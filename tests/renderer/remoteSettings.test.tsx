@@ -73,6 +73,21 @@ async function mount(): Promise<void> {
 }
 
 describe('RemoteSettings', () => {
+  it('says the feature is unavailable when the preload provides no remote API', async () => {
+    // A renderer without the bridge used to throw out of the mount effect,
+    // which took the whole Settings pane down with it.
+    const saved = (window as unknown as { remote?: unknown }).remote
+    delete (window as unknown as { remote?: unknown }).remote
+    try {
+      render(<RemoteSettings />)
+      const note = await screen.findByTestId('remote-unavailable')
+      expect(note.textContent).toContain('not available')
+      expect(api.status).not.toHaveBeenCalled()
+    } finally {
+      ;(window as unknown as { remote?: unknown }).remote = saved
+    }
+  })
+
   it('says so when remote never started in this session', async () => {
     api.status.mockResolvedValue(fail('Remote access is not running in this session'))
     render(<RemoteSettings />)

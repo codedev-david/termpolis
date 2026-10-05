@@ -45,6 +45,14 @@ export interface PairedDevice {
   capabilities: Capabilities
   pairedAt: number
   lastSeenAt: number
+  /** `'desktop'` for another Termpolis machine linked under Settings ▸ Linked
+   *  machines; absent for a phone.
+   *
+   *  Absent rather than `'phone'` so every record written before linked machines
+   *  existed -- and every one an older build writes -- reads as what it is. A
+   *  desktop peer is served the `peer*` request kinds and nothing else, so the
+   *  phone capabilities above never apply to it (spec §4.4). */
+  kind?: 'desktop'
 }
 
 /** The three agents a phone may launch. A closed set on purpose: `launchAgent`
@@ -184,6 +192,113 @@ export interface RemoteEnvelope {
   request: RemoteRequest
 }
 
+// ── Linked machines ──────────────────────────────────────────────────────────
+// Two desktops paired the way a phone pairs with one, carrying requests in BOTH
+// directions over a single sealed session. Everything here is additive on
+// PROTOCOL_VERSION 2. See docs/superpowers/specs/2026-10-05-linked-machines-design.md.
+
+/** Which machine a linked request is for, or came from, as THIS bridge knows it.
+ *
+ *  `device` is a machine that entered a code this machine created: it is a
+ *  `PairedDevice` with `kind: 'desktop'` in the registry, and its room is the one
+ *  this machine already opens for every paired device. `link` is a machine whose
+ *  code this machine entered: it lives in `BridgeLink`, and this machine dials
+ *  its room as `device`. The `id` is the same 16-hex device id on both sides. */
+export type LinkTarget = { via: 'device'; id: string } | { via: 'link'; id: string }
+
+/** A link this machine JOINED, as main hands it down.
+ *
+ *  `secretKey` is a keypair minted for this one link, never the machine
+ *  identity: two machines that each host a link to the other would otherwise
+ *  derive the SAME session room from the same two keys, and one side would take
+ *  a 409 forever. Provisioned in main, like the identity, because `safeStorage`
+ *  does not exist in a utilityProcess. */
+export interface BridgeLink {
+  id: string
+  hostPublicKey: string
+  relayUrl: string
+  sessionRoomId: string
+  secretKey: string
+}
+
+/** The agents a linked machine may be asked to run headless. */
+export type PeerAgent = 'claude' | 'codex' | 'gemini'
+
+/** What one linked machine may ask another.
+ *
+ *  Deliberately NOT part of `RemoteRequest`: the phone's union is mirrored by
+ *  the mobile app and pinned by the parity tests, and a phone is never served
+ *  these. They are absent from `requiredCapability` for the same reason
+ *  `getCapabilities` is -- a lost interception fails closed for a phone. */
+export type PeerRequest =
+  | { kind: 'peerHello' }
+  | {
+      kind: 'peerRun'
+      agent: PeerAgent
+      prompt: string
+      cwd?: string
+      write?: boolean
+      model?: string
+      timeoutMs?: number
+    }
+  // A long-poll: the answering side holds it up to `waitMs` (≤ 50_000).
+  | { kind: 'peerResult'; jobId: string; waitMs?: number }
+  | { kind: 'peerCancel'; jobId: string }
+  // "I unlinked you." Handled inside the bridge, never forwarded to main.
+  | { kind: 'peerBye' }
+
+/** The data of a `peerHello` answer. */
+export interface PeerHelloInfo {
+  /** The answering machine's own name. */
+  name: string
+  agents: { claude: boolean; codex: boolean; gemini: boolean }
+  /** What the CALLER may do on the answering machine. */
+  grants: { run: boolean; write: boolean }
+  confirmed: boolean
+  /** App version. */
+  version: string
+}
+
+/** The data of a `peerRun` / `peerResult` / `peerCancel` answer. */
+export interface PeerJobView {
+  /** 12 hex, minted by the executing machine. */
+  jobId: string
+  agent: PeerAgent
+  status: 'running' | 'done' | 'failed' | 'cancelled'
+  /** At most 200_000 chars, and at most 600_002 bytes once written as a JSON
+   *  string (linkedJobs MAX_OUTPUT_JSON_BYTES), so an answer always fits one
+   *  relay frame; the TAIL is kept on truncation. */
+  output?: string
+  truncated?: boolean
+  error?: string
+  startedAt: number
+  durationMs?: number
+}
+
+/** Every kind in `PeerRequest`. The one list the bridge routes on. */
+export const PEER_REQUEST_KINDS: readonly PeerRequest['kind'][] = [
+  'peerHello',
+  'peerRun',
+  'peerResult',
+  'peerCancel',
+  'peerBye',
+]
+
+/** Whether a request kind is one of the linked-machine kinds.
+ *
+ *  Takes `unknown` because what it is asked about arrived over the network: a
+ *  sealed frame proves who sent it, not that the sender spoke this version. */
+export function isPeerKind(kind: unknown): kind is PeerRequest['kind'] {
+  return (PEER_REQUEST_KINDS as readonly unknown[]).includes(kind)
+}
+
+/** At most this many linked machines per install, hosted and joined together.
+ *
+ *  Sixteen, like the phone's own cap on paired desktops: past a handful, a
+ *  list of names is no longer something a person reads, and every link is a
+ *  socket held open against the relay for as long as the app runs. */
+export const MAX_LINKED_MACHINES = 16
+
 /** Messages main sends down to the bridge process. */
 /** One read of a terminal's output stream, as `readOutputFrom` in main produces it. */
 export interface OutputSlice {
@@ -200,11 +315,30 @@ export interface TerminalSize {
 }
 
 export type HostToBridge =
-  | { kind: 'init'; mcpPort: number; mcpToken: string; identitySecretKey: string; devices: PairedDevice[] }
+  | {
+      kind: 'init'
+      mcpPort: number
+      mcpToken: string
+      identitySecretKey: string
+      devices: PairedDevice[]
+      /** The links this machine joined. Their rooms open only when `linked`. */
+      links?: BridgeLink[]
+      /** Whether phone rooms open. Absent means true: every init sent before
+       *  linked machines existed was a phone init. */
+      phones?: boolean
+      /** Whether desktop-peer rooms and link rooms open. Absent means false, so
+       *  turning on Remote never quietly exposes Linked machines -- nor the other
+       *  way round, which is why the bridge is told both. */
+      linked?: boolean
+    }
   /** `capabilities` is what the user granted in Settings before the QR was
    *  shown. Optional so an older host still pairs -- absent means nothing is
-   *  granted, which is what pairing did before the choice existed. */
-  | { kind: 'beginPairing'; label: string; capabilities?: Capabilities }
+   *  granted, which is what pairing did before the choice existed.
+   *
+   *  `link` makes it a code for ANOTHER COMPUTER rather than a phone: it lives
+   *  five minutes instead of ninety seconds, is announced with a `linkCode`, and
+   *  accepts only a hello marked `peer: 'desktop'`. */
+  | { kind: 'beginPairing'; label: string; capabilities?: Capabilities; link?: boolean }
   | { kind: 'cancelPairing' }
   | { kind: 'revokeDevice'; deviceId: string }
   | { kind: 'setCapabilities'; deviceId: string; capabilities: Capabilities }
@@ -241,13 +375,30 @@ export type HostToBridge =
   // main's session record and nowhere the bridge can see.
   | { kind: 'terminalStatus'; terminalId: string; status: AgentStatus; summary: string }
   | { kind: 'shutdown' }
+  // Enter a code another computer created. `secretKey` is a FRESH keypair for
+  // this one link (see `BridgeLink`); `label` is what this machine suggests the
+  // other one call it. Answered with `linkJoined` or `joinFailed`.
+  | { kind: 'joinLink'; code: string; secretKey: string; label: string }
+  | { kind: 'cancelJoin' }
+  // The whole joined-link list. The bridge diffs it against the rooms it holds.
+  | { kind: 'setLinks'; links: BridgeLink[] }
+  | { kind: 'renameDevice'; deviceId: string; label: string }
+  // A request to a linked machine, answered with `linkCallResult` under the same
+  // `callId`. Main mints the id.
+  | { kind: 'linkCall'; callId: string; target: LinkTarget; request: PeerRequest; timeoutMs: number }
+  // Main's answer to a `peerRequest`, under the bridge's `callId`.
+  | { kind: 'peerReply'; callId: string; ok: true; data: unknown }
+  | { kind: 'peerReply'; callId: string; ok: false; message: string }
 
 /** Messages the bridge sends up to main. */
 export type BridgeToHost =
   | { kind: 'ready' }
   // No verificationPhrase: the safety number needs BOTH public keys and the
   // device's does not exist until it answers. It arrives in its own message below.
-  | { kind: 'pairingCode'; qrPayload: string; expiresAt: number }
+  //
+  // `linkCode` is present for a link offer only: the same payload as the QR,
+  // wrapped as text a person can carry between two computers (`linkCode.ts`).
+  | { kind: 'pairingCode'; qrPayload: string; expiresAt: number; linkCode?: string }
   | { kind: 'verificationPhrase'; deviceId: string; phrase: string }
   | { kind: 'paired'; device: PairedDevice }
   | { kind: 'devicesChanged'; devices: PairedDevice[] }
@@ -261,7 +412,36 @@ export type BridgeToHost =
   // the phone is in a tunnel. Settings shows the two separately.
   | { kind: 'deviceConnected'; deviceId: string }
   | { kind: 'deviceDisconnected'; deviceId: string }
-  | { kind: 'error'; message: string }
+  // `scope: 'link'` marks an error about Linked machines -- a link room the
+  // relay cut, a link record the bridge refused, a code for another computer.
+  // Main shows it under Settings ▸ Linked machines and keeps it out of the
+  // phone pane. Absent means what every error meant before linked machines
+  // existed: Remote's to show, unless the offer it concerns says otherwise.
+  | { kind: 'error'; message: string; scope?: 'link' }
+  // The joining side of a link pairing, finished. Everything in it is derived
+  // from the two keys or read off the authenticated ack; `phrase` is the safety
+  // number the user compares with the other screen before main trusts the link.
+  | {
+      kind: 'linkJoined'
+      publicKey: string
+      hostPublicKey: string
+      hostName: string | null
+      deviceId: string
+      sessionRoomId: string
+      relayUrl: string
+      phrase: string
+    }
+  | { kind: 'joinFailed'; message: string }
+  | { kind: 'linkCallResult'; callId: string; ok: true; data: unknown }
+  | { kind: 'linkCallResult'; callId: string; ok: false; message: string }
+  // A linked machine asked something only main can answer. Reply with
+  // `peerReply` under the same `callId`.
+  | { kind: 'peerRequest'; callId: string; from: LinkTarget; request: PeerRequest }
+  // Reachability of a JOINED link. Hosted desktop peers report through
+  // `deviceConnected` / `deviceDisconnected`, like every other paired device.
+  | { kind: 'linkStateChanged'; id: string; attached: boolean }
+  // The other machine unlinked this one. The bridge has already dropped its side.
+  | { kind: 'linkBye'; from: LinkTarget }
 
 /** The relay refuses -- and cuts the connection on -- any frame larger than this.
  *

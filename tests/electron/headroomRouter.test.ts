@@ -31,4 +31,20 @@ describe('router', () => {
   it('exposes the exempt list', () => {
     expect(EXEMPT_TOOLS).toContain('retrieve_full')
   })
+
+  it('exempts agent_exec, whose result the CLI parses as JSON', () => {
+    // A compacted result swaps the long `output` for a retrieve_full token, and the text that
+    // reaches `termpolis-cli exec` is then no longer the JSON it parses.
+    expect(EXEMPT_TOOLS).toContain('agent_exec')
+    expect(route('agent_exec', { ok: true, output: 'x'.repeat(50_000) })).toBe('exempt')
+    expect(isExempt('mcp__termpolis__agent_exec')).toBe(true)
+  })
+
+  it('exempts linked_machines, whose answer is a whole agent run on another machine', () => {
+    // Compacted, the answer would hide behind a retrieve_full token that expires, and the advice
+    // for an expired token, re-run the tool, would run the remote agent again.
+    expect(EXEMPT_TOOLS).toContain('linked_machines')
+    expect(route('linked_machines', { jobId: 'a-b', status: 'done', output: 'x'.repeat(50_000) })).toBe('exempt')
+    expect(isExempt('mcp__termpolis__linked_machines')).toBe(true)
+  })
 })

@@ -12,7 +12,7 @@ import {
   type SecondOpinionDeliverDeps,
 } from '../../src/main/secondOpinionDeliver'
 import { TREE_KILL_GRACE_MS } from '../../src/main/processTree'
-import { DELIVER_GRACE_MS, PROMPT_TOKEN, SECOND_OPINION_TIMEOUT_MS, runSecondOpinion } from '../../src/main/secondOpinion'
+import { DELIVER_GRACE_MS, PROMPT_TOKEN, SECOND_OPINION_TIMEOUT_MS, powershellPath, runSecondOpinion } from '../../src/main/secondOpinion'
 import { runHeadless } from '../../src/main/headlessExec'
 
 // Every process here is a fake: spawn, kill, and the temp-file writes are all injected. What
@@ -106,7 +106,7 @@ describe('secondOpinionDeliver: spawning', () => {
     expect(data).toBe('the "prompt"')
 
     const [cmd, args, opts] = h.spawn.mock.calls[0]
-    expect(cmd).toBe('powershell.exe')
+    expect(cmd).toBe(powershellPath())
     expect(args.join(' ')).not.toContain('the "prompt"')
     expect(opts.env).toEqual({ PATH: 'C:\\bin', TP_SO_FILE: file })
     // A detached Windows child gets its own console; the tree is found through taskkill instead.
@@ -200,9 +200,132 @@ describe('secondOpinionDeliver: spawning', () => {
     const h = harness({ platform: undefined })
     const win = withPlatform('win32', () => h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000 }))
     const posix = withPlatform('linux', () => h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000 }))
-    expect(h.spawn.mock.calls.map(([cmd, , opts]) => [cmd, opts.detached])).toEqual([['powershell.exe', false], ['claude', true]])
+    expect(h.spawn.mock.calls.map(([cmd, , opts]) => [cmd, opts.detached])).toEqual([[powershellPath(), false], ['claude', true]])
     h.children.forEach((c) => c.emit('close', 0))
     await Promise.all([win, posix])
+  })
+})
+
+describe('secondOpinionDeliver: working folder and environment', () => {
+  it('spawns in the run\'s working folder, and leaves the folder alone when there is none', async () => {
+    const h = harness()
+    const inFolder = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000, cwd: '/work/repo' })
+    const noFolder = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000 })
+    expect(h.spawn.mock.calls[0][2].cwd).toBe('/work/repo')
+    expect(h.spawn.mock.calls[1][2]).not.toHaveProperty('cwd')
+    h.children.forEach((c) => c.emit('close', 0))
+    await Promise.all([inFolder, noFolder])
+  })
+
+  it('also sets the folder on the Windows wrapper, which is spawned by absolute path', async () => {
+    const h = harness({ platform: 'win32' })
+    const result = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000, cwd: 'C:\\work\\repo' })
+    const [cmd, , opts] = h.spawn.mock.calls[0]
+    expect(cmd).toBe(powershellPath())
+    expect(opts.cwd).toBe('C:\\work\\repo')
+    h.children[0].emit('close', 0)
+    await result
+  })
+
+  it('sets the caller\'s variables over the base environment, and writes to neither', async () => {
+    const base = { PATH: '/usr/bin', KEEP: '1' }
+    const extra = { KEEP: '2', TERMPOLIS_LINKED_JOB: 'job1' }
+    const h = harness({ env: () => base })
+    const result = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000, env: extra })
+    expect(h.spawn.mock.calls[0][2].env).toEqual({ PATH: '/usr/bin', KEEP: '2', TERMPOLIS_LINKED_JOB: 'job1' })
+    expect(base).toEqual({ PATH: '/usr/bin', KEEP: '1' })
+    expect(extra).toEqual({ KEEP: '2', TERMPOLIS_LINKED_JOB: 'job1' })
+    h.children[0].emit('close', 0)
+    await result
+  })
+
+  it('on Windows keeps its own prompt file over a caller\'s TP_SO_FILE', async () => {
+    // The wrapper reads the prompt from this variable, so no caller may point it elsewhere.
+    const h = harness({ platform: 'win32' })
+    const result = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000, env: { TP_SO_FILE: 'C:\\elsewhere.txt' } })
+    const [file] = h.writeFile.mock.calls[0] as [string, string]
+    expect(h.spawn.mock.calls[0][2].env!.TP_SO_FILE).toBe(file)
+    h.children[0].emit('close', 0)
+    await result
+  })
+})
+
+describe('secondOpinionDeliver: cancelling a run', () => {
+  it('stops the whole tree on abort, as the deadline does, and says it was cancelled', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const ac = new AbortController()
+    const result = h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 90_000, signal: ac.signal })
+    const c = h.children[0]
+    c.stdout!.emit('data', 'half done')
+    c.stderr!.emit('data', 'still going')
+    ac.abort()
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false })
+    c.emit('exit', null)
+    c.emit('close', null)
+    expect(await result).toEqual({ stdout: 'half done', stderr: 'cancelled\nstill going', code: 1 })
+    // The deadline went with it.
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('settles a cancelled run even when close never comes', async () => {
+    vi.useFakeTimers()
+    const h = harness({ platform: 'win32' })
+    const ac = new AbortController()
+    const result = h.deliver('agy', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 90_000, signal: ac.signal })
+    const state = track(result)
+    ac.abort()
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'win32', sync: false })
+    vi.advanceTimersByTime(STOP_SETTLE_MS - 1)
+    await Promise.resolve()
+    expect(state.done()).toBe(false)
+    vi.advanceTimersByTime(1)
+    expect(await result).toEqual({ stdout: '', stderr: 'cancelled', code: 1 })
+    expect(h.unlink).toHaveBeenCalledTimes(1)
+  })
+
+  it('never starts a run that was cancelled before it began, and leaves no prompt file', async () => {
+    const h = harness({ platform: 'win32' })
+    const ac = new AbortController()
+    ac.abort()
+    expect(await h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000, signal: ac.signal }))
+      .toEqual({ stdout: '', stderr: 'cancelled', code: 1 })
+    expect(h.writeFile).not.toHaveBeenCalled()
+    expect(h.spawn).not.toHaveBeenCalled()
+  })
+
+  it('lets go of the signal once the run is over, so a late abort stops nothing', async () => {
+    const h = harness()
+    const ac = new AbortController()
+    const add = vi.spyOn(ac.signal, 'addEventListener')
+    const remove = vi.spyOn(ac.signal, 'removeEventListener')
+    const result = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000, signal: ac.signal })
+    h.children[0].emit('close', 0)
+    expect(await result).toEqual({ stdout: '', stderr: '', code: 0 })
+    expect(add).toHaveBeenCalledWith('abort', expect.any(Function), { once: true })
+    expect(remove).toHaveBeenCalledWith('abort', add.mock.calls[0][1])
+    ac.abort()
+    expect(h.killTree).not.toHaveBeenCalled()
+  })
+
+  it('keeps the deadline as the reason when an abort comes after it', async () => {
+    vi.useFakeTimers()
+    const h = harness()
+    const ac = new AbortController()
+    const result = h.deliver('claude', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 5_000, signal: ac.signal })
+    vi.advanceTimersByTime(5_000)
+    ac.abort()
+    h.children[0].emit('close', null)
+    expect((await result).stderr).toBe('claude did not finish within 5s and was stopped')
+  })
+
+  it('attaches nothing to the signal when the spawn itself fails', async () => {
+    const h = harness({ spawn: vi.fn(() => { throw new Error('ENOENT codex') }) })
+    const ac = new AbortController()
+    const add = vi.spyOn(ac.signal, 'addEventListener')
+    expect(await h.deliver('codex', ARGS, 'p', PROMPT_TOKEN, { timeoutMs: 1000, signal: ac.signal }))
+      .toEqual({ stdout: '', stderr: 'ENOENT codex', code: 1 })
+    expect(add).not.toHaveBeenCalled()
   })
 })
 
@@ -438,7 +561,8 @@ describe('secondOpinionDeliver through its callers', () => {
     vi.useFakeTimers()
     const h = harness()
     const remember = vi.fn(async () => undefined)
-    const run = runHeadless({ task: 'summarise the repo', agent: 'claude', timeoutMs: 60_000, noPrimer: true, cwd: '/repo' }, { deliver: h.deliver, remember })
+    // No cwd: checking one is real file I/O, which one microtask tick doesn't wait out.
+    const run = runHeadless({ task: 'summarise the repo', agent: 'claude', timeoutMs: 60_000, noPrimer: true }, { deliver: h.deliver, remember })
     await Promise.resolve()
     const c = h.children[0]
     c.stdout!.emit('data', 'half done')
@@ -446,6 +570,25 @@ describe('secondOpinionDeliver through its callers', () => {
     c.emit('close', null)
     const r = await run
     expect(r).toMatchObject({ ok: false, code: 1, output: 'half done', error: 'claude did not finish within 60s and was stopped' })
+    expect(remember).not.toHaveBeenCalled()
+  })
+
+  it('a headless run cancelled through its signal stops its tree, fails as cancelled, and is not remembered', async () => {
+    const h = harness()
+    const remember = vi.fn(async () => undefined)
+    const ac = new AbortController()
+    const run = runHeadless(
+      { task: 'implement the parser', agent: 'codex', write: true, noPrimer: true, env: { TERMPOLIS_LINKED_JOB: 'job1' }, signal: ac.signal },
+      { deliver: h.deliver, remember },
+    )
+    await Promise.resolve()
+    const c = h.children[0]
+    expect(h.spawn.mock.calls[0][2].env).toMatchObject({ TERMPOLIS_LINKED_JOB: 'job1' })
+    c.stdout!.emit('data', 'half done')
+    ac.abort()
+    expect(h.killTree).toHaveBeenCalledWith(4242, { platform: 'linux', sync: false })
+    c.emit('close', null)
+    expect(await run).toMatchObject({ ok: false, code: 1, output: 'half done', error: 'cancelled' })
     expect(remember).not.toHaveBeenCalled()
   })
 })

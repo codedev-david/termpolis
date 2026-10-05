@@ -1073,6 +1073,82 @@ export interface RemoteAPI {
   onEvent: (cb: (event: RemoteEvent) => void) => () => void
 }
 
+/** What a linked computer may do on THIS one. Each side stores and enforces its
+ *  own copy, so the two directions of a link are granted independently.
+ *  `write` implies `run`; main forces `run` on whenever `write` is set. */
+export interface LinkedGrants {
+  run: boolean
+  write: boolean
+}
+
+/** One linked computer as Settings ▸ Linked machines sees it. Like
+ *  `RemoteDeviceView`, it is rebuilt field by field in main, so no key, secret
+ *  or relay room id can reach the renderer. */
+export interface LinkedMachineView {
+  /** 'device:<id>' (that computer entered our code) or 'link:<id>' (we entered its code). */
+  ref: string
+  name: string
+  online: boolean
+  /** The safety words have been checked on THIS side. Nothing is served before that. */
+  confirmed: boolean
+  /** The 8 safety words, kept only while the link is unconfirmed. */
+  phrase?: string
+  grants: LinkedGrants
+  linkedAt: number
+  lastActivityAt?: number
+}
+
+/** One delegated job, in either direction. */
+export interface LinkedActivityView {
+  id: string
+  /** 'in': that computer asked this one; 'out': this one asked that computer. */
+  direction: 'in' | 'out'
+  machine: string
+  agent: string
+  /** The first line of the prompt. */
+  summary: string
+  status: 'running' | 'done' | 'failed' | 'cancelled'
+  startedAt: number
+  durationMs?: number
+}
+
+export interface LinkedStatusView {
+  enabled: boolean
+  running: boolean
+  /** The Remote relay. Shown read-only here; it is set under Settings ▸ Remote. */
+  relayUrl: string
+  /** This computer's own name, which the other side is offered as a suggestion. */
+  thisMachine: string
+  /** The live link code, while one is being offered. */
+  code: { code: string; expiresAt: number } | null
+  /** A code from another computer is being redeemed right now. */
+  joining: boolean
+  machines: LinkedMachineView[]
+  activity: LinkedActivityView[]
+}
+
+export type LinkedEvent =
+  | { kind: 'pending'; ref: string; phrase: string; suggestedName: string }
+  | { kind: 'error'; message: string }
+  | { kind: 'linked'; ref: string; name: string }
+
+/** `window.linked`. Every mutating call answers with the whole status view, so
+ *  the pane adopts it rather than patching its own copy. */
+export interface LinkedAPI {
+  status(): Promise<IpcResponse<LinkedStatusView>>
+  setEnabled(enabled: boolean): Promise<IpcResponse<LinkedStatusView>>
+  createCode(grants: LinkedGrants): Promise<IpcResponse<LinkedStatusView>>
+  cancelCode(): Promise<IpcResponse<LinkedStatusView>>
+  join(code: string, grants: LinkedGrants): Promise<IpcResponse<LinkedStatusView>>
+  cancelJoin(): Promise<IpcResponse<LinkedStatusView>>
+  confirm(ref: string, name: string): Promise<IpcResponse<LinkedStatusView>>
+  rename(ref: string, name: string): Promise<IpcResponse<LinkedStatusView>>
+  setGrants(ref: string, grants: LinkedGrants): Promise<IpcResponse<LinkedStatusView>>
+  unlink(ref: string): Promise<IpcResponse<LinkedStatusView>>
+  onStatus(cb: (s: LinkedStatusView) => void): () => void
+  onEvent(cb: (e: LinkedEvent) => void): () => void
+}
+
 /** Which of the three diffs a Changes-rail row refers to. */
 export type GitChangeMode = 'staged' | 'unstaged' | 'untracked'
 
@@ -1142,5 +1218,8 @@ declare global {
       onTerminalClosed: (cb: (terminalId: string) => void) => () => void
     }
     remote: RemoteAPI
+    /** Optional: only a preload that ships Linked machines defines it, so every
+     *  reader has to cope with it being absent. */
+    linked?: LinkedAPI
   }
 }

@@ -231,12 +231,39 @@ describe('getAgentExtraPaths', () => {
 // getExtendedPath
 // =========================================================================
 describe('getExtendedPath', () => {
-  it('on Windows joins with ";" and includes process.env.PATH last', () => {
+  it('on Windows joins with ";" and puts process.env.PATH FIRST, the known dirs after it', () => {
     setPlatform('win32')
+    mockHomedir.mockReturnValue('C:\\Users\\dev')
     process.env.PATH = 'C:\\Windows;C:\\Tools'
     const out = getExtendedPath()
-    expect(out).toContain(';')
-    expect(out.endsWith('C:\\Windows;C:\\Tools')).toBe(true)
+    expect(out.startsWith('C:\\Windows;C:\\Tools;')).toBe(true)
+    expect(out.split(';')).toContain('C:\\Users\\dev\\AppData\\Roaming\\npm')
+    expect(out).not.toContain(';;')
+    expect(out.endsWith(';')).toBe(false)
+  })
+
+  // The bug a real two-instance Linked machines run hit: Claude Code moved to its native
+  // installer, which leaves `%AppData%\npm\claude.ps1` behind with its claude.exe gone. The
+  // user's PATH names `~\.local\bin` (the working claude.exe) first, so every terminal runs the
+  // right one -- but this PATH put the npm dir ahead of it, `claude` resolved to the dead shim,
+  // and every headless Claude job failed with "claude.exe is not recognized".
+  it('on Windows never lets a known dir shadow a binary the user PATH finds first', () => {
+    setPlatform('win32')
+    mockHomedir.mockReturnValue('C:\\Users\\dev')
+    process.env.PATH = 'C:\\Users\\dev\\.local\\bin;C:\\Windows\\System32'
+    const dirs = getExtendedPath().split(';')
+    expect(dirs.indexOf('C:\\Users\\dev\\.local\\bin')).toBeLessThan(
+      dirs.indexOf('C:\\Users\\dev\\AppData\\Roaming\\npm'),
+    )
+  })
+
+  it('on Windows still finds the known dirs when the inherited PATH is empty', () => {
+    setPlatform('win32')
+    mockHomedir.mockReturnValue('C:\\Users\\dev')
+    delete process.env.PATH
+    const out = getExtendedPath()
+    expect(out.startsWith('C:\\Users\\dev\\AppData\\Roaming\\npm;')).toBe(true)
+    expect(out.startsWith(';')).toBe(false)
   })
 
   it('on linux joins with ":" and prepends the agent paths', () => {
@@ -379,6 +406,16 @@ describe('getExtendedPathAsync', () => {
     const out = await getExtendedPathAsync()
     expect(out.split(';')).toContain('C:\Windows')
     expect(out).not.toContain(';;')
+  })
+
+  it('matches the sync version on Windows too: the user PATH first', async () => {
+    setPlatform('win32')
+    mockHomedir.mockReturnValue('C:\\Users\\dev')
+    process.env.PATH = 'C:\\Users\\dev\\.local\\bin'
+    const out = await getExtendedPathAsync()
+    expect(out).toBe(getExtendedPath())
+    expect(out.startsWith('C:\\Users\\dev\\.local\\bin;')).toBe(true)
+    expect(mockExecShellOffThread).not.toHaveBeenCalled()
   })
 
   it('survives PATH being undefined', async () => {

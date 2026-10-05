@@ -4,7 +4,23 @@ import {
   isRemoteDisabled, onBridgeMessage, sendToBridge, clearRemoteDisabled,
   _resetSupervisorForTests, type BridgeHandle,
 } from '../../src/main/remoteBridgeSupervisor'
-import type { BridgeToHost, HostToBridge } from '../../src/main/remoteBridge/protocol'
+import {
+  NO_CAPABILITIES,
+  type BridgeToHost,
+  type HostToBridge,
+  type PairedDevice,
+} from '../../src/main/remoteBridge/protocol'
+
+/** A device that did not exist when the bridge was first launched. */
+const pairedLater: PairedDevice = {
+  id: 'paired-later',
+  label: 'Pixel',
+  publicKey: 'a'.repeat(64),
+  sessionRoomId: 'b'.repeat(32),
+  capabilities: { ...NO_CAPABILITIES },
+  pairedAt: 1,
+  lastSeenAt: 1,
+}
 
 function fakeBridge() {
   const messageCbs: Array<(m: BridgeToHost) => void> = []
@@ -76,6 +92,69 @@ describe('remoteBridgeSupervisor', () => {
     expect(isRemoteBridgeRunning()).toBe(false)
     b.emitExit(0)
     expect(isRemoteBridgeRunning()).toBe(false)
+  })
+
+  it('replays the CURRENT init on a respawn, not the one it launched with', () => {
+    // The stale-respawn bug: init was captured once at launch, so a bridge that
+    // crashed an hour later came back with the devices and links of an hour ago
+    // -- a phone paired since then was gone until the next manual restart, and a
+    // revoked one was live again. A factory is asked afresh on every spawn.
+    const bridges: ReturnType<typeof fakeBridge>[] = []
+    setBridgeSpawner(() => {
+      const b = fakeBridge()
+      bridges.push(b)
+      return b.handle
+    })
+    let devices: PairedDevice[] = []
+    const factory = vi.fn(() => ({ ...init, devices }))
+    startRemoteBridge(factory)
+    expect(bridges[0].sent[0]).toEqual({ kind: 'init', ...init, devices: [] })
+
+    devices = [{ ...pairedLater }]
+    bridges[0].emitExit(1)
+
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(bridges[1].sent[0]).toMatchObject({ kind: 'init', devices: [{ id: 'paired-later' }] })
+  })
+
+  it('ignores the late exit of a child it already replaced', () => {
+    // stop → start → the OLD child's exit arrives. Acting on it would clear the new
+    // child's handle, count a crash, and spawn a third bridge that 409s against the
+    // second one, which nothing would ever kill.
+    const first = fakeBridge()
+    const second = fakeBridge()
+    const spawned = [first, second]
+    let spawns = 0
+    setBridgeSpawner(() => spawned[spawns++]?.handle ?? fakeBridge().handle)
+    startRemoteBridge(init)
+    stopRemoteBridge()
+    startRemoteBridge(init)
+    expect(spawns).toBe(2)
+
+    first.emitExit(0)
+
+    expect(spawns).toBe(2)
+    expect(isRemoteBridgeRunning()).toBe(true)
+    sendToBridge({ kind: 'cancelPairing' })
+    expect(second.sent.at(-1)).toEqual({ kind: 'cancelPairing' })
+  })
+
+  it('drops messages from a child it already stopped', () => {
+    const first = fakeBridge()
+    const second = fakeBridge()
+    const spawned = [first, second]
+    let spawns = 0
+    setBridgeSpawner(() => spawned[spawns++]!.handle)
+    const seen: BridgeToHost[] = []
+    onBridgeMessage((m) => seen.push(m))
+    startRemoteBridge(init)
+    stopRemoteBridge()
+    startRemoteBridge(init)
+
+    first.emit({ kind: 'ready' })
+    second.emit({ kind: 'devicesChanged', devices: [] })
+
+    expect(seen).toEqual([{ kind: 'devicesChanged', devices: [] }])
   })
 
   it('start is idempotent — a second call does not spawn twice', () => {

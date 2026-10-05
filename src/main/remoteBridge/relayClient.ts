@@ -3,8 +3,10 @@ import {
   FRAME_KEEPALIVE,
   FRAME_SESSION,
   type Handshake,
+  type Role,
   type SealedSession,
 } from './sessionCrypto'
+import { MAX_PAYLOAD_BYTES } from './outputChunker'
 import type {
   QuotaLimit,
   RelayControlFrame,
@@ -51,10 +53,22 @@ interface RelayCommonDeps {
    *  caller's business: a paired device's room is DERIVED and never announced,
    *  while a pairing room's name is on screen for as long as the QR is. */
   roomId: string
+  /** Which seat to take. A desktop sits in `desktop` for every room it hosts --
+   *  its phones, and the machines it linked by showing a code. A machine that
+   *  ENTERED a link code sits in the host's `device` seat, exactly where a phone
+   *  would: two desktops dialling one room's `desktop` seat is a 409 for
+   *  whichever came second. Absent means `desktop`, which is every room that
+   *  existed before linked machines. */
+  role?: Role
   onStateChange(state: RelayState): void
   /** Told which limit the relay cut this connection for. Optional: it is a
    *  diagnosis for the user, not part of the request path. */
   onQuota?(limit: QuotaLimit): void
+  /** Told every control frame the relay sends, AFTER this client has acted on
+   *  it -- so on `hello` the seat is already taken. Joining a link needs exactly
+   *  what this client already watches for: when the host is in the room, and
+   *  when it leaves. A hint from an untrusted relay, like the frame itself. */
+  onControl?(frame: RelayControlFrame): void
   /** Injected in tests. Production dials the real relay. */
   openSocket?(url: string): SocketLike
   /** Injected so backoff jitter is deterministic under test. */
@@ -135,6 +149,25 @@ export function backoffDelay(attempt: number, random: () => number = Math.random
   return Math.round(base * (0.5 + 0.5 * random()))
 }
 
+/** One session frame, opened and parsed, before anything in it is trusted. It
+ *  is either a question from the other end (`request`) or an answer to one this
+ *  end asked (`kind` of `ok` / `error`); every field is checked before use. */
+interface InboundMessage {
+  id?: unknown
+  request?: { kind?: unknown } | null
+  kind?: unknown
+  data?: unknown
+  message?: unknown
+}
+
+/** A payload as the plaintext that gets sealed. Its length is what the relay's
+ *  frame cap is measured against, less the header and seal overhead that
+ *  `MAX_PAYLOAD_BYTES` already leaves out -- bytes, not characters, since
+ *  escaping can grow one character into six. */
+function encodeJson(payload: unknown): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(payload))
+}
+
 export class RelayClient {
   private socket: SocketLike | null = null
   private attempt = 0
@@ -149,6 +182,20 @@ export class RelayClient {
    *  Both are per-attachment, and both die with the peer or with the socket. */
   private pending: Handshake | null = null
   private session: SealedSession | null = null
+  /** Requests this end has asked and not yet had answered, by envelope id.
+   *
+   *  A link carries requests in BOTH directions over one session, and the two
+   *  ends number their own: the other end's request 1 and this end's request 1
+   *  are different things, told apart by shape -- a question has `request`, an
+   *  answer has `kind`. */
+  private readonly calls = new Map<
+    number,
+    { resolve(data: unknown): void; reject(err: Error): void; timer: ReturnType<typeof setTimeout> }
+  >()
+  /** Monotonic for this client's whole life, across every reconnect, so a late
+   *  answer from a dead session can never settle a new request that happened to
+   *  be given the same number. */
+  private nextCallId = 1
   state: RelayState = 'offline'
 
   constructor(private readonly deps: RelayClientDeps) {}
@@ -167,7 +214,7 @@ export class RelayClient {
     this.setState('connecting')
     const open =
       this.deps.openSocket ?? ((url: string) => new WebSocket(url) as unknown as SocketLike)
-    const sock = open(`${this.deps.url}/v1/pair/${this.deps.roomId}?role=desktop`)
+    const sock = open(`${this.deps.url}/v1/pair/${this.deps.roomId}?role=${this.deps.role ?? 'desktop'}`)
     this.socket = sock
 
     sock.on('open', (() => {
@@ -185,6 +232,12 @@ export class RelayClient {
     }) as never)
 
     sock.on('message', ((data: Buffer, isBinary: boolean) => {
+      // A socket this client has let go of speaks for nobody. `ws` goes on
+      // emitting frames that were already in flight after `close()`, and one
+      // acted on here would seat a stopped client all over again -- with a
+      // keepalive `down` would never clear, since it only acts for the socket the
+      // client still holds.
+      if (this.socket !== sock) return
       // Text is the relay speaking for itself. Peers speak binary only, and the
       // relay refuses to forward text at all, so nothing here can have come from
       // the phone.
@@ -229,9 +282,15 @@ export class RelayClient {
       // sits connected and permanently mute.
       this.pending = null
       this.session = null
+      this.failCalls()
       this.setState('offline')
       this.retry()
     }
+    // Both listeners stay for the socket's whole life and are never removed. `ws`
+    // emits `error` on the NEXT tick when a socket is closed while still
+    // connecting, and an `error` with no listener is an uncaught exception --
+    // which in the utilityProcess is the bridge dying because somebody cancelled
+    // a join quickly.
     sock.on('close', down as never)
     sock.on('error', down as never)
   }
@@ -254,10 +313,10 @@ export class RelayClient {
         this.startKeepalive(sock)
         // Greet only into a room that has someone in it -- see `dial`.
         if (frame.peer) this.greet(sock)
-        return
+        break
       case 'peer-joined':
         this.greet(sock)
-        return
+        break
       case 'peer-gone':
         // `online`, NOT `offline`: this desktop is still seated and still
         // reachable, and telling the user otherwise blames the wrong machine.
@@ -268,13 +327,20 @@ export class RelayClient {
         // open -- leaving a socket that is connected, attached, and mute.
         this.pending = null
         this.session = null
+        // Anything asked over that session can only be answered over it.
+        this.failCalls()
         this.setState('online')
-        return
+        break
       case 'quota-exceeded':
         if (FATAL_LIMITS.includes(frame.limit)) this.cutForQuota = true
         this.deps.onQuota?.(frame.limit)
+        break
+      default:
+        // Unknown kinds stop here and never reach `onControl`: the caller is told
+        // about frames this client understood, not handed whatever arrived.
         return
     }
+    this.deps.onControl?.(frame)
   }
 
   /** Mint an ephemeral key for this attachment and send the greeting it makes.
@@ -311,26 +377,97 @@ export class RelayClient {
    *  session path reaches here -- a pairing room returns above -- and handing the
    *  narrowed value down says so in the types instead of in a comment. */
   private async handleFrame(deps: SessionRelayDeps, frame: Uint8Array): Promise<void> {
-    let envelope: RemoteEnvelope
+    let message: InboundMessage
     try {
       // Two distinct rejections, both silent: a frame that does not open (forged,
       // replayed, or corrupted in transit) and one that opens but is not an
       // envelope. Neither may throw out of here -- an unhandled rejection in the
       // message handler tears down a connection that a hostile phone could then
       // drop at will.
-      envelope = JSON.parse(new TextDecoder().decode(this.session!.open(frame, 1)))
-      if (typeof envelope?.id !== 'number' || typeof envelope?.request?.kind !== 'string') return
+      message = JSON.parse(new TextDecoder().decode(this.session!.open(frame, 1)))
     } catch {
       return
     }
+    // `typeof null` is 'object', so null is refused by name. Everything below
+    // needs a numeric id: a question is answered under it, an answer settles by it.
+    if (typeof message !== 'object' || message === null || typeof message.id !== 'number') return
+    const id = message.id
 
-    let response: RemoteResponse
-    try {
-      response = await deps.onRequest(envelope)
-    } catch (err) {
-      response = { kind: 'error', id: envelope.id, message: (err as Error).message }
+    if (typeof message.request?.kind === 'string') {
+      const envelope = message as RemoteEnvelope
+      let response: RemoteResponse
+      try {
+        response = await deps.onRequest(envelope)
+      } catch (err) {
+        response = { kind: 'error', id, message: (err as Error).message }
+      }
+      // An answer the relay would cut is replaced by one it will carry. A cut for
+      // `frame-size` latches, so sending it would take this room dark until the
+      // bridge restarts -- and leave the asker waiting out its timeout besides.
+      let body = encodeJson(response)
+      if (body.length > MAX_PAYLOAD_BYTES) {
+        body = encodeJson({ kind: 'error', id, message: 'response too large for the relay' })
+      }
+      this.transmit(body)
+      return
     }
-    this.send(response)
+
+    // An answer to something this end asked. Anything else -- an answer nobody
+    // is waiting for, a second answer to one already settled, a push of a kind
+    // this end does not take -- is dropped like any other malformed frame.
+    if (message.kind === 'ok') {
+      this.takeCall(id)?.resolve(message.data)
+    } else if (message.kind === 'error') {
+      // The far end is authenticated, not trusted to be well-formed: an Error
+      // whose message is `undefined` would reach an agent as the word "undefined".
+      const reason = typeof message.message === 'string' ? message.message : 'request failed'
+      this.takeCall(id)?.reject(new Error(reason))
+    }
+  }
+
+  /** Ask the other end something and wait for its answer.
+   *
+   *  Refused at once with `offline` when there is no session: seated-but-alone
+   *  is not attached, and a request written then is sealed under no key and
+   *  dropped, so the caller would wait out the whole timeout for an answer that
+   *  was never asked for. A pairing room never has a session, so this is always
+   *  refused there.
+   *
+   *  `timed out` when no answer comes in time; `offline` when the session dies
+   *  first -- see `failCalls`. */
+  request(request: unknown, timeoutMs: number): Promise<unknown> {
+    if (!this.session) return Promise.reject(new Error('offline'))
+    const id = this.nextCallId++
+    const body = encodeJson({ id, request })
+    // Refused here rather than sent and cut for: see the response case above.
+    if (body.length > MAX_PAYLOAD_BYTES) return Promise.reject(new Error('request too large'))
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        // Removed before rejecting, so an answer that arrives a moment later
+        // finds nothing to settle rather than settling a dead promise.
+        this.calls.delete(id)
+        reject(new Error('timed out'))
+      }, timeoutMs)
+      this.calls.set(id, { resolve, reject, timer })
+      this.transmit(body)
+    })
+  }
+
+  /** Claim a call, so each id is settled at most once. */
+  private takeCall(id: number) {
+    const call = this.calls.get(id)
+    if (!call) return null
+    this.calls.delete(id)
+    clearTimeout(call.timer)
+    return call
+  }
+
+  /** Fail everything asked over the session that just died.
+   *
+   *  Its answers could only come back over that session. Waiting out each
+   *  timeout instead would tell an agent a machine is slow when it has gone. */
+  private failCalls(): void {
+    for (const id of [...this.calls.keys()]) this.takeCall(id)?.reject(new Error('offline'))
   }
 
   /** Seal and write. Drops the payload when there is no socket or no session yet:
@@ -342,11 +479,15 @@ export class RelayClient {
    *  runs on every terminal write -- sealing on a null session there would throw
    *  into the pump and stall every later chunk for this device. */
   send(payload: unknown): void {
+    this.transmit(encodeJson(payload))
+  }
+
+  /** Seal already-serialised plaintext and write it, under the same drop rules
+   *  as `send`. */
+  private transmit(plaintext: Uint8Array): void {
     if (!this.socket || !this.session) return
     try {
-      this.socket.send(
-        this.session.seal(SESSION_HEADER, new TextEncoder().encode(JSON.stringify(payload))),
-      )
+      this.socket.send(this.session.seal(SESSION_HEADER, plaintext))
     } catch {
       // A write to a socket the peer already closed. `close` will follow.
     }
@@ -401,6 +542,7 @@ export class RelayClient {
     this.socket = null
     this.pending = null
     this.session = null
+    this.failCalls()
     this.setState('offline')
   }
 

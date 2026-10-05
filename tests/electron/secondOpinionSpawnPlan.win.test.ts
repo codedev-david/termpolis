@@ -28,6 +28,8 @@ describe.runIf(process.platform === 'win32')('secondOpinionSpawnPlan on real Win
     writeFileSync(promptFile, prompt, 'utf8') // BOM-less, as the main process writes it
     const { cmd, cmdArgs } = secondOpinionSpawnPlan(true, bin, args, PROMPT_TOKEN, prompt)
     const r = spawnSync(cmd, cmdArgs, {
+      // In the temp folder, so anything a broken plan lets a test's payload create lands there.
+      cwd: dir,
       env: { ...process.env, ...env, TP_SO_FILE: promptFile, TP_ARGV_OUT: out },
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -64,6 +66,48 @@ describe.runIf(process.platform === 'win32')('secondOpinionSpawnPlan on real Win
   it('keeps an empty argv entry and an empty prompt as real arguments', () => {
     const r = run('empty', process.execPath, [printer, '', PROMPT_TOKEN, '--after'], '')
     expect(r.argv, r.stderr).toEqual(['', ' ', '--after'])
+  }, 60_000)
+
+  it('keeps a folder with a space and a trailing backslash one argument, and the prompt whole', () => {
+    // `codex exec -C <cwd>` puts a caller's folder on the command line. Unshaped, this one reached
+    // the child as `"C:\Program Files\"`, ran on into the prompt, and split the prompt's words
+    // into separate arguments, a flag among them.
+    const folder = 'C:\\Program Files\\'
+    const prompt = 'review this --dangerously-bypass-approvals-and-sandbox please'
+    const direct = run('folder', process.execPath, [printer, '-C', folder, 'a b\\\\', PROMPT_TOKEN], prompt)
+    expect(direct.argv, direct.stderr).toEqual(['-C', folder, 'a b\\\\', prompt])
+    // The same entries cross a second native hop inside an npm PowerShell shim.
+    const bin = join(dir, 'shim-bin-folder')
+    mkdirSync(bin, { recursive: true })
+    const q = (s: string): string => `'${s.replace(/'/g, "''")}'`
+    writeFileSync(join(bin, 'tp-so-folder.ps1'), `& ${q(process.execPath)} ${q(printer)} $args\r\nexit $LASTEXITCODE\r\n`)
+    const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
+    const shim = run('folder-shim', 'tp-so-folder', ['-C', folder, PROMPT_TOKEN], prompt, {
+      [pathKey]: `${bin};${process.env[pathKey] ?? ''}`,
+      PSExecutionPolicyPreference: 'Bypass',
+    })
+    expect(shim.argv, shim.stderr).toEqual(['-C', folder, prompt])
+  }, 60_000)
+
+  it('keeps a folder name with a typographic quote inside its literal, where it cannot run as script', () => {
+    // PowerShell reads U+2018 to U+201B as single quotes too. When only the ASCII one was doubled,
+    // this name (every character legal on NTFS) closed the literal, and New-Item ran.
+    for (const [i, q] of ['\u2018', '\u2019', '\u201a', '\u201b'].entries()) {
+      const marker = `tp-pwned-${i}.txt`
+      const folder = `x${q}; New-Item -ItemType File -Path ${marker}; #`
+      const r = run(`quote-${i}`, process.execPath, [printer, '-C', folder, PROMPT_TOKEN], 'the prompt')
+      expect(existsSync(join(dir, marker)), folder).toBe(false)
+      expect(r.argv, r.stderr).toEqual(['-C', folder, 'the prompt'])
+    }
+  }, 60_000)
+
+  it('doubles a trailing backslash exactly when 5.1 adds quotes, by its own idea of whitespace', () => {
+    // 5.1 wraps an entry that holds any char.IsWhiteSpace character. That set is not JS's \s: it
+    // has NEL (U+0085), which \s lacks, and lacks the BOM (U+FEFF), which \s has. A miss either way
+    // corrupts the entry, and a missed wrap splits the prompt into separate arguments.
+    const entries = ['a\u0085b\\', 'a\ufeffb\\', 'a\u00a0b\\', 'a\u3000b\\', 'a\u2028b\\', 'a\tb\\', 'a\u201cb\u201d c']
+    const r = run('whitespace', process.execPath, [printer, ...entries, PROMPT_TOKEN], 'the prompt here')
+    expect(r.argv, r.stderr).toEqual([...entries, 'the prompt here'])
   }, 60_000)
 
   it('refuses a batch-file shim rather than hand the prompt to cmd.exe', () => {

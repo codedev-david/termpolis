@@ -117,14 +117,29 @@ export function getAgentExtraPaths(): string[] {
   return paths
 }
 
-// Build a complete PATH for agent detection. Order: our known dirs first
-// (deterministic), then the user's interactive-shell PATH (catches
-// dotfile-driven additions), then the current process PATH last.
-export function getExtendedPath(): string {
+// The PATH an agent is found and spawned with. The order is per platform:
+//
+//   Unix: our known dirs first (Homebrew beats an older system copy), then
+//   the interactive-shell PATH (dotfile-driven additions), then this
+//   process's PATH. A GUI launch inherits launchd's minimal PATH, which is
+//   no order worth keeping.
+//
+//   Windows: this process's PATH FIRST, then the known dirs. PATH is global
+//   there -- the user's own, set by the installers, and the order every other
+//   terminal resolves with -- so the known dirs only fill a PATH that lacks
+//   them. Put ahead of it, a stale npm shim (`%AppData%\npm\claude.ps1`, its
+//   claude.exe gone after a move to Claude Code's native installer) shadowed
+//   the working `~\.local\bin\claude.exe` the user's PATH names first, and
+//   every headless Claude run failed: Second Opinion, `termpolis exec` and
+//   Linked machines jobs alike.
+function searchPath(shellPath: string): string {
   const currentPath = process.env.PATH || ''
-  const shellPath = getInteractiveShellPath()
-  const sep = process.platform === 'win32' ? ';' : ':'
-  return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(sep)
+  if (process.platform === 'win32') return [currentPath, ...getAgentExtraPaths()].filter(Boolean).join(';')
+  return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(':')
+}
+
+export function getExtendedPath(): string {
+  return searchPath(getInteractiveShellPath())
 }
 
 /**
@@ -161,8 +176,5 @@ export async function primeInteractiveShellPath(): Promise<string> {
 /** getExtendedPath with the shell fork done off-thread. Identical result — the sync version reads
  *  the same cache this primes. */
 export async function getExtendedPathAsync(): Promise<string> {
-  const currentPath = process.env.PATH || ''
-  const shellPath = await primeInteractiveShellPath()
-  const sep = process.platform === 'win32' ? ';' : ':'
-  return [...getAgentExtraPaths(), shellPath, currentPath].filter(Boolean).join(sep)
+  return searchPath(await primeInteractiveShellPath())
 }

@@ -1,5 +1,6 @@
 import {
   NO_CAPABILITIES,
+  type BridgeLink,
   type BridgeToHost,
   type Capabilities,
   type HostToBridge,
@@ -16,6 +17,14 @@ import { createStatusPump, type StatusPump, type TerminalSnapshot } from './remo
 import { detectAgentStatus } from '../shared/agentStatusDetector'
 
 type InitParams = Omit<Extract<HostToBridge, { kind: 'init' }>, 'kind'>
+
+/** Linked machines' half of the bridge's init: its switch, and the links this
+ *  machine joined. The rooms of computers this machine HOSTS travel with the
+ *  devices, like every other paired device. */
+export interface LinkedInit {
+  enabled: boolean
+  links: BridgeLink[]
+}
 
 /** Everything the host reaches out to, injected.
  *
@@ -45,7 +54,10 @@ export interface RemoteHostDeps {
    *  Separate from `readOutput` because that one is an incremental read that
    *  advances an offset, and the detector needs the window every time. */
   readRecent(terminalId: string): TerminalSnapshot | null
-  startBridge(init: InitParams, relayUrl: string): void
+  /** `init` is a FACTORY, and the supervisor asks it again on every crash
+   *  respawn. Params captured at launch would bring a bridge back an hour later
+   *  with the devices, links and switches of an hour ago. */
+  startBridge(init: () => InitParams, relayUrl: string): void
   stopBridge(): void
   sendToBridge(msg: HostToBridge): void
   onBridgeMessage(cb: (m: BridgeToHost) => void): void
@@ -54,6 +66,10 @@ export interface RemoteHostDeps {
   clearDisabled(): void
   setTimer(fn: () => void, ms: number): unknown
   clearTimer(handle: unknown): void
+  /** Linked machines' state, asked at every bridge start and respawn and by
+   *  `refreshLinked()`. Optional: absent means Linked machines is off, which is
+   *  what every host built before it existed meant. */
+  linkedInit?: () => LinkedInit
 }
 
 /** One paired device as the renderer sees it.
@@ -109,6 +125,40 @@ export interface RemoteStatusView {
   devices: RemoteDeviceView[]
 }
 
+/** The one bridge, as Linked machines (`linkedHost.ts`) sees it.
+ *
+ *  Remote and Linked machines share a child process and a relay identity, and
+ *  Remote owns the lifecycle: Linked machines never starts or stops the bridge
+ *  itself, it says what it wants through `linkedInit` and `refreshLinked()`.
+ *  This is everything else it needs. */
+export interface LinkedBridgePort {
+  /** The bridge is up AND was started with linked rooms open. */
+  running(): boolean
+  /** Post to the bridge. A no-op when it is down, like every send to it. */
+  send(msg: HostToBridge): void
+  /** EVERY bridge message, unfiltered -- the ones Remote hears too. Called after
+   *  the host has applied the message, so the readers below already reflect
+   *  it. Returns the unsubscribe. */
+  onMessage(cb: (m: BridgeToHost) => void): () => void
+  /** The paired devices that are linked computers (`kind: 'desktop'`). */
+  desktopPeers(): PairedDevice[]
+  /** Device ids whose session room is attached right now; empty while the
+   *  bridge is down. Phones are in it too -- intersect with `desktopPeers()`. */
+  attachedDeviceIds(): ReadonlySet<string>
+  /** The safety words for a hosted device, from the two public keys. */
+  verificationPhraseFor(deviceId: string): string | null
+  /** The relay this machine's rooms -- and every code it makes -- use. */
+  relayUrl(): string
+  /** Whether the bridge's one offer -- the code it holds, or the one it was
+   *  last asked for and has not answered yet -- is for another computer.
+   *
+   *  The bridge's `{kind:'error'}` names no owner, so this is what does: an
+   *  error delivered while this is true is Linked machines' to show, and Remote
+   *  never shows it. A refused request is answered by exactly such an error,
+   *  and this still says so while that error is being delivered. */
+  linkOfferLive(): boolean
+}
+
 export interface RemoteHost {
   start(): void
   stop(): void
@@ -124,6 +174,27 @@ export interface RemoteHost {
   verificationPhraseFor(deviceId: string): string | null
   noteTerminalOutput(terminalId: string): void
   noteTerminalClosed(terminalId: string): void
+  /** Re-read `linkedInit()` and bring the bridge in line: start or stop it (it
+   *  runs while Remote OR Linked machines is on), restart it when the kinds of
+   *  room it should open changed, or hand it the new link list when only that
+   *  changed. Does nothing before `start()`, which reads `linkedInit` itself. */
+  refreshLinked(): void
+  /** Ask the bridge for a code for another computer. The bridge holds one offer
+   *  at a time, so this replaces any phone QR on screen. */
+  beginLinkPairing(label?: string): void
+  /** Withdraw the code for another computer -- and only that. A phone QR that
+   *  has since replaced it is left alone. */
+  cancelLinkPairing(): void
+  linkedPort(): LinkedBridgePort
+}
+
+/** Which kind of device an offer pairs. */
+type OfferKind = 'phone' | 'link'
+
+/** One string per link list, for "has it changed?". Every field, because a link
+ *  whose record changed under the same id is a different room to the bridge. */
+function linksKey(links: BridgeLink[]): string {
+  return JSON.stringify(links.map((l) => [l.id, l.hostPublicKey, l.relayUrl, l.sessionRoomId, l.secretKey]))
 }
 
 /**
@@ -133,6 +204,11 @@ export interface RemoteHost {
  * A module rather than lines in `index.ts` because `index.ts` is already ~3,700
  * lines and its uncovered IPC handlers have historically been the repo's worst
  * coverage offender. Nothing here needs Electron, so all of it is testable.
+ *
+ * The bridge it runs also carries Linked machines, so it runs while EITHER
+ * feature is on, and `init` tells it which kinds of room to open. Everything a
+ * linked computer does stays out of the Remote views and events: the phone UI
+ * lists phones, and a computer is managed under Settings ▸ Linked machines.
  */
 export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   // Read in `start()`, not here: construction happens during app bootstrap, and
@@ -145,6 +221,37 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   let pairing: RemotePairingView | null = null
   let pump: OutputPump | null = null
   let statusPump: StatusPump | null = null
+  let started = false
+  /** Every device id known to be a linked computer.
+   *
+   *  Never pruned. An id is a hash of the device's public key, so a phone can
+   *  never turn up under one -- and the bridge reports a revoked computer's room
+   *  closing AFTER the device list that dropped it, so a set that followed the
+   *  list would let that last word through to the phone UI. */
+  const desktopIds = new Set<string>()
+  /** The bridge holds ONE offer, and starting one replaces the other. These two
+   *  mirror it, because the bridge's errors name no owner and only the offer
+   *  says whose an error is.
+   *
+   *  `offerAsks` are the requests it has not answered yet, oldest first: it
+   *  answers each, in order, with a code or a refusal. `cancelled` is a request
+   *  withdrawn before its code came back -- that code is already gone over
+   *  there. */
+  let offerAsks: Array<{ kind: OfferKind; cancelled: boolean }> = []
+  /** The offer the bridge holds, as its last code announced it. */
+  let offerLive: { kind: OfferKind; expiresAt: number } | null = null
+  /** Whether the init factory's next call is a crash respawn rather than the
+   *  first spawn after `launch()`. */
+  let respawn = false
+  /** What the running bridge was told at init, and the link list it has been
+   *  handed since. Null while it is down. Filled in by the init factory itself,
+   *  so a crash respawn that read newer state is recorded as what it read. */
+  let launched: { phones: boolean; linked: boolean; links: string } | null = null
+  /** The Linked machines switch as `start()` or the last `refreshLinked()` saw
+   *  it, so that turning it ON can re-arm the supervisor the way turning Remote
+   *  on does. */
+  let linkedWasOn = false
+  const linkedListeners = new Set<(m: BridgeToHost) => void>()
 
   /** The long-term X25519 identity, minted on first use.
    *
@@ -167,6 +274,69 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     } catch {
       /* window is gone */
     }
+  }
+
+  /** Linked machines' view of its own switch and links.
+   *
+   *  Also asked inside the supervisor's respawn path, where a throw would escape
+   *  into a child-exit handler with no caller to land on. A provider that fails
+   *  reads as Linked machines off: the safe direction for a switch that opens
+   *  network rooms. */
+  function linkedState(): LinkedInit {
+    try {
+      const state = deps.linkedInit?.()
+      const links = state?.links
+      return { enabled: state?.enabled === true, links: Array.isArray(links) ? links : [] }
+    } catch {
+      return { enabled: false, links: [] }
+    }
+  }
+
+  /** Whose offer the bridge has: the request it answers next, else the code
+   *  it holds. A bridge that is not running has none and owes nothing -- so the
+   *  supervisor's own "gave up" error stays Remote's, as it always was. */
+  function offerOwner(): OfferKind | null {
+    if (!deps.isBridgeRunning()) return null
+    const ask = offerAsks[0]
+    if (ask) return ask.kind
+    return offerLive && offerLive.expiresAt > Date.now() ? offerLive.kind : null
+  }
+
+  function linkOfferLive(): boolean {
+    return offerOwner() === 'link'
+  }
+
+  /** Whether a device is a linked computer.
+   *
+   *  A device this host has never heard of is the one pairing through the live
+   *  offer right now: the bridge opens its room, and reports the room, before
+   *  it reports the pairing. Only the offer knows what it is at that moment. */
+  function isDesktop(deviceId: string): boolean {
+    if (desktopIds.has(deviceId)) return true
+    return !devices.some((d) => d.id === deviceId) && offerOwner() === 'link'
+  }
+
+  function noteDesktops(list: PairedDevice[]): void {
+    for (const d of list) if (d.kind === 'desktop') desktopIds.add(d.id)
+  }
+
+  /** Everything this host posts to the bridge goes through here, so the offer
+   *  mirror above sees every request for one. */
+  function post(msg: HostToBridge): void {
+    if (msg.kind === 'beginPairing') {
+      // Only while a child is up to answer. The supervisor drops a message sent
+      // with none running, and a request never answered would claim every
+      // error after it.
+      if (deps.isBridgeRunning()) offerAsks.push({ kind: msg.link === true ? 'link' : 'phone', cancelled: false })
+    } else if (msg.kind === 'cancelPairing') {
+      // Withdraws whatever is held -- and, since the bridge reads its messages
+      // in order, whatever a request still on its way will make.
+      for (const ask of offerAsks) ask.cancelled = true
+      offerLive = null
+    } else if (msg.kind === 'setLinks' && launched !== null) {
+      launched.links = linksKey(msg.links)
+    }
+    deps.sendToBridge(msg)
   }
 
   function toEvent(m: BridgeToHost): RemoteEvent {
@@ -224,24 +394,55 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   }
 
   function handle(m: BridgeToHost): void {
+    // What the Remote renderer is told: the event and a fresh status, the status
+    // alone, or nothing. A linked computer is not a phone, so what concerns only
+    // a computer stays out of the phone UI -- a `paired` here would put a
+    // "phone paired" modal on screen for a machine.
+    let tell: 'all' | 'status' | 'none' = 'all'
+    /** Run once every listener has heard `m`. */
+    let settle: (() => void) | null = null
     switch (m.kind) {
-      case 'pairingCode':
-        pairing = { qrPayload: m.qrPayload, expiresAt: m.expiresAt }
+      case 'pairingCode': {
+        const ask = offerAsks.shift()
+        const kind: OfferKind = m.linkCode === undefined ? 'phone' : 'link'
+        offerLive = ask?.cancelled ? null : { kind, expiresAt: m.expiresAt }
+        if (kind === 'phone') {
+          pairing = { qrPayload: m.qrPayload, expiresAt: m.expiresAt }
+        } else {
+          // A code for another computer. It REPLACED any phone QR, so that goes
+          // from the Remote view -- quietly: Remote did not ask for this code.
+          pairing = null
+          tell = 'status'
+        }
         break
+      }
       case 'paired':
         // The offer is single-use. Leaving it on screen after it has been spent
         // invites the user to scan a code that will simply be refused.
         pairing = null
+        offerLive = null
+        if (m.device.kind === 'desktop') {
+          desktopIds.add(m.device.id)
+          tell = 'none'
+        }
+        break
+      case 'verificationPhrase':
+        if (isDesktop(m.deviceId)) tell = 'none'
         break
       case 'devicesChanged':
+        // Computers included: `remote-devices.json` is the host's half of every
+        // link, and the store keeps `kind` so they reload as computers.
         devices = m.devices
+        noteDesktops(devices)
         saveRemoteDevices(deps.userDataDir, devices)
         for (const id of [...attached]) if (!devices.some((d) => d.id === id)) attached.delete(id)
         break
       case 'deviceConnected':
+        if (isDesktop(m.deviceId)) tell = 'none'
         attached.add(m.deviceId)
         break
       case 'deviceDisconnected':
+        if (isDesktop(m.deviceId)) tell = 'none'
         attached.delete(m.deviceId)
         break
       case 'subscriptionsChanged':
@@ -260,11 +461,73 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
         pump?.setSubscriptions([])
         statusPump?.setSubscriptions([])
         break
+      case 'error': {
+        // Linked machines' to show when the bridge marks it so (`scope`) -- a
+        // link room the relay cut, a link record it refused -- or when the
+        // offer says so, for an error that names nothing: one raised while a
+        // code for another computer is the bridge's offer -- its refusal, or a
+        // wrong machine knocking. The status still goes: it is the whole
+        // picture, and it may have moved.
+        if (m.scope === 'link' || linkOfferLive()) tell = 'status'
+        // A refusal answers the oldest request still waiting. Spent only after
+        // the listeners, so they hear it under the owner it had.
+        const ask = deps.isBridgeRunning() ? offerAsks[0] : undefined
+        if (ask) {
+          settle = () => {
+            offerAsks = offerAsks.filter((a) => a !== ask)
+          }
+        }
+        break
+      }
+      case 'linkJoined':
+      case 'joinFailed':
+      case 'linkCallResult':
+      case 'peerRequest':
+      case 'linkStateChanged':
+      case 'linkBye':
+        tell = 'none'
+        break
       default:
         break
     }
-    push(() => deps.sendEvent(toEvent(m)))
-    emitStatus()
+    // Remote's events are about phones. While Remote is off the bridge runs for
+    // Linked machines alone, and nothing it says is the phone pane's to show --
+    // a relay error about a linked computer least of all.
+    if (tell === 'all' && settings.enabled) push(() => deps.sendEvent(toEvent(m)))
+    if (tell !== 'none') emitStatus()
+    // Last, so a listener reading `desktopPeers()` or `attachedDeviceIds()`
+    // already sees what this message changed. Each one guarded: this runs inside
+    // the supervisor's emit loop too.
+    for (const cb of [...linkedListeners]) push(() => cb(m))
+    settle?.()
+  }
+
+  /** The bridge's init, built at the moment it is spawned -- see `startBridge`.
+   *
+   *  Both switches always travel. Absent `phones` means true to the bridge, so
+   *  an init that left it out would open phone rooms on a machine that switched
+   *  Remote off. */
+  function initParams(secretKey: string): InitParams {
+    // A respawn: the child before this one died holding whatever offer it held,
+    // and owing answers it will never send. The FIRST spawn after `launch()`
+    // keeps what was asked since -- a supervisor may spawn a beat after it is
+    // told to, and a request posted in between went to this child.
+    if (respawn) {
+      offerAsks = []
+      offerLive = null
+    }
+    respawn = true
+    const linked = linkedState()
+    launched = { phones: settings.enabled, linked: linked.enabled, links: linksKey(linked.links) }
+    return {
+      mcpPort: deps.mcpPort,
+      mcpToken: deps.mcpToken,
+      identitySecretKey: secretKey,
+      devices,
+      links: linked.links,
+      phones: settings.enabled,
+      linked: linked.enabled,
+    }
   }
 
   /** Spawn the child with everything it needs to run unattended.
@@ -274,18 +537,21 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
    *  itself, and it must never travel to the renderer. */
   function launch(): void {
     pump?.stop()
-    pump = newPump()
     statusPump?.stop()
-    statusPump = newStatusPump()
-    deps.startBridge(
-      {
-        mcpPort: deps.mcpPort,
-        mcpToken: deps.mcpToken,
-        identitySecretKey: ownIdentity().secretKey,
-        devices,
-      },
-      settings.relayUrl,
-    )
+    // The pumps exist to stream terminals to a phone. A bridge running for
+    // Linked machines alone has no phone to stream to, and reading terminals
+    // anyway would charge every PTY write for a feature that is switched off.
+    pump = settings.enabled ? newPump() : null
+    statusPump = settings.enabled ? newStatusPump() : null
+    // Whatever an earlier child held or was asked, this one starts with none.
+    offerAsks = []
+    offerLive = null
+    respawn = false
+    // Resolved here and not in the factory: the factory also runs inside the
+    // supervisor's crash-respawn handler, where a throw from the key store would
+    // have no caller to land on.
+    const secretKey = ownIdentity().secretKey
+    deps.startBridge(() => initParams(secretKey), settings.relayUrl)
   }
 
   function shutdown(): void {
@@ -295,13 +561,45 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     statusPump = null
     attached.clear()
     pairing = null
+    offerAsks = []
+    offerLive = null
+    launched = null
     deps.stopBridge()
+  }
+
+  /** Bring the bridge in line with both switches.
+   *
+   *  It runs while Remote OR Linked machines is on. Which kinds of room it opens
+   *  is fixed at init, so a change in which is on means a new bridge; a change
+   *  in the link list alone is handed to the running one, which diffs it rather
+   *  than dropping every live session. Returns whether the bridge was started,
+   *  stopped or replaced. */
+  function reconcile(linked: LinkedInit): boolean {
+    if (!settings.enabled && !linked.enabled) {
+      shutdown()
+      return true
+    }
+    const running = deps.isBridgeRunning()
+    if (
+      running &&
+      launched !== null &&
+      launched.phones === settings.enabled &&
+      launched.linked === linked.enabled
+    ) {
+      if (linksKey(linked.links) !== launched.links) post({ kind: 'setLinks', links: linked.links })
+      return false
+    }
+    if (running) shutdown()
+    launch()
+    return true
   }
 
   function status(): RemoteStatusView {
     return {
       enabled: settings.enabled,
-      running: deps.isBridgeRunning(),
+      // What the Remote pane means by running: phones can reach this desktop.
+      // The bridge also runs for Linked machines alone, with no phone room open.
+      running: deps.isBridgeRunning() && settings.enabled,
       disabled: deps.isDisabled(),
       relayUrl: settings.relayUrl,
       publicKey: ownIdentity().publicKey,
@@ -309,40 +607,85 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       // to be cancelled on every path out of pairing, and forgetting one leaves a
       // stale callback holding this closure.
       pairing: pairing && pairing.expiresAt > Date.now() ? pairing : null,
-      devices: devices.map((d) => ({
-        id: d.id,
-        label: d.label,
-        publicKey: d.publicKey,
-        capabilities: { ...NO_CAPABILITIES, ...d.capabilities },
-        pairedAt: d.pairedAt,
-        lastSeenAt: d.lastSeenAt,
-        attached: attached.has(d.id),
-      })),
+      // Phones only. A linked computer is managed under Settings ▸ Linked
+      // machines, and counted here it would light the Remote indicator for a
+      // machine that is not a phone.
+      devices: devices
+        .filter((d) => d.kind !== 'desktop')
+        .map((d) => ({
+          id: d.id,
+          label: d.label,
+          publicKey: d.publicKey,
+          capabilities: { ...NO_CAPABILITIES, ...d.capabilities },
+          pairedAt: d.pairedAt,
+          lastSeenAt: d.lastSeenAt,
+          attached: attached.has(d.id),
+        })),
     }
+  }
+
+  /** The safety number for one device.
+   *
+   *  Computed here from the two public keys rather than asked of the child: it
+   *  is a pure function of both identities, so a round trip would add a failure
+   *  mode and answer nothing extra -- and it works while the phone is offline,
+   *  which is exactly when the user reads it aloud to compare. */
+  function verificationPhraseFor(deviceId: string): string | null {
+    const device = devices.find((d) => d.id === deviceId)
+    if (!device) return null
+    return deriveVerificationPhrase(ownIdentity().publicKey, device.publicKey)
+  }
+
+  const port: LinkedBridgePort = {
+    running: () => deps.isBridgeRunning() && launched?.linked === true,
+    send: post,
+    onMessage(cb) {
+      linkedListeners.add(cb)
+      return () => {
+        linkedListeners.delete(cb)
+      }
+    },
+    // Copies: the caller is another module, and the list is this host's record
+    // of what the bridge last reported.
+    desktopPeers: () =>
+      devices.filter((d) => d.kind === 'desktop').map((d) => ({ ...d, capabilities: { ...d.capabilities } })),
+    // Nothing is reachable through a bridge that is not running, whatever its
+    // last words were: a crashed child never says goodbye.
+    attachedDeviceIds: () => (deps.isBridgeRunning() ? new Set(attached) : new Set<string>()),
+    verificationPhraseFor,
+    relayUrl: () => settings.relayUrl,
+    linkOfferLive,
   }
 
   return {
     start(): void {
       settings = loadRemoteSettings(deps.userDataDir)
       devices = loadRemoteDevices(deps.userDataDir)
+      noteDesktops(devices)
       deps.onBridgeMessage(handle)
-      if (settings.enabled) launch()
+      started = true
+      const linked = linkedState()
+      linkedWasOn = linked.enabled
+      if (settings.enabled || linked.enabled) launch()
     },
 
-    stop: shutdown,
+    stop(): void {
+      started = false
+      shutdown()
+    },
+
     status,
 
     setEnabled(enabled: boolean): void {
       settings = saveRemoteSettings(deps.userDataDir, { enabled })
-      if (enabled) {
-        // Re-arm first. The supervisor fails CLOSED on a crash loop and stays
-        // that way, so without this the switch would do nothing at all until the
-        // app restarted -- and say nothing about why.
-        deps.clearDisabled()
-        launch()
-      } else {
-        shutdown()
-      }
+      // Re-arm first. The supervisor fails CLOSED on a crash loop and stays
+      // that way, so without this the switch would do nothing at all until the
+      // app restarted -- and say nothing about why.
+      if (enabled) deps.clearDisabled()
+      // Not a plain stop when switched off: the same bridge carries Linked
+      // machines, and turning phones off must not cut the user's other
+      // computers. It comes back without phone rooms instead.
+      reconcile(linkedState())
       emitStatus()
     },
 
@@ -364,12 +707,15 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     },
 
     beginPairing(label: string, capabilities?: Capabilities): void {
-      deps.sendToBridge({ kind: 'beginPairing', label, capabilities })
+      post({ kind: 'beginPairing', label, capabilities })
     },
 
     cancelPairing(): void {
       pairing = null
-      deps.sendToBridge({ kind: 'cancelPairing' })
+      // A code for another computer is Linked machines' to withdraw. The phone
+      // dialog calls this whenever it closes, and the bridge's one offer may by
+      // then be a code the user is halfway through carrying to another machine.
+      if (!linkOfferLive()) post({ kind: 'cancelPairing' })
       emitStatus()
     },
 
@@ -384,17 +730,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       deps.sendToBridge({ kind: 'setCapabilities', deviceId, capabilities })
     },
 
-    /** The safety number for one device.
-     *
-     *  Computed here from the two public keys rather than asked of the child: it
-     *  is a pure function of both identities, so a round trip would add a failure
-     *  mode and answer nothing extra -- and it works while the phone is offline,
-     *  which is exactly when the user reads it aloud to compare. */
-    verificationPhraseFor(deviceId: string): string | null {
-      const device = devices.find((d) => d.id === deviceId)
-      if (!device) return null
-      return deriveVerificationPhrase(ownIdentity().publicKey, device.publicKey)
-    },
+    verificationPhraseFor,
 
     noteTerminalOutput(terminalId: string): void {
       pump?.markDirty(terminalId)
@@ -405,5 +741,30 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       pump?.dropTerminal(terminalId)
       statusPump?.dropTerminal(terminalId)
     },
+
+    refreshLinked(): void {
+      if (!started) return
+      const linked = linkedState()
+      // Switching Linked machines on is the same explicit "try again" as
+      // switching Remote on, so it re-arms a supervisor that gave up after a
+      // crash loop. Only the switch does: a link list that changed while the
+      // bridge is down is not a request to retry it.
+      if (linked.enabled && !linkedWasOn) deps.clearDisabled()
+      linkedWasOn = linked.enabled
+      if (reconcile(linked)) emitStatus()
+    },
+
+    beginLinkPairing(label?: string): void {
+      // Empty means "let the other computer name itself": the bridge then labels
+      // the device from the joiner's hello, which carries its hostname, and the
+      // user confirms or changes that name on both screens.
+      post({ kind: 'beginPairing', label: label ?? '', link: true })
+    },
+
+    cancelLinkPairing(): void {
+      if (linkOfferLive()) post({ kind: 'cancelPairing' })
+    },
+
+    linkedPort: () => port,
   }
 }

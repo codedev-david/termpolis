@@ -80,6 +80,12 @@ export function RemoteSettings(): JSX.Element {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
+    // The preload defines it, but a renderer without it has to say so rather
+    // than throw out of this effect and take the whole Settings pane with it.
+    if (!window.remote) {
+      setUnavailable('Remote is not available in this version of Termpolis.')
+      return
+    }
     let live = true
     void window.remote.status().then((res) => {
       if (!live) return

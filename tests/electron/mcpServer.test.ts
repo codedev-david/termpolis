@@ -12,7 +12,10 @@ const {
   stopMcpServer,
   awaitMcpPortBound,
   _resetPortStateForTest,
+  executeTool,
 } = await import('../../src/main/mcpServer')
+
+const LINKED_OFF = { error: 'Linked machines is off. Turn it on under Settings ▸ Linked machines.' }
 
 // --- Helpers ---
 
@@ -38,6 +41,7 @@ function createMockHandlers() {
     memorySearch: vi.fn().mockResolvedValue([]),
     memoryList: vi.fn().mockReturnValue([]),
     memoryPrimer: vi.fn().mockResolvedValue({ project: 'termpolis', primer: 'PRIMER DIGEST' }),
+    linkedMachines: vi.fn().mockResolvedValue(LINKED_OFF),
   }
 }
 
@@ -127,6 +131,13 @@ describe('checkRateLimit', () => {
     expect(checkRateLimit('run_command')).toBe(false)
   })
 
+  it('blocks linked_machines after 30 requests (each run can start an agent on another machine)', () => {
+    for (let i = 0; i < 30; i++) {
+      expect(checkRateLimit('linked_machines')).toBe(true)
+    }
+    expect(checkRateLimit('linked_machines')).toBe(false)
+  })
+
   it('uses global limit for unknown keys', () => {
     // Unknown keys fall back to _global limit (200/min)
     for (let i = 0; i < 200; i++) {
@@ -201,7 +212,7 @@ describe('MCP HTTP server', () => {
     const body = JSON.parse(res.body)
     expect(body.status).toBe('ok')
     expect(body.name).toBe('termpolis-mcp')
-    expect(body.tools).toBe(39)
+    expect(body.tools).toBe(40)
   })
 
   it('OPTIONS returns 204 with CORS headers', async () => {
@@ -265,7 +276,7 @@ describe('MCP HTTP server', () => {
 
   // --- JSON-RPC: tools/list ---
 
-  it('tools/list returns 39 tools', async () => {
+  it('tools/list returns 40 tools', async () => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',
       method: 'tools/list',
@@ -273,7 +284,7 @@ describe('MCP HTTP server', () => {
     })
     expect(res.statusCode).toBe(200)
     const body = JSON.parse(res.body)
-    expect(body.result.tools).toHaveLength(39)
+    expect(body.result.tools).toHaveLength(40)
     const names = body.result.tools.map((t: any) => t.name)
     expect(names).toContain('list_terminals')
     expect(names).toContain('retrieve_full')
@@ -294,6 +305,31 @@ describe('MCP HTTP server', () => {
     expect(names).toContain('code_callers')
     expect(names).toContain('code_impact')
     expect(names).toContain('code_search')
+    expect(names).toContain('linked_machines')
+  })
+
+  it('advertises linked_machines with its three actions and the agents it can start', async () => {
+    const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/list', id: 33 })
+    const tools = JSON.parse(res.body).result.tools as Array<{
+      name: string
+      description: string
+      inputSchema: { properties: Record<string, { type: string; enum?: string[]; description?: string }>; required: string[] }
+    }>
+    const linked = tools.find((t) => t.name === 'linked_machines')!
+    // Only `action` is required: `list` takes nothing, and the handler checks what run/result need.
+    expect(linked.inputSchema.required).toEqual(['action'])
+    const props = linked.inputSchema.properties
+    expect(Object.keys(props).sort()).toEqual(['action', 'agent', 'cwd', 'jobId', 'machine', 'model', 'prompt', 'waitSec', 'write'])
+    expect(props.action.enum).toEqual(['list', 'run', 'result'])
+    expect(props.agent.enum).toEqual(['claude', 'codex', 'gemini'])
+    expect(props.write.type).toBe('boolean')
+    expect(props.waitSec.type).toBe('number')
+    // The remote agent gets the prompt and nothing else: an agent that is not told so sends "fix it".
+    expect(props.prompt.description).toMatch(/self-contained/i)
+    // What an agent needs to pick the tool at all: who it reaches, where, and to look before it leaps.
+    expect(linked.description).toMatch(/Claude, Codex or Gemini/)
+    expect(linked.description).toMatch(/another linked Termpolis machine/)
+    expect(linked.description).toMatch(/list first/i)
   })
 
   it('advertises diversify — a retrieval knob agents cannot use if it is not in the schema', async () => {
@@ -338,6 +374,23 @@ describe('MCP HTTP server', () => {
     expect(handlers.listTerminals).toHaveBeenCalled()
     const content = JSON.parse(body.result.content[0].text)
     expect(content).toEqual([{ id: 't1', name: 'Test', shellType: 'bash', cwd: '/home' }])
+  })
+
+  it('tools/call linked_machines hands the arguments over whole and returns its answer as data', async () => {
+    const args = { action: 'run', machine: 'linux', agent: 'codex', prompt: 'p', cwd: '~/repos/foo', write: true, waitSec: 10 }
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'linked_machines', arguments: args },
+      id: 34,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.linkedMachines).toHaveBeenCalledWith(args)
+    const body = JSON.parse(res.body)
+    // The handler reports failure as data. A thrown message would reach the agent as
+    // 'Tool execution failed', which says nothing about turning the feature on.
+    expect(body.result.isError).toBeUndefined()
+    expect(JSON.parse(body.result.content[0].text)).toEqual(LINKED_OFF)
   })
 
   it('tools/call memory_primer forwards cwd/query/limit and returns the digest', async () => {
@@ -781,6 +834,22 @@ describe('MCP HTTP server', () => {
     expect(body.error.message).toContain('run_command')
   })
 
+  it('returns 429 when linked_machines per-tool rate limit is exceeded, before any machine is asked', async () => {
+    for (let i = 0; i < 30; i++) {
+      checkRateLimit('linked_machines')
+    }
+
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'linked_machines', arguments: { action: 'list' } },
+      id: 401,
+    })
+    expect(res.statusCode).toBe(429)
+    expect(JSON.parse(res.body).error.message).toContain('linked_machines')
+    expect(handlers.linkedMachines).not.toHaveBeenCalled()
+  })
+
   // --- GET / root health check ---
 
   it('GET / also returns health status', async () => {
@@ -926,6 +995,20 @@ describe('stopMcpServer', () => {
     const mockServer = { close: vi.fn() } as any
     stopMcpServer(mockServer)
     expect(mockServer.close).toHaveBeenCalled()
+  })
+})
+
+// --- executeTool: linked_machines ---
+
+describe('executeTool linked_machines', () => {
+  it('gives the handler an empty object when a direct caller passes no arguments', async () => {
+    // tools/call substitutes {} for absent arguments, but the workflow engine calls executeTool
+    // directly, and the handler reads fields off whatever it is given.
+    const linkedMachines = vi.fn().mockResolvedValue(LINKED_OFF)
+    const handlers = { linkedMachines } as unknown as Parameters<typeof executeTool>[2]
+    expect(await executeTool('linked_machines', undefined, handlers)).toEqual(LINKED_OFF)
+    expect(await executeTool('linked_machines', null, handlers)).toEqual(LINKED_OFF)
+    expect(linkedMachines.mock.calls).toEqual([[{}], [{}]])
   })
 })
 

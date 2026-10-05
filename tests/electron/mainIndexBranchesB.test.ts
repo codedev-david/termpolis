@@ -71,7 +71,22 @@ const M = vi.hoisted(() => ({
   isHighValueEpisode: vi.fn(() => false),
   // workflow adapter seam (only used by the default-shell fallback test)
   terminalRunnerDeps: null as Record<string, unknown> | null,
+  // when set, Linked machines fails to start at boot (the real service runs otherwise)
+  failLinkedStart: false,
 }))
+
+// The REAL Linked machines service, but one whose start can be made to fail: that is the only
+// way to reach index.ts's guard around it, since the real start has nothing in it that throws.
+vi.mock('../../src/main/linkedHost', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/linkedHost')>()
+  return {
+    ...actual,
+    startLinkedHost: (binding: Parameters<typeof actual.startLinkedHost>[0]) => {
+      if (M.failLinkedStart) throw new Error('linked boom')
+      actual.startLinkedHost(binding)
+    },
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Electron
@@ -456,6 +471,7 @@ beforeEach(() => {
   mockWebContents.send.mockClear()
   M.execFileSync.mockReset()
   M.aclError = ''
+  M.failLinkedStart = false
   delete process.env.TERMPOLIS_SKIP_ACL
 })
 
@@ -813,6 +829,26 @@ describe('memory:reflect-session distiller gate', () => {
 
     expect(M.distillEpisode.mock.calls[0][1]).toEqual({})
     expect(M.isHighValueEpisode).not.toHaveBeenCalled()
+  })
+})
+
+describe('Linked machines at boot', () => {
+  it('comes up with the app: its channels answer once the MCP port has bound', async () => {
+    await boot()
+    expect(await invoke('linked:status')).toMatchObject({ success: true, data: { enabled: false, running: false } })
+  })
+
+  it('a service that fails to start costs Linked machines and nothing else', async () => {
+    // The real module behind the mock outlives vi.resetModules(), and with it the service an
+    // earlier boot started: this boot must begin with none.
+    ;(await import('../../src/main/linkedHost'))._resetLinkedHostForTests()
+    M.failLinkedStart = true
+    await boot()
+    expect(errors).toContain('[linked] failed to start: linked boom')
+    // Off in that run, and saying so...
+    expect(await invoke('linked:status')).toEqual({ success: false, error: 'Linked machines is not running in this session' })
+    // ...while Remote, started right after it, is up.
+    expect(await invoke('remote:status')).toMatchObject({ success: true })
   })
 })
 

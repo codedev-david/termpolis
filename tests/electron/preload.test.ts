@@ -1125,6 +1125,52 @@ describe('preload: event bridges that only ever fire from main', () => {
     cleanup()
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('remote:event', handler)
   })
+
+  it('linked.onStatus forwards the status view and unsubscribes cleanly', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.linked.onStatus(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === 'linked:status-changed')![1] as Function
+    const status = { enabled: true, running: true, machines: [] }
+    handler({}, status)
+    expect(cb).toHaveBeenCalledWith(status)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('linked:status-changed', handler)
+  })
+
+  it('linked.onEvent forwards the event and unsubscribes cleanly', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.linked.onEvent(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === 'linked:event')![1] as Function
+    const evt = { kind: 'pending', ref: 'device:0011223344556677', phrase: 'a b c d e f g h', suggestedName: 'linux' }
+    handler({}, evt)
+    expect(cb).toHaveBeenCalledWith(evt)
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('linked:event', handler)
+  })
+})
+
+describe('preload: linked machines', () => {
+  // Every method is one invoke on one channel with one payload shape, and main reads
+  // exactly these field names (linkedHost.ts registerLinkedIpc). A renamed field here
+  // would reach main as undefined and be refused as malformed.
+  const grants = { run: true, write: false }
+  it.each([
+    ['status', [], 'linked:status', undefined],
+    ['setEnabled', [true], 'linked:set-enabled', { enabled: true }],
+    ['createCode', [grants], 'linked:create-code', { grants }],
+    ['cancelCode', [], 'linked:cancel-code', undefined],
+    ['join', ['termpolis-link:abc', grants], 'linked:join', { code: 'termpolis-link:abc', grants }],
+    ['cancelJoin', [], 'linked:cancel-join', undefined],
+    ['confirm', ['link:0011223344556677', 'linux'], 'linked:confirm', { ref: 'link:0011223344556677', name: 'linux' }],
+    ['rename', ['link:0011223344556677', 'mac'], 'linked:rename', { ref: 'link:0011223344556677', name: 'mac' }],
+    ['setGrants', ['device:0011223344556677', grants], 'linked:set-grants', { ref: 'device:0011223344556677', grants }],
+    ['unlink', ['device:0011223344556677'], 'linked:unlink', { ref: 'device:0011223344556677' }],
+  ])('linked.%s invokes its channel with its payload', async (method, args, channel, payload) => {
+    await exposed.linked[method](...args)
+    if (payload === undefined) expect(mockIpcRenderer.invoke).toHaveBeenCalledWith(channel)
+    else expect(mockIpcRenderer.invoke).toHaveBeenCalledWith(channel, payload)
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('preload IPC surface — every exposed wrapper forwards without throwing', () => {

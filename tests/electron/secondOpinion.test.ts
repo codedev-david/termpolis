@@ -10,6 +10,7 @@ import {
   positionalPrompt,
   cleanReviewText,
   runSecondOpinion,
+  powershellPath,
   CLAUDE_MUTATING_TOOLS,
   DELIVER_GRACE_MS,
   PROMPT_TOKEN,
@@ -226,7 +227,8 @@ describe('secondOpinionSpawnPlan', () => {
   })
   it('windows: runs via PowerShell with the prompt read from a file into $p — never on the command line', () => {
     const { cmd, cmdArgs } = secondOpinionSpawnPlan(true, 'codex', args, PROMPT_TOKEN, 'REVIEW THIS; rm -rf /')
-    expect(cmd).toBe('powershell.exe')
+    // By absolute path: the run's cwd may be a repo, and Windows looks there before PATH.
+    expect(cmd).toBe(powershellPath())
     expect(cmdArgs.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command'])
     const script = cmdArgs[cmdArgs.length - 1]
     expect(script).toBe([
@@ -252,6 +254,49 @@ describe('secondOpinionSpawnPlan', () => {
     const script = secondOpinionSpawnPlan(true, "ev'il", ["it's", PROMPT_TOKEN], PROMPT_TOKEN, 'x').cmdArgs[3]
     expect(script).toContain("Get-Command -Name 'ev''il' ")
     expect(script).toContain("& $c 'it''s' $p")
+  })
+  it('windows: doubles every character PowerShell reads as a single quote, not just the ASCII one', () => {
+    // U+2018 to U+201B close a single-quoted literal too, so a folder name holding one would end
+    // its literal early and run the rest as script.
+    const script = secondOpinionSpawnPlan(true, 'x\u2019', ['-C', 'a\u2018b\u2019c\u201ad\u201be\'f', PROMPT_TOKEN], PROMPT_TOKEN, 'x').cmdArgs[3]
+    expect(script).toContain("Get-Command -Name 'x\u2019\u2019' ")
+    expect(script).toContain("& $c '-C' 'a\u2018\u2018b\u2019\u2019c\u201a\u201ad\u201b\u201be''f' $p")
+  })
+  it('windows: decides who gets wrapped by .NET\'s whitespace, which is not JS\'s \\s', () => {
+    const literal = (a: string): string => {
+      const script = secondOpinionSpawnPlan(true, 'codex', [a, PROMPT_TOKEN], PROMPT_TOKEN, 'x').cmdArgs[3]
+      return script.slice(script.indexOf('& $c ') + 5, script.lastIndexOf(' $p'))
+    }
+    // NEL is .NET whitespace (5.1 wraps), and U+180E was before Unicode 6.3: doubling where 5.1
+    // adds no quotes costs an extra separator, while missing a wrap would split the arguments.
+    expect(literal('a\u0085b\\')).toBe("'a\u0085b\\\\'")
+    expect(literal('a\u180eb\\')).toBe("'a\u180eb\\\\'")
+    expect(literal('a\u3000b\\')).toBe("'a\u3000b\\\\'")
+    // The BOM is \s to JS but never whitespace to .NET, so 5.1 passes it bare: nothing to double.
+    expect(literal('a\ufeffb\\')).toBe("'a\ufeffb\\'")
+  })
+  it('windows: doubles the trailing backslashes of an argv entry that 5.1 will wrap in quotes', () => {
+    // 5.1 wraps an entry with whitespace in quotes and escapes nothing, so `C:\Program Files\`
+    // would reach the child as `"C:\Program Files\"`, whose `\"` is an escaped quote. The entry
+    // would then run on into the prompt, and the prompt's words would become separate arguments.
+    const script = secondOpinionSpawnPlan(true, 'codex', ['-C', 'C:\\Program Files\\', '--x', 'C:\\Win\\', 'a b\\c', 'a b\\\\', PROMPT_TOKEN], PROMPT_TOKEN, 'x').cmdArgs[3]
+    expect(script).toContain(String.raw`& $c '-C' 'C:\Program Files\\' '--x' 'C:\Win\' 'a b\c' 'a b\\\\' $p`)
+  })
+  it('windows: refuses an argv entry with a double quote, which 5.1 cannot pass intact', () => {
+    expect(() => secondOpinionSpawnPlan(true, 'codex', ['-c', 'model="o3"', PROMPT_TOKEN], PROMPT_TOKEN, 'x')).toThrow(/double quote/)
+    // Only Windows needs it: elsewhere the entry is exec'd as it is.
+    expect(secondOpinionSpawnPlan(false, 'codex', ['-c', 'model="o3"', PROMPT_TOKEN], PROMPT_TOKEN, 'x').cmdArgs).toEqual(['-c', 'model="o3"', 'x'])
+  })
+})
+
+describe('powershellPath', () => {
+  it('resolves Windows PowerShell 5.1 under SystemRoot, then windir, then C:\\Windows', () => {
+    expect(powershellPath({ SystemRoot: 'D:\\Win' })).toBe('D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    expect(powershellPath({ windir: 'E:\\W' })).toBe('E:\\W\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+    expect(powershellPath({})).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+  })
+  it('reads this process\'s environment by default', () => {
+    expect(powershellPath()).toBe(powershellPath(process.env))
   })
 })
 
@@ -313,6 +358,19 @@ describe('deliverWithDeadline', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+  it('forwards the working folder, extra environment and abort signal to deliver', async () => {
+    const deliver = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
+    const signal = new AbortController().signal
+    await deliverWithDeadline(deliver, 'codex', ['exec', PROMPT_TOKEN], 'the prompt', 0, 10, { cwd: '/repo', env: { TERMPOLIS_LINKED_JOB: 'abc' }, signal })
+    expect(deliver).toHaveBeenCalledWith('codex', ['exec', PROMPT_TOKEN], 'the prompt', PROMPT_TOKEN, {
+      timeoutMs: 0, cwd: '/repo', env: { TERMPOLIS_LINKED_JOB: 'abc' }, signal,
+    })
+  })
+  it('keeps its own timeout over one smuggled into the extras', async () => {
+    const deliver = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
+    await deliverWithDeadline(deliver, 'claude', [], 'the prompt', 0, 10, { timeoutMs: 1 } as never)
+    expect(deliver).toHaveBeenCalledWith('claude', [], 'the prompt', PROMPT_TOKEN, { timeoutMs: 0 })
   })
   it('honours a custom grace period', async () => {
     vi.useFakeTimers()

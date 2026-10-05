@@ -39,7 +39,7 @@ import { join } from 'node:path'
 import type { McpToolHandlers } from '../../src/main/mcpServer'
 import { SYNC_TASKKILL_TIMEOUT_MS, TREE_KILL_GRACE_MS, taskkillPath } from '../../src/main/processTree'
 import { STOP_SETTLE_MS } from '../../src/main/secondOpinionDeliver'
-import { SECOND_OPINION_TIMEOUT_MS } from '../../src/main/secondOpinion'
+import { SECOND_OPINION_TIMEOUT_MS, powershellPath } from '../../src/main/secondOpinion'
 
 const H = vi.hoisted(() => {
   // Node's own require: vi.mock('fs') below does not reach it, so this is a REAL temp folder.
@@ -412,12 +412,13 @@ async function startReview(platform: NodeJS.Platform): Promise<{ result: Promise
   return { result }
 }
 
-/** Start `termpolis exec` on POSIX. It awaits its memory primer before it spawns, so the platform
- *  override lasts until the agent is up. */
+/** Start `termpolis exec` on POSIX. It checks its cwd and awaits its memory primer before it
+ *  spawns, so the platform override lasts until the agent is up. The cwd must really exist, and
+ *  H.userData does: it was made with node's own fs, which vi.mock('fs') doesn't reach. */
 async function startExec(spawnsBefore: number): Promise<{ result: Promise<unknown> }> {
   let result!: Promise<unknown>
   await withPlatform('linux', async () => {
-    result = boot.agentExec({ prompt: 'summarize the last commit', agent: 'claude', cwd: '/scratch/repo' })
+    result = boot.agentExec({ prompt: 'summarize the last commit', agent: 'claude', cwd: H.userData })
     await vi.waitFor(() => expect(agentSpawns()).toHaveLength(spawnsBefore + 1), { timeout: 5_000, interval: 5 })
   })
   return { result }
@@ -526,7 +527,8 @@ describe('agent:second-opinion spawns through the deliver that stops the whole t
     await startReview('win32')
 
     const [cmd, , opts] = theAgentSpawn()
-    expect(cmd).toBe('powershell.exe')
+    // By absolute path: a run's cwd may be a repo, and Windows looks there before PATH.
+    expect(cmd).toBe(powershellPath())
     expect(opts).toMatchObject({ detached: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     expect(opts).not.toHaveProperty('timeout')
     const tmp = (opts.env as NodeJS.ProcessEnv).TP_SO_FILE
@@ -545,6 +547,8 @@ describe('agentExec (`termpolis exec`) spawns through the same deliver', () => {
     expect(opts).toMatchObject({ detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     expect(opts).not.toHaveProperty('timeout')
     expect((opts.env as NodeJS.ProcessEnv).PATH).toBe(H.extendedPath)
+    // `termpolis exec --cwd X` runs the agent in X, not in the app's own cwd.
+    expect(opts.cwd).toBe(H.userData)
   })
 })
 

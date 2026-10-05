@@ -3,9 +3,9 @@
 // The process half of a one-shot agent run, shared by Second Opinion and `termpolis exec`.
 // It does four things:
 //   - writes the untrusted prompt out of band;
-//   - spawns the plan secondOpinionSpawnPlan resolved;
+//   - spawns the plan secondOpinionSpawnPlan resolved, in the run's folder and environment;
 //   - captures stdout and stderr;
-//   - STOPS the run when its time is up or Termpolis quits.
+//   - STOPS the run when its time is up, its caller cancels it, or Termpolis quits.
 //
 // Stopping ends the whole process tree (see processTree.ts). On Windows every agent runs under a
 // PowerShell wrapper, so ending only the process we spawned used to leave the agent itself running,
@@ -31,6 +31,9 @@ export const STOP_SETTLE_MS = 3_000
 
 // setTimeout fires at once for a delay past 2^31-1 ms (the same bound deliverWithDeadline uses).
 const MAX_TIMER_MS = 2_147_483_647
+
+/** The note a run stopped by its caller's AbortSignal reports. */
+const CANCELLED = 'cancelled'
 
 type DataListener = (chunk: Buffer | string) => void
 
@@ -81,14 +84,18 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
   const running = new Set<Run>()
 
   const deliver: DeliverFn = (bin, args, prompt, promptToken, opts) => new Promise((resolve) => {
+    const { timeoutMs, cwd, signal } = opts
+    // A run cancelled before it starts is never spawned, and leaves no prompt file behind.
+    if (signal?.aborted) { resolve({ stdout: '', stderr: CANCELLED, code: 1 }); return }
     const platform = deps.platform ?? process.platform
     const isWin = platform === 'win32'
-    const env: NodeJS.ProcessEnv = { ...deps.env() }
+    // The caller's variables go over the base environment. Neither object is written to.
+    const env: NodeJS.ProcessEnv = { ...deps.env(), ...opts.env }
     let tmp: string | null = null
     if (isWin) {
       // PowerShell reads the prompt from this file into $p, so it never touches a command line (see
       // secondOpinionSpawnPlan). If the file can't be written, the run is refused. It is not sent
-      // some other way.
+      // some other way. Set after the caller's variables, so none of them can point it elsewhere.
       tmp = join(deps.tempDir(), `termpolis-so-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`)
       try { writeFile(tmp, prompt) } catch { resolve({ stdout: '', code: 1 }); return }
       env.TP_SO_FILE = tmp
@@ -106,6 +113,7 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
       settled = true
       clearTimeout(deadline)
       clearTimeout(giveUp)
+      signal?.removeEventListener('abort', onAbort)
       running.delete(run)
       if (tmp) { try { unlink(tmp) } catch { /* best effort */ } }
       resolve(r)
@@ -130,6 +138,8 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
         else giveUp = setTimeout(() => finish(stopped(note)), settleMs)
       },
     }
+    // A cancel stops the run the way the deadline does: the whole tree, and the same settling.
+    const onAbort = (): void => run.stop(CANCELLED, false)
     running.add(run)
     try {
       const { cmd, cmdArgs } = secondOpinionSpawnPlan(isWin, bin, args, promptToken, prompt)
@@ -138,7 +148,9 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
       //  - `detached`, POSIX only: the agent leads its own process group, so a stop reaches
       //    everything it started. On Windows it would give the agent its own console instead.
       //  - No spawn `timeout`: that ends only the direct child. The deadline below stops the tree.
-      child = spawnAgent(cmd, cmdArgs, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], detached: !isWin })
+      //  - `cwd` only when the run has one. Windows searches it before PATH, which is why the
+      //    plan names PowerShell by absolute path.
+      child = spawnAgent(cmd, cmdArgs, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], detached: !isWin, ...(cwd ? { cwd } : {}) })
       child.stdout?.on('data', (d) => { stdout += d.toString() })
       child.stderr?.on('data', (d) => { stderr += d.toString() })
       child.on('error', (e) => finish({ stdout: '', stderr: e.message, code: 1 }))
@@ -148,13 +160,13 @@ export function createSecondOpinionDeliver(deps: SecondOpinionDeliverDeps): Seco
       finish({ stdout: '', stderr: (e as Error)?.message, code: 1 })
       return
     }
-    const { timeoutMs } = opts
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
       deadline = setTimeout(
         () => run.stop(`${bin} did not finish within ${Math.round(timeoutMs / 1000)}s and was stopped`, false),
         Math.min(timeoutMs, MAX_TIMER_MS),
       )
     }
+    signal?.addEventListener('abort', onAbort, { once: true })
   })
 
   return {

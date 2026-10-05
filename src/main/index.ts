@@ -218,7 +218,7 @@ import { registerMcpIpc } from './mcpIpc'
 import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections } from './memoryCorrectionStore'
-import { runHeadless, type ExecAgent } from './headlessExec'
+import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
 import { buildProbes, runBench, checkRegression, baselineFrom, formatBench, type BenchMemory } from './recallBench'
@@ -502,6 +502,13 @@ import {
   startRemoteBridgeHost,
   stopRemoteBridgeHost,
 } from './remoteHost'
+import {
+  linkedInitForRemote,
+  linkedToolCall,
+  registerLinkedIpc,
+  startLinkedHost,
+  stopLinkedHost,
+} from './linkedHost'
 
 // Bypass for the agents-running close guard: armed when the user clicks
 // "Restart" on a downloaded update, so the quit from quitAndInstall isn't
@@ -2868,7 +2875,10 @@ async function findAgentInstalled(command: string): Promise<boolean> {
   return false
 }
 
-ipcMain.handle('agents:detect', async () => {
+/** Which agents are installed here, by the id each is launched under. `agents:detect` answers
+ *  the renderer with it, and Linked machines tells a linked computer what it may ask this one to
+ *  run -- one probe, so the two can never disagree about what is installed. */
+async function detectInstalledAgents(): Promise<Record<string, boolean>> {
   const agents = ['claude', 'codex']
   const results: Record<string, boolean> = {}
   for (const agent of agents) {
@@ -2887,8 +2897,10 @@ ipcMain.handle('agents:detect', async () => {
       results[id] = false
     }
   }
-  return ok(results)
-})
+  return results
+}
+
+ipcMain.handle('agents:detect', async () => ok(await detectInstalledAgents()))
 
 // ---------------------------------------------------------------------------
 // Model catalog — what the model pickers may offer, per provider.
@@ -3016,6 +3028,10 @@ ipcMain.on('app-log:append', (_e, payload) => {
 // call time and answers "not running" until then.
 registerRemoteIpc(ipcMain)
 
+// Linked machines, for the same reason: Settings asks for its status at mount, and the
+// service starts with Remote, once the MCP port is bound.
+registerLinkedIpc(ipcMain)
+
 // Second Opinion and `termpolis exec`: run a chosen agent headless and return what it printed.
 // `args` carries a PROMPT_TOKEN placeholder where the (UNTRUSTED, terminal-scraped) prompt goes,
 // and the prompt is NEVER placed on a shell command line: on Windows PowerShell reads it from a
@@ -3027,6 +3043,22 @@ const secondOpinionRuns = createSecondOpinionDeliver({
   env: () => ({ ...process.env, PATH: getExtendedPath() }),
 })
 const deliverSecondOpinion = secondOpinionRuns.deliver
+
+/** The memory primer a headless run starts with, scoped to the folder it runs in. One function
+ *  for `termpolis exec` and for jobs a linked computer starts here, so both start equally warm. */
+async function headlessPrimer(cwd: string): Promise<string | null> {
+  const project = cwd ? normalizeProjectSlug(cwd) : ''
+  return await buildContextPrimer(memorySearch, {
+    query: project
+      ? `recent work, decisions, conventions, and context for ${project}`
+      : 'recent work, key decisions, and conventions',
+    limit: getPrimerLimit(),
+    maxSnippetChars: 400,
+    project: project || undefined,
+    projectPath: cwd || undefined,
+    recent: primerRecent,
+  })
+}
 
 ipcMain.handle('agent:second-opinion', async (_e, opts: { agent: string; model?: string; content: string }) => {
   try {
@@ -3638,36 +3670,23 @@ async function semanticPoolOptions(
       gatewayListTools: () => gatewayListTools(),
       gatewayCall: (opts) => gatewayCall(opts),
       retrieveFull: (token: string) => headroomRetrieveFull(token),
+      // Ask a linked computer's agents to do work, and wait for the answer (linkedHost.ts). Safe
+      // before the service starts: it then answers, as data, that Linked machines is off.
+      linkedMachines: (opts) => linkedToolCall(opts),
 
       // ── Operator verbs (CLI-only — see McpToolHandlers) ───────────────────────────────
       // A headless run of a hosted CLI, primed with this project's memory. The point of
       // the primer is that a CI job or a git hook starts with everything the app already
       // learned instead of from zero, which is the whole difference between "an agent in
       // a pipeline" and "an agent that has worked here before".
+      // The verb is checked at the edge (execRequestFromVerb): an unknown agent is refused and
+      // the timeout is clamped to [10 s, 60 min]. runHeadless then refuses a cwd that isn't an
+      // existing absolute folder, and runs the agent in it.
       agentExec: async (opts) => await runHeadless(
-        {
-          task: opts.prompt,
-          ...(opts.agent ? { agent: opts.agent as ExecAgent } : {}),
-          ...(opts.model ? { model: opts.model } : {}),
-          ...(opts.cwd ? { cwd: opts.cwd } : {}),
-          ...(opts.write !== undefined ? { write: opts.write } : {}),
-          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
-        },
+        execRequestFromVerb(opts),
         {
           deliver: deliverSecondOpinion,
-          primer: async (cwd: string) => {
-            const project = cwd ? normalizeProjectSlug(cwd) : ''
-            return await buildContextPrimer(memorySearch, {
-              query: project
-                ? `recent work, decisions, conventions, and context for ${project}`
-                : 'recent work, key decisions, and conventions',
-              limit: getPrimerLimit(),
-              maxSnippetChars: 400,
-              project: project || undefined,
-              projectPath: cwd || undefined,
-              recent: primerRecent,
-            })
-          },
+          primer: headlessPrimer,
           remember: async (input) => await memoryWrite({
             agentId: 'headless-exec',
             kind: 'result',
@@ -4338,6 +4357,30 @@ async function semanticPoolOptions(
     // `safeStorage` does not exist in a utilityProcess. It never reaches the
     // renderer: everything pushed there is rebuilt from an allowlist.
     awaitMcpPortBound().then((boundPort) => {
+      // ── Linked machines ──
+      // Started just BEFORE Remote: the one bridge carries both, and Remote's start() asks
+      // `linkedInit` straight away. Loaded first, the bridge comes up once with both features'
+      // rooms instead of coming up for phones and being restarted a moment later for links.
+      // Delegated jobs run headless with the same deliver and primer as `termpolis exec`, and
+      // deliberately without `remember`: text another machine asked for must never become a
+      // later run's primer here.
+      try {
+        startLinkedHost({
+          userDataDir: app.getPath('userData'),
+          version: app.getVersion(),
+          sendStatus: (status) => { try { mainWindow?.webContents.send('linked:status-changed', status) } catch { /* window gone */ } },
+          sendEvent: (event) => { try { mainWindow?.webContents.send('linked:event', event) } catch { /* window gone */ } },
+          runHeadless: (req) => runHeadless(req, { deliver: deliverSecondOpinion, primer: headlessPrimer }),
+          agentsInstalled: async () => {
+            const found = await detectInstalledAgents()
+            return { claude: found.claude === true, codex: found.codex === true, gemini: found.gemini === true }
+          },
+        })
+      } catch (e) {
+        // Same rule as Remote below: a wiring fault must not fatal `whenReady`. Linked machines
+        // is off in that run, and every channel and the agent tool say so.
+        console.error(`[linked] failed to start: ${(e as Error).message}`)
+      }
       try {
         startRemoteBridgeHost({
           userDataDir: app.getPath('userData'),
@@ -4352,6 +4395,8 @@ async function semanticPoolOptions(
               ? { output: readOutput(terminalOutputBuffers, terminalId), name: terminalDisplayName(terminalId) }
               : null,
           createTransport: realBridgeTransport,
+          // Asked at every bridge start and crash respawn: answered from memory, synchronously.
+          linkedInit: () => linkedInitForRemote(),
         })
       } catch (e) {
         // A wiring fault here must not fatal `whenReady` -- the app-boot rule. Remote
@@ -4444,6 +4489,9 @@ async function semanticPoolOptions(
     // Reap the memory process. The store is already durable on disk (every write is appended before
     // its RPC resolves), so this loses nothing — it just stops the child outliving the app.
     try { stopMemoryHost() } catch {}
+    // Jobs a linked computer started here stop with the app, as do calls waiting on one.
+    // Before the bridge: a job's cancellation is the last thing it reports.
+    try { stopLinkedHost() } catch {}
     // Ask the bridge to close its relay rooms before the process goes. A seat is
     // exclusive -- the relay answers a second desktop socket for the same room
     // with 409 -- so a killed child leaves the next launch racing its timeout.
@@ -4518,6 +4566,7 @@ async function semanticPoolOptions(
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
+    try { stopLinkedHost() } catch {}
     try { stopRemoteBridgeHost() } catch {}
     stage = 'watchers'
     // close() on an already-stopped server throws ERR_SERVER_NOT_RUNNING, and this used to be the

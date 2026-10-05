@@ -136,6 +136,27 @@ function applyDefaultProjectScope(request, cwd) {
   return request
 }
 
+// Linked machines (spec §4.5 rule 2). A job that another linked machine started runs with
+// TERMPOLIS_LINKED_JOB set, and this adapter inherits it from the agent. That agent may not hand
+// the work on to yet another machine: a chain of machines delegating to each other is a loop
+// nobody is watching. Answered here, before the app or the network sees it, so the refusal holds
+// even for an agent whose Termpolis MCP could not be switched off for the run. Any value counts,
+// even an empty one: a check that an empty marker switches off fails open.
+const NESTED_DELEGATION_REFUSAL = 'Nested delegation is not allowed: this agent was itself started by a linked machine.'
+
+// The reply to send instead of forwarding, or null to carry on. A tool result marked isError
+// rather than a JSON-RPC error, so the agent reads the reason as its answer instead of
+// concluding that the server is broken.
+function nestedDelegationRefusal(request, env) {
+  if (!env || env.TERMPOLIS_LINKED_JOB === undefined) return null
+  if (!request || request.method !== 'tools/call' || !request.params || request.params.name !== 'linked_machines') return null
+  return {
+    jsonrpc: '2.0',
+    id: request.id ?? null,
+    result: { content: [{ type: 'text', text: NESTED_DELEGATION_REFUSAL }], isError: true },
+  }
+}
+
 // Read JSON-RPC messages from stdin (newline-delimited)
 async function handleLine(line) {
   if (!line.trim()) return
@@ -148,6 +169,12 @@ async function handleLine(line) {
   applyDefaultProjectScope(request, process.cwd())
   // MCP notifications are fire-and-forget — don't forward to server
   if (!request.id && (request.method?.startsWith('notifications/') || request.method === 'initialized')) {
+    return
+  }
+  // Ahead of degraded mode: whether the app is up does not change this answer.
+  const refusal = nestedDelegationRefusal(request, process.env)
+  if (refusal) {
+    process.stdout.write(JSON.stringify(refusal) + '\n')
     return
   }
   // Degraded mode: no token, or health check confirmed server down.
@@ -210,4 +237,4 @@ function startAdapter() {
 
 if (require.main === module) startAdapter()
 
-module.exports = { applyDefaultProjectScope }
+module.exports = { applyDefaultProjectScope, nestedDelegationRefusal }

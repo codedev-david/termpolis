@@ -55,6 +55,10 @@ function device(v: unknown): PairedDevice | null {
     capabilities: coerceCapabilities(raw.capabilities),
     pairedAt: num(raw.pairedAt),
     lastSeenAt: num(raw.lastSeenAt),
+    // A linked computer, kept as one only on the exact string. Anything else
+    // reads as a phone -- the record every file written before linked machines
+    // holds -- so the field is left off rather than carried in some other shape.
+    ...(raw.kind === 'desktop' ? { kind: 'desktop' as const } : {}),
   }
 }
 

@@ -37,8 +37,9 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 27. [Status Bar](#27-status-bar)
 28. [Troubleshooting](#28-troubleshooting)
 29. [Termpolis Remote (phone app)](#29-termpolis-remote-phone-app)
-30. [Architecture](#30-architecture)
-31. [Keyboard Shortcut Reference](#31-keyboard-shortcut-reference)
+30. [Linked machines](#30-linked-machines)
+31. [Architecture](#31-architecture)
+32. [Keyboard Shortcut Reference](#32-keyboard-shortcut-reference)
 
 ---
 
@@ -326,7 +327,7 @@ Each row's reset button restores its default, and **Reset All** restores them al
 
 On macOS, `⌘` works wherever a binding says `Ctrl`.
 
-See [§31](#31-keyboard-shortcut-reference) for the complete default list.
+See [§32](#32-keyboard-shortcut-reference) for the complete default list.
 
 ---
 
@@ -532,7 +533,7 @@ Termpolis ships an **MCP (Model Context Protocol) server** so AI agents can cont
 
 ### Available tools
 
-The tools come in six groups. The authoritative list is the one your agent shows for the `termpolis` server (for example `/mcp` in Claude Code), because it comes straight from the running app.
+The tools come in seven groups. The authoritative list is the one your agent shows for the `termpolis` server (for example `/mcp` in Claude Code), because it comes straight from the running app.
 
 | Group | Tools | What they're for |
 |-------|-------|------------------|
@@ -542,6 +543,7 @@ The tools come in six groups. The authoritative list is the one your agent shows
 | Code intelligence | `code_search`, `code_locate`, `code_explore`, `code_callers`, `code_callees`, `code_impact`, `test_coverage` | Find symbols, predict where a bug lives, trace callers and callees, size the blast radius of a change, and read which lines the project's last coverage run covered |
 | Gateway | `gateway_list_tools`, `gateway_call` | Reach tools on the MCP servers you add in Settings → MCP Servers, under its gateway policy |
 | Token Headroom | `retrieve_full` | Expand a tool result that Token Headroom shortened |
+| Linked machines | `linked_machines` | Have a Claude, Codex or Gemini agent on another linked machine do a task headlessly and return its final answer: `list` the machines, `run` a task, and fetch the `result` of one still running. See [§30](#30-linked-machines) |
 
 The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log.
 
@@ -912,7 +914,195 @@ the phone app and the relay is at <https://termpolis.com/privacy.html>.
 
 ---
 
-## 30. Architecture
+## 30. Linked machines
+
+**Linked machines** pairs your Termpolis desktops with each other, the way a
+phone pairs with one. An agent on one computer can then have a Claude, Codex or
+Gemini agent on another do a task **headlessly** and get its final answer back
+as an ordinary tool result. It works in both directions and across any network:
+
+> *"Have Codex on linux implement the parser in ~/repos/foo and commit it, then
+> review the commit yourself."*
+
+Nothing is typed into a terminal and no terminal opens on either machine. The
+work runs as a background job, and both computers list it under **Activity**.
+
+Linked machines is **off by default**. It uses the same relay and the same
+background process as [Termpolis Remote](#29-termpolis-remote-phone-app), but
+the two switch on separately: turning on one never lets the other's devices
+connect.
+
+### Turning it on
+
+*Settings → Linked machines*, on **both** computers.
+
+1. Tick **Let this computer link with my other computers**. The pane shows the
+   relay in use, which you change under *Settings → Remote*. It has to be an
+   encrypted `wss://` address.
+2. On one computer, go to **Link a computer**. Choose what the new computer may
+   do here (see below) and click **Create code**. A code starting
+   `termpolis-link:` appears with **Copy**, a countdown and **Cancel**. It works
+   **once** and expires after **5 minutes**.
+3. Carry the code to the other computer any way you like: a chat message, a
+   shared folder, or typing it. Paste it under **Enter a code from another
+   computer**, choose what the first computer may do there, and click
+   **Link**.
+4. Both screens show the **same eight words**, and each suggests the other
+   computer's hostname as its name. Change the name to whatever you want to
+   call that machine. Compare the words, then click **They match — link** on
+   **both** computers. The words come from the two computers' keys, so they
+   match only if nothing sits in the middle.
+
+Nothing is served until **both** sides have confirmed. Your agent will not
+send work to a machine you have not confirmed, and a machine refuses work from
+one it has not confirmed.
+
+Each linked computer gets a row in **Linked computers**:
+
+- an online dot;
+- its name, which you can rename by clicking it (Enter saves, Escape cancels);
+- *waiting for confirmation*, until you confirm it;
+- its two permissions;
+- when it last did anything;
+- **Unlink**, which asks you to click again.
+
+Names are yours, and each computer names the other. Two machines given the same
+name are numbered: `linux`, `linux (2)`. **Activity** lists the 20 latest jobs
+in both directions, with the machine, the agent, the first line of the prompt,
+the status and how long each took.
+
+### What a linked computer may do here
+
+Each computer decides what the **other** may do **on it**, per linked machine.
+You choose when the link is made, and you can change it at any time:
+
+| Permission | Default | What it allows |
+|---|---|---|
+| **Run agents here (read-only)** | on | Start a headless agent here that can read any file you can read and changes nothing. Claude runs in plan mode with only Read, Grep and Glob, Codex runs in its `read-only` sandbox, and Gemini (`agy`) runs in plan mode. |
+| **Let agents edit files and run commands here** | off | The agent here runs unattended, with permission prompts skipped. That is the same as running `termpolis-cli exec "<task>" --write` on this computer. Turning it on turns on *Run agents here* too. |
+
+The risk is stated plainly. A machine with *Run agents here* can have an agent
+read any file you can read on this computer and send it back. With *edit*, it
+can change files and run commands. Grant *edit* only to a machine you trust as
+much as this one.
+
+Permissions are checked **on the computer that does the work**, before any
+agent starts. They are checked again when you change them:
+
+- switching *edit* off stops that machine's running edit jobs;
+- switching *Run agents here* off stops all of its jobs;
+- unlinking stops all of its jobs.
+
+### Asking another machine: the `linked_machines` tool
+
+Agents get one MCP tool, `linked_machines`, with three actions:
+
+| Action | Arguments | Returns |
+|---|---|---|
+| `list` | — | `thisMachine`, and for each linked machine `name`, `online`, `confirmed`, `agents` (installed there), `canRun`, `canWrite`, and a `note` explaining anything it could not find out |
+| `run` | `machine`, `agent` (`claude`, `codex` or `gemini`), `prompt`; optional `cwd`, `write`, `model`, `waitSec` | `jobId`, `machine`, `agent`, `status` (`running`, `done`, `failed` or `cancelled`), plus `output`, `truncated`, `error`, `durationMs` and `note` where they apply |
+| `result` | `jobId`; optional `waitSec` | the same as `run` |
+
+- **`machine`** is the name you gave it on this computer, in any case. If no
+  machine has that name, the error lists the names of the linked machines.
+- **`prompt`** must be self-contained, up to 20,000 characters, because the
+  agent over there has none of this conversation. It gets the prompt after one
+  line. That line names the computer that asked and the working folder, and
+  says its final message is returned to the agent that asked. Like any
+  headless run there, it also starts with that computer's own memory primer.
+- **`cwd`** is a folder on the other machine, absolute or starting with `~`.
+  It defaults to the home folder and must exist there. Network paths are
+  refused.
+- **`write: true`** works only if that machine lets this one edit.
+- **`model`** picks the agent's model there. By default the agent uses its own.
+
+`run` waits up to **45 seconds** by default for the answer (`waitSec`, at most
+50). That stays under the 60 seconds Codex gives a single tool call. A job
+still going when the wait ends comes back with `status: "running"`, its
+`jobId`, and a note saying to call `result` with that `jobId`, which waits the
+same way.
+
+The `jobId` names the link, not the machine's name. It still works after a
+rename or after this computer restarts, as long as the other computer still
+holds the job. A finished job is kept there for 2 hours.
+
+Losing touch with the other computer while `run` waits on a job is not
+reported as a failure. You get the job's last known status and a note to check
+again with `result`. Every failure comes back as data, `{ "error": "…" }`,
+worded for the agent to act on or pass on to you.
+
+Termpolis never pre-approves this tool. Claude Code asks you before using it,
+and Codex is not told to trust it. It is limited to 30 calls a minute.
+
+### Limits
+
+- **Both computers need Termpolis running**, with Linked machines on and a
+  connection to the relay. The relay is a meeting point, not a mailbox, so a
+  request to a machine that isn't there fails at once with *"linux" is offline
+  — Termpolis must be running there.* instead of waiting.
+- **Every run is a fresh headless session.** It remembers nothing of the
+  previous run, so the prompt carries what the other agent needs: a commit
+  SHA, earlier findings. Code moves between the machines through Git as
+  usual. Linked machines does not copy files.
+- **A job may run for up to 15 minutes.** After that it is stopped.
+- **A computer runs at most 2 jobs at a time for any one machine, and 4 in
+  all.** Past that a request is refused with a message starting `busy:`.
+- **The end of a long answer is kept.** That is up to the last 200,000
+  characters, fewer if the answer is dense with control characters, so it
+  still fits in one relay frame. Agents put their conclusion last. A
+  shortened answer says `truncated: true`.
+- **Up to 16 linked machines** per computer, counting the ones this computer
+  made codes for and the ones whose codes it entered.
+- **Jobs live in memory.** Quitting Termpolis stops every job it is running for
+  other computers, and forgets the finished ones.
+
+### How it is secured
+
+- **End-to-end encrypted.** It uses the same X25519 pairing,
+  ChaCha20-Poly1305 sealing and untrusted relay as
+  [Termpolis Remote](#29-termpolis-remote-phone-app). The relay forwards sealed
+  frames and never sees a prompt or an answer.
+- **A key per link.** The computer that entered a code makes a fresh key pair
+  for that link alone, as a phone does for each desktop. Unlinking one machine
+  says nothing about any other.
+- **Both sides confirm** the eight words before anything is served.
+- **Read-only by default.** Every request is checked on the computer that would
+  do the work, before any agent starts. A linked computer is never given a
+  phone's abilities either. It cannot list, read or type into your terminals.
+  It can only ask for the jobs described here.
+- **No chains.**
+  - Termpolis's own MCP server is switched off inside a delegated job. Claude
+    runs with `--strict-mcp-config`, and Codex gets two `-c` overrides that
+    disable its `termpolis` server for that one run. Gemini (`agy`) has no
+    per-run switch, and the marker below covers it.
+  - The job is also marked in its environment. An agent that asks for
+    `linked_machines` anyway is refused with *Nested delegation is not allowed:
+    this agent was itself started by a linked machine.* It cannot hand the work
+    on to a third machine.
+- **Answers are data.** What comes back from another machine passes the
+  gateway's prompt-injection scan before your agent sees it. That covers the
+  answer, its error and any refusal worded over there. A flagged answer
+  arrives under an **UNTRUSTED CONTENT** banner telling the agent not to
+  follow it.
+- **Nothing is learned from another machine.** The agent doing the work starts
+  with that computer's own memory primer, as a local run would. Its answer is
+  never written into memory there, so text another computer asked for never
+  becomes context for later runs.
+- **Link records are kept in the OS keystore** (DPAPI, Keychain or libsecret)
+  wherever one is available.
+
+### Unlinking
+
+Click **Unlink** twice on either computer. The other computer drops the link
+too and says so (*"laptop" unlinked this computer.*), and any job either one
+still had running on the other is stopped. If the other computer is offline at the
+time, it keeps showing this one as offline until you unlink it there as well.
+
+The wire format is in [`docs/remote-wire-format.md` §13](remote-wire-format.md#13-linked-machines).
+
+---
+
+## 31. Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -949,7 +1139,7 @@ the phone app and the relay is at <https://termpolis.com/privacy.html>.
 
 ---
 
-## 31. Keyboard Shortcut Reference
+## 32. Keyboard Shortcut Reference
 
 Everything listed in Settings → Keybindings can be rebound there, except the three copy shortcuts. The panel shortcuts (the command palette, the Swarm dashboard and so on) are fixed. Defaults:
 

@@ -185,6 +185,12 @@ const M = vi.hoisted(() => ({
   startRemoteBridgeHost: vi.fn(),
   stopRemoteBridgeHost: vi.fn(),
   registerRemoteIpc: vi.fn(),
+  // linked machines
+  startLinkedHost: vi.fn(),
+  stopLinkedHost: vi.fn(),
+  registerLinkedIpc: vi.fn(),
+  linkedToolCall: vi.fn<(...a: any[]) => any>(async () => ({ thisMachine: 'here', machines: [] })),
+  linkedInitForRemote: vi.fn(() => ({ enabled: true, links: [] })),
   // learning signals
   startLearningSignals: vi.fn(),
   stopLearningSignals: vi.fn(),
@@ -420,7 +426,11 @@ vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: vi.fn(), stopInde
 vi.mock('../../src/main/secondOpinion', () => ({
   runSecondOpinion: M.runSecondOpinion, secondOpinionSpawnPlan: M.secondOpinionSpawnPlan,
 }))
-vi.mock('../../src/main/headlessExec', () => ({ runHeadless: M.runHeadless }))
+// runHeadless is faked. The verb's checks run for real, so these tests see what index.ts sends.
+vi.mock('../../src/main/headlessExec', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/headlessExec')>()
+  return { runHeadless: M.runHeadless, execRequestFromVerb: actual.execRequestFromVerb }
+})
 vi.mock('../../src/main/contextPrimer', () => ({ buildContextPrimer: M.buildContextPrimer }))
 vi.mock('../../src/main/memoryCorrectionStore', () => ({
   initMemoryCorrections: vi.fn(), correctMemory: M.correctMemory, applyCorrections: vi.fn((x: unknown) => x),
@@ -439,6 +449,11 @@ vi.mock('../../src/main/remoteHost', () => ({
   noteTerminalClosed: vi.fn(), noteTerminalOutput: vi.fn(), realBridgeTransport: vi.fn(),
   registerRemoteIpc: M.registerRemoteIpc,
   startRemoteBridgeHost: M.startRemoteBridgeHost, stopRemoteBridgeHost: M.stopRemoteBridgeHost,
+}))
+vi.mock('../../src/main/linkedHost', () => ({
+  registerLinkedIpc: M.registerLinkedIpc,
+  startLinkedHost: M.startLinkedHost, stopLinkedHost: M.stopLinkedHost,
+  linkedToolCall: M.linkedToolCall, linkedInitForRemote: M.linkedInitForRemote,
 }))
 vi.mock('../../src/main/mcpGatewayRuntime', () => ({
   initMcpGateway: vi.fn(),
@@ -1292,11 +1307,25 @@ describe('MCP tool table — operator verbs', () => {
       expect(req).toEqual({ task: 'summarise the repo' })
     })
 
-    it('forwards write:false and timeoutMs:0 — falsy is not the same as absent', async () => {
+    it('forwards write:false, and clamps timeoutMs:0 up to the floor — falsy is not the same as absent', async () => {
       await mcp().agentExec({ prompt: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 0 })
       const [req] = M.runHeadless.mock.calls.at(-1)!
       // `!== undefined` rather than truthiness: dropping write:false would let a CI job commit.
-      expect(req).toEqual({ task: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 0 })
+      // And 0 is deliver's "no limit", so the verb may no longer start an unbounded run.
+      expect(req).toEqual({ task: 'p', agent: 'codex', model: 'o3', cwd: '/repo', write: false, timeoutMs: 10_000 })
+    })
+
+    it('clamps a timeout past an hour down to the ceiling', async () => {
+      await mcp().agentExec({ prompt: 'p', timeoutMs: 24 * 3_600_000 })
+      const [req] = M.runHeadless.mock.calls.at(-1)!
+      expect(req).toEqual({ task: 'p', timeoutMs: 3_600_000 })
+    })
+
+    it('refuses an unknown agent before anything runs', async () => {
+      M.runHeadless.mockClear()
+      // Before, an unknown name fell through execCommand and quietly ran agy.
+      await expect(mcp().agentExec({ prompt: 'p', agent: 'agy' })).rejects.toThrow(/^Invalid agent/)
+      expect(M.runHeadless).not.toHaveBeenCalled()
     })
 
     it('primes the run with a project-scoped primer when given a cwd', async () => {
@@ -1451,6 +1480,81 @@ describe('remote bridge host wiring', () => {
     // null is what tells the phone "there is nothing here"; {output:''} would render as a live
     // terminal that has printed nothing.
     expect(opts().readRecent('no-such-terminal')).toBeNull()
+  })
+
+  it("asks Linked machines for its half of the bridge's init, every time", () => {
+    // A factory, not a snapshot: Remote asks it again at every bridge start and crash respawn.
+    M.linkedInitForRemote.mockReturnValueOnce({ enabled: true, links: [{ id: 'x' }] } as never)
+    expect(opts().linkedInit()).toEqual({ enabled: true, links: [{ id: 'x' }] })
+    expect(M.linkedInitForRemote).toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// Linked machines' wiring: the bindings index.ts hands the service.
+// ===========================================================================
+describe('linked machines wiring', () => {
+  const linked = (): any => {
+    const calls = M.startLinkedHost.mock.calls as unknown as unknown[][]
+    if (calls.length === 0) throw new Error('startLinkedHost was never called')
+    return calls[calls.length - 1][0]
+  }
+
+  it('registers its channels at module scope, so Settings can ask before it starts', async () => {
+    const { ipcMain } = (await import('electron')) as any
+    expect(M.registerLinkedIpc).toHaveBeenCalledWith(ipcMain)
+  })
+
+  it('starts just before Remote, in the same userData, with the app version', () => {
+    // Before: Remote's start() asks linkedInit at once, so the bridge comes up with both kinds of
+    // room instead of coming up for phones and being restarted for links a moment later.
+    expect(M.startLinkedHost.mock.invocationCallOrder[0]).toBeLessThan(M.startRemoteBridgeHost.mock.invocationCallOrder[0])
+    const remote = (M.startRemoteBridgeHost.mock.calls.at(-1) as unknown as any[])[0]
+    expect(linked().userDataDir).toBe(remote.userDataDir)
+    expect(linked().version).toBe('1.25.2')
+  })
+
+  it('pushes status and events to the renderer on their own channels', () => {
+    linked().sendStatus({ enabled: true })
+    linked().sendEvent({ kind: 'error', message: 'x' })
+    expect(mockWebContents.send).toHaveBeenCalledWith('linked:status-changed', { enabled: true })
+    expect(mockWebContents.send).toHaveBeenCalledWith('linked:event', { kind: 'error', message: 'x' })
+  })
+
+  it('swallows a send into a window that has gone away', () => {
+    mockWebContents.send.mockImplementationOnce(() => { throw new Error('Object has been destroyed') })
+    expect(() => linked().sendStatus({})).not.toThrow()
+    mockWebContents.send.mockImplementationOnce(() => { throw new Error('Object has been destroyed') })
+    expect(() => linked().sendEvent({ kind: 'error', message: 'x' })).not.toThrow()
+  })
+
+  it('runs a delegated job as termpolis exec runs one -- same deliver, same primer -- and never remembers it', async () => {
+    await mcp().agentExec({ prompt: 'p' })
+    const [, execDeps] = M.runHeadless.mock.calls.at(-1)! as any[]
+    const req = { task: 'delegated', agent: 'codex', noRemember: true }
+    await linked().runHeadless(req)
+    const [sent, deps] = M.runHeadless.mock.calls.at(-1)! as any[]
+    expect(sent).toBe(req)
+    expect(deps.deliver).toBe(execDeps.deliver)
+    expect(deps.primer).toBe(execDeps.primer)
+    // Text another machine asked for must never become a later run's primer here.
+    expect(deps).not.toHaveProperty('remember')
+  })
+
+  it('tells a linked computer which agents are installed, from the agents:detect probe', async () => {
+    // Forced, so the answer does not depend on what this machine has installed.
+    process.env.TERMPOLIS_FORCE_MISSING_AGENTS = 'claude,codex,gemini'
+    try {
+      expect(await linked().agentsInstalled()).toEqual({ claude: false, codex: false, gemini: false })
+    } finally {
+      delete process.env.TERMPOLIS_FORCE_MISSING_AGENTS
+    }
+  })
+
+  it('answers the linked_machines tool through the service', async () => {
+    const r = await mcp().linkedMachines({ action: 'list' })
+    expect(M.linkedToolCall).toHaveBeenCalledWith({ action: 'list' })
+    expect(r).toEqual({ thisMachine: 'here', machines: [] })
   })
 })
 

@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import { DeviceRegistry } from './deviceRegistry'
 import { RequestDispatcher } from './dispatcher'
 import { OutputFanout, type DrainedChunk } from './outputFanout'
@@ -6,29 +7,45 @@ import { LocalMcpClient } from './mcpClient'
 import { localDesktopName } from './desktopName'
 import {
   createPairingOffer,
+  openPairingAck,
   openPairingHello,
   sealPairingAck,
+  sealPairingHello,
   PairingSession,
   type PairingOffer,
 } from './pairing'
 import { chunkOutbound, MAX_PAYLOAD_BYTES } from './outputChunker'
 import { RelayClient, type RelayClientDeps, type RelayState } from './relayClient'
-import { Handshake } from './sessionCrypto'
+import { Handshake, deriveSessionRoomId } from './sessionCrypto'
+import { deriveVerificationPhrase, fromHex, toHex } from './sealedChannel'
+import {
+  LINK_OFFER_TTL_MS,
+  encodeLinkCode,
+  isBridgeLink,
+  isLinkRelayUrl,
+  parseLinkCode,
+} from './linkCode'
+import { CapabilityError } from './remotePolicy'
 import {
   DEFAULT_RELAY_URL,
   DEVICE_EXPIRY_SWEEP_MS,
   DEVICE_IDLE_EXPIRY_MS,
+  MAX_LINKED_MACHINES,
   NO_CAPABILITIES,
   SEEN_ANNOUNCE_INTERVAL_MS,
+  isPeerKind,
 } from './protocol'
 import { sanitizeDeviceLabel } from './deviceLabel'
 import { x25519 } from '@noble/curves/ed25519.js'
 import type { AgentStatus } from '../../shared/agentStatusDetector'
 import type {
+  BridgeLink,
   BridgeToHost,
   Capabilities,
   HostToBridge,
+  LinkTarget,
   PairedDevice,
+  PeerRequest,
   RemoteEnvelope,
   RemoteResponse,
 } from './protocol'
@@ -61,8 +78,102 @@ export interface RelayLike {
    *  are sealed under a root derived from the QR, not under a session the relay
    *  client owns. */
   sendFrame(frame: Uint8Array): void
+  /** Ask the other end something over the session and wait for its answer.
+   *  Optional so a room that only ever answers -- every phone room, and every
+   *  stub a test stands in -- need not implement it; a room without it is a
+   *  room nothing can be asked through, and a linked call reports it offline. */
+  request?(request: unknown, timeoutMs: number): Promise<unknown>
   stop(): void
   readonly state: RelayState
+}
+
+// ── Linked machines ──────────────────────────────────────────────────────────
+
+/** How long a join waits for the host's answer. Shorter than the link offer's
+ *  five minutes on purpose: the code is already on the other screen when it is
+ *  entered here, so a minute of silence means it is not being shown any more. */
+export const JOIN_TIMEOUT_MS = 60_000
+
+/** How long a linked request may wait on main before it is answered for it. */
+export const PEER_CALL_TIMEOUT_MS = 30_000
+
+/** A `peerResult` is a long-poll: main holds it up to `waitMs`, so the bridge
+ *  waits that long plus this, for the job's answer to reach it. */
+export const PEER_RESULT_GRACE_MS = 15_000
+
+/** The longest a `peerResult` may ask main to hold it. */
+export const MAX_PEER_WAIT_MS = 50_000
+
+/** The longest main may ask a linked call to wait. Bounded because a timer past
+ *  2^31 - 1 ms fires at once, and nothing a link does takes ten minutes to answer. */
+export const MAX_LINK_CALL_TIMEOUT_MS = 10 * 60_000
+
+/** What every refusal of a kind outside the allowed set reads -- the same words
+ *  the policy uses for a phone, so a desktop peer and a phone are refused alike. */
+const UNRECOGNISED_KIND = new CapabilityError(null).message
+
+const LINK_CODE_FOR_COMPUTER = 'That code is for linking another computer, not a phone.'
+const PHONE_CODE_NOT_LINK =
+  'That code is for a phone. Create a code under Settings ▸ Linked machines.'
+const LINKED_OFF = 'Linked machines is off. Switch it on under Settings ▸ Linked machines first.'
+const PHONES_OFF = 'Phone pairing is off. Switch on "Allow phones to connect" first.'
+const LINK_CAP = `This computer already has ${MAX_LINKED_MACHINES} linked machines. Unlink one before linking another.`
+const LINK_RELAY_UNENCRYPTED =
+  'Linked machines needs an encrypted relay (wss://). Change the relay under Settings ▸ Remote.'
+const JOIN_NOT_A_CODE =
+  'That is not a link code. Copy the whole code from Settings ▸ Linked machines on the other computer.'
+const JOIN_OWN_CODE = 'That code was made on this computer. Enter it on the other one.'
+const JOIN_BAD_KEY = 'This computer could not make a key for the link. Try again.'
+const JOIN_PEER_GONE = 'The other computer stopped showing that code.'
+const JOIN_TIMED_OUT =
+  'No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer.'
+const JOIN_BAD_ACK =
+  'The other computer answered for a different key than this one sent. Create a new code and try again.'
+
+const SECRET_KEY_RE = /^[0-9a-f]{64}$/
+
+/** A request kind narrowed to the linked set. A sealed frame proves who sent
+ *  it, not that the sender spoke this version, so this asks rather than assumes. */
+function isPeerRequest(request: { kind: unknown }): request is PeerRequest {
+  return isPeerKind(request.kind)
+}
+
+/** How long main may take over one inbound linked request. */
+function mainTimeout(request: PeerRequest): number {
+  if (request.kind !== 'peerResult') return PEER_CALL_TIMEOUT_MS
+  // `waitMs` arrived over the relay. Anything that is not a finite number means
+  // "do not hold it", and the hold is capped where the spec caps it.
+  const wait: unknown = request.waitMs
+  const held =
+    typeof wait === 'number' && Number.isFinite(wait) ? Math.min(Math.max(wait, 0), MAX_PEER_WAIT_MS) : 0
+  return held + PEER_RESULT_GRACE_MS
+}
+
+/** How long one outbound linked call may wait for its answer. */
+function callTimeout(timeoutMs: unknown): number {
+  return typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? Math.min(timeoutMs, MAX_LINK_CALL_TIMEOUT_MS)
+    : PEER_CALL_TIMEOUT_MS
+}
+
+/** Whether two records name the same room with the same keys. A link whose
+ *  record changed under the same id is a different room, not the same one. */
+function sameLink(a: BridgeLink, b: BridgeLink): boolean {
+  return (
+    a.hostPublicKey === b.hostPublicKey &&
+    a.relayUrl === b.relayUrl &&
+    a.sessionRoomId === b.sessionRoomId &&
+    a.secretKey === b.secretKey
+  )
+}
+
+/** Run something once the answer now being returned has been sent.
+ *
+ *  A goodbye is answered and THEN acted on: closing the room first would close
+ *  the socket the answer has to leave by. The answer goes out in the microtask
+ *  after the handler returns, and a timer runs after every microtask. */
+function afterAnswering(fn: () => void): void {
+  setTimeout(fn, 0)
 }
 
 export interface BridgeCoreDeps {
@@ -130,6 +241,30 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  have raced. Reset with every offer: a grant chosen for one pairing is not
    *  consent for the next one. */
   let requestedCapabilities: Capabilities = { ...NO_CAPABILITIES }
+  /** Whether the offer currently open is for a phone or for another computer.
+   *  Reset with every offer, like the grant: it decides which hello the offer
+   *  takes, and what the device it makes may ask. */
+  let requestedKind: 'phone' | 'desktop' = 'phone'
+  /** Which kinds of room this bridge opens, from `init`. Phones default on and
+   *  links default off, so an init written before linked machines existed means
+   *  exactly what it meant then -- and turning on one feature never opens the
+   *  other's rooms. */
+  let phonesEnabled = true
+  let linkedEnabled = false
+  /** One room per link this machine JOINED, keyed by link id. Kept apart from
+   *  `rooms` because this end sits in the DEVICE seat here, holds a per-link key
+   *  instead of the identity, and serves nothing but `peer*` -- and so that the
+   *  output pump, which walks `rooms`, never drains a phone's queue into one. */
+  const linkRooms = new Map<string, { link: BridgeLink; client: RelayLike; attached: boolean }>()
+  /** The join in progress, if any: its pairing room and the timer that gives up
+   *  on it. One at a time -- a second join replaces the first. */
+  let joining: { room: RelayLike; timer: ReturnType<typeof setTimeout> } | null = null
+  /** Linked requests handed to main and not yet answered, by call id. */
+  const peerCalls = new Map<
+    string,
+    { resolve(data: unknown): void; reject(err: Error): void; timer: ReturnType<typeof setTimeout> }
+  >()
+  let peerCallSeq = 0
   /** Per device, the `lastSeenAt` main was last told about. Throttles the
    *  announcement; see `noteSeen`. */
   const announcedSeenAt = new Map<string, number>()
@@ -174,6 +309,13 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   let pairingRoom: RelayLike | null = null
   let pairingTimer: ReturnType<typeof setTimeout> | null = null
 
+  /** Tell main something went wrong. `link` marks it as Linked machines' to
+   *  show (`scope` on the error, protocol.ts), so it never reaches the phone
+   *  pane; an error about a phone is the same unmarked message it always was. */
+  function report(message: string, link = false): void {
+    deps.send(link ? { kind: 'error', message, scope: 'link' } : { kind: 'error', message })
+  }
+
   function closePairingRoom(): void {
     if (pairingTimer) clearTimeout(pairingTimer)
     pairingTimer = null
@@ -188,6 +330,8 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
    *  opens, sealed under a root both ends derive from the QR. */
   function openPairingRoom(offer: PairingOffer): void {
     closePairingRoom()
+    // Fixed for this room's life: it holds this offer, of this kind, and no other.
+    const link = requestedKind === 'desktop'
     const open = deps.openRelay ?? ((d: RelayClientDeps) => new RelayClient(d))
     pairingRoom = open({
       url: deps.relayUrl,
@@ -198,8 +342,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       // looking at, and `deviceConnected` for a device that does not exist yet
       // would light the Settings indicator for nobody.
       onStateChange: () => {},
-      onQuota: (limit) =>
-        deps.send({ kind: 'error', message: `relay closed the pairing connection: ${limit}` }),
+      onQuota: (limit) => report(`relay closed the pairing connection: ${limit}`, link),
     })
     // The offer outlives its usefulness by exactly its TTL, and an abandoned QR
     // would otherwise hold a socket -- keepalived every two minutes -- for as long
@@ -224,6 +367,28 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       return
     }
 
+    // The kind of code must match the kind of sender, both ways. The marker is
+    // sealed, so it is the sender's own word for what it is -- and it is checked
+    // BEFORE the secret, so a sender of the wrong kind never spends the offer:
+    // the room stays open and the right machine can still finish. Reported,
+    // because the user is looking at this code and wondering why nothing happens.
+    const link = requestedKind === 'desktop'
+    if (link && hello.peer !== 'desktop') {
+      report(LINK_CODE_FOR_COMPUTER, true)
+      return
+    }
+    // The PHONE code's error, shown with the QR it is about.
+    if (!link && hello.peer === 'desktop') {
+      report(PHONE_CODE_NOT_LINK)
+      return
+    }
+    // Checked again here, not only when the code was made: a join can finish
+    // inside the five minutes this code is on screen.
+    if (link && linkCount() >= MAX_LINKED_MACHINES) {
+      report(LINK_CAP, true)
+      return
+    }
+
     let result: { device: PairedDevice; verificationPhrase: string }
     try {
       result = acceptPairing({
@@ -235,14 +400,15 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // arrives over the relay, so its length and its bytes are the sender's
         // choice entirely. Unsanitised, a paired phone could park an escape
         // sequence or a few kilobytes of text in the desktop's settings file.
-        label: requestedLabel || sanitizeDeviceLabel(hello.label) || 'Phone',
+        label:
+          requestedLabel || sanitizeDeviceLabel(hello.label) || (link ? 'Linked computer' : 'Phone'),
         capabilities: requestedCapabilities,
       })
     } catch (err) {
       // This one IS worth surfacing: the frame opened, so the sender had the QR's
       // pairing id and public key but not its secret. The offer survives a refusal,
       // so the room stays open and the real phone can still finish.
-      deps.send({ kind: 'error', message: `pairing failed: ${(err as Error).message}` })
+      report(`pairing failed: ${(err as Error).message}`, link)
       return
     }
 
@@ -293,12 +459,9 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       // Reported, not swallowed. A quota cut is the relay saying this desktop is
       // the problem, and for `frame-size`/`frame-rate` the client also stops
       // redialing -- so without this the room goes quiet permanently and the only
-      // symptom the user gets is a phone that stopped working.
-      onQuota: (limit) =>
-        deps.send({
-          kind: 'error',
-          message: `relay closed the ${dev.label} connection: ${limit}`,
-        }),
+      // symptom the user gets is a phone that stopped working. A linked
+      // computer's cut is Linked machines' to show, not the phone pane's.
+      onQuota: (limit) => report(`relay closed the ${dev.label} connection: ${limit}`, dev.kind === 'desktop'),
     })
     rooms.set(dev.id, { client, roomId: dev.sessionRoomId })
     client.start()
@@ -307,6 +470,318 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   function closeRoom(deviceId: string): void {
     rooms.get(deviceId)?.client.stop()
     rooms.delete(deviceId)
+  }
+
+  /** Whether a paired device's room may open, by the switch for its kind. */
+  function roomAllowed(dev: PairedDevice): boolean {
+    return dev.kind === 'desktop' ? linkedEnabled : phonesEnabled
+  }
+
+  /** Linked machines, hosted and joined together -- what the cap counts. */
+  function linkCount(): number {
+    return registry.list().filter((d) => d.kind === 'desktop').length + linkRooms.size
+  }
+
+  /** Dial the room of a link this machine joined.
+   *
+   *  The DEVICE seat, with the link's own keypair: this end is the one that
+   *  entered the code, so it sits where a phone would. Same greeting rule and
+   *  the same fresh-handshake-per-dial factory as a phone room. */
+  function openLinkRoom(link: BridgeLink): void {
+    const open = deps.openRelay ?? ((d: RelayClientDeps) => new RelayClient(d))
+    const client = open({
+      url: link.relayUrl,
+      roomId: link.sessionRoomId,
+      role: 'device',
+      handshake: () =>
+        new Handshake({
+          ownSecretKey: link.secretKey,
+          peerPublicKey: link.hostPublicKey,
+          role: 'device',
+        }),
+      onRequest: (env) => handleLinkRequest(link.id, env),
+      onStateChange: (state) => onLinkState(link.id, state),
+      onQuota: (limit) => report(`relay closed a linked machine connection: ${limit}`, true),
+    })
+    linkRooms.set(link.id, { link, client, attached: false })
+    client.start()
+  }
+
+  /** Stop first, forget second: a room that was attached reports going offline
+   *  on its way out, so main is not left believing a link it removed is up. */
+  function closeLinkRoom(id: string): void {
+    const entry = linkRooms.get(id)
+    if (!entry) return
+    entry.client.stop()
+    linkRooms.delete(id)
+  }
+
+  /** Tell main when a joined link starts or stops being reachable -- on the
+   *  change only. `online` is not reachable: it is a seat in a room the other
+   *  machine is not in. */
+  function onLinkState(id: string, state: RelayState): void {
+    const entry = linkRooms.get(id)
+    if (!entry) return
+    const attached = state === 'attached'
+    if (attached === entry.attached) return
+    entry.attached = attached
+    deps.send({ kind: 'linkStateChanged', id, attached })
+  }
+
+  /** Bring the joined-link rooms in line with the list main holds.
+   *
+   *  A diff, not a rebuild: closing a live room to reopen the same one would
+   *  drop a session that had nothing wrong with it, and cost both machines a
+   *  handshake for nothing. Records that are not safe to dial are refused here,
+   *  where a bad key is an error message rather than an exception inside a
+   *  socket handler. Nothing opens while linked machines is off. */
+  function applyLinks(next: BridgeLink[]): void {
+    const wanted = new Map<string, BridgeLink>()
+    for (const link of linkedEnabled ? next : []) {
+      if (isBridgeLink(link)) wanted.set(link.id, link)
+      else report('a linked machine record is malformed and was skipped', true)
+    }
+    for (const [id, entry] of [...linkRooms]) {
+      const want = wanted.get(id)
+      if (!want || !sameLink(want, entry.link)) closeLinkRoom(id)
+    }
+    for (const link of wanted.values()) if (!linkRooms.has(link.id)) openLinkRoom(link)
+  }
+
+  /** The room a linked call goes out through, if there is one to use.
+   *
+   *  A hosted computer is reached through its device room -- but only a device
+   *  that IS a computer: a phone is never sent a `peer*` request, whatever main
+   *  asks for. */
+  function linkClient(target: LinkTarget): RelayLike | undefined {
+    if (target?.via === 'device') {
+      return registry.get(target.id)?.kind === 'desktop' ? rooms.get(target.id)?.client : undefined
+    }
+    if (target?.via === 'link') return linkRooms.get(target.id)?.client
+    return undefined
+  }
+
+  /** Hand one inbound linked request to main and wait for its answer.
+   *
+   *  The bridge is transport and main is policy: names, grants, confirmation and
+   *  the jobs themselves all live there. Bounded, so a main that never answers
+   *  costs the asker a refusal rather than a request that hangs forever. */
+  function askMain(from: LinkTarget, request: PeerRequest): Promise<unknown> {
+    const callId = `peer-${++peerCallSeq}`
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        // Removed first, so a reply that arrives a moment later finds nothing.
+        peerCalls.delete(callId)
+        reject(new Error('timed out'))
+      }, mainTimeout(request))
+      peerCalls.set(callId, { resolve, reject, timer })
+      deps.send({ kind: 'peerRequest', callId, from, request })
+    })
+  }
+
+  async function forwardToMain(from: LinkTarget, request: PeerRequest, id: number): Promise<RemoteResponse> {
+    try {
+      return { kind: 'ok', id, data: await askMain(from, request) }
+    } catch (err) {
+      return { kind: 'error', id, message: (err as Error).message }
+    }
+  }
+
+  /** A request from a computer this machine HOSTS.
+   *
+   *  The `peer*` set and nothing else (spec §4.4). A computer is paired with no
+   *  phone capabilities, but this does not rest on that: a grant set on it by
+   *  mistake still could not reach a terminal, because no phone kind gets past
+   *  here at all. */
+  async function handleHostedPeer(device: PairedDevice, env: RemoteEnvelope): Promise<RemoteResponse> {
+    const request = env.request as { kind: unknown }
+    if (!isPeerRequest(request)) return { kind: 'error', id: env.id, message: UNRECOGNISED_KIND }
+    if (request.kind === 'peerBye') {
+      // The other machine unlinked this one. Revoked exactly as a phone's
+      // `unpair` is -- the sender and only the sender, by the id its sealed
+      // session proves, never by anything in the payload. Unlike `unpair`, the
+      // room is closed too, once the answer is out: the other end has thrown
+      // its key away, so this seat would otherwise wait in an empty room for
+      // as long as the app runs. Nothing to drop from the fan-out: a computer
+      // can never subscribe, since no phone kind gets past this function.
+      registry.revoke(device.id)
+      announcedSeenAt.delete(device.id)
+      announceDevices()
+      afterAnswering(() => {
+        closeRoom(device.id)
+        deps.send({ kind: 'linkBye', from: { via: 'device', id: device.id } })
+      })
+      return { kind: 'ok', id: env.id, data: null }
+    }
+    noteSeen(device)
+    return forwardToMain({ via: 'device', id: device.id }, request, env.id)
+  }
+
+  /** A request from the computer that hosts a link this machine JOINED. Same
+   *  rule: `peer*` only. */
+  async function handleLinkRequest(linkId: string, env: RemoteEnvelope): Promise<RemoteResponse> {
+    if (!linkRooms.has(linkId)) return { kind: 'error', id: env.id, message: 'unknown or removed link' }
+    const request = env.request as { kind: unknown }
+    if (!isPeerRequest(request)) return { kind: 'error', id: env.id, message: UNRECOGNISED_KIND }
+    if (request.kind === 'peerBye') {
+      // Answered, then acted on. Main drops its record when it hears `linkBye`
+      // and hands down a link list without this one; the room is closed here
+      // already so nothing more is served on it in between.
+      afterAnswering(() => {
+        closeLinkRoom(linkId)
+        deps.send({ kind: 'linkBye', from: { via: 'link', id: linkId } })
+      })
+      return { kind: 'ok', id: env.id, data: null }
+    }
+    return forwardToMain({ via: 'link', id: linkId }, request, env.id)
+  }
+
+  /** Send one request to a linked machine for main, and answer with the outcome.
+   *
+   *  Offline is answered AT ONCE when there is no attached room: the relay is a
+   *  rendezvous, not a mailbox, so a request into a room the other machine is
+   *  not in is dropped -- waiting out a timeout for it would only tell an agent
+   *  the machine is slow when it is not there at all. */
+  async function linkCall(msg: Extract<HostToBridge, { kind: 'linkCall' }>): Promise<void> {
+    // Every outcome is an answer, including a throw nobody planned for: this
+    // runs detached (`void`), so anything escaping it would be an unhandled
+    // rejection -- which ends the utilityProcess.
+    let result: BridgeToHost
+    try {
+      result = { kind: 'linkCallResult', callId: msg.callId, ok: true, data: await callLinked(msg) }
+    } catch (err) {
+      result = { kind: 'linkCallResult', callId: msg.callId, ok: false, message: (err as Error).message }
+    }
+    deps.send(result)
+  }
+
+  /** The request a `linkCall` carries, sent. Throws what main is to be told. */
+  function callLinked(msg: Extract<HostToBridge, { kind: 'linkCall' }>): Promise<unknown> {
+    const request = msg.request as { kind?: unknown } | null
+    if (typeof request !== 'object' || request === null || !isPeerKind(request.kind)) {
+      throw new Error('not a linked-machine request')
+    }
+    const client = linkClient(msg.target)
+    if (!client?.request || client.state !== 'attached') throw new Error('offline')
+    return client.request(request, callTimeout(msg.timeoutMs))
+  }
+
+  function endJoin(): void {
+    if (!joining) return
+    clearTimeout(joining.timer)
+    joining.room.stop()
+    joining = null
+  }
+
+  /** Enter a link code: the joining half of pairing, which the phone does on
+   *  its side (`mobile/src/net/pairingClient.ts`) and this machine now does for
+   *  itself.
+   *
+   *  Sits in the DEVICE seat of the code's room, speaks first with a hello sealed
+   *  under the code's root and marked as a computer, and waits for the host's
+   *  ack. The keypair is the one main minted for this link -- never the machine
+   *  identity (see `BridgeLink`). */
+  function joinLink(msg: Extract<HostToBridge, { kind: 'joinLink' }>): void {
+    endJoin()
+    const fail = (message: string): void => deps.send({ kind: 'joinFailed', message })
+    if (!linkedEnabled) return fail(LINKED_OFF)
+    if (linkCount() >= MAX_LINKED_MACHINES) return fail(LINK_CAP)
+    const offer = parseLinkCode(msg.code)
+    if (!offer) return fail(JOIN_NOT_A_CODE)
+    // The code this machine is showing, pasted into its own box. The two text
+    // fields sit on one screen, so it is an easy slip -- and followed through it
+    // would link this machine to itself, under its own name.
+    if (offer.desktopPublicKey === publicKey) return fail(JOIN_OWN_CODE)
+    // From main, and about to reach the curve library: checked, not assumed.
+    if (typeof msg.secretKey !== 'string' || !SECRET_KEY_RE.test(msg.secretKey)) return fail(JOIN_BAD_KEY)
+
+    const secretKey = msg.secretKey
+    const linkPublicKey = toHex(x25519.getPublicKey(fromHex(secretKey)))
+    // The id the host will settle on for this machine: the same hash it takes,
+    // so an ack naming any other id is refused rather than believed.
+    const expectedId = createHash('sha256').update(linkPublicKey).digest('hex').slice(0, 16)
+    const label = sanitizeDeviceLabel(msg.label)
+    let greeted = false
+
+    // Every callback asks whether it still belongs to the join in progress: a
+    // room that was replaced or cancelled may still deliver what was in flight.
+    const current = (): boolean => joining?.room === room
+    const finish = (event: BridgeToHost): void => {
+      endJoin()
+      deps.send(event)
+    }
+
+    const open = deps.openRelay ?? ((d: RelayClientDeps) => new RelayClient(d))
+    const room: RelayLike = open({
+      url: offer.relayUrl,
+      roomId: offer.pairingId,
+      mode: 'pairing',
+      role: 'device',
+      // Nothing to report: a join has one outcome, and it is `linkJoined` or
+      // `joinFailed`.
+      onStateChange: () => {},
+      onControl: (frame) => {
+        if (!current()) return
+        if (frame.kind === 'peer-gone') return finish({ kind: 'joinFailed', message: JOIN_PEER_GONE })
+        if (frame.kind === 'quota-exceeded') {
+          return finish({
+            kind: 'joinFailed',
+            message: `The relay refused the connection (${frame.limit}).`,
+          })
+        }
+        // Speak only into a room the host is in -- a frame into an empty room is
+        // dropped -- and only once.
+        const hostPresent = frame.kind === 'peer-joined' || (frame.kind === 'hello' && frame.peer)
+        if (!hostPresent || greeted) return
+        greeted = true
+        room.sendFrame(
+          sealPairingHello({
+            deviceSecretKey: secretKey,
+            devicePublicKey: linkPublicKey,
+            desktopPublicKey: offer.desktopPublicKey,
+            pairingId: offer.pairingId,
+            label,
+            oneTimeSecret: offer.oneTimeSecret,
+            peer: 'desktop',
+          }),
+        )
+      },
+      onFrame: (frame) => {
+        if (!current()) return
+        let ack: ReturnType<typeof openPairingAck>
+        try {
+          ack = openPairingAck({
+            deviceSecretKey: secretKey,
+            desktopPublicKey: offer.desktopPublicKey,
+            pairingId: offer.pairingId,
+            frame,
+          })
+        } catch {
+          // Not an ack this join can open: a stray, a forgery, or noise in a
+          // room whose name was on a screen. The real ack may be one frame behind.
+          return
+        }
+        // Authentic -- only the host could seal it -- but for a different key.
+        // That is a broken host, not something to wait out.
+        if (ack.deviceId !== expectedId) return finish({ kind: 'joinFailed', message: JOIN_BAD_ACK })
+        finish({
+          kind: 'linkJoined',
+          publicKey: linkPublicKey,
+          hostPublicKey: offer.desktopPublicKey,
+          hostName: ack.name,
+          deviceId: ack.deviceId,
+          // Derived, never announced, exactly as the host derives it.
+          sessionRoomId: deriveSessionRoomId(secretKey, offer.desktopPublicKey),
+          relayUrl: offer.relayUrl,
+          phrase: deriveVerificationPhrase(linkPublicKey, offer.desktopPublicKey),
+        })
+      },
+    })
+    joining = {
+      room,
+      timer: setTimeout(() => finish({ kind: 'joinFailed', message: JOIN_TIMED_OUT }), JOIN_TIMEOUT_MS),
+    }
+    room.start()
   }
 
   function onRoomState(deviceId: string, state: RelayState): void {
@@ -486,6 +961,8 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       case 'init': {
         registry = new DeviceRegistry(msg.devices)
         identitySecretKey = msg.identitySecretKey
+        phonesEnabled = msg.phones !== false
+        linkedEnabled = msg.linked === true
         const mcp = deps.mcp ?? new LocalMcpClient(msg.mcpPort, msg.mcpToken)
         dispatcher = new RequestDispatcher(mcp)
         publicKey = Buffer.from(
@@ -498,15 +975,46 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         expirySweep ??= setInterval(expireIdleDevices, DEVICE_EXPIRY_SWEEP_MS)
         // Every device already paired gets its room back on start. A phone left
         // waiting overnight reconnects without the user touching either machine.
-        for (const dev of registry.list()) openRoom(dev)
+        // Each kind only while its own switch is on: Remote alone never opens a
+        // linked computer's room, and Linked machines alone never opens a phone's.
+        for (const dev of registry.list()) if (roomAllowed(dev)) openRoom(dev)
+        applyLinks(msg.links ?? [])
         return
       }
       case 'beginPairing': {
+        const link = msg.link === true
+        // A code for a kind that is switched off would pair something whose room
+        // this bridge then refuses to open.
+        // Each refusal is marked with the kind of code it refuses, so main shows
+        // it beside the button that asked for that code.
+        if (link ? !linkedEnabled : !phonesEnabled) {
+          report(link ? LINKED_OFF : PHONES_OFF, link)
+          return
+        }
+        if (link && linkCount() >= MAX_LINKED_MACHINES) {
+          report(LINK_CAP, true)
+          return
+        }
+        // Remote takes a plain ws:// relay anywhere; a joining computer takes one
+        // only on loopback (`isLinkRelayUrl`). A code minted over any other would
+        // be refused over there as "not a link code" -- so say why here instead.
+        if (link && !isLinkRelayUrl(deps.relayUrl)) {
+          report(LINK_RELAY_UNENCRYPTED, true)
+          return
+        }
+        requestedKind = link ? 'desktop' : 'phone'
         // What the user typed in Settings. It is already sanitised on the way in,
         // but this process does not get to assume that about anything it is sent.
         requestedLabel = sanitizeDeviceLabel(msg.label)
-        requestedCapabilities = { ...NO_CAPABILITIES, ...msg.capabilities }
-        const offer = createPairingOffer({ relayUrl: deps.relayUrl, desktopPublicKey: publicKey })
+        // A computer is granted no PHONE capability, whatever arrived: what it
+        // may do on this machine is main's linked grants, enforced where the job
+        // runs, and its requests never reach the terminal dispatcher at all.
+        requestedCapabilities = link ? { ...NO_CAPABILITIES } : { ...NO_CAPABILITIES, ...msg.capabilities }
+        const offer = createPairingOffer({
+          relayUrl: deps.relayUrl,
+          desktopPublicKey: publicKey,
+          ...(link ? { ttlMs: LINK_OFFER_TTL_MS } : {}),
+        })
         pairing = new PairingSession(offer, publicKey, identitySecretKey)
         openPairingRoom(offer)
         // NO verification phrase here, deliberately. The safety number is a function
@@ -520,6 +1028,8 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
           kind: 'pairingCode',
           qrPayload: offer.qrPayload,
           expiresAt: offer.expiresAt,
+          // The same offer, as text a person can carry to another computer.
+          ...(link ? { linkCode: encodeLinkCode(offer.qrPayload) } : {}),
         })
         return
       }
@@ -620,12 +1130,51 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         }
         return
       }
+      case 'joinLink':
+        joinLink(msg)
+        return
+      case 'cancelJoin':
+        endJoin()
+        return
+      case 'setLinks':
+        applyLinks(msg.links)
+        return
+      case 'renameDevice': {
+        // Cleaned here for the same reason a pairing label is: it is written to
+        // `remote-devices.json` and drawn in the device list. A name that cleans
+        // to nothing is no name, so the old one stands.
+        const label = sanitizeDeviceLabel(msg.label)
+        if (label && registry.setLabel(msg.deviceId, label)) announceDevices()
+        return
+      }
+      case 'linkCall':
+        void linkCall(msg)
+        return
+      case 'peerReply': {
+        const call = peerCalls.get(msg.callId)
+        // Late (already timed out), duplicated, or never asked: nothing to settle.
+        if (!call) return
+        peerCalls.delete(msg.callId)
+        clearTimeout(call.timer)
+        if (msg.ok) call.resolve(msg.data)
+        else call.reject(new Error(msg.message))
+        return
+      }
       case 'shutdown':
         dispatcher = null
         if (expirySweep) clearInterval(expirySweep)
         expirySweep = null
         closePairingRoom()
+        endJoin()
         for (const deviceId of [...rooms.keys()]) closeRoom(deviceId)
+        for (const id of [...linkRooms.keys()]) closeLinkRoom(id)
+        // Every request still waiting on main is answered now, with a refusal,
+        // rather than left holding a timer in a bridge that is going away.
+        for (const [callId, call] of [...peerCalls]) {
+          peerCalls.delete(callId)
+          clearTimeout(call.timer)
+          call.reject(new Error('bridge shutting down'))
+        }
         // Main's pump outlives this process by however long the teardown takes.
         // Leaving it pumping into a bridge that is going away is the cost this
         // whole mechanism exists to avoid.
@@ -640,6 +1189,12 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     const device = registry.get(deviceId)
     if (!device) return { kind: 'error', id: env.id, message: 'unknown or revoked device' }
     if (!dispatcher) return { kind: 'error', id: env.id, message: 'bridge not initialised' }
+
+    // A linked computer is served the `peer*` set and nothing else -- above the
+    // phone branches below, so not even `getCapabilities` or `unpair` reaches
+    // it. A phone sending a `peer*` kind goes on down to the dispatcher, whose
+    // policy has no case for it and refuses it as unrecognised.
+    if (device.kind === 'desktop') return handleHostedPeer(device, env)
 
     // Answered here, above the dispatcher, because it needs no grant. A device
     // that has been granted nothing must still be able to learn that: without
@@ -733,19 +1288,24 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     now?: number
   }): { device: PairedDevice; verificationPhrase: string } {
     if (!pairing) throw new Error('no pairing offer is open')
-    const result = pairing.accept(input)
+    // The KIND comes from the offer, not from the caller: a code made for a
+    // computer makes a computer, and one made for a phone makes a phone. A
+    // computer gets no phone capability even if one was passed in.
+    const link = requestedKind === 'desktop'
+    const result = pairing.accept(link ? { ...input, capabilities: { ...NO_CAPABILITIES } } : input)
     // Single-use: the offer is spent whether or not the caller retries.
     pairing = null
-    registry.add(result.device)
-    openRoom(result.device)
-    deps.send({ kind: 'paired', device: result.device })
+    const device: PairedDevice = link ? { ...result.device, kind: 'desktop' } : result.device
+    registry.add(device)
+    openRoom(device)
+    deps.send({ kind: 'paired', device })
     deps.send({
       kind: 'verificationPhrase',
-      deviceId: result.device.id,
+      deviceId: device.id,
       phrase: result.verificationPhrase,
     })
     announceDevices()
-    return result
+    return { device, verificationPhrase: result.verificationPhrase }
   }
 
   /** Everything queued for one device, clearing the queue.

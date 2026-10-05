@@ -16,10 +16,19 @@
  * is "catch someone deleting half the adapter by accident", not
  * end-to-end verification. End-to-end is covered by the full-pipeline
  * swarm E2E and mcp-registration.spec.ts.
+ *
+ * The one exception is the nested-delegation block at the bottom, which
+ * drives the real adapter against a stand-in app: what it guards is a
+ * request that must never leave the adapter, and only traffic shows that.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, existsSync } from 'fs'
-import { resolve } from 'path'
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { join, resolve } from 'path'
+import { spawn } from 'child_process'
+import { createServer } from 'http'
+import { tmpdir } from 'os'
+import { createRequire } from 'module'
+import type { AddressInfo } from 'net'
 
 const REPO_ROOT = resolve(__dirname, '..', '..')
 const ADAPTER = resolve(REPO_ROOT, 'src/mcp-adapter/stdio-adapter.cjs')
@@ -183,5 +192,176 @@ describe('stdio-adapter.cjs — packaging invariants', () => {
       return !core.has(r)
     })
     expect(nonCore, `adapter imports non-core modules: ${nonCore.join(', ')}`).toEqual([])
+  })
+})
+
+// -----------------------------------------------------------------------
+// Nested delegation (linked machines, spec §4.5 rule 2 and §8). An agent a
+// linked machine started runs with TERMPOLIS_LINKED_JOB set, and must not
+// hand the work on to yet another machine. The adapter answers that call
+// itself, so the refusal holds even where the agent's Termpolis MCP could
+// not be switched off for the run.
+// -----------------------------------------------------------------------
+
+const NESTED = 'Nested delegation is not allowed: this agent was itself started by a linked machine.'
+
+interface Rpc {
+  jsonrpc: string
+  id: unknown
+  result?: { content: Array<{ type: string; text: string }>; isError?: boolean }
+  error?: { message: string }
+}
+
+/** Where dataDir.cjs looks for mcp-token and mcp-port once HOME, APPDATA and XDG_CONFIG_HOME all
+ *  point at `root`. */
+function dataDirUnder(root: string): string {
+  return process.platform === 'darwin'
+    ? join(root, 'Library', 'Application Support', 'termpolis')
+    : join(root, 'termpolis') // APPDATA on Windows, XDG_CONFIG_HOME elsewhere
+}
+
+/** A stand-in for the app: healthy, and it records the tool name of every call forwarded to it. */
+async function standInApp(): Promise<{ port: number; forwarded: string[]; close: () => Promise<void> }> {
+  const forwarded: string[] = []
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      if (req.method === 'GET') {
+        res.end('{"status":"ok"}')
+        return
+      }
+      const rpc = JSON.parse(body)
+      forwarded.push(rpc.params?.name ?? rpc.method)
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'answered by the app' }] } }))
+    })
+  })
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+  return {
+    port: (server.address() as AddressInfo).port,
+    forwarded,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  }
+}
+
+/** Runs the real adapter, sends each request, and returns the replies once there is one for every
+ *  id. With a `port` the adapter is connected to the app there; with null it finds no token and
+ *  runs degraded, as it does when Termpolis is not running. It has exited by the time this returns. */
+async function runAdapter(
+  port: number | null,
+  extraEnv: Record<string, string>,
+  requests: Array<{ id: number; method: string; params?: object }>,
+): Promise<Rpc[]> {
+  const root = mkdtempSync(join(tmpdir(), 'termpolis-adapter-linked-'))
+  if (port !== null) {
+    const dir = dataDirUnder(root)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'mcp-token'), 'stand-in-token')
+    writeFileSync(join(dir, 'mcp-port'), String(port))
+  }
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, XDG_CONFIG_HOME: root }
+  delete env.TERMPOLIS_LINKED_JOB // the shell running the tests must not decide the outcome
+  const child = spawn(process.execPath, [ADAPTER], { env: { ...env, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] })
+  const exited = new Promise<void>((r) => child.on('exit', () => r()))
+  let stdout = ''
+  let stderr = '' // read so the pipe never fills, and shown if the adapter goes quiet
+  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  // Complete lines only: the last segment is either empty or a reply still arriving.
+  const replies = (): Rpc[] => stdout.split('\n').slice(0, -1).filter((l) => l.trim()).map((l) => JSON.parse(l) as Rpc)
+  try {
+    await new Promise<void>((answered, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`the adapter did not answer every request. stdout: ${stdout} stderr: ${stderr}`)),
+        10_000,
+      )
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString()
+        const ids = replies().map((r) => r.id)
+        if (requests.every((q) => ids.includes(q.id))) {
+          clearTimeout(timer)
+          answered()
+        }
+      })
+      for (const q of requests) child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...q }) + '\n')
+    })
+    return replies()
+  } finally {
+    child.stdin.end() // readline 'close' exits the adapter
+    const killer = setTimeout(() => child.kill(), 5_000)
+    await exited
+    clearTimeout(killer)
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+describe('stdio-adapter.cjs — nested delegation (linked machines)', () => {
+  const linkedRun = { name: 'linked_machines', arguments: { action: 'run', machine: 'laptop', agent: 'codex', prompt: 'review it' } }
+
+  it('answers linked_machines itself inside a linked job, and still forwards every other tool', async () => {
+    const app = await standInApp()
+    try {
+      const replies = await runAdapter(app.port, { TERMPOLIS_LINKED_JOB: '0123456789ab' }, [
+        { id: 7, method: 'tools/call', params: linkedRun },
+        { id: 8, method: 'tools/call', params: { name: 'list_terminals', arguments: {} } },
+      ])
+      // A tool result marked isError, not a JSON-RPC error: the agent reads the reason as the
+      // answer to its call instead of treating the server as broken.
+      expect(replies.find((r) => r.id === 7)).toEqual({
+        jsonrpc: '2.0',
+        id: 7,
+        result: { content: [{ type: 'text', text: NESTED }], isError: true },
+      })
+      expect(replies.find((r) => r.id === 8)?.result?.content[0].text).toBe('answered by the app')
+      // The app saw the other call, so the adapter was connected: linked_machines never left it.
+      expect(app.forwarded).toEqual(['list_terminals'])
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('forwards linked_machines to the app for an agent the user started', async () => {
+    const app = await standInApp()
+    try {
+      const replies = await runAdapter(app.port, {}, [{ id: 9, method: 'tools/call', params: linkedRun }])
+      expect(replies.find((r) => r.id === 9)?.result?.content[0].text).toBe('answered by the app')
+      expect(app.forwarded).toEqual(['linked_machines'])
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('gives the same refusal inside a linked job when Termpolis is not running', async () => {
+    // The refusal does not depend on the app, so it comes first: an agent should not be told to
+    // start Termpolis for a call it would then refuse anyway.
+    const replies = await runAdapter(null, { TERMPOLIS_LINKED_JOB: '0123456789ab' }, [
+      { id: 10, method: 'tools/call', params: linkedRun },
+      { id: 11, method: 'tools/call', params: { name: 'list_terminals', arguments: {} } },
+    ])
+    expect(replies.find((r) => r.id === 10)?.result).toEqual({ content: [{ type: 'text', text: NESTED }], isError: true })
+    expect(replies.find((r) => r.id === 11)?.error?.message).toMatch(/Termpolis is not running/)
+  })
+
+  it('refuses only a linked_machines call, only inside a linked job, and treats an empty marker as set', () => {
+    const { nestedDelegationRefusal } = createRequire(import.meta.url)(ADAPTER) as {
+      nestedDelegationRefusal: (request: unknown, env: Record<string, string | undefined>) => Rpc | null
+    }
+    const call = (name: string, id?: number): object =>
+      ({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method: 'tools/call', params: { name, arguments: {} } })
+    const inJob = { TERMPOLIS_LINKED_JOB: '0123456789ab' }
+
+    expect(nestedDelegationRefusal(call('linked_machines', 3), inJob)).toEqual({
+      jsonrpc: '2.0',
+      id: 3,
+      result: { content: [{ type: 'text', text: NESTED }], isError: true },
+    })
+    expect(nestedDelegationRefusal(call('linked_machines', 3), {})).toBeNull()
+    // Present is enough: a security check that an empty value switches off fails open.
+    expect(nestedDelegationRefusal(call('linked_machines', 3), { TERMPOLIS_LINKED_JOB: '' })?.result?.isError).toBe(true)
+    expect(nestedDelegationRefusal(call('memory_search', 3), inJob)).toBeNull()
+    expect(nestedDelegationRefusal({ jsonrpc: '2.0', id: 4, method: 'tools/list' }, inJob)).toBeNull()
+    expect(nestedDelegationRefusal({ jsonrpc: '2.0', id: 5, method: 'tools/call' }, inJob)).toBeNull()
+    expect(nestedDelegationRefusal(null, inJob)).toBeNull()
+    expect(nestedDelegationRefusal(call('linked_machines'), inJob)?.id).toBeNull()
   })
 })

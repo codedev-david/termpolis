@@ -13,6 +13,7 @@
 // the untrusted (terminal-scraped) prompt out-of-band — via a temp file / env var, never on
 // a shell command line — and a scraped prompt can't inject a command.
 
+import path from 'path'
 import { isSafeModelId } from './modelCatalog'
 
 export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini'
@@ -135,17 +136,45 @@ export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string, 
   }
 }
 
-/** A PowerShell single-quoted literal: nothing inside one is special except `'`, which doubles. */
-const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
+/** A PowerShell single-quoted literal. Nothing inside one is special except a single quote, which
+ *  doubles, and PowerShell reads the typographic ones (U+2018 to U+201B) as single quotes too.
+ *  Doubling only `'` once let a folder name holding `\u2019` close the literal and run the rest. */
+const psQuote = (s: string): string => `'${s.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`
+
+/** What 5.1 counts as whitespace when it decides to wrap a native argument in quotes: .NET's
+ *  char.IsWhiteSpace. JS's `\s` differs by NEL (U+0085, .NET only) and the BOM (U+FEFF, JS
+ *  only). U+180E is included because .NET counted it before Unicode 6.3. Doubling where no
+ *  quotes come leaves an extra separator, which names the same folder. Missing a wrap would
+ *  split the arguments. */
+const PS_WHITESPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/
+
+/** Windows PowerShell 5.1 by absolute path, as processTree's taskkillPath does for taskkill. A
+ *  run's cwd may be a repo, and Windows looks in the cwd before PATH, so a bare `powershell.exe`
+ *  could be one planted there. */
+export function powershellPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.win32.join(env.SystemRoot || env.windir || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
+/** A literal argv entry, shaped so 5.1 hands it to the agent unchanged. 5.1 wraps an entry
+ *  that has whitespace in quotes and escapes nothing, so a trailing backslash (a folder such as
+ *  `C:\Program Files\`) would escape the closing quote and run the entry on into the prompt.
+ *  The child's parser halves a backslash run that ends at a quote, so the run is doubled, as
+ *  `$p`'s is. A `"` can't be made safe without control over that wrapping, and no entry needs
+ *  one (a Windows path can't hold one), so it is refused rather than passed corrupted. */
+function psNativeArg(a: string): string {
+  if (a.includes('"')) throw new Error('an argument contains a double quote, which Windows PowerShell 5.1 cannot pass to an agent intact')
+  return PS_WHITESPACE.test(a) ? a.replace(/(\\+)$/, '$1$1') : a
+}
 
 /**
  * Resolve the actual process to spawn for a review. PURE — no fs/spawn — so the argv shaping
  * (the security-sensitive part) is unit-tested. On other platforms the binary is spawned
  * directly with the token swapped for the prompt (no shell). On Windows the agent runs
- * through Windows PowerShell 5.1 with the untrusted prompt read from a temp file into `$p`
- * (never on the command line): the token position becomes `$p` and every other argv token
- * is a single-quoted literal. The caller writes `prompt` (UTF-8) to the temp file referenced
- * by `$env:TP_SO_FILE` before spawning on Windows.
+ * through Windows PowerShell 5.1 (by absolute path, see powershellPath) with the untrusted
+ * prompt read from a temp file into `$p` (never on the command line): the token position
+ * becomes `$p` and every other argv token is a single-quoted literal, shaped by psNativeArg.
+ * The caller writes `prompt` (UTF-8) to the temp file referenced by `$env:TP_SO_FILE` before
+ * spawning on Windows.
  *
  * 5.1 hands a native command a string argument as `"<arg>"` when the arg has whitespace
  * outside quotes, bare otherwise, and escapes nothing — so an embedded `"` would end the
@@ -160,7 +189,7 @@ const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
  */
 export function secondOpinionSpawnPlan(isWindows: boolean, bin: string, args: string[], promptToken: string, prompt: string): { cmd: string; cmdArgs: string[] } {
   if (isWindows) {
-    const psArgs = args.map((a) => (a === promptToken ? '$p' : psQuote(a === '' ? '""' : a))).join(' ')
+    const psArgs = args.map((a) => (a === promptToken ? '$p' : psQuote(a === '' ? '""' : psNativeArg(a)))).join(' ')
     const script = [
       "$ErrorActionPreference='Stop'",
       // [string]: an empty file gives no pipeline output at all, which would pass NO argument.
@@ -171,17 +200,28 @@ export function secondOpinionSpawnPlan(isWindows: boolean, bin: string, args: st
       `if ($c.CommandType -eq 'Application' -and $c.Path -match '\\.(bat|cmd)$') { throw ($c.Path + ' is a batch-file shim; Termpolis will not pass an untrusted prompt through cmd.exe') }`,
       `& $c ${psArgs}`,
     ].join('; ')
-    return { cmd: 'powershell.exe', cmdArgs: ['-NoProfile', '-NonInteractive', '-Command', script] }
+    return { cmd: powershellPath(), cmdArgs: ['-NoProfile', '-NonInteractive', '-Command', script] }
   }
   return { cmd: bin, cmdArgs: args.map((a) => (a === promptToken ? prompt : a)) }
+}
+
+/** How one run is spawned and bounded. Everything but the timeout is optional. */
+export interface DeliverOpts {
+  timeoutMs: number
+  /** The agent's working folder. Absent: the app's own. */
+  cwd?: string
+  /** Variables set on top of the deliver's own environment. */
+  env?: Record<string, string>
+  /** Aborting stops the run as its deadline does. */
+  signal?: AbortSignal
 }
 
 /** Injected spawn seam. Runs the resolved argv (with `promptToken` swapped for the real
  *  prompt, out-of-band) with the child's STDIN closed (some agents, e.g. `codex exec`, read
  *  stdin and would otherwise block), and resolves (never rejects) with stdout/stderr/code.
- *  It stops the run itself once `opts.timeoutMs` is up. The app's deliver
- *  (secondOpinionDeliver.ts) ends the agent's whole process tree when it does. */
-export type DeliverFn = (bin: string, args: string[], prompt: string, promptToken: string, opts: { timeoutMs: number }) => Promise<{ stdout: string; stderr?: string; code: number }>
+ *  It stops the run itself once `opts.timeoutMs` is up or `opts.signal` aborts. The app's
+ *  deliver (secondOpinionDeliver.ts) ends the agent's whole process tree when it does. */
+export type DeliverFn = (bin: string, args: string[], prompt: string, promptToken: string, opts: DeliverOpts) => Promise<{ stdout: string; stderr?: string; code: number }>
 
 /** How long `deliver` gets past its own timeout before the call is abandoned. */
 export const DELIVER_GRACE_MS = 5_000
@@ -204,7 +244,7 @@ export function positionalPrompt(prompt: string): string {
  *  `timeoutMs + graceMs`, rejecting with a legible error, whatever the child is doing. A
  *  zero, negative or non-finite `timeoutMs` means "no timeout" to `deliver` and gets no
  *  deadline here. Every one-shot prompt passes through here, so this is also where it is
- *  made positional. */
+ *  made positional. `extra` (cwd, env, signal) goes to `deliver` as it is. */
 export function deliverWithDeadline(
   deliver: DeliverFn,
   bin: string,
@@ -212,8 +252,9 @@ export function deliverWithDeadline(
   prompt: string,
   timeoutMs: number,
   graceMs: number = DELIVER_GRACE_MS,
+  extra: Omit<DeliverOpts, 'timeoutMs'> = {},
 ): ReturnType<DeliverFn> {
-  const run = deliver(bin, args, positionalPrompt(prompt), PROMPT_TOKEN, { timeoutMs })
+  const run = deliver(bin, args, positionalPrompt(prompt), PROMPT_TOKEN, { ...extra, timeoutMs })
   if (!(Number.isFinite(timeoutMs) && timeoutMs > 0)) return run
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_resolve, reject) => {

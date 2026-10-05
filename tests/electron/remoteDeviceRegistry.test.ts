@@ -69,4 +69,32 @@ describe('DeviceRegistry', () => {
     const r = new DeviceRegistry([device('a')])
     expect(new DeviceRegistry(r.toJSON()).get('a')?.label).toBe('phone-a')
   })
+
+  it('renames a device and reports unknown ids', () => {
+    const r = new DeviceRegistry([device('a')])
+    expect(r.setLabel('a', 'build box')).toBe(true)
+    expect(r.get('a')?.label).toBe('build box')
+    expect(r.setLabel('ghost', 'x')).toBe(false)
+    expect(r.list()).toHaveLength(1)
+  })
+
+  it('never ages out a linked computer, however long it has been quiet', () => {
+    // The idle clock counts INBOUND requests only. A link that this machine
+    // mostly asks rather than answers would look idle for months while in daily
+    // use -- and a link is a relationship the user ends by unlinking, not one
+    // that should quietly lapse.
+    const r = new DeviceRegistry([
+      { ...device('desk', 1_000), kind: 'desktop' },
+      device('phone', 1_000),
+    ])
+    expect(r.expireIdle(5_000, 10_000)).toEqual(['phone'])
+    expect(r.list().map((d) => d.id)).toEqual(['desk'])
+  })
+
+  it('keeps the kind of a device it is handed', () => {
+    const r = new DeviceRegistry()
+    r.add({ ...device('desk'), kind: 'desktop' })
+    expect(r.get('desk')?.kind).toBe('desktop')
+    expect(new DeviceRegistry(r.toJSON()).get('desk')?.kind).toBe('desktop')
+  })
 })

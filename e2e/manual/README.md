@@ -21,6 +21,7 @@ The main `playwright.config.ts` ignores `e2e/manual/**`; this directory has its 
 | `second-opinion-proof.spec.ts` | Spawns the real `claude`, `codex` and `agy` binaries. On CI every one is `spawn … ENOENT`. | Needs all three CLIs installed and authed. |
 | `model-switch-proof.spec.ts` | The live model picker renders empty and disabled (`title="Claude Code must be installed to switch models."`) unless `installedAgents.claude` is true, so `selectOption` has nothing to select on CI. | Needs a real `claude` on PATH. |
 | `visual-regression.spec.ts` | Pixel baselines are `*-win32.png` and are **gitignored** — a Linux runner has none, so it would silently write fresh baselines and pass on anything. | Windows only. Delete a baseline to re-record it. |
+| `linked-machines-real.spec.ts` | Links two instances through the **production relay** (`wss://relay.termpolis.com`) and has each run real headless agent jobs on the other via the `linked_machines` MCP tool (Claude both ways, then Codex). CI has neither the relay nor signed-in agents; `e2e/linked-machines.spec.ts` covers the pane over a dead relay instead. | Needs network plus `claude` installed and signed in; `codex` too for its leg, which is skipped (with the reason) when `api.openai.com` is unreachable from the network you are on. Spends a few tokens. Evidence (screenshots, MCP answers, each instance's main log) lands in `$LINKED_REAL_OUT`, default `test-results/linked-real`. `TERMPOLIS_E2E_SKIP_BUILD=1` reuses `out/`. |
 
 ## Adding one
 

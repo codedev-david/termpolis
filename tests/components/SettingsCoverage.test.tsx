@@ -989,6 +989,10 @@ describe('SettingsPane — tab switching', () => {
     expect(await screen.findByTestId('processes-settings')).toBeInTheDocument()
     expect(screen.queryByText('Shell Config Files')).toBeNull()
 
+    fireEvent.click(screen.getByTestId('settings-tab-linked'))
+    expect(await screen.findByTestId('linked-settings')).toBeInTheDocument()
+    expect(screen.queryByTestId('processes-settings')).toBeNull()
+
     fireEvent.click(screen.getByTestId('settings-tab-general'))
     expect(screen.getByText('Default Shell')).toBeInTheDocument()
     expect(screen.queryByText('Shell Config Files')).toBeNull()
@@ -1020,6 +1024,36 @@ describe('SettingsPane — tab switching', () => {
     expect(await screen.findByTestId('agent-integration-status')).toBeInTheDocument()
     expect(tp().agentIntegrationStatus).toHaveBeenCalledTimes(1)
     expect(screen.queryByText('Default Shell')).toBeNull()
+  })
+
+  it('opens Linked machines from the tab after Remote, even with no linked bridge', async () => {
+    // This suite never installs window.linked. The panel must say so rather
+    // than throw and take the whole Settings pane down with it.
+    delete (window as any).linked
+    render(<SettingsPane />)
+    const tab = screen.getByTestId('settings-tab-linked')
+    expect(tab).toHaveTextContent('Linked machines')
+    expect(tab.querySelector('i.fa-link')).not.toBeNull()
+    const order = Array.from(screen.getByTestId('settings-tabs').querySelectorAll('button')).map((b) =>
+      b.getAttribute('data-testid'),
+    )
+    expect(order.indexOf('settings-tab-linked')).toBe(order.indexOf('settings-tab-remote') + 1)
+
+    fireEvent.click(tab)
+    expect(await screen.findByTestId('linked-unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Default Shell')).toBeNull()
+  })
+
+  it('opens Remote from its tab without crashing when window.remote is absent', async () => {
+    const saved = (window as any).remote
+    delete (window as any).remote
+    try {
+      render(<SettingsPane />)
+      fireEvent.click(screen.getByTestId('settings-tab-remote'))
+      expect(await screen.findByTestId('remote-unavailable')).toHaveTextContent('not available')
+    } finally {
+      ;(window as any).remote = saved
+    }
   })
 
   it('underlines only the active tab', () => {

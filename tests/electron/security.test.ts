@@ -154,6 +154,8 @@ MockBrowserWindow.prototype = {}
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => require('os').tmpdir()),
+    // Linked machines tells a linked computer which version answers it.
+    getVersion: vi.fn(() => '0.0.0-test'),
     whenReady: () => Promise.resolve(),
     requestSingleInstanceLock: () => true,
     setName: vi.fn(),

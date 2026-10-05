@@ -21,4 +21,9 @@ describe('settingsNav pending tab', () => {
     setPendingSettingsTab('voice')
     expect(consumePendingSettingsTab()).toBe('voice')
   })
+
+  it('can send Settings straight to the Linked machines tab', () => {
+    setPendingSettingsTab('linked')
+    expect(consumePendingSettingsTab()).toBe('linked')
+  })
 })

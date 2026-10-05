@@ -1,5 +1,7 @@
 import {
   createRemoteHost,
+  type LinkedBridgePort,
+  type LinkedInit,
   type RemoteEvent,
   type RemoteHost,
   type RemoteStatusView,
@@ -18,6 +20,7 @@ import {
 } from './remoteBridgeSupervisor'
 import { coerceCapabilities } from './remoteDeviceStore'
 import {
+  DEFAULT_RELAY_URL,
   NO_CAPABILITIES,
   type BridgeToHost,
   type Capabilities,
@@ -52,6 +55,10 @@ export interface RemoteHostBinding {
   /** How a bridge child is forked. Injected so tests never fork anything; the
    *  app passes `realBridgeTransport`. */
   createTransport(relayUrl: string): BridgeHandle
+  /** Linked machines' switch and joined links, asked at every bridge start and
+   *  respawn and on `refreshRemoteLinked()`. The one bridge runs while Remote OR
+   *  Linked machines is on. Optional: absent means Linked machines is off. */
+  linkedInit?: () => LinkedInit
 }
 
 /** Answered by every remote channel while the feature has not started -- which is
@@ -68,9 +75,41 @@ export const REMOTE_UNAVAILABLE = 'Remote access is not running in this session'
 export const REMOTE_NOT_RUNNING =
   'Remote access is off. Switch on "Allow phones to connect" first.'
 
+/** Answered by the Remote channels that change a device, when the device is a
+ *  linked computer. The phone UI never lists one, so only a confused or hostile
+ *  renderer gets here -- and acting on it would unlink a machine without the
+ *  goodbye Linked machines sends, or hand a computer phone capabilities. */
+export const REMOTE_LINKED_DEVICE =
+  'That device is a linked computer. Manage it under Settings ▸ Linked machines.'
+
 let host: RemoteHost | null = null
 let handler: ((m: BridgeToHost) => void) | null = null
 let subscribed = false
+
+/** Linked machines' listeners. Held here rather than on a host so they outlive a
+ *  host stop/start, and so `linkedHost.ts` can subscribe BEFORE Remote starts --
+ *  which it has to: Remote starts once the MCP port binds, and its `start()`
+ *  asks `linkedInit` straight away. */
+const linkedListeners = new Set<(m: BridgeToHost) => void>()
+
+/** The bridge as Linked machines sees it, valid at any time. With no host it
+ *  answers "down": nothing running, nothing attached, sends dropped -- the same
+ *  as a host whose bridge is stopped. */
+const linkedPort: LinkedBridgePort = {
+  running: () => host?.linkedPort().running() ?? false,
+  send: (msg) => host?.linkedPort().send(msg),
+  onMessage(cb) {
+    linkedListeners.add(cb)
+    return () => {
+      linkedListeners.delete(cb)
+    }
+  },
+  desktopPeers: () => host?.linkedPort().desktopPeers() ?? [],
+  attachedDeviceIds: () => host?.linkedPort().attachedDeviceIds() ?? new Set<string>(),
+  verificationPhraseFor: (deviceId) => host?.linkedPort().verificationPhraseFor(deviceId) ?? null,
+  relayUrl: () => host?.linkedPort().relayUrl() ?? DEFAULT_RELAY_URL,
+  linkOfferLive: () => host?.linkedPort().linkOfferLive() ?? false,
+}
 
 /* c8 ignore start -- only reachable inside a packaged/dev Electron run, exactly
    like the transport it wraps. Named so `index.ts` holds no fork logic of its own. */
@@ -78,6 +117,33 @@ export function realBridgeTransport(relayUrl: string): BridgeHandle {
   return createRemoteBridgeTransport(undefined, relayUrl)
 }
 /* c8 ignore stop */
+
+/** A child that falls silent once it has been killed.
+ *
+ *  The supervisor reads every `exit` as a crash of the CURRENT child. A child
+ *  killed by a stop exits a moment later -- after the restart that followed has
+ *  already spawned its replacement -- and that late exit would clear the new
+ *  child's handle and spawn a third, leaving the second running, unkilled, in
+ *  every relay seat the third then dials (a 409 each). Restarts are routine now:
+ *  switching Remote or Linked machines while the other is on is one. Anything
+ *  else a killed child says describes a bridge main has already let go of. */
+function quietOnceKilled(child: BridgeHandle): BridgeHandle {
+  let killed = false
+  return {
+    postMessage: (msg) => child.postMessage(msg),
+    on(event: 'message' | 'exit', cb: (arg: never) => void): void {
+      const live = (arg: unknown): void => {
+        if (!killed) cb(arg as never)
+      }
+      if (event === 'message') child.on('message', live)
+      else child.on('exit', live)
+    },
+    kill: () => {
+      killed = true
+      child.kill()
+    },
+  }
+}
 
 export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
   if (host) return
@@ -94,7 +160,9 @@ export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
       // Re-armed on every launch: the spawner closes over the relay URL, and the
       // supervisor calls it again on a crash restart. Wiring it once at bootstrap
       // would make a changed relay address take effect only until the first crash.
-      setBridgeSpawner(() => binding.createTransport(relayUrl))
+      setBridgeSpawner(() => quietOnceKilled(binding.createTransport(relayUrl)))
+      // The factory itself, not its result: the supervisor asks it again on a
+      // crash respawn, so the new child gets the devices and links of now.
       startRemoteBridge(init)
     },
     stopBridge: stopRemoteBridge,
@@ -114,6 +182,18 @@ export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
     clearDisabled: clearRemoteDisabled,
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    linkedInit: binding.linkedInit,
+  })
+  // Before `start()`, so nothing the new bridge says is missed. Each listener is
+  // guarded on its own: one that throws must not deafen the others.
+  host.linkedPort().onMessage((m) => {
+    for (const cb of [...linkedListeners]) {
+      try {
+        cb(m)
+      } catch {
+        /* a listener's fault is its own */
+      }
+    }
   })
   host.start()
 }
@@ -122,6 +202,31 @@ export function stopRemoteBridgeHost(): void {
   host?.stop()
   host = null
   handler = null
+}
+
+/** The one bridge as Linked machines uses it. Never null: valid before Remote
+ *  starts and across a stop/start, so a subscription made once lasts the run. */
+export function remoteLinkedPort(): LinkedBridgePort {
+  return linkedPort
+}
+
+/** Re-read `linkedInit` and start, stop, restart or re-link the bridge to match.
+ *  Call after every change to Linked machines' switch or joined links. A no-op
+ *  while Remote has not started -- its `start()` reads `linkedInit` itself. */
+export function refreshRemoteLinked(): void {
+  host?.refreshLinked()
+}
+
+/** Ask the bridge for a code for another computer. It replaces any phone QR,
+ *  and answers with a `pairingCode` carrying `linkCode` -- or a plain `error`
+ *  while `linkOfferLive()` is true. */
+export function beginRemoteLinkPairing(label?: string): void {
+  host?.beginLinkPairing(label)
+}
+
+/** Withdraw this machine's code for another computer, and only that. */
+export function cancelRemoteLinkPairing(): void {
+  host?.cancelLinkPairing()
 }
 
 /** Both called from the PTY data path, on every chunk. A null host has to be
@@ -144,6 +249,14 @@ function sanitizeLabel(raw: unknown): string {
 function deviceIdOf(input: unknown): string {
   const raw = (input as { deviceId?: unknown } | undefined)?.deviceId
   return typeof raw === 'string' ? raw.trim() : ''
+}
+
+/** Whether a device id names a linked computer rather than a phone. */
+function isLinkedComputer(remote: RemoteHost, deviceId: string): boolean {
+  return remote
+    .linkedPort()
+    .desktopPeers()
+    .some((d) => d.id === deviceId)
 }
 
 /** Validate a capability payload, or say why it is not one.
@@ -229,6 +342,7 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     if (!host) return err(REMOTE_UNAVAILABLE)
     const deviceId = deviceIdOf(input)
     if (!deviceId) return err('A device id is required')
+    if (isLinkedComputer(host, deviceId)) return err(REMOTE_LINKED_DEVICE)
     if (!host.status().running) return err(REMOTE_NOT_RUNNING)
     host.revokeDevice(deviceId)
     return ok(host.status())
@@ -240,6 +354,7 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     if (!deviceId) return err('A device id is required')
     const read = readCapabilities(input)
     if ('error' in read) return err(read.error)
+    if (isLinkedComputer(host, deviceId)) return err(REMOTE_LINKED_DEVICE)
     if (!host.status().running) return err(REMOTE_NOT_RUNNING)
     host.setDeviceCapabilities(deviceId, read.caps)
     return ok(host.status())
@@ -249,6 +364,7 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     if (!host) return err(REMOTE_UNAVAILABLE)
     const deviceId = deviceIdOf(input)
     if (!deviceId) return err('A device id is required')
+    if (isLinkedComputer(host, deviceId)) return err(REMOTE_LINKED_DEVICE)
     const phrase = host.verificationPhraseFor(deviceId)
     if (!phrase) return err('That device is not paired with this desktop')
     return ok({ deviceId, phrase })
@@ -260,4 +376,5 @@ export function _resetRemoteHostForTests(): void {
   host = null
   handler = null
   subscribed = false
+  linkedListeners.clear()
 }

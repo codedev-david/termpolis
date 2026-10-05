@@ -79,8 +79,10 @@ function makeHarness() {
     },
     readRecent: (id) => (id in text ? { output: text[id], name: id } : null),
     terminalSize: () => size,
+    // A factory, asked at once as the supervisor's spawn does -- and again on
+    // every respawn, which `remoteHostLinked.test.ts` exercises.
     startBridge: (init, relayUrl) => {
-      started.push({ init, relayUrl })
+      started.push({ init: init(), relayUrl })
       running = true
     },
     stopBridge: () => {

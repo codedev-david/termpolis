@@ -64,10 +64,12 @@ function advertisedToolNames(): string[] {
 }
 
 /** The tools the brief for this policy names: they run commands, type into, open, close or
- *  read other terminals, list files, or call through to other MCP servers. */
+ *  read other terminals, list files, or call through to other MCP servers. linked_machines
+ *  starts an agent on another machine, which may edit files and run commands there, and its
+ *  name says none of that, so the name check below would not catch it. */
 const NEVER_AUTO_ALLOWED = [
   'run_command', 'run_and_wait', 'write_to_terminal', 'create_terminal', 'close_terminal',
-  'read_output', 'get_file_tree', 'gateway_call',
+  'read_output', 'get_file_tree', 'gateway_call', 'linked_machines',
 ]
 
 /** A tool outside Termpolis's own memory whose name says it acts, or that goes through the
@@ -107,11 +109,19 @@ describe('MCP tool permission policy', () => {
     expect(missing(CODEX_AUTO_APPROVED_TOOLS), 'CODEX_AUTO_APPROVED_TOOLS').toEqual([])
   })
 
-  it('never auto-allows a tool that runs commands, drives other terminals, lists files or calls other servers', () => {
+  it('never auto-allows a tool that runs commands, drives other terminals, lists files, calls other servers or reaches other machines', () => {
     expect(MCP_TOOLS_AUTO_ALLOWED.filter((t) => NEVER_AUTO_ALLOWED.includes(t))).toEqual([])
     for (const tool of NEVER_AUTO_ALLOWED.filter((t) => advertised.includes(t))) {
       expect(MCP_TOOLS_ASK, `${tool} must ask first`).toContain(tool)
     }
+  })
+
+  it('asks before an agent delegates to a linked machine, and never pre-approves it for Codex', () => {
+    // Spec §8: the user approves it once in their agent. Asserted against the advertised table
+    // so the policy cannot pass while the tool itself has gone missing.
+    expect(advertised).toContain('linked_machines')
+    expect(MCP_TOOLS_ASK).toContain('linked_machines')
+    expect(CODEX_AUTO_APPROVED_TOOLS).not.toContain('linked_machines')
   })
 
   it('never auto-allows a non-memory tool whose name says it acts or reaches the gateway', () => {

@@ -73,7 +73,7 @@ beforeAll(() => {
 })
 
 // Helper: click a settings tab so its content renders.
-function openTab(tabId: 'general' | 'security' | 'keybindings' | 'agents' | 'shell') {
+function openTab(tabId: 'general' | 'security' | 'keybindings' | 'agents' | 'shell' | 'linked') {
   fireEvent.click(screen.getByTestId(`settings-tab-${tabId}`))
 }
 
@@ -459,13 +459,23 @@ describe('SettingsPane', () => {
     ;(window as any).termpolis.readConfigFile = vi.fn().mockResolvedValue({ success: true, data: '# config content' })
   })
 
-  it('renders all 5 settings tabs by default', () => {
+  it('renders the core settings tabs and Linked machines by default', () => {
     render(<SettingsPane />)
     expect(screen.getByTestId('settings-tab-general')).toBeInTheDocument()
     expect(screen.getByTestId('settings-tab-security')).toBeInTheDocument()
     expect(screen.getByTestId('settings-tab-keybindings')).toBeInTheDocument()
     expect(screen.getByTestId('settings-tab-agents')).toBeInTheDocument()
     expect(screen.getByTestId('settings-tab-shell')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-tab-linked')).toHaveTextContent('Linked machines')
+  })
+
+  it('Linked machines tab renders its panel without crashing when window.linked is absent', async () => {
+    delete (window as any).linked
+    render(<SettingsPane />)
+    openTab('linked')
+    await waitFor(() => {
+      expect(screen.getByTestId('linked-unavailable')).toBeInTheDocument()
+    })
   })
 
   it('AI Security tab renders the security panel', async () => {

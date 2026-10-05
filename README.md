@@ -221,6 +221,43 @@ The wire format is specified in [`docs/remote-wire-format.md`](docs/remote-wire-
 
 ---
 
+## 🔗 Linked machines — let an agent hand work to your other computer
+
+Link two Termpolis desktops, and an agent on one can have a Claude, Codex or Gemini agent on the other do a task **headlessly** and hand back its final answer as an ordinary tool result. It works in both directions, across any network: *"Have Codex on linux implement the parser in ~/repos/foo and commit it, then review the commit yourself."* Nothing is typed into a terminal and no terminal opens on either machine. Every job is listed under **Activity** on both computers.
+
+**Setting it up**, once per pair of computers:
+
+1. On **both** computers, open **Settings → Linked machines** and turn on **Let this computer link with my other computers**.
+2. On one of them, under **Link a computer**, click **Create code**, then **Copy**. The code works once and expires after 5 minutes.
+3. Carry it to the other computer any way you like (a chat, a shared folder, typing it). Paste it under **Enter a code from another computer** and click **Link**.
+4. Both screens show the same **eight safety words**. Name the other computer whatever you like, check the words match, and click **They match — link** on **both** sides. Nothing is served until each side has confirmed.
+
+**Using it.** Agents get one MCP tool, `linked_machines`, and you refer to a machine by the name you gave it: *"have codex on linux run the integration tests and summarise the failures"*. The agent can `list` the machines to see which agents are installed on each and what it may do there, then `run` a task with a self-contained prompt and, optionally, a folder on that machine.
+
+**What each permission means.** Each computer decides what the *other* may do *on it*, per linked machine, and you can change it at any time:
+
+- **Run agents here (read-only)** — on by default. The other computer's agents may start an agent here that reads any file you can read but changes nothing: Claude in plan mode with only Read/Grep/Glob, Codex in its read-only sandbox, Gemini in plan mode.
+- **Let agents edit files and run commands here** — off by default. The agent here then runs unattended, with permission prompts skipped, like `termpolis-cli exec --write`. Grant it only to a machine you trust as much as this one. Switching it off stops any edit already running.
+
+**Limits.**
+
+- **Both computers need Termpolis running and online.** The relay is a meeting point, not a mailbox, so a request to a machine that isn't there fails at once as offline instead of waiting.
+- **Each run is a fresh headless session** that remembers nothing of the last one. The prompt has to carry everything the other agent needs (commit SHAs, earlier findings), and code moves through Git as usual.
+- **Long jobs come back as a job id.** A `run` waits up to 45 seconds, within the 60 seconds Codex gives one tool call. A job still going returns `running` with a `jobId`, and the agent collects it with `action: "result"`. A job may run for up to 15 minutes.
+- **Up to 16 linked machines** per computer, counting both directions. A computer runs at most 2 jobs at a time for any one machine and 4 in all.
+
+**Security.**
+
+- **End-to-end encrypted through the relay**, with the same X25519 pairing and ChaCha20-Poly1305 sealing as Termpolis Remote. The relay passes sealed frames along and never sees a prompt or an answer.
+- **Read-only by default.** Every request is checked on the computer that would do the work, before any agent starts there.
+- **No chains.** Termpolis's own MCP server is switched off inside a delegated job, and a delegated agent that asks for `linked_machines` anyway is refused. It cannot hand the work on to a third machine.
+- **Answers are treated as data.** What comes back from another machine is scanned for prompt injection, and a flagged answer reaches your agent under an **UNTRUSTED CONTENT** banner. Nothing another computer asks for is written into this computer's memory.
+- **Unlink from either side.** The other computer drops the link too, and any job either one still had running on the other is stopped. If the other computer was offline at the time, unlink it there as well.
+
+Full guide: [`docs/DOCUMENTATION.md`](docs/DOCUMENTATION.md#30-linked-machines). Wire format: [`docs/remote-wire-format.md`](docs/remote-wire-format.md#13-linked-machines).
+
+---
+
 ## 📊 Memory & Learning dashboard — proof it's working, computed locally
 
 A **Memory & Learning** tab in Settings turns the brain from a black box into an inspectable instrument — **every number computed on your machine, offline, from the append-only store.** No word-taking; nothing on the screen leaves your machine.
@@ -353,7 +390,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 - **Safe Import** — import a third-party **skill, plugin, slash-command, subagent, or MCP server** and Termpolis **statically scans it before it touches your machine**: 41 rules across outbound network calls, shell / `eval` execution, credential + `~/.ssh` access, obfuscated payloads, and **prompt injection hidden in the artifact's own instructions**, plus context-sensitive checks that judge a construct by its surroundings. You get a red / yellow / green report with `file:line`; **red can never be installed**, and approvals are **hash-pinned**, so editing an approved artifact re-prompts. On approval it wires the artifact into the agents that support its kind — an MCP server into all three (Claude Code, Codex, Gemini CLI), custom commands into Claude / Gemini, and skills, subagents, and plugins into Claude Code. **Settings → General.** It is a static review aid, not a sandbox — nothing is executed
 
 ### MCP Server & Agent Integration
-- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, the `memory_audit` self-inspection tool, and the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search` / `code_locate`)
+- **MCP Server** — built-in HTTP/SSE server on `localhost:9315` with tools for AI agents to control terminals programmatically (incl. shared-memory search/write/list, the background primer, `memory_related` traversal, the knowledge graph `memory_link` + `memory_graph`, the learning tools `memory_anticipate` / `memory_pool` / `memory_selfcheck` / `memory_feedback` / `memory_conflicts`, the `memory_audit` self-inspection tool, the code-graph tools `code_explore` / `code_callers` / `code_callees` / `code_impact` / `code_search` / `code_locate`, and `linked_machines`, which has a Claude, Codex or Gemini agent on another of your linked machines do a task headlessly and hands back its final answer)
 - **Connects to your coding agents — after it asks (v1.49)** — the first step of the first-run tour lists exactly what Termpolis would write for each of Claude Code, Codex and Gemini CLI installed on this machine, and nothing is written until you finish or skip the tour (both boxes start ticked, and **Skip tour** keeps what is shown). Connected, it adds the Termpolis MCP server to each agent's user config, lets Claude Code run 27 read-only and memory tools without asking (tools that run commands or type into terminals still ask), pre-approves Codex's 14 memory tools unless you already chose a setting for them, and answers the folder-trust prompt for project folders you open agents in — never your home folder or a drive root. An optional SessionStart hook loads project memory whenever a Claude Code session starts, including sessions started outside Termpolis. **Settings → Agent Integration** lists every change and has **Disconnect**, which removes everything Termpolis wrote; the Windows uninstaller and removing the Linux .deb do the same, and `Termpolis --disconnect-agents` does it from the command line.
 - **Stdio Adapter** — for agents that use stdio-based MCP, a standalone adapter script proxies to the HTTP server
 - **CLI Tool** — `termpolis-cli` lets you control Termpolis from any terminal (`list`, `create`, `run`, `read`, `close`, `files`, `git`) and reach the shared memory brain from a plain shell, CI job, or git hook (`primer`, `recall`, `remember`)
@@ -497,7 +534,7 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 
 Once you connect your agents — on the first step of the first-run tour, or in **Settings → Agent Integration** — Termpolis registers itself as a user-scope MCP server: in Claude Code's `~/.claude.json` (as `claude mcp add -s user` writes it), Codex's `config.toml` and Gemini CLI's `settings.json`. Nothing is written before you agree, and **Disconnect** removes all of it.
 
-### Available Tools (33)
+### Available Tools (40)
 
 **Terminal Management:**
 
@@ -506,6 +543,7 @@ Once you connect your agents — on the first step of the first-run tour, or in 
 | `list_terminals` | List all open terminals with IDs, names, shells, and cwds |
 | `create_terminal` | Create a new terminal with name, shell, and working directory |
 | `run_command` | Send a command to a terminal (types it and presses Enter) |
+| `run_and_wait` | Run a command to completion and return its exit code and output |
 | `read_output` | Read recent output from a terminal (last N lines) |
 | `write_to_terminal` | Write raw text to a terminal |
 | `close_terminal` | Close a terminal by ID |
@@ -540,8 +578,9 @@ Once you connect your agents — on the first step of the first-run tour, or in 
 | `memory_feedback` | Mark a recalled memory as helpful so the useful ones rank higher |
 | `memory_conflicts` | Surface pairs of lessons different agents learned that assert opposite things about the same subject |
 | `memory_audit` | Inspect the brain's own behaviour — what it stored, recalled, and learned, computed from the local store |
+| `memory_correct` | Retract, amend or demote a memory that recall got wrong — reversible and audited |
 
-**Code Graph** (AST-precise via web-tree-sitter, native-free):
+**Code Intelligence** (the code graph is AST-precise via web-tree-sitter, native-free):
 
 | Tool | Description |
 |------|-------------|
@@ -551,6 +590,26 @@ Once you connect your agents — on the first step of the first-run tour, or in 
 | `code_impact` | Transitive blast radius of changing a symbol — what could break |
 | `code_search` | Locate any symbol by name across the codebase |
 | `code_locate` | Predict WHERE an issue lives: ranked `{file, symbol, why:[past lessons]}` from an error/problem — crosses the memory↔code bridge |
+| `test_coverage` | Which lines of a file its own tests cover, from the project's last coverage run |
+
+**Gateway:**
+
+| Tool | Description |
+|------|-------------|
+| `gateway_list_tools` | List the tools on the MCP servers you added in Settings → MCP Servers |
+| `gateway_call` | Call one of those tools, under the gateway's policy |
+
+**Token Headroom:**
+
+| Tool | Description |
+|------|-------------|
+| `retrieve_full` | Expand a tool result that Token Headroom shortened |
+
+**Linked Machines:**
+
+| Tool | Description |
+|------|-------------|
+| `linked_machines` | Have a Claude, Codex or Gemini agent on another linked machine do a task headlessly and return its final answer (`list`, `run`, `result`) |
 
 ### CLI Tool
 
@@ -594,7 +653,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:9315/mcp \
 
 ```bash
 curl http://localhost:9315/health
-# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":33,"auth":"required"}
+# {"status":"ok","name":"termpolis-mcp","version":"1.2.0","tools":40,"auth":"required"}
 ```
 
 ## Security

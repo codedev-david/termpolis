@@ -12,6 +12,7 @@ import { SafeImportPanel } from './SafeImportPanel'
 import { VoiceSettings } from './VoiceSettings'
 import { TokenSavingsSettings } from './TokenSavingsSettings'
 import { RemoteSettings } from './RemoteSettings'
+import { LinkedMachinesSettings } from './LinkedMachinesSettings'
 import { McpServersSettings } from './McpServersSettings'
 import { AgentIntegrationSettings } from './AgentIntegrationSettings'
 import { ProcessesSettings } from './ProcessesSettings'
@@ -246,6 +247,7 @@ export function SettingsPane() {
           { id: 'shell', label: 'Shell Config' },
           { id: 'tokenSavings', label: 'Token Savings' },
           { id: 'remote', label: 'Remote' },
+          { id: 'linked', label: 'Linked machines' },
           { id: 'agentIntegration', label: 'Agent Integration' },
           { id: 'mcp', label: 'MCP Servers' },
           { id: 'processes', label: 'Processes' },
@@ -263,6 +265,7 @@ export function SettingsPane() {
             {t.id === 'memory' && <i className="fa-solid fa-brain text-[10px] mr-1.5 text-[#22D3EE]"></i>}
             {t.id === 'security' && <i className="fa-solid fa-shield-halved text-[10px] mr-1.5 text-[#7ee2a3]"></i>}
             {t.id === 'processes' && <i className="fa-solid fa-microchip text-[10px] mr-1.5 text-[#e5c07b]"></i>}
+            {t.id === 'linked' && <i className="fa-solid fa-link text-[10px] mr-1.5 text-[#4aa8d8]"></i>}
             {t.label}
           </button>
         ))}
@@ -601,6 +604,7 @@ export function SettingsPane() {
       {activeTab === 'agents' && <AgentRatingsSettings />}
       {activeTab === 'tokenSavings' && <TokenSavingsSettings />}
       {activeTab === 'remote' && <RemoteSettings />}
+      {activeTab === 'linked' && <LinkedMachinesSettings />}
 
       {activeTab === 'agentIntegration' && <AgentIntegrationSettings />}
       {activeTab === 'mcp' && <McpServersSettings />}

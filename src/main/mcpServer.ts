@@ -28,6 +28,7 @@ const rateBuckets = new Map<string, RateBucket>()
 const RATE_LIMITS: Record<string, { max: number; windowMs: number }> = {
   create_terminal: { max: 10, windowMs: 60_000 },   // 10 terminals per minute
   run_command: { max: 60, windowMs: 60_000 },        // 60 commands per minute
+  linked_machines: { max: 30, windowMs: 60_000 },    // 30 per minute: a run starts an agent on another machine
   _global: { max: 200, windowMs: 60_000 },           // 200 total requests per minute
 }
 
@@ -574,7 +575,41 @@ const TOOLS: McpTool[] = [
       required: ['token'],
     },
   },
+  {
+    name: 'linked_machines',
+    description: 'Have a Claude, Codex or Gemini agent on another linked Termpolis machine do a task headlessly and return its final answer. Call list first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'run', 'result'], description: 'list: machines and their agents; run: start a task; result: check a job still running' },
+        machine: { type: 'string', description: 'Machine name, as list shows it' },
+        agent: { type: 'string', enum: ['claude', 'codex', 'gemini'], description: 'Agent to run on that machine' },
+        prompt: { type: 'string', description: 'Self-contained task; the remote agent sees nothing else' },
+        cwd: { type: 'string', description: 'Folder on that machine (default: home)' },
+        write: { type: 'boolean', description: 'Allow edits and commands, if that machine permits it' },
+        model: { type: 'string', description: 'Model for that agent (default: its own)' },
+        jobId: { type: 'string', description: 'From run, to fetch the result' },
+        waitSec: { type: 'number', description: 'Seconds to wait for the answer (default 45, max 50)' },
+      },
+      required: ['action'],
+    },
+  },
 ]
+
+/** The linked_machines arguments, exactly as the agent sent them. Same shape as linkedTool.ts's
+ *  LinkedToolArgs, declared here so the MCP server does not import the linked-machines stack;
+ *  the handler validates every field. */
+export interface LinkedToolArgs {
+  action?: string
+  machine?: string
+  agent?: string
+  prompt?: string
+  cwd?: string
+  write?: boolean
+  model?: string
+  jobId?: string
+  waitSec?: number
+}
 
 export interface McpToolHandlers {
   listTerminals: () => { id: string; name: string; shellType: string; cwd: string }[]
@@ -617,6 +652,9 @@ export interface McpToolHandlers {
   /** Async since 1.41: a redemption waits out a stash that may still be crossing from the proxy
    *  child, so an in-flight original is not reported as content this app destroyed. */
   retrieveFull: (token: string) => Promise<unknown>
+  /** Never rejects: a failure comes back as `{ error }` data, because handleJsonRpc masks a thrown
+   *  message to 'Tool execution failed' and the agent would never learn, say, that the feature is off. */
+  linkedMachines: (opts: LinkedToolArgs) => Promise<unknown>
   // Operator verbs. Deliberately absent from TOOLS: the tool list is re-sent on every
   // request of every session, so a diagnostic no agent will ever call is a permanent tax
   // on the exact token budget this app exists to protect. `executeTool` dispatches by
@@ -780,6 +818,10 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
       return await handlers.gatewayCall({ tool: args.tool, arguments: args.arguments })
     case 'retrieve_full':
       return await handlers.retrieveFull(args.token)
+    case 'linked_machines':
+      // Handed over whole: which fields matter depends on the action, and the handler checks
+      // them. `?? {}` because the workflow engine calls executeTool without tools/call's default.
+      return await handlers.linkedMachines(args ?? {})
     // --- operator verbs (CLI-only; see McpToolHandlers) ---
     case 'agent_exec':
       return await handlers.agentExec({

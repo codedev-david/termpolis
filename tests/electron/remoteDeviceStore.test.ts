@@ -133,6 +133,26 @@ describe('remoteDeviceStore', () => {
     expect(loaded.pairedAt).toBe(0)
   })
 
+  it('keeps a linked computer marked as one across a restart', () => {
+    // Without the marker a desktop peer comes back as a phone: its room opens
+    // with Remote rather than Linked machines, and the phone list shows it.
+    const desk = device({ id: 'deskdeskdeskdesk', kind: 'desktop' })
+    saveRemoteDevices(dir, [desk, device()])
+    const loaded = loadRemoteDevices(dir)
+    expect(loaded[0].kind).toBe('desktop')
+    expect('kind' in loaded[1]).toBe(false)
+  })
+
+  it.each([['phone'], ['DESKTOP'], [true], [1], [null]])(
+    'reads a kind it does not know (%j) as a phone',
+    (kind) => {
+      // Only the exact string is a computer. Anything else falls back to the
+      // record every file written before linked machines holds: no kind at all.
+      writeRaw([{ ...device(), kind }])
+      expect('kind' in loadRemoteDevices(dir)[0]).toBe(false)
+    },
+  )
+
   it('swallows a write error rather than taking the app down', () => {
     // Persistence failing is bad; an unhandled throw out of a pairing handler is
     // worse -- the device is already paired in memory by the time we save.

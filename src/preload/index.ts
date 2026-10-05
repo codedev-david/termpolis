@@ -7,6 +7,9 @@ import type {
   RemoteCapabilities,
   RemoteEvent,
   RemoteStatusView,
+  LinkedAPI,
+  LinkedEvent,
+  LinkedStatusView,
   McpServerSpecView,
   McpGatewayPolicyView,
 } from '../renderer/src/types'
@@ -561,6 +564,33 @@ contextBridge.exposeInMainWorld('remote', {
     return () => ipcRenderer.removeListener('remote:event', handler)
   },
 })
+
+// Linked machines (Settings ▸ Linked machines). Its own namespace, like Remote's. Annotated,
+// so a method the renderer's `LinkedAPI` adds or reshapes fails the typecheck here instead
+// of reaching the pane as an undefined function.
+const linked: LinkedAPI = {
+  status: () => ipcRenderer.invoke('linked:status'),
+  setEnabled: (enabled) => ipcRenderer.invoke('linked:set-enabled', { enabled }),
+  createCode: (grants) => ipcRenderer.invoke('linked:create-code', { grants }),
+  cancelCode: () => ipcRenderer.invoke('linked:cancel-code'),
+  join: (code, grants) => ipcRenderer.invoke('linked:join', { code, grants }),
+  cancelJoin: () => ipcRenderer.invoke('linked:cancel-join'),
+  confirm: (ref, name) => ipcRenderer.invoke('linked:confirm', { ref, name }),
+  rename: (ref, name) => ipcRenderer.invoke('linked:rename', { ref, name }),
+  setGrants: (ref, grants) => ipcRenderer.invoke('linked:set-grants', { ref, grants }),
+  unlink: (ref) => ipcRenderer.invoke('linked:unlink', { ref }),
+  onStatus: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, status: LinkedStatusView) => cb(status)
+    ipcRenderer.on('linked:status-changed', handler)
+    return () => ipcRenderer.removeListener('linked:status-changed', handler)
+  },
+  onEvent: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, event: LinkedEvent) => cb(event)
+    ipcRenderer.on('linked:event', handler)
+    return () => ipcRenderer.removeListener('linked:event', handler)
+  },
+}
+contextBridge.exposeInMainWorld('linked', linked)
 
 // MCP server events — terminals created/closed by AI agents
 contextBridge.exposeInMainWorld('mcpEvents', {

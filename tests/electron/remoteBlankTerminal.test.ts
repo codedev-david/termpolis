@@ -126,7 +126,8 @@ function desktop(devices: PairedDevice[]) {
   const rooms: Room[] = []
   const cores: BridgeCore[] = []
   let bridge: BridgeCore | null = null
-  let launched: { init: InitParams; relayUrl: string } | null = null
+  // The init FACTORY, asked again on every spawn, as the real supervisor does.
+  let launched: { init: () => InitParams; relayUrl: string } | null = null
   let fromBridge: (m: BridgeToHost) => void = () => {}
   let inflight = 0
 
@@ -171,7 +172,7 @@ function desktop(devices: PairedDevice[]) {
     })
     cores.push(core)
     bridge = core
-    toBridge.push({ kind: 'init', ...launched!.init })
+    toBridge.push({ kind: 'init', ...launched!.init() })
   }
 
   const host: RemoteHost = createRemoteHost({

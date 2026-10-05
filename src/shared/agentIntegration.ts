@@ -95,11 +95,13 @@ export const MCP_TOOLS_AUTO_ALLOWED: readonly string[] = [
 ]
 
 /** Tools that run commands, type into or read other terminals, list files, reach other
- *  MCP servers or change swarm state. Claude Code keeps asking for these. */
+ *  MCP servers, change swarm state or start an agent on a linked machine. Claude Code keeps
+ *  asking for these. */
 export const MCP_TOOLS_ASK: readonly string[] = [
   'run_command', 'run_and_wait', 'write_to_terminal', 'create_terminal', 'close_terminal',
   'read_output', 'get_file_tree', 'gateway_call', 'gateway_list_tools',
   'swarm_send_message', 'swarm_create_task', 'swarm_update_task',
+  'linked_machines',
 ]
 
 /** The tools Termpolis pre-approves in Codex's config.toml: only the memory ones. */

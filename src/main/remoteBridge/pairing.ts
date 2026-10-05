@@ -52,6 +52,15 @@ interface HelloPayload {
   v: number
   label: string
   oneTimeSecret: string
+  /** Present, and exactly `'desktop'`, when the sender is another Termpolis
+   *  machine joining a link rather than a phone.
+   *
+   *  Optional for the same reason the ack's `name` is: `v` is compared for
+   *  equality at both ends, and an added field an old reader never looks for
+   *  costs it nothing. An older desktop ignores it and pairs the joiner as a
+   *  phone; the joiner then finds no `peer*` support and says so. Sealed, so a
+   *  relay can neither forge the marker nor strip it. */
+  peer?: 'desktop'
 }
 
 /** The phone's opening frame: `0x01 || devicePublicKey[32] || sealed`.
@@ -70,6 +79,8 @@ export function sealPairingHello(opts: {
   pairingId: string
   label: string
   oneTimeSecret: string
+  /** Set by a desktop joining a link. A phone never sets it. */
+  peer?: 'desktop'
 }): Uint8Array {
   const header = new Uint8Array(HELLO_HEADER_BYTES)
   header[0] = FRAME_PAIRING_HELLO
@@ -80,6 +91,9 @@ export function sealPairingHello(opts: {
     v: PROTOCOL_VERSION,
     label: opts.label,
     oneTimeSecret: opts.oneTimeSecret,
+    // Omitted rather than written as anything for a phone, so a phone's hello is
+    // the same bytes it always was -- the golden vectors pin exactly that.
+    ...(opts.peer === 'desktop' ? { peer: 'desktop' as const } : {}),
   }
   return SealedSession.fromRoot(root, 'device').seal(
     header,
@@ -98,7 +112,7 @@ export function openPairingHello(opts: {
   desktopSecretKey: string
   pairingId: string
   frame: Uint8Array
-}): { devicePublicKey: string; label: string; oneTimeSecret: string } {
+}): { devicePublicKey: string; label: string; oneTimeSecret: string; peer?: 'desktop' } {
   const { frame } = opts
   if (frame.length < HELLO_HEADER_BYTES) throw new Error('pairing hello too short')
   if (frame[0] !== FRAME_PAIRING_HELLO) throw new Error('not a pairing hello')
@@ -114,7 +128,15 @@ export function openPairingHello(opts: {
   if (payload.v !== PROTOCOL_VERSION) {
     throw new Error(`unsupported pairing version ${payload.v}`)
   }
-  return { devicePublicKey, label: payload.label, oneTimeSecret: payload.oneTimeSecret }
+  return {
+    devicePublicKey,
+    label: payload.label,
+    oneTimeSecret: payload.oneTimeSecret,
+    // Only the exact string marks a computer; anything else is no marker. Absent
+    // rather than null for a phone, so what a phone's hello opens to is exactly
+    // what it opened to before linked machines existed.
+    ...(payload.peer === 'desktop' ? { peer: 'desktop' as const } : {}),
+  }
 }
 
 /** An ack's clear header: the frame tag, and nothing else. The phone has exactly

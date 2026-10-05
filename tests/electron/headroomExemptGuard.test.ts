@@ -11,6 +11,10 @@ const MUST_EXEMPT = [
   'swarm_update_task', 'swarm_list_agents',
   'create_terminal', 'close_terminal', 'write_to_terminal', 'run_command', 'list_terminals',
   'retrieve_full',
+  // The CLI JSON.parses this result, and a compacted one is no longer JSON.
+  'agent_exec',
+  // A whole agent run on another machine: re-fetching it would mean running that agent again.
+  'linked_machines',
 ]
 
 describe('brain/control non-interference guard', () => {

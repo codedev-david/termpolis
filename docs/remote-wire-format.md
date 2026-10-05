@@ -784,3 +784,224 @@ Hex above is wrapped for width; concatenate the lines. The JSON payloads are
 shown with the exact key order the vectors were generated from — order is free
 for interoperability, since the receiver parses JSON, but it must match to
 reproduce these bytes.
+
+---
+
+## 13. Linked machines
+
+Two Termpolis desktops pair with each other and then ask each other for
+headless agent jobs, using everything above. Every addition is **optional and
+additive**: `PROTOCOL_VERSION` stays 2, the offer stays `"v": 1`, and a phone's
+frames are byte-for-byte what they were, so the golden vectors in §12 are
+unchanged. A phone never sends or receives anything in this section.
+
+The two desktops have different roles:
+
+- **The host** made the code. It plays the desktop's part throughout, with its
+  identity key, in the `desktop` seat of the pairing room and then of the
+  session room. The joiner becomes a paired device of kind `desktop` in its
+  registry.
+- **The joiner** entered the code. It plays the phone's part: the `device`
+  seat, and a hello sealed under the pairing root. Its key is an X25519 keypair
+  minted for **this link alone**, never its own identity. Two desktops that
+  each host a link to the other would otherwise derive the same session room
+  from the same two keys, and one of them would get a `409` forever.
+
+### 13.1 The link code
+
+```
+termpolis-link:<base64url(utf8(offer JSON))>
+```
+
+The offer JSON is exactly the §7.1 payload, encoded as unpadded base64url. The
+prefix keeps the two kinds of code apart in both directions. The phone's
+scanner reads JSON and nothing else, so it can never accept a link code. A
+phone QR pasted where a link code goes is refused.
+
+- **Lifetime.** The code is valid for **5 minutes**, not 90 s, and once. It
+  has to be carried from one computer to another rather than scanned off the
+  screen in front of you.
+- **Reading it.** It is read as §7.1 is read: `v === 1`, `pairingId` 32 hex,
+  both keys 64 hex, rebuilt field by field. A reader also follows three rules:
+  - whitespace anywhere is ignored, because a code that crossed a chat can
+    come back wrapped;
+  - text over 4,096 characters is refused unread;
+  - the body must be base64url alphabet *before* it is decoded, because a
+    lenient decoder skips characters it does not know, and a mangled code
+    would decode to something merely wrong.
+- **`relayUrl`** must be `wss:`, with one exception: `ws:` when the host is
+  `127.0.0.1` or `localhost`, for tests and a relay run locally. Nothing on
+  loopback crosses a network. A host whose relay is anything else refuses to
+  make a code at all.
+
+### 13.2 Pairing
+
+This is §7.2–§7.5 with the joiner in the phone's place, except for the
+following.
+
+**The joiner greets once,** on `hello{peer:true}` or `peer-joined` (§3.3). It
+never greets into an empty room.
+
+**`PAIRING_HELLO` carries an optional `peer`** inside its sealed JSON:
+
+```
+plaintext = {"v":2,"label":"buildbox","oneTimeSecret":"<64 hex>","peer":"desktop"}
+```
+
+Only the exact string `"desktop"` counts, and anything else is no marker. A
+phone omits the field entirely. The field is sealed, so a relay can neither
+forge it nor strip it.
+
+**The host enforces the marker both ways.** It checks the marker *before* the
+one-time secret, so a sender of the wrong kind never spends the offer and the
+room stays open for the right one:
+
+- a **link** offer refuses a hello without `"peer":"desktop"`: *That code is
+  for linking another computer, not a phone.*
+- a **phone** offer refuses a hello with it: *That code is for a phone. Create
+  a code under Settings ▸ Linked machines.*
+- a link offer also refuses any hello once the host holds 16 links, counting
+  the ones it hosts and the ones it joined.
+
+Each refusal is shown on the host. The joiner hears nothing back and gives up
+after 60 s.
+
+**An accepted link** becomes a paired device with `"kind":"desktop"` and no
+phone capabilities. Its label is the hello's `label`, sanitised per §7.6.
+
+**`PAIRING_ACK` is unchanged.** Its optional `name` carries the host's machine
+name, which the joiner offers as the name to call the host. The joiner refuses
+an ack whose `deviceId` is not `SHA-256(utf8(link public key hex))`, truncated
+to 8 bytes, in hex. An authentic ack for a different key is a broken host, not
+something to wait out.
+
+**Both sides then derive the session room and the safety words.** They use
+§6.2 and §8, from the host's identity key and the joiner's link key, and meet
+in the session room. The host dials `role=desktop` and the joiner
+`role=device`, and the §6.1 handshake runs with the same roles.
+
+**An older host.** A desktop that predates linked machines ignores `peer`, as
+it ignores any field it does not know, and pairs the sender as a phone. Every
+request in §13.3 then comes back as an unrecognised kind, which the asking
+side reports as *update Termpolis there*.
+
+### 13.3 Requests in both directions
+
+On a phone's session, only the phone asks. On a link's session, **either
+desktop may ask**, using the §9 envelopes unchanged:
+
+```json
+{"id": 1, "request": {"kind": "peerHello"}}
+{"kind": "ok", "id": 1, "data": …}
+{"kind": "error", "id": 1, "message": "…"}
+```
+
+- **Each end numbers the requests it sends** from its own counter. The same
+  `id` can be in flight in both directions at once.
+- **An opened frame is told apart by its shape.**
+  - A numeric `id` with a string `request.kind` is a request for this end to
+    answer.
+  - `"kind":"ok"` or `"kind":"error"` with a numeric `id` answers a request
+    **this end** sent. It settles the entry with that `id` in this end's own
+    pending map.
+  - Anything else is dropped silently, including an answer to an `id` nobody is
+    waiting on.
+- **A request fails locally** in three cases:
+  - with `offline` when the session ends under it (`peer-gone`, a drop, a
+    stop);
+  - with `timed out` when its own timer runs out;
+  - with `offline` **at once** when there is no session to send it on. The
+    relay is not a mailbox, so a request written into a room the other desktop
+    is not in would only wait out its timer.
+
+The kinds:
+
+| `kind` | Fields | `data` of the answer |
+| --- | --- | --- |
+| `peerHello` | — | `PeerHelloInfo` |
+| `peerRun` | `agent`, `prompt`, `cwd?`, `write?`, `model?`, `timeoutMs?` | `PeerJobView` |
+| `peerResult` | `jobId`, `waitMs?` | `PeerJobView` |
+| `peerCancel` | `jobId` | `PeerJobView` |
+| `peerBye` | — | `null` |
+
+```ts
+type PeerRequest =
+  | { kind: 'peerHello' }
+  | { kind: 'peerRun'; agent: 'claude' | 'codex' | 'gemini'; prompt: string; cwd?: string;
+      write?: boolean; model?: string; timeoutMs?: number }
+  | { kind: 'peerResult'; jobId: string; waitMs?: number }   // a long-poll, held ≤ 50_000 ms
+  | { kind: 'peerCancel'; jobId: string }
+  | { kind: 'peerBye' }                                       // "I unlinked you"
+
+interface PeerHelloInfo {                // the data of a peerHello answer
+  name: string                           // the answering machine's own name
+  agents: { claude: boolean; codex: boolean; gemini: boolean }
+  grants: { run: boolean; write: boolean }  // what the ASKER may do there
+  confirmed: boolean
+  version: string                        // app version
+}
+
+interface PeerJobView {                  // the data of a peerRun / peerResult / peerCancel answer
+  jobId: string                          // 12 hex, minted by the answering machine
+  agent: 'claude' | 'codex' | 'gemini'
+  status: 'running' | 'done' | 'failed' | 'cancelled'
+  output?: string                        // the TAIL: ≤ 200_000 chars and ≤ 600_002 bytes as a JSON string
+  truncated?: boolean
+  error?: string
+  startedAt: number
+  durationMs?: number
+}
+```
+
+**Phones never send or receive these.** They are not in the phone's request
+set (§9) or its capability table. A phone that sends one is refused with the
+standard *remote device sent an unrecognised request kind*, which fails closed
+even if the routing below were lost. A desktop never sends one into a phone's
+room.
+
+**A linked desktop is served these and nothing else.** A request from a device
+of kind `desktop` is routed before every phone branch, so not even
+`getCapabilities` or `unpair` reaches it. A kind outside the five gets the same
+unrecognised-kind refusal. The joiner's side of a link serves the same five
+kinds only.
+
+**`peerBye` is answered first and acted on after the answer is out.** Closing
+the room first would close the socket the answer leaves by. The desktop that
+sent it has already dropped its own record of the link. The desktop that
+receives it does this:
+
+- a host revokes the sender exactly as `unpair` does (§9), by the device id
+  its sealed session proves and never by a field in the payload, and closes
+  that device's room;
+- a joiner closes the link's room;
+- either way, it then drops its record of the link and stops any job the
+  sender still had running on it.
+
+**Every other kind is answered by the asked machine's policy, not by the
+transport.** The asked machine:
+
+- refuses everything but `peerHello` until its user has confirmed the safety
+  words;
+- requires the `run` grant for `peerRun`, and the `write` grant for
+  `write: true`;
+- accepts `peerResult` and `peerCancel` only for jobs the same link started.
+  Any other `jobId` answers `unknown job`, whether or not that job exists.
+
+Refusals are sentences written for the asking agent, such as *Not confirmed
+yet on …*, `busy: …` or `unknown job`. The asker treats them as untrusted
+text, like every `output`. The answering bridge gives that policy 30 s to
+answer. For `peerResult` it gives the held `waitMs`, clamped to 0–50,000, plus
+15 s.
+
+**Size.** `output` keeps its tail within 200,000 characters *and* within
+600,002 bytes as a JSON string. A control character costs six bytes in JSON
+(`\u0001`), so the character cap alone does not keep an answer inside the
+1 MiB frame (§3.5). The cut cannot be left to the relay, because it does not
+truncate: it cuts the connection. The desktop's relay client adds two more
+guards:
+
+- an answer that would still not fit, on any session, phone or link, is
+  replaced by
+  `{"kind":"error","id":…,"message":"response too large for the relay"}`;
+- a request that would not fit is refused before it is sent, as
+  `request too large`.

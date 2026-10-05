@@ -20,7 +20,6 @@ const RESTART_WINDOW_MS = 60_000
 let spawner: BridgeSpawner | null = null
 let handle: BridgeHandle | null = null
 let disabled = false
-let stopping = false
 const restartTimes: number[] = []
 const subscribers: Array<(m: BridgeToHost) => void> = []
 
@@ -46,17 +45,31 @@ function emit(m: BridgeToHost): void {
 
 /** Fork one child and arm the restart policy behind it.
  *
- *  `init` is an argument rather than module state so a respawn replays exactly
- *  what the first spawn was given. Held in a variable it could be `null` on a
- *  path no caller can reach, which buys a guard nothing can exercise. */
-function spawn(init: InitParams): void {
+ *  `init` is a FACTORY, asked afresh on every spawn. It used to be the params
+ *  themselves, captured at launch and replayed on every respawn -- so a bridge
+ *  that crashed an hour in came back with the devices and links of an hour ago:
+ *  a phone paired since then was gone until the next manual restart, and one
+ *  revoked since was live again. An argument rather than module state, because
+ *  held in a variable it could be `null` on a path no caller can reach, which
+ *  buys a guard nothing can exercise. */
+function spawn(init: () => InitParams): void {
   if (!spawner || disabled) return
   const child = spawner()
   handle = child
-  child.on('message', emit)
+  // Only the CURRENT child speaks for the bridge. A stopped child's last words and
+  // its exit arrive after its replacement is already running; treating that exit
+  // as a crash would clear the new handle and spawn a third bridge that fights the
+  // second for every relay seat (409), with nothing left holding a handle to kill it.
+  child.on('message', (m: BridgeToHost) => {
+    if (handle === child) emit(m)
+  })
   child.on('exit', (code) => {
+    // A stopped child is no longer `handle` (stop clears it), so this one guard also
+    // covers a deliberate stop: only an unplanned exit of the live child counts. No
+    // `disabled` check is needed here either: `disabled` is only ever set below, and
+    // `spawn()` refuses to start a child while it is set.
+    if (handle !== child) return
     handle = null
-    if (stopping || disabled) return
 
     const now = Date.now()
     restartTimes.push(now)
@@ -70,16 +83,17 @@ function spawn(init: InitParams): void {
     void code
     spawn(init)
   })
-  child.postMessage({ kind: 'init', ...init })
+  child.postMessage({ kind: 'init', ...init() })
 }
 
-export function startRemoteBridge(init: InitParams): void {
+/** Start the bridge. Pass a factory so a crash restart replays the CURRENT
+ *  devices and links; plain params are still accepted and replay as given. */
+export function startRemoteBridge(init: InitParams | (() => InitParams)): void {
   // `disabled` is checked in `spawn()` and nowhere else. Two places that decide
   // whether a fail-closed switch is closed is one place too many: the day a
   // third caller appears, it will copy whichever guard it happened to read.
   if (handle) return
-  stopping = false
-  spawn(init)
+  spawn(typeof init === 'function' ? init : () => init)
 }
 
 /** Push one message down to the running bridge.
@@ -103,7 +117,6 @@ export function clearRemoteDisabled(): void {
 }
 
 export function stopRemoteBridge(): void {
-  stopping = true
   // Ask before killing. The child closes its relay rooms on `shutdown`, which
   // frees each seat immediately -- and a seat is exclusive: the relay answers a
   // second desktop socket for the same room with 409. Without this the next
@@ -171,7 +184,6 @@ export function createRemoteBridgeTransport(
 
 /** @internal test-only */
 export function _resetSupervisorForTests(): void {
-  stopping = false
   disabled = false
   handle = null
   spawner = null

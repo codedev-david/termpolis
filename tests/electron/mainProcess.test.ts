@@ -33,6 +33,8 @@ MockBrowserWindow.prototype = {}
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => require('os').tmpdir()),
+    // Linked machines tells a linked computer which version answers it.
+    getVersion: vi.fn(() => '0.0.0-test'),
     whenReady: () => Promise.resolve(),
     requestSingleInstanceLock: () => true,
     setName: vi.fn(),
@@ -2428,12 +2430,19 @@ describe('App lifecycle events', () => {
   it('before-quit unregisters shortcuts, kills all terminals, and stops MCP server', async () => {
     const { globalShortcut } = await import('electron') as any
     const { killAll } = await import('../../src/main/terminalManager') as any
+    // Linked machines came up with the app, once the MCP port bound...
+    expect(await invokeHandler('linked:status')).toMatchObject({ success: true })
 
     capturedAppCallbacks['before-quit']()
 
     expect(globalShortcut.unregisterAll).toHaveBeenCalled()
     expect(killAll).toHaveBeenCalled()
     expect(mockStopMcpServer).toHaveBeenCalled()
+    // ...and goes with it: a job another computer started here must not outlive the app.
+    expect(await invokeHandler('linked:status')).toEqual({
+      success: false,
+      error: 'Linked machines is not running in this session',
+    })
   })
 
   /**

@@ -19,6 +19,7 @@
 
 const http = require('http')
 const fs = require('fs')
+const path = require('path')
 
 // Data-dir logic is shared so it can't drift (lowercase name, XDG_CONFIG_HOME on Linux) — dataDir.cjs
 const { dataFile } = require('./dataDir.cjs')
@@ -113,6 +114,9 @@ function textOf(res) {
 // code to mean what it says.
 function failIfError(res) {
   if (res.error) { console.error(`Error: ${res.error.message || JSON.stringify(res.error)}`); process.exit(1) }
+  // A tool error is a result flagged isError, whose text ("Error: ...") is the message. The verbs
+  // below would otherwise try to parse that text as their JSON payload.
+  if (res.result?.isError) { console.error(textOf(res) || 'Error: the tool call failed'); process.exit(1) }
   return res
 }
 
@@ -258,7 +262,9 @@ Headless + proof (for CI, git hooks, and scripts):
           prompt,
           agent: flags.agent,
           model: flags.model,
-          cwd: flags.cwd || process.cwd(),
+          // Absolute, against THIS shell's folder. The app refuses a relative one: there it would
+          // mean the app's own folder, not the one the user typed it in.
+          cwd: path.resolve(flags.cwd || process.cwd()),
           write: flags.write === true,
           timeoutMs,
         }, (timeoutMs || 900000) + 30000))

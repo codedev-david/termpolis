@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { RelayClient, backoffDelay, KEEPALIVE_MS } from '../../src/main/remoteBridge/relayClient'
 import type { SessionRelayDeps } from '../../src/main/remoteBridge/relayClient'
+import { MAX_PAYLOAD_BYTES } from '../../src/main/remoteBridge/outputChunker'
+import type { RelayControlFrame } from '../../src/main/remoteBridge/protocol'
 import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
 import {
   Handshake,
@@ -829,6 +831,44 @@ describe('relay client keepalive', () => {
     }
   })
 
+  it('ignores whatever a socket it has let go of still delivers', () => {
+    // `ws` keeps emitting `message` for frames already in flight after `close()`
+    // -- the socket is CLOSING, not closed, until the far end answers. A `hello`
+    // landing then used to seat a stopped client all over again: state back to
+    // `online`, and a keepalive started on a socket nothing would ever clear it
+    // from, since `down` only acts for the socket the client still holds.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      sock.close = () => {
+        sock.closed = true
+      }
+      const states: string[] = []
+      const controls: string[] = []
+      const c = build(p, () => sock as never, {
+        onStateChange: (s) => states.push(s),
+        onControl: (f) => controls.push(f.kind),
+      })
+      c.start()
+      sock.emit('open')
+      c.stop()
+      const before = states.length
+
+      seat(sock, true)
+      control(sock, { kind: 'peer-joined', role: 'device' })
+      sock.emit('message', Buffer.from(p.phone().greeting), true)
+      vi.advanceTimersByTime(10 * KEEPALIVE_MS)
+
+      expect(c.state).toBe('offline')
+      expect(states).toHaveLength(before)
+      expect(controls).toEqual([])
+      expect(sock.sent).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('stops pinging when stopped before the close event arrives', () => {
     // `ws.close()` starts a closing handshake and the `close` event lands later.
     // By then `stop()` has dropped its reference to the socket, so `down` -- which
@@ -997,5 +1037,337 @@ describe('relay client pairing mode', () => {
     const c = pairingClient(sock, () => {})
     c.stop()
     expect(() => c.sendFrame(new Uint8Array([FRAME_PAIRING_ACK]))).not.toThrow()
+  })
+
+  it('has no session to ask anything over', async () => {
+    // A pairing room never attaches, so a request there can only be refused --
+    // at once, rather than after a timeout spent waiting on nobody.
+    const sock = fakeSocket()
+    const c = pairingClient(sock, () => {})
+    seat(sock, true)
+    await expect(c.request({ kind: 'peerHello' }, 1000)).rejects.toThrow('offline')
+    expect(sock.sent).toEqual([])
+  })
+})
+
+/** Open one frame the client sealed, the way the phone's end would. */
+function opened(session: SealedSession, frame: Uint8Array): unknown {
+  return JSON.parse(new TextDecoder().decode(session.open(frame, 1)))
+}
+
+/** Seal one JSON payload from the phone's end and push it in. */
+function answer(sock: ReturnType<typeof fakeSocket>, session: SealedSession, body: unknown): void {
+  sock.emit('message', Buffer.from(session.seal(H, enc(JSON.stringify(body)))), true)
+}
+
+describe('relay client seat and control frames', () => {
+  it('dials the desktop seat unless told otherwise', () => {
+    const urls: string[] = []
+    const c = build(pair(), (url) => {
+      urls.push(url)
+      return fakeSocket() as never
+    })
+    c.start()
+    expect(urls).toEqual([`wss://relay.test/v1/pair/${'a'.repeat(32)}?role=desktop`])
+  })
+
+  it('dials the device seat when it joins a link', () => {
+    // A machine that entered a link code sits in the DEVICE seat of the host's
+    // room, exactly where a phone would. Two desktops dialling the desktop seat
+    // of one room would be a 409 for whichever came second, forever.
+    const urls: string[] = []
+    const c = build(pair(), (url) => {
+      urls.push(url)
+      return fakeSocket() as never
+    }, { role: 'device' })
+    c.start()
+    expect(urls).toEqual([`wss://relay.test/v1/pair/${'a'.repeat(32)}?role=device`])
+  })
+
+  it('attaches from the device seat with a device-role handshake', () => {
+    // The mirror image of `connect`: this end greets as the device, and a desktop
+    // handshake on the far side accepts it. Same greeting rule, same session.
+    const p = pair()
+    const sock = fakeSocket()
+    const c = build(p, () => sock as never, { role: 'device', handshake: p.phone })
+    c.start()
+    sock.emit('open')
+    control(sock, { kind: 'hello', role: 'device', peer: true })
+    const desktop = p.handshake()
+    desktop.accept(sock.sent.shift()!)
+    sock.emit('message', Buffer.from(desktop.greeting), true)
+    expect(c.state).toBe('attached')
+  })
+
+  it('tells the caller every control frame it knows, after acting on it', () => {
+    // Joining a link needs exactly what this client already watches for: when
+    // the host is in the room, and when it leaves. Reported AFTER the client's
+    // own handling, so by the time the caller hears `hello` the seat is taken.
+    const seen: Array<{ frame: RelayControlFrame; state: string }> = []
+    const sock = fakeSocket()
+    const c: RelayClient = build(pair(), () => sock as never, {
+      onControl: (frame) => seen.push({ frame, state: c.state }),
+    })
+    c.start()
+    sock.emit('open')
+    seat(sock, false)
+    control(sock, { kind: 'peer-joined', role: 'device' })
+    control(sock, { kind: 'peer-gone', role: 'device' })
+    control(sock, { kind: 'quota-exceeded', limit: 'idle' })
+
+    expect(seen.map((s) => s.frame.kind)).toEqual(['hello', 'peer-joined', 'peer-gone', 'quota-exceeded'])
+    expect(seen[0].state).toBe('online')
+  })
+
+  it('keeps unparseable and unknown control frames from the caller too', () => {
+    const seen: RelayControlFrame[] = []
+    const sock = fakeSocket()
+    const c = build(pair(), () => sock as never, { onControl: (f) => seen.push(f) })
+    c.start()
+    sock.emit('open')
+    sock.emit('message', Buffer.from('}{'), false)
+    sock.emit('message', Buffer.from(JSON.stringify({ kind: 'from-the-future' })), false)
+    sock.emit('message', Buffer.from('null'), false)
+    expect(seen).toEqual([])
+  })
+})
+
+describe('relay client requests', () => {
+  it('asks over the session and resolves with the answer', async () => {
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    const phone = connect(sock, p)
+
+    const asked = c.request({ kind: 'peerHello' }, 5_000)
+    expect(opened(phone, sock.sent[0])).toEqual({ id: 1, request: { kind: 'peerHello' } })
+    answer(sock, phone, { kind: 'ok', id: 1, data: { name: 'build-box' } })
+
+    await expect(asked).resolves.toEqual({ name: 'build-box' })
+  })
+
+  it('rejects with the message the other end refused it with', async () => {
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    const phone = connect(sock, p)
+
+    const asked = c.request({ kind: 'peerRun' }, 5_000)
+    answer(sock, phone, { kind: 'error', id: 1, message: 'write is not granted' })
+    await expect(asked).rejects.toThrow('write is not granted')
+  })
+
+  it('rejects with a placeholder when the refusal carries no text', async () => {
+    // The far end is authenticated, not trusted to be well-formed. An Error whose
+    // message is `undefined` would reach the agent as the word "undefined".
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    const phone = connect(sock, p)
+
+    const asked = c.request({ kind: 'peerRun' }, 5_000)
+    answer(sock, phone, { kind: 'error', id: 1, message: { not: 'text' } })
+    await expect(asked).rejects.toThrow('request failed')
+  })
+
+  it('refuses at once, sending nothing, when there is no session', async () => {
+    // Seated but alone is not attached. A request written then is sealed under
+    // no key and dropped -- the caller would wait out the whole timeout for an
+    // answer that was never asked for.
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    await expect(c.request({ kind: 'peerHello' }, 5_000)).rejects.toThrow('offline')
+    sock.emit('open')
+    seat(sock, false)
+    await expect(c.request({ kind: 'peerHello' }, 5_000)).rejects.toThrow('offline')
+    expect(sock.sent).toEqual([])
+  })
+
+  it('gives up after its timeout, and a late answer changes nothing', async () => {
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      const phone = connect(sock, p)
+
+      const asked = c.request({ kind: 'peerHello' }, 8_000)
+      const settled = expect(asked).rejects.toThrow('timed out')
+      await vi.advanceTimersByTimeAsync(8_000)
+      await settled
+
+      expect(() => answer(sock, phone, { kind: 'ok', id: 1, data: 'late' })).not.toThrow()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(c.state).toBe('attached')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never reuses an id, even across a reconnect', async () => {
+    // A late answer from the previous session must not be able to settle a new
+    // request that happens to have been given the same number.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const o = opener()
+      const c = build(p, o.open)
+      c.start()
+      const first = connect(o.sockets[0], p)
+      void c.request({ kind: 'peerHello' }, 60_000).catch(() => {})
+      void c.request({ kind: 'peerHello' }, 60_000).catch(() => {})
+      expect((opened(first, o.sockets[0].sent[1]) as { id: number }).id).toBe(2)
+
+      o.sockets[0].emit('close')
+      vi.advanceTimersByTime(rung(0))
+      const second = connect(o.sockets[1], p)
+      void c.request({ kind: 'peerHello' }, 60_000).catch(() => {})
+      expect((opened(second, o.sockets[1].sent[0]) as { id: number }).id).toBe(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['the socket drops', (sock: ReturnType<typeof fakeSocket>) => sock.emit('close')],
+    ['the peer leaves the room', (sock: ReturnType<typeof fakeSocket>) => control(sock, { kind: 'peer-gone', role: 'device' })],
+  ])('fails everything in flight as offline when %s', async (_label, cut) => {
+    // An answer can only come back over the session it was asked on, and that
+    // session is gone. Waiting out the timeout would tell an agent a machine is
+    // slow when it has in fact gone away.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      connect(sock, p)
+      // One timer either side of the cut: the keepalive while seated, and then
+      // either that same keepalive (peer gone, still seated) or the redial that
+      // replaced it (socket gone). The two request timers must not survive.
+      const baseline = vi.getTimerCount()
+      const a = c.request({ kind: 'peerHello' }, 60_000)
+      const b = c.request({ kind: 'peerResult', jobId: 'j' }, 60_000)
+      const both = Promise.allSettled([a, b])
+      expect(vi.getTimerCount()).toBe(baseline + 2)
+
+      cut(sock)
+      const results = await both
+      expect(results.map((r) => (r as PromiseRejectedResult).reason.message)).toEqual(['offline', 'offline'])
+      expect(vi.getTimerCount()).toBe(baseline)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails everything in flight as offline when stopped', async () => {
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    connect(sock, p)
+    const asked = c.request({ kind: 'peerHello' }, 60_000)
+    c.stop()
+    await expect(asked).rejects.toThrow('offline')
+  })
+
+  it('ignores an answer to a question it never asked, and a second answer to one it did', async () => {
+    const p = pair()
+    const sock = fakeSocket()
+    const onRequest = vi.fn()
+    const c = client(sock, p, onRequest)
+    c.start()
+    const phone = connect(sock, p)
+
+    answer(sock, phone, { kind: 'ok', id: 41, data: 'unasked' })
+    answer(sock, phone, { kind: 'error', id: 42, message: 'unasked' })
+    const asked = c.request({ kind: 'peerHello' }, 5_000)
+    answer(sock, phone, { kind: 'ok', id: 1, data: 'first' })
+    answer(sock, phone, { kind: 'ok', id: 1, data: 'second' })
+
+    await expect(asked).resolves.toBe('first')
+    expect(onRequest).not.toHaveBeenCalled()
+    expect(c.state).toBe('attached')
+  })
+
+  it.each([
+    ['an answer with no id', { kind: 'ok', data: 1 }],
+    ['an answer whose id is text', { kind: 'ok', id: '1', data: 1 }],
+    ['something that is neither question nor answer', { kind: 'output', id: 1, chunks: [] }],
+  ])('drops %s without settling anything', async (_label, body) => {
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    const phone = connect(sock, p)
+    let settled = false
+    void c.request({ kind: 'peerHello' }, 60_000).then(
+      () => (settled = true),
+      () => (settled = true),
+    )
+    answer(sock, phone, body)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(settled).toBe(false)
+  })
+
+  it('answers and asks over one session at once, without the ids colliding', async () => {
+    // A link carries requests in BOTH directions. Each end numbers its own, so
+    // the other end's request 1 and this end's request 1 are different things:
+    // one arrives with `request`, the other's answer arrives with `kind`.
+    const p = pair()
+    const sock = fakeSocket()
+    const onRequest = vi.fn().mockResolvedValue({ kind: 'ok', id: 1, data: 'their answer' })
+    const c = client(sock, p, onRequest)
+    c.start()
+    const phone = connect(sock, p)
+
+    const mine = c.request({ kind: 'peerHello' }, 5_000)
+    sock.emit('message', Buffer.from(phone.seal(H, envelope(1))), true)
+    await vi.waitFor(() => expect(sock.sent).toHaveLength(2))
+    expect(onRequest).toHaveBeenCalledWith({ id: 1, request: { kind: 'listTerminals' } })
+    expect(opened(phone, sock.sent[0])).toEqual({ id: 1, request: { kind: 'peerHello' } })
+    expect(opened(phone, sock.sent[1])).toEqual({ kind: 'ok', id: 1, data: 'their answer' })
+
+    answer(sock, phone, { kind: 'ok', id: 1, data: 'my answer' })
+    await expect(mine).resolves.toBe('my answer')
+  })
+
+  it('refuses a request too large for the relay instead of getting cut for it', async () => {
+    // The relay CUTS a connection over an oversized frame, and a frame-size cut
+    // latches: this room would stay dark until the bridge restarted.
+    const p = pair()
+    const sock = fakeSocket()
+    const c = client(sock, p, vi.fn())
+    c.start()
+    connect(sock, p)
+    await expect(
+      c.request({ kind: 'peerRun', prompt: 'x'.repeat(MAX_PAYLOAD_BYTES) }, 5_000),
+    ).rejects.toThrow('request too large')
+    expect(sock.sent).toEqual([])
+  })
+
+  it('answers with an error rather than a frame the relay would cut', async () => {
+    // A headless agent's output is capped by characters, and escaping can grow a
+    // character into six bytes. A response that would seal past the cap is
+    // replaced by a refusal the asker can read, not sent and latched on.
+    const p = pair()
+    const sock = fakeSocket()
+    const big = 'x'.repeat(MAX_PAYLOAD_BYTES)
+    const c = client(sock, p, vi.fn().mockResolvedValue({ kind: 'ok', id: 9, data: big }))
+    c.start()
+    const phone = connect(sock, p)
+    sock.emit('message', Buffer.from(phone.seal(H, envelope(9))), true)
+    await vi.waitFor(() => expect(sock.sent).toHaveLength(1))
+    expect(opened(phone, sock.sent[0])).toEqual({
+      kind: 'error',
+      id: 9,
+      message: 'response too large for the relay',
+    })
   })
 })

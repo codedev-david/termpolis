@@ -3,6 +3,12 @@ export type Route = 'exempt' | 'array' | 'object'
 export const EXEMPT_TOOLS: readonly string[] = [
   'list_terminals', 'create_terminal', 'run_command', 'close_terminal', 'write_to_terminal',
   'retrieve_full',
+  // `termpolis-cli exec` JSON.parses this result. A compacted one swaps the long output for a
+  // retrieve_full token and is no longer JSON.
+  'agent_exec',
+  // A whole agent run on another machine. Compacted, the answer would sit behind a retrieve_full
+  // token that expires, and the advice for an expired token, re-run the tool, runs that agent again.
+  'linked_machines',
 ]
 
 /**

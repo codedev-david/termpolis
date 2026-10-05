@@ -160,6 +160,79 @@ describe('pairing hello', () => {
       }),
     ).toThrow(/not a pairing hello/)
   })
+
+  it('carries the mark of another computer, sealed, and opens it as one', () => {
+    // Linked machines reuse the phone's pairing wire. The marker is what lets a
+    // host refuse a phone on a link code and a computer on a phone QR -- and it
+    // rides inside the seal, so a relay can neither add it nor strip it.
+    const o = offer()
+    const frame = sealPairingHello({
+      deviceSecretKey: phone.secretKey,
+      devicePublicKey: phone.publicKey,
+      desktopPublicKey: desktop.publicKey,
+      pairingId: o.pairingId,
+      label: 'build-box',
+      oneTimeSecret: o.oneTimeSecret,
+      peer: 'desktop',
+    })
+    expect(
+      openPairingHello({ desktopSecretKey: desktop.secretKey, pairingId: o.pairingId, frame }),
+    ).toEqual({
+      devicePublicKey: phone.publicKey,
+      label: 'build-box',
+      oneTimeSecret: o.oneTimeSecret,
+      peer: 'desktop',
+    })
+  })
+
+  it('seals a phone hello exactly as it was before the marker existed', () => {
+    // Additive on PROTOCOL_VERSION 2 means a phone's frame does not change by a
+    // byte. The marker is omitted, not written as null, so the golden vectors in
+    // remoteWireVectors still pin the phone's hello.
+    const o = offer()
+    const opened = openPairingHello({
+      desktopSecretKey: desktop.secretKey,
+      pairingId: o.pairingId,
+      frame: hello(o),
+    })
+    expect('peer' in opened).toBe(false)
+    const plaintext = SealedSession.fromRoot(
+      pairingRoot(desktop.secretKey, phone.publicKey, o.pairingId),
+      'desktop',
+    ).open(hello(o), HELLO_HEADER_BYTES)
+    expect(Object.keys(JSON.parse(new TextDecoder().decode(plaintext)))).toEqual([
+      'v',
+      'label',
+      'oneTimeSecret',
+    ])
+  })
+
+  it.each([['phone'], [true], [{}], [null]])(
+    'reads a marker it does not know (%j) as no marker at all',
+    (peer) => {
+      // A sealed hello proves who sent it, not that the sender spoke this
+      // version. Only the exact string means a computer.
+      const o = offer()
+      const header = new Uint8Array(HELLO_HEADER_BYTES)
+      header[0] = FRAME_PAIRING_HELLO
+      header.set(fromHex(phone.publicKey), 1)
+      const frame = SealedSession.fromRoot(
+        pairingRoot(phone.secretKey, desktop.publicKey, o.pairingId),
+        'device',
+      ).seal(
+        header,
+        new TextEncoder().encode(
+          JSON.stringify({ v: PROTOCOL_VERSION, label: 'x', oneTimeSecret: o.oneTimeSecret, peer }),
+        ),
+      )
+      const opened = openPairingHello({
+        desktopSecretKey: desktop.secretKey,
+        pairingId: o.pairingId,
+        frame,
+      })
+      expect('peer' in opened).toBe(false)
+    },
+  )
 })
 
 describe('pairing ack', () => {
