@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import { gpuPolicy } from './gpuPolicy'
 import {
@@ -517,6 +517,14 @@ import {
 // disarmed again if the move didn't happen.
 let quittingForUpdate = false
 
+// Armed by before-quit. app.quit() emits before-quit and only THEN closes the windows, and a
+// close listener that calls preventDefault cancels the whole quit. By then the terminals are
+// already killed and the background services stopped, so there is nothing left to confirm, and
+// holding the window only strands the app: on macOS the window then closed by itself and, since
+// window-all-closed never quits there, Termpolis sat in the Dock offline -- the first Cmd+Q never
+// quit. Disarmed when a window is created again (a quit something else cancelled).
+let appQuitting = false
+
 let mainWindow: BrowserWindow | null = null
 
 // Buffer terminal output for MCP read_output (capped at 32KB per terminal)
@@ -616,6 +624,7 @@ function loadWindowIcon() {
 let onSessionEnd: (() => void) | null = null
 
 function createWindow() {
+  appQuitting = false
   // If the icon fails to load we leave `icon` undefined so the OS uses the
   // executable's embedded icon, never a blank one.
   const windowIcon = loadWindowIcon()
@@ -672,7 +681,7 @@ function createWindow() {
   // dialog must not interject and cancel the update's restart.
   let forceClose = false
   mainWindow.on('close', (e) => {
-    if (forceClose || quittingForUpdate || process.env.NODE_ENV === 'test') return
+    if (forceClose || quittingForUpdate || appQuitting || process.env.NODE_ENV === 'test') return
     // Ask renderer if agents are running, show in-app dialog if so
     const hasAgents = mainWindow?.webContents.executeJavaScript(
       `(() => { try { return window.__termpolis_has_agents?.() ?? false } catch { return false } })()`
@@ -4364,6 +4373,12 @@ async function semanticPoolOptions(
       // Delegated jobs run headless with the same deliver and primer as `termpolis exec`, and
       // deliberately without `remember`: text another machine asked for must never become a
       // later run's primer here.
+      //
+      // While another computer's job runs here, the system must not idle-sleep under it, nor
+      // macOS put the app in App Nap: a sleeping machine drops off the relay. 'prevent-app-suspension'
+      // still lets the display sleep. One blocker, held by id; powerSaveBlocker is read only when
+      // called, never at load.
+      let sleepBlocker: number | null = null
       try {
         startLinkedHost({
           userDataDir: app.getPath('userData'),
@@ -4374,6 +4389,14 @@ async function semanticPoolOptions(
           agentsInstalled: async () => {
             const found = await detectInstalledAgents()
             return { claude: found.claude === true, codex: found.codex === true, gemini: found.gemini === true }
+          },
+          keepAwake: (on) => {
+            if (on && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start('prevent-app-suspension')
+            else if (!on && sleepBlocker !== null) {
+              const id = sleepBlocker
+              sleepBlocker = null
+              powerSaveBlocker.stop(id)
+            }
           },
         })
       } catch (e) {
@@ -4462,6 +4485,7 @@ async function semanticPoolOptions(
   // How far teardown got, so the `will-quit` watchdog below can name the step it stalled on.
   let shutdownStage = 'idle'
   app.on('before-quit', () => {
+    appQuitting = true
     shutdownStage = 'start'
     // FIRST: this is a clean shutdown, so the next boot must not report it as a crash. Everything
     // below can throw; the marker must be cleared regardless.
@@ -4566,6 +4590,12 @@ async function semanticPoolOptions(
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { shutdownEventBus() } catch {}
+    // macOS keeps the app running in the Dock with no window, and `activate` only makes a new
+    // window -- nothing would start these three again. So there they live until the app quits:
+    // `before-quit` stops all of them, and every quit (Cmd+Q, the Dock, an update restart,
+    // Playwright's app.close()) is app.quit(), which emits it. Stopped here, a Mac whose window was
+    // closed would drop offline to its linked machines and phones, and its agents would lose MCP.
+    if (process.platform === 'darwin') return
     try { stopLinkedHost() } catch {}
     try { stopRemoteBridgeHost() } catch {}
     stage = 'watchers'
@@ -4576,11 +4606,9 @@ async function semanticPoolOptions(
       mcpServer = null
     }
     stage = 'mcp'
-    if (process.platform !== 'darwin') {
-      app.quit()
-      // Force exit — MCP server or PTY processes may keep event loop alive
-      setTimeout(() => process.exit(0), 500)
-    }
+    app.quit()
+    // Force exit — MCP server or PTY processes may keep event loop alive
+    setTimeout(() => process.exit(0), 500)
   })
   app.on('activate', () => { if (!mainWindow) createWindow() })
 }

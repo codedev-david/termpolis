@@ -1249,36 +1249,53 @@ describe('second-instance: relaunching Termpolis surfaces the existing window', 
   })
 })
 
-// Ordering matters here and is deliberate: window-all-closed nulls the MCP server handle, so the
-// later before-quit exercises the already-stopped path. Both run against THIS file's module
-// instance, so they cannot disturb the other suites.
+// Ordering matters here and is deliberate: the non-macOS window-all-closed nulls the MCP server
+// handle, so the later before-quit exercises the already-stopped path. All of them run against
+// THIS file's module instance, so they cannot disturb the other suites. Linked machines and Remote
+// are the real services here, so "running" is what their own status channels answer.
 describe('shutdown', () => {
-  it('macOS keeps the app alive with no windows, but still stops the MCP server', async () => {
+  it('macOS keeps the app alive with no windows -- and the MCP server, Remote and Linked machines with it', async () => {
     const { app } = (await import('electron')) as any
     app.quit.mockClear()
     M.stopMcpServer.mockClear()
     M.killAll.mockClear()
-
-    await withPlatform('darwin', async () => {
-      ;(await appCallback('window-all-closed'))()
-    })
+    exitSpy.mockClear()
+    vi.useFakeTimers()
+    try {
+      await withPlatform('darwin', async () => {
+        ;(await appCallback('window-all-closed'))()
+      })
+      vi.advanceTimersByTime(60_000)
+    } finally {
+      vi.useRealTimers()
+    }
 
     expect(M.killAll).toHaveBeenCalledTimes(1)
-    // The MCP server is torn down regardless of platform — a stray listener would hold the port.
-    expect(M.stopMcpServer).toHaveBeenCalledWith({ id: 'mcp-server-handle' })
-    // …but the app itself stays running, which is the macOS convention.
+    // The app stays running in the Dock, which is the macOS convention...
     expect(app.quit).not.toHaveBeenCalled()
+    expect(exitSpy).not.toHaveBeenCalled()
+    // ...and so does everything another machine reaches it through. Nothing restarts these when a
+    // window comes back, so stopping them here would leave the computer offline to its linked
+    // machines and phones, and its agents without MCP, until a full quit and relaunch.
+    expect(M.stopMcpServer).not.toHaveBeenCalled()
+    expect(await invoke('linked:status')).toMatchObject({ success: true })
+    expect(await invoke('remote:status')).toMatchObject({ success: true })
   })
 
-  it('elsewhere it quits AND force-exits, because a live PTY/MCP handle can outlive app.quit()', async () => {
+  it('elsewhere it stops them, quits AND force-exits, because a live PTY/MCP handle can outlive app.quit()', async () => {
     const { app } = (await import('electron')) as any
     app.quit.mockClear()
+    M.stopMcpServer.mockClear()
     exitSpy.mockClear()
     vi.useFakeTimers()
     try {
       await withPlatform('win32', async () => {
         ;(await appCallback('window-all-closed'))()
       })
+      // Closing the last window IS quitting here, so the services go with it.
+      expect(M.stopMcpServer).toHaveBeenCalledWith({ id: 'mcp-server-handle' })
+      expect(await invoke('linked:status')).toEqual({ success: false, error: 'Linked machines is not running in this session' })
+      expect(await invoke('remote:status')).toEqual({ success: false, error: 'Remote access is not running in this session' })
       expect(app.quit).toHaveBeenCalledTimes(1)
       // The escape hatch has not fired yet — app.quit() gets its chance first.
       expect(exitSpy).not.toHaveBeenCalled()

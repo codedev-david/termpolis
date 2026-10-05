@@ -143,6 +143,7 @@ Delegated jobs run through the existing headless executor with these extra rules
    - The byte cap was added after the end-to-end test showed the character cap was not enough. A control character is six bytes in JSON (`\u0001`), so 200,000 of them made a 1.2 MB answer.
    - The bridge refused to send that answer, and every poll lost the finished job.
 8. **Result inspection.** Before an output reaches the calling agent, it goes through `mcpGateway/guard` injection inspection, up to 210,000 characters. So does any error or refusal the other machine worded. Flagged text is wrapped in the existing UNTRUSTED/DATA banner.
+9. **Kept awake while it runs.** While at least one inbound job is running, the executing machine holds one `powerSaveBlocker.start('prevent-app-suspension')`: no idle sleep, no App Nap, the display may still sleep. A machine that sleeps drops off the relay, and the job's answer with it. `linkedHost` tells its binding's `keepAwake(on)` on the 0→1 and 1→0 transitions of inbound jobs, whether a job finishes, fails or is cancelled, and `stopLinkedHost` releases it. Outbound jobs run elsewhere and hold nothing.
 
 ### 4.6 Accepted risk — the `write` grant
 
@@ -180,6 +181,7 @@ The `write` grant means *"an agent on that machine may start an autonomous, perm
   - A compromised bridge already holds the MCP bearer token, so the new main↔bridge messages add no authority it did not have.
 - **The bridge runs when Remote *or* Linked machines is enabled.** `init` tells it which kinds of rooms to open (`phones`, `linked`), so enabling one never exposes the other.
 - **Delegated jobs** go through the existing `runHeadless` with the confinement rules in §4.5. A delegated run's output is **not** written to the executing machine's memory brain (no `remember`): text from another machine must not become future primer context.
+- **Lifetime: until the app quits.** The MCP server, the bridge (`remoteHost`) and `linkedHost` start once per run, and nothing starts them again. On macOS, closing the last window leaves the app running in the Dock and `activate` only makes a new window, so `window-all-closed` leaves all three running there; elsewhere it quits. `before-quit` stops them on every platform, and every quit (⌘Q, the Dock, an update restart, Playwright's `app.close()`) goes through `app.quit()`, which emits it. Only a quit takes a machine offline.
 
 ---
 

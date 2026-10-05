@@ -218,6 +218,7 @@ interface BootOptions {
   machineName?: string
   runHeadless?: (req: ExecRequest) => Promise<ExecResult>
   agentsInstalled?: () => Promise<{ claude: boolean; codex: boolean; gemini: boolean }>
+  keepAwake?: (on: boolean) => void
 }
 
 function boot(opts: BootOptions = {}) {
@@ -250,6 +251,8 @@ function boot(opts: BootOptions = {}) {
     bridge: bridge.access,
     machineName: opts.machineName ?? 'laptop',
     ...(opts.now ? { now: opts.now } : {}),
+    // Only when a test asks: every other test runs without one, as a binding may.
+    ...(opts.keepAwake ? { keepAwake: opts.keepAwake } : {}),
   })
   const invoke = async (channel: string, input?: unknown): Promise<Envelope> =>
     (await handlers.get(channel)!(null, input)) as Envelope
@@ -1359,6 +1362,162 @@ describe('serving another machine', () => {
     stopLinkedHost()
     expect(signal!.aborted).toBe(true)
     expect(h.statuses.length).toBe(pushed)
+  })
+})
+
+describe('keeping this computer awake while it works for another', () => {
+  const OK: ExecResult = { ok: true, agent: 'claude', output: 'done', code: 0, durationMs: 1, primerChars: 0 }
+
+  /** Boot with jobs that run until the test ends them, two linked machines to
+   *  start them from, and a keepAwake that records what it was told. */
+  function working(opts: { keepAwake?: (on: boolean) => void } = {}) {
+    const L = joined()
+    const P = peer()
+    const keepAwake = vi.fn(opts.keepAwake ?? (() => {}))
+    const runs: Array<{ signal: AbortSignal; end(r: Partial<ExecResult> | Error): void }> = []
+    const h = boot({
+      enabled: true,
+      state: { links: [L], meta: [meta(linkRef(L), { name: 'desk' }), meta(devRef(P), { name: 'build-box' })] },
+      keepAwake,
+      runHeadless: (req) =>
+        new Promise((resolve, reject) => {
+          runs.push({ signal: req.signal!, end: (r) => (r instanceof Error ? reject(r) : resolve({ ...OK, ...r })) })
+          req.signal!.addEventListener('abort', () => resolve({ ...OK, ok: false, code: 1 }))
+        }),
+    })
+    h.bridge.peers = [P]
+    const fromL: LinkTarget = { via: 'link', id: L.id }
+    const fromP: LinkTarget = { via: 'device', id: P.id }
+    let seq = 0
+    /** A job `from` starts here, once it is running. */
+    async function start(from: LinkTarget) {
+      const callId = `run-${++seq}`
+      const before = runs.length
+      h.bridge.emit({ kind: 'peerRequest', callId, from, request: { kind: 'peerRun', agent: 'claude', prompt: 'x', cwd: dir } })
+      await vi.waitFor(() => expect(h.replyTo(callId)).toBeDefined())
+      expect(runs).toHaveLength(before + 1)
+      const jobId = ((h.replyTo(callId) as Extract<PeerReply, { ok: true }>).data as PeerJobView).jobId
+      return { jobId, ...runs[before] }
+    }
+    /** What the activity view says of one inbound job. */
+    async function statusOf(jobId: string): Promise<string | undefined> {
+      return (await h.status()).activity.find((a) => a.direction === 'in' && a.id === jobId)?.status
+    }
+    return { h, keepAwake, fromL, fromP, start, statusOf }
+  }
+
+  it('holds it from the first job until the last one ends, however many run at once', async () => {
+    const { keepAwake, fromL, fromP, start, statusOf } = working()
+    const first = await start(fromL)
+    expect(keepAwake.mock.calls).toEqual([[true]])
+    const second = await start(fromP)
+    // Already held: a second job asks for nothing more.
+    expect(keepAwake.mock.calls).toEqual([[true]])
+
+    first.end({})
+    await vi.waitFor(async () => expect(await statusOf(first.jobId)).toBe('done'))
+    // One job is still running here.
+    expect(keepAwake.mock.calls).toEqual([[true]])
+    second.end({})
+    await vi.waitFor(() => expect(keepAwake.mock.calls).toEqual([[true], [false]]))
+
+    // And held afresh for the next one.
+    const third = await start(fromL)
+    expect(keepAwake.mock.calls).toEqual([[true], [false], [true]])
+    third.end({})
+    await vi.waitFor(() => expect(keepAwake.mock.calls).toEqual([[true], [false], [true], [false]]))
+  })
+
+  it('lets go when the computer that asked cancels the job', async () => {
+    const { h, keepAwake, fromL, start } = working()
+    const job = await start(fromL)
+    h.bridge.emit({ kind: 'peerRequest', callId: 'c1', from: fromL, request: { kind: 'peerCancel', jobId: job.jobId } })
+    await vi.waitFor(() => expect(h.replyTo('c1')).toBeDefined())
+    expect(h.replyTo('c1')).toMatchObject({ ok: true, data: { status: 'cancelled' } })
+    expect(job.signal.aborted).toBe(true)
+    expect(keepAwake.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('lets go when a job fails, whether the agent failed or could not start', async () => {
+    const { keepAwake, fromL, start, statusOf } = working()
+    const failed = await start(fromL)
+    failed.end({ ok: false, code: 2, error: 'tests failed' })
+    await vi.waitFor(async () => expect(await statusOf(failed.jobId)).toBe('failed'))
+    expect(keepAwake.mock.calls).toEqual([[true], [false]])
+
+    const broken = await start(fromL)
+    broken.end(new Error('spawn claude ENOENT'))
+    await vi.waitFor(async () => expect(await statusOf(broken.jobId)).toBe('failed'))
+    expect(keepAwake.mock.calls).toEqual([[true], [false], [true], [false]])
+  })
+
+  it('lets go when Linked machines is switched off', async () => {
+    const { h, keepAwake, fromL, start } = working()
+    const job = await start(fromL)
+    await h.invoke('linked:set-enabled', { enabled: false })
+    expect(job.signal.aborted).toBe(true)
+    expect(keepAwake.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('lets go when the service stops, as it does when the app quits', async () => {
+    const { keepAwake, fromL, fromP, start } = working()
+    const a = await start(fromL)
+    const b = await start(fromP)
+    stopLinkedHost()
+    expect([a.signal.aborted, b.signal.aborted]).toEqual([true, true])
+    expect(keepAwake.mock.calls).toEqual([[true], [false]])
+  })
+
+  it('never takes it again once stopped -- not even for a job whose checks were still running', async () => {
+    const L = joined()
+    const keepAwake = vi.fn()
+    let probed: (() => void) | undefined
+    const h = boot({
+      enabled: true,
+      state: { links: [L], meta: [meta(linkRef(L))] },
+      keepAwake,
+      agentsInstalled: () =>
+        new Promise((resolve) => {
+          probed = () => resolve({ claude: true, codex: false, gemini: false })
+        }),
+    })
+    h.bridge.emit({ kind: 'peerRequest', callId: 'r1', from: { via: 'link', id: L.id }, request: { kind: 'peerRun', agent: 'claude', prompt: 'x', cwd: dir } })
+    await vi.waitFor(() => expect(probed).toBeDefined())
+    stopLinkedHost()
+    probed!()
+    await vi.waitFor(() => expect(h.replyTo('r1')).toBeDefined())
+    expect(keepAwake).not.toHaveBeenCalled()
+  })
+
+  it('is not held for a job this computer asked another to run', async () => {
+    const L = joined()
+    const keepAwake = vi.fn()
+    const h = boot({ enabled: true, keepAwake, state: { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] } })
+    h.bridge.emit({ kind: 'linkStateChanged', id: L.id, attached: true })
+    h.bridge.answer = (call) => ({
+      kind: 'linkCallResult',
+      callId: call.callId,
+      ok: true,
+      data: { jobId: 'a1b2c3d4e5f6', agent: 'codex', status: 'running', startedAt: 1 },
+    })
+    expect(await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: 'p', waitSec: 0 })).toMatchObject({ status: 'running' })
+    // It runs over there: this computer may sleep while it waits.
+    expect((await h.status()).activity).toMatchObject([{ direction: 'out', status: 'running' }])
+    expect(keepAwake).not.toHaveBeenCalled()
+  })
+
+  it('runs the job all the same when keeping awake fails', async () => {
+    const { keepAwake, fromL, start, statusOf } = working({
+      keepAwake: () => {
+        throw new Error('no power management here')
+      },
+    })
+    const job = await start(fromL)
+    // The job is in the activity view: the failure stopped nothing after it.
+    expect(await statusOf(job.jobId)).toBe('running')
+    job.end({})
+    await vi.waitFor(async () => expect(await statusOf(job.jobId)).toBe('done'))
+    expect(keepAwake.mock.calls).toEqual([[true], [false]])
   })
 })
 

@@ -318,6 +318,9 @@ jobs:
   #   - first-run-zero-agents: proves a brand-new macOS user — no Claude,
   #     no Codex, no Gemini — can still boot the app and open a
   #     terminal. This is the path a first-time TestFlight reviewer hits.
+  #   - linked-machines: Settings ▸ Linked machines through the forked
+  #     bridge child (code minted, own code refused, switched off), so a
+  #     Mac can be the computer a delegated job runs on.
   #
   # Required on main as of v1.11.15 — first green seen on 0342333.
   # If macOS starts flaking after a runner-image bump or similar, flip
@@ -365,6 +368,8 @@ jobs:
         run: npx playwright test e2e/report-problem.spec.ts
       - name: Workflow Orchestrator author→run→green (macOS)
         run: npx playwright test e2e/workflow-orchestrator.spec.ts
+      - name: Linked machines settings (macOS)
+        run: npx playwright test e2e/linked-machines.spec.ts
       - name: Upload failure traces
         if: failure()
         uses: actions/upload-artifact@v4

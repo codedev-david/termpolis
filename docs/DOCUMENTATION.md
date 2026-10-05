@@ -1040,6 +1040,15 @@ and Codex is not told to trust it. It is limited to 30 calls a minute.
   connection to the relay. The relay is a meeting point, not a mailbox, so a
   request to a machine that isn't there fails at once with *"linux" is offline
   — Termpolis must be running there.* instead of waiting.
+- **A computer that is asleep or shut down is offline.** While it runs a job
+  for another computer, Termpolis keeps it from idle-sleeping, and lets go
+  when the last such job finishes, fails or is cancelled. Only idle sleep is
+  held off: the display can still turn off, and closing a laptop's lid or
+  choosing Sleep can still put it to sleep.
+- **On a Mac, closing the window does not take the computer offline.**
+  Termpolis keeps running in the Dock, and its links with it, as do Remote
+  and the agents' MCP connection. Quit it (⌘Q, or Quit from the Dock) to go
+  offline.
 - **Every run is a fresh headless session.** It remembers nothing of the
   previous run, so the prompt carries what the other agent needs: a commit
   SHA, earlier findings. Code moves between the machines through Git as

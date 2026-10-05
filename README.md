@@ -242,6 +242,8 @@ Link two Termpolis desktops, and an agent on one can have a Claude, Codex or Gem
 **Limits.**
 
 - **Both computers need Termpolis running and online.** The relay is a meeting point, not a mailbox, so a request to a machine that isn't there fails at once as offline instead of waiting.
+- **A computer that is asleep or shut down is offline.** While it runs a job for another computer, Termpolis keeps it from idle-sleeping until the job ends; the display can still turn off.
+- **On a Mac, closing the window keeps Termpolis running in the Dock**, links and all. Quit it (⌘Q) to take the Mac offline.
 - **Each run is a fresh headless session** that remembers nothing of the last one. The prompt has to carry everything the other agent needs (commit SHAs, earlier findings), and code moves through Git as usual.
 - **Long jobs come back as a job id.** A `run` waits up to 45 seconds, within the 60 seconds Codex gives one tool call. A job still going returns `running` with a `jobId`, and the agent collects it with `action: "result"`. A job may run for up to 15 minutes.
 - **Up to 16 linked machines** per computer, counting both directions. A computer runs at most 2 jobs at a time for any one machine and 4 in all.

@@ -36,6 +36,9 @@ const M = vi.hoisted(() => ({
   showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })),
   showSaveDialog: vi.fn(async () => ({ canceled: true, filePath: undefined })),
   showMessageBox: vi.fn(async () => ({ response: 0, checkboxChecked: false })),
+  // electron powerSaveBlocker: an id per blocker, as Electron hands them out
+  powerSaveStart: vi.fn(() => 42),
+  powerSaveStop: vi.fn(),
   // lifecycle collaborators
   initAutoUpdater: vi.fn(),
   startMcpServer: vi.fn(() => ({ id: 'mcp-server-handle' })),
@@ -265,6 +268,7 @@ vi.mock('electron', () => ({
     encryptString: (s: string) => Buffer.from(s, 'utf8'),
     decryptString: (b: Buffer) => b.toString('utf8'),
   },
+  powerSaveBlocker: { start: M.powerSaveStart, stop: M.powerSaveStop },
 }))
 
 // ---------------------------------------------------------------------------
@@ -1556,6 +1560,28 @@ describe('linked machines wiring', () => {
     expect(M.linkedToolCall).toHaveBeenCalledWith({ action: 'list' })
     expect(r).toEqual({ thisMachine: 'here', machines: [] })
   })
+
+  it('keeps this computer from idle-sleeping, with one blocker, while another computer has a job running here', () => {
+    M.powerSaveStart.mockClear()
+    M.powerSaveStop.mockClear()
+    linked().keepAwake(true)
+    // Not a blocker per call: one is held, so nothing more is started.
+    linked().keepAwake(true)
+    // The system stays up and App Nap stays off; the display may still sleep.
+    expect(M.powerSaveStart.mock.calls).toEqual([['prevent-app-suspension']])
+    expect(M.powerSaveStop).not.toHaveBeenCalled()
+
+    linked().keepAwake(false)
+    // Released once: there is nothing left to stop.
+    linked().keepAwake(false)
+    expect(M.powerSaveStop.mock.calls).toEqual([[42]])
+
+    // And taken afresh for the next job.
+    linked().keepAwake(true)
+    expect(M.powerSaveStart).toHaveBeenCalledTimes(2)
+    linked().keepAwake(false)
+    expect(M.powerSaveStop).toHaveBeenCalledTimes(2)
+  })
 })
 
 // ===========================================================================
@@ -2156,5 +2182,101 @@ describe('aiSecurity:input-pending', () => {
     write({}, { id: 'ip-1', data: '\r' })
     // Enter clears the staging buffer: the line is gone, so the coast is clear.
     expect(await invoke('aiSecurity:input-pending', { id: 'ip-1' })).toEqual({ success: true, data: false })
+  })
+})
+
+// ===========================================================================
+// Closing the last window vs quitting, for the three services other machines reach this one
+// through: the MCP server, Remote's bridge and Linked machines. LAST in the file on purpose:
+// before-quit tears this module instance down, and the MCP handle it nulls stays gone.
+// ===========================================================================
+describe('closing the last window, then quitting', () => {
+  /** Fire an app event as `platform` would. Fake timers absorb the force-exit a non-macOS close
+   *  arms: a real one would land in whatever runs next and take the worker with it. */
+  async function fire(name: string, platform: NodeJS.Platform, advanceMs = 0): Promise<void> {
+    const { app } = (await import('electron')) as any
+    const call = app.on.mock.calls.find((c: unknown[]) => c[0] === name)
+    if (!call) throw new Error(`app.on(${name}) was never registered`)
+    vi.useFakeTimers()
+    try {
+      await withPlatform(platform, () => call[1]())
+      vi.advanceTimersByTime(advanceMs)
+    } finally {
+      vi.useRealTimers()
+    }
+  }
+
+  it('on macOS a closed window leaves the MCP server, Remote and Linked machines running', async () => {
+    const { app } = (await import('electron')) as any
+    for (const spy of [M.killAll, M.stopMcpServer, M.stopRemoteBridgeHost, M.stopLinkedHost, app.quit, exitSpy]) spy.mockClear()
+    await fire('window-all-closed', 'darwin', 60_000)
+    // The terminals go with the window, as they always have...
+    expect(M.killAll).toHaveBeenCalledTimes(1)
+    // ...but the app stays in the Dock, and nothing would restart these when a window comes back.
+    expect(M.stopLinkedHost).not.toHaveBeenCalled()
+    expect(M.stopRemoteBridgeHost).not.toHaveBeenCalled()
+    expect(M.stopMcpServer).not.toHaveBeenCalled()
+    expect(app.quit).not.toHaveBeenCalled()
+    expect(exitSpy).not.toHaveBeenCalled()
+  })
+
+  it("and quitting it stops all three: Cmd+Q, the Dock, an update restart and Playwright's app.close() all emit before-quit", async () => {
+    for (const spy of [M.stopMcpServer, M.stopRemoteBridgeHost, M.stopLinkedHost]) spy.mockClear()
+    // Each of those is app.quit(), and Electron never emits window-all-closed for a quit.
+    await fire('before-quit', 'darwin')
+    expect(M.stopLinkedHost).toHaveBeenCalledTimes(1)
+    expect(M.stopRemoteBridgeHost).toHaveBeenCalledTimes(1)
+    expect(M.stopMcpServer).toHaveBeenCalledWith({ id: 'mcp-server-handle' })
+  })
+
+  // Cmd+Q is app.quit(): Electron emits before-quit, THEN closes the windows. A close listener
+  // that calls preventDefault cancels the whole quit -- and before-quit has already killed the
+  // terminals and stopped the three services. On macOS the window then closed on its own a moment
+  // later and window-all-closed (which never quits there) left the app windowless in the Dock,
+  // offline, with nothing to restart it: the first Cmd+Q never quit.
+  it('once a quit is under way, the agents-running close guard no longer holds the window', async () => {
+    const savedEnv = process.env.NODE_ENV
+    await fire('before-quit', 'darwin')
+    const close = mockMainWindow.on.mock.calls.filter((c: unknown[]) => c[0] === 'close').at(-1)
+    if (!close) throw new Error('createWindow never attached a close listener')
+    delete process.env.NODE_ENV                   // the guard is skipped in test mode
+    try {
+      mockWebContents.executeJavaScript.mockClear()
+      const e = { preventDefault: vi.fn() }
+      ;(close[1] as (e: unknown) => void)(e)
+      expect(e.preventDefault).not.toHaveBeenCalled()
+      expect(mockWebContents.executeJavaScript).not.toHaveBeenCalled()
+    } finally {
+      process.env.NODE_ENV = savedEnv
+    }
+  })
+
+  it('a window created again (a quit something else cancelled) gets the guard back', async () => {
+    const { app } = (await import('electron')) as any
+    const savedEnv = process.env.NODE_ENV
+    await fire('before-quit', 'darwin')           // armed
+    const listener = (event: string): ((...a: unknown[]) => void) | undefined =>
+      mockMainWindow.on.mock.calls.filter((c: unknown[]) => c[0] === event).at(-1)?.[1] as never
+    listener('closed')?.()                        // mainWindow = null
+    app.on.mock.calls.find((c: unknown[]) => c[0] === 'activate')[1]()   // createWindow() disarms
+    const close = listener('close')
+    if (!close) throw new Error('createWindow never attached a close listener')
+    delete process.env.NODE_ENV
+    try {
+      const e = { preventDefault: vi.fn() }
+      close(e)
+      expect(e.preventDefault).toHaveBeenCalled()
+    } finally {
+      process.env.NODE_ENV = savedEnv
+    }
+  })
+
+  it('elsewhere closing the last window is the quit, so they stop with it', async () => {
+    const { app } = (await import('electron')) as any
+    for (const spy of [M.stopRemoteBridgeHost, M.stopLinkedHost, app.quit]) spy.mockClear()
+    await fire('window-all-closed', 'linux')
+    expect(M.stopLinkedHost).toHaveBeenCalledTimes(1)
+    expect(M.stopRemoteBridgeHost).toHaveBeenCalledTimes(1)
+    expect(app.quit).toHaveBeenCalledTimes(1)
   })
 })

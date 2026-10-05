@@ -88,6 +88,12 @@ export interface LinkedHostBinding {
   runHeadless(req: ExecRequest): Promise<ExecResult>
   /** Which agents are installed here. Probed afresh on every call; cached here. */
   agentsInstalled(): Promise<AgentsInstalled>
+  /** `true` when a job another computer started begins running here and none
+   *  was; `false` when the last one ends -- done, failed, cancelled, or the
+   *  service stopped. In between the app keeps this computer from idle-sleeping:
+   *  one that sleeps drops off the relay, and the job with it. Told on a change
+   *  only. Absent, nothing is held. */
+  keepAwake?(on: boolean): void
   /** Test seams. */
   bridge?: LinkedBridgeAccess
   machineName?: string
@@ -244,6 +250,10 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   /** Every job either way, by direction and id, oldest first. */
   const activity = new Map<string, LinkedActivity>()
   const lastActivity = new Map<string, number>()
+  /** The jobs other computers have running here right now, by id. */
+  const runningHere = new Set<string>()
+  /** What `keepAwake` was last told. */
+  let awake = false
   let agentsCache: { at: number; value: Promise<AgentsInstalled> } | null = null
 
   function guarded(fn: () => void): void {
@@ -405,7 +415,24 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     }
   }
 
+  /** Awake while this computer runs a job for another, and only then. Never
+   *  for a stopped service: stop() cancels every job, and each reports in here
+   *  once `started` is false -- as does one that got past its checks just as
+   *  the service stopped, which must not take it back. A job this computer
+   *  asked for runs elsewhere, and holds nothing here. */
+  function stayAwake(): void {
+    const on = started && runningHere.size > 0
+    if (on === awake) return
+    awake = on
+    guarded(() => b.keepAwake?.(on))
+  }
+
   function noteActivity(a: LinkedActivity): void {
+    if (a.direction === 'in') {
+      if (a.status === 'running') runningHere.add(a.id)
+      else runningHere.delete(a.id)
+      stayAwake()
+    }
     const key = `${a.direction}:${a.id}`
     activity.set(key, { ...a })
     if (activity.size > MAX_ACTIVITY) activity.delete(activity.keys().next().value as string)
@@ -909,6 +936,8 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       jobs.cancelAll()
       failCalls('offline')
       endJoin()
+      // Released whatever the jobs above reported: a stopped service holds nothing.
+      stayAwake()
     },
 
     status,
