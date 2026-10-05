@@ -36,6 +36,14 @@ import {
   primeInteractiveShellPath,
   __resetShellPathCacheForTests,
 } from '../../src/main/agentPaths'
+import { join } from 'path'
+
+// The Windows dirs are built with the HOST's path.join, exactly as agentPaths.ts builds
+// them, so the expectation matches on every CI runner. A hard-coded backslash path only
+// matches when the suite itself runs on Windows (on POSIX `join` yields
+// `C:\Users\dev/AppData/Roaming/npm`), which is how this went green locally and red on
+// ubuntu/macos.
+const WIN_NPM_DIR = join('C:\\Users\\dev', 'AppData', 'Roaming', 'npm')
 
 // Save & restore process.platform and the env vars we mutate so this file
 // can run interleaved with other suites without leaking state.
@@ -237,7 +245,7 @@ describe('getExtendedPath', () => {
     process.env.PATH = 'C:\\Windows;C:\\Tools'
     const out = getExtendedPath()
     expect(out.startsWith('C:\\Windows;C:\\Tools;')).toBe(true)
-    expect(out.split(';')).toContain('C:\\Users\\dev\\AppData\\Roaming\\npm')
+    expect(out.split(';')).toContain(WIN_NPM_DIR)
     expect(out).not.toContain(';;')
     expect(out.endsWith(';')).toBe(false)
   })
@@ -252,9 +260,10 @@ describe('getExtendedPath', () => {
     mockHomedir.mockReturnValue('C:\\Users\\dev')
     process.env.PATH = 'C:\\Users\\dev\\.local\\bin;C:\\Windows\\System32'
     const dirs = getExtendedPath().split(';')
-    expect(dirs.indexOf('C:\\Users\\dev\\.local\\bin')).toBeLessThan(
-      dirs.indexOf('C:\\Users\\dev\\AppData\\Roaming\\npm'),
-    )
+    // Both must be PRESENT, or indexOf's -1 would make "less than" pass vacuously.
+    expect(dirs).toContain('C:\\Users\\dev\\.local\\bin')
+    expect(dirs).toContain(WIN_NPM_DIR)
+    expect(dirs.indexOf('C:\\Users\\dev\\.local\\bin')).toBeLessThan(dirs.indexOf(WIN_NPM_DIR))
   })
 
   it('on Windows still finds the known dirs when the inherited PATH is empty', () => {
@@ -262,7 +271,7 @@ describe('getExtendedPath', () => {
     mockHomedir.mockReturnValue('C:\\Users\\dev')
     delete process.env.PATH
     const out = getExtendedPath()
-    expect(out.startsWith('C:\\Users\\dev\\AppData\\Roaming\\npm;')).toBe(true)
+    expect(out.startsWith(`${WIN_NPM_DIR};`)).toBe(true)
     expect(out.startsWith(';')).toBe(false)
   })
 
