@@ -43,13 +43,16 @@ export function hasNoNewPrivs(
   }
 }
 
-/** Waits for the process in $1 to exit, then runs the remaining arguments in its place. It gives
- *  up after about two minutes: while the old Termpolis runs it holds the single-instance lock, so
- *  a copy started then would only quit again. `sleep 1` covers a sleep that rejects fractions. */
+/** Waits for the process in $1 to exit, then runs the remaining arguments in its place. A process
+ *  that has exited but that its parent hasn't reaped yet still answers kill -0, so a zombie counts
+ *  as gone. It gives up after about two minutes: while the old Termpolis runs it holds the
+ *  single-instance lock, so a copy started then would only quit again. `sleep 1` covers a sleep
+ *  that rejects fractions. */
 export const RELAUNCH_SCRIPT = [
   'pid=$1; shift',
   'i=0',
   'while kill -0 "$pid" 2>/dev/null; do',
+  '  case "$(ps -o stat= -p "$pid" 2>/dev/null)" in *Z*) break ;; esac',
   '  i=$((i + 1)); [ "$i" -gt 600 ] && exit 1',
   '  sleep 0.2 2>/dev/null || sleep 1',
   'done',

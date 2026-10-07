@@ -148,6 +148,23 @@ describe.runIf(process.platform !== 'win32')('RELAUNCH_SCRIPT, run by a real she
     expect(readFileSync(out, 'utf8')).toBe('a b|--flag|')
   })
 
+  it('treats an exited process that nobody has reaped as gone', async () => {
+    // `exec sleep 5` replaces the shell, so nothing ever reaps the backgrounded sleep: once it
+    // exits it stays a zombie, which still answers kill -0, for the rest of the five seconds.
+    const holder = spawn('/bin/sh', ['-c', 'sleep 0.2 & echo $!; exec sleep 5'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const pid = await new Promise<string>((resolve) => holder.stdout!.once('data', (d) => resolve(String(d).trim())))
+    try {
+      const out = join(dir, 'out')
+      const started = Date.now()
+      const r = spawnSync('/bin/sh', ['-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', pid, '/bin/sh', '-c', ': > "$0"', out], { timeout: 10_000 })
+      expect(r.status).toBe(0)
+      expect(Date.now() - started).toBeLessThan(4000)
+      expect(existsSync(out)).toBe(true)
+    } finally {
+      holder.kill()
+    }
+  })
+
   it('starts at once when the old process is already gone', () => {
     const out = join(dir, 'out')
     const r = spawnSync('/bin/sh', ['-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', '999999999', '/bin/sh', '-c', ': > "$0"', out], { timeout: 10_000 })
