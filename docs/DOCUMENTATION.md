@@ -719,6 +719,14 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 - **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver). With **Auto-recall context on agent launch** on (Settings → General; on by default), every agent you launch is pointed at it: Claude through its system prompt, Codex and Gemini through a one-line pointer typed into their input. The pointer waits while the agent's screen shows something waiting for an answer, such as a trust or approval prompt, or can't be read, so its Enter never answers a prompt for you. If you connected Claude Code with the optional SessionStart hook, sessions you start outside Termpolis load your project memory too.
 - **Current-directory precedence.** The primer leads with context for the project you're standing in — past conversations from this repo first, then its code/notes — and anything from other projects is appended under a "may NOT apply" label. Ingested chunks are tagged with their project (derived from the transcript cwd / repo root), legacy chunks get back-tagged on the next indexer pass, and `memory_search` accepts a `project` filter so agents can scope recall themselves.
 
+### What memory can and can't tell an agent
+
+- **Recall returns excerpts.** A past conversation is stored in pieces of about 2,000 characters, so a search hit can start or end mid-sentence. Each piece is linked to the next: `memory_graph` with the hit's id and relation `follows` reads on, and `precedes` reads back. The primer tells agents this.
+- **Search ranks by similarity; it never says "nothing found".** Even a search with no relevant memory returns its best few matches with high-looking scores, so judge a hit by what it says, not by its score. To see the latest entries in order, use `memory_list` with your project instead.
+- **Memory records what was said, not what is true now.** A note that a disk was 48% full was true when it was written. Agents are told to verify anything they rely on.
+- **Each computer has its own memory.** Something you did or discussed on another machine isn't in this one's memory, and something that happened without an agent session (plugging in a drive, say) isn't in any.
+- **Lessons are extracted automatically, and the extractor can be wrong.** Termpolis reads finished sessions for problems that got fixed, decisions and gotchas. Through 1.50.0 it read many ordinary sentences as problems and decisions; 1.50.1 tightens its rules and, once, demotes the lessons it wrote by mistake. A demoted lesson is still stored and still found when nothing better matches. Correct a bad lesson as it surfaces with `memory_correct`.
+
 ### Using the Memory panel
 
 Open the panel with **Ctrl+Shift+M**, or from **Settings → General → Open the Memory panel**. From there you can:

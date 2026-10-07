@@ -32,6 +32,14 @@ describe('buildContextPrimer', () => {
     expect(out).toContain('before re-deriving')
   })
 
+  it('tells the agent a recalled excerpt can be read on, and that memory is no proof of the present', async () => {
+    const out = await buildContextPrimer(vi.fn().mockResolvedValue(hits), { query: 'auth' })
+    expect(out).toContain('memory_graph with its id and relation "follows" reads on, "precedes" reads back')
+    expect(out).toContain('on this computer, not what is true now: verify anything you rely on')
+    // Still plain text an agent's shell can take: no backticks.
+    expect(out).not.toContain('`')
+  })
+
   it('points the agent at the code_* tools for structural (who-calls / blast-radius) questions', async () => {
     const out = await buildContextPrimer(vi.fn().mockResolvedValue(hits), { query: 'auth' })
     expect(out).toContain('code_explore')

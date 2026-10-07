@@ -217,7 +217,8 @@ import {
 import { registerMcpIpc } from './mcpIpc'
 import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
-import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections } from './memoryCorrectionStore'
+import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
+import { recheckMarker, recheckStoredLessons } from './mnemeLessonRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
@@ -4048,6 +4049,16 @@ async function semanticPoolOptions(
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
+        // Once per install: demote the junk lessons the extractor wrote through 1.50.0
+        // (mnemeLessonRecheck.ts). A no-op on every later pass.
+        try {
+          await recheckStoredLessons({
+            list: (opts) => memoryList(opts),
+            isCorrected: (id) => correctionForMemory(id) !== null,
+            demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+            ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join),
+          })
+        } catch { /* the store wasn't readable: the next pass tries again */ }
 
         // ── The three PURE PLANNERS ───────────────────────────────────────────────────────────────
         // runConsolidation and runWeave are SYNC, and runSummarization hands its deps to a sync

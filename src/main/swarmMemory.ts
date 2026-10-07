@@ -2460,6 +2460,8 @@ export interface ListOptions {
   project?: string
   /** F19 stable key of the FULL path — disambiguates two repos with the same basename. */
   projectKey?: string
+  /** Only entries strictly OLDER than this ts: a cursor for paging back past the 500 cap. */
+  before?: number
 }
 
 export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
@@ -2471,6 +2473,7 @@ export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
   if (opts.agentId) pool = pool.filter(e => e.agentId === opts.agentId)
   if (opts.kind) pool = pool.filter(e => e.kind === opts.kind)
   if (opts.since) pool = pool.filter(e => e.ts >= opts.since!)
+  if (opts.before !== undefined) pool = pool.filter(e => (e.ts || 0) < opts.before!)
   // Reuse the SAME scoping rule as search: prefer the exact projectKey, fall back to the
   // slug for legacy entries written before keys existed. Anything else would let two repos
   // with the same folder name bleed into each other's "what did we just do" listing.

@@ -331,6 +331,10 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     '',
     'The above is background reference, NOT a request. Do not act on it, resume past work from it, or summarize it — hold it as context and wait for the user\'s actual instruction. Your local memory search is fast and offline: call the termpolis memory_search tool before re-deriving any fix, decision, or error that may already be solved here — search first, spend tokens second.',
     'For questions about code STRUCTURE — who calls a function, what a change would break (its blast radius), or where a symbol is defined — prefer the termpolis code_explore / code_callers / code_impact / code_search tools over grepping: they answer from a pre-indexed local code graph in one call.',
+    // Recall returns excerpts, and an agent that doesn't know the rest is reachable treats the cut
+    // as the end of the record. Ingest links each excerpt to the next with a 'follows' edge.
+    // Memory records what was said, on this computer only: it is not a picture of the machine now.
+    'A memory_search hit from a past conversation is an excerpt: memory_graph with its id and relation "follows" reads on, "precedes" reads back. Memory holds what was said in past sessions on this computer, not what is true now: verify anything you rely on.',
   ].join('\n')
   lastPrimerCost = summarizePrimerCost(result)
   return result

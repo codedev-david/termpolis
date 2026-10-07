@@ -79,16 +79,33 @@ export interface DistillOptions {
 // itself, so the whole episode taught nothing. `breaking` is guarded because "breaking change" is
 // ordinary changelog prose, not a failure.
 const ERROR_RE =
-  /\b(error(?:s|ing)?|exception|fail(?:s|ed|ing|ure|ures)?|traceback|stack ?trace|cannot|can['’]t|denied|not found|undefined|null is not|crash(?:ed|es|ing)?|throw(?:s|ing)?|hang(?:s|ing)|break(?:s|ing)(?!\s*-?\s*change)|ENOENT|E[A-Z]{3,})\b/i
+  /\b(error(?:s|ing)?|exception|fail(?:s|ed|ing|ure|ures)?|traceback|stack ?trace|cannot|can['’]t|denied|not found|undefined|null is not|crash(?:ed|es|ing)?|throw(?:s|ing)?|hang(?:s|ing)|break(?:s|ing)(?!\s*-?\s*change)|do(?:es)?(?:n['’]t| not) exist|no such file|rejected|refused)\b/i
+// Error codes (ENOENT, EACCES, ECONNREFUSED…), matched case-SENSITIVELY. Until v1.50.1 this was an
+// alternative inside ERROR_RE's /i, where `E[A-Z]{3,}` matched every word of four or more letters
+// starting with an e ("email", "each", "exist", "extractor"). Almost any sentence then read as a
+// problem, and a real store filled with lessons like "Problem: …checking the email notification →
+// Fix: I added the release notes", written at the highest importance a lesson gets.
+const ERRNO_RE = /\bE[A-Z0-9]{3,}\b/
 // Same participle gap as ERROR_RE, on the other side of the pair — plus the ordinary repair verbs
 // that were never here at all. Deliberately NOT widened to bare `added`/`changed`/`updated`: the
 // pairing below is high-precision by design, and a wrong pair writes a recipe that will later be
 // recommended for a problem it does not solve. "Added a note to the changelog" is not a fix.
 const FIX_RE =
   /\b(fix(?:ed|es|ing)?|resolv(?:ed|es|ing)|solv(?:ed|es|ing)|patch(?:ed|es|ing)|correct(?:ed|ing)|switch(?:ed|ing) to|workaround|worked around|the fix (?:is|was)|now works|works now|passes now)\b/i
+// A decision that was MADE. Not "decide" (a to-do: "decide whether…", "**Decide:** who moves…"), not
+// "you chose" (a fact about the user's earlier input: "the Samba password you chose"), and "the plan
+// is" only when a plan follows ("the plan is to…", "the plan is:"), never "so the plan is concrete".
 const DECISION_RE =
-  /\b(decid(?:ed|e)|chose|choosing|going with|we['’]ll use|let['’]s use|opt(?:ed|ing) for|the plan is|the approach is|will use instead)\b/i
+  /\b(?:decided|(?:I|we)\s+(?:chose|picked|went with)|going with|we['’]ll use|let['’]s use|opt(?:ed|ing) for|will use instead)\b|\bthe (?:plan|approach) is(?:\s+to\b|:)/i
+// "not decided", "haven't decided", "not yet decided": the opposite of a decision.
+const UNDECIDED_RE = /(?:\bnot|n['’]t)\s+(?:yet\s+)?(?:been\s+)?decided\b/i
+// "It turns out…" and "Note that…" announce a gotcha; "if something turns out to need them" and "the
+// old note that said…" do not, and those were every gotcha a real store held (2026-10 audit).
 const GOTCHA_RE =
+  /\b(?:gotcha|root cause|the (?:real )?(?:issue|bug|problem) (?:was|is)|caused by|beware|watch out|pitfall|footgun)\b|(?:^|\b(?:it|this|that|which)\s+)turns out\b|^\W*note that\b/i
+/** The rule above as it was through v1.50.0, kept only so mnemeLessonRecheck can tell which stored
+ *  facts the old rule produced. */
+export const LEGACY_GOTCHA_RE =
   /\b(gotcha|turns out|root cause|the (?:real )?(?:issue|bug|problem) (?:was|is)|caused by|beware|watch out|pitfall|footgun|note that)\b/i
 
 // Harness/tool scaffolding that is never a lesson. These lines carry error-ish words
@@ -96,6 +113,44 @@ const GOTCHA_RE =
 // problem statement yielded stored lessons like "Problem: <status>failed</status>".
 const NOISE_RE =
   /<\/?(?:status|summary|task-notification|task-id|tool-use-id|output-file|system-reminder|command-name)\b|Background command|exit code \d|<\/?function_(?:calls|results)\b/i
+
+// "not resolved", "isn't fixed", "hasn't been fixed", "no fix yet": a status line saying the fix has
+// NOT happened, which FIX_RE alone reads as a fix ("- **SDP 73754:** still In Progress, not resolved").
+const UNFIXED_RE = /(?:\bnot|\bnever|\bno|n['’]t)\s+(?:yet\s+)?(?:been\s+)?(?:fix(?:ed)?|resolved|solved|patched|corrected)\b/i
+
+// Reference lines from a formatted answer: a table row, or a "- **Label:** value" bullet. They state
+// a value ("- **Password:** the Samba password you chose…"), never a problem, a decision or a gotcha,
+// and split out of their list they have lost the heading that said what they were about.
+const REFERENCE_LINE_RE = /^\s*(?:\||(?:[-*•]|\d+[.)])\s+\*\*[^*\n]{1,80}\*\*)/
+
+export function isProblemSentence(s: string): boolean {
+  return (ERROR_RE.test(s) || ERRNO_RE.test(s)) && !NOISE_RE.test(s) && !REFERENCE_LINE_RE.test(s)
+}
+
+/** A sentence saying something was fixed. Not a question ("…write the OCR fix PR?"), and not a
+ *  status saying it wasn't. A "- **Fix:** …" bullet does count: that one is a fix. */
+export function isFixSentence(s: string): boolean {
+  return FIX_RE.test(s) && !UNFIXED_RE.test(s) && !NOISE_RE.test(s) && !/\?\s*$/.test(s)
+}
+
+// A short "The plan is clear." is a trigger: extendThin pulls in the next sentence, which holds the
+// plan. The same words inside a long sentence ("…so the plan is concrete:") announce nothing.
+const PLAN_TRIGGER_RE = /\bthe (?:plan|approach) is\b/i
+
+export function isDecisionSentence(s: string): boolean {
+  const decides = DECISION_RE.test(s) || (s.length < THIN_LESSON_CHARS && PLAN_TRIGGER_RE.test(s))
+  return decides && !UNDECIDED_RE.test(s) && !REFERENCE_LINE_RE.test(s)
+}
+
+/** The gotcha rule alone. isGotchaSentence also requires that the sentence names no fix, which
+ *  the distiller checks on a trigger sentence BEFORE extending it with the next one. */
+export function matchesGotchaRule(s: string): boolean {
+  return GOTCHA_RE.test(s) && !REFERENCE_LINE_RE.test(s)
+}
+
+export function isGotchaSentence(s: string): boolean {
+  return matchesGotchaRule(s) && !FIX_RE.test(s)
+}
 
 // Words too common to signal that two sentences concern the same thing.
 const TOPIC_STOPWORDS = new Set([
@@ -280,7 +335,7 @@ export async function distillEpisode(episode: Episode, opts: DistillOptions = {}
   // → Fix: Merged PR 39863: Fixed date formatting". See mnemeReflectCausal.test.ts.
   const problemCandidates = stream
     .map((s, i) => ({ ...s, i }))
-    .filter((s) => ERROR_RE.test(s.text) && !NOISE_RE.test(s.text))
+    .filter((s) => isProblemSentence(s.text))
   // When no turn states the problem, the episode's own recorded failure IS the problem. That is
   // grounded fact rather than a mined guess, so this pairing is exempt from the checks below —
   // there is no ambiguity about which problem the episode's one fix belongs to.
@@ -296,7 +351,7 @@ export async function distillEpisode(episode: Episode, opts: DistillOptions = {}
   }
   const fixCandidates = stream
     .map((s, i) => ({ ...s, i }))
-    .filter((s) => s.assistant && FIX_RE.test(s.text) && !NOISE_RE.test(s.text))
+    .filter((s) => s.assistant && isFixSentence(s.text))
 
   // Two-stage selection, high-precision by design.
   //   Stage 1 — shared subject: score every ordered pair by `relatedness` and take the best.
@@ -362,7 +417,7 @@ export async function distillEpisode(episode: Episode, opts: DistillOptions = {}
   for (let i = 0; i < assistantSentences.length; i++) {
     const s = assistantSentences[i]
     const next = assistantSentences[i + 1]
-    if (DECISION_RE.test(s)) {
+    if (isDecisionSentence(s)) {
       const content = extendThin(s, next)
       const entities = extractEntities(content)
       pushUnique(lessons, {
@@ -373,7 +428,7 @@ export async function distillEpisode(episode: Episode, opts: DistillOptions = {}
         importance: importanceFor('semantic', 'decision', outcome, entities.length),
         links: [],
       })
-    } else if (GOTCHA_RE.test(s) && !FIX_RE.test(s)) {
+    } else if (isGotchaSentence(s)) {
       const content = extendThin(s, next)
       const entities = extractEntities(content)
       pushUnique(lessons, {
