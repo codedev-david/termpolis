@@ -145,6 +145,43 @@ describe('terminalManager', () => {
     expect(env.PROMPT_COMMAND).toContain('history -a')
   })
 
+  describe('SUDO_ASKPASS', () => {
+    const own = process.env.SUDO_ASKPASS
+    const fs = { mkdir: vi.fn(), write: vi.fn(), chmod: vi.fn(), rename: vi.fn() }
+    afterEach(async () => {
+      const { installSudoAskpass } = await import('../../src/main/sudoAskpass')
+      installSudoAskpass('/unused', 'win32')
+      if (own === undefined) delete process.env.SUDO_ASKPASS
+      else process.env.SUDO_ASKPASS = own
+    })
+
+    it("points sudo -A at Termpolis's password dialog once the helper is installed", async () => {
+      const { installSudoAskpass } = await import('../../src/main/sudoAskpass')
+      delete process.env.SUDO_ASKPASS
+      const helper = installSudoAskpass('/home/testuser/.config/termpolis', 'linux', fs)
+      spawnTerminal('sa1', '/bin/bash', '/tmp', vi.fn())
+      const env = vi.mocked(pty.spawn).mock.calls[0][2]?.env as Record<string, string>
+      expect(env.SUDO_ASKPASS).toBe(helper)
+    })
+
+    it('leaves a helper the user chose, and a caller can still override it', async () => {
+      const { installSudoAskpass } = await import('../../src/main/sudoAskpass')
+      installSudoAskpass('/home/testuser/.config/termpolis', 'linux', fs)
+      process.env.SUDO_ASKPASS = '/usr/bin/ksshaskpass'
+      spawnTerminal('sa2', '/bin/bash', '/tmp', vi.fn())
+      expect((vi.mocked(pty.spawn).mock.calls[0][2]?.env as Record<string, string>).SUDO_ASKPASS).toBe('/usr/bin/ksshaskpass')
+      delete process.env.SUDO_ASKPASS
+      spawnTerminal('sa3', '/bin/bash', '/tmp', vi.fn(), undefined, { SUDO_ASKPASS: '/x' })
+      expect((vi.mocked(pty.spawn).mock.calls[1][2]?.env as Record<string, string>).SUDO_ASKPASS).toBe('/x')
+    })
+
+    it('sets nothing where there is no helper (Windows)', () => {
+      delete process.env.SUDO_ASKPASS
+      spawnTerminal('sa4', '/bin/bash', '/tmp', vi.fn())
+      expect((vi.mocked(pty.spawn).mock.calls[0][2]?.env as Record<string, string>).SUDO_ASKPASS).toBeUndefined()
+    })
+  })
+
   it('spawnTerminal leaves the spawn untouched when integration is disabled', () => {
     // The escape hatch has to restore the exact previous behaviour, or it is not an
     // escape hatch.

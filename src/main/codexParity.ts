@@ -2,6 +2,7 @@ import { unlinkSync } from 'fs'
 import { join } from 'path'
 import { atomicWriteText, errorText, readTextFile } from './agentConfigIO'
 import { isShellSafeInstruction } from '../shared/agentIntegration'
+import { SUDO_AGENT_HINT } from './sudoAskpass'
 
 /**
  * Cross-agent memory parity for OpenAI Codex.
@@ -98,14 +99,16 @@ export const CODEX_BASE_INSTRUCTION =
  * for a file, so its typographic dashes, ellipses and quotes are flattened first; if it still
  * would not survive the shell, it is dropped and the memory part is sent alone.
  */
-export function buildCodexInstruction(steering?: string | null): string {
-  if (!steering || !steering.trim()) return CODEX_BASE_INSTRUCTION
+export function buildCodexInstruction(steering?: string | null, sudoAskpass = false): string {
+  // The sudo line is shell-safe as written (sudoAskpass.ts), so it never costs the memory part.
+  const base = sudoAskpass ? `${CODEX_BASE_INSTRUCTION} ${SUDO_AGENT_HINT}` : CODEX_BASE_INSTRUCTION
+  if (!steering || !steering.trim()) return base
   const plain = steering
     .replace(/[–—]/g, '-')
     .replace(/…/g, '...')
     .replace(/"/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-  const full = `${CODEX_BASE_INSTRUCTION} ${plain}`
-  return isShellSafeInstruction(full) ? full : CODEX_BASE_INSTRUCTION
+  const full = `${base} ${plain}`
+  return isShellSafeInstruction(full) ? full : base
 }

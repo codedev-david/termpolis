@@ -372,6 +372,7 @@ If you ever need to launch from a shell with the same flags applied: `/opt/Termp
 
 ### AI-Native Features
 - **AI Session Profiles** — one-click launch profiles for Claude Code, Codex, and Gemini CLI with custom profiles support
+- **Agents can use `sudo` (Linux, macOS)** — agents run `sudo -A`, and Termpolis asks for your password in a dialog that shows the whole command about to run. Type it only for commands you expected: whatever you approve runs as administrator
 - **Command Palette** — `Ctrl+K` opens a natural language command bar to control the app (new terminal, split panes, launch agents, run commands)
 - **Prompt Templates** — save reusable prompt snippets (Fix Tests, Code Review, Refactor, etc.) and insert them with `Ctrl+Shift+P` (accessible via Command Palette)
 - **Workflow Orchestrator** — an Azure-Logic-Apps-style canvas that chains four kinds of step — **Command** (a shell line on a real terminal), **Agent** (Claude Code / Codex / Gemini CLI on a prompt), **Skill** (a built-in tool), and **Control** (wait / branch / loop / notify) — into one repeatable, saveable run. Real control flow with per-step `when` gates and `continueOnError`; later steps read earlier results (`steps.build.exitCode`, captured output) through a **sandboxed expression engine** (no `eval`); and a live Runner timeline streams every step and lets you cancel mid-run

@@ -7,6 +7,7 @@ import { app } from 'electron'
 import { execShellCaptureOffThread } from './procClient'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
+import { sudoAskpassEnv } from './sudoAskpass'
 import {
   detectShellKind,
   integrationArgs,
@@ -188,6 +189,8 @@ export function spawnTerminal(
     PATH: `${testShimPath}${extraPathStr}${basePath}`,
     OLLAMA_API_BASE: process.env.OLLAMA_API_BASE || 'http://localhost:11434',
     BASH_SILENCE_DEPRECATION_WARNING: '1',
+    // Where `sudo -A` finds Termpolis's password dialog (sudoAskpass.ts), on Linux and macOS.
+    ...sudoAskpassEnv(),
     ...(extraEnv || {}),
   } as Record<string, string>
 

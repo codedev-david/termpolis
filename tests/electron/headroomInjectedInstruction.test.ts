@@ -41,3 +41,23 @@ describe('buildInjectedInstruction — cache-stable system-prompt bytes', () => 
     expect(s).toContain('memory_search')
   })
 })
+
+describe('buildInjectedInstruction — sudo -A', () => {
+  it('tells the agent how to run as administrator only where the helper is installed', async () => {
+    const { SUDO_AGENT_HINT } = await import('../../src/main/sudoAskpass')
+    const on = buildInjectedInstruction({ cwd: CWD, steering: false, sudoAskpass: true })
+    expect(on).toContain(SUDO_AGENT_HINT)
+    expect(buildInjectedInstruction({ cwd: CWD, steering: false, sudoAskpass: false })).not.toContain('sudo')
+    expect(buildInjectedInstruction({ cwd: CWD, steering: false })).not.toContain('sudo')
+    // Same bytes every launch: it is part of the cached system prompt.
+    expect(buildInjectedInstruction({ cwd: CWD, steering: true, mode: 'balanced', sudoAskpass: true }))
+      .toBe(buildInjectedInstruction({ cwd: CWD, steering: true, mode: 'balanced', sudoAskpass: true }))
+  })
+
+  it('keeps the steering directive last', async () => {
+    const { SUDO_AGENT_HINT } = await import('../../src/main/sudoAskpass')
+    const s = buildInjectedInstruction({ cwd: CWD, steering: true, mode: 'balanced', sudoAskpass: true })
+    expect(s.indexOf(SUDO_AGENT_HINT)).toBeGreaterThan(s.indexOf('memory_search'))
+    expect(s.endsWith(SUDO_AGENT_HINT)).toBe(false)
+  })
+})

@@ -163,6 +163,16 @@ describe('buildCodexInstruction', () => {
     }
   })
 
+  it('adds the sudo -A line where the helper is installed, and keeps it when steering is dropped', async () => {
+    const { SUDO_AGENT_HINT } = await import('../../src/main/sudoAskpass')
+    const withSudo = `${CODEX_BASE_INSTRUCTION} ${SUDO_AGENT_HINT}`
+    expect(buildCodexInstruction(null, true)).toBe(withSudo)
+    expect(buildCodexInstruction('Be brief.', true)).toBe(`${withSudo} Be brief.`)
+    expect(buildCodexInstruction('Use $HOME.', true)).toBe(withSudo)
+    expect(isShellSafeInstruction(buildCodexInstruction('Be brief.', true))).toBe(true)
+    expect(buildCodexInstruction(null, false)).toBe(CODEX_BASE_INSTRUCTION)
+  })
+
   it('drops a directive that would push the command past its length limit', () => {
     const room = CODEX_INSTRUCTION_MAX_CHARS - CODEX_BASE_INSTRUCTION.length - 1
     expect(buildCodexInstruction('a'.repeat(room))).toHaveLength(CODEX_INSTRUCTION_MAX_CHARS)

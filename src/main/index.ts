@@ -490,6 +490,8 @@ async function reflectOnTask(
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
+import { scheduleNoNewPrivsNotice } from './noNewPrivs'
+import { installSudoAskpass, sudoAskpassPath } from './sudoAskpass'
 import type { SessionData } from './types'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -2483,7 +2485,7 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
       // keyed by cwd so a project stays on one side for the life of the experiment.
       if (steering && armForSession(opts?.cwd || 'default') === 'holdout') steering = false
     } catch { /* steering optional */ }
-    const instruction = buildInjectedInstruction({ cwd: opts?.cwd, steering, mode: steeringMode })
+    const instruction = buildInjectedInstruction({ cwd: opts?.cwd, steering, mode: steeringMode, sudoAskpass: sudoAskpassPath() !== null })
     const file = join(dir, `primer-${uuidv4()}.txt`)
     writeFileSync(file, instruction, 'utf8')
     // Count the memories in the digest so the launch banner can show how much
@@ -3249,7 +3251,18 @@ if (!gotTheLock) {
     // null on Windows/Linux (custom title bar, no menu bar); a minimal app/edit/window role menu on
     // macOS, without which Cmd+Q and copy/paste in native inputs do not work. See appMenu.ts.
     installApplicationMenu(Menu, process.platform)
+    // Before the window, so the first terminal it opens already has SUDO_ASKPASS (sudoAskpass.ts).
+    installSudoAskpass(app.getPath('userData'))
     createWindow()
+    // A Termpolis started with no_new_privs can't run sudo in any of its terminals (noNewPrivs.ts).
+    // Never under test: its Restart button relaunches whatever process is running.
+    if (process.env.NODE_ENV !== 'test') {
+      scheduleNoNewPrivsNotice(
+        app.getPath('userData'),
+        (d) => (mainWindow ? dialog.showMessageBox(mainWindow, d) : dialog.showMessageBox(d)),
+        () => app.quit(),
+      )
+    }
 
     // Repair Windows shortcuts whose ICON_LOCATION was corrupted by the over-long
     // package.json description (see windowsShortcutRepair.ts). Shortening the

@@ -5,6 +5,7 @@ import { join } from 'path'
 import type { UpdaterHost } from '../../src/main/autoUpdater'
 import { MOVE_FAILED_DIALOG, MOVE_OFFER_DIALOG, updateBlockerHint } from '../../src/main/updaterLocation'
 import { DISK_FULL_MESSAGE, NO_UPDATE_FEED_MESSAGE, UPDATE_SERVER_UNREACHABLE_MESSAGE } from '../../src/main/updaterErrors'
+import { NO_NEW_PRIVS_UPDATE_MESSAGE } from '../../src/main/autoUpdater'
 
 // Capture event handlers + IPC handlers registered by initAutoUpdater
 const eventHandlers: Record<string, Function> = {}
@@ -73,7 +74,16 @@ const diskFull = () =>
   )
 
 // Deterministic whatever OS runs the suite: no macOS location check, no Move offer.
-const LINUX_HOST: Partial<UpdaterHost> = { platform: 'linux', exePath: '/opt/Termpolis/termpolis' }
+// The Linux-only pieces are pinned too: a CI container can run the suite with no_new_privs set, and
+// nothing here may ever restart the test runner.
+const LINUX_HOST: Partial<UpdaterHost> = {
+  platform: 'linux',
+  exePath: '/opt/Termpolis/termpolis',
+  appImage: false,
+  noNewPrivs: () => false,
+  relaunch: () => true,
+  onQuitForUpdate: () => {},
+}
 
 /** A fresh copy of the module, wired to the fake updater, on the host a test picks. */
 async function freshAutoUpdater(host: Partial<UpdaterHost> = LINUX_HOST) {
@@ -1067,5 +1077,106 @@ describe('initAutoUpdater dev/test short-circuit', () => {
     mod.initAutoUpdater(() => null)
     expect(mockAutoUpdater.on).not.toHaveBeenCalled()
     expect(await ipcHandlers.get('updater:check')!()).toEqual({ success: false, error: 'electron-updater unavailable' })
+  })
+})
+
+describe('initAutoUpdater on Linux — reopening after an update keeps sudo working (no_new_privs)', () => {
+  // electron-updater's .deb/.rpm/pacman installers reopen the app with app.relaunch(), which on
+  // Linux leaves the new copy with no_new_privs: sudo then fails in every terminal (noNewPrivs.ts).
+  async function setup(host: Partial<UpdaterHost>) {
+    delete (mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall
+    mockAutoUpdater.quitAndInstall.mockReset()
+    let listener: (() => void) | undefined
+    const relaunch = vi.fn(() => true)
+    const onQuitForUpdate = vi.fn((fn: () => void) => { listener = fn })
+    const mod = await freshAutoUpdater({ ...LINUX_HOST, appImage: false, relaunch, onQuitForUpdate, ...host })
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    return { relaunch, onQuitForUpdate, quitForUpdate: () => listener?.() }
+  }
+
+  it("stops electron-updater's app.relaunch() and reopens Termpolis itself after Restart", async () => {
+    const { relaunch, quitForUpdate } = await setup({})
+    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBe(false)
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+    quitForUpdate()
+    expect(relaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reopen after an install on quit, which nobody asked to restart from', async () => {
+    const { relaunch, quitForUpdate } = await setup({})
+    quitForUpdate()
+    expect(relaunch).not.toHaveBeenCalled()
+  })
+
+  it('does not reopen when the install failed', async () => {
+    const { relaunch, quitForUpdate } = await setup({})
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    ipcHandlers.get('updater:quit-and-install')!()
+    eventHandlers['error']?.(new Error('sha512 checksum mismatch'))
+    quitForUpdate()
+    expect(relaunch).not.toHaveBeenCalled()
+  })
+
+  it('leaves an AppImage to its own updater, which starts the new image without the flag', async () => {
+    const { onQuitForUpdate } = await setup({ appImage: true })
+    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBeUndefined()
+    expect(onQuitForUpdate).not.toHaveBeenCalled()
+  })
+
+  it('changes nothing on Windows', async () => {
+    const { onQuitForUpdate } = await setup({ platform: 'win32', exePath: 'C:\Program Files\Termpolis\Termpolis.exe' })
+    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBeUndefined()
+    expect(onQuitForUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('updater:quit-and-install on Linux — a window with no_new_privs cannot install', () => {
+  async function load(host: Partial<UpdaterHost>) {
+    mockAutoUpdater.quitAndInstall.mockReset()
+    const onBefore = vi.fn()
+    const mod = await freshAutoUpdater({ ...LINUX_HOST, ...host })
+    const send = vi.fn()
+    mod.initAutoUpdater(() => ({ webContents: { send } }) as any, { onBeforeQuitAndInstall: onBefore })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    send.mockClear()
+    mockRecordUpdaterEvent.mockClear()
+    return { send, onBefore }
+  }
+
+  it("says why instead of quitting into a pkexec that can't run", async () => {
+    const { send, onBefore } = await load({ noNewPrivs: () => true })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: NO_NEW_PRIVS_UPDATE_MESSAGE })
+    expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
+    expect(onBefore).not.toHaveBeenCalled()
+    const hint = { status: 'error', error: NO_NEW_PRIVS_UPDATE_MESSAGE, reason: 'no-new-privs' }
+    expect(send).toHaveBeenCalledWith('updater:state', hint)
+    expect(ipcHandlers.get('updater:status')!()).toEqual(hint)
+    // Something the user does, not a failure to report.
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalled()
+  })
+
+  it('installs as usual when the flag is clear or unknown', async () => {
+    for (const noNewPrivs of [() => false, () => null]) {
+      await load({ noNewPrivs })
+      expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+      expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+    }
+  })
+
+  it('lets an AppImage install, since replacing its own file needs no root', async () => {
+    await load({ noNewPrivs: () => true, appImage: true })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+  })
+
+  it('reads the real flag by default', async () => {
+    const { appImage: _a, noNewPrivs: _n, ...host } = LINUX_HOST
+    mockAutoUpdater.quitAndInstall.mockReset()
+    const mod = await freshAutoUpdater({ ...host, appImage: true })
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    // An AppImage never consults it, so this proves only that the default host wires up cleanly.
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
   })
 })

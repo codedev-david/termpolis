@@ -35,6 +35,7 @@ import {
 } from './codexConfigEdit'
 import { claudeProjectKey, revertClaudeTrust, trustClaudeWorkspace, untrustUnsafeClaudeRoots } from './claudeTrust'
 import { buildCodexInstruction, cleanAgentsMd } from './codexParity'
+import { sudoAskpassPath } from './sudoAskpass'
 
 export interface AgentIntegrationPaths {
   /** The user's home folder as a full path, or '' when none is known. With '' no agent config
@@ -969,7 +970,7 @@ export function prepareCodexLaunch(
     const userSet = codexConfigSets(text, 'developer_instructions')
     if (typeof userSet === 'object') return { developerInstructions: null, skipped: 'disabled', approvals, ...base }
     if (userSet) return { developerInstructions: null, skipped: 'user-set', approvals, ...base }
-    return { developerInstructions: buildCodexInstruction(opts.steering), approvals, ...base }
+    return { developerInstructions: buildCodexInstruction(opts.steering, sudoAskpassPath() !== null), approvals, ...base }
   } catch {
     return { developerInstructions: null, skipped: 'disabled', approvals: 0, ...base }
   }

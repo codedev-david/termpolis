@@ -7,7 +7,7 @@ type UpdaterStatus = {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
   version?: string
   error?: string
-  reason?: 'read-only-location' | 'disk-full'
+  reason?: 'read-only-location' | 'disk-full' | 'no-new-privs'
 }
 
 const READ_ONLY_HINT = "Termpolis is running from a read-only disk, so it can't update itself."

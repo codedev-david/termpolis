@@ -1,4 +1,5 @@
 import { steeringDirective, type SteeringMode } from './outputSteering'
+import { SUDO_AGENT_HINT } from '../sudoAskpass'
 
 export interface InjectedInstructionOpts {
   /** The launch cwd — embedded verbatim so the agent scopes memory to this repo. */
@@ -7,6 +8,8 @@ export interface InjectedInstructionOpts {
   steering: boolean
   /** Steering intensity (settings.mode); ignored when steering is off. */
   mode?: SteeringMode
+  /** Whether `sudo -A` reaches Termpolis's password dialog in this session (sudoAskpass.ts). */
+  sudoAskpass?: boolean
 }
 
 /**
@@ -35,6 +38,8 @@ export function buildInjectedInstruction(opts: InjectedInstructionOpts): string 
     'If your context is compacted or summarized during this session, the memory digest you loaded will have been summarized away with it — call memory_primer once more, silently, before continuing, then carry on with the task in hand.',
     'If the termpolis memory tools are unavailable, ignore this and proceed normally.',
   ]
+  // Without it an agent's sudo has no terminal to ask for the password on, and fails.
+  if (opts.sudoAskpass) parts.push(SUDO_AGENT_HINT)
   // Output-token steering (Token Headroom): trims what the model writes back.
   if (opts.steering) parts.push(steeringDirective(opts.mode))
   return parts.join(' ')

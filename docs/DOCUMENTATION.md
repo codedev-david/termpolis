@@ -797,6 +797,10 @@ The bottom strip shows, left to right:
 
 **Wrong `claude` / `codex` binary runs.** If you've installed the CLI via multiple package managers (Homebrew, npm, cargo), PATH order decides the winner. Use `which claude` to see which one Termpolis will launch. To pin a specific one, add a custom profile with the **+** on the sidebar's **AI Agents** section and give it the full path as its command.
 
+**An agent can't run `sudo` (Linux and macOS).** An agent runs its commands without a terminal, so plain `sudo` has nowhere to ask for your password. Termpolis tells the agents it launches to use `sudo -A` instead: sudo then asks through a Termpolis password dialog that shows the whole command about to run. Type your password only for a command you expected, because whatever you approve runs as administrator. The helper behind the dialog (`askpass/sudo-askpass` in the data directory, set as `SUDO_ASKPASS` in every terminal) won't run unless sudo started it, and won't ask at all for a command too long to show in full. It can't protect you from a program that is already hostile and running as you, which could show a lookalike dialog of its own. A `SUDO_ASKPASS` you set yourself is left alone. On Linux the dialog uses zenity, kdialog or ssh-askpass, whichever is installed; on macOS it uses the system dialog.
+
+**`sudo` fails in every terminal with "The 'no new privileges' flag is set" (Linux).** Updates from Termpolis 1.50.0 and earlier reopened the app in a way Linux marks "no new privileges", which stops sudo, su and pkexec in every terminal it opens. Termpolis shows a notice when it starts in that state and offers to restart itself properly. You can also quit Termpolis and open it again from your applications menu. Later in-app updates no longer cause it.
+
 **Agent exits with "API key not set".** Each agent's env vars come from the login shell, not from a `.env` file in your workspace. `export ANTHROPIC_API_KEY=...` in `~/.zprofile` / `~/.bash_profile` / PowerShell `$PROFILE`, then relaunch Termpolis.
 
 ### Swarm, MCP, and memory

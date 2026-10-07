@@ -11,9 +11,10 @@
 // sees — the next scheduled check retries. A full disk, or a macOS location Squirrel can't install
 // to (the .dmg, App Translocation: see updaterLocation), is one plain hint, never a crash report.
 
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, autoUpdater as electronAutoUpdater, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
+import { defaultRelaunchDeps, hasNoNewPrivs, relaunchWithoutNoNewPrivs } from './noNewPrivs'
 import { recordUpdaterEvent } from './telemetry'
 import { classifyUpdaterError, DISK_FULL_MESSAGE, scrubUpdaterText, updaterFailureMessage } from './updaterErrors'
 import {
@@ -35,13 +36,19 @@ export interface UpdateState {
    * Set on an 'error' that is something for the user to do rather than a failure, with `error` in
    * plain words. 'read-only-location': this copy can't install updates where it runs (macOS), so the
    * updater has stopped checking. 'disk-full': there wasn't room to save the update.
+   * 'no-new-privs': this process can't run the administrator command a Linux install needs.
    */
-  reason?: 'read-only-location' | 'disk-full'
+  reason?: 'read-only-location' | 'disk-full' | 'no-new-privs'
   downloadedBytes?: number
   totalBytes?: number
 }
 
 let currentState: UpdateState = { status: 'idle' }
+
+/** Shown instead of installing when no_new_privs would make the install's pkexec or sudo fail. */
+export const NO_NEW_PRIVS_UPDATE_MESSAGE =
+  "This Termpolis window can't install the update: Linux has blocked it from asking for the administrator password. " +
+  'Quit Termpolis and open it again from your applications menu, then install the update.'
 
 // Injectable resolver so unit tests can swap in a fake autoUpdater without
 // vi.mock() intercepting our lazy require() (which it doesn't for ESM tests).
@@ -120,6 +127,14 @@ export interface UpdaterHost {
   isInApplicationsFolder?: () => boolean
   moveToApplicationsFolder: () => boolean
   showMessageBox: (parent: BrowserWindow | null, options: UpdaterDialog) => Promise<{ response: number }>
+  /** Running from an AppImage (APPIMAGE is set). */
+  appImage: boolean
+  /** Whether this process has Linux's no_new_privs set (noNewPrivs.ts). */
+  noNewPrivs: () => boolean | null
+  /** Start Termpolis again once this copy has quit (noNewPrivs.ts). */
+  relaunch: () => boolean
+  /** Subscribe to the quit that follows an update quitAndInstall managed to install. */
+  onQuitForUpdate: (listener: () => void) => void
 }
 
 function defaultHost(): UpdaterHost {
@@ -136,6 +151,15 @@ function defaultHost(): UpdaterHost {
     moveToApplicationsFolder: () => app.moveToApplicationsFolder(),
     showMessageBox: (parent, options) =>
       parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options),
+    appImage: !!process.env.APPIMAGE,
+    noNewPrivs: () => hasNoNewPrivs(),
+    relaunch: () => relaunchWithoutNoNewPrivs(defaultRelaunchDeps()),
+    // electron-updater emits this on Electron's own autoUpdater, which it emulates on Linux.
+    onQuitForUpdate: (listener) => {
+      try {
+        electronAutoUpdater.on('before-quit-for-update', listener)
+      } catch { /* the update still installs; Termpolis just doesn't reopen by itself */ }
+    },
   }
 }
 
@@ -176,6 +200,8 @@ export function initAutoUpdater(
   // From "Restart" until the app quits. An updater error in between means that quit isn't coming
   // (Squirrel.Mac failing to unpack, an installer that won't start), so the guard must guard again.
   let restartRequested = false
+  // Assigned once setState exists below; until then no update can be 'downloaded'.
+  let showNoNewPrivsHint = (): void => {}
   const cancelRestart = () => {
     if (!restartRequested) return
     restartRequested = false
@@ -185,6 +211,12 @@ export function initAutoUpdater(
   ipcMain.handle('updater:status', () => currentState)
   ipcMain.handle('updater:quit-and-install', () => {
     if (currentState.status !== 'downloaded') return { success: false, error: 'no update ready' }
+    // A .deb/.rpm install runs pkexec or sudo, which fail outright under no_new_privs, and the app
+    // would quit with nothing installed. An AppImage replaces its own file and needs no root.
+    if (host.platform === 'linux' && !host.appImage && host.noNewPrivs() === true) {
+      showNoNewPrivsHint()
+      return { success: false, error: NO_NEW_PRIVS_UPDATE_MESSAGE }
+    }
     try {
       const au = updaterProvider()
       if (!au) return { success: false, error: 'electron-updater unavailable' }
@@ -224,6 +256,17 @@ export function initAutoUpdater(
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.allowPrerelease = false
 
+  // .deb, .rpm and pacman installs. electron-updater reopens the app with app.relaunch(), and on
+  // Linux that leaves the new copy unable to run sudo in any of its terminals (noNewPrivs.ts), so
+  // Termpolis reopens itself instead. An AppImage is left alone: its updater starts the new image
+  // through child_process, which doesn't cause it.
+  if (host.platform === 'linux' && !host.appImage) {
+    autoUpdater.autoRunAppAfterInstall = false
+    host.onQuitForUpdate(() => {
+      if (restartRequested) host.relaunch()
+    })
+  }
+
   // Where the updater last came to rest (not mid-check or mid-download). A check that fails through
   // nobody's fault goes back here: it neither buries an update that is ready to install nor invents
   // an answer the check never got. It is never a failure, though: a failure is news of the attempt
@@ -255,6 +298,7 @@ export function initAutoUpdater(
       })
     } catch { /* never let telemetry crash the updater */ }
   }
+  showNoNewPrivsHint = () => setState({ status: 'error', error: NO_NEW_PRIVS_UPDATE_MESSAGE, reason: 'no-new-privs' }, { record: false })
 
   // This copy can't install an update where it runs. One plain hint, and no more checks: each one
   // would download the whole update only to be refused again, as every 4-hourly retry was (#21/#22).

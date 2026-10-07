@@ -6,7 +6,7 @@ interface UpdateState {
   releaseNotes?: string
   error?: string
   // Set on an 'error' that is the user's to act on, with `error` in plain words.
-  reason?: 'read-only-location' | 'disk-full'
+  reason?: 'read-only-location' | 'disk-full' | 'no-new-privs'
   downloadedBytes?: number
   totalBytes?: number
 }
