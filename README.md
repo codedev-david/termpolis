@@ -9,16 +9,16 @@
 </p>
 
 <p align="center">
-  Claude, Codex, and Gemini share <strong>one local memory that learns as you work</strong> —<br>
+  Claude and Codex share <strong>one local memory that learns as you work</strong> —<br>
   so every agent already knows your project, your decisions, and what got figured out yesterday.<br>
-  <strong>100% on your machine. No cloud. No telemetry unless you opt in.</strong>
+  <strong>Local by default. No cloud account. No telemetry unless you opt in.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/🧠_One_shared_memory-across_all_3_agents-6E56CF?style=for-the-badge" alt="One shared memory across all three agents">
+  <img src="https://img.shields.io/badge/🧠_One_shared_memory-Claude_%26_Codex-6E56CF?style=for-the-badge" alt="One shared memory for Claude and Codex">
   <img src="https://img.shields.io/badge/🌱_Learns_every_session-never_re--explain-1f6e3a?style=for-the-badge" alt="Learns from every session">
   <img src="https://img.shields.io/badge/🔀_Second_Opinion-agents_review_each_other-b07407?style=for-the-badge" alt="Second Opinion — agents review each other">
-  <img src="https://img.shields.io/badge/🔒_100%25_local-no_cloud,_opt--in_telemetry_only-0078d4?style=for-the-badge" alt="100% local, no cloud, opt-in telemetry only">
+  <img src="https://img.shields.io/badge/🔒_Local_by_default-no_cloud_account,_opt--in_telemetry_only-0078d4?style=for-the-badge" alt="Local by default, no cloud account, opt-in telemetry only">
 </p>
 
 <p align="center">
@@ -42,14 +42,14 @@
 
 ---
 
-## 🧠 Meet Mneme — one memory, every agent, that learns as you work
+## 🧠 Meet Mneme — one memory for Claude and Codex, that learns as you work
 
-Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. **Mneme** (named for the Greek muse of memory) is the local brain at the heart of Termpolis: **one shared memory** that Claude, Codex, and Gemini all read and write, that **remembers across sessions and learns from each one**, so you stop repeating yourself.
+Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. **Mneme** (named for the Greek muse of memory) is the local brain at the heart of Termpolis: **one shared memory** that Claude and Codex both read and write, that **remembers across sessions and learns from each one**, so you stop repeating yourself. (Gemini isn't connected yet: Termpolis launches it as the Antigravity CLI, `agy`, and registers its memory tools only where the older Gemini CLI looks for them.)
 
-- **One memory, three agents.** All three read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the others — no copy-paste, no re-discovery.
-- **It learns from every session.** When an agent finishes a chunk of work, Termpolis quietly distills the lesson — the fix, the decision, the gotcha — plus its own track record into the brain, so the fleet gets smarter the more you use it. Automatic for Claude, Codex, and Gemini (from their session transcripts).
-- **Every new agent starts warm.** Open a fresh Codex or Gemini terminal and it already knows your project — the relevant memory loads at launch, behind the scenes, no wall of text.
-- **100% local & private.** Embeddings run in-process (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry, nothing leaves your machine. The local store is encrypted at rest (AES-256-GCM) by default whenever the OS keychain is available (DPAPI on Windows, Keychain on macOS, libsecret/KWallet on Linux): each device gets a random key, which is itself stored encrypted by the OS. With no keychain (for example a Linux box without a keyring) the memory stays plaintext rather than sitting next to an unprotected key. One exception today: aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`) are written there in plain text. Each computer keeps its own memory.
+- **One memory, shared by Claude and Codex.** Both read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the other — no copy-paste, no re-discovery.
+- **It learns from every session.** When an agent finishes a chunk of work, Termpolis quietly distills the lesson — the fix, the decision, the gotcha — plus its own track record into the brain, so the fleet gets smarter the more you use it. Automatic for Claude and Codex (from their session transcripts).
+- **Every new agent starts warm.** Open a fresh Claude or Codex terminal and it already knows your project — the relevant memory loads at launch, behind the scenes, no wall of text.
+- **Local & private.** Embeddings run locally (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry; the memory never leaves your machine. The local store is encrypted at rest (AES-256-GCM) by default whenever the OS keychain is available (DPAPI on Windows, Keychain on macOS, libsecret/KWallet on Linux): each device gets a random key, which is itself stored encrypted by the OS. With no keychain (for example a Linux box without a keyring) the memory stays plaintext rather than sitting next to an unprotected key. One exception today: aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`) are written there in plain text. Each computer keeps its own memory.
 - **Built to trust.** Content-addressed dedup (never stores the same thing twice), millisecond HNSW retrieval at scale, staleness-guarded recall, and an observable `🧠 Loaded N memories` banner so you always know it fired.
 
 > **Proven, not just claimed.** A CI gate has one agent write a decision and a *different* agent recall it from a keyword-free paraphrase over the real MCP wire; semantic recall scores **0.97+** similarity on paraphrases. Backed by **7,000+ tests** (97.5% statements / 98.5% lines).
@@ -65,10 +65,10 @@ Termpolis **runs those exact CLIs, unchanged** — and fixes the one thing they 
 | What you get | Claude Code / Codex on their own | The same agent inside Termpolis |
 | --- | --- | --- |
 | **Long-term memory** | Starts cold every launch; you re-explain and re-pay tokens to reload context | **Mneme** — a local brain holding months of context, surviving restarts, recalled in ms |
-| **Shared across tools** | Siloed — Codex can't see what Claude just figured out | All three agents read/write **one memory**; a fact one learns, the others recall |
+| **Shared across tools** | Siloed — Codex can't see what Claude just figured out | Claude and Codex read/write **one memory**; a fact one learns, the other recalls |
 | **It learns** | No learning — every session is a blank slate | Distills a lesson from every finished task + tracks its own competence |
 | **Every new session** | Re-explain your codebase from scratch | Opens already knowing the project; one-click cross-agent handoff, no re-explaining |
-| **Your data & lock-in** | One vendor's account + cloud; telemetry varies | 100% local, Apache-2.0, no account/backend; prompts scanned for secrets |
+| **Your data & lock-in** | One vendor's account + cloud; telemetry varies | Local by default, Apache-2.0, no account/backend; prompts to Claude Code and Codex scanned for secrets |
 
 **Same agents, same accounts you already pay for** — Termpolis is the workspace around them that remembers and learns.
 
@@ -109,12 +109,12 @@ See [`PRIVACY.md`](PRIVACY.md) for the data-flow spec, [`TERMS.md`](TERMS.md) fo
 
 ### 🧠 Shared memory — the deep dive
 
-The moat above in full — every capability of the brain that all three agents share:
+The moat above in full — every capability of the brain that Claude and Codex share:
 
-- **One memory, three agents.** Claude, Codex, and Gemini all read and write the same store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list` / `memory_primer`). A fact one agent figures out is instantly available to the others — no copy-paste, no re-discovery.
+- **The memory tools.** Claude and Codex reach the store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list` / `memory_primer`).
 - **It survives quitting the app.** Stored as JSONL (`swarm-memory.jsonl`, one entry per line, each line encrypted when the OS keychain is available) in Termpolis's per-user app-data folder — `%APPDATA%\termpolis\` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with its embeddings at startup. Because it lives in your user profile (not the install folder), it survives app updates and even an uninstall/reinstall — close Termpolis, reopen it tomorrow, the context is still there.
 - **Each computer keeps its own memory.** The Memory panel's **Sync across machines** setting (a shared synced folder) doesn't work reliably in current versions: Termpolis forgets the chosen folder when it restarts, and turning it on for a store that is already encrypted can conflict with that store's key. Leave it off. To use what another of your computers knows, link the two with [Linked machines](#-linked-machines--let-an-agent-hand-work-to-your-other-computer): an agent there starts with a digest of that machine's memory and works on its files.
-- **It feeds itself.** A background indexer ingests your past Claude / Codex / Gemini transcripts automatically (10 s after launch, then every 30 min). Idempotent (content-hash dedup), so it only ever embeds genuinely new content — no action required from you.
+- **It feeds itself.** A background indexer ingests your past Claude and Codex transcripts (and older Gemini CLI ones) automatically (10 s after launch, then every 30 min). Idempotent (content-hash dedup), so it only ever embeds genuinely new content — no action required from you.
 - **Fully offline, no server, no secrets.** Embeddings run in-process via WASM with a bundled `bge-small-en-v1.5` model — **no Ollama, no native binaries, nothing leaves your machine.** The indexer reuses the same sensitive-file denylist as the read watcher, so `.env` files, keys, and cloud credentials are never embedded.
 - **Scales into six figures.** Vectors are packed into a typed-array store (about half the RAM of boxed arrays), and past tens of thousands of entries an **HNSW** approximate-nearest-neighbour index engages automatically so search stays sub-linear (a few ms/query, measured). The graph lives *off* the JS heap and persists to disk. It builds once, lazily, in the background **without blocking your searches** — the first query after the store crosses the threshold returns instantly from the exact fallback while the index builds (frame-budgeted so the UI never stalls); every later search and launch uses the saved graph.
 - **Auto-recovers from compaction.** When Claude Code compacts its conversation to fit the context window, it summarizes detail away — but that detail still lives in the brain. Termpolis watches the terminal, waits for the compaction to settle (debounced through the whole thing), and **re-adds a one-line memory pointer** to the agent's input — *ready to send, never auto-submitted* — so the agent reloads what it lost **behind the scenes** over MCP (`memory_primer`) instead of a wall of pasted text. Cooldown-guarded to fire once per compaction; opt-out in Settings. Your durable memory is the large working set; the model's window only holds the active task.
@@ -157,7 +157,7 @@ Termpolis doesn't replace Claude Code, Codex, or Gemini CLI — **it runs them, 
 
 | What you actually get | A bare AI CLI / IDE assistant | The same agent inside Termpolis |
 | --- | --- | --- |
-| **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **all three agents share**, surviving restarts; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
+| **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **Claude and Codex share**, surviving restarts; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
 | **More than one model** | Locked to one vendor's family | Claude + Codex + Gemini run **as a team** under a local conductor that routes each subtask to the best-suited model |
 | **Secrets / code leaving the machine** | Whatever you type is sent as-is, and you never find out | Every prompt is scanned against **97 secret patterns**. Your text is forwarded untouched, and a hit is **logged by name** (`DB_PASSWORD`) so you know what to rotate — the value is never stored. And since v1.25 the same engine **actually blocks a `git commit` or `git push`** that would carry a secret into history or to a remote |
 | **Importing a third-party skill / plugin / MCP server** | Wired straight into the agent's config — a zip nobody diffs, whose *instruction text* the agent reads as if you'd typed it | **Safe Import** statically scans it first (**41 rules**, including prompt injection hidden in the artifact's own prose). **Red is never installable**, and approvals are **hash-pinned** so an edited artifact re-prompts |
@@ -208,11 +208,11 @@ Long AI coding sessions chew through rate limits and hit compaction fast — and
 
 ## 📱 Termpolis Remote — keep a session going from your phone
 
-The desktop app is where the work happens. **Termpolis Remote** is a small companion app for iPhone and Android that lets you read those terminals and type into them while you are away from the machine — nothing more. It is a **pass-through**, not a second Termpolis.
+The desktop app is where the work happens. **Termpolis Remote** is a small companion app for iPhone ([Termpolis R](https://apps.apple.com/us/app/termpolis-r/id6809306362) on the App Store) that lets you read those terminals and type into them while you are away from the machine — nothing more. It is a **pass-through**, not a second Termpolis.
 
 - **Nothing runs on the phone.** No agent, no memory, no embeddings, no API keys. The desktop runs the Claude/Codex/Gemini session it was already running, signed in the way it was already signed in; the phone sends keystrokes and receives output. Lose the phone and you have lost a display, not an account.
-- **End-to-end encrypted, and the relay is not trusted.** Pairing is an X25519 exchange completed by scanning a QR code **off the desktop's own screen**, so an attacker needs to be standing in front of your machine. Everything afterwards is ChaCha20-Poly1305 under a key the relay never sees — it forwards opaque frames between two rooms and cannot read, replay or reorder a single one. Both ends show the same eight-word **safety phrase**; if the words differ, something is in the middle.
-- **The desktop decides what the phone may do.** Read, create a terminal, type into a terminal and close a terminal are four separate grants, all **off until you turn them on**, revocable from the desktop at any moment, and re-checked on the desktop for every request — a phone that thinks it has a grant it does not simply gets refused. Typing into a terminal is deliberately *not* implied by creating one.
+- **End-to-end encrypted, and the relay is not trusted.** Pairing is an X25519 exchange completed by scanning a QR code **off the desktop's own screen**, so the desktop's key never crosses the network — but whoever can see that screen during the code's 90 seconds (in person, or through a screen share or a recording) can pair in your place, so pair privately. Everything afterwards is ChaCha20-Poly1305 under fresh per-connection keys the relay never sees: it forwards sealed frames it cannot read or alter, and both ends reject replayed or reordered ones. Both ends show the same eight **safety words**; if they differ, something is in the middle.
+- **The desktop decides what the phone may do.** Read, start a terminal, type into a terminal and close a terminal are four separate grants, chosen when you pair (only **Read** is ticked by default), changeable from the desktop at any moment, and re-checked on the desktop for every request — a phone that thinks it has a grant it does not simply gets refused. Typing into a terminal is deliberately *not* implied by starting one. An agent started from the phone runs the way swarm workers do, without permission prompts, so grant *start* and *type* only to a phone you trust as much as the desktop.
 - **One phone, up to 16 desktops.** A work machine, a home one, a Linux box in the corner — pair with each, and switch between them from the header of the terminal list. Every pairing gets its **own keypair**, so each desktop sees a different device, grants capabilities to that device alone, and revoking on one machine says nothing about any other. Rows are named from the desktop's hostname and renameable on the phone; two machines with the same hostname are numbered, because a switcher with two identical rows is one where the wrong terminal gets the command.
 - **Off by default, and unpairable from either end.** Remote is disabled until you enable it. The desktop can revoke a device; the phone can unpair itself even with no network, because a phone that can only be unpaired while online cannot be unpaired when it matters. Either side ending it is enough — the session key cannot be re-derived without both identities.
 - **It runs off the main thread.** The bridge lives in its own Electron `utilityProcess`, so a busy relay connection can never make your terminals stutter.

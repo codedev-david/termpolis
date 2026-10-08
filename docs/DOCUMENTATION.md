@@ -855,72 +855,146 @@ If none of the above fixes your problem, **[open an issue](https://github.com/co
 
 ## 29. Termpolis Remote (phone app)
 
-**Termpolis Remote** is a small companion app for iPhone and Android that lets
-you read the terminals already running on your desktop and type into them while
-you are away from the machine. It is a **pass-through**, not a second
+**Termpolis Remote** is an iPhone app (on the App Store as
+[Termpolis R](https://apps.apple.com/us/app/termpolis-r/id6809306362)) that
+shows the terminals running in Termpolis on your desktop and lets you type into
+them while you are away from the machine. It is a **pass-through**, not a second
 Termpolis: nothing runs on the phone — no agent, no memory, no embeddings, no
 API keys. The desktop keeps running the Claude/Codex/Gemini session it was
 already running, signed in the way it was already signed in; the phone sends
 keystrokes and receives output. Lose the phone and you have lost a display, not
 an account.
 
-Remote is **off by default**.
+Remote is **off by default**. It shares the relay and one background process
+with [Linked machines](#30-linked-machines), but each has its own switch: a
+phone has no direct way to send work to a linked computer (an agent it types
+into still can), and a linked computer can't see your terminals. Switching either one on or off restarts that process, so the other's
+connections drop for a moment.
+
+Relay access is a subscription in the phone app ($4.99 a month on the App
+Store, first week free for new subscribers). The desktop app stays free.
 
 ### Turning it on
 
 *Settings → Remote.*
 
-1. Tick **Enable Termpolis Remote**. The desktop half runs in its own
+1. Tick **Allow phones to connect**. The desktop half runs in its own
    `utilityProcess`, off the main thread, so a stalled relay connection cannot
-   slow the terminals down. If it ever crashes it is restarted; four crashes
-   inside a minute disable Remote rather than restart forever, and the pane
-   says so.
+   slow the terminals down. If it crashes it is restarted; a fourth crash
+   inside a minute turns Remote off rather than restarting forever, and the
+   pane says so.
 2. Leave **Relay address** at `wss://relay.termpolis.com` unless you are
-   running your own. The relay is Apache-2.0 source in `relay/` — a single
-   Cloudflare Worker — and pointing the setting at your own deployment is
-   supported.
-3. Type a label for the phone and press **Pair a device**. A QR code appears
-   and is valid for **90 seconds**; scan it with Termpolis Remote.
-4. Both screens show the **same eight words**. Compare them. They are derived
-   from the two device keys, so they match only if nothing is sitting in the
-   middle — this comparison is the entire verification, and it takes a couple
-   of seconds. If they differ, cancel and pair again.
+   running your own. The relay's source (Apache-2.0, like the rest of the repo) is in `relay/` (a Cloudflare Worker plus
+   a Durable Object), and pointing the setting at your own deployment is
+   supported. The phone takes the address from the pairing QR code and only
+   accepts `wss://`; phones paired before a change keep using the old relay and
+   must pair again.
+3. Under **Pair a device**, type a label for the phone (it defaults to
+   "Phone") and tick what it will be allowed to do. Only **Read terminal
+   output** is ticked to begin with. Press **Pair a device**.
+4. A QR code appears with a countdown. It works **once** and is valid for
+   **90 seconds**; closing the dialog withdraws it. Scan it with Termpolis
+   Remote. The desktop shows the code only as a picture, so the app needs
+   camera access to pair.
+5. Both screens show the **same eight words**, derived from the two devices'
+   long-term keys. If they match, nothing is sitting in the middle. If they
+   differ, tap **They do not match — unpair** on the phone and **Revoke** the
+   device on the desktop.
+
+**Treat the QR code as a password for its 90 seconds.** Whoever scans it first
+is paired — including through a screen share or a recording — and gets the
+ticked permissions straight away: nothing waits for the words to be compared.
+Pair where nobody else can see the screen, and revoke any device you don't
+recognise.
 
 ### What the phone is allowed to do
 
-A newly paired device is granted **nothing**. Four capabilities are granted
-individually in *Settings → Remote*, each revocable at any moment and
-re-checked on the desktop for every request — a phone that thinks it holds a
-grant it does not simply gets refused:
+Each phone has four permissions, chosen when it is paired and changed at any
+time with the checkboxes in its row under **Paired devices**. They are checked
+on the desktop for every request, and a change takes effect at once. The phone
+only reports them (its Settings screen lists *What the desktop allows*) and
+hides the controls it isn't allowed to use.
 
-| Capability | What it allows |
-|---|---|
-| **Read** | List terminals and read their output. |
-| **Create terminal** | Start a new AI terminal. The command goes through the same allowlist an agent's does. |
-| **Type into terminal** | Send keystrokes to an **existing** terminal. This bypasses the command allowlist — it is a keyboard. Deliberately **not** implied by *Create terminal*. |
-| **Close terminal** | Close a terminal. |
+| Permission | Default | What it allows |
+|---|---|---|
+| **Read terminal output** | on | List the terminals saved in the desktop's session, i.e. the sidebar (name and working folder; swarm workers are excluded), and stream the output of the one the phone has open. |
+| **Start terminals** | off | Start a terminal. The app offers Claude, Codex or Gemini (`agy`) in a folder picked by browsing the folders under the desktop's home folder; the desktop itself accepts any folder, and a plain shell. The terminal is created over MCP like a swarm worker's, so `sanitizeAgentCommand` launches it the same way: Claude and Gemini with `--dangerously-skip-permissions`, Codex with `-a never -s workspace-write`. |
+| **Type into terminals** | off | Send text to any open terminal, then Enter. This bypasses the command checks — it is a keyboard, and anything typed runs as you. Deliberately **not** implied by *Start terminals*. |
+| **Close terminals** | off | Close a terminal. The current phone app has no control for this. |
 
-**Revoke** deletes the device record. The channel cannot be re-opened without
-pairing again from both ends, and unpairing from the phone has the same
-effect.
+### Using it
+
+- **Terminal list** — the terminals in the desktop's sidebar (from
+  `list_terminals`, i.e. the saved session, so swarm workers and phone-started
+  agents are not in it), titled with the desktop's name; pull to refresh.
+  While a terminal is open the phone shows its agent's status (*Thinking*,
+  *Working*, *Waiting for you*, …) and a one-line summary; the list keeps the
+  last status seen.
+- **Output** — streamed as it is printed, for the terminals the phone has
+  open. The desktop flattens it through a headless terminal first, so cursor
+  moves and redraws arrive as edits and colour survives. Opening a terminal
+  brings back what its last 32,768 characters of raw output draw.
+- **Send** — types the text, then presses Enter 150 ms later; several lines go
+  in as one bracketed paste. There are no special keys (Esc, Ctrl+C, Tab,
+  arrows, or Enter on its own).
+- **Up to 16 desktops** on one phone, each with its own key pair; *Desktops*
+  at the top left of the terminal list switches between them.
+- **New AI terminal** — the terminal is created over MCP, so the renderer
+  adds it hidden, like a swarm worker: it is not in the sidebar or the phone's
+  list after you leave it, and *Clear swarm* closes it.
+- **Backgrounding** disconnects the phone; it reconnects on return. The
+  desktop keeps the newest 262,144 characters of output per phone meanwhile,
+  dropping older output and marking the gap as skipped.
+- **On the desktop**, the title bar shows a phone icon while a phone is
+  connected, and each device row shows connected / last seen, its four
+  permissions, **Show safety words** and **Revoke**.
+
+### Unpairing and revoking
+
+- **Revoke** (click again on *Really revoke?*) deletes the device record and
+  closes its connection at once. The phone isn't told; it sees the desktop as
+  offline until it is paired again. Terminals it started keep running.
+  Revoking and changing permissions need *Allow phones to connect* on.
+- **Unpairing on the phone** erases that desktop's key and works offline. The
+  desktop is told only if it is the phone's current, reachable desktop;
+  otherwise revoke it there too.
+- Unticking *Allow phones to connect* ends every session but keeps the
+  pairings. A phone not seen for **30 days** is forgotten.
+- Deleting the app is not a reliable unpair: iOS can keep Keychain items after
+  an app is deleted.
 
 ### How it is secured
 
 - **End-to-end encrypted.** X25519 key agreement, HKDF-SHA256 derivation and
-  ChaCha20-Poly1305 authenticated encryption, keyed from both devices'
-  identities at pairing time. The relay never holds the keys and cannot derive
-  them.
-- **The relay is not trusted.** It sees an opaque room id, a frame size and a
-  timestamp — not your terminal, not what you typed. It stores no messages and
-  keeps no traffic logs, and a room with nobody in it is discarded.
-- **Nothing leaves the desktop that was not asked for.** The phone drives the
-  desktop's own MCP server over the sealed channel; there is no second copy of
-  your memory, your embeddings or your model credentials anywhere.
-- **The desktop's identity key never reaches the renderer**, and is encrypted
-  with the OS keychain (DPAPI / Keychain / libsecret) where one is available; on
-  Linux without a keyring it is stored unencrypted in the data directory. The phone's key lives
-  in the iOS Keychain or Android Keystore, available only while the device is
-  unlocked and never backed up elsewhere.
+  ChaCha20-Poly1305, with a key per direction and a counter in every sealed
+  frame that rejects replayed or reordered frames. Every connection mixes in fresh ephemeral keys,
+  so recorded traffic stays sealed even if a long-term key later leaks; the
+  pairing exchange itself is sealed under the long-term keys only.
+- **Pairing the relay can't step into.** The desktop's public key and a
+  one-time secret travel only in the QR code, so a relay that never saw it can't
+  open or forge the pairing. The eight words are the check against a swapped
+  code; they are stable for the life of the pairing.
+- **The relay is not trusted.** It sees both IP addresses, which side is which,
+  connection times, a room id that is stable for the life of the pairing, the
+  size and timing of every frame (frames are not padded) and the unencrypted
+  frame headers (type, public keys during pairing and connection setup, a
+  counter). It can drop or delay frames but not read or alter them. It stores
+  no frames; Cloudflare's own logs keep request metadata.
+- **Desktop-side checks.** Every request is checked against the device's
+  grants. Terminal actions then go to the desktop's own MCP server over
+  localhost — limited to `list_terminals`, `create_terminal`, `run_command`,
+  `write_to_terminal` and `close_terminal`, with the same rate limits and audit
+  log (tool name and device id, not the text) as any MCP client. Folder
+  browsing (home-rooted, folder names only) and the output stream are handled
+  in the bridge and are not audited. The phone's own requests reach no memory,
+  swarm or other tools; an agent it types into still has its own.
+- **Keys.** The desktop's identity key never reaches the renderer, and is
+  encrypted with the OS keychain (DPAPI / Keychain / libsecret) where one is
+  available; on Linux without a keyring it is stored unencrypted in the data
+  directory. `remote-devices.json` (labels, public keys, room ids, grants) is plain. The
+  phone makes a new key pair per desktop and keeps it in the iOS Keychain,
+  available only while the device is unlocked and never synced to another
+  device.
 
 Privacy details are in `PRIVACY.md`; the combined policy for the desktop app,
 the phone app and the relay is at <https://termpolis.com/privacy.html>.
