@@ -701,7 +701,7 @@ Termpolis takes security seriously, especially with AI agent integration.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 22.12+ (20.19+ also works)
+- [Node.js](https://nodejs.org/) 22.12+
 - npm 10+
 - **Windows only:** Visual Studio Build Tools (for native `node-pty` compilation)
 - **Linux only:** `build-essential`, `python3` (for native module compilation)
