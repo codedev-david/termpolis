@@ -701,8 +701,8 @@ Termpolis takes security seriously, especially with AI agent integration.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 18+
-- npm 9+
+- [Node.js](https://nodejs.org/) 22.12+
+- npm 10+
 - **Windows only:** Visual Studio Build Tools (for native `node-pty` compilation)
 - **Linux only:** `build-essential`, `python3` (for native module compilation)
 
@@ -733,6 +733,7 @@ npm test
 
 ```bash
 bash scripts/download-tools.sh  # Download bundled CLI tools
+npm install
 npm run package
 ```
 
@@ -742,6 +743,7 @@ Output: `dist-electron-builder/Termpolis Setup X.X.X.exe`
 
 ```bash
 bash scripts/download-tools.sh
+npm install
 npm run package
 ```
 
@@ -753,6 +755,7 @@ Output: `dist-electron-builder/Termpolis-X.X.X-arm64.dmg` and `Termpolis-X.X.X-x
 
 ```bash
 bash scripts/download-tools.sh
+npm install
 npm run package
 ```
 

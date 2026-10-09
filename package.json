@@ -6,12 +6,17 @@
   "author": "Termpolis",
   "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
   "bin": {
     "termpolis-cli": "src/mcp-adapter/termpolis-cli.cjs",
     "termpolis-mcp": "src/mcp-adapter/stdio-adapter.cjs"
   },
   "main": "out/main/index.js",
   "scripts": {
+    "postinstall": "install-electron",
     "dev": "electron-vite dev",
     "grammars": "node scripts/copy-grammars.cjs",
     "build": "node scripts/copy-grammars.cjs && electron-vite build",
@@ -66,6 +71,7 @@
       }
     ],
     "afterPack": "scripts/afterPack.cjs",
+    "npmRebuild": false,
     "asarUnpack": [
       "node_modules/node-pty/**",
       "node_modules/onnxruntime-web/**",
@@ -75,14 +81,16 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",
-      "publisherName": [
-        "David Engelhart",
-        "Termpolis"
-      ],
       "legalTrademarks": "Termpolis",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
+      "signtoolOptions": {
+        "publisherName": [
+          "David Engelhart",
+          "Termpolis"
+        ],
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      },
       "signAndEditExecutable": true
     },
     "nsis": {
@@ -119,10 +127,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
-      "entitlementsInherit": "entitlements.mac.inherit.plist",
-      "notarize": {
-        "teamId": "${env.APPLE_TEAM_ID}"
-      }
+      "entitlementsInherit": "entitlements.mac.inherit.plist"
     },
     "linux": {
       "target": [
@@ -177,7 +182,7 @@
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
-    "@sentry/electron": "7.10.0",
+    "@sentry/electron": "7.20.1",
     "@sentry/react": "10.45.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-search": "0.15.0",
@@ -187,21 +192,21 @@
     "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "5.5.0",
     "autoprefixer": "10.4.27",
-    "electron-updater": "6.8.3",
+    "electron-updater": "6.8.9",
     "jpeg-js": "^0.4.4",
-    "monaco-editor": "^0.55.1",
+    "monaco-editor": "^0.57.0",
     "node-pty": "1.1.0",
     "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
     "pngjs": "^7.0.0",
-    "postcss": "8.5.8",
+    "postcss": "8.5.29",
     "qrcode-generator": "^2.0.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "tailwindcss": "3.4.19",
-    "uuid": "13.0.0",
+    "uuid": "13.0.2",
     "web-tree-sitter": "^0.21.0",
     "ws": "^8.21.3",
-    "yaml": "2.5.1",
+    "yaml": "2.9.1",
     "zustand": "5.0.12"
   },
   "devDependencies": {
@@ -215,21 +220,21 @@
     "@types/react-dom": "18.3.7",
     "@types/uuid": "10.0.0",
     "@types/ws": "^8.18.1",
-    "@typescript-eslint/eslint-plugin": "7.18.0",
-    "@typescript-eslint/parser": "7.18.0",
+    "@typescript-eslint/eslint-plugin": "8.71.1",
+    "@typescript-eslint/parser": "8.71.1",
     "@vitejs/plugin-react": "4.7.0",
-    "@vitest/coverage-v8": "4.1.0",
-    "electron": "30.5.1",
-    "electron-builder": "24.13.3",
-    "electron-vite": "2.3.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "electron": "43.7.9",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
     "eslint": "8.57.1",
     "eslint-plugin-react-hooks": "4.6.2",
     "eslint-plugin-react-refresh": "0.4.26",
     "jsdom": "29.0.0",
-    "sharp": "0.34.5",
+    "sharp": "0.35.5",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "5.9.3",
-    "vite": "5.4.21",
-    "vitest": "4.1.0"
+    "vite": "7.3.7",
+    "vitest": "4.1.11"
   }
 }
