@@ -67,6 +67,7 @@ function jsonRpcRequest(
   port: number,
   token: string,
   payload: object,
+  extraHeaders: Record<string, string> = {},
 ): Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; body: string }> {
   return makeRequest(
     {
@@ -77,6 +78,7 @@ function jsonRpcRequest(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
+        ...extraHeaders,
       },
     },
     JSON.stringify(payload),
@@ -875,6 +877,63 @@ describe('MCP HTTP server', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(handlers.createTerminal).toHaveBeenCalledWith('Default', 'bash', '')
+  })
+
+  // --- create_terminal for a paired phone ---
+
+  const PHONE_HEADER = { 'X-Termpolis-Device': '0123456789abcdef' }
+
+  it('tools/call create_terminal from a paired phone passes its device and agent on', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'create_terminal', arguments: { name: 'Claude · repo', cwd: '/repo', agentCommand: 'claude' } },
+      id: 510,
+    }, PHONE_HEADER)
+    expect(res.statusCode).toBe(200)
+    expect(handlers.createTerminal).toHaveBeenCalledWith('Claude · repo', 'bash', '/repo', {
+      device: '0123456789abcdef', agentCommand: 'claude',
+    })
+  })
+
+  it.each([
+    ['a command with flags', 'claude --dangerously-skip-permissions'],
+    ['a command chain', 'claude; rm -rf ~'],
+    ['an unknown binary', 'bash'],
+    ['a non-string', 42],
+  ])('tools/call create_terminal from a paired phone drops %s as its agent', async (_label, agentCommand) => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'create_terminal', arguments: { name: 'T', cwd: '/repo', agentCommand } },
+      id: 511,
+    }, PHONE_HEADER)
+    expect(res.statusCode).toBe(200)
+    expect(handlers.createTerminal).toHaveBeenCalledWith('T', 'bash', '/repo', { device: '0123456789abcdef' })
+  })
+
+  it('tools/call create_terminal ignores an agent from a caller that is not a phone', async () => {
+    // An agent's create_terminal is a swarm worker whatever it sends; only the bridge's device
+    // tag marks a terminal as the user's.
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'create_terminal', arguments: { name: 'W', cwd: '/repo', agentCommand: 'claude' } },
+      id: 512,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.createTerminal).toHaveBeenCalledWith('W', 'bash', '/repo')
+  })
+
+  it('tools/call create_terminal treats a malformed device tag as no phone', async () => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'create_terminal', arguments: { name: 'W', cwd: '/repo', agentCommand: 'claude' } },
+      id: 513,
+    }, { 'X-Termpolis-Device': 'not-a-device' })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.createTerminal).toHaveBeenCalledWith('W', 'bash', '/repo')
   })
 
   it('tools/call read_output uses default 50 lines when omitted', async () => {

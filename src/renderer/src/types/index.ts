@@ -1214,7 +1214,9 @@ declare global {
       onConfirmClose: (cb: () => void) => () => void
     }
     mcpEvents: {
-      onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string }) => void) => () => void
+      /** `remote`: a paired phone opened it, so it is the user's own terminal, not a swarm
+       *  worker. `agentCommand`: the agent the phone launched in it. */
+      onTerminalCreated: (cb: (data: { id: string; name: string; shell: string; cwd: string; remote?: boolean; agentCommand?: string }) => void) => () => void
       onTerminalClosed: (cb: (terminalId: string) => void) => () => void
     }
     remote: RemoteAPI

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { sanitizeAgentCommand, AGENT_COMMAND_ALLOWLIST, AGENT_MODEL_ALIASES } from '../../src/main/agentCommandSanitizer'
+import { sanitizeAgentCommand, isAgentBinary, AGENT_COMMAND_ALLOWLIST, AGENT_MODEL_ALIASES } from '../../src/main/agentCommandSanitizer'
 
 describe('sanitizeAgentCommand', () => {
   // ---- Correct commands pass through ----
@@ -164,5 +164,25 @@ describe('sanitizeAgentCommand', () => {
   it('exposes Claude-only model aliases', () => {
     expect(AGENT_MODEL_ALIASES.claude).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
     expect(AGENT_MODEL_ALIASES.gemini).toBeUndefined()
+  })
+})
+
+describe('isAgentBinary', () => {
+  it.each(['claude', 'codex', 'agy', 'gemini'])('accepts the bare %s binary', (name) => {
+    expect(isAgentBinary(name)).toBe(true)
+  })
+
+  it.each([
+    ['a command with flags', 'claude --dangerously-skip-permissions'],
+    ['a chained command', 'claude; rm -rf ~'],
+    ['a different case', 'Claude'],
+    ['padding', ' claude'],
+    ['an unknown binary', 'bash'],
+    ['an inherited property', 'toString'],
+    ['an empty string', ''],
+    ['a number', 42],
+    ['undefined', undefined],
+  ])('rejects %s', (_label, value) => {
+    expect(isAgentBinary(value)).toBe(false)
   })
 })

@@ -585,16 +585,23 @@ export default function App() {
     const unsubCreated = window.mcpEvents?.onTerminalCreated((data) => {
       const store = useTerminalStore.getState()
       const color = TERMINAL_COLORS[store.terminals.length % TERMINAL_COLORS.length]
-      addTerminal({
+      const terminal = {
         id: data.id,
         name: data.name,
         color,
         shellType: data.shell as any,
         cwd: data.cwd,
         ...getTerminalDefaults(),
-        isSwarm: true,
-        hidden: true,
-      })
+      }
+      if (data.remote) {
+        // A paired phone opened this one for the user, so it is theirs like any other: in the
+        // sidebar, in the saved session that the phone's list is read from, and an AI terminal
+        // when the phone launched an agent in it. As a hidden swarm worker it was in neither
+        // place, and vanished from the phone the moment the user left it.
+        addTerminal({ ...terminal, ...(data.agentCommand ? { agentCommand: data.agentCommand } : {}) })
+        return
+      }
+      addTerminal({ ...terminal, isSwarm: true, hidden: true })
 
       // Extract agent name and role from terminal name (e.g. "Claude (Build UI)" → agent: "Claude", role: "Build UI")
       const nameMatch = data.name.match(/^(.+?)\s*\((.+)\)$/)

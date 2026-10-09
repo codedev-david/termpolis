@@ -43,6 +43,11 @@ function extractModelAlias(command: string, aliases: string[]): string | null {
   return null
 }
 
+/** Is this exactly one of the agent binaries above — a bare name, nothing appended? */
+export function isAgentBinary(command: unknown): command is string {
+  return typeof command === 'string' && Object.prototype.hasOwnProperty.call(AGENT_COMMAND_ALLOWLIST, command)
+}
+
 /** Soft signal: does an LLM-chosen swarm terminal NAME denote a Claude agent (e.g. "Claude (Build UI)")?
  *  Used to gate the always-on Headroom proxy env for swarm-spawned Claude workers. */
 export function isClaudeAgentName(name: string): boolean {

@@ -4,6 +4,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
 import { compressToolResult } from './headroom/compressToolResult'
+import { isAgentBinary } from './agentCommandSanitizer'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -611,9 +612,18 @@ export interface LinkedToolArgs {
   waitSec?: number
 }
 
+/** A tool call made for a paired phone rather than by an agent: the request carried a valid
+ *  `X-Termpolis-Device` tag. `agentCommand` is set only when it names a known agent binary. */
+export interface RemoteOrigin {
+  device: string
+  agentCommand?: string
+}
+
 export interface McpToolHandlers {
   listTerminals: () => { id: string; name: string; shellType: string; cwd: string }[]
-  createTerminal: (name: string, shell: string, cwd: string) => Promise<string>
+  /** `remote` is passed only for a phone's request. Its terminal is the user's own, shown in
+   *  the sidebar; an agent's is a swarm worker, which the renderer keeps hidden. */
+  createTerminal: (name: string, shell: string, cwd: string, remote?: RemoteOrigin) => Promise<string>
   runCommand: (terminalId: string, command: string) => void
   runAndWait: (opts: { command: string; cwd?: string; shell?: string; timeoutMs?: number }) => Promise<{ exitCode: number; output: string; timedOut?: boolean }>
   testCoverage: (opts: { file: string; cwd?: string; startLine?: number; endLine?: number }) => { file: string; hasCoverage: boolean; hint?: string; covered?: number; total?: number; percent?: number | null; uncovered?: number[]; stale?: boolean; source?: string }
@@ -664,12 +674,28 @@ export interface McpToolHandlers {
   recallBench: (opts: { project?: string; limit?: number; save?: boolean }) => Promise<unknown>
 }
 
-export async function executeTool(name: string, args: any, handlers: McpToolHandlers) {
+export async function executeTool(
+  name: string,
+  args: any,
+  handlers: McpToolHandlers,
+  /** The paired phone the request was made for, from the validated device tag. */
+  device: string | null = null,
+) {
   switch (name) {
     case 'list_terminals':
       return handlers.listTerminals()
     case 'create_terminal': {
-      const tid = await handlers.createTerminal(args.name, args.shell || 'bash', args.cwd || '')
+      // `agentCommand` is the remote bridge's, not part of the tool's schema, and counts only
+      // on a phone's request. It becomes the terminal's launch command in the renderer, which
+      // a restored workspace types into a shell, so nothing but a known agent binary passes.
+      const shell = args.shell || 'bash'
+      const cwd = args.cwd || ''
+      const tid = device
+        ? await handlers.createTerminal(args.name, shell, cwd, {
+            device,
+            ...(isAgentBinary(args.agentCommand) ? { agentCommand: args.agentCommand } : {}),
+          })
+        : await handlers.createTerminal(args.name, shell, cwd)
       return { terminalId: tid, name: args.name }
     }
     case 'run_command':
@@ -841,7 +867,7 @@ export async function executeTool(name: string, args: any, handlers: McpToolHand
   }
 }
 
-async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
+async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: string | null) {
   const { method, params, id } = request
 
   if (method === 'initialize') {
@@ -878,7 +904,7 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers) {
   if (method === 'tools/call') {
     const { name, arguments: args } = params
     try {
-      const result = await executeTool(name, args || {}, handlers)
+      const result = await executeTool(name, args || {}, handlers, device)
       return {
         jsonrpc: '2.0',
         result: { content: [{ type: 'text', text: compressToolResult(name, result) }] },
@@ -1050,7 +1076,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
             return
           }
 
-          const response = await handleJsonRpc(request, handlers)
+          const response = await handleJsonRpc(request, handlers, device)
           logMcpRequest(request.method || 'unknown', toolName, response.error ? 'error' : 'ok', undefined, device)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(response))

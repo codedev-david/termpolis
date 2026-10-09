@@ -505,6 +505,7 @@ import {
   startRemoteBridgeHost,
   stopRemoteBridgeHost,
 } from './remoteHost'
+import { createRemoteTerminals } from './remoteTerminals'
 import {
   linkedInitForRemote,
   linkedToolCall,
@@ -535,6 +536,9 @@ const terminalOutputBuffers: OutputBuffers = new Map()
 
 // Track terminals created via MCP (swarm) so we can enforce agent commands
 const mcpCreatedTerminals = new Set<string>()
+
+// The terminals of those a paired phone opened, until the saved session lists them.
+const remoteTerminals = createRemoteTerminals()
 
 /** What the user called a terminal, or '' when nothing is on record.
  *
@@ -811,6 +815,10 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     killTerminal(id)
     terminalOutputBuffers.delete(id)
     remoteNoteTerminalClosed(id)
+    // Closing from the desktop frees the MCP slot too. Only close_terminal used to, so every
+    // agent or phone terminal closed by hand counted against MAX_MCP_TERMINALS until a restart.
+    mcpCreatedTerminals.delete(id)
+    remoteTerminals.remove(id)
     try { detachWatchers(id) } catch {}
     if (recentlyAuditedTerminals.has(id)) {
       recentlyAuditedTerminals.delete(id)
@@ -1095,7 +1103,11 @@ ipcMain.handle('session:load', async () => {
 })
 
 ipcMain.on('session:save', (_, data: SessionData) => {
-  try { saveSession(data) } catch {}
+  try {
+    saveSession(data)
+    // The session lists these now, so main stops answering for the ones a phone opened.
+    remoteTerminals.recorded(data.terminals.map(t => t.id))
+  } catch {}
 })
 
 ipcMain.handle('terminal:export', async (_, { content, defaultFilename }) => {
@@ -3401,9 +3413,9 @@ async function semanticPoolOptions(
     const mcpHandlers: McpToolHandlers = {
       listTerminals: () => {
         const session = loadSession()
-        return session.terminals.map(t => ({ id: t.id, name: t.name, shellType: t.shellType, cwd: t.cwd }))
+        return remoteTerminals.merge(session.terminals.map(t => ({ id: t.id, name: t.name, shellType: t.shellType, cwd: t.cwd })))
       },
-      createTerminal: async (name, shell, cwd) => {
+      createTerminal: async (name, shell, cwd, remote) => {
         if (mcpCreatedTerminals.size >= MAX_MCP_TERMINALS) {
           throw new Error(`Agent terminal limit reached (${MAX_MCP_TERMINALS}). Close existing agent terminals before creating more.`)
         }
@@ -3425,8 +3437,14 @@ async function semanticPoolOptions(
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
-        // Notify renderer to add the terminal to the store
-        mainWindow?.webContents.send('mcp:terminal-created', { id, name, shell: shellInfo?.type || shell, cwd: resolvedCwd })
+        const shellType = shellInfo?.type || shell
+        if (remote) remoteTerminals.add({ id, name, shellType, cwd: resolvedCwd })
+        // Notify renderer to add the terminal to the store. A phone's terminal goes in the
+        // sidebar as the user's own; an agent's becomes a hidden swarm worker.
+        mainWindow?.webContents.send('mcp:terminal-created', {
+          id, name, shell: shellType, cwd: resolvedCwd,
+          ...(remote ? { remote: true, ...(remote.agentCommand ? { agentCommand: remote.agentCommand } : {}) } : {}),
+        })
         return id
       },
       runCommand: (terminalId, command) => {
@@ -3481,6 +3499,7 @@ async function semanticPoolOptions(
         terminalOutputBuffers.delete(terminalId)
         remoteNoteTerminalClosed(terminalId)
         mcpCreatedTerminals.delete(terminalId)
+        remoteTerminals.remove(terminalId)
         mainWindow?.webContents.send('mcp:terminal-closed', terminalId)
       },
       writeToTerminal: (terminalId, text) => {

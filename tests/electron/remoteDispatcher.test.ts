@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { RequestDispatcher, SUBMIT_SETTLE_MS } from '../../src/main/remoteBridge/dispatcher'
+import { MAX_REMOTE_TERMINAL_NAME, RequestDispatcher, SUBMIT_SETTLE_MS } from '../../src/main/remoteBridge/dispatcher'
 import { CapabilityError } from '../../src/main/remoteBridge/remotePolicy'
 import {
   NO_CAPABILITIES,
@@ -102,6 +102,50 @@ describe('RequestDispatcher — input outside the union', () => {
     await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'agent' }, all, DEVICE)
     const args = mcp.callTool.mock.calls[0][1] as Record<string, unknown>
     expect('cwd' in args).toBe(false)
+  })
+
+  // A phone's terminal is drawn in the desktop's sidebar, where a name that is not
+  // text crashes the window. The relay checks only the request kind, so the shape
+  // of the fields arrives unchecked from the device.
+  it.each([
+    ['an object', {}],
+    ['a number', 7],
+    ['null', null],
+    ['nothing', undefined],
+  ])('refuses a terminal whose name is %s, without touching MCP', async (_label, name) => {
+    const mcp = fakeMcp()
+    const request = { kind: 'createTerminal', name } as unknown as RemoteRequest
+    await expect(new RequestDispatcher(mcp).dispatch(request, all, DEVICE))
+      .rejects.toThrow(/without a name/)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an object', {}],
+    ['a number', 7],
+    ['null', null],
+  ])('refuses a terminal whose working directory is %s, without touching MCP', async (_label, cwd) => {
+    const mcp = fakeMcp()
+    const request = { kind: 'createTerminal', name: 'shell', cwd } as unknown as RemoteRequest
+    await expect(new RequestDispatcher(mcp).dispatch(request, all, DEVICE))
+      .rejects.toThrow(/working directory that is not text/)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  it('cuts a long terminal name to what a tab can show', async () => {
+    const mcp = fakeMcp()
+    const name = 'n'.repeat(MAX_REMOTE_TERMINAL_NAME + 50)
+    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith(
+      'create_terminal', { name: 'n'.repeat(MAX_REMOTE_TERMINAL_NAME) }, DEVICE,
+    )
+  })
+
+  it('keeps an empty name and an empty working directory, which the desktop already handles', async () => {
+    // An empty cwd opens in the home folder, as it always has.
+    const mcp = fakeMcp()
+    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: '', cwd: '' }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith('create_terminal', { name: '', cwd: '' }, DEVICE)
   })
 
   // The bridge answers getCapabilities before the dispatcher ever sees it. If one
@@ -419,7 +463,7 @@ describe('RequestDispatcher — launching an agent', () => {
     expect(mcp.callTool).toHaveBeenNthCalledWith(
       1,
       'create_terminal',
-      { name: `Codex ${DOT} api`, cwd: '/home/dev/api' },
+      { name: `Codex ${DOT} api`, cwd: '/home/dev/api', agentCommand: 'codex' },
       DEVICE,
     )
     expect(mcp.callTool).toHaveBeenNthCalledWith(2, 'run_command', { terminalId: 't9', command: 'codex' }, DEVICE)
@@ -438,6 +482,14 @@ describe('RequestDispatcher — launching an agent', () => {
       DEVICE,
     )
 
+    // The desktop records the terminal under the same binary it runs, so its badge and a
+    // restored workspace launch agy too.
+    expect(mcp.callTool).toHaveBeenNthCalledWith(
+      1,
+      'create_terminal',
+      { name: `Gemini ${DOT} repo`, cwd: '/repo', agentCommand: 'agy' },
+      DEVICE,
+    )
     expect(mcp.callTool).toHaveBeenNthCalledWith(2, 'run_command', { terminalId: 't1', command: 'agy' }, DEVICE)
   })
 

@@ -1118,6 +1118,131 @@ describe('MCP tool handlers', () => {
       id: 'mock-uuid', name: 'agent-2', shell: 'powershell', cwd: '/repo',
     })
   })
+
+  describe('a terminal a paired phone opened', () => {
+    const PHONE = { device: '0123456789abcdef' }
+    let seq = 0
+
+    async function sessionStore(): Promise<any> {
+      return await import('../../src/main/sessionStore')
+    }
+
+    // Closed after each test, pass or fail, so one failure cannot leave terminals that make
+    // the next test's list or slot count wrong.
+    const opened: string[] = []
+
+    async function phoneTerminal(name: string, cwd: string, remote: object = PHONE): Promise<string> {
+      const id = await mcp().createTerminal(name, 'powershell', cwd, remote)
+      opened.push(id)
+      return id
+    }
+
+    // Ids of their own, so the module-level registry never mixes two tests' terminals.
+    beforeEach(async () => {
+      const { v4 } = await import('uuid') as any
+      v4.mockImplementation(() => `phone-${++seq}`)
+    })
+
+    afterEach(async () => {
+      for (const id of opened.splice(0)) mcp().closeTerminal(id)
+      const { v4 } = await import('uuid') as any
+      v4.mockImplementation(() => 'mock-uuid')
+      const store = await sessionStore()
+      vi.mocked(store.loadSession).mockReturnValue({ terminals: [] })
+      // A failing save queued by a test that stopped early must not fail the next one's.
+      vi.mocked(store.saveSession).mockReset()
+    })
+
+    it('reaches the renderer marked as the phone’s, with the agent it launched', async () => {
+      mockWebContents.send.mockClear()
+      const id = await phoneTerminal('Claude · repo', '/repo', { ...PHONE, agentCommand: 'claude' })
+      expect(mockWebContents.send).toHaveBeenCalledWith('mcp:terminal-created', {
+        id, name: 'Claude · repo', shell: 'powershell', cwd: '/repo', remote: true, agentCommand: 'claude',
+      })
+    })
+
+    it('carries no agent when the phone named none', async () => {
+      mockWebContents.send.mockClear()
+      const id = await phoneTerminal('shell', '/repo')
+      expect(mockWebContents.send).toHaveBeenCalledWith('mcp:terminal-created', {
+        id, name: 'shell', shell: 'powershell', cwd: '/repo', remote: true,
+      })
+    })
+
+    it('is listed at once, before the saved session has caught up', async () => {
+      // The renderer saves the session a second after its terminal list changes. The phone asks
+      // for the list the moment the launch returns, so without this it got a list without the
+      // terminal it had just started.
+      const id = await phoneTerminal('Codex · api', '/home/dev/api', { ...PHONE, agentCommand: 'codex' })
+      expect(mcp().listTerminals()).toEqual([
+        { id, name: 'Codex · api', shellType: 'powershell', cwd: '/home/dev/api' },
+      ])
+    })
+
+    it('is listed from the session once the session has it, so a rename on the desktop shows', async () => {
+      const id = await phoneTerminal('Claude · repo', '/repo')
+      const { loadSession } = await sessionStore()
+      vi.mocked(loadSession).mockReturnValue({
+        terminals: [{ id, name: 'Renamed', shellType: 'powershell', cwd: '/repo' }],
+      })
+      expect(mcp().listTerminals()).toEqual([{ id, name: 'Renamed', shellType: 'powershell', cwd: '/repo' }])
+    })
+
+    it('is let go once the renderer saves a session that lists it', async () => {
+      // From then on the session is the only authority: a terminal the user closes on the
+      // desktop leaves the session, and must leave the phone's list with it.
+      const id = await phoneTerminal('Claude · repo', '/repo')
+      const { ipcMain } = (await import('electron')) as any
+      const save = ipcMain.on.mock.calls.find((c: unknown[]) => c[0] === 'session:save')![1]
+      save({}, { terminals: [{ id, name: 'Claude · repo', shellType: 'powershell', cwd: '/repo' }] })
+      expect(mcp().listTerminals()).toEqual([])
+    })
+
+    it('is still listed when the session save fails', async () => {
+      // The file never got it, so main keeps answering for the terminal that is really running.
+      const id = await phoneTerminal('Claude · repo', '/repo')
+      const { saveSession } = await sessionStore()
+      vi.mocked(saveSession).mockImplementationOnce(() => { throw new Error('disk full') })
+      const { ipcMain } = (await import('electron')) as any
+      const save = ipcMain.on.mock.calls.find((c: unknown[]) => c[0] === 'session:save')![1]
+      save({}, { terminals: [{ id, name: 'Claude · repo', shellType: 'powershell', cwd: '/repo' }] })
+      expect(mcp().listTerminals().map((t: { id: string }) => t.id)).toEqual([id])
+    })
+
+    it('is no longer listed once closed over MCP', async () => {
+      const id = await phoneTerminal('Gemini · web', '/web')
+      mcp().closeTerminal(id)
+      expect(mcp().listTerminals()).toEqual([])
+    })
+
+    it('is no longer listed once closed on the desktop', async () => {
+      const id = await phoneTerminal('Gemini · web', '/web')
+      await invoke('terminal:kill', { id })
+      expect(mcp().listTerminals()).toEqual([])
+    })
+
+    it('an agent’s terminal stays out of the list until the session has it', async () => {
+      // Swarm workers are hidden and never saved; nothing here may start listing them.
+      opened.push(await mcp().createTerminal('Claude (Build UI)', 'powershell', '/repo'))
+      expect(mcp().listTerminals()).toEqual([])
+    })
+
+    it('frees its MCP slot when closed on the desktop', async () => {
+      // terminal:kill used to leave the id in the MCP set, so eight terminals closed by hand
+      // locked the phone (and every agent) out of create_terminal until a restart.
+      const ids: string[] = []
+      // Every free slot, whatever earlier tests left behind. Bounded, so a cap that stopped
+      // working fails here instead of opening terminals until the test times out.
+      let refused: unknown = null
+      for (let i = 0; i < 20 && refused === null; i++) {
+        try { ids.push(await phoneTerminal(`T${i}`, '/repo')) } catch (e) { refused = e }
+      }
+      expect(String(refused)).toMatch(/terminal limit reached/)
+      expect(ids.length).toBeGreaterThan(0)
+      await invoke('terminal:kill', { id: ids.pop() })
+      await expect(phoneTerminal('one more', '/repo')).resolves.toMatch(/^phone-/)
+    })
+  })
 })
 
 // ===========================================================================

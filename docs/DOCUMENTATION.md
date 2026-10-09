@@ -925,8 +925,8 @@ hides the controls it isn't allowed to use.
 ### Using it
 
 - **Terminal list** — the terminals in the desktop's sidebar (from
-  `list_terminals`, i.e. the saved session, so swarm workers and phone-started
-  agents are not in it), titled with the desktop's name; pull to refresh.
+  `list_terminals`, i.e. the saved session, so swarm workers are not in it),
+  titled with the desktop's name; pull to refresh.
   While a terminal is open the phone shows its agent's status (*Thinking*,
   *Working*, *Waiting for you*, …) and a one-line summary; the list keeps the
   last status seen.
@@ -939,9 +939,13 @@ hides the controls it isn't allowed to use.
   arrows, or Enter on its own).
 - **Up to 16 desktops** on one phone, each with its own key pair; *Desktops*
   at the top left of the terminal list switches between them.
-- **New AI terminal** — the terminal is created over MCP, so the renderer
-  adds it hidden, like a swarm worker: it is not in the sidebar or the phone's
-  list after you leave it, and *Clear swarm* closes it.
+- **New AI terminal** — the terminal is created over MCP, but the bridge tags
+  the request with the phone's device id, so the renderer adds it as an
+  ordinary AI terminal: in the sidebar, in the saved session (and so in the
+  phone's list), and relaunched with its agent when a workspace holding it is
+  restored. Main lists it from the moment it opens, until the session's
+  debounced save records it. It still counts towards the eight-terminal MCP
+  cap, and closing it on the desktop frees its slot.
 - **Backgrounding** disconnects the phone; it reconnects on return. The
   desktop keeps the newest 262,144 characters of output per phone meanwhile,
   dropping older output and marking the gap as skipped.

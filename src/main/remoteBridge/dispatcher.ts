@@ -73,6 +73,10 @@ export const SUBMIT_SETTLE_MS = 150
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** The longest name a phone may give a terminal. It labels a sidebar row and a
+ *  tab; past this it is only something to scroll. */
+export const MAX_REMOTE_TERMINAL_NAME = 120
+
 /** Translates remote requests into MCP tool calls, after checking capability. */
 export class RequestDispatcher {
   /** `settle` is injected only so tests do not spend real time asleep. Nothing
@@ -96,10 +100,7 @@ export class RequestDispatcher {
       case 'listTerminals':
         return this.mcp.callTool('list_terminals', {}, deviceId)
       case 'createTerminal':
-        return this.mcp.callTool('create_terminal', {
-          name: request.name,
-          ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-        }, deviceId)
+        return this.createTerminal(request.name, request.cwd, deviceId)
       case 'runCommand':
         return this.mcp.callTool('run_command', {
           terminalId: request.terminalId, command: request.command,
@@ -124,6 +125,28 @@ export class RequestDispatcher {
   }
 
   /**
+   * Opens a plain terminal under the name the phone gave it.
+   *
+   * The desktop shows a phone's terminal in its sidebar, and React renders the
+   * name there as text: an object in its place crashes the whole window rather
+   * than labelling a tab. The relay boundary validates only the request KIND
+   * (relayClient.ts), so both fields are checked here, as launchAgent checks its
+   * own, and the name is cut to a length a tab can show.
+   */
+  private async createTerminal(name: unknown, cwd: unknown, deviceId: string): Promise<unknown> {
+    if (typeof name !== 'string') {
+      throw new Error('remote device asked for a terminal without a name')
+    }
+    if (cwd !== undefined && typeof cwd !== 'string') {
+      throw new Error('remote device asked for a terminal in a working directory that is not text')
+    }
+    return this.mcp.callTool('create_terminal', {
+      name: name.slice(0, MAX_REMOTE_TERMINAL_NAME),
+      ...(cwd === undefined ? {} : { cwd }),
+    }, deviceId)
+  }
+
+  /**
    * Opens a terminal in `cwd` and starts the chosen agent in it -- the remote
    * form of the desktop's own "new AI terminal".
    *
@@ -140,6 +163,11 @@ export class RequestDispatcher {
    * startup -- the exact class of "typed it and nothing happened" the split cured
    * for messages. The terminal id is recovered from `create_terminal` so the
    * phone can navigate straight to the terminal it just made.
+   *
+   * `agentCommand` rides along so the desktop records the terminal as an AI
+   * terminal from the start -- agent badge, prompt handling, a restored
+   * workspace relaunching it -- the way its own launch does. Main honours it
+   * only on a request tagged with a paired device.
    */
   private async launchAgent(agent: RemoteAgent, cwd: unknown, deviceId: string): Promise<LaunchedAgent> {
     if (!Object.prototype.hasOwnProperty.call(AGENT_BINARY, agent)) {
@@ -150,7 +178,11 @@ export class RequestDispatcher {
     }
 
     const name = `${AGENT_LABEL[agent]} · ${basename(cwd) || cwd}`
-    const created = await this.mcp.callTool('create_terminal', { name, cwd }, deviceId)
+    const created = await this.mcp.callTool(
+      'create_terminal',
+      { name, cwd, agentCommand: AGENT_BINARY[agent] },
+      deviceId,
+    )
     const terminalId = terminalIdOf(created)
     if (terminalId === null) {
       throw new Error('create_terminal did not return a terminal id')
