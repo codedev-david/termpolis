@@ -68,7 +68,7 @@ Termpolis **runs those exact CLIs, unchanged** — and fixes the one thing they 
 | **Shared across tools** | Siloed — Codex can't see what Claude just figured out | Claude, Codex and Gemini read/write **one memory**; a fact one learns, the others recall |
 | **It learns** | No learning — every session is a blank slate | Distills a lesson from every finished task + tracks its own competence |
 | **Every new session** | Re-explain your codebase from scratch | Opens already knowing the project; one-click cross-agent handoff, no re-explaining |
-| **Your data & lock-in** | One vendor's account + cloud; telemetry varies | Local by default, Apache-2.0, no account/backend; prompts to Claude Code and Codex scanned for secrets |
+| **Your data & lock-in** | One vendor's account + cloud; telemetry varies | Local by default, Apache-2.0, no account/backend; prompts to Claude Code, Codex and Gemini scanned for secrets |
 
 **Same agents, same accounts you already pay for** — Termpolis is the workspace around them that remembers and learns.
 
