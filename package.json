@@ -66,6 +66,7 @@
       }
     ],
     "afterPack": "scripts/afterPack.cjs",
+    "npmRebuild": false,
     "asarUnpack": [
       "node_modules/node-pty/**",
       "node_modules/onnxruntime-web/**",
@@ -75,14 +76,16 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",
-      "publisherName": [
-        "David Engelhart",
-        "Termpolis"
-      ],
       "legalTrademarks": "Termpolis",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
+      "signtoolOptions": {
+        "publisherName": [
+          "David Engelhart",
+          "Termpolis"
+        ],
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      },
       "signAndEditExecutable": true
     },
     "nsis": {
@@ -119,10 +122,7 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "entitlements.mac.plist",
-      "entitlementsInherit": "entitlements.mac.inherit.plist",
-      "notarize": {
-        "teamId": "${env.APPLE_TEAM_ID}"
-      }
+      "entitlementsInherit": "entitlements.mac.inherit.plist"
     },
     "linux": {
       "target": [
@@ -220,7 +220,7 @@
     "@vitejs/plugin-react": "4.7.0",
     "@vitest/coverage-v8": "4.1.11",
     "electron": "30.5.1",
-    "electron-builder": "24.13.3",
+    "electron-builder": "26.15.3",
     "electron-vite": "2.3.0",
     "eslint": "8.57.1",
     "eslint-plugin-react-hooks": "4.6.2",
