@@ -733,6 +733,7 @@ npm test
 
 ```bash
 bash scripts/download-tools.sh  # Download bundled CLI tools
+npm install
 npm run package
 ```
 
@@ -742,6 +743,7 @@ Output: `dist-electron-builder/Termpolis Setup X.X.X.exe`
 
 ```bash
 bash scripts/download-tools.sh
+npm install
 npm run package
 ```
 
@@ -753,6 +755,7 @@ Output: `dist-electron-builder/Termpolis-X.X.X-arm64.dmg` and `Termpolis-X.X.X-x
 
 ```bash
 bash scripts/download-tools.sh
+npm install
 npm run package
 ```
 
