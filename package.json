@@ -177,7 +177,7 @@
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
-    "@sentry/electron": "7.10.0",
+    "@sentry/electron": "7.20.1",
     "@sentry/react": "10.45.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-search": "0.15.0",
@@ -187,21 +187,21 @@
     "@xterm/headless": "^5.5.0",
     "@xterm/xterm": "5.5.0",
     "autoprefixer": "10.4.27",
-    "electron-updater": "6.8.3",
+    "electron-updater": "6.8.9",
     "jpeg-js": "^0.4.4",
     "monaco-editor": "^0.55.1",
     "node-pty": "1.1.0",
     "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
     "pngjs": "^7.0.0",
-    "postcss": "8.5.8",
+    "postcss": "8.5.29",
     "qrcode-generator": "^2.0.4",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "tailwindcss": "3.4.19",
-    "uuid": "13.0.0",
+    "uuid": "13.0.2",
     "web-tree-sitter": "^0.21.0",
     "ws": "^8.21.3",
-    "yaml": "2.5.1",
+    "yaml": "2.9.1",
     "zustand": "5.0.12"
   },
   "devDependencies": {
@@ -218,7 +218,7 @@
     "@typescript-eslint/eslint-plugin": "7.18.0",
     "@typescript-eslint/parser": "7.18.0",
     "@vitejs/plugin-react": "4.7.0",
-    "@vitest/coverage-v8": "4.1.0",
+    "@vitest/coverage-v8": "4.1.11",
     "electron": "30.5.1",
     "electron-builder": "24.13.3",
     "electron-vite": "2.3.0",
@@ -230,6 +230,6 @@
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "5.9.3",
     "vite": "5.4.21",
-    "vitest": "4.1.0"
+    "vitest": "4.1.11"
   }
 }
