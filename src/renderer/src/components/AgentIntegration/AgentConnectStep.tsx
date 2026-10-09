@@ -15,7 +15,7 @@ export function AgentConnectStep({ connect, primerHook, onChange }: AgentChoice 
     <div className="flex flex-col gap-3" data-testid="onboarding-agent-step">
       <h3 className="text-base font-medium text-[#22D3EE]">Connect your coding agents</h3>
       <p>
-        Termpolis can connect Claude Code, Codex and Gemini CLI to its memory and code search.
+        Termpolis can connect Claude Code, Codex and Gemini / Antigravity CLI to its memory and code search.
         This is exactly what that writes, for each of them installed on this machine, and nothing
         is written until you finish or skip the tour.
       </p>

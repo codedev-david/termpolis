@@ -178,7 +178,7 @@ test.describe.serial('UI screens show visible results', () => {
     // Agents sidebar is always mounted; these are the four canonical
     // profile names. All three MUST be visible â€” a missing one means
     // the profile list regressed.
-    for (const name of ['Claude Code', 'OpenAI Codex', 'Gemini CLI']) {
+    for (const name of ['Claude Code', 'OpenAI Codex', 'Gemini / Antigravity CLI']) {
       await expect(
         page.locator(`text=${name}`).first(),
       ).toBeVisible({ timeout: 5000 })

@@ -41,6 +41,13 @@ const AGENT_COMMAND_MAP: { prefix: string; info: AgentInfo }[] = [
  * discusses OpenAI gets badged "Codex". Prefer this for the status-bar badge;
  * fall back to detectAgent() only for an agent started by hand in a plain shell.
  */
+/** The command launches the Antigravity CLI (`agy`), Gemini's current CLI, rather than the
+ *  older `gemini`. They share a name, but only `agy`'s sessions are stored where Termpolis
+ *  can't read them. Same prefix test as agentFromCommand. */
+export function isAntigravityCommand(command: string | null | undefined): boolean {
+  return !!command && command.trim().toLowerCase().startsWith('agy')
+}
+
 export function agentFromCommand(command: string | null | undefined): AgentInfo | null {
   if (!command) return null
   const c = command.trim().toLowerCase()

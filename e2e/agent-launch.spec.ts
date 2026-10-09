@@ -129,7 +129,7 @@ test.describe.serial('2. Sidebar AI Agents', () => {
 
   test('2.2 sidebar shows AI Agents section with all 3 agents listed', async () => {
     await ensureAgentsExpanded()
-    const agents = ['Claude Code', 'OpenAI Codex', 'Gemini CLI']
+    const agents = ['Claude Code', 'OpenAI Codex', 'Gemini / Antigravity CLI']
     for (const agent of agents) {
       const el = page.locator(`text=${agent}`).first()
       await expect(el).toBeVisible()
@@ -146,8 +146,8 @@ test.describe.serial('2. Sidebar AI Agents', () => {
     await expect(page.locator('text=OpenAI Codex').first()).toBeVisible()
   })
 
-  test('2.5 sidebar shows agent name: Gemini CLI', async () => {
-    await expect(page.locator('text=Gemini CLI').first()).toBeVisible()
+  test('2.5 sidebar shows agent name: Gemini / Antigravity CLI', async () => {
+    await expect(page.locator('text=Gemini / Antigravity CLI').first()).toBeVisible()
   })
 
   test('2.6 AI agents section is collapsible', async () => {

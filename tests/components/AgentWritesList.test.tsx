@@ -50,7 +50,7 @@ describe('AgentWritesList', () => {
       if (id === 'claude') expected.push(`Optional: ${PRIMER_HOOK_DESCRIPTION}`)
       expect(items).toEqual(expected)
     }
-    expect(AGENT_LABELS).toEqual({ claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' })
+    expect(AGENT_LABELS).toEqual({ claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini / Antigravity CLI' })
   })
 
   it('names the SessionStart hook once, under Claude Code', () => {

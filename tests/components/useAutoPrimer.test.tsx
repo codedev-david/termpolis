@@ -9,6 +9,7 @@ import {
   buildPrimerPointer,
   reprimeAfterCompaction,
   primeOnLaunch,
+  selfRecordsLessons,
   promptShowing,
   PRIMER_GATE_POLL_MS,
   PRIMER_GATE_MAX_WAIT_MS,
@@ -266,7 +267,7 @@ describe('primeOnLaunch (the launch gate)', () => {
   it('injects immediately when the gate is already open', async () => {
     const inject = vi.fn(async () => true)
     expect(await primeOnLaunch('t', '/p', openGate(), { inject, sleep: noSleep })).toBe(true)
-    expect(inject).toHaveBeenCalledWith('t', '/p')
+    expect(inject).toHaveBeenCalledWith('t', '/p', false)
   })
 
   it('waits for the launch command to be submitted, then for the delay', async () => {
@@ -862,6 +863,33 @@ describe('when a bridge call fails', () => {
       expect(inject).toHaveBeenCalledTimes(1)
     } finally {
       ;(window as any).aiSecurity = before
+    }
+  })
+})
+
+describe('selfRecordsLessons: which agents record their own lessons', () => {
+  it('asks only agy (Gemini through the Antigravity CLI), whose sessions are not read from disk', () => {
+    expect(selfRecordsLessons('agy')).toBe(true)
+    expect(selfRecordsLessons('  agy --model gemini-3')).toBe(true)
+    // The older Gemini CLI shares the display name, but its transcripts ARE ingested.
+    expect(selfRecordsLessons('gemini')).toBe(false)
+    expect(selfRecordsLessons('claude')).toBe(false)
+    expect(selfRecordsLessons('codex')).toBe(false)
+    expect(selfRecordsLessons(null)).toBe(false)
+    expect(selfRecordsLessons(undefined)).toBe(false)
+  })
+
+  it('primeOnLaunch asks for self-recorded lessons only when the launch command was agy', async () => {
+    const noSleep = async (): Promise<void> => {}
+    const gateFor = (command: string | undefined) => ({
+      launchedAgent: () => ({ name: 'Gemini CLI', icon: '', color: '' }),
+      draft: () => '',
+      launchCommand: () => command,
+    })
+    for (const [command, expected] of [['agy', true], ['gemini', false], ['codex', false], [undefined, false]] as const) {
+      const inject = vi.fn(async () => true)
+      expect(await primeOnLaunch('t', '/p', gateFor(command), { inject, sleep: noSleep, awaiting: async () => false })).toBe(true)
+      expect(inject).toHaveBeenCalledWith('t', '/p', expected)
     }
   })
 })

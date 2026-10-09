@@ -147,10 +147,10 @@ test.describe.serial('First-run with zero agents installed', () => {
   test('Gemini install hint also opens correctly', async () => {
     await page.locator('button:has-text("Launch AI Agent")').first().click()
     await page.waitForTimeout(300)
-    const geminiRow = page.locator('button:has-text("Gemini CLI")').first()
+    const geminiRow = page.locator('button:has-text("Gemini / Antigravity CLI")').first()
     await geminiRow.click()
     await page.locator('[data-testid="install-hint-modal"]').waitFor({ state: 'visible', timeout: 5000 })
-    await expect(page.locator('h2:has-text("Install Gemini CLI")')).toBeVisible()
+    await expect(page.locator('h2:has-text("Install Gemini / Antigravity CLI")')).toBeVisible()
     await ss('4-gemini-install-hint')
     await closeModalIfOpen()
   })

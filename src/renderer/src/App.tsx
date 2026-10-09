@@ -41,7 +41,8 @@ import { startRepoResweep } from './hooks/useAutoCodeIndex'
 import { useShallow } from 'zustand/react/shallow'
 import { matchesKeybinding, matchLaunchAgentSlot, matchCustomKeybinding, isEditableTarget, withReservedDefaults } from './lib/keybindings'
 import { primaryModifier } from './lib/platform'
-import { DEFAULT_AI_PROFILES, launchAgentProfile } from './lib/aiProfiles'
+import { DEFAULT_AI_PROFILES, agentLaunchConfig, launchAgentProfile } from './lib/aiProfiles'
+
 import { sanitizeVoiceSettings } from './lib/voice/voicePipeline'
 import { getHomedir } from './lib/homedir'
 import { resolveNewTerminalCwd } from './lib/newTerminalCwd'
@@ -862,12 +863,8 @@ export default function App() {
       case 'launch_claude':
       case 'launch_codex':
       case 'launch_gemini': {
-        const profiles: Record<string, typeof AGENT_CONFIGS[string]> = {
-          launch_claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
-          launch_codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
-          launch_gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
-        }
-        const prof = profiles[action]
+        const prof = agentLaunchConfig(action.slice('launch_'.length))
+        if (!prof) break
         const dirRes = await window.termpolis.pickDirectory()
         if (!dirRes.success || !dirRes.data) break
         const pCwd = dirRes.data
@@ -896,14 +893,8 @@ export default function App() {
     }
   }
 
-  const AGENT_CONFIGS: Record<string, { name: string; command: string; color: string }> = {
-    claude: { name: 'Claude Code', command: 'claude', color: '#D97706' },
-    codex: { name: 'OpenAI Codex', command: 'codex', color: '#10B981' },
-    gemini: { name: 'Gemini CLI', command: 'gemini', color: '#4285F4' },
-  }
-
   const handleWelcomeLaunchAgent = async (agentId: string) => {
-    const config = AGENT_CONFIGS[agentId]
+    const config = agentLaunchConfig(agentId)
     if (!config) return
     // Prompt user to pick a project directory
     const dirRes = await window.termpolis.pickDirectory()

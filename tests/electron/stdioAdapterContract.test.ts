@@ -234,6 +234,11 @@ async function standInApp(): Promise<{ port: number; forwarded: string[]; close:
       }
       const rpc = JSON.parse(body)
       forwarded.push(rpc.params?.name ?? rpc.method)
+      if (rpc.method === 'tools/list') {
+        const tools = ['memory_search', 'run_command', 'linked_machines', 'code_explore', 'memory_write'].map((name) => ({ name }))
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { tools } }))
+        return
+      }
       res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'answered by the app' }] } }))
     })
   })
@@ -262,6 +267,7 @@ async function runAdapter(
   }
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, XDG_CONFIG_HOME: root }
   delete env.TERMPOLIS_LINKED_JOB // the shell running the tests must not decide the outcome
+  delete env.TERMPOLIS_READ_ONLY_RUN
   const child = spawn(process.execPath, [ADAPTER], { env: { ...env, ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] })
   const exited = new Promise<void>((r) => child.on('exit', () => r()))
   let stdout = ''
@@ -298,12 +304,13 @@ async function runAdapter(
 describe('stdio-adapter.cjs — nested delegation (linked machines)', () => {
   const linkedRun = { name: 'linked_machines', arguments: { action: 'run', machine: 'laptop', agent: 'codex', prompt: 'review it' } }
 
-  it('answers linked_machines itself inside a linked job, and still forwards every other tool', async () => {
+  it('answers linked_machines itself inside a linked job, forwards the read-only toolset and refuses the rest', async () => {
     const app = await standInApp()
     try {
       const replies = await runAdapter(app.port, { TERMPOLIS_LINKED_JOB: '0123456789ab' }, [
         { id: 7, method: 'tools/call', params: linkedRun },
-        { id: 8, method: 'tools/call', params: { name: 'list_terminals', arguments: {} } },
+        { id: 8, method: 'tools/call', params: { name: 'memory_search', arguments: { query: 'x' } } },
+        { id: 12, method: 'tools/call', params: { name: 'list_terminals', arguments: {} } },
       ])
       // A tool result marked isError, not a JSON-RPC error: the agent reads the reason as the
       // answer to its call instead of treating the server as broken.
@@ -313,8 +320,13 @@ describe('stdio-adapter.cjs — nested delegation (linked machines)', () => {
         result: { content: [{ type: 'text', text: NESTED }], isError: true },
       })
       expect(replies.find((r) => r.id === 8)?.result?.content[0].text).toBe('answered by the app')
-      // The app saw the other call, so the adapter was connected: linked_machines never left it.
-      expect(app.forwarded).toEqual(['list_terminals'])
+      // Terminals are out of a delegated job's reach: refused here, never forwarded.
+      expect(replies.find((r) => r.id === 12)?.result).toEqual({
+        content: [{ type: 'text', text: expect.stringMatching(/^list_terminals is not available to a job another linked machine started/) }],
+        isError: true,
+      })
+      // The app saw only the allowed call, so the adapter was connected and nothing else left it.
+      expect(app.forwarded).toEqual(['memory_search'])
     } finally {
       await app.close()
     }
@@ -336,10 +348,12 @@ describe('stdio-adapter.cjs — nested delegation (linked machines)', () => {
     // start Termpolis for a call it would then refuse anyway.
     const replies = await runAdapter(null, { TERMPOLIS_LINKED_JOB: '0123456789ab' }, [
       { id: 10, method: 'tools/call', params: linkedRun },
-      { id: 11, method: 'tools/call', params: { name: 'list_terminals', arguments: {} } },
+      { id: 11, method: 'tools/call', params: { name: 'memory_search', arguments: {} } },
+      { id: 13, method: 'tools/call', params: { name: 'run_command', arguments: {} } },
     ])
     expect(replies.find((r) => r.id === 10)?.result).toEqual({ content: [{ type: 'text', text: NESTED }], isError: true })
     expect(replies.find((r) => r.id === 11)?.error?.message).toMatch(/Termpolis is not running/)
+    expect(replies.find((r) => r.id === 13)?.result?.isError).toBe(true)
   })
 
   it('refuses only a linked_machines call, only inside a linked job, and treats an empty marker as set', () => {
@@ -363,5 +377,89 @@ describe('stdio-adapter.cjs — nested delegation (linked machines)', () => {
     expect(nestedDelegationRefusal({ jsonrpc: '2.0', id: 5, method: 'tools/call' }, inJob)).toBeNull()
     expect(nestedDelegationRefusal(null, inJob)).toBeNull()
     expect(nestedDelegationRefusal(call('linked_machines'), inJob)?.id).toBeNull()
+  })
+})
+
+describe('stdio-adapter.cjs — the delegated-job toolset (linked machines)', () => {
+  type Adapter = {
+    delegatedJobRefusal: (request: unknown, env: Record<string, string | undefined>) => Rpc | null
+    filterDelegatedToolList: (request: unknown, response: unknown, env: Record<string, string | undefined>) => any
+    DELEGATED_JOB_TOOLS: readonly string[]
+  }
+  const load = (): Adapter => createRequire(import.meta.url)(ADAPTER) as Adapter
+  const call = (name: unknown, id?: number): object =>
+    ({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method: 'tools/call', params: { name, arguments: {} } })
+  const inJob = { TERMPOLIS_LINKED_JOB: '0123456789ab' }
+
+  it('offers a delegated job only the read-only tools, and an agent the user started everything', async () => {
+    const app = await standInApp()
+    try {
+      const [inside] = await runAdapter(app.port, inJob, [{ id: 20, method: 'tools/list' }])
+      expect(inside.result?.tools.map((t: { name: string }) => t.name)).toEqual(['memory_search', 'code_explore'])
+      const [outside] = await runAdapter(app.port, {}, [{ id: 21, method: 'tools/list' }])
+      expect(outside.result?.tools).toHaveLength(5)
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('is read-only and closed: no writes, terminals, commands, swarm, gateway or other machines', () => {
+    const { DELEGATED_JOB_TOOLS } = load()
+    for (const t of ['memory_write', 'memory_correct', 'memory_link', 'memory_feedback', 'memory_pool', 'list_terminals',
+      'read_output', 'write_to_terminal', 'run_command', 'run_and_wait', 'create_terminal', 'close_terminal',
+      'get_file_tree', 'gateway_call', 'gateway_list_tools', 'swarm_create_task', 'swarm_send_message', 'linked_machines']) {
+      expect(DELEGATED_JOB_TOOLS).not.toContain(t)
+    }
+    expect(Object.isFrozen(DELEGATED_JOB_TOOLS)).toBe(true)
+  })
+
+  it('refuses everything outside the toolset, only inside a linked job, as a tool result', () => {
+    const { delegatedJobRefusal } = load()
+    expect(delegatedJobRefusal(call('run_command', 1), inJob)).toEqual({
+      jsonrpc: '2.0', id: 1,
+      result: { content: [{ type: 'text', text: expect.stringMatching(/^run_command is not available/) }], isError: true },
+    })
+    expect(delegatedJobRefusal(call('run_command', 1), {})).toBeNull()
+    expect(delegatedJobRefusal(call('run_command', 1), { TERMPOLIS_LINKED_JOB: '' })?.result?.isError).toBe(true)
+    expect(delegatedJobRefusal(call('memory_search', 1), inJob)).toBeNull()
+    expect(delegatedJobRefusal(call('linked_machines', 2), inJob)?.result?.content[0].text).toBe(NESTED)
+    expect(delegatedJobRefusal(call('run_command'), inJob)?.id).toBeNull()
+    expect(delegatedJobRefusal({ jsonrpc: '2.0', id: 3, method: 'tools/list' }, inJob)).toBeNull()
+    expect(delegatedJobRefusal({ jsonrpc: '2.0', id: 4, method: 'tools/call' }, inJob)).toBeNull()
+    expect(delegatedJobRefusal(call(7, 5), inJob)).toBeNull()
+    expect(delegatedJobRefusal(null, inJob)).toBeNull()
+    expect(delegatedJobRefusal(call('run_command', 6), undefined as unknown as Record<string, string>)).toBeNull()
+  })
+
+  it('filters a tools/list answer only inside a linked job, and leaves anything else alone', () => {
+    const { filterDelegatedToolList } = load()
+    const list = { jsonrpc: '2.0', id: 1, method: 'tools/list' }
+    const answer = { jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'memory_search' }, { name: 'run_command' }, null], nextCursor: 'c' } }
+    expect(filterDelegatedToolList(list, answer, inJob)).toEqual({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'memory_search' }], nextCursor: 'c' } })
+    expect(filterDelegatedToolList(list, answer, {})).toBe(answer)
+    expect(filterDelegatedToolList(call('x', 1), answer, inJob)).toBe(answer)
+    expect(filterDelegatedToolList(null, answer, inJob)).toBe(answer)
+    const error = { jsonrpc: '2.0', id: 1, error: { message: 'nope' } }
+    expect(filterDelegatedToolList(list, error, inJob)).toBe(error)
+    expect(filterDelegatedToolList(list, null, inJob)).toBeNull()
+  })
+
+  it('applies the same toolset to a read-only run, worded for one', () => {
+    const { delegatedJobRefusal, filterDelegatedToolList } = load()
+    const readOnly = { TERMPOLIS_READ_ONLY_RUN: '1' }
+    expect(delegatedJobRefusal(call('memory_write', 8), readOnly)?.result?.content[0].text)
+      .toMatch(/^memory_write is not available to a read-only run\. It can use this machine's memory and code index, read-only, and nothing else\.$/)
+    expect(delegatedJobRefusal(call('memory_search', 8), readOnly)).toBeNull()
+    // Delegation from a read-only run is just another tool it may not use.
+    expect(delegatedJobRefusal(call('linked_machines', 9), readOnly)?.result?.content[0].text).toMatch(/^linked_machines is not available to a read-only run/)
+    const list = { jsonrpc: '2.0', id: 1, method: 'tools/list' }
+    const answer = { jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'memory_write' }, { name: 'code_impact' }] } }
+    expect(filterDelegatedToolList(list, answer, readOnly).result.tools).toEqual([{ name: 'code_impact' }])
+  })
+
+  it('words a linked job\'s refusal for a linked job even when the run is also marked read-only', () => {
+    const { delegatedJobRefusal } = load()
+    expect(delegatedJobRefusal(call('run_command', 1), { ...inJob, TERMPOLIS_READ_ONLY_RUN: '1' })?.result?.content[0].text)
+      .toMatch(/^run_command is not available to a job another linked machine started/)
   })
 })

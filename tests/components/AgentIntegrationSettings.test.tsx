@@ -137,7 +137,7 @@ describe('AgentIntegrationSettings: connecting and disconnecting', () => {
     }))
     await renderLoaded()
     expect(toggle()).toHaveAttribute('aria-pressed', 'true')
-    expect(toggle()).toHaveAccessibleName('Connect Termpolis to Claude Code, Codex and Gemini CLI')
+    expect(toggle()).toHaveAccessibleName('Connect Termpolis to Claude Code, Codex and Gemini / Antigravity CLI')
     fireEvent.click(toggle())
     await waitFor(() => expect(screen.getByTestId('agent-integration-status').textContent).toBe('Not connected'))
     expect(api.agentIntegrationSet).toHaveBeenCalledWith({ connect: false })

@@ -21,9 +21,9 @@ import type {
 } from '../shared/agentIntegration'
 import { atomicWriteText, editJsonObject, errorText, readJsonObject, readTextFile } from './agentConfigIO'
 import {
-  FOREIGN_SERVER, applyAllowRules, applyPrimerHook, hasPluginEnablement, hasPrimerHook,
+  FOREIGN_SERVER, applyAgyAllowRules, applyAllowRules, applyPrimerHook, hasPluginEnablement, hasPrimerHook,
   hasServerEntry, hasTermpolisAllowRule, isAdapterPath, isPrimerHookCommand, isTermpolisPluginManifest,
-  isTermpolisServerEntry, localMarketplaceNames, primerHookCommand, removeAllowRules,
+  isTermpolisServerEntry, localMarketplaceNames, primerHookCommand, removeAgyAllowRules, removeAllowRules,
   removeInstalledPlugin, removeLegacyAllowRules, removeMarketplaceEntry, removePluginEnablement,
   removePrimerHooks, removeRootServerEntry, removeServerEntry, termpolisServerEntry, toRunner,
   upsertClaudeUserServer, upsertServerEntry,
@@ -671,7 +671,7 @@ function applyHook(root: Json, rt: AgentIntegrationRuntime, script: string): Ent
 
 /** Connect every agent that is installed (its config folder exists). Idempotent: a second
  *  run writes nothing. With no home folder, touches nothing and says so. */
-function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean): AgentIntegrationChange[] {
+function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean, consent: AgentIntegrationConsent): AgentIntegrationChange[] {
   const { paths } = rt
   if (!agentPaths(paths)) return [noHomeRow()]
   const entry = termpolisServerEntry(rt.node, rt.adapterPath)
@@ -700,10 +700,48 @@ function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean): AgentIntegr
       { what: 'MCP server', run: (root) => upsertServerEntry(root, entry) },
     ], true))
   }
+  // Only with consent on record: an install that predates the review keeps what older versions
+  // wrote until its owner answers, and older versions never wrote these.
+  if (consent === 'granted') rows.push(...applyAntigravity(paths.geminiDir, entry))
   return rows
 }
 
+/** The Antigravity CLI's own files. `agy`, which the Gemini profile runs, reads its MCP servers
+ *  from `config/mcp_config.json` and its permissions from `antigravity-cli/settings.json`, never
+ *  from Gemini CLI's `settings.json`. */
+function antigravityFiles(geminiDir: string): { mcpConfig: string; settings: string } {
+  return {
+    mcpConfig: join(geminiDir, 'config', 'mcp_config.json'),
+    settings: join(geminiDir, 'antigravity-cli', 'settings.json'),
+  }
+}
+
+/** Each file only once agy has made its folder (the writer never makes folders), and the rules
+ *  only beside a server that is Termpolis's: allowing `mcp(termpolis/…)` next to someone else's
+ *  `termpolis` would hand their tools the safe list. */
+function applyAntigravity(geminiDir: string, entry: ServerEntry): AgentIntegrationChange[] {
+  const agy = antigravityFiles(geminiDir)
+  if (!existsSync(dirname(agy.mcpConfig))) return []
+  const server = editConfig('gemini', agy.mcpConfig, [
+    { what: 'MCP server (Antigravity CLI)', run: (root) => upsertServerEntry(root, entry) },
+  ], true)
+  if (!existsSync(dirname(agy.settings)) || server.some((r) => r.action === 'skipped')) return server
+  return [...server, ...editConfig('gemini', agy.settings, [
+    { what: 'Tool permissions (Antigravity CLI)', run: applyAgyAllowRules },
+  ], true)]
+}
+
 const noAgent = (): AgentIntegrationAgentStatus => ({ installed: false, configPath: '', registered: false })
+
+/** Codex's config.toml holds Termpolis's own server: what a Linked machines job needs to keep
+ *  that server for one run (headlessExec's codex arguments). The job's caller treats a throw as
+ *  "no", and runs with the server switched off. */
+export function codexHasTermpolisServer(paths: AgentIntegrationPaths): boolean {
+  if (!agentPaths(paths)) return false
+  const read = readText(join(paths.codexHome, 'config.toml'))
+  const text = 'text' in read ? read.text : null
+  return text !== null && codexOwner(text) === 'ours'
+}
 
 function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegrationStatus {
   const status = (agents: AgentIntegrationStatus['agents'], codexHomeTrusted: boolean): AgentIntegrationStatus => ({
@@ -724,11 +762,17 @@ function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegratio
   const codex = 'text' in read ? read.text : null
   const geminiFile = join(paths.geminiDir, 'settings.json')
   const gemini = readJson(geminiFile)
+  const antigravity = readJson(antigravityFiles(paths.geminiDir).mcpConfig)
   const codexTrusted = codex === null ? [] : codexTrustedProjects(codex)
   return status({
     claude: { installed: existsSync(paths.claudeDir), configPath: paths.claudeJson, registered: !!claudeJson && hasServerEntry(claudeJson) },
     codex: { installed: existsSync(paths.codexHome), configPath: codexFile, registered: codex !== null && codexOwner(codex) === 'ours' },
-    gemini: { installed: existsSync(paths.geminiDir), configPath: geminiFile, registered: !!gemini && hasServerEntry(gemini) },
+    // Either Gemini CLI's file or the Antigravity CLI's own (what `agy` actually reads).
+    gemini: {
+      installed: existsSync(paths.geminiDir),
+      configPath: geminiFile,
+      registered: (!!gemini && hasServerEntry(gemini)) || (!!antigravity && hasServerEntry(antigravity)),
+    },
   }, Array.isArray(codexTrusted) && codexTrusted.some((f) => isUnsafeTrustRoot(f, paths.home)))
 }
 
@@ -755,7 +799,7 @@ export function bootAgentIntegration(rt: AgentIntegrationRuntime): AgentIntegrat
       // A migration that could not finish runs again next start.
       if (!rows.some((r) => r.action === 'skipped')) ledger.migrations.push(m.id)
     }
-    if (isConnected(ledger)) changes.push(...applyAll(rt, ledger.primerHook))
+    if (isConnected(ledger)) changes.push(...applyAll(rt, ledger.primerHook, ledger.consent))
     if (JSON.stringify(ledger) !== before) writeLedger(rt.paths, ledger)
     return { status: statusOf(rt.paths, ledger), changes: changes.filter(isChange) }
   } catch (e) {
@@ -809,7 +853,7 @@ export function setAgentIntegration(
     // with no consent saved for it. Nothing is written until the answer can be kept.
     const saveError = writeLedger(rt.paths, ledger)
     if (saveError !== null) return { status: getAgentIntegrationStatus(rt.paths), changes: [], saveError }
-    const changes = applyAll(rt, ledger.primerHook).filter(isChange)
+    const changes = applyAll(rt, ledger.primerHook, ledger.consent).filter(isChange)
     return { status: statusOf(rt.paths, ledger), changes }
   } catch (e) {
     return failed(rt, e, [])
@@ -870,6 +914,13 @@ function disconnect(paths: AgentIntegrationPaths, recordDecline: boolean): { row
     }
     const gemini = join(at.geminiDir, 'settings.json')
     run('gemini', gemini, () => editConfig('gemini', gemini, [{ what: 'MCP server', run: removeServerEntry }], false))
+    const agy = antigravityFiles(at.geminiDir)
+    run('gemini', agy.mcpConfig, () => editConfig('gemini', agy.mcpConfig, [
+      { what: 'MCP server (Antigravity CLI)', run: removeServerEntry },
+    ], false))
+    run('gemini', agy.settings, () => editConfig('gemini', agy.settings, [
+      { what: 'Tool permissions (Antigravity CLI)', run: removeAgyAllowRules },
+    ], false))
 
     const trustFrom = rows.length
     for (const file of claudeJsons) {

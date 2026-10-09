@@ -303,15 +303,20 @@ export function removeLegacyAllowRules(root: Json): EntryEdit {
   return dropRules(root, legacyRules(allow))
 }
 
-/** Allow the safe tools, appending only the rules that are missing. */
-export function applyAllowRules(root: Json): EntryEdit {
+/** Append whichever of `rules` `permissions.allow` is missing. */
+function appendRules(root: Json, rules: readonly string[]): EntryEdit {
   const allow = allowArray(root)
   if (allow !== null && !Array.isArray(allow)) return allow
   const have = allow ?? []
-  const missing = CLAUDE_ALLOW_RULES.filter((r) => !have.includes(r))
+  const missing = rules.filter((r) => !have.includes(r))
   if (missing.length === 0) return 'unchanged'
   root.permissions = { ...(root.permissions ?? {}), allow: [...have, ...missing] }
-  return missing.length === CLAUDE_ALLOW_RULES.length ? 'add' : 'update'
+  return missing.length === rules.length ? 'add' : 'update'
+}
+
+/** Allow the safe tools, appending only the rules that are missing. */
+export function applyAllowRules(root: Json): EntryEdit {
+  return appendRules(root, CLAUDE_ALLOW_RULES)
 }
 
 /** Disconnect: the safe list plus everything the migration removes. */
@@ -326,6 +331,25 @@ export function removeAllowRules(root: Json): EntryEdit {
 export function hasTermpolisAllowRule(root: Json): boolean {
   const allow = allowArray(root)
   return Array.isArray(allow) && allow.some((r) => typeof r === 'string' && r.startsWith(CLAUDE_TOOL_PREFIX))
+}
+
+// ── Antigravity CLI (agy) settings.json: tool permissions ──────────────────────────────
+
+/** agy's form of the same safe list. agy's headless runs refuse any MCP tool these don't name,
+ *  and a Linked machines job is narrowed further, to read-only tools, by the stdio adapter.
+ *  Never `mcp(termpolis/*)`, for the reason the Claude wildcard went. */
+export const AGY_ALLOW_RULES: readonly string[] = MCP_TOOLS_AUTO_ALLOWED.map((t) => `mcp(termpolis/${t})`)
+
+export function applyAgyAllowRules(root: Json): EntryEdit {
+  return appendRules(root, AGY_ALLOW_RULES)
+}
+
+/** Disconnect: exactly the rules above. agy writes this file too (`trustedWorkspaces`), and
+ *  anything else in it is left as it is. */
+export function removeAgyAllowRules(root: Json): EntryEdit {
+  const allow = allowArray(root)
+  if (!Array.isArray(allow)) return allow ?? 'unchanged'
+  return dropRules(root, new Set(AGY_ALLOW_RULES.filter((r) => allow.includes(r))))
 }
 
 // ── Claude Code settings.json: the SessionStart memory hook ────────────────────────────

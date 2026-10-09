@@ -21,6 +21,8 @@ describe('resolveAgentCommand', () => {
     expect(resolveAgentCommand('claude')).toContain('mock-claude')
     expect(resolveAgentCommand('codex')).toContain('mock-codex')
     expect(resolveAgentCommand('gemini')).toContain('mock-gemini')
+    // What the Gemini profile actually types.
+    expect(resolveAgentCommand('agy')).toContain('mock-gemini')
   })
 
   it('passes unknown commands through in test mode', () => {

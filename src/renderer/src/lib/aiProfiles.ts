@@ -11,16 +11,34 @@ import {
   waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
   PROMPT_ECHO_CEILING_MS,
 } from './launchSequence'
+import openaiIcon from '../assets/agents/openai.svg'
+import antigravityIcon from '../assets/agents/antigravity.svg'
+
+/** Brand marks for the built-in agents. Font Awesome has no OpenAI or Antigravity glyph,
+ *  so these are bundled SVGs; `icon` stays as the fallback for places that only take a class. */
+export const AGENT_ICON_IMAGES: Readonly<Record<'codex' | 'gemini', string>> = {
+  codex: openaiIcon,
+  gemini: antigravityIcon,
+}
 
 /**
  * The three built-in AI agents. Always rendered first in the sidebar and always
- * mapped to launch shortcuts 1..3, so this order is load-bearing.
+ * mapped to launch shortcuts 1..3, so this order is load-bearing. Gemini launches the
+ * Antigravity CLI (`agy`), Gemini's current command-line entry point, hence its name.
  */
 export const DEFAULT_AI_PROFILES: AIProfile[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', command: 'claude', shell: 'bash', color: '#D97706' },
-  { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', command: 'codex', shell: 'bash', color: '#10B981' },
-  { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', command: 'agy', shell: 'bash', color: '#4285F4' },
+  { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', iconImage: AGENT_ICON_IMAGES.codex, command: 'codex', shell: 'bash', color: '#10B981' },
+  { id: 'gemini', name: 'Gemini / Antigravity CLI', icon: 'fa-brands fa-google', iconImage: AGENT_ICON_IMAGES.gemini, command: 'agy', shell: 'bash', color: '#4285F4' },
 ]
+
+/** What the Welcome screen and the launch shortcuts start for a built-in agent id: the sidebar
+ *  profile's own name, command and colour, so all three launch the same thing. Gemini's command is
+ *  `agy`; these used to type the retired `gemini`, which isn't installed on a current setup. */
+export function agentLaunchConfig(id: string): { name: string; command: string; color: string } | null {
+  const p = DEFAULT_AI_PROFILES.find((x) => x.id === id)
+  return p ? { name: p.name, command: p.command, color: p.color } : null
+}
 
 export function resolveShellType(profileShell: string, availableShells: ShellInfo[]): ShellType {
   const available = availableShells.map(s => s.type)

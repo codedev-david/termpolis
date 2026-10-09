@@ -38,6 +38,21 @@ export const SECOND_OPINION_TIMEOUT_MS = 90_000
  *  PowerShell is Bash's Windows twin, and the CLI always knows it by name, so it can't warn. */
 export const CLAUDE_MUTATING_TOOLS = ['Bash', 'PowerShell', 'Edit', 'Write', 'NotebookEdit'] as const
 
+/** Termpolis's MCP server, off for one codex run. The first override is the switch, verified
+ *  against codex-cli 0.153.4 (`mcp list` then reports the server `disabled`; `-c 'mcp_servers={}'`
+ *  does not do it). The second is needed because an override that names a server the config
+ *  doesn't have creates a table with no transport, and codex then refuses to start ("invalid
+ *  transport"). That is every machine where Termpolis isn't connected to Codex. A placeholder
+ *  command makes the table a valid server, still disabled, either way. The value is left
+ *  unquoted: codex takes a value that isn't TOML as a literal string, and an entry with no quote
+ *  in it reaches codex through PowerShell 5.1 unchanged. A hand-written `url` entry for
+ *  termpolis (Termpolis never writes one) can't hold a command, so there codex refuses to start
+ *  and the run fails closed. */
+export const CODEX_ISOLATE_MCP_ARGS: readonly string[] = [
+  '-c', 'mcp_servers.termpolis.enabled=false',
+  '-c', 'mcp_servers.termpolis.command=termpolis-mcp-disabled',
+]
+
 /** Wrap captured terminal output in a concise "give a second opinion" instruction. Pure.
  *  The content is tail-trimmed to `maxChars` so a huge scrollback can't blow the arg. */
 export function buildReviewPrompt(content: string, opts: { maxChars?: number } = {}): string {
@@ -286,15 +301,31 @@ export interface SecondOpinionResult { ok: boolean; feedback?: string; error?: s
  *  own stderr (so e.g. an auth/eligibility failure is legible, not a bare exit code). Both
  *  are cleaned of terminal control sequences, since both are pasted into a terminal. Pure
  *  given `deliver`. */
+/** A review's argv: the read-only command, and for codex Termpolis's MCP server switched off,
+ *  ahead of the prompt. A review needs no tools (a claude review gets none); codex keeps any other
+ *  MCP servers of its own, as before. */
+export function reviewCommand(agent: SecondOpinionAgent, model?: string, timeoutMs?: number): { bin: string; args: string[] } {
+  const cmd = secondOpinionCommand(agent, model, timeoutMs)
+  if (agent !== 'codex') return cmd
+  const args = [...cmd.args]
+  args.splice(args.indexOf(PROMPT_TOKEN), 0, ...CODEX_ISOLATE_MCP_ARGS)
+  return { bin: cmd.bin, args }
+}
+
 export async function runSecondOpinion(
   opts: { agent: SecondOpinionAgent; model?: string; content: string; timeoutMs?: number; maxChars?: number },
   deliver: DeliverFn,
 ): Promise<SecondOpinionResult> {
   const prompt = buildReviewPrompt(opts.content, { maxChars: opts.maxChars })
   const timeoutMs = opts.timeoutMs ?? SECOND_OPINION_TIMEOUT_MS
-  const { bin, args } = secondOpinionCommand(opts.agent, opts.model, timeoutMs)
+  const { bin, args } = reviewCommand(opts.agent, opts.model, timeoutMs)
   try {
-    const { stdout, stderr, code } = await deliverWithDeadline(deliver, bin, args, prompt, timeoutMs)
+    // The reviewer reads terminal output it must not act on. agy hands its environment to its MCP
+    // servers, so this marker narrows Termpolis's to the read-only tools: no memory writes from a
+    // review. codex doesn't pass it on, so its review runs with Termpolis's server switched off.
+    const { stdout, stderr, code } = await deliverWithDeadline(deliver, bin, args, prompt, timeoutMs, DELIVER_GRACE_MS, {
+      env: { TERMPOLIS_READ_ONLY_RUN: '1' },
+    })
     const out = cleanReviewText(stdout || '').trim()
     if (code === 0 && out.length > 0) return { ok: true, feedback: out }
     const errText = cleanReviewText(stderr || '').trim() || out

@@ -8,7 +8,8 @@
 // sends the message back verbatim, and the agent on the other machine reads it.
 //
 // Jobs run through the existing headless executor with the confinement rules
-// in spec §4.5: Termpolis's own MCP kept out (isolateMcp), the job marked in its
+// in spec §4.5: Termpolis's own MCP cut down to this machine's memory and code
+// index, read-only (linkedJob; the stdio adapter enforces it), the job marked in its
 // environment so a nested delegation is refused, nothing written to the brain
 // (output another machine asked for must not become a later run's primer), and
 // read-only unless the write grant is held. The memory primer IS kept: a job
@@ -424,7 +425,7 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       cwd,
       write,
       timeoutMs,
-      isolateMcp: true,
+      linkedJob: id,
       noRemember: true,
       env: { TERMPOLIS_LINKED_JOB: id },
       signal: controller.signal,

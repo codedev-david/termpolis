@@ -92,7 +92,7 @@ describe('AIProfiles', () => {
       render(<AIProfiles availableShells={defaultShells} />)
       expect(screen.getByText('Claude Code')).toBeInTheDocument()
       expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
-      expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
+      expect(screen.getByText('Gemini / Antigravity CLI')).toBeInTheDocument()
     })
 
     it('renders custom profiles alongside defaults', async () => {
@@ -172,9 +172,9 @@ describe('AIProfiles', () => {
       await waitFor(() => {
         expect(document.querySelectorAll('.fa-circle-xmark').length).toBeGreaterThan(0)
       })
-      fireEvent.click(screen.getByText('Gemini CLI'))
+      fireEvent.click(screen.getByText('Gemini / Antigravity CLI'))
       expect(screen.getByTestId('install-hint')).toBeInTheDocument()
-      expect(screen.getByTestId('install-hint-agent')).toHaveTextContent('Gemini CLI')
+      expect(screen.getByTestId('install-hint-agent')).toHaveTextContent('Gemini / Antigravity CLI')
     })
 
     it('closes install hint when close button is clicked', async () => {
@@ -182,7 +182,7 @@ describe('AIProfiles', () => {
       await waitFor(() => {
         expect(document.querySelectorAll('.fa-circle-xmark').length).toBeGreaterThan(0)
       })
-      fireEvent.click(screen.getByText('Gemini CLI'))
+      fireEvent.click(screen.getByText('Gemini / Antigravity CLI'))
       expect(screen.getByTestId('install-hint')).toBeInTheDocument()
       fireEvent.click(screen.getByText('Close Hint'))
       expect(screen.queryByTestId('install-hint')).not.toBeInTheDocument()

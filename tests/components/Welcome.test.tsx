@@ -95,7 +95,7 @@ describe('Welcome', () => {
     fireEvent.click(screen.getByText('Launch AI Agent'))
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
     expect(screen.getByText('OpenAI Codex')).toBeInTheDocument()
-    expect(screen.getByText('Gemini CLI')).toBeInTheDocument()
+    expect(screen.getByText('Gemini / Antigravity CLI')).toBeInTheDocument()
   })
 
   it('toggles agent picker open and closed', () => {

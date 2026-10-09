@@ -14,7 +14,7 @@ export const AGENT_ORDER: readonly AgentId[] = ['claude', 'codex', 'gemini']
 export const AGENT_LABELS: Readonly<Record<AgentId, string>> = {
   claude: 'Claude Code',
   codex: 'Codex',
-  gemini: 'Gemini CLI',
+  gemini: 'Gemini / Antigravity CLI',
 }
 
 /** The hook checkbox, worded the same everywhere it appears. */

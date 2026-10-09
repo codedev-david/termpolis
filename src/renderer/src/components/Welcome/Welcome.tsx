@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { InstallHint } from '../InstallHint/InstallHint'
+import openaiIcon from '../../assets/agents/openai.svg'
+import antigravityIcon from '../../assets/agents/antigravity.svg'
 
 interface WelcomeProps {
   onNewTerminal: () => void
@@ -7,10 +9,10 @@ interface WelcomeProps {
   onStartSwarm: () => void
 }
 
-const AGENT_OPTIONS = [
+const AGENT_OPTIONS: { id: string; name: string; icon: string; iconImage?: string; color: string }[] = [
   { id: 'claude', name: 'Claude Code', icon: 'fa-solid fa-robot', color: '#D97706' },
-  { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', color: '#10B981' },
-  { id: 'gemini', name: 'Gemini CLI', icon: 'fa-brands fa-google', color: '#4285F4' },
+  { id: 'codex', name: 'OpenAI Codex', icon: 'fa-solid fa-microchip', iconImage: openaiIcon, color: '#10B981' },
+  { id: 'gemini', name: 'Gemini / Antigravity CLI', icon: 'fa-brands fa-google', iconImage: antigravityIcon, color: '#4285F4' },
 ]
 
 export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeProps) {
@@ -95,7 +97,11 @@ export function Welcome({ onNewTerminal, onLaunchAgent, onStartSwarm }: WelcomeP
                         notInstalled ? 'hover:bg-[#2a2a2a]' : 'hover:bg-[#37373d]'
                       }`}
                     >
-                      <i className={agent.icon} style={{ color: notInstalled ? '#555' : agent.color, fontSize: '12px' }}></i>
+                      {agent.iconImage ? (
+                        <img src={agent.iconImage} alt="" aria-hidden="true" style={{ height: '12px', width: 'auto', opacity: notInstalled ? 0.35 : 1, filter: notInstalled ? 'grayscale(1)' : undefined }} />
+                      ) : (
+                        <i className={agent.icon} style={{ color: notInstalled ? '#555' : agent.color, fontSize: '12px' }}></i>
+                      )}
                       <span className={`text-xs flex-1 ${notInstalled ? 'text-[#888]' : 'text-[#d4d4d4]'}`}>{agent.name}</span>
                       {installed && !detecting && (
                         <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Installed"></span>

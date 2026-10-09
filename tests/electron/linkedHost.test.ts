@@ -1275,7 +1275,7 @@ describe('serving another machine', () => {
       model: 'gpt-5-codex',
       cwd: dir,
       write: true,
-      isolateMcp: true,
+      linkedJob: job.jobId,
       noRemember: true,
       env: { TERMPOLIS_LINKED_JOB: job.jobId },
     })

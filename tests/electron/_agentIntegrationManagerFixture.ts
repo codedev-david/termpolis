@@ -40,6 +40,10 @@ export interface SandboxFiles {
   codex: string
   /** Gemini CLI's settings.json */
   gemini: string
+  /** The Antigravity CLI's MCP servers: ~/.gemini/config/mcp_config.json */
+  agyMcp: string
+  /** The Antigravity CLI's settings: ~/.gemini/antigravity-cli/settings.json */
+  agySettings: string
   /** ~/.mcp.json */
   mcpJson: string
 }
@@ -99,6 +103,8 @@ export function createSandbox(): Sandbox {
       settings: join(paths.claudeDir, 'settings.json'),
       codex: join(paths.codexHome, 'config.toml'),
       gemini: join(paths.geminiDir, 'settings.json'),
+      agyMcp: join(paths.geminiDir, 'config', 'mcp_config.json'),
+      agySettings: join(paths.geminiDir, 'antigravity-cli', 'settings.json'),
       mcpJson: join(paths.home, '.mcp.json'),
     },
     link(target: string, at: string): void {

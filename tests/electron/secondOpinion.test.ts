@@ -10,7 +10,9 @@ import {
   positionalPrompt,
   cleanReviewText,
   runSecondOpinion,
+  reviewCommand,
   powershellPath,
+  CODEX_ISOLATE_MCP_ARGS,
   CLAUDE_MUTATING_TOOLS,
   DELIVER_GRACE_MS,
   PROMPT_TOKEN,
@@ -461,7 +463,9 @@ describe('runSecondOpinion', () => {
     expect(args).not.toContain(prompt) // …never the raw prompt
     expect(prompt).toContain('the answer') // prompt is delivered separately
     expect(token).toBe(PROMPT_TOKEN)
-    expect(opts).toEqual({ timeoutMs: SECOND_OPINION_TIMEOUT_MS })
+    // Marked read-only, so an agent that hands its environment to its MCP servers (agy) gets
+    // Termpolis's read-only tools only while it reads untrusted terminal output.
+    expect(opts).toEqual({ timeoutMs: SECOND_OPINION_TIMEOUT_MS, env: { TERMPOLIS_READ_ONLY_RUN: '1' } })
     expect(SECOND_OPINION_TIMEOUT_MS).toBe(90_000)
   })
   it('launches every provider read-only', async () => {
@@ -477,7 +481,7 @@ describe('runSecondOpinion', () => {
     const deliver = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
     await runSecondOpinion({ agent: 'gemini', content: 'x', timeoutMs: 30_000 }, deliver)
     const [, args, , , opts] = deliver.mock.calls[0] as unknown as [string, string[], string, string, { timeoutMs: number }]
-    expect(opts).toEqual({ timeoutMs: 30_000 })
+    expect(opts).toEqual({ timeoutMs: 30_000, env: { TERMPOLIS_READ_ONLY_RUN: '1' } })
     expect(args.slice(args.indexOf('--print-timeout'), args.indexOf('--print-timeout') + 2)).toEqual(['--print-timeout', '30s'])
   })
   it('strips terminal control sequences from the feedback, which is pasted into a terminal', async () => {
@@ -522,5 +526,27 @@ describe('runSecondOpinion', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('reviewCommand: what a Second Opinion review runs', () => {
+  it("switches Termpolis's MCP server off for a codex review, ahead of the prompt", () => {
+    const { bin, args } = reviewCommand('codex', 'gpt-5.6-sol')
+    expect(bin).toBe('codex')
+    expect(args).toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...CODEX_ISOLATE_MCP_ARGS, PROMPT_TOKEN])
+  })
+
+  it('leaves claude (no MCP servers already) and agy (narrowed by the read-only marker) as they are', () => {
+    for (const agent of ['claude', 'gemini'] as const) {
+      expect(reviewCommand(agent, undefined, 30_000)).toEqual(secondOpinionCommand(agent, undefined, 30_000))
+    }
+  })
+
+  it('runs every review through it, marked read-only', async () => {
+    const deliver = vi.fn(async () => ({ stdout: 'ok', code: 0 }))
+    await runSecondOpinion({ agent: 'codex', content: 'x' }, deliver)
+    const [, args, , , opts] = deliver.mock.calls[0] as unknown as [string, string[], string, string, { env: Record<string, string> }]
+    expect(args).toEqual(expect.arrayContaining([...CODEX_ISOLATE_MCP_ARGS]))
+    expect(opts.env).toEqual({ TERMPOLIS_READ_ONLY_RUN: '1' })
   })
 })

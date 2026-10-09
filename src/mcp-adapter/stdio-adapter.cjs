@@ -157,6 +157,59 @@ function nestedDelegationRefusal(request, env) {
   }
 }
 
+// What a restricted run may use on this machine: its memory and code index, read-only, plus git
+// status, coverage and expanding a compressed result. A run is restricted when another linked
+// machine started it (TERMPOLIS_LINKED_JOB) or when it reads input it must not act on, such as a
+// Second Opinion review (TERMPOLIS_READ_ONLY_RUN). Nothing that writes memory, reads or types into
+// a terminal, runs a command, touches the swarm, reaches another MCP server or starts an agent
+// elsewhere. Deny by default: a tool the server gains later stays out until it is added here on
+// purpose. The app's copy is RESTRICTED_RUN_TOOLS in src/shared/agentIntegration.ts.
+const DELEGATED_JOB_TOOLS = Object.freeze([
+  'memory_search', 'memory_list', 'memory_related', 'memory_graph', 'memory_anticipate',
+  'memory_selfcheck', 'memory_conflicts',
+  'code_search', 'code_locate', 'code_explore', 'code_callers', 'code_callees', 'code_impact',
+  'get_git_status', 'test_coverage', 'retrieve_full',
+])
+
+function inLinkedJob(env) {
+  return !!env && env.TERMPOLIS_LINKED_JOB !== undefined
+}
+
+// Present is enough, as for the linked-job marker.
+function inRestrictedRun(env) {
+  return inLinkedJob(env) || (!!env && env.TERMPOLIS_READ_ONLY_RUN !== undefined)
+}
+
+function restrictedToolRefusal(name, env) {
+  const who = inLinkedJob(env) ? 'a job another linked machine started' : 'a read-only run'
+  return `${name} is not available to ${who}. It can use this machine's memory and code index, read-only, and nothing else.`
+}
+
+// The reply that refuses a restricted run's call to anything outside DELEGATED_JOB_TOOLS, or null
+// to carry on. linked_machines inside a linked job keeps its own wording.
+function delegatedJobRefusal(request, env) {
+  if (!inRestrictedRun(env)) return null
+  const nested = nestedDelegationRefusal(request, env)
+  if (nested) return nested
+  if (!request || request.method !== 'tools/call' || !request.params || typeof request.params.name !== 'string') return null
+  const name = request.params.name
+  if (DELEGATED_JOB_TOOLS.includes(name)) return null
+  return {
+    jsonrpc: '2.0',
+    id: request.id ?? null,
+    result: { content: [{ type: 'text', text: restrictedToolRefusal(name, env) }], isError: true },
+  }
+}
+
+// A restricted run is offered only the tools it may call: no schema it would be refused, and fewer
+// input tokens on every turn.
+function filterDelegatedToolList(request, response, env) {
+  if (!inRestrictedRun(env) || !request || request.method !== 'tools/list') return response
+  const tools = response && response.result && Array.isArray(response.result.tools) ? response.result.tools : null
+  if (!tools) return response
+  return { ...response, result: { ...response.result, tools: tools.filter((t) => t && DELEGATED_JOB_TOOLS.includes(t.name)) } }
+}
+
 // Read JSON-RPC messages from stdin (newline-delimited)
 async function handleLine(line) {
   if (!line.trim()) return
@@ -172,7 +225,7 @@ async function handleLine(line) {
     return
   }
   // Ahead of degraded mode: whether the app is up does not change this answer.
-  const refusal = nestedDelegationRefusal(request, process.env)
+  const refusal = delegatedJobRefusal(request, process.env)
   if (refusal) {
     process.stdout.write(JSON.stringify(refusal) + '\n')
     return
@@ -183,7 +236,7 @@ async function handleLine(line) {
     return
   }
   try {
-    const response = await sendToServer(request)
+    const response = filterDelegatedToolList(request, await sendToServer(request), process.env)
     process.stdout.write(JSON.stringify(response) + '\n')
   } catch (err) {
     // Connection refused etc. — flip into degraded mode so subsequent
@@ -237,4 +290,6 @@ function startAdapter() {
 
 if (require.main === module) startAdapter()
 
-module.exports = { applyDefaultProjectScope, nestedDelegationRefusal }
+module.exports = {
+  applyDefaultProjectScope, nestedDelegationRefusal, delegatedJobRefusal, filterDelegatedToolList, DELEGATED_JOB_TOOLS,
+}

@@ -553,7 +553,7 @@ Termpolis doesn't register itself with an agent until you say so. The first step
 
 - **Claude Code** — adds the `termpolis` MCP server at user scope in `~/.claude.json`, as `claude mcp add -s user` would (under your `CLAUDE_CONFIG_DIR` if you set one). It allows 27 read-only and memory tools in `settings.json` so they run without asking; tools that run commands or type into terminals still ask. It marks each folder you open an agent in as trusted — never your home folder, a folder above it, a drive root or a network share root. Optionally, it adds a **SessionStart hook** that loads your project memory whenever a Claude Code session starts, including sessions started outside Termpolis. Since v1.49.1 the hook does nothing once Termpolis is gone, so removing the app without disconnecting first doesn't leave Claude Code with a failing hook (an existing hook is upgraded the first time v1.49.1 starts).
 - **Codex** — adds the `termpolis` MCP server to its `config.toml` (a different server you already named `termpolis` is left alone), pre-approves the 14 `memory_*` tools unless you already chose a setting for them, and answers the folder-trust prompt for a folder you open it in, with the same exclusions. Its memory instruction is passed on the launch command (`-c developer_instructions`) for that session only, and not at all if you set your own; nothing is written into your projects.
-- **Gemini CLI** — adds the `termpolis` MCP server to its `settings.json`.
+- **Gemini / Antigravity CLI** — adds the `termpolis` MCP server where the Antigravity CLI (`agy`, which the Gemini profile runs) reads it, `~/.gemini/config/mcp_config.json`, and lets the same read-only and memory tools Claude Code gets run without asking, in `~/.gemini/antigravity-cli/settings.json` (rules like `mcp(termpolis/memory_search)`, never a wildcard). Each file is written only once `agy` has created its folder. It also keeps the entry in Gemini CLI's `settings.json` for the older CLI. Disconnect removes exactly these entries and rules, and nothing `agy` wrote.
 
 When Termpolis answers a folder-trust prompt, it selects the trust option itself instead of pressing Enter on whatever is highlighted. It never answers a permission, approval or MCP prompt, a `[Y/n]` question or a numbered choice — those wait for you — and while your agents aren't connected it doesn't answer the folder-trust prompt either. On an agent's first-run screens it still presses Enter and takes the default: Claude Code's intro splash, its theme and login-method pickers, and Gemini CLI's terms and sign-in screens.
 
@@ -1065,7 +1065,7 @@ You choose when the link is made, and you can change it at any time:
 
 | Permission | Default | What it allows |
 |---|---|---|
-| **Run agents here (read-only)** | on | Start a headless agent here in its own read-only mode. It can read any file you can read. Claude runs in plan mode with only Read, Grep and Glob and no MCP servers, Codex runs in its `read-only` sandbox with Termpolis's MCP server switched off, and Gemini (`agy`) runs in plan mode. Codex and `agy` keep MCP servers you added to their own configs. |
+| **Run agents here (read-only)** | on | Start a headless agent here in its own read-only mode. It can read any file you can read. Claude runs with only Read, Grep and Glob, Codex in its `read-only` sandbox, and Gemini (`agy`) in plan mode. Each gets this machine's memory and code index as read-only Termpolis tools (see *Read-only tools* below). Codex and `agy` keep MCP servers you added to their own configs. |
 | **Let agents edit files and run commands here** | off | The agent here runs unattended, as you: Claude and Gemini with permission prompts skipped, Codex in its `workspace-write` sandbox. Turning it on turns on *Run agents here* too. |
 
 The risk is stated plainly. A machine with *Run agents here* can have an agent
@@ -1219,15 +1219,25 @@ step that calls it is not counted.
   It cannot list, read or type into your terminals; it can only ask for the
   jobs described here. A job with *edit* permission runs as you, though, and
   can do whatever you can.
-- **No passing the work on.**
-  - Termpolis's own MCP server is switched off inside a delegated job. Claude
-    runs with `--strict-mcp-config`, and Codex gets two `-c` overrides that
-    disable its `termpolis` server for that one run. Gemini (`agy`) keeps its
-    own MCP list, which Termpolis doesn't add itself to.
-  - The job is also marked in its environment. An agent that asks for
-    `linked_machines` through Termpolis's agent connection anyway is refused
-    with *Nested delegation is not allowed: this agent was itself started by a
-    linked machine.*
+- **Read-only tools, and no passing the work on (v1.51).**
+  - A delegated job keeps Termpolis's MCP server, cut down to this machine's
+    memory and code index: `memory_search`, `memory_list`, `memory_related`,
+    `memory_graph`, `memory_anticipate`, `memory_selfcheck`,
+    `memory_conflicts`, the six `code_*` tools, `get_git_status`,
+    `test_coverage` and `retrieve_full`. No memory writes, terminals, swarm,
+    gateway or other machines.
+  - The job is marked in its environment (`TERMPOLIS_LINKED_JOB`), and
+    Termpolis's agent connection (the stdio adapter) enforces the list: it
+    offers the job only those tools, and refuses anything else as a tool
+    result. `linked_machines` is refused with *Nested delegation is not
+    allowed: this agent was itself started by a linked machine.*
+  - Claude gets a per-run config holding only Termpolis's server with the
+    marker (`--mcp-config` plus `--strict-mcp-config`, so none of your other
+    servers load), those tools pre-approved, and in a read-only job only Read,
+    Grep and Glob besides. Codex gets the marker on its `termpolis` server for
+    that one run, and the tools pre-approved, when its `config.toml` holds
+    Termpolis's own server; otherwise the server is switched off for the run.
+    `agy` passes its environment, marker included, to the server itself.
   - A job with *edit* permission has a shell and runs as you, so it could reach
     Termpolis's local MCP server directly.
 - **Answers are scanned.** What comes back from another machine passes the

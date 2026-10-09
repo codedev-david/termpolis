@@ -622,6 +622,18 @@ describe('terminal:write — always forwards, never withholds', () => {
     expect(auditEvents()).toContainEqual(expect.objectContaining({ agent, event: 'terminal_open' }))
   })
 
+  it('recognises `agy`, the Antigravity CLI every built-in Gemini launch types, as gemini', () => {
+    const id = newId('w-agy')
+    fire('terminal:write', { id, data: 'agy\r' })
+    expect(auditEvents()).toContainEqual(expect.objectContaining({ agent: 'gemini', event: 'terminal_open', terminalId: id }))
+    // And it arms the prompt watch for that terminal, naming the agent the same way.
+    mockAppendAudit.mockClear()
+    mockWebContents.send.mockClear()
+    fire('terminal:write', { id, data: `use ${AWS_KEY} here\r` })
+    expect(auditEvents().find((e) => e.event === 'prompt_secret_sent')).toBeTruthy()
+    expect(sentEvents('terminal:secret-observed')).toHaveLength(1)
+  })
+
   it('throttles the launch audit — relaunching within 5s does not double-log', () => {
     const id = newId('w-throttle')
     fire('terminal:write', { id, data: 'claude\r' })

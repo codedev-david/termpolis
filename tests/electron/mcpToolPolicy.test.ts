@@ -9,10 +9,12 @@ import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import ts from 'typescript'
+import { createRequire } from 'module'
 import {
   CODEX_AUTO_APPROVED_TOOLS,
   MCP_TOOLS_ASK,
   MCP_TOOLS_AUTO_ALLOWED,
+  RESTRICTED_RUN_TOOLS,
 } from '../../src/shared/agentIntegration'
 
 const SERVER_FILE = join(__dirname, '..', '..', 'src', 'main', 'mcpServer.ts')
@@ -137,5 +139,21 @@ describe('MCP tool permission policy', () => {
     }
     expect(MCP_TOOLS_AUTO_ALLOWED.filter(soundsLikeItActs)).toEqual([])
     expect(advertised.filter(soundsLikeItActs).filter((t) => !MCP_TOOLS_ASK.includes(t))).toEqual([])
+  })
+
+  it('gives restricted runs only advertised, auto-allowed tools, and never a write, terminal or delegation', () => {
+    for (const t of RESTRICTED_RUN_TOOLS) {
+      expect(advertised).toContain(t)
+      expect(MCP_TOOLS_AUTO_ALLOWED).toContain(t)
+    }
+    for (const t of ['memory_write', 'memory_link', 'memory_feedback', 'memory_correct', 'list_terminals', 'read_output', 'linked_machines', 'memory_primer']) {
+      expect(RESTRICTED_RUN_TOOLS).not.toContain(t)
+    }
+    expect(RESTRICTED_RUN_TOOLS.filter((t) => MCP_TOOLS_ASK.includes(t))).toEqual([])
+  })
+
+  it('keeps the stdio adapter\'s copy of the restricted toolset equal to the app\'s', () => {
+    const adapter = createRequire(import.meta.url)(join(__dirname, '..', '..', 'src', 'mcp-adapter', 'stdio-adapter.cjs')) as { DELEGATED_JOB_TOOLS: readonly string[] }
+    expect([...adapter.DELEGATED_JOB_TOOLS]).toEqual([...RESTRICTED_RUN_TOOLS])
   })
 })

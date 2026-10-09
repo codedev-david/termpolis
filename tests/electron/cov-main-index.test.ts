@@ -106,6 +106,7 @@ const M = vi.hoisted(() => ({
   prepareCodexLaunch: vi.fn<(...a: unknown[]) => any>(() => ({ developerInstructions: 'DEV', approvals: 2 })),
   removeCodexHomeTrust: vi.fn<(...a: unknown[]) => any>(() => ({ changed: true })),
   conductorMcpConfig: vi.fn<(...a: unknown[]) => any>(() => ({ mcpServers: { termpolis: { type: 'stdio' } } })),
+  codexHasTermpolisServer: vi.fn<(...a: unknown[]) => any>(() => true),
   // workspace trust
   isWorkspaceTrusted: vi.fn(() => true),
   trustWorkspace: vi.fn(),
@@ -367,6 +368,7 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   prepareCodexLaunch: M.prepareCodexLaunch,
   removeCodexHomeTrust: M.removeCodexHomeTrust,
   conductorMcpConfig: M.conductorMcpConfig,
+  codexHasTermpolisServer: M.codexHasTermpolisServer,
 }))
 vi.mock('../../src/main/workspaceTrust', () => ({
   initWorkspaceTrust: vi.fn(),
@@ -1543,6 +1545,32 @@ describe('linked machines wiring', () => {
     expect(deps.primer).toBe(execDeps.primer)
     // Text another machine asked for must never become a later run's primer here.
     expect(deps).not.toHaveProperty('remember')
+  })
+
+  it("hands a delegated job Termpolis's MCP server, restricted: claude a config file, codex its own server", async () => {
+    await linked().runHeadless({ task: 'delegated', agent: 'claude', noRemember: true })
+    const [, deps] = M.runHeadless.mock.calls.at(-1)! as any[]
+    M.writeFileSync.mockClear()
+    const claude = deps.linkedJobMcp('0123456789ab', 'claude')
+    const file = require('path').join(require('os').tmpdir(), 'termpolis-linked-0123456789ab.mcp.json')
+    expect(claude.claudeMcpConfig).toBe(file)
+    const [written, text] = M.writeFileSync.mock.calls.at(-1)! as any[]
+    expect(written).toBe(file)
+    const server = JSON.parse(text).mcpServers.termpolis
+    expect(server.type).toBe('stdio')
+    expect(server.args[0]).toMatch(/mcp-adapter[\\/]stdio-adapter\.cjs$/)
+    expect(server.env.TERMPOLIS_LINKED_JOB).toBe('0123456789ab')
+    // Worked out once: a second job reuses the same entry.
+    deps.linkedJobMcp('0123456789ac', 'claude')
+    expect(JSON.parse((M.writeFileSync.mock.calls.at(-1)! as any[])[1]).mcpServers.termpolis.command).toBe(server.command)
+    M.unlinkSync.mockClear()
+    claude.dispose()
+    expect(M.unlinkSync).toHaveBeenCalledWith(file)
+
+    expect(deps.linkedJobMcp('0123456789ab', 'codex')).toEqual({ codexHasTermpolis: true })
+    expect(M.codexHasTermpolisServer).toHaveBeenCalledWith(M.agentPaths)
+    M.codexHasTermpolisServer.mockReturnValueOnce(false)
+    expect(deps.linkedJobMcp('0123456789ab', 'codex')).toBeNull()
   })
 
   it('tells a linked computer which agents are installed, from the agents:detect probe', async () => {

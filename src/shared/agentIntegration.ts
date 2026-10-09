@@ -108,6 +108,20 @@ export const MCP_TOOLS_ASK: readonly string[] = [
 export const CODEX_AUTO_APPROVED_TOOLS: readonly string[] = MCP_TOOLS_AUTO_ALLOWED.filter(t => t.startsWith('memory_'))
 
 /**
+ * What a job another linked machine started, or a read-only run such as a Second Opinion
+ * review, may call on this machine: its memory and code index, read-only, plus git status,
+ * coverage and expanding a compressed result. No memory writes, terminals, commands, swarm,
+ * other MCP servers or other machines, and no memory_primer (such a run already starts with the
+ * primer). The stdio adapter enforces it and keeps its own copy, which a test keeps equal.
+ */
+export const RESTRICTED_RUN_TOOLS: readonly string[] = [
+  'memory_search', 'memory_list', 'memory_related', 'memory_graph', 'memory_anticipate',
+  'memory_selfcheck', 'memory_conflicts',
+  'code_search', 'code_locate', 'code_explore', 'code_callers', 'code_callees', 'code_impact',
+  'get_git_status', 'test_coverage', 'retrieve_full',
+]
+
+/**
  * What connecting writes, per agent. Onboarding, the one-time review and Settings list
  * exactly these lines, and main writes nothing beyond them — change both together.
  */
@@ -123,7 +137,8 @@ export const AGENT_INTEGRATION_WRITES: Readonly<Record<AgentId, readonly string[
     'Answers the folder-trust prompt for folders you open agents in. Never your home folder or a drive root',
   ],
   gemini: [
-    'Adds the Termpolis MCP server to settings.json',
+    'Adds the Termpolis MCP server to the Antigravity CLI (config/mcp_config.json) and to Gemini CLI\'s settings.json',
+    `Lets the same ${MCP_TOOLS_AUTO_ALLOWED.length} read-only and memory tools run without asking in the Antigravity CLI (antigravity-cli/settings.json). Tools that run commands or type into terminals still ask`,
   ],
 }
 

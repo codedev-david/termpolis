@@ -16,9 +16,11 @@ import {
   EXEC_MAX_PRIMER_CHARS,
   EXEC_READ_ONLY_CLAUDE_TOOLS,
   PROMPT_TOKEN,
+  codexLinkedJobMarker,
   type ExecDeps,
   type ExecRequest,
 } from '../../src/main/headlessExec'
+import { RESTRICTED_RUN_TOOLS } from '../../src/shared/agentIntegration'
 
 const okDeliver = (stdout: string, code = 0, stderr = ''): ExecDeps['deliver'] =>
   vi.fn(async () => ({ stdout, stderr, code }))
@@ -102,15 +104,23 @@ describe('headlessExec/execCommand', () => {
     // Every value of a mode flag, not the first: a CLI keeps the last one it is given.
     const valuesOf = (args: string[], ...flags: string[]): string[] =>
       args.flatMap((a, i) => flags.flatMap((f) => (a === f ? [args[i + 1]] : a.startsWith(`${f}=`) ? [a.slice(f.length + 1)] : [])))
-    // A linked job's options (isolateMcp, cwd) must not loosen a read-only run either.
-    const variants = [{}, { isolateMcp: true }, { isolateMcp: true, cwd: '/work/repo' }]
+    // A linked job's options must not loosen a read-only run either.
+    const job = { id: 'job1', claudeMcpConfig: '/tmp/job1.mcp.json', codexHasTermpolis: true }
+    const variants = [{}, { linkedJob: { id: 'job1' } }, { linkedJob: job, cwd: '/work/repo' }]
     for (const agent of ['claude', 'codex', 'gemini'] as const) {
       for (const model of models) {
         for (const opts of variants) {
           const args = execCommand(agent, model, false, EXEC_DEFAULT_TIMEOUT_MS, opts).args
           for (const a of args) expect(a).not.toMatch(/dangerously|yolo|bypass|skip-permissions|full-auto|approve-for-me|danger-full-access|workspace-write|accept-?edits|auto[-_]?edit|dont-?ask/i)
           expect(args).not.toContain('-y')
-          if (agent === 'claude') expect(valuesOf(args, '--permission-mode')).toEqual(['plan'])
+          if (agent === 'claude') {
+            // A job with its own MCP config runs in default mode (plan mode refuses MCP tools),
+            // read-only by what it is given: the read built-ins and Termpolis's server only.
+            const withConfig = 'linkedJob' in opts && !!opts.linkedJob.claudeMcpConfig
+            expect(valuesOf(args, '--permission-mode')).toEqual([withConfig ? 'default' : 'plan'])
+            expect(valuesOf(args, '--tools')).toEqual(['Read,Grep,Glob'])
+            expect(args).toContain('--strict-mcp-config')
+          }
           if (agent === 'codex') expect(valuesOf(args, '--sandbox', '-s')).toEqual(['read-only'])
           if (agent === 'gemini') expect(valuesOf(args, '--mode')).toEqual(['plan'])
         }
@@ -150,26 +160,65 @@ describe('headlessExec/execCommand', () => {
   })
 })
 
-describe('headlessExec/execCommand for a linked job (isolateMcp, cwd)', () => {
-  it('drops every MCP server from a claude write run when asked', () => {
-    expect(execCommand('claude', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { isolateMcp: true }).args)
-      .toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--strict-mcp-config'])
-    expect(execCommand('claude', 'opus', true, EXEC_DEFAULT_TIMEOUT_MS, { isolateMcp: true, cwd: '/work/repo' }).args)
-      .toEqual(['-p', PROMPT_TOKEN, '--model', 'opus', '--dangerously-skip-permissions', '--strict-mcp-config'])
+describe('headlessExec/execCommand for a linked job (linkedJob, cwd)', () => {
+  const CONFIG = '/tmp/termpolis-linked-job1.mcp.json'
+  const RESTRICTED = RESTRICTED_RUN_TOOLS.map((t) => `mcp__termpolis__${t}`).join(',')
+  // The restricted tools Termpolis's codex config doesn't already pre-approve: all but memory_*.
+  const CODEX_APPROVALS = RESTRICTED_RUN_TOOLS.filter((t) => !t.startsWith('memory_'))
+    .flatMap((t) => ['-c', `mcp_servers.termpolis.tools.${t}.approval_mode=auto`])
+
+  it('gives a claude write job Termpolis\'s server only, from the job\'s own config file', () => {
+    expect(execCommand('claude', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1', claudeMcpConfig: CONFIG } }).args)
+      .toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--strict-mcp-config', '--mcp-config', CONFIG])
+    expect(execCommand('claude', 'opus', true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1', claudeMcpConfig: CONFIG }, cwd: '/work/repo' }).args)
+      .toEqual(['-p', PROMPT_TOKEN, '--model', 'opus', '--dangerously-skip-permissions', '--strict-mcp-config', '--mcp-config', CONFIG])
   })
 
-  it('leaves a claude read-only run as it is: it already has no MCP servers, and claude takes no folder flag', () => {
+  it('switches every MCP server off for a claude write job with no config file', () => {
+    expect(execCommand('claude', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' } }).args)
+      .toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--strict-mcp-config'])
+  })
+
+  it('runs a claude read-only job in default mode, the read built-ins and the restricted tools only', () => {
+    expect(execCommand('claude', 'sonnet', false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1', claudeMcpConfig: CONFIG } }).args).toEqual([
+      '--permission-mode', 'default',
+      '--tools', 'Read,Grep,Glob',
+      '--disallowedTools', 'Bash,PowerShell,Edit,Write,NotebookEdit',
+      // Takes several values: a flag follows it, never the prompt.
+      '--mcp-config', CONFIG,
+      '--strict-mcp-config',
+      '--allowedTools', RESTRICTED,
+      '--model', 'sonnet',
+      '-p', PROMPT_TOKEN,
+    ])
+  })
+
+  it('leaves a claude read-only job with no config file as it was: plan mode, no MCP servers', () => {
     const plain = execCommand('claude', undefined, false).args
-    const linked = execCommand('claude', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { isolateMcp: true, cwd: '/work/repo' }).args
+    const linked = execCommand('claude', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' }, cwd: '/work/repo' }).args
     expect(linked).toEqual(plain)
     expect(linked.filter((a) => a === '--strict-mcp-config')).toHaveLength(1)
   })
 
-  it('turns Termpolis MCP off for one codex run, ahead of the prompt', () => {
+  it('marks Termpolis\'s codex server for one run and approves the restricted tools, ahead of the prompt', () => {
+    expect(execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1', codexHasTermpolis: true } }).args).toEqual([
+      'exec', '--sandbox', 'read-only', '--skip-git-repo-check',
+      '-c', 'mcp_servers.termpolis.env.TERMPOLIS_LINKED_JOB=linked-job1', ...CODEX_APPROVALS,
+      PROMPT_TOKEN,
+    ])
+    expect(CODEX_APPROVALS).toHaveLength(2 * 9)
+  })
+
+  it('turns Termpolis MCP off for one codex run when codex\'s config doesn\'t hold Termpolis\'s server', () => {
     // Verified against codex-cli 0.153.4. The command makes the table a valid server on a machine
     // whose config has no termpolis entry, where the enabled switch alone stops codex starting.
-    expect(execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { isolateMcp: true }).args)
+    expect(execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' } }).args)
       .toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...CODEX_MCP_OFF, PROMPT_TOKEN])
+  })
+
+  it('keeps the codex marker a string: a bare all-digit id would be read as a TOML number', () => {
+    expect(codexLinkedJobMarker('123456789012')).toBe('linked-123456789012')
+    expect(codexLinkedJobMarker('123456789012')).not.toMatch(/^[0-9]/)
   })
 
   it('tells codex its working root with -C whenever there is a cwd', () => {
@@ -178,14 +227,14 @@ describe('headlessExec/execCommand for a linked job (isolateMcp, cwd)', () => {
   })
 
   it('puts every codex flag before the positional prompt, on a write run too', () => {
-    expect(execCommand('codex', 'gpt-5.6-sol', true, EXEC_DEFAULT_TIMEOUT_MS, { isolateMcp: true, cwd: '/work/repo' }).args).toEqual([
+    expect(execCommand('codex', 'gpt-5.6-sol', true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' }, cwd: '/work/repo' }).args).toEqual([
       'exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...CODEX_MCP_OFF, '-C', '/work/repo', PROMPT_TOKEN,
     ])
   })
 
-  it('leaves agy alone: it has no per-run MCP switch and no folder flag', () => {
+  it('leaves agy alone: it has no per-run MCP switch and passes the marker on itself', () => {
     for (const write of [false, true]) {
-      expect(execCommand('gemini', undefined, write, 30_000, { isolateMcp: true, cwd: '/work/repo' }).args)
+      expect(execCommand('gemini', undefined, write, 30_000, { linkedJob: { id: 'job1', claudeMcpConfig: CONFIG, codexHasTermpolis: true }, cwd: '/work/repo' }).args)
         .toEqual(execCommand('gemini', undefined, write, 30_000).args)
     }
   })
@@ -227,7 +276,7 @@ describe('headlessExec/the agent_exec verb', () => {
   })
 
   it('never lets the verb set a linked job\'s options', () => {
-    const smuggled = { prompt: 'p', isolateMcp: false, noRemember: true, env: { PATH: '/evil' }, noPrimer: true }
+    const smuggled = { prompt: 'p', linkedJob: 'x', noRemember: true, env: { PATH: '/evil' }, noPrimer: true }
     expect(execRequestFromVerb(smuggled as Parameters<typeof execRequestFromVerb>[0])).toEqual({ task: 'p' })
   })
 })
@@ -280,17 +329,60 @@ describe('headlessExec/runHeadless', () => {
       .toEqual({ timeoutMs: EXEC_DEFAULT_TIMEOUT_MS, env: { TERMPOLIS_LINKED_JOB: 'job1' }, signal })
   })
 
-  it('keeps Termpolis MCP out of the run when asked (isolateMcp)', async () => {
+  it('switches Termpolis MCP off for a linked job that has no MCP plumbing', async () => {
     const claude = okDeliver('ok')
-    await runHeadless({ task: 't', write: true, isolateMcp: true }, { deliver: claude })
+    await runHeadless({ task: 't', write: true, linkedJob: 'job1' }, { deliver: claude })
     expect((claude as ReturnType<typeof vi.fn>).mock.calls[0][1]).toContain('--strict-mcp-config')
+    expect((claude as ReturnType<typeof vi.fn>).mock.calls[0][1]).not.toContain('--mcp-config')
     const codex = okDeliver('ok')
-    await runHeadless({ task: 't', agent: 'codex', isolateMcp: true }, { deliver: codex })
+    await runHeadless({ task: 't', agent: 'codex', linkedJob: 'job1' }, { deliver: codex })
     expect((codex as ReturnType<typeof vi.fn>).mock.calls[0][1]).toEqual(expect.arrayContaining(CODEX_MCP_OFF))
     // Off unless asked: a plain `termpolis exec` keeps the user's MCP setup.
     const plain = okDeliver('ok')
     await runHeadless({ task: 't', write: true }, { deliver: plain })
     expect((plain as ReturnType<typeof vi.fn>).mock.calls[0][1]).not.toContain('--strict-mcp-config')
+  })
+
+  it('hands a linked job its MCP plumbing, and disposes of it once the run settles', async () => {
+    const dispose = vi.fn()
+    const linkedJobMcp = vi.fn(() => ({ claudeMcpConfig: '/tmp/job1.mcp.json', dispose }))
+    const deliver = okDeliver('ok')
+    const res = await runHeadless({ task: 't', linkedJob: 'job1' }, { deliver, linkedJobMcp })
+    expect(res.ok).toBe(true)
+    expect(linkedJobMcp).toHaveBeenCalledWith('job1', 'claude')
+    expect((deliver as ReturnType<typeof vi.fn>).mock.calls[0][1]).toEqual(expect.arrayContaining(['--mcp-config', '/tmp/job1.mcp.json']))
+    expect(dispose).toHaveBeenCalledTimes(1)
+
+    const codex = okDeliver('ok')
+    await runHeadless({ task: 't', agent: 'codex', linkedJob: 'job2' }, { deliver: codex, linkedJobMcp: () => ({ codexHasTermpolis: true }) })
+    expect((codex as ReturnType<typeof vi.fn>).mock.calls[0][1])
+      .toEqual(expect.arrayContaining(['-c', 'mcp_servers.termpolis.env.TERMPOLIS_LINKED_JOB=linked-job2']))
+  })
+
+  it('never asks for MCP plumbing for a run that isn\'t a linked job', async () => {
+    const linkedJobMcp = vi.fn(() => null)
+    await runHeadless({ task: 't' }, { deliver: okDeliver('ok'), linkedJobMcp })
+    expect(linkedJobMcp).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the server switched off when the plumbing can\'t be set up, and still runs', async () => {
+    const deliver = okDeliver('ok')
+    const res = await runHeadless({ task: 't', write: true, linkedJob: 'job1' }, {
+      deliver,
+      linkedJobMcp: () => { throw new Error('temp dir is read-only') },
+    })
+    expect(res.ok).toBe(true)
+    const args = (deliver as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    expect(args).toContain('--strict-mcp-config')
+    expect(args).not.toContain('--mcp-config')
+  })
+
+  it('disposes of the plumbing when the run fails, and a failed dispose changes nothing', async () => {
+    const dispose = vi.fn(() => { throw new Error('already gone') })
+    const deliver = vi.fn(async () => { throw new Error('spawn failed') }) as unknown as Parameters<typeof runHeadless>[1]['deliver']
+    const res = await runHeadless({ task: 't', linkedJob: 'job1' }, { deliver, linkedJobMcp: () => ({ claudeMcpConfig: '/tmp/x.json', dispose }) })
+    expect(res).toMatchObject({ ok: false, error: 'spawn failed' })
+    expect(dispose).toHaveBeenCalledTimes(1)
   })
 
   it('skips the primer when asked, leaving the prompt exactly the task', async () => {

@@ -9,13 +9,13 @@
 </p>
 
 <p align="center">
-  Claude and Codex share <strong>one local memory that learns as you work</strong> —<br>
+  Claude, Codex and Gemini share <strong>one local memory that learns as you work</strong> —<br>
   so every agent already knows your project, your decisions, and what got figured out yesterday.<br>
   <strong>Local by default. No cloud account. No telemetry unless you opt in.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/🧠_One_shared_memory-Claude_%26_Codex-6E56CF?style=for-the-badge" alt="One shared memory for Claude and Codex">
+  <img src="https://img.shields.io/badge/🧠_One_shared_memory-across_all_3_agents-6E56CF?style=for-the-badge" alt="One shared memory across all three agents">
   <img src="https://img.shields.io/badge/🌱_Learns_every_session-never_re--explain-1f6e3a?style=for-the-badge" alt="Learns from every session">
   <img src="https://img.shields.io/badge/🔀_Second_Opinion-agents_review_each_other-b07407?style=for-the-badge" alt="Second Opinion — agents review each other">
   <img src="https://img.shields.io/badge/🔒_Local_by_default-no_cloud_account,_opt--in_telemetry_only-0078d4?style=for-the-badge" alt="Local by default, no cloud account, opt-in telemetry only">
@@ -42,11 +42,11 @@
 
 ---
 
-## 🧠 Meet Mneme — one memory for Claude and Codex, that learns as you work
+## 🧠 Meet Mneme — one memory, every agent, that learns as you work
 
-Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. **Mneme** (named for the Greek muse of memory) is the local brain at the heart of Termpolis: **one shared memory** that Claude and Codex both read and write, that **remembers across sessions and learns from each one**, so you stop repeating yourself. (Gemini isn't connected yet: Termpolis launches it as the Antigravity CLI, `agy`, and registers its memory tools only where the older Gemini CLI looks for them.)
+Every AI session normally starts cold — you re-explain the task and burn 20–50K tokens reloading context. **Mneme** (named for the Greek muse of memory) is the local brain at the heart of Termpolis: **one shared memory** that Claude, Codex and Gemini all read and write, that **remembers across sessions and learns from each one**, so you stop repeating yourself. (Since v1.51, Gemini through the Antigravity CLI, `agy`, which Termpolis now connects to its MCP server.)
 
-- **One memory, shared by Claude and Codex.** Both read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the other — no copy-paste, no re-discovery.
+- **One memory, three agents.** Claude, Codex and Gemini all read and write the same store over the built-in MCP server. A fact one agent figures out is instantly recalled by the others — no copy-paste, no re-discovery.
 - **It learns from every session.** When an agent finishes a chunk of work, Termpolis quietly distills the lesson — the fix, the decision, the gotcha — plus its own track record into the brain, so the fleet gets smarter the more you use it. Automatic for Claude and Codex (from their session transcripts).
 - **Every new agent starts warm.** Open a fresh Claude or Codex terminal and it already knows your project — the relevant memory loads at launch, behind the scenes, no wall of text.
 - **Local & private.** Embeddings run locally (bundled `bge-small-en-v1.5`, WASM) — no server, no telemetry; the memory never leaves your machine. The local store is encrypted at rest (AES-256-GCM) by default whenever the OS keychain is available (DPAPI on Windows, Keychain on macOS, libsecret/KWallet on Linux): each device gets a random key, which is itself stored encrypted by the OS. With no keychain (for example a Linux box without a keyring) the memory stays plaintext rather than sitting next to an unprotected key. One exception today: aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`) are written there in plain text. Each computer keeps its own memory.
@@ -65,7 +65,7 @@ Termpolis **runs those exact CLIs, unchanged** — and fixes the one thing they 
 | What you get | Claude Code / Codex on their own | The same agent inside Termpolis |
 | --- | --- | --- |
 | **Long-term memory** | Starts cold every launch; you re-explain and re-pay tokens to reload context | **Mneme** — a local brain holding months of context, surviving restarts, recalled in ms |
-| **Shared across tools** | Siloed — Codex can't see what Claude just figured out | Claude and Codex read/write **one memory**; a fact one learns, the other recalls |
+| **Shared across tools** | Siloed — Codex can't see what Claude just figured out | Claude, Codex and Gemini read/write **one memory**; a fact one learns, the others recall |
 | **It learns** | No learning — every session is a blank slate | Distills a lesson from every finished task + tracks its own competence |
 | **Every new session** | Re-explain your codebase from scratch | Opens already knowing the project; one-click cross-agent handoff, no re-explaining |
 | **Your data & lock-in** | One vendor's account + cloud; telemetry varies | Local by default, Apache-2.0, no account/backend; prompts to Claude Code and Codex scanned for secrets |
@@ -109,9 +109,9 @@ See [`PRIVACY.md`](PRIVACY.md) for the data-flow spec, [`TERMS.md`](TERMS.md) fo
 
 ### 🧠 Shared memory — the deep dive
 
-The moat above in full — every capability of the brain that Claude and Codex share:
+The moat above in full — every capability of the brain that all three agents share:
 
-- **The memory tools.** Claude and Codex reach the store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list` / `memory_primer`).
+- **The memory tools.** Every agent reaches the store over the built-in MCP server (`memory_search` / `memory_write` / `memory_list` / `memory_primer`). Claude and Codex sessions are learned from automatically; Gemini (`agy`) keeps its sessions where Termpolis can't read them, so it is asked at launch to record its own lessons with `memory_write`.
 - **It survives quitting the app.** Stored as JSONL (`swarm-memory.jsonl`, one entry per line, each line encrypted when the OS keychain is available) in Termpolis's per-user app-data folder — `%APPDATA%\termpolis\` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with its embeddings at startup. Because it lives in your user profile (not the install folder), it survives app updates and even an uninstall/reinstall — close Termpolis, reopen it tomorrow, the context is still there.
 - **Each computer keeps its own memory.** The Memory panel's **Sync across machines** setting (a shared synced folder) doesn't work reliably in current versions: Termpolis forgets the chosen folder when it restarts, and turning it on for a store that is already encrypted can conflict with that store's key. Leave it off. To use what another of your computers knows, link the two with [Linked machines](#-linked-machines--let-an-agent-hand-work-to-your-other-computer): an agent there starts with a digest of that machine's memory and works on its files.
 - **It feeds itself.** A background indexer ingests your past Claude and Codex transcripts (and older Gemini CLI ones) automatically (10 s after launch, then every 30 min). Idempotent (content-hash dedup), so it only ever embeds genuinely new content — no action required from you.
@@ -157,7 +157,7 @@ Termpolis doesn't replace Claude Code, Codex, or Gemini CLI — **it runs them, 
 
 | What you actually get | A bare AI CLI / IDE assistant | The same agent inside Termpolis |
 | --- | --- | --- |
-| **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **Claude and Codex share**, surviving restarts; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
+| **Memory across sessions** | A per-session context window that resets cold every launch — you re-explain the task and re-pay the tokens to reload it | One local brain **all three agents share**, surviving restarts; auto-fed from past transcripts; **observable + staleness-guarded** (v1.16.7) |
 | **More than one model** | Locked to one vendor's family | Claude + Codex + Gemini run **as a team** under a local conductor that routes each subtask to the best-suited model |
 | **Secrets / code leaving the machine** | Whatever you type is sent as-is, and you never find out | Every prompt is scanned against **97 secret patterns**. Your text is forwarded untouched, and a hit is **logged by name** (`DB_PASSWORD`) so you know what to rotate — the value is never stored. And since v1.25 the same engine **actually blocks a `git commit` or `git push`** that would carry a secret into history or to a remote |
 | **Importing a third-party skill / plugin / MCP server** | Wired straight into the agent's config — a zip nobody diffs, whose *instruction text* the agent reads as if you'd typed it | **Safe Import** statically scans it first (**41 rules**, including prompt injection hidden in the artifact's own prose). **Red is never installable**, and approvals are **hash-pinned** so an edited artifact re-prompts |
@@ -236,7 +236,7 @@ Link two Termpolis desktops, and an agent on one can have a Claude, Codex or Gem
 
 **What each permission means.** Each computer decides what the *other* may do *on it*, per linked machine, and you can change it at any time:
 
-- **Run agents here (read-only)** — on by default. The other computer's agents may start an agent here in its own read-only mode: Claude in plan mode with only Read/Grep/Glob and no MCP servers, Codex in its read-only sandbox with Termpolis's MCP server switched off, Gemini (`agy`) in plan mode. That agent can read any file you can read on this computer and send it back. Codex and `agy` keep MCP servers you added to their own configs.
+- **Run agents here (read-only)** — on by default. The other computer's agents may start an agent here in its own read-only mode: Claude with only Read/Grep/Glob, Codex in its read-only sandbox, Gemini (`agy`) in plan mode, each with this machine's memory and code index as read-only Termpolis tools and nothing else of Termpolis's. That agent can read any file you can read on this computer and send it back. Codex and `agy` keep MCP servers you added to their own configs.
 - **Let agents edit files and run commands here** — off by default. The agent here then runs unattended, as you: Claude and Gemini with permission prompts skipped, Codex in its `workspace-write` sandbox. Grant it only to a machine you trust as much as this one. Switching it off stops any edit already running; it doesn't undo changes already made.
 
 The computer doing the work doesn't ask you per job: the permissions are the decision.
@@ -256,7 +256,7 @@ The computer doing the work doesn't ask you per job: the permissions are the dec
 - **What the relay does see:** both computers' IP addresses, a room id for the link, when each connects, the size and timing of each frame, and each frame's unencrypted header (public keys while pairing and connecting, a frame counter). Each agent's AI provider sees what that agent is asked and answers, as always.
 - **Read-only by default.** Every request is checked on the computer that would do the work, before any agent starts there.
 - **Keys.** The computer that enters a code makes a new key pair for that link. Private keys are encrypted with the OS keychain where one is available; on Linux without a keyring they're stored unencrypted in the data directory.
-- **No passing the work on.** A delegated job doesn't get Termpolis's tools: Claude and Codex jobs run with Termpolis's MCP server switched off, Termpolis doesn't connect itself to `agy`, and its agent connection refuses `linked_machines` inside a delegated job. A job with edit permission runs as you, though, so it can reach anything you can.
+- **Read-only tools, no passing the work on (v1.51).** A delegated job gets this machine's memory and code index (memory search and recall, the code graph, git status, coverage) and nothing else of Termpolis's: no memory writes, no terminals, no other machines. Termpolis's agent connection enforces it, refusing every other tool, `linked_machines` included, and offering the job only the tools it may use, so it also carries fewer tool definitions. A job with edit permission runs as you, though, so it can reach anything you can.
 - **Answers are scanned.** What comes back from another machine is scanned for prompt injection, and a flagged answer reaches your agent under an **UNTRUSTED CONTENT** banner. Prompts and answers aren't scanned for secrets, so don't put secrets in a prompt.
 - **Memory.** Termpolis doesn't save a job's result into the doing computer's memory itself, but a Claude or Codex job's session is saved like any other, and the memory indexer can pick it up there.
 - **Unlink from either side.** The other computer drops the link too, and any job either one still had running on the other is stopped. If the other computer was offline at the time, unlink it there as well.
@@ -542,7 +542,7 @@ Termpolis runs an MCP (Model Context Protocol) server on `localhost:9315` that A
 
 ### Claude Code Integration
 
-Once you connect your agents — on the first step of the first-run tour, or in **Settings → Agent Integration** — Termpolis registers itself as a user-scope MCP server: in Claude Code's `~/.claude.json` (as `claude mcp add -s user` writes it), Codex's `config.toml` and Gemini CLI's `settings.json`. Nothing is written before you agree, and **Disconnect** removes all of it.
+Once you connect your agents — on the first step of the first-run tour, or in **Settings → Agent Integration** — Termpolis registers itself as a user-scope MCP server: in Claude Code's `~/.claude.json` (as `claude mcp add -s user` writes it), Codex's `config.toml`, the Antigravity CLI's `~/.gemini/config/mcp_config.json` (with permission for the same read-only and memory tools Claude Code gets, in `~/.gemini/antigravity-cli/settings.json`) and Gemini CLI's `settings.json`. Nothing is written before you agree, and **Disconnect** removes all of it.
 
 ### Available Tools (40)
 

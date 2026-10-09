@@ -21,9 +21,11 @@ const ADAPTER = resolve(__dirname, '..', '..', 'src/mcp-adapter/stdio-adapter.cj
 async function runAdapterDegraded(requests: object[]): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   const tmpHome = mkdtempSync(join(tmpdir(), 'termpolis-adapter-test-'))
   try {
+    // A test run inside a Linked machines job or a read-only run must not restrict the adapter.
+    const { TERMPOLIS_LINKED_JOB: _job, TERMPOLIS_READ_ONLY_RUN: _readOnly, ...env } = process.env
     const child = spawn(process.execPath, [ADAPTER], {
       env: {
-        ...process.env,
+        ...env,
         HOME: tmpHome,
         USERPROFILE: tmpHome,
         APPDATA: tmpHome,

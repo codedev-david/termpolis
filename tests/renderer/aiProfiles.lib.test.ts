@@ -15,7 +15,7 @@ vi.mock('../../src/renderer/src/hooks/useAutoPrimer', () => ({
   isAutoPrimerEnabled: () => primerSetting.enabled,
 }))
 
-import { DEFAULT_AI_PROFILES, resolveShellType, launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
+import { DEFAULT_AI_PROFILES, agentLaunchConfig, resolveShellType, launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { CODEX_INSTRUCTION_MAX_CHARS } from '../../src/shared/agentIntegration'
 import type { AIProfile, ShellInfo } from '../../src/renderer/src/types'
@@ -57,6 +57,19 @@ beforeEach(() => {
     memoryPrepareCodexContext: codexContext(),
   }
   useTerminalStore.getState().setMemoryNotice(null)
+})
+
+describe('agentLaunchConfig: what the Welcome screen and shortcuts launch', () => {
+  it('launches each built-in agent with its sidebar name and command, Gemini as agy', () => {
+    expect(agentLaunchConfig('claude')).toEqual({ name: 'Claude Code', command: 'claude', color: '#D97706' })
+    expect(agentLaunchConfig('codex')).toEqual({ name: 'OpenAI Codex', command: 'codex', color: '#10B981' })
+    expect(agentLaunchConfig('gemini')).toEqual({ name: 'Gemini / Antigravity CLI', command: 'agy', color: '#4285F4' })
+  })
+
+  it('knows nothing else', () => {
+    expect(agentLaunchConfig('qwen')).toBeNull()
+    expect(agentLaunchConfig('')).toBeNull()
+  })
 })
 
 describe('DEFAULT_AI_PROFILES', () => {

@@ -38,9 +38,12 @@ import {
   deliverWithDeadline,
   DELIVER_GRACE_MS,
   PROMPT_TOKEN,
+  CLAUDE_MUTATING_TOOLS,
+  CODEX_ISOLATE_MCP_ARGS,
   type SecondOpinionAgent,
   type DeliverFn,
 } from './secondOpinion'
+import { CODEX_AUTO_APPROVED_TOOLS, RESTRICTED_RUN_TOOLS } from '../shared/agentIntegration'
 
 export type ExecAgent = SecondOpinionAgent
 
@@ -85,9 +88,11 @@ export interface ExecRequest {
   timeoutMs?: number
   /** Skip the memory primer. Escape hatch for measuring the primer's own cost. */
   noPrimer?: boolean
-  /** Keep Termpolis's own MCP server out of the run (see execCommand), so a job another
-   *  machine started can't reach this app's tools, delegation included. */
-  isolateMcp?: boolean
+  /** The id of the Linked machines job this run is. Termpolis's own MCP server stays in the
+   *  run, cut down to RESTRICTED_RUN_TOOLS by the stdio adapter (see execCommand), so a job
+   *  another machine started gets this machine's memory and code index, read-only, and can't
+   *  reach terminals, memory writes or other machines. */
+  linkedJob?: string
   /** Variables set on top of the agent's environment. */
   env?: Record<string, string>
   /** Aborting stops the run, its whole process tree included. */
@@ -109,7 +114,7 @@ export interface ExecVerbArgs {
 
 /** The verb, checked and bounded at the edge. An unknown agent is refused rather than run as
  *  some other one, the timeout is clamped, and only the verb's own fields are copied, so no
- *  caller can set a linked job's options (isolateMcp, env, noRemember). Fields are copied only
+ *  caller can set a linked job's options (linkedJob, env, noRemember). Fields are copied only
  *  when present: an explicit `agent: undefined` would override runHeadless's default. Throws a
  *  message that starts with "Invalid", which the MCP server passes on rather than masking. */
 export function execRequestFromVerb(opts: ExecVerbArgs): ExecRequest {
@@ -171,20 +176,54 @@ export function buildExecPrompt(task: string, primer?: string | null): string {
  *  nothing that writes, runs a command or reaches the network. */
 export const EXEC_READ_ONLY_CLAUDE_TOOLS = 'Read,Grep,Glob'
 
-/** Termpolis's MCP server, off for one codex run. The first override is the switch, verified
- *  against codex-cli 0.153.4 (`mcp list` then reports the server `disabled`; `-c 'mcp_servers={}'`
- *  does not do it). The second is needed because an override that names a server the config
- *  doesn't have creates a table with no transport, and codex then refuses to start ("invalid
- *  transport"). That is every machine where Termpolis isn't connected to Codex. A placeholder
- *  command makes the table a valid server, still disabled, either way. The value is left
- *  unquoted: codex takes a value that isn't TOML as a literal string, and an entry with no quote
- *  in it reaches codex through PowerShell 5.1 unchanged. A hand-written `url` entry for
- *  termpolis (Termpolis never writes one) can't hold a command, so there codex refuses to start
- *  and the run fails closed. */
-const CODEX_ISOLATE_MCP_ARGS: readonly string[] = [
-  '-c', 'mcp_servers.termpolis.enabled=false',
-  '-c', 'mcp_servers.termpolis.command=termpolis-mcp-disabled',
-]
+/** A Linked machines job, as execCommand needs it. */
+export interface LinkedJobArgs {
+  id: string
+  /** claude only: a file holding just Termpolis's server, the marker in its env. */
+  claudeMcpConfig?: string
+  /** codex only: its config.toml holds Termpolis's own server. */
+  codexHasTermpolis?: boolean
+}
+
+/** The marker as codex is handed it in a `-c` value. codex parses a bare value as TOML first,
+ *  and a 12-hex id made only of digits would come back a number; the prefix keeps it a string
+ *  with no quote for PowerShell 5.1 to refuse. The adapter only checks that the marker is set. */
+export function codexLinkedJobMarker(id: string): string {
+  return `linked-${id}`
+}
+
+/** One codex run in a linked job. With Termpolis's own server in config.toml: the marker on that
+ *  server (codex hands an MCP server only an allowlist of the agent's variables, so inheriting it
+ *  isn't enough), and auto approval for the restricted tools Termpolis doesn't already pre-approve
+ *  (only the memory ones), so `codex exec` can call them. Without it, the server stays off. */
+function codexLinkedJobArgs(job: LinkedJobArgs): readonly string[] {
+  if (!job.codexHasTermpolis) return CODEX_ISOLATE_MCP_ARGS
+  const approvals = RESTRICTED_RUN_TOOLS
+    .filter((t) => !CODEX_AUTO_APPROVED_TOOLS.includes(t))
+    .flatMap((t) => ['-c', `mcp_servers.termpolis.tools.${t}.approval_mode=auto`])
+  return ['-c', `mcp_servers.termpolis.env.TERMPOLIS_LINKED_JOB=${codexLinkedJobMarker(job.id)}`, ...approvals]
+}
+
+/** The restricted tools as claude names them. */
+const CLAUDE_RESTRICTED_TOOLS = RESTRICTED_RUN_TOOLS.map((t) => `mcp__termpolis__${t}`).join(',')
+
+/** A read-only linked job on claude. Plan mode refuses every MCP tool, allowed or not, so this
+ *  runs in default mode, named explicitly so a settings `defaultMode` of bypassPermissions can't
+ *  apply. It stays read-only by what it is given: the read/search built-ins only, Termpolis's
+ *  server only, its restricted tools pre-approved, and the adapter refusing everything else.
+ *  `--mcp-config` takes several values, so a flag follows it, never the prompt. */
+function claudeLinkedReadOnlyArgs(model: string | undefined, mcpConfig: string): string[] {
+  return [
+    '--permission-mode', 'default',
+    '--tools', EXEC_READ_ONLY_CLAUDE_TOOLS,
+    '--disallowedTools', CLAUDE_MUTATING_TOOLS.join(','),
+    '--mcp-config', mcpConfig,
+    '--strict-mcp-config',
+    '--allowedTools', CLAUDE_RESTRICTED_TOOLS,
+    ...modelArgs('claude', model),
+    '-p', PROMPT_TOKEN,
+  ]
+}
 
 /** Per-agent argv for a headless run.
  *
@@ -197,18 +236,22 @@ const CODEX_ISOLATE_MCP_ARGS: readonly string[] = [
  *  opt-in to an unattended agent that edits and runs commands, and keeps the
  *  skip-permissions launch. `timeoutMs` only shapes agy's own time limit.
  *
- *  `opts.isolateMcp` keeps Termpolis's own MCP server out of the run: a claude write run gets
- *  `--strict-mcp-config` (read-only already has it) and codex gets CODEX_ISOLATE_MCP_ARGS. agy
- *  has no per-run switch, so it is left as it is. `opts.cwd` is the spawn's to use, and codex
- *  is also told it with `-C`. The caller checks it first: runHeadless takes only an absolute
- *  path, which can never be read as a flag. */
+ *  `opts.linkedJob` is a job another machine started. It keeps Termpolis's own MCP server, and
+ *  no other, narrowed to RESTRICTED_RUN_TOOLS by the stdio adapter: claude through its own config
+ *  file (`--strict-mcp-config` drops the user's other servers), codex with the marker set on the
+ *  server for the run. Missing those, the server is switched off for the run as before: claude
+ *  gets `--strict-mcp-config` alone, codex CODEX_ISOLATE_MCP_ARGS. agy has no per-run switch; it
+ *  passes its own environment, marker included, to the adapter. `opts.cwd` is the spawn's to use,
+ *  and codex is also told it with `-C`. The caller checks it first: runHeadless takes only an
+ *  absolute path, which can never be read as a flag. */
 export function execCommand(
   agent: ExecAgent,
   model: string | undefined,
   write: boolean,
   timeoutMs: number = EXEC_DEFAULT_TIMEOUT_MS,
-  opts: { isolateMcp?: boolean; cwd?: string } = {},
+  opts: { linkedJob?: LinkedJobArgs; cwd?: string } = {},
 ): { bin: string; args: string[] } {
+  const job = opts.linkedJob
   if (agent === 'codex') {
     const base = secondOpinionCommand(agent, model)
     const args = [...base.args]
@@ -220,16 +263,26 @@ export function execCommand(
       if (i >= 0 && args[i + 1] === 'read-only') args[i + 1] = 'workspace-write'
     }
     // Options go before the positional prompt, which `codex exec` takes last.
-    args.splice(args.indexOf(PROMPT_TOKEN), 0, ...(opts.isolateMcp ? CODEX_ISOLATE_MCP_ARGS : []), ...(opts.cwd ? ['-C', opts.cwd] : []))
+    args.splice(args.indexOf(PROMPT_TOKEN), 0, ...(job ? codexLinkedJobArgs(job) : []), ...(opts.cwd ? ['-C', opts.cwd] : []))
     return { bin: base.bin, args }
   }
   const bin = agent === 'claude' ? 'claude' : 'agy'
   if (write) {
-    // Only when asked: a plain `termpolis exec --write` keeps the user's own MCP servers.
-    const isolate = opts.isolateMcp && agent === 'claude' ? ['--strict-mcp-config'] : []
-    return { bin, args: ['-p', PROMPT_TOKEN, ...modelArgs(agent, model), '--dangerously-skip-permissions', ...isolate] }
+    // Only for a linked job: a plain `termpolis exec --write` keeps the user's own MCP servers.
+    const mcp = job && agent === 'claude'
+      ? ['--strict-mcp-config', ...(job.claudeMcpConfig ? ['--mcp-config', job.claudeMcpConfig] : [])]
+      : []
+    return { bin, args: ['-p', PROMPT_TOKEN, ...modelArgs(agent, model), '--dangerously-skip-permissions', ...mcp] }
   }
-  return { bin, args: agent === 'claude' ? claudeReadOnlyArgs(model, EXEC_READ_ONLY_CLAUDE_TOOLS) : agyReadOnlyArgs(model, timeoutMs) }
+  if (agent === 'claude') {
+    return {
+      bin,
+      args: job?.claudeMcpConfig
+        ? claudeLinkedReadOnlyArgs(model, job.claudeMcpConfig)
+        : claudeReadOnlyArgs(model, EXEC_READ_ONLY_CLAUDE_TOOLS),
+    }
+  }
+  return { bin, args: agyReadOnlyArgs(model, timeoutMs) }
 }
 
 export interface ExecDeps {
@@ -244,6 +297,21 @@ export interface ExecDeps {
    *  asynchronously: this runs on the main thread, and an unreachable network path can make a
    *  synchronous stat hang for seconds. */
   isDirectory?: (p: string) => Promise<boolean>
+  /** What a Linked machines job needs to keep Termpolis's MCP server, restricted (see
+   *  LinkedJobMcp). Absent, or null for a run, and the job runs with the server switched off. */
+  linkedJobMcp?: (jobId: string, agent: ExecAgent) => LinkedJobMcp | null
+}
+
+/** Per-run MCP plumbing for one Linked machines job. */
+export interface LinkedJobMcp {
+  /** A file holding only Termpolis's server, with TERMPOLIS_LINKED_JOB in its env, for claude's
+   *  `--mcp-config`. */
+  claudeMcpConfig?: string
+  /** Codex's config.toml holds Termpolis's own server, so the marker and approvals can be set
+   *  on it for one run. */
+  codexHasTermpolis?: boolean
+  /** Called once the run has settled, however it ended. */
+  dispose?: () => void
 }
 
 async function isExistingDirectory(p: string): Promise<boolean> {
@@ -288,8 +356,14 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   const prompt = buildExecPrompt(req.task, primer)
   const primerChars = prompt.length - req.task.length
   const timeoutMs = req.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS
+  const mcp = req.linkedJob === undefined ? null : linkedJobMcpFor(deps, req.linkedJob, agent)
+  const linkedJob: LinkedJobArgs | undefined = req.linkedJob === undefined ? undefined : {
+    id: req.linkedJob,
+    ...(mcp?.claudeMcpConfig ? { claudeMcpConfig: mcp.claudeMcpConfig } : {}),
+    ...(mcp?.codexHasTermpolis ? { codexHasTermpolis: true } : {}),
+  }
   const { bin, args } = execCommand(agent, req.model, req.write === true, timeoutMs, {
-    isolateMcp: req.isolateMcp === true,
+    ...(linkedJob ? { linkedJob } : {}),
     ...(req.cwd ? { cwd: req.cwd } : {}),
   })
   // Only what this run has, so deliver's options never carry an explicit undefined.
@@ -336,6 +410,23 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
       durationMs: now() - started,
       primerChars,
     }
+  } finally {
+    try {
+      mcp?.dispose?.()
+    } catch {
+      /* a temp file left behind must not change the run's outcome */
+    }
+  }
+}
+
+/** The job's MCP plumbing, or null. A failure to set it up leaves the server switched off for
+ *  the run rather than failing it. */
+function linkedJobMcpFor(deps: ExecDeps, jobId: string, agent: ExecAgent): LinkedJobMcp | null {
+  if (!deps.linkedJobMcp) return null
+  try {
+    return deps.linkedJobMcp(jobId, agent)
+  } catch {
+    return null
   }
 }
 

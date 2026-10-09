@@ -9,10 +9,10 @@ import { noteAgentAnswerSaved } from '../AgentIntegration/AgentReviewModal'
 import { AgentWritesList, PRIMER_HOOK_LABEL, homeFromStatus, tildify } from '../AgentIntegration/AgentWritesList'
 
 // Settings ▸ Agent Integration: what Termpolis has written into the Claude Code, Codex and
-// Gemini CLI configs, and the switch that connects or disconnects them. Main applies each change
+// Gemini / Antigravity CLI configs, and the switch that connects or disconnects them. Main applies each change
 // at once and reports every file it touched; that report stays up until the next action.
 
-const CONNECT_LABEL = 'Connect Termpolis to Claude Code, Codex and Gemini CLI'
+const CONNECT_LABEL = 'Connect Termpolis to Claude Code, Codex and Gemini / Antigravity CLI'
 
 const ACTION_LABELS: Record<AgentIntegrationChange['action'], string> = {
   add: 'Added',

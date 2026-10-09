@@ -366,6 +366,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   useAutoPrimer(terminalId, agent.detectedAgent, cwd, {
     launchedAgent: () => agentFromCommand(agentCommand) ?? agentFromCommand(lastCommandRef.current),
     draft: () => inputBufferRef.current,
+    launchCommand: () => (agentFromCommand(agentCommand) ? agentCommand : lastCommandRef.current),
   })
   // Re-seed it after Claude compacts its conversation, restoring the detail it
   // summarized away from the durable memory brain (opt-out in Settings).

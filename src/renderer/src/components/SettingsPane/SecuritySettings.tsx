@@ -272,7 +272,7 @@ export function SecuritySettings() {
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             When ON, Termpolis intercepts any <code>gemini</code> command typed in any terminal and refuses to forward it unless one of the paid-tier env vars is detected
             (<code>GEMINI_API_KEY</code>, <code>GOOGLE_GENAI_USE_GCA=true</code>, or <code>GOOGLE_APPLICATION_CREDENTIALS</code> + <code>GOOGLE_CLOUD_PROJECT</code>).
-            The blocked launch is recorded in the audit log. <strong>Caveat:</strong> a Google Workspace account with a Code Assist license can be safe even without env vars; in that case set <code>GOOGLE_GENAI_USE_GCA=true</code> to whitelist it. The lock detects env-var evidence only.
+            The blocked launch is recorded in the audit log. <strong>Caveat:</strong> a Google Workspace account with a Code Assist license can be safe even without env vars; in that case set <code>GOOGLE_GENAI_USE_GCA=true</code> to whitelist it. The lock detects env-var evidence only, and it doesn't see <code>agy</code>, the Antigravity CLI the Gemini profile runs.
           </span>
         </div>
       </div>

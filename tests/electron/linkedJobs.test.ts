@@ -331,7 +331,7 @@ describe('peerRun working folder', () => {
 })
 
 describe('running a job', () => {
-  it('starts the agent confined: framed prompt, no Termpolis MCP, nothing remembered, marked as a linked job', async () => {
+  it('starts the agent confined: framed prompt, Termpolis MCP as a linked job (read-only tools), nothing remembered, marked', async () => {
     const h = setup()
     const view = await start(h, FROM, WRITER, { cwd: '~/repos/app', write: true, model: 'gpt-5-codex', timeoutMs: 60_000, prompt: 'Implement the parser.\nThen commit.' })
     expect(view).toEqual({ jobId: '000000000001', agent: 'codex', status: 'running', startedAt: 1_000_000 })
@@ -344,7 +344,7 @@ describe('running a job', () => {
       cwd: REPO,
       write: true,
       timeoutMs: 60_000,
-      isolateMcp: true,
+      linkedJob: '000000000001',
       noRemember: true,
       env: { TERMPOLIS_LINKED_JOB: '000000000001' },
       signal: expect.any(AbortSignal),

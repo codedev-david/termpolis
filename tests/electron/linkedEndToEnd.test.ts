@@ -456,9 +456,11 @@ describe('delegating a job', () => {
       cwd: b.work,
       write: false,
       timeoutMs: EXEC_DEFAULT_TIMEOUT_MS,
-      isolateMcp: true,
       noRemember: true,
     })
+    // A linked job: Termpolis's MCP stays, restricted, under the job's own id.
+    expect(exec.linkedJob).toBe(exec.env?.TERMPOLIS_LINKED_JOB)
+    expect(exec).not.toHaveProperty('isolateMcp')
     expect(exec.model).toBeUndefined()
     expect(exec.signal).toBeInstanceOf(AbortSignal)
     expect(exec.env).toEqual({ TERMPOLIS_LINKED_JOB: expect.stringMatching(/^[0-9a-f]{12}$/) })
@@ -631,9 +633,9 @@ describe('delegating a job', () => {
       task: framed(BUILDBOX_ON_LAPTOP, a.work, 'Review commit 1a2b3c4.'),
       agent: 'claude',
       cwd: a.work,
-      isolateMcp: true,
       noRemember: true,
     })
+    expect(a.execs[0].linkedJob).toBe(a.execs[0].env?.TERMPOLIS_LINKED_JOB)
     expect(fromB).toEqual({
       jobId: `${idOf(onB)}-${a.execs[0].env?.TERMPOLIS_LINKED_JOB}`,
       machine: LAPTOP_ON_BUILDBOX,
@@ -726,7 +728,7 @@ describe('what the other computer allows', () => {
     expect((await a.tool({ action: 'list' })).machines?.[0]).toMatchObject({ canRun: true, canWrite: true })
     expect(await a.tool(ask)).toMatchObject({ status: 'done', output: `${BUILDBOX} did it` })
     expect(b.execs).toHaveLength(1)
-    expect(b.execs[0]).toMatchObject({ write: true, isolateMcp: true })
+    expect(b.execs[0]).toMatchObject({ write: true, linkedJob: expect.stringMatching(/^[0-9a-f]{12}$/) })
 
     // And with "run" taken away, not even a read-only job starts.
     expect(await b.ipc('linked:set-grants', { ref: onB, grants: { run: false, write: false } })).toMatchObject({ success: true })

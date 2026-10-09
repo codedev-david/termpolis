@@ -16,6 +16,7 @@ import { existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
+  AGY_ALLOW_RULES, applyAgyAllowRules, removeAgyAllowRules,
   CLAUDE_ALLOW_RULES,
   FOREIGN_SERVER,
   applyAllowRules,
@@ -783,5 +784,34 @@ describe('agentMcpRegistry', () => {
         }
       }
     })
+  })
+})
+
+describe('Antigravity CLI tool permissions', () => {
+  it('appends the safe list to a missing permissions block', () => {
+    const root: Record<string, any> = {}
+    expect(applyAgyAllowRules(root)).toBe('add')
+    expect(root.permissions.allow).toEqual([...AGY_ALLOW_RULES])
+  })
+
+  it('refuses a permissions block or allow list of the wrong shape, on apply and on remove', () => {
+    expect(applyAgyAllowRules({ permissions: [] })).toEqual({ skipped: '`permissions` is not an object' })
+    expect(applyAgyAllowRules({ permissions: { allow: 'x' } })).toEqual({ skipped: '`permissions.allow` is not an array' })
+    expect(removeAgyAllowRules({ permissions: [] })).toEqual({ skipped: '`permissions` is not an object' })
+    expect(removeAgyAllowRules({ permissions: { allow: 'x' } })).toEqual({ skipped: '`permissions.allow` is not an array' })
+  })
+
+  it('has nothing to remove when no permissions block exists or none of its rules are ours', () => {
+    expect(removeAgyAllowRules({})).toBe('unchanged')
+    expect(removeAgyAllowRules({ permissions: {} })).toBe('unchanged')
+    const root = { permissions: { allow: ['mcp(termpolis/*)', 'command(git status)'] } }
+    expect(removeAgyAllowRules(root)).toBe('unchanged')
+    expect(root.permissions.allow).toEqual(['mcp(termpolis/*)', 'command(git status)'])
+  })
+
+  it('removes exactly the safe list and keeps the rest of the block', () => {
+    const root: Record<string, any> = { permissions: { allow: [AGY_ALLOW_RULES[1], 'mcp(fs/read)'], deny: ['command(rm)'] } }
+    expect(removeAgyAllowRules(root)).toBe('remove')
+    expect(root).toEqual({ permissions: { allow: ['mcp(fs/read)'], deny: ['command(rm)'] } })
   })
 })

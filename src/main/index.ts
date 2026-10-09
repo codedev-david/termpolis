@@ -566,7 +566,8 @@ import {
   listTrustedWorkspaces,
   ensureWorkspaceTrust,
 } from './workspaceTrust'
-import { resolveNodeCommand, resolveNodeRunner } from './agentMcpRegistry'
+import { resolveNodeCommand, resolveNodeRunner, termpolisServerEntry, type ServerEntry } from './agentMcpRegistry'
+import { createLinkedJobMcp } from './linkedJobMcp'
 import {
   resolveAgentIntegrationPaths,
   bootAgentIntegration,
@@ -578,6 +579,7 @@ import {
   prepareCodexLaunch,
   removeCodexHomeTrust,
   conductorMcpConfig,
+  codexHasTermpolisServer,
   type AgentIntegrationPaths,
   type AgentIntegrationRuntime,
 } from './agentIntegrationManager'
@@ -774,12 +776,14 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
   }
 })
 
-// Heuristic: when the user types `claude`, `codex`, or `gemini` as
+// Heuristic: when the user types `claude`, `codex`, `agy` or `gemini` as
 // the start of a command line, the next bytes typed are about to be a prompt
 // going to that AI provider's network. We log a terminal_open audit entry
 // (only if the audit toggle is on) so security-conscious teams can prove
-// "exactly when did developer X launch agent Y in repo Z."
-const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini)(?:\s|$)/
+// "exactly when did developer X launch agent Y in repo Z." `agy` is the
+// Antigravity CLI, which every built-in Gemini launch types; it is recorded as gemini.
+const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini|agy)(?:\s|$)/
+const launchedAgentName = (m: RegExpMatchArray | null): string | null => (m ? (m[1] === 'agy' ? 'gemini' : m[1]) : null)
 // Strict mode: refuse to forward a `gemini` invocation when the account
 // detector says we're on the free OAuth tier. We intercept before the bytes
 // hit the PTY, write a clear refusal message to the terminal, and audit it.
@@ -946,8 +950,7 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   let detectedAgent: string | null = null
   try {
     if (typeof data === 'string' && auditLaunchPattern.test(data)) {
-      const m = data.match(auditLaunchPattern)
-      detectedAgent = m ? m[1] : null
+      detectedAgent = launchedAgentName(data.match(auditLaunchPattern))
       if (detectedAgent) {
         aiTerminalFlag.add(id)
       }
@@ -1038,8 +1041,7 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
       const now = Date.now()
       if (now - last > 5000) {
         recentlyAuditedTerminals.set(id, now)
-        const m = data.match(auditLaunchPattern)
-        const agent = m ? m[1] : 'unknown'
+        const agent = launchedAgentName(data.match(auditLaunchPattern)) ?? 'unknown'
         aiSecurityAppend({ agent, event: 'terminal_open', terminalId: id, byteCount: data.length, notes: 'AI agent invocation detected' }).catch(() => {})
       }
     }
@@ -2658,6 +2660,24 @@ function agentHookPath(): string {
 function agentIntegrationPaths(): AgentIntegrationPaths {
   return resolveAgentIntegrationPaths(homedir(), app.getPath('userData'), process.env)
 }
+
+// A Linked machines job keeps Termpolis's MCP server, restricted to this machine's memory and
+// code index (see headlessExec and the stdio adapter). claude is handed a config file holding
+// only that server; codex keeps the one in its config.toml when it is Termpolis's own.
+// The entry is worked out once: finding the node runner scans PATH with synchronous stats, and
+// this runs on the main thread, per job.
+let linkedJobServerEntry: ServerEntry | null = null
+const linkedJobMcp = createLinkedJobMcp({
+  serverEntry: () => {
+    if (!linkedJobServerEntry) {
+      const rt = agentIntegrationRuntime()
+      linkedJobServerEntry = termpolisServerEntry(rt.node, rt.adapterPath)
+    }
+    return linkedJobServerEntry
+  },
+  codexHasTermpolis: () => codexHasTermpolisServer(agentIntegrationPaths()),
+  tempDir: () => app.getPath('temp'),
+})
 
 function agentIntegrationRuntime(): AgentIntegrationRuntime {
   const hook = agentHookPath()
@@ -4409,7 +4429,7 @@ async function semanticPoolOptions(
           version: app.getVersion(),
           sendStatus: (status) => { try { mainWindow?.webContents.send('linked:status-changed', status) } catch { /* window gone */ } },
           sendEvent: (event) => { try { mainWindow?.webContents.send('linked:event', event) } catch { /* window gone */ } },
-          runHeadless: (req) => runHeadless(req, { deliver: deliverSecondOpinion, primer: headlessPrimer }),
+          runHeadless: (req) => runHeadless(req, { deliver: deliverSecondOpinion, primer: headlessPrimer, linkedJobMcp }),
           agentsInstalled: async () => {
             const found = await detectInstalledAgents()
             return { claude: found.claude === true, codex: found.codex === true, gemini: found.gemini === true }

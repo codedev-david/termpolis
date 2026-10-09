@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: September 29, 2026 (crash reports and usage statistics are separate opt-ins; connecting your coding agents is asked, not assumed; the Claude Code compression proxy)
+Last updated: October 8, 2026 (connecting Gemini now reaches the Antigravity CLI's own config; crash reports and usage statistics are separate opt-ins; connecting your coding agents is asked, not assumed; the Claude Code compression proxy)
 
 ## Overview
 
@@ -304,7 +304,11 @@ Connected, Termpolis:
   answers the folder-trust prompt for folders you open agents in, never your
   home folder or a drive root. Its memory instruction is passed on the launch
   command, for that session only; nothing is written into your projects.
-- **Gemini CLI** — adds the Termpolis MCP server to `settings.json`.
+- **Gemini / Antigravity CLI** — adds the Termpolis MCP server to the Antigravity
+  CLI's `~/.gemini/config/mcp_config.json`, and lets the same read-only and memory
+  tools Claude Code gets run without asking, in
+  `~/.gemini/antigravity-cli/settings.json`. It also adds the server to Gemini
+  CLI's `settings.json`, for the older CLI.
 
 All of this stays on your machine. **Disconnect** in Settings → Agent
 Integration removes everything Termpolis wrote, and so does uninstalling on

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { agentFromCommand, type AgentInfo } from '../lib/agentDetector'
+import { agentFromCommand, isAntigravityCommand, type AgentInfo } from '../lib/agentDetector'
 import { createReprimeController, type ReprimeController } from '../lib/compactionReprime'
 import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
@@ -54,7 +54,7 @@ export function buildPrimerPointer(cwd: string, selfRecord = false): string {
     'Use memory_search before re-deriving a stored fix; if memory_primer is unavailable, reply "Memory tools unavailable." then wait.'
   if (selfRecord) {
     // Agents without a parseable on-disk transcript can't be auto-learned
-    // FROM the way Claude/Codex/Gemini are, so ask it to record its own lesson via MCP —
+    // FROM the way Claude/Codex are, so ask it to record its own lesson via MCP —
     // that is how its work reaches the shared brain. One paste-safe line (no newline/backtick).
     pointer +=
       ' Also, when you finish a task or before ending this session, call the termpolis memory_write tool once with a short lesson' +
@@ -250,6 +250,16 @@ export interface PrimerGate {
   launchedAgent: () => AgentInfo | null
   /** The user's un-submitted draft on this terminal's input line; '' when the line is idle. */
   draft: () => string
+  /** The command the agent was launched with, when known. */
+  launchCommand?: () => string | null | undefined
+}
+
+/** Agents whose sessions Termpolis can't learn from on disk, so the launch pointer asks them to
+ *  record their own lesson with memory_write. Only agy (Gemini) today: Claude and Codex
+ *  transcripts are read, and so are the older `gemini` CLI's, while agy's sessions live in a store
+ *  Termpolis doesn't parse. Decided by the launch command, since both Gemini CLIs share a name. */
+export function selfRecordsLessons(command: string | null | undefined): boolean {
+  return isAntigravityCommand(command)
 }
 
 /**
@@ -267,7 +277,8 @@ export async function primeOnLaunch(
   cwd: string,
   gate: PrimerGate,
   opts: {
-    inject?: (id: string, cwd: string) => Promise<boolean>
+    /** Pastes the pointer; `selfRecord` asks the agent to record its own lesson (selfRecordsLessons). */
+    inject?: (id: string, cwd: string, selfRecord: boolean) => Promise<boolean>
     /** A prompt is on screen (promptShowing). Waited out after the boot delay. */
     awaiting?: (id: string) => Promise<boolean>
     sleep?: (ms: number) => Promise<void>
@@ -277,10 +288,10 @@ export async function primeOnLaunch(
     delayMs?: number
   } = {},
 ): Promise<boolean> {
-  // All built-in agents (Claude / Codex / Gemini) have parseable on-disk transcripts, so none
-  // need the self-record primer path; keep it wired for future agents that might.
+  // Claude and Codex are learned from their on-disk transcripts. agy (Gemini) keeps its sessions
+  // where Termpolis doesn't read them, so it is asked to record its own lesson (selfRecordsLessons).
   // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
-  const inject = opts.inject ?? ((id, c) => injectAutoPrimer(id, c, false, true))
+  const inject = opts.inject ?? ((id, c, selfRecord) => injectAutoPrimer(id, c, selfRecord, true))
   const awaiting = opts.awaiting ?? promptShowing
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const stopped = opts.stopped ?? (() => false)
@@ -307,7 +318,7 @@ export async function primeOnLaunch(
     waited += pollMs
   }
   if (!open()) return false // they started typing while the CLI was booting
-  return inject(terminalId, cwd)
+  return inject(terminalId, cwd, selfRecordsLessons(gate.launchCommand?.()))
 }
 
 // Fire injectAutoPrimer once per terminal, on the first output that looks like an agent — but
@@ -354,10 +365,11 @@ export function useAutoPrimer(
     // Without a gate from the pane, fall back to the one signal this hook can read on its own:
     // the launch command Termpolis recorded for the terminal. Still authoritative, just blind
     // to a hand-typed launch — which is the safe direction to be blind in.
+    const launchCommand = (): string | undefined => useTerminalStore.getState().terminals.find(t => t.id === terminalId)?.agentCommand
     const fallback: PrimerGate = {
-      launchedAgent: () =>
-        agentFromCommand(useTerminalStore.getState().terminals.find(t => t.id === terminalId)?.agentCommand),
+      launchedAgent: () => agentFromCommand(launchCommand()),
       draft: () => '',
+      launchCommand,
     }
 
     let cancelled = false
