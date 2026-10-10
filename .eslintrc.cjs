@@ -34,10 +34,10 @@ module.exports = {
     // Style / low-signal rules — demoted to avoid noise drowning out
     // real findings. Revisit individually if a class of bug shows up.
     'no-extra-semi': 'off',
-    '@typescript-eslint/no-extra-semi': 'off',
     '@typescript-eslint/no-explicit-any': 'warn',
-    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
-    '@typescript-eslint/no-var-requires': 'off',
+    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
+    '@typescript-eslint/no-require-imports': 'off',
+    '@typescript-eslint/no-unused-expressions': ['error', { allowShortCircuit: true, allowTernary: true }],
     'no-inner-declarations': 'off',
     'no-console': 'off',
     'no-empty': ['warn', { allowEmptyCatch: true }],
@@ -53,8 +53,10 @@ module.exports = {
       rules: {
         '@typescript-eslint/no-explicit-any': 'off',
         '@typescript-eslint/no-unused-vars': 'off',
-        '@typescript-eslint/no-var-requires': 'off',
-        '@typescript-eslint/ban-types': 'off',
+        '@typescript-eslint/no-require-imports': 'off',
+        '@typescript-eslint/no-unsafe-function-type': 'off',
+        '@typescript-eslint/no-empty-object-type': 'off',
+        '@typescript-eslint/no-wrapper-object-types': 'off',
         'react-hooks/exhaustive-deps': 'off',
         'no-empty': 'off',
       },
@@ -63,7 +65,7 @@ module.exports = {
       // .cjs / .js preload/adapter scripts legitimately use require().
       files: ['**/*.{cjs,js}', 'src/mcp-adapter/**/*.{cjs,js,ts}'],
       rules: {
-        '@typescript-eslint/no-var-requires': 'off',
+        '@typescript-eslint/no-require-imports': 'off',
         '@typescript-eslint/no-explicit-any': 'off',
         'no-empty': 'off',
       },

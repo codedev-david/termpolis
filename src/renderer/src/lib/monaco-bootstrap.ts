@@ -9,7 +9,7 @@ import { loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 // Vite-specific `?worker` suffix — bundles editor.worker.js into a CSP-safe
 // blob: worker. Type comes from vite/client.
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
+import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 import { configureMonaco } from './monaco-setup'
 
 configureMonaco({ loader, monaco, WorkerCtor: EditorWorker as unknown as new () => Worker })
