@@ -140,6 +140,31 @@ describe('what the user actually asked to catch', () => {
   })
 })
 
+// Termpolis pastes the way every terminal does: xterm turns each line break into \r and, when the
+// program asked for it, wraps the paste in bracketed-paste markers. Agent TUIs always ask, and so
+// do bash and zsh. The watcher has to read the TEXT of a paste, not its framing.
+describe('a paste is read as its text, not its bracketed-paste framing', () => {
+  const asPasted = (text: string): string => '\x1b[200~' + text.replace(/\r?\n/g, '\r') + '\x1b[201~'
+
+  it('a .env file pasted into an agent is still recognised as an env dump', () => {
+    const env = 'API_URL=https://api.local\nDB_HOST=db.local\nDB_USER=svc\nDB_NAME=app\nREGION=us-east-1\n'
+    const d = processOutboundChunk('', asPasted(env), AI)
+    expect(d.envDump?.variableNames).toEqual(['API_URL', 'DB_HOST', 'DB_USER', 'DB_NAME', 'REGION'])
+  })
+
+  it('a secret on the first line of a paste is caught — the opening marker does not shield it', () => {
+    const yaml = `password: ${'p'.repeat(12)}\nhost: db.local\napi_key: ${'k'.repeat(12)}\n`
+    const d = processOutboundChunk('', asPasted(yaml), AI)
+    expect(d.action).toBe('observed')
+    expect(d.scan!.hits.map((h) => h.name)).toEqual(expect.arrayContaining(['password', 'api_key']))
+  })
+
+  it('still forwards the paste byte-for-byte, markers and all', () => {
+    const paste = asPasted(`TOKEN=${'z'.repeat(20)}\nDEBUG=true`)
+    expect(processOutboundChunk('', paste, AI).writeChunk).toBe(paste)
+  })
+})
+
 // Guarantee 2 above is enforced through `auditNoteFor`, which MIRRORS how src/main/index.ts builds
 // the note. A mirror is only as good as its fidelity: someone could change index.ts to log
 // `h.sample` and every test in this file would still pass, because none of them read index.ts.

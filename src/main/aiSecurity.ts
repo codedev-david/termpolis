@@ -380,6 +380,17 @@ export interface OutboundOptions {
 const DEFAULT_PASTE_THRESHOLD = 32
 const DEFAULT_STAGE_CAP = 64 * 1024
 
+// A paste reaches the PTY the way any terminal sends one: each line break is \r (what Enter
+// sends), and the whole paste is wrapped in bracketed-paste markers whenever the program asked
+// for them — every agent TUI does, and so do bash and zsh. The markers are framing, not text.
+// Every pattern here is written against plain lines, so it must look past them: a `^`-anchored
+// rule cannot match the first line of a paste through ESC[200~, and an env dump that arrives as
+// one marker-led, \r-separated line counts as zero variables.
+const PASTE_MARKERS = /\x1b\[20[01]~/g
+export function stripPasteMarkers(data: string): string {
+  return data.replace(PASTE_MARKERS, '')
+}
+
 export function processOutboundChunk(
   prevStaging: string,
   data: string,
@@ -404,9 +415,11 @@ export function processOutboundChunk(
     return { action: 'pass', writeChunk: data, newStaging: buf, isSubmit, isPaste }
   }
 
-  const scan = scanText(buf)
-  const codeChunk = detectCodeChunk(buf)
-  const envDump = detectEnvDump(buf)
+  // Scan the TEXT: framing stripped, every line break a plain \n (see stripPasteMarkers).
+  const text = stripPasteMarkers(buf).replace(/\r\n?/g, '\n')
+  const scan = scanText(text)
+  const codeChunk = detectCodeChunk(text)
+  const envDump = detectEnvDump(text)
   const newStaging = isSubmit ? '' : buf
 
   if (scan.hitCount > 0) {

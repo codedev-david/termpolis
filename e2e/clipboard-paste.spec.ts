@@ -121,6 +121,44 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     await expect.poll(terminalText, { timeout: 15000 }).toContain(MARKER)
   })
 
+  // A long multi-line paste must reach the program as ONE bracketed paste with \r line breaks —
+  // what xterm's own paste() sends, and what every agent TUI asks for. The raw clipboard text
+  // used to go straight to the PTY instead. Delivered in ~1 KB reads with no markers, Claude
+  // Code took it for several pastes and showed only the tail of it as typed text. The probe
+  // stands in for the agent: it asks for bracketed paste, then reports what one paste delivered.
+  test('Ctrl+V delivers a long multi-line paste as ONE bracketed paste', async () => {
+    const probe = path.join(isolatedUserData, 'paste-probe.cjs')
+    fs.writeFileSync(probe, [
+      "const ESC = '\\x1b'",
+      'process.stdin.setRawMode(true)',
+      "process.stdin.setEncoding('utf8')",
+      "process.stdout.write(ESC + '[?2004hPROBE_READY\\r\\n')",
+      "let got = ''",
+      "process.stdin.on('data', (d) => {",
+      '  got += d',
+      "  if (!got.includes(ESC + '[201~')) return",
+      "  const body = got.slice(got.indexOf(ESC + '[200~') + 6, got.indexOf(ESC + '[201~'))",
+      "  const pastes = got.split(ESC + '[200~').length - 1",
+      "  process.stdout.write(ESC + '[?2004l\\r\\nPROBE_RESULT pastes=' + pastes + ' lines=' + body.split('\\r').length + ' lf=' + (body.split('\\n').length - 1) + '\\r\\n')",
+      '  process.exit(0)',
+      '})',
+    ].join('\n'))
+
+    const term = page.locator('.xterm').first()
+    await term.click()
+    await page.keyboard.press('Enter') // submit whatever the previous test left on the input line
+    await page.waitForTimeout(500)
+    await page.keyboard.type(`node "${probe}"`)
+    await page.keyboard.press('Enter')
+    await expect.poll(terminalText, { timeout: 20000 }).toContain('PROBE_READY')
+
+    const lines = Array.from({ length: 200 }, (_, i) => `paste line ${i + 1} of 200 - the quick brown fox jumps over the lazy dog`)
+    await app.evaluate(async ({ clipboard }, text) => clipboard.writeText(text), lines.join('\r\n'))
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+V' : 'Control+V')
+
+    await expect.poll(terminalText, { timeout: 20000 }).toContain('PROBE_RESULT pastes=1 lines=200 lf=0')
+  })
+
   // --- COPY: select terminal text, press a RESERVED Copy hotkey, read the REAL OS
   // clipboard. As of v1.30.3 the greyed-area right-click Copy items were removed and
   // copy is hotkey-only (Ctrl+Shift+C / +K / +Q), so these drive the keyboard. Copy

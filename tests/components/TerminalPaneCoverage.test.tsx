@@ -33,6 +33,7 @@ const H = vi.hoisted(() => {
     open: vi.fn(),
     focus: vi.fn(),
     write: vi.fn(),
+    paste: vi.fn(),
     dispose: vi.fn(),
     onData: vi.fn(),
     attachCustomKeyEventHandler: vi.fn(),
@@ -1161,6 +1162,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
 
       expect(mockClipboardReadText).toHaveBeenCalled()
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
 
     it('a REJECTED clipboard read on Ctrl+Shift+V writes nothing to the pty', async () => {
@@ -1172,6 +1174,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
 
     it('a FAILED clipboard read on Ctrl+V writes nothing to the pty', async () => {
@@ -1183,6 +1186,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
 
     it('a REJECTED clipboard read on Ctrl+V writes nothing to the pty', async () => {
@@ -1194,6 +1198,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
   })
 
@@ -1484,6 +1489,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
 
       expect(mockClipboardReadText).toHaveBeenCalled()
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
       expect(screen.queryByTestId('terminal-context-menu')).not.toBeInTheDocument()
     })
 
@@ -1497,6 +1503,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
   })
 

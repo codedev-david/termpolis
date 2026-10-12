@@ -634,6 +634,20 @@ describe('terminal:write — always forwards, never withholds', () => {
     expect(sentEvents('terminal:secret-observed')).toHaveLength(1)
   })
 
+  // A paste reaches this handler wrapped in bracketed-paste markers whenever the program in the
+  // terminal asked for them (bash and zsh do at every prompt). The markers are framing: a pasted
+  // launch is still a launch, and it must arm the prompt watch like a typed one.
+  it('recognises an agent launch that arrives as a bracketed paste, and forwards it untouched', () => {
+    const id = newId('w-bp-launch')
+    const paste = '\x1b[200~claude\x1b[201~'
+    fire('terminal:write', { id, data: paste })
+    expect(auditEvents()).toContainEqual(expect.objectContaining({ agent: 'claude', event: 'terminal_open', terminalId: id }))
+    expect(mockWriteToTerminal).toHaveBeenCalledWith(id, paste)
+    mockAppendAudit.mockClear()
+    fire('terminal:write', { id, data: `use ${AWS_KEY} here\r` })
+    expect(auditEvents().find((e) => e.event === 'prompt_secret_sent')).toBeTruthy()
+  })
+
   it('throttles the launch audit — relaunching within 5s does not double-log', () => {
     const id = newId('w-throttle')
     fire('terminal:write', { id, data: 'claude\r' })
@@ -854,6 +868,14 @@ describe('terminal:write — strict-mode Gemini is the ONE interception', () => 
     const id = newId('w-strict-off')
     fire('terminal:write', { id, data: 'gemini\r' })
     expect(mockWriteToTerminal).toHaveBeenCalledWith(id, 'gemini\r')
+  })
+
+  it('BLOCKS a pasted launch too — bracketed-paste markers do not hide `gemini`', () => {
+    aiSec.setStrictGeminiPaidOnly(true)
+    const id = newId('w-strict-paste')
+    fire('terminal:write', { id, data: '\x1b[200~gemini\x1b[201~' })
+    expect(mockWriteToTerminal).not.toHaveBeenCalledWith(id, '\x1b[200~gemini\x1b[201~')
+    expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, id, '\u0003')
   })
 
   it('does not intercept an unrelated command that merely mentions gemini', () => {

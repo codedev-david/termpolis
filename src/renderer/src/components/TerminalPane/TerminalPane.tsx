@@ -1207,12 +1207,19 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         if (selection) window.termpolis.clipboardWriteText(selection).catch(() => {})
         return false
       }
-      // Paste (explicit form)
+      // Paste (explicit form). Every paste goes through xterm's own paste(), never straight to
+      // the PTY: paste() turns line breaks into \r and wraps the text in bracketed-paste markers
+      // whenever the program asked for them (agent TUIs always do, and so do bash and zsh). The
+      // raw text used to go to the PTY instead. ConPTY hands a long write to the program in ~1 KB
+      // reads, and with no markers Claude Code took those reads for separate pastes, collapsed
+      // all but the last into "[Pasted text #N]" placeholders and showed only the tail as typed
+      // text. Bash ran each pasted line as it arrived, and PowerShell read the \n of every \r\n
+      // as an extra key, leaving stray ">>" continuation prompts.
       if (matchesKeybinding(e, kb.paste)) {
         e.preventDefault()
         window.termpolis.clipboardReadText().then(res => {
           const text = res?.success ? res.data : ''
-          if (text) window.termpolis.writeToTerminal(terminalId, text)
+          if (text) term.paste(text)
         }).catch(() => {})
         return false
       }
@@ -1251,12 +1258,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         return true
       }
       // Paste (no Shift). Same modifier rule — on mac this is Cmd+V; Ctrl+V falls through to the
-      // shell (readline quoted-insert), which is what a mac user expects.
+      // shell (readline quoted-insert), which is what a mac user expects. Through term.paste(),
+      // like every paste — see the explicit form above.
       if (primaryModifier(e) && !e.shiftKey && !e.altKey && (e.key === 'V' || e.key === 'v')) {
         e.preventDefault()
         window.termpolis.clipboardReadText().then(res => {
           const text = res?.success ? res.data : ''
-          if (text) window.termpolis.writeToTerminal(terminalId, text)
+          if (text) term.paste(text)
         }).catch(() => {})
         return false
       }
@@ -1272,7 +1280,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
       // Track the current command line so we can record it to history on Enter and
       // dismiss the command-fix banner when the user starts a new command.
-      if (data === '\r') {
+      const submitLine = () => {
         const cmd = inputBufferRef.current.trim()
         if (cmd) {
           window.termpolis.appendHistory(terminalId, terminalName, cmd)
@@ -1282,10 +1290,21 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         outputBufferRef.current = ''
         diffDetectedRef.current = false
         setDiffDetected(false)
+      }
+      if (data === '\r') {
+        submitLine()
       } else if (data === '\u007f') {
         inputBufferRef.current = inputBufferRef.current.slice(0, -1)
       } else if (!data.startsWith('\x1b')) {
-        inputBufferRef.current += data
+        // A paste into a program that never asked for bracketed paste (PowerShell, cmd) arrives
+        // here as ONE chunk whose \r are Enters: the shell runs each line as it lands. So each
+        // \r submits the line before it, and only the text after the last one is still a draft.
+        const lines = data.split('\r')
+        for (let i = 0; i < lines.length - 1; i++) {
+          inputBufferRef.current += lines[i]
+          submitLine()
+        }
+        inputBufferRef.current += lines[lines.length - 1]
         // Dismiss fix banner when user starts typing a new command
         if (fixSuggestionRef.current) setFixSuggestion(null)
       }
@@ -1889,7 +1908,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               onClick={() => {
                 window.termpolis.clipboardReadText().then(res => {
                   const text = res?.success ? res.data : ''
-                  if (text) window.termpolis.writeToTerminal(terminalId, text)
+                  // Through term.paste(), like every paste — see the Ctrl+Shift+V handler.
+                  if (text) termRef.current?.paste(text)
                 }).catch(() => {})
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}

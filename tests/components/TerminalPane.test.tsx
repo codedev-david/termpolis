@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     open: vi.fn(),
     focus: vi.fn(),
     write: vi.fn(),
+    paste: vi.fn(),
     dispose: vi.fn(),
     onData: vi.fn(),
     attachCustomKeyEventHandler: vi.fn(),
@@ -2056,6 +2057,25 @@ describe('TerminalPane', () => {
       act(() => { mockOnDataCb?.('\r') })
       expect(mockAppendHistory).not.toHaveBeenCalled()
     })
+
+    // A paste into a shell that never asked for bracketed paste (PowerShell, cmd) arrives as ONE
+    // chunk whose \r are Enters: the shell runs each line as it lands. Each one is a command.
+    it('a multi-line paste records each line it submits, and keeps the rest as the draft', () => {
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnDataCb?.('echo one\recho two\rgit st') })
+      expect(mockAppendHistory.mock.calls.map((c) => c[2])).toEqual(['echo one', 'echo two'])
+      act(() => { mockOnDataCb?.('atus') })
+      act(() => { mockOnDataCb?.('\r') })
+      expect(mockAppendHistory).toHaveBeenLastCalledWith('term-1', 'Terminal 1', 'git status')
+      expect(mockAppendHistory).toHaveBeenCalledTimes(3)
+    })
+
+    it('a pasted line joins what was already typed on the line', () => {
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnDataCb?.('e') })
+      act(() => { mockOnDataCb?.('cho hi\r') })
+      expect(mockAppendHistory.mock.calls.map((c) => c[2])).toEqual(['echo hi'])
+    })
   })
 
   // =====================================================
@@ -2087,7 +2107,11 @@ describe('TerminalPane', () => {
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
-    it('Ctrl+Shift+V reads clipboard and writes to terminal', async () => {
+    // Every paste goes through xterm's own paste(), never straight to the PTY. paste() turns
+    // line breaks into \r and wraps the text in bracketed-paste markers when the program asked
+    // for them. Raw text skips both, and an agent TUI that gets a long raw paste in ~1 KB reads
+    // splits it into several pastes and shows only the tail as typed text.
+    it('Ctrl+Shift+V pastes the clipboard through xterm, not raw to the PTY', async () => {
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', {
         ctrlKey: true,
@@ -2097,9 +2121,10 @@ describe('TerminalPane', () => {
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
       await waitFor(() => {
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+        expect(mocks.mockTerminal.paste).toHaveBeenCalledWith('pasted-text')
       })
       expect(mockClipboardReadText).toHaveBeenCalled()
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', 'pasted-text')
     })
 
     it('normal keys pass through (returns true)', () => {
@@ -2128,15 +2153,16 @@ describe('TerminalPane', () => {
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
-    it('Ctrl+V pastes clipboard text into terminal', async () => {
+    it('Ctrl+V pastes the clipboard through xterm, not raw to the PTY', async () => {
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', { ctrlKey: true, key: 'V' })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
       await waitFor(() => {
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+        expect(mocks.mockTerminal.paste).toHaveBeenCalledWith('pasted-text')
       })
       expect(mockClipboardReadText).toHaveBeenCalled()
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', 'pasted-text')
     })
 
     it('Shift+Enter sends backslash+CR for shell line continuation when no agent detected', () => {
@@ -2511,15 +2537,16 @@ describe('TerminalPane', () => {
       expect(screen.getByText('right-click-text')).toBeInTheDocument()
     })
 
-    it('clicking Paste in context menu pastes from clipboard', async () => {
+    it('clicking Paste in context menu pastes the clipboard through xterm, not raw to the PTY', async () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Paste'))
       await waitFor(() => {
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+        expect(mocks.mockTerminal.paste).toHaveBeenCalledWith('pasted-text')
       })
       expect(mockClipboardReadText).toHaveBeenCalled()
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', 'pasted-text')
     })
 
     it('clicking Select All calls selectAll on terminal', () => {

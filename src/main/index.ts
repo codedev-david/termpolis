@@ -121,6 +121,7 @@ import {
   setAuditEnabled,
   scanText as aiSecurityScan,
   processOutboundChunk,
+  stripPasteMarkers,
   appendAudit as aiSecurityAppend,
   getRecentAudit as aiSecurityRecent,
   clearAudit as aiSecurityClear,
@@ -915,6 +916,9 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
 ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
+  // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
+  // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
+  const typed = typeof data === 'string' ? stripPasteMarkers(data) : data
   // Strict-mode enforcement: if the user is launching `gemini` on a free-tier
   // account and the operator has enabled the lock, intercept BEFORE forwarding
   // to the PTY. We write a refusal banner directly back to the terminal stream
@@ -923,7 +927,7 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   try {
     if (typeof data === 'string' && data.length > 0) {
       const s = getAiSecuritySettings()
-      if (s.strictGeminiPaidOnly && strictBlockPattern.test(data)) {
+      if (s.strictGeminiPaidOnly && strictBlockPattern.test(typed)) {
         const acct = detectGeminiAccount()
         if (!acct.safeForTraining) {
           writeToTerminal(id, '\u0003')
@@ -957,8 +961,8 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   // this gates auto-scan to only the terminals where the leak risk lives.
   let detectedAgent: string | null = null
   try {
-    if (typeof data === 'string' && auditLaunchPattern.test(data)) {
-      detectedAgent = launchedAgentName(data.match(auditLaunchPattern))
+    if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
+      detectedAgent = launchedAgentName(typed.match(auditLaunchPattern))
       if (detectedAgent) {
         aiTerminalFlag.add(id)
       }
@@ -1044,12 +1048,12 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   // ALWAYS. Unmodified. Never withheld. This is the "don't touch" half of the contract.
   writeToTerminal(id, data)
   try {
-    if (typeof data === 'string' && auditLaunchPattern.test(data)) {
+    if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
       const last = recentlyAuditedTerminals.get(id) || 0
       const now = Date.now()
       if (now - last > 5000) {
         recentlyAuditedTerminals.set(id, now)
-        const agent = launchedAgentName(data.match(auditLaunchPattern)) ?? 'unknown'
+        const agent = launchedAgentName(typed.match(auditLaunchPattern)) ?? 'unknown'
         aiSecurityAppend({ agent, event: 'terminal_open', terminalId: id, byteCount: data.length, notes: 'AI agent invocation detected' }).catch(() => {})
       }
     }
