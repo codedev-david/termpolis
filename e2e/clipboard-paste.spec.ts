@@ -146,7 +146,11 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
 
     const term = page.locator('.xterm').first()
     await term.click()
-    await page.keyboard.press('Enter') // submit whatever the previous test left on the input line
+    // Drop the marker the previous test left on the input line WITHOUT running it. Run, it fails,
+    // and Ubuntu's command-not-found handler can take seconds. The probe command typed meanwhile
+    // became the "last command", so the fix banner offered to re-run it, and the next test's
+    // first Enter accepted that offer, relaunching the probe to swallow the rest of its keys.
+    await page.keyboard.press('Control+C')
     await page.waitForTimeout(500)
     await page.keyboard.type(`node "${probe}"`)
     await page.keyboard.press('Enter')
