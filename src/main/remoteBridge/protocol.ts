@@ -62,8 +62,9 @@ export interface PairedDevice {
 export type RemoteAgent = 'claude' | 'codex' | 'gemini'
 
 /** One selectable folder in the remote directory picker. `path` is an absolute
- *  path on the DESKTOP, already resolved and contained under the desktop home by
- *  the bridge -- the phone only ever echoes it back to descend or to launch. */
+ *  path on the DESKTOP that the bridge found and resolved (links followed, never
+ *  a network or device path) -- the phone only ever echoes it back to descend or
+ *  to launch. A drive row is named by its own path: `{ name: 'D:\\', path: 'D:\\' }`. */
 export interface DirectoryEntry {
   name: string
   path: string
@@ -71,9 +72,13 @@ export interface DirectoryEntry {
 
 /** One level of the desktop filesystem, as the phone's folder picker sees it.
  *
- *  `parent` is null at the picker's root (the desktop home) and an absolute path
- *  otherwise, so the phone can offer a ".." row without deciding for itself
- *  where the ceiling is. `entries` are directories only, sorted by name. */
+ *  `parent` is null at the picker's starting point (the desktop home) and an
+ *  absolute path otherwise, so the phone can offer a ".." row without deciding
+ *  for itself where the top is; up from a drive root is home. `entries` are
+ *  directories only, each path at most once. At home the drive roots come first,
+ *  in letter order (`/` on macOS and Linux), then home's folders sorted by name;
+ *  anywhere else it is just the folders. A huge folder is cut to what one relay
+ *  frame carries (MAX_PICKER_ENTRIES), keeping the first rows. */
 export interface DirectoryListing {
   path: string
   parent: string | null
@@ -112,18 +117,20 @@ export type RemoteRequest =
   | { kind: 'closeTerminal'; terminalId: string }
   | { kind: 'subscribe'; terminalId: string }
   | { kind: 'unsubscribe'; terminalId: string }
-  // Browse the desktop filesystem so a phone can pick a working folder. Rooted
-  // at the desktop home and contained there by the bridge; `path` absent means
-  // that root. Needs `createTerminal` -- it exists only to feed `launchAgent`,
-  // and a device that cannot open a terminal has no use for the folder list.
+  // Browse the desktop filesystem so a phone can pick a working folder. Opens at
+  // the desktop home, which also lists the desktop's drives, and reaches any
+  // local folder from there; `path` absent means home. A network or device path
+  // is refused without being touched, and answered with home. Needs
+  // `createTerminal` -- it exists only to feed `launchAgent`, and a device that
+  // cannot open a terminal has no use for the folder list.
   | { kind: 'listDirectory'; path?: string }
   // Open a terminal in `cwd` and start `agent` in it. `agent` is one of a fixed
   // three, mapped to a binary name on the desktop -- the phone never spells the
   // command, so this is not the arbitrary-execution power that `runCommand`
-  // carries and it rides `createTerminal`, not `writeToTerminal`. `cwd` must be
+  // carries and it rides `createTerminal`, not `writeToTerminal`. `cwd` should be
   // a folder the desktop offered; the dispatcher does not re-derive it, so it is
-  // validated as a non-empty string and trusted only as far as `create_terminal`
-  // itself trusts a cwd.
+  // validated as a non-empty string that is not a network or device path, and
+  // trusted only as far as `create_terminal` itself trusts a cwd.
   | { kind: 'launchAgent'; agent: RemoteAgent; cwd: string }
 
 /** One terminal's output as it crosses the wire.

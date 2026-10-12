@@ -88,8 +88,9 @@ interface RemoteState {
   outputEnd: Record<string, number>
   agentStatus: Record<string, StatusUpdate>
   /** The desktop folder the picker is currently showing, or null before the
-   *  first listing (and after a desktop switch). Home-rooted by the desktop; the
-   *  phone only ever hands `path`s from here straight back. */
+   *  first listing (and after a desktop switch). It starts at the desktop home,
+   *  which lists the desktop's drives; the phone only ever hands `path`s from
+   *  here straight back. */
   directory: DirectoryListing | null
   /** True while a `listDirectory` is in flight, so the picker can show a spinner
    *  instead of a stale level. */

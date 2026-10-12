@@ -918,7 +918,7 @@ hides the controls it isn't allowed to use.
 | Permission | Default | What it allows |
 |---|---|---|
 | **Read terminal output** | on | List the terminals saved in the desktop's session, i.e. the sidebar (name and working folder; swarm workers are excluded), and stream the output of the one the phone has open. |
-| **Start terminals** | off | Start a terminal. The app offers Claude, Codex or Gemini (`agy`) in a folder picked by browsing the folders under the desktop's home folder; the desktop itself accepts any folder, and a plain shell. The terminal is created over MCP like a swarm worker's, so `sanitizeAgentCommand` launches it the same way: Claude and Gemini with `--dangerously-skip-permissions`, Codex with `-a never -s workspace-write`. |
+| **Start terminals** | off | Start a terminal. The app offers Claude, Codex or Gemini (`agy`) in a folder picked by browsing the desktop's folders, and a plain shell. The picker opens at the desktop's home folder, which also lists every drive the desktop can see (`C:\`, `D:\` and so on, mapped drives included; `/` on macOS and Linux). Network paths (`\\server\share`) are refused, both for browsing and as a terminal's folder. The terminal is created over MCP like a swarm worker's, so `sanitizeAgentCommand` launches it the same way: Claude and Gemini with `--dangerously-skip-permissions`, Codex with `-a never -s workspace-write`. |
 | **Type into terminals** | off | Send text to any open terminal, then Enter. This bypasses the command checks — it is a keyboard, and anything typed runs as you. Deliberately **not** implied by *Start terminals*. |
 | **Close terminals** | off | Close a terminal. The current phone app has no control for this. |
 
@@ -989,8 +989,8 @@ hides the controls it isn't allowed to use.
   localhost — limited to `list_terminals`, `create_terminal`, `run_command`,
   `write_to_terminal` and `close_terminal`, with the same rate limits and audit
   log (tool name and device id, not the text) as any MCP client. Folder
-  browsing (home-rooted, folder names only) and the output stream are handled
-  in the bridge and are not audited. The phone's own requests reach no memory,
+  browsing (any local drive, folder names only, never a network path) and the
+  output stream are handled in the bridge and are not audited. The phone's own requests reach no memory,
   swarm or other tools; an agent it types into still has its own.
 - **Keys.** The desktop's identity key never reaches the renderer, and is
   encrypted with the OS keychain (DPAPI / Keychain / libsecret) where one is

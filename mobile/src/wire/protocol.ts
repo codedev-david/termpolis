@@ -150,16 +150,20 @@ export function parseLaunchedAgent(data: unknown): LaunchedAgent | null {
 export type RemoteAgent = 'claude' | 'codex' | 'gemini'
 
 /** One selectable folder in the remote directory picker. `path` is an absolute
- *  path on the DESKTOP that the desktop already resolved and fenced under its
- *  home; the phone only ever echoes it back to descend or to launch. */
+ *  path on the DESKTOP that the desktop already found and resolved -- never a
+ *  network path; the phone only ever echoes it back to descend or to launch. A
+ *  drive row (`D:\`) is named by its own path, and travels like any folder. */
 export interface DirectoryEntry {
   name: string
   path: string
 }
 
 /** One level of the desktop filesystem, as the folder picker sees it. `parent`
- *  is null at the picker's root and an absolute path otherwise, so the phone can
- *  offer a ".." row without deciding where the ceiling is. */
+ *  is null at the desktop home, where the picker opens, and an absolute path
+ *  otherwise, so the phone can offer a ".." row without deciding where the top
+ *  is. Home lists the desktop's drives ahead of its own folders, and ".." from a
+ *  drive root leads back there -- all decided on the desktop, so this build
+ *  walks other drives without knowing they exist. */
 export interface DirectoryListing {
   path: string
   parent: string | null
@@ -191,8 +195,9 @@ export type RemoteRequest =
   | { kind: 'closeTerminal'; terminalId: string }
   | { kind: 'subscribe'; terminalId: string }
   | { kind: 'unsubscribe'; terminalId: string }
-  // Browse the desktop's folders to pick a working directory; `path` absent means
-  // the desktop home. Both this and `launchAgent` need the `createTerminal` grant.
+  // Browse the desktop's folders, on any of its drives, to pick a working
+  // directory; `path` absent means the desktop home. Both this and `launchAgent`
+  // need the `createTerminal` grant.
   | { kind: 'listDirectory'; path?: string }
   // Open a terminal in `cwd` and start `agent` in it. `agent` is one of three
   // fixed keys the desktop maps to a binary, so the command is never phone text.

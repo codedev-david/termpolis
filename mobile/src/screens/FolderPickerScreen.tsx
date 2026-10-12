@@ -17,10 +17,13 @@ const AGENT_LABEL: Record<RemoteAgent, string> = { claude: 'Claude', codex: 'Cod
 /**
  * Pick a desktop folder, then launch the chosen agent in it.
  *
- * The tree is the desktop's, home-rooted and fenced there by the bridge, so this
- * screen only ever hands back paths the desktop itself just offered -- it never
- * builds one. It opens at the home root every time rather than resuming a past
- * spot, which is what "a folder picker from the desktop location" means.
+ * The tree is the desktop's, and so is every decision about it: this screen only
+ * ever hands back paths the desktop itself just offered -- it never builds one.
+ * It opens at the desktop home every time rather than resuming a past spot,
+ * which is what "a folder picker from the desktop location" means. Home also
+ * lists the desktop's drives (`C:\`, `D:\`, ...), so other drives are a tap away;
+ * they arrive as ordinary rows, which is why no change here was needed to reach
+ * them.
  *
  * The controls follow the same rule as the terminal list: capability-gated and
  * `stale`-gated things are ABSENT, not disabled, because the desktop re-checks

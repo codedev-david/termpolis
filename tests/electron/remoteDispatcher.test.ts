@@ -132,6 +132,30 @@ describe('RequestDispatcher — input outside the union', () => {
     expect(mcp.callTool).not.toHaveBeenCalled()
   })
 
+  // On Windows, merely opening \\host\share makes the OS connect to that host and
+  // offer it the signed-in user's NTLM hash -- and main checks a new terminal's
+  // folder exists before it spawns. So a phone's network or device path is refused
+  // HERE, before create_terminal is ever called with it.
+  it.each([
+    ['a UNC share', '\\\\attacker.invalid\\share'],
+    ['a forward-slash UNC share', '//attacker.invalid/share'],
+    ['a Win32 long-path name', '\\\\?\\C:\\Windows'],
+    ['a device-namespace pipe', '\\\\.\\pipe\\termpolis-no-such-pipe'],
+  ])('refuses a terminal in %s, without touching MCP', async (_label, cwd) => {
+    const mcp = fakeMcp()
+    await expect(
+      new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'shell', cwd }, all, DEVICE),
+    ).rejects.toThrow(/network or device path/)
+    expect(mcp.callTool).not.toHaveBeenCalled()
+  })
+
+  it('still opens a terminal on another local drive', async () => {
+    // The refusal is for paths that leave the machine, not for drives other than C:.
+    const mcp = fakeMcp()
+    await new RequestDispatcher(mcp).dispatch({ kind: 'createTerminal', name: 'shell', cwd: 'D:\\projects' }, all, DEVICE)
+    expect(mcp.callTool).toHaveBeenCalledWith('create_terminal', { name: 'shell', cwd: 'D:\\projects' }, DEVICE)
+  })
+
   it('cuts a long terminal name to what a tab can show', async () => {
     const mcp = fakeMcp()
     const name = 'n'.repeat(MAX_REMOTE_TERMINAL_NAME + 50)
@@ -381,10 +405,30 @@ describe('RequestDispatcher — the folder picker', () => {
     expect(mcp.callTool).not.toHaveBeenCalled()
   })
 
+  it('waits for the picker, which reads the disk asynchronously, before answering', async () => {
+    // The picker no longer blocks the bridge's event loop on a slow or network
+    // drive, so it answers with a promise; the phone must get the listing.
+    const listing: DirectoryListing = {
+      path: 'D:\\',
+      parent: 'C:\\Users\\dev',
+      entries: [{ name: 'repo', path: 'D:\\repo' }],
+    }
+    const listDir = vi.fn(async () => listing)
+    const { settle } = fakeSettle()
+
+    const answer = await new RequestDispatcher(fakeMcp(), settle, listDir).dispatch(
+      { kind: 'listDirectory', path: 'D:\\' },
+      all,
+      DEVICE,
+    )
+
+    expect(answer).toEqual(listing)
+  })
+
   it('passes no path to the picker when the phone named none, so it opens at home', async () => {
     // An absent `path` is the phone asking for the desktop home. Forwarding an
-    // explicit `undefined` is what listHomeDirectory reads as "the root" -- a
-    // sentinel string here would name a folder called "undefined" instead.
+    // explicit `undefined` is what listDirectory reads as "home" -- a sentinel
+    // string here would name a folder called "undefined" instead.
     const mcp = fakeMcp()
     const listDir = vi.fn().mockReturnValue({ path: '/home/dev', parent: null, entries: [] })
     const { settle } = fakeSettle()
@@ -536,6 +580,55 @@ describe('RequestDispatcher — launching an agent', () => {
     )
 
     expect((launched as LaunchedAgent).name).toBe(`Claude ${DOT} /`)
+  })
+
+  it('names a terminal started at a drive root after the drive', async () => {
+    // The picker now offers drive roots, and Start is on screen at every level.
+    // basename('D:\\') is '' on Windows (and the whole string on POSIX), so
+    // either way the name is the drive, never an empty tail.
+    const mcp = launchMcp({ terminalId: 't1' })
+    const { settle } = fakeSettle()
+
+    const launched = await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'claude', cwd: 'D:\\' },
+      all,
+      DEVICE,
+    )
+
+    expect((launched as LaunchedAgent).name).toBe(`Claude ${DOT} D:\\`)
+  })
+
+  it('launches in a folder on another local drive', async () => {
+    const mcp = launchMcp()
+    const { settle } = fakeSettle()
+
+    await new RequestDispatcher(mcp, settle).dispatch(
+      { kind: 'launchAgent', agent: 'claude', cwd: 'D:\\projects\\app' },
+      all,
+      DEVICE,
+    )
+
+    expect(mcp.callTool.mock.calls[0][1]).toMatchObject({ cwd: 'D:\\projects\\app', agentCommand: 'claude' })
+  })
+
+  it.each([
+    ['a UNC share', '\\\\attacker.invalid\\share'],
+    ['a folder inside a UNC share', '\\\\attacker.invalid\\share\\repo'],
+    ['a forward-slash UNC share', '//attacker.invalid/share'],
+    ['a Win32 long-path name', '\\\\?\\C:\\Windows'],
+    ['a device-namespace pipe', '\\\\.\\pipe\\termpolis-no-such-pipe'],
+  ])('refuses to launch in %s, without opening a terminal', async (_label, cwd) => {
+    // The picker never offers such a path, so only a crafted request can carry
+    // one -- and opening it would hand the named host the user's NTLM hash.
+    const mcp = fakeMcp()
+    const { slept, settle } = fakeSettle()
+
+    await expect(
+      new RequestDispatcher(mcp, settle).dispatch({ kind: 'launchAgent', agent: 'claude', cwd }, all, DEVICE),
+    ).rejects.toThrow(/network or device path/)
+
+    expect(mcp.callTool).not.toHaveBeenCalled()
+    expect(slept).toEqual([])
   })
 
   it.each<[string, unknown]>([

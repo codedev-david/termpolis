@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join, parse, sep } from 'path'
 
 // The desktop bridge, exactly as it ships.
 import * as desktopPairing from '../../src/main/remoteBridge/pairing'
@@ -30,6 +33,8 @@ import {
   MAX_DEVICE_LABEL as DESKTOP_MAX_LABEL,
 } from '../../src/main/remoteBridge/deviceLabel'
 import { FORGET_FROM, OutputFanout } from '../../src/main/remoteBridge/outputFanout'
+// The folder picker itself, so stage 10 hands the phone real listings, not fixtures.
+import { listDirectory, type PickerDirent, type PickerFs } from '../../src/main/remoteBridge/directoryPicker'
 
 // The phone, from a tree that shares no code with the above.
 import * as phonePairing from '../../mobile/src/wire/pairing'
@@ -704,5 +709,114 @@ describe('stage 9: browsing folders and launching an agent, both trees', () => {
     const answer = desktop.seal(header, utf8Encode(JSON.stringify({ kind: 'ok', id: 6, data: launched })))
     const message = parseRemoteMessage(phone.open(answer, SESSION_HEADER_BYTES)!)
     expect(parseLaunchedAgent((message as { data: unknown }).data)).toEqual(launched)
+  })
+})
+
+describe('stage 10: beyond home, walked on the shipped phone\'s own rules', () => {
+  // Phone 1.2.0 is already in people's hands, and the picker's reach past home
+  // reaches them only if that build can walk it. It can, because the screen never
+  // builds a path: tapping a row sends that row's `path`, ".." sends `parent` (and
+  // exists only while `parent` is a string), Start sends the listing's `path`. So
+  // every hop here goes desktop -> sealed frame -> the phone's own parser, and the
+  // next request carries nothing but a path the phone was just sent.
+  const header = Uint8Array.from([FRAME_SESSION])
+  let HOME = ''
+  let savedUserProfile: string | undefined
+  let savedHome: string | undefined
+
+  beforeAll(() => {
+    savedUserProfile = process.env.USERPROFILE
+    savedHome = process.env.HOME
+    // homedir() reads these before anything else, so the picker opens here.
+    HOME = realpathSync(mkdtempSync(join(tmpdir(), 'tp-interop-home-')))
+    mkdirSync(join(HOME, 'repo'))
+    process.env.USERPROFILE = HOME
+    process.env.HOME = HOME
+  })
+
+  afterAll(() => {
+    if (savedUserProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = savedUserProfile
+    if (savedHome === undefined) delete process.env.HOME
+    else process.env.HOME = savedHome
+    rmSync(HOME, { recursive: true, force: true })
+  })
+
+  /** One listDirectory, both ways through the session crypto. */
+  async function ask(
+    session: ReturnType<typeof connect>,
+    id: number,
+    path: string | undefined,
+    deps: Parameters<typeof listDirectory>[1],
+  ) {
+    const request = path === undefined ? { kind: 'listDirectory' } : { kind: 'listDirectory', path }
+    const asked = session.phone.seal(header, utf8Encode(JSON.stringify({ id, request })))
+    const heard = JSON.parse(new TextDecoder().decode(session.desktop.open(asked, SESSION_HEADER_BYTES)))
+    const sent = await listDirectory(heard.request.path, deps)
+    const frame = session.desktop.seal(header, utf8Encode(JSON.stringify({ kind: 'ok', id, data: sent })))
+    const message = parseRemoteMessage(session.phone.open(frame, SESSION_HEADER_BYTES)!)
+    const read = parseDirectoryListing((message as { data: unknown }).data)
+    // The phone keys its rows by path; a level with a path twice is a duplicate key.
+    if (read !== null) expect(new Set(read.entries.map((e) => e.path)).size).toBe(read.entries.length)
+    return { frame, sent, read }
+  }
+
+  it('the phone reads the home listing row for row, drive rows first and in order', async () => {
+    const { sent, read } = await ask(connect(), 1, undefined, { driveRoots: async () => ['C:\\', 'D:\\'] })
+    expect(read).toEqual(sent)
+    expect(read!.parent).toBeNull()
+    expect(read!.entries.map((e) => e.name)).toEqual(['C:\\', 'D:\\', 'repo'])
+  })
+
+  it('walks home, a drive, a folder on it, and back up to home on paths the desktop sent', async () => {
+    const session = connect()
+    const top = parse(HOME).root
+    const deps = { driveRoots: async () => [top] }
+    let id = 10
+    let screen = (await ask(session, id++, undefined, deps)).read!
+
+    const tap = async (name: string): Promise<void> => {
+      const row = screen.entries.find((e) => e.name === name)
+      expect(row, `a row named ${name}`).toBeDefined()
+      screen = (await ask(session, id++, row!.path, deps)).read!
+    }
+    const up = async (): Promise<void> => {
+      expect(screen.parent, 'a ".." row').not.toBeNull()
+      screen = (await ask(session, id++, screen.parent!, deps)).read!
+    }
+
+    await tap(top)
+    expect(screen.path).toBe(top)
+    // Up from a drive is home -- never the drive again, which dirname would give.
+    expect(screen.parent).toBe(HOME)
+
+    // The first folder on the way from the drive root to the fixture: Users on
+    // Windows, tmp or private on POSIX. It exists, so the drive must list it.
+    const first = HOME.slice(top.length).split(sep)[0]
+    await tap(first)
+    expect(screen.path).toBe(join(top, first))
+    expect(screen.parent).toBe(top)
+
+    await up()
+    expect(screen.path).toBe(top)
+    await up()
+    expect(screen.path).toBe(HOME)
+    expect(screen.parent).toBeNull()
+  })
+
+  it('a listing cut to fit is still one frame the relay will carry', async () => {
+    // 1,500 folders of ~1 KB names would be ~3 MB. The relay cuts any frame over
+    // RELAY_MAX_FRAME_BYTES and latches the room dark, so the cut has to happen
+    // on the desktop, and it has to hold after sealing, header and tag included.
+    const folder = (name: string): PickerDirent => ({ name, isDirectory: () => true, isSymbolicLink: () => false })
+    const fs: PickerFs = {
+      realpath: async (path) => path,
+      stat: async () => ({ isDirectory: () => true }),
+      readdir: async (path) => (path === HOME ? Array.from({ length: 1_500 }, (_, i) => folder(`${i}-${'z'.repeat(1_000)}`)) : []),
+    }
+    const { frame, read } = await ask(connect(), 99, undefined, { driveRoots: async () => [], fs })
+    expect(frame.length).toBeLessThanOrEqual(DESKTOP_MAX_FRAME)
+    expect(read!.entries.length).toBeGreaterThan(0)
+    expect(read!.entries.length).toBeLessThan(1_500)
   })
 })
