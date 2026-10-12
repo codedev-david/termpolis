@@ -180,6 +180,8 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwd: vi.fn(() => '/repo'),
   getTerminalCwdAsync: vi.fn(async () => '/repo'),
   getTerminalPid: vi.fn(() => 0),
+  // terminal:read-buffer hands a replaying pane the pty's size; no pty is known here.
+  getTerminalSize: vi.fn(() => null),
   computeWindowsPty: vi.fn(() => undefined),
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: M.detectAvailableShells }))

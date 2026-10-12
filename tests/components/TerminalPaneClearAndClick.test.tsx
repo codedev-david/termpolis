@@ -698,6 +698,74 @@ describe('TerminalPane — click forwarding and clear (v1.39.1)', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
 
+    it('puts back the modes the cleared output left set, after the reset, from what main hands back', async () => {
+      // term.reset() also drops what the running agent turned on — bracketed paste, the
+      // alternate screen, the mouse — and the agent will not send it again. Main computes the
+      // modes in the same step as the clear, so nothing printed in between can be missed.
+      detectedAgentValue = CLAUDE_BADGE
+      mockClearTerminalBuffer.mockResolvedValue({ success: true, data: { preamble: '\x1b[?1049h\x1b[?2004h' } } as never)
+      await renderPane()
+      mocks.mockTerminal.write.mockClear()
+
+      await act(async () => { fireEvent.click(screen.getByTestId('clear-terminal-btn')) })
+
+      expect(mocks.mockTerminal.write).toHaveBeenCalledTimes(1)
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('\x1b[?1049h\x1b[?2004h', expect.any(Function))
+      expect(mocks.mockTerminal.reset.mock.invocationCallOrder[0])
+        .toBeLessThan(mocks.mockTerminal.write.mock.invocationCallOrder[0])
+    })
+
+    it('drops the focus-out a restored ?1004h provokes, and only while it parses', async () => {
+      detectedAgentValue = CLAUDE_BADGE
+      mockClearTerminalBuffer.mockResolvedValue({ success: true, data: { preamble: '\x1b[?1004h' } } as never)
+      // Browser xterm answers ?1004h with a focus report mid-parse -- `ESC[O` when the pane is
+      // not focused (the Clear button took focus off it). Hold the parse open so the test
+      // controls the window.
+      let parsed: (() => void) | undefined
+      mocks.mockTerminal.write.mockImplementation((data: string, cb?: () => void) => {
+        if (data.includes('\x1b[?1004h')) mockOnDataCb?.('\x1b[O')
+        if (cb) parsed = cb
+      })
+      await renderPane()
+      mockWriteToTerminal.mockClear()
+
+      await act(async () => { fireEvent.click(screen.getByTestId('clear-terminal-btn')) })
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('\x1b[?1004h', expect.any(Function)) // restored...
+      expect(mockWriteToTerminal).not.toHaveBeenCalled() // ...without reporting focus-out for it
+
+      act(() => { parsed?.() })
+      act(() => { mockOnDataCb?.('\x1b[O') }) // focus really leaving, after the restore
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\x1b[O')
+      mocks.mockTerminal.write.mockReset()
+    })
+
+    it('lets the focus-in a restored ?1004h provokes through: the pane being cleared has focus', async () => {
+      detectedAgentValue = CLAUDE_BADGE
+      mockClearTerminalBuffer.mockResolvedValue({ success: true, data: { preamble: '\x1b[?1004h' } } as never)
+      mocks.mockTerminal.write.mockImplementation((data: string) => {
+        if (data.includes('\x1b[?1004h')) mockOnDataCb?.('\x1b[I')
+      })
+      await renderPane()
+      mockWriteToTerminal.mockClear()
+
+      await act(async () => { fireEvent.click(screen.getByTestId('clear-terminal-btn')) })
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '\x1b[I')
+      mocks.mockTerminal.write.mockReset()
+    })
+
+    it('writes nothing more when main hands back no modes, or none at all', async () => {
+      // `{ success: true }` alone is what the clear returned before it reported modes.
+      detectedAgentValue = CLAUDE_BADGE
+      await renderPane()
+      for (const reply of [{ success: true }, { success: true, data: { preamble: '' } }, { success: false, error: 'gone' }]) {
+        mockClearTerminalBuffer.mockResolvedValueOnce(reply as never)
+        mocks.mockTerminal.write.mockClear()
+        await act(async () => { fireEvent.click(screen.getByTestId('clear-terminal-btn')) })
+        expect(mocks.mockTerminal.write, JSON.stringify(reply)).not.toHaveBeenCalled()
+      }
+      expect(mocks.mockTerminal.reset).toHaveBeenCalledTimes(3)
+    })
+
     it('still clears the screen when the main process refuses the buffer clear', async () => {
       // A failed IPC leaves replay able to restore the old text on the next mount —
       // worse than nothing, but not worth refusing the visible half of the action over.

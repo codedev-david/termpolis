@@ -103,6 +103,7 @@ import {
   readOutputFrom,
   readOutputTail,
   clearOutput,
+  replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
@@ -763,8 +764,11 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
         const agentPaths = getAgentExtraPaths()
         const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
         spawnTerminal(id, shell.executable, cwd, (data) => {
-          mainWindow?.webContents.send('terminal:data', id, data)
-          appendOutput(terminalOutputBuffers, id, data)
+          // Buffer first, so the event can carry where this chunk ENDS in the stream: a pane
+          // replaying the buffer on mount compares it with the reply's nextOffset, to drop a
+          // chunk that is both in its replay and on its way live instead of drawing it twice.
+          const end = appendOutput(terminalOutputBuffers, id, data)
+          mainWindow?.webContents.send('terminal:data', id, data, end)
           // Mark only. The remote pump reads the buffer on its own 50ms tick, so a
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
@@ -3033,8 +3037,26 @@ ipcMain.handle('models:refresh-catalog', async () => {
 // evicted before the caller read it, so falling behind is visible instead of silent.
 ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {
   const slice = readOutputFrom(terminalOutputBuffers, terminalId, fromOffset || 0)
-  return ok({ ...slice, length: slice.output.length })
+  return ok({ ...slice, length: slice.output.length, ...replayContext(terminalId, fromOffset || 0) })
 })
+
+// A pane rebuilding a terminal from the window (TerminalPane, on every mount) needs more than
+// the bytes: the modes the EVICTED output left set — the alt screen, mouse tracking and
+// bracketed paste an agent turns on once at startup — how much of the window finishes a
+// sequence the eviction cut in half, and the geometry the bytes were drawn for (parsed at any
+// other width they wrap differently, and on Windows 10 xterm never reflows them back). Only a
+// read from the window's start is a replay: a poller reading on from its own offset gets
+// exactly what it always got, and empty parts are left out for the same reason.
+function replayContext(terminalId: string, fromOffset: number): { preamble?: string; skip?: number; cols?: number; rows?: number } {
+  const replay = replayPreamble(terminalOutputBuffers, terminalId, fromOffset)
+  if (!replay) return {}
+  const size = getTerminalSize(terminalId)
+  return {
+    ...(replay.preamble ? { preamble: replay.preamble } : {}),
+    ...(replay.skip > 0 ? { skip: replay.skip } : {}),
+    ...(size ? { cols: size.cols, rows: size.rows } : {}),
+  }
+}
 
 // Wipe a terminal's retained output. The renderer clears xterm itself; this is the
 // half that makes it STICK -- TerminalPane replays this window into a fresh xterm on
@@ -3045,7 +3067,12 @@ ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => 
 ipcMain.handle('terminal:clear', async (_, { terminalId }) => {
   if (typeof terminalId !== 'string' || !terminalId) return err('terminalId required')
   clearOutput(terminalOutputBuffers, terminalId)
-  return ok()
+  // The renderer's term.reset() also wipes the modes the running agent set -- bracketed paste,
+  // the alternate screen, the mouse -- and the agent will not send them again. clearOutput has
+  // just folded the cleared window into the evicted-mode tracker, so the full mode state is
+  // known here; handing it back from this same synchronous step means no output can land
+  // between the clear and the state reported. The renderer writes it straight after its reset.
+  return ok({ preamble: replayPreamble(terminalOutputBuffers, terminalId)?.preamble ?? '' })
 })
 
 // The app's own log -- what Termpolis printed about itself, which in a packaged build
@@ -3429,8 +3456,9 @@ async function semanticPoolOptions(
         const shellInfo = shells.find(s => s.type === shell) || shells[0]
         if (shellInfo) {
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
-            mainWindow?.webContents.send('terminal:data', id, data)
-            appendOutput(terminalOutputBuffers, id, data)
+            // Buffer first: the event carries the chunk's end offset (see terminal:create).
+            const end = appendOutput(terminalOutputBuffers, id, data)
+            mainWindow?.webContents.send('terminal:data', id, data, end)
             remoteNoteTerminalOutput(id)
           // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend

@@ -37,7 +37,9 @@ const api: TermpolisAPI = {
     ipcRenderer.send('terminal:resize', { id, cols, rows }),
 
   onTerminalData: (cb) => {
-    const handler = (_: Electron.IpcRendererEvent, id: string, data: string) => cb(id, data)
+    // `end` is where the chunk ends in the terminal's output stream (absent for output main
+    // never buffered). TerminalPane compares it with a mount replay's nextOffset.
+    const handler = (_: Electron.IpcRendererEvent, id: string, data: string, end?: number) => cb(id, data, end)
     ipcRenderer.on('terminal:data', handler)
     return () => ipcRenderer.removeListener('terminal:data', handler)
   },

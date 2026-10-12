@@ -217,4 +217,97 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
     // Message form reflows wrapped lines (no hard returns) but preserves the token.
     await expect.poll(readClip, { timeout: 10000 }).toContain(marker)
   })
+
+  // Issue #35. A pane's xterm is rebuilt on every remount (here, a Settings round trip) from the
+  // last 32 KB of output main keeps. A fullscreen agent turns on the alternate screen, mouse
+  // tracking and bracketed paste ONCE, at startup, so in a long session those switches are gone
+  // from that window: the rebuilt pane stopped sending the wheel to the agent ("can't scroll to
+  // see the agent's full response") and pasted raw again. The mock stands in for the agent.
+  test('a remount keeps a fullscreen agent getting the wheel and bracketed pastes', async () => {
+    const mock = path.join(isolatedUserData, 'fullscreen-mock.cjs')
+    fs.writeFileSync(mock, [
+      "const ESC = '\\x1b'",
+      'process.stdin.setRawMode(true)',
+      'process.stdin.resume()',
+      "process.stdout.write(ESC + '[?1049h' + ESC + '[?1000h' + ESC + '[?1002h' + ESC + '[?1003h' + ESC + '[?1006h' + ESC + '[?2004h')",
+      // Far more than the 32 KB window, in batches, so a Windows ConPTY forwards each one.
+      'let batch = 0',
+      'const next = () => {',
+      "  if (batch === 120) return process.stdout.write(ESC + '[2J' + ESC + '[HMOCK_FULLSCREEN_READY\\r\\n')",
+      "  let out = ''",
+      "  for (let i = 0; i < 20; i++) out += 'response line ' + (batch * 20 + i) + ' ' + 'abcdefghij'.repeat(8) + '\\r\\n'",
+      '  process.stdout.write(out)',
+      '  batch++',
+      '  setTimeout(next, 15)',
+      '}',
+      'next()',
+      "process.stdin.on('data', (d) => { if (String(d).includes('\\x03')) process.exit(0) })",
+    ].join('\n'))
+
+    const writes = async (): Promise<string[]> =>
+      await page.evaluate(async () => {
+        const res = await (window as unknown as { termpolis: { __testTerminalWrites: () => Promise<{ data: Array<{ data: string }> }> } })
+          .termpolis.__testTerminalWrites()
+        return res.data.map((w) => w.data)
+      })
+    const wheelReports = async (): Promise<number> =>
+      (await writes()).filter((d) => d.includes('\x1b[<64;') || d.includes('\x1b[<65;')).length
+    const wheelOverPane = async (): Promise<void> => {
+      const box = await page.locator('.xterm-screen').first().boundingBox()
+      if (!box) throw new Error('no .xterm-screen bounding box')
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.wheel(0, -240)
+    }
+
+    const term = page.locator('.xterm').first()
+    await term.click()
+    await page.keyboard.press('Control+C') // a clean input line
+    await page.waitForTimeout(500)
+    await page.keyboard.type(`node "${mock}"`)
+    await page.keyboard.press('Enter')
+    await expect.poll(terminalText, { timeout: 30000 }).toContain('MOCK_FULLSCREEN_READY')
+
+    // The live pane sends the wheel to the agent -- the precondition for the rest to mean anything.
+    let seen = await wheelReports()
+    await wheelOverPane()
+    await expect.poll(wheelReports, { timeout: 5000 }).toBeGreaterThan(seen)
+
+    // Remount every pane with a Settings round trip.
+    await page.locator('button[title="Settings"]').first().click()
+    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 })
+    await page.locator('button[title="Settings"]').first().click()
+    await expect(page.locator('h1:has-text("Settings")')).toBeHidden({ timeout: 10000 })
+    await expect(term).toBeVisible({ timeout: 10000 })
+    await expect.poll(terminalText, { timeout: 10000 }).toContain('MOCK_FULLSCREEN_READY')
+
+    // The rebuilt pane still sends the wheel to the agent ...
+    seen = await wheelReports()
+    await wheelOverPane()
+    await expect.poll(wheelReports, { timeout: 5000 }).toBeGreaterThan(seen)
+
+    // ... and still brackets a paste.
+    await app.evaluate(async ({ clipboard }) => clipboard.writeText('one\r\ntwo\r\nthree'))
+    const before = (await writes()).length
+    await term.click()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+V' : 'Control+V')
+    await expect
+      .poll(async () => (await writes()).slice(before).find((d) => d.includes('three')) ?? '', { timeout: 5000 })
+      .toBe('\x1b[200~one\rtwo\rthree\x1b[201~')
+
+    // Clear terminal (Ctrl+Shift+X) wipes the pane with a full reset. It has to put the agent's
+    // modes back, or pastes go in raw again until the agent happens to re-send them.
+    await page.keyboard.press('Control+Shift+X')
+    await page.waitForTimeout(500)
+    await app.evaluate(async ({ clipboard }) => clipboard.writeText('four\r\nfive'))
+    const beforeClearPaste = (await writes()).length
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+V' : 'Control+V')
+    await expect
+      .poll(async () => (await writes()).slice(beforeClearPaste).find((d) => d.includes('five')) ?? '', { timeout: 5000 })
+      .toBe('\x1b[200~four\rfive\x1b[201~')
+    seen = await wheelReports()
+    await wheelOverPane()
+    await expect.poll(wheelReports, { timeout: 5000 }).toBeGreaterThan(seen)
+
+    await page.keyboard.press('Control+C') // the mock exits
+  })
 })

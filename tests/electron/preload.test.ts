@@ -436,13 +436,17 @@ describe('preload: termpolis API — additional methods', () => {
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:data', expect.any(Function))
   })
 
-  it('onTerminalData handler invokes callback with id and data', () => {
+  it('onTerminalData handler invokes callback with id, data and the end offset main tagged it with', () => {
     const cb = vi.fn()
     exposed.termpolis.onTerminalData(cb)
     // Grab the handler that was registered
     const registeredHandler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:data')?.[1]
-    registeredHandler({}, 'tid-1', 'output-data')
-    expect(cb).toHaveBeenCalledWith('tid-1', 'output-data')
+    registeredHandler({}, 'tid-1', 'output-data', 42)
+    // The offset is what lets a replaying TerminalPane drop a chunk its replay already holds.
+    expect(cb).toHaveBeenCalledWith('tid-1', 'output-data', 42)
+    // Output main never buffered (a Strict-Mode banner) arrives without one.
+    registeredHandler({}, 'tid-1', 'banner')
+    expect(cb).toHaveBeenLastCalledWith('tid-1', 'banner', undefined)
   })
 })
 

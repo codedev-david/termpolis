@@ -37,7 +37,7 @@ const {
   mockOpenExternal, mockOpenPath,
   mockCreateFromBuffer,
   mockSpawnTerminal, mockKillTerminal, mockWriteToTerminal, mockResizeTerminal,
-  mockGetTerminalCwd, mockGetTerminalPid, mockComputeWindowsPty,
+  mockGetTerminalCwd, mockGetTerminalPid, mockComputeWindowsPty, mockGetTerminalSize,
   mockDetectAvailableShells,
   mockLoadSession, mockLoadRestoreSession, mockSaveSession,
   mockAppendCommand, mockSearchHistory,
@@ -69,6 +69,9 @@ const {
   mockGetTerminalCwd: vi.fn(() => ''),
   mockGetTerminalPid: vi.fn(() => 0),
   mockComputeWindowsPty: vi.fn(() => ({ backend: 'conpty', buildNumber: 22631 })),
+  // The geometry the pty is drawing for, which terminal:read-buffer hands a replaying pane.
+  // Default: no pty known, so the reply carries no size.
+  mockGetTerminalSize: vi.fn((): { cols: number; rows: number } | null => null),
   mockDetectAvailableShells: vi.fn(async () => [] as Array<{ type: string; executable: string; name?: string }>),
   mockLoadSession: vi.fn(() => ({ terminals: [] })),
   mockLoadRestoreSession: vi.fn(() => ({ terminals: [] })),
@@ -174,6 +177,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwd: mockGetTerminalCwd,
   getTerminalCwdAsync: mockGetTerminalCwdAsync,
   getTerminalPid: mockGetTerminalPid,
+  getTerminalSize: mockGetTerminalSize,
   computeWindowsPty: mockComputeWindowsPty,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
@@ -379,6 +383,7 @@ beforeEach(() => {
   mockClipboardReadText.mockReturnValue('')
   mockDetectAvailableShells.mockResolvedValue([])
   mockAppendAudit.mockImplementation(async () => undefined)
+  mockGetTerminalSize.mockReturnValue(null)
 })
 
 // ===========================================================================
@@ -491,12 +496,68 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     onData('hello ')
     onData('world')
 
-    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'hello ')
-    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'world')
+    // Each chunk carries where it ends in the stream (6, then 11) — see the next test.
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'hello ', 6)
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'world', 11)
     expect(await invoke('terminal:read-buffer', { terminalId: id })).toEqual({
       success: true,
       data: { output: 'hello world', length: 11, nextOffset: 11, missed: 0 },
     })
+  })
+
+  it('tags each chunk with where it ends in the stream, so a replaying pane can tell what its replay already holds', async () => {
+    // A pane asks for this buffer on mount while live chunks are still arriving, so one chunk can
+    // be inside the reply AND arrive live. Its end offset against the reply's nextOffset is how
+    // the pane tells the two apart instead of drawing the chunk twice.
+    const id = 'buf-offsets'
+    const onData = await spawnWithPump(id)
+    onData('abc')
+    onData('de')
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'abc', 3)
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'de', 5)
+    // Both were sent before this read was served, so both are inside it — and nextOffset says so.
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id })
+    expect(data.output).toBe('abcde')
+    expect(data.nextOffset).toBe(5)
+  })
+
+  it('hands a replaying pane the modes the evicted output left set, and the size the pty draws for', async () => {
+    const id = 'buf-replay'
+    mockGetTerminalSize.mockReturnValue({ cols: 120, rows: 30 })
+    const onData = await spawnWithPump(id)
+    onData('\x1b[?1049h\x1b[?2004h') // an agent's startup: alt screen + bracketed paste, sent ONCE
+    onData('x'.repeat(32768))        // ...and then enough output to evict it from the window
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id })
+    expect(data.output).toBe('x'.repeat(32768))
+    expect(data.preamble).toBe('\x1b[?1049h\x1b[?2004h')
+    expect(data).not.toHaveProperty('skip') // the window opens on plain text: nothing to skip
+    expect(data.cols).toBe(120)
+    expect(data.rows).toBe(30)
+    expect(mockGetTerminalSize).toHaveBeenCalledWith(id)
+  })
+
+  it('tells the replay how much of the window finishes a sequence the eviction cut in half', async () => {
+    const id = 'buf-skip'
+    const onData = await spawnWithPump(id)
+    onData('\x1b[?1049h' + 'x'.repeat(32760)) // exactly the cap
+    onData('ABC')                              // evicts `\x1b[?` — half the DECSET
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id })
+    expect(data.output.startsWith('1049h')).toBe(true)
+    expect(data.preamble).toBe('\x1b[?1049h')
+    expect(data.skip).toBe(5)
+  })
+
+  it("leaves a poller's read exactly as it was — no preamble, skip or size for a read from its own offset", async () => {
+    const id = 'buf-poller'
+    mockGetTerminalSize.mockReturnValue({ cols: 120, rows: 30 })
+    const onData = await spawnWithPump(id)
+    onData('\x1b[?1049h')
+    onData('x'.repeat(32768))
+    onData('NEW')
+    expect(await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 32776 })).toEqual({
+      success: true, data: { output: 'NEW', length: 3, nextOffset: 32779, missed: 0 },
+    })
+    expect(mockGetTerminalSize).not.toHaveBeenCalled()
   })
 
   it('reads from an offset so a poller only gets what is new', async () => {
