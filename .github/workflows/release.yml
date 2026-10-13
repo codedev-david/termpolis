@@ -369,13 +369,15 @@ jobs:
       # AFTER electron-builder wrote latest-mac.yml, so the recorded SHA512
       # + size are stale by ~2KB per dmg. Recompute them now or
       # validate-draft fails (and Mac auto-update breaks).
+      # --minimum-system-version: Electron 43 needs macOS 12 (Darwin 21). Without it a Mac on
+      # 10.15 or 11 would auto-update into a build that refuses to start.
       - name: Refresh latest-mac.yml after notarization (macOS)
         if: matrix.platform == 'mac'
         shell: bash
         run: |
           for DMG in dist-electron-builder/*.dmg; do
             echo "Refreshing latest-mac.yml entry for $DMG"
-            node scripts/refreshLatestYml.cjs --installer "$DMG" --yml dist-electron-builder/latest-mac.yml
+            node scripts/refreshLatestYml.cjs --installer "$DMG" --yml dist-electron-builder/latest-mac.yml --minimum-system-version 21.0.0
           done
 
       - name: Find Windows installer
