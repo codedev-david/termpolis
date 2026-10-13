@@ -1383,6 +1383,14 @@ interface ParentPortLike {
 }
 const parentPort = (process as NodeJS.Process & { parentPort?: ParentPortLike }).parentPort
 if (parentPort) {
+  // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
+  // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
+  // a child in an unknown state goes away. So it still does. Inside this block, not at the top:
+  // tests import this module too, and there it must not exit the run.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[remote bridge] unhandled rejection:', reason)
+    process.exit(1)
+  })
   const core = createBridgeCore({
     send: (m) => parentPort.postMessage(m),
     relayUrl: process.env.TERMPOLIS_RELAY_URL ?? DEFAULT_RELAY_URL,

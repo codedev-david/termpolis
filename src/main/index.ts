@@ -672,6 +672,10 @@ function createWindow() {
     backgroundColor: '#1e1e1e',
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    // Electron 43 rounds a frameless window's corners on Linux wherever the desktop draws them,
+    // which clips the custom close button in the top-right corner. Square, as before. (Electron
+    // 30 only reads this on macOS, where the default stays.)
+    ...(process.platform === 'linux' ? { roundedCorners: false } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
