@@ -104,11 +104,12 @@ test.describe.serial('Linked machines settings', () => {
     // would race that.
     await byId('linked-enable').click()
     await expect(byId('linked-enable')).toBeChecked({ timeout: 15000 })
-    // `running` means the bridge child is up with linked rooms, not that a
-    // socket is open: over a dead relay the client redials in the background,
-    // as Remote's indicator does. "(not connected)" would mean the child never
-    // came up, which is the failure this test exists to catch.
-    await expect(byId('linked-running')).toHaveText('(connected to the relay)', { timeout: 15000 })
+    // Nothing is linked yet, so the bridge holds no room and dials nothing.
+    // Main says `connecting` for every new child, so `idle` can only come from
+    // the child: proof it came up. This label used to say "(connected to the
+    // relay)" off the process alone, over this dead relay. "(not connected)"
+    // would mean the child never came up, which is what this test catches.
+    await expect(byId('linked-running')).toHaveText('(no computer linked yet)', { timeout: 15000 })
     await expect(byId('linked-error')).toHaveCount(0)
     // The relay the bridge was started with: Remote's saved setting, read back
     // through main. Checked here rather than on first paint, because a status

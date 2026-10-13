@@ -1058,6 +1058,9 @@ export interface RemotePairingView {
 export interface RemoteStatusView {
   enabled: boolean
   running: boolean
+  /** Seated (`online`), dialling/redialling (`connecting`), or no room because
+   *  nothing is paired and no QR is open (`idle`). Meaningful while `running`. */
+  relay: 'idle' | 'connecting' | 'online'
   /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
   disabled: boolean
   relayUrl: string
@@ -1137,6 +1140,9 @@ export interface LinkedActivityView {
 export interface LinkedStatusView {
   enabled: boolean
   running: boolean
+  /** This machine's rooms on its relay, as the bridge reports them (see
+   *  RemoteStatusView.relay). A link this machine joined is not counted. */
+  relay: 'idle' | 'connecting' | 'online'
   /** The Remote relay. Shown read-only here; it is set under Settings ▸ Remote. */
   relayUrl: string
   /** This computer's own name, which the other side is offered as a suggestion. */

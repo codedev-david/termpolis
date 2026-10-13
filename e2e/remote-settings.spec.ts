@@ -80,8 +80,12 @@ test.describe.serial('Remote settings', () => {
     // on Electron 43 although the box did turn on; toBeChecked below waits for it.
     await page.locator('[data-testid="remote-enable"]').click()
     await expect(page.locator('[data-testid="remote-enable"]')).toBeChecked({ timeout: 15000 })
-    // A dead relay is not an error state: the client redials in the background
-    // and the pane says so in its status text. A banner here would mean the
+    // Nothing is paired, so the bridge holds no room and dials nothing yet. Main
+    // says `connecting` for every new child, so `idle` can only come from the
+    // child itself: proof it started and reported. This label used to read
+    // "(connected to the relay)" off the process being up, over a dead relay.
+    await expect(page.locator('[data-testid="remote-running"]')).toHaveText('(no phone paired yet)', { timeout: 15000 })
+    // A dead relay is not an error state, and a banner here would mean the
     // child died, which is the failure this test exists to catch.
     await expect(page.locator('[data-testid="remote-error"]')).toHaveCount(0)
     await expect(page.locator('[data-testid="remote-disabled-banner"]')).toHaveCount(0)
@@ -97,6 +101,8 @@ test.describe.serial('Remote settings', () => {
     const qr = page.locator('[data-testid="pairing-qr"], [data-testid="pairing-qr-fallback"]')
     await expect(qr.first()).toBeVisible({ timeout: 20000 })
     await expect(page.locator('[data-testid="pairing-countdown"]')).toBeVisible()
+    // The QR's room is the first thing that dials, and the dead relay never seats it.
+    await expect(page.locator('[data-testid="remote-running"]')).toHaveText('(connecting to the relay…)')
   })
 
   test('6. closing the modal withdraws the offer without an error', async () => {
@@ -105,6 +111,8 @@ test.describe.serial('Remote settings', () => {
     await expect(page.locator('[data-testid="remote-error"]')).toHaveCount(0)
     // Nothing paired, because nothing answered the offer.
     await expect(page.locator('[data-testid="remote-no-devices"]')).toBeVisible()
+    // And with the QR's room gone there is nothing left to dial.
+    await expect(page.locator('[data-testid="remote-running"]')).toHaveText('(no phone paired yet)')
   })
 
   test('7. the only key on screen is the public one', async () => {

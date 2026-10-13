@@ -582,6 +582,27 @@ describe('remote bridge host', () => {
     expect(harness.host.status().pairing).toBeNull()
   })
 
+  it('says the relay is being dialled, not reached, until the bridge reports', () => {
+    // `running` is only the child process. A relay that refuses every dial runs too.
+    harness.host.start()
+    harness.host.setEnabled(true)
+    expect(harness.host.status()).toMatchObject({ running: true, relay: 'connecting' })
+    harness.fromBridge({ kind: 'relayState', state: 'idle' })
+    expect(harness.statuses.at(-1)?.relay).toBe('idle')
+    harness.fromBridge({ kind: 'relayState', state: 'online' })
+    expect(harness.statuses.at(-1)?.relay).toBe('online')
+    // Nothing happened to a phone, so the renderer gets a status and no event.
+    expect(harness.events).toHaveLength(0)
+  })
+
+  it("does not carry one bridge's word about the relay into the next", () => {
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    harness.fromBridge({ kind: 'relayState', state: 'online' })
+    harness.host.setRelayUrl('wss://other.example/ws')
+    expect(harness.host.status().relay).toBe('connecting')
+  })
+
   it('restarts the bridge when the relay URL changes', () => {
     // The child reads the URL once, at bootstrap. Saving the setting without a
     // restart leaves every device dialling the old relay.

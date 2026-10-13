@@ -41,6 +41,16 @@ function relativeTime(ts: number, now: number): string {
   return `${Math.round(hours / 24)}d ago`
 }
 
+/** `running` is only the bridge process, up whatever the relay is doing --
+ *  reading "connected" off it claimed a relay that refused every dial. */
+function runningText(status: RemoteStatusView): string {
+  if (!status.enabled) return ''
+  if (!status.running) return '(not connected)'
+  if (status.relay === 'online') return '(connected to the relay)'
+  if (status.relay === 'connecting') return '(connecting to the relay…)'
+  return '(no phone paired yet)'
+}
+
 type StatusResult = { success: true; data: RemoteStatusView } | { success: false; error: string }
 
 /**
@@ -243,7 +253,7 @@ export function RemoteSettings(): JSX.Element {
         />
         <span>Allow phones to connect</span>
         <span className="text-xs text-[#9ca3af]" data-testid="remote-running">
-          {status.enabled ? (status.running ? '(connected to the relay)' : '(not connected)') : ''}
+          {runningText(status)}
         </span>
       </label>
 

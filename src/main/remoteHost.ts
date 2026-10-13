@@ -109,6 +109,7 @@ const linkedPort: LinkedBridgePort = {
   verificationPhraseFor: (deviceId) => host?.linkedPort().verificationPhraseFor(deviceId) ?? null,
   relayUrl: () => host?.linkedPort().relayUrl() ?? DEFAULT_RELAY_URL,
   linkOfferLive: () => host?.linkedPort().linkOfferLive() ?? false,
+  relay: () => host?.linkedPort().relay() ?? 'idle',
 }
 
 /* c8 ignore start -- only reachable inside a packaged/dev Electron run, exactly

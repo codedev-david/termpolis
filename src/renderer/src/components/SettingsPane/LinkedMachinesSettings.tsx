@@ -15,6 +15,17 @@ import { LinkedActivityList, LinkedMachineRow } from './LinkedMachineList'
 /** Run on, write off: the grant a user gives without thinking is the harmless one. */
 const DEFAULT_GRANTS: LinkedGrants = { run: true, write: false }
 
+/** `running` is only the bridge process, up whatever the relay is doing. A link
+ *  this computer joined sits on the other one's relay, so a machine that is
+ *  online counts as connected too, and one that isn't as still dialling. */
+function runningText(status: LinkedStatusView): string {
+  if (!status.enabled) return ''
+  if (!status.running) return '(not connected)'
+  if (status.relay === 'online' || status.machines.some((m) => m.online)) return '(connected to the relay)'
+  if (status.relay === 'connecting' || status.machines.length > 0) return '(connecting to the relay…)'
+  return '(no computer linked yet)'
+}
+
 function Notice({ children }: { children: JSX.Element }): JSX.Element {
   return (
     <div className="settings-section" data-testid="linked-settings">
@@ -227,7 +238,7 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
         />
         <span>Let this computer link with my other computers</span>
         <span className="text-xs text-[#9ca3af]" data-testid="linked-running">
-          {status.enabled ? (status.running ? '(connected to the relay)' : '(not connected)') : ''}
+          {runningText(status)}
         </span>
       </label>
 
