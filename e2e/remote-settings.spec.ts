@@ -75,7 +75,10 @@ test.describe.serial('Remote settings', () => {
   })
 
   test('4. turning it on forks the bridge without complaint', async () => {
-    await page.locator('[data-testid="remote-enable"]').check()
+    // click(), not check(): the box is controlled by state that comes back from main after an IPC
+    // round trip, and check() reads it once, straight after the click. That read lost the race
+    // on Electron 43 although the box did turn on; toBeChecked below waits for it.
+    await page.locator('[data-testid="remote-enable"]').click()
     await expect(page.locator('[data-testid="remote-enable"]')).toBeChecked({ timeout: 15000 })
     // A dead relay is not an error state: the client redials in the background
     // and the pane says so in its status text. A banner here would mean the
@@ -123,7 +126,7 @@ test.describe.serial('Remote settings', () => {
   test('8. turning it off stops the bridge and leaves nothing behind', async () => {
     // Also the teardown for this file: a live utilityProcess still holding a
     // socket is exactly the kind of thing that turns app.close() into a hang.
-    await page.locator('[data-testid="remote-enable"]').uncheck()
+    await page.locator('[data-testid="remote-enable"]').click() // not uncheck(): see test 4
     await expect(page.locator('[data-testid="remote-enable"]')).not.toBeChecked({ timeout: 15000 })
     await expect(page.locator('[data-testid="remote-error"]')).toHaveCount(0)
   })
