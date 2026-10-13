@@ -43,8 +43,8 @@ test.beforeAll(async () => {
       path.resolve('out/main/index.js'),
       `--user-data-dir=${userDataDir}`,
       // Linux CI (xvfb) rejects chrome-sandbox because the binary isn't
-      // SUID-owned by root. App code later sets --no-sandbox, but by then
-      // chromium has already aborted. Mirror the pattern used by chrome-smoke.
+      // SUID-owned by root, and chromium aborts before any app code runs.
+      // Mirror the pattern used by chrome-smoke.
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
     env: { ...process.env, NODE_ENV: 'test' },

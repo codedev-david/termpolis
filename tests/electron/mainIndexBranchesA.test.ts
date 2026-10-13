@@ -807,36 +807,41 @@ async function reimportUnder(platform: NodeJS.Platform, env: Record<string, stri
 }
 
 describe('Linux launch policy (fresh module under a forced platform)', () => {
-  it('disables the SUID sandbox and applies every GPU switch the policy asks for', async () => {
-    // The chrome-sandbox bundled in an AppImage has no SUID root, so Chromium's namespace sandbox
-    // is the only one that can start. And gpuPolicy is the single source of truth for the
-    // blank-window workarounds -- index.ts must apply all three arms it can return, not just VAAPI.
+  it('applies every GPU switch the policy asks for', async () => {
+    // gpuPolicy is the single source of truth for the blank-window workarounds -- index.ts must
+    // apply all three arms it can return, not just VAAPI.
     X.gpuPolicy.mockReturnValue({ disableVaapi: true, disableHardwareAcceleration: true, disableGpuSwitch: true })
     const app = await reimportUnder('linux', { APPIMAGE: '/tmp/Termpolis.AppImage', CHROME_DEVEL_SANDBOX: undefined })
 
     const switches = app.commandLine.appendSwitch.mock.calls.map((c: unknown[]) => c[0])
-    expect(switches).toContain('no-sandbox')
-    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith('disable-features', 'VaapiVideoDecoder,VaapiVideoEncoder')
+    // Both spellings: Chromium 131 renamed the features, and Electron 34+ would ignore the old ones.
+    expect(app.commandLine.appendSwitch).toHaveBeenCalledWith(
+      'disable-features',
+      'VaapiVideoDecoder,VaapiVideoEncoder,AcceleratedVideoDecoder,AcceleratedVideoEncoder',
+    )
     expect(app.disableHardwareAcceleration).toHaveBeenCalled()
     expect(switches).toContain('disable-gpu')
     // The policy is asked about the platform actually running, never a hard-coded one.
     expect(X.gpuPolicy.mock.calls[X.gpuPolicy.mock.calls.length - 1][0]).toBe('linux')
   })
 
-  it('still drops the sandbox on a plain Linux run with no CHROME_DEVEL_SANDBOX', async () => {
-    // Not an AppImage, but no dev sandbox binary either -- same crash on launch, same fix.
+  it('gets nothing from a policy that asks for nothing: no blanket GPU disable behind the user\'s back', async () => {
     X.gpuPolicy.mockReturnValue({ disableVaapi: false, disableHardwareAcceleration: false, disableGpuSwitch: false })
     const app = await reimportUnder('linux', { APPIMAGE: undefined, CHROME_DEVEL_SANDBOX: undefined })
-    expect(app.commandLine.appendSwitch.mock.calls.map((c: unknown[]) => c[0])).toContain('no-sandbox')
-    // ...and a policy that asks for nothing gets nothing: no blanket GPU disable behind the user's back.
     expect(app.disableHardwareAcceleration).not.toHaveBeenCalled()
+    expect(app.commandLine.appendSwitch).not.toHaveBeenCalledWith('disable-features', expect.anything())
   })
 
-  it('leaves the sandbox alone when the distro provides CHROME_DEVEL_SANDBOX', async () => {
-    // A properly provisioned setuid sandbox is strictly stronger than --no-sandbox, so an
-    // unconditional appendSwitch here would silently downgrade every packaged Linux install.
+  it.each([
+    ['an AppImage', { APPIMAGE: '/tmp/Termpolis.AppImage', CHROME_DEVEL_SANDBOX: undefined }],
+    ['a plain Linux run', { APPIMAGE: undefined, CHROME_DEVEL_SANDBOX: undefined }],
+    ['a distro-provided setuid sandbox', { APPIMAGE: undefined, CHROME_DEVEL_SANDBOX: '/usr/lib/chrome-devel-sandbox' }],
+  ])('never turns the sandbox off from code (%s)', async (_launch, env) => {
+    // By the time this runs the zygote is already sandboxed, so a late no-sandbox only leaves the
+    // renderers unable to reach /dev/shm -- the Fedora 44 AppImage that never opened (issue #32).
+    // AppRun and the .deb's desktop entry pass --no-sandbox on the command line where it's needed.
     X.gpuPolicy.mockReturnValue({ disableVaapi: false, disableHardwareAcceleration: false, disableGpuSwitch: false })
-    const app = await reimportUnder('linux', { APPIMAGE: undefined, CHROME_DEVEL_SANDBOX: '/usr/lib/chrome-devel-sandbox' })
+    const app = await reimportUnder('linux', env)
     expect(app.commandLine.appendSwitch.mock.calls.map((c: unknown[]) => c[0])).not.toContain('no-sandbox')
   })
 })

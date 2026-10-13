@@ -63,11 +63,13 @@ if (process.argv.includes('--disconnect-agents')) {
 initTelemetry(app.getPath('userData'), app.getVersion?.())
 initMainSentry()
 
-// Linux AppImage: the bundled chrome-sandbox lacks SUID root, which crashes on
-// launch. Use Chromium's namespace sandbox instead (no root needed).
-if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME_DEVEL_SANDBOX)) {
-  app.commandLine.appendSwitch('no-sandbox')
-}
+// Linux sandbox: decided on the command line, never here. Chromium forks its zygote, sandboxed
+// with user namespaces wherever the kernel allows them, before this file runs. A late
+// appendSwitch('no-sandbox') then only tells each renderer it is unsandboxed while it still sits
+// inside that sandbox: it can't create shared memory in /dev/shm and the window dies on launch
+// (issue #32, Fedora 44 AppImage). Where the sandbox can't start, --no-sandbox already arrives up
+// front: the AppImage's AppRun adds it when `unshare -Ur` fails, and the .deb's desktop entry
+// carries it (build.linux.executableArgs).
 
 // Linux blank/black-window safety net, as a testable policy (see gpuPolicy.ts). By DEFAULT this
 // disables only VAAPI video decode/encode — the most-reported cause of a blank Electron window on
@@ -75,9 +77,16 @@ if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME
 // works. The FULL GPU disable is the documented TERMPOLIS_DISABLE_GPU=1 escape hatch for genuinely
 // broken drivers. (Until now `--disable-gpu` was baked into the .deb launcher, forcing the slow DOM
 // renderer on every Linux user and leaving this hatch dead — the executableArgs no longer do that.)
+// Chromium 131 renamed the two features (Vaapi* -> Accelerated*) and ignores a name it doesn't know,
+// so both spellings go in: the old ones for today's Electron 30, the new ones from Electron 34 on.
 {
   const gpu = gpuPolicy(process.platform, process.env)
-  if (gpu.disableVaapi) app.commandLine.appendSwitch('disable-features', 'VaapiVideoDecoder,VaapiVideoEncoder')
+  if (gpu.disableVaapi) {
+    app.commandLine.appendSwitch(
+      'disable-features',
+      'VaapiVideoDecoder,VaapiVideoEncoder,AcceleratedVideoDecoder,AcceleratedVideoEncoder',
+    )
+  }
   if (gpu.disableHardwareAcceleration) app.disableHardwareAcceleration()
   if (gpu.disableGpuSwitch) app.commandLine.appendSwitch('disable-gpu')
 }

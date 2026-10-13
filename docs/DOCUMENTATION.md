@@ -783,7 +783,7 @@ The bottom strip shows, left to right:
 
 **macOS: "Permission denied" when launching a terminal.** Grant Termpolis **Full Disk Access** in System Settings → Privacy & Security → Full Disk Access. Re-launch after granting.
 
-**Linux: AppImage won't run.** Mark it executable: `chmod +x Termpolis-*.AppImage`. On systems with hardened FUSE, extract and run the inner binary: `./Termpolis-*.AppImage --appimage-extract && ./squashfs-root/termpolis`.
+**Linux: AppImage won't run.** Mark it executable: `chmod +x Termpolis-*.AppImage`. On systems with hardened FUSE, extract and run the inner binary: `./Termpolis-*.AppImage --appimage-extract && ./squashfs-root/termpolis`. If the window never appears and the output ends with `Unable to access(W_OK|X_OK) /dev/shm: No such process`, update to v1.51.5 or later; on an older version, start it with `--no-sandbox`.
 
 **Data directory didn't appear.** Termpolis creates the data directory on first run — make sure you actually clicked "Open" rather than dismissing the first-launch dialog. Paths by platform: `%APPDATA%\termpolis\` (Windows), `~/Library/Application Support/termpolis/` (macOS), `~/.config/termpolis/` (Linux).
 
