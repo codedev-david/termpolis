@@ -88,9 +88,12 @@ const {
   mockWriteFileSync: vi.fn(),
 }))
 
+const wcOnHandlers = new Map<string, Function>()
 const mockWebContents = {
   send: vi.fn(),
   executeJavaScript: vi.fn(),
+  setWindowOpenHandler: vi.fn(),
+  on: vi.fn((ev: string, h: Function) => { wcOnHandlers.set(ev, h) }),
   session: {
     setPermissionRequestHandler: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
@@ -1463,6 +1466,48 @@ describe('createWindow — renderer source + chrome', () => {
     grant({}, 'media', callback)
     expect(callback).toHaveBeenCalledWith(true)
     expect(check()).toBe(true)
+  })
+
+  it('sends window.open links to the browser and never opens a second Electron window', () => {
+    recreateWindow()
+    mockOpenExternal.mockClear()
+    const open = mockWebContents.setWindowOpenHandler.mock.calls.at(-1)![0] as Function
+
+    expect(open({ url: 'https://github.com/sponsors/codedev-david' })).toEqual({ action: 'deny' })
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://github.com/sponsors/codedev-david')
+
+    // Anything that isn't a web page is refused outright, not handed to the OS either.
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'not a url']) {
+      expect(open({ url })).toEqual({ action: 'deny' })
+    }
+    expect(mockOpenExternal).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the window on the app: a link or a dropped file never navigates it away', () => {
+    recreateWindow()
+    mockOpenExternal.mockClear()
+    const willNavigate = wcOnHandlers.get('will-navigate')!
+
+    const toLink = { preventDefault: vi.fn() }
+    willNavigate(toLink, 'https://github.com/codedev-david/termpolis/blob/main/PRIVACY.md')
+    expect(toLink.preventDefault).toHaveBeenCalled()
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://github.com/codedev-david/termpolis/blob/main/PRIVACY.md')
+
+    // A dropped file would load in this window with the preload API: blocked, and not opened.
+    const toDroppedFile = { preventDefault: vi.fn() }
+    willNavigate(toDroppedFile, 'file:///home/user/Downloads/readme.html')
+    expect(toDroppedFile.preventDefault).toHaveBeenCalled()
+    expect(mockOpenExternal).toHaveBeenCalledTimes(1)
+  })
+
+  it('swallows a browser that fails to open, rather than an unhandled rejection', async () => {
+    recreateWindow()
+    mockOpenExternal.mockRejectedValueOnce(new Error('no default browser'))
+    const open = mockWebContents.setWindowOpenHandler.mock.calls.at(-1)![0] as Function
+    expect(open({ url: 'https://termpolis.com/docs.html' })).toEqual({ action: 'deny' })
+    mockOpenExternal.mockRejectedValueOnce(new Error('no default browser'))
+    wcOnHandlers.get('will-navigate')!({ preventDefault: vi.fn() }, 'https://termpolis.com')
+    await new Promise((r) => setTimeout(r, 0))
   })
 })
 

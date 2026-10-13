@@ -150,4 +150,32 @@ test.describe.serial('Report-a-Problem flow', () => {
     })
     await ss('4-submitted')
   })
+
+  test('links leave for the browser, and nothing navigates the window off the app', async () => {
+    await app.evaluate(({ shell }) => {
+      const s = shell as any
+      s.__opened = []
+      s.__origOpenExternal = shell.openExternal.bind(shell)
+      shell.openExternal = async (url: string) => { s.__opened.push(url) }
+    })
+    const appUrl = page.url()
+
+    // The Sponsor / Docs / install-hint links all use window.open(url, '_blank').
+    await page.evaluate(() => { window.open('https://github.com/sponsors/codedev-david', '_blank') })
+    // A plain link, and what a file dropped outside a terminal pane does: navigate this window.
+    await page.evaluate(() => { location.href = 'https://github.com/codedev-david/termpolis' })
+    await page.evaluate(() => { location.href = 'file:///etc/hosts' }).catch(() => {})
+    await page.waitForTimeout(1000)
+
+    const opened = await app.evaluate(({ shell }) => (shell as any).__opened as string[])
+    expect(opened).toEqual(['https://github.com/sponsors/codedev-david', 'https://github.com/codedev-david/termpolis'])
+    expect(app.windows()).toHaveLength(1)
+    expect(page.url()).toBe(appUrl)
+    expect(await page.evaluate(() => typeof (window as any).termpolis?.getAppVersion)).toBe('function')
+
+    await app.evaluate(({ shell }) => {
+      const s = shell as any
+      if (s.__origOpenExternal) shell.openExternal = s.__origOpenExternal
+    })
+  })
 })

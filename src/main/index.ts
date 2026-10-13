@@ -643,6 +643,16 @@ function loadWindowIcon() {
  */
 let onSessionEnd: (() => void) | null = null
 
+/** http(s) only: the one kind of link Termpolis hands to the user's browser. */
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url)
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function createWindow() {
   appQuitting = false
   // If the icon fails to load we leave `icon` undefined so the OS uses the
@@ -689,6 +699,20 @@ function createWindow() {
   const ses = mainWindow.webContents?.session
   ses?.setPermissionRequestHandler?.((_wc, _permission, callback) => callback(true))
   ses?.setPermissionCheckHandler?.(() => true)
+
+  // The window only ever shows Termpolis itself. A link opened with window.open goes to the user's
+  // browser, never into a second Electron window, where the grant-everything handlers above would
+  // apply to whatever site it is. Nothing may navigate this window away either: a plain link, or a
+  // file dropped outside a terminal pane, would otherwise replace the app with that page, preload
+  // API and all.
+  mainWindow.webContents?.setWindowOpenHandler?.(({ url }) => {
+    if (isWebUrl(url)) shell.openExternal(url).catch(() => { /* no browser to hand it to */ })
+    return { action: 'deny' }
+  })
+  mainWindow.webContents?.on?.('will-navigate', (event, url) => {
+    event.preventDefault()
+    if (isWebUrl(url)) shell.openExternal(url).catch(() => { /* no browser to hand it to */ })
+  })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
