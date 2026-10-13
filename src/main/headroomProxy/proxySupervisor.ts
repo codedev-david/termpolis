@@ -1,6 +1,7 @@
 import * as net from 'net'
 import type { WireStats } from './wireCompress'
 import type { Usage } from './usageParse'
+import { killUtility } from '../utilityKill'
 
 export interface ProxyResultMsg {
   kind: 'result'
@@ -46,6 +47,9 @@ let proxyEnabled = true
 let started = false
 let restartTimes: number[] = []
 let stopped = false
+// Set by stopProxy, which only the app's quit calls, and never cleared: once the app is going,
+// nothing may start a proxy it will not be around to stop.
+let shutDown = false
 let cooldownTimer: ReturnType<typeof setTimeout> | null = null
 let resultCb: ((r: ProxyResultMsg) => void) | null = null
 let stashCb: ((s: ProxyStashMsg) => void) | null = null
@@ -161,6 +165,7 @@ export function getProxyEnv(env: Record<string, string | undefined> = process.en
 export function isProxyStarted(): boolean { return started }
 
 export function startProxy(opts: { port: number; upstreamHost?: string }): void {
+  if (shutDown) return
   port = opts.port
   upstream = opts.upstreamHost || 'api.anthropic.com'
   restartTimes = []
@@ -170,20 +175,27 @@ export function startProxy(opts: { port: number; upstreamHost?: string }): void 
 }
 
 function spawnOnce(): void {
+  if (shutDown) return
   if (!spawner) { healthy = false; return }
+  let t: ProxyTransport
   try {
-    transport = spawner()
+    t = spawner()
   } catch { healthy = false; transport = null; return }
-  transport.onMessage((m) => {
+  transport = t
+  t.onMessage((m) => {
     const msg = m as { kind?: string; port?: number }
     if (!msg) return
-    if (msg.kind === 'ready') { healthy = true; if (msg.port) port = msg.port }
-    else if (msg.kind === 'error') { healthy = false }
+    // Health is the CURRENT child's. A replaced one's last words describe nothing that serves.
+    if (msg.kind === 'ready') { if (transport === t) { healthy = true; if (msg.port) port = msg.port } }
+    else if (msg.kind === 'error') { if (transport === t) healthy = false }
     else if (msg.kind === 'result' && resultCb) { try { resultCb(m as ProxyResultMsg) } catch { /* best effort */ } }
     else if (msg.kind === 'stash' && stashCb) { try { stashCb(m as ProxyStashMsg) } catch { /* best effort */ } }
   })
-  transport.onExit(() => { healthy = false; transport = null; maybeRestart() })
-  try { transport.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { healthy = false }
+  // Only the current child's exit counts. A replaced one dying late used to null out the
+  // transport of the child that replaced it -- leaving that one running where stopProxy can't
+  // reach it -- and then spawn yet another.
+  t.onExit(() => { if (transport !== t) return; healthy = false; transport = null; maybeRestart() })
+  try { t.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { healthy = false }
 }
 
 function maybeRestart(): void {
@@ -203,6 +215,7 @@ function maybeRestart(): void {
 }
 
 export function stopProxy(): void {
+  shutDown = true
   stopped = true
   started = false
   if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
@@ -220,7 +233,7 @@ export function createProxyTransport(entryPath: string): ProxyTransport {
     postMessage: (m: unknown) => child.postMessage(m),
     onMessage: (cb) => child.on('message', (m: unknown) => cb(m)), // parent gets `m` directly
     onExit: (cb) => child.on('exit', (code: number) => cb(code)),
-    kill: () => { try { child.kill() } catch { /* ignore */ } },
+    kill: () => killUtility(child),
     get pid() { return child.pid },
   }
 }
@@ -242,5 +255,5 @@ export function pickFreePort(): Promise<number> {
 export function _resetProxyForTest(): void {
   agentEnvReader = null
   if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
-  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; resultCb = null; stashCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
+  transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
 }

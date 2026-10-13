@@ -119,7 +119,7 @@ import {
   replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -4682,7 +4682,24 @@ async function semanticPoolOptions(
   // to `will-quit`. So the net has to be armed here too, or one stray handle hangs the quit forever
   // with no window left to show for it. `will-quit` is the right place rather than `before-quit`:
   // it only fires once the quit is really happening, so a close the user cancels never arms this.
-  app.on('will-quit', () => {
+  // Set once will-quit has waited for the shells, so the quit it re-issues goes straight through.
+  let terminalsReaped = false
+  app.on('will-quit', (event) => {
+    if (!terminalsReaped && process.platform !== 'win32' && runningShellCount() > 0) {
+      // Every shell has to be gone, and its exit delivered, before Node tears down. node-pty
+      // waits on each shell from a thread of its own, and reports the exit by calling into JS.
+      // A shell that exits DURING teardown makes that call fail: it throws (Napi::Error), the
+      // process aborts, and on Linux CI the abort then hung in the crash handler with the main
+      // thread blocked on a pipe write -- the e2e app.close() hang. One that never exits holds
+      // the teardown open forever instead. So: wait here, SIGKILL whatever is left after a
+      // second, and quit for real once they're all reported. (Windows: ConPTY, which neither
+      // waits nor calls back like this.)
+      event.preventDefault()
+      terminalsReaped = true
+      shutdownStep('terminals exiting')
+      void whenTerminalsExit().finally(() => app.quit())
+      return
+    }
     shutdownStep('windows closed')
     // A Second Opinion or `termpolis exec` run still going would outlive the app and keep
     // spending tokens: on Windows the agent runs under a PowerShell wrapper, outside the job

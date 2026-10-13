@@ -65,6 +65,8 @@ const M = vi.hoisted(() => ({
   writeToTerminal: vi.fn(),
   killTerminal: vi.fn(),
   killAll: vi.fn(),
+  whenTerminalsExit: vi.fn(() => Promise.resolve()),
+  runningShellCount: vi.fn(() => 0),
   detectAvailableShells: vi.fn(async () => [
     { type: 'powershell', name: 'PowerShell', executable: 'pwsh.exe' },
   ]),
@@ -176,7 +178,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   killTerminal: M.killTerminal,
   writeToTerminal: M.writeToTerminal,
   resizeTerminal: vi.fn(),
-  killAll: M.killAll,
+  killAll: M.killAll, whenTerminalsExit: M.whenTerminalsExit, runningShellCount: M.runningShellCount,
   getTerminalCwd: vi.fn(() => '/repo'),
   getTerminalCwdAsync: vi.fn(async () => '/repo'),
   getTerminalPid: vi.fn(() => 0),
@@ -1481,6 +1483,38 @@ describe('shutdown', () => {
       expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('stalled after "agent runs"'))
     } finally {
       vi.useRealTimers()
+      errSpy.mockRestore()
+    }
+  })
+
+  it('holds the quit until every shell has exited, then quits again and goes through', async () => {
+    // A shell exiting while Node tears down aborts the process (node-pty's exit call into JS
+    // throws), and on Linux CI that abort hung app.close(). So with shells still running, the
+    // first will-quit is cancelled until they are gone; the quit it re-issues is let through.
+    const { app } = (await import('electron')) as any
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let shellsGone: () => void = () => {}
+    M.runningShellCount.mockReturnValue(1)
+    M.whenTerminalsExit.mockImplementation(() => new Promise<void>((resolve) => { shellsGone = resolve }))
+    app.quit.mockClear()
+    try {
+      await withPlatform('linux', async () => {
+        const willQuit = await appCallback('will-quit')
+        const first = { preventDefault: vi.fn() }
+        willQuit(first)
+        expect(first.preventDefault).toHaveBeenCalledTimes(1)
+        expect(app.quit).not.toHaveBeenCalled()
+        shellsGone()
+        await new Promise((r) => setTimeout(r, 0))
+        expect(app.quit).toHaveBeenCalledTimes(1)
+        // The second time round it is a normal quit, shells or not.
+        const second = { preventDefault: vi.fn() }
+        willQuit(second)
+        expect(second.preventDefault).not.toHaveBeenCalled()
+      })
+    } finally {
+      M.runningShellCount.mockReturnValue(0)
+      M.whenTerminalsExit.mockImplementation(() => Promise.resolve())
       errSpy.mockRestore()
     }
   })

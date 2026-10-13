@@ -9,6 +9,8 @@ const forks: Array<{
   posted: unknown[]
   killed: number
   killThrows: boolean
+  pid: number | undefined
+  spawn: () => void
 }> = []
 
 vi.mock('electron', () => ({
@@ -22,8 +24,19 @@ vi.mock('electron', () => ({
         posted: [] as unknown[],
         killed: 0,
         killThrows: false,
+        // Running, as a forked child is by the time anything kills it -- except in the test
+        // that clears it to stand for one still starting.
+        pid: 4321 as number | undefined,
+        onSpawn: [] as Array<() => void>,
+        spawn() {
+          child.pid = 4321
+          for (const cb of child.onSpawn.splice(0)) cb()
+        },
         on(event: string, cb: (arg: unknown) => void) {
           child.listeners[event] = cb
+        },
+        once(event: string, cb: () => void) {
+          if (event === 'spawn') child.onSpawn.push(cb)
         },
         postMessage(msg: unknown) {
           child.posted.push(msg)
@@ -103,6 +116,17 @@ describe('createRemoteBridgeTransport', () => {
     const handle = createRemoteBridgeTransport('/bridge.js')
     forks[0].killThrows = true
     expect(() => handle.kill()).not.toThrow()
+    expect(forks[0].killed).toBe(1)
+  })
+
+  it('holds a kill that lands before the child has started, and delivers it on spawn', () => {
+    // A utilityProcess ignores kill() until it has a pid. Dropped, that kill leaves the child
+    // running after the app has quit, with the app's stdout and stderr still open.
+    const handle = createRemoteBridgeTransport('/bridge.js')
+    forks[0].pid = undefined
+    handle.kill()
+    expect(forks[0].killed).toBe(0)
+    forks[0].spawn()
     expect(forks[0].killed).toBe(1)
   })
 })

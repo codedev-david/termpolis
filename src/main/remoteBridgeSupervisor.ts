@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'url'
 import { utilityProcess } from 'electron'
 import type { BridgeToHost, HostToBridge } from './remoteBridge/protocol'
+import { killUtility } from './utilityKill'
 
 export interface BridgeHandle {
   postMessage(msg: HostToBridge): void
@@ -171,13 +172,7 @@ export function createRemoteBridgeTransport(
       if (event === 'message') child.on('message', cb as unknown as (m: BridgeToHost) => void)
       else child.on('exit', cb as unknown as (code: number) => void)
     },
-    kill: () => {
-      try {
-        child.kill()
-      } catch {
-        /* already gone */
-      }
-    },
+    kill: () => killUtility(child),
   } as BridgeHandle
 }
 /* c8 ignore stop */

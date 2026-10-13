@@ -199,10 +199,12 @@ const QUIT_TIMEOUT_MS = 20_000
 export async function quitApp(app: ElectronApplication | null | undefined): Promise<void> {
   if (!app) return
   const proc = app.process()
-  // The app's ends of its stdout/stderr, read while it is surely still alive, so that a hang
-  // report can say which processes still hold them.
+  // The app's ends of the pipes Playwright gave it, read while it is surely still alive, so that
+  // a hang report can say which processes still hold them. Five, not three: Playwright starts
+  // Electron with fds 3 and 4 open as well, nothing in the app closes them, and every child that
+  // main spawns (a PTY's shell, a git call) inherits them.
   const outputEnds = process.platform === 'linux' && proc.pid !== undefined
-    ? [1, 2].map(fd => safeReadlink(`/proc/${proc.pid}/fd/${fd}`)).filter(Boolean)
+    ? [1, 2, 3, 4].map(fd => safeReadlink(`/proc/${proc.pid}/fd/${fd}`)).filter(link => link.startsWith('pipe:') || link.startsWith('socket:'))
     : []
   const output: string[] = []
   const keep = (chunk: Buffer | string): void => {
@@ -217,9 +219,10 @@ export async function quitApp(app: ElectronApplication | null | undefined): Prom
     reportQuitHang(proc, output, outputEnds)
     killTree(proc)
     await Promise.race([new Promise(resolve => proc.once('exit', resolve)), sleep(5_000)])
-    // Whatever survived the kill (a child that moved to its own process group, say) may still
-    // hold the pipes, and close() waits for them. Closing our ends ends that wait.
-    for (const stream of [proc.stdin, proc.stdout, proc.stderr]) stream?.destroy()
+    // Whatever survived the kill may still hold the pipes: a PTY's shell, in a session of its own
+    // that the group kill doesn't reach, or a child of it. close() waits for every one of the
+    // five, so closing our ends is what ends that wait.
+    for (const stream of proc.stdio) (stream as { destroy?: () => void } | null)?.destroy?.()
     await Promise.race([closed, sleep(10_000)])
   }
   proc.stdout?.off('data', keep)
@@ -247,7 +250,7 @@ function reportQuitHang(proc: ChildProcess, output: string[], outputEnds: string
   const pid = proc.pid ?? 0
   const exited = proc.exitCode !== null || proc.signalCode !== null
   const state = exited
-    ? `main process ${pid} HAD exited (code ${proc.exitCode}, signal ${proc.signalCode}), but something still held its stdout/stderr open`
+    ? `main process ${pid} HAD exited (code ${proc.exitCode}, signal ${proc.signalCode}), but something still held the pipes Playwright gave it`
     : `main process ${pid} was still running`
   const lines = [
     `${spec}: app.close() had not returned after ${QUIT_TIMEOUT_MS / 1000}s; ${state}.`,
@@ -322,7 +325,7 @@ function linuxProcessState(proc: ChildProcess, exited: boolean, outputEnds: stri
 
   return [
     '',
-    `--- processes still holding the app's stdout/stderr (${inodes.join(', ') || 'pipe inode unknown'}):`,
+    `--- processes still holding the app's fds 1-4 (${inodes.join(', ') || 'pipe inode unknown'}):`,
     ...(holders.length > 0 ? holders : ['(none)']),
     '',
     `--- /proc/${pid}/status:`,

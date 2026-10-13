@@ -59,6 +59,7 @@ import type { GraphSample } from './memoryGraphSample'
 import type { ConsolEntry } from './mnemeConsolidate'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
 import type { CodeRef } from './codeGraph'
+import { killUtility } from './utilityKill'
 
 // ── Transport seam ───────────────────────────────────────────────────────────────────────────────
 // Deliberately NOT Electron's UtilityProcess type: keeping the surface to four methods is what lets
@@ -135,6 +136,12 @@ export function _resetMemoryClientForTests(): void {
   scrubber = null
   scrubbedWrites = 0
   secretsRedacted = 0
+  stopped = false
+}
+
+/** @internal test-only — undo stopMemoryHost()'s latch, for a suite that fires before-quit and
+ *  then needs the store again. Nothing in the app may call this: after a quit, nothing restarts. */
+export function _unlatchMemoryHostForTests(): void {
   stopped = false
 }
 
@@ -299,8 +306,10 @@ async function spawnAndInit(): Promise<void> {
         // stopMemoryHost() ran while this child was starting, and its 'ready' was already on the
         // way. Taking it would set mode 'host' for a child that has been killed, and that child's
         // exit would then read as a crash and fork a replacement in the middle of the app's quit.
+        // The stop's own kill may have come before the child had a pid, and been dropped: again.
         settled = true
         clearTimeout(timer)
+        try { t.kill() } catch { /* already gone */ }
         reject(new Error('memory host stopped while starting'))
         return
       }
@@ -695,7 +704,7 @@ export function createMemoryHostTransport(hostPath: string = resolveMemoryHostPa
     postMessage: (msg) => child.postMessage(msg),
     onMessage: (cb) => { child.on('message', (m: HostResponse) => cb(m)) },
     onExit: (cb) => { child.on('exit', (code: number) => cb(code)) },
-    kill: () => { try { child.kill() } catch { /* already gone */ } },
+    kill: () => killUtility(child),
     get pid() { return child.pid },
   }
 }

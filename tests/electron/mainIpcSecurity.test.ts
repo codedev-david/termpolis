@@ -200,7 +200,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
   primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: vi.fn(), killTerminal: vi.fn(), writeToTerminal: vi.fn(),
-  resizeTerminal: vi.fn(), killAll: vi.fn(), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''),
+  resizeTerminal: vi.fn(), killAll: vi.fn(), whenTerminalsExit: vi.fn(() => Promise.resolve()), runningShellCount: vi.fn(() => 0), getTerminalCwd: vi.fn(), getTerminalCwdAsync: vi.fn(async () => ''),
   getTerminalPid: H.mockGetTerminalPid,
   computeWindowsPty: vi.fn(() => ({})),
 }))

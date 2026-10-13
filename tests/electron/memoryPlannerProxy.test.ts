@@ -83,7 +83,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   // Primed at startup so spawnTerminal never probes for jq/yq/nano on the main thread.
   primeBundledToolsCheck: vi.fn(async () => false),
   spawnTerminal: vi.fn(), writeToTerminal: vi.fn(), resizeTerminal: vi.fn(), killTerminal: vi.fn(),
-  killAll: vi.fn(), getTerminal: vi.fn(), getAllTerminals: vi.fn(() => []), getOutputBuffer: vi.fn(() => ''),
+  killAll: vi.fn(), whenTerminalsExit: vi.fn(() => Promise.resolve()), runningShellCount: vi.fn(() => 0), getTerminal: vi.fn(), getAllTerminals: vi.fn(() => []), getOutputBuffer: vi.fn(() => ''),
   setMouseModeGuard: vi.fn(), onTerminalData: vi.fn(), onTerminalExit: vi.fn(),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))
