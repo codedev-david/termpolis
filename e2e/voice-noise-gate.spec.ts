@@ -23,6 +23,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { quitApp } from './helpers/launch'
 
 const REPO = path.resolve('.')
 const NOISE = path.join(REPO, 'tests', 'fixtures', 'voice-noise.wav')
@@ -103,7 +104,7 @@ test.describe.serial('Voice gates steady noise (no phantom transcript)', () => {
   })
 
   test.afterAll(async () => {
-    if (app) await app.close()
+    await quitApp(app)
     if (isolatedUserData) { try { fs.rmSync(isolatedUserData, { recursive: true, force: true }) } catch {} }
   })
 

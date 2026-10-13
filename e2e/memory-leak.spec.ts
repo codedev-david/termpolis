@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -117,7 +117,7 @@ test.beforeAll(async () => {
       break
     } catch (err) {
       console.log(`Launch attempt ${attempt + 1} failed, retrying...`)
-      try { await app?.close() } catch { /* ignore */ }
+      await quitApp(app)
       if (attempt === 2) throw err
       await new Promise(r => setTimeout(r, 3000))
     }
@@ -125,7 +125,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  try { if (app) await app.close() } catch { /* already closed */ }
+  await quitApp(app)
 })
 
 test.describe.serial('Memory Leak Detection', () => {

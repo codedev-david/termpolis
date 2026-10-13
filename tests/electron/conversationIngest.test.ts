@@ -277,6 +277,25 @@ describe('ingestConversations', () => {
     expect(written).toHaveLength(3) // it really stopped — didn't embed the rest
   })
 
+  it('reads no further file once the app is quitting, and leaves the rest as backlog', async () => {
+    // Every read still under way is one more request the app's exit waits out, and a pass that
+    // kept going through quit was one of the things an e2e app.close() hung behind.
+    let quitting = false
+    const read: string[] = []
+    const deps: IngestDeps = {
+      sources: ['claude'],
+      listFiles: async () => ['a.jsonl', 'b.jsonl', 'c.jsonl'],
+      readFile: async (fp) => { read.push(fp); if (fp === 'b.jsonl') quitting = true; return fileTurn(fp) },
+      hasHash: () => false,
+      write: async () => {},
+      stopped: () => quitting,
+    }
+    const s = await ingestConversations(deps)
+    expect(read).toEqual(['a.jsonl', 'b.jsonl']) // b was already read when the quit came; c never is
+    expect(s.filesScanned).toBe(2)
+    expect(s.truncated).toBe(true)
+  })
+
   it('uses the real setImmediate yield when none is injected', async () => {
     const deps: IngestDeps = {
       sources: ['claude'],

@@ -25,6 +25,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { quitApp } from './helpers/launch'
 
 let app: ElectronApplication | null = null
 let page: Page | null = null
@@ -98,7 +99,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  try { await app?.close() } catch { /* already gone */ }
+  await quitApp(app)
   for (const d of [projectDir, isolatedUserData]) {
     try { if (d) fs.rmSync(d, { recursive: true, force: true }) } catch { /* temp dir */ }
   }

@@ -10,7 +10,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -36,7 +36,7 @@ async function launchApp() {
 /** Close the app and wait for session to flush */
 async function closeApp() {
   await page.waitForTimeout(2000) // let session auto-save (debounced 500ms)
-  await app.close()
+  await quitApp(app)
 }
 
 /** Restart: close then relaunch with delay for single-instance lock release */
@@ -139,7 +139,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
 })
 
 // ════════════════════════════════════════════════════════════
@@ -443,7 +443,7 @@ test.describe.serial('Session Restore', () => {
     // mean the agent is running again — not an empty prompt in the right directory.
     // The workspace is seeded straight into the session file because launching a real
     // agent from the sidebar needs a native directory picker.
-    if (app) await app.close()
+    await quitApp(app)
     const sessionPath = path.join(e2eUserDataDir('session-restore'), 'session.json')
     const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'))
     session.terminals = []

@@ -293,6 +293,10 @@ jobs:
           done
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
+      # quitApp() (e2e/helpers/launch.ts) attaches gdb to a main process that won't quit, so the
+      # warning it leaves names the native frame the quit is stuck in.
+      - name: Install gdb
+        run: sudo apt-get install -y --no-install-recommends gdb || true
       - name: Build
         run: npm run build
       # e2e/linux-sandbox.spec.ts launches with Chromium's sandbox ON (issue #32), which needs

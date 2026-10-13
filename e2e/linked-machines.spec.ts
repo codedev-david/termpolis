@@ -18,7 +18,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding, quitApp } from './helpers/launch'
 
 /** Discard port on loopback: refused instantly, never routed. Still a relay a
  *  link code may name -- plain ws:// is accepted on loopback only. */
@@ -69,7 +69,7 @@ test.afterAll(async () => {
   await page
     ?.evaluate(() => (window as unknown as { linked?: { setEnabled(on: boolean): Promise<unknown> } }).linked?.setEnabled(false))
     .catch(() => {})
-  if (app) await app.close()
+  await quitApp(app)
 })
 
 test.describe.serial('Linked machines settings', () => {

@@ -110,6 +110,9 @@ const restartTimes: number[] = []
 let scrubber: MemoryScrubber | null = null
 let scrubbedWrites = 0
 let secretsRedacted = 0
+// Set by stopMemoryHost (app shutdown) and never cleared: from then on nothing starts a host, and
+// nothing falls back to loading the store on the main thread, while the app is trying to exit.
+let stopped = false
 
 /** Set the spawner (the app wires this to a real utilityProcess; tests inject a fake). Mirrors
  *  localEmbedder.setWorkerSpawner. With none set, startMemoryHost runs the store in-process. */
@@ -132,6 +135,7 @@ export function _resetMemoryClientForTests(): void {
   scrubber = null
   scrubbedWrites = 0
   secretsRedacted = 0
+  stopped = false
 }
 
 /** Which side is actually serving memory. Observable so the app can SAY so (and so a test can prove
@@ -208,6 +212,7 @@ function failAllPending(reason: string): void {
 }
 
 function fallBackToInProcess(why: string): void {
+  if (stopped) return
   logLoud(`FALLBACK — running the memory store on the MAIN thread: ${why}`)
   transport = null
   mode = 'inproc'
@@ -246,7 +251,7 @@ function onChildExit(code: number): void {
   // result" here would be indistinguishable from "you have no memories", the worst lie this app
   // can tell.
   failAllPending(`memory host exited unexpectedly (code ${code})`)
-  if (!wasHost || !initParams) return
+  if (!wasHost || !initParams || stopped) return
 
   // (b) respawn — but do not flap. A child that dies on init (bad key, corrupt store) would
   // otherwise restart forever, and the app would look alive while every call failed.
@@ -290,6 +295,15 @@ async function spawnAndInit(): Promise<void> {
     }, READY_TIMEOUT_MS)
 
     t.onMessage((msg: HostResponse) => {
+      if (!settled && msg?.kind === 'ready' && transport !== t) {
+        // stopMemoryHost() ran while this child was starting, and its 'ready' was already on the
+        // way. Taking it would set mode 'host' for a child that has been killed, and that child's
+        // exit would then read as a crash and fork a replacement in the middle of the app's quit.
+        settled = true
+        clearTimeout(timer)
+        reject(new Error('memory host stopped while starting'))
+        return
+      }
       if (!settled && msg?.kind === 'ready') {
         settled = true
         clearTimeout(timer)
@@ -330,6 +344,7 @@ async function spawnAndInit(): Promise<void> {
  * terminal down with it.
  */
 export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mode> {
+  if (stopped) return mode
   const userDataPath = opts.userDataPath
   const syncDir = opts.syncDir ?? null
   // Provision the key BEFORE we choose a mode, so the host and the in-process fallback are given
@@ -359,8 +374,12 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
   return mode
 }
 
-/** Stop the child (app shutdown). The store is already durable on disk. */
+/**
+ * Stop the child (app shutdown). The store is already durable on disk. Final: the app is quitting,
+ * so a host that is still starting, or one that exits after this, is never replaced.
+ */
 export function stopMemoryHost(): void {
+  stopped = true
   try { transport?.kill() } catch { /* already gone */ }
   transport = null
   readyPromise = null
