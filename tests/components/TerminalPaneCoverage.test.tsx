@@ -437,6 +437,8 @@ beforeEach(() => {
     clipboardWriteText: mockClipboardWriteText,
     clipboardReadText: mockClipboardReadText,
     clipboardWriteRich: mockClipboardWriteRich,
+    // A constructed File has no path on disk; webUtils answers ''.
+    getPathForFile: () => '',
     detectAgents: mockDetectAgents,
     secondOpinion: mockSecondOpinion,
     groqGetKeyStatus: mockGroqGetKeyStatus,
@@ -1463,14 +1465,14 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
 
-    it('a dropped File with no Electron `path` yields an empty quoted arg, never "undefined"', () => {
+    it('a dropped File with no path on disk writes nothing, not an empty quoted arg', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       mockWriteToTerminal.mockClear()
-      const f = new File(['x'], 'notes.txt', { type: 'text/plain' }) // browser File — no .path
+      const f = new File(['x'], 'notes.txt', { type: 'text/plain' }) // browser File — not on disk
 
       fireEvent.drop(pane(container), { dataTransfer: { files: [f] } })
 
-      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '""')
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
   })
 

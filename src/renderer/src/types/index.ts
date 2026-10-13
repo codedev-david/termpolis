@@ -540,6 +540,10 @@ export interface TermpolisAPI {
   clipboardReadText: () => Promise<IpcResponse<string>>
   clipboardWriteRich: (text: string, html: string) => Promise<IpcResponse>
 
+  // The on-disk path of a dropped File, '' when it has none (Electron's webUtils; `File.path`
+  // is gone since Electron 32).
+  getPathForFile: (file: File) => string
+
   // Voice (Groq cloud STT). The API key lives only in main (OS keychain); the
   // renderer can validate/set/clear it and read a masked status, and send PCM to
   // be transcribed — it never holds the raw key.

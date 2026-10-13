@@ -310,4 +310,47 @@ test.describe.serial('Terminal clipboard (real OS clipboard)', () => {
 
     await page.keyboard.press('Control+C') // the mock exits
   })
+
+  // Dropping a file from disk types its quoted path. The drop handler read `File.path`, which
+  // Electron 32 removed; it now asks the preload (webUtils.getPathForFile). Asserted on what reached
+  // the PTY, so it also proves the sandboxed preload can reach webUtils at all.
+  test('dropping a file from disk types its quoted path', async () => {
+    const dropped = path.join(isolatedUserData, 'dropped file.txt')
+    fs.writeFileSync(dropped, 'x')
+    await expect(page.locator('.xterm').first()).toBeVisible({ timeout: 10000 })
+
+    // A File that really lives on disk is what an <input type=file> hands back.
+    await page.evaluate(() => {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.id = 'e2e-drop-source'
+      input.style.display = 'none'
+      document.body.appendChild(input)
+    })
+    await page.setInputFiles('#e2e-drop-source', dropped)
+
+    const writes = async (): Promise<string[]> =>
+      await page.evaluate(async () => {
+        const res = await (window as unknown as { termpolis: { __testTerminalWrites: () => Promise<{ data: Array<{ data: string }> }> } })
+          .termpolis.__testTerminalWrites()
+        return res.data.map((w) => w.data)
+      })
+    const before = (await writes()).length
+    await page.evaluate(() => {
+      const input = document.getElementById('e2e-drop-source') as HTMLInputElement
+      const dt = new DataTransfer()
+      dt.items.add(input.files![0])
+      const pane = document.querySelector('.xterm')!.closest('.flex-1.relative')!
+      pane.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }))
+      input.remove()
+    })
+
+    let typed = ''
+    await expect
+      .poll(async () => (typed = (await writes()).slice(before).find((d) => d.includes('dropped file.txt')) ?? ''), { timeout: 5000 })
+      .toMatch(/^".+dropped file\.txt"$/)
+    // The file's real location, not just its name (compared resolved: Windows temp paths can be 8.3).
+    expect(fs.realpathSync.native(typed.slice(1, -1))).toBe(fs.realpathSync.native(dropped))
+    await page.keyboard.press('Control+C') // leave the shell's input line empty
+  })
 })

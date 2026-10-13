@@ -1808,11 +1808,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         onDrop={(e) => {
           e.preventDefault()
           e.stopPropagation()
-          const files = Array.from(e.dataTransfer.files)
-          if (files.length > 0) {
-            // Paste file paths into terminal, quoted and space-separated
-            const paths = files.map(f => `"${(f as File & { path?: string }).path ?? ''}"`).join(' ')
-            window.termpolis.writeToTerminal(terminalId, paths)
+          // Paste file paths into terminal, quoted and space-separated. A file with no path on
+          // disk (dragged out of a web page) has nothing to paste.
+          const paths = Array.from(e.dataTransfer.files)
+            .map(f => window.termpolis.getPathForFile(f))
+            .filter(Boolean)
+          if (paths.length > 0) {
+            window.termpolis.writeToTerminal(terminalId, paths.map(p => `"${p}"`).join(' '))
           }
         }}
       >

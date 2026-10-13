@@ -310,6 +310,7 @@ const mockKillTerminal = vi.fn()
 const mockClipboardWriteText = vi.fn(() => Promise.resolve({ success: true }))
 const mockClipboardReadText = vi.fn(() => Promise.resolve({ success: true, data: 'pasted-text' }))
 const mockClipboardWriteRich = vi.fn(() => Promise.resolve({ success: true }))
+const mockGetPathForFile = vi.fn((_file: File) => '')
 
 beforeAll(() => {
   ;(window as any).termpolis = {
@@ -325,6 +326,7 @@ beforeAll(() => {
     clipboardWriteText: mockClipboardWriteText,
     clipboardReadText: mockClipboardReadText,
     clipboardWriteRich: mockClipboardWriteRich,
+    getPathForFile: mockGetPathForFile,
     listAISessions: vi.fn().mockResolvedValue({ success: true, data: [] }),
     groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_test' } })),
     platformInfo: { platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } },
@@ -3638,18 +3640,43 @@ describe('TerminalPane', () => {
       const terminalContainer = container.querySelector('.flex-1.relative')!
 
       const file1 = new File([''], 'test.txt')
-      Object.defineProperty(file1, 'path', { value: '/home/user/test.txt' })
       const file2 = new File([''], 'test2.txt')
-      Object.defineProperty(file2, 'path', { value: '/home/user/test2.txt' })
+      const onDisk = new Map([[file1, '/home/user/test.txt'], [file2, '/home/user/test2.txt']])
+      mockGetPathForFile.mockImplementation((f: File) => onDisk.get(f) ?? '')
 
       fireEvent.drop(terminalContainer, {
         dataTransfer: { files: [file1, file2] },
       })
 
+      expect(mockGetPathForFile).toHaveBeenCalledWith(file1)
       expect(mockWriteToTerminal).toHaveBeenCalledWith(
         'term-1',
         '"/home/user/test.txt" "/home/user/test2.txt"'
       )
+    })
+
+    it('ignores the File.path that Electron 32 removed, asking webUtils for the path instead', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const file = new File([''], 'test.txt')
+      Object.defineProperty(file, 'path', { value: '/stale/path.txt' })
+      mockGetPathForFile.mockReturnValue('/home/user/test.txt')
+
+      fireEvent.drop(container.querySelector('.flex-1.relative')!, { dataTransfer: { files: [file] } })
+
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '"/home/user/test.txt"')
+    })
+
+    it('drops only the files that have a path on disk', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const onDisk = new File([''], 'a.txt')
+      const fromWeb = new File([''], 'b.png')
+      mockGetPathForFile.mockImplementation((f: File) => (f === onDisk ? 'C:\\work\\a.txt' : ''))
+
+      fireEvent.drop(container.querySelector('.flex-1.relative')!, { dataTransfer: { files: [fromWeb, onDisk] } })
+
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '"C:\\work\\a.txt"')
     })
 
     it('dragOver is handled without error', () => {
