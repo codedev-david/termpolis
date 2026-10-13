@@ -175,6 +175,8 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwd: mockGetTerminalCwd,
   getTerminalCwdAsync: mockGetTerminalCwdAsync,
   getTerminalPid: mockGetTerminalPid,
+  // terminal:read-buffer hands a replaying pane the pty's size; no pty is known here.
+  getTerminalSize: vi.fn(() => null),
   computeWindowsPty: mockComputeWindowsPty,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
@@ -390,8 +392,28 @@ describe('terminal:clear IPC', () => {
     onData('hello world')
     expect((await invoke('terminal:read-buffer', { terminalId: id })).data.output).toBe('hello world')
 
-    expect(await invoke('terminal:clear', { terminalId: id })).toEqual({ success: true, data: undefined })
+    // Plain text set no terminal modes, so there are none to hand back.
+    expect(await invoke('terminal:clear', { terminalId: id })).toEqual({ success: true, data: { preamble: '' } })
     expect((await invoke('terminal:read-buffer', { terminalId: id })).data.output).toBe('')
+  })
+
+  it('hands back, from the same step as the clear, the modes the cleared output left set', async () => {
+    // The renderer's term.reset() also wipes the modes the running agent turned on — bracketed
+    // paste, the alternate screen, the mouse — and the agent will not send them again. The
+    // cleared window has just been folded into the evicted-mode tracker, so main knows them;
+    // computing them in the same synchronous step means no output can land in between.
+    const id = newId('clear')
+    const onData = await spawnWithPump(id)
+    onData('\x1b[?1049h\x1b[?2004h')
+    onData('frame')
+
+    expect(await invoke('terminal:clear', { terminalId: id })).toEqual({
+      success: true, data: { preamble: '\x1b[?1049h\x1b[?2004h' },
+    })
+    // ...and the next mount's replay gets the same modes, with nothing left to draw.
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id })
+    expect(data.output).toBe('')
+    expect(data.preamble).toBe('\x1b[?1049h\x1b[?2004h')
   })
 
   it('keeps the ABSOLUTE stream position, reporting the wipe as missed output', async () => {
@@ -460,9 +482,10 @@ describe('terminal:clear IPC', () => {
 
   it('answers ok for a terminal that never existed', async () => {
     // Clearing an unknown id is not an error: a pane can close between the keystroke and
-    // the IPC arriving, and surfacing that race as a failure would be pure noise.
+    // the IPC arriving, and surfacing that race as a failure would be pure noise. It set no
+    // modes either, so there are none to hand back.
     expect(await invoke('terminal:clear', { terminalId: 'never-spawned' })).toEqual({
-      success: true, data: undefined,
+      success: true, data: { preamble: '' },
     })
   })
 })

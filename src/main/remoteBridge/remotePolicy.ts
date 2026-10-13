@@ -40,11 +40,12 @@ export function requiredCapability(request: RemoteRequest): keyof Capabilities |
       return 'closeTerminal'
     // Both are the folder-picker path that ends in opening a terminal. They ride
     // `createTerminal`, not a grant of their own: browsing the desktop's folders
-    // and launching a fixed agent binary in one is exactly the reach the local
-    // "new AI terminal" flow already has, and no less -- `launchAgent` composes a
-    // command from a three-value enum, never from phone-supplied text, so it is
-    // not the arbitrary execution that keeps `runCommand`/`writeToTerminal` on
-    // their own grant.
+    // (on any local drive, as the native folder dialog can) and launching a fixed
+    // agent binary in one is exactly the reach the local "new AI terminal" flow
+    // already has, and no less -- `launchAgent` composes a command from a
+    // three-value enum, never from phone-supplied text, so it is not the
+    // arbitrary execution that keeps `runCommand`/`writeToTerminal` on their own
+    // grant.
     case 'listDirectory':
     case 'launchAgent':
       return 'createTerminal'

@@ -36,9 +36,9 @@ test.beforeAll(async () => {
       path.resolve('out/main/index.js'),
       `--user-data-dir=${isolatedUserData}`,
       // Ubuntu 24.04 GHA runners ship chrome-sandbox without SUID root,
-      // which crashes Electron at startup. App code sets no-sandbox later
-      // via app.commandLine, but that's too late â€” the chromium runtime
-      // checks before JS runs. Pass it up-front on Linux.
+      // which crashes Electron at startup. Chromium settles its sandbox
+      // before any JS runs (the app never touches it), so pass it up-front
+      // on Linux.
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
     ],
     env: {

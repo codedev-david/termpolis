@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ModelCatalog } from '../renderer/src/lib/modelCatalog'
 import type {
   TermpolisAPI,
@@ -37,7 +37,9 @@ const api: TermpolisAPI = {
     ipcRenderer.send('terminal:resize', { id, cols, rows }),
 
   onTerminalData: (cb) => {
-    const handler = (_: Electron.IpcRendererEvent, id: string, data: string) => cb(id, data)
+    // `end` is where the chunk ends in the terminal's output stream (absent for output main
+    // never buffered). TerminalPane compares it with a mount replay's nextOffset.
+    const handler = (_: Electron.IpcRendererEvent, id: string, data: string, end?: number) => cb(id, data, end)
     ipcRenderer.on('terminal:data', handler)
     return () => ipcRenderer.removeListener('terminal:data', handler)
   },
@@ -309,6 +311,10 @@ const api: TermpolisAPI = {
   clipboardWriteText: (text: string) => ipcRenderer.invoke('clipboard:write-text', { text }),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
   clipboardWriteRich: (text: string, html: string) => ipcRenderer.invoke('clipboard:write-rich', { text, html }),
+
+  // Where a dropped file lives on disk ('' for one that isn't on disk). Electron 32 removed
+  // `File.path`, which is what the terminal's drop handler used to read.
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
   // Voice (Groq cloud STT). The API key stays in main (OS keychain) — these only
   // push the key one-way into main, read back a masked status, or send PCM out.

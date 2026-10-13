@@ -353,9 +353,9 @@ That's the only command you need on v1.11.31+. The package's postinst takes care
 
 - runs `apt-get install -f -y` to pull any missing transitive deps (libgtk, libnss3, …),
 - refreshes the desktop + hicolor icon caches so the launcher icon shows up without a logout, and
-- the .desktop entry ships with `--no-sandbox --disable-gpu` baked into the `Exec=` line, so clicking the dock icon launches a working window on NVIDIA / Wayland setups where Chromium's GPU compositor would otherwise produce a blank black box.
+- the .desktop entry passes `--no-sandbox` on its `Exec=` line, so clicking the dock icon starts the app even where Chromium's sandbox can't (Ubuntu 24.04 restricts the user namespaces it needs).
 
-If you ever need to launch from a shell with the same flags applied: `/opt/Termpolis/termpolis --no-sandbox --disable-gpu`.
+If you ever need to launch from a shell with the same flag: `/opt/Termpolis/termpolis --no-sandbox`. If the window opens blank or black (some NVIDIA / Wayland drivers), start it with `TERMPOLIS_DISABLE_GPU=1` to turn the GPU off.
 
 **`sudo` in Termpolis terminals.** If `sudo`, `su` or `pkexec` fail in every terminal with *"The 'no new privileges' flag is set"*, the window was reopened by an in-app update of the .deb from Termpolis 1.50.0 or earlier. Quit Termpolis and open it again from your applications menu. Since v1.50.1, updates no longer cause it, and a window that starts with the flag says so and, where `systemd-run` is available, offers to restart itself properly. Every Termpolis terminal also sets `SUDO_ASKPASS`, so `sudo -A` there asks for your password in a Termpolis dialog that shows the whole command (Linux and macOS). Termpolis tells Codex, and Claude Code in projects with saved memory, to use it; otherwise mention `sudo -A` in your prompt.
 

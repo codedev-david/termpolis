@@ -33,6 +33,7 @@ const H = vi.hoisted(() => {
     open: vi.fn(),
     focus: vi.fn(),
     write: vi.fn(),
+    paste: vi.fn(),
     dispose: vi.fn(),
     onData: vi.fn(),
     attachCustomKeyEventHandler: vi.fn(),
@@ -436,6 +437,8 @@ beforeEach(() => {
     clipboardWriteText: mockClipboardWriteText,
     clipboardReadText: mockClipboardReadText,
     clipboardWriteRich: mockClipboardWriteRich,
+    // A constructed File has no path on disk; webUtils answers ''.
+    getPathForFile: () => '',
     detectAgents: mockDetectAgents,
     secondOpinion: mockSecondOpinion,
     groqGetKeyStatus: mockGroqGetKeyStatus,
@@ -1161,6 +1164,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
 
       expect(mockClipboardReadText).toHaveBeenCalled()
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
 
     it('a REJECTED clipboard read on Ctrl+Shift+V writes nothing to the pty', async () => {
@@ -1172,6 +1176,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
 
     it('a FAILED clipboard read on Ctrl+V writes nothing to the pty', async () => {
@@ -1183,6 +1188,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
 
     it('a REJECTED clipboard read on Ctrl+V writes nothing to the pty', async () => {
@@ -1194,6 +1200,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
   })
 
@@ -1458,14 +1465,14 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
 
-    it('a dropped File with no Electron `path` yields an empty quoted arg, never "undefined"', () => {
+    it('a dropped File with no path on disk writes nothing, not an empty quoted arg', () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       mockWriteToTerminal.mockClear()
-      const f = new File(['x'], 'notes.txt', { type: 'text/plain' }) // browser File — no .path
+      const f = new File(['x'], 'notes.txt', { type: 'text/plain' }) // browser File — not on disk
 
       fireEvent.drop(pane(container), { dataTransfer: { files: [f] } })
 
-      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '""')
+      expect(mockWriteToTerminal).not.toHaveBeenCalled()
     })
   })
 
@@ -1484,6 +1491,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
 
       expect(mockClipboardReadText).toHaveBeenCalled()
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
       expect(screen.queryByTestId('terminal-context-menu')).not.toBeInTheDocument()
     })
 
@@ -1497,6 +1505,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       await act(async () => { await Promise.resolve() })
 
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect(H.term.paste).not.toHaveBeenCalled()
     })
   })
 

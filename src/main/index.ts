@@ -63,11 +63,13 @@ if (process.argv.includes('--disconnect-agents')) {
 initTelemetry(app.getPath('userData'), app.getVersion?.())
 initMainSentry()
 
-// Linux AppImage: the bundled chrome-sandbox lacks SUID root, which crashes on
-// launch. Use Chromium's namespace sandbox instead (no root needed).
-if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME_DEVEL_SANDBOX)) {
-  app.commandLine.appendSwitch('no-sandbox')
-}
+// Linux sandbox: decided on the command line, never here. Chromium forks its zygote, sandboxed
+// with user namespaces wherever the kernel allows them, before this file runs. A late
+// appendSwitch('no-sandbox') then only tells each renderer it is unsandboxed while it still sits
+// inside that sandbox: it can't create shared memory in /dev/shm and the window dies on launch
+// (issue #32, Fedora 44 AppImage). Where the sandbox can't start, --no-sandbox already arrives up
+// front: the AppImage's AppRun adds it when `unshare -Ur` fails, and the .deb's desktop entry
+// carries it (build.linux.executableArgs).
 
 // Linux blank/black-window safety net, as a testable policy (see gpuPolicy.ts). By DEFAULT this
 // disables only VAAPI video decode/encode — the most-reported cause of a blank Electron window on
@@ -75,9 +77,16 @@ if (process.platform === 'linux' && (process.env.APPIMAGE || !process.env.CHROME
 // works. The FULL GPU disable is the documented TERMPOLIS_DISABLE_GPU=1 escape hatch for genuinely
 // broken drivers. (Until now `--disable-gpu` was baked into the .deb launcher, forcing the slow DOM
 // renderer on every Linux user and leaving this hatch dead — the executableArgs no longer do that.)
+// Chromium 131 renamed the two features (Vaapi* -> Accelerated*) and ignores a name it doesn't know,
+// so both spellings go in: the old ones for today's Electron 30, the new ones from Electron 34 on.
 {
   const gpu = gpuPolicy(process.platform, process.env)
-  if (gpu.disableVaapi) app.commandLine.appendSwitch('disable-features', 'VaapiVideoDecoder,VaapiVideoEncoder')
+  if (gpu.disableVaapi) {
+    app.commandLine.appendSwitch(
+      'disable-features',
+      'VaapiVideoDecoder,VaapiVideoEncoder,AcceleratedVideoDecoder,AcceleratedVideoEncoder',
+    )
+  }
   if (gpu.disableHardwareAcceleration) app.disableHardwareAcceleration()
   if (gpu.disableGpuSwitch) app.commandLine.appendSwitch('disable-gpu')
 }
@@ -103,6 +112,7 @@ import {
   readOutputFrom,
   readOutputTail,
   clearOutput,
+  replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
@@ -121,6 +131,7 @@ import {
   setAuditEnabled,
   scanText as aiSecurityScan,
   processOutboundChunk,
+  stripPasteMarkers,
   appendAudit as aiSecurityAppend,
   getRecentAudit as aiSecurityRecent,
   clearAudit as aiSecurityClear,
@@ -632,6 +643,16 @@ function loadWindowIcon() {
  */
 let onSessionEnd: (() => void) | null = null
 
+/** http(s) only: the one kind of link Termpolis hands to the user's browser. */
+function isWebUrl(url: string): boolean {
+  try {
+    const { protocol } = new URL(url)
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function createWindow() {
   appQuitting = false
   // If the icon fails to load we leave `icon` undefined so the OS uses the
@@ -678,6 +699,20 @@ function createWindow() {
   const ses = mainWindow.webContents?.session
   ses?.setPermissionRequestHandler?.((_wc, _permission, callback) => callback(true))
   ses?.setPermissionCheckHandler?.(() => true)
+
+  // The window only ever shows Termpolis itself. A link opened with window.open goes to the user's
+  // browser, never into a second Electron window, where the grant-everything handlers above would
+  // apply to whatever site it is. Nothing may navigate this window away either: a plain link, or a
+  // file dropped outside a terminal pane, would otherwise replace the app with that page, preload
+  // API and all.
+  mainWindow.webContents?.setWindowOpenHandler?.(({ url }) => {
+    if (isWebUrl(url)) shell.openExternal(url).catch(() => { /* no browser to hand it to */ })
+    return { action: 'deny' }
+  })
+  mainWindow.webContents?.on?.('will-navigate', (event, url) => {
+    event.preventDefault()
+    if (isWebUrl(url)) shell.openExternal(url).catch(() => { /* no browser to hand it to */ })
+  })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -762,8 +797,11 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
         const agentPaths = getAgentExtraPaths()
         const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
         spawnTerminal(id, shell.executable, cwd, (data) => {
-          mainWindow?.webContents.send('terminal:data', id, data)
-          appendOutput(terminalOutputBuffers, id, data)
+          // Buffer first, so the event can carry where this chunk ENDS in the stream: a pane
+          // replaying the buffer on mount compares it with the reply's nextOffset, to drop a
+          // chunk that is both in its replay and on its way live instead of drawing it twice.
+          const end = appendOutput(terminalOutputBuffers, id, data)
+          mainWindow?.webContents.send('terminal:data', id, data, end)
           // Mark only. The remote pump reads the buffer on its own 50ms tick, so a
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
@@ -915,6 +953,9 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
 ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
+  // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
+  // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
+  const typed = typeof data === 'string' ? stripPasteMarkers(data) : data
   // Strict-mode enforcement: if the user is launching `gemini` on a free-tier
   // account and the operator has enabled the lock, intercept BEFORE forwarding
   // to the PTY. We write a refusal banner directly back to the terminal stream
@@ -923,7 +964,7 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   try {
     if (typeof data === 'string' && data.length > 0) {
       const s = getAiSecuritySettings()
-      if (s.strictGeminiPaidOnly && strictBlockPattern.test(data)) {
+      if (s.strictGeminiPaidOnly && strictBlockPattern.test(typed)) {
         const acct = detectGeminiAccount()
         if (!acct.safeForTraining) {
           writeToTerminal(id, '\u0003')
@@ -957,8 +998,8 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   // this gates auto-scan to only the terminals where the leak risk lives.
   let detectedAgent: string | null = null
   try {
-    if (typeof data === 'string' && auditLaunchPattern.test(data)) {
-      detectedAgent = launchedAgentName(data.match(auditLaunchPattern))
+    if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
+      detectedAgent = launchedAgentName(typed.match(auditLaunchPattern))
       if (detectedAgent) {
         aiTerminalFlag.add(id)
       }
@@ -1044,12 +1085,12 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
   // ALWAYS. Unmodified. Never withheld. This is the "don't touch" half of the contract.
   writeToTerminal(id, data)
   try {
-    if (typeof data === 'string' && auditLaunchPattern.test(data)) {
+    if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
       const last = recentlyAuditedTerminals.get(id) || 0
       const now = Date.now()
       if (now - last > 5000) {
         recentlyAuditedTerminals.set(id, now)
-        const agent = launchedAgentName(data.match(auditLaunchPattern)) ?? 'unknown'
+        const agent = launchedAgentName(typed.match(auditLaunchPattern)) ?? 'unknown'
         aiSecurityAppend({ agent, event: 'terminal_open', terminalId: id, byteCount: data.length, notes: 'AI agent invocation detected' }).catch(() => {})
       }
     }
@@ -3029,8 +3070,26 @@ ipcMain.handle('models:refresh-catalog', async () => {
 // evicted before the caller read it, so falling behind is visible instead of silent.
 ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {
   const slice = readOutputFrom(terminalOutputBuffers, terminalId, fromOffset || 0)
-  return ok({ ...slice, length: slice.output.length })
+  return ok({ ...slice, length: slice.output.length, ...replayContext(terminalId, fromOffset || 0) })
 })
+
+// A pane rebuilding a terminal from the window (TerminalPane, on every mount) needs more than
+// the bytes: the modes the EVICTED output left set — the alt screen, mouse tracking and
+// bracketed paste an agent turns on once at startup — how much of the window finishes a
+// sequence the eviction cut in half, and the geometry the bytes were drawn for (parsed at any
+// other width they wrap differently, and on Windows 10 xterm never reflows them back). Only a
+// read from the window's start is a replay: a poller reading on from its own offset gets
+// exactly what it always got, and empty parts are left out for the same reason.
+function replayContext(terminalId: string, fromOffset: number): { preamble?: string; skip?: number; cols?: number; rows?: number } {
+  const replay = replayPreamble(terminalOutputBuffers, terminalId, fromOffset)
+  if (!replay) return {}
+  const size = getTerminalSize(terminalId)
+  return {
+    ...(replay.preamble ? { preamble: replay.preamble } : {}),
+    ...(replay.skip > 0 ? { skip: replay.skip } : {}),
+    ...(size ? { cols: size.cols, rows: size.rows } : {}),
+  }
+}
 
 // Wipe a terminal's retained output. The renderer clears xterm itself; this is the
 // half that makes it STICK -- TerminalPane replays this window into a fresh xterm on
@@ -3041,7 +3100,12 @@ ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => 
 ipcMain.handle('terminal:clear', async (_, { terminalId }) => {
   if (typeof terminalId !== 'string' || !terminalId) return err('terminalId required')
   clearOutput(terminalOutputBuffers, terminalId)
-  return ok()
+  // The renderer's term.reset() also wipes the modes the running agent set -- bracketed paste,
+  // the alternate screen, the mouse -- and the agent will not send them again. clearOutput has
+  // just folded the cleared window into the evicted-mode tracker, so the full mode state is
+  // known here; handing it back from this same synchronous step means no output can land
+  // between the clear and the state reported. The renderer writes it straight after its reset.
+  return ok({ preamble: replayPreamble(terminalOutputBuffers, terminalId)?.preamble ?? '' })
 })
 
 // The app's own log -- what Termpolis printed about itself, which in a packaged build
@@ -3425,8 +3489,9 @@ async function semanticPoolOptions(
         const shellInfo = shells.find(s => s.type === shell) || shells[0]
         if (shellInfo) {
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
-            mainWindow?.webContents.send('terminal:data', id, data)
-            appendOutput(terminalOutputBuffers, id, data)
+            // Buffer first: the event carries the chunk's end offset (see terminal:create).
+            const end = appendOutput(terminalOutputBuffers, id, data)
+            mainWindow?.webContents.send('terminal:data', id, data, end)
             remoteNoteTerminalOutput(id)
           // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend

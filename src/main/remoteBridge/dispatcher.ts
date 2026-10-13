@@ -1,6 +1,6 @@
 import { basename } from 'path'
 
-import { listHomeDirectory } from './directoryPicker'
+import { isNetworkOrDevicePath, listDirectory } from './directoryPicker'
 import { assertAllowed } from './remotePolicy'
 import type {
   Capabilities,
@@ -84,9 +84,9 @@ export class RequestDispatcher {
   constructor(
     private readonly mcp: McpLike,
     private readonly settle: (ms: number) => Promise<void> = wait,
-    /** Injected only so a test can list a fixture tree instead of the real home.
-     *  Nothing in production passes it. */
-    private readonly listDir: (path?: string) => DirectoryListing = listHomeDirectory,
+    /** Injected only so a test can list a fixture tree instead of the real
+     *  desktop. Nothing in production passes it. */
+    private readonly listDir: (path?: string) => Promise<DirectoryListing> = listDirectory,
   ) {}
 
   /** `deviceId` is carried through to MCP purely so the audit line names the
@@ -114,10 +114,10 @@ export class RequestDispatcher {
         // Subscription state lives in OutputFanout; nothing to ask MCP for.
         return { ok: true }
       case 'listDirectory':
-        // Bridge-local fs, home-rooted. `path` is typed string|undefined here but
-        // arrives unvalidated over the wire; listHomeDirectory ignores anything
-        // that is not a real directory under home, so it is safe to hand straight
-        // over.
+        // Bridge-local fs, opening at home. `path` is typed string|undefined here
+        // but arrives unvalidated over the wire; listDirectory refuses anything
+        // that is not text, a network or device path, or a real folder -- before
+        // touching it -- so it is safe to hand straight over.
         return this.listDir(request.path)
       case 'launchAgent':
         return this.launchAgent(request.agent, request.cwd, deviceId)
@@ -132,6 +132,12 @@ export class RequestDispatcher {
    * than labelling a tab. The relay boundary validates only the request KIND
    * (relayClient.ts), so both fields are checked here, as launchAgent checks its
    * own, and the name is cut to a length a tab can show.
+   *
+   * A network or device folder is refused before it reaches main, which checks
+   * that a new terminal's folder exists before spawning it -- and on Windows,
+   * checking `\\host\share` exists is connecting to that host and offering it the
+   * user's NTLM hash. The picker never offers such a path; only a crafted request
+   * carries one.
    */
   private async createTerminal(name: unknown, cwd: unknown, deviceId: string): Promise<unknown> {
     if (typeof name !== 'string') {
@@ -139,6 +145,9 @@ export class RequestDispatcher {
     }
     if (cwd !== undefined && typeof cwd !== 'string') {
       throw new Error('remote device asked for a terminal in a working directory that is not text')
+    }
+    if (cwd !== undefined && isNetworkOrDevicePath(cwd)) {
+      throw new Error('remote device asked for a terminal on a network or device path')
     }
     return this.mcp.callTool('create_terminal', {
       name: name.slice(0, MAX_REMOTE_TERMINAL_NAME),
@@ -154,8 +163,8 @@ export class RequestDispatcher {
    * phone typed, which is why this rides `createTerminal` and not
    * `writeToTerminal`. The relay boundary validates only the request KIND
    * (relayClient.ts), so `agent` and `cwd` are re-checked before either reaches
-   * MCP: an unknown agent or an empty cwd is refused rather than passed to
-   * `create_terminal`.
+   * MCP: an unknown agent, an empty cwd, or a network or device cwd (see
+   * createTerminal) is refused rather than passed to `create_terminal`.
    *
    * The two MCP calls are separated by the same settle the typed-message path
    * uses. `run_command` reaches the just-spawned PTY as a single burst, and an
@@ -175,6 +184,9 @@ export class RequestDispatcher {
     }
     if (typeof cwd !== 'string' || cwd.length === 0) {
       throw new Error('remote device asked to launch an agent with no working directory')
+    }
+    if (isNetworkOrDevicePath(cwd)) {
+      throw new Error('remote device asked to launch an agent on a network or device path')
     }
 
     const name = `${AGENT_LABEL[agent]} · ${basename(cwd) || cwd}`

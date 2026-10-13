@@ -100,6 +100,8 @@ vi.mock('../../src/main/terminalManager', () => ({
   // The async cwd probe delegates to the SAME mock, so a mockReturnValue resolves and a throwing
   // mockImplementation rejects — every existing terminal:status test body works unchanged.
   getTerminalCwdAsync: async (...args: any[]) => mockGetTerminalCwd(...args),
+  // terminal:read-buffer hands a replaying pane the pty's size; no pty is known here.
+  getTerminalSize: () => null,
 }))
 
 const mockDetectAvailableShells = vi.fn()
@@ -2312,8 +2314,9 @@ describe('MCP handler callbacks', () => {
     const output = capturedMcpHandlers.readOutput('mcp-buf-cb-test', 50)
     expect(output).toContain('buffered output')
 
-    // Also verify webContents.send was called with terminal:data
-    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', 'mcp-buf-cb-test', 'buffered output')
+    // Also verify webContents.send was called with terminal:data — tagged with where the chunk
+    // ends in the stream (15 chars in), which a replaying pane uses to drop what it already has.
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', 'mcp-buf-cb-test', 'buffered output', 15)
 
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
     mockV4.mockImplementation(() => 'mock-uuid-1234')

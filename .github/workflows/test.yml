@@ -295,6 +295,16 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Build
         run: npm run build
+      # e2e/linux-sandbox.spec.ts launches with Chromium's sandbox ON (issue #32), which needs
+      # unprivileged user namespaces. Ubuntu 24.04 restricts them by default; lift that here.
+      - name: Allow the Chromium sandbox
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          if unshare -Ur true; then
+            echo "TERMPOLIS_E2E_SANDBOX=1" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no unprivileged user namespaces on this runner; linux-sandbox.spec.ts will skip"
+          fi
       # Sharded: Electron forces workers=1 inside a job, and once the 34 specs
       # actually launched, the whole directory ran past the 90-minute cap and was
       # cancelled mid-suite. Separate runners are the only parallelism available.

@@ -334,7 +334,9 @@ export interface TermpolisAPI {
   onWorkflowRunEvent: (cb: (event: WorkflowRunEvent) => void) => () => void
   writeToTerminal: (id: string, data: string) => void
   resizeTerminal: (id: string, cols: number, rows: number) => void
-  onTerminalData: (cb: (id: string, data: string) => void) => () => void
+  /** `end` is where the chunk ends in the terminal's output stream — absent for output main
+   *  never buffered (a Strict-Mode banner). Comparable with readTerminalBuffer's `nextOffset`. */
+  onTerminalData: (cb: (id: string, data: string, end?: number) => void) => () => void
   getAvailableShells: () => Promise<IpcResponse<ShellInfo[]>>
   readConfigFile: (filePath: string) => Promise<IpcResponse<string>>
   writeConfigFile: (filePath: string, content: string) => Promise<IpcResponse>
@@ -379,11 +381,27 @@ export interface TermpolisAPI {
     terminalId: string,
     fromOffset?: number,
   ) => Promise<
-    IpcResponse<{ output: string; length: number; nextOffset: number; missed: number }>
+    IpcResponse<{
+      output: string
+      length: number
+      nextOffset: number
+      missed: number
+      /** Only on a read from the window's start (a replay). Escape sequences that put a fresh
+       *  xterm into the mode state the evicted output left — write them before `output`. */
+      preamble?: string
+      /** Only on a replay: chars at the start of `output` that finish a sequence the eviction
+       *  cut in half (the preamble already holds its effect). Replay `output.slice(skip)`. */
+      skip?: number
+      /** Only on a replay: the geometry the pty is drawing for, i.e. what `output` was drawn for. */
+      cols?: number
+      rows?: number
+    }>
   >
   /** Drops the main-process copy of a terminal's output so a cleared terminal stays
-   *  cleared across remounts. The renderer wipes its own xterm separately. */
-  clearTerminalBuffer: (terminalId: string) => Promise<IpcResponse>
+   *  cleared across remounts. The renderer wipes its own xterm separately. `preamble` is
+   *  the terminal-mode state the cleared output left (computed in the same step as the
+   *  clear): write it after resetting xterm, so the running app keeps its modes. */
+  clearTerminalBuffer: (terminalId: string) => Promise<IpcResponse<{ preamble: string }>>
 
   // App log -- what Termpolis itself printed, kept so users can see behind the scenes
   readAppLog: (limit?: number) => Promise<IpcResponse<{ entries: AppLogEntry[]; path: string | null }>>
@@ -521,6 +539,10 @@ export interface TermpolisAPI {
   clipboardWriteText: (text: string) => Promise<IpcResponse>
   clipboardReadText: () => Promise<IpcResponse<string>>
   clipboardWriteRich: (text: string, html: string) => Promise<IpcResponse>
+
+  // The on-disk path of a dropped File, '' when it has none (Electron's webUtils; `File.path`
+  // is gone since Electron 32).
+  getPathForFile: (file: File) => string
 
   // Voice (Groq cloud STT). The API key lives only in main (OS keychain); the
   // renderer can validate/set/clear it and read a masked status, and send PCM to

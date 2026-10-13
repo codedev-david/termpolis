@@ -150,6 +150,77 @@ const TERMINAL_DISPOSE_DELAY_MS = 50
 // weakly so a forgotten entry can never pin a Terminal (and its DOM) in memory.
 const terminalOwners = new WeakMap<Terminal, object>()
 
+// How long a mount holds fits waiting for its replay to report that it has been parsed (see
+// landReplay). A 32 KB replay parses in milliseconds; this only bounds one that never reports
+// back, so a pane can never be left unable to resize.
+const REPLAY_PARSE_GRACE_MS = 2000
+
+// How much live output a mount holds on to while its replay reply is on the way (see landReplay).
+// The reply normally lands within one IPC round trip, behind a few chunks at most. Past this,
+// the replay is abandoned — live output has long overtaken a 32 KB window — and the pane simply
+// carries on as a live terminal, rather than holding a flood in memory for a reply that may
+// never come.
+const EARLY_LIVE_CAP = 1_000_000
+
+/** What a mount's replay is built from: terminal:read-buffer's reply (see its typing). */
+interface ReplayReply {
+  output: string
+  nextOffset?: number
+  preamble?: string
+  skip?: number
+  cols?: number
+  rows?: number
+}
+
+/** A geometry xterm can actually be resized to: whole, positive cell counts. */
+function isCellCount(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n) && n > 0
+}
+
+/** term.resize, reporting a throw (a renderer torn down mid-mount — a WebGL context loss,
+ *  say) as false rather than propagating it, so the caller can carry on at the current size. */
+function tryResize(term: Terminal, cols: number, rows: number): boolean {
+  try {
+    term.resize(cols, rows)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The focus-out report xterm sends for an app that set `?1004h` (focus in is `ESC [ I`).
+const FOCUS_OUT = '\x1b[O'
+
+/** Writes that REPLAY terminal history — a mount's replay, the modes a Clear restores — in
+ *  flight, by mount. Read by onData (see writeHistory). */
+interface HistoryParses {
+  count: number
+}
+
+/** Write terminal history into xterm, counted in `parses` until xterm has parsed it.
+ *
+ *  Replaying history re-runs DECSETs an app sent long ago, and browser xterm answers `?1004h`
+ *  with a focus report the moment it parses it — through onData, like a keystroke. For a pane
+ *  that is not focused that report is a focus-OUT the app was already sent when focus left the
+ *  old pane (ConPTY sets 1004 in every Windows session, so every remount of a background pane
+ *  would repeat one), and session recording logged it as typed input. While `parses.count` is
+ *  non-zero, onData drops exactly that report. A focus-IN goes through: xterm only sends it
+ *  when the pane really has focus, and it is the app's only news of it — the fresh xterm was
+ *  not reporting focus yet when the pane got it. Keystrokes, and every report after the parse,
+ *  go through too. */
+function writeHistory(term: Terminal, parses: HistoryParses, data: string, onParsed?: () => void): void {
+  parses.count++
+  try {
+    term.write(data, () => {
+      parses.count--
+      onParsed?.()
+    })
+  } catch (e) {
+    parses.count-- // a write that never queued will never call back
+    throw e
+  }
+}
+
 // Live terminals by id, plus a read-only window hook that reads their text out of xterm's
 // own buffer.
 //
@@ -218,6 +289,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // has to render even mid-selection, or the wheel looks dead. Stamped by the
   // wheel handler, read by writeOutput.
   const lastUserScrollRef = useRef(0)
+  // Set while a mount's replay is being parsed at the pty's size (landReplay). Fits wait for
+  // it: a fit resizes at once but xterm parses writes later, so a fit in between would parse
+  // the replay at the pane's size after all. It points at the CURRENT mount's hold, so a late
+  // callback from an earlier mount can never release a later one's.
+  const replaySizeHoldRef = useRef<{ active: boolean } | null>(null)
+  // The current mount's count of history writes still being parsed (see writeHistory) — so a
+  // Clear's mode restore, made outside the mount effect, is counted where onData looks.
+  const historyParsesRef = useRef<HistoryParses>({ count: 0 })
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0 })
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuPos, setMenuPos] = useState<MenuPosition | null>(null)
@@ -674,9 +753,17 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // it still remembers the conversation, and this only forgets what was DRAWN. That
   // asymmetry is the honest one: the app can throw away its own scrollback, but it has
   // no business rewriting an agent's history behind its back.
+  //
+  // What was drawn, but not how the agent set the terminal up. term.reset() also turns off
+  // every mode the running agent set -- bracketed paste, the alternate screen, the mouse --
+  // and the agent will not send them again, so a paste after a Clear went in raw (the long-
+  // paste bug v1.51.3 fixed). Main hands back the modes the cleared output left, from the
+  // same step as the clear, and they go straight back on after the reset.
   const handleClearTerminal = useCallback(async () => {
+    let preamble = ''
     try {
-      await window.termpolis.clearTerminalBuffer(terminalId)
+      const res = await window.termpolis.clearTerminalBuffer(terminalId)
+      if (res?.success && typeof res.data?.preamble === 'string') preamble = res.data.preamble
     } catch {
       // A failed buffer clear still leaves a clear screen; replay would restore the
       // old text on the next mount, which is worse than nothing but not worth
@@ -685,6 +772,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     const term = termRef.current
     if (term) {
       term.reset()
+      if (preamble) writeHistory(term, historyParsesRef.current, preamble)
       term.scrollToBottom()
     }
     // Everything derived from the text that just went away. Leaving these set is how
@@ -774,6 +862,15 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   useEffect(() => {
     if (!containerRef.current) return
     let disposed = false
+    // This mount's hold on fits while its replay parses at the pty's size (landReplay). Published
+    // through the ref so the font and visibility effects respect it too. Declared first: the
+    // mount's own fit below may run synchronously.
+    const sizeHold = { active: false }
+    replaySizeHoldRef.current = sizeHold
+    // This mount's history writes still being parsed (writeHistory); onData reads it. Per mount,
+    // so a parse that never reports back from a torn-down pane cannot mute a later mount's.
+    const historyParses: HistoryParses = { count: 0 }
+    historyParsesRef.current = historyParses
     // Identity for THIS mount, so the deferred dispose in the cleanup can tell whether it
     // still owns the Terminal it was scheduled for.
     const mountToken = {}
@@ -990,9 +1087,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       })
     } catch { /* search addon unavailable — the find bar will simply no-op */ }
 
-    // 7. Fit (deferred to avoid layout thrashing when multiple terminals mount at once)
+    // 7. Fit (deferred to avoid layout thrashing when multiple terminals mount at once) — unless
+    // the replay is being parsed at the pty's size by then; it refits when it is done.
     requestAnimationFrame(() => {
-      if (!disposed) fitAddon.fit()
+      if (!disposed && !sizeHold.active) fitAddon.fit()
     })
 
     termRef.current = term
@@ -1004,11 +1102,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     onTerminalReady?.(term)
 
-    // Replay buffered output so view switches don't lose scrollback
-    window.termpolis.readTerminalBuffer(terminalId).then(res => {
-      if (disposed || !res.success || !res.data) return
-      if (res.data.output) term.write(res.data.output)
-    }).catch(() => { /* terminal may have been killed before replay */ })
+    // Ask main for the output it retained, so view switches don't lose scrollback. Asked now so
+    // the reply is already on its way while the rest of the pane wires up; landReplay (further
+    // down, once everything it needs exists) writes it. Until it lands, live output is noted
+    // with where it ends in the stream, so landReplay can tell what the reply already holds.
+    const replayRequest = window.termpolis.readTerminalBuffer(terminalId)
+    let replayPending = true
+    const earlyLive: Array<{ data: string; end?: number }> = []
+    let earlyLiveChars = 0
 
     // Copy/paste shortcuts are read from the store keybindings at event time, so
     // rebinding them in Settings takes effect immediately:
@@ -1207,12 +1308,19 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         if (selection) window.termpolis.clipboardWriteText(selection).catch(() => {})
         return false
       }
-      // Paste (explicit form)
+      // Paste (explicit form). Every paste goes through xterm's own paste(), never straight to
+      // the PTY: paste() turns line breaks into \r and wraps the text in bracketed-paste markers
+      // whenever the program asked for them (agent TUIs always do, and so do bash and zsh). The
+      // raw text used to go to the PTY instead. ConPTY hands a long write to the program in ~1 KB
+      // reads, and with no markers Claude Code took those reads for separate pastes, collapsed
+      // all but the last into "[Pasted text #N]" placeholders and showed only the tail as typed
+      // text. Bash ran each pasted line as it arrived, and PowerShell read the \n of every \r\n
+      // as an extra key, leaving stray ">>" continuation prompts.
       if (matchesKeybinding(e, kb.paste)) {
         e.preventDefault()
         window.termpolis.clipboardReadText().then(res => {
           const text = res?.success ? res.data : ''
-          if (text) window.termpolis.writeToTerminal(terminalId, text)
+          if (text) term.paste(text)
         }).catch(() => {})
         return false
       }
@@ -1251,12 +1359,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         return true
       }
       // Paste (no Shift). Same modifier rule — on mac this is Cmd+V; Ctrl+V falls through to the
-      // shell (readline quoted-insert), which is what a mac user expects.
+      // shell (readline quoted-insert), which is what a mac user expects. Through term.paste(),
+      // like every paste — see the explicit form above.
       if (primaryModifier(e) && !e.shiftKey && !e.altKey && (e.key === 'V' || e.key === 'v')) {
         e.preventDefault()
         window.termpolis.clipboardReadText().then(res => {
           const text = res?.success ? res.data : ''
-          if (text) window.termpolis.writeToTerminal(terminalId, text)
+          if (text) term.paste(text)
         }).catch(() => {})
         return false
       }
@@ -1264,6 +1373,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     })
 
     term.onData((data) => {
+      // A focus-out report xterm sent because it is REPLAYING an old `?1004h` (see writeHistory):
+      // not the user's input, and not news to the app. Dropped before it is forwarded or recorded.
+      if (historyParses.count > 0 && data === FOCUS_OUT) return
       // Pass data to PTY
       window.termpolis.writeToTerminal(terminalId, data)
 
@@ -1272,7 +1384,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
       // Track the current command line so we can record it to history on Enter and
       // dismiss the command-fix banner when the user starts a new command.
-      if (data === '\r') {
+      const submitLine = () => {
         const cmd = inputBufferRef.current.trim()
         if (cmd) {
           window.termpolis.appendHistory(terminalId, terminalName, cmd)
@@ -1282,16 +1394,34 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         outputBufferRef.current = ''
         diffDetectedRef.current = false
         setDiffDetected(false)
+      }
+      if (data === '\r') {
+        submitLine()
       } else if (data === '\u007f') {
         inputBufferRef.current = inputBufferRef.current.slice(0, -1)
       } else if (!data.startsWith('\x1b')) {
-        inputBufferRef.current += data
+        // A paste into a program that never asked for bracketed paste (PowerShell, cmd) arrives
+        // here as ONE chunk whose \r are Enters: the shell runs each line as it lands. So each
+        // \r submits the line before it, and only the text after the last one is still a draft.
+        const lines = data.split('\r')
+        for (let i = 0; i < lines.length - 1; i++) {
+          inputBufferRef.current += lines[i]
+          submitLine()
+        }
+        inputBufferRef.current += lines[lines.length - 1]
         // Dismiss fix banner when user starts typing a new command
         if (fixSuggestionRef.current) setFixSuggestion(null)
       }
     })
 
     const throttledWrite = createOutputThrottle((data) => term.write(data))
+    // Until this mount's replay lands, live output goes straight into xterm's own (ordered)
+    // write queue rather than through the throttle: if the replay then has to be laid in behind
+    // it (landReplay), nothing can still be sitting in the throttle to land after the replay.
+    const toXterm = (data: string): void => {
+      if (replayPending) term.write(data)
+      else throttledWrite(data)
+    }
 
     // Freeze writes into xterm while a selection/drag is active. Agent output
     // that scrolls or trims the buffer mid-selection is what drops the selection
@@ -1312,7 +1442,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       const buffered = pendingWriteRef.current
       if (!buffered) return
       pendingWriteRef.current = ''
-      throttledWrite(buffered)
+      toXterm(buffered)
     }
     const writeOutput = (data: string): void => {
       if (isSelectionActive() && !isUserScroll()) {
@@ -1323,7 +1453,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         return
       }
       flushPendingWrite()
-      throttledWrite(data)
+      toXterm(data)
     }
     // xterm's onSelectionChange is the authoritative, synchronous "the selection model changed"
     // signal: it fires the instant a selection exists, for ANY gesture (drag, double-click word,
@@ -1370,8 +1500,18 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     }
     document.addEventListener('mouseup', handleDocumentMouseUp)
 
-    const unsub = window.termpolis.onTerminalData((id, data) => {
+    const unsub = window.termpolis.onTerminalData((id, data, end) => {
       if (id !== terminalId) return
+      // Output that beat this mount's replay reply: note where it ends in the stream, so
+      // landReplay can tell whether the replay already holds it.
+      if (replayPending) {
+        earlyLive.push({ data, end })
+        earlyLiveChars += data.length
+        if (earlyLiveChars > EARLY_LIVE_CAP) {
+          replayPending = false // overtaken: landReplay now ignores the reply
+          earlyLive.length = 0
+        }
+      }
       writeOutput(data)
 
       // Record output if recording
@@ -1473,6 +1613,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     let resizeTimer: ReturnType<typeof setTimeout> | null = null
     const doFit = (): void => {
       if (disposed) return
+      // A replay still being parsed at the pty's size refits when it is done (landReplay).
+      if (sizeHold.active) return
       // fit() reflows the buffer, and xterm doesn't remap an active selection
       // across a resize — it'd be lost. Defer the reflow until the selection is
       // released so resizing the split/window mid-drag can't drop it.
@@ -1489,12 +1631,79 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     })
     ro.observe(containerRef.current)
 
+    // --- Replay the retained window ---
+    //
+    // A pane is rebuilt on every mount — a Settings round-trip, a tabs/split toggle, a split, a
+    // terminal added or closed in split view — and main's 32 KB window is all it is rebuilt from.
+    // Three things keep the rebuilt pane true to the terminal the user was looking at (issue #35):
+    //
+    //  1. The preamble. The modes an agent sets ONCE at startup — alt screen, mouse tracking,
+    //     bracketed paste — are long gone from a busy session's window, and without them the
+    //     pane sat on the wrong buffer with the wheel routed to an empty scrollback: the agent's
+    //     response looked cut off and nothing scrolled to the rest of it. Main tracks the modes
+    //     of the evicted output (terminalOutputBuffer.ts). They go through the parser handlers
+    //     above like live output, so appWantedMouseRef and the encoding come back on their own.
+    //  2. The pty's size. The bytes were drawn for it; parsed at any other width they wrap
+    //     differently, and below ConPTY build 21376 (Windows 10) xterm never reflows them back,
+    //     so every replayed line wider than xterm's default 80 columns stayed broken in two.
+    //  3. Output that raced the reply. A chunk main sent before serving the request is in the
+    //     reply AND arrives live — first, ahead of the older replay. Main tags every chunk with
+    //     where it ends in the stream: what the reply covers is dropped, and the replay is laid
+    //     in behind a reset so the early writes cannot stand in front of it.
+    let sizeHoldTimer: ReturnType<typeof setTimeout> | undefined
+    const releaseSizeHold = (): void => {
+      if (!sizeHold.active) return
+      sizeHold.active = false
+      clearTimeout(sizeHoldTimer)
+      doFit()
+    }
+    const landReplay = (reply: ReplayReply | undefined): void => {
+      if (!replayPending) return
+      replayPending = false
+      const early = earlyLive.splice(0)
+      if (disposed || !reply) return
+      const skip = typeof reply.skip === 'number' && reply.skip > 0 ? reply.skip : 0
+      let replay = (reply.preamble ?? '') + (reply.output ?? '').slice(skip)
+      if (!replay) return // nothing to replay: whatever arrived early already stands, in order
+      if (early.length > 0) {
+        const covered = reply.nextOffset
+        const uncovered = early.filter((c) => c.end === undefined || covered === undefined || c.end > covered)
+        // The early chunks are already in xterm's queue — or frozen behind a selection — AHEAD
+        // of this older replay. RIS, parsed in order, wipes what they drew; the replay redraws
+        // the window; and whatever it does not cover goes back on top, once, in order.
+        pendingWriteRef.current = ''
+        replay = '\x1bc' + replay + uncovered.map((c) => c.data).join('')
+      }
+      // A resize that throws must not cost the replay: drawn at the wrong width beats a blank
+      // pane, so carry on at the current size, without a hold.
+      const atPtySize = isCellCount(reply.cols) && isCellCount(reply.rows)
+        && (reply.cols !== term.cols || reply.rows !== term.rows)
+        && tryResize(term, reply.cols, reply.rows)
+      if (atPtySize) {
+        // Hold every fit until xterm has parsed the replay at that size, then fit to the pane
+        // (which tells the pty, if the pane is a different size). The timer only bounds a parse
+        // that never reports back.
+        sizeHold.active = true
+        sizeHoldTimer = setTimeout(releaseSizeHold, REPLAY_PARSE_GRACE_MS)
+        writeHistory(term, historyParses, replay, releaseSizeHold)
+        return
+      }
+      writeHistory(term, historyParses, replay)
+    }
+    replayRequest
+      .then((res) => landReplay(res?.success ? res.data : undefined))
+      .catch(() => landReplay(undefined)) // the terminal may have been killed before the replay
+
     return () => {
       disposed = true
       unsub()
       selectionChangeDisposable.dispose()
       document.removeEventListener('mouseup', handleDocumentMouseUp)
       if (resizeTimer) clearTimeout(resizeTimer)
+      // A hold that outlives its mount would freeze the next one's fits; the next mount
+      // publishes its own hold through the ref, and this one now reads as released.
+      clearTimeout(sizeHoldTimer)
+      sizeHold.active = false
       ro.disconnect()
       // Synchronously, unlike term.dispose() below: this is bookkeeping, not the xterm
       // instance, and leaving a dead pane in the budget would hold a slot that a live
@@ -1529,6 +1738,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     termRef.current.options.fontSize = fontSize
     termRef.current.options.fontFamily = fontFamily
     termRef.current.options.theme = getTheme(theme)
+    // A replay still being parsed at the pty's size refits once it has (landReplay).
+    if (replaySizeHoldRef.current?.active) return
     fitRef.current?.fit()
     window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
   }, [fontSize, theme, fontFamily])
@@ -1538,6 +1749,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       setTimeout(() => {
         if (!fitRef.current || !termRef.current) return
         if (typeof window === 'undefined' || !window.termpolis?.resizeTerminal) return
+        if (replaySizeHoldRef.current?.active) return // the replay refits once it has parsed
         fitRef.current.fit()
         window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
       }, 0)
@@ -1596,11 +1808,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         onDrop={(e) => {
           e.preventDefault()
           e.stopPropagation()
-          const files = Array.from(e.dataTransfer.files)
-          if (files.length > 0) {
-            // Paste file paths into terminal, quoted and space-separated
-            const paths = files.map(f => `"${(f as File & { path?: string }).path ?? ''}"`).join(' ')
-            window.termpolis.writeToTerminal(terminalId, paths)
+          // Paste file paths into terminal, quoted and space-separated. A file with no path on
+          // disk (dragged out of a web page) has nothing to paste.
+          const paths = Array.from(e.dataTransfer.files)
+            .map(f => window.termpolis.getPathForFile(f))
+            .filter(Boolean)
+          if (paths.length > 0) {
+            window.termpolis.writeToTerminal(terminalId, paths.map(p => `"${p}"`).join(' '))
           }
         }}
       >
@@ -1889,7 +2103,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               onClick={() => {
                 window.termpolis.clipboardReadText().then(res => {
                   const text = res?.success ? res.data : ''
-                  if (text) window.termpolis.writeToTerminal(terminalId, text)
+                  // Through term.paste(), like every paste — see the Ctrl+Shift+V handler.
+                  if (text) termRef.current?.paste(text)
                 }).catch(() => {})
                 setContextMenu({ visible: false, x: 0, y: 0 })
               }}

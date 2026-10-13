@@ -12,8 +12,10 @@ const mockIpcRenderer = {
   on: vi.fn((_channel: string, handler: Function) => handler),
   removeListener: vi.fn(),
 }
+const mockGetPathForFile = vi.fn((_file: unknown) => 'C:\\work\\notes.txt')
 
 vi.mock('electron', () => ({
+  webUtils: { getPathForFile: (file: unknown) => mockGetPathForFile(file) },
   contextBridge: {
     exposeInMainWorld: vi.fn((key: string, api: any) => {
       exposed[key] = api
@@ -59,6 +61,12 @@ describe('preload: termpolis API', () => {
   it('killTerminal invokes terminal:kill', async () => {
     await exposed.termpolis.killTerminal('id1')
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('terminal:kill', { id: 'id1' })
+  })
+
+  it('getPathForFile asks webUtils where a dropped file lives (File.path is gone since Electron 32)', () => {
+    const file = { name: 'notes.txt' }
+    expect(exposed.termpolis.getPathForFile(file)).toBe('C:\\work\\notes.txt')
+    expect(mockGetPathForFile).toHaveBeenCalledWith(file)
   })
 
   it('writeToTerminal sends terminal:write', () => {
@@ -436,13 +444,17 @@ describe('preload: termpolis API — additional methods', () => {
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('terminal:data', expect.any(Function))
   })
 
-  it('onTerminalData handler invokes callback with id and data', () => {
+  it('onTerminalData handler invokes callback with id, data and the end offset main tagged it with', () => {
     const cb = vi.fn()
     exposed.termpolis.onTerminalData(cb)
     // Grab the handler that was registered
     const registeredHandler = mockIpcRenderer.on.mock.calls.find((c: any) => c[0] === 'terminal:data')?.[1]
-    registeredHandler({}, 'tid-1', 'output-data')
-    expect(cb).toHaveBeenCalledWith('tid-1', 'output-data')
+    registeredHandler({}, 'tid-1', 'output-data', 42)
+    // The offset is what lets a replaying TerminalPane drop a chunk its replay already holds.
+    expect(cb).toHaveBeenCalledWith('tid-1', 'output-data', 42)
+    // Output main never buffered (a Strict-Mode banner) arrives without one.
+    registeredHandler({}, 'tid-1', 'banner')
+    expect(cb).toHaveBeenLastCalledWith('tid-1', 'banner', undefined)
   })
 })
 

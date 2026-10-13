@@ -37,7 +37,7 @@ const {
   mockOpenExternal, mockOpenPath,
   mockCreateFromBuffer,
   mockSpawnTerminal, mockKillTerminal, mockWriteToTerminal, mockResizeTerminal,
-  mockGetTerminalCwd, mockGetTerminalPid, mockComputeWindowsPty,
+  mockGetTerminalCwd, mockGetTerminalPid, mockComputeWindowsPty, mockGetTerminalSize,
   mockDetectAvailableShells,
   mockLoadSession, mockLoadRestoreSession, mockSaveSession,
   mockAppendCommand, mockSearchHistory,
@@ -69,6 +69,9 @@ const {
   mockGetTerminalCwd: vi.fn(() => ''),
   mockGetTerminalPid: vi.fn(() => 0),
   mockComputeWindowsPty: vi.fn(() => ({ backend: 'conpty', buildNumber: 22631 })),
+  // The geometry the pty is drawing for, which terminal:read-buffer hands a replaying pane.
+  // Default: no pty known, so the reply carries no size.
+  mockGetTerminalSize: vi.fn((): { cols: number; rows: number } | null => null),
   mockDetectAvailableShells: vi.fn(async () => [] as Array<{ type: string; executable: string; name?: string }>),
   mockLoadSession: vi.fn(() => ({ terminals: [] })),
   mockLoadRestoreSession: vi.fn(() => ({ terminals: [] })),
@@ -85,9 +88,12 @@ const {
   mockWriteFileSync: vi.fn(),
 }))
 
+const wcOnHandlers = new Map<string, Function>()
 const mockWebContents = {
   send: vi.fn(),
   executeJavaScript: vi.fn(),
+  setWindowOpenHandler: vi.fn(),
+  on: vi.fn((ev: string, h: Function) => { wcOnHandlers.set(ev, h) }),
   session: {
     setPermissionRequestHandler: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
@@ -174,6 +180,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwd: mockGetTerminalCwd,
   getTerminalCwdAsync: mockGetTerminalCwdAsync,
   getTerminalPid: mockGetTerminalPid,
+  getTerminalSize: mockGetTerminalSize,
   computeWindowsPty: mockComputeWindowsPty,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
@@ -379,6 +386,7 @@ beforeEach(() => {
   mockClipboardReadText.mockReturnValue('')
   mockDetectAvailableShells.mockResolvedValue([])
   mockAppendAudit.mockImplementation(async () => undefined)
+  mockGetTerminalSize.mockReturnValue(null)
 })
 
 // ===========================================================================
@@ -491,12 +499,68 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     onData('hello ')
     onData('world')
 
-    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'hello ')
-    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'world')
+    // Each chunk carries where it ends in the stream (6, then 11) — see the next test.
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'hello ', 6)
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'world', 11)
     expect(await invoke('terminal:read-buffer', { terminalId: id })).toEqual({
       success: true,
       data: { output: 'hello world', length: 11, nextOffset: 11, missed: 0 },
     })
+  })
+
+  it('tags each chunk with where it ends in the stream, so a replaying pane can tell what its replay already holds', async () => {
+    // A pane asks for this buffer on mount while live chunks are still arriving, so one chunk can
+    // be inside the reply AND arrive live. Its end offset against the reply's nextOffset is how
+    // the pane tells the two apart instead of drawing the chunk twice.
+    const id = 'buf-offsets'
+    const onData = await spawnWithPump(id)
+    onData('abc')
+    onData('de')
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'abc', 3)
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', id, 'de', 5)
+    // Both were sent before this read was served, so both are inside it — and nextOffset says so.
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id })
+    expect(data.output).toBe('abcde')
+    expect(data.nextOffset).toBe(5)
+  })
+
+  it('hands a replaying pane the modes the evicted output left set, and the size the pty draws for', async () => {
+    const id = 'buf-replay'
+    mockGetTerminalSize.mockReturnValue({ cols: 120, rows: 30 })
+    const onData = await spawnWithPump(id)
+    onData('\x1b[?1049h\x1b[?2004h') // an agent's startup: alt screen + bracketed paste, sent ONCE
+    onData('x'.repeat(32768))        // ...and then enough output to evict it from the window
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id })
+    expect(data.output).toBe('x'.repeat(32768))
+    expect(data.preamble).toBe('\x1b[?1049h\x1b[?2004h')
+    expect(data).not.toHaveProperty('skip') // the window opens on plain text: nothing to skip
+    expect(data.cols).toBe(120)
+    expect(data.rows).toBe(30)
+    expect(mockGetTerminalSize).toHaveBeenCalledWith(id)
+  })
+
+  it('tells the replay how much of the window finishes a sequence the eviction cut in half', async () => {
+    const id = 'buf-skip'
+    const onData = await spawnWithPump(id)
+    onData('\x1b[?1049h' + 'x'.repeat(32760)) // exactly the cap
+    onData('ABC')                              // evicts `\x1b[?` — half the DECSET
+    const { data } = await invoke('terminal:read-buffer', { terminalId: id })
+    expect(data.output.startsWith('1049h')).toBe(true)
+    expect(data.preamble).toBe('\x1b[?1049h')
+    expect(data.skip).toBe(5)
+  })
+
+  it("leaves a poller's read exactly as it was — no preamble, skip or size for a read from its own offset", async () => {
+    const id = 'buf-poller'
+    mockGetTerminalSize.mockReturnValue({ cols: 120, rows: 30 })
+    const onData = await spawnWithPump(id)
+    onData('\x1b[?1049h')
+    onData('x'.repeat(32768))
+    onData('NEW')
+    expect(await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 32776 })).toEqual({
+      success: true, data: { output: 'NEW', length: 3, nextOffset: 32779, missed: 0 },
+    })
+    expect(mockGetTerminalSize).not.toHaveBeenCalled()
   })
 
   it('reads from an offset so a poller only gets what is new', async () => {
@@ -632,6 +696,20 @@ describe('terminal:write — always forwards, never withholds', () => {
     fire('terminal:write', { id, data: `use ${AWS_KEY} here\r` })
     expect(auditEvents().find((e) => e.event === 'prompt_secret_sent')).toBeTruthy()
     expect(sentEvents('terminal:secret-observed')).toHaveLength(1)
+  })
+
+  // A paste reaches this handler wrapped in bracketed-paste markers whenever the program in the
+  // terminal asked for them (bash and zsh do at every prompt). The markers are framing: a pasted
+  // launch is still a launch, and it must arm the prompt watch like a typed one.
+  it('recognises an agent launch that arrives as a bracketed paste, and forwards it untouched', () => {
+    const id = newId('w-bp-launch')
+    const paste = '\x1b[200~claude\x1b[201~'
+    fire('terminal:write', { id, data: paste })
+    expect(auditEvents()).toContainEqual(expect.objectContaining({ agent: 'claude', event: 'terminal_open', terminalId: id }))
+    expect(mockWriteToTerminal).toHaveBeenCalledWith(id, paste)
+    mockAppendAudit.mockClear()
+    fire('terminal:write', { id, data: `use ${AWS_KEY} here\r` })
+    expect(auditEvents().find((e) => e.event === 'prompt_secret_sent')).toBeTruthy()
   })
 
   it('throttles the launch audit — relaunching within 5s does not double-log', () => {
@@ -854,6 +932,14 @@ describe('terminal:write — strict-mode Gemini is the ONE interception', () => 
     const id = newId('w-strict-off')
     fire('terminal:write', { id, data: 'gemini\r' })
     expect(mockWriteToTerminal).toHaveBeenCalledWith(id, 'gemini\r')
+  })
+
+  it('BLOCKS a pasted launch too — bracketed-paste markers do not hide `gemini`', () => {
+    aiSec.setStrictGeminiPaidOnly(true)
+    const id = newId('w-strict-paste')
+    fire('terminal:write', { id, data: '\x1b[200~gemini\x1b[201~' })
+    expect(mockWriteToTerminal).not.toHaveBeenCalledWith(id, '\x1b[200~gemini\x1b[201~')
+    expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, id, '\u0003')
   })
 
   it('does not intercept an unrelated command that merely mentions gemini', () => {
@@ -1380,6 +1466,48 @@ describe('createWindow — renderer source + chrome', () => {
     grant({}, 'media', callback)
     expect(callback).toHaveBeenCalledWith(true)
     expect(check()).toBe(true)
+  })
+
+  it('sends window.open links to the browser and never opens a second Electron window', () => {
+    recreateWindow()
+    mockOpenExternal.mockClear()
+    const open = mockWebContents.setWindowOpenHandler.mock.calls.at(-1)![0] as Function
+
+    expect(open({ url: 'https://github.com/sponsors/codedev-david' })).toEqual({ action: 'deny' })
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://github.com/sponsors/codedev-david')
+
+    // Anything that isn't a web page is refused outright, not handed to the OS either.
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'not a url']) {
+      expect(open({ url })).toEqual({ action: 'deny' })
+    }
+    expect(mockOpenExternal).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the window on the app: a link or a dropped file never navigates it away', () => {
+    recreateWindow()
+    mockOpenExternal.mockClear()
+    const willNavigate = wcOnHandlers.get('will-navigate')!
+
+    const toLink = { preventDefault: vi.fn() }
+    willNavigate(toLink, 'https://github.com/codedev-david/termpolis/blob/main/PRIVACY.md')
+    expect(toLink.preventDefault).toHaveBeenCalled()
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://github.com/codedev-david/termpolis/blob/main/PRIVACY.md')
+
+    // A dropped file would load in this window with the preload API: blocked, and not opened.
+    const toDroppedFile = { preventDefault: vi.fn() }
+    willNavigate(toDroppedFile, 'file:///home/user/Downloads/readme.html')
+    expect(toDroppedFile.preventDefault).toHaveBeenCalled()
+    expect(mockOpenExternal).toHaveBeenCalledTimes(1)
+  })
+
+  it('swallows a browser that fails to open, rather than an unhandled rejection', async () => {
+    recreateWindow()
+    mockOpenExternal.mockRejectedValueOnce(new Error('no default browser'))
+    const open = mockWebContents.setWindowOpenHandler.mock.calls.at(-1)![0] as Function
+    expect(open({ url: 'https://termpolis.com/docs.html' })).toEqual({ action: 'deny' })
+    mockOpenExternal.mockRejectedValueOnce(new Error('no default browser'))
+    wcOnHandlers.get('will-navigate')!({ preventDefault: vi.fn() }, 'https://termpolis.com')
+    await new Promise((r) => setTimeout(r, 0))
   })
 })
 

@@ -1,6 +1,7 @@
 import React from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { Terminal as HeadlessTerminal } from '@xterm/headless'
 import { consumePendingSettingsTab } from '../../src/renderer/src/lib/settingsNav'
 import { __setPlatformForTests } from '../../src/renderer/src/lib/platform'
 
@@ -13,6 +14,11 @@ const mocks = vi.hoisted(() => {
     open: vi.fn(),
     focus: vi.fn(),
     write: vi.fn(),
+    resize: vi.fn(),
+    // The visible half of a Clear (handleClearTerminal).
+    reset: vi.fn(),
+    scrollToBottom: vi.fn(),
+    paste: vi.fn(),
     dispose: vi.fn(),
     onData: vi.fn(),
     attachCustomKeyEventHandler: vi.fn(),
@@ -73,7 +79,7 @@ const mocks = vi.hoisted(() => {
 // --- Capture callbacks registered by the mock Terminal ---
 let mockOnDataCb: ((data: string) => void) | null = null
 let mockKeyHandlerCb: ((e: KeyboardEvent) => boolean) | null = null
-let mockOnTerminalDataCb: ((id: string, data: string) => void) | null = null
+let mockOnTerminalDataCb: ((id: string, data: string, end?: number) => void) | null = null
 let mockSelectionChangeCb: (() => void) | null = null
 let mockResizeObserverCb: (() => void) | null = null
 let mockSearchResultsCb: ((e: { resultIndex: number; resultCount: number }) => void) | null = null
@@ -291,7 +297,8 @@ const mockWriteToTerminal = vi.fn()
 const mockReadTerminalBuffer = vi.fn(() =>
   Promise.resolve({ success: true, data: { output: '' } })
 )
-const mockOnTerminalData = vi.fn((cb: (id: string, data: string) => void) => {
+const mockClearTerminalBuffer = vi.fn(() => Promise.resolve({ success: true, data: { preamble: '' } }))
+const mockOnTerminalData = vi.fn((cb: (id: string, data: string, end?: number) => void) => {
   mockOnTerminalDataCb = cb
   return vi.fn() // unsub function
 })
@@ -303,11 +310,13 @@ const mockKillTerminal = vi.fn()
 const mockClipboardWriteText = vi.fn(() => Promise.resolve({ success: true }))
 const mockClipboardReadText = vi.fn(() => Promise.resolve({ success: true, data: 'pasted-text' }))
 const mockClipboardWriteRich = vi.fn(() => Promise.resolve({ success: true }))
+const mockGetPathForFile = vi.fn((_file: File) => '')
 
 beforeAll(() => {
   ;(window as any).termpolis = {
     writeToTerminal: mockWriteToTerminal,
     readTerminalBuffer: mockReadTerminalBuffer,
+    clearTerminalBuffer: mockClearTerminalBuffer,
     onTerminalData: mockOnTerminalData,
     appendHistory: mockAppendHistory,
     exportTerminal: mockExportTerminal,
@@ -317,6 +326,7 @@ beforeAll(() => {
     clipboardWriteText: mockClipboardWriteText,
     clipboardReadText: mockClipboardReadText,
     clipboardWriteRich: mockClipboardWriteRich,
+    getPathForFile: mockGetPathForFile,
     listAISessions: vi.fn().mockResolvedValue({ success: true, data: [] }),
     groqGetKeyStatus: vi.fn(async () => ({ success: true, data: { connected: true, hint: 'gsk_test' } })),
     platformInfo: { platform: 'win32', windowsPty: { backend: 'conpty', buildNumber: 22631 } },
@@ -393,7 +403,7 @@ describe('TerminalPane', () => {
     }))
     mocks.mockHandleDropdownKeyIntercept.mockReturnValue(false)
     mocks.mockGetSuggestion.mockReturnValue(Promise.resolve(null))
-    mockOnTerminalData.mockImplementation((cb: (id: string, data: string) => void) => {
+    mockOnTerminalData.mockImplementation((cb: (id: string, data: string, end?: number) => void) => {
       mockOnTerminalDataCb = cb
       return vi.fn()
     })
@@ -991,7 +1001,8 @@ describe('TerminalPane', () => {
       })
       render(<TerminalPane {...defaultProps} />)
       await waitFor(() => {
-        expect(mocks.mockTerminal.write).toHaveBeenCalledWith('buffered-output')
+        // With a callback: the replay is counted until xterm has parsed it (see writeHistory).
+        expect(mocks.mockTerminal.write).toHaveBeenCalledWith('buffered-output', expect.any(Function))
       })
     })
 
@@ -2056,6 +2067,25 @@ describe('TerminalPane', () => {
       act(() => { mockOnDataCb?.('\r') })
       expect(mockAppendHistory).not.toHaveBeenCalled()
     })
+
+    // A paste into a shell that never asked for bracketed paste (PowerShell, cmd) arrives as ONE
+    // chunk whose \r are Enters: the shell runs each line as it lands. Each one is a command.
+    it('a multi-line paste records each line it submits, and keeps the rest as the draft', () => {
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnDataCb?.('echo one\recho two\rgit st') })
+      expect(mockAppendHistory.mock.calls.map((c) => c[2])).toEqual(['echo one', 'echo two'])
+      act(() => { mockOnDataCb?.('atus') })
+      act(() => { mockOnDataCb?.('\r') })
+      expect(mockAppendHistory).toHaveBeenLastCalledWith('term-1', 'Terminal 1', 'git status')
+      expect(mockAppendHistory).toHaveBeenCalledTimes(3)
+    })
+
+    it('a pasted line joins what was already typed on the line', () => {
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnDataCb?.('e') })
+      act(() => { mockOnDataCb?.('cho hi\r') })
+      expect(mockAppendHistory.mock.calls.map((c) => c[2])).toEqual(['echo hi'])
+    })
   })
 
   // =====================================================
@@ -2087,7 +2117,11 @@ describe('TerminalPane', () => {
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
-    it('Ctrl+Shift+V reads clipboard and writes to terminal', async () => {
+    // Every paste goes through xterm's own paste(), never straight to the PTY. paste() turns
+    // line breaks into \r and wraps the text in bracketed-paste markers when the program asked
+    // for them. Raw text skips both, and an agent TUI that gets a long raw paste in ~1 KB reads
+    // splits it into several pastes and shows only the tail as typed text.
+    it('Ctrl+Shift+V pastes the clipboard through xterm, not raw to the PTY', async () => {
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', {
         ctrlKey: true,
@@ -2097,9 +2131,10 @@ describe('TerminalPane', () => {
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
       await waitFor(() => {
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+        expect(mocks.mockTerminal.paste).toHaveBeenCalledWith('pasted-text')
       })
       expect(mockClipboardReadText).toHaveBeenCalled()
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', 'pasted-text')
     })
 
     it('normal keys pass through (returns true)', () => {
@@ -2128,15 +2163,16 @@ describe('TerminalPane', () => {
       expect(mockClipboardWriteText).not.toHaveBeenCalled()
     })
 
-    it('Ctrl+V pastes clipboard text into terminal', async () => {
+    it('Ctrl+V pastes the clipboard through xterm, not raw to the PTY', async () => {
       render(<TerminalPane {...defaultProps} />)
       const event = new KeyboardEvent('keydown', { ctrlKey: true, key: 'V' })
       const result = mockKeyHandlerCb?.(event)
       expect(result).toBe(false)
       await waitFor(() => {
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+        expect(mocks.mockTerminal.paste).toHaveBeenCalledWith('pasted-text')
       })
       expect(mockClipboardReadText).toHaveBeenCalled()
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', 'pasted-text')
     })
 
     it('Shift+Enter sends backslash+CR for shell line continuation when no agent detected', () => {
@@ -2511,15 +2547,16 @@ describe('TerminalPane', () => {
       expect(screen.getByText('right-click-text')).toBeInTheDocument()
     })
 
-    it('clicking Paste in context menu pastes from clipboard', async () => {
+    it('clicking Paste in context menu pastes the clipboard through xterm, not raw to the PTY', async () => {
       const { container } = render(<TerminalPane {...defaultProps} />)
       const terminalContainer = container.querySelector('.flex-1.relative')!
       fireEvent.contextMenu(terminalContainer, { clientX: 100, clientY: 200, shiftKey: true })
       fireEvent.click(screen.getByText('Paste'))
       await waitFor(() => {
-        expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'pasted-text')
+        expect(mocks.mockTerminal.paste).toHaveBeenCalledWith('pasted-text')
       })
       expect(mockClipboardReadText).toHaveBeenCalled()
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', 'pasted-text')
     })
 
     it('clicking Select All calls selectAll on terminal', () => {
@@ -3083,6 +3120,456 @@ describe('TerminalPane', () => {
   })
 
   // =====================================================
+  // 12d. Replaying the retained window on mount (issue #35)
+  //
+  // A pane is rebuilt from main's 32 KB window on every mount — a Settings round-trip, a
+  // tabs/split toggle, a split, a terminal added or closed in split view. These tests put a REAL
+  // xterm parser behind the mocked Terminal (writes, resizes and the pane's own CSI handlers all
+  // land on it), so they check what the rebuilt pane actually shows and does.
+  // =====================================================
+  describe('replaying the retained window on mount', () => {
+    const E = '\x1b'
+    /** Claude Code 2.1.296 fullscreen: alt screen, focus, bracketed paste, then the "full" mouse. */
+    const AGENT_MODES = `${E}[?1049h${E}[?1004h${E}[?2004h${E}[?1000h${E}[?1002h${E}[?1003h${E}[?1006h`
+
+    const realScreen = (opts: { cols?: number; rows?: number; buildNumber?: number } = {}): HeadlessTerminal => {
+      const screen = new HeadlessTerminal({
+        cols: opts.cols ?? 80,
+        rows: opts.rows ?? 24,
+        scrollback: 1000,
+        allowProposedApi: true,
+        ...(opts.buildNumber ? { windowsPty: { backend: 'conpty' as const, buildNumber: opts.buildNumber } } : {}),
+      })
+      mocks.mockTerminal.cols = screen.cols
+      mocks.mockTerminal.rows = screen.rows
+      mocks.mockTerminal.write.mockImplementation((data: string, cb?: () => void) => screen.write(data, cb))
+      mocks.mockTerminal.resize.mockImplementation((cols: number, rows: number) => {
+        screen.resize(cols, rows)
+        mocks.mockTerminal.cols = cols
+        mocks.mockTerminal.rows = rows
+      })
+      mocks.mockTerminal.parser.registerCsiHandler.mockImplementation(
+        (id: Parameters<HeadlessTerminal['parser']['registerCsiHandler']>[0], cb: (p: (number | number[])[]) => boolean) =>
+          screen.parser.registerCsiHandler(id, cb),
+      )
+      mocks.mockTerminal.reset.mockImplementation(() => screen.reset())
+      // Browser xterm answers `?1004h` with a focus report on the spot — `ESC[O` here, since a
+      // freshly mounted pane is not focused — through the same onData as a keystroke. Headless
+      // xterm has no focus at all, so emulate exactly that, mid-parse, as xterm does.
+      screen.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+        if (params.some((p) => (typeof p === 'number' ? p : p[0]) === 1004)) mockOnDataCb?.(`${E}[O`)
+        return false
+      })
+      return screen
+    }
+    /** Resolves once everything written so far has been parsed. */
+    const settle = (screen: HeadlessTerminal): Promise<void> => new Promise((resolve) => screen.write('', resolve))
+    const rows = (screen: HeadlessTerminal): string[] => {
+      const b = screen.buffer.active
+      const out: string[] = []
+      for (let y = 0; y < b.length; y++) out.push(b.getLine(y)?.translateToString(true) ?? '')
+      while (out.length > 0 && out[out.length - 1] === '') out.pop()
+      return out
+    }
+    /** Hold the mount's replay reply until the test releases it (null = the request failed). */
+    const deferredReplay = (): ((data: Record<string, unknown> | null) => Promise<void>) => {
+      let release!: (data: Record<string, unknown> | null) => void
+      mockReadTerminalBuffer.mockReturnValueOnce(
+        new Promise((resolve) => {
+          release = (data) => resolve(data ? { success: true, data } : { success: false, error: 'gone' })
+        }) as never,
+      )
+      return (data) => act(async () => { release(data) })
+    }
+    const fitAddon = (): { fit: ReturnType<typeof vi.fn> } =>
+      mocks.mockTerminal.loadAddon.mock.calls.map((c) => c[0]).find((a) => typeof a?.fit === 'function')
+    const wheelHandler = () => {
+      const calls = mocks.mockTerminal.attachCustomWheelEventHandler.mock.calls
+      return calls[calls.length - 1]?.[0] as (e: WheelEvent) => boolean
+    }
+    const wheelUp = () =>
+      ({ deltaY: -100, deltaMode: 0, clientX: 0, clientY: 0, preventDefault: vi.fn() }) as unknown as WheelEvent
+
+    afterEach(() => {
+      mocks.mockTerminal.cols = 80
+      mocks.mockTerminal.rows = 24
+      mocks.mockTerminal.write.mockReset()
+      mocks.mockTerminal.resize.mockReset()
+      mocks.mockTerminal.reset.mockReset()
+      mocks.mockTerminal.parser.registerCsiHandler.mockReset()
+      mocks.mockTerminal.hasSelection.mockReturnValue(false)
+    })
+
+    it('writes the mode preamble ahead of the window, minus the half-sequence the window opens on', async () => {
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: '49hFRAME', preamble: `${E}[?1049h${E}[?2004h`, skip: 3, nextOffset: 99, missed: 0, length: 8 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await waitFor(() => expect(mocks.mockTerminal.write).toHaveBeenCalledWith(`${E}[?1049h${E}[?2004hFRAME`, expect.any(Function)))
+    })
+
+    it('ignores a skip that is not a positive count', async () => {
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: 'FRAME', skip: -4, nextOffset: 5, missed: 0, length: 5 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await waitFor(() => expect(mocks.mockTerminal.write).toHaveBeenCalledWith('FRAME', expect.any(Function)))
+    })
+
+    it('still restores the modes when the window itself is empty (just cleared, say)', async () => {
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { preamble: `${E}[?1049h`, nextOffset: 40, missed: 40, length: 0 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await waitFor(() => expect(mocks.mockTerminal.write).toHaveBeenCalledWith(`${E}[?1049h`, expect.any(Function)))
+    })
+
+    it('keeps working when writing the replay throws', async () => {
+      mocks.mockTerminal.write.mockImplementationOnce(() => { throw new Error('renderer gone') })
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: 'frame', nextOffset: 5, missed: 0, length: 5 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('frame', expect.any(Function)) // it tried, and it threw
+      // The failed replay is not retried into the pane, and live output carries on as usual.
+      act(() => { mockOnTerminalDataCb?.('term-1', 'after', 10) })
+      expect(mocks.mockTerminal.write).toHaveBeenLastCalledWith('after')
+      expect(mocks.mockTerminal.write.mock.calls.filter((c) => c[0] === 'frame')).toHaveLength(1)
+    })
+
+    it('still replays, at the current size, when resizing to the pty size throws', async () => {
+      // A renderer torn down mid-mount (a WebGL context loss, say) can make resize throw. The
+      // replay drawn at the wrong width is still far better than a blank pane.
+      const screen = realScreen()
+      mocks.mockTerminal.resize.mockImplementation(() => { throw new Error('renderer gone') })
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: 'line one\r\nline two\r\n', cols: 120, rows: 30, nextOffset: 20, missed: 0, length: 20 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      await settle(screen)
+      expect(rows(screen)).toEqual(['line one', 'line two'])
+      // ...and no hold was left behind: the next pane resize fits as usual.
+      const fit = fitAddon().fit
+      fit.mockClear()
+      act(() => { mockResizeObserverCb?.() })
+      await act(async () => { await new Promise((r) => setTimeout(r, 150)) })
+      expect(fit).toHaveBeenCalled()
+    })
+
+    // --- Focus reports a replay provokes --------------------------------------------
+    // Browser xterm answers `?1004h` with a focus report the moment it parses it. Replaying an
+    // agent's (or ConPTY's — it sets 1004 in every session) old `?1004h` in a pane that is not
+    // focused would therefore send the app a focus-out it was already sent when focus left the
+    // old pane, and session recording would log it as typed input.
+
+    it.each([
+      ['at the size it already has', {}],
+      ['after resizing to the pty size', { cols: 120, rows: 30 }],
+    ])('drops the focus-out report a replayed ?1004h provokes (%s) — not forwarded, not recorded', async (_label, size) => {
+      const screen = realScreen()
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: 'frame', preamble: `${E}[?1049h${E}[?1004h`, ...size, nextOffset: 5, missed: 0, length: 5 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      await settle(screen)
+      expect(screen.modes.sendFocusMode).toBe(true) // the mode itself is restored...
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', `${E}[O`) // ...without the report
+      expect(mocks.mockAppendRecordingEntry).not.toHaveBeenCalledWith('input', `${E}[O`)
+    })
+
+    it('drops only a focus-out, only while the replay parses: a focus-in, keystrokes and later reports go through', async () => {
+      // Hold the replay's parse open, so "while it parses" is a window the test controls.
+      let parsed: (() => void) | undefined
+      mocks.mockTerminal.write.mockImplementation((_data: string, cb?: () => void) => { if (cb) parsed = cb })
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: 'frame', preamble: `${E}[?1004h`, nextOffset: 5, missed: 0, length: 5 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      mockWriteToTerminal.mockClear()
+
+      act(() => { mockOnDataCb?.(`${E}[O`) }) // xterm, mid-parse, answering the replayed ?1004h
+      // The same answer in a pane that HAS focus: the app's only news of it -- the fresh xterm was
+      // not reporting focus yet when the pane got it.
+      act(() => { mockOnDataCb?.(`${E}[I`) })
+      act(() => { mockOnDataCb?.('k') }) // the user typing meanwhile
+      act(() => { mockOnDataCb?.(`${E}[A`) }) // an arrow key is an escape sequence too
+      expect(mockWriteToTerminal.mock.calls.map((c) => c[1])).toEqual([`${E}[I`, 'k', `${E}[A`])
+
+      act(() => { parsed?.() }) // the replay has been parsed
+      act(() => { mockOnDataCb?.(`${E}[I`) }) // a real focus change from here on reaches the app
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', `${E}[I`)
+    })
+
+    // --- Clear ---------------------------------------------------------------------
+    // term.reset() wipes the screen AND every mode the running agent set — bracketed paste, the
+    // alternate screen, the mouse — which the agent will not send again. Main folds the cleared
+    // output into its mode tracker and hands that state back with the clear, in the same step.
+
+    it('keeps the agent\'s modes through a Clear: bracketed paste and the wheel still work after it', async () => {
+      const screen = realScreen()
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      act(() => { mockOnTerminalDataCb?.('term-1', `${AGENT_MODES}${E}[5;1Hframe`, 99) })
+      await settle(screen)
+      expect(screen.modes.bracketedPasteMode).toBe(true)
+
+      mockClearTerminalBuffer.mockResolvedValueOnce({ success: true, data: { preamble: AGENT_MODES } } as never)
+      mockWriteToTerminal.mockClear()
+      await act(async () => { window.dispatchEvent(new CustomEvent('termpolis:clear-terminal', { detail: 'term-1' })) })
+      await settle(screen)
+
+      expect(mocks.mockTerminal.reset).toHaveBeenCalledTimes(1)
+      expect(rows(screen)).toEqual([]) // the screen is still wiped...
+      expect(screen.buffer.active.type).toBe('alternate') // ...but the agent's screen is back
+      expect(screen.modes.bracketedPasteMode).toBe(true) // so term.paste() still brackets
+      expect(mockWriteToTerminal).not.toHaveBeenCalled() // no focus report for the restored ?1004h
+      expect(wheelHandler()(wheelUp())).toBe(false) // and the wheel still reaches the agent
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<64;')
+    })
+
+    it('keeps forwarding the wheel — and bracketing pastes — for a fullscreen agent after the pane remounts', async () => {
+      // The live pane: the agent's startup turns on the alt screen, bracketed paste and the mouse.
+      const live = realScreen()
+      const first = render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      act(() => { mockOnTerminalDataCb?.('term-1', AGENT_MODES, AGENT_MODES.length) })
+      await settle(live)
+      mockWriteToTerminal.mockClear()
+      expect(wheelHandler()(wheelUp())).toBe(false)
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<64;')
+      first.unmount()
+
+      // A same-size remount (Settings opened and closed). The agent is still running, but main's
+      // window evicted its one-time startup long ago — so the modes arrive as the preamble.
+      const remounted = realScreen()
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: `${E}[5;1Hframe diff`, preamble: AGENT_MODES, nextOffset: 50_000, missed: 49_000, length: 1000 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      await settle(remounted)
+
+      expect(remounted.buffer.active.type).toBe('alternate')
+      expect(remounted.buffer.active.getLine(4)?.translateToString(true)).toBe('frame diff')
+      expect(remounted.modes.bracketedPasteMode).toBe(true) // so term.paste() brackets again
+      mockWriteToTerminal.mockClear()
+      expect(wheelHandler()(wheelUp())).toBe(false)
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(1)
+      expect(mockWriteToTerminal.mock.calls[0][1]).toContain('\x1b[<64;')
+    })
+
+    it('parses the replay at the size the pty is drawing for, so Windows 10 does not hard-wrap it at 80 columns', async () => {
+      // xterm turns reflow off for a ConPTY build below 21376, so a replay parsed at the default
+      // 80 columns stays wrapped at 80 — every replayed line wider than that is broken in two.
+      const screen = realScreen({ buildNumber: 19045 })
+      const line = 'L' + 'x'.repeat(99)
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: `${line}\r\n`, cols: 120, rows: 30, nextOffset: 102, missed: 0, length: 102 },
+      } as never)
+      render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      await settle(screen)
+      expect(rows(screen)[0]).toBe(line)
+    })
+
+    it('holds every fit while the replay parses at the pty size, then fits to the pane once it has', async () => {
+      let parsed: (() => void) | undefined
+      mocks.mockTerminal.write.mockImplementation((_data: string, cb?: () => void) => { if (cb) parsed = cb })
+      mockReadTerminalBuffer.mockResolvedValueOnce({
+        success: true,
+        data: { output: 'frame', cols: 120, rows: 30, nextOffset: 5, missed: 0, length: 5 },
+      } as never)
+      const { rerender } = render(<TerminalPane {...defaultProps} />)
+      await act(async () => {})
+      expect(mocks.mockTerminal.resize).toHaveBeenCalledWith(120, 30)
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith('frame', expect.any(Function))
+      const fit = fitAddon().fit
+      fit.mockClear()
+      mockResizeTerminal.mockClear()
+
+      // Every route to a fit while the replay is still being parsed at 120x30 must wait:
+      const bigger = defaultProps.fontSize + 2
+      rerender(<TerminalPane {...defaultProps} fontSize={bigger} />) // a font change
+      expect(mocks.mockTerminal.options.fontSize).toBe(bigger) //       (the font itself still applies)
+      rerender(<TerminalPane {...defaultProps} fontSize={bigger} isVisible={false} />)
+      rerender(<TerminalPane {...defaultProps} fontSize={bigger} />) // the pane becoming visible
+      act(() => { mockResizeObserverCb?.() }) // the container resizing
+      await act(async () => { await new Promise((r) => setTimeout(r, 150)) })
+      expect(fit).not.toHaveBeenCalled()
+      expect(mockResizeTerminal).not.toHaveBeenCalled()
+
+      // The replay has parsed: now fit the grid to the pane and tell the pty the fitted size.
+      act(() => { parsed?.() })
+      expect(fit).toHaveBeenCalledTimes(1)
+      expect(mockResizeTerminal).toHaveBeenCalledTimes(1)
+      expect(mockResizeTerminal).toHaveBeenCalledWith('term-1', mocks.mockTerminal.cols, mocks.mockTerminal.rows)
+      // Releasing twice (a late callback after the grace timer, say) fits no more than once.
+      act(() => { parsed?.() })
+      expect(fit).toHaveBeenCalledTimes(1)
+    })
+
+    it('stops holding fits even if the replay never reports that it parsed', async () => {
+      vi.useFakeTimers()
+      try {
+        mocks.mockTerminal.write.mockImplementation(() => {}) // the parse callback never comes
+        mockReadTerminalBuffer.mockResolvedValueOnce({
+          success: true,
+          data: { output: 'frame', cols: 120, rows: 30, nextOffset: 5, missed: 0, length: 5 },
+        } as never)
+        render(<TerminalPane {...defaultProps} />)
+        await act(async () => {})
+        const fit = fitAddon().fit
+        fit.mockClear()
+        act(() => { vi.advanceTimersByTime(10_000) })
+        expect(fit).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('replays at the current size when main has no usable pty size, or it already matches', async () => {
+      for (const size of [{}, { cols: 0, rows: 30 }, { cols: 120, rows: Number.NaN }, { cols: 80.5, rows: 24 }, { cols: 80, rows: 24 }]) {
+        mocks.mockTerminal.write.mockClear()
+        mockReadTerminalBuffer.mockResolvedValueOnce({
+          success: true,
+          data: { output: 'frame', ...size, nextOffset: 5, missed: 0, length: 5 },
+        } as never)
+        const { unmount } = render(<TerminalPane {...defaultProps} />)
+        await act(async () => {})
+        expect(mocks.mockTerminal.resize, JSON.stringify(size)).not.toHaveBeenCalled()
+        expect(mocks.mockTerminal.write, JSON.stringify(size)).toHaveBeenCalledWith('frame', expect.any(Function))
+        unmount()
+      }
+    })
+
+    it('does not replay into a pane that unmounted before the reply landed', async () => {
+      const reply = deferredReplay()
+      const { unmount } = render(<TerminalPane {...defaultProps} />)
+      unmount()
+      mocks.mockTerminal.write.mockClear()
+      await reply({ output: 'late', nextOffset: 4, missed: 0, length: 4 })
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+    })
+
+    // --- Output that races the reply -------------------------------------------------
+    // The pane subscribes to live output and asks main for the window in the same tick. A chunk
+    // main sent before it served that request is in the reply AND arrives live — and live, it
+    // lands first, on a terminal the replay has not drawn yet. Main tags every chunk with where it
+    // ends in the stream, so the pane can tell what its replay already holds.
+
+    it('does not draw output twice, or out of order, when it arrives between the replay request and its reply', async () => {
+      const screen = realScreen({ cols: 40, rows: 10 })
+      const reply = deferredReplay()
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'line two\r\n', 20) })
+      await reply({ output: 'line one\r\nline two\r\n', nextOffset: 20, missed: 0, length: 20 })
+      act(() => { mockOnTerminalDataCb?.('term-1', 'line three\r\n', 32) })
+      await settle(screen)
+      expect(rows(screen)).toEqual(['line one', 'line two', 'line three'])
+    })
+
+    it('keeps a racing chunk the reply does not hold, after the replay', async () => {
+      const screen = realScreen({ cols: 40, rows: 10 })
+      const reply = deferredReplay()
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'two\r\n', 10) }) // inside the reply
+      act(() => { mockOnTerminalDataCb?.('term-1', 'three\r\n', 17) }) // sent after main served it
+      await reply({ output: 'one\r\ntwo\r\n', nextOffset: 10, missed: 0, length: 10 })
+      await settle(screen)
+      expect(rows(screen)).toEqual(['one', 'two', 'three'])
+    })
+
+    it('keeps racing output that main never buffered (no stream position), after the replay', async () => {
+      const screen = realScreen({ cols: 40, rows: 10 })
+      const reply = deferredReplay()
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'BANNER\r\n') }) // e.g. the Strict-Mode banner
+      await reply({ output: 'one\r\n', nextOffset: 5, missed: 0, length: 5 })
+      await settle(screen)
+      expect(rows(screen)).toEqual(['one', 'BANNER'])
+    })
+
+    it('keeps every racing chunk when the reply does not say how far it reaches', async () => {
+      const screen = realScreen({ cols: 40, rows: 10 })
+      const reply = deferredReplay()
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'later\r\n', 13) })
+      await reply({ output: 'earlier\r\n', missed: 0, length: 9 })
+      await settle(screen)
+      expect(rows(screen)).toEqual(['earlier', 'later'])
+    })
+
+    it('does not write a racing chunk twice when a selection had frozen it', async () => {
+      const screen = realScreen({ cols: 40, rows: 10 })
+      const reply = deferredReplay()
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'two\r\n', 10) }) // frozen behind the selection
+      await reply({ output: 'one\r\ntwo\r\n', nextOffset: 10, missed: 0, length: 10 })
+      mocks.mockTerminal.hasSelection.mockReturnValue(false)
+      act(() => { mockSelectionChangeCb?.() }) // the selection clears, which flushes the freeze
+      await settle(screen)
+      expect(rows(screen)).toEqual(['one', 'two'])
+    })
+
+    it('gives up on a reply that is overtaken by a flood, rather than holding the flood for it', async () => {
+      const reply = deferredReplay()
+      render(<TerminalPane {...defaultProps} />)
+      const flood = 'y'.repeat(2_000_000) // far more than the window a replay could restore
+      act(() => { mockOnTerminalDataCb?.('term-1', flood, 2_000_100) })
+      act(() => { mockOnTerminalDataCb?.('term-1', 'next', 2_000_104) })
+      await reply({ output: 'stale window', nextOffset: 100, missed: 0, length: 12 })
+      const written = mocks.mockTerminal.write.mock.calls.map((c) => String(c[0]))
+      expect(written).toEqual([flood, 'next']) // live output stands; the overtaken replay is dropped
+    })
+
+    it('leaves early live output alone when there is nothing to replay', async () => {
+      const screen = realScreen()
+      const reply = deferredReplay()
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'hello\r\n', 7) })
+      await reply({ output: '', nextOffset: 7, missed: 0, length: 0 })
+      await settle(screen)
+      expect(rows(screen)).toEqual(['hello'])
+      expect(mocks.mockTerminal.write.mock.calls.some((c) => String(c[0]).includes(`${E}c`))).toBe(false)
+    })
+
+    it('lets live output through untouched when the replay request fails or throws', async () => {
+      const failed = realScreen()
+      const reply = deferredReplay()
+      const first = render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'live\r\n', 6) })
+      await reply(null)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'more\r\n', 12) })
+      await settle(failed)
+      expect(rows(failed)).toEqual(['live', 'more'])
+      first.unmount()
+
+      const rejected = realScreen()
+      mockReadTerminalBuffer.mockReturnValueOnce(Promise.reject(new Error('terminal killed')) as never)
+      render(<TerminalPane {...defaultProps} />)
+      act(() => { mockOnTerminalDataCb?.('term-1', 'still here\r\n', 12) })
+      await act(async () => {})
+      act(() => { mockOnTerminalDataCb?.('term-1', 'and here\r\n', 22) })
+      await settle(rejected)
+      expect(rows(rejected)).toEqual(['still here', 'and here'])
+    })
+  })
+
+  // =====================================================
   // 13. Recording entries
   // =====================================================
   describe('session recording', () => {
@@ -3153,18 +3640,43 @@ describe('TerminalPane', () => {
       const terminalContainer = container.querySelector('.flex-1.relative')!
 
       const file1 = new File([''], 'test.txt')
-      Object.defineProperty(file1, 'path', { value: '/home/user/test.txt' })
       const file2 = new File([''], 'test2.txt')
-      Object.defineProperty(file2, 'path', { value: '/home/user/test2.txt' })
+      const onDisk = new Map([[file1, '/home/user/test.txt'], [file2, '/home/user/test2.txt']])
+      mockGetPathForFile.mockImplementation((f: File) => onDisk.get(f) ?? '')
 
       fireEvent.drop(terminalContainer, {
         dataTransfer: { files: [file1, file2] },
       })
 
+      expect(mockGetPathForFile).toHaveBeenCalledWith(file1)
       expect(mockWriteToTerminal).toHaveBeenCalledWith(
         'term-1',
         '"/home/user/test.txt" "/home/user/test2.txt"'
       )
+    })
+
+    it('ignores the File.path that Electron 32 removed, asking webUtils for the path instead', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const file = new File([''], 'test.txt')
+      Object.defineProperty(file, 'path', { value: '/stale/path.txt' })
+      mockGetPathForFile.mockReturnValue('/home/user/test.txt')
+
+      fireEvent.drop(container.querySelector('.flex-1.relative')!, { dataTransfer: { files: [file] } })
+
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '"/home/user/test.txt"')
+    })
+
+    it('drops only the files that have a path on disk', () => {
+      const { container } = render(<TerminalPane {...defaultProps} />)
+      mockWriteToTerminal.mockClear()
+      const onDisk = new File([''], 'a.txt')
+      const fromWeb = new File([''], 'b.png')
+      mockGetPathForFile.mockImplementation((f: File) => (f === onDisk ? 'C:\\work\\a.txt' : ''))
+
+      fireEvent.drop(container.querySelector('.flex-1.relative')!, { dataTransfer: { files: [fromWeb, onDisk] } })
+
+      expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', '"C:\\work\\a.txt"')
     })
 
     it('dragOver is handled without error', () => {

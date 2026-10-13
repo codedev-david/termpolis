@@ -783,7 +783,7 @@ The bottom strip shows, left to right:
 
 **macOS: "Permission denied" when launching a terminal.** Grant Termpolis **Full Disk Access** in System Settings → Privacy & Security → Full Disk Access. Re-launch after granting.
 
-**Linux: AppImage won't run.** Mark it executable: `chmod +x Termpolis-*.AppImage`. On systems with hardened FUSE, extract and run the inner binary: `./Termpolis-*.AppImage --appimage-extract && ./squashfs-root/termpolis`.
+**Linux: AppImage won't run.** Mark it executable: `chmod +x Termpolis-*.AppImage`. On systems with hardened FUSE, extract and run the inner binary: `./Termpolis-*.AppImage --appimage-extract && ./squashfs-root/termpolis`. If the window never appears and the output ends with `Unable to access(W_OK|X_OK) /dev/shm: No such process`, update to v1.51.5 or later; on an older version, start it with `--no-sandbox`.
 
 **Data directory didn't appear.** Termpolis creates the data directory on first run — make sure you actually clicked "Open" rather than dismissing the first-launch dialog. Paths by platform: `%APPDATA%\termpolis\` (Windows), `~/Library/Application Support/termpolis/` (macOS), `~/.config/termpolis/` (Linux).
 
@@ -918,7 +918,7 @@ hides the controls it isn't allowed to use.
 | Permission | Default | What it allows |
 |---|---|---|
 | **Read terminal output** | on | List the terminals saved in the desktop's session, i.e. the sidebar (name and working folder; swarm workers are excluded), and stream the output of the one the phone has open. |
-| **Start terminals** | off | Start a terminal. The app offers Claude, Codex or Gemini (`agy`) in a folder picked by browsing the folders under the desktop's home folder; the desktop itself accepts any folder, and a plain shell. The terminal is created over MCP like a swarm worker's, so `sanitizeAgentCommand` launches it the same way: Claude and Gemini with `--dangerously-skip-permissions`, Codex with `-a never -s workspace-write`. |
+| **Start terminals** | off | Start a terminal. The app offers Claude, Codex or Gemini (`agy`) in a folder picked by browsing the desktop's folders, and a plain shell. The picker opens at the desktop's home folder, which also lists every drive the desktop can see (`C:\`, `D:\` and so on, mapped drives included; `/` on macOS and Linux). Network paths (`\\server\share`) are refused, both for browsing and as a terminal's folder. The terminal is created over MCP like a swarm worker's, so `sanitizeAgentCommand` launches it the same way: Claude and Gemini with `--dangerously-skip-permissions`, Codex with `-a never -s workspace-write`. |
 | **Type into terminals** | off | Send text to any open terminal, then Enter. This bypasses the command checks — it is a keyboard, and anything typed runs as you. Deliberately **not** implied by *Start terminals*. |
 | **Close terminals** | off | Close a terminal. The current phone app has no control for this. |
 
@@ -989,8 +989,8 @@ hides the controls it isn't allowed to use.
   localhost — limited to `list_terminals`, `create_terminal`, `run_command`,
   `write_to_terminal` and `close_terminal`, with the same rate limits and audit
   log (tool name and device id, not the text) as any MCP client. Folder
-  browsing (home-rooted, folder names only) and the output stream are handled
-  in the bridge and are not audited. The phone's own requests reach no memory,
+  browsing (any local drive, folder names only, never a network path) and the
+  output stream are handled in the bridge and are not audited. The phone's own requests reach no memory,
   swarm or other tools; an agent it types into still has its own.
 - **Keys.** The desktop's identity key never reaches the renderer, and is
   encrypted with the OS keychain (DPAPI / Keychain / libsecret) where one is
