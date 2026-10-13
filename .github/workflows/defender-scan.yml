@@ -1,0 +1,214 @@
+name: Defender scan
+
+# Would Microsoft Defender quarantine a Windows build? Its cloud verdicts have hit Termpolis before
+# (Trojan:Win32/Cinjo.O!cl on an unsigned inner Termpolis.exe: v1.11.55, v1.15.3, v1.49.1), and they
+# hit Electron 43's own unsigned dev binary on the way to that upgrade (PR #34).
+#
+# A GitHub Windows runner ships with Defender switched off. This turns it back on the way a stock
+# Windows install has it (real-time and cloud protection, block at first sight, no exclusions) and
+# scans three kinds of file:
+#   - controls, which say whether this runner's Defender can tell at all: the EICAR test file
+#     (which it must catch), Electron's own unsigned electron.exe (43 and 30), and the latest
+#     release's inner Termpolis.exe with its signature stripped (what v1.49.1 shipped as);
+#   - the baseline: the latest published release's signed installer and inner exe;
+#   - the subject, when a tag is given (a draft release works): its installer and inner exe, and
+#     then the installed app, installed and run with real-time protection on, as a user would.
+# Defender flagging any part of the subject fails the job, and so does Defender missing EICAR: a
+# clean result from a Defender that isn't working would prove nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose Windows installer to test (a draft works). Empty = controls and baseline only.
+        required: false
+        default: ''
+      cloud_block_level:
+        description: Cloud block level. 0 = the Windows default, 2 = High, 4 = High+ (strict corporate).
+        required: false
+        default: '0'
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      cloud_block_level:
+        type: string
+        required: false
+        default: '0'
+
+permissions:
+  contents: write # a draft release is only visible to a token that can push
+
+jobs:
+  scan:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      SUBJECT_TAG: ${{ inputs.tag }}
+      CLOUD_BLOCK_LEVEL: ${{ inputs.cloud_block_level }}
+    steps:
+      # Defender is still off here, so nothing is quarantined on the way in, and each file is
+      # judged by the explicit scan below.
+      - name: Gather the files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:SCAN = Join-Path $env:RUNNER_TEMP 'defender-scan'
+          "SCAN=$env:SCAN" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force $env:SCAN | Out-Null
+          $samples = [ordered]@{}
+
+          # EICAR, assembled here so the string itself is in no file in this repo.
+          $codes = 88,53,79,33,80,37,64,65,80,91,52,92,80,90,88,53,52,40,80,94,41,55,67,67,41,55,125,36,69,73,67,65,82,45,83,84,65,78,68,65,82,68,45,65,78,84,73,86,73,82,85,83,45,84,69,83,84,45,70,73,76,69,33,36,72,43,72,42
+          $eicar = Join-Path $env:SCAN 'eicar.com'
+          [IO.File]::WriteAllBytes($eicar, [byte[]]$codes)
+          $samples['control: EICAR test file'] = $eicar
+
+          foreach ($v in '43.7.9', '30.5.1') {
+            $zip = Join-Path $env:SCAN "electron-$v.zip"
+            Invoke-WebRequest "https://github.com/electron/electron/releases/download/v$v/electron-v$v-win32-x64.zip" -OutFile $zip
+            $dir = Join-Path $env:SCAN "electron-$v"
+            7z x $zip "-o$dir" electron.exe -y | Out-Null
+            $samples["control: Electron $v electron.exe"] = Join-Path $dir 'electron.exe'
+          }
+
+          function Expand-Installer([string]$installer, [string]$into) {
+            7z x $installer "-o$into" '$PLUGINSDIR\app-64.7z' -y | Out-Null
+            7z x (Join-Path $into '$PLUGINSDIR\app-64.7z') "-o$(Join-Path $into 'app')" Termpolis.exe -y | Out-Null
+            Join-Path $into 'app\Termpolis.exe'
+          }
+
+          $baseline = gh release view -R $env:REPO --json tagName -q .tagName
+          $bdir = Join-Path $env:SCAN "baseline-$baseline"
+          gh release download $baseline -R $env:REPO --pattern 'Termpolis*Setup*.exe' --dir $bdir
+          $binstaller = (Get-ChildItem $bdir -Filter '*.exe' | Select-Object -First 1).FullName
+          $binner = Expand-Installer $binstaller $bdir
+          $samples["baseline: $baseline installer"] = $binstaller
+          $samples["baseline: $baseline inner Termpolis.exe"] = $binner
+
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          $unsigned = Join-Path $env:SCAN 'unsigned\Termpolis.exe'
+          New-Item -ItemType Directory -Force (Split-Path $unsigned) | Out-Null
+          Copy-Item $binner $unsigned
+          & $signtool.FullName remove /s $unsigned | Out-Null
+          $samples["control: $baseline inner Termpolis.exe, signature stripped"] = $unsigned
+
+          if ($env:SUBJECT_TAG) {
+            $sdir = Join-Path $env:SCAN "subject-$env:SUBJECT_TAG"
+            gh release download $env:SUBJECT_TAG -R $env:REPO --pattern 'Termpolis*Setup*.exe' --dir $sdir
+            $sinstaller = (Get-ChildItem $sdir -Filter '*.exe' | Select-Object -First 1).FullName
+            $samples["subject: $env:SUBJECT_TAG installer"] = $sinstaller
+            $samples["subject: $env:SUBJECT_TAG inner Termpolis.exe"] = Expand-Installer $sinstaller $sdir
+            "SUBJECT_INSTALLER=$sinstaller" >> $env:GITHUB_ENV
+          }
+
+          $rows = foreach ($k in $samples.Keys) {
+            $sig = Get-AuthenticodeSignature $samples[$k]
+            [pscustomobject]@{ name = $k; path = $samples[$k]; signature = "$($sig.Status)"; signer = "$($sig.SignerCertificate.Subject)" }
+          }
+          $rows | Format-Table name, signature, signer -AutoSize | Out-String -Width 300
+          $rows | ConvertTo-Json | Set-Content (Join-Path $env:SCAN 'samples.json')
+
+      - name: Turn Defender on as a stock Windows install has it
+        shell: pwsh
+        run: |
+          # One setting the SKU refuses must not stop the rest; the status printed below is the record.
+          $ErrorActionPreference = 'Continue'
+          $pref = Get-MpPreference
+          foreach ($p in @($pref.ExclusionPath)) { if ($p) { Remove-MpPreference -ExclusionPath $p } }
+          foreach ($p in @($pref.ExclusionProcess)) { if ($p) { Remove-MpPreference -ExclusionProcess $p } }
+          foreach ($p in @($pref.ExclusionExtension)) { if ($p) { Remove-MpPreference -ExclusionExtension $p } }
+          $atp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+          if (Test-Path $atp) { Remove-ItemProperty $atp -Name ForceDefenderPassiveMode -ErrorAction SilentlyContinue }
+          Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false `
+            -DisableIOAVProtection $false -DisableScriptScanning $false -DisableArchiveScanning $false `
+            -DisableBlockAtFirstSeen $false -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples `
+            -CloudBlockLevel ([int]$env:CLOUD_BLOCK_LEVEL) -CloudExtendedTimeout 50 -PUAProtection Enabled
+          Update-MpSignature -UpdateSource MicrosoftUpdateServer
+          Get-MpComputerStatus | Format-List AMRunningMode, AMServiceEnabled, AntivirusEnabled,
+            RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled,
+            AntivirusSignatureVersion, AMEngineVersion, AMProductVersion | Out-String
+          Get-MpPreference | Format-List MAPSReporting, SubmitSamplesConsent, CloudBlockLevel,
+            CloudExtendedTimeout, DisableBlockAtFirstSeen, DisableRealtimeMonitoring, ExclusionPath | Out-String
+          & "$env:ProgramFiles\Windows Defender\MpCmdRun.exe" -ValidateMapsConnection
+          exit 0 # the MAPS check's own exit code is information, not a failure
+
+      - name: Scan
+        shell: pwsh
+        run: |
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          $samples = Get-Content (Join-Path $env:SCAN 'samples.json') | ConvertFrom-Json
+          $results = foreach ($s in $samples) {
+            $out = & $mp -Scan -ScanType 3 -File $s.path -DisableRemediation 2>&1 | Out-String
+            $code = $LASTEXITCODE
+            $threats = ([regex]::Matches($out, '(?m)^Threat\s+:\s+(.+)$') | ForEach-Object { $_.Groups[1].Value.Trim() }) -join ', '
+            $verdict = if ($code -eq 2) { 'FLAGGED' } elseif ($code -eq 0) { 'clean' } else { "scan error ($code)" }
+            Write-Host "== $($s.name): $verdict $threats"
+            [pscustomobject]@{ name = $s.name; signature = $s.signature; verdict = $verdict; threats = $threats }
+          }
+          $results | ConvertTo-Json | Set-Content (Join-Path $env:SCAN 'results.json')
+          exit 0 # MpCmdRun exits 2 on a detection, which is a result here; the Verdict step judges
+
+      - name: Install and run the subject with real-time protection on
+        if: env.SUBJECT_INSTALLER != ''
+        shell: pwsh
+        run: |
+          $start = Get-Date
+          $p = Start-Process -FilePath $env:SUBJECT_INSTALLER -ArgumentList '/S' -PassThru -Wait
+          Write-Host "installer exit code: $($p.ExitCode)"
+          # Cinjo.O!cl used to land within about a minute of the install.
+          Start-Sleep -Seconds 60
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\termpolis\Termpolis.exe'
+          $installed = Test-Path $exe
+          Write-Host "installed exe present after 60s: $installed"
+          $ran = $false
+          if ($installed) {
+            $userData = Join-Path $env:RUNNER_TEMP 'termpolis-profile'
+            $app = Start-Process -FilePath $exe -ArgumentList "--user-data-dir=$userData" -PassThru
+            Start-Sleep -Seconds 45
+            $ran = -not $app.HasExited
+            Write-Host "app still running after 45s: $ran"
+            taskkill /PID $app.Id /T /F | Out-Null
+            Start-Sleep -Seconds 5
+            $installed = Test-Path $exe
+          }
+          $detections = Get-MpThreatDetection | Where-Object { $_.InitialDetectionTime -ge $start }
+          $names = foreach ($d in $detections) { (Get-MpThreat -ThreatID $d.ThreatID).ThreatName + ' on ' + ($d.Resources -join ' ') }
+          $install = [pscustomobject]@{
+            installerExit = $p.ExitCode; presentAfter = $installed; ran = $ran
+            detections = ($names -join '; ')
+          }
+          $install | Format-List | Out-String
+          $install | ConvertTo-Json | Set-Content (Join-Path $env:SCAN 'install.json')
+          exit 0
+
+      - name: Verdict
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $results = Get-Content (Join-Path $env:SCAN 'results.json') | ConvertFrom-Json
+          $summary = @('## Defender scan', '', "Cloud block level: $env:CLOUD_BLOCK_LEVEL", '',
+            '| File | Signature | Verdict | Threat |', '|---|---|---|---|')
+          foreach ($r in $results) { $summary += "| $($r.name) | $($r.signature) | **$($r.verdict)** | $($r.threats) |" }
+          $installFile = Join-Path $env:SCAN 'install.json'
+          $install = if (Test-Path $installFile) { Get-Content $installFile | ConvertFrom-Json } else { $null }
+          if ($install) {
+            $summary += '', "Install + run: installer exit $($install.installerExit); installed exe present: $($install.presentAfter); app ran 45s: $($install.ran); detections: $(if ($install.detections) { $install.detections } else { 'none' })"
+          }
+          $failures = @()
+          $eicar = $results | Where-Object name -like 'control: EICAR*'
+          if ($eicar.verdict -ne 'FLAGGED') { $failures += "Defender did not catch EICAR, so it isn't scanning on this runner and nothing here means anything." }
+          $controls = $results | Where-Object { $_.name -like 'control:*' -and $_.name -notlike 'control: EICAR*' }
+          if (-not ($controls | Where-Object verdict -eq 'FLAGGED')) {
+            $summary += '', '> Note: no unsigned control was flagged. This runner''s Defender may not reproduce reputation-based cloud verdicts, so a clean subject proves less than it looks.'
+          }
+          foreach ($r in ($results | Where-Object { $_.name -like 'subject:*' -and $_.verdict -ne 'clean' })) { $failures += "$($r.name): $($r.verdict) $($r.threats)" }
+          if ($install -and (-not $install.presentAfter -or $install.detections)) { $failures += "the installed app was flagged or removed: $($install.detections)" }
+          if ($install -and -not $install.ran) { $failures += 'the installed app did not stay running for 45s' }
+          if ($failures) { $summary += '', '### Failed', ''; $summary += ($failures | ForEach-Object { "- $_" }) }
+          $summary -join "`n" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          $summary -join "`n"
+          if ($failures) { exit 1 }
