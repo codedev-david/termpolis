@@ -19,6 +19,12 @@
  *     --installer dist-electron-builder/Termpolis.Setup.1.11.24.exe \
  *     --yml dist-electron-builder/latest.yml
  *
+ * `--minimum-system-version <v>` also records the oldest OS the build runs on.
+ * electron-updater (6.3.0+; Termpolis clients run 6.8.x) skips an update whose
+ * `minimumSystemVersion` is above `os.release()`, so on macOS the value is a
+ * Darwin version: 21.0.0 is macOS 12, the floor since Electron 38. electron-builder
+ * never writes the field itself.
+ *
  * Exit 0 on success, 1 on any error (file missing, parse fail, no
  * matching `files[]` entry).
  */
@@ -58,15 +64,16 @@ function refreshParsed(parsed, installerName, sha512, size) {
 }
 
 function parseArgs(argv) {
-  const args = { installer: null, yml: null }
+  const args = { installer: null, yml: null, minimumSystemVersion: null }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--installer' && argv[i + 1]) args.installer = argv[++i]
     else if (argv[i] === '--yml' && argv[i + 1]) args.yml = argv[++i]
+    else if (argv[i] === '--minimum-system-version' && argv[i + 1]) args.minimumSystemVersion = argv[++i]
   }
   return args
 }
 
-function refreshOnDisk({ installer, yml }) {
+function refreshOnDisk({ installer, yml, minimumSystemVersion }) {
   if (!installer || !yml) {
     return { ok: false, error: 'usage: --installer <path> --yml <path>' }
   }
@@ -85,6 +92,7 @@ function refreshOnDisk({ installer, yml }) {
   if (!updated) {
     return { ok: false, error: `no files[].url entry matched ${installerName}` }
   }
+  if (minimumSystemVersion) updated.minimumSystemVersion = minimumSystemVersion
 
   const out = yaml.dump(updated, { lineWidth: -1, noRefs: true })
   fs.writeFileSync(yml, out, 'utf8')

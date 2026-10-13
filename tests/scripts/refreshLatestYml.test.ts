@@ -206,5 +206,33 @@ describe('refreshLatestYml — parseArgs', () => {
     const args = parseArgs([])
     expect(args.installer).toBeNull()
     expect(args.yml).toBeNull()
+    expect(args.minimumSystemVersion).toBeNull()
+  })
+
+  it('parses --minimum-system-version', () => {
+    expect(parseArgs(['--minimum-system-version', '21.0.0']).minimumSystemVersion).toBe('21.0.0')
+  })
+})
+
+describe('refreshLatestYml — minimumSystemVersion (Electron 43 needs macOS 12)', () => {
+  function macYml(dir: string): { dmg: string; yml: string } {
+    const dmg = path.join(dir, 'Termpolis-1.52.0.dmg')
+    const yml = path.join(dir, 'latest-mac.yml')
+    fs.writeFileSync(dmg, Buffer.from('DMG'))
+    fs.writeFileSync(yml, ['version: 1.52.0', 'files:', '  - url: Termpolis-1.52.0.dmg', '    sha512: OLD', '    size: 1',
+      'path: Termpolis-1.52.0.dmg', 'sha512: OLD'].join('\n'))
+    return { dmg, yml }
+  }
+
+  it('records the Darwin floor that electron-updater compares os.release() against', () => {
+    const { dmg, yml } = macYml(tmpDir())
+    expect(refreshOnDisk({ installer: dmg, yml, minimumSystemVersion: '21.0.0' }).ok).toBe(true)
+    expect(fs.readFileSync(yml, 'utf8')).toMatch(/^minimumSystemVersion: 21\.0\.0$/m)
+  })
+
+  it('writes no floor unless asked (latest.yml, latest-linux.yml)', () => {
+    const { dmg, yml } = macYml(tmpDir())
+    expect(refreshOnDisk({ installer: dmg, yml }).ok).toBe(true)
+    expect(fs.readFileSync(yml, 'utf8')).not.toContain('minimumSystemVersion')
   })
 })

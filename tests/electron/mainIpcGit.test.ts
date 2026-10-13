@@ -757,6 +757,16 @@ describe('Commit Shield hooks — repo resolution', () => {
     expect(r).toEqual({ success: false, error: 'Not a git repository' })
   })
 
+  it('with no folder given, asks for one starting from home, not the Downloads that Electron 43 picks', async () => {
+    H.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const r = await invoke('gitHooks:install', {})
+    expect(r).toEqual({ success: true, data: { canceled: true } })
+    expect(H.showOpenDialog).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      title: 'Protect a repository with the Commit Shield',
+      defaultPath: require('os').homedir(),
+    }))
+  })
+
   it('refuses to install into a folder that is not a git repository, and names the fix', async () => {
     git(() => new Error('fatal: not a git repository (or any of the parent directories)'))
 

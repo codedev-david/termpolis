@@ -7,7 +7,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0",
+    "node": ">=22.12.0",
     "npm": ">=10"
   },
   "bin": {
@@ -16,6 +16,7 @@
   },
   "main": "out/main/index.js",
   "scripts": {
+    "postinstall": "install-electron",
     "dev": "electron-vite dev",
     "grammars": "node scripts/copy-grammars.cjs",
     "build": "node scripts/copy-grammars.cjs && electron-vite build",
@@ -223,7 +224,7 @@
     "@typescript-eslint/parser": "8.71.1",
     "@vitejs/plugin-react": "4.7.0",
     "@vitest/coverage-v8": "4.1.11",
-    "electron": "30.5.1",
+    "electron": "43.7.9",
     "electron-builder": "26.15.3",
     "electron-vite": "5.0.0",
     "eslint": "8.57.1",

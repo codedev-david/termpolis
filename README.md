@@ -701,7 +701,7 @@ Termpolis takes security seriously, especially with AI agent integration.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 22.12+ (20.19+ also works)
+- [Node.js](https://nodejs.org/) 22.12+
 - npm 10+
 - **Windows only:** Visual Studio Build Tools (for native `node-pty` compilation)
 - **Linux only:** `build-essential`, `python3` (for native module compilation)
@@ -714,6 +714,8 @@ cd termpolis
 npm install
 npm run dev
 ```
+
+`npm install` also fetches the Electron binary: since Electron 42 the `electron` package no longer downloads it by itself, so the `postinstall` script runs Electron's own `install-electron` to do it. With install scripts turned off (`--ignore-scripts`), Electron downloads it the first time the app starts instead.
 
 ### Run Tests
 
