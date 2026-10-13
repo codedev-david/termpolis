@@ -27,6 +27,12 @@ on:
         description: Spec files to run (space-separated, e.g. e2e/chrome-smoke.spec.ts). Empty = all.
         required: false
         default: ''
+      display:
+        description: Linux only. wayland = a headless Weston compositor and no X server at all, so the app can only start as a native Wayland client (Electron 38+'s default in a Wayland session).
+        required: false
+        default: x11
+        type: choice
+        options: [x11, wayland]
 
 jobs:
   e2e:
@@ -66,11 +72,28 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if unshare -Ur true; then echo "TERMPOLIS_E2E_SANDBOX=1" >> "$GITHUB_ENV"; fi
+      - name: Start a headless Wayland compositor
+        if: runner.os == 'Linux' && inputs.display == 'wayland'
+        run: |
+          sudo apt-get install -y --no-install-recommends weston
+          export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+          mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
+          nohup weston --backend=headless --socket=wayland-e2e --width=1600 --height=1000 --idle-time=0 > /tmp/weston.log 2>&1 &
+          for i in $(seq 1 30); do [ -S "$XDG_RUNTIME_DIR/wayland-e2e" ] && break; sleep 1; done
+          [ -S "$XDG_RUNTIME_DIR/wayland-e2e" ] || { cat /tmp/weston.log; exit 1; }
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
       - name: Whole e2e suite
         shell: bash
         run: |
           run=(npx playwright test ${{ inputs.specs }} --shard=${{ matrix.shard }}/4 --reporter=list)
-          if [ "$RUNNER_OS" = Linux ]; then xvfb-run --auto-servernum "${run[@]}"; else "${run[@]}"; fi
+          if [ "$RUNNER_OS" = Linux ] && [ "${{ inputs.display }}" = wayland ]; then
+            # No DISPLAY: if Electron fell back to X11 it could not start at all.
+            env -u DISPLAY WAYLAND_DISPLAY=wayland-e2e XDG_SESSION_TYPE=wayland "${run[@]}"
+          elif [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run --auto-servernum "${run[@]}"
+          else
+            "${run[@]}"
+          fi
       - name: Upload results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
