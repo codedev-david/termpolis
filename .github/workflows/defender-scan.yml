@@ -135,6 +135,16 @@ jobs:
             -DisableBlockAtFirstSeen $false -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples `
             -CloudBlockLevel ([int]$env:CLOUD_BLOCK_LEVEL) -CloudExtendedTimeout 50 -PUAProtection Enabled
           Update-MpSignature -UpdateSource MicrosoftUpdateServer
+          # Real-time protection is Defender's file-system minifilter, WdFilter. Runner images may
+          # leave it unloaded, and then the setting above is accepted and nothing scans on access.
+          if (-not (fltmc filters | Select-String -Quiet 'WdFilter')) {
+            Write-Host 'WdFilter not loaded; loading it'
+            fltmc load WdFilter
+          }
+          fltmc filters | Select-String 'WdFilter'
+          fltmc instances -f WdFilter | Out-String
+          Set-MpPreference -DisableRealtimeMonitoring $false
+          for ($i = 0; $i -lt 12 -and -not (Get-MpComputerStatus).RealTimeProtectionEnabled; $i++) { Start-Sleep -Seconds 5 }
           Get-MpComputerStatus | Format-List AMRunningMode, AMServiceEnabled, AntivirusEnabled,
             RealTimeProtectionEnabled, BehaviorMonitorEnabled, IoavProtectionEnabled,
             AntivirusSignatureVersion, AMEngineVersion, AMProductVersion | Out-String
