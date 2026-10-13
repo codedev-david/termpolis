@@ -3253,6 +3253,8 @@ describe('memory cross-machine sync handlers', () => {
       const res = await invokeHandler('memory:choose-sync-dir')
       expect(res.success).toBe(true)
       expect(res.data.syncing).toBe(true)
+      // From home: Electron 43 would otherwise open Downloads, an easy place to make a sync folder by mistake.
+      expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ defaultPath: os.homedir() }))
     } finally {
       await invokeHandler('memory:set-sync-dir', { dir: null }) // restore local-only
       fs.rmSync(picked, { recursive: true, force: true })

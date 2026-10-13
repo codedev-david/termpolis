@@ -1726,6 +1726,8 @@ ipcMain.handle('gitHooks:install', async (_, opts: { cwd?: string } = {}) => {
     if (!repo) {
       const picked = await dialog.showOpenDialog(mainWindow!, {
         title: 'Protect a repository with the Commit Shield',
+        // Electron 43 opens a dialog with no defaultPath in Downloads, where no repository lives.
+        defaultPath: homedir(),
         properties: ['openDirectory'],
       })
       if (picked.canceled || !picked.filePaths[0]) return ok({ canceled: true })
@@ -2650,6 +2652,8 @@ ipcMain.handle('memory:choose-sync-dir', async () => {
   try {
     const res = await dialog.showOpenDialog(mainWindow!, {
       title: 'Choose a synced folder for Termpolis memory (e.g. inside Dropbox or Syncthing)',
+      // Not Downloads, Electron 43's default, where a new sync folder would be easy to create by mistake.
+      defaultPath: homedir(),
       properties: ['openDirectory', 'createDirectory'],
     })
     if (res.canceled || !res.filePaths[0]) return ok(await getSyncStatus())
