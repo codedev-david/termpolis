@@ -1,26 +1,42 @@
 name: E2E soak
 
-# The Linux e2e suite (Tests' e2e-full job), three times over in parallel. A flake one run only
-# hits now and then needs many runs to show itself: the app.close() teardown hang hit about one
-# shard in ten. A quit that overruns leaves its diagnosis in test-results/teardown-hangs/, which
-# is uploaded with each job's results, and as a warning on the run.
+# The e2e suite (Tests' e2e-full job), several times over in parallel, on any OS. Two uses:
+#   - a flake one run only hits now and then needs many runs to show itself: the app.close()
+#     teardown hang hit about one shard in ten. A quit that overruns leaves its diagnosis in
+#     test-results/teardown-hangs/, uploaded with each job's results and warned on the run.
+#   - the suite on an OS Tests doesn't run it on (Windows), for one ref against another: the same
+#     specs on main and on a branch, side by side, before an upgrade like Electron 43.
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Branch, tag or SHA to test
+        description: Branch, tag, full SHA or refs/pull/N/head to test
         required: false
         default: main
+      os:
+        description: Runner
+        required: false
+        default: ubuntu-latest
+        type: choice
+        options: [ubuntu-latest, windows-latest, macos-latest]
+      copies:
+        description: How many times to run each shard, as a JSON list
+        required: false
+        default: '[1, 2, 3]'
+      specs:
+        description: Spec files to run (space-separated, e.g. e2e/chrome-smoke.spec.ts). Empty = all.
+        required: false
+        default: ''
 
 jobs:
   e2e:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-        copy: [1, 2, 3]
+        copy: ${{ fromJSON(inputs.copies) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -41,19 +57,24 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Install gdb
+        if: runner.os == 'Linux'
         run: sudo apt-get install -y --no-install-recommends gdb || true
       - name: Build
         run: npm run build
       - name: Allow the Chromium sandbox
+        if: runner.os == 'Linux'
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           if unshare -Ur true; then echo "TERMPOLIS_E2E_SANDBOX=1" >> "$GITHUB_ENV"; fi
       - name: Whole e2e suite
-        run: xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
+        shell: bash
+        run: |
+          run=(npx playwright test ${{ inputs.specs }} --shard=${{ matrix.shard }}/4 --reporter=list)
+          if [ "$RUNNER_OS" = Linux ]; then xvfb-run --auto-servernum "${run[@]}"; else "${run[@]}"; fi
       - name: Upload results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: soak-shard${{ matrix.shard }}-copy${{ matrix.copy }}
+          name: soak-${{ inputs.os }}-shard${{ matrix.shard }}-copy${{ matrix.copy }}
           path: test-results/
           retention-days: 7
