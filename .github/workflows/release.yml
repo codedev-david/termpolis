@@ -499,8 +499,18 @@ jobs:
   # therefore verified a release nothing would ever re-publish, failed again on
   # three 404s, and re-retracted. Fused, re-running this one job re-flips the
   # release live and then re-checks it.
+  # Defender on a stock-configured Windows runner, against the draft's SIGNED installer: scanned,
+  # installed and run with real-time protection on. A Defender quarantine on install is the failure
+  # users can't recover from without an admin (v1.11.55, v1.15.3, v1.49.1 all hit Trojan:Win32/
+  # Cinjo.O!cl), so a flagged build stays a draft. Runs beside validate-draft, not after it.
+  defender:
+    needs: build
+    uses: ./.github/workflows/defender-scan.yml
+    with:
+      tag: ${{ github.ref_name }}
+
   publish-release:
-    needs: validate-draft
+    needs: [validate-draft, defender]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
