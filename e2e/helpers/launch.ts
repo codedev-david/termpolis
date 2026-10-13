@@ -16,7 +16,8 @@
  *
  * Centralising it means a new spec inherits both fixes instead of rediscovering them.
  */
-import type { Page } from '@playwright/test'
+import { test, type ElectronApplication, type Page } from '@playwright/test'
+import { spawnSync, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -178,4 +179,172 @@ export async function dismissOnboarding(page: Page): Promise<void> {
     await consentReview.locator('button:has-text("Not now")').click({ force: true }).catch(() => {})
     await consentReview.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {})
   }
+}
+
+/** A healthy quit takes about a second, and the app's own shutdown watchdogs give up at 5. */
+const QUIT_TIMEOUT_MS = 20_000
+
+/**
+ * End a spec's app: `app.close()`, but never for longer than QUIT_TIMEOUT_MS.
+ *
+ * Playwright's close() has main call app.quit() and then waits, with no limit, for the process's
+ * `close` event. That needs more than the main process exiting: every process that inherited its
+ * stdout and stderr has to let go of them too. About one e2e job in ten one of those two never
+ * happened: every test in the spec had passed, and the shard still went red on "Worker teardown
+ * timeout of 120000ms exceeded". A quit that overruns is written up in
+ * test-results/teardown-hangs/ (the main process's last `[shutdown]` lines, whether it exited,
+ * what still holds its output pipes, a native backtrace where gdb can attach) and then ended
+ * outright, so the next one names where it stuck instead of failing a shard.
+ */
+export async function quitApp(app: ElectronApplication | null | undefined): Promise<void> {
+  if (!app) return
+  const proc = app.process()
+  // The app's ends of the pipes Playwright gave it, read while it is surely still alive, so that
+  // a hang report can say which processes still hold them. Five, not three: Playwright starts
+  // Electron with fds 3 and 4 open as well, nothing in the app closes them, and every child that
+  // main spawns (a PTY's shell, a git call) inherits them.
+  const outputEnds = process.platform === 'linux' && proc.pid !== undefined
+    ? [1, 2, 3, 4].map(fd => safeReadlink(`/proc/${proc.pid}/fd/${fd}`)).filter(link => link.startsWith('pipe:') || link.startsWith('socket:'))
+    : []
+  const output: string[] = []
+  const keep = (chunk: Buffer | string): void => {
+    for (const line of chunk.toString().split(/\r?\n/)) if (line.trim()) output.push(line)
+    if (output.length > 400) output.splice(0, output.length - 400)
+  }
+  proc.stdout?.on('data', keep)
+  proc.stderr?.on('data', keep)
+  const closed = app.close().then(() => true, () => true)
+  const inTime = await Promise.race([closed, sleep(QUIT_TIMEOUT_MS).then(() => false)])
+  if (!inTime) {
+    reportQuitHang(proc, output, outputEnds)
+    killTree(proc)
+    await Promise.race([new Promise(resolve => proc.once('exit', resolve)), sleep(5_000)])
+    // Whatever survived the kill may still hold the pipes: a PTY's shell, in a session of its own
+    // that the group kill doesn't reach, or a child of it. close() waits for every one of the
+    // five, so closing our ends is what ends that wait.
+    for (const stream of proc.stdio) (stream as { destroy?: () => void } | null)?.destroy?.()
+    await Promise.race([closed, sleep(10_000)])
+  }
+  proc.stdout?.off('data', keep)
+  proc.stderr?.off('data', keep)
+}
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+
+/** The app and every process under it. Off Windows, Playwright starts Electron as a process-group
+ *  leader, so the group is the tree; on Windows the pid is cmd.exe, and only taskkill /T reaches
+ *  the electron.exe beneath it. */
+function killTree(proc: ChildProcess): void {
+  if (proc.pid === undefined) return
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { timeout: 10_000 })
+    return
+  }
+  try { process.kill(-proc.pid, 'SIGKILL') } catch { /* the group is gone; the leader may not be */ }
+  try { proc.kill('SIGKILL') } catch { /* already gone */ }
+}
+
+function reportQuitHang(proc: ChildProcess, output: string[], outputEnds: string[]): void {
+  let spec = 'unknown-spec'
+  try { spec = path.basename(test.info().file, '.ts') } catch { /* not inside a test or hook */ }
+  const pid = proc.pid ?? 0
+  const exited = proc.exitCode !== null || proc.signalCode !== null
+  const state = exited
+    ? `main process ${pid} HAD exited (code ${proc.exitCode}, signal ${proc.signalCode}), but something still held the pipes Playwright gave it`
+    : `main process ${pid} was still running`
+  const lines = [
+    `${spec}: app.close() had not returned after ${QUIT_TIMEOUT_MS / 1000}s; ${state}.`,
+    '',
+    '--- main process output since close() was called:',
+    ...(output.length > 0 ? output.slice(-150) : ['(none)']),
+    ...(process.platform === 'linux' ? linuxProcessState(proc, exited, outputEnds) : []),
+  ]
+  const file = path.resolve('test-results', 'teardown-hangs', `${spec}-${pid}.txt`)
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, `${lines.join('\n')}\n`)
+  } catch { /* the console copy below still has the gist */ }
+  const steps = output.filter(line => line.includes('[shutdown]')).slice(-12)
+  console.error([
+    `::warning title=e2e quit hang::${spec}: app.close() overran ${QUIT_TIMEOUT_MS / 1000}s (${exited ? 'main had exited' : 'main still running'}); killed. Details: ${path.relative(process.cwd(), file)}`,
+    ...(steps.length > 0 ? steps : ['(the main process printed no [shutdown] line while closing)']),
+  ].join('\n'))
+}
+
+/**
+ * What a stuck Linux main process is doing: its process group, every thread, and a backtrace.
+ * Bounded to about a minute, so the wait, this and the kill stay inside the hook's 120s timeout.
+ */
+function linuxProcessState(proc: ChildProcess, exited: boolean, outputEnds: string[]): string[] {
+  const pid = proc.pid ?? 0
+  const read = (file: string): string => { try { return fs.readFileSync(file, 'utf8') } catch { return '' } }
+  const run = (cmd: string, args: string[], timeout = 10_000): string => {
+    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout })
+    return r.error ? `(${cmd} failed: ${r.error.message})` : `${r.stdout ?? ''}${r.stderr ?? ''}`.trimEnd()
+  }
+
+  // ps -g means different things to different procps builds, so filter by pgid/ppid here.
+  const rows = run('ps', ['-e', '-o', 'pid=,ppid=,pgid=,stat=,etime=,wchan:24=,args=']).split('\n')
+  const group = rows.filter(row => {
+    const [p, pp, pg] = row.trim().split(/\s+/).map(Number)
+    return p === pid || pg === pid || pp === pid
+  })
+
+  const threads: string[] = []
+  let tids: string[] = []
+  try { tids = fs.readdirSync(`/proc/${pid}/task`) } catch { /* already gone */ }
+  for (const tid of tids) {
+    const base = `/proc/${pid}/task/${tid}`
+    const stat = read(`${base}/stat`)
+    const state = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] || '?'
+    const syscall = read(`${base}/syscall`).split(' ')[0] || '?'
+    threads.push(`${tid.padStart(7)} ${state} wchan=${read(`${base}/wchan`).trim() || '-'} syscall=${syscall} ${read(`${base}/comm`).trim()}`)
+  }
+
+  // Who still holds the app's ends of its output pipes (socketpairs, under libuv: our ends have
+  // other inodes). After the main process has gone, these are the whole story.
+  const holders: string[] = []
+  const inodes = outputEnds
+  if (inodes.length > 0) {
+    let pids: string[] = []
+    try { pids = fs.readdirSync('/proc').filter(name => /^\d+$/.test(name)) } catch { /* no procfs */ }
+    for (const other of pids) {
+      if (Number(other) === process.pid) continue
+      let fds: string[] = []
+      try { fds = fs.readdirSync(`/proc/${other}/fd`) } catch { continue }
+      if (!fds.some(fd => inodes.includes(safeReadlink(`/proc/${other}/fd/${fd}`)))) continue
+      holders.push(`${other.padStart(7)} ${read(`/proc/${other}/cmdline`).split('\0').join(' ').trim().slice(0, 300)}`)
+    }
+  }
+
+  const gdb = run('sh', ['-c', 'command -v gdb'])
+  const backtrace = exited ? '(main had already exited)' : gdb.startsWith('/')
+    ? run('sudo', ['-n', 'gdb', '-p', String(pid), '-batch', '-nx', '-ex', 'set pagination off',
+      '-ex', 'info threads', '-ex', 'thread apply all bt 30'], 30_000)
+    : '(gdb is not installed)'
+
+  return [
+    '',
+    `--- processes still holding the app's fds 1-4 (${inodes.join(', ') || 'pipe inode unknown'}):`,
+    ...(holders.length > 0 ? holders : ['(none)']),
+    '',
+    `--- /proc/${pid}/status:`,
+    ...read(`/proc/${pid}/status`).split('\n').filter(l => /^(State|Threads|SigPnd|ShdPnd|SigBlk):/.test(l)),
+    '',
+    '--- its process group and children (pid ppid pgid stat elapsed wchan args):',
+    ...(group.length > 0 ? group : ['(none)']),
+    '',
+    `--- its ${threads.length} threads (tid state wchan syscall name):`,
+    ...threads,
+    '',
+    '--- kernel stack of the main thread:',
+    run('sudo', ['-n', 'cat', `/proc/${pid}/stack`]),
+    '',
+    '--- gdb:',
+    backtrace,
+  ]
+}
+
+function safeReadlink(file: string): string {
+  try { return fs.readlinkSync(file) } catch { return '' }
 }

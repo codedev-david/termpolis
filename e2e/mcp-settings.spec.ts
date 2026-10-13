@@ -16,7 +16,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -43,7 +43,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
   if (agentHome) {
     try { fs.rmSync(agentHome, { recursive: true, force: true }) } catch { /* ignore */ }
   }

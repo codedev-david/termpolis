@@ -28,6 +28,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -68,7 +69,7 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
   })
 
   test.afterAll(async () => {
-    if (app) await app.close()
+    await quitApp(app)
     try { fs.rmSync(ud, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 

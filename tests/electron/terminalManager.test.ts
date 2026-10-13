@@ -38,6 +38,9 @@ const {
   writeToTerminal,
   resizeTerminal,
   killAll,
+  whenTerminalsExit,
+  runningShellCount,
+  _resetTerminalExitsForTests,
   getTerminalPid,
   getTerminalCwd,
   getTerminalSize,
@@ -745,4 +748,69 @@ describe('terminalManager', () => {
     })
   })
 
+  describe('whenTerminalsExit: no shell may outlive the quit', () => {
+    // node-pty reports a shell's exit by calling into JS from its own thread. A shell still
+    // running when Node tears down either holds the teardown open or exits during it, and then
+    // that call throws and aborts the process. The app waits on this before it really quits.
+    afterEach(() => { _resetTerminalExitsForTests(); vi.useRealTimers() })
+    const exitOf = (n: number) => mockPty.onExit.mock.calls[n][0] as (e: { exitCode: number }) => void
+
+    it('resolves at once with no shell running', async () => {
+      _resetTerminalExitsForTests()
+      expect(runningShellCount()).toBe(0)
+      await expect(whenTerminalsExit()).resolves.toBeUndefined()
+    })
+
+    it('waits for every shell to report its exit, even one killAll already let go of', async () => {
+      _resetTerminalExitsForTests()
+      spawnTerminal('w1', '/bin/bash', '/tmp', vi.fn())
+      expect(runningShellCount()).toBe(1)
+      killAll() // forgets the terminal, but the shell is not gone until node-pty says so
+      expect(getTerminalPid('w1')).toBeNull()
+      expect(runningShellCount()).toBe(1)
+      let done = false
+      const waiting = whenTerminalsExit(60_000).then(() => { done = true })
+      await Promise.resolve()
+      expect(done).toBe(false)
+      exitOf(0)({ exitCode: 0 })
+      await waiting
+      expect(done).toBe(true)
+      expect(runningShellCount()).toBe(0)
+    })
+
+    it('SIGKILLs a shell still running half way through, and gives up at the deadline', async () => {
+      _resetTerminalExitsForTests()
+      vi.useFakeTimers()
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      try {
+        spawnTerminal('w2', '/bin/bash', '/tmp', vi.fn())
+        let done = false
+        void whenTerminalsExit(2000).then(() => { done = true })
+        vi.advanceTimersByTime(999)
+        expect(kill).not.toHaveBeenCalledWith(12345, 'SIGKILL')
+        vi.advanceTimersByTime(1)
+        expect(kill).toHaveBeenCalledWith(12345, 'SIGKILL')
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(done).toBe(true) // never forever, whatever the shell does
+      } finally {
+        kill.mockRestore()
+      }
+    })
+
+    it('a kill that fails, for a shell already gone, does not stop the wait ending', async () => {
+      _resetTerminalExitsForTests()
+      vi.useFakeTimers()
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('ESRCH') })
+      try {
+        spawnTerminal('w3', '/bin/bash', '/tmp', vi.fn())
+        let done = false
+        void whenTerminalsExit(2000).then(() => { done = true })
+        await vi.advanceTimersByTimeAsync(2000)
+        expect(done).toBe(true)
+      } finally {
+        kill.mockRestore()
+      }
+    })
+  })
 })
+

@@ -19,7 +19,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir, quitApp } from './helpers/launch'
 
 const PROJECT_ROOT = path.resolve('.')
 const OUT = path.join(PROJECT_ROOT, 'e2e', 'screenshots', 'docs')
@@ -192,7 +192,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  try { if (app) await app.close() } catch {}
+  await quitApp(app)
   try {
     fs.mkdirSync(WEB_OUT, { recursive: true })
     const files = fs.readdirSync(OUT).filter(f => f.endsWith('.png'))

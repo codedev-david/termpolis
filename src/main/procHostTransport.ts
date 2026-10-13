@@ -15,6 +15,7 @@ import { utilityProcess } from 'electron'
 import { fileURLToPath } from 'url'
 import type { ProcTransport } from './procClient'
 import type { ProcResult } from './procHost'
+import { killUtility } from './utilityKill'
 
 /** The bundled host entry, emitted next to the main `index.js` (another electron-vite input).
  *  `import.meta.url`, not `__dirname`: package.json is `"type": "module"` and the built main
@@ -35,7 +36,7 @@ export function createProcHostTransport(hostPath: string = resolveProcHostPath()
     postMessage: (msg) => child.postMessage(msg),
     onMessage: (cb) => { child.on('message', (m: ProcResult) => cb(m)) },
     onExit: (cb) => { child.on('exit', (code: number) => cb(code)) },
-    kill: () => { try { child.kill() } catch { /* already gone */ } },
+    kill: () => killUtility(child),
     get pid() { return child.pid },
   }
 }

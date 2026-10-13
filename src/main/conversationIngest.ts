@@ -365,6 +365,9 @@ export interface IngestDeps {
   yieldEvery?: number
   /** Stop after writing this many new chunks this pass; sets `truncated` (default: unbounded). */
   maxChunks?: number
+  /** Asked before each file. True ends the pass there: the app is quitting, and a read already
+   *  under way is one more request its exit has to wait out. */
+  stopped?: () => boolean
 }
 
 // Sources with stable, documented on-disk transcripts.
@@ -408,6 +411,11 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
       continue
     }
     for (const filePath of files) {
+      if (deps.stopped?.()) {
+        // No flushPatches: the store is shutting down too, and the next pass rebuilds them.
+        stats.truncated = true
+        return stats
+      }
       let content: string
       try {
         content = await deps.readFile(filePath)
@@ -549,7 +557,7 @@ export interface IngestMemory {
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
   memory: IngestMemory,
-  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number } = {},
+  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number; stopped?: () => boolean } = {},
 ): Promise<IngestStats> {
   // BB6: track the last-written chunk id per session so we can lay down a 'follows'
   // edge between consecutive same-session chunks. Idempotent: already-stored chunks
@@ -560,6 +568,7 @@ export async function runConversationIngest(
     sources: opts.sources,
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
+    stopped: opts.stopped,
     listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,

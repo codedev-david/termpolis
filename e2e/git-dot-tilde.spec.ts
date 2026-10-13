@@ -56,6 +56,7 @@ import fs from 'fs'
 import os from 'os'
 import { execSync, execFileSync } from 'child_process'
 import { ensureGitOnPath } from '../tests/gitPath'
+import { quitApp } from './helpers/launch'
 
 // The same executable shellDetector looks for; checked here so a machine without Git for
 // Windows skips cleanly instead of failing in beforeAll on a missing shell.
@@ -133,7 +134,7 @@ describeMaybe('the git mark in a `~`-abbreviated directory', () => {
   })
 
   test.afterAll(async () => {
-    if (app) await app.close()
+    await quitApp(app)
     for (const dir of [isolatedUserData, homeRepo, plainDir]) {
       if (dir) {
         try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }

@@ -169,7 +169,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   killTerminal: vi.fn(),
   writeToTerminal: vi.fn(),
   resizeTerminal: vi.fn(),
-  killAll: vi.fn(),
+  killAll: vi.fn(), whenTerminalsExit: vi.fn(() => Promise.resolve()), runningShellCount: vi.fn(() => 0),
   getTerminalCwd: vi.fn(() => ''),
   getTerminalCwdAsync: vi.fn(async () => ''),
   getTerminalPid: vi.fn(() => 0),

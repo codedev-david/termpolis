@@ -65,6 +65,8 @@ const M = vi.hoisted(() => ({
   writeToTerminal: vi.fn(),
   killTerminal: vi.fn(),
   killAll: vi.fn(),
+  whenTerminalsExit: vi.fn(() => Promise.resolve()),
+  runningShellCount: vi.fn(() => 0),
   detectAvailableShells: vi.fn(async () => [
     { type: 'powershell', name: 'PowerShell', executable: 'pwsh.exe' },
   ]),
@@ -176,7 +178,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   killTerminal: M.killTerminal,
   writeToTerminal: M.writeToTerminal,
   resizeTerminal: vi.fn(),
-  killAll: M.killAll,
+  killAll: M.killAll, whenTerminalsExit: M.whenTerminalsExit, runningShellCount: M.runningShellCount,
   getTerminalCwd: vi.fn(() => '/repo'),
   getTerminalCwdAsync: vi.fn(async () => '/repo'),
   getTerminalPid: vi.fn(() => 0),
@@ -1478,8 +1480,88 @@ describe('shutdown', () => {
       vi.advanceTimersByTime(5000)
       expect(exitSpy).toHaveBeenCalledWith(0)
       // And it names the step it got stuck after, which is the whole point of tracking one.
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('stalled after "mcp"'))
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('stalled after "agent runs"'))
     } finally {
+      vi.useRealTimers()
+      errSpy.mockRestore()
+    }
+  })
+
+  it('holds the quit until every shell has exited, then quits again and goes through', async () => {
+    // A shell exiting while Node tears down aborts the process (node-pty's exit call into JS
+    // throws), and on Linux CI that abort hung app.close(). So with shells still running, the
+    // first will-quit is cancelled until they are gone; the quit it re-issues is let through.
+    const { app } = (await import('electron')) as any
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let shellsGone: () => void = () => {}
+    M.runningShellCount.mockReturnValue(1)
+    M.whenTerminalsExit.mockImplementation(() => new Promise<void>((resolve) => { shellsGone = resolve }))
+    app.quit.mockClear()
+    try {
+      await withPlatform('linux', async () => {
+        const willQuit = await appCallback('will-quit')
+        const first = { preventDefault: vi.fn() }
+        willQuit(first)
+        expect(first.preventDefault).toHaveBeenCalledTimes(1)
+        expect(app.quit).not.toHaveBeenCalled()
+        shellsGone()
+        await new Promise((r) => setTimeout(r, 0))
+        expect(app.quit).toHaveBeenCalledTimes(1)
+        // The second time round it is a normal quit, shells or not.
+        const second = { preventDefault: vi.fn() }
+        willQuit(second)
+        expect(second.preventDefault).not.toHaveBeenCalled()
+      })
+    } finally {
+      M.runningShellCount.mockReturnValue(0)
+      M.whenTerminalsExit.mockImplementation(() => Promise.resolve())
+      errSpy.mockRestore()
+    }
+  })
+
+  it('under e2e, writes each teardown step to stderr as it is reached, through quit', async () => {
+    // A quit that stalls after `quit` has no JS left to run, the watchdog included, so these lines
+    // are all an e2e teardown hang leaves behind. They must arrive in the order the steps run.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.useFakeTimers()
+    try {
+      ;(await appCallback('before-quit'))()
+      ;(await appCallback('will-quit'))()
+      ;(await appCallback('quit'))({}, 0)
+      const steps = errSpy.mock.calls.map(c => String(c[0])).filter(l => l.startsWith('[shutdown] '))
+      // `still open` and `in flight` describe the process at will-quit; the rest are the steps.
+      expect(steps.filter(l => !/^\[shutdown\] (still open|in flight):/.test(l))).toEqual([
+        '[shutdown] start', '[shutdown] terminals', '[shutdown] watchers', '[shutdown] history',
+        '[shutdown] hosts', '[shutdown] proxy', '[shutdown] mcp', '[shutdown] windows closed',
+        '[shutdown] agent runs', '[shutdown] quit (exit code 0)',
+      ])
+      // What Node still holds open at will-quit, by kind: the request a stuck exit waits on.
+      const open = steps.find(l => l.startsWith('[shutdown] still open: '))
+      expect(open).toBeDefined()
+      expect(JSON.parse(open!.slice('[shutdown] still open: '.length))).toEqual(expect.any(Object))
+    } finally {
+      vi.useRealTimers()
+      errSpy.mockRestore()
+    }
+  })
+
+  it('outside e2e, tracks the steps silently but still names the stalled one', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const nodeEnv = process.env.NODE_ENV
+    process.env.NODE_ENV = 'production'
+    exitSpy.mockClear()
+    vi.useFakeTimers()
+    try {
+      ;(await appCallback('before-quit'))()
+      ;(await appCallback('will-quit'))()
+      ;(await appCallback('quit'))({}, 0)
+      expect(errSpy).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(5000)
+      expect(errSpy).toHaveBeenCalledTimes(1)
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('stalled after "quit (exit code 0)"'))
+      expect(exitSpy).toHaveBeenCalledWith(0)
+    } finally {
+      process.env.NODE_ENV = nodeEnv
       vi.useRealTimers()
       errSpy.mockRestore()
     }

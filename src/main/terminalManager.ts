@@ -233,7 +233,11 @@ export function spawnTerminal(
 
   const coalescer = createOutputCoalescer(onData)
   proc.onData((chunk) => coalescer.push(chunk))
+  const pid = proc.pid
+  if (pid) running.add(pid)
   proc.onExit((e: { exitCode: number }) => {
+    if (pid) running.delete(pid)
+    if (running.size === 0) for (const done of exitWaiters.splice(0)) done()
     // Flush BEFORE the exit callback: a shell's last line (a prompt, an error, an exit
     // banner) is usually still inside the window when the process ends, and delivering
     // it after the terminal is torn down is the same as losing it.
@@ -271,6 +275,49 @@ export function resizeTerminal(id: string, cols: number, rows: number): void {
 
 export function killAll(): void {
   for (const [id] of processes) killTerminal(id)
+}
+
+/** Shells started and not yet reported exited, by pid. Unlike `processes`, a kill leaves an
+ *  entry here until node-pty sees the exit: that is what the app's own exit is waiting on. */
+const running = new Set<number>()
+const exitWaiters: Array<() => void> = []
+
+/**
+ * Resolves once every shell has exited, or after `timeoutMs` whatever is left.
+ *
+ * At exit, node-pty joins a thread per terminal that waits for its shell, so a shell that
+ * survives killAll's SIGHUP/SIGTERM holds the whole app open after its last line of JS, and
+ * holds open the output pipes it inherited from main too. Half way through the wait anything
+ * still running gets SIGKILL, so the wait ends one way or the other.
+ */
+export function whenTerminalsExit(timeoutMs = 2000): Promise<void> {
+  if (running.size === 0) return Promise.resolve()
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(force)
+      clearTimeout(giveUp)
+      resolve()
+    }
+    exitWaiters.push(finish)
+    const force = setTimeout(() => {
+      for (const pid of running) { try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ } }
+    }, timeoutMs / 2)
+    const giveUp = setTimeout(finish, timeoutMs)
+  })
+}
+
+/** How many shells have started and not yet been seen to exit. */
+export function runningShellCount(): number {
+  return running.size
+}
+
+/** @internal test-only */
+export function _resetTerminalExitsForTests(): void {
+  running.clear()
+  exitWaiters.splice(0)
 }
 
 export function getTerminalPid(id: string): number | null {

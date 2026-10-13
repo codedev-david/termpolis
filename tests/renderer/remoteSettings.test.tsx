@@ -24,6 +24,7 @@ const statusView = (over: Record<string, unknown> = {}): RemoteStatusView =>
   ({
     enabled: false,
     running: false,
+    relay: 'idle',
     disabled: false,
     relayUrl: DEFAULT_RELAY_URL,
     publicKey: 'a'.repeat(64),
@@ -114,12 +115,26 @@ describe('RemoteSettings', () => {
   })
 
   it('turns remote on and adopts the status that comes back', async () => {
+    api.setEnabled.mockResolvedValue(ok(statusView({ enabled: true, running: true, relay: 'online' })))
     await mount()
     fireEvent.click(screen.getByTestId('remote-enable'))
     await waitFor(() => expect(api.setEnabled).toHaveBeenCalledWith(true))
     await waitFor(() =>
-      expect(screen.getByTestId('remote-running').textContent).toContain('connected to the relay'),
+      expect(screen.getByTestId('remote-running').textContent).toBe('(connected to the relay)'),
     )
+  })
+
+  it('never says connected while the bridge is only dialling', async () => {
+    // `running` is the bridge process alone. It was all the label read, so a relay that refused
+    // every dial showed "(connected to the relay)".
+    api.status.mockResolvedValue(ok(statusView({ enabled: true, running: true, relay: 'connecting' })))
+    await mount()
+    const text = (): string | null => screen.getByTestId('remote-running').textContent
+    expect(text()).toBe('(connecting to the relay…)')
+    act(() => pushStatus(statusView({ enabled: true, running: true, relay: 'idle' })))
+    expect(text()).toBe('(no phone paired yet)')
+    act(() => pushStatus(statusView({ enabled: true, running: true, relay: 'online' })))
+    expect(text()).toBe('(connected to the relay)')
   })
 
   it('turns remote off again', async () => {

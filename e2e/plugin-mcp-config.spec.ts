@@ -23,7 +23,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs } from './helpers/launch'
+import { e2eLaunchArgs, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -87,7 +87,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
   if (scratchHome) {
     try { fs.rmSync(scratchHome, { recursive: true, force: true }) } catch {}
   }

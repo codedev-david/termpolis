@@ -16,7 +16,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eUserDataDir, dismissOnboarding } from './helpers/launch'
+import { e2eUserDataDir, dismissOnboarding, quitApp } from './helpers/launch'
 
 test.skip(
   process.platform !== 'linux' || process.env.TERMPOLIS_E2E_SANDBOX !== '1',
@@ -28,7 +28,7 @@ let page: Page
 let output = ''
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
 })
 
 test('the window and a terminal work with the sandbox on', async () => {

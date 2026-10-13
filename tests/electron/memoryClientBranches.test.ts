@@ -28,7 +28,7 @@ import type { HostRequest, HostResponse } from '../../src/main/memoryHost'
 import {
   startMemoryHost, setMemoryHostSpawner, _resetMemoryClientForTests, memoryHostMode, memoryHostPid,
   provisionMemoryKey, memoryWrite, memoryCount, memoryList, getSyncStatus, enableLocalEncryption,
-  consolidationSimOf,
+  consolidationSimOf, stopMemoryHost,
   type MemoryHostTransport,
 } from '../../src/main/memoryClient'
 import {
@@ -467,5 +467,52 @@ describe('memoryClient — starting is not failing', () => {
     await started
     expect(await early).toBe(42)
     expect(host.posted.some((m) => m.kind === 'call' && m.fn === 'memoryCount')).toBe(true)
+  })
+})
+
+describe('memoryClient — app shutdown is final', () => {
+  // stopMemoryHost() runs in before-quit. Anything that starts a memory process after it is a child
+  // nobody will stop, holding the app's stdout and stderr open, and Playwright's app.close() waits
+  // for those to close: one way an e2e teardown hangs. These are the three ways it could happen.
+  const counting = (onInit: 'ready' | 'exit' | 'silent'): ManualHost[] => {
+    const spawned: ManualHost[] = []
+    setMemoryHostSpawner(() => { const h = makeManualHost({ onInit }); spawned.push(h); return h.transport })
+    return spawned
+  }
+
+  it('a ready already on its way when the app quit neither revives host mode nor forks a replacement', async () => {
+    const spawned = counting('silent')
+    const started = startMemoryHost({ userDataPath: tmp })
+    await flush()
+    expect(spawned).toHaveLength(1)
+
+    stopMemoryHost()
+    spawned[0].push({ kind: 'ready', pid: 7777, entries: 0 }) // sent just before the kill landed
+    spawned[0].exit(0)                                         // and then the kill
+    expect(await started).toBe('unstarted')
+    await flush()
+
+    // Taking that ready made the kill's exit look like a crash, which respawned the host mid-quit.
+    expect(spawned).toHaveLength(1)
+    expect(memoryHostMode()).toBe('unstarted')
+  })
+
+  it('a child killed while starting does not pull the store onto the main thread instead', async () => {
+    const spawned = counting('silent')
+    const started = startMemoryHost({ userDataPath: tmp })
+    await flush()
+    stopMemoryHost()
+    spawned[0].exit(9)
+    // Before, this was "exited during startup", so the store loaded in-process: seconds of the main
+    // thread spent on a brain nobody will query, in the middle of quitting.
+    expect(await started).toBe('unstarted')
+    expect(memoryHostMode()).toBe('unstarted')
+  })
+
+  it('nothing starts at all once the app has quit', async () => {
+    stopMemoryHost()
+    const spawned = counting('ready')
+    expect(await startMemoryHost({ userDataPath: tmp })).toBe('unstarted')
+    expect(spawned).toHaveLength(0)
   })
 })

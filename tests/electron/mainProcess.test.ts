@@ -95,7 +95,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   killTerminal: (...args: any[]) => mockKillTerminal(...args),
   writeToTerminal: (...args: any[]) => mockWriteToTerminal(...args),
   resizeTerminal: (...args: any[]) => mockResizeTerminal(...args),
-  killAll: vi.fn(),
+  killAll: vi.fn(), whenTerminalsExit: vi.fn(() => Promise.resolve()), runningShellCount: vi.fn(() => 0),
   getTerminalCwd: (...args: any[]) => mockGetTerminalCwd(...args),
   // The async cwd probe delegates to the SAME mock, so a mockReturnValue resolves and a throwing
   // mockImplementation rejects — every existing terminal:status test body works unchanged.
@@ -3205,6 +3205,8 @@ describe('ai-security:sensitive-reads', () => {
 async function ensureMemoryStore(): Promise<void> {
   const mc: any = await import('../../src/main/memoryClient')
   if (mc.memoryHostMode() !== 'inproc') {
+    // An earlier test fired before-quit, and stopMemoryHost() is final in the app.
+    mc._unlatchMemoryHostForTests()
     await mc.startMemoryHost({ userDataPath: require('os').tmpdir(), inProcess: true })
   }
 }

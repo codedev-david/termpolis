@@ -397,6 +397,12 @@ export type HostToBridge =
   | { kind: 'peerReply'; callId: string; ok: true; data: unknown }
   | { kind: 'peerReply'; callId: string; ok: false; message: string }
 
+/** Where a desktop stands on its own relay, over every room it holds there.
+ *  `online` -- the relay seated at least one. `connecting` -- it holds rooms and
+ *  none is seated: dialling, or backing off after a refusal (a dead relay stays
+ *  here). `idle` -- it holds none: nothing paired, no QR open, nothing to dial. */
+export type RelayReach = 'idle' | 'connecting' | 'online'
+
 /** Messages the bridge sends up to main. */
 export type BridgeToHost =
   | { kind: 'ready' }
@@ -449,6 +455,10 @@ export type BridgeToHost =
   | { kind: 'linkStateChanged'; id: string; attached: boolean }
   // The other machine unlinked this one. The bridge has already dropped its side.
   | { kind: 'linkBye'; from: LinkTarget }
+  // On every change, and once at `init` so main never carries the last child's
+  // word into this one. Not a device's reachability: seated alone is `online`
+  // here and still `deviceDisconnected` for the phone.
+  | { kind: 'relayState'; state: RelayReach }
 
 /** The relay refuses -- and cuts the connection on -- any frame larger than this.
  *

@@ -11,7 +11,7 @@ import os from 'os'
 // alternative (dynamic import from page.evaluate) doesn't work because the
 // renderer bundle doesn't ship source files at those paths.
 import { buildConductorPrompt } from '../src/renderer/src/lib/conductorPrompt'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -54,7 +54,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
 })
 
 const ss = (name: string) => page.screenshot({ path: `${SCREENSHOTS}/${name}.png` })

@@ -182,6 +182,39 @@ describe('bridge core', () => {
     expect(core().sent.some((m) => m.kind === 'ready')).toBe(true)
   })
 
+  const reachOf = (sent: BridgeToHost[]): string[] =>
+    sent.flatMap((m) => (m.kind === 'relayState' ? [m.state] : []))
+
+  it('reports idle with nothing to dial, the QR room, then idle again', () => {
+    const { c, sent, rooms } = core()
+    expect(reachOf(sent)).toEqual(['idle'])
+    c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })
+    const qr = rooms.find((r) => r.deps.mode === 'pairing')!
+    expect(reachOf(sent)).toEqual(['idle', 'connecting'])
+    qr.state = 'online'
+    qr.deps.onStateChange('online')
+    // The real client reports `offline` as it stops; that must not read as redialling.
+    qr.stop = () => { qr.state = 'offline'; qr.deps.onStateChange('offline') }
+    c.handleHostMessage({ kind: 'cancelPairing' })
+    expect(reachOf(sent)).toEqual(['idle', 'connecting', 'online', 'idle'])
+  })
+
+  it('never calls a relay online until it seats a room; a seat with no phone is online', () => {
+    const { sent, rooms: [room] } = core([device()])
+    const to = (s: RelayState): void => { room.state = s; room.deps.onStateChange(s) }
+    to('connecting'); to('offline') // a refusal and its redial: one `connecting`
+    expect(reachOf(sent)).toEqual(['connecting'])
+    to('online'); attach(room)
+    to('offline')
+    expect(reachOf(sent)).toEqual(['connecting', 'online', 'connecting'])
+  })
+
+  it('a device room closed by revoke takes the relay back to idle', () => {
+    const { c, sent } = core([device()])
+    c.handleHostMessage({ kind: 'revokeDevice', deviceId: 'd1' })
+    expect(reachOf(sent)).toEqual(['connecting', 'idle'])
+  })
+
   it('emits a QR payload on beginPairing', () => {
     const { c, sent } = core()
     c.handleHostMessage({ kind: 'beginPairing', label: 'Pixel' })

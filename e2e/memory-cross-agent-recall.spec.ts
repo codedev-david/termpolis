@@ -18,7 +18,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let token: string
@@ -108,7 +108,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
 })
 
 test.describe.serial('shared brain over the real MCP wire', () => {

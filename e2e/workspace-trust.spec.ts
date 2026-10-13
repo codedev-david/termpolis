@@ -14,7 +14,7 @@ import { execFileSync, execSync } from 'child_process'
 import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
-import { e2eLaunchArgs, dismissOnboarding } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -39,7 +39,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   try { rmSync(tempRepo, { recursive: true, force: true }) } catch {}
-  if (app) await app.close()
+  await quitApp(app)
 })
 
 // Helper to invoke IPC through the preload bridge the renderer actually uses.

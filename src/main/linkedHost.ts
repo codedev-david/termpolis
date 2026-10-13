@@ -406,6 +406,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     return {
       enabled: settings.enabled,
       running: settings.enabled && port.running(),
+      relay: port.relay(),
       relayUrl: port.relayUrl(),
       thisMachine: machineName || DEFAULT_MACHINE_NAME,
       code: live,
@@ -747,6 +748,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
         return onLinkState(m.id, m.attached)
       case 'linkBye':
         return onBye(m.from)
+      case 'relayState':
+        // The label beside the switch reads it; nothing else moved.
+        return changed()
       case 'error':
         // Ours when the bridge says so, or when the offer it holds is a code
         // for another computer -- its refusal, or a wrong machine knocking.

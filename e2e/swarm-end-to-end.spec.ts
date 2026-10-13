@@ -24,7 +24,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -164,7 +164,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
   try { if (fs.existsSync(TASK_FILE)) fs.unlinkSync(TASK_FILE) } catch {}
 })
 

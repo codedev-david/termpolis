@@ -46,6 +46,7 @@ import type {
   LinkTarget,
   PairedDevice,
   PeerRequest,
+  RelayReach,
   RemoteEnvelope,
   RemoteResponse,
 } from './protocol'
@@ -309,6 +310,9 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   let pairingRoom: RelayLike | null = null
   let pairingTimer: ReturnType<typeof setTimeout> | null = null
 
+  /** What main was last told about the relay. Null until `init` reports. */
+  let reach: RelayReach | null = null
+
   /** Tell main something went wrong. `link` marks it as Linked machines' to
    *  show (`scope` on the error, protocol.ts), so it never reaches the phone
    *  pane; an error about a phone is the same unmarked message it always was. */
@@ -316,11 +320,36 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     deps.send(link ? { kind: 'error', message, scope: 'link' } : { kind: 'error', message })
   }
 
+  /** Every room this desktop holds on ITS relay: each device's and the QR's.
+   *  Joined links are left out -- they sit on the other computer's relay.
+   *  Seated anywhere is `online`: all "connected to the relay" can mean. */
+  function relayReach(): RelayReach {
+    const held = [...rooms.values()].map((r) => r.client)
+    if (pairingRoom) held.push(pairingRoom)
+    if (held.length === 0) return 'idle'
+    return held.some((c) => c.state === 'online' || c.state === 'attached') ? 'online' : 'connecting'
+  }
+
+  /** Main's `running` only says this process is up, so this is the one place
+   *  the pane's "connected" can come from. Called wherever a room is added,
+   *  removed, or changes state. */
+  function reportRelay(): void {
+    const next = relayReach()
+    if (next === reach) return
+    reach = next
+    deps.send({ kind: 'relayState', state: next })
+  }
+
   function closePairingRoom(): void {
     if (pairingTimer) clearTimeout(pairingTimer)
     pairingTimer = null
-    pairingRoom?.stop()
+    const room = pairingRoom
+    if (!room) return
+    // Forgotten BEFORE it is stopped: a stopping room reports `offline` on its
+    // way out, and still counted then it reads as a relay being redialled.
     pairingRoom = null
+    room.stop()
+    reportRelay()
   }
 
   /** Sit in the QR's room and wait for a phone to speak first.
@@ -338,10 +367,9 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       roomId: offer.pairingId,
       mode: 'pairing',
       onFrame: (frame) => onPairingFrame(offer, frame),
-      // Nothing to report: this room's states are about a QR the user is already
-      // looking at, and `deviceConnected` for a device that does not exist yet
-      // would light the Settings indicator for nobody.
-      onStateChange: () => {},
+      // No `deviceConnected`: its device does not exist yet. Whether the relay
+      // seated the QR's room is still the pane's to show.
+      onStateChange: () => reportRelay(),
       onQuota: (limit) => report(`relay closed the pairing connection: ${limit}`, link),
     })
     // The offer outlives its usefulness by exactly its TTL, and an abandoned QR
@@ -349,6 +377,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     // as the app runs.
     pairingTimer = setTimeout(closePairingRoom, Math.max(0, offer.expiresAt - Date.now()))
     pairingRoom.start()
+    reportRelay()
   }
 
   function onPairingFrame(offer: PairingOffer, frame: Uint8Array): void {
@@ -465,11 +494,17 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     })
     rooms.set(dev.id, { client, roomId: dev.sessionRoomId })
     client.start()
+    reportRelay()
   }
 
   function closeRoom(deviceId: string): void {
-    rooms.get(deviceId)?.client.stop()
+    // The startup expiry sweep lands here before any room is open.
+    const room = rooms.get(deviceId)
+    if (!room) return
+    // Forgotten before it is stopped, like the QR's room.
     rooms.delete(deviceId)
+    room.client.stop()
+    reportRelay()
   }
 
   /** Whether a paired device's room may open, by the switch for its kind. */
@@ -793,6 +828,8 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       kind: state === 'attached' ? 'deviceConnected' : 'deviceDisconnected',
       deviceId,
     })
+    // The relay half: seated alone is no phone, but it is a desktop on the relay.
+    reportRelay()
     // Attaching is the one moment a device has a backlog AND somewhere to put it.
     // Without this, output queued during an outage sits in the fan-out until the
     // next keystroke happens to flush it.
@@ -979,6 +1016,8 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         // linked computer's room, and Linked machines alone never opens a phone's.
         for (const dev of registry.list()) if (roomAllowed(dev)) openRoom(dev)
         applyLinks(msg.links ?? [])
+        // Always, even with no room: main takes a new child to be on its way.
+        reportRelay()
         return
       }
       case 'beginPairing': {
@@ -1344,6 +1383,14 @@ interface ParentPortLike {
 }
 const parentPort = (process as NodeJS.Process & { parentPort?: ParentPortLike }).parentPort
 if (parentPort) {
+  // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
+  // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
+  // a child in an unknown state goes away. So it still does. Inside this block, not at the top:
+  // tests import this module too, and there it must not exit the run.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[remote bridge] unhandled rejection:', reason)
+    process.exit(1)
+  })
   const core = createBridgeCore({
     send: (m) => parentPort.postMessage(m),
     relayUrl: process.env.TERMPOLIS_RELAY_URL ?? DEFAULT_RELAY_URL,

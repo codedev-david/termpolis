@@ -150,6 +150,14 @@ const parentPort = (process as NodeJS.Process & { parentPort?: ParentPortLike })
 
 /* c8 ignore start */
 if (parentPort) {
+  // Electron 37 stopped ending a utility process on an unhandled rejection: it only warns now.
+  // The parent restarts this child when it dies and falls back when it keeps dying, which assumes
+  // a child in an unknown state goes away. So it still does. Inside this block, not at the top:
+  // main imports this module too, and there it must not exit the app.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[proc host] unhandled rejection:', reason)
+    process.exit(1)
+  })
   parentPort.on('message', (e) => {
     const msg = e?.data
     const id = (msg as ProcRequest)?.id

@@ -15,6 +15,10 @@ import { initCrashWatch, heartbeat as crashHeartbeat, markCleanExit, installClea
 // import is written, so from down there the block failed with "Cannot access 'homedir' before
 // initialization" and disconnected nothing (tests/electron/mainDisconnectAgentsExit.test.ts).
 import { homedir, release } from 'os'
+import { startShutdownTrace, describeInflight } from './shutdownTrace'
+
+// e2e: remember where every in-flight request came from, so a quit that stalls on one can say so.
+if (process.env.NODE_ENV === 'test') startShutdownTrace()
 
 // Force a stable app name. When launched via `electron out/main/index.js`
 // (dev, E2E tests) Electron defaults to "Electron" for app.getName() and
@@ -115,7 +119,7 @@ import {
   replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -668,6 +672,10 @@ function createWindow() {
     backgroundColor: '#1e1e1e',
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    // Electron 43 rounds a frameless window's corners on Linux wherever the desktop draws them,
+    // which clips the custom close button in the top-right corner. Square, as before. (Electron
+    // 30 only reads this on macOS, where the default stays.)
+    ...(process.platform === 'linux' ? { roundedCorners: false } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -2168,7 +2176,7 @@ ipcMain.handle('memory:graph-sample', async (_e, opts: { limit?: number } = {}) 
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
-    const stats = await runConversationIngest(ingestMemoryDeps())
+    const stats = await runConversationIngest(ingestMemoryDeps(), { stopped: () => appQuitting })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
 })
@@ -4073,6 +4081,7 @@ async function semanticPoolOptions(
       // Say which side is serving. An in-process fallback is a real regression in launch latency and
       // typing lag, so it must never be silent — this is the line that tells us the child died.
       if (m === 'host') console.log(`[termpolis][memory] brain is OFF the main thread (mode=${m})`)
+      else if (m === 'unstarted') { /* the app quit before the host came up: nothing to report */ }
       else console.warn(`[termpolis][memory] FALLBACK — the brain is running ON the main thread (mode=${m}); launch and typing will stall`)
     })
     // Memory-at-rest secret scrub. Redact secrets BEFORE a memory is hashed, embedded, or
@@ -4149,7 +4158,7 @@ async function semanticPoolOptions(
         try { await reloadMemoryFromSync() } catch { /* best effort */ }
         const stats = await runConversationIngest(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
-          { maxChunks: 250 },
+          { maxChunks: 250, stopped: () => appQuitting },
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
@@ -4283,7 +4292,7 @@ async function semanticPoolOptions(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
           // F16: the fast pass re-reads the ACTIVE session — emit only sealed chunks so a
           // growing trailing partial doesn't deposit a superset duplicate every 90s.
-          { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true } },
+          { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true }, stopped: () => appQuitting },
         )
         try { await persistMemoryIndex() } catch { /* best effort */ }
         return { written: stats.chunksWritten, more: stats.truncated }
@@ -4610,16 +4619,23 @@ async function semanticPoolOptions(
     })) console.log(`Global hotkey ${hotkeys.toggleSwarm} unavailable (already registered by the OS)`)
   })
 
-  // How far teardown got, so the `will-quit` watchdog below can name the step it stalled on.
+  // How far teardown got, so the `will-quit` watchdog below can name the step it stalled on. Under
+  // e2e each step also goes to stderr as it is reached: a quit that stalls where no JS runs any more
+  // takes the watchdog down with it, and then the last line printed is the only record of where.
   let shutdownStage = 'idle'
+  const shutdownStep = (stage: string): void => {
+    shutdownStage = stage
+    if (process.env.NODE_ENV === 'test') console.error(`[shutdown] ${stage}`)
+  }
   app.on('before-quit', () => {
     appQuitting = true
-    shutdownStage = 'start'
+    shutdownStep('start')
     // FIRST: this is a clean shutdown, so the next boot must not report it as a crash. Everything
     // below can throw; the marker must be cleared regardless.
     try { markCleanExit() } catch { /* best effort */ }
     try { globalShortcut.unregisterAll() } catch { /* best effort */ }
     try { killAll() } catch { /* best effort */ }
+    shutdownStep('terminals')
     try { clearSensitiveReadCount() } catch {}
     try { detachAllWatchers() } catch {}
     try { stopRepoWatches() } catch {}
@@ -4628,7 +4644,7 @@ async function semanticPoolOptions(
     // being destroyed, right in the middle of teardown, and on Linux a recursive watch is one
     // inotify watch PER DIRECTORY that nothing else releases.
     try { gitWatchers.closeAll() } catch {}
-    shutdownStage = 'watchers'
+    shutdownStep('watchers')
     try { shutdownEventBus() } catch {}
     try { stopIndexer() } catch {}
     // How far reflection got into each transcript. Losing this doesn't lose memory, but it
@@ -4638,6 +4654,7 @@ async function semanticPoolOptions(
     // between the last Enter and its flush. This is the one place a blocking write is
     // correct: there is no event loop left to await on.
     try { flushHistorySync() } catch {}
+    shutdownStep('history')
     // Reap the memory process. The store is already durable on disk (every write is appended before
     // its RPC resolves), so this loses nothing — it just stops the child outliving the app.
     try { stopMemoryHost() } catch {}
@@ -4652,15 +4669,16 @@ async function semanticPoolOptions(
     // are still polling as the window goes, and without it the next poll forks a REPLACEMENT host
     // out of a process that is trying to exit.
     try { shutdownProcHost() } catch {}
-    shutdownStage = 'hosts'
+    shutdownStep('hosts')
     try { stopProxy() } catch { /* ignore */ }
     try { saveProxyTotalsToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
     try { saveDepthCurveToDisk(join(app.getPath('userData'), 'headroom')) } catch { /* ignore */ }
+    shutdownStep('proxy')
     if (mcpServer) {
       try { stopMcpServer(mcpServer) } catch { /* already down */ }
       mcpServer = null
     }
-    shutdownStage = 'mcp'
+    shutdownStep('mcp')
   })
   // The force-exit that ends a stalled shutdown lives in `window-all-closed` — and Electron never
   // emits that event for a quit we asked for. Cmd/Ctrl+Q, the menu, an update restart and
@@ -4668,7 +4686,25 @@ async function semanticPoolOptions(
   // to `will-quit`. So the net has to be armed here too, or one stray handle hangs the quit forever
   // with no window left to show for it. `will-quit` is the right place rather than `before-quit`:
   // it only fires once the quit is really happening, so a close the user cancels never arms this.
-  app.on('will-quit', () => {
+  // Set once will-quit has waited for the shells, so the quit it re-issues goes straight through.
+  let terminalsReaped = false
+  app.on('will-quit', (event) => {
+    if (!terminalsReaped && process.platform !== 'win32' && runningShellCount() > 0) {
+      // Every shell has to be gone, and its exit delivered, before Node tears down. node-pty
+      // waits on each shell from a thread of its own, and reports the exit by calling into JS.
+      // A shell that exits DURING teardown makes that call fail: it throws (Napi::Error), the
+      // process aborts, and on Linux CI the abort then hung in the crash handler with the main
+      // thread blocked on a pipe write -- the e2e app.close() hang. One that never exits holds
+      // the teardown open forever instead. So: wait here, SIGKILL whatever is left after a
+      // second, and quit for real once they're all reported. (Windows: ConPTY, which neither
+      // waits nor calls back like this.)
+      event.preventDefault()
+      terminalsReaped = true
+      shutdownStep('terminals exiting')
+      void whenTerminalsExit().finally(() => app.quit())
+      return
+    }
+    shutdownStep('windows closed')
     // A Second Opinion or `termpolis exec` run still going would outlive the app and keep
     // spending tokens: on Windows the agent runs under a PowerShell wrapper, outside the job
     // that takes our direct children down with us. End each run's whole tree now. stopAll is
@@ -4676,6 +4712,15 @@ async function semanticPoolOptions(
     // before the watchdog: a timer can't interrupt it anyway, and it shouldn't use up the
     // watchdog's 5s.
     try { secondOpinionRuns.stopAll() } catch { /* shutting down anyway */ }
+    shutdownStep('agent runs')
+    if (process.env.NODE_ENV === 'test') {
+      // What Node still holds open. After `quit` no JS runs, this watchdog included, and Node's
+      // own teardown waits on every request still in flight before the process can exit.
+      const open: Record<string, number> = {}
+      for (const kind of process.getActiveResourcesInfo()) open[kind] = (open[kind] ?? 0) + 1
+      console.error(`[shutdown] still open: ${JSON.stringify(open)}`)
+      for (const request of describeInflight()) console.error(`[shutdown] in flight: ${request}`)
+    }
     const watchdog = setTimeout(() => {
       console.error(`[shutdown] stalled after "${shutdownStage}" — forcing exit`)
       // A forced exit is still a deliberate one: without this the next boot files it as a crash.
@@ -4685,6 +4730,8 @@ async function semanticPoolOptions(
     // unref so the watchdog itself never holds open a shutdown that is going fine.
     watchdog.unref?.()
   })
+  // The last JS that runs. A process still alive after this line is stuck in native teardown.
+  app.on('quit', (_event, exitCode) => shutdownStep(`quit (exit code ${exitCode})`))
   // `before-quit` above misses the shutdowns we don't initiate — an OS session end and a
   // termination signal — and each of those would otherwise be filed as a phantom native crash
   // (Sentry ELECTRON-D / #20). Neither is one.

@@ -6,6 +6,7 @@ import {
   type HostToBridge,
   type OutputSlice,
   type PairedDevice,
+  type RelayReach,
   type TerminalSize,
 } from './remoteBridge/protocol'
 import { deriveVerificationPhrase } from './remoteBridge/sealedChannel'
@@ -114,7 +115,11 @@ export interface RemotePairingView {
 
 export interface RemoteStatusView {
   enabled: boolean
+  /** The bridge PROCESS is up -- what the pairing channels gate on. Says
+   *  nothing about the relay: one dialling a refusing address runs too. */
   running: boolean
+  /** Where the running bridge stands on the relay, as it last reported. */
+  relay: RelayReach
   /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
   disabled: boolean
   relayUrl: string
@@ -157,6 +162,9 @@ export interface LinkedBridgePort {
    *  never shows it. A refused request is answered by exactly such an error,
    *  and this still says so while that error is being delivered. */
   linkOfferLive(): boolean
+  /** Where the bridge stands on this machine's relay, as it last reported.
+   *  Rooms only: a link this machine joined sits on the other one's relay. */
+  relay(): RelayReach
 }
 
 export interface RemoteHost {
@@ -252,6 +260,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
    *  on does. */
   let linkedWasOn = false
   const linkedListeners = new Set<(m: BridgeToHost) => void>()
+  /** What the running bridge last said about the relay. */
+  let relay: RelayReach = 'idle'
 
   /** The long-term X25519 identity, minted on first use.
    *
@@ -461,6 +471,11 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
         pump?.setSubscriptions([])
         statusPump?.setSubscriptions([])
         break
+      case 'relayState':
+        // For the pane's text; nothing happened to a phone, so no event.
+        relay = m.state
+        tell = 'status'
+        break
       case 'error': {
         // Linked machines' to show when the bridge marks it so (`scope`) -- a
         // link room the relay cut, a link record it refused -- or when the
@@ -517,6 +532,9 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       offerLive = null
     }
     respawn = true
+    // Every spawn, first or crash: the new child holds no room yet, and the
+    // last child's word about the relay is not true of it.
+    relay = 'connecting'
     const linked = linkedState()
     launched = { phones: settings.enabled, linked: linked.enabled, links: linksKey(linked.links) }
     return {
@@ -600,6 +618,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       // What the Remote pane means by running: phones can reach this desktop.
       // The bridge also runs for Linked machines alone, with no phone room open.
       running: deps.isBridgeRunning() && settings.enabled,
+      relay,
       disabled: deps.isDisabled(),
       relayUrl: settings.relayUrl,
       publicKey: ownIdentity().publicKey,
@@ -655,6 +674,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     verificationPhraseFor,
     relayUrl: () => settings.relayUrl,
     linkOfferLive,
+    relay: () => relay,
   }
 
   return {

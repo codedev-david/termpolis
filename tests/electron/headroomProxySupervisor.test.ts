@@ -198,6 +198,30 @@ describe('proxy supervisor — the user decides where Claude traffic goes', () =
     expect(isProxyStarted()).toBe(false)
   })
 
+  it('starts nothing once the app has quit, whatever asks', () => {
+    // stopProxy runs only at quit. A Settings flip, or a boot that was still picking its port, would
+    // otherwise fork a proxy nobody stops -- holding the app's output open after it exits.
+    startProxy({ port: 9999 })
+    stopProxy()
+    expect(fakes[0].killed).toBe(true)
+    startProxy({ port: 9999 })
+    expect(fakes).toHaveLength(1)
+    expect(isProxyStarted()).toBe(false)
+    fakes[0].fireExit() // the kill's own exit
+    expect(fakes).toHaveLength(1)
+  })
+
+  it('a replaced child dying late neither hides the current one nor spawns another', () => {
+    startProxy({ port: 9999 })
+    startProxy({ port: 9999 }) // a second start, while the first child still runs
+    expect(fakes).toHaveLength(2)
+    fakes[0].fireExit()
+    expect(fakes).toHaveLength(2)    // no extra child for an exit that isn't the current one's
+    expect(isProxyHealthy()).toBe(true)
+    stopProxy()
+    expect(fakes[1].killed).toBe(true) // and the current one is still the one stop reaches
+  })
+
   it('steps aside for a route set only in Claude Code settings.json', () => {
     startProxy({ port: 9999 })
     for (const k of USER_ROUTING_ENV) {

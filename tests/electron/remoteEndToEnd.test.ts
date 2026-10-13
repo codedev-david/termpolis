@@ -100,7 +100,7 @@ describe('remote bridge end-to-end', () => {
       identitySecretKey: desktop.secretKey,
       devices: [],
     })
-    expect(sent.map((m) => m.kind)).toEqual(['ready'])
+    expect(sent.map((m) => m.kind)).toEqual(['ready', 'relayState']) // idle: nothing to dial
 
     // 2. User taps "Pair a phone". The desktop paints a QR.
     core.handleHostMessage({ kind: 'beginPairing', label: 'Kitchen iPhone' })

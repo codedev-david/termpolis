@@ -24,6 +24,7 @@ import {
   type PairedDevice,
   type PeerJobView,
   type PeerRequest,
+  type RelayReach,
 } from '../../src/main/remoteBridge/protocol'
 import type { LinkedBridgePort } from '../../src/main/remoteBridgeHost'
 import { _resetRemoteHostForTests } from '../../src/main/remoteHost'
@@ -135,6 +136,7 @@ function fakeBridge() {
     offerLive: false,
     phrases: new Map<string, string>(),
     relay: 'wss://relay.test',
+    relayReach: 'idle' as RelayReach,
     sent: [] as HostToBridge[],
     /** Answers each `linkCall` as it is posted, when set; null leaves it pending. */
     answer: null as ((call: LinkCall) => BridgeToHost | null) | null,
@@ -169,6 +171,7 @@ function fakeBridge() {
     verificationPhraseFor: (id) => b.phrases.get(id) ?? null,
     relayUrl: () => b.relay,
     linkOfferLive: () => b.offerLive,
+    relay: () => b.relayReach,
   }
   const access: LinkedBridgeAccess = {
     port,
@@ -296,6 +299,20 @@ describe('before the service starts', () => {
 })
 
 describe('starting and stopping', () => {
+  it("pushes a fresh status when the bridge's relay state moves, and shows it", async () => {
+    // The label beside the switch reads `relay`; before, it read `running` alone, which is only
+    // the bridge process, and called a relay that refused every dial "connected".
+    const h = boot({ enabled: true })
+    const before = h.statuses.length
+    h.bridge.relayReach = 'connecting'
+    h.bridge.emit({ kind: 'relayState', state: 'connecting' })
+    expect(h.statuses.length).toBe(before + 1)
+    expect(h.statuses.at(-1)?.relay).toBe('connecting')
+    h.bridge.relayReach = 'online'
+    h.bridge.emit({ kind: 'relayState', state: 'online' })
+    expect((await h.status()).relay).toBe('online')
+  })
+
   it('loads both files, subscribes once, asks the bridge to catch up and pushes a status', async () => {
     const L = joined()
     const h = boot({ enabled: true, state: { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] } })
@@ -312,6 +329,7 @@ describe('starting and stopping', () => {
     expect(await h.status()).toEqual({
       enabled: true,
       running: true,
+      relay: 'idle',
       relayUrl: 'wss://relay.test',
       thisMachine: 'laptop',
       code: null,

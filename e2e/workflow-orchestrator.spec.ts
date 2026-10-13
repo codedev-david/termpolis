@@ -19,6 +19,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { quitApp } from './helpers/launch'
 
 const WF_NAME = 'E2E Orchestrator'
 
@@ -79,7 +80,7 @@ test.afterAll(async () => {
       await page.evaluate(c => window.termpolis.deleteWorkflow(c.cwd, c.id), created)
     }
   } catch { /* best effort */ }
-  if (app) await app.close()
+  await quitApp(app)
   if (isolatedUserData) {
     try { fs.rmSync(isolatedUserData, { recursive: true, force: true }) } catch { /* ignore */ }
   }

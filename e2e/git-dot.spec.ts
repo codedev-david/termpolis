@@ -21,6 +21,7 @@ import fs from 'fs'
 import os from 'os'
 import { execSync, execFileSync } from 'child_process'
 import { ensureGitOnPath } from '../tests/gitPath'
+import { quitApp } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -99,7 +100,7 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  if (app) await app.close()
+  await quitApp(app)
   for (const dir of [isolatedUserData, repoDir, plainDir, originDir]) {
     if (dir) {
       try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }

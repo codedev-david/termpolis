@@ -39,6 +39,7 @@ const job = (over: Partial<LinkedActivityView> = {}): LinkedActivityView => ({
 const statusView = (over: Partial<LinkedStatusView> = {}): LinkedStatusView => ({
   enabled: true,
   running: true,
+  relay: 'idle',
   relayUrl: DEFAULT_RELAY_URL,
   thisMachine: 'laptop',
   code: null,
@@ -204,6 +205,7 @@ describe('LinkedMachinesSettings switch and relay', () => {
 
   it('turns linking on and adopts the status that comes back', async () => {
     api.status.mockResolvedValue(ok(statusView({ enabled: false, running: false })))
+    api.setEnabled.mockResolvedValue(ok(statusView({ relay: 'online' })))
     await mount()
     fireEvent.click(screen.getByTestId('linked-enable'))
     await waitFor(() => expect(api.setEnabled).toHaveBeenCalledWith(true))
@@ -212,6 +214,20 @@ describe('LinkedMachinesSettings switch and relay', () => {
     )
     expect(screen.getByTestId('linked-create-code')).toBeTruthy()
     expect(screen.queryByTestId('linked-off-note')).toBeNull()
+  })
+
+  it('never says connected while nothing is on a relay', async () => {
+    // `running` is the bridge process alone, which was all this label read.
+    await mount()
+    const text = (): string | null => screen.getByTestId('linked-running').textContent
+    expect(text()).toBe('(no computer linked yet)')
+    act(() => pushStatus(statusView({ relay: 'connecting' })))
+    expect(text()).toBe('(connecting to the relay…)')
+    // A link this computer joined sits on the OTHER computer's relay: ours says idle.
+    act(() => pushStatus(statusView({ machines: [machine({ online: false })] })))
+    expect(text()).toBe('(connecting to the relay…)')
+    act(() => pushStatus(statusView({ machines: [machine({ online: true })] })))
+    expect(text()).toBe('(connected to the relay)')
   })
 
   it('says so when the bridge is not connected', async () => {
