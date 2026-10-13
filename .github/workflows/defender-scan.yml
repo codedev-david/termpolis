@@ -123,6 +123,13 @@ jobs:
           foreach ($p in @($pref.ExclusionExtension)) { if ($p) { Remove-MpPreference -ExclusionExtension $p } }
           $atp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
           if (Test-Path $atp) { Remove-ItemProperty $atp -Name ForceDefenderPassiveMode -ErrorAction SilentlyContinue }
+          # The runner image may also switch real-time protection off by policy, which outranks
+          # Set-MpPreference. A stock install has no such policy.
+          $policy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender'
+          if (Test-Path $policy) {
+            Get-ChildItem $policy -Recurse | ForEach-Object { Write-Host "removing policy key $($_.Name)" }
+            Remove-Item $policy -Recurse -Force -ErrorAction SilentlyContinue
+          }
           Set-MpPreference -DisableRealtimeMonitoring $false -DisableBehaviorMonitoring $false `
             -DisableIOAVProtection $false -DisableScriptScanning $false -DisableArchiveScanning $false `
             -DisableBlockAtFirstSeen $false -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples `
