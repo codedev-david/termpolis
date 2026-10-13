@@ -100,7 +100,7 @@ Grab the latest build from the [Termpolis website](https://termpolis.com/#downlo
 ### Requirements
 
 - **Windows**: 10 or 11 (x64)
-- **macOS**: 11 (Big Sur) or later — Apple Silicon and Intel builds both ship
+- **macOS**: 12 (Monterey) or later — Apple Silicon and Intel builds both ship. 1.51.5 is the last version for macOS 10.15 and 11; auto-update won't offer them anything newer
 - **Linux**: AppImage runs on any modern glibc distro
 - **Disk**: ~200 MB
 - **RAM**: 512 MB minimum; 2 GB recommended when running multiple agents
