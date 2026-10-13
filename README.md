@@ -715,6 +715,8 @@ npm install
 npm run dev
 ```
 
+`npm install` also fetches the Electron binary: since Electron 42 the `electron` package no longer downloads it by itself, so the `postinstall` script runs Electron's own `install-electron` to do it. With install scripts turned off (`--ignore-scripts`), Electron downloads it the first time the app starts instead.
+
 ### Run Tests
 
 ```bash
