@@ -25,8 +25,7 @@
  * Command step's `onExit` never fires, so a command step here would hang for
  * reasons that have nothing to do with triggers.
  *
- * Ubuntu-only in CI. Windows headless can't drive this reliably (see above) and
- * the point of the spec is the git plumbing, not the platform.
+ * CI runs it with the rest of e2e/, on Linux (e2e-full) and Windows (e2e-windows).
  */
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import path from 'path'

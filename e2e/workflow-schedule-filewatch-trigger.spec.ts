@@ -24,8 +24,7 @@
  *      the whole feature depends on: run history lives in `.termpolis`, so a
  *      fileWatch workflow that saw its own history would retrigger forever.
  *
- * Ubuntu/macOS only in CI, matching workflow-git-trigger: headless Windows can't
- * drive the app reliably and the subject here is the supervisor, not the platform.
+ * CI runs it with the rest of e2e/, on Linux (e2e-full) and Windows (e2e-windows).
  */
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import path from 'path'

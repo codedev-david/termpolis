@@ -12,8 +12,8 @@ env:
 
 jobs:
   # The release gates on the SAME suite every push gets — lint, typecheck, build,
-  # the unit matrix WITH its coverage thresholds, package-verify, and e2e on Linux
-  # and macOS. This job used to be a bare `npx vitest run` on two runners, which
+  # the unit matrix WITH its coverage thresholds, package-verify, and e2e on Linux,
+  # Windows and macOS. This job used to be a bare `npx vitest run` on two runners, which
   # meant a tag could publish installers that no coverage gate, no typecheck and no
   # e2e had ever seen; "push the commit, wait for Tests to go green, THEN push the
   # tag" was a human standing in for a missing machine gate. Now the tag waits.

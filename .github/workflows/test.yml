@@ -326,6 +326,59 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  # THE Windows e2e gate: the whole e2e directory again, blocking, sharded 4 ways like e2e-full.
+  #
+  # ConPTY, NTFS ACLs and the hosted runner's 1024x768 desktop exist only here. Until this job,
+  # Windows e2e ran only when someone dispatched e2e-soak, and three Windows-only failures built
+  # up unseen, two of them product bugs: the prompt parse lost the prompt ConPTY sends after
+  # every Enter, and mcp-token's ACL lockdown could leave the file with an empty ACL.
+  #
+  # No Playwright browser install: Electron is the only browser a spec launches (e2e-full keeps
+  # the step on Linux, where --with-deps also installs system libraries). The gdb, xvfb and
+  # sandbox steps are Linux-only. If a runner-image bump destabilizes this job, flip
+  # continue-on-error to true while stabilizing, as with e2e-smoke-macos, rather than papering
+  # over a real regression.
+  e2e-windows:
+    needs: static
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Build
+        run: npm run build
+      # bash, as in e2e-soak, where these specs were stabilized on Windows: the shells the specs
+      # open inherit this step's environment. TERMPOLIS_E2E_PREBUILT: the specs launch the Build
+      # step's out/ instead of each building it again (ensureE2eBuild, e2e/helpers/launch.ts).
+      - name: Whole e2e suite
+        shell: bash
+        env:
+          TERMPOLIS_E2E_PREBUILT: '1'
+        run: npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
+      - name: Upload failure traces
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces-windows-${{ matrix.shard }}
+          path: test-results/
+          retention-days: 7
+
   # macOS e2e smoke: Darwin runner exercising the core boot + first-run
   # flows. e2e-full above is Linux-only, so this is the sole Darwin coverage —
   # a handful of specs intentionally, not the whole suite, because what it is

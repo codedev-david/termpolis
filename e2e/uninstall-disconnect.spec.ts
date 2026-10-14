@@ -5,8 +5,9 @@
  * 30 seconds the uninstaller gives it, leaving nothing open in its profile folder.
  *
  * The flag is handled in index.ts before anything platform-specific, so this works on every OS;
- * CI runs it with the rest of e2e/ in the Linux e2e-full shards. The Windows-only half, the
- * uninstaller macro itself, is pinned by tests/electron/installerUninstallDisconnect.test.ts.
+ * CI runs it with the rest of e2e/ in the Linux and Windows shards (e2e-full, e2e-windows). The
+ * Windows-only half, the uninstaller macro itself, is pinned by
+ * tests/electron/installerUninstallDisconnect.test.ts.
  *
  * Spawned directly, not with Playwright's electron.launch(): the app is meant to exit before
  * `ready`, which launch() would report as a failure to start. The agent configs live in a

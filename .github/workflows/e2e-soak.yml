@@ -1,11 +1,13 @@
 name: E2E soak
 
-# The e2e suite (Tests' e2e-full job), several times over in parallel, on any OS. Two uses:
+# The e2e suite (Tests' e2e-full and e2e-windows jobs), several times over in parallel, on any
+# OS. Two uses:
 #   - a flake one run only hits now and then needs many runs to show itself: the app.close()
 #     teardown hang hit about one shard in ten. A quit that overruns leaves its diagnosis in
 #     test-results/teardown-hangs/, uploaded with each job's results and warned on the run.
-#   - the suite on an OS Tests doesn't run it on (Windows), for one ref against another: the same
-#     specs on main and on a branch, side by side, before an upgrade like Electron 43.
+#   - the whole suite on macOS, where Tests runs only a smoke of it, or on any OS for one ref
+#     against another: the same specs on main and on a branch, side by side, before an upgrade
+#     like Electron 43.
 on:
   workflow_dispatch:
     inputs:
