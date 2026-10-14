@@ -32,7 +32,7 @@ export interface StoredLesson {
 
 export const RECHECK_REASON =
   'Re-checked by Termpolis 1.50.1: the lesson extractor that wrote this read ordinary sentences as ' +
-  'problems, fixes and decisions, so it was demoted. Revoke this correction if it was a real lesson.'
+  'problems, fixes and decisions, so it was demoted, not deleted: still found, ranked lower.'
 
 const PROBLEM_FIX = /^Problem: ([\s\S]*?) → Fix: ([\s\S]*)$/
 

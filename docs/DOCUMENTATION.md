@@ -720,7 +720,7 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
   - the background indexer, reflection and consolidation pause, and they pick up where they stopped once memory unlocks;
   - the Memory panel says why it is locked.
 
-  If the key comes back, restart Termpolis and every memory returns. If it won't, click **Start a new memory key** in the Memory panel. The old key file is renamed aside (`memory-sync.key.retired-<time>`), never deleted, and a new key is created so memory saves again. Older memories stay on disk, unreadable until the old key works again; Termpolis tries every retired key at every launch, so they come back by themselves if it ever does.
+  If the key comes back, restart Termpolis and every memory returns. If it won't, click **Start a new memory key** in the Memory panel. The old key file is renamed aside (`memory-sync.key.retired-<time>`), never deleted, and a new key is created so memory saves again. A new key needs the OS keychain, because it is never saved in the clear: with none, Termpolis says so and changes nothing. Older memories stay on disk, unreadable until the old key works again; Termpolis tries every retired key at every launch, so they come back by themselves if it ever does.
 - **Turning encryption off is all-or-nothing.** It decrypts every file of the store (including rotated `swarm-memory.<n>.jsonl` generations and the archive), reads the result back to check it, and only then retires the key. If any step fails, nothing changes.
 - **Backing up an encrypted brain.** Copy `memory-sync.key` along with the `swarm-memory*.jsonl` files. The key is wrapped by the OS keychain, so it opens only under the same OS user account; on Windows the wrap also depends on the `Local State` file in the same folder, so back that up too. A backup without them can't be decrypted.
 - **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
@@ -1225,10 +1225,10 @@ audit log.
   Termpolis keeps running in the Dock, and its links with it, as do Remote
   and the agents' MCP connection. Quit it (⌘Q, or Quit from the Dock) to go
   offline.
-- **Every run is a fresh headless session.** No conversation carries over
-  (its memory digest can include earlier jobs once the indexer has picked them
-  up), so the prompt carries what the other agent needs: a commit
-  SHA, earlier findings. Code moves between the machines through Git as
+- **Every run is a fresh headless session.** No conversation carries over,
+  and a job doesn't become that computer's memory (see **Memory** under *How
+  it is secured* below), so the prompt carries what the other agent needs: a
+  commit SHA, earlier findings. Code moves between the machines through Git as
   usual. Linked machines does not copy files.
 - **A job runs for up to 15 minutes by default.** After that it is stopped.
 - **A computer runs at most 2 jobs at a time for any one machine, and 4 in
@@ -1361,7 +1361,8 @@ audit log.
   the learning reflex skip a session another computer started even if it was
   saved, and the indexer skips the transcripts of the subagents it ran too. What versions 1.50 to 1.52 had already stored from such jobs is demoted
   once, whole sessions at a time, the first time the indexer finishes a full
-  pass after the update (a demotion can be revoked with `memory_correct`).
+  pass after the update. A demoted chunk is still stored and still found,
+  ranked lower.
   Gemini jobs run through `agy`, whose own conversation store Termpolis doesn't
   read.
 - **Your AI providers.** Each agent's provider sees what that agent is asked

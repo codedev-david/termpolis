@@ -9,10 +9,9 @@
 // (shared/headlessPrompt); this deals with what is already stored.
 //
 // A delegated session is DEMOTED whole, user and assistant chunks alike, never deleted: recall
-// still finds a chunk when nothing better matches, and memory_correct can revoke the demotion. It
-// is recorded in the same correction log as an agent's or the user's corrections, so the reason
-// travels with it. Finding the whole session takes three steps, because a stored chunk does not
-// carry its session id:
+// still finds a chunk when nothing better matches. It is recorded in the same correction log as an
+// agent's or the user's corrections, so the reason travels with it. Finding the whole session takes
+// three steps, because a stored chunk does not carry its session id:
 //   1. Seeds. A chunk whose hash is one the indexer just computed for a delegated session still
 //      on disk. Or, for one no longer on disk, a chunk that opens its session with a delegated
 //      prompt, as the indexer's own rule reads a session: from the chunk's start, only the
@@ -48,7 +47,7 @@ export const LINKED_SINCE = Date.UTC(2026, 9, 5)
 
 export const LINKED_RECHECK_REASON =
   'Re-checked by Termpolis: another linked computer started this session, so it was that ' +
-  "computer's job, not this computer's own work. Revoke this correction if it was your own session."
+  "computer's job, not this computer's own work. It is demoted, not deleted: still found, ranked lower."
 
 /** The once-per-install marker, in userData. */
 export const LINKED_RECHECK_MARKER = 'linked-history-recheck.json'
