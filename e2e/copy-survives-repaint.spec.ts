@@ -105,11 +105,18 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
       return JSON.stringify({ xtermBox: box, ...sizes, screenTail: (await screenText()).split('\n').slice(-8) }, null, 2)
     }
 
-    // Behave like Claude Code: mouse tracking on, clear + repaint IN PLACE, forever. Each frame is
-    // sized from the terminal's LIVE size, re-read every frame: lines two columns short of the
-    // width so none wraps, and at most rows-3 of them (marker + lines + the cursor's line, with a
-    // row to spare) so the frame never scrolls. That keeps the marker on row 0 at any window size,
-    // while the rate of rewriting still buries the selection.
+    // Behave like Claude Code: mouse tracking on, repaint IN PLACE, forever. Each frame is sized
+    // from the terminal's LIVE size, re-read every frame: lines two columns short of the width so
+    // none wraps, and at most rows-3 of them (marker + lines + the cursor's line, with a row to
+    // spare) so the frame never scrolls. That keeps the marker on row 0 at any window size.
+    //
+    // Each frame homes the cursor and OVERWRITES (erasing each line's tail, then everything below),
+    // never clearing the screen first. Under ConPTY a clear-then-draw frame reaches the renderer in
+    // two pieces about a paint apart, the clear and an erase of every row, then the text, and a drag
+    // freezes xterm in whichever piece it lands on: replayed through a real ConPTY at the runner's
+    // 98x36, row 0 was blank 43% of the time, so the drag copied nothing. Overwritten, row 0 only
+    // ever holds the marker (0% blank in the same replay). The filler alternates x and y so every
+    // frame differs: ConPTY sends only what changed, and an unchanging frame would send nothing.
     await term.click()
     // The shell is powershell on Windows and bash everywhere else (see session.json above) — this
     // used to type PowerShell unconditionally, so on Linux CI `Write-Host` was just an unknown
@@ -120,20 +127,24 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
     if (process.platform === 'win32') {
       const esc = '$([char]27)'
       await page.keyboard.type(
-        `Write-Host -NoNewline "${esc}[?1002h${esc}[?1006h"; ` +
+        `Write-Host -NoNewline "${esc}[?1002h${esc}[?1006h"; $c='x'; ` +
         `while($true){ $s=$Host.UI.RawUI.WindowSize; $w=[Math]::Max(20,$s.Width-2); ` +
         `$n=[Math]::Max(1,[Math]::Min(25,$s.Height-3)); ` +
-        `Write-Host -NoNewline "${esc}[2J${esc}[H"; Write-Host "${MARKER} keep me"; ` +
-        `1..$n | %{ Write-Host ("x" * $w) }; Start-Sleep -Milliseconds 25 }`,
+        `if ($c -eq 'x') { $c='y' } else { $c='x' }; ` +
+        `Write-Host -NoNewline "${esc}[H"; Write-Host "${MARKER} keep me${esc}[K"; ` +
+        `1..$n | %{ Write-Host (($c * $w) + "${esc}[K") }; ` +
+        `Write-Host -NoNewline "${esc}[J"; Start-Sleep -Milliseconds 25 }`,
       )
     } else {
       const esc = '\\033'
       await page.keyboard.type(
-        `printf '${esc}[?1002h${esc}[?1006h'; ` +
+        `printf '${esc}[?1002h${esc}[?1006h'; c=x; ` +
         `while :; do w=$(( \${COLUMNS:-80} - 2 )); n=$(( \${LINES:-24} - 3 )); ` +
         `[ $n -gt 25 ] && n=25; [ $n -lt 1 ] && n=1; ` +
-        `printf '${esc}[2J${esc}[H'; echo "${MARKER} keep me"; ` +
-        `for i in $(seq $n); do printf 'x%.0s' $(seq $w); echo; done; sleep 0.025; done`,
+        `[ $c = x ] && c=y || c=x; ` +
+        `printf '${esc}[H%s${esc}[K\\n' "${MARKER} keep me"; ` +
+        `for i in $(seq $n); do printf "$c%.0s" $(seq $w); printf '${esc}[K\\n'; done; ` +
+        `printf '${esc}[J'; sleep 0.025; done`,
       )
     }
     await page.keyboard.press('Enter')
@@ -179,9 +190,12 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('__NOTHING__'))
     await drag()
 
-    // Sit on it. Writes are frozen while a selection is active, but only up to PENDING_WRITE_CAP
-    // (1 MB) — this loop emits ~2.6 KB per frame at ~30 fps, so the valve opens within seconds and
-    // the repaint lands squarely on the selection. This is the state a Claude Code user is in.
+    // Sit on it, with the loop still painting. Writes into xterm are frozen while a selection is
+    // active, up to PENDING_WRITE_CAP (1,000,000 characters) of held-back output. This loop emits
+    // about 45 KB/s through a real ConPTY at the runner's 98x36, so the valve needs ~20 s of frozen
+    // output to open: on most machines it stays shut for this whole sit and the copy below reads the
+    // frame frozen at the drag. Where it does open, the flush repaints row 0 with the same marker,
+    // since a frame never blanks it, so the selection holds the marker either way.
     await page.waitForTimeout(12000)
 
     // THE POINT: xterm's selection may be visually buried by the repaint by now, but the live
