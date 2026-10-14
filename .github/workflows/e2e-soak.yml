@@ -99,5 +99,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: soak-${{ inputs.os }}-shard${{ matrix.shard }}-copy${{ matrix.copy }}
-          path: test-results/
+          # The docs screenshots too, so a styling change can be compared before and after.
+          path: |
+            test-results/
+            e2e/screenshots/docs/
           retention-days: 7
