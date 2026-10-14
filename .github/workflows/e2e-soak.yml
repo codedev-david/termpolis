@@ -62,7 +62,10 @@ jobs:
             npm cache clean --force || true
             sleep 10
           done
+      # Linux only, as in Tests. Electron is the only browser a spec launches; on Linux the step
+      # stays for the system libraries --with-deps installs, which Electron's Chromium loads too.
       - name: Install Playwright browsers
+        if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium
       - name: Install gdb
         if: runner.os == 'Linux'
@@ -84,6 +87,22 @@ jobs:
           for i in $(seq 1 30); do [ -S "$XDG_RUNTIME_DIR/wayland-e2e" ] && break; sleep 1; done
           [ -S "$XDG_RUNTIME_DIR/wayland-e2e" ] || { cat /tmp/weston.log; exit 1; }
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+      # Where a new file's ACEs come from on this runner, for workspace-trust.spec.ts's check of
+      # mcp-token: TEMP, a folder made under it the way e2eUserDataDir makes one, and a file
+      # written into that the way the app writes mcp-token. An ACE on the file without (I), when
+      # the folder above passes nothing down to files, came from the creating token's default
+      # DACL, not from inheritance.
+      - name: ACL diagnostic (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          icacls $env:TEMP
+          $d = node -e "const fs = require('fs'), os = require('os'), path = require('path'); const d = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-acl-probe-')); fs.writeFileSync(path.join(d, 'f'), 'x'); process.stdout.write(d)"
+          icacls $d
+          icacls (Join-Path $d f)
+          (Get-Acl (Join-Path $d f)).Sddl
+          Remove-Item -Recurse -Force $d
       # TERMPOLIS_E2E_PREBUILT: the specs launch the Build step's out/ instead of each building it
       # again (ensureE2eBuild, e2e/helpers/launch.ts).
       - name: Whole e2e suite
