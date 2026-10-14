@@ -55,7 +55,7 @@ import * as path from 'path'
 import {
   initSwarmMemory, memoryWrite, memoryList, memoryCount, memoryDelete, memoryArchive, searchArchive, memoryClear,
   memoryFeedback, memoryPatchProjects, memoryPruneCodePath, backfillCodeRefs, importMemorySnapshot, compactSelfShard,
-  memorySearch, persistMemoryIndex, getSyncStatus, enableLocalEncryption, disableEncryption, adoptEncryptionKey,
+  memorySearch, persistMemoryIndex, getSyncStatus, memoryDashboardStats, enableLocalEncryption, disableEncryption, adoptEncryptionKey,
   startNewMemoryKey, setVectorQuantization, setSyncDir, setSyncPassphrase, disableSyncEncryption, reloadMemoryFromSync,
   inspectMemoryKey, encodeEmbedding, KEY_CACHE_FILE, ENCRYPTION_OPTOUT_FILE,
   _resetForTests, _setEmbeddingsAvailable, _setEmbedFnForTests, _setMaxShardBytesForTests, _setHnswThresholdForTests,
@@ -217,8 +217,10 @@ describe('LOCKED — every writer refuses, and not one byte moves (Decision 2)',
     seedBrain()
     relaunch({ encKey: null, keyProblem: 'keychain-unavailable' })
     expect(getSyncStatus().ownLocked).toBe(true)
+    expect(memoryDashboardStats().locked).toBe(true) // the dashboard must not call this brain empty
     relaunch({ encKey: K1 })
     expect(getSyncStatus()).toMatchObject({ ownLocked: false, encrypted: true })
+    expect(memoryDashboardStats().locked).toBe(false)
     expect(contents()).toEqual(['a plaintext memory with a vector', 'old memory 0', 'old memory 1', 'old memory 2'])
   })
 })
@@ -557,6 +559,49 @@ describe('the encryption rewrite covers the WHOLE own set and the archive (Decis
     const before = fs.readFileSync(own)
     expect(disableSyncEncryption().encrypted).toBe(false)
     expect(fs.readFileSync(own).equals(before)).toBe(true)
+  })
+})
+
+// A crash between a swap's two renames (Windows' move-aside path) leaves an original only under
+// `<file>.replaced`. The next init must put it back before anything recreates the file empty — or the
+// next swap of that file would clear the aside and delete the only copy.
+describe('an interrupted swap is repaired at the next launch', () => {
+  it('the active shard, a generation and the archive found only as asides are restored', () => {
+    lay(logFile() + '.replaced', [entry('in the active shard')])
+    lay(genFile(2) + '.replaced', [entry('in a generation')])
+    fs.writeFileSync(archiveFile() + '.replaced', entry('in the archive') + '\n')
+    relaunch()
+    expect(contents()).toEqual(['in a generation', 'in the active shard'])
+    expect(searchArchive('archive', 5).map((e) => e.content)).toEqual(['in the archive'])
+    expect(fs.readdirSync(userDir).filter((f) => f.endsWith('.replaced'))).toEqual([])
+  })
+
+  it('an aside whose file exists (a swap that completed) is left alone, and so is anything not ours', () => {
+    lay(logFile(), [entry('the completed swap')])
+    lay(logFile() + '.replaced', [entry('the original before it')])
+    fs.writeFileSync(path.join(userDir, 'notes.jsonl.replaced'), 'not ours\n')
+    relaunch()
+    expect(contents()).toEqual(['the completed swap'])
+    expect(fs.existsSync(logFile() + '.replaced')).toBe(true)
+    expect(fs.existsSync(path.join(userDir, 'notes.jsonl'))).toBe(false)
+  })
+
+  it('a restore the OS refuses is reported, and init carries on', () => {
+    lay(logFile() + '.replaced', [entry('stuck aside')])
+    failIO.renameSync = (from) => from === logFile() + '.replaced'
+    relaunch()
+    failIO.renameSync = null
+    expect(tele.recordSwarmError).toHaveBeenCalledWith('swarmMemory.swap.restoreFailed', expect.anything(), expect.anything())
+    expect(fs.existsSync(logFile() + '.replaced')).toBe(true) // still there, still recoverable
+  })
+
+  it('a sync shard is restored the same way', () => {
+    initSwarmMemory(userDir, { syncDir })
+    const own = fs.readdirSync(syncDir).find((f) => f.endsWith('.jsonl')) as string
+    fs.renameSync(path.join(syncDir, own), path.join(syncDir, own + '.replaced'))
+    fs.writeFileSync(path.join(syncDir, own + '.replaced'), entry('synced, then swapped') + '\n')
+    relaunch({ syncDir })
+    expect(contents()).toEqual(['synced, then swapped'])
   })
 })
 

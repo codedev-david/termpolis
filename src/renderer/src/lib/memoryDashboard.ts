@@ -165,7 +165,12 @@ export function hasUnreadableShards(m: MemoryMetrics): boolean {
 /** True when nothing has been stored yet — the dashboard shows an onboarding note. Never true
  *  while a shard failed to load: "empty" and "couldn't be read" are different facts. */
 export function isBrainEmpty(m: MemoryMetrics): boolean {
-  return m.store.total === 0 && !hasUnreadableShards(m)
+  return m.store.total === 0 && !hasUnreadableShards(m) && !isBrainLocked(m)
+}
+
+/** LOCKED: the memory key can't open the store. Like unreadable shards, it suppresses "empty". */
+export function isBrainLocked(m: MemoryMetrics): boolean {
+  return m.store.locked === true
 }
 
 /** SVG polyline + closed-area paths for a series in a `w`×`h` box (with `pad` inset).

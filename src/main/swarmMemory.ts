@@ -874,6 +874,7 @@ export function initSwarmMemory(
     if (syncDir) {
       fs.mkdirSync(syncDir, { recursive: true })
       memPath = path.join(syncDir, `${deviceId}.jsonl`)
+      restoreInterruptedSwaps(memPath) // before the existence check below can recreate it empty
       // One-time migration: seed this device's shard from the legacy local store
       // so existing memories join the synced set.
       if (!fs.existsSync(memPath)) {
@@ -887,6 +888,7 @@ export function initSwarmMemory(
       reloadFrom(shardFiles())
     } else {
       memPath = legacyPath
+      restoreInterruptedSwaps(memPath) // before the existence check below can recreate it empty
       if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom(shardFiles()) }
       else fs.writeFileSync(memPath, '')
     }
@@ -1202,6 +1204,9 @@ export interface MemoryDashboardStats {
   /** F31: shard files the last reload could not read at all. NON-ZERO means every number above is a
    *  floor, not the truth — the UI must say "couldn't load your brain", never "your brain is empty". */
   unreadableShards: number
+  /** Decision 2: LOCKED. The same rule as unreadableShards: the numbers cover only what this key could
+   *  open, so the UI must never call a locked brain empty. */
+  locked: boolean
 }
 
 /** One row of the dashboard's live activity ticker. */
@@ -1236,6 +1241,7 @@ export function memoryDashboardStats(): MemoryDashboardStats {
     lessons,
     timeline,
     unreadableShards: unreadableShards.length,
+    locked: ownLock !== null,
   }
 }
 
@@ -3377,20 +3383,53 @@ function verifyTranscoded(tmp: string, target: Buffer | null, wrote: { lines: nu
   }
 }
 
+const ASIDE_SUFFIX = '.replaced'
+
 /**
  * Rename `tmp` over `target`. Windows refuses a rename over a file something holds open, and the usual
  * fix — delete the target, then rename — would destroy the only copy if the retry failed too. So the
  * target is moved aside instead, moved back if the swap can't complete, and only dropped once the new
- * file is in place.
+ * file is in place. (A crash between the two renames is repaired at the next init: see
+ * restoreInterruptedSwaps.)
  */
 function replaceFile(tmp: string, target: string): void {
   try { fs.renameSync(tmp, target); return } catch { /* held open: swap it aside */ }
-  const aside = target + '.replaced'
+  const aside = target + ASIDE_SUFFIX
   try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
   fs.renameSync(target, aside)
   try { fs.renameSync(tmp, target) }
   catch (err) { try { fs.renameSync(aside, target) } catch { /* ignore */ } throw err }
   try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
+}
+
+/**
+ * A crash between replaceFile's two renames leaves an original ONLY under `<file>.replaced`. Left like
+ * that, init would recreate `<file>` empty — the memories in it invisible — and the next swap of that
+ * file would clear the aside, deleting the only copy. So before anything recreates an own file (the
+ * active shard, a rotated generation, the archive), one found only as its aside is put back. Restoring
+ * the original is always safe: whoever was swapping still held every key that reads it. Nothing is
+ * deleted; an aside whose file exists was a completed swap, and the next swap clears it.
+ */
+function restoreInterruptedSwaps(active: string): void {
+  const dir = path.dirname(active)
+  const prefix = rotationPrefix(active)
+  const targets = [archivePath() as string]
+  try {
+    for (const n of fs.readdirSync(dir)) {
+      if (!n.endsWith(ASIDE_SUFFIX)) continue
+      const base = n.slice(0, -ASIDE_SUFFIX.length)
+      if (base === path.basename(active) || rotationGen(base, prefix) !== null) targets.push(path.join(dir, base))
+    }
+  } catch { /* an unreadable folder: init reports it in a moment */ }
+  for (const target of targets) {
+    if (fs.existsSync(target) || !fs.existsSync(target + ASIDE_SUFFIX)) continue
+    try {
+      fs.renameSync(target + ASIDE_SUFFIX, target)
+      recordAnomaly('swap-restored', `${path.basename(target)} was restored from an interrupted rewrite`)
+    } catch (err) {
+      recordSwarmError('swarmMemory.swap.restoreFailed', err, { target })
+    }
+  }
 }
 
 // Shard compaction thresholds — only worth rewriting a large shard that's mostly dead lines.

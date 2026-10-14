@@ -820,6 +820,9 @@ export interface MemoryMetrics {
      *  Optional so a main process that predates the field (stale utility process mid-upgrade)
      *  still deserialises; absent is read as 0. */
     unreadableShards?: number
+    /** LOCKED: the memory key can't open the store, so these numbers cover only what it could.
+     *  Optional for the same reason as unreadableShards; absent is read as false. */
+    locked?: boolean
   }
   graph: { nodes: number; edges: number; byRelation: Record<string, number> }
   competence: Array<{ domain: string; attempts: number; confidence: number }>
