@@ -77,8 +77,11 @@ jobs:
               console.error('FAILED:', e && e.message)
               code = 1
             }
-            // app.quit() exits 0 whatever process.exitCode says.
-            app.exit(code)
+            // A clean quit, never app.exit(): Chromium writes a fresh profile's encryption key into
+            // Local State on its way out, and app.exit() skips that, so the next process could
+            // never decrypt anything. app.quit() exits 0 whatever happened, hence the result file.
+            fs.writeFileSync(path.join(dir, `result-${mode}.txt`), String(code))
+            app.quit()
           })
           EOF
       - name: Upgrade (old writes, new reads) and downgrade (new writes, old reads)
@@ -94,6 +97,7 @@ jobs:
             else
               "$bin" "$RUNNER_TEMP/probe.js" "$mode" "$dir"
             fi
+            [ "$(cat "$dir/result-$mode.txt" 2>/dev/null)" = 0 ]
           }
           fail=0
           up="$RUNNER_TEMP/profile-up"; mkdir -p "$up"
