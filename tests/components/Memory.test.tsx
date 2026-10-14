@@ -18,6 +18,7 @@ beforeEach(() => {
     memoryChooseSyncDir: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/Users/me/Dropbox/termpolis-memory', deviceId: 'dev01', devices: 2, count: 42, encrypted: false, locked: false } }),
     memorySetSyncPassphrase: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: true, locked: false } }),
     memoryDisableSyncEncryption: vi.fn().mockResolvedValue({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: false, locked: false } }),
+    memoryStartNewKey: vi.fn().mockResolvedValue({ success: true, data: { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 3, encrypted: true, locked: true, ownLocked: false, lockReason: null } }),
     writeToTerminal: vi.fn(),
   }
   ;(window as unknown as { termpolis: Api }).termpolis = api
@@ -148,73 +149,104 @@ describe('Memory panel', () => {
     expect(await screen.findByText(/\+20 chunks from 10 files/)).toBeInTheDocument()
   })
 
-  it('shows the cross-machine sync section, off by default', async () => {
+  // Decision 5: v1 sync can lock or overwrite a brain, so it can no longer be turned ON from here (main
+  // refuses it too). The section says so, and offers nothing that would call a sync channel.
+  it('shows cross-machine sync as unavailable, with no way to turn it on', async () => {
     renderPanel()
     await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
     expect(screen.getByText(/Sync across machines/i)).toBeInTheDocument()
-    expect(screen.getByTestId('memory-sync-choose')).toBeInTheDocument()
+    expect(screen.getByTestId('memory-sync-unavailable')).toHaveTextContent(/Unavailable in this version/)
+    expect(screen.queryByTestId('memory-sync-choose')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('memory-sync-passphrase')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('memory-sync-disable-enc')).not.toBeInTheDocument()
+    expect(api.memoryChooseSyncDir).not.toHaveBeenCalled()
+    expect(api.memorySetSyncPassphrase).not.toHaveBeenCalled()
+    expect(api.memoryDisableSyncEncryption).not.toHaveBeenCalled()
   })
 
-  it('choosing a synced folder enables sync and shows the device count', async () => {
-    renderPanel()
-    await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId('memory-sync-choose'))
-    await waitFor(() => expect(api.memoryChooseSyncDir).toHaveBeenCalled())
-    expect(await screen.findByText(/2 devices sharing this brain/i)).toBeInTheDocument()
-    expect(screen.getByTestId('memory-sync-off')).toBeInTheDocument()
-  })
-
-  it('turning sync off calls set-sync-dir(null)', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/Dropbox/mem', deviceId: 'dev01', devices: 2, count: 42 } })
+  it('a sync session still running can be turned off — and nothing else about it is offered', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/Dropbox/mem', deviceId: 'dev01', devices: 2, count: 42, encrypted: true, locked: true } })
     renderPanel()
     await waitFor(() => expect(screen.getByTestId('memory-sync-off')).toBeInTheDocument())
+    expect(screen.getByText(/2 devices sharing this brain/i)).toBeInTheDocument()
+    expect(screen.queryByTestId('memory-sync-passphrase')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('memory-sync-disable-enc')).not.toBeInTheDocument()
     fireEvent.click(screen.getByTestId('memory-sync-off'))
     await waitFor(() => expect(api.memorySetSyncDir).toHaveBeenCalledWith(null))
-    expect(await screen.findByText(/Sync turned off/i)).toBeInTheDocument()
+    expect(await screen.findByText(/this computer's own memory is back, exactly as it was/i)).toBeInTheDocument()
+  })
+})
+
+// Decisions 1-2: a LOCKED brain is shown, with the reason and what would bring it back, and the only
+// way past it is the user's own two-step "Start a new memory key".
+describe('Memory panel — LOCKED', () => {
+  const LOCKED = { syncing: false, dir: null, deviceId: 'dev01', devices: 0, count: 0, encrypted: false, locked: true, ownLocked: true }
+
+  it.each([
+    ['keychain-unavailable', /OS keychain that protects this computer's memory key isn't available/],
+    ['key-unreadable', /couldn't unwrap its memory key/],
+    ['key-invalid', /memory key file on this computer is damaged/],
+    ['key-mismatch', /doesn't match the memories on disk/],
+  ])('says why when the reason is %s', async (lockReason, copy) => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...LOCKED, lockReason } })
+    renderPanel()
+    const banner = await screen.findByTestId('memory-locked')
+    expect(banner).toHaveTextContent(/Memory is locked — nothing new is being saved/)
+    expect(banner).toHaveTextContent(copy)
   })
 
-  it('reports an error when enabling sync fails', async () => {
-    api.memoryChooseSyncDir.mockResolvedValueOnce({ success: false, error: 'no folder picked' })
+  it('falls back to a plain explanation for a reason it does not know', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...LOCKED, lockReason: null } })
+    renderPanel()
+    expect(await screen.findByTestId('memory-locked')).toHaveTextContent(/can't open your memories with the key on this computer/)
+  })
+
+  it('shows no banner when memory is not locked', async () => {
     renderPanel()
     await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId('memory-sync-choose'))
-    expect(await screen.findByText('no folder picked')).toBeInTheDocument()
+    expect(screen.queryByTestId('memory-locked')).not.toBeInTheDocument()
   })
 
-  it('encrypts the synced folder with a passphrase', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: false, locked: false } })
+  it('Start a new memory key asks first — saying older memories stay on disk — and only then acts', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...LOCKED, lockReason: 'key-unreadable' } })
     renderPanel()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-encrypt')).toBeInTheDocument())
-    fireEvent.change(screen.getByTestId('memory-sync-passphrase'), { target: { value: 'hunter2' } })
-    fireEvent.click(screen.getByTestId('memory-sync-encrypt'))
-    await waitFor(() => expect(api.memorySetSyncPassphrase).toHaveBeenCalledWith('hunter2'))
-    expect(await screen.findByText(/holds only ciphertext/i)).toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('memory-new-key'))
+    expect(api.memoryStartNewKey).not.toHaveBeenCalled()
+    expect(screen.getByTestId('memory-locked')).toHaveTextContent(/Older memories stay on disk, unreadable until the old key works again/)
+    expect(screen.getByTestId('memory-locked')).toHaveTextContent(/Nothing is deleted/)
+
+    fireEvent.click(screen.getByTestId('memory-new-key-confirm'))
+    await waitFor(() => expect(api.memoryStartNewKey).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText(/New memory key started/)).toBeInTheDocument()
+    expect(screen.queryByTestId('memory-locked')).not.toBeInTheDocument()
+    await waitFor(() => expect(api.memoryStats).toHaveBeenCalledTimes(2))
   })
 
-  it('warns if you click encrypt without a passphrase', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: false, locked: false } })
+  it('Cancel backs out without doing anything', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...LOCKED, lockReason: 'key-mismatch' } })
     renderPanel()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-encrypt')).toBeInTheDocument())
-    fireEvent.click(screen.getByTestId('memory-sync-encrypt'))
-    expect(await screen.findByText(/Enter a passphrase/i)).toBeInTheDocument()
-    expect(api.memorySetSyncPassphrase).not.toHaveBeenCalled()
+    fireEvent.click(await screen.findByTestId('memory-new-key'))
+    fireEvent.click(screen.getByTestId('memory-new-key-cancel'))
+    expect(screen.getByTestId('memory-new-key')).toBeInTheDocument()
+    expect(api.memoryStartNewKey).not.toHaveBeenCalled()
   })
 
-  it('unlocks an encrypted store when locked', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 2, count: 0, encrypted: false, locked: true } })
+  it('a refusal keeps the banner up and says why', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...LOCKED, lockReason: 'keychain-unavailable' } })
+    api.memoryStartNewKey.mockResolvedValueOnce({ success: false, error: "This computer has no OS keychain to protect a new memory key, so one can't be started." })
     renderPanel()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-unlock')).toBeInTheDocument())
-    fireEvent.change(screen.getByTestId('memory-sync-passphrase'), { target: { value: 'p@ss' } })
-    fireEvent.click(screen.getByTestId('memory-sync-unlock'))
-    await waitFor(() => expect(api.memorySetSyncPassphrase).toHaveBeenCalledWith('p@ss'))
+    fireEvent.click(await screen.findByTestId('memory-new-key'))
+    fireEvent.click(screen.getByTestId('memory-new-key-confirm'))
+    expect(await screen.findByText(/no OS keychain to protect a new memory key/)).toBeInTheDocument()
+    expect(screen.getByTestId('memory-locked')).toBeInTheDocument()
   })
 
-  it('disables encryption when already encrypted', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { syncing: true, dir: '/d', deviceId: 'dev01', devices: 1, count: 42, encrypted: true, locked: false } })
+  it('a refusal with no reason still says something', async () => {
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...LOCKED, lockReason: 'key-invalid' } })
+    api.memoryStartNewKey.mockResolvedValueOnce({ success: false })
     renderPanel()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-disable-enc')).toBeInTheDocument())
-    fireEvent.click(screen.getByTestId('memory-sync-disable-enc'))
-    await waitFor(() => expect(api.memoryDisableSyncEncryption).toHaveBeenCalled())
-    expect(await screen.findByText(/Encryption disabled/i)).toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('memory-new-key'))
+    fireEvent.click(screen.getByTestId('memory-new-key-confirm'))
+    expect(await screen.findByText('Could not start a new memory key.')).toBeInTheDocument()
   })
 })

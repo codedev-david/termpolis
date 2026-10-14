@@ -208,6 +208,7 @@ const mem = vi.hoisted(() => ({
   disableSyncEncryption: vi.fn(async () => ({ ok: true })),
   enableLocalEncryption: vi.fn(async () => ({ ok: true })),
   disableEncryption: vi.fn(async () => ({ ok: true })),
+  startNewMemoryKey: vi.fn(async () => ({ ownLocked: false, lockReason: null })),
   persistMemoryIndex: vi.fn(async () => {}),
   entityDedupHash: vi.fn((n: string, key?: string) => `edh:${n}:${key ?? ''}`),
   projectKeyOf: vi.fn((p: string) => `pk:${p}`),
@@ -1957,6 +1958,66 @@ describe('memory indexer passes', () => {
     await indexerOpts().fastRun()
     mneme.runConversationIngest.mock.calls[1][0].link('c', 'd', 'follows', 0.3, 8)
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'c', to: 'd', relation: 'follows', weight: 0.3, ts: 8, createdBy: 'ingest' })
+  })
+})
+
+// ===========================================================================
+// Decision 2 — a LOCKED brain. The store refuses every write itself; main makes the BULK writers skip
+// the pass entirely, so nothing that records "done" (a reflection cursor, the lesson recheck marker)
+// advances over memories that were never saved, and no pass reads every transcript to fail every chunk.
+// ===========================================================================
+describe('a LOCKED brain — the bulk writers stand down', () => {
+  const lockedOnce = (n = 1): void => {
+    for (let i = 0; i < n; i++) mem.getSyncStatus.mockResolvedValueOnce({ ownLocked: true, lockReason: 'key-unreadable' } as never)
+  }
+
+  it('the full indexer pass does nothing at all — no ingest, recheck, consolidation, weave or persist', async () => {
+    lockedOnce()
+    await expect(indexer.run()).resolves.toEqual({ written: 0 })
+    expect(mem.reloadMemoryFromSync).not.toHaveBeenCalled()
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+    expect(mem.persistMemoryIndex).not.toHaveBeenCalled()
+    expect(mneme.runConsolidation).not.toHaveBeenCalled()
+    expect(mneme.runWeave).not.toHaveBeenCalled()
+  })
+
+  it('the fast pass does nothing either', async () => {
+    lockedOnce()
+    await expect(indexer.fastRun()).resolves.toEqual({ written: 0 })
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+  })
+
+  it('reflect-session fires nothing and leaves the cursor where it was', async () => {
+    lockedOnce()
+    const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    expect(r).toEqual({ success: true, data: { fired: false, lessons: 0 } })
+    expect(mneme.reflectSoloSession).not.toHaveBeenCalled()
+  })
+
+  it('a user-triggered ingest says the brain is locked instead of failing every chunk', async () => {
+    lockedOnce(2)
+    expect(await invoke('memory:ingest-conversations')).toEqual({ success: false, error: expect.stringMatching(/^Memory is locked/) })
+    expect(await invoke('memory:ingest-code', { repoRoot: '/r' })).toEqual({ success: false, error: expect.stringMatching(/^Memory is locked/) })
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+    expect(mneme.runCodeIngest).not.toHaveBeenCalled()
+  })
+
+  it('a store that cannot even answer is not treated as locked — its own writes fail loudly enough', async () => {
+    mem.getSyncStatus.mockRejectedValueOnce(new Error('memory host exited') as never)
+    await expect(indexer.fastRun()).resolves.toEqual({ written: 4, more: false })
+    expect(mneme.runConversationIngest).toHaveBeenCalled()
+  })
+})
+
+describe('memory:start-new-key — the only way past LOCKED (Decision 1)', () => {
+  it('returns the new status', async () => {
+    expect(await invoke('memory:start-new-key')).toEqual({ success: true, data: { ownLocked: false, lockReason: null } })
+    expect(mem.startNewMemoryKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces a refusal as {success:false,error}', async () => {
+    mem.startNewMemoryKey.mockRejectedValueOnce(new Error("Memory isn't locked — there is no need to start a new key.") as never)
+    expect(await invoke('memory:start-new-key')).toEqual({ success: false, error: "Memory isn't locked — there is no need to start a new key." })
   })
 })
 

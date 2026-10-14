@@ -401,15 +401,16 @@ describe('Memory panel — degraded responses and edge inputs', () => {
     delete api.memorySyncStatus
     renderMemory()
     await settled()
-    expect(screen.getByTestId('memory-sync-choose')).toBeInTheDocument()
+    expect(screen.getByTestId('memory-sync-unavailable')).toBeInTheDocument()
     expect(screen.queryByTestId('memory-sync-off')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('memory-locked')).not.toBeInTheDocument()
   })
 
   it('ignores a successful sync-status response that carries no data', async () => {
     api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: null })
     renderMemory()
     await waitFor(() => expect(api.memorySyncStatus).toHaveBeenCalled())
-    expect(screen.getByTestId('memory-sync-choose')).toBeInTheDocument()
+    expect(screen.getByTestId('memory-sync-unavailable')).toBeInTheDocument()
   })
 
   it('stays on "Loading…" when stats succeed but return no payload', async () => {
@@ -493,7 +494,6 @@ describe('Memory panel — degraded responses and edge inputs', () => {
     expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Inject primer' })).toBeDisabled()
     expect(screen.getByRole('button', { name: /Index past conversations/i })).toBeDisabled()
-    expect(screen.getByTestId('memory-sync-choose')).toBeDisabled()
 
     await act(async () => { release({ success: true, data: [] }) })
     expect(screen.getByRole('button', { name: 'Search' })).not.toBeDisabled()
@@ -552,30 +552,10 @@ describe('Memory panel — ingest failures', () => {
 })
 
 describe('Memory panel — sync failures and singular/plural wording', () => {
-  it('says "Sync unchanged." when the folder picker is dismissed', async () => {
-    api.memoryChooseSyncDir.mockResolvedValueOnce({ success: true, data: { ...SYNC_ON, syncing: false, dir: null, devices: 0 } })
-    renderMemory()
-    await settled()
-    fireEvent.click(screen.getByTestId('memory-sync-choose'))
-    expect(await screen.findByText('Sync unchanged.')).toBeInTheDocument()
-    expect(screen.getByTestId('memory-sync-choose')).toBeInTheDocument()   // still off
-  })
-
   it('uses the singular "1 device" when this is the only machine on the brain', async () => {
-    api.memoryChooseSyncDir.mockResolvedValueOnce({ success: true, data: { ...SYNC_ON, dir: '/Dropbox/mem', devices: 1 } })
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...SYNC_ON, dir: '/Dropbox/mem', devices: 1 } })
     renderMemory()
-    await settled()
-    fireEvent.click(screen.getByTestId('memory-sync-choose'))
-    expect(await screen.findByText('Syncing via /Dropbox/mem (1 device)')).toBeInTheDocument()
-    expect(screen.getByText(/1 device sharing this brain/)).toBeInTheDocument()
-  })
-
-  it('falls back to a generic message when enabling sync fails with no reason', async () => {
-    api.memoryChooseSyncDir.mockResolvedValueOnce({ success: false })
-    renderMemory()
-    await settled()
-    fireEvent.click(screen.getByTestId('memory-sync-choose'))
-    expect(await screen.findByText('Could not enable sync.')).toBeInTheDocument()
+    expect(await screen.findByText(/1 device sharing this brain/)).toBeInTheDocument()
   })
 
   it('leaves sync on when turning it off fails', async () => {
@@ -589,48 +569,16 @@ describe('Memory panel — sync failures and singular/plural wording', () => {
     expect(screen.queryByText(/Sync turned off/i)).not.toBeInTheDocument()
   })
 
-  it('warns that entries are still locked when the passphrase does not unlock them', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...SYNC_ON, locked: true } })
-    api.memorySetSyncPassphrase.mockResolvedValueOnce({ success: true, data: { ...SYNC_ON, locked: true } })
+  it('the LOCKED banner disables its own buttons while a request is in flight', async () => {
+    let release!: (v: unknown) => void
+    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...SYNC_ON, syncing: false, dir: null, ownLocked: true, lockReason: 'key-mismatch' } })
+    api.memoryStartNewKey = vi.fn().mockImplementationOnce(() => new Promise((r) => { release = r }))
     renderMemory()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-unlock')).toBeInTheDocument())
-    fireEvent.change(screen.getByTestId('memory-sync-passphrase'), { target: { value: 'wrong' } })
-    fireEvent.click(screen.getByTestId('memory-sync-unlock'))
-    await waitFor(() => expect(api.memorySetSyncPassphrase).toHaveBeenCalledWith('wrong'))
-    expect(await screen.findByText(/Some entries are still locked/i)).toBeInTheDocument()
-    // the field is cleared so the next attempt starts clean
-    expect(screen.getByTestId('memory-sync-passphrase')).toHaveValue('')
-  })
-
-  it('surfaces the reason a passphrase could not be applied', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: SYNC_ON })
-    api.memorySetSyncPassphrase.mockResolvedValueOnce({ success: false, error: 'key derivation failed' })
-    renderMemory()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-encrypt')).toBeInTheDocument())
-    fireEvent.change(screen.getByTestId('memory-sync-passphrase'), { target: { value: 'hunter2' } })
-    fireEvent.click(screen.getByTestId('memory-sync-encrypt'))
-    expect(await screen.findByText('key derivation failed')).toBeInTheDocument()
-    expect(screen.getByTestId('memory-sync-encrypt')).toBeInTheDocument()      // still not encrypted
-  })
-
-  it('falls back to a generic message when a passphrase fails with no reason', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: SYNC_ON })
-    api.memorySetSyncPassphrase.mockResolvedValueOnce({ success: false })
-    renderMemory()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-encrypt')).toBeInTheDocument())
-    fireEvent.change(screen.getByTestId('memory-sync-passphrase'), { target: { value: 'hunter2' } })
-    fireEvent.click(screen.getByTestId('memory-sync-encrypt'))
-    expect(await screen.findByText('Could not apply passphrase.')).toBeInTheDocument()
-  })
-
-  it('stays encrypted when disabling encryption fails', async () => {
-    api.memorySyncStatus.mockResolvedValueOnce({ success: true, data: { ...SYNC_ON, encrypted: true } })
-    api.memoryDisableSyncEncryption.mockResolvedValueOnce({ success: false, error: 'nope' })
-    renderMemory()
-    await waitFor(() => expect(screen.getByTestId('memory-sync-disable-enc')).toBeInTheDocument())
-    fireEvent.click(screen.getByTestId('memory-sync-disable-enc'))
-    await waitFor(() => expect(api.memoryDisableSyncEncryption).toHaveBeenCalled())
-    expect(screen.getByTestId('memory-sync-disable-enc')).toBeInTheDocument()  // still encrypted
-    expect(screen.queryByText(/Encryption disabled/i)).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('memory-new-key'))
+    fireEvent.click(screen.getByTestId('memory-new-key-confirm'))
+    expect(screen.getByTestId('memory-new-key-confirm')).toBeDisabled()
+    expect(screen.getByTestId('memory-new-key-cancel')).toBeDisabled()
+    await act(async () => { release({ success: true, data: { ...SYNC_ON, syncing: false, dir: null, ownLocked: false, lockReason: null } }) })
+    expect(screen.queryByTestId('memory-locked')).not.toBeInTheDocument()
   })
 })

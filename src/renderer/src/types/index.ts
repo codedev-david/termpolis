@@ -533,6 +533,8 @@ export interface TermpolisAPI {
   // preload's own object literal failed to typecheck — silently, because nothing typechecked.
   memoryEnableLocalEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
   memoryDisableEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
+  /** Retire the memory key and start a new one: the only way past a LOCKED brain. Never automatic. */
+  memoryStartNewKey: () => Promise<IpcResponse<MemorySyncStatus>>
 
   // Clipboard — native Electron clipboard (focus/permission-immune), used by the
   // terminal context menu where navigator.clipboard silently rejects.
@@ -740,7 +742,14 @@ export interface MemorySyncStatus {
   count: number
   encrypted: boolean // this device holds the key and writes ciphertext at rest
   locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
+  /** LOCKED: nothing new is being saved — the memory key can't be used, or doesn't match the memories
+   *  on disk. Optional because builds before this one never sent it. */
+  ownLocked?: boolean
+  lockReason?: MemoryLockReason | null
 }
+
+/** Why memory is LOCKED (see swarmMemory.LockReason). */
+export type MemoryLockReason = 'keychain-unavailable' | 'key-unreadable' | 'key-invalid' | 'key-mismatch'
 
 export interface MemoryWriteInput {
   agentId: string

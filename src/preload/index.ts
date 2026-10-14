@@ -271,6 +271,7 @@ const api: TermpolisAPI = {
   memoryDisableSyncEncryption: () => ipcRenderer.invoke('memory:disable-sync-encryption'),
   memoryEnableLocalEncryption: () => ipcRenderer.invoke('memory:enable-local-encryption'), // WP-F
   memoryDisableEncryption: () => ipcRenderer.invoke('memory:disable-encryption'), // WP-F
+  memoryStartNewKey: () => ipcRenderer.invoke('memory:start-new-key'), // the only way past a LOCKED brain
 
   // Test-only (inert in production — handlers registered only under NODE_ENV=test):
   // feed synthetic terminal output and read back raw terminal writes, so e2e can

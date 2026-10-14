@@ -260,6 +260,7 @@ import {
   setMemoryScrubber,
   weaveCandidates, weaveNeighboursBatch, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
+  startNewMemoryKey,
   persistMemoryIndex,
   entityDedupHash, projectKeyOf,
   type MemoryEntry,
@@ -2173,11 +2174,15 @@ ipcMain.handle('memory:graph-sample', async (_e, opts: { limit?: number } = {}) 
   } catch (e: any) { return err(e.message) }
 })
 
+// What a bulk writer says when the brain is LOCKED (Decision 2) — the panel's banner says why.
+const MEMORY_LOCKED = 'Memory is locked, so nothing new can be saved. Open the Memory panel to see why.'
+
 // Ingest past AI sessions (Claude/Codex/Gemini transcripts on disk) into the
 // shared memory so every agent can semantically recall them. Idempotent — only
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
+    if (await memoryIsLocked()) return err(MEMORY_LOCKED)
     const stats = await runConversationIngest(ingestMemoryDeps(), { stopped: () => appQuitting })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
@@ -2189,6 +2194,7 @@ ipcMain.handle('memory:ingest-conversations', async () => {
 ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
+    if (await memoryIsLocked()) return err(MEMORY_LOCKED)
     // hasHashES, not hasHash: the sync per-chunk predicate cannot be answered by an out-of-process
     // store, and an async one would report every chunk as already-indexed (a Promise is truthy) —
     // the repo would appear to index and nothing would be written.
@@ -2600,6 +2606,9 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
 ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; cwd: string; agent: string }) => {
   try {
     if (!opts?.terminalId || !opts?.cwd || !opts?.agent) return ok({ fired: false, lessons: 0 })
+    // LOCKED: every lesson write would be refused, yet the cursor would still advance past the turns —
+    // and they would never be reflected. Leave the cursor where it is; the first pass after unlock does it.
+    if (await memoryIsLocked()) return ok({ fired: false, lessons: 0 })
     const project = normalizeProjectSlug(opts.cwd)
     const cursorKey = sessionCursorKey(opts.cwd, opts.agent)
     const res = await reflectSoloSession(
@@ -2643,23 +2652,22 @@ ipcMain.handle('memory:sync-status', async () => {
   try { return ok(await getSyncStatus()) } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
-  try { return ok(await setSyncDir(opts?.dir ?? null)) } catch (e: any) { return err(e.message) }
-})
+// Decision 5: v1 sync can LOCK or overwrite a brain (it copied the local log into the folder, cached
+// the passphrase key over the device key, and snapshotted the union back over the local file on the
+// way out). Turning it ON is refused here, in main, whatever the renderer sends — the panel no longer
+// offers it, and this holds even against a devtools call. Turning it OFF stays allowed: it only ever
+// reopens the local brain as it was left. The v2 flow replaces this.
+const SYNC_TEMPORARILY_DISABLED = "SYNC_TEMPORARILY_DISABLED: cross-machine sync is unavailable in this version — each computer keeps its own memory."
 
-// Native folder picker → enable sync to the chosen folder in one step.
-ipcMain.handle('memory:choose-sync-dir', async () => {
+ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
   try {
-    const res = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Choose a synced folder for Termpolis memory (e.g. inside Dropbox or Syncthing)',
-      // Not Downloads, Electron 43's default, where a new sync folder would be easy to create by mistake.
-      defaultPath: homedir(),
-      properties: ['openDirectory', 'createDirectory'],
-    })
-    if (res.canceled || !res.filePaths[0]) return ok(await getSyncStatus())
-    return ok(await setSyncDir(res.filePaths[0]))
+    if (opts?.dir) return err(SYNC_TEMPORARILY_DISABLED)
+    return ok(await setSyncDir(null))
   } catch (e: any) { return err(e.message) }
 })
+
+// Was: a native folder picker that turned sync on in one step. Refused before any dialog opens.
+ipcMain.handle('memory:choose-sync-dir', async () => err(SYNC_TEMPORARILY_DISABLED))
 
 // At-rest encryption of the synced folder. Set/enter the passphrase (encrypts
 // this device's shard + unlocks peers' encrypted shards); the key is derived
@@ -2681,6 +2689,24 @@ ipcMain.handle('memory:enable-local-encryption', async () => {
 ipcMain.handle('memory:disable-encryption', async () => {
   try { return ok(await disableEncryption()) } catch (e: any) { return err(e.message) }
 })
+
+// Decision 1: the ONLY way past a LOCKED brain, and only ever on the user's click in the Memory panel.
+// The old key file is retired (renamed aside, never deleted) and a new one minted; older memories stay
+// on disk, readable again whenever the old key works — they are never rewritten.
+ipcMain.handle('memory:start-new-key', async () => {
+  try { return ok(await startNewMemoryKey()) } catch (e: any) { return err(e.message) }
+})
+
+/**
+ * Decision 2: is the brain LOCKED? The store refuses every write itself; this is for the BULK writers,
+ * so they skip a pass instead of reading every transcript to attempt (and fail) every chunk — and so
+ * nothing that records "done" (a session's reflection cursor, the lesson recheck marker) advances over
+ * memories that were never saved. They are all picked up again on the first pass after it unlocks.
+ * A store that can't even answer is not reported as locked: its own writes will fail loudly enough.
+ */
+async function memoryIsLocked(): Promise<boolean> {
+  try { return (await getSyncStatus()).ownLocked === true } catch { return false }
+}
 
 // Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
 // Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
@@ -4157,6 +4183,11 @@ async function semanticPoolOptions(
     // quick follow-up whenever a pass reports more backlog).
     startIndexer({
       run: async () => {
+        // LOCKED (Decision 2): no ingest, no lesson recheck, no consolidation, no Weave, no index
+        // persist — every one of them either writes to a brain that refuses writes or decides things
+        // from a hot window missing everything that can't be decrypted. Nothing is marked done, so the
+        // first pass after an unlock picks it all up.
+        if (await memoryIsLocked()) return { written: 0 }
         // Pick up entries other machines synced into the shared folder (no-op
         // when cross-machine sync is off).
         try { await reloadMemoryFromSync() } catch { /* best effort */ }
@@ -4292,6 +4323,7 @@ async function semanticPoolOptions(
       // of past sessions on disk (it stats, not re-reads, the cold ones).
       fastIntervalMs: 90_000,
       fastRun: async () => {
+        if (await memoryIsLocked()) return { written: 0 } // see run: nothing is marked done while LOCKED
         const stats = await runConversationIngest(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
           // F16: the fast pass re-reads the ACTIVE session — emit only sealed chunks so a
