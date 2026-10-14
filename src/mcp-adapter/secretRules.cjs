@@ -38,7 +38,7 @@ module.exports = [
   // === Azure ===
   { id: 'azure_storage_key', label: 'Azure Storage AccountKey', precision: 'heuristic', pattern: /AccountKey\s*=\s*([A-Za-z0-9+/=]{86,90})/g },
   { id: 'azure_sas', label: 'Azure SAS signature', precision: 'heuristic', pattern: /[?&]sig=([A-Za-z0-9%]{40,})/g },
-  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]*AccountKey=[^;\s]+/g },
+  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]{0,1024}AccountKey=[^;\s]+/g },
   { id: 'azure_devops_pat', label: 'Azure DevOps PAT', precision: 'heuristic', pattern: /\b(?:AZURE_DEVOPS_PAT|ADO_PAT|VSTS_PAT|SYSTEM_ACCESSTOKEN)\s*[:=]\s*["']?([a-z0-9]{52})["']?/gi },
   { id: 'azure_client_secret', label: 'Azure AD client secret (named)', precision: 'heuristic', pattern: /\b(?:AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|client[_-]?secret)\s*[:=]\s*["']?([A-Za-z0-9~_.-]{34,})["']?/gi },
   // === GCP ===
@@ -127,7 +127,7 @@ module.exports = [
   // === Crypto / financial ===
   { id: 'coinbase_pat', label: 'Coinbase API key (named)', precision: 'heuristic', pattern: /\b(?:COINBASE_API_KEY|coinbase_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
   // === Generic high-confidence shapes ===
-  { id: 'jwt', label: 'JWT (3-part base64url)', precision: 'heuristic', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  { id: 'jwt', label: 'JWT (3-part base64url)', precision: 'heuristic', pattern: /\b(?<!-)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   { id: 'private_key', label: 'PEM private key block', precision: 'high', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)?/g },
   // === .env-style — last because it's the loosest catch-all. ===
   // === Named secrets — the ones you can actually ACT on =================================
@@ -141,11 +141,11 @@ module.exports = [
   // watch and log, a false positive costs one line in a log nobody is forced to read, while a
   // miss costs a leaked credential. The trade flipped, so the rules can.
   { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', precision: 'heuristic', nameGroup: 1, pattern: /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
-  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', precision: 'heuristic', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]*)"\s*:\s*"([^"\\]{6,})"/gi },
-  { id: 'password_literal', label: 'Password assigned to a literal', precision: 'heuristic', nameGroup: 1, pattern: /\b([A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*)\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
-  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', precision: 'heuristic', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]*)[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
+  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', precision: 'heuristic', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]{0,64}?(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]{0,48})"\s*:\s*"([^"\\]{6,})"/gi },
+  { id: 'password_literal', label: 'Password assigned to a literal', precision: 'heuristic', nameGroup: 1, pattern: /(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{0,64}?(?:password|passwd|pwd)[A-Za-z0-9_.-]{0,48})\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
+  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', precision: 'heuristic', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]{0,64}?(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]{0,48})[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
   { id: 'conn_string_password', label: 'Password in a connection string', precision: 'heuristic', nameGroup: 1, pattern: /\b(Password|Pwd)\s*=\s*([^;\s"']{4,})/gi },
-  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', precision: 'heuristic', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]*:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
+  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', precision: 'heuristic', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]{0,31}:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
   // The shapeless secret. Every rule above matches either a KNOWN TOKEN SHAPE (AKIA…, ghp_…,
   // sk-ant-…) or a NAMED assignment. Neither fires on the most human thing in the world:
   //
@@ -158,5 +158,5 @@ module.exports = [
   // both a digit and a letter), which is what keeps "rotate the api key in production" from
   // matching on "production". Heuristic, and named as one — but in watch-only mode a false
   // positive is one line in a log, while a miss is a leaked credential.
-  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', precision: 'heuristic', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]*\d)(?=[A-Za-z0-9_+/=.-]*[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
+  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', precision: 'heuristic', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]{0,63}\d)(?=[A-Za-z0-9_+/=.-]{0,63}[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
 ]

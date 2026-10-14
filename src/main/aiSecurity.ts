@@ -110,9 +110,14 @@ interface RedactionRule {
 // import this module — it carries its own copy, and that test is what keeps them identical.
 //
 // Text another computer controls is scanned too (Linked machines, screenText), on the main
-// thread, so no rule may take more than linear time on a crafted input: a lookahead is bounded
-// (cloudflare_global and gh_runner_token look 200 characters ahead, where `.*` cost ~170 ms on a
-// crafted 200 KB answer), and a private-key block takes at most 400 lines after its BEGIN line.
+// thread, so no rule may take more than linear time on a crafted input. Every run that a match
+// can start in many places is bounded: the lookaheads (cloudflare_global and gh_runner_token look
+// 200 characters ahead, contextual_secret 64 into its value), the name around a password or secret
+// keyword (64 characters before it, 48 after), a URL scheme (32), the stretch between an Azure
+// account's name and its key (1,024), and a private-key block (400 lines after its BEGIN line).
+// password_literal starts only where a name starts, and a JWT not right after a `-`: with either
+// starting inside a run, `pwd.pwd.…` or `eyJ-eyJ-…` cost seconds per 20,000 characters.
+// aiSecurityScreen.test.ts times every rule on such runs.
 export const RULES: RedactionRule[] = [
   // === AWS ===
   { id: 'aws_access_key', label: 'AWS Access Key ID', precision: 'high', pattern: /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ASCA)[0-9A-Z]{16}\b/g },
@@ -135,7 +140,7 @@ export const RULES: RedactionRule[] = [
   // === Azure ===
   { id: 'azure_storage_key', label: 'Azure Storage AccountKey', precision: 'heuristic', pattern: /AccountKey\s*=\s*([A-Za-z0-9+/=]{86,90})/g },
   { id: 'azure_sas', label: 'Azure SAS signature', precision: 'heuristic', pattern: /[?&]sig=([A-Za-z0-9%]{40,})/g },
-  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]*AccountKey=[^;\s]+/g },
+  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]{0,1024}AccountKey=[^;\s]+/g },
   { id: 'azure_devops_pat', label: 'Azure DevOps PAT', precision: 'heuristic', pattern: /\b(?:AZURE_DEVOPS_PAT|ADO_PAT|VSTS_PAT|SYSTEM_ACCESSTOKEN)\s*[:=]\s*["']?([a-z0-9]{52})["']?/gi },
   { id: 'azure_client_secret', label: 'Azure AD client secret (named)', precision: 'heuristic', pattern: /\b(?:AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|client[_-]?secret)\s*[:=]\s*["']?([A-Za-z0-9~_.-]{34,})["']?/gi },
   // === GCP ===
@@ -224,7 +229,7 @@ export const RULES: RedactionRule[] = [
   // === Crypto / financial ===
   { id: 'coinbase_pat', label: 'Coinbase API key (named)', precision: 'heuristic', pattern: /\b(?:COINBASE_API_KEY|coinbase_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
   // === Generic high-confidence shapes ===
-  { id: 'jwt', label: 'JWT (3-part base64url)', precision: 'heuristic', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  { id: 'jwt', label: 'JWT (3-part base64url)', precision: 'heuristic', pattern: /\b(?<!-)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   { id: 'private_key', label: 'PEM private key block', precision: 'high', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)?/g },
   // === .env-style — last because it's the loosest catch-all. ===
   // === Named secrets — the ones you can actually ACT on =================================
@@ -238,11 +243,11 @@ export const RULES: RedactionRule[] = [
   // watch and log, a false positive costs one line in a log nobody is forced to read, while a
   // miss costs a leaked credential. The trade flipped, so the rules can.
   { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', precision: 'heuristic', nameGroup: 1, pattern: /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
-  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', precision: 'heuristic', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]*)"\s*:\s*"([^"\\]{6,})"/gi },
-  { id: 'password_literal', label: 'Password assigned to a literal', precision: 'heuristic', nameGroup: 1, pattern: /\b([A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*)\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
-  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', precision: 'heuristic', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]*)[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
+  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', precision: 'heuristic', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]{0,64}?(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]{0,48})"\s*:\s*"([^"\\]{6,})"/gi },
+  { id: 'password_literal', label: 'Password assigned to a literal', precision: 'heuristic', nameGroup: 1, pattern: /(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]{0,64}?(?:password|passwd|pwd)[A-Za-z0-9_.-]{0,48})\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
+  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', precision: 'heuristic', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]{0,64}?(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]{0,48})[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
   { id: 'conn_string_password', label: 'Password in a connection string', precision: 'heuristic', nameGroup: 1, pattern: /\b(Password|Pwd)\s*=\s*([^;\s"']{4,})/gi },
-  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', precision: 'heuristic', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]*:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
+  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', precision: 'heuristic', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]{0,31}:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
   // The shapeless secret. Every rule above matches either a KNOWN TOKEN SHAPE (AKIA…, ghp_…,
   // sk-ant-…) or a NAMED assignment. Neither fires on the most human thing in the world:
   //
@@ -255,7 +260,7 @@ export const RULES: RedactionRule[] = [
   // both a digit and a letter), which is what keeps "rotate the api key in production" from
   // matching on "production". Heuristic, and named as one — but in watch-only mode a false
   // positive is one line in a log, while a miss is a leaked credential.
-  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', precision: 'heuristic', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]*\d)(?=[A-Za-z0-9_+/=.-]*[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
+  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', precision: 'heuristic', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]{0,63}\d)(?=[A-Za-z0-9_+/=.-]{0,63}[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
 ]
 
 let userDataDir = ''
@@ -527,11 +532,28 @@ export function detectEnvDump(text: string, threshold = 5): EnvDumpSignals {
   return out
 }
 
+/** Where the group opened at `open` in a pattern's source closes. */
+function groupEnd(src: string, open: number): number {
+  let depth = 0
+  let inClass = false
+  let i = open
+  for (; i < src.length; i++) {
+    const c = src[i]
+    if (c === '\\') i++
+    else if (inClass) inClass = c !== ']'
+    else if (c === '[') inClass = true
+    else if (c === '(') depth++
+    else if (c === ')' && --depth === 0) break
+  }
+  return i
+}
+
 /** A piece of text every match of `pattern` contains, lower-cased for a rule that ignores case, or
  *  null when none can be read off the pattern safely. It is the run of literal characters at the
- *  start of the pattern (after a leading \b, which takes no text), up to the first piece of regex
- *  syntax; a quantifier right after the run may drop its last character, so that goes. A pattern
- *  with an alternative outside every group has none: the run would belong to its first branch. */
+ *  start of the pattern (after any leading \b and lookbehinds, which take no text), up to the first
+ *  piece of regex syntax; a quantifier right after the run may drop its last character, so that
+ *  goes. A pattern with an alternative outside every group has none: the run would belong to its
+ *  first branch. */
 export function requiredLiteral(pattern: RegExp): string | null {
   const src = pattern.source
   let depth = 0
@@ -546,7 +568,12 @@ export function requiredLiteral(pattern: RegExp): string | null {
     else if (c === '|' && depth === 0) return null
   }
   let run = ''
-  let i = src.startsWith('\\b') ? 2 : 0
+  let i = 0
+  for (;;) {
+    if (src.startsWith('\\b', i)) i += 2
+    else if (src.startsWith('(?<!', i) || src.startsWith('(?<=', i)) i = groupEnd(src, i) + 1
+    else break
+  }
   for (; i < src.length; i++) {
     const c = src[i]
     if (c === '\\') {

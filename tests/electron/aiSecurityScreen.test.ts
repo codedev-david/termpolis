@@ -114,6 +114,52 @@ describe('screenText', () => {
   })
 })
 
+describe('every rule in linear time on text another computer wrote', () => {
+  // Runs that made a rule start a match every few characters and rescan the rest of the run from
+  // each start, before every such run was bounded. On 20,000 characters: password_literal took
+  // minutes (a second on 3,000 of `pwd.`), contextual_secret a third of a second, and jwt and
+  // basic_auth_url a tenth each. Every rule now takes a few milliseconds at most.
+  const RUNS = [
+    'pwd.', 'PWD-', 'pwdpwd.', `${'pwd.'.repeat(24)} `, '"pwd.', 'apikey.\n', 'eyJ-', 'a.', 'h.', 'token=', 'token ',
+    'secret:', 'x:', 'https://a:', '1', 'a', '-', '=', ' ', '\\n', `${'A'.repeat(39)}\\n`,
+    '-----BEGIN PRIVATE KEY-----\n', '-----BEGIN PRIVATE KEY-----\\n', 'DefaultEndpointsProtocol=https;AccountName=x;',
+  ]
+  const run = (unit: string, chars: number): string => unit.repeat(Math.ceil(chars / unit.length)).slice(0, chars)
+
+  /** The fastest of three scans, so a pause on a busy CI box doesn't count against a rule. */
+  function bestOf3(scan: () => void): number {
+    let best = Infinity
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now()
+      scan()
+      best = Math.min(best, performance.now() - t)
+    }
+    return best
+  }
+
+  it('takes each rule under 50 ms on 20,000 characters of any of them (a prompt is at most 20,000)', () => {
+    for (const rule of RULES) {
+      for (const unit of RUNS) {
+        const text = run(unit, 20_000)
+        const ms = bestOf3(() => {
+          const re = new RegExp(rule.pattern.source, rule.pattern.flags)
+          // Every match, as forEachMatch takes them. No rule matches the empty string.
+          while (re.exec(text) !== null) { /* next */ }
+        })
+        expect(ms, `${rule.id} on ${JSON.stringify(unit)}`).toBeLessThan(50)
+      }
+    }
+  })
+
+  it('screens 200,000 characters of any of them in well under a second (an answer is at most 200,000)', () => {
+    for (const unit of RUNS) {
+      const text = run(unit, 200_000)
+      // A quadratic rule takes ten seconds here, which the test above can't always tell from noise.
+      expect(bestOf3(() => screenText(text)), JSON.stringify(unit)).toBeLessThan(1_000)
+    }
+  })
+})
+
 describe('the rule changes every scan sees', () => {
   it('bounds the two lookahead rules to 200 characters on the same line', () => {
     const cf = `id ${'a'.repeat(37)} for cloudflare`
@@ -169,6 +215,14 @@ describe('requiredLiteral', () => {
     expect(requiredLiteral(/clé-[a-z]+/g)).toBe('cl')
     expect(requiredLiteral(/\Bx/g)).toBeNull()
     expect(requiredLiteral(/a?b/g)).toBeNull()
+  })
+
+  it('reads past lookbehinds at the start, which take no text, whatever is inside them', () => {
+    expect(requiredLiteral(/\b(?<!-)eyJ[A-Za-z0-9_-]{10,}/g)).toBe('eyJ')
+    expect(requiredLiteral(/(?<=[(\]])x-[a-z]+/g)).toBe('x-')
+    expect(requiredLiteral(/(?<!\()(?<=(?:a|b))key-[a-z]+/g)).toBe('key-')
+    // A capture group after it is the end of the literal, as anywhere else.
+    expect(requiredLiteral(/(?<![A-Za-z0-9_.-])([a-z]{0,64}?pwd)/gi)).toBeNull()
   })
 
   it('ignores an alternative inside a group or a class', () => {
