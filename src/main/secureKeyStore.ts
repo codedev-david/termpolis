@@ -21,11 +21,14 @@ export interface SafeStorageLike {
   isEncryptionAvailable(): boolean
   encryptString(plainText: string): Buffer
   decryptString(encrypted: Buffer): string
+  /** Linux only in Electron: the store it picked ('basic_text' when it found no keyring). */
+  getSelectedStorageBackend?(): string
 }
 
 const OSK_PREFIX = 'osk:v1:' // marks an OS-keychain-encrypted blob vs a legacy plaintext value
 
 let impl: SafeStorageLike | null = null
+let backend: string | null = null
 
 /** Wire up the OS keychain. Pass Electron's `safeStorage` in production; a fake
  *  (or null) in tests. Stored only if encryption is actually available. */
@@ -34,6 +37,13 @@ export function setSafeStorage(s: SafeStorageLike | null): void {
     impl = s && s.isEncryptionAvailable() ? s : null
   } catch {
     impl = null
+  }
+  // Small print only: whether keys are wrapped is decided by `impl` above, never by this name.
+  // Asked once, here, inside `whenReady` -- before ready Electron can only answer 'unknown'.
+  try {
+    backend = s?.getSelectedStorageBackend?.() || null
+  } catch {
+    backend = null
   }
 }
 
@@ -81,15 +91,21 @@ export function keyStorageMode(): 'keychain' | 'plaintext' {
   return impl ? 'keychain' : 'plaintext'
 }
 
+/** Electron's own name for the key store it uses -- Linux only ('basic_text', 'gnome_libsecret',
+ *  'kwallet6', ...), null elsewhere. Diagnostic text beside a plaintext warning, never a decision. */
+export function keyStorageBackend(): string | null {
+  return backend
+}
+
 // ── Key files: inspect, create exclusively, retire. Never overwrite, never delete. ────────────────
 //
 // writeSecret REPLACES whatever is at the path, and readSecret answers null both for "no file" and for
 // "a file this process can't open right now". For a key that encrypts data, those are opposite facts.
 // A blob the keychain refuses today (keyring not unlocked yet, a DPAPI hiccup after a password reset)
 // is still the only thing that opens everything written under it, so minting a replacement over it
-// makes that data unreadable for good. The three verbs below keep the two facts apart and cannot
-// destroy a key: inspect reports which case it is, create refuses to touch an existing file, and
-// retire renames a key aside and proves the bytes survived.
+// makes that data unreadable for good. The verbs below keep the two facts apart and cannot destroy a
+// key: inspect reports which case it is, create refuses to touch an existing file, retire renames a
+// key aside and proves the bytes survived, and wrap replaces a file only with the same secret, sealed.
 
 export type SecretState = 'absent' | 'plaintext' | 'encrypted' | 'locked'
 
@@ -193,6 +209,33 @@ export function retireSecretFile(filePath: string, reason: string): string {
     throw new Error(`retiring ${path.basename(filePath)} (${reason}): ${path.basename(target)} does not match the original bytes`)
   }
   return target
+}
+
+/**
+ * Seal a secret that was saved in the clear with the OS keychain, in place -- asked for by the user,
+ * never done on the side: once sealed it opens only where the keychain does.
+ *
+ * The sealed copy is created beside it (exclusively, and read back the way the next launch reads it)
+ * and then renamed over the original in one step, so the name never holds anything but a working
+ * secret: not nothing, and not half of one. Returns false, touching nothing, when there is nothing to
+ * seal -- no file, an empty one, one already sealed, or one this process can't open. Throws with no
+ * keychain to seal with, or when the sealed copy can't be put in place, and then the original is
+ * exactly as it was.
+ */
+export function wrapSecretInPlace(filePath: string): boolean {
+  const found = inspectSecret(filePath)
+  if (found.state !== 'plaintext' || !found.value) return false
+  if (!impl) throw new Error('no OS keychain to encrypt it with')
+  const sealed = `${filePath}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.sealed`
+  createSecretExclusive(sealed, found.value)
+  try {
+    fs.renameSync(sealed, filePath)
+  } catch (err) {
+    try { fs.rmSync(sealed, { force: true }) } catch { /* a sealed copy of what is still in place */ }
+    throw err
+  }
+  fsyncDir(path.dirname(filePath))
+  return true
 }
 
 /** Every retired copy of `filePath`, newest first. */

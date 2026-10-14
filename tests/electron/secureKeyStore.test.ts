@@ -13,6 +13,7 @@ import * as path from 'path'
 import {
   setSafeStorage, isOsEncryptionAvailable, writeSecret, readSecret,
   inspectSecret, createSecretExclusive, retireSecretFile, listRetiredSecrets, keyStorageMode,
+  keyStorageBackend, wrapSecretInPlace,
 } from '../../src/main/secureKeyStore'
 
 // A fake OS keychain: "encrypts" by XOR (so the on-disk blob is clearly not the
@@ -359,5 +360,118 @@ describe('listRetiredSecrets', () => {
 
   it('is empty when the directory cannot be listed', () => {
     expect(listRetiredSecrets(path.join(dir, 'no-such-dir', 'k'))).toEqual([])
+  })
+})
+
+describe('keyStorageBackend -- small print, never a decision', () => {
+  it('is the name Electron reports for its store, asked once when the keychain is wired up', () => {
+    const backend = vi.fn(() => 'basic_text')
+    // basic_text with no plain-text opt-in: Electron reports no encryption, and
+    // that alone decides the mode. The name only rides along.
+    setSafeStorage({ ...fakeSafeStorage(false), getSelectedStorageBackend: backend })
+    expect(keyStorageMode()).toBe('plaintext')
+    expect(keyStorageBackend()).toBe('basic_text')
+    keyStorageBackend()
+    expect(backend).toHaveBeenCalledTimes(1)
+  })
+
+  it('is null where Electron has no such method (Windows, macOS), and for no keychain at all', () => {
+    setSafeStorage(fakeSafeStorage())
+    expect(keyStorageBackend()).toBeNull()
+    setSafeStorage(null)
+    expect(keyStorageBackend()).toBeNull()
+  })
+
+  it('is null when the method throws or answers nothing', () => {
+    setSafeStorage({ ...fakeSafeStorage(), getSelectedStorageBackend: () => { throw new Error('not ready') } })
+    expect(keyStorageBackend()).toBeNull()
+    expect(keyStorageMode()).toBe('keychain')
+    setSafeStorage({ ...fakeSafeStorage(), getSelectedStorageBackend: () => '' })
+    expect(keyStorageBackend()).toBeNull()
+  })
+})
+
+describe('wrapSecretInPlace -- seal a secret saved in the clear, never leaving its name empty', () => {
+  it('seals a plaintext secret under the same name, opening to the same value', () => {
+    const p = path.join(dir, 'remote-identity-key')
+    fs.writeFileSync(p, 'ab'.repeat(32) + '\n')
+    setSafeStorage(fakeSafeStorage())
+    expect(wrapSecretInPlace(p)).toBe(true)
+    expect(fs.readFileSync(p, 'utf8').startsWith('osk:v1:')).toBe(true)
+    expect(inspectSecret(p)).toEqual({ state: 'encrypted', value: 'ab'.repeat(32) })
+    // Nothing left beside it: the sealed copy became the file.
+    expect(fs.readdirSync(dir)).toEqual(['remote-identity-key'])
+  })
+
+  it('does nothing to a file that is absent, empty, already sealed or locked', () => {
+    setSafeStorage(fakeSafeStorage())
+    expect(wrapSecretInPlace(path.join(dir, 'absent'))).toBe(false)
+    const empty = path.join(dir, 'empty')
+    fs.writeFileSync(empty, '  ')
+    expect(wrapSecretInPlace(empty)).toBe(false)
+    const sealed = path.join(dir, 'sealed')
+    writeSecret(sealed, 'secret')
+    const before = fs.readFileSync(sealed)
+    expect(wrapSecretInPlace(sealed)).toBe(false)
+    setSafeStorage(null) // now it can't be opened at all
+    expect(wrapSecretInPlace(sealed)).toBe(false)
+    expect(fs.readFileSync(sealed).equals(before)).toBe(true)
+    expect(fs.readFileSync(empty, 'utf8')).toBe('  ')
+  })
+
+  it('refuses without a keychain to seal with, leaving the secret as it was', () => {
+    const p = path.join(dir, 'k')
+    fs.writeFileSync(p, 'plain')
+    setSafeStorage(null)
+    expect(() => wrapSecretInPlace(p)).toThrow(/no OS keychain/)
+    expect(fs.readFileSync(p, 'utf8')).toBe('plain')
+    expect(fs.readdirSync(dir)).toEqual(['k'])
+  })
+
+  it('a sealed copy that cannot be renamed into place is removed, and the original kept', () => {
+    const p = path.join(dir, 'k')
+    fs.writeFileSync(p, 'plain')
+    setSafeStorage(fakeSafeStorage())
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('in use'), { code: 'EBUSY' })
+    })
+    try {
+      expect(() => wrapSecretInPlace(p)).toThrow(/in use/)
+    } finally {
+      rename.mockRestore()
+    }
+    expect(fs.readFileSync(p, 'utf8')).toBe('plain')
+    expect(fs.readdirSync(dir)).toEqual(['k'])
+  })
+
+  it('still reports the rename when the sealed copy will not go either', () => {
+    const p = path.join(dir, 'k')
+    fs.writeFileSync(p, 'plain')
+    setSafeStorage(fakeSafeStorage())
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('in use'), { code: 'EBUSY' })
+    })
+    const realRm = fs.rmSync
+    const rm = vi.spyOn(fs, 'rmSync').mockImplementation((target, opts) => {
+      // createSecretExclusive tidies its own temp name first; only the sealed copy refuses.
+      if (String(target).endsWith('.sealed')) throw new Error('locked by a scanner')
+      realRm(target, opts)
+    })
+    try {
+      expect(() => wrapSecretInPlace(p)).toThrow(/in use/)
+    } finally {
+      rename.mockRestore()
+      rm.mockRestore()
+    }
+    expect(fs.readFileSync(p, 'utf8')).toBe('plain')
+  })
+
+  it('a sealed copy that does not read back never replaces the original', () => {
+    const p = path.join(dir, 'k')
+    fs.writeFileSync(p, 'plain')
+    // A keychain whose wrap does not open again: createSecretExclusive catches it.
+    setSafeStorage({ ...fakeSafeStorage(), decryptString: () => 'something else' })
+    expect(() => wrapSecretInPlace(p)).toThrow(/could not be read back/)
+    expect(fs.readFileSync(p, 'utf8')).toBe('plain')
   })
 })
