@@ -239,7 +239,7 @@ export const LINKED_WRITE_NEEDS_CONFIRM = 'Confirm the safety words before letti
 /** ...and only by a request that says the user was shown what it means: the
  *  pane's confirm panel sends it. */
 export const LINKED_WRITE_NEEDS_ACK =
-  "Edit permission wasn't confirmed. Turn it on from the computer's row under Settings ▸ Linked machines and click Allow."
+  "Edit permission wasn't confirmed. Turn it on from the computer's row under Settings ▸ Linked machines and click \"Allow edit\"."
 
 /** How much longer than a linked call's own timeout main waits for the
  *  bridge's answer -- the bridge times the call out itself, so this only fires
