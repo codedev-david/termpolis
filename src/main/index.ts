@@ -235,6 +235,7 @@ import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
 import { recheckMarker, recheckStoredLessons } from './mnemeLessonRecheck'
+import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
@@ -255,7 +256,7 @@ import { initRecallBench, loadBenchBaseline, saveBenchBaseline } from './recallB
 import {
   startMemoryHost, setMemoryHostSpawner, createMemoryHostTransport, stopMemoryHost, memoryHostMode, memoryHostPid,
   graphStats, graphRelationStats,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, edgeKeysIncident, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   entrySimMatrix,
   setMemoryScrubber,
@@ -4196,12 +4197,30 @@ async function semanticPoolOptions(
         // Pick up entries other machines synced into the shared folder (no-op
         // when cross-machine sync is off).
         try { await reloadMemoryFromSync() } catch { /* best effort */ }
+        // The chunk hashes of every delegated session the pass skips, for the linked-history
+        // recheck below.
+        const delegatedHashes = new Set<string>()
         const stats = await runConversationIngest(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
-          { maxChunks: 250, stopped: () => appQuitting },
+          { maxChunks: 250, stopped: () => appQuitting, onDelegated: (hashes) => { for (const h of hashes) delegatedHashes.add(h) } },
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
+        // Once per install: demote the sessions other computers' jobs left in memory through 1.52
+        // (linkedHistoryRecheck.ts). Only after a pass that read every transcript, so it knows
+        // every delegated session still on disk; a pass cut short leaves it for the next one.
+        if (!stats.truncated) {
+          try {
+            await recheckLinkedHistory({
+              list: (opts) => memoryList(opts),
+              edgeKeys: (ids) => edgeKeysIncident(ids),
+              delegatedHashes,
+              isCorrected: (id) => correctionForMemory(id) !== null,
+              demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+              ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, LINKED_RECHECK_MARKER),
+            })
+          } catch { /* the store wasn't readable: the next complete pass tries again */ }
+        }
         // Once per install: demote the junk lessons the extractor wrote through 1.50.0
         // (mnemeLessonRecheck.ts). A no-op on every later pass.
         try {
