@@ -178,9 +178,7 @@ describe('verifyPackagedResources — verifyFromAfterPack', () => {
 describe('verifyPackagedResources — verifyNoBuildTooling', () => {
   // electron-builder's own asar library, resolved the way the verifier resolves it, so the
   // real-archive tests below list entries in the path form this platform actually produces.
-  const asar = require(
-    require.resolve('@electron/asar', { paths: [dirname(require.resolve('app-builder-lib/package.json'))] }),
-  )
+  const asar = require(require.resolve('@electron/asar', { paths: [dirname(require.resolve('app-builder-lib'))] }))
 
   /** A resources dir with an app.asar on disk. The injected lister answers for it, so its bytes don't matter. */
   function resourcesWithAsar(): string {

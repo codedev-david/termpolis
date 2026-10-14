@@ -106,8 +106,10 @@ const BUILD_TOOLING = /(?:^|[\\/])node_modules[\\/](?:tailwindcss|@tailwindcss[\
 // @electron/asar is not one of our dependencies: electron-builder brings it in through
 // app-builder-lib. Resolving it from there works whether npm hoists it or nests it, and keeps
 // package.json from declaring a second copy that would have to move in step with electron-builder.
+// From app-builder-lib's entry point, not its package.json: electron-builder 27 adds an exports
+// map that does not export package.json, which would fail every build on that upgrade.
 function listAsar(archive) {
-  const builder = path.dirname(require.resolve('app-builder-lib/package.json'))
+  const builder = path.dirname(require.resolve('app-builder-lib'))
   return require(require.resolve('@electron/asar', { paths: [builder] })).listPackage(archive, { isPack: false })
 }
 
