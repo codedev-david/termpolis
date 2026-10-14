@@ -92,14 +92,17 @@ describe('durability + control-line edge branches', () => {
     expect(w.id).toBeTruthy()
   })
 
-  it('serializes tombstones into the sync-off snapshot', async () => {
+  it('turning sync off reopens the local brain as it was left; what was written while syncing stays in the folder', async () => {
+    // Decision 5: no snapshot is written over the local file any more (it replaced this computer's
+    // own log with a copy made under whatever key sync was using).
     initSwarmMemory(userDir, { syncDir })
     const w = await memoryWrite({ agentId: 'a', kind: 'fact', content: 'to delete' })
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'to keep' })
     memoryDelete(w.id)
     setSyncDir(null)
-    expect(memoryList().some((e) => e.content === 'to keep')).toBe(true)
-    expect(memoryList().some((e) => e.content === 'to delete')).toBe(false)
+    expect(memoryList()).toEqual([]) // the local log never held these...
+    const shard = fs.readdirSync(syncDir).find((f) => f.endsWith('.jsonl')) as string
+    expect(fs.readFileSync(path.join(syncDir, shard), 'utf8')).toContain('to keep') // ...and the folder still does
   })
 
   it('ignores a malformed patch line and a patch for an absent hash', () => {

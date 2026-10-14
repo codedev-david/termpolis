@@ -28,6 +28,8 @@
 import {
   initSwarmMemory,
   adoptEncryptionKey,
+  startNewMemoryKey,
+  type KeyFileProblem,
   memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback,
   memoryList, memoryCount, memoryClear, memoryHasHash, memoryStats, memoryDashboardStats,
   memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete,
@@ -63,8 +65,8 @@ export interface HostInitMsg {
   syncDir: string | null
   /** The user's persisted int8-quantization choice. Must be applied BEFORE the store is built: the
    *  packed vector array is allocated inside initSwarmMemory, so the mode has to be known by then.
-   *  Setting it afterwards is not merely untidy — setVectorQuantization() re-runs initSwarmMemory(),
-   *  so the child would build the whole 90k-entry vector store TWICE on every launch. */
+   *  Setting it afterwards is not merely untidy — setVectorQuantization() rebuilds the packed store
+   *  in the new mode, so the child would build the whole 90k-entry vector store TWICE on every launch. */
   quantize?: boolean
   /** The already-unwrapped 32-byte AES key, base64. Main owns safeStorage; the child never does. */
   encKeyB64: string | null
@@ -72,6 +74,10 @@ export interface HostInitMsg {
    *  still PLAINTEXT and needs the one-time ciphertext rewrite that maybeAutoEncrypt() would have
    *  done. False for an existing key — rewriting a 475 MB shard on every boot is not free. */
   encKeyMinted?: boolean
+  /** Retired keys main could still unwrap, base64: the read ring. Lines under them stay readable. */
+  readKeysB64: string[]
+  /** Why the key FILE couldn't be used, when it couldn't. The store then comes up LOCKED. */
+  keyProblem: KeyFileProblem | null
   /** Whether MAIN has a working OS keychain. The child mirrors that answer rather than guessing, so
    *  its at-rest behaviour is identical to main's on the same machine (see installKeychainGuard). */
   osEncryptionAvailable?: boolean
@@ -216,6 +222,16 @@ export function adoptEncryptionKeyB64(b64: string): ReturnType<typeof adoptEncry
   return adoptEncryptionKey(Buffer.from(String(b64 ?? ''), 'base64'))
 }
 
+/** The read ring as Buffers. A message from an older sender (or a malformed one) carries none. */
+export function readKeysOf(readKeysB64: unknown): Buffer[] {
+  return Array.isArray(readKeysB64) ? readKeysB64.map((k) => Buffer.from(String(k), 'base64')) : []
+}
+
+/** Same wire rule: the new key and the retired keys that still unwrap cross as base64. */
+export function startNewMemoryKeyB64(b64: string, readKeysB64: string[]): ReturnType<typeof startNewMemoryKey> {
+  return startNewMemoryKey(Buffer.from(String(b64 ?? ''), 'base64'), readKeysOf(readKeysB64))
+}
+
 export const HOST_HANDLERS: Record<string, HostHandler> = {
   // reads
   memorySearch, memoryRelated, memoryGraphQuery, memoryList, memoryCount, memoryHasHash,
@@ -235,7 +251,7 @@ export const HOST_HANDLERS: Record<string, HostHandler> = {
   // the key, which this process does not have — memoryClient wraps both and does the keychain half
   // in main. adoptEncryptionKeyB64 is the injection point it calls.
   setSyncDir, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
-  adoptEncryptionKeyB64,
+  adoptEncryptionKeyB64, startNewMemoryKeyB64,
   // composites (not 1:1 swarmMemory exports — see above). Each collapses a per-item RPC that the
   // consumer calls from INSIDE a sync loop into one round trip.
   consolidationSimMatrix, entrySimMatrix, weaveNeighboursBatch, memoryKnownHashes,
@@ -247,15 +263,15 @@ export const HOST_HANDLERS: Record<string, HostHandler> = {
 //     if (impl) { fs.writeFileSync(p, OSK_PREFIX + impl.encryptString(s)) }
 //     else      { fs.writeFileSync(p, secret) }        // <-- the raw AES key, in the clear
 //
-// That fallback is sound in main (an impl is always wired there) and a LEAK here. setSyncPassphrase()
-// calls writeSecret with NO `isOsEncryptionAvailable()` guard, so an unguarded child would write the
-// key that decrypts the entire synced store to disk in plaintext, right beside the ciphertext. An
-// impl that reports available and then THROWS makes such a write fail CLOSED instead of failing open:
-// swarmMemory's existing try/catch degrades honestly (key simply not cached) and nothing lands in the
-// clear. memoryClient then re-persists the key properly, through main's real keychain.
+// That fallback is sound in main (an impl is always wired there) and a LEAK here. The store no longer
+// writes a key through it — maybeAutoEncrypt mints with createSecretExclusive, which refuses plaintext
+// — but anything that ever did would drop the key beside the ciphertext. An impl that reports
+// available and then THROWS makes every wrap and unwrap here fail CLOSED instead: a mint is refused
+// with nothing on disk, and a wrapped key file reads as 'locked', never as absent, so nothing is ever
+// minted over it. Keys are main's business; it injects them.
 //
-// When main has NO keychain we install nothing, mirroring main exactly — including its pre-existing
-// plaintext fallback. The child must not be MORE broken than main, and it must not be different.
+// When main has NO keychain we install nothing, mirroring main exactly. The child must not be MORE
+// broken than main, and it must not be different.
 export function installKeychainGuard(osEncryptionAvailable: boolean): void {
   if (!osEncryptionAvailable) {
     setSafeStorage(null) // mirror main on a keyring-less box: honest plaintext, encrypted:false
@@ -298,21 +314,27 @@ export function handleInit(msg: HostInitMsg): HostResponse {
   try {
     installKeychainGuard(msg.osEncryptionAvailable !== false)
     // Quantization mode BEFORE the store is built — the packed vector array is allocated inside
-    // initSwarmMemory. Setting it after would work, but only by re-running initSwarmMemory from
-    // inside setVectorQuantization: a second full load of a 90k-entry store on every launch.
-    // Before the store exists this is a pure flag write (userDataDir is unset, so it rebuilds
-    // nothing), which is precisely how index.ts sequenced it in-process.
+    // initSwarmMemory. Setting it after would work, but only by rebuilding the packed store a second
+    // time on every launch. Before the store exists this is a pure flag write (userDataDir is unset,
+    // so it rebuilds nothing), which is precisely how index.ts sequenced it in-process.
     try { setVectorQuantization(msg.quantize === true) } catch { /* fall back to exact floats */ }
     // A truncated/garbage key makes initSwarmMemory throw (it validates 32 bytes) — which is exactly
     // right: the client then falls back to in-process rather than serving an "empty" store that is
     // really a fully populated ENCRYPTED one we simply cannot read.
     const encKey = msg.encKeyB64 ? Buffer.from(msg.encKeyB64, 'base64') : null
-    initSwarmMemory(msg.userDataPath, { syncDir: msg.syncDir ?? null, encKey })
+    initSwarmMemory(msg.userDataPath, { syncDir: msg.syncDir ?? null, encKey, readKeys: readKeysOf(msg.readKeysB64), keyProblem: msg.keyProblem })
     // Main minted this key on THIS launch, so the shard on disk is still plaintext: initSwarmMemory
     // read it fine (plaintext and ciphertext lines coexist) but maybeAutoEncrypt() early-returned
     // with a key already set, so nothing rewrote it. Do that one-time rewrite now — it is precisely
     // the half of maybeAutoEncrypt() a child process CAN do; the mint + keychain write happened in main.
-    if (encKey && msg.encKeyMinted) adoptEncryptionKey(encKey)
+    //
+    // Its failure must not fail the init: the store is up, the new key is in force (new lines are
+    // ciphertext) and every old line is still readable plaintext. Failing here would push the whole
+    // brain onto the main thread over a rewrite that is safe to skip. A LOCKED store refuses it too —
+    // its log isn't the plaintext this was meant for.
+    if (encKey && msg.encKeyMinted) {
+      try { adoptEncryptionKey(encKey) } catch { /* a failed rewrite is recorded by the store; see above */ }
+    }
     initialised = true
     return { kind: 'ready', pid: process.pid, entries: memoryCount() }
   } catch (err) {

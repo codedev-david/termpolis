@@ -28,6 +28,7 @@ const failIO = vi.hoisted(() => ({
   writeFileSync: null as null | ((p: unknown) => boolean),
   appendFileSync: false,
   rmSync: null as null | ((p: unknown) => boolean),
+  renameSync: null as null | ((from: unknown) => boolean),
 }))
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>()
@@ -45,6 +46,10 @@ vi.mock('fs', async (importOriginal) => {
     rmSync: (...args: unknown[]): unknown => {
       if (failIO.rmSync?.(args[0])) throw new Error('EPERM: the file is locked by another process')
       return call(actual.rmSync, args)
+    },
+    renameSync: (...args: unknown[]): unknown => {
+      if (failIO.renameSync?.(args[0])) throw new Error('EBUSY: the file is locked by another process')
+      return call(actual.renameSync, args)
     },
   }
   return { ...api, default: api }
@@ -148,6 +153,7 @@ beforeEach(() => {
   failIO.writeFileSync = null
   failIO.appendFileSync = false
   failIO.rmSync = null
+  failIO.renameSync = null
   setSafeStorage(null)          // no OS keychain by default → default-on encryption stays off
   _resetForTests()
   _setEmbedFnForTests(async () => null) // default: writes succeed, no vectors
@@ -158,6 +164,7 @@ afterEach(() => {
   failIO.writeFileSync = null
   failIO.appendFileSync = false
   failIO.rmSync = null
+  failIO.renameSync = null
   vi.restoreAllMocks()
   setSafeStorage(null)
   _resetForTests()
@@ -489,10 +496,11 @@ describe('local at-rest encryption — best-effort file operations and their con
     expect(shardText()).toContain('plaintext please')   // and the shard really is still plaintext
   })
 
-  it('disabling encryption survives an unremovable key file, but the disable does not survive a relaunch', async () => {
-    // The opt-out marker is what makes "off" stick across launches, and the key cache is what makes
-    // default-on find a key. If neither can be written/removed, this session is decrypted but the
-    // next launch legitimately picks the key back up — the user must not be told otherwise.
+  it('disabling encryption survives a key file that will not move, but the disable does not survive a relaunch', async () => {
+    // The opt-out marker is what makes "off" stick across launches, and retiring the key file is what
+    // stops default-on finding it. If neither can happen, this session is decrypted but the next launch
+    // legitimately picks the key back up — the user must not be told otherwise. (The key is retired by
+    // RENAME now, never deleted: Decision 1.)
     setSafeStorage(fakeSafe)
     initSwarmMemory(userDir)
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'round trip content' })
@@ -500,17 +508,18 @@ describe('local at-rest encryption — best-effort file operations and their con
     const keyCache = path.join(userDir, KEY_CACHE_FILE)
     const optout = path.join(userDir, ENCRYPTION_OPTOUT_FILE)
 
-    failIO.rmSync = (p) => String(p) === keyCache
+    failIO.renameSync = (from) => String(from) === keyCache
     failIO.writeFileSync = (p) => String(p) === optout
     const st = disableEncryption()
-    failIO.rmSync = null
+    failIO.renameSync = null
     failIO.writeFileSync = null
 
     expect(st.encrypted).toBe(false)
     expect(shardText()).toContain('round trip content') // decrypted for real
     expect(shardText()).not.toContain('enc:v1:')
-    expect(fs.existsSync(keyCache)).toBe(true)   // the key we could not delete
+    expect(fs.existsSync(keyCache)).toBe(true)   // the key we could not move aside
     expect(fs.existsSync(optout)).toBe(false)    // the choice we could not record
+    expect(tele.recordSwarmError).toHaveBeenCalledWith('swarmMemory.disableEncryption.retireFailed', expect.anything(), expect.anything())
 
     relaunch()
     expect(getSyncStatus().encrypted).toBe(true) // …so the next launch re-adopts it
@@ -576,21 +585,26 @@ describe('cross-machine sync encryption — passphrase model', () => {
     expect(contents()).toEqual(['never encrypted content'])
   })
 
-  it('decrypts the shard even when the cached key file cannot be removed', async () => {
-    initSwarmMemory(userDir, { syncDir })
+  it('decrypts the shard and NEVER touches the device key file (Decision 5)', async () => {
+    // v1 deleted memory-sync.key here. That file is the DEVICE key — the local brain's, not the
+    // folder's — so turning off the folder's encryption must leave it exactly as it is.
+    setSafeStorage(fakeSafe)
+    const keyCache = path.join(userDir, KEY_CACHE_FILE)
+    fs.writeFileSync(keyCache, 'osk:v1:' + fakeSafe.encryptString(Buffer.alloc(32, 4).toString('base64')).toString('base64'))
+    const keyBytes = fs.readFileSync(keyCache)
+    // Main injects no key for a synced store (the passphrase model), whatever is in the file.
+    initSwarmMemory(userDir, { syncDir, encKey: null })
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'decrypt me back' })
     setSyncPassphrase('temporary passphrase')
     const selfShard = path.join(syncDir, fs.readdirSync(syncDir).find((f) => f.endsWith('.jsonl')) as string)
     expect(fs.readFileSync(selfShard, 'utf8')).toContain('enc:v1:')
-    const keyCache = path.join(userDir, KEY_CACHE_FILE)
 
-    failIO.rmSync = (p) => String(p) === keyCache
     const st = disableSyncEncryption()
-    failIO.rmSync = null
 
     expect(st.encrypted).toBe(false)
-    expect(fs.readFileSync(selfShard, 'utf8')).toContain('decrypt me back') // the rewrite still ran
-    expect(fs.existsSync(keyCache)).toBe(true) // the stale key we could not remove
+    expect(fs.readFileSync(selfShard, 'utf8')).toContain('decrypt me back') // the rewrite ran
+    expect(fs.readFileSync(keyCache).equals(keyBytes)).toBe(true)           // the device key did not move
+    expect(fs.readdirSync(userDir).filter((f) => f.startsWith(`${KEY_CACHE_FILE}.retired-`))).toEqual([])
     expect(contents()).toEqual(['decrypt me back'])
   })
 })

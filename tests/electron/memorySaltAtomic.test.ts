@@ -3,7 +3,7 @@
 //      failure — doing so re-derives a different key and locks out all encrypted memory.
 //  F11 the salt is authoritative + write-once: a device adopts an existing (peer) salt
 //      instead of minting its own (same passphrase must yield the same key everywhere).
-//  F7/F33 rewriteSelfShard (encryption toggle) + local clear must be ATOMIC (temp+rename)
+//  F7/F33 the encryption rewrite (rewriteEncryptionSet) + local clear must be ATOMIC (temp+rename)
 //      so an interrupted/failed rewrite can never truncate or half-write the shard.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
@@ -69,20 +69,23 @@ describe('F7/F33: whole-shard rewrites are atomic', () => {
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'atomic-secret' })
     setSyncPassphrase('pw')
     const shard = selfShard()
-    expect(fs.existsSync(shard + '.tmp')).toBe(false)
+    expect(fs.readdirSync(syncDir).filter((f) => f.endsWith('.tmp'))).toEqual([])
     expect(fs.readFileSync(shard, 'utf8')).toContain('enc:v1:')
     expect(memoryList().some((e) => e.content === 'atomic-secret')).toBe(true)
   })
 
-  it('keeps the original shard intact when the atomic rewrite cannot complete', async () => {
+  it('keeps the original shard intact — and says so — when the rewrite cannot complete', async () => {
     initSwarmMemory(userDir, { syncDir })
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'must-survive-failed-rewrite' })
     const shard = selfShard()
     const before = fs.readFileSync(shard, 'utf8')
-    // Block the temp path so the atomic write fails at openSync('w') — original must be untouched.
-    fs.mkdirSync(shard + '.tmp')
-    setSyncPassphrase('pw') // rewrite fails internally; must NOT truncate the real shard
+    // Block the temp path so the rewrite fails at openSync('w') — the original must be untouched, and
+    // the failure surfaces instead of being swallowed (a swallowed failure is what let callers delete a
+    // key over a log that had never been decrypted).
+    fs.mkdirSync(shard + '.rekey.tmp')
+    expect(() => setSyncPassphrase('pw')).toThrow()
     expect(fs.readFileSync(shard, 'utf8')).toBe(before)
-    fs.rmSync(shard + '.tmp', { recursive: true, force: true })
+    expect(memoryList().some((e) => e.content === 'must-survive-failed-rewrite')).toBe(true)
+    fs.rmSync(shard + '.rekey.tmp', { recursive: true, force: true })
   })
 })

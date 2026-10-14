@@ -621,13 +621,18 @@ describe('device identity + sync config', () => {
 
 // ---------------------------------------------------------------------------
 describe('at-rest encryption — honest failure, never lossy', () => {
-  it('ignores a corrupt (wrong-length) cached device key and stays honestly plaintext', async () => {
-    fs.writeFileSync(path.join(userDir, 'memory-sync.key'), Buffer.from('too-short').toString('base64'))
+  it('a corrupt (wrong-length) device key is neither ignored nor replaced: LOCKED, file untouched, nothing written', async () => {
+    // It used to be quietly ignored, and plaintext written beside whatever it had encrypted. A damaged
+    // key is the user's call (Start a new memory key) — Decision 1.
+    const keyFile = path.join(userDir, 'memory-sync.key')
+    fs.writeFileSync(keyFile, Buffer.from('too-short').toString('base64'))
+    const before = fs.readFileSync(keyFile)
     initSwarmMemory(userDir)   // no keychain in beforeEach → auto-encrypt is off
 
-    expect(getSyncStatus().encrypted).toBe(false)  // the bad key was rejected, not adopted
-    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'PLAINAFTERBADKEY' })
-    expect(storeText()).toContain('PLAINAFTERBADKEY')
+    expect(getSyncStatus()).toMatchObject({ encrypted: false, ownLocked: true, lockReason: 'key-invalid' })
+    await expect(memoryWrite({ agentId: 'a', kind: 'fact', content: 'PLAINAFTERBADKEY' })).rejects.toThrow(/Memory is locked \(key-invalid\)/)
+    expect(storeText()).not.toContain('PLAINAFTERBADKEY')
+    expect(fs.readFileSync(keyFile).equals(before)).toBe(true)
   })
 
   it('enableLocalEncryption / disableEncryption throw when memory is not initialised', () => {
@@ -651,7 +656,11 @@ describe('at-rest encryption — honest failure, never lossy', () => {
     expect(fs.existsSync(path.join(userDir, 'memory-sync.key'))).toBe(false) // and no key was left behind
   })
 
-  it('enabling encryption keeps an undecryptable foreign line VERBATIM instead of dropping it', async () => {
+  it('a log whose ciphertext NO key opens comes up LOCKED: no key is minted over it, and its bytes stay put', async () => {
+    // A key file gone missing over an encrypted log. Default-on encryption used to mint a key and
+    // "ciphertext-ify" the log around lines it could not read; anything written after them then sat
+    // beside them under a different key. Decision 2: that log is LOCKED (key-mismatch) — nothing is
+    // minted, rewritten or appended until the user starts a new key.
     const foreignKey = crypto.randomBytes(32)
     const foreignLine = encryptLine(foreignKey, JSON.stringify({
       id: 'peer-1', ts: 1000, agentId: 'p', kind: 'fact', content: 'a peer memory we cannot read', hash: 'hp',
@@ -659,11 +668,11 @@ describe('at-rest encryption — honest failure, never lossy', () => {
     fs.writeFileSync(storeFile(), foreignLine + '\n')
 
     setSafeStorage(fakeKeychain)
-    initSwarmMemory(userDir)   // default-on encryption rewrites our shard around the foreign line
+    initSwarmMemory(userDir)
 
-    expect(getSyncStatus().encrypted).toBe(true)
-    expect(storeText()).toContain(foreignLine)   // never dropped — the bytes are recoverable
-    expect(getSyncStatus().locked).toBe(true)    // and honestly reported as unreadable
+    expect(getSyncStatus()).toMatchObject({ encrypted: false, locked: true, ownLocked: true, lockReason: 'key-mismatch' })
+    expect(storeText()).toBe(foreignLine + '\n')                               // never dropped, never rewritten
+    expect(fs.existsSync(path.join(userDir, 'memory-sync.key'))).toBe(false) // no key minted over it
   })
 
   it('compactSelfShard REFUSES to rewrite a shard holding a line it cannot decrypt', () => {
