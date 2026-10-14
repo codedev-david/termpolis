@@ -1,4 +1,9 @@
 /*! Tailwind CSS v3.4.19 preflight, theme() values resolved | MIT License | https://tailwindcss.com */
+/* Part of the Tailwind 3 parity layer described at the top of index.css, which imports this into
+   the base layer in place of v4's Preflight. It is tailwindcss@3.4.19's `@tailwind base` output
+   with only the preflight core plugin and its theme() values resolved, so it never needs to change.
+   v4's Preflight differs where it shows: the placeholder and default border colours, the button
+   cursor, form-control backgrounds, and table-cell padding. Keep it to what v3 emitted. */
 /*
 ! tailwindcss v3.4.19 | MIT License | https://tailwindcss.com
 *//*

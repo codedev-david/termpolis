@@ -1,7 +1,8 @@
 /**
  * Tailwind 4 is set up to render exactly what the Tailwind 3.4 build did (see the comments in
  * src/renderer/src/index.css). Four parts of that setup are easy to undo by accident, and undoing
- * any of them changes pixels without failing anything else. This file pins them.
+ * any of them changes pixels without failing anything else. This file pins them in the source;
+ * scripts/verifyRendererCss.cjs checks the built CSS for the same things in CI.
  */
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
@@ -19,10 +20,13 @@ function sourceFiles(dir: string): string[] {
   })
 }
 
+// What the @source glob in index.css hands Tailwind: every .ts, .tsx, .js and .jsx file under src/.
+const SOURCES = sourceFiles(path.join(ROOT, 'src'))
+
 describe('Tailwind v3 parity setup', () => {
-  it('gives every space-y-* the renderer uses its v3 rule, and stops v4 generating its own', () => {
+  it('gives every space-y-* src/ uses its v3 rule, and stops v4 generating its own', () => {
     const used = new Set<string>()
-    for (const file of sourceFiles(RENDERER)) {
+    for (const file of SOURCES) {
       for (const m of fs.readFileSync(file, 'utf8').matchAll(/(?<![\w-])space-([xy])-(\d+(?:\.\d+)?|px)(?![\w.-])/g)) {
         used.add(`space-${m[1]}-${m[2]}`)
       }
@@ -35,6 +39,21 @@ describe('Tailwind v3 parity setup', () => {
       expect(blocked, `${cls} must be listed in @source not inline("space-y-{...}")`).toContain(cls.slice('space-y-'.length))
       expect(INDEX_CSS, `${cls} needs its v3 rule in index.css`).toContain(`.${cls.replace('.', '\\.')} > :not([hidden]) ~ :not([hidden])`)
     }
+  })
+
+  it('uses space-y-* only as a bare class, the one form the v3 rules and the blocklist cover', () => {
+    // A variant (md:space-y-4) or important (!space-y-4, space-y-4!) form is a different
+    // candidate, which the blocklist does not name, so v4 generates its own rule for it. A
+    // negative, arbitrary or reverse value has no v3 rule here at all.
+    const uncovered = /[\w\]*-]:!?-?space-[xy]-|!-?space-[xy]-|space-[xy]-[\w.]+!|(?<![\w-])-space-[xy]-|space-[xy]-(?:\[|\(|reverse)/g
+    const found: string[] = []
+    for (const file of SOURCES) {
+      const source = fs.readFileSync(file, 'utf8')
+      for (const m of source.matchAll(uncovered)) {
+        found.push(`${path.relative(ROOT, file)}:${source.slice(0, m.index).split('\n').length}: ${m[0]}`)
+      }
+    }
+    expect(found).toEqual([])
   })
 
   it('scans only src/, as the v3 content glob did', () => {

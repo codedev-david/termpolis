@@ -1,6 +1,9 @@
-/* Tailwind 3.4.19's default theme values wherever v4's defaults would change a pixel.
+/*! Theme values from Tailwind CSS v3.4.19 | MIT License | https://tailwindcss.com */
+/* Part of the Tailwind 3 parity layer described at the top of index.css.
+   Tailwind 3.4.19's default theme values wherever v4's defaults would change a pixel.
    Generated from tailwindcss@3.4.19 (lib/public/colors.js and stubs/config.full.js fontSize).
-   v4's own palette is OKLCH and its text sizes use unitless line heights; both render differently. */
+   v4's own palette is OKLCH and its text sizes use unitless line heights; both render differently.
+   `--color-*: initial` also drops the colours v4 added, so a v4-only colour class renders nothing. */
 @theme {
   --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --color-*: initial;

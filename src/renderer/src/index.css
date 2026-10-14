@@ -1,5 +1,19 @@
 /* Tailwind CSS v4, set up to render exactly what the Tailwind 3.4 build did. Every departure
-   from a stock v4 setup is there for pixel parity, with the reason beside it.
+   from a stock v4 setup is there for pixel parity, with the reason beside it. Together they are
+   the parity layer, so read this before writing anything here the v4 way:
+   - tailwind-v3-theme.css: v3's hex palette (v4's is OKLCH, and the colours v4 added are
+     dropped), v3's rem line heights for the text sizes (v4's are unitless ratios), v3's
+     font-sans, and a hover variant that applies on every device (v4 wraps hover: in
+     @media (hover: hover)).
+   - tailwind-v3-preflight.css: v3's Preflight, in place of v4's.
+   - source(none) and the @source glob: Tailwind scans what v3's content glob did, not the repo.
+   - The v3 space-y-* rules, and the blocklist that keeps v4 from generating its own.
+   - postcss.config.js passes optimize: false, so Lightning CSS leaves the colours alone.
+   v4 also puts utilities in a cascade layer, and an un-layered rule beats every layer, so a
+   custom rule that a utility should be able to override goes in a layer (see the button rule).
+   tests/renderer/tailwindParity.test.ts pins this setup and scripts/verifyRendererCss.cjs checks
+   the built CSS in CI. Moving any part to v4's default changes how the app looks: do it on
+   purpose, in its own commit, against a screenshot diff.
    Keep every @import above every other statement: Vite inlines @import with postcss-import,
    which only accepts @import at the top of the file. */
 @layer theme, base, components, utilities;
