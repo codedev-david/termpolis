@@ -189,6 +189,21 @@ describe('createSecretExclusive — creates, and never overwrites', () => {
     expect(fs.readdirSync(dir)).toEqual([])
   })
 
+  it('a secret with surrounding whitespace is not mistaken for an unreadable one', () => {
+    // readSecret hands back a wrapped secret exactly, and a plaintext file trimmed — the read-back
+    // check has to expect the same, or a padded secret would be moved aside as "unreadable".
+    setSafeStorage(fakeSafeStorage())
+    const wrapped = path.join(dir, 'wrapped')
+    createSecretExclusive(wrapped, '  padded-secret\n')
+    expect(readSecret(wrapped)).toBe('  padded-secret\n')
+    setSafeStorage(null)
+    const plain = path.join(dir, 'plain')
+    createSecretExclusive(plain, '  padded-secret\n', { allowPlaintext: true })
+    expect(readSecret(plain)).toBe('padded-secret')
+    expect(listRetiredSecrets(wrapped)).toEqual([])
+    expect(listRetiredSecrets(plain)).toEqual([])
+  })
+
   it('writes plaintext only when the caller explicitly allows it', () => {
     const p = path.join(dir, 'k')
     createSecretExclusive(p, 'allowed-plain', { allowPlaintext: true })

@@ -168,9 +168,10 @@ export function createSecretExclusive(filePath: string, secret: string, opts: { 
     try { fs.rmSync(tmp, { force: true }) } catch { /* the published name holds the bytes */ }
   }
   fsyncDir(path.dirname(filePath))
-  // Read it back the way the next launch will. A wrapped blob that does not open is a key nothing has
-  // been encrypted under yet, so it is moved aside rather than left to block the next mint.
-  if (inspectSecret(filePath).value !== secret) {
+  // Read it back the way the next launch will — a plaintext file comes back trimmed, a wrapped one
+  // exactly. A wrapped blob that does not open is a key nothing has been encrypted under yet, so it is
+  // moved aside rather than left to block the next mint.
+  if (inspectSecret(filePath).value !== (impl ? secret : secret.trim())) {
     retireSecretFile(filePath, 'unreadable-after-create')
     throw new Error(`${path.basename(filePath)} was written but could not be read back`)
   }
