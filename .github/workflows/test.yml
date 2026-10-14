@@ -314,7 +314,11 @@ jobs:
       # cancelled mid-suite. Separate runners are the only parallelism available.
       # TERMPOLIS_E2E_PREBUILT: the specs launch the Build step's out/ instead of each
       # building it again (ensureE2eBuild, e2e/helpers/launch.ts).
+      # The step's own timeout sits under the job's on purpose. A step that runs out of time
+      # FAILS and the job goes on to the upload below; a job that runs out is CANCELLED, which
+      # skips the `!cancelled()` upload and loses the traces of exactly the run that needs them.
       - name: Whole e2e suite
+        timeout-minutes: 52
         env:
           TERMPOLIS_E2E_PREBUILT: '1'
         run: xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
@@ -366,7 +370,9 @@ jobs:
       # bash, as in e2e-soak, where these specs were stabilized on Windows: the shells the specs
       # open inherit this step's environment. TERMPOLIS_E2E_PREBUILT: the specs launch the Build
       # step's out/ instead of each building it again (ensureE2eBuild, e2e/helpers/launch.ts).
+      # A step timeout under the job's, as in e2e-full, so a run out of time still uploads.
       - name: Whole e2e suite
+        timeout-minutes: 38
         shell: bash
         env:
           TERMPOLIS_E2E_PREBUILT: '1'

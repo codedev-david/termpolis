@@ -104,8 +104,11 @@ jobs:
           (Get-Acl (Join-Path $d f)).Sddl
           Remove-Item -Recurse -Force $d
       # TERMPOLIS_E2E_PREBUILT: the specs launch the Build step's out/ instead of each building it
-      # again (ensureE2eBuild, e2e/helpers/launch.ts).
+      # again (ensureE2eBuild, e2e/helpers/launch.ts). The step's timeout sits under the job's: a
+      # step out of time fails and the upload below still runs, where a job out of time is
+      # cancelled and skips it, losing the traces and teardown-hang reports of that very run.
       - name: Whole e2e suite
+        timeout-minutes: 68
         shell: bash
         env:
           TERMPOLIS_E2E_PREBUILT: '1'
