@@ -309,7 +309,7 @@ const HISTORY_STATUS: Record<Exclude<HistoryRow, { kind: 'refused' }>['status'],
 /** The last part of a folder path, for a row that has no room for all of it. */
 function folderName(cwd: string): string {
   const parts = cwd.split(/[\\/]+/).filter(Boolean)
-  return parts.at(-1) ?? cwd
+  return parts[parts.length - 1] ?? cwd
 }
 
 /** Every job other computers started here, and every one they were refused, from the history
