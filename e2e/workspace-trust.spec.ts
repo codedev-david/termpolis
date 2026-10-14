@@ -106,12 +106,22 @@ test('mcp-token file is written under userData with restricted ACL (win32)', asy
       shell: false,
       windowsHide: true,
     })
-    const user = (process.env.USERNAME || '').replace(/[^A-Za-z0-9._\\-]/g, '')
-    expect(icaclsOut).toContain(user)
-    expect(icaclsOut).toContain('(F)')
-    // Proof inheritance was stripped — none of these default ACEs should remain
-    expect(icaclsOut).not.toContain('BUILTIN\\Administrators')
-    expect(icaclsOut).not.toContain('NT AUTHORITY\\SYSTEM')
+    // The app grants the account name exactly as Windows has it (spaces, accents and all),
+    // so the listing is matched against the raw USERNAME.
+    const user = (process.env.USERNAME || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    expect(icaclsOut).toMatch(new RegExp(`[\\s\\\\]${user}:\\(F\\)`, 'i'))
+    // Proof inheritance was stripped: no ACE handed down from the folder survives.
+    expect(icaclsOut).not.toContain('(I)')
+    // The actual boundary: no broad-audience principal can read the token.
     expect(icaclsOut).not.toContain('Everyone')
+    expect(icaclsOut).not.toContain('BUILTIN\\Users')
+    expect(icaclsOut).not.toMatch(/Authenticated Users/i)
+    // NT AUTHORITY\SYSTEM and BUILTIN\Administrators MAY appear, as explicit ACEs. When the
+    // userData folder passes nothing inheritable (a CI runner's mkdtemp dir does exactly that),
+    // Windows stamps the creating token's default DACL onto the new file, and the app's one
+    // icacls call leaves explicit ACEs alone by design: both principals can read every file on
+    // the machine anyway, and a Termpolis child stripping them at every boot is the permission
+    // change endpoint monitors flag. tests/electron/secureFile.integration.test.ts holds the
+    // same line and reproduces that folder on any machine.
   }
 })

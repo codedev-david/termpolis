@@ -674,7 +674,7 @@ Termpolis takes security seriously, especially with AI agent integration.
 - **Localhost only** — bound to `127.0.0.1`, never exposed to the network
 - **Auth token required** — random 256-bit token generated on each app launch, required via `Authorization: Bearer` header on all endpoints except health check
 - **CORS restricted** — no wildcard origins, preventing browser-based CSRF attacks
-- **Token file permissions** — `600` (owner read/write only) on macOS/Linux; per-user `%APPDATA%` on Windows
+- **Token file permissions** — `600` (owner read/write only) on macOS/Linux; on Windows, an NTFS ACL that drops the access inherited from the folder and grants your account full control (Everyone, Users and Authenticated Users get nothing; SYSTEM and Administrators, who can read any file anyway, are left alone)
 
 ### Application Security
 - **Single-instance lock** — prevents session data corruption from multiple windows
