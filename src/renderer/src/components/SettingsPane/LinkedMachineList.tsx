@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LinkedActivityView, LinkedGrants, LinkedJobRecord, LinkedMachineView } from '../../types'
 import {
+  codexEditAccess,
   formatDuration,
   historyRows,
   latestActivity,
@@ -10,6 +11,7 @@ import {
   type HistoryRow,
 } from '../../lib/linkedMachines'
 import { LinkedGrantToggles } from './LinkedGrantToggles'
+import { hostPlatform } from '../../lib/platform'
 
 export interface LinkedMachineRowProps {
   machine: LinkedMachineView
@@ -22,7 +24,8 @@ export interface LinkedMachineRowProps {
 }
 
 /** What edit hands a computer, per agent, where it is turned on (spec §4.6). Termpolis switches
- *  a Codex job's network off; Claude and Gemini have no such switch. */
+ *  a Codex job's network off; Claude and Gemini have no such switch. What that switch is worth
+ *  depends on this computer's OS (codexEditAccess). */
 function EditConfirm({
   machine,
   onAllow,
@@ -32,6 +35,7 @@ function EditConfirm({
   onAllow(): void
   onCancel(): void
 }): JSX.Element {
+  const codex = codexEditAccess(hostPlatform())
   return (
     <div
       data-testid={`linked-write-confirm-${machine.ref}`}
@@ -46,8 +50,7 @@ function EditConfirm({
         </li>
         <li>
           <span className="text-[#e5c07b]">Codex: in its sandbox.</span> It can change files only in the
-          job&apos;s folder and temporary folders, and Termpolis switches its network off, for Codex&apos;s
-          sandbox to enforce. It can still read any file you can.
+          job&apos;s folder and temporary folders, and read any file you can. {codex.sentence}
         </li>
       </ul>
       <p className="text-xs text-[#9ca3af]">
@@ -161,7 +164,11 @@ export function LinkedMachineRow({
           {machine.grants.write && (
             <span
               data-testid={`linked-full-access-${machine.ref}`}
-              title="Its Claude and Gemini agents run here with full access as you; Codex in its sandbox, network off."
+              title={
+                codexEditAccess(hostPlatform()).full
+                  ? 'Its agents run here with full access as you: Claude and Gemini, and on Windows Codex too.'
+                  : 'Its Claude and Gemini agents run here with full access as you; Codex in its sandbox, network off.'
+              }
               className="text-[10px] px-1.5 py-0.5 rounded border border-[#5a2d2d] bg-[#2a1919] text-[#f28b82] whitespace-nowrap"
             >
               full access

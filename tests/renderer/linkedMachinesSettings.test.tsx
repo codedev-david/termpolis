@@ -11,6 +11,7 @@ import type {
   LinkedStatusView,
 } from '../../src/renderer/src/types'
 import { DEFAULT_RELAY_URL } from '../../src/main/remoteBridge/protocol'
+import { __setPlatformForTests } from '../../src/renderer/src/lib/platform'
 
 const ok = <T,>(data: T) => ({ success: true as const, data })
 const fail = (error: string) => ({ success: false as const, error })
@@ -106,10 +107,13 @@ beforeEach(() => {
     }),
   }
   win.linked = api
+  // The edit copy for Codex depends on this computer's OS; tests pick one rather than inherit the runner's.
+  __setPlatformForTests('linux')
 })
 
 afterEach(() => {
   cleanup()
+  __setPlatformForTests(null)
   delete win.linked
   delete win.termpolis
   delete (navigator as unknown as { clipboard?: unknown }).clipboard
@@ -728,12 +732,28 @@ describe('LinkedMachinesSettings machines', () => {
     const risk = screen.getByTestId('linked-grant-device:bbbb-write-risk')
     expect(risk.textContent).toContain('full access as you')
     expect(risk.textContent).toContain('Codex runs in its own sandbox: it changes files only in its folder and temporary folders')
-    expect(risk.textContent).toContain('its network switched off')
+    expect(risk.textContent).toContain('Termpolis switches its network off, for its sandbox to enforce.')
+    expect(risk.textContent).toContain('Allow this only for a computer you trust as much as this one.')
     expect(risk.className).toContain('e5c07b')
     expect(row.textContent).toContain('without asking')
     // A computer that may edit says so at a glance; one that may not doesn't.
     expect(screen.getByTestId('linked-full-access-device:bbbb').textContent).toBe('full access')
+    expect(screen.getByTestId('linked-full-access-device:bbbb').title).toContain('Codex in its sandbox, network off')
     expect(screen.queryByTestId('linked-full-access-link:aaaa')).toBeNull()
+  })
+
+  it('on a Windows computer, calls a Codex edit job full access too: its sandbox is unconfirmed there', async () => {
+    __setPlatformForTests('win32')
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine({ ref: 'device:bbbb', grants: { run: true, write: true } }), machine()] })))
+    await mount()
+    const risk = screen.getByTestId('linked-grant-device:bbbb-write-risk')
+    expect(risk.textContent).toContain('On Windows, treat it as full access too')
+    expect(risk.textContent).not.toContain('for its sandbox to enforce')
+    expect(screen.getByTestId('linked-full-access-device:bbbb').title).toContain('on Windows Codex too')
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    const panel = screen.getByTestId('linked-write-confirm-link:aaaa')
+    expect(panel.textContent).toContain('Codex: in its sandbox.')
+    expect(panel.textContent).toContain("isn't confirmed")
   })
 
   it('renames on Enter and then follows the saved name', async () => {

@@ -24,6 +24,24 @@ export function toggleGrant(grants: LinkedGrants, key: GrantKey): LinkedGrants {
   return { run, write: run && grants.write }
 }
 
+/** What a Codex edit job is held to on this computer, the one that runs it, as the pane says it.
+ *  Termpolis switches the network of Codex's `workspace-write` sandbox off for the job, and the
+ *  sandbox enforces it. On Windows that sandbox is separate user accounts and firewall rules, and
+ *  that they keep a job from this computer's own local services (Termpolis's MCP server, with its
+ *  memory and terminals, among them) has not been checked there: on Windows it is said to be full
+ *  access, as Claude and Gemini are, until a live run shows otherwise. */
+export function codexEditAccess(platform: string): { full: boolean; sentence: string } {
+  if (platform === 'win32') {
+    return {
+      full: true,
+      sentence:
+        'On Windows, treat it as full access too: Termpolis switches its network off, but whether its sandbox keeps ' +
+        "it from this computer's own local services, Termpolis's among them, isn't confirmed.",
+    }
+  }
+  return { full: false, sentence: 'Termpolis switches its network off, for its sandbox to enforce.' }
+}
+
 export function secondsLeft(expiresAt: number, now: number): number {
   return Math.max(0, Math.ceil((expiresAt - now) / 1000))
 }

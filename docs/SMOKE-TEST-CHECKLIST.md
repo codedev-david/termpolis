@@ -75,6 +75,10 @@
 - [ ] MCP status indicator shows in status bar (localhost:9315)
 - [ ] Claude Code can discover and use Termpolis MCP tools (run a tool call end-to-end)
 
+## Linked machines
+
+- [ ] **Codex edit job, network off, on each OS that will do the work (Windows especially).** Link two computers and give the asking one *edit* on the doing one. From the asking computer, have Codex run an edit job whose task is to fetch `http://127.0.0.1:9315/` (the doing computer's MCP port) and report the result: the job must fail to connect. On Linux and macOS Codex's sandbox (seccomp, Seatbelt) is expected to block it. On Windows it is not confirmed yet, which is why the pane calls a Codex edit job full access there; if the job connects, keep that copy. Use a test machine, not a managed work laptop: the check reaches a local service from a sandboxed process on purpose.
+
 ## Cross-platform (if available)
 
 - [ ] **Windows:** all features above work

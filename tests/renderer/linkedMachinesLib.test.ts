@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   ACTIVITY_ROWS,
+  codexEditAccess,
   HISTORY_ROWS,
   LINKED_MACHINE_LIMIT,
   formatCountdown,
@@ -280,5 +281,17 @@ describe('historyRows', () => {
     const rows = historyRows(many, none)
     expect(rows).toHaveLength(HISTORY_ROWS)
     expect(rows[0].ts).toBe(79)
+  })
+})
+
+describe('codexEditAccess', () => {
+  it("says the network switch is the sandbox's to enforce, except on Windows, where it is called full access", () => {
+    for (const platform of ['linux', 'darwin', '']) {
+      expect(codexEditAccess(platform)).toEqual({ full: false, sentence: 'Termpolis switches its network off, for its sandbox to enforce.' })
+    }
+    const win = codexEditAccess('win32')
+    expect(win.full).toBe(true)
+    expect(win.sentence).toContain('On Windows, treat it as full access too')
+    expect(win.sentence).toContain("isn't confirmed")
   })
 })
