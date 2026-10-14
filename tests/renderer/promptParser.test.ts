@@ -245,6 +245,17 @@ describe('promptParser', () => {
       expect(result.fromDialect).toBe(false)
     })
 
+    it("is true for a PowerShell prompt that abbreviates home, as in `\"PS $($PWD -replace [regex]::Escape($HOME),'~')> \"`", () => {
+      // Still PowerShell's own `PS <path>>` shape, and a backslash path at that, which no ssh or
+      // WSL prompt prints: this `~` is this machine's home.
+      expect(parsePromptFromOutput('PS ~\\repos\\termpolis> ', 'powershell')).toMatchObject({ cwd: '~\\repos\\termpolis', fromDialect: true })
+      expect(parsePromptFromOutput('PS ~> ', 'powershell')).toMatchObject({ cwd: '~', fromDialect: true })
+    })
+
+    it('still ignores a `PS ~\\...>` prompt quoted mid-line', () => {
+      expect(parsePromptFromOutput('Try this: PS ~\\x> npm i', 'powershell').cwd).toBeNull()
+    })
+
     it('is false for a zsh prompt customised to end in $', () => {
       expect(parsePromptFromOutput('~/repos/project $', 'zsh').fromDialect).toBe(false)
     })

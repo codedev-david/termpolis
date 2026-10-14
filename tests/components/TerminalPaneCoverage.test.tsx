@@ -1378,6 +1378,23 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       })
     })
 
+    it("a PowerShell prompt's `~\\` is this machine's home: expanded and published", () => {
+      // The parser reports `PS ~\proj>` as PowerShell's own dialect (a prompt function that
+      // abbreviates $HOME), so it is followed like `PS C:\...>`, not withdrawn like an ssh `~`.
+      __setHomedirForTests('C:\\Users\\dev')
+      try {
+        useTimers()
+        H.parsePrompt.mockReturnValue({ cwd: '~\\proj', gitBranch: null, fromDialect: true })
+        render(<TerminalPane {...defaultProps} shellType="powershell" />)
+        emitPty('PS ~\\proj> ')
+
+        expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: 'C:\\Users\\dev\\proj' })
+        expect(screen.getByTestId('sb-cwd')).toHaveTextContent('C:\\Users\\dev\\proj')
+      } finally {
+        __setHomedirForTests(null)
+      }
+    })
+
     it("a generic prompt's `~` (ssh, WSL) is another machine's home: nothing is published", () => {
       // `dev@box:~/proj$` inside Git Bash is the remote's prompt. Expanded against this machine's
       // home it would aim the mark at an unrelated local folder. The local shell has not moved,

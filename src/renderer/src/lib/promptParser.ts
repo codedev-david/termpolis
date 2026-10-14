@@ -9,8 +9,10 @@ const GIT_BASH_PROMPT = /MINGW\d*\s+([^\s(]+(?:\s[^\s(]+)*)\s*(?:\(([^)]+)\))?/
 
 // PowerShell prompt: "PS C:\Users\name\repos\project>" — anchored to the line
 // start so prompts QUOTED inside other output (AI answers, pasted context)
-// are not mistaken for the live prompt.
-const PS_PROMPT = /^PS\s+([A-Za-z]:\\[^>]+)>/
+// are not mistaken for the live prompt. Also "PS ~\repos\project>", from a
+// prompt function that abbreviates $HOME: still PowerShell's own shape, and a
+// backslash path no ssh or WSL prompt prints, so that `~` is this machine's.
+const PS_PROMPT = /^PS\s+([A-Za-z]:\\[^>]+|~(?:\\[^>]*)?)>/
 
 // Generic path detection: lines ending with $ or > preceded by a path
 const GENERIC_PROMPT = /([~\/][^\s$>]+|\b[A-Za-z]:\\[^\s$>]+)\s*[$>]\s*$/
