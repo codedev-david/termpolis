@@ -275,7 +275,7 @@ if (typeof window !== 'undefined') {
 /** The CSI and OSC sequences in a chunk of pty output, removed: what the prompt parser and the
  *  agent detector read. */
 function stripEscapes(output: string): string {
-  return output.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+  return output.replace(/\x1b\[[?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
 }
 
 interface PromptParseTrace {
