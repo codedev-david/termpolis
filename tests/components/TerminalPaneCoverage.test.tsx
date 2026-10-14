@@ -20,6 +20,7 @@ import React from 'react'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import { MAX_WEBGL_CONTEXTS, resetWebglBudget } from '../../src/renderer/src/lib/webglBudget'
+import { __setHomedirForTests } from '../../src/renderer/src/lib/platform'
 
 // ---------------------------------------------------------------------------
 // Hoisted mock state. Callbacks are collected into ARRAYS (not a single "last"
@@ -1262,6 +1263,145 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       // The status bar still shows it (local state), but no store write for an unchanged cwd.
       expect(screen.getByTestId('sb-cwd')).toHaveTextContent('/home/dev/proj')
       expect(H.updateTerminal).not.toHaveBeenCalledWith('term-1', { cwd: '/home/dev/proj' })
+    })
+
+    // The ConPTY chunk order behind git-dot-tilde. Enter empties the parse buffer, and with the pty
+    // idle, main's coalescer sends Enter's echo alone. Then come readline's bracketed-paste toggles
+    // and, ~30 ms later, the prompt. A leading-edge-only throttle spent its window parsing the bare
+    // echo and dropped the prompt; an idle shell prints nothing more, so it was never parsed.
+    describe('the prompt after Enter (ConPTY chunk order)', () => {
+      const home = process.platform === 'win32' ? 'C:\\Users\\dev' : '/home/dev'
+      const repo = process.platform === 'win32' ? 'C:\\Users\\dev\\repo' : '/home/dev/repo'
+      const PROMPT = 'MINGW64 ~/repo\r\n$ '
+
+      beforeEach(() => {
+        __setHomedirForTests(home)
+        // A real parser's answer to the buffer it was handed: a cwd only once the prompt is in it.
+        H.parsePrompt.mockImplementation((text: string) => text.includes('MINGW64 ~/repo')
+          ? { cwd: '~/repo', gitBranch: null, fromDialect: true }
+          : { cwd: null, gitBranch: null, fromDialect: false })
+      })
+
+      afterEach(() => {
+        __setHomedirForTests(null)
+        delete (globalThis as any).termpolisTestFlags
+        delete (window as any).__termpolis_prompt_parses
+      })
+
+      /** Enter, then the three messages ConPTY + Git Bash deliver for it, 15 ms apart. */
+      const enterThenPrompt = (): void => {
+        typeIntoPty('\r')
+        emitPty('\r\n')
+        act(() => { vi.advanceTimersByTime(15) })
+        emitPty('\x1b[?2004l\x1b[?2004h')
+        act(() => { vi.advanceTimersByTime(15) })
+        emitPty(PROMPT)
+      }
+
+      it('is parsed once the window ends, though nothing arrives after it', () => {
+        useTimers()
+        render(<TerminalPane {...defaultProps} shellType="gitbash" />)
+
+        enterThenPrompt()
+        // The leading parse ran on the echo and found nothing; the prompt is not parsed yet...
+        expect(H.updateTerminal).not.toHaveBeenCalledWith('term-1', { cwd: repo })
+
+        // ...but it is by the end of the window, with no further output to trigger it.
+        act(() => { vi.advanceTimersByTime(500) })
+        expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: repo })
+        expect(screen.getByTestId('sb-cwd')).toHaveTextContent(repo)
+      })
+
+      it('a pane unmounted before the window ends neither parses nor writes the store', () => {
+        useTimers()
+        const { unmount } = render(<TerminalPane {...defaultProps} shellType="gitbash" />)
+        enterThenPrompt()
+        const parses = H.parsePrompt.mock.calls.length
+
+        unmount()
+        act(() => { vi.advanceTimersByTime(1_000) })
+
+        expect(H.parsePrompt).toHaveBeenCalledTimes(parses)
+        expect(H.updateTerminal).not.toHaveBeenCalledWith('term-1', { cwd: repo })
+      })
+
+      it('an agent banner that lands before the window ends stops the parse', () => {
+        // Agent output is full of prompt-shaped text; the gate is checked when the parse RUNS.
+        useTimers()
+        render(<TerminalPane {...defaultProps} shellType="gitbash" />)
+        enterThenPrompt()
+        const parses = H.parsePrompt.mock.calls.length
+
+        H.agent.current.agentDetectedRef.current = true // what processAgentDetection does on a banner
+        act(() => { vi.advanceTimersByTime(500) })
+
+        expect(H.parsePrompt).toHaveBeenCalledTimes(parses)
+        expect(H.updateTerminal).not.toHaveBeenCalledWith('term-1', { cwd: repo })
+      })
+
+      it('with TERMPOLIS_TEST_PROMPT_TRACE, each parse lands on window.__termpolis_prompt_parses', () => {
+        ;(globalThis as any).termpolisTestFlags = { agents: false, timing: false, promptTrace: true }
+        useTimers()
+        render(<TerminalPane {...defaultProps} shellType="gitbash" />)
+        enterThenPrompt()
+        act(() => { vi.advanceTimersByTime(500) })
+
+        const trace = (window as any).__termpolis_prompt_parses
+        // The leading parse saw only the echo; the trailing one saw the prompt and published it.
+        expect(trace).toHaveLength(2)
+        expect(trace[0]).toMatchObject({ terminalId: 'term-1', cwd: null, reported: null })
+        expect(trace[1]).toMatchObject({ terminalId: 'term-1', cwd: '~/repo', fromDialect: true, reported: repo })
+        expect(trace[1].tail).toContain('MINGW64 ~/repo')
+      })
+
+      it('the trace keeps only the most recent parses', () => {
+        ;(globalThis as any).termpolisTestFlags = { agents: false, timing: false, promptTrace: true }
+        useTimers()
+        render(<TerminalPane {...defaultProps} shellType="gitbash" />)
+        for (let i = 0; i < 45; i++) {
+          emitPty(`out-${i}\n`)
+          act(() => { vi.advanceTimersByTime(500) })
+        }
+
+        const trace = (window as any).__termpolis_prompt_parses
+        expect(trace).toHaveLength(40)
+        expect(trace[39].tail).toContain('out-44')
+      })
+
+      it('without the switch there is no trace at all', () => {
+        useTimers()
+        render(<TerminalPane {...defaultProps} shellType="gitbash" />)
+        enterThenPrompt()
+        act(() => { vi.advanceTimersByTime(500) })
+
+        expect((window as any).__termpolis_prompt_parses).toBeUndefined()
+      })
+    })
+
+    it("a generic prompt's `~` (ssh, WSL) is another machine's home: nothing is published", () => {
+      // `dev@box:~/proj$` inside Git Bash is the remote's prompt. Expanded against this machine's
+      // home it would aim the mark at an unrelated local folder. The local shell has not moved,
+      // so the status bar falls back to the directory the store already has.
+      __setHomedirForTests(process.platform === 'win32' ? 'C:\\Users\\dev' : '/home/dev')
+      try {
+        useTimers()
+        H.parsePrompt.mockReturnValue({ cwd: '/srv/local', gitBranch: null, fromDialect: false })
+        render(<TerminalPane {...defaultProps} shellType="gitbash" />)
+        emitPty('/srv/local $ ')
+        expect(screen.getByTestId('sb-cwd')).not.toHaveTextContent('/home/user')
+        H.updateTerminal.mockClear()
+
+        H.parsePrompt.mockReturnValue({ cwd: '~/proj', gitBranch: null, fromDialect: false })
+        act(() => { vi.advanceTimersByTime(500) })
+        emitPty('dev@box:~/proj$ ')
+
+        expect(H.updateTerminal).not.toHaveBeenCalled()
+        // The prompt-derived directory is withdrawn rather than left stale: the status bar shows
+        // the store's (here the prop's) cwd again.
+        expect(screen.getByTestId('sb-cwd')).toHaveTextContent('/home/user')
+      } finally {
+        __setHomedirForTests(null)
+      }
     })
   })
 

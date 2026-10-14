@@ -73,6 +73,8 @@ let plainDir: string | undefined
 
 const anyDot = '[data-testid^="git-dot-"][data-repo="true"]'
 
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 const runnable = process.platform === 'win32' && GIT_BASH_PATHS.some((p) => fs.existsSync(p))
 const describeMaybe = runnable ? test.describe : test.describe.skip
 
@@ -114,6 +116,9 @@ describeMaybe('the git mark in a `~`-abbreviated directory', () => {
         TERMPOLIS_TEST_AGENTS: '1',
         TERMPOLIS_TEST_TIMING: '1',
         TERMPOLIS_DISABLE_SHELL_INTEGRATION: '1',
+        // Keeps the renderer's last prompt parses on window.__termpolis_prompt_parses, so a miss
+        // below can report what the parser saw rather than only that the wait ran out.
+        TERMPOLIS_TEST_PROMPT_TRACE: '1',
       },
     })
     page = await app.firstWindow()
@@ -198,17 +203,31 @@ describeMaybe('the git mark in a `~`-abbreviated directory', () => {
       expect(await screen()).toMatch(new RegExp(`MINGW64\\s+~/${repoName}`))
     }).toPass({ timeout: 20000 })
 
-    // Prompt parsing is driven by shell OUTPUT and throttled to one parse per 500ms, so a
-    // prompt landing in the same window as the command echo can be dropped — and an idle
-    // shell then emits nothing further to re-trigger it. A bare Enter redraws the prompt,
-    // which is both something people really do and a fresh parse opportunity, so this keeps
-    // offering one until the mark appears rather than betting on one chunk's arrival timing.
-    // The mark's own poll is 5s, so the budget covers several redraws plus a poll.
-    await expect(async () => {
-      await page.keyboard.press('Enter')
-      await page.waitForTimeout(900)
-      expect(await page.locator(anyDot).count()).toBe(before + 1)
-    }).toPass({ timeout: 90000 })
+    // The directory has to reach the status bar first, and on its own: the prompt parse is the
+    // only directory reporter here, and this is the stage that used to fail. Under ConPTY,
+    // Enter's echo reaches the renderer alone and the prompt ~30 ms behind it; a parse that
+    // was throttled on its leading edge only spent its 500 ms window on the bare echo and
+    // dropped the prompt, every time, because an idle shell prints nothing more. (A bare Enter
+    // has the same echo-then-prompt shape, so pressing it again was never a fresh chance.)
+    // Asserting this stage separately tells "the prompt never reached the store" apart from
+    // "git did not answer", and on a miss the parse trace says what the parser actually saw.
+    const statusDir = page.locator('[title^="Working directory: "]').first()
+    try {
+      await expect(statusDir).toHaveAttribute(
+        'title',
+        new RegExp(`^Working directory: ${escapeRegExp(homeRepo!)}$`, 'i'),
+        { timeout: 15000 },
+      )
+    } catch (e) {
+      const parses = await page.evaluate(
+        () => (window as unknown as { __termpolis_prompt_parses?: unknown[] }).__termpolis_prompt_parses ?? [],
+      )
+      throw new Error(`${(e as Error).message}\n\nLast prompt parses, oldest first:\n${JSON.stringify(parses, null, 2)}`)
+    }
+
+    // ...then the mark. A plain `cd` must be enough: no extra Enter presses to coax a parse out
+    // of the shell. The mark's own poll is 5s, so the budget covers several polls.
+    await expect(page.locator(anyDot)).toHaveCount(before + 1, { timeout: 30000 })
 
     // Not merely live: reading the untracked file proves git was handed the EXPANDED absolute
     // path and ran there, rather than the mark lighting up for some unrelated reason.

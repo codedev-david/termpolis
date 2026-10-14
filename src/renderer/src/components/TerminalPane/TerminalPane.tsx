@@ -20,6 +20,8 @@ import { getSuggestion } from '../../corrections/correctionEngine'
 import { CommandFixBanner } from '../CommandFix/CommandFixBanner'
 import { TerminalStatusBar } from '../StatusBar/TerminalStatusBar'
 import { parsePromptFromOutput } from '../../lib/promptParser'
+import { createTrailingThrottle } from '../../lib/trailingThrottle'
+import { tracesPromptParses } from '../../lib/testAgents'
 import { decodeOsc7, normalizeShellPath, osc7PathPart, samePath } from '../../../../shared/cwdPath'
 import { hostHomedir } from '../../lib/platform'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
@@ -270,6 +272,41 @@ if (typeof window !== 'undefined') {
     readTerminalText
 }
 
+/** The CSI and OSC sequences in a chunk of pty output, removed: what the prompt parser and the
+ *  agent detector read. */
+function stripEscapes(output: string): string {
+  return output.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+}
+
+interface PromptParseTrace {
+  at: number
+  terminalId: string
+  /** The end of the text the parser was given — where a prompt, if any, would be. */
+  tail: string
+  /** What the parser read as the directory, in the shell's own dialect. */
+  cwd: string | null
+  fromDialect: boolean
+  /** What the pane published from it: the native path, or null when it published nothing. */
+  reported: string | null
+}
+
+const PROMPT_TRACE_MAX = 40
+const PROMPT_TRACE_TAIL = 160
+
+/**
+ * E2E only (TERMPOLIS_TEST_PROMPT_TRACE): the last PROMPT_TRACE_MAX prompt parses, on
+ * window.__termpolis_prompt_parses. A spec that waits for the status bar to reach a directory
+ * dumps this when it times out, so the failure says what the parser actually saw — the text
+ * of a missed prompt, or that it never ran at all — instead of only that the wait ran out.
+ */
+function tracePromptParse(entry: PromptParseTrace): void {
+  if (!tracesPromptParses()) return
+  const w = window as unknown as { __termpolis_prompt_parses?: PromptParseTrace[] }
+  const ring = w.__termpolis_prompt_parses ?? (w.__termpolis_prompt_parses = [])
+  ring.push(entry)
+  if (ring.length > PROMPT_TRACE_MAX) ring.splice(0, ring.length - PROMPT_TRACE_MAX)
+}
+
 function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible, fontSize, theme, fontFamily, onTerminalReady, onSplitRight, onSplitDown }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -409,9 +446,6 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const [diffDetected, setDiffDetected] = useState(false)
   const [showDiffViewer, setShowDiffViewer] = useState(false)
   const diffDetectedRef = useRef(false)
-
-  // Throttle ref for prompt parsing
-  const lastPromptParseRef = useRef(0)
 
   // Keep fixSuggestionRef in sync
   fixSuggestionRef.current = fixSuggestion
@@ -1500,6 +1534,64 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     }
     document.addEventListener('mouseup', handleDocumentMouseUp)
 
+    // Parse the prompt for cwd and git branch.
+    //
+    // Throttled to one parse per 500ms, but on BOTH edges. Leading-edge only, it dropped the
+    // prompt after every Enter under ConPTY: submitLine empties the buffer, main's coalescer
+    // sends Enter's echo ("\r\n") alone because the pty was idle, the bracketed-paste toggles
+    // and then the prompt follow ~30ms later, and the parse that ran on the bare echo had
+    // already spent the window. An idle shell prints nothing more, so the prompt was never
+    // parsed and the git mark never followed a `cd`. The trailing run reads the buffer as it
+    // is THEN, so it sees the prompt that arrived after the request.
+    //
+    // Skipped while an AI agent owns the terminal: agent TUI output and injected context are
+    // full of path/branch-shaped text that is NOT a live shell prompt, and parsing it corrupts
+    // the status bar cwd/branch and the store cwd the Git Panel follows. Checked when the parse
+    // runs, so an agent banner that lands while a trailing run is pending still stops it.
+    const parsePromptNow = (): void => {
+      if (disposed || agent.agentDetectedRef.current) return
+      const text = stripEscapes(outputBufferRef.current)
+      const promptInfo = parsePromptFromOutput(text, shellType)
+      // A `~` is this machine's home only when the shell's own prompt drew it. The generic
+      // pattern also matches an ssh or WSL prompt running inside this terminal, whose `~` is
+      // the other machine's home: expanded here it would point the mark at an unrelated local
+      // folder, and verbatim it is no path at all. The local shell has not moved (it is the one
+      // running ssh), so nothing is reported, and the status bar falls back to the directory
+      // OSC 7 or the pid probe last put in the store.
+      const foreignTilde = !promptInfo.fromDialect && !!promptInfo.cwd?.startsWith('~')
+      // A prompt reports the shell's OWN dialect: Git Bash says /c/Users/dev, and any
+      // shell whose prompt abbreviates home says ~/repo. Neither is a path git can
+      // open — and git:change-counts answers null for an unusable path exactly as it
+      // does for "not a repo", so the mark would blank with nothing to show why.
+      // Normalize before anything stores it.
+      // Keeps the shell's own text when no native form exists (an MSYS /usr/bin, a WSL
+      // /home/dev): it fails git cleanly, so the mark blanks — whereas dropping the
+      // report would strand the mark on the directory the shell has already left.
+      // The homedir matters most here: a Git Bash prompt abbreviates to `~/repos/x`, and
+      // without an expansion target the tilde reached the store verbatim, so git could not
+      // chdir to it and the dot reported "not a repository" inside a real repo.
+      const promptCwd = promptInfo.cwd && !foreignTilde
+        ? (normalizeShellPath(promptInfo.cwd, { homedir: hostHomedir() }) ?? promptInfo.cwd)
+        : null
+      tracePromptParse({ at: Date.now(), terminalId, tail: text.slice(-PROMPT_TRACE_TAIL), cwd: promptInfo.cwd, fromDialect: promptInfo.fromDialect, reported: promptCwd })
+      if (foreignTilde) {
+        setParsedCwd(null)
+      } else if (promptCwd) {
+        setParsedCwd(promptCwd)
+        // Write live cwd back to the store so Git Panel and other components can use it — but ONLY
+        // when it actually changed. updateTerminal replaces the whole terminals array (a new
+        // reference), which re-renders every store subscriber; a plain shell re-emits the same
+        // prompt ~twice a second, so an unconditional write was a full re-render for no change.
+        // (setParsedCwd above already no-ops on an unchanged string — the store write did not.)
+        const store = useTerminalStore.getState()
+        if (!samePath(store.terminals.find(t => t.id === terminalId)?.cwd, promptCwd)) {
+          store.updateTerminal(terminalId, { cwd: promptCwd })
+        }
+      }
+      if (promptInfo.gitBranch !== undefined) setParsedBranch(promptInfo.gitBranch)
+    }
+    const promptParse = createTrailingThrottle(parsePromptNow, 500)
+
     const unsub = window.termpolis.onTerminalData((id, data, end) => {
       if (id !== terminalId) return
       // Output that beat this mount's replay reply: note where it ends in the stream, so
@@ -1531,45 +1623,11 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       }
 
       // Strip ANSI for processing
-      const stripped = outputBufferRef.current.replace(/\x1b\[[\?]?[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      const stripped = stripEscapes(outputBufferRef.current)
 
-      // Parse prompt for cwd and git branch — throttled to once per 500ms.
-      // Skipped while an AI agent owns the terminal: agent TUI output and
-      // injected context are full of path/branch-shaped text that is NOT a
-      // live shell prompt, and parsing it corrupts the status bar cwd/branch
-      // and the store cwd the Git Panel follows.
-      const now = Date.now()
-      if (!agent.agentDetectedRef.current && now - lastPromptParseRef.current > 500) {
-        lastPromptParseRef.current = now
-        const promptInfo = parsePromptFromOutput(stripped, shellType)
-        // A prompt reports the shell's OWN dialect: Git Bash says /c/Users/dev, and any
-        // shell whose prompt abbreviates home says ~/repo. Neither is a path git can
-        // open — and git:change-counts answers null for an unusable path exactly as it
-        // does for "not a repo", so the mark would blank with nothing to show why.
-        // Normalize before anything stores it.
-        // Keeps the shell's own text when no native form exists (an MSYS /usr/bin, a WSL
-        // /home/dev): it fails git cleanly, so the mark blanks — whereas dropping the
-        // report would strand the mark on the directory the shell has already left.
-        // The homedir matters most here: a Git Bash prompt abbreviates to `~/repos/x`, and
-        // without an expansion target the tilde reached the store verbatim, so git could not
-        // chdir to it and the dot reported "not a repository" inside a real repo.
-        const promptCwd = promptInfo.cwd
-          ? (normalizeShellPath(promptInfo.cwd, { homedir: hostHomedir() }) ?? promptInfo.cwd)
-          : null
-        if (promptCwd && !disposed) {
-          setParsedCwd(promptCwd)
-          // Write live cwd back to the store so Git Panel and other components can use it — but ONLY
-          // when it actually changed. updateTerminal replaces the whole terminals array (a new
-          // reference), which re-renders every store subscriber; a plain shell re-emits the same
-          // prompt ~twice a second, so an unconditional write was a full re-render for no change.
-          // (setParsedCwd above already no-ops on an unchanged string — the store write did not.)
-          const store = useTerminalStore.getState()
-          if (!samePath(store.terminals.find(t => t.id === terminalId)?.cwd, promptCwd)) {
-            store.updateTerminal(terminalId, { cwd: promptCwd })
-          }
-        }
-        if (promptInfo.gitBranch !== undefined && !disposed) setParsedBranch(promptInfo.gitBranch)
-      }
+      // Parse prompt for cwd and git branch — at most once per 500ms, and never skipping
+      // the last prompt of a burst (see parsePromptNow).
+      promptParse.request()
 
       // Agent detection + cost tracking + conversation parsing
       agent.processAgentDetection(stripped, data.length, terminalId, terminalName)
@@ -1697,6 +1755,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     return () => {
       disposed = true
       unsub()
+      promptParse.cancel()
       selectionChangeDisposable.dispose()
       document.removeEventListener('mouseup', handleDocumentMouseUp)
       if (resizeTimer) clearTimeout(resizeTimer)

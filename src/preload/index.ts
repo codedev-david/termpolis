@@ -347,6 +347,7 @@ contextBridge.exposeInMainWorld('termpolis', api)
 contextBridge.exposeInMainWorld('termpolisTestFlags', {
   agents: process.env.TERMPOLIS_TEST_AGENTS === '1',
   timing: process.env.TERMPOLIS_TEST_TIMING === '1',
+  promptTrace: process.env.TERMPOLIS_TEST_PROMPT_TRACE === '1',
 })
 
 contextBridge.exposeInMainWorld('windowControls', {

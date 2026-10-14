@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { resolveAgentCommand, testDelay } from '../../src/renderer/src/lib/testAgents'
+import { resolveAgentCommand, testDelay, tracesPromptParses } from '../../src/renderer/src/lib/testAgents'
 
 describe('resolveAgentCommand', () => {
   const origEnv = process.env.TERMPOLIS_TEST_AGENTS
@@ -74,5 +74,27 @@ describe('preload bridge (renderer has no process.env of its own)', () => {
     ;(globalThis as any).termpolisTestFlags = { agents: false, timing: false }
     expect(resolveAgentCommand('claude')).toBe('claude')
     delete process.env.TERMPOLIS_TEST_AGENTS
+  })
+
+  it('reads the prompt-trace switch off the bridge, and only that one', () => {
+    ;(globalThis as any).termpolisTestFlags = { agents: false, timing: false, promptTrace: true }
+    expect(tracesPromptParses()).toBe(true)
+    ;(globalThis as any).termpolisTestFlags = { agents: true, timing: true }
+    expect(tracesPromptParses()).toBe(false)
+  })
+})
+
+describe('tracesPromptParses', () => {
+  const origEnv = process.env.TERMPOLIS_TEST_PROMPT_TRACE
+  afterEach(() => {
+    if (origEnv === undefined) delete process.env.TERMPOLIS_TEST_PROMPT_TRACE
+    else process.env.TERMPOLIS_TEST_PROMPT_TRACE = origEnv
+  })
+
+  it('is off unless TERMPOLIS_TEST_PROMPT_TRACE=1', () => {
+    delete process.env.TERMPOLIS_TEST_PROMPT_TRACE
+    expect(tracesPromptParses()).toBe(false)
+    process.env.TERMPOLIS_TEST_PROMPT_TRACE = '1'
+    expect(tracesPromptParses()).toBe(true)
   })
 })
