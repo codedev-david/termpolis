@@ -16,6 +16,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as crypto from 'crypto'
+import { renameWithRetry } from './agentConfigIO'
 
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean
@@ -236,6 +237,29 @@ export function wrapSecretInPlace(filePath: string): boolean {
   }
   fsyncDir(path.dirname(filePath))
   return true
+}
+
+/**
+ * Write a secret over the one at `filePath` in one step, sealed as writeSecret seals it. The bytes go
+ * to a temp file beside it first (written, fsync'd), which is then renamed over the old one: a crash
+ * part-way leaves the old file or the new one, never a truncated blob that reads as locked from then
+ * on. For a file that changes often and holds keys nothing else does (the links this computer
+ * joined). Throws with the old file as it was when the new one can't be put in its place.
+ */
+export function replaceSecret(filePath: string, secret: string): void {
+  // Wrapped before the disk is touched: a keychain that refuses leaves nothing behind.
+  const payload = impl ? OSK_PREFIX + impl.encryptString(secret).toString('base64') : secret
+  const tmp = `${filePath}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`
+  const fd = fs.openSync(tmp, 'wx')
+  try {
+    try { fs.writeFileSync(fd, payload); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    // Retried briefly: on Windows a scanner holding the old file makes the rename fail for a moment.
+    renameWithRetry(tmp, filePath, (from, to) => fs.renameSync(from, to))
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }) } catch { /* the old file is still in place */ }
+    throw err
+  }
+  fsyncDir(path.dirname(filePath))
 }
 
 /** Every retired copy of `filePath`, newest first. */

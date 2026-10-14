@@ -45,6 +45,7 @@ import { localDesktopName } from './remoteBridge/desktopName'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { loadLinkedSettings, notifiesJobs, saveLinkedSettings, type LinkedSettings } from './linkedSettings'
 import { createLinkedJobLog, MAX_REASON_CHARS, type LinkedJobRecord } from './linkedJobLog'
+import { retireLinkedStateFile } from './remoteKeyFiles'
 import {
   DEFAULT_GRANTS,
   DEFAULT_MACHINE_NAME,
@@ -556,7 +557,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   function keys(): KeyStorageView {
     const shared = port.keys()
     if (!stateLocked || shared.keyStorage === 'locked') return shared
-    return { ...shared, keyStorage: 'locked', keyLockReason: stateLocked, keysUnencrypted: false }
+    return { ...shared, keyStorage: 'locked', keyLockReason: stateLocked, keysUnencrypted: false, keyLockLinksOnly: true }
   }
 
   function status(): LinkedStatusView {
@@ -1256,7 +1257,19 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   function startOver(): unknown {
     // Only for keys that can't be opened, like Remote's own: any other day this
     // would throw away every link that works.
-    if (keys().keyStorage !== 'locked') return err(REMOTE_KEYS_NOT_LOCKED)
+    const locked = keys()
+    if (locked.keyStorage !== 'locked') return err(REMOTE_KEYS_NOT_LOCKED)
+    // Only this module's file: the identity opens, and with it every phone and
+    // every computer that entered a code from this one. Remote's own Start over
+    // retires the identity, and refuses while it opens; so does this.
+    if (locked.keyLockLinksOnly) {
+      retireLinkedStateFile(b.userDataDir)
+      forgetLinks()
+      // The bridge drops the rooms of the links this computer joined.
+      refresh()
+      changed()
+      return ok(status())
+    }
     // Remote does the whole of it -- the identity, the devices and this
     // module's file -- and calls forgetAll() on the way.
     const problem = bridge.startOver()
@@ -1264,15 +1277,22 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     return ok(status())
   }
 
-  /** Every link went with the keys: nothing joined, nothing hosted, nothing
-   *  half done. A fresh file takes the place of the one set aside -- or its
-   *  place outright, if it couldn't be moved: the user chose to forget it. */
-  function forgetAll(): void {
+  /** What the links file held is gone: every link this computer joined, and
+   *  the name, permissions and confirmation of every linked computer. Nothing
+   *  half done is kept either. A fresh file takes the place of the one set
+   *  aside -- or its place outright, if it couldn't be moved: the user chose to
+   *  forget it. */
+  function forgetLinks(): void {
     quiesce()
     state = { links: [], meta: [] }
     stateLocked = null
-    leaving.clear()
     save()
+  }
+
+  /** Remote's Start over: every link went with the keys, hosted ones too. */
+  function forgetAll(): void {
+    forgetLinks()
+    leaving.clear()
     changed()
   }
 

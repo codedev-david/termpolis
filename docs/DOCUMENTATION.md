@@ -1276,7 +1276,12 @@ audit log.
   key the keychain can't open is never replaced: no link can be made or changed
   until it opens again, or until you choose **Start over**, which costs every
   link and every phone (see
-  [Remote's keys](#29-termpolis-remote-phone-app)).
+  [Remote's keys](#29-termpolis-remote-phone-app)). When only the file of links
+  can't be opened and the identity still can, this pane says so, and its
+  **Start over** sets that file alone aside: the links this computer joined
+  have to be made again, and a computer that entered a code from this one has
+  to be confirmed again, but every phone keeps working. The file is written in
+  one step, so a crash mid-save can't leave half of it.
 - **Confirmed on each computer.** A computer runs nothing for another until you
   confirm the eight words on it. Before that, the other computer can learn only
   this one's name and Termpolis version. Treat the code like a one-time

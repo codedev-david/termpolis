@@ -1197,6 +1197,21 @@ describe('LinkedMachinesSettings: the keys', () => {
     await waitFor(() => expect(screen.queryByTestId('linked-keys-warning')).toBeNull())
   })
 
+  it('only the links file locked: says the phones keep working, and that Start over costs the links only', async () => {
+    for (const reason of ['no-keychain', 'unwrap-failed', 'unreadable', undefined] as const) {
+      api.status.mockResolvedValue(ok(statusView({ keyStorage: 'locked', keyLockReason: reason, keyLockLinksOnly: true })))
+      await mount()
+      const banner = screen.getByTestId('linked-keys-warning')
+      expect(banner.textContent).toContain("the file that holds this computer's links to your other computers")
+      expect(banner.textContent).toContain('your phones keep working')
+      expect(banner.textContent).not.toContain('every pairing is kept')
+      fireEvent.click(button('linked-keys-start-over'))
+      expect(banner.textContent).toContain("Phones and this computer's identity are kept.")
+      expect(banner.textContent).not.toContain('makes a new identity')
+      cleanup()
+    }
+  })
+
   it('a refused Start over shows the reason as the pane error', async () => {
     api.status.mockResolvedValue(ok(statusView({ keyStorage: 'locked' })))
     api.startOver = vi.fn().mockResolvedValue(fail("Start over is only for keys this computer can't open."))

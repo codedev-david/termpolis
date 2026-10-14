@@ -13,7 +13,7 @@
 // record rebuilt field by field, a malformed one dropped, permission granted only
 // by an explicit boolean -- and nothing a hand edit invents survives a load.
 import * as path from 'path'
-import { inspectSecret, writeSecret, type SecretInspection } from './secureKeyStore'
+import { inspectSecret, replaceSecret, type SecretInspection } from './secureKeyStore'
 import { isBridgeLink } from './remoteBridge/linkCode'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { PHRASE_WORDS } from './remoteBridge/sealedChannel'
@@ -185,10 +185,11 @@ export function loadLinkedState(userDataDir: string): LoadedLinkedState {
   }
 }
 
-/** Persist, best effort, writing only the known fields. The caller has already
- *  changed the links in memory by the time this runs, so a throw here would
- *  abort a handler halfway through and leave the two out of step -- worse than
- *  a file that is stale until the next successful write. */
+/** Persist, best effort, writing only the known fields. In one step (replaceSecret): half a file,
+ *  left by a crash mid-write, would read as locked at the next launch and keep every link off until
+ *  the user started over. The caller has already changed the links in memory by the time this
+ *  runs, so a throw here would abort a handler halfway through and leave the two out of step --
+ *  worse than a file that is stale until the next successful write. */
 export function saveLinkedState(userDataDir: string, state: LinkedState): void {
   try {
     const doc = {
@@ -210,7 +211,7 @@ export function saveLinkedState(userDataDir: string, state: LinkedState): void {
         ...(!m.confirmed && m.phrase ? { phrase: m.phrase } : {}),
       })),
     }
-    writeSecret(linkedStatePath(userDataDir), JSON.stringify(doc))
+    replaceSecret(linkedStatePath(userDataDir), JSON.stringify(doc))
   } catch {
     /* see above */
   }

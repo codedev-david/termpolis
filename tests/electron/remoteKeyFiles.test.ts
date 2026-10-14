@@ -13,7 +13,7 @@ import { inspectSecret, listRetiredSecrets, setSafeStorage, writeSecret } from '
 import { remoteIdentityPath } from '../../src/main/remoteIdentityStore'
 import { linkedStatePath } from '../../src/main/linkedStore'
 import { remoteDevicesPath } from '../../src/main/remoteDeviceStore'
-import { encryptKeyFiles, retireRemoteKeyFiles, unencryptedKeyFiles } from '../../src/main/remoteKeyFiles'
+import { encryptKeyFiles, retireLinkedStateFile, retireRemoteKeyFiles, unencryptedKeyFiles } from '../../src/main/remoteKeyFiles'
 
 const XOR = 0x5a
 function fakeSafeStorage() {
@@ -143,5 +143,27 @@ describe('retireRemoteKeyFiles', () => {
     expect(fs.existsSync(identity)).toBe(false)
     expect(fs.existsSync(linked)).toBe(true)
     expect(fs.existsSync(devices)).toBe(false)
+  })
+})
+
+describe('retireLinkedStateFile', () => {
+  it('sets the links file aside alone, byte for byte: the identity and the devices stay', () => {
+    setSafeStorage(fakeSafeStorage())
+    writeSecret(identity, SECRET)
+    writeSecret(linked, STATE)
+    fs.writeFileSync(devices, '[]')
+    const before = fs.readFileSync(linked)
+    retireLinkedStateFile(dir)
+    expect(fs.existsSync(linked)).toBe(false)
+    expect(fs.readFileSync(listRetiredSecrets(linked)[0]).equals(before)).toBe(true)
+    expect(inspectSecret(identity)).toEqual({ state: 'encrypted', value: SECRET })
+    expect(fs.readFileSync(devices, 'utf8')).toBe('[]')
+  })
+
+  it('is quiet about a file that is not there, or will not move: the host forgets it anyway', () => {
+    expect(() => retireLinkedStateFile(dir)).not.toThrow()
+    fs.mkdirSync(linked)
+    expect(() => retireLinkedStateFile(dir)).not.toThrow()
+    expect(fs.statSync(linked).isDirectory()).toBe(true)
   })
 })

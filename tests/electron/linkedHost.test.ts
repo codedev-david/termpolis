@@ -1838,7 +1838,7 @@ describe('keys that cannot be opened', () => {
     h.bridge.peers = [P]
     h.bridge.emit({ kind: 'devicesChanged', devices: [P] })
     const s = await h.status()
-    expect(s).toMatchObject({ keyStorage: 'locked', keyLockReason: 'unwrap-failed', keysUnencrypted: false })
+    expect(s).toMatchObject({ keyStorage: 'locked', keyLockReason: 'unwrap-failed', keysUnencrypted: false, keyLockLinksOnly: true })
     expect(s.machines.map((m) => m.ref)).toEqual([devRef(P)])
 
     // Nothing that would have to be saved is let through: it would hold for
@@ -1885,7 +1885,9 @@ describe('keys that cannot be opened', () => {
     setSafeStorage(anotherKeychain())
     const h = boot({ enabled: true })
     h.bridge.keys = { keyStorage: 'locked', keyLockReason: 'no-keychain', keysUnencrypted: false }
-    expect(await h.status()).toMatchObject({ keyStorage: 'locked', keyLockReason: 'no-keychain' })
+    const s = await h.status()
+    expect(s).toMatchObject({ keyStorage: 'locked', keyLockReason: 'no-keychain' })
+    expect(s.keyLockLinksOnly).toBeUndefined()
   })
 
   it('passes the shared facts through untouched while its own file opens', async () => {
@@ -1900,14 +1902,58 @@ describe('keys that cannot be opened', () => {
     expect(h.bridge.startOver).not.toHaveBeenCalled()
   })
 
-  it('Start over asks Remote, which sets the file aside and calls back to forget every link', async () => {
+  it('Start over with only the links file locked sets that file aside alone, and never asks Remote', async () => {
+    const L = joined()
+    const P = peer('build-box')
+    saveLinkedState(dir, { links: [L], meta: [meta(linkRef(L), { name: 'linux' }), meta(devRef(P), { name: 'box' })] })
+    const before = fs.readFileSync(stateFile())
+    // Remote's files, which open: the identity every phone and room stands on, and its devices.
+    fs.writeFileSync(path.join(dir, 'remote-identity-key'), 'identity')
+    fs.writeFileSync(path.join(dir, 'remote-devices.json'), '{"devices":[]}')
+    setSafeStorage(anotherKeychain())
+    const h = boot({ enabled: true })
+    h.bridge.peers = [P]
+    expect(await h.status()).toMatchObject({ keyStorage: 'locked', keyLockLinksOnly: true })
+    h.bridge.refresh.mockClear()
+
+    const res = await h.invoke('linked:start-over')
+    expect(res.success).toBe(true)
+    // Remote's Start over would have retired the identity and every phone with it.
+    expect(h.bridge.startOver).not.toHaveBeenCalled()
+    expect(fs.readFileSync(path.join(dir, 'remote-identity-key'), 'utf8')).toBe('identity')
+    expect(fs.readFileSync(path.join(dir, 'remote-devices.json'), 'utf8')).toBe('{"devices":[]}')
+    // The links file aside, byte for byte, and a fresh one this keychain opens in its place.
+    const retired = fs.readdirSync(dir).filter((n) => n.startsWith('linked-machines.retired-'))
+    expect(retired).toHaveLength(1)
+    expect(fs.readFileSync(path.join(dir, retired[0])).equals(before)).toBe(true)
+    expect(loadLinkedState(dir)).toEqual({ links: [], meta: [] })
+    // The joined link's room goes; the computer that entered a code from this one stays paired,
+    // waiting to be confirmed again.
+    expect(linkedInitForRemote().links).toEqual([])
+    expect(h.bridge.refresh).toHaveBeenCalled()
+    expect(res.data).toMatchObject({ keyStorage: 'keychain', machines: [{ ref: devRef(P), confirmed: false }] })
+    expect(res.data.keyLockLinksOnly).toBeUndefined()
+  })
+
+  it('Start over with only the links file locked writes over a file that will not move', async () => {
+    fs.mkdirSync(stateFile())
+    const h = boot({ enabled: true })
+    expect(await h.status()).toMatchObject({ keyStorage: 'locked', keyLockReason: 'unreadable', keyLockLinksOnly: true })
+    expect((await h.invoke('linked:start-over')).success).toBe(true)
+    expect(h.bridge.startOver).not.toHaveBeenCalled()
+    expect((await h.status()).keyStorage).toBe('keychain')
+  })
+
+  it('Start over with the identity locked asks Remote, which sets every file aside and calls back to forget every link', async () => {
     const L = joined()
     saveLinkedState(dir, { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] })
     setSafeStorage(anotherKeychain())
     const h = boot({ enabled: true })
-    // Remote's half, the way the app's does it: the file aside, then the call back.
+    h.bridge.keys = { keyStorage: 'locked', keyLockReason: 'unwrap-failed', keysUnencrypted: false }
+    // Remote's half, the way the app's does it: the files aside, then the call back.
     h.bridge.startOver.mockImplementation(() => {
       fs.renameSync(stateFile(), `${stateFile()}.retired-1`)
+      h.bridge.keys = { keyStorage: 'keychain', keysUnencrypted: false }
       linkedStartOverForRemote()
       return null
     })
@@ -1925,6 +1971,7 @@ describe('keys that cannot be opened', () => {
     saveLinkedState(dir, { links: [joined()], meta: [] })
     setSafeStorage(anotherKeychain())
     const h = boot({ enabled: true })
+    h.bridge.keys = { keyStorage: 'locked', keyLockReason: 'no-keychain', keysUnencrypted: false }
     h.bridge.startOver.mockReturnValue('Termpolis could not start over')
     expect(await h.invoke('linked:start-over')).toEqual({ success: false, error: 'Termpolis could not start over' })
     expect((await h.status()).keyStorage).toBe('locked')

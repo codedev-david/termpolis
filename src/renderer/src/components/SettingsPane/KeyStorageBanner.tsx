@@ -2,12 +2,20 @@ import { useState } from 'react'
 import type { KeyStorageView } from '../../types'
 
 const KEYS = 'the keys that identify this computer to your phones and linked computers'
+const LINKS = "the file that holds this computer's links to your other computers"
 
 /** Why the keys are locked, in words: what would bring them back, before the way past it. */
 const LOCK_COPY: Record<NonNullable<KeyStorageView['keyLockReason']>, string> = {
   'no-keychain': `Your keyring is locked or not running, so Termpolis can't read ${KEYS}. Unlock it and restart Termpolis.`,
   'unwrap-failed': `This computer's keychain won't open ${KEYS}. That can happen after a password reset, or when Termpolis's data folder came from another computer or user account. If the original account comes back, restart Termpolis.`,
   unreadable: `Termpolis can't read the files that hold ${KEYS}. Check that they can be read, then restart Termpolis.`,
+}
+
+/** The same, when the identity opens and only the links file doesn't (Settings ▸ Linked machines). */
+const LINKS_LOCK_COPY: Record<NonNullable<KeyStorageView['keyLockReason']>, string> = {
+  'no-keychain': `Your keyring is locked or not running, so Termpolis can't read ${LINKS}. Unlock it and restart Termpolis.`,
+  'unwrap-failed': `This computer's keychain won't open ${LINKS}. That can happen after a password reset, when Termpolis's data folder came from another computer or user account, or when the file was only partly written. If the original account comes back, restart Termpolis.`,
+  unreadable: `Termpolis can't read ${LINKS}. Check that it can be read, then restart Termpolis.`,
 }
 
 const RED = 'text-xs text-[#f28b82] border border-[#5a2d2d] bg-[#2a1919] rounded px-3 py-2 mb-3 flex flex-col gap-2'
@@ -27,7 +35,8 @@ interface Props {
  * this computer's one identity, and whichever pane is open says so.
  *
  * Locked, the way past is Start over -- the user's decision, never the app's, and a two-step one,
- * because it costs every pairing. Saved in the clear with no keychain, there is only the warning.
+ * because it costs every pairing (or, with only the links file locked, every link). Saved in the
+ * clear with no keychain, there is only the warning.
  * In the clear WITH a keychain, Encrypt keys now: asked for rather than done on the side, because
  * sealed keys open only where the keychain does.
  */
@@ -46,18 +55,26 @@ export function KeyStorageBanner({ view, pane, onEncrypt, onStartOver }: Props):
   }
 
   if (view.keyStorage === 'locked') {
+    const linksOnly = view.keyLockLinksOnly === true
+    const copy = linksOnly ? LINKS_LOCK_COPY : LOCK_COPY
     return (
       <div data-testid={`${pane}-keys-warning`} data-keys="locked" className={RED}>
         <span>
-          {view.keyLockReason ? LOCK_COPY[view.keyLockReason] : `Termpolis can't open ${KEYS}.`} Nothing was
-          changed: no new keys were made, and every pairing is kept.
+          {view.keyLockReason ? copy[view.keyLockReason] : `Termpolis can't open ${linksOnly ? LINKS : KEYS}.`}{' '}
+          {linksOnly
+            ? 'Nothing was changed, and your phones keep working: the identity they know this computer by opens.'
+            : 'Nothing was changed: no new keys were made, and every pairing is kept.'}
         </span>
         {confirming ? (
           <>
             <span className="text-[#e0e0e0]">
-              Start over makes a new identity for this computer. Every phone and every linked computer paired
-              with the old one has to pair again, and a linked computer keeps listing this one until it is
-              unlinked there. The old key files are renamed aside, not deleted.
+              {linksOnly
+                ? 'Start over forgets what that file held. A computer whose code this one entered has to be linked ' +
+                  'again, and one that entered a code from this computer has to be confirmed again, its permissions ' +
+                  "set again. Phones and this computer's identity are kept. The old file is renamed aside, not deleted."
+                : 'Start over makes a new identity for this computer. Every phone and every linked computer paired ' +
+                  'with the old one has to pair again, and a linked computer keeps listing this one until it is ' +
+                  'unlinked there. The old key files are renamed aside, not deleted.'}
             </span>
             <div className="flex gap-2">
               <button

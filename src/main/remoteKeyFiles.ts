@@ -4,8 +4,8 @@
 //
 // Two user decisions act on them, and nothing else does: "Encrypt keys now" seals the key files
 // still saved in the clear once a keychain is there to do it, and "Start over" sets all three aside
-// when the keys can't be opened any more. Both go through secureKeyStore's verbs, so no key is ever
-// written over or deleted.
+// when the keys can't be opened any more -- or only the links file, when only it can't. Both go
+// through secureKeyStore's verbs, so no key is ever written over or deleted.
 import { inspectSecret, keyStorageMode, retireSecretFile, wrapSecretInPlace } from './secureKeyStore'
 import { remoteIdentityPath } from './remoteIdentityStore'
 import { linkedStatePath } from './linkedStore'
@@ -41,6 +41,18 @@ export function retireRemoteKeyFiles(userDataDir: string): void {
     } catch {
       /* the hosts forget what it held anyway, and their next save writes over it */
     }
+  }
+}
+
+/** Linked machines' own "Start over", for when only the links file can't be opened: that file alone
+ *  is set aside. The identity opens, so it stays, and the device registry with it: every phone, and
+ *  every computer that entered a code from this one, keeps working. One that can't be moved is
+ *  written over by the host's next save, as the user chose. */
+export function retireLinkedStateFile(userDataDir: string): void {
+  try {
+    retireIfThere(linkedStatePath(userDataDir))
+  } catch {
+    /* the host forgets what it held anyway, and its next save writes over it */
   }
 }
 

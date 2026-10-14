@@ -1076,6 +1076,9 @@ export interface KeyStorageView {
   keyStorage: 'keychain' | 'plaintext' | 'locked'
   /** Why, while 'locked'. */
   keyLockReason?: 'no-keychain' | 'unwrap-failed' | 'unreadable'
+  /** Linked machines only, while 'locked': the identity opens, and only the file of links can't be.
+   *  Start over then sets aside that file alone, and the phones keep working. */
+  keyLockLinksOnly?: boolean
   /** A key file saved in the clear before a keychain was there to seal it: what "Encrypt keys now"
    *  is for. Only ever true with a keychain. */
   keysUnencrypted: boolean

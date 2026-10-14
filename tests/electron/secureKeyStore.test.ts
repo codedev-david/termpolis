@@ -13,7 +13,7 @@ import * as path from 'path'
 import {
   setSafeStorage, isOsEncryptionAvailable, writeSecret, readSecret,
   inspectSecret, createSecretExclusive, retireSecretFile, listRetiredSecrets, keyStorageMode,
-  keyStorageBackend, wrapSecretInPlace,
+  keyStorageBackend, wrapSecretInPlace, replaceSecret,
 } from '../../src/main/secureKeyStore'
 
 // A fake OS keychain: "encrypts" by XOR (so the on-disk blob is clearly not the
@@ -473,5 +473,76 @@ describe('wrapSecretInPlace -- seal a secret saved in the clear, never leaving i
     setSafeStorage({ ...fakeSafeStorage(), decryptString: () => 'something else' })
     expect(() => wrapSecretInPlace(p)).toThrow(/could not be read back/)
     expect(fs.readFileSync(p, 'utf8')).toBe('plain')
+  })
+})
+
+describe('replaceSecret -- write over a secret in one step, never half of it', () => {
+  it('replaces the file with the new secret, sealed while there is a keychain, and leaves nothing beside it', () => {
+    const p = path.join(dir, 'linked-machines')
+    setSafeStorage(fakeSafeStorage())
+    replaceSecret(p, 'first')
+    replaceSecret(p, 'second')
+    expect(fs.readFileSync(p, 'utf8').startsWith('osk:v1:')).toBe(true)
+    expect(inspectSecret(p)).toEqual({ state: 'encrypted', value: 'second' })
+    expect(fs.readdirSync(dir)).toEqual(['linked-machines'])
+    setSafeStorage(null)
+    replaceSecret(p, 'third')
+    expect(fs.readFileSync(p, 'utf8')).toBe('third')
+  })
+
+  it('a new file that will not go into place is removed, after a retry, and the old one kept byte for byte', () => {
+    const p = path.join(dir, 'linked-machines')
+    setSafeStorage(fakeSafeStorage())
+    replaceSecret(p, 'old')
+    const before = fs.readFileSync(p)
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('in use'), { code: 'EBUSY' })
+    })
+    try {
+      expect(() => replaceSecret(p, 'new')).toThrow(/in use/)
+      // A scanner holding the old file lets go in a moment, most times: asked again first.
+      expect(rename.mock.calls.length).toBeGreaterThan(1)
+    } finally {
+      rename.mockRestore()
+    }
+    expect(fs.readFileSync(p).equals(before)).toBe(true)
+    expect(fs.readdirSync(dir)).toEqual(['linked-machines'])
+  })
+
+  it('a write that fails part-way, or a keychain that refuses, leaves the old file as it was', () => {
+    const p = path.join(dir, 'k')
+    fs.writeFileSync(p, 'old')
+    const write = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+    })
+    try {
+      expect(() => replaceSecret(p, 'new')).toThrow(/disk full/)
+    } finally {
+      write.mockRestore()
+    }
+    expect(fs.readFileSync(p, 'utf8')).toBe('old')
+    expect(fs.readdirSync(dir)).toEqual(['k'])
+    setSafeStorage({ ...fakeSafeStorage(), encryptString: () => { throw new Error('keychain refused') } })
+    expect(() => replaceSecret(p, 'new')).toThrow(/keychain refused/)
+    expect(fs.readFileSync(p, 'utf8')).toBe('old')
+    expect(fs.readdirSync(dir)).toEqual(['k'])
+  })
+
+  it('still reports the failed rename when the new file will not go either', () => {
+    const p = path.join(dir, 'k')
+    fs.writeFileSync(p, 'old')
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('not allowed'), { code: 'EXDEV' })
+    })
+    const rm = vi.spyOn(fs, 'rmSync').mockImplementation(() => {
+      throw new Error('locked by a scanner')
+    })
+    try {
+      expect(() => replaceSecret(p, 'new')).toThrow(/not allowed/)
+    } finally {
+      rename.mockRestore()
+      rm.mockRestore()
+    }
+    expect(fs.readFileSync(p, 'utf8')).toBe('old')
   })
 })
