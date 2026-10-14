@@ -787,10 +787,10 @@ function reloadFromImpl(paths: string[]): void {
 
 // v1.26: an at-rest key handed in by the CALLER, already unwrapped. The memory store now runs in
 // an Electron `utilityProcess`, and that child has no `safeStorage` (DPAPI / Keychain / libsecret
-// are main-process-only) — so it cannot run loadCachedKey() itself. Main unwraps the key and
-// injects it here. It MUST be a 32-byte AES-256 key: a short/garbage buffer is a caller bug, and
-// silently falling back to loadCachedKey() (which returns null in the child) would present a fully
-// populated encrypted store as EMPTY — the single worst failure mode this module has. Fail loud.
+// are main-process-only) — so it cannot read its own key file. Main unwraps the key and injects it
+// here. It MUST be a 32-byte AES-256 key: a short/garbage buffer is a caller bug, and silently
+// falling back to the key file (which the child cannot open) would present a fully populated
+// encrypted store as EMPTY — the single worst failure mode this module has. Fail loud.
 function normalizeInjectedKey(k: Buffer | null | undefined): Buffer | null {
   if (k === undefined || k === null) return null
   if (!Buffer.isBuffer(k) || k.length !== 32) {
@@ -3084,11 +3084,12 @@ export function getSyncStatus(): SyncStatus {
 
 // ---- At-rest encryption ----
 //
-// When on, every shard line is AES-256-GCM encrypted under a key derived (scrypt)
-// from the user's passphrase + a per-store salt (the salt lives in the sync
-// folder; the derived key is cached LOCALLY, never synced). The sync provider
-// sees only ciphertext; Termpolis, holding the key, reads it. Plaintext and
-// ciphertext lines coexist, so enabling/disabling never corrupts a store.
+// When on, every shard line is AES-256-GCM encrypted: a local store under a random per-device key
+// that the OS keychain wraps (memory-sync.key), a v1 synced store under a key derived (scrypt) from
+// the user's passphrase + a per-store salt (the salt lives in the sync folder; the derived key is
+// held for the session only, never synced and never written to the device key's file). The sync
+// provider sees only ciphertext; Termpolis, holding the key, reads it. Plaintext and ciphertext
+// lines coexist, so enabling/disabling never corrupts a store.
 
 function keyCachePath(): string | null { return userDataDir ? path.join(userDataDir, KEY_CACHE_FILE) : null }
 function saltPath(): string | null { return syncDir ? path.join(syncDir, SALT_FILE) : null }
