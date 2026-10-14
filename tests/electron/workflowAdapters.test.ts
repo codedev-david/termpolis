@@ -137,6 +137,22 @@ describe('tool invoker adapter', () => {
       vi.useRealTimers()
     }
   })
+  it('waits as long as the tool takes when the step sets no timeout, with no timer at all', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer!: (v: unknown) => void
+      const runner = makeToolInvoker({} as any, () => new Promise((resolve) => { answer = resolve }))
+      for (const none of [undefined, null]) {
+        const pending = runner.invoke('agent_exec', {}, none as unknown as undefined)
+        expect(vi.getTimerCount()).toBe(0)
+        await vi.advanceTimersByTimeAsync(3_600_000)
+        answer({ ok: true })
+        expect(await pending).toEqual({ output: '{"ok":true}', ok: true })
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('clears its timer once the tool answers, and on a throw', async () => {
     vi.useFakeTimers()
     try {

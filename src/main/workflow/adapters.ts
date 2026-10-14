@@ -78,13 +78,16 @@ function errorOf(res: unknown): string | null {
 export function makeToolInvoker(handlers: McpToolHandlers, exec: (name: string, args: any, h: McpToolHandlers) => Promise<any>): ToolInvoker {
   return {
     async invoke(tool, args, timeoutMs) {
-      const ms = Math.min(Math.max(Number(timeoutMs) || 0, 0), MAX_TIMER_MS)
+      // A step with no timeout of its own waits for its tool, which has a budget of its own.
+      const ms = timeoutMs === undefined || timeoutMs === null ? null : Math.min(Math.max(Number(timeoutMs) || 0, 0), MAX_TIMER_MS)
       let timer: ReturnType<typeof setTimeout> | undefined
-      // A call can't be cancelled: past the step's timeout it finishes on its own, and what it
-      // answers then goes nowhere.
-      const expired = new Promise<typeof TIMED_OUT>((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
       try {
-        const res = await Promise.race([exec(tool, args, handlers), expired])
+        const call = exec(tool, args, handlers)
+        // A call can't be cancelled: past the step's timeout it finishes on its own, and what it
+        // answers then goes nowhere.
+        const res = ms === null
+          ? await call
+          : await Promise.race([call, new Promise<typeof TIMED_OUT>((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })])
         if (res === TIMED_OUT) return { output: '', ok: false, error: `${tool} timed out after ${ms}ms` }
         const output = typeof res === 'string' ? res : (JSON.stringify(res) ?? '')
         const error = errorOf(res)

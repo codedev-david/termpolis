@@ -92,6 +92,8 @@ export async function executeSkillStep(step: SkillStep, results: Results, tools:
   for (const [k, v] of Object.entries(step.args || {})) {
     args[k] = typeof v === 'string' ? interpolate(v, results, scope) : v
   }
-  const res = await tools.invoke(step.tool, args, step.timeoutMs ?? 120_000)
+  // Only a timeout the user set. The canvas shows an empty one as "(none)", and a tool such as
+  // run_and_wait or agent_exec has a budget of its own that a default here would cut short.
+  const res = await tools.invoke(step.tool, args, step.timeoutMs)
   return { stepId: step.id, status: res.ok ? 'succeeded' : 'failed', output: tail(res.output), error: res.error }
 }
