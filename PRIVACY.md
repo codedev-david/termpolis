@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: October 8, 2026 (connecting Gemini now reaches the Antigravity CLI's own config; crash reports and usage statistics are separate opt-ins; connecting your coding agents is asked, not assumed; the Claude Code compression proxy)
+Last updated: October 14, 2026 (Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers)
 
 ## Overview
 
