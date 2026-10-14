@@ -224,25 +224,24 @@ describe('a shard that will not read', () => {
     expect(memoryCount()).toBe(2)
   })
 
-  it('still enables encryption when neither the passphrase probe nor the rewrite can read the shard', () => {
+  it('refuses to re-key a shard it cannot read: nothing is adopted, and the shard keeps every byte', () => {
     // setSyncPassphrase reads the shard TWICE: once to find a ciphertext sample to validate the
-    // passphrase against, once to re-encrypt this device's lines. Both are best-effort; the one
-    // thing that must never happen is the rewrite writing back the empty result of a failed read.
+    // passphrase against (best effort), once to re-encrypt this device's lines. The second is not best
+    // effort any more: it used to swallow the failure and adopt the key anyway, and a swallowed rewrite
+    // failure is exactly what let the disable paths delete a key over a log that was never decrypted.
+    // So it fails out loud, the old key stays in force, and nothing is left staged beside the shard.
     initSwarmMemory(userDir, { syncDir })
     const memPath = fs.readdirSync(syncDir).filter((f) => f.endsWith('.jsonl')).map((f) => path.join(syncDir, f))[0]
     fs.writeFileSync(memPath, JSON.stringify({ id: 'plain-1', ts: Date.now(), agentId: 'a', kind: 'note', content: 'a plaintext line nobody could read back' }) + '\n')
     const before = fs.readFileSync(memPath, 'utf8')
 
     failIO.openSync = (p) => p.endsWith('.jsonl') && p.startsWith(syncDir)
-    const status = setSyncPassphrase('correct horse battery staple')
+    expect(() => setSyncPassphrase('correct horse battery staple')).toThrow()
     failIO.openSync = null
 
-    expect(status.encrypted).toBe(true)          // the key was still adopted
-    expect(fs.readFileSync(memPath, 'utf8')).toBe(before) // ...but the shard was left verbatim
-    // F31: the degradation is survivable, NOT benign. Before this, a shard the OS refused to hand
-    // over was indistinguishable from an empty one all the way up to the dashboard — which is how a
-    // 2.27 GB brain spent a day reporting zero memories. It is reported, and nothing else is.
-    expect(tele.recordSwarmError.mock.calls.map((c) => c[0])).toEqual(['swarmMemory.shard.unreadable'])
+    expect(getSyncStatus().encrypted).toBe(false)          // the key was NOT adopted
+    expect(fs.readFileSync(memPath, 'utf8')).toBe(before)  // and the shard was left verbatim
+    expect(fs.readdirSync(syncDir).filter((f) => f.endsWith('.tmp'))).toEqual([])
   })
 
   it('refuses to mint a replacement salt when the existing one cannot be read', () => {

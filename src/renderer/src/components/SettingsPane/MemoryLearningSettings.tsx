@@ -10,6 +10,7 @@ import {
   portabilityRows,
   svgLine,
   isBrainEmpty,
+  isBrainLocked,
   hasUnreadableShards,
   compactNumber,
   pct,
@@ -136,6 +137,15 @@ export function MemoryLearningSettings() {
           Your brain is <em>not</em> empty &mdash; the numbers below only cover what did load, so treat them as a
           floor. Nothing has been deleted: compaction and clearing both refuse to rewrite a shard they
           can&rsquo;t read, so the file on disk is intact. Restart Termpolis to retry the load.
+        </div>
+      )}
+
+      {m && isBrainLocked(m) && (
+        <div data-testid="ml-locked" className="text-xs text-[#FFB74D] p-4 border border-[#FFB74D]/40 rounded bg-[#FFB74D]/10 leading-relaxed">
+          <span className="font-medium">Memory is locked &mdash; nothing new is being saved.</span>{' '}
+          Your brain is <em>not</em> empty: this computer can&rsquo;t open it with its memory key, so the numbers
+          below only cover what it could read. Nothing on disk has been changed. Open the Memory panel
+          (Ctrl+Shift+M) to see why and what to do.
         </div>
       )}
 

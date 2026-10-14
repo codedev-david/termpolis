@@ -75,6 +75,15 @@ describe('MemoryLearningSettings', () => {
     expect(screen.getByTestId('ml-receipts')).toBeInTheDocument()
   })
 
+  it('says memory is LOCKED instead of claiming the brain is empty, and points to the Memory panel', async () => {
+    stub(metrics({ store: { total: 0, capacity: 500000, byType: {}, bySource: {}, lessons: 0, timeline: [], locked: true } }))
+    render(<MemoryLearningSettings />)
+    const banner = await screen.findByTestId('ml-locked')
+    expect(banner).toHaveTextContent(/Memory is locked — nothing new is being saved/)
+    expect(banner).toHaveTextContent(/Open the Memory panel/)
+    expect(screen.queryByTestId('ml-empty')).not.toBeInTheDocument()
+  })
+
   it('shows the empty-brain onboarding note when nothing is stored', async () => {
     stub(metrics())
     render(<MemoryLearningSettings />)

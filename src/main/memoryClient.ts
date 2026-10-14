@@ -32,10 +32,10 @@ import * as path from 'path'
 import * as crypto from 'crypto'
 import { fileURLToPath } from 'url'
 import { utilityProcess } from 'electron'
-import { deriveKey } from './memoryCrypto'
-import { readSecret, writeSecret, isOsEncryptionAvailable } from './secureKeyStore'
+import { isOsEncryptionAvailable, keyStorageMode, createSecretExclusive, retireSecretFile } from './secureKeyStore'
 import {
   HOST_HANDLERS,
+  readKeysOf,
   type HostRequest,
   type HostResponse,
   type HostInitMsg,
@@ -46,7 +46,9 @@ import {
   adoptEncryptionKey as inprocAdoptKey,
   setMemoryScrubber as inprocSetScrubber,
   setVectorQuantization as inprocSetQuantization,
-  KEY_CACHE_FILE, SALT_FILE, ENCRYPTION_OPTOUT_FILE,
+  inspectMemoryKey, retiredMemoryKeys,
+  KEY_CACHE_FILE, ENCRYPTION_OPTOUT_FILE,
+  type KeyFileProblem,
   // Pure, stateless helpers — see the re-export block at the bottom.
   normalizeProjectSlug, projectKeyOf, entityDedupHash, contentHash, canonicalEntityName,
   type MemoryEntry, type MemorySearchResult, type WriteInput, type SearchOptions,
@@ -176,32 +178,43 @@ function rehydrate(e: SerializedError | undefined, fallback: string): Error {
  * Policy is copied deliberately, not approximated: no auto-key for a SYNCED store (peers cannot share
  * a per-device key — that is the passphrase model), none when the user opted out, and none without a
  * real OS keychain (a plaintext key beside the ciphertext is security theatre — stay honestly plaintext).
+ *
+ * The key FILE is never overwritten (Decision 1). It used to be: a blob the keychain refused once — a
+ * DPAPI hiccup, a keyring not unlocked yet, an Electron upgrade reading the old wrap — read as "no key",
+ * and a fresh one was minted over it, which made the whole brain unreadable for good. Now:
+ *   - no file: mint one, exclusively (it can't clobber a file that appears meanwhile);
+ *   - a file that opens to a 32-byte key: use it, write nothing;
+ *   - a file that doesn't (no keychain, unwrap refused, wrong length): leave it exactly as it is and
+ *     report why. The store comes up LOCKED, and only the user's "Start a new memory key" moves it.
+ * Retired keys that still unwrap come back as `readKeys`, so lines under them stay readable.
  */
 export function provisionMemoryKey(
   userDataPath: string,
   syncDir: string | null,
-): { key: Buffer | null; minted: boolean } {
+): { key: Buffer | null; minted: boolean; readKeys: Buffer[]; problem: KeyFileProblem | null } {
   const keyPath = path.join(userDataPath, KEY_CACHE_FILE)
-  try {
-    const existing = readSecret(keyPath)
-    if (existing) {
-      const k = Buffer.from(existing, 'base64')
-      if (k.length === 32) return { key: k, minted: false }
-    }
-  } catch { /* fall through to the mint decision */ }
+  const readKeys = retiredMemoryKeys(keyPath)
+  const found = inspectMemoryKey(keyPath)
+  if (!found.absent) return { key: found.key, minted: false, readKeys, problem: found.problem }
 
-  if (syncDir) return { key: null, minted: false }                                   // passphrase model
+  const none = { key: null, minted: false, readKeys, problem: null }
+  if (syncDir) return none                                   // passphrase model
   try {
-    if (fs.existsSync(path.join(userDataPath, ENCRYPTION_OPTOUT_FILE))) return { key: null, minted: false }
+    if (fs.existsSync(path.join(userDataPath, ENCRYPTION_OPTOUT_FILE))) return none
   } catch { /* treat an unreadable opt-out marker as absent */ }
-  if (!isOsEncryptionAvailable()) return { key: null, minted: false }                // honest plaintext
+  if (keyStorageMode() !== 'keychain') return none            // honest plaintext
 
+  const key = crypto.randomBytes(32)
   try {
-    const key = crypto.randomBytes(32)
-    writeSecret(keyPath, key.toString('base64')) // OS-encrypted at rest, in the ONLY process that can
-    return { key, minted: true }
-  } catch {
-    return { key: null, minted: false } // never leave a half-written key behind — stay plaintext
+    createSecretExclusive(keyPath, key.toString('base64')) // OS-encrypted at rest, in the ONLY process that can
+    return { key, minted: true, readKeys, problem: null }
+  } catch (err) {
+    // A file appeared between the look and the write (EEXIST): that one is the key — use it, as found.
+    if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') {
+      const raced = inspectMemoryKey(keyPath)
+      return { key: raced.key, minted: false, readKeys, problem: raced.problem }
+    }
+    return none // the keychain refused: nothing was left behind, so stay honestly plaintext
   }
 }
 
@@ -231,8 +244,9 @@ function fallBackToInProcess(why: string): void {
     // Same ordering the host uses (and that index.ts used in-process): mode BEFORE the store, or the
     // packed array is allocated in the wrong one and setVectorQuantization has to rebuild it.
     try { inprocSetQuantization(initParams.quantize === true) } catch { /* exact floats */ }
-    inprocInit(initParams.userDataPath, { syncDir: initParams.syncDir, encKey })
-    if (encKey && initParams.encKeyMinted) inprocAdoptKey(encKey)
+    inprocInit(initParams.userDataPath, { syncDir: initParams.syncDir, encKey, readKeys: readKeysOf(initParams.readKeysB64), keyProblem: initParams.keyProblem })
+    // As in the host: a rewrite that fails (or a LOCKED store refusing it) must not cost the scrubber.
+    if (encKey && initParams.encKeyMinted) { try { inprocAdoptKey(encKey) } catch { /* the key is in force regardless */ } }
     if (scrubber) inprocSetScrubber(scrubber)
   } catch (err) {
     logLoud(`in-process memory init FAILED too: ${(err as Error)?.message}`)
@@ -358,7 +372,7 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
   const syncDir = opts.syncDir ?? null
   // Provision the key BEFORE we choose a mode, so the host and the in-process fallback are given
   // byte-for-byte the same key story and can't diverge on which one encrypts.
-  const { key, minted } = provisionMemoryKey(userDataPath, syncDir)
+  const { key, minted, readKeys, problem } = provisionMemoryKey(userDataPath, syncDir)
   initParams = {
     kind: 'init',
     userDataPath,
@@ -366,6 +380,8 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
     quantize: opts.quantize === true,
     encKeyB64: key ? key.toString('base64') : null,
     encKeyMinted: minted,
+    readKeysB64: readKeys.map((k) => k.toString('base64')),
+    keyProblem: problem,
     osEncryptionAvailable: isOsEncryptionAvailable(),
   }
 
@@ -561,10 +577,32 @@ export const symbolHistory = (query: string, projectKey?: string): Promise<Memor
 export const vectorRamStats = (): Promise<VectorRamStats> => call('vectorRamStats', [])
 export const setVectorQuantization = (on: boolean): Promise<VectorRamStats> => call('setVectorQuantization', [on])
 export const getSyncStatus = (): Promise<SyncStatus> => call('getSyncStatus', [])
-export const setSyncDir = (dir: string | null): Promise<SyncStatus> => call('setSyncDir', [dir])
 export const reloadMemoryFromSync = (): Promise<void> => call('reloadMemoryFromSync', [])
 export const disableSyncEncryption = (): Promise<SyncStatus> => call('disableSyncEncryption', [])
-export const disableEncryption = (): Promise<SyncStatus> => call('disableEncryption', [])
+
+// A respawn re-inits from initParams, so every call that changes what the store is running on records
+// it there — or a crash mid-session would quietly put the store back the way it booted.
+
+// (A call that resolved means startMemoryHost ran, so initParams is set — hence the casts below.)
+
+/** Point the store at a sync folder, or (null) back at its own local file. */
+export async function setSyncDir(dir: string | null): Promise<SyncStatus> {
+  const status = await call<SyncStatus>('setSyncDir', [dir])
+  initParams = { ...(initParams as HostInitMsg), syncDir: status.syncing ? status.dir : null }
+  return status
+}
+
+/** Turn local at-rest encryption off. The store decrypts everything and retires the key file; a
+ *  respawn must then come up without that key too. */
+export async function disableEncryption(): Promise<SyncStatus> {
+  const status = await call<SyncStatus>('disableEncryption', [])
+  const p = initParams as HostInitMsg
+  if (p.encKeyB64) {
+    // Not dropped: the store keeps the old key in its read ring, and so must a fresh child.
+    initParams = { ...p, encKeyB64: null, encKeyMinted: false, readKeysB64: [p.encKeyB64, ...p.readKeysB64] }
+  }
+  return status
+}
 // brainIpc.ts imports these two DIRECTLY from swarmMemory today — which, once the store moves, would
 // export/import against an EMPTY in-main store. Proxied here so step 2 can repoint it.
 // string[] not string: a >512 MiB brain joined into ONE string throws RangeError (V8 max-string) and
@@ -577,25 +615,28 @@ export const importMemorySnapshot = (lines: string[]): Promise<{ imported: numbe
 /**
  * enableLocalEncryption, but with the mint done where a keychain exists.
  *
- * In the child, maybeAutoEncrypt() bails at `!isOsEncryptionAvailable()` and the call is a SILENT
- * no-op: the user ticks "encrypt my memory" and nothing happens. So mint + persist here, then have
- * the store adopt the key (which clears the opt-out and ciphertext-ifies the existing plaintext).
+ * In the child, maybeAutoEncrypt() can't mint (the child has no keychain) and the call would be a
+ * SILENT no-op: the user ticks "encrypt my memory" and nothing happens. So mint + persist here, then
+ * have the store adopt the key (which clears the opt-out and ciphertext-ifies the existing plaintext).
+ *
+ * An existing key file is used if it opens, and never replaced if it doesn't (Decision 1): a file the
+ * keychain refuses is still the only key to whatever was written under it.
  */
 export async function enableLocalEncryption(): Promise<SyncStatus> {
   const p = initParams
   if (mode !== 'host' || !p) return call('enableLocalEncryption', []) // in-process: safeStorage is right here
   if (p.syncDir) return call('enableLocalEncryption', [])             // synced stores use the passphrase model
-  if (!isOsEncryptionAvailable()) return call('enableLocalEncryption', []) // no keychain → honest no-op, encrypted:false
+  if (keyStorageMode() !== 'keychain') return call('enableLocalEncryption', []) // no keychain → honest no-op, encrypted:false
 
   const keyPath = path.join(p.userDataPath, KEY_CACHE_FILE)
-  let key: Buffer | null = null
-  try {
-    const existing = readSecret(keyPath)
-    if (existing) { const k = Buffer.from(existing, 'base64'); if (k.length === 32) key = k }
-  } catch { /* mint a fresh one below */ }
+  const found = inspectMemoryKey(keyPath)
+  if (found.problem) {
+    throw new Error(`The memory key file can't be used (${found.problem}), so encryption can't be turned on. It was left exactly as it is.`)
+  }
+  let key = found.key
   if (!key) {
     key = crypto.randomBytes(32)
-    writeSecret(keyPath, key.toString('base64'))
+    createSecretExclusive(keyPath, key.toString('base64')) // throws — writing nothing — if a file beat us to it
   }
   const status = await call<SyncStatus>('adoptEncryptionKeyB64', [key.toString('base64')])
   initParams = { ...p, encKeyB64: key.toString('base64'), encKeyMinted: false } // survive a respawn
@@ -603,29 +644,42 @@ export async function enableLocalEncryption(): Promise<SyncStatus> {
 }
 
 /**
- * setSyncPassphrase, plus the keychain write the child cannot do.
+ * setSyncPassphrase: the store derives, validates and applies the key itself (it has the salt and the
+ * ciphertext to check against).
  *
- * The store derives, validates and applies the key itself (it has the salt and the ciphertext to
- * check against) — but it cannot CACHE it: writeSecret needs safeStorage, and the host fences off
- * its plaintext fallback precisely so a child can never drop the sync key on disk in the clear. So
- * main re-derives the same key from the same passphrase + salt and persists it properly; without
- * this the store would work all session and then ask for the passphrase again on every launch.
+ * Main no longer caches the result. It used to write it into memory-sync.key — the DEVICE key's file —
+ * overwriting the key the local brain is encrypted under (Decision 1). The passphrase key lives for the
+ * session; persisting it belongs in its own file, which v2 sync introduces.
  */
-export async function setSyncPassphrase(passphrase: string): Promise<SyncStatus> {
-  const status = await call<SyncStatus>('setSyncPassphrase', [passphrase])
+export const setSyncPassphrase = (passphrase: string): Promise<SyncStatus> => call('setSyncPassphrase', [passphrase])
+
+/**
+ * Decision 1 — "Start a new memory key", the only way past a LOCKED store, and only ever by the user.
+ *
+ * The old key file is retired (renamed aside, its bytes verified, never deleted), a new key is minted
+ * exclusively, and the store starts writing under it. Nothing is rewritten: older memories stay on disk
+ * as they are, readable again whenever the old key works — every retired key is retried on every
+ * launch. It needs a real keychain (a new key is never written in the clear), and it is refused on a
+ * store that isn't locked, where it would only cost every later launch an extra key to try.
+ */
+export async function startNewMemoryKey(): Promise<SyncStatus> {
   const p = initParams
-  if (mode === 'host' && p?.syncDir) {
-    try {
-      const salt = fs.readFileSync(path.join(p.syncDir, SALT_FILE)) // written by the store; present by now
-      const key = deriveKey(passphrase, salt)
-      writeSecret(path.join(p.userDataPath, KEY_CACHE_FILE), key.toString('base64'))
-      initParams = { ...p, encKeyB64: key.toString('base64'), encKeyMinted: false } // survive a respawn
-    } catch {
-      // Best effort, exactly as swarmMemory treats it. The store is unlocked for this session; the
-      // worst case is re-entering the passphrase next launch. Never a plaintext key on disk.
-      logLoud('could not cache the sync key in the OS keychain — the passphrase will be needed again next launch')
-    }
+  if (!p) throw new Error(`memory client: startMemoryHost() has not been called (fn "startNewMemoryKey")`)
+  if (keyStorageMode() !== 'keychain') {
+    throw new Error("This computer has no OS keychain to protect a new memory key, so one can't be started.")
   }
+  const before = await call<SyncStatus>('getSyncStatus', [])
+  if (!before.ownLocked) throw new Error("Memory isn't locked — there is no need to start a new key.")
+  const keyPath = path.join(p.userDataPath, KEY_CACHE_FILE)
+  if (!inspectMemoryKey(keyPath).absent) {
+    const retired = retireSecretFile(keyPath, 'new-memory-key')
+    logLoud(`memory key retired to ${path.basename(retired)} — a new one is being started`)
+  }
+  const key = crypto.randomBytes(32)
+  createSecretExclusive(keyPath, key.toString('base64'))
+  const readKeysB64 = retiredMemoryKeys(keyPath).map((k) => k.toString('base64')) // includes the one just retired, if it opens
+  const status = await call<SyncStatus>('startNewMemoryKeyB64', [key.toString('base64'), readKeysB64])
+  initParams = { ...p, encKeyB64: key.toString('base64'), encKeyMinted: false, readKeysB64, keyProblem: null } // survive a respawn
   return status
 }
 

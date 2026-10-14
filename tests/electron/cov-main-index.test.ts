@@ -1947,30 +1947,28 @@ describe('memory handlers return err() instead of rejecting the IPC call', () =>
   it('memory:set-sync-dir turns a missing dir into an explicit null (disable)', async () => {
     MEMC.setSyncDir.mockResolvedValueOnce({ enabled: false, dir: null } as never)
     expect(await invoke('memory:set-sync-dir', {})).toEqual({ success: true, data: { enabled: false, dir: null } })
-    // `?? null`: undefined would read as "no argument supplied" and could leave sync on.
+    // undefined would read as "no argument supplied" and could leave sync on.
     expect(MEMC.setSyncDir).toHaveBeenLastCalledWith(null)
     MEMC.setSyncDir.mockRejectedValueOnce(new Error('not writable') as never)
-    expect(await invoke('memory:set-sync-dir', { dir: '/x' })).toEqual({ success: false, error: 'not writable' })
+    expect(await invoke('memory:set-sync-dir', { dir: null })).toEqual({ success: false, error: 'not writable' })
   })
 
-  it('memory:choose-sync-dir leaves sync untouched when the picker is cancelled', async () => {
-    M.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] } as never)
+  it('memory:set-sync-dir REFUSES a folder (Decision 5) without ever reaching the store', async () => {
     MEMC.setSyncDir.mockClear()
-    MEMC.getSyncStatus.mockResolvedValueOnce({ enabled: false, dir: null } as never)
-    expect(await invoke('memory:choose-sync-dir')).toEqual({ success: true, data: { enabled: false, dir: null } })
-    // Cancel must not disable an already-configured sync.
+    const res = await invoke('memory:set-sync-dir', { dir: '/Dropbox/brain' }) as { success: boolean; error: string }
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/^SYNC_TEMPORARILY_DISABLED/)
     expect(MEMC.setSyncDir).not.toHaveBeenCalled()
   })
 
-  it('memory:choose-sync-dir enables sync to the chosen folder in one step', async () => {
-    M.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/Dropbox/brain'] } as never)
-    MEMC.setSyncDir.mockResolvedValueOnce({ enabled: true, dir: '/Dropbox/brain' } as never)
-    expect(await invoke('memory:choose-sync-dir')).toEqual({ success: true, data: { enabled: true, dir: '/Dropbox/brain' } })
-  })
-
-  it('memory:choose-sync-dir', async () => {
-    M.showOpenDialog.mockRejectedValueOnce(new Error('no window'))
-    expect(await invoke('memory:choose-sync-dir')).toEqual({ success: false, error: 'no window' })
+  it('memory:choose-sync-dir is refused before a picker opens, so nothing can turn sync on', async () => {
+    M.showOpenDialog.mockClear()
+    MEMC.setSyncDir.mockClear()
+    const res = await invoke('memory:choose-sync-dir') as { success: boolean; error: string }
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/^SYNC_TEMPORARILY_DISABLED/)
+    expect(M.showOpenDialog).not.toHaveBeenCalled()
+    expect(MEMC.setSyncDir).not.toHaveBeenCalled()
   })
 
   it('memory:disable-sync-encryption', async () => {

@@ -327,7 +327,7 @@ describe('memoryClient — falling back must not drop encryption', () => {
 })
 
 describe('enableLocalEncryption — a half-written key cache', () => {
-  it('replaces a TRUNCATED cached key instead of handing the store a short one', async () => {
+  it('REFUSES a truncated key file rather than minting over it — and never hands the store a short key', async () => {
     setSafeStorage(fakeSafe)
     const posted: HostCall[] = []
     const h = makeManualHost({
@@ -337,19 +337,18 @@ describe('enableLocalEncryption — a half-written key cache', () => {
     expect(await startMemoryHost({ userDataPath: tmp })).toBe('host')
 
     // What a crash mid-write (or a truncating sync client) leaves behind: a readable blob that is not
-    // a 32-byte AES key. Adopting it would either throw in the store or, worse, key the shard with
-    // something nothing can reproduce.
+    // a 32-byte AES key. Adopting it would key the shard with something nothing can reproduce — and
+    // "repairing" it, which this used to do, overwrote the only copy of whatever the file had been.
+    // A damaged key is the user's call (Start a new memory key), never this function's.
     const keyPath = path.join(tmp, KEY_CACHE_FILE)
     writeSecret(keyPath, Buffer.from('too short').toString('base64'))
+    const before = fs.readFileSync(keyPath)
 
-    const status = await enableLocalEncryption()
-    expect(status.encrypted).toBe(true)
+    await expect(enableLocalEncryption()).rejects.toThrow(/key-invalid/)
 
-    const adopt = posted.find((m) => m.fn === 'adoptEncryptionKeyB64')
-    expect(adopt).toBeDefined()
-    expect(Buffer.from(adopt?.args[0] as string, 'base64')).toHaveLength(32)
-    // The cache is repaired on disk too, so the next launch does not repeat this.
-    expect(Buffer.from(readSecret(keyPath) ?? '', 'base64')).toHaveLength(32)
+    expect(posted.find((m) => m.fn === 'adoptEncryptionKeyB64')).toBeUndefined()
+    expect(fs.readFileSync(keyPath).equals(before)).toBe(true)
+    expect(Buffer.from(readSecret(keyPath) ?? '', 'base64').toString()).toBe('too short')
   })
 })
 
