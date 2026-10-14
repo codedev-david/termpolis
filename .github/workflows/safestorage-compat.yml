@@ -5,9 +5,10 @@ name: safeStorage compat
 # auto-update with their existing profile. Each OS: the OLD Electron wraps a secret in a fresh
 # profile, the NEW one unwraps it from that same profile (the upgrade), then the reverse (a
 # downgrade). Windows is DPAPI plus the AES key in <userData>/Local State, so the runner is
-# representative. macOS keychain access is tied to the code signature, so two unsigned Electrons
-# can prompt or fail there where two signed Termpolis builds would not. A Linux runner has no
-# keyring, so it only covers the basic_text fallback.
+# representative. A Linux runner has no keyring, so there it only shows that both versions agree
+# nothing can be wrapped. No macOS: keychain access is bound to the code signature, and the second
+# unsigned Electron sits on an access prompt nobody can answer (it hung until the job timed out).
+# Signed Termpolis builds share one Developer ID, which is what keeps that access across updates.
 on:
   workflow_dispatch:
     inputs:
@@ -27,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -55,22 +56,29 @@ jobs:
           app.setPath('userData', dir)
           app.whenReady().then(() => {
             const blob = path.join(dir, 'blob.txt')
+            let code = 0
             try {
+              const available = safeStorage.isEncryptionAvailable()
               const backend = process.platform === 'linux' && safeStorage.getSelectedStorageBackend ? safeStorage.getSelectedStorageBackend() : '-'
-              console.log(`electron ${process.versions.electron} available=${safeStorage.isEncryptionAvailable()} backend=${backend}`)
+              console.log(`electron ${process.versions.electron} available=${available} backend=${backend}`)
               if (mode === 'write') {
-                fs.writeFileSync(blob, safeStorage.encryptString('termpolis-compat-ok').toString('base64'))
-                console.log('wrote', fs.readFileSync(blob, 'utf8').length, 'base64 chars')
+                // No OS keyring (a bare Linux runner): Termpolis keeps no wrapped key there, so there
+                // is nothing to carry across an upgrade. Say so instead of passing silently.
+                fs.writeFileSync(blob, available ? safeStorage.encryptString('termpolis-compat-ok').toString('base64') : 'UNAVAILABLE')
+                console.log('wrote', fs.readFileSync(blob, 'utf8').length, 'chars')
+              } else if (fs.readFileSync(blob, 'utf8') === 'UNAVAILABLE') {
+                console.log(`::notice::No OS keyring on ${process.platform}: nothing to test`)
               } else {
                 const s = safeStorage.decryptString(Buffer.from(fs.readFileSync(blob, 'utf8'), 'base64'))
                 console.log('read back:', s)
-                if (s !== 'termpolis-compat-ok') process.exitCode = 1
+                if (s !== 'termpolis-compat-ok') code = 1
               }
             } catch (e) {
               console.error('FAILED:', e && e.message)
-              process.exitCode = 1
+              code = 1
             }
-            app.quit()
+            // app.quit() exits 0 whatever process.exitCode says.
+            app.exit(code)
           })
           EOF
       - name: Upgrade (old writes, new reads) and downgrade (new writes, old reads)
