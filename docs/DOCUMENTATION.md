@@ -1009,11 +1009,25 @@ hides the controls it isn't allowed to use.
   swarm or other tools; an agent it types into still has its own.
 - **Keys.** The desktop's identity key never reaches the renderer, and is
   encrypted with the OS keychain (DPAPI / Keychain / libsecret) where one is
-  available; on Linux without a keyring it is stored unencrypted in the data
-  directory. `remote-devices.json` (labels, public keys, room ids, grants) is plain. The
+  available. On Linux without a keyring it is stored unencrypted in the data
+  directory, and *Settings → Remote* and *→ Linked machines* both say so. If
+  a keyring turns up later, **Encrypt keys now** in either pane encrypts the
+  keys saved without one (the identity key and the file of links this
+  computer joined), and from then on they open only while the keyring does.
+  `remote-devices.json` (labels, public keys, room ids, grants) is plain. The
   phone makes a new key pair per desktop and keeps it in the iOS Keychain,
   available only while the device is unlocked and never synced to another
   device.
+- **A key the keychain can't open is never replaced.** That happens when the
+  keyring is locked or not running, after a password reset, or when the data
+  folder came from another computer or user account. Nothing that needs that
+  key starts, nothing is written over it, and the panes say why.
+  Restart Termpolis once the keychain is back and every pairing returns. For a
+  key that will never open, **Start over** renames the identity, the links file
+  and `remote-devices.json` aside (`<name>.retired-<time>`, never deleted) and
+  makes a new identity; every phone and linked computer then has to pair
+  again. Versions before 1.53 replaced such a key without a word, which lost
+  every pairing.
 
 Privacy details are in `PRIVACY.md`; the combined policy for the desktop app,
 the phone app and the relay is at <https://termpolis.com/privacy.html>.
@@ -1226,9 +1240,16 @@ step that calls it is not counted.
   metadata.
 - **Keys.** The computer that enters a code makes a fresh key pair for that
   link alone, as a phone does for each desktop. The computer that made the code
-  uses its one identity key for all its links. Private keys are encrypted with
-  the OS keychain (DPAPI, Keychain or libsecret) where one is available; on
-  Linux without a keyring they are stored unencrypted in the data directory.
+  uses its one identity key, the one its phones pair with, for all its links.
+  A separate key per link there would protect nothing more: every key sits in
+  the same data folder under the same OS account, so whatever can read one can
+  read them all. Private keys are encrypted with the OS keychain (DPAPI,
+  Keychain or libsecret) where one is available; on Linux without a keyring
+  they are stored unencrypted in the data directory, and this pane says so. A
+  key the keychain can't open is never replaced: no link can be made or changed
+  until it opens again, or until you choose **Start over**, which costs every
+  link and every phone (see
+  [Remote's keys](#29-termpolis-remote-phone-app)).
 - **Confirmed on each computer.** A computer runs nothing for another until you
   confirm the eight words on it. Before that, the other computer can learn only
   this one's name and Termpolis version. Treat the code like a one-time
