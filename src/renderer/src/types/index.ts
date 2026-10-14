@@ -1064,6 +1064,9 @@ export interface RemoteStatusView {
   /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
   disabled: boolean
   relayUrl: string
+  /** `relayUrl` is plain ws:// to another computer, saved by an older version.
+   *  Kept but never dialled, and the pane says so until it changes. */
+  relayInsecure: boolean
   publicKey: string
   pairing: RemotePairingView | null
   devices: RemoteDeviceView[]
@@ -1145,6 +1148,10 @@ export interface LinkedStatusView {
   relay: 'idle' | 'connecting' | 'online'
   /** The Remote relay. Shown read-only here; it is set under Settings ▸ Remote. */
   relayUrl: string
+  /** That relay is plain ws:// to another computer (see RemoteStatusView). No
+   *  room of this machine's is dialled on it, so computers that entered a code
+   *  from this one stay offline and no code can be made. */
+  relayInsecure: boolean
   /** This computer's own name, which the other side is offered as a suggestion. */
   thisMachine: string
   /** The live link code, while one is being offered. */

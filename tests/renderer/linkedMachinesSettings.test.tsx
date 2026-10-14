@@ -41,6 +41,7 @@ const statusView = (over: Partial<LinkedStatusView> = {}): LinkedStatusView => (
   running: true,
   relay: 'idle',
   relayUrl: DEFAULT_RELAY_URL,
+  relayInsecure: false,
   thisMachine: 'laptop',
   code: null,
   joining: false,
@@ -228,6 +229,38 @@ describe('LinkedMachinesSettings switch and relay', () => {
     expect(text()).toBe('(connecting to the relay…)')
     act(() => pushStatus(statusView({ machines: [machine({ online: true })] })))
     expect(text()).toBe('(connected to the relay)')
+  })
+
+  it('warns while the Remote relay is plain ws:// to another computer, and does not call it connecting', async () => {
+    // This machine's rooms are never dialled on that relay, so a computer that
+    // entered its code will not come back by waiting. Links it joined still can.
+    api.status.mockResolvedValue(
+      ok(
+        statusView({
+          relayUrl: 'ws://10.0.0.5:8787',
+          relayInsecure: true,
+          machines: [machine({ ref: 'device:bbbb', online: false })],
+        }),
+      ),
+    )
+    await mount()
+    const warning = screen.getByTestId('linked-relay-insecure')
+    expect(warning.textContent).toContain('not encrypted')
+    expect(warning.textContent).toContain('Settings ▸ Remote')
+    expect(screen.getByTestId('linked-relay').textContent).toBe('ws://10.0.0.5:8787')
+    expect(screen.getByTestId('linked-running').textContent).toBe('(not connected)')
+
+    // A link this machine joined is on the other computer's relay, and online.
+    act(() =>
+      pushStatus(
+        statusView({ relayUrl: 'ws://10.0.0.5:8787', relayInsecure: true, machines: [machine({ online: true })] }),
+      ),
+    )
+    expect(screen.getByTestId('linked-running').textContent).toBe('(connected to the relay)')
+    expect(screen.getByTestId('linked-relay-insecure')).toBeTruthy()
+
+    act(() => pushStatus(statusView()))
+    expect(screen.queryByTestId('linked-relay-insecure')).toBeNull()
   })
 
   it('says so when the bridge is not connected', async () => {

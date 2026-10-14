@@ -41,11 +41,16 @@ function relativeTime(ts: number, now: number): string {
   return `${Math.round(hours / 24)}d ago`
 }
 
+/** The relay the bridge dials when none is set: `DEFAULT_RELAY_URL` in main,
+ *  which the renderer cannot import. The tests hold the two to one spelling. */
+const DEFAULT_RELAY = 'wss://relay.termpolis.com'
+
 /** `running` is only the bridge process, up whatever the relay is doing --
- *  reading "connected" off it claimed a relay that refused every dial. */
+ *  reading "connected" off it claimed a relay that refused every dial. A relay
+ *  that is never dialled is not even connecting. */
 function runningText(status: RemoteStatusView): string {
   if (!status.enabled) return ''
-  if (!status.running) return '(not connected)'
+  if (!status.running || status.relayInsecure) return '(not connected)'
   if (status.relay === 'online') return '(connected to the relay)'
   if (status.relay === 'connecting') return '(connecting to the relay…)'
   return '(no phone paired yet)'
@@ -244,6 +249,30 @@ export function RemoteSettings(): JSX.Element {
         </div>
       )}
 
+      {/* From the status, not an event: it holds for as long as the address
+          does, across restarts, and goes the moment a wss:// one is saved. */}
+      {status.relayInsecure && (
+        <div
+          data-testid="remote-relay-insecure"
+          className="text-xs text-[#f28b82] border border-[#5a2d2d] bg-[#2a1919] rounded px-3 py-2 mb-3 flex flex-col gap-2"
+        >
+          <span>
+            Termpolis no longer connects to <span className="font-mono break-all">{status.relayUrl}</span>.
+            Plain ws:// is not encrypted, so anyone on the network between this computer and the relay
+            could see when your devices connect and take their place in the relay before they do. Your
+            phones, and computers that entered a code from this one, stay offline until you save a wss://
+            address.
+          </span>
+          <button
+            data-testid="remote-relay-use-default"
+            onClick={() => void saveRelay(DEFAULT_RELAY)}
+            className="self-start px-3 py-1 text-xs rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0]"
+          >
+            Use the default relay
+          </button>
+        </div>
+      )}
+
       <label className="flex items-center gap-2 text-sm text-[#d4d4d4] mb-4">
         <input
           type="checkbox"
@@ -269,7 +298,7 @@ export function RemoteSettings(): JSX.Element {
             // to read `.../ws`, a path this relay does not serve -- so a user who
             // typed the suggestion verbatim got a relay that could never connect,
             // and no hint that the address was the reason.
-            placeholder="wss://relay.termpolis.com"
+            placeholder={DEFAULT_RELAY}
             className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
           />
           <button
@@ -279,6 +308,9 @@ export function RemoteSettings(): JSX.Element {
           >
             Save
           </button>
+        </div>
+        <div data-testid="remote-relay-hint" className="text-xs text-[#6b7280] mt-1">
+          A wss:// address. Plain ws:// works only for a relay on this computer (localhost or 127.0.0.1).
         </div>
       </div>
 

@@ -27,6 +27,7 @@ const statusView = (over: Record<string, unknown> = {}): RemoteStatusView =>
     relay: 'idle',
     disabled: false,
     relayUrl: DEFAULT_RELAY_URL,
+    relayInsecure: false,
     publicKey: 'a'.repeat(64),
     pairing: null,
     devices: [],
@@ -164,13 +165,64 @@ describe('RemoteSettings', () => {
 
   it('keeps the draft on screen when the address is refused', async () => {
     await mount()
-    fireEvent.change(screen.getByTestId('remote-relay-url'), { target: { value: 'http://nope' } })
-    api.setRelayUrl.mockResolvedValue(fail('Relay URL must be a ws:// or wss:// address'))
+    fireEvent.change(screen.getByTestId('remote-relay-url'), { target: { value: 'ws://relay.example/ws' } })
+    api.setRelayUrl.mockResolvedValue(
+      fail('Relay URL must be a wss:// address (ws:// only to this computer: localhost or 127.0.0.1).'),
+    )
     fireEvent.click(screen.getByTestId('remote-relay-save'))
     const banner = await screen.findByTestId('remote-error')
-    expect(banner.textContent).toContain('ws:// or wss://')
+    expect(banner.textContent).toContain('must be a wss:// address')
     // Reverting the field would hide what the user actually typed.
-    expect((screen.getByTestId('remote-relay-url') as HTMLInputElement).value).toBe('http://nope')
+    expect((screen.getByTestId('remote-relay-url') as HTMLInputElement).value).toBe('ws://relay.example/ws')
+  })
+
+  it('says which addresses it takes, under the field', async () => {
+    await mount()
+    const hint = screen.getByTestId('remote-relay-hint').textContent
+    expect(hint).toContain('wss://')
+    expect(hint).toContain('localhost or 127.0.0.1')
+  })
+
+  it('warns while the saved relay is plain ws:// to another computer, and stays "not connected"', async () => {
+    // Saved by an older version. It is kept but never dialled, so a paired phone
+    // is not "on its way" -- and the warning must outlive any one error.
+    api.status.mockResolvedValue(
+      ok(
+        statusView({
+          enabled: true,
+          running: true,
+          relayUrl: 'ws://relay.example/ws',
+          relayInsecure: true,
+          devices: [device()],
+        }),
+      ),
+    )
+    await mount()
+    const warning = screen.getByTestId('remote-relay-insecure')
+    expect(warning.textContent).toContain('ws://relay.example/ws')
+    expect(warning.textContent).toContain('not encrypted')
+    expect(screen.getByTestId('remote-running').textContent).toBe('(not connected)')
+    // An unrelated success does not clear it: it follows the address, not events.
+    api.setEnabled.mockResolvedValue(ok(statusView({ relayUrl: 'ws://relay.example/ws', relayInsecure: true })))
+    fireEvent.click(screen.getByTestId('remote-enable'))
+    await waitFor(() => expect((screen.getByTestId('remote-enable') as HTMLInputElement).checked).toBe(false))
+    expect(screen.getByTestId('remote-relay-insecure')).toBeTruthy()
+  })
+
+  it('goes back to the default relay from the warning in one click', async () => {
+    api.status.mockResolvedValue(ok(statusView({ relayUrl: 'ws://relay.example/ws', relayInsecure: true })))
+    api.setRelayUrl.mockResolvedValue(ok(statusView()))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-relay-use-default'))
+    // The relay main dials when nothing is set, spelled the same on both sides.
+    await waitFor(() => expect(api.setRelayUrl).toHaveBeenCalledWith(DEFAULT_RELAY_URL))
+    await waitFor(() => expect(screen.queryByTestId('remote-relay-insecure')).toBeNull())
+    expect((screen.getByTestId('remote-relay-url') as HTMLInputElement).value).toBe(DEFAULT_RELAY_URL)
+  })
+
+  it('shows no warning for a secure relay', async () => {
+    await mount()
+    expect(screen.queryByTestId('remote-relay-insecure')).toBeNull()
   })
 })
 

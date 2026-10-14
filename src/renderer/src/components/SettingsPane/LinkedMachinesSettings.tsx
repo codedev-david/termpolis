@@ -22,6 +22,9 @@ function runningText(status: LinkedStatusView): string {
   if (!status.enabled) return ''
   if (!status.running) return '(not connected)'
   if (status.relay === 'online' || status.machines.some((m) => m.online)) return '(connected to the relay)'
+  // This machine's rooms are never dialled on that relay, so nothing it hosts
+  // is on its way: "connecting" would never end.
+  if (status.relayInsecure) return '(not connected)'
   if (status.relay === 'connecting' || status.machines.length > 0) return '(connecting to the relay…)'
   return '(no computer linked yet)'
 }
@@ -226,6 +229,20 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
           className="text-xs text-[#f28b82] border border-[#5a2d2d] bg-[#2a1919] rounded px-3 py-2 mb-3"
         >
           {error}
+        </div>
+      )}
+
+      {/* The Remote pane's warning, from the same status fact, because this is
+          where the computers it leaves offline are listed. */}
+      {status.relayInsecure && (
+        <div
+          data-testid="linked-relay-insecure"
+          className="text-xs text-[#f28b82] border border-[#5a2d2d] bg-[#2a1919] rounded px-3 py-2 mb-3"
+        >
+          The relay below is plain ws://, which is not encrypted, so Termpolis no longer connects to it.
+          Computers that entered a code from this one stay offline, and no new code can be made, until you
+          save a wss:// address under Settings ▸ Remote. Links made by entering another computer&apos;s
+          code use that computer&apos;s relay and keep working.
         </div>
       )}
 

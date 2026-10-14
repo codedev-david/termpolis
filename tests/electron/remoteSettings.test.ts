@@ -60,6 +60,44 @@ describe('remoteSettings', () => {
     }
   })
 
+  it('keeps the previous relay URL when the new one is plain ws:// to another computer', () => {
+    // Sealed frames stay sealed over ws://, but the room ids do not: anyone on
+    // the network learns when each device connects and can take its seat first.
+    saveRemoteSettings(dir, { relayUrl: 'wss://relay.example/ws' })
+    for (const bad of ['ws://relay.example/ws', 'ws://10.0.0.5', 'ws://192.168.1.20:8787', 'ws://localhost.example.com']) {
+      expect(saveRemoteSettings(dir, { relayUrl: bad }).relayUrl).toBe('wss://relay.example/ws')
+    }
+    expect(loadRemoteSettings(dir).relayUrl).toBe('wss://relay.example/ws')
+  })
+
+  it('saves plain ws:// to this computer, for a relay run locally', () => {
+    for (const local of ['ws://127.0.0.1:8787', 'ws://localhost', ' ws://localhost:8787/ws ']) {
+      expect(saveRemoteSettings(dir, { relayUrl: local }).relayUrl).toBe(local.trim())
+    }
+  })
+
+  it('refuses a relay URL that is not text at all', () => {
+    saveRemoteSettings(dir, { relayUrl: 'wss://relay.example/ws' })
+    // @ts-expect-error -- deliberately wrong: the IPC edge is not type-checked.
+    expect(saveRemoteSettings(dir, { relayUrl: 42 }).relayUrl).toBe('wss://relay.example/ws')
+  })
+
+  it('keeps a plain ws:// relay an older version saved, rather than moving it to the default', () => {
+    // Swapping in the public relay would quietly move someone who runs their
+    // own onto ours. The address stays -- in memory and on disk, through an
+    // unrelated save -- and is refused where it would be dialled instead.
+    fs.writeFileSync(
+      remoteSettingsPath(dir),
+      JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }),
+    )
+    expect(loadRemoteSettings(dir)).toEqual({ enabled: true, relayUrl: 'ws://relay.example/ws' })
+    saveRemoteSettings(dir, { enabled: false })
+    expect(JSON.parse(fs.readFileSync(remoteSettingsPath(dir), 'utf8'))).toEqual({
+      enabled: false,
+      relayUrl: 'ws://relay.example/ws',
+    })
+  })
+
   it('rejects a non-boolean enabled flag', () => {
     // @ts-expect-error -- deliberately wrong: the IPC edge is not type-checked.
     expect(saveRemoteSettings(dir, { enabled: 'yes' }).enabled).toBe(false)
@@ -73,6 +111,13 @@ describe('remoteSettings', () => {
     const loaded = loadRemoteSettings(dir)
     expect(loaded.enabled).toBe(true)
     expect(loaded.relayUrl).toBe(DEFAULT_RELAY_URL)
+  })
+
+  it('repairs a stored relay URL that is not a URL, or not text, to the default', () => {
+    for (const relayUrl of ['relay.example', '   ', 42, null]) {
+      fs.writeFileSync(remoteSettingsPath(dir), JSON.stringify({ enabled: true, relayUrl }))
+      expect(loadRemoteSettings(dir).relayUrl).toBe(DEFAULT_RELAY_URL)
+    }
   })
 
   it('swallows a write error and still reports the merged value', () => {

@@ -331,6 +331,7 @@ describe('starting and stopping', () => {
       running: true,
       relay: 'idle',
       relayUrl: 'wss://relay.test',
+      relayInsecure: false,
       thisMachine: 'laptop',
       code: null,
       joining: false,
@@ -372,6 +373,16 @@ describe('starting and stopping', () => {
     expect(s.enabled).toBe(false)
     expect(s.running).toBe(false)
     expect(linkedInitForRemote().enabled).toBe(false)
+  })
+
+  it('says when the Remote relay is plain ws:// to another computer, and only then', async () => {
+    // The bridge dials none of this machine's rooms on such a relay, so the
+    // computers that entered its codes sit offline. The pane has to say why.
+    const h = boot({ enabled: true })
+    h.bridge.relay = 'ws://10.0.0.5:8787'
+    expect(await h.status()).toMatchObject({ relayUrl: 'ws://10.0.0.5:8787', relayInsecure: true })
+    h.bridge.relay = 'ws://127.0.0.1:8787'
+    expect((await h.status()).relayInsecure).toBe(false)
   })
 
   it('names this machine "Computer" when it has no name of its own', async () => {

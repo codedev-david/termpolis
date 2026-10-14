@@ -10,6 +10,7 @@ import {
   type TerminalSize,
 } from './remoteBridge/protocol'
 import { deriveVerificationPhrase } from './remoteBridge/sealedChannel'
+import { isSecureRelayUrl } from './remoteBridge/relayUrl'
 import { getOrCreateRemoteIdentity, type RemoteIdentity } from './remoteIdentityStore'
 import { loadRemoteDevices, saveRemoteDevices } from './remoteDeviceStore'
 import { DEFAULT_REMOTE_SETTINGS, loadRemoteSettings, saveRemoteSettings } from './remoteSettings'
@@ -123,6 +124,11 @@ export interface RemoteStatusView {
   /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
   disabled: boolean
   relayUrl: string
+  /** `relayUrl` is plain `ws://` to another computer -- saved by a version
+   *  before 1.53, since a save refuses one now. Kept, never dialled: the bridge
+   *  opens none of this desktop's rooms on it, and both panes say so until the
+   *  address changes. */
+  relayInsecure: boolean
   /** This desktop's X25519 public key, hex. Safe to show: it is half of what a
    *  device needs to pair, and the half that is meant to be published. */
   publicKey: string
@@ -621,6 +627,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       relay,
       disabled: deps.isDisabled(),
       relayUrl: settings.relayUrl,
+      relayInsecure: !isSecureRelayUrl(settings.relayUrl),
       publicKey: ownIdentity().publicKey,
       // Computed at read time rather than cleared by a timer: a timer would have
       // to be cancelled on every path out of pairing, and forgetting one leaves a

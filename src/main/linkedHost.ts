@@ -35,6 +35,7 @@ import {
 } from './remoteBridge/protocol'
 import { generateIdentity } from './remoteBridge/sealedChannel'
 import { isBridgeLink, parseLinkCode } from './remoteBridge/linkCode'
+import { isSecureRelayUrl } from './remoteBridge/relayUrl'
 import { localDesktopName } from './remoteBridge/desktopName'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { loadLinkedSettings, saveLinkedSettings, type LinkedSettings } from './linkedSettings'
@@ -408,6 +409,10 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       running: settings.enabled && port.running(),
       relay: port.relay(),
       relayUrl: port.relayUrl(),
+      // The bridge opens none of this machine's rooms on such a relay, so a
+      // computer that entered a code from this one stays offline until it is
+      // changed -- worth saying here, where that computer is listed.
+      relayInsecure: !isSecureRelayUrl(port.relayUrl()),
       thisMachine: machineName || DEFAULT_MACHINE_NAME,
       code: live,
       joining: join !== null,

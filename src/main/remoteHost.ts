@@ -28,6 +28,7 @@ import {
   type TerminalSize,
 } from './remoteBridge/protocol'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
+import { isSecureRelayUrl } from './remoteBridge/relayUrl'
 import type { TerminalSnapshot } from './remoteStatusPump'
 import { ok, err } from './ipcResult'
 
@@ -81,6 +82,16 @@ export const REMOTE_NOT_RUNNING =
  *  goodbye Linked machines sends, or hand a computer phone capabilities. */
 export const REMOTE_LINKED_DEVICE =
   'That device is a linked computer. Manage it under Settings ▸ Linked machines.'
+
+/** Answered by `remote:set-relay-url` for an address a save will not take. */
+export const REMOTE_RELAY_URL_RULE =
+  'Relay URL must be a wss:// address (ws:// only to this computer: localhost or 127.0.0.1).'
+
+/** Answered by `remote:begin-pairing` while the saved relay is plain ws:// to
+ *  another computer. The bridge would refuse the offer too, but by then the
+ *  pairing dialog is open and waiting for a code that is not coming. */
+export const REMOTE_RELAY_INSECURE =
+  'The saved relay is not encrypted (ws://), so no phone can pair through it. Save a wss:// address first.'
 
 let host: RemoteHost | null = null
 let handler: ((m: BridgeToHost) => void) | null = null
@@ -304,18 +315,21 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     if (!host) return err(REMOTE_UNAVAILABLE)
     const raw = (input as { relayUrl?: unknown } | undefined)?.relayUrl
     const wanted = typeof raw === 'string' ? raw.trim() : ''
+    // Asked here, by the rule the store applies, rather than read back from the
+    // store afterwards. It keeps the previous address when it refuses one, and
+    // the old read-back missed the case that matters most: a plain ws://
+    // address an older version saved, typed again, IS the previous address --
+    // the field would look saved and nothing would connect.
+    if (!isSecureRelayUrl(wanted)) return err(REMOTE_RELAY_URL_RULE)
     host.setRelayUrl(wanted)
-    const status = host.status()
-    // The store keeps the previous address when it refuses one, so the effective
-    // value is the only honest answer to "did that take?". Without the check the
-    // field would appear to save and every device would keep using the old relay.
-    if (status.relayUrl !== wanted) return err('Relay URL must be a ws:// or wss:// address')
-    return ok(status)
+    return ok(host.status())
   })
 
   ipc.handle('remote:begin-pairing', (_e, input) => {
     if (!host) return err(REMOTE_UNAVAILABLE)
-    if (!host.status().running) return err(REMOTE_NOT_RUNNING)
+    const status = host.status()
+    if (!status.running) return err(REMOTE_NOT_RUNNING)
+    if (status.relayInsecure) return err(REMOTE_RELAY_INSECURE)
     // Only when the renderer actually sent a grant. Absent means "grant nothing",
     // the way pairing behaved before the choice existed; a malformed one is
     // refused outright rather than silently downgraded, for the same reason

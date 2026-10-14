@@ -17,6 +17,8 @@ import {
 import type { RemoteEvent, RemoteStatusView } from '../../src/main/remoteBridgeHost'
 import {
   REMOTE_NOT_RUNNING,
+  REMOTE_RELAY_INSECURE,
+  REMOTE_RELAY_URL_RULE,
   REMOTE_UNAVAILABLE,
   _resetRemoteHostForTests,
   noteTerminalClosed,
@@ -312,16 +314,68 @@ describe('remote IPC surface', () => {
   })
 
   it('rejects a relay URL the store will not keep, and leaves the bridge alone', () => {
-    // The store answers a refused address by keeping the old one, so without the
-    // effective-value check the field would look saved while every device kept
+    // The store answers a refused address by keeping the old one, so without an
+    // explicit refusal the field would look saved while every device kept
     // using the previous relay.
     saveRemoteSettings(dir, { enabled: true, relayUrl: 'wss://relay.example/ws' })
     harness.start()
-    const res = harness.call('remote:set-relay-url', { relayUrl: 'http://relay.example' })
-    expect(res.success).toBe(false)
-    expect(res.error).toMatch(/ws:\/\/ or wss:\/\//)
+    for (const relayUrl of ['http://relay.example', 'ws://relay.example/ws', 'ws://10.0.0.5:8787']) {
+      const res = harness.call('remote:set-relay-url', { relayUrl })
+      expect(res.success).toBe(false)
+      expect(res.error).toBe(REMOTE_RELAY_URL_RULE)
+    }
     expect(harness.forks).toHaveLength(1)
     expect(loadRemoteSettings(dir).relayUrl).toBe('wss://relay.example/ws')
+  })
+
+  it('refuses the plain ws:// address an older version saved, even typed again unchanged', () => {
+    // That address IS the effective value, so reading the store back after the
+    // save would have called it saved -- and nothing would ever connect.
+    fs.writeFileSync(
+      path.join(dir, 'remote-settings.json'),
+      JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }),
+    )
+    harness.start()
+    expect(harness.call('remote:set-relay-url', { relayUrl: 'ws://relay.example/ws' })).toEqual({
+      success: false,
+      error: REMOTE_RELAY_URL_RULE,
+    })
+    expect(harness.forks).toHaveLength(1)
+  })
+
+  it('says a stored plain ws:// relay is insecure, until a wss:// one replaces it', () => {
+    fs.writeFileSync(
+      path.join(dir, 'remote-settings.json'),
+      JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }),
+    )
+    harness.start()
+    const before = harness.call('remote:status').data as RemoteStatusView
+    expect(before).toMatchObject({ relayUrl: 'ws://relay.example/ws', relayInsecure: true })
+    // Handed to the bridge as it is: the bridge opens none of this desktop's rooms
+    // on it, and still dials the links this machine joined, on their own relays.
+    expect(harness.child().relayUrl).toBe('ws://relay.example/ws')
+
+    const res = harness.call('remote:set-relay-url', { relayUrl: 'wss://relay.example/ws' })
+    expect(res.success).toBe(true)
+    expect(res.data as RemoteStatusView).toMatchObject({ relayUrl: 'wss://relay.example/ws', relayInsecure: false })
+    // Moved to the new address, which is the only way the refused rooms come back.
+    expect(harness.forks).toHaveLength(2)
+    expect(harness.child().relayUrl).toBe('wss://relay.example/ws')
+  })
+
+  it('refuses to start pairing while the saved relay is insecure', () => {
+    // The bridge would refuse too, but only after the pairing dialog had opened
+    // to wait for a code that is not coming.
+    fs.writeFileSync(
+      path.join(dir, 'remote-settings.json'),
+      JSON.stringify({ enabled: true, relayUrl: 'ws://10.0.0.5:8787' }),
+    )
+    harness.start()
+    expect(harness.call('remote:begin-pairing', { label: 'Pixel' })).toEqual({
+      success: false,
+      error: REMOTE_RELAY_INSECURE,
+    })
+    expect(harness.child().posted.filter((m) => m.kind === 'beginPairing')).toEqual([])
   })
 
   it('rejects a relay URL that is not a string at all', () => {

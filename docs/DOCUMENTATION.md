@@ -888,7 +888,13 @@ Store, first week free for new subscribers). The desktop app stays free.
    a Durable Object), and pointing the setting at your own deployment is
    supported. The phone takes the address from the pairing QR code and only
    accepts `wss://`; phones paired before a change keep using the old relay and
-   must pair again.
+   must pair again. The field takes a `wss://` address only, or plain `ws://`
+   for a relay on this computer (`localhost` or `127.0.0.1`): over plain `ws://`
+   to another computer, anyone on the network in between could see when your
+   devices connect and take their place in the relay first. A plain `ws://`
+   address saved by a version before 1.53 is kept but no longer used. Nothing
+   connects through it, and the Remote and Linked machines panes both say so
+   until you save a `wss://` address or click **Use the default relay**.
 3. Under **Pair a device**, type a label for the phone (it defaults to
    "Phone") and tick what it will be allowed to do. Only **Read terminal
    output** is ticked to begin with. Press **Pair a device**.
@@ -1198,8 +1204,11 @@ step that calls it is not counted.
   keys, so prompts and answers recorded today can't be decrypted later, even if a
   computer's long-term key leaks.
 - **An encrypted relay.** Making or entering a code requires a `wss://` relay
-  (`ws://` only to localhost). Keep *Settings → Remote* on a `wss://` address:
-  links this computer created reconnect through that setting. The relay's
+  (`ws://` only to localhost), and *Settings → Remote* accepts nothing else.
+  Links this computer created reconnect through that setting; if it still holds
+  a plain `ws://` address saved by an older version, Termpolis connects none of
+  them through it and both panes say so until it is changed. Links made by
+  entering another computer's code use that computer's relay. The relay's
   source is in [`relay/`](../relay/), so you can run your own.
 - **What the relay does see:** both computers' IP addresses, a room id for the
   link, when each computer connects, the size and timing of each frame, and each
