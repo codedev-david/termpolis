@@ -524,6 +524,7 @@ import {
 import { createRemoteTerminals } from './remoteTerminals'
 import {
   linkedInitForRemote,
+  linkedStartOverForRemote,
   linkedToolCall,
   registerLinkedIpc,
   startLinkedHost,
@@ -4593,6 +4594,8 @@ async function semanticPoolOptions(
           createTransport: realBridgeTransport,
           // Asked at every bridge start and crash respawn: answered from memory, synchronously.
           linkedInit: () => linkedInitForRemote(),
+          // "Start over" covers the links too: forgotten before the bridge comes back and asks.
+          linkedStartOver: () => linkedStartOverForRemote(),
         })
       } catch (e) {
         // A wiring fault here must not fatal `whenReady` -- the app-boot rule. Remote

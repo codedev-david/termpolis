@@ -26,8 +26,8 @@ import {
   type PeerRequest,
   type RelayReach,
 } from '../../src/main/remoteBridge/protocol'
-import type { LinkedBridgePort } from '../../src/main/remoteBridgeHost'
-import { _resetRemoteHostForTests } from '../../src/main/remoteHost'
+import type { KeyStorageView, LinkedBridgePort } from '../../src/main/remoteBridgeHost'
+import { REMOTE_KEYS_NOT_LOCKED, _resetRemoteHostForTests } from '../../src/main/remoteHost'
 import { localDesktopName } from '../../src/main/remoteBridge/desktopName'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import { loadLinkedSettings, saveLinkedSettings } from '../../src/main/linkedSettings'
@@ -50,6 +50,7 @@ import {
   LINKED_CODE_LOST,
   LINKED_JOIN_BAD_ANSWER,
   LINKED_JOIN_NO_ANSWER,
+  LINKED_KEYS_LOCKED,
   LINKED_NAME_REQUIRED,
   LINKED_NOT_CONNECTED,
   LINKED_OFF,
@@ -59,6 +60,7 @@ import {
   LINKED_UNLINK_NEEDS_BRIDGE,
   _resetLinkedHostForTests,
   linkedInitForRemote,
+  linkedStartOverForRemote,
   linkedToolCall,
   registerLinkedIpc,
   startLinkedHost,
@@ -137,12 +139,16 @@ function fakeBridge() {
     phrases: new Map<string, string>(),
     relay: 'wss://relay.test',
     relayReach: 'idle' as RelayReach,
+    keys: { keyStorage: 'keychain', keysUnencrypted: false } as KeyStorageView,
     sent: [] as HostToBridge[],
     /** Answers each `linkCall` as it is posted, when set; null leaves it pending. */
     answer: null as ((call: LinkCall) => BridgeToHost | null) | null,
     refresh: vi.fn(),
     beginLinkPairing: vi.fn(),
     cancelLinkPairing: vi.fn(),
+    /** Remote's key actions: what each answers, null for done. */
+    encryptKeys: vi.fn((): string | null => null),
+    startOver: vi.fn((): string | null => null),
     listeners,
     emit(m: unknown): void {
       for (const cb of [...listeners]) cb(m as BridgeToHost)
@@ -172,12 +178,15 @@ function fakeBridge() {
     relayUrl: () => b.relay,
     linkOfferLive: () => b.offerLive,
     relay: () => b.relayReach,
+    keys: () => b.keys,
   }
   const access: LinkedBridgeAccess = {
     port,
     refresh: b.refresh,
     beginLinkPairing: b.beginLinkPairing,
     cancelLinkPairing: b.cancelLinkPairing,
+    encryptKeys: () => b.encryptKeys(),
+    startOver: () => b.startOver(),
   }
   return Object.assign(b, { access, port })
 }
@@ -276,6 +285,8 @@ const CHANNELS = [
   'linked:rename',
   'linked:set-grants',
   'linked:unlink',
+  'linked:encrypt-keys',
+  'linked:start-over',
 ]
 
 describe('before the service starts', () => {
@@ -327,6 +338,8 @@ describe('starting and stopping', () => {
       ],
     })
     expect(await h.status()).toEqual({
+      keyStorage: 'keychain',
+      keysUnencrypted: false,
       enabled: true,
       running: true,
       relay: 'idle',
@@ -1705,5 +1718,142 @@ describe('asking another machine (the linked_machines tool)', () => {
     clock = 5
     await linkedToolCall({ action: 'run', machine: 'linux', agent: 'claude', prompt: 'early', waitSec: 0 })
     expect((await h.status()).machines[0].lastActivityAt).toBe(10_000 + 101 * 1_000)
+  })
+})
+
+/** A keychain that opens only what it sealed itself: the one on another
+ *  computer or user account, or after a password reset. */
+function anotherKeychain() {
+  const mark = 0x99
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (s: string) => Buffer.from([mark, ...Buffer.from(s, 'utf8')]),
+    decryptString: (b: Buffer) => {
+      if (b[0] !== mark) throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.')
+      return b.subarray(1).toString('utf8')
+    },
+  }
+}
+
+const stateFile = (): string => path.join(dir, 'linked-machines')
+
+describe('keys that cannot be opened', () => {
+  it('a state file that cannot be opened reads as no links, says so, and is never written over', async () => {
+    const L = joined()
+    saveLinkedState(dir, { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] })
+    const before = fs.readFileSync(stateFile())
+    setSafeStorage(anotherKeychain())
+    const P = peer('build-box')
+    const h = boot({ enabled: true })
+    // A computer that entered a code from this one: its device record is
+    // Remote's, and still there, so it is listed -- unconfirmed.
+    h.bridge.peers = [P]
+    h.bridge.emit({ kind: 'devicesChanged', devices: [P] })
+    const s = await h.status()
+    expect(s).toMatchObject({ keyStorage: 'locked', keyLockReason: 'unwrap-failed', keysUnencrypted: false })
+    expect(s.machines.map((m) => m.ref)).toEqual([devRef(P)])
+
+    // Nothing that would have to be saved is let through: it would hold for
+    // this run only, and quietly undo itself at the next launch.
+    const READ_ONLY = { run: true, write: false }
+    const refused: Array<[string, unknown]> = [
+      ['linked:confirm', { ref: devRef(P), name: 'box' }],
+      ['linked:rename', { ref: devRef(P), name: 'box' }],
+      ['linked:set-grants', { ref: devRef(P), grants: READ_ONLY }],
+      ['linked:create-code', { grants: READ_ONLY }],
+      ['linked:join', { code: linkCode(), grants: READ_ONLY }],
+    ]
+    for (const [channel, input] of refused) {
+      expect(await h.invoke(channel, input)).toEqual({ success: false, error: LINKED_KEYS_LOCKED })
+    }
+    // Unlinking still cuts a machine off -- the safe direction -- and writes nothing.
+    h.bridge.answer = answering(() => null)
+    expect((await h.invoke('linked:unlink', { ref: devRef(P) })).success).toBe(true)
+    expect(h.bridge.sent.at(-1)).toEqual({ kind: 'revokeDevice', deviceId: P.id })
+    expect(fs.readFileSync(stateFile()).equals(before)).toBe(true)
+
+    // Every link comes back, in full, once the keychain that sealed them does.
+    setSafeStorage(fakeSafeStorage())
+    expect(loadLinkedState(dir).links).toEqual([L])
+  })
+
+  it('with the identity locked under every room, no link can be made, but the records still change and save', async () => {
+    const L = joined()
+    const h = boot({ enabled: true, state: { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] } })
+    h.bridge.keys = { keyStorage: 'locked', keyLockReason: 'no-keychain', keysUnencrypted: false }
+    // The bridge never starts on a locked identity; the lock is said first all the same.
+    h.bridge.running = false
+    expect(await h.status()).toMatchObject({ keyStorage: 'locked', keyLockReason: 'no-keychain' })
+    expect(await h.invoke('linked:create-code', { grants: { run: true, write: false } })).toEqual({
+      success: false,
+      error: LINKED_KEYS_LOCKED,
+    })
+    expect((await h.invoke('linked:rename', { ref: linkRef(L), name: 'build' })).success).toBe(true)
+    expect(loadLinkedState(dir).meta[0].name).toBe('build')
+  })
+
+  it('with both locked, the identity speaks for both', async () => {
+    saveLinkedState(dir, { links: [joined()], meta: [] })
+    setSafeStorage(anotherKeychain())
+    const h = boot({ enabled: true })
+    h.bridge.keys = { keyStorage: 'locked', keyLockReason: 'no-keychain', keysUnencrypted: false }
+    expect(await h.status()).toMatchObject({ keyStorage: 'locked', keyLockReason: 'no-keychain' })
+  })
+
+  it('passes the shared facts through untouched while its own file opens', async () => {
+    const h = boot({ enabled: true })
+    h.bridge.keys = { keyStorage: 'plaintext', keysUnencrypted: false, keyBackend: 'basic_text' }
+    expect(await h.status()).toMatchObject({ keyStorage: 'plaintext', keysUnencrypted: false, keyBackend: 'basic_text' })
+  })
+
+  it('Start over is only for keys that cannot be opened', async () => {
+    const h = boot({ enabled: true })
+    expect(await h.invoke('linked:start-over')).toEqual({ success: false, error: REMOTE_KEYS_NOT_LOCKED })
+    expect(h.bridge.startOver).not.toHaveBeenCalled()
+  })
+
+  it('Start over asks Remote, which sets the file aside and calls back to forget every link', async () => {
+    const L = joined()
+    saveLinkedState(dir, { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] })
+    setSafeStorage(anotherKeychain())
+    const h = boot({ enabled: true })
+    // Remote's half, the way the app's does it: the file aside, then the call back.
+    h.bridge.startOver.mockImplementation(() => {
+      fs.renameSync(stateFile(), `${stateFile()}.retired-1`)
+      linkedStartOverForRemote()
+      return null
+    })
+    const res = await h.invoke('linked:start-over')
+    expect(h.bridge.startOver).toHaveBeenCalledTimes(1)
+    expect(res.success).toBe(true)
+    expect(res.data).toMatchObject({ keyStorage: 'keychain', machines: [] })
+    expect(linkedInitForRemote().links).toEqual([])
+    // A fresh file this keychain opens in its place, and the old one aside, untouched.
+    expect(loadLinkedState(dir)).toEqual({ links: [], meta: [] })
+    expect(fs.existsSync(`${stateFile()}.retired-1`)).toBe(true)
+  })
+
+  it('Start over that Remote could not do says why, and keeps the lock', async () => {
+    saveLinkedState(dir, { links: [joined()], meta: [] })
+    setSafeStorage(anotherKeychain())
+    const h = boot({ enabled: true })
+    h.bridge.startOver.mockReturnValue('Termpolis could not start over')
+    expect(await h.invoke('linked:start-over')).toEqual({ success: false, error: 'Termpolis could not start over' })
+    expect((await h.status()).keyStorage).toBe('locked')
+  })
+
+  it('Encrypt keys now asks Remote, then pushes and answers the status -- or says why not', async () => {
+    const h = boot({ enabled: true })
+    h.statuses.length = 0
+    const res = await h.invoke('linked:encrypt-keys')
+    expect(h.bridge.encryptKeys).toHaveBeenCalledTimes(1)
+    expect(res.success).toBe(true)
+    expect(h.statuses).toHaveLength(1)
+    h.bridge.encryptKeys.mockReturnValue('There is no keychain on this computer')
+    expect(await h.invoke('linked:encrypt-keys')).toEqual({ success: false, error: 'There is no keychain on this computer' })
+  })
+
+  it("forgetting, Remote's call, is a no-op before the service starts", () => {
+    expect(() => linkedStartOverForRemote()).not.toThrow()
   })
 })

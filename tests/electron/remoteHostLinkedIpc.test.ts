@@ -9,7 +9,7 @@ import * as path from 'path'
 import { setSafeStorage } from '../../src/main/secureKeyStore'
 import { _resetSupervisorForTests, type BridgeHandle } from '../../src/main/remoteBridgeSupervisor'
 import { deriveVerificationPhrase, generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
-import { getOrCreateRemoteIdentity } from '../../src/main/remoteIdentityStore'
+import { identityOf } from './fixtures/remoteIdentity'
 import { saveRemoteDevices } from '../../src/main/remoteDeviceStore'
 import { saveRemoteSettings } from '../../src/main/remoteSettings'
 import {
@@ -318,7 +318,7 @@ describe('the port once Remote has started', () => {
     expect(port.desktopPeers().map((d) => d.id)).toEqual([COMPUTER_ID])
     expect([...port.attachedDeviceIds()]).toEqual([COMPUTER_ID])
     expect(port.verificationPhraseFor(COMPUTER_ID)).toBe(
-      deriveVerificationPhrase(getOrCreateRemoteIdentity(dir).publicKey, COMPUTER.publicKey),
+      deriveVerificationPhrase(identityOf(dir).publicKey, COMPUTER.publicKey),
     )
     expect(port.relayUrl()).toBe('wss://relay.example/ws')
   })

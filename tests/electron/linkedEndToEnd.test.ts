@@ -44,6 +44,20 @@ function fakeSafeStorage() {
   }
 }
 
+/** A keyring that opens only what it sealed itself: the one a restart finds
+ *  after a password reset, or on a data folder copied from another account. */
+function anotherKeychain(): ReturnType<typeof fakeSafeStorage> {
+  const mark = 0x99
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (s: string) => Buffer.from([mark, ...Buffer.from(s, 'utf8')]),
+    decryptString: (b: Buffer) => {
+      if (b[0] !== mark) throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.')
+      return b.subarray(1).toString('utf8')
+    },
+  }
+}
+
 const READ_ONLY: LinkedGrants = { run: true, write: false }
 const EDIT: LinkedGrants = { run: true, write: true }
 
@@ -159,16 +173,22 @@ const idOf = (ref: string): string => ref.slice(ref.indexOf(':') + 1)
 /**
  * One Termpolis desktop: main's remote host and linked host, and the bridge
  * child main supervises, with only the process boundary faked. `from` starts
- * it again on the folders of one that quit -- the same computer, restarted.
+ * it again on the folders of one that quit -- the same computer, restarted --
+ * and `keychain` is the keyring it comes up with.
  */
-async function machine(relay: MemoryRelay, name: string, from?: Machine): Promise<Machine> {
+async function machine(
+  relay: MemoryRelay,
+  name: string,
+  from?: Machine,
+  keychain = fakeSafeStorage(),
+): Promise<Machine> {
   // Each computer is its own copy of main's modules: linkedHost keeps its
   // service in a module singleton, exactly as in the app, so a second computer
   // in this process needs a second copy. Loaded fresh, and the copy of the key
   // store that copy uses is given a keyring before anything reads a key.
   vi.resetModules()
   const keyStore = await import('../../src/main/secureKeyStore')
-  keyStore.setSafeStorage(fakeSafeStorage())
+  keyStore.setSafeStorage(keychain)
   const linked = await import('../../src/main/linkedHost')
   const store = await import('../../src/main/linkedStore')
   const { createRemoteHost } = await import('../../src/main/remoteBridgeHost')
@@ -239,6 +259,7 @@ async function machine(relay: MemoryRelay, name: string, from?: Machine): Promis
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     linkedInit: () => linked.linkedInitForRemote(),
+    linkedStartOver: () => linked.linkedStartOverForRemote(),
   })
 
   const m: Machine = {
@@ -291,6 +312,14 @@ async function machine(relay: MemoryRelay, name: string, from?: Machine): Promis
       refresh: () => remote.refreshLinked(),
       beginLinkPairing: (label) => remote.beginLinkPairing(label),
       cancelLinkPairing: () => remote.cancelLinkPairing(),
+      encryptKeys: () => {
+        remote.encryptKeys()
+        return null
+      },
+      startOver: () => {
+        remote.startOver()
+        return null
+      },
     },
     machineName: name,
   })
@@ -918,6 +947,37 @@ describe('restarts', () => {
       output: `${LAPTOP} did it`,
     })
     expect(await a2.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'And you?' })).toMatchObject({
+      status: 'done',
+      output: `${BUILDBOX} did it`,
+    })
+  })
+
+  it('a restart whose keychain cannot open the keys mints none: the link waits, untouched, and comes back with the keychain', async () => {
+    const { relay, a, b, onA } = await linkedPair()
+    const files = ['remote-identity-key', 'linked-machines', 'remote-devices.json'].map((f) => path.join(a.dir, f))
+    a.quit()
+    const before = files.map((f) => fs.readFileSync(f))
+
+    // The laptop comes back with a keyring that can't open what it sealed. It
+    // used to mint a new identity over the old one, and the build box -- whose
+    // link is bound to that key -- could never reach it again.
+    const a2 = await machine(relay, LAPTOP, a, anotherKeychain())
+    expect(a2.remote.status()).toMatchObject({ keyStorage: 'locked', publicKey: null, running: false })
+    expect(await a2.status()).toMatchObject({ keyStorage: 'locked', running: false })
+    expect(a2.bridgeSaid).toEqual([])
+    expect(await a2.ipc('linked:create-code', { grants: READ_ONLY })).toMatchObject({ success: false })
+    files.forEach((f, i) => expect(fs.readFileSync(f).equals(before[i])).toBe(true))
+    await until(async () => expect((await b.status()).machines[0]).toMatchObject({ online: false }))
+
+    // The keyring is back: the same identity, the same link, nothing to redo.
+    a2.quit()
+    const a3 = await machine(relay, LAPTOP, a)
+    await until(async () => {
+      expect((await a3.status()).machines).toEqual([
+        expect.objectContaining({ ref: onA, name: BUILDBOX_ON_LAPTOP, confirmed: true, online: true }),
+      ])
+    })
+    expect(await a3.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Still linked?' })).toMatchObject({
       status: 'done',
       output: `${BUILDBOX} did it`,
     })

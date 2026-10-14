@@ -1177,11 +1177,26 @@ describe('preload: linked machines', () => {
     ['rename', ['link:0011223344556677', 'mac'], 'linked:rename', { ref: 'link:0011223344556677', name: 'mac' }],
     ['setGrants', ['device:0011223344556677', grants], 'linked:set-grants', { ref: 'device:0011223344556677', grants }],
     ['unlink', ['device:0011223344556677'], 'linked:unlink', { ref: 'device:0011223344556677' }],
+    ['encryptKeys', [], 'linked:encrypt-keys', undefined],
+    ['startOver', [], 'linked:start-over', undefined],
   ])('linked.%s invokes its channel with its payload', async (method, args, channel, payload) => {
     await exposed.linked[method](...args)
     if (payload === undefined) expect(mockIpcRenderer.invoke).toHaveBeenCalledWith(channel)
     else expect(mockIpcRenderer.invoke).toHaveBeenCalledWith(channel, payload)
     expect(mockIpcRenderer.invoke).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('preload: the keys under Remote and Linked machines', () => {
+  // Both carry no payload: main decides what to seal or set aside, from its own
+  // files, never from anything the renderer names.
+  it.each([
+    ['encryptKeys', 'remote:encrypt-keys'],
+    ['startOver', 'remote:start-over'],
+  ])('remote.%s invokes %s with nothing else', async (method, channel) => {
+    await exposed.remote[method]()
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith(channel)
+    expect(mockIpcRenderer.invoke.mock.calls.at(-1)).toEqual([channel])
   })
 })
 

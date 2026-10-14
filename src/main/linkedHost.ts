@@ -18,12 +18,15 @@ import type { ExecRequest, ExecResult } from './headlessExec'
 import { isSafeModelId } from './modelCatalog'
 import { inspectResult, riskBanner } from './mcpGateway/guard'
 import {
+  REMOTE_KEYS_NOT_LOCKED,
   beginRemoteLinkPairing,
   cancelRemoteLinkPairing,
+  encryptRemoteKeys,
   refreshRemoteLinked,
   remoteLinkedPort,
+  startOverRemoteKeys,
 } from './remoteHost'
-import type { LinkedBridgePort, LinkedInit } from './remoteBridgeHost'
+import type { KeyStorageView, LinkedBridgePort, LinkedInit } from './remoteBridgeHost'
 import {
   MAX_LINKED_MACHINES,
   type BridgeLink,
@@ -50,6 +53,7 @@ import {
   type JoinedLink,
   type LinkedGrants,
   type LinkedState,
+  type LoadedLinkedState,
   type LinkMeta,
 } from './linkedStore'
 import { machineViews, pruneMeta, uniqueName, type LinkedMachineView } from './linkedDirectory'
@@ -73,6 +77,10 @@ export interface LinkedBridgeAccess {
   refresh(): void
   beginLinkPairing(label?: string): void
   cancelLinkPairing(): void
+  /** Remote's two key actions, which cover this module's file too. Null when
+   *  done, else what to tell the user. */
+  encryptKeys(): string | null
+  startOver(): string | null
 }
 
 export interface LinkedHostBinding {
@@ -131,6 +139,10 @@ export const LINKED_CODE_LOST =
   'The connection to the relay restarted, so that code no longer works. Create a new one.'
 export const LINKED_JOIN_BAD_ANSWER =
   'The other computer answered with a link this computer cannot use. Create a new code and try again.'
+/** Answered while the keys are locked: the identity under every room, or the
+ *  file holding the links this computer joined. */
+export const LINKED_KEYS_LOCKED =
+  "This computer's link keys can't be opened right now, so links can't be made or changed. Nothing was changed."
 
 /** How much longer than a linked call's own timeout main waits for the
  *  bridge's answer -- the bridge times the call out itself, so this only fires
@@ -190,6 +202,10 @@ interface LinkedHost {
   rename(input: unknown): unknown
   setGrants(input: unknown): unknown
   unlink(input: unknown): Promise<unknown>
+  encryptKeys(): unknown
+  startOver(): unknown
+  /** Remote's call, in the middle of its own Start over. */
+  forgetAll(): void
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -219,6 +235,8 @@ function appBridge(): LinkedBridgeAccess {
     refresh: refreshRemoteLinked,
     beginLinkPairing: beginRemoteLinkPairing,
     cancelLinkPairing: cancelRemoteLinkPairing,
+    encryptKeys: encryptRemoteKeys,
+    startOver: startOverRemoteKeys,
   }
 }
 
@@ -233,6 +251,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   let started = false
   let settings: LinkedSettings = { enabled: false }
   let state: LinkedState = { links: [], meta: [] }
+  /** Why the state file couldn't be opened at start, while it still can't be:
+   *  `state` is then empty only because it was unreadable, not because it is. */
+  let stateLocked: LoadedLinkedState['locked'] | null = null
   let unsubscribe: (() => void) | null = null
   /** The code on screen, as the bridge announced it. Shown only while the
    *  bridge still holds a link offer (`linkOfferLive`): a respawn, a phone QR
@@ -294,6 +315,10 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   }
 
   function save(): void {
+    // A state file that couldn't be opened is the only copy of every joined
+    // link's key, and an empty state written over it would lose them all.
+    // Nothing is written until it opens again or the user starts over.
+    if (stateLocked) return
     saveLinkedState(b.userDataDir, state)
   }
 
@@ -406,9 +431,18 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       }))
   }
 
+  /** The Remote pane's key facts, and this module's own file on top: locked
+   *  too while it couldn't be opened, even with the identity fine. */
+  function keys(): KeyStorageView {
+    const shared = port.keys()
+    if (!stateLocked || shared.keyStorage === 'locked') return shared
+    return { ...shared, keyStorage: 'locked', keyLockReason: stateLocked, keysUnencrypted: false }
+  }
+
   function status(): LinkedStatusView {
     const live = code && code.expiresAt > now() && port.linkOfferLive() ? { ...code } : null
     return {
+      ...keys(),
       enabled: settings.enabled,
       running: settings.enabled && port.running(),
       relay: port.relay(),
@@ -801,6 +835,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   /** Why a new link cannot be made right now, or null when it can. */
   function cannotLink(): string | null {
     if (!settings.enabled) return LINKED_OFF
+    // Ahead of the relay: with the identity locked the bridge never starts, and
+    // with the file locked a new link's key could not be saved.
+    if (keys().keyStorage === 'locked') return LINKED_KEYS_LOCKED
     // Checked first: a request posted to a bridge that is down is dropped, and
     // the pane would wait for a code nothing is making.
     if (!port.running()) return LINKED_NOT_CONNECTED
@@ -856,6 +893,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   }
 
   function confirm(input: unknown): unknown {
+    // A change that can't be saved would hold for this run only, and quietly
+    // undo itself at the next launch.
+    if (stateLocked) return err(LINKED_KEYS_LOCKED)
     const view = viewFor(field(input, 'ref'))
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
     const typed = sanitizeDeviceLabel(field(input, 'name'))
@@ -868,6 +908,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   }
 
   function rename(input: unknown): unknown {
+    if (stateLocked) return err(LINKED_KEYS_LOCKED)
     const view = viewFor(field(input, 'ref'))
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
     const typed = sanitizeDeviceLabel(field(input, 'name'))
@@ -882,6 +923,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   function setGrants(input: unknown): unknown {
     const grants = normalizeGrants(field(input, 'grants'))
     if (!grants) return err(LINKED_BAD_GRANTS)
+    if (stateLocked) return err(LINKED_KEYS_LOCKED)
     const view = viewFor(field(input, 'ref'))
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
     putMeta({ ...metaOrView(view), grants })
@@ -928,10 +970,42 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     return ok(status())
   }
 
+  function encryptKeys(): unknown {
+    const problem = bridge.encryptKeys()
+    if (problem) return err(problem)
+    changed()
+    return ok(status())
+  }
+
+  function startOver(): unknown {
+    // Only for keys that can't be opened, like Remote's own: any other day this
+    // would throw away every link that works.
+    if (keys().keyStorage !== 'locked') return err(REMOTE_KEYS_NOT_LOCKED)
+    // Remote does the whole of it -- the identity, the devices and this
+    // module's file -- and calls forgetAll() on the way.
+    const problem = bridge.startOver()
+    if (problem) return err(problem)
+    return ok(status())
+  }
+
+  /** Every link went with the keys: nothing joined, nothing hosted, nothing
+   *  half done. A fresh file takes the place of the one set aside -- or its
+   *  place outright, if it couldn't be moved: the user chose to forget it. */
+  function forgetAll(): void {
+    quiesce()
+    state = { links: [], meta: [] }
+    stateLocked = null
+    leaving.clear()
+    save()
+    changed()
+  }
+
   return {
     start(): void {
       settings = loadLinkedSettings(b.userDataDir)
-      state = loadLinkedState(b.userDataDir)
+      const loaded = loadLinkedState(b.userDataDir)
+      state = { links: loaded.links, meta: loaded.meta }
+      stateLocked = loaded.locked ?? null
       // Once, for the life of the service: the port outlives Remote's own
       // stop/start, and hears a bridge whichever feature started it.
       unsubscribe = port.onMessage(onBridge)
@@ -968,6 +1042,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     rename,
     setGrants,
     unlink,
+    encryptKeys,
+    startOver,
+    forgetAll,
   }
 }
 
@@ -1001,6 +1078,12 @@ export function linkedInitForRemote(): LinkedInit {
   return host ? host.initForRemote() : { enabled: false, links: [] }
 }
 
+/** Linked machines' half of Remote's "Start over": forget every link held in
+ *  memory. Nothing to forget before the service has started. */
+export function linkedStartOverForRemote(): void {
+  host?.forgetAll()
+}
+
 export interface LinkedIpcLike {
   handle(channel: string, listener: (event: unknown, input?: unknown) => unknown): void
 }
@@ -1024,6 +1107,8 @@ export function registerLinkedIpc(ipc: LinkedIpcLike): void {
   on('linked:rename', (h, input) => h.rename(input))
   on('linked:set-grants', (h, input) => h.setGrants(input))
   on('linked:unlink', (h, input) => h.unlink(input))
+  on('linked:encrypt-keys', (h) => h.encryptKeys())
+  on('linked:start-over', (h) => h.startOver())
 }
 
 /** @internal test-only */

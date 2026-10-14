@@ -124,6 +124,15 @@ test.describe.serial('Linked machines settings', () => {
     expect(savedLinkedSetting()).toEqual({ enabled: true })
   })
 
+  test('3b. the keys warning is there exactly when this computer has no keychain', async () => {
+    // Main decides by safeStorage alone, so the pane is held to what safeStorage
+    // says here, not to a fixed platform: the Linux runners have no Secret
+    // Service, and there the keys are saved in the clear and the pane says so.
+    const sealed = await app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable())
+    if (sealed) await expect(byId('linked-keys-warning')).toHaveCount(0)
+    else await expect(byId('linked-keys-warning')).toHaveAttribute('data-keys', 'plaintext')
+  })
+
   test('4. Create code shows a termpolis-link code minted inside the bridge, with a countdown', async () => {
     await byId('linked-create-code').click()
     await expect(byId('linked-code')).toBeVisible({ timeout: 20000 })

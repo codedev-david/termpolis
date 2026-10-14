@@ -1067,7 +1067,23 @@ export interface RemotePairingView {
   expiresAt: number
 }
 
-export interface RemoteStatusView {
+/** Where the keys that identify this computer to its phones and linked computers stand. One set of
+ *  facts for both panes: Remote and Linked machines stand on the same identity. */
+export interface KeyStorageView {
+  /** 'keychain': sealed by the OS keychain. 'plaintext': there is none, so they are saved
+   *  unencrypted. 'locked': a key file is there but can't be opened now -- nothing that needs it
+   *  starts, and nothing is written over it. */
+  keyStorage: 'keychain' | 'plaintext' | 'locked'
+  /** Why, while 'locked'. */
+  keyLockReason?: 'no-keychain' | 'unwrap-failed' | 'unreadable'
+  /** A key file saved in the clear before a keychain was there to seal it: what "Encrypt keys now"
+   *  is for. Only ever true with a keychain. */
+  keysUnencrypted: boolean
+  /** Electron's own name for its key store (Linux), shown as small print beside the warning. */
+  keyBackend?: string
+}
+
+export interface RemoteStatusView extends KeyStorageView {
   enabled: boolean
   running: boolean
   /** Seated (`online`), dialling/redialling (`connecting`), or no room because
@@ -1079,7 +1095,8 @@ export interface RemoteStatusView {
   /** `relayUrl` is plain ws:// to another computer, saved by an older version.
    *  Kept but never dialled, and the pane says so until it changes. */
   relayInsecure: boolean
-  publicKey: string
+  /** Null while the keys are locked: there is no identity to show. */
+  publicKey: string | null
   pairing: RemotePairingView | null
   devices: RemoteDeviceView[]
 }
@@ -1109,6 +1126,10 @@ export interface RemoteAPI {
   revokeDevice: (deviceId: string) => Promise<IpcResponse<RemoteStatusView>>
   setCapabilities: (deviceId: string, capabilities: RemoteCapabilities) => Promise<IpcResponse<RemoteStatusView>>
   verificationPhrase: (deviceId: string) => Promise<IpcResponse<{ deviceId: string; phrase: string }>>
+  /** Seal the key files saved in the clear, now that a keychain can (`keysUnencrypted`). */
+  encryptKeys: () => Promise<IpcResponse<RemoteStatusView>>
+  /** Only while `keyStorage` is 'locked': a new identity, and no phone or linked computer. */
+  startOver: () => Promise<IpcResponse<RemoteStatusView>>
   onStatus: (cb: (status: RemoteStatusView) => void) => () => void
   onEvent: (cb: (event: RemoteEvent) => void) => () => void
 }
@@ -1152,7 +1173,10 @@ export interface LinkedActivityView {
   durationMs?: number
 }
 
-export interface LinkedStatusView {
+/** `keyStorage` is 'locked' when the identity is, or when the file holding the links this computer
+ *  joined can't be opened -- then nothing about them can change until it opens or the user starts
+ *  over. */
+export interface LinkedStatusView extends KeyStorageView {
   enabled: boolean
   running: boolean
   /** This machine's rooms on its relay, as the bridge reports them (see
@@ -1192,6 +1216,9 @@ export interface LinkedAPI {
   rename(ref: string, name: string): Promise<IpcResponse<LinkedStatusView>>
   setGrants(ref: string, grants: LinkedGrants): Promise<IpcResponse<LinkedStatusView>>
   unlink(ref: string): Promise<IpcResponse<LinkedStatusView>>
+  /** The Remote pane's two key actions, on the same keys (see RemoteAPI). */
+  encryptKeys(): Promise<IpcResponse<LinkedStatusView>>
+  startOver(): Promise<IpcResponse<LinkedStatusView>>
   onStatus(cb: (s: LinkedStatusView) => void): () => void
   onEvent(cb: (e: LinkedEvent) => void): () => void
 }

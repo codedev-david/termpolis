@@ -47,6 +47,8 @@ const statusView = (over: Partial<LinkedStatusView> = {}): LinkedStatusView => (
   joining: false,
   machines: [],
   activity: [],
+  keyStorage: 'keychain',
+  keysUnencrypted: false,
   ...over,
 })
 
@@ -924,5 +926,51 @@ describe('LinkedMachinesSettings clock', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('LinkedMachinesSettings: the keys', () => {
+  // The banner is Remote's own component; these hold this pane to its half: the
+  // status it reads, and the channels its two buttons call.
+  it('says nothing while the keys are sealed by a keychain', async () => {
+    await mount()
+    expect(screen.queryByTestId('linked-keys-warning')).toBeNull()
+  })
+
+  it('locked: Start over, after its warning, goes through this pane and takes the answer', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'locked', keyLockReason: 'unwrap-failed' })))
+    api.startOver = vi.fn().mockResolvedValue(ok(statusView()))
+    await mount()
+    expect(screen.getByTestId('linked-keys-warning').textContent).toContain('password reset')
+    fireEvent.click(button('linked-keys-start-over'))
+    expect(api.startOver).not.toHaveBeenCalled()
+    fireEvent.click(button('linked-keys-start-over-confirm'))
+    await waitFor(() => expect(api.startOver).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId('linked-keys-warning')).toBeNull())
+  })
+
+  it('a refused Start over shows the reason as the pane error', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'locked' })))
+    api.startOver = vi.fn().mockResolvedValue(fail("Start over is only for keys this computer can't open."))
+    await mount()
+    fireEvent.click(button('linked-keys-start-over'))
+    fireEvent.click(button('linked-keys-start-over-confirm'))
+    await waitFor(() => expect(screen.getByTestId('linked-error').textContent).toContain('only for keys'))
+  })
+
+  it('plaintext: the warning, here too', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'plaintext', keyBackend: 'basic_text' })))
+    await mount()
+    expect(screen.getByTestId('linked-keys-warning').getAttribute('data-keys')).toBe('plaintext')
+    expect(screen.getByTestId('linked-keys-backend').textContent).toContain('basic_text')
+  })
+
+  it('Encrypt keys now goes through this pane, and the banner goes', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keysUnencrypted: true })))
+    api.encryptKeys = vi.fn().mockResolvedValue(ok(statusView()))
+    await mount()
+    fireEvent.click(button('linked-keys-encrypt'))
+    await waitFor(() => expect(api.encryptKeys).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId('linked-keys-warning')).toBeNull())
   })
 })

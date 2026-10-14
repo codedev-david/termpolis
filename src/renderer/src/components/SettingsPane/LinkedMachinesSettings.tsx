@@ -11,6 +11,7 @@ import {
 import { InfoTip } from './InfoTip'
 import { LinkedCodeOffer, LinkedJoinForm, LinkedPendingCard } from './LinkedPairing'
 import { LinkedActivityList, LinkedMachineRow } from './LinkedMachineList'
+import { KeyStorageBanner } from './KeyStorageBanner'
 
 /** Run on, write off: the grant a user gives without thinking is the harmless one. */
 const DEFAULT_GRANTS: LinkedGrants = { run: true, write: false }
@@ -192,6 +193,14 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
     apply(await api.unlink(ref))
   }
 
+  const encryptKeys = async (): Promise<void> => {
+    apply(await api.encryptKeys())
+  }
+
+  const startOver = async (): Promise<void> => {
+    apply(await api.startOver())
+  }
+
   if (unavailable) return <Unavailable message={unavailable} />
 
   if (!status) {
@@ -245,6 +254,8 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
           code use that computer&apos;s relay and keep working.
         </div>
       )}
+
+      <KeyStorageBanner view={status} pane="linked" onEncrypt={encryptKeys} onStartOver={startOver} />
 
       <label className="flex items-center gap-2 text-sm text-[#d4d4d4] mb-3">
         <input

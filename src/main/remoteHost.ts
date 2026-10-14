@@ -1,4 +1,5 @@
 import {
+  REMOTE_KEYS_LOCKED,
   createRemoteHost,
   type LinkedBridgePort,
   type LinkedInit,
@@ -30,7 +31,10 @@ import {
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { isSecureRelayUrl } from './remoteBridge/relayUrl'
 import type { TerminalSnapshot } from './remoteStatusPump'
+import { keyStorageMode } from './secureKeyStore'
 import { ok, err } from './ipcResult'
+
+export { REMOTE_KEYS_LOCKED }
 
 /**
  * The app's single remote host: one bridge, one device registry, one IPC surface.
@@ -60,6 +64,8 @@ export interface RemoteHostBinding {
    *  respawn and on `refreshRemoteLinked()`. The one bridge runs while Remote OR
    *  Linked machines is on. Optional: absent means Linked machines is off. */
   linkedInit?: () => LinkedInit
+  /** Linked machines' half of "Start over": forget the links it holds in memory. */
+  linkedStartOver?: () => void
 }
 
 /** Answered by every remote channel while the feature has not started -- which is
@@ -93,6 +99,19 @@ export const REMOTE_RELAY_URL_RULE =
 export const REMOTE_RELAY_INSECURE =
   'The saved relay is not encrypted (ws://), so no phone can pair through it. Save a wss:// address first.'
 
+/** "Encrypt keys now" on a computer with no keychain: there is nothing to seal them with. */
+export const REMOTE_KEYS_NO_KEYCHAIN =
+  'There is no keychain on this computer to encrypt the keys with. Install and unlock a keyring (GNOME Keyring or KWallet), then restart Termpolis.'
+
+/** "Start over" asked of keys that open. Refused: that would throw away every pairing that works. */
+export const REMOTE_KEYS_NOT_LOCKED = "Start over is only for keys this computer can't open. These open, so nothing was changed."
+
+/** The lead of each key action's failure; the reason follows. */
+export const REMOTE_KEYS_NOT_ENCRYPTED = "Termpolis couldn't encrypt every key, and each one is either encrypted or exactly as it was:"
+export const REMOTE_START_OVER_FAILED = "Termpolis couldn't start over, so nothing was changed:"
+
+const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
 let host: RemoteHost | null = null
 let handler: ((m: BridgeToHost) => void) | null = null
 let subscribed = false
@@ -121,6 +140,7 @@ const linkedPort: LinkedBridgePort = {
   relayUrl: () => host?.linkedPort().relayUrl() ?? DEFAULT_RELAY_URL,
   linkOfferLive: () => host?.linkedPort().linkOfferLive() ?? false,
   relay: () => host?.linkedPort().relay() ?? 'idle',
+  keys: () => host?.linkedPort().keys() ?? { keyStorage: keyStorageMode(), keysUnencrypted: false },
 }
 
 /* c8 ignore start -- only reachable inside a packaged/dev Electron run, exactly
@@ -195,6 +215,7 @@ export function startRemoteBridgeHost(binding: RemoteHostBinding): void {
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     linkedInit: binding.linkedInit,
+    linkedStartOver: binding.linkedStartOver,
   })
   // Before `start()`, so nothing the new bridge says is missed. Each listener is
   // guarded on its own: one that throws must not deafen the others.
@@ -241,6 +262,31 @@ export function cancelRemoteLinkPairing(): void {
   host?.cancelLinkPairing()
 }
 
+/** "Encrypt keys now", for either pane. Null when it is done, else what to tell
+ *  the user. */
+export function encryptRemoteKeys(): string | null {
+  if (!host) return REMOTE_UNAVAILABLE
+  if (keyStorageMode() !== 'keychain') return REMOTE_KEYS_NO_KEYCHAIN
+  try {
+    host.encryptKeys()
+    return null
+  } catch (e) {
+    return `${REMOTE_KEYS_NOT_ENCRYPTED} ${messageOf(e)}`
+  }
+}
+
+/** "Start over", for either pane -- each checks first that its keys are the
+ *  locked ones. Null when it is done, else what to tell the user. */
+export function startOverRemoteKeys(): string | null {
+  if (!host) return REMOTE_UNAVAILABLE
+  try {
+    host.startOver()
+    return null
+  } catch (e) {
+    return `${REMOTE_START_OVER_FAILED} ${messageOf(e)}`
+  }
+}
+
 /** Both called from the PTY data path, on every chunk. A null host has to be
  *  free, not merely cheap -- this runs ahead of the renderer's own write. */
 export function noteTerminalOutput(terminalId: string): void {
@@ -269,6 +315,14 @@ function isLinkedComputer(remote: RemoteHost, deviceId: string): boolean {
     .linkedPort()
     .desktopPeers()
     .some((d) => d.id === deviceId)
+}
+
+/** Why a channel that needs the bridge can't have it, or null when it can. The
+ *  keys first: while they are locked the bridge never starts, and "switch it
+ *  on" would send the user round a switch that is already on. */
+function bridgeRefusal(status: RemoteStatusView): string | null {
+  if (status.keyStorage === 'locked') return REMOTE_KEYS_LOCKED
+  return status.running ? null : REMOTE_NOT_RUNNING
 }
 
 /** Validate a capability payload, or say why it is not one.
@@ -328,7 +382,8 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
   ipc.handle('remote:begin-pairing', (_e, input) => {
     if (!host) return err(REMOTE_UNAVAILABLE)
     const status = host.status()
-    if (!status.running) return err(REMOTE_NOT_RUNNING)
+    const refusal = bridgeRefusal(status)
+    if (refusal) return err(refusal)
     if (status.relayInsecure) return err(REMOTE_RELAY_INSECURE)
     // Only when the renderer actually sent a grant. Absent means "grant nothing",
     // the way pairing behaved before the choice existed; a malformed one is
@@ -358,7 +413,8 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     const deviceId = deviceIdOf(input)
     if (!deviceId) return err('A device id is required')
     if (isLinkedComputer(host, deviceId)) return err(REMOTE_LINKED_DEVICE)
-    if (!host.status().running) return err(REMOTE_NOT_RUNNING)
+    const refusal = bridgeRefusal(host.status())
+    if (refusal) return err(refusal)
     host.revokeDevice(deviceId)
     return ok(host.status())
   })
@@ -370,7 +426,8 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     const read = readCapabilities(input)
     if ('error' in read) return err(read.error)
     if (isLinkedComputer(host, deviceId)) return err(REMOTE_LINKED_DEVICE)
-    if (!host.status().running) return err(REMOTE_NOT_RUNNING)
+    const refusal = bridgeRefusal(host.status())
+    if (refusal) return err(refusal)
     host.setDeviceCapabilities(deviceId, read.caps)
     return ok(host.status())
   })
@@ -380,9 +437,27 @@ export function registerRemoteIpc(ipc: RemoteIpcLike): void {
     const deviceId = deviceIdOf(input)
     if (!deviceId) return err('A device id is required')
     if (isLinkedComputer(host, deviceId)) return err(REMOTE_LINKED_DEVICE)
+    // The words are made from this desktop's key, which a locked one can't give.
+    if (host.status().keyStorage === 'locked') return err(REMOTE_KEYS_LOCKED)
     const phrase = host.verificationPhraseFor(deviceId)
     if (!phrase) return err('That device is not paired with this desktop')
     return ok({ deviceId, phrase })
+  })
+
+  ipc.handle('remote:encrypt-keys', () => {
+    if (!host) return err(REMOTE_UNAVAILABLE)
+    const problem = encryptRemoteKeys()
+    return problem ? err(problem) : ok(host.status())
+  })
+
+  ipc.handle('remote:start-over', () => {
+    if (!host) return err(REMOTE_UNAVAILABLE)
+    // Only for an identity that can't be opened. Any other day this would throw
+    // away every pairing that works, at one click from a confused or hostile
+    // renderer.
+    if (host.status().keyStorage !== 'locked') return err(REMOTE_KEYS_NOT_LOCKED)
+    const problem = startOverRemoteKeys()
+    return problem ? err(problem) : ok(host.status())
   })
 }
 

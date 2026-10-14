@@ -195,6 +195,7 @@ const M = vi.hoisted(() => ({
   registerLinkedIpc: vi.fn(),
   linkedToolCall: vi.fn<(...a: any[]) => any>(async () => ({ thisMachine: 'here', machines: [] })),
   linkedInitForRemote: vi.fn(() => ({ enabled: true, links: [] })),
+  linkedStartOverForRemote: vi.fn(),
   // learning signals
   startLearningSignals: vi.fn(),
   stopLearningSignals: vi.fn(),
@@ -460,6 +461,7 @@ vi.mock('../../src/main/linkedHost', () => ({
   registerLinkedIpc: M.registerLinkedIpc,
   startLinkedHost: M.startLinkedHost, stopLinkedHost: M.stopLinkedHost,
   linkedToolCall: M.linkedToolCall, linkedInitForRemote: M.linkedInitForRemote,
+  linkedStartOverForRemote: M.linkedStartOverForRemote,
 }))
 vi.mock('../../src/main/mcpGatewayRuntime', () => ({
   initMcpGateway: vi.fn(),
@@ -1493,6 +1495,11 @@ describe('remote bridge host wiring', () => {
     M.linkedInitForRemote.mockReturnValueOnce({ enabled: true, links: [{ id: 'x' }] } as never)
     expect(opts().linkedInit()).toEqual({ enabled: true, links: [{ id: 'x' }] })
     expect(M.linkedInitForRemote).toHaveBeenCalled()
+  })
+
+  it("hands Linked machines its half of Start over: the links forgotten with the keys", () => {
+    opts().linkedStartOver()
+    expect(M.linkedStartOverForRemote).toHaveBeenCalledTimes(1)
   })
 })
 

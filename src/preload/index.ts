@@ -560,6 +560,8 @@ contextBridge.exposeInMainWorld('remote', {
     ipcRenderer.invoke('remote:set-capabilities', { deviceId, capabilities }),
   verificationPhrase: (deviceId: string) =>
     ipcRenderer.invoke('remote:verification-phrase', { deviceId }),
+  encryptKeys: () => ipcRenderer.invoke('remote:encrypt-keys'),
+  startOver: () => ipcRenderer.invoke('remote:start-over'),
   onStatus: (cb: (status: RemoteStatusView) => void) => {
     const handler = (_: Electron.IpcRendererEvent, status: RemoteStatusView) => cb(status)
     ipcRenderer.on('remote:status-changed', handler)
@@ -586,6 +588,8 @@ const linked: LinkedAPI = {
   rename: (ref, name) => ipcRenderer.invoke('linked:rename', { ref, name }),
   setGrants: (ref, grants) => ipcRenderer.invoke('linked:set-grants', { ref, grants }),
   unlink: (ref) => ipcRenderer.invoke('linked:unlink', { ref }),
+  encryptKeys: () => ipcRenderer.invoke('linked:encrypt-keys'),
+  startOver: () => ipcRenderer.invoke('linked:start-over'),
   onStatus: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, status: LinkedStatusView) => cb(status)
     ipcRenderer.on('linked:status-changed', handler)

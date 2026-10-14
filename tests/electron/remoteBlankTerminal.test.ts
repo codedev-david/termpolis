@@ -18,7 +18,7 @@ import {
 } from '../../src/main/remoteBridge/protocol'
 import type { RelayState, SessionRelayDeps } from '../../src/main/remoteBridge/relayClient'
 import { saveRemoteDevices } from '../../src/main/remoteDeviceStore'
-import { getOrCreateRemoteIdentity } from '../../src/main/remoteIdentityStore'
+import { identityOf } from './fixtures/remoteIdentity'
 import { saveRemoteSettings } from '../../src/main/remoteSettings'
 import { createRemoteHost, type RemoteHost } from '../../src/main/remoteBridgeHost'
 import {
@@ -340,7 +340,7 @@ let devices: Record<string, PairedDevice>
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-blank-'))
   setSafeStorage(fakeSafeStorage())
-  const identity = getOrCreateRemoteIdentity(dir)
+  const identity = identityOf(dir)
   devices = {}
   for (const id of ['dev1', 'dev2', 'dev3']) {
     const keys = generateIdentity()

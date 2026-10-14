@@ -6,6 +6,7 @@ import type {
   RemoteStatusView,
 } from '../../types'
 import { PairingModal, type PairedResult } from './PairingModal'
+import { KeyStorageBanner } from './KeyStorageBanner'
 
 interface CapabilityRow {
   key: keyof RemoteCapabilities
@@ -197,6 +198,14 @@ export function RemoteSettings(): JSX.Element {
     apply(await window.remote.revokeDevice(deviceId))
   }
 
+  const encryptKeys = async (): Promise<void> => {
+    apply(await window.remote.encryptKeys())
+  }
+
+  const startOver = async (): Promise<void> => {
+    apply(await window.remote.startOver())
+  }
+
   const showPhrase = async (deviceId: string): Promise<void> => {
     const res = await window.remote.verificationPhrase(deviceId)
     if (res.success) setPhrases((prev) => ({ ...prev, [deviceId]: res.data.phrase }))
@@ -272,6 +281,8 @@ export function RemoteSettings(): JSX.Element {
           </button>
         </div>
       )}
+
+      <KeyStorageBanner view={status} pane="remote" onEncrypt={encryptKeys} onStartOver={startOver} />
 
       <label className="flex items-center gap-2 text-sm text-[#d4d4d4] mb-4">
         <input
@@ -440,13 +451,18 @@ export function RemoteSettings(): JSX.Element {
         </div>
       )}
 
-      <div className="text-xs text-[#9ca3af] mb-1">This desktop&apos;s public key</div>
-      <div
-        data-testid="remote-public-key"
-        className="font-mono text-[10px] break-all text-[#6b7280] bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 select-all"
-      >
-        {status.publicKey}
-      </div>
+      {/* None while the keys are locked: the banner above says why. */}
+      {status.publicKey && (
+        <>
+          <div className="text-xs text-[#9ca3af] mb-1">This desktop&apos;s public key</div>
+          <div
+            data-testid="remote-public-key"
+            className="font-mono text-[10px] break-all text-[#6b7280] bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 select-all"
+          >
+            {status.publicKey}
+          </div>
+        </>
+      )}
 
       {modalOpen && (
         <PairingModal

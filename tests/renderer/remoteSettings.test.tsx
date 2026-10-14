@@ -31,6 +31,8 @@ const statusView = (over: Record<string, unknown> = {}): RemoteStatusView =>
     publicKey: 'a'.repeat(64),
     pairing: null,
     devices: [],
+    keyStorage: 'keychain',
+    keysUnencrypted: false,
     ...over,
   }) as RemoteStatusView
 
@@ -538,5 +540,90 @@ describe('RemoteSettings clock and defaults', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('RemoteSettings: the keys', () => {
+  const locked = (over: Record<string, unknown> = {}) =>
+    statusView({ keyStorage: 'locked', keyLockReason: 'no-keychain', publicKey: null, ...over })
+
+  it('says nothing while the keys are sealed by a keychain', async () => {
+    await mount()
+    expect(screen.queryByTestId('remote-keys-warning')).toBeNull()
+  })
+
+  it('locked: says why and that nothing changed, shows no public key, and starts over only on a second click', async () => {
+    api.status.mockResolvedValue(ok(locked()))
+    api.startOver = vi.fn().mockResolvedValue(ok(statusView({ publicKey: 'c'.repeat(64) })))
+    await mount()
+    const banner = screen.getByTestId('remote-keys-warning')
+    expect(banner.getAttribute('data-keys')).toBe('locked')
+    expect(banner.textContent).toContain('Your keyring is locked or not running')
+    expect(banner.textContent).toContain('Nothing was changed')
+    // No identity to show, and no blank box standing for one.
+    expect(screen.queryByTestId('remote-public-key')).toBeNull()
+
+    // The first click only says what it costs.
+    fireEvent.click(screen.getByTestId('remote-keys-start-over'))
+    expect(api.startOver).not.toHaveBeenCalled()
+    expect(banner.textContent).toContain('has to pair again')
+    fireEvent.click(screen.getByTestId('remote-keys-start-over-cancel'))
+    expect(screen.queryByTestId('remote-keys-start-over-confirm')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('remote-keys-start-over'))
+    fireEvent.click(screen.getByTestId('remote-keys-start-over-confirm'))
+    await waitFor(() => expect(api.startOver).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId('remote-keys-warning')).toBeNull())
+    expect(screen.getByTestId('remote-public-key').textContent).toBe('c'.repeat(64))
+  })
+
+  it.each([
+    ['unwrap-failed', 'password reset'],
+    ['unreadable', "can't read the files"],
+    [undefined, "can't open the keys"],
+  ])('locked (%s) says what would bring the keys back', async (reason, words) => {
+    api.status.mockResolvedValue(ok(locked({ keyLockReason: reason })))
+    await mount()
+    expect(screen.getByTestId('remote-keys-warning').textContent).toContain(words)
+  })
+
+  it('a Start over that fails says why, and the lock stays', async () => {
+    api.status.mockResolvedValue(ok(locked({ keyLockReason: 'unreadable' })))
+    api.startOver = vi.fn().mockResolvedValue(fail("Termpolis couldn't start over, so nothing was changed: EISDIR"))
+    await mount()
+    fireEvent.click(screen.getByTestId('remote-keys-start-over'))
+    fireEvent.click(screen.getByTestId('remote-keys-start-over-confirm'))
+    await waitFor(() => expect(screen.getByTestId('remote-error').textContent).toContain("couldn't start over"))
+    expect(screen.getByTestId('remote-keys-warning').getAttribute('data-keys')).toBe('locked')
+    // Back to the first step, ready to try again.
+    expect(screen.getByTestId('remote-keys-start-over')).toBeTruthy()
+  })
+
+  it('plaintext: warns, with the store Electron reports as small print, and offers nothing to press', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'plaintext', keyBackend: 'basic_text' })))
+    await mount()
+    const banner = screen.getByTestId('remote-keys-warning')
+    expect(banner.getAttribute('data-keys')).toBe('plaintext')
+    expect(banner.textContent).toContain('saved unencrypted')
+    expect(screen.getByTestId('remote-keys-backend').textContent).toContain('basic_text')
+    // There is no keychain to seal them with.
+    expect(screen.queryByTestId('remote-keys-encrypt')).toBeNull()
+  })
+
+  it('plaintext with no store named has no small print', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'plaintext' })))
+    await mount()
+    expect(screen.getByTestId('remote-keys-warning')).toBeTruthy()
+    expect(screen.queryByTestId('remote-keys-backend')).toBeNull()
+  })
+
+  it('keys saved in the clear with a keychain here: Encrypt keys now, and the banner goes', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keysUnencrypted: true })))
+    api.encryptKeys = vi.fn().mockResolvedValue(ok(statusView()))
+    await mount()
+    expect(screen.getByTestId('remote-keys-warning').getAttribute('data-keys')).toBe('unencrypted')
+    fireEvent.click(screen.getByTestId('remote-keys-encrypt'))
+    await waitFor(() => expect(api.encryptKeys).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId('remote-keys-warning')).toBeNull())
   })
 })
