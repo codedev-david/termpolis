@@ -5,7 +5,9 @@
  * depends on at runtime. Today this is mostly the MCP stdio adapter —
  * but because v1.11.5 shipped a broken installer (the adapter was
  * missing, the swarm silently failed with zero user-visible errors),
- * we want a hard fail-fast guard that runs on EVERY build.
+ * we want a hard fail-fast guard that runs on EVERY build. It also
+ * asserts the reverse for build-time CSS tooling, which must NOT ship
+ * (see verifyNoBuildTooling).
  *
  * This module is consumed two ways:
  *   1. electron-builder `afterPack` hook (called once per platform
@@ -94,6 +96,59 @@ function verifyResourcesFolder(resourcesDir) {
   }
 }
 
+// Build-time CSS tooling. The renderer's CSS is compiled during the build, so nothing in the
+// packaged app needs any of these, and while Tailwind 3 sat in "dependencies" it carried 7 npm
+// audit findings into app.asar. They are devDependencies now; this catches one coming back as a
+// dependency of something that ships. A path segment after ANY node_modules/, so a nested copy
+// (node_modules/x/node_modules/postcss) counts, and the bare directory entry an asar lists counts.
+const BUILD_TOOLING = /(?:^|[\\/])node_modules[\\/](?:tailwindcss|@tailwindcss[\\/][^\\/]+|postcss|autoprefixer|lightningcss(?:-[^\\/]+)?)(?=[\\/]|$)/
+
+// @electron/asar is not one of our dependencies: electron-builder brings it in through
+// app-builder-lib. Resolving it from there works whether npm hoists it or nests it, and keeps
+// package.json from declaring a second copy that would have to move in step with electron-builder.
+function listAsar(archive) {
+  const builder = path.dirname(require.resolve('app-builder-lib/package.json'))
+  return require(require.resolve('@electron/asar', { paths: [builder] })).listPackage(archive, { isPack: false })
+}
+
+/**
+ * Throw if build-time CSS tooling made it into the packaged app: into app.asar, or beside it in
+ * app.asar.unpacked, which is where electron-builder would put a native .node binary such as
+ * @tailwindcss/oxide's or lightningcss's. A missing app.asar (an asar: false build, or a test
+ * fixture) has nothing to check. `listPackage` lists every path in an archive; it is injected
+ * so the tests can describe an archive without packing one.
+ */
+function verifyNoBuildTooling(resourcesDir, listPackage = listAsar) {
+  const found = new Set()
+  const record = (prefix, entry) => {
+    const m = BUILD_TOOLING.exec(entry)
+    if (m) found.add(`${prefix}/${entry.slice(0, m.index + m[0].length).replace(/\\/g, '/').replace(/^\//, '')}`)
+  }
+
+  const asar = path.join(resourcesDir, 'app.asar')
+  if (fs.existsSync(asar)) {
+    for (const entry of listPackage(asar)) record('app.asar', entry)
+  }
+  const unpacked = path.join(resourcesDir, 'app.asar.unpacked', 'node_modules')
+  if (fs.existsSync(unpacked)) {
+    for (const entry of fs.readdirSync(unpacked, { recursive: true })) {
+      record('app.asar.unpacked', path.join('node_modules', entry))
+    }
+  }
+
+  if (found.size > 0) {
+    throw new Error(
+      `[verifyPackagedResources] FATAL: build-time CSS tooling is in the packaged app. The ` +
+        `renderer's CSS is compiled during the build, so nothing needs it at runtime, and it ` +
+        `ships its npm audit findings with the app.\n` +
+        `Found:\n  - ${[...found].join('\n  - ')}\n\n` +
+        `Likely cause: one of them is in package.json "dependencies", or a package that ships ` +
+        `started depending on one. tailwindcss, @tailwindcss/postcss and postcss belong in ` +
+        `"devDependencies"; autoprefixer is not needed at all.`,
+    )
+  }
+}
+
 /**
  * Main entrypoint for the electron-builder afterPack hook.
  * Throws if verification fails (which fails the build).
@@ -107,9 +162,10 @@ function verifyFromAfterPack(context) {
   // eslint-disable-next-line no-console
   console.log(`[verifyPackagedResources] Checking: ${resourcesDir}`)
   verifyResourcesFolder(resourcesDir)
+  verifyNoBuildTooling(resourcesDir)
   // eslint-disable-next-line no-console
   console.log(
-    `[verifyPackagedResources] OK — all ${REQUIRED_RESOURCE_FILES.length} required file(s) present`,
+    `[verifyPackagedResources] OK — all ${REQUIRED_RESOURCE_FILES.length} required file(s) present, no build tooling packed`,
   )
 }
 
@@ -153,6 +209,7 @@ function verifyFromCLI(target) {
     if (fs.existsSync(path.join(cand, 'mcp-adapter'))) {
       try {
         verifyResourcesFolder(cand)
+        verifyNoBuildTooling(cand)
         // eslint-disable-next-line no-console
         console.log(`[verifyPackagedResources] OK — verified ${cand}`)
         return
@@ -234,6 +291,7 @@ module.exports = {
   REQUIRED_RESOURCE_FILES,
   resolveResourcesDir,
   verifyResourcesFolder,
+  verifyNoBuildTooling,
   verifyFromAfterPack,
   verifyEmbeddingModelBundled,
 }

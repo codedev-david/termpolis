@@ -4,7 +4,8 @@
 //
 //   1. Fix node-pty spawn-helper permissions on macOS (Hyper does the
 //      same — needed for posix_spawnp to actually launch spawn-helper).
-//   2. Verify every required runtime resource is physically present.
+//   2. Verify every required runtime resource is physically present,
+//      and that no build-time CSS tooling was packed alongside them.
 //      If verification fails we throw — this FAILS THE BUILD, which
 //      is exactly what we want; v1.11.5 shipped a broken installer
 //      because nothing enforced this.

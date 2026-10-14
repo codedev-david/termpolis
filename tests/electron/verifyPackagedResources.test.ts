@@ -16,9 +16,9 @@
  *     (so if main/index.ts grows a new resource dep, this test fails until
  *     REQUIRED_RESOURCE_FILES is updated).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from 'fs'
-import { join, resolve } from 'path'
+import { dirname, join, resolve } from 'path'
 import { tmpdir } from 'os'
 
 const verifier = require('../../scripts/verifyPackagedResources.cjs')
@@ -172,6 +172,135 @@ describe('verifyPackagedResources — verifyFromAfterPack', () => {
         electronPlatformName: 'win32',
       }),
     ).toThrow(/win-unpacked/)
+  })
+})
+
+describe('verifyPackagedResources — verifyNoBuildTooling', () => {
+  // electron-builder's own asar library, resolved the way the verifier resolves it, so the
+  // real-archive tests below list entries in the path form this platform actually produces.
+  const asar = require(
+    require.resolve('@electron/asar', { paths: [dirname(require.resolve('app-builder-lib/package.json'))] }),
+  )
+
+  /** A resources dir with an app.asar on disk. The injected lister answers for it, so its bytes don't matter. */
+  function resourcesWithAsar(): string {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    writeFileSync(join(res, 'app.asar'), '')
+    return res
+  }
+
+  function unpackedFile(res: string, rel: string): void {
+    const full = join(res, 'app.asar.unpacked', rel)
+    mkdirSync(dirname(full), { recursive: true })
+    writeFileSync(full, 'x')
+  }
+
+  function message(fn: () => void): string {
+    try {
+      fn()
+    } catch (err: any) {
+      return err.message
+    }
+    throw new Error('should have thrown')
+  }
+
+  it('has nothing to check when there is no app.asar (asar: false builds, plain fixtures)', () => {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    const listPackage = vi.fn(() => ['/node_modules/postcss/package.json'])
+    expect(() => verifier.verifyNoBuildTooling(res, listPackage)).not.toThrow()
+    expect(listPackage).not.toHaveBeenCalled()
+  })
+
+  it('passes runtime packages, including ones whose names only start like the tooling', () => {
+    const entries = [
+      '/out/renderer/assets/index.css',
+      '/node_modules/postcss-value-parser/package.json',
+      '/node_modules/tailwind-merge/package.json',
+      '/node_modules/@tailwind/runtime/index.js',
+    ]
+    expect(() => verifier.verifyNoBuildTooling(resourcesWithAsar(), () => entries)).not.toThrow()
+  })
+
+  it('names a packed package once, from the Windows-form entries asar lists on Windows', () => {
+    const err = message(() =>
+      verifier.verifyNoBuildTooling(resourcesWithAsar(), () => [
+        '\\node_modules\\tailwindcss',
+        '\\node_modules\\tailwindcss\\package.json',
+        '\\node_modules\\tailwindcss\\dist\\lib.js',
+      ]),
+    )
+    expect(err.match(/app\.asar\/node_modules\/tailwindcss$/gm)).toHaveLength(1)
+    expect(err).toMatch(/devDependencies/)
+  })
+
+  it('finds every tooling package, scoped and native, at any node_modules depth', () => {
+    const err = message(() =>
+      verifier.verifyNoBuildTooling(resourcesWithAsar(), () => [
+        '/node_modules/@tailwindcss/oxide/index.js',
+        '/node_modules/some-dep/node_modules/postcss/lib/postcss.js',
+        '/node_modules/autoprefixer',
+        '/node_modules/lightningcss/node/index.js',
+        '/node_modules/lightningcss-linux-x64-gnu/lightningcss.linux-x64-gnu.node',
+      ]),
+    )
+    for (const pkg of [
+      'node_modules/@tailwindcss/oxide',
+      'node_modules/some-dep/node_modules/postcss',
+      'node_modules/autoprefixer',
+      'node_modules/lightningcss',
+      'node_modules/lightningcss-linux-x64-gnu',
+    ]) {
+      expect(err).toContain(`  - app.asar/${pkg}\n`)
+    }
+  })
+
+  it('checks app.asar.unpacked on disk, where a native binary would be unpacked to', () => {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    unpackedFile(res, join('node_modules', 'lightningcss-win32-x64-msvc', 'lightningcss.win32-x64-msvc.node'))
+    expect(() => verifier.verifyNoBuildTooling(res)).toThrow(
+      /app\.asar\.unpacked\/node_modules\/lightningcss-win32-x64-msvc$/m,
+    )
+  })
+
+  it('finds a nested copy in app.asar.unpacked too', () => {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    unpackedFile(res, join('node_modules', 'node-pty', 'node_modules', '@tailwindcss', 'oxide', 'package.json'))
+    expect(() => verifier.verifyNoBuildTooling(res)).toThrow(
+      /app\.asar\.unpacked\/node_modules\/node-pty\/node_modules\/@tailwindcss\/oxide$/m,
+    )
+  })
+
+  it('leaves the modules package.json really unpacks alone', () => {
+    const res = makeWinFixture(join(sandbox, 'win-unpacked'), true)
+    unpackedFile(res, join('node_modules', 'node-pty', 'build', 'Release', 'pty.node'))
+    unpackedFile(res, join('node_modules', 'onnxruntime-web', 'dist', 'ort-wasm-simd-threaded.wasm'))
+    unpackedFile(res, join('node_modules', 'web-tree-sitter', 'tree-sitter.wasm'))
+    expect(() => verifier.verifyNoBuildTooling(res)).not.toThrow()
+  })
+
+  it('fails afterPack on a real archive that carries postcss', async () => {
+    const out = join(sandbox, 'win-unpacked')
+    const res = makeWinFixture(out, true)
+    const app = join(sandbox, 'app')
+    for (const rel of ['package.json', 'node_modules/zustand/package.json', 'node_modules/postcss/package.json']) {
+      mkdirSync(dirname(join(app, rel)), { recursive: true })
+      writeFileSync(join(app, rel), '{}')
+    }
+    await asar.createPackage(app, join(res, 'app.asar'))
+    expect(() => verifier.verifyFromAfterPack({ appOutDir: out, electronPlatformName: 'win32' })).toThrow(
+      /app\.asar\/node_modules\/postcss$/m,
+    )
+  })
+
+  it('passes afterPack on a real archive without tooling', async () => {
+    const out = join(sandbox, 'win-unpacked')
+    const res = makeWinFixture(out, true)
+    const app = join(sandbox, 'app')
+    mkdirSync(join(app, 'node_modules', 'zustand'), { recursive: true })
+    writeFileSync(join(app, 'package.json'), '{}')
+    writeFileSync(join(app, 'node_modules', 'zustand', 'package.json'), '{}')
+    await asar.createPackage(app, join(res, 'app.asar'))
+    expect(() => verifier.verifyFromAfterPack({ appOutDir: out, electronPlatformName: 'win32' })).not.toThrow()
   })
 })
 
