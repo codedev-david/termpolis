@@ -82,8 +82,12 @@ jobs:
           for i in $(seq 1 30); do [ -S "$XDG_RUNTIME_DIR/wayland-e2e" ] && break; sleep 1; done
           [ -S "$XDG_RUNTIME_DIR/wayland-e2e" ] || { cat /tmp/weston.log; exit 1; }
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+      # TERMPOLIS_E2E_PREBUILT: the specs launch the Build step's out/ instead of each building it
+      # again (ensureE2eBuild, e2e/helpers/launch.ts).
       - name: Whole e2e suite
         shell: bash
+        env:
+          TERMPOLIS_E2E_PREBUILT: '1'
         run: |
           run=(npx playwright test ${{ inputs.specs }} --shard=${{ matrix.shard }}/4 --reporter=list)
           if [ "$RUNNER_OS" = Linux ] && [ "${{ inputs.display }}" = wayland ]; then

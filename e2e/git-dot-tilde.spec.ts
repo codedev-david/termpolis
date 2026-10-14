@@ -54,9 +54,9 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { execSync, execFileSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { ensureGitOnPath } from '../tests/gitPath'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 // The same executable shellDetector looks for; checked here so a machine without Git for
 // Windows skips cleanly instead of failing in beforeAll on a missing shell.
@@ -85,7 +85,7 @@ describeMaybe('the git mark in a `~`-abbreviated directory', () => {
       throw new Error('git-dot-tilde.spec needs a real git to build its fixture repo')
     }
 
-    execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+    ensureE2eBuild()
 
     // The repo has to live under the REAL home directory: a tilde abbreviates to $HOME and to
     // nothing else, so os.tmpdir() cannot stand in for it. Removed in afterAll, so a

@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -18,9 +18,7 @@ test.beforeAll(async () => {
   if (fs.existsSync(SCREENSHOTS)) fs.rmSync(SCREENSHOTS, { recursive: true })
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
 
-  // Build
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // Clear session so we start fresh
   const os = await import('os')

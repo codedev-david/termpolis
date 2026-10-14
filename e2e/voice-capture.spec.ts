@@ -26,15 +26,14 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 let isolatedUserData: string
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // Isolated profile: its own single-instance lock (so it won't collide with a
   // dev app) and a seeded session that turns voice ON. Transcription is never

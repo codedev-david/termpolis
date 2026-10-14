@@ -13,7 +13,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -21,8 +21,7 @@ let isolatedUserData: string
 const errors: string[] = []
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // Isolate from the developer's real ~/AppData/Roaming/termpolis profile.
   // Without this the test's localStorage writes (e.g. onboarding.seen = 1)

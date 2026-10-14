@@ -19,9 +19,9 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { execSync, execFileSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { ensureGitOnPath } from '../tests/gitPath'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -50,7 +50,7 @@ test.beforeAll(async () => {
     )
   }
 
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // A real repo with a commit (so the branch header is a normal branch name) plus one
   // untracked file, so the dot must not merely appear — it must report work outstanding,

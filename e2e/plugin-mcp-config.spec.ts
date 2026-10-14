@@ -23,13 +23,11 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 let scratchHome: string
-
-const PROJECT_ROOT = path.resolve('.')
 
 const claude = (...parts: string[]) => path.join(scratchHome, '.claude', ...parts)
 const writeJson = (file: string, value: unknown) => {
@@ -68,8 +66,7 @@ test.beforeAll(async () => {
   // The user's own plugin in the same marketplace.
   writeJson(claude('local-marketplace', 'plugins', 'mine', '.claude-plugin', 'plugin.json'), { name: 'mine' })
 
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' })
+  ensureE2eBuild()
 
   app = await electron.launch({
     args: e2eLaunchArgs('plugin-removal'),

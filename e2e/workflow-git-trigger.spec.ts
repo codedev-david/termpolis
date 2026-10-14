@@ -33,7 +33,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { execFileSync } from 'child_process'
-import { probeAppVersion, quitApp } from './helpers/launch'
+import { probeAppVersion, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication | null = null
 let page: Page | null = null
@@ -68,8 +68,7 @@ test.beforeAll(async () => {
   // A build plus two Electron launches does not fit the config's 120s hook budget
   // on a cold runner.
   test.setTimeout(300_000)
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // The version the running build reports, so the seeded session.json is one the app keeps
   // (see probeAppVersion for why it cannot be read from package.json).

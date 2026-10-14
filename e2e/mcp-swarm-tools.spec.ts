@@ -8,7 +8,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let token: string
@@ -63,8 +63,7 @@ function parseToolResult(data: any): any {
 }
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   app = await electron.launch({
     args: e2eLaunchArgs('mcp-swarm-tools'),

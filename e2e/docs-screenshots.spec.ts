@@ -19,7 +19,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, e2eUserDataDir, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir, quitApp, ensureE2eBuild } from './helpers/launch'
 
 const PROJECT_ROOT = path.resolve('.')
 const OUT = path.join(PROJECT_ROOT, 'e2e', 'screenshots', 'docs')
@@ -157,9 +157,7 @@ test.beforeAll(async () => {
     }
   } catch {}
 
-  const { execSync } = await import('child_process')
-  try { execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' }) }
-  catch { execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' }) }
+  ensureE2eBuild()
 
   const dirs = [
     e2eUserDataDir('docs-screenshots'),

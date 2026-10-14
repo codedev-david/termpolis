@@ -23,7 +23,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 const REPO = path.resolve('.')
 const NOISE = path.join(REPO, 'tests', 'fixtures', 'voice-noise.wav')
@@ -38,8 +38,7 @@ test.describe.serial('Voice gates steady noise (no phantom transcript)', () => {
   test.setTimeout(120_000)
 
   test.beforeAll(async () => {
-    const { execSync } = await import('child_process')
-    execSync('npx electron-vite build', { cwd: REPO, stdio: 'pipe' })
+    ensureE2eBuild()
 
     // Voice ON, plain shell so a transcript — if one were wrongly produced —
     // would surface in the confirm bar we assert NEVER appears. The speech/noise

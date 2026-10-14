@@ -15,8 +15,7 @@
  */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
-import path from 'path'
-import { e2eLaunchArgs, dismissOnboarding, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, quitApp, ensureE2eBuild } from './helpers/launch'
 
 /** Discard port on loopback: valid to `new URL()`, refused instantly, never routed. */
 const DEAD_RELAY = 'ws://127.0.0.1:9/ws'
@@ -25,8 +24,7 @@ let app: ElectronApplication
 let page: Page
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   app = await electron.launch({
     args: e2eLaunchArgs('remote-settings'),

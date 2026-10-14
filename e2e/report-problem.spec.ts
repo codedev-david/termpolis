@@ -19,7 +19,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -29,8 +29,7 @@ test.beforeAll(async () => {
   if (fs.existsSync(SCREENSHOTS)) fs.rmSync(SCREENSHOTS, { recursive: true })
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
 
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // Isolated userData: the single-instance lock is keyed on this path, so
   // without it a Termpolis already running on the developer's machine owns the

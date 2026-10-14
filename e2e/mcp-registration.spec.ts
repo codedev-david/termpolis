@@ -11,15 +11,14 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, e2eUserDataDir, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 let agentHome = ''
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // The agents count as installed when their config directories exist.
   agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-mcp-reg-home-'))

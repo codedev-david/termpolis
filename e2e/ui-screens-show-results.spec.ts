@@ -29,13 +29,12 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 let isolatedUserData: string
 
-const PROJECT_ROOT = path.resolve('.')
 const SCREENSHOTS = 'e2e/screenshots/ui-screens-show-results'
 
 test.beforeAll(async () => {
@@ -53,8 +52,7 @@ test.beforeAll(async () => {
   })
   fs.writeFileSync(path.join(isolatedUserData, 'session.json'), cleanSession)
 
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' })
+  ensureE2eBuild()
 
   app = await electron.launch({
     args: [

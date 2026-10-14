@@ -1,14 +1,13 @@
 ﻿import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 import path from 'path'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   app = await electron.launch({
     args: e2eLaunchArgs('full-test'),

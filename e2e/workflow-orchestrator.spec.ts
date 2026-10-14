@@ -19,7 +19,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 const WF_NAME = 'E2E Orchestrator'
 
@@ -31,8 +31,7 @@ let isolatedUserData: string
 let created: { cwd: string; id: string } | null = null
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // Isolate Electron's userData (session.json, trusted-workspaces.json) from the
   // developer's real ~/AppData/Roaming/termpolis profile â€” see chrome-smoke.

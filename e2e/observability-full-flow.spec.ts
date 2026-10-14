@@ -23,12 +23,11 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 
-const PROJECT_ROOT = path.resolve('.')
 const SCREENSHOTS = 'e2e/screenshots/observability-full-flow'
 const TEST_CWD = path.join(os.tmpdir(), `termpolis-obs-e2e-${Date.now()}`)
 
@@ -43,9 +42,7 @@ test.beforeAll(async () => {
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
   fs.mkdirSync(TEST_CWD, { recursive: true })
 
-  const { execSync } = await import('child_process')
-  try { execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' }) }
-  catch { execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' }) }
+  ensureE2eBuild()
 
   // Wipe session so each run starts clean
   const udir = userDataDir()

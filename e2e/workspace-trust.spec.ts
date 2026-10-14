@@ -10,18 +10,18 @@
 
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
-import { execFileSync, execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
-import { e2eLaunchArgs, dismissOnboarding, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 let tempRepo: string
 
 test.beforeAll(async () => {
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
   // TERMPOLIS_TEST_TRUST='deny' makes the dialog auto-deny so we can test
   // the gate without a visible modal. Individual tests override via
   // workspace:trust IPC calls.

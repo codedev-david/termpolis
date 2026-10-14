@@ -28,7 +28,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -47,12 +47,7 @@ test.beforeAll(async () => {
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
 
 
-  const { execSync } = await import('child_process')
-  try {
-    execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' })
-  } catch {
-    execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' })
-  }
+  ensureE2eBuild()
 
   const candidates = [
     e2eUserDataDir('swarm-mcp-unavailable'),

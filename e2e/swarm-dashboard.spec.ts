@@ -25,7 +25,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication | null = null
 let page: Page | null = null
@@ -64,8 +64,7 @@ async function openDashboard(): Promise<void> {
 
 test.beforeAll(async () => {
   test.setTimeout(300_000)
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // A real directory for the picker to return. Nothing is written to it — the
   // point is only that the wizard receives a genuine path.

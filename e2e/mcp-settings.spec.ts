@@ -16,15 +16,14 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { e2eLaunchArgs, dismissOnboarding, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 let agentHome = ''
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // A scratch agent home of this spec's own, where Claude Code counts as installed (its
   // config directory exists), so connecting the agents writes a registration for the

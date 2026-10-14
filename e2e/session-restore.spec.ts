@@ -10,7 +10,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -119,9 +119,7 @@ async function saveWorkspace(name: string) {
 }
 
 test.beforeAll(async () => {
-  // Build the app
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // Start fresh on the Welcome screen. Seeded into this spec's own profile — the old code
   // wrote into ~/AppData/Roaming/termpolis, i.e. the developer's REAL session layout.

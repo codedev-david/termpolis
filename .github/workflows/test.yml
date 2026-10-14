@@ -312,7 +312,11 @@ jobs:
       # Sharded: Electron forces workers=1 inside a job, and once the 34 specs
       # actually launched, the whole directory ran past the 90-minute cap and was
       # cancelled mid-suite. Separate runners are the only parallelism available.
+      # TERMPOLIS_E2E_PREBUILT: the specs launch the Build step's out/ instead of each
+      # building it again (ensureE2eBuild, e2e/helpers/launch.ts).
       - name: Whole e2e suite
+        env:
+          TERMPOLIS_E2E_PREBUILT: '1'
         run: xvfb-run --auto-servernum npx playwright test --shard=${{ matrix.shard }}/4 --reporter=list
       - name: Upload failure traces
         if: ${{ !cancelled() }}
@@ -344,6 +348,10 @@ jobs:
     needs: static
     runs-on: macos-latest
     continue-on-error: false
+    # The Build step runs before any spec, so the specs launch its out/ instead of each
+    # building it again (ensureE2eBuild, e2e/helpers/launch.ts).
+    env:
+      TERMPOLIS_E2E_PREBUILT: '1'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6

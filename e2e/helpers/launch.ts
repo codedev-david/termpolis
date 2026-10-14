@@ -17,7 +17,7 @@
  * Centralising it means a new spec inherits both fixes instead of rediscovering them.
  */
 import { test, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import { spawnSync, type ChildProcess } from 'child_process'
+import { execSync, spawnSync, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -55,6 +55,26 @@ export function e2eLaunchArgs(label = 'e2e'): string[] {
     `--user-data-dir=${e2eUserDataDir(label)}`,
     ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
   ]
+}
+
+/**
+ * Build the app a spec launches, unless the job running the suite already has.
+ *
+ * Specs call this from their beforeAll, so a spec run on its own launches the code on disk, not
+ * whatever an earlier build left in out/. In CI that meant the job's Build step and then the same
+ * build again in 52 specs, and on a Windows runner each spec spent about 40 s before its app even
+ * started. A job whose Build step runs before the suite sets TERMPOLIS_E2E_PREBUILT=1, and then
+ * this only checks that out/ holds the main entry. It cannot tell whether that build is current,
+ * so only a job that builds first should set it: a stale out/ passes or fails on code that is no
+ * longer there.
+ *
+ * One retry, as the specs that carried their own had: electron-vite build can fail on Windows and
+ * pass on the next try, and a failed build takes every test in the file down with it.
+ */
+export function ensureE2eBuild(): void {
+  if (process.env.TERMPOLIS_E2E_PREBUILT === '1' && fs.existsSync(path.resolve('out/main/index.js'))) return
+  const build = (): void => { execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' }) }
+  try { build() } catch { build() }
 }
 
 /**

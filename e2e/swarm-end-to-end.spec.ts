@@ -24,7 +24,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -105,13 +105,7 @@ test.beforeAll(async () => {
   try { if (fs.existsSync(TASK_FILE)) fs.unlinkSync(TASK_FILE) } catch {}
 
 
-  // Build the app (retry once — electron-vite can flake on Windows)
-  const { execSync } = await import('child_process')
-  try {
-    execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' })
-  } catch {
-    execSync('npx electron-vite build', { cwd: PROJECT_ROOT, stdio: 'pipe' })
-  }
+  ensureE2eBuild()
 
   // Wipe session.json + any lockfile so we start fresh
   const candidates = [

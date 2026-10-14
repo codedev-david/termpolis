@@ -31,7 +31,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { probeAppVersion, quitApp } from './helpers/launch'
+import { probeAppVersion, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication | null = null
 let page: Page | null = null
@@ -82,8 +82,7 @@ test.beforeAll(async () => {
   // A build plus two Electron launches does not fit the config's 120s hook budget
   // on a cold runner.
   test.setTimeout(300_000)
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // The version the running build reports (see probeAppVersion). The terminal the session seeds
   // is never reopened — the supervisor only arms the project at its cwd.

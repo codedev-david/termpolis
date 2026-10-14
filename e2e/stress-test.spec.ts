@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, dismissOverlays, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, dismissOverlays, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -15,9 +15,8 @@ let page: Page
 test.setTimeout(60_000)
 
 test.beforeAll(async () => {
-  // Build the app
+  ensureE2eBuild()
   const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
   // Clear session so we start fresh on the Welcome screen
   const os = await import('os')

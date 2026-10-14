@@ -18,7 +18,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, e2eUserDataDir, dismissOnboarding, quitApp, ensureE2eBuild } from './helpers/launch'
 
 /** Discard port on loopback: refused instantly, never routed. Still a relay a
  *  link code may name -- plain ws:// is accepted on loopback only. */
@@ -41,8 +41,7 @@ function savedLinkedSetting(): unknown {
 test.beforeAll(async () => {
   // The build alone can take most of the default 120 s on a cold machine.
   test.setTimeout(300_000)
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   // Linked machines dials Remote's relay, so the address is Remote's setting,
   // seeded before first launch. TERMPOLIS_RELAY_URL is set too, but alone it

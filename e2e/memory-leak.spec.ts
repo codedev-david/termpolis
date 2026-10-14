@@ -7,7 +7,7 @@ import { test, expect, type ElectronApplication, type Page } from '@playwright/t
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
-import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp } from './helpers/launch'
+import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
@@ -75,9 +75,8 @@ function mb(bytes: number): string {
 }
 
 test.beforeAll(async () => {
-  // Build the app
+  ensureE2eBuild()
   const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
   // Kill any stale Electron processes that might block launch
   try { execSync('taskkill /F /IM electron.exe', { stdio: 'pipe' }) } catch { /* none running */ }

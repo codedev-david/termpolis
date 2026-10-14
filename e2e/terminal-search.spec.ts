@@ -14,15 +14,14 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { quitApp, ensureE2eBuild } from './helpers/launch'
 
 let app: ElectronApplication
 let page: Page
 let isolatedUserData: string
 
 test.beforeAll(async () => {
-  const { execSync } = await import('child_process')
-  execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
+  ensureE2eBuild()
 
   isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-search-'))
   fs.writeFileSync(path.join(isolatedUserData, 'session.json'), JSON.stringify({
