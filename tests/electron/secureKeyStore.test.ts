@@ -115,6 +115,18 @@ describe('inspectSecret — never mistakes "can\'t open it now" for "not there"'
     expect(inspectSecret(path.join(dir, 'nope'))).toEqual({ state: 'absent' })
   })
 
+  it('a path under a regular file is absent: nothing can be there, though POSIX answers ENOTDIR', () => {
+    const file = path.join(dir, 'not-a-dir')
+    fs.writeFileSync(file, '')
+    expect(inspectSecret(path.join(file, 'k'))).toEqual({ state: 'absent' })
+    // Windows answers ENOENT there, so give every machine the POSIX answer too.
+    const read = vi.spyOn(fs, 'readFileSync').mockImplementation(() => {
+      throw Object.assign(new Error('ENOTDIR: not a directory'), { code: 'ENOTDIR' })
+    })
+    expect(inspectSecret(path.join(file, 'k'))).toEqual({ state: 'absent' })
+    read.mockRestore()
+  })
+
   it('an OS-wrapped blob opens to its value', () => {
     setSafeStorage(fakeSafeStorage())
     const p = path.join(dir, 'k')

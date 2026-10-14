@@ -124,9 +124,12 @@ export function inspectSecret(filePath: string): SecretInspection {
   try {
     raw = fs.readFileSync(filePath, 'utf8').trim()
   } catch (err) {
-    // Only ENOENT means absent. A file the OS won't hand over (locked, permissions, a directory in the
-    // way) still exists, and minting over it is the exact failure this function is here to prevent.
-    return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? { state: 'absent' } : { state: 'locked', reason: 'unreadable' }
+    // Only "nothing there" means absent: ENOENT, or the ENOTDIR POSIX gives where Windows says ENOENT,
+    // a regular file where a folder on the way should be. A file the OS won't hand over (locked,
+    // permissions, a directory in the way) still exists, and minting over it is the exact failure this
+    // function is here to prevent.
+    const code = (err as NodeJS.ErrnoException)?.code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { state: 'absent' } : { state: 'locked', reason: 'unreadable' }
   }
   if (!raw.startsWith(OSK_PREFIX)) return { state: 'plaintext', value: raw }
   if (!impl) return { state: 'locked', reason: 'no-keychain' }
