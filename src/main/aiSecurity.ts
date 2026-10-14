@@ -72,6 +72,10 @@ export interface AuditEntry {
     | 'import_scan'
     | 'import_blocked'
     | 'memory_scrub'
+    // Linked machines (screenText): a credential taken out of a prompt or an answer on its way
+    // between two computers, or a possible one left in. Rule ids and counts only, never values.
+    | 'linked_secret_removed'
+    | 'linked_secret_flagged'
   terminalId?: string
   byteCount?: number
   hitCount?: number
@@ -81,6 +85,14 @@ export interface AuditEntry {
 interface RedactionRule {
   id: string
   label: string
+  /** How sure a match is to be a live credential, which decides what screenText does with it.
+   *  `high`: a token whose own shape names it (a vendor prefix or format that does not occur by
+   *  accident, or a private-key block), removed wherever text crosses to another computer.
+   *  `heuristic`: a match that leans on a variable name, a nearby word, or a generic URL or
+   *  assignment shape, or a value meant to sit in code (a publishable key, a client id, a DSN).
+   *  Those are as often examples, fixtures and test data, and removing them corrupts the code a
+   *  delegated job came back with, so they are only reported. */
+  precision: 'high' | 'heuristic'
   pattern: RegExp
   /** Capture group holding the secret's NAME (e.g. `DB_PASSWORD`, `apiKey`). We log the name
    *  and never the value — that is what tells you what to rotate, without us storing it. */
@@ -96,119 +108,124 @@ interface RedactionRule {
 // git-hook rule table (src/mcp-adapter/secretRules.cjs) has not drifted from this one.
 // The hook scans in a plain node process with Termpolis possibly closed, so it cannot
 // import this module — it carries its own copy, and that test is what keeps them identical.
+//
+// Text another computer controls is scanned too (Linked machines, screenText), on the main
+// thread, so no rule may take more than linear time on a crafted input: a lookahead is bounded
+// (cloudflare_global and gh_runner_token look 200 characters ahead, where `.*` cost ~170 ms on a
+// crafted 200 KB answer), and a private-key block takes at most 400 lines after its BEGIN line.
 export const RULES: RedactionRule[] = [
   // === AWS ===
-  { id: 'aws_access_key', label: 'AWS Access Key ID', pattern: /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ASCA)[0-9A-Z]{16}\b/g },
-  { id: 'aws_secret', label: 'AWS Secret-shaped 40-char base64', pattern: /\b(?:aws_secret|secret_access_key|aws_secret_access_key)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi },
-  { id: 'aws_session_token', label: 'AWS session token', pattern: /\b(?:aws_session_token|x-amz-security-token)\s*[:=]\s*["']?([A-Za-z0-9/+=]{100,})["']?/gi },
+  { id: 'aws_access_key', label: 'AWS Access Key ID', precision: 'high', pattern: /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ASCA)[0-9A-Z]{16}\b/g },
+  { id: 'aws_secret', label: 'AWS Secret-shaped 40-char base64', precision: 'heuristic', pattern: /\b(?:aws_secret|secret_access_key|aws_secret_access_key)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?/gi },
+  { id: 'aws_session_token', label: 'AWS session token', precision: 'heuristic', pattern: /\b(?:aws_session_token|x-amz-security-token)\s*[:=]\s*["']?([A-Za-z0-9/+=]{100,})["']?/gi },
   // === GitHub ===
-  { id: 'gh_pat', label: 'GitHub PAT (ghp/gho/ghu/ghs/ghr)', pattern: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g },
-  { id: 'gh_fine_grained', label: 'GitHub fine-grained token', pattern: /\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
+  { id: 'gh_pat', label: 'GitHub PAT (ghp/gho/ghu/ghs/ghr)', precision: 'high', pattern: /\bgh[pousr]_[A-Za-z0-9]{36,}\b/g },
+  { id: 'gh_fine_grained', label: 'GitHub fine-grained token', precision: 'high', pattern: /\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
   // === GitLab / Bitbucket ===
-  { id: 'gitlab_pat', label: 'GitLab PAT', pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/g },
-  { id: 'gitlab_runner', label: 'GitLab Runner token', pattern: /\bglrt-[A-Za-z0-9_-]{20,}\b/g },
-  { id: 'bitbucket_app_pw', label: 'Bitbucket app password', pattern: /\bATBB[A-Za-z0-9]{32,}\b/g },
+  { id: 'gitlab_pat', label: 'GitLab PAT', precision: 'high', pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/g },
+  { id: 'gitlab_runner', label: 'GitLab Runner token', precision: 'high', pattern: /\bglrt-[A-Za-z0-9_-]{20,}\b/g },
+  { id: 'bitbucket_app_pw', label: 'Bitbucket app password', precision: 'high', pattern: /\bATBB[A-Za-z0-9]{32,}\b/g },
   // === AI providers ===
-  { id: 'openai_key', label: 'OpenAI API key', pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g },
-  { id: 'anthropic_key', label: 'Anthropic API key', pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g },
-  { id: 'google_api', label: 'Google API key', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g },
-  { id: 'huggingface', label: 'HuggingFace token', pattern: /\bhf_[A-Za-z0-9]{34}\b/g },
-  { id: 'cohere_key', label: 'Cohere API key', pattern: /\b(?:COHERE_API_KEY|cohere_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{40})["']?/g },
-  { id: 'replicate_token', label: 'Replicate API token', pattern: /\br8_[A-Za-z0-9]{40}\b/g },
+  { id: 'openai_key', label: 'OpenAI API key', precision: 'high', pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g },
+  { id: 'anthropic_key', label: 'Anthropic API key', precision: 'high', pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g },
+  { id: 'google_api', label: 'Google API key', precision: 'high', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { id: 'huggingface', label: 'HuggingFace token', precision: 'high', pattern: /\bhf_[A-Za-z0-9]{34}\b/g },
+  { id: 'cohere_key', label: 'Cohere API key', precision: 'heuristic', pattern: /\b(?:COHERE_API_KEY|cohere_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{40})["']?/g },
+  { id: 'replicate_token', label: 'Replicate API token', precision: 'high', pattern: /\br8_[A-Za-z0-9]{40}\b/g },
   // === Azure ===
-  { id: 'azure_storage_key', label: 'Azure Storage AccountKey', pattern: /AccountKey\s*=\s*([A-Za-z0-9+/=]{86,90})/g },
-  { id: 'azure_sas', label: 'Azure SAS signature', pattern: /[?&]sig=([A-Za-z0-9%]{40,})/g },
-  { id: 'azure_conn_string', label: 'Azure connection string', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]*AccountKey=[^;\s]+/g },
-  { id: 'azure_devops_pat', label: 'Azure DevOps PAT', pattern: /\b(?:AZURE_DEVOPS_PAT|ADO_PAT|VSTS_PAT|SYSTEM_ACCESSTOKEN)\s*[:=]\s*["']?([a-z0-9]{52})["']?/gi },
-  { id: 'azure_client_secret', label: 'Azure AD client secret (named)', pattern: /\b(?:AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|client[_-]?secret)\s*[:=]\s*["']?([A-Za-z0-9~_.-]{34,})["']?/gi },
+  { id: 'azure_storage_key', label: 'Azure Storage AccountKey', precision: 'heuristic', pattern: /AccountKey\s*=\s*([A-Za-z0-9+/=]{86,90})/g },
+  { id: 'azure_sas', label: 'Azure SAS signature', precision: 'heuristic', pattern: /[?&]sig=([A-Za-z0-9%]{40,})/g },
+  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]*AccountKey=[^;\s]+/g },
+  { id: 'azure_devops_pat', label: 'Azure DevOps PAT', precision: 'heuristic', pattern: /\b(?:AZURE_DEVOPS_PAT|ADO_PAT|VSTS_PAT|SYSTEM_ACCESSTOKEN)\s*[:=]\s*["']?([a-z0-9]{52})["']?/gi },
+  { id: 'azure_client_secret', label: 'Azure AD client secret (named)', precision: 'heuristic', pattern: /\b(?:AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|client[_-]?secret)\s*[:=]\s*["']?([A-Za-z0-9~_.-]{34,})["']?/gi },
   // === GCP ===
-  { id: 'gcp_sa_json', label: 'GCP service-account JSON', pattern: /"type"\s*:\s*"service_account"/g },
-  { id: 'gcp_oauth_client', label: 'GCP OAuth client ID', pattern: /\b[0-9]{12}-[a-z0-9]{32}\.apps\.googleusercontent\.com\b/g },
+  { id: 'gcp_sa_json', label: 'GCP service-account JSON', precision: 'heuristic', pattern: /"type"\s*:\s*"service_account"/g },
+  { id: 'gcp_oauth_client', label: 'GCP OAuth client ID', precision: 'heuristic', pattern: /\b[0-9]{12}-[a-z0-9]{32}\.apps\.googleusercontent\.com\b/g },
   // === Slack / chat ===
-  { id: 'slack_token', label: 'Slack token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
-  { id: 'slack_webhook', label: 'Slack incoming webhook', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}\b/g },
-  { id: 'discord_bot', label: 'Discord bot token', pattern: /\b[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27,}\b/g },
-  { id: 'discord_webhook', label: 'Discord webhook', pattern: /\bhttps:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]{40,}\b/g },
-  { id: 'telegram_bot', label: 'Telegram bot token', pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
+  { id: 'slack_token', label: 'Slack token', precision: 'high', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { id: 'slack_webhook', label: 'Slack incoming webhook', precision: 'high', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}\b/g },
+  { id: 'discord_bot', label: 'Discord bot token', precision: 'high', pattern: /\b[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27,}\b/g },
+  { id: 'discord_webhook', label: 'Discord webhook', precision: 'high', pattern: /\bhttps:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]{40,}\b/g },
+  { id: 'telegram_bot', label: 'Telegram bot token', precision: 'high', pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
   // === Payments ===
-  { id: 'stripe_secret', label: 'Stripe secret key', pattern: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
-  { id: 'stripe_pub', label: 'Stripe publishable key (info)', pattern: /\bpk_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
-  { id: 'paypal_braintree', label: 'PayPal Braintree access token', pattern: /\baccess_token\$production\$[a-z0-9]{16}\$[a-f0-9]{32}\b/g },
-  { id: 'square_oauth', label: 'Square OAuth secret', pattern: /\bsq0(?:csp|atp|idp)-[A-Za-z0-9_-]{22,}\b/g },
+  { id: 'stripe_secret', label: 'Stripe secret key', precision: 'high', pattern: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
+  { id: 'stripe_pub', label: 'Stripe publishable key (info)', precision: 'heuristic', pattern: /\bpk_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
+  { id: 'paypal_braintree', label: 'PayPal Braintree access token', precision: 'high', pattern: /\baccess_token\$production\$[a-z0-9]{16}\$[a-f0-9]{32}\b/g },
+  { id: 'square_oauth', label: 'Square OAuth secret', precision: 'high', pattern: /\bsq0(?:csp|atp|idp)-[A-Za-z0-9_-]{22,}\b/g },
   // === Comms / email ===
-  { id: 'twilio_sid', label: 'Twilio Account SID', pattern: /\bAC[a-f0-9]{32}\b/g },
-  { id: 'twilio_token', label: 'Twilio auth token (named)', pattern: /\b(?:TWILIO_AUTH_TOKEN|twilio_auth_token)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
-  { id: 'sendgrid_key', label: 'SendGrid API key', pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/g },
-  { id: 'mailgun_key', label: 'Mailgun API key', pattern: /\bkey-[a-f0-9]{32}\b/g },
-  { id: 'mailchimp_key', label: 'Mailchimp API key', pattern: /\b[a-f0-9]{32}-us\d{1,2}\b/g },
-  { id: 'postmark_token', label: 'Postmark server token', pattern: /\b(?:POSTMARK_(?:SERVER|API)_TOKEN|postmark_token)\s*[:=]\s*["']?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})["']?/gi },
+  { id: 'twilio_sid', label: 'Twilio Account SID', precision: 'heuristic', pattern: /\bAC[a-f0-9]{32}\b/g },
+  { id: 'twilio_token', label: 'Twilio auth token (named)', precision: 'heuristic', pattern: /\b(?:TWILIO_AUTH_TOKEN|twilio_auth_token)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
+  { id: 'sendgrid_key', label: 'SendGrid API key', precision: 'high', pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/g },
+  { id: 'mailgun_key', label: 'Mailgun API key', precision: 'heuristic', pattern: /\bkey-[a-f0-9]{32}\b/g },
+  { id: 'mailchimp_key', label: 'Mailchimp API key', precision: 'high', pattern: /\b[a-f0-9]{32}-us\d{1,2}\b/g },
+  { id: 'postmark_token', label: 'Postmark server token', precision: 'heuristic', pattern: /\b(?:POSTMARK_(?:SERVER|API)_TOKEN|postmark_token)\s*[:=]\s*["']?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})["']?/gi },
   // === Cloud / infra ===
-  { id: 'cloudflare_api', label: 'Cloudflare API token', pattern: /\b(?:CF_API_TOKEN|CLOUDFLARE_API_TOKEN)\s*[:=]\s*["']?([A-Za-z0-9_-]{40})["']?/gi },
-  { id: 'cloudflare_global', label: 'Cloudflare Global API key', pattern: /\b[a-f0-9]{37}\b(?=.*cloudflare|cloudflare.*)/gi },
-  { id: 'digitalocean_pat', label: 'DigitalOcean PAT', pattern: /\bdo[opt]_v1_[a-f0-9]{64}\b/g },
-  { id: 'heroku_api', label: 'Heroku API key (named)', pattern: /\b(?:HEROKU_API_KEY|heroku_api_key)\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?/gi },
-  { id: 'netlify_token', label: 'Netlify token (named)', pattern: /\b(?:NETLIFY_AUTH_TOKEN|netlify_auth_token)\s*[:=]\s*["']?([A-Za-z0-9_-]{40,})["']?/gi },
-  { id: 'vercel_token', label: 'Vercel token (named)', pattern: /\b(?:VERCEL_TOKEN|vercel_token)\s*[:=]\s*["']?([A-Za-z0-9]{24})["']?/gi },
-  { id: 'fly_api', label: 'Fly.io API token', pattern: /\bfo1_[A-Za-z0-9_-]{20,}\b/g },
-  { id: 'render_api', label: 'Render API key', pattern: /\brnd_[A-Za-z0-9]{30,}\b/g },
-  { id: 'pulumi_pat', label: 'Pulumi PAT', pattern: /\bpul-[a-f0-9]{40}\b/g },
+  { id: 'cloudflare_api', label: 'Cloudflare API token', precision: 'heuristic', pattern: /\b(?:CF_API_TOKEN|CLOUDFLARE_API_TOKEN)\s*[:=]\s*["']?([A-Za-z0-9_-]{40})["']?/gi },
+  { id: 'cloudflare_global', label: 'Cloudflare Global API key', precision: 'heuristic', pattern: /\b[a-f0-9]{37}\b(?=.{0,200}cloudflare)/gi },
+  { id: 'digitalocean_pat', label: 'DigitalOcean PAT', precision: 'high', pattern: /\bdo[opt]_v1_[a-f0-9]{64}\b/g },
+  { id: 'heroku_api', label: 'Heroku API key (named)', precision: 'heuristic', pattern: /\b(?:HEROKU_API_KEY|heroku_api_key)\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?/gi },
+  { id: 'netlify_token', label: 'Netlify token (named)', precision: 'heuristic', pattern: /\b(?:NETLIFY_AUTH_TOKEN|netlify_auth_token)\s*[:=]\s*["']?([A-Za-z0-9_-]{40,})["']?/gi },
+  { id: 'vercel_token', label: 'Vercel token (named)', precision: 'heuristic', pattern: /\b(?:VERCEL_TOKEN|vercel_token)\s*[:=]\s*["']?([A-Za-z0-9]{24})["']?/gi },
+  { id: 'fly_api', label: 'Fly.io API token', precision: 'high', pattern: /\bfo1_[A-Za-z0-9_-]{20,}\b/g },
+  { id: 'render_api', label: 'Render API key', precision: 'high', pattern: /\brnd_[A-Za-z0-9]{30,}\b/g },
+  { id: 'pulumi_pat', label: 'Pulumi PAT', precision: 'high', pattern: /\bpul-[a-f0-9]{40}\b/g },
   // === Project mgmt / dev tools ===
-  { id: 'linear_api', label: 'Linear API key', pattern: /\blin_(?:api|oauth)_[A-Za-z0-9]{40,}\b/g },
-  { id: 'notion_secret', label: 'Notion integration secret', pattern: /\bsecret_[A-Za-z0-9]{43}\b/g },
-  { id: 'asana_pat', label: 'Asana PAT', pattern: /\b\d+\/[a-f0-9]{32}:[a-f0-9]{32}\b/g },
-  { id: 'jira_token', label: 'Jira/Atlassian API token', pattern: /\b(?:JIRA_API_TOKEN|ATLASSIAN_API_TOKEN|jira_api_token)\s*[:=]\s*["']?([A-Za-z0-9]{24,})["']?/gi },
-  { id: 'figma_pat', label: 'Figma PAT', pattern: /\bfigd_[A-Za-z0-9_-]{30,}\b/g },
+  { id: 'linear_api', label: 'Linear API key', precision: 'high', pattern: /\blin_(?:api|oauth)_[A-Za-z0-9]{40,}\b/g },
+  { id: 'notion_secret', label: 'Notion integration secret', precision: 'high', pattern: /\bsecret_[A-Za-z0-9]{43}\b/g },
+  { id: 'asana_pat', label: 'Asana PAT', precision: 'high', pattern: /\b\d+\/[a-f0-9]{32}:[a-f0-9]{32}\b/g },
+  { id: 'jira_token', label: 'Jira/Atlassian API token', precision: 'heuristic', pattern: /\b(?:JIRA_API_TOKEN|ATLASSIAN_API_TOKEN|jira_api_token)\s*[:=]\s*["']?([A-Za-z0-9]{24,})["']?/gi },
+  { id: 'figma_pat', label: 'Figma PAT', precision: 'high', pattern: /\bfigd_[A-Za-z0-9_-]{30,}\b/g },
   // === Package registries ===
-  { id: 'npm_token', label: 'npm access token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
-  { id: 'npm_authtoken_line', label: 'npm _authToken line', pattern: /\/\/registry\.npmjs\.org\/:_authToken=[A-Za-z0-9_-]+/g },
-  { id: 'pypi_token', label: 'PyPI upload token', pattern: /\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]+/g },
-  { id: 'docker_pat', label: 'Docker Hub PAT', pattern: /\bdckr_pat_[A-Za-z0-9_-]{27,}\b/g },
+  { id: 'npm_token', label: 'npm access token', precision: 'high', pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { id: 'npm_authtoken_line', label: 'npm _authToken line', precision: 'heuristic', pattern: /\/\/registry\.npmjs\.org\/:_authToken=[A-Za-z0-9_-]+/g },
+  { id: 'pypi_token', label: 'PyPI upload token', precision: 'high', pattern: /\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]+/g },
+  { id: 'docker_pat', label: 'Docker Hub PAT', precision: 'high', pattern: /\bdckr_pat_[A-Za-z0-9_-]{27,}\b/g },
   // === Monitoring / analytics ===
-  { id: 'sentry_dsn', label: 'Sentry DSN', pattern: /\bhttps:\/\/[a-f0-9]{32}@[a-z0-9.-]+\/\d+\b/g },
-  { id: 'datadog_api', label: 'Datadog API key (named)', pattern: /\b(?:DD_API_KEY|DATADOG_API_KEY|datadog_api_key)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
-  { id: 'datadog_app', label: 'Datadog APP key (named)', pattern: /\b(?:DD_APP_KEY|DATADOG_APP_KEY|datadog_app_key)\s*[:=]\s*["']?([a-f0-9]{40})["']?/gi },
-  { id: 'pagerduty', label: 'PagerDuty token (named)', pattern: /\b(?:PAGERDUTY_(?:API_)?TOKEN|pagerduty_token)\s*[:=]\s*["']?([A-Za-z0-9_-]{20,})["']?/gi },
-  { id: 'algolia_admin', label: 'Algolia admin key (named)', pattern: /\b(?:ALGOLIA_(?:ADMIN_)?API_KEY|algolia_admin_api_key)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
-  { id: 'mapbox_secret', label: 'Mapbox secret token', pattern: /\bsk\.eyJ[A-Za-z0-9_-]{50,}\b/g },
-  { id: 'okta_token', label: 'Okta API token (named)', pattern: /\b(?:OKTA_API_TOKEN|okta_api_token)\s*[:=]\s*["']?(00[A-Za-z0-9_-]{40})["']?/gi },
-  { id: 'auth0_secret', label: 'Auth0 client secret (named)', pattern: /\b(?:AUTH0_CLIENT_SECRET|auth0_client_secret)\s*[:=]\s*["']?([A-Za-z0-9_-]{40,})["']?/gi },
+  { id: 'sentry_dsn', label: 'Sentry DSN', precision: 'heuristic', pattern: /\bhttps:\/\/[a-f0-9]{32}@[a-z0-9.-]+\/\d+\b/g },
+  { id: 'datadog_api', label: 'Datadog API key (named)', precision: 'heuristic', pattern: /\b(?:DD_API_KEY|DATADOG_API_KEY|datadog_api_key)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
+  { id: 'datadog_app', label: 'Datadog APP key (named)', precision: 'heuristic', pattern: /\b(?:DD_APP_KEY|DATADOG_APP_KEY|datadog_app_key)\s*[:=]\s*["']?([a-f0-9]{40})["']?/gi },
+  { id: 'pagerduty', label: 'PagerDuty token (named)', precision: 'heuristic', pattern: /\b(?:PAGERDUTY_(?:API_)?TOKEN|pagerduty_token)\s*[:=]\s*["']?([A-Za-z0-9_-]{20,})["']?/gi },
+  { id: 'algolia_admin', label: 'Algolia admin key (named)', precision: 'heuristic', pattern: /\b(?:ALGOLIA_(?:ADMIN_)?API_KEY|algolia_admin_api_key)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
+  { id: 'mapbox_secret', label: 'Mapbox secret token', precision: 'high', pattern: /\bsk\.eyJ[A-Za-z0-9_-]{50,}\b/g },
+  { id: 'okta_token', label: 'Okta API token (named)', precision: 'heuristic', pattern: /\b(?:OKTA_API_TOKEN|okta_api_token)\s*[:=]\s*["']?(00[A-Za-z0-9_-]{40})["']?/gi },
+  { id: 'auth0_secret', label: 'Auth0 client secret (named)', precision: 'heuristic', pattern: /\b(?:AUTH0_CLIENT_SECRET|auth0_client_secret)\s*[:=]\s*["']?([A-Za-z0-9_-]{40,})["']?/gi },
   // === Database connection strings ===
-  { id: 'postgres_url', label: 'Postgres URL with credentials', pattern: /\bpostgres(?:ql)?:\/\/[^:\s/]+:[^@\s/]+@[^/\s]+\/[^\s]+/g },
-  { id: 'mysql_url', label: 'MySQL URL with credentials', pattern: /\bmysql:\/\/[^:\s/]+:[^@\s/]+@[^/\s]+\/[^\s]+/g },
-  { id: 'mongodb_url', label: 'MongoDB URL with credentials', pattern: /\bmongodb(?:\+srv)?:\/\/[^:\s/]+:[^@\s/]+@[^/\s]+/g },
-  { id: 'redis_url', label: 'Redis URL with credentials', pattern: /\bredis(?:s)?:\/\/[^:\s/]*:[^@\s/]+@[^/\s]+/g },
-  { id: 'http_basic_auth', label: 'HTTP basic-auth URL', pattern: /\bhttps?:\/\/[^:\s/]+:[^@\s/]{6,}@[^\s]+/g },
+  { id: 'postgres_url', label: 'Postgres URL with credentials', precision: 'heuristic', pattern: /\bpostgres(?:ql)?:\/\/[^:\s/]+:[^@\s/]+@[^/\s]+\/[^\s]+/g },
+  { id: 'mysql_url', label: 'MySQL URL with credentials', precision: 'heuristic', pattern: /\bmysql:\/\/[^:\s/]+:[^@\s/]+@[^/\s]+\/[^\s]+/g },
+  { id: 'mongodb_url', label: 'MongoDB URL with credentials', precision: 'heuristic', pattern: /\bmongodb(?:\+srv)?:\/\/[^:\s/]+:[^@\s/]+@[^/\s]+/g },
+  { id: 'redis_url', label: 'Redis URL with credentials', precision: 'heuristic', pattern: /\bredis(?:s)?:\/\/[^:\s/]*:[^@\s/]+@[^/\s]+/g },
+  { id: 'http_basic_auth', label: 'HTTP basic-auth URL', precision: 'heuristic', pattern: /\bhttps?:\/\/[^:\s/]+:[^@\s/]{6,}@[^\s]+/g },
   // === Secrets vaults / 1P / KMS ===
-  { id: 'vault_token', label: 'HashiCorp Vault token', pattern: /\bhvs\.[A-Za-z0-9_-]{20,}\b/g },
-  { id: 'vault_legacy', label: 'HashiCorp Vault legacy token (named)', pattern: /\b(?:VAULT_TOKEN|vault_token)\s*[:=]\s*["']?(s\.[A-Za-z0-9]{24,})["']?/gi },
-  { id: 'tfcloud_token', label: 'Terraform Cloud token (named)', pattern: /\b(?:TFE_TOKEN|TF_CLOUD_TOKEN|TFC_TOKEN)\s*[:=]\s*["']?([A-Za-z0-9]+\.atlasv1\.[A-Za-z0-9]+)["']?/gi },
-  { id: 'doppler_token', label: 'Doppler personal token', pattern: /\bdp\.pt\.[A-Za-z0-9]{40,}\b/g },
-  { id: 'doppler_service', label: 'Doppler service token', pattern: /\bdp\.st\.[A-Za-z0-9]{40,}\b/g },
-  { id: 'onepassword_secret', label: '1Password Connect secret', pattern: /\bops_[A-Za-z0-9_-]{30,}\b/g },
+  { id: 'vault_token', label: 'HashiCorp Vault token', precision: 'high', pattern: /\bhvs\.[A-Za-z0-9_-]{20,}\b/g },
+  { id: 'vault_legacy', label: 'HashiCorp Vault legacy token (named)', precision: 'heuristic', pattern: /\b(?:VAULT_TOKEN|vault_token)\s*[:=]\s*["']?(s\.[A-Za-z0-9]{24,})["']?/gi },
+  { id: 'tfcloud_token', label: 'Terraform Cloud token (named)', precision: 'heuristic', pattern: /\b(?:TFE_TOKEN|TF_CLOUD_TOKEN|TFC_TOKEN)\s*[:=]\s*["']?([A-Za-z0-9]+\.atlasv1\.[A-Za-z0-9]+)["']?/gi },
+  { id: 'doppler_token', label: 'Doppler personal token', precision: 'high', pattern: /\bdp\.pt\.[A-Za-z0-9]{40,}\b/g },
+  { id: 'doppler_service', label: 'Doppler service token', precision: 'high', pattern: /\bdp\.st\.[A-Za-z0-9]{40,}\b/g },
+  { id: 'onepassword_secret', label: '1Password Connect secret', precision: 'heuristic', pattern: /\bops_[A-Za-z0-9_-]{30,}\b/g },
   // === GitHub additional ===
-  { id: 'gh_oauth_secret', label: 'GitHub OAuth client secret (named)', pattern: /\b(?:GH_CLIENT_SECRET|GITHUB_CLIENT_SECRET)\s*[:=]\s*["']?([a-f0-9]{40})["']?/gi },
-  { id: 'gh_app_jwt_named', label: 'GitHub App private key (named)', pattern: /\b(?:GITHUB_APP_PRIVATE_KEY|GH_APP_PRIVATE_KEY)\s*[:=]/gi },
-  { id: 'gh_runner_token', label: 'GitHub Actions runner token', pattern: /\bA[A-Z2-7]{31}\b(?=.*runner|runner.*)/gi },
+  { id: 'gh_oauth_secret', label: 'GitHub OAuth client secret (named)', precision: 'heuristic', pattern: /\b(?:GH_CLIENT_SECRET|GITHUB_CLIENT_SECRET)\s*[:=]\s*["']?([a-f0-9]{40})["']?/gi },
+  { id: 'gh_app_jwt_named', label: 'GitHub App private key (named)', precision: 'heuristic', pattern: /\b(?:GITHUB_APP_PRIVATE_KEY|GH_APP_PRIVATE_KEY)\s*[:=]/gi },
+  { id: 'gh_runner_token', label: 'GitHub Actions runner token', precision: 'heuristic', pattern: /\bA[A-Z2-7]{31}\b(?=.{0,200}runner)/gi },
   // === CI/CD ===
-  { id: 'circleci_pat', label: 'CircleCI PAT', pattern: /\bCCIPAT_[A-Za-z0-9_-]{30,}\b/g },
-  { id: 'circleci_legacy', label: 'CircleCI legacy token (named)', pattern: /\b(?:CIRCLECI_API_TOKEN|circle_token)\s*[:=]\s*["']?([a-f0-9]{40})["']?/gi },
-  { id: 'travis_token', label: 'Travis CI token (named)', pattern: /\b(?:TRAVIS_(?:API_)?TOKEN|travis_token)\s*[:=]\s*["']?([A-Za-z0-9_-]{20,})["']?/gi },
-  { id: 'codecov_token', label: 'Codecov upload token', pattern: /\b(?:CODECOV_TOKEN|codecov_token)\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?/gi },
+  { id: 'circleci_pat', label: 'CircleCI PAT', precision: 'high', pattern: /\bCCIPAT_[A-Za-z0-9_-]{30,}\b/g },
+  { id: 'circleci_legacy', label: 'CircleCI legacy token (named)', precision: 'heuristic', pattern: /\b(?:CIRCLECI_API_TOKEN|circle_token)\s*[:=]\s*["']?([a-f0-9]{40})["']?/gi },
+  { id: 'travis_token', label: 'Travis CI token (named)', precision: 'heuristic', pattern: /\b(?:TRAVIS_(?:API_)?TOKEN|travis_token)\s*[:=]\s*["']?([A-Za-z0-9_-]{20,})["']?/gi },
+  { id: 'codecov_token', label: 'Codecov upload token', precision: 'heuristic', pattern: /\b(?:CODECOV_TOKEN|codecov_token)\s*[:=]\s*["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?/gi },
   // === Observability ===
-  { id: 'newrelic_license', label: 'New Relic license key (named)', pattern: /\b(?:NEW_RELIC_LICENSE_KEY|NR_LICENSE_KEY)\s*[:=]\s*["']?([A-Fa-f0-9]{40}|[A-Za-z0-9]{40}NRAL)["']?/gi },
-  { id: 'rollbar_token', label: 'Rollbar access token (named)', pattern: /\b(?:ROLLBAR_(?:ACCESS_)?TOKEN|rollbar_token)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
-  { id: 'honeycomb_key', label: 'Honeycomb API key (named)', pattern: /\b(?:HONEYCOMB_API_KEY|honeycomb_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
-  { id: 'lightstep_token', label: 'Lightstep access token (named)', pattern: /\b(?:LIGHTSTEP_ACCESS_TOKEN|lightstep_token)\s*[:=]\s*["']?([A-Za-z0-9]{40,})["']?/gi },
+  { id: 'newrelic_license', label: 'New Relic license key (named)', precision: 'heuristic', pattern: /\b(?:NEW_RELIC_LICENSE_KEY|NR_LICENSE_KEY)\s*[:=]\s*["']?([A-Fa-f0-9]{40}|[A-Za-z0-9]{40}NRAL)["']?/gi },
+  { id: 'rollbar_token', label: 'Rollbar access token (named)', precision: 'heuristic', pattern: /\b(?:ROLLBAR_(?:ACCESS_)?TOKEN|rollbar_token)\s*[:=]\s*["']?([a-f0-9]{32})["']?/gi },
+  { id: 'honeycomb_key', label: 'Honeycomb API key (named)', precision: 'heuristic', pattern: /\b(?:HONEYCOMB_API_KEY|honeycomb_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
+  { id: 'lightstep_token', label: 'Lightstep access token (named)', precision: 'heuristic', pattern: /\b(?:LIGHTSTEP_ACCESS_TOKEN|lightstep_token)\s*[:=]\s*["']?([A-Za-z0-9]{40,})["']?/gi },
   // === SSH / GPG ===
-  { id: 'ssh_dsa_pubkey', label: 'SSH DSA private key block', pattern: /-----BEGIN DSA PRIVATE KEY-----/g },
-  { id: 'gpg_block', label: 'GPG/PGP private key block', pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----/g },
+  { id: 'ssh_dsa_pubkey', label: 'SSH DSA private key block', precision: 'high', pattern: /-----BEGIN DSA PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END DSA PRIVATE KEY-----)?/g },
+  { id: 'gpg_block', label: 'GPG/PGP private key block', precision: 'high', pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END PGP PRIVATE KEY BLOCK-----)?/g },
   // === Auth tokens that show up in headers ===
-  { id: 'bearer_token_named', label: 'Bearer token in named env (named)', pattern: /\b(?:AUTH_BEARER|AUTHORIZATION|BEARER_TOKEN)\s*[:=]\s*["']?(?:Bearer\s+)?([A-Za-z0-9._-]{40,})["']?/gi },
+  { id: 'bearer_token_named', label: 'Bearer token in named env (named)', precision: 'heuristic', pattern: /\b(?:AUTH_BEARER|AUTHORIZATION|BEARER_TOKEN)\s*[:=]\s*["']?(?:Bearer\s+)?([A-Za-z0-9._-]{40,})["']?/gi },
   // === Crypto / financial ===
-  { id: 'coinbase_pat', label: 'Coinbase API key (named)', pattern: /\b(?:COINBASE_API_KEY|coinbase_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
+  { id: 'coinbase_pat', label: 'Coinbase API key (named)', precision: 'heuristic', pattern: /\b(?:COINBASE_API_KEY|coinbase_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
   // === Generic high-confidence shapes ===
-  { id: 'jwt', label: 'JWT (3-part base64url)', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
-  { id: 'private_key', label: 'PEM private key block', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/g },
+  { id: 'jwt', label: 'JWT (3-part base64url)', precision: 'heuristic', pattern: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  { id: 'private_key', label: 'PEM private key block', precision: 'high', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)?/g },
   // === .env-style — last because it's the loosest catch-all. ===
   // === Named secrets — the ones you can actually ACT on =================================
   //
@@ -220,12 +237,12 @@ export const RULES: RedactionRule[] = [
   // when a hit REWROTE YOUR PROMPT. A false positive was destructive. Now that we only ever
   // watch and log, a false positive costs one line in a log nobody is forced to read, while a
   // miss costs a leaked credential. The trade flipped, so the rules can.
-  { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', nameGroup: 1, pattern: /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
-  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]*)"\s*:\s*"([^"\\]{6,})"/gi },
-  { id: 'password_literal', label: 'Password assigned to a literal', nameGroup: 1, pattern: /\b([A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*)\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
-  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]*)[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
-  { id: 'conn_string_password', label: 'Password in a connection string', nameGroup: 1, pattern: /\b(Password|Pwd)\s*=\s*([^;\s"']{4,})/gi },
-  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]*:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
+  { id: 'env_secret', label: '.env-style SECRET/TOKEN/KEY assignment', precision: 'heuristic', nameGroup: 1, pattern: /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|CREDENTIALS))\s*=\s*["']?[^\s"'#]{8,}["']?/g },
+  { id: 'json_secret', label: 'Secret in a JSON config value (appsettings.json etc.)', precision: 'heuristic', nameGroup: 1, pattern: /"([A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential|access[_-]?key|private[_-]?key|connection[_-]?string)[A-Za-z0-9_.-]*)"\s*:\s*"([^"\\]{6,})"/gi },
+  { id: 'password_literal', label: 'Password assigned to a literal', precision: 'heuristic', nameGroup: 1, pattern: /\b([A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*)\s*[:=]\s*["']([^"'\s]{6,})["']/gi },
+  { id: 'yaml_secret', label: 'Secret in a YAML/INI value', precision: 'heuristic', nameGroup: 1, pattern: /^[ \t]*([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|apikey)[A-Za-z0-9_.-]*)[ \t]*:[ \t]*["']?([^\s#"']{6,})["']?[ \t]*$/gim },
+  { id: 'conn_string_password', label: 'Password in a connection string', precision: 'heuristic', nameGroup: 1, pattern: /\b(Password|Pwd)\s*=\s*([^;\s"']{4,})/gi },
+  { id: 'basic_auth_url', label: 'Credentials embedded in a URL', precision: 'heuristic', nameGroup: 1, pattern: /\b[a-z][a-z0-9+.-]*:\/\/([^\s/:@]{1,64}):([^\s/:@]{3,})@/gi },
   // The shapeless secret. Every rule above matches either a KNOWN TOKEN SHAPE (AKIA…, ghp_…,
   // sk-ant-…) or a NAMED assignment. Neither fires on the most human thing in the world:
   //
@@ -238,7 +255,7 @@ export const RULES: RedactionRule[] = [
   // both a digit and a letter), which is what keeps "rotate the api key in production" from
   // matching on "production". Heuristic, and named as one — but in watch-only mode a false
   // positive is one line in a log, while a miss is a leaked credential.
-  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]*\d)(?=[A-Za-z0-9_+/=.-]*[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
+  { id: 'contextual_secret', label: 'Credential-shaped value next to the word key/token/password (heuristic)', precision: 'heuristic', nameGroup: 1, pattern: /\b(api[\s_-]?keys?|secrets?|tokens?|passwords?|passwd|credentials?|access[\s_-]?keys?|private[\s_-]?keys?)\b[^\n]{0,40}?[\s:="'`]\s*["'`]?((?=[A-Za-z0-9_+/=.-]*\d)(?=[A-Za-z0-9_+/=.-]*[A-Za-z])[A-Za-z0-9_+/=.-]{12,})["'`]?/gi },
 ]
 
 let userDataDir = ''
@@ -510,28 +527,164 @@ export function detectEnvDump(text: string, threshold = 5): EnvDumpSignals {
   return out
 }
 
+/** A piece of text every match of `pattern` contains, lower-cased for a rule that ignores case, or
+ *  null when none can be read off the pattern safely. It is the run of literal characters at the
+ *  start of the pattern (after a leading \b, which takes no text), up to the first piece of regex
+ *  syntax; a quantifier right after the run may drop its last character, so that goes. A pattern
+ *  with an alternative outside every group has none: the run would belong to its first branch. */
+export function requiredLiteral(pattern: RegExp): string | null {
+  const src = pattern.source
+  let depth = 0
+  let inClass = false
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (c === '\\') i++
+    else if (inClass) inClass = c !== ']'
+    else if (c === '[') inClass = true
+    else if (c === '(') depth++
+    else if (c === ')') depth--
+    else if (c === '|' && depth === 0) return null
+  }
+  let run = ''
+  let i = src.startsWith('\\b') ? 2 : 0
+  for (; i < src.length; i++) {
+    const c = src[i]
+    if (c === '\\') {
+      // An escaped letter or digit is a class or an anchor (\d, \s, \b, \1), not a character.
+      const next = src[i + 1] ?? ''
+      if (!/^[!-/:-@[-`{-~]$/.test(next)) break
+      run += next
+      i++
+    } else if ('[](){}*+?|^$.'.includes(c) || !/^[ -~]$/.test(c)) {
+      break
+    } else {
+      run += c
+    }
+  }
+  if ('*+?{'.includes(src[i] ?? '_')) run = run.slice(0, -1)
+  if (!run) return null
+  return pattern.flags.includes('i') ? run.toLowerCase() : run
+}
+
+/** Each rule's literal, worked out once. */
+const LITERALS = new Map<RedactionRule, string | null>(RULES.map((rule) => [rule, requiredLiteral(rule.pattern)]))
+
+/** Every match of every rule, rule by rule in table order. A rule whose literal (requiredLiteral)
+ *  is missing from the text is not run: it cannot match. Most text carries none of the vendor
+ *  prefixes, so most of the table is skipped by a substring search. */
+function forEachMatch(input: string, visit: (rule: RedactionRule, m: RegExpExecArray) => void): void {
+  let lower: string | undefined
+  for (const rule of RULES) {
+    const literal = LITERALS.get(rule)
+    if (literal) {
+      // Every literal is printable ASCII, which a case-insensitive pattern matches only as its
+      // ASCII self or its other case: lower-casing the whole text loses no match.
+      const hay = rule.pattern.flags.includes('i') ? (lower ??= input.toLowerCase()) : input
+      if (!hay.includes(literal)) continue
+    }
+    const re = new RegExp(rule.pattern.source, rule.pattern.flags)
+    let m: RegExpExecArray | null
+    while ((m = re.exec(input)) !== null) {
+      visit(rule, m)
+      if (re.flags.indexOf('g') === -1) break
+    }
+  }
+}
+
 export function scanText(input: string): ScanResult {
   if (typeof input !== 'string' || !input) {
     return { hitCount: 0, hits: [], redacted: input ?? '' }
   }
   let redacted = input
   const hits: ScanResult['hits'] = []
-  for (const rule of RULES) {
-    rule.pattern.lastIndex = 0
-    let m: RegExpExecArray | null
-    const re = new RegExp(rule.pattern.source, rule.pattern.flags)
-    while ((m = re.exec(input)) !== null) {
-      const matched = m[0]
-      const sample = matched.length <= 8 ? '****' : matched.slice(0, 4) + '…' + matched.slice(-2)
-      // The NAME (DB_PASSWORD, apiKey) is what makes the audit actionable — it tells you what
-      // to rotate. The VALUE is never captured, never logged, never stored.
-      const name = rule.nameGroup && m[rule.nameGroup] ? String(m[rule.nameGroup]) : undefined
-      hits.push({ rule: rule.id, label: rule.label, sample, name })
-      redacted = redacted.split(matched).join('[REDACTED:' + rule.id + ']')
-      if (re.flags.indexOf('g') === -1) break
+  forEachMatch(input, (rule, m) => {
+    const matched = m[0]
+    const sample = matched.length <= 8 ? '****' : matched.slice(0, 4) + '…' + matched.slice(-2)
+    // The NAME (DB_PASSWORD, apiKey) is what makes the audit actionable — it tells you what
+    // to rotate. The VALUE is never captured, never logged, never stored.
+    const name = rule.nameGroup && m[rule.nameGroup] ? String(m[rule.nameGroup]) : undefined
+    hits.push({ rule: rule.id, label: rule.label, sample, name })
+    redacted = redacted.split(matched).join('[REDACTED:' + rule.id + ']')
+  })
+  return { hitCount: hits.length, hits, redacted }
+}
+
+/** What screenText found, by rule id: how many matches. */
+export interface SecretScreen {
+  /** The text with every high-precision match replaced by `[REDACTED:<rule>]`. Nothing else in it
+   *  changes: a heuristic match is left exactly as it was. */
+  text: string
+  /** High-precision rules, and how many of their matches were taken out. */
+  removed: Record<string, number>
+  /** Heuristic rules, and how many matches were left in. One that overlaps a removed match isn't
+   *  counted: the credential in it went with that. */
+  flagged: Record<string, number>
+}
+
+interface Span {
+  rule: string
+  from: number
+  to: number
+}
+
+/** Text that crosses to another computer (Linked machines), screened in two tiers by
+ *  RedactionRule.precision. A credential whose own shape names it is removed; anything that only
+ *  looks like one is reported and left alone, because the text is usually code and a removed
+ *  fixture or example would corrupt it. Values are never returned: only rule ids and counts.
+ *
+ *  The other computer controls this text, so it runs in linear time: the output is built in one
+ *  pass over the matches, where scanText rewrites the whole text once per match. Overlapping
+ *  matches (an Anthropic key is an OpenAI-shaped one too) are taken once, under the first rule in
+ *  table order. */
+export function screenText(input: string): SecretScreen {
+  const removed: Record<string, number> = {}
+  const flagged: Record<string, number> = {}
+  if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged }
+  const taken: Span[] = []
+  const looks: Span[] = []
+  forEachMatch(input, (rule, m) => {
+    const span = { rule: rule.id, from: m.index, to: m.index + m[0].length }
+    if (rule.precision === 'high') taken.push(span)
+    else looks.push(span)
+  })
+  // Sorted by start; a stable sort keeps table order among matches that start together.
+  taken.sort((a, b) => a.from - b.from)
+  const cuts: Span[] = []
+  for (const t of taken) {
+    const last = cuts[cuts.length - 1]
+    if (last && t.from < last.to) last.to = Math.max(last.to, t.to)
+    else cuts.push({ ...t })
+  }
+  let text = ''
+  let at = 0
+  for (const cut of cuts) {
+    removed[cut.rule] = (removed[cut.rule] ?? 0) + 1
+    text += `${input.slice(at, cut.from)}[REDACTED:${cut.rule}]`
+    at = cut.to
+  }
+  text += input.slice(at)
+  for (const look of looks) {
+    if (!overlapsCut(cuts, look)) flagged[look.rule] = (flagged[look.rule] ?? 0) + 1
+  }
+  return { text, removed, flagged }
+}
+
+/** Whether `span` overlaps one of `cuts`, which are sorted and disjoint: only the last cut that
+ *  starts before the span ends can. */
+function overlapsCut(cuts: Span[], span: Span): boolean {
+  let lo = 0
+  let hi = cuts.length - 1
+  let last = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (cuts[mid].from < span.to) {
+      last = mid
+      lo = mid + 1
+    } else {
+      hi = mid - 1
     }
   }
-  return { hitCount: hits.length, hits, redacted }
+  return last >= 0 && cuts[last].to > span.from
 }
 
 function rotateIfNeeded(): void {
