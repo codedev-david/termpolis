@@ -10,11 +10,11 @@
 
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { _electron as electron } from 'playwright'
-import { execFileSync } from 'child_process'
 import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 import { e2eLaunchArgs, dismissOnboarding, quitApp, ensureE2eBuild } from './helpers/launch'
+import { lockdownProblems } from '../tests/windowsAcl'
 
 let app: ElectronApplication
 let page: Page
@@ -101,27 +101,17 @@ test('mcp-token file is written under userData with restricted ACL (win32)', asy
   expect(existsSync(tokenPath), `mcp-token should exist at ${tokenPath}`).toBe(true)
 
   if (process.platform === 'win32') {
-    const icaclsOut = execFileSync('icacls', [tokenPath], {
-      encoding: 'utf-8',
-      shell: false,
-      windowsHide: true,
-    })
-    // The app grants the account name exactly as Windows has it (spaces, accents and all),
-    // so the listing is matched against the raw USERNAME.
-    const user = (process.env.USERNAME || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    expect(icaclsOut).toMatch(new RegExp(`[\\s\\\\]${user}:\\(F\\)`, 'i'))
-    // Proof inheritance was stripped: no ACE handed down from the folder survives.
-    expect(icaclsOut).not.toContain('(I)')
-    // The actual boundary: no broad-audience principal can read the token.
-    expect(icaclsOut).not.toContain('Everyone')
-    expect(icaclsOut).not.toContain('BUILTIN\\Users')
-    expect(icaclsOut).not.toMatch(/Authenticated Users/i)
-    // NT AUTHORITY\SYSTEM and BUILTIN\Administrators MAY appear, as explicit ACEs. When the
-    // userData folder passes nothing inheritable (a CI runner's mkdtemp dir does exactly that),
-    // Windows stamps the creating token's default DACL onto the new file, and the app's one
-    // icacls call leaves explicit ACEs alone by design: both principals can read every file on
-    // the machine anyway, and a Termpolis child stripping them at every boot is the permission
-    // change endpoint monitors flag. tests/electron/secureFile.integration.test.ts holds the
-    // same line and reproduces that folder on any machine.
+    // The lockdown ran (the DACL is protected), nothing is inherited, no broad audience, and the
+    // user holds full control — matched against the raw USERNAME, which the app grants exactly as
+    // Windows has it (spaces, accents and all).
+    //
+    // The protected flag is the check with teeth on a CI runner: its userData (a mkdtemp folder)
+    // passes nothing inheritable, so mcp-token is BORN with explicit ACEs only, and would pass all
+    // the others with no lockdown at all. NT AUTHORITY\SYSTEM and BUILTIN\Administrators MAY appear,
+    // as explicit ACEs from the creating token's default DACL: the app's one icacls call leaves
+    // them alone by design. lockdownProblems (tests/windowsAcl.ts) says why;
+    // tests/electron/secureFile.integration.test.ts holds the same line and reproduces that
+    // folder on any machine.
+    expect(lockdownProblems(tokenPath, process.env.USERNAME || '')).toEqual([])
   }
 })
