@@ -40,6 +40,12 @@ jobs:
         run: npm run typecheck
       - name: Build
         run: npm run build
+      # Tailwind 4 runs behind a parity layer that makes it emit what Tailwind 3 did (see the top
+      # of src/renderer/src/index.css). Undo any part of it and the app looks different while every
+      # test still passes; tailwindParity.test.ts can only read the source, so a Tailwind or Vite
+      # upgrade that compiles the same source differently gets past it. This reads what was built.
+      - name: Verify the renderer CSS keeps Tailwind 3 parity
+        run: node scripts/verifyRendererCss.cjs out/renderer
 
   # The relay is a separate npm project with its own lockfile, and its tests run
   # inside real workerd rather than a mock -- Durable Object storage, alarms and
