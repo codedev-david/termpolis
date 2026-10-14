@@ -1,12 +1,11 @@
 import React from 'react'
-import { render, act } from '@testing-library/react'
+import { render, act, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // A Linked machines job notification, clicked: main brings the window forward and sends
 // `linked:show`, and App opens Settings on the Linked machines tab, where that job is listed and
-// can be stopped. Settings itself is a stand-in: which tab it opens on is what is under test.
-
-const nav = vi.hoisted(() => ({ setPendingSettingsTab: vi.fn() }))
+// can be stopped. Settings itself is a stand-in that keeps its tab the way the real pane does
+// (settingsNav's useSettingsTab, unmocked): which tab it shows is what is under test.
 
 vi.mock('@sentry/react', () => ({
   init: vi.fn(),
@@ -16,12 +15,14 @@ vi.mock('@sentry/react', () => ({
   captureException: vi.fn(),
 }))
 
-vi.mock('../../src/renderer/src/lib/settingsNav', () => ({
-  setPendingSettingsTab: nav.setPendingSettingsTab,
-  consumePendingSettingsTab: () => null,
-}))
 vi.mock('../../src/renderer/src/lib/monaco-bootstrap', () => ({}))
-vi.mock('../../src/renderer/src/components/SettingsPane/SettingsPane', () => ({ SettingsPane: () => null }))
+vi.mock('../../src/renderer/src/components/SettingsPane/SettingsPane', async () => {
+  const React = await import('react')
+  const { useSettingsTab } = await import('../../src/renderer/src/lib/settingsNav')
+  return {
+    SettingsPane: () => React.createElement('div', { 'data-testid': 'settings-shown' }, useSettingsTab()[0]),
+  }
+})
 vi.mock('../../src/renderer/src/components/TitleBar/TitleBar', () => ({ TitleBar: () => null }))
 vi.mock('../../src/renderer/src/components/Sidebar/Sidebar', () => ({ Sidebar: () => null }))
 vi.mock('../../src/renderer/src/components/TabView/TabView', () => ({ TabView: () => null }))
@@ -47,6 +48,7 @@ vi.mock('../../src/renderer/src/hooks/useAutoCodeIndex', () => ({ startRepoReswe
 
 import App from '../../src/renderer/src/App'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
+import { consumePendingSettingsTab } from '../../src/renderer/src/lib/settingsNav'
 
 /** Every bridge call App makes, answered harmlessly. */
 function bridge(): void {
@@ -79,7 +81,7 @@ const win = window as unknown as TestWindow
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('termpolis.onboarding.seen.v1', '1')
-  nav.setPendingSettingsTab.mockClear()
+  consumePendingSettingsTab()
   useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, showSettings: false })
   bridge()
 })
@@ -92,26 +94,52 @@ afterEach(() => {
   localStorage.clear()
 })
 
+/** Which tab the Settings stand-in shows, or null while Settings is closed. */
+const shownTab = (): string | null => screen.queryByTestId('settings-shown')?.textContent ?? null
+
 describe('App: a Linked machines job notification, clicked', () => {
-  it('opens Settings on the Linked machines tab, and lets go of the event when it unmounts', async () => {
+  /** App rendered with a Linked machines preload; the notification's click, as main sends it. */
+  async function withNotification() {
     let show: (() => void) | null = null
     const off = vi.fn()
     win.linked = { onShow: vi.fn((cb: () => void) => { show = cb; return off }) }
-    const { unmount } = render(<App />)
+    const view = render(<App />)
     await settle()
     expect(show).not.toBeNull()
+    return { ...view, off, click: async () => { act(() => show!()); await settle() } }
+  }
+
+  it('opens Settings on the Linked machines tab, and lets go of the event when it unmounts', async () => {
+    const { click, unmount, off } = await withNotification()
     expect(useTerminalStore.getState().showSettings).toBe(false)
-    act(() => show!())
-    expect(nav.setPendingSettingsTab).toHaveBeenCalledWith('linked')
+    await click()
     expect(useTerminalStore.getState().showSettings).toBe(true)
+    expect(shownTab()).toBe('linked')
     unmount()
     expect(off).toHaveBeenCalled()
+  })
+
+  it('switches Settings already open on another tab, and a later plain open still starts on General', async () => {
+    const { click } = await withNotification()
+    act(() => useTerminalStore.getState().setShowSettings(true))
+    await settle()
+    expect(shownTab()).toBe('general')
+    await click()
+    expect(shownTab()).toBe('linked')
+    // Closed, then opened the plain way: the click's request was spent where it landed.
+    act(() => useTerminalStore.getState().setShowSettings(false))
+    await settle()
+    expect(shownTab()).toBeNull()
+    act(() => useTerminalStore.getState().setShowSettings(true))
+    await settle()
+    expect(shownTab()).toBe('general')
   })
 
   it('runs as before with a preload that has no Linked machines', async () => {
     const { unmount } = render(<App />)
     await settle()
-    expect(nav.setPendingSettingsTab).not.toHaveBeenCalled()
+    expect(shownTab()).toBeNull()
+    expect(consumePendingSettingsTab()).toBeNull()
     expect(() => unmount()).not.toThrow()
   })
 })

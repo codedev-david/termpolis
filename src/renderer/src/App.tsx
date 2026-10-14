@@ -57,7 +57,7 @@ import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
-import { setPendingSettingsTab } from './lib/settingsNav'
+import { requestSettingsTab } from './lib/settingsNav'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -779,11 +779,13 @@ export default function App() {
   }, [])
 
   // A Linked machines job notification, clicked: main has brought the window forward, and this
-  // opens the pane listing that job, where it can be stopped.
+  // opens the pane listing that job, where it can be stopped. Settings may be open already, on
+  // another tab: it switches then. Read now, not from a render that may be stale.
   useEffect(() => {
     const off = window.linked?.onShow(() => {
-      setPendingSettingsTab('linked')
-      setShowSettings(true)
+      const open = useTerminalStore.getState().showSettings
+      requestSettingsTab('linked', open)
+      if (!open) setShowSettings(true)
     })
     return () => off?.()
   }, [setShowSettings])
