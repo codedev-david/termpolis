@@ -19,6 +19,7 @@
 // next poll gets `unknown job`.
 import path from 'path'
 import { normalizeShellPath } from '../shared/cwdPath'
+import { delegationHeader } from '../shared/headlessPrompt'
 import {
   EXEC_DEFAULT_TIMEOUT_MS,
   clampExecTimeout,
@@ -417,9 +418,9 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     emit(job)
 
     const request: ExecRequest = {
-      task:
-        `[Delegated by "${meta.name}" over Termpolis Linked machines. Working folder: ${cwd}. ` +
-        `Your final message is returned to the agent that asked.]\n\n${prompt}`,
+      // The header is also how this computer's memory indexer knows the session, once the agent's
+      // CLI has saved it, as one it must not learn from (shared/headlessPrompt).
+      task: `${delegationHeader(meta.name, cwd)}\n\n${prompt}`,
       agent,
       ...(model !== undefined ? { model } : {}),
       cwd,

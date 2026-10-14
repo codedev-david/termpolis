@@ -16,6 +16,7 @@ import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { ownDialogue } from '../shared/headlessPrompt'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini'
 
@@ -305,6 +306,8 @@ export interface IngestStats {
   chunksWritten: number
   chunksSkipped: number // already present (content-hash dedup)
   truncated: boolean    // maxChunks halted this pass early — backlog remains for the next run
+  /** Sessions another computer started over Linked machines, left out. Absent when there were none. */
+  delegatedSkipped?: number
 }
 
 // A macrotask yield. Embedding is CPU-heavy and runs in-process on the main
@@ -368,6 +371,9 @@ export interface IngestDeps {
   /** Asked before each file. True ends the pass there: the app is quitting, and a read already
    *  under way is one more request its exit has to wait out. */
   stopped?: () => boolean
+  /** Told the chunk hashes a delegated session would have had, for the one-time pass that finds
+   *  the ones an earlier version stored (linkedHistoryRecheck). */
+  onDelegated?: (hashes: string[]) => void
 }
 
 // Sources with stable, documented on-disk transcripts.
@@ -423,7 +429,18 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         continue
       }
       stats.filesScanned++
-      const turns = parseBySource(source, content, filePath)
+      const parsed = parseBySource(source, content, filePath)
+      // A session another computer started here over Linked machines is that computer's job, not
+      // this one's memory, and the primer a headless run opened with is memory already. Both are
+      // left out (shared/headlessPrompt).
+      const turns = ownDialogue(parsed)
+      if (!turns) {
+        stats.delegatedSkipped = (stats.delegatedSkipped ?? 0) + 1
+        if (deps.onDelegated) {
+          try { deps.onDelegated(chunkTurns(parsed, deps.chunkOptions).map((c) => c.hash)) } catch { /* best effort */ }
+        }
+        continue
+      }
       if (turns.length === 0) continue
       const chunks = [...chunkTurns(turns, deps.chunkOptions)]
       if (chunks.length === 0) continue
@@ -519,23 +536,25 @@ export async function discoverTranscriptFiles(source: ConversationSource, root?:
   return out
 }
 
-// Newest matching transcript file for a source — used by solo-session learning to read
-// the ACTIVE session. Reuses the PROVEN discovery above (correct roots + patterns +
-// depth-6 recursion), so it handles Codex's nested `sessions/YYYY/MM/DD/rollout-*.jsonl`
-// and Gemini's `tmp/<proj>/chats/session-*.json` layouts — where the old per-agent
-// watcher finders silently found nothing. Newest by mtime; null when nothing matches.
-export async function findLatestTranscriptFile(source: ConversationSource, root?: string): Promise<string | null> {
+// The newest transcript files for a source, newest first by mtime — used by solo-session learning
+// to read the ACTIVE session. Several rather than one: the newest can be a job another computer
+// ran here, which the reader then passes over (liveTranscript). Reuses the PROVEN discovery above
+// (correct roots + patterns + depth-6 recursion), so it handles Codex's nested
+// `sessions/YYYY/MM/DD/rollout-*.jsonl` and Gemini's `tmp/<proj>/chats/session-*.json` layouts —
+// where the old per-agent watcher finders silently found nothing. Files with the same mtime keep
+// discovery order. Empty when nothing matches.
+export async function newestTranscriptFiles(source: ConversationSource, limit: number, root?: string): Promise<string[]> {
   const files = await discoverTranscriptFiles(source, root)
-  let best: { path: string; mtime: number } | null = null
+  const dated: Array<{ path: string; mtime: number }> = []
   for (const f of files) {
     try {
-      const mtime = (await fsp.stat(f)).mtimeMs
-      if (!best || mtime > best.mtime) best = { path: f, mtime }
+      dated.push({ path: f, mtime: (await fsp.stat(f)).mtimeMs })
     } catch {
       /* skip an unreadable file */
     }
   }
-  return best ? best.path : null
+  dated.sort((a, b) => b.mtime - a.mtime)
+  return dated.slice(0, Math.max(0, limit)).map((d) => d.path)
 }
 
 export interface IngestMemory {
@@ -557,7 +576,7 @@ export interface IngestMemory {
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
   memory: IngestMemory,
-  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number; stopped?: () => boolean } = {},
+  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number; stopped?: () => boolean; onDelegated?: (hashes: string[]) => void } = {},
 ): Promise<IngestStats> {
   // BB6: track the last-written chunk id per session so we can lay down a 'follows'
   // edge between consecutive same-session chunks. Idempotent: already-stored chunks
@@ -569,6 +588,7 @@ export async function runConversationIngest(
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
     stopped: opts.stopped,
+    onDelegated: opts.onDelegated,
     listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,

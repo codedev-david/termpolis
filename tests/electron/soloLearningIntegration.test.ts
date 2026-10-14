@@ -36,7 +36,7 @@ describe('solo-session learning — full main-side pipeline (real modules)', () 
       {
         readTranscript: (cwd, agent) =>
           readSessionTranscript(cwd, agent, {
-            findFile: () => file,
+            findFiles: () => [file],
             readFile: (f) => fsp.readFile(f, 'utf8'),
             parse: (a, c) => parseBySource(a as never, c),
           }),
@@ -72,7 +72,7 @@ describe('solo-session learning — full main-side pipeline (real modules)', () 
         {
           readTranscript: (cwd, agent) =>
             readSessionTranscript(cwd, agent, {
-              findFile: () => file,
+              findFiles: () => [file],
               readFile: (f) => fsp.readFile(f, 'utf8'),
               parse: (a, c) => parseBySource(a as never, c),
             }),
