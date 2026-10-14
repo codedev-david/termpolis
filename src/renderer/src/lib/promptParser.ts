@@ -23,6 +23,13 @@ const BRANCH_IN_PARENS = /\(([A-Za-z0-9][\w./-]*)\)\s*[$>]?\s*$/
 export interface PromptInfo {
   cwd: string | null
   gitBranch: string | null
+  /**
+   * True when `cwd` came from the shell's OWN prompt pattern (Git Bash's MINGW line, PowerShell's
+   * `PS C:\...>`, zsh's `%`), false when only the generic catch-all matched. A generic `$`/`>` line
+   * is just as often an ssh or WSL prompt running INSIDE the terminal, so its `~` is that other
+   * machine's home, and only a dialect match can be trusted to mean this one.
+   */
+  fromDialect: boolean
 }
 
 // Detect "cd <path>" commands to track directory changes
@@ -57,7 +64,9 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
 
   let cwd: string | null = null
   let gitBranch: string | null = null
+  let fromDialect = false
   let lastKnownPath: string | null = null
+  let lastKnownFromDialect = false
   let lastCdTarget: string | null = null
 
   // Scan lines from bottom up to find the most recent prompt
@@ -70,6 +79,7 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
       if (gitBashMatch) {
         cwd = gitBashMatch[1]
         gitBranch = gitBashMatch[2] || null
+        fromDialect = true
         break
       }
     }
@@ -78,6 +88,7 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
       const psMatch = line.match(PS_PROMPT)
       if (psMatch) {
         cwd = psMatch[1]
+        fromDialect = true
         break
       }
     }
@@ -97,8 +108,10 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
         if (zshMatch) {
           if (!lastCdTarget) {
             cwd = zshMatch[1]
+            fromDialect = true
           } else {
             lastKnownPath = zshMatch[1]
+            lastKnownFromDialect = true
           }
         }
       }
@@ -127,6 +140,7 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
         } else {
           // We found a path AND saw a cd command below it — resolve the cd
           lastKnownPath = pathMatch[1]
+          lastKnownFromDialect = false
         }
       }
     }
@@ -145,8 +159,10 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
     if (lines.length - 1 - i > 20) break
   }
 
-  // If we found a path and a cd command but no final cwd, resolve it
+  // If we found a path and a cd command but no final cwd, resolve it. The cd was typed into
+  // whichever shell drew that prompt, so its `~` belongs to the same machine as the prompt's.
   if (!cwd && lastKnownPath && lastCdTarget) {
+    fromDialect = lastKnownFromDialect
     if (lastCdTarget.startsWith('/') || lastCdTarget.startsWith('~') || /^[A-Za-z]:/.test(lastCdTarget)) {
       // Absolute path — use as-is
       cwd = lastCdTarget
@@ -156,5 +172,5 @@ export function parsePromptFromOutput(output: string, shellType: string): Prompt
     }
   }
 
-  return { cwd, gitBranch }
+  return { cwd, gitBranch, fromDialect }
 }

@@ -217,4 +217,48 @@ describe('promptParser', () => {
       expect(result.gitBranch).toBe('main')
     })
   })
+
+  // Whose `~` is it? Only the shell's own prompt pattern can say "this machine". The generic
+  // catch-all also matches an ssh or WSL prompt running inside the terminal, whose `~` is the other
+  // machine's home — TerminalPane must not expand that against this one's.
+  describe('fromDialect', () => {
+    it.each([
+      ['gitbash', 'user@host MINGW64 ~/repos/project (main)\n$ '],
+      ['bash', 'user@host MINGW64 ~/repos/project\n$ '],
+      ['powershell', 'PS C:\\Users\\dev\\repo> '],
+      ['zsh', 'dave@mac ~/repos/project %'],
+    ])("is true for %s's own prompt", (shell, output) => {
+      const result = parsePromptFromOutput(output, shell)
+      expect(result.cwd).not.toBeNull()
+      expect(result.fromDialect).toBe(true)
+    })
+
+    it('is false for an ssh prompt inside Git Bash, though its path is home-relative', () => {
+      const result = parsePromptFromOutput('dev@box:~/proj$ ', 'gitbash')
+      expect(result.cwd).toBe('~/proj')
+      expect(result.fromDialect).toBe(false)
+    })
+
+    it('is false for a generic prompt inside PowerShell (WSL, ssh)', () => {
+      const result = parsePromptFromOutput('dev@wsl:~/proj$ ', 'powershell')
+      expect(result.cwd).toBe('~/proj')
+      expect(result.fromDialect).toBe(false)
+    })
+
+    it('is false for a zsh prompt customised to end in $', () => {
+      expect(parsePromptFromOutput('~/repos/project $', 'zsh').fromDialect).toBe(false)
+    })
+
+    it('is false when nothing matched', () => {
+      expect(parsePromptFromOutput('just some output\n', 'gitbash')).toEqual({ cwd: null, gitBranch: null, fromDialect: false })
+    })
+
+    it('a cd resolution inherits the dialect of the prompt it was typed after', () => {
+      // `cd ~/x` typed after a zsh prompt is this machine's; after a generic one it may not be.
+      const zsh = parsePromptFromOutput('dave@mac ~/repos %\n% cd ~/elsewhere\n', 'zsh')
+      expect(zsh).toMatchObject({ cwd: '~/elsewhere', fromDialect: true })
+      const generic = parsePromptFromOutput('dev@box:~/repos $\n$ cd ~/elsewhere\n', 'bash')
+      expect(generic).toMatchObject({ cwd: '~/elsewhere', fromDialect: false })
+    })
+  })
 })
