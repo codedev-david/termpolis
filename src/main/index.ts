@@ -4483,7 +4483,8 @@ async function semanticPoolOptions(
     // that can't be written costs agents their MCP connection; it must not cost the rest.
     //
     // replaceIfLocked: the token is new every launch, so a token file an older Termpolis locked
-    // is deleted and written afresh, which also drops any other account that old ACL let in.
+    // this user out of is granted back, deleted and written afresh; the new file drops any other
+    // account that old ACL let in.
     const tokenPath = join(app.getPath('userData'), 'mcp-token')
     try {
       const tokenWrite = writeSecureFile(tokenPath, getMcpAuthToken(), { replaceIfLocked: true })

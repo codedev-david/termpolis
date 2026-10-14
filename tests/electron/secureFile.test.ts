@@ -378,37 +378,70 @@ describe('writeSecureFile', () => {
       return () => writes
     }
 
-    it('is replaced, not reopened in place: the old DACL goes with the old file', async () => {
-      // Granting INTO the old DACL would reopen it but keep whatever else it held, so the local
-      // account an older version granted would read every live token from then on.
+    /**
+     * The token file as an ordinary session meets it when its DACL names no ACE for this user:
+     * empty, or only the local account an older version granted. Writes are refused, and so is
+     * the delete until a grant names the file. Node's unlink opens the file first, and that open
+     * asks SYNCHRONIZE (CreateFileW always adds it) and, on Node 22's libuv, FILE_WRITE_ATTRIBUTES;
+     * only an ACE on the file gives either, as the folder's delete-child right covers DELETE alone.
+     * `landed` says where the content went: into the old file and its DACL, or into a new file.
+     */
+    function lockedAgainstUser() {
+      const file = { userGranted: false, deleted: false, writes: 0, landed: 'nowhere' as 'nowhere' | 'in place' | 'fresh' }
+      mockExistsSync.mockImplementation(() => !file.deleted || file.landed === 'fresh')
+      mockExecFileSync.mockImplementation((_cmd: string, argv: string[]) => {
+        if (argv[0] === TOKEN) file.userGranted = true
+      })
+      mockUnlinkSync.mockImplementation(() => {
+        if (!file.userGranted) throw errno('EPERM', 'unlink refused: no ACE grants this user SYNCHRONIZE')
+        file.deleted = true
+      })
+      mockWriteFileSync.mockImplementation(() => {
+        file.writes++
+        if (file.deleted) file.landed = 'fresh'
+        else if (file.userGranted) file.landed = 'in place'
+        else throw errno('EPERM', `write refused: attempt ${file.writes}`)
+      })
+      return file
+    }
+
+    it('is granted back, then replaced: the old DACL goes with the old file', async () => {
+      // Writing INTO the old DACL would keep whatever else it held, so the local account an older
+      // version granted would read every live token from then on. Only a new file sheds it — but
+      // the delete that makes room for one is refused until the grant gives this user an ACE.
       onWindows('David Engelhart', 'PC')
-      mockExistsSync.mockReturnValue(true)
-      const writes = failFirstWrites(4)
+      const file = lockedAgainstUser()
       const { writeSecureFile } = await import('../../src/main/secureFile')
       const r = writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })
 
+      expect(file.landed).toBe('fresh')
       expect(mockUnlinkSync).toHaveBeenCalledWith(TOKEN)
-      // Four refused writes, the delete, the write that makes the new file — then the usual lockdown,
-      // which is the ONLY icacls call: nothing was granted into the old file first.
-      expect(writes()).toBe(5)
-      expect(mockExecFileSync).toHaveBeenCalledTimes(1)
-      expect(mockUnlinkSync.mock.invocationCallOrder[0]).toBeLessThan(mockExecFileSync.mock.invocationCallOrder[0])
-      expect(granted()).toBe('PC\\David Engelhart:F')
+      // Four refused writes, the grant into the old file, the delete, the write that makes the new
+      // file — then the usual lockdown of that new file.
+      expect(file.writes).toBe(5)
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2)
+      expect(mockExecFileSync.mock.invocationCallOrder[0]).toBeLessThan(mockUnlinkSync.mock.invocationCallOrder[0])
+      expect(granted(0)).toBe('PC\\David Engelhart:F')
+      expect(granted(1)).toBe('PC\\David Engelhart:F')
       expect(r).toMatchObject({ aclApplied: true, writeRetries: 4 })
     }, 10000)
 
-    it('is reopened with the grant when the folder will not let it go', async () => {
-      // The owner keeps WRITE_DAC whatever the DACL says, so the grant still gets the user back in.
+    it('is written in place only when it will not go even after the grant', async () => {
+      // Another program holding it open without delete sharing, say. The owner keeps WRITE_DAC
+      // whatever the DACL says, so the grant has reopened it and the token still gets written —
+      // into the old DACL, which is why this is the last resort and not the repair.
       onWindows('david', 'PC')
       mockExistsSync.mockReturnValue(true)
-      mockUnlinkSync.mockImplementation(() => { throw errno('EPERM', 'unlink refused') })
+      mockUnlinkSync.mockImplementation(() => { throw errno('EBUSY', 'unlink refused') })
       const writes = failFirstWrites(4, 'EACCES')
       const { writeSecureFile } = await import('../../src/main/secureFile')
       const r = writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })
 
       expect(writes()).toBe(5)
-      // The grant that reopens it, then the usual lockdown.
+      // The grant that reopens it, the delete it still refuses, then the usual lockdown.
       expect(mockExecFileSync).toHaveBeenCalledTimes(2)
+      expect(mockUnlinkSync).toHaveBeenCalledWith(TOKEN)
+      expect(mockExecFileSync.mock.invocationCallOrder[0]).toBeLessThan(mockUnlinkSync.mock.invocationCallOrder[0])
       expect(r).toMatchObject({ aclApplied: true, writeRetries: 4 })
     }, 10000)
 
@@ -425,14 +458,17 @@ describe('writeSecureFile', () => {
     }, 10000)
 
     it('a replacement that cannot be created fails with its own error, after its own retries', async () => {
-      // The old file is gone by then, so there is nothing left to grant: the new file's error is the answer.
+      // The grant let the delete through, so the old file is gone and there is nothing left to
+      // reopen: the new file's error is the answer.
       onWindows('david', 'PC')
       mockExistsSync.mockReturnValue(true)
       const writes = failFirstWrites(8)
       const { writeSecureFile } = await import('../../src/main/secureFile')
       expect(() => writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })).toThrowError('EPERM: attempt 8')
       expect(writes()).toBe(8)
-      expect(mockExecFileSync).not.toHaveBeenCalled()
+      expect(mockUnlinkSync).toHaveBeenCalledWith(TOKEN)
+      // Only the grant into the old file: no new file was made, so there was nothing to lock down.
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1)
     }, 10000)
 
     it('an access-denied on a file that is not there is not a lockout', async () => {

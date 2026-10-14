@@ -151,19 +151,29 @@ function errnoCode(e: unknown): string | undefined {
  * DACL; a bare name a same-named LOCAL account captures (Windows looks local accounts up before
  * the domain) left that account with full control and the real user with nothing.
  *
- * So the file is replaced, not reopened: deleting it takes only the folder's delete-child right,
- * and the new file starts from the folder's ACL, so whatever the old DACL held goes with it.
- * Granting into the old DACL would reopen it but keep the other account's ACE, and that account
- * would then read every live token written after it. The grant is only the fallback for a folder
- * that will not let the file go: the owner keeps WRITE_DAC whatever the DACL says. Returns the
- * extra attempts it took; throws the new file's own error if it cannot be created, or `cause`
- * when the file can be neither replaced nor reopened.
+ * So the file is replaced, not written in place: the new file starts from the folder's ACL, so
+ * whatever the old DACL held goes with the old file. Writing into the old DACL would keep the
+ * other account's ACE, and that account would then read every live token written after it.
+ *
+ * The grant still comes first, because the delete needs it. Node's unlink opens the file, and the
+ * open asks SYNCHRONIZE (CreateFileW always adds it) and, on Node 22's libuv, FILE_WRITE_ATTRIBUTES.
+ * Only an ACE on the file gives either — the folder's delete-child right covers DELETE alone — so
+ * without one an ordinary session's delete is refused. The owner keeps WRITE_DAC whatever the DACL
+ * says, so the grant lands even on an empty DACL. Only a file that will not go even then is
+ * written in place, into the DACL the grant reopened.
+ *
+ * A session with the backup and restore privileges enabled writes through any DACL, so it never
+ * meets this lockout, and a grant an older version gave another account stays on the file. An
+ * ordinary launch has neither privilege enabled.
+ *
+ * Returns the extra attempts it took; throws the new file's own error if it cannot be created, or
+ * `cause` when the file can be neither replaced nor reopened.
  */
 function reopenAndWrite(path: string, content: string, cause: unknown): number {
+  lockToCurrentUser(path)
   try {
     unlinkSync(path)
   } catch {
-    lockToCurrentUser(path)
     try {
       writeFileSync(path, content, WRITE_OPTIONS)
       return 1

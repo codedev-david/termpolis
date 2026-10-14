@@ -141,6 +141,9 @@ describe('writeSecureFile — real filesystem integration', () => {
     describe('Windows: a file an older Termpolis locked', () => {
       // A session that writes through any DACL would write in place and never meet the lockout;
       // the read-only attribute refuses the write to every session, so the repair runs there too.
+      // Its delete goes through any DACL as well, though, so there these cases pass whether the
+      // repair grants or deletes first. Only an ordinary session, whose delete is refused until the
+      // grant, tells the two apart; the unit suite pins the order on every machine.
       const refuseWritesEverywhere = (f: string): void => {
         if (nodeOpensForWrite(f)) chmodSync(f, 0o444)
       }
@@ -161,7 +164,8 @@ describe('writeSecureFile — real filesystem integration', () => {
 
       it("another account's grant does not survive the repair", () => {
         // LOCAL SERVICE (alias LS) stands in for the local account that captured the bare name.
-        // Granting the user into this DACL would leave LS there, reading every token after it.
+        // Writing into this DACL, even with the user granted back in, would leave LS there,
+        // reading every token after it.
         const f = join(userDataLike(), 'f')
         writeFileSync(f, 'old')
         icacls(f, '/inheritance:r', '/grant:r', '*S-1-5-19:F')
