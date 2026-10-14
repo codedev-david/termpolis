@@ -17,7 +17,7 @@ function Switch({ on, label, testId, onClick }: { on: boolean; label: string; te
       }`}
     >
       <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-        on ? 'translate-x-4.5' : 'translate-x-0.5'
+        on ? 'translate-x-5' : 'translate-x-0.5'
       }`} />
     </button>
   )

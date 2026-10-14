@@ -13,7 +13,7 @@ function Toggle({ on, onClick, testid, label }: { on: boolean; onClick: () => vo
       data-testid={testid}
       className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${on ? 'bg-[#0078d4]' : 'bg-[#555]'}`}
     >
-      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${on ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${on ? 'translate-x-5' : 'translate-x-0.5'}`} />
     </button>
   )
 }

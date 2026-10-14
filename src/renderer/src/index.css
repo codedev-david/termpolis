@@ -17,10 +17,6 @@
 /* Every .ts, .tsx, .js and .jsx file under src/, which is what tailwind.config.js `content` listed. */
 @source "../../**/*.{ts,tsx,js,jsx}";
 
-/* translate-x-4.5 is not a v3 class, so v3 emitted nothing for it and the Settings toggles'
-   knobs never moved. Blocked so this upgrade changes no pixels. */
-@source not inline("translate-x-4.5");
-
 /* v4 moved space-y-* to margin-bottom on :not(:last-child) at zero specificity, which changes
    the gap wherever a child sets its own margin (StartSwarmModal). These are the v3 rules. */
 @source not inline("space-y-{0.5,1,1.5,2,3,4}");

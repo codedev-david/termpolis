@@ -401,7 +401,7 @@ export function SettingsPane() {
             >
               <span
                 className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                  allowAppMouseControl ? 'translate-x-4.5' : 'translate-x-0.5'
+                  allowAppMouseControl ? 'translate-x-5' : 'translate-x-0.5'
                 }`}
               />
             </button>
@@ -425,7 +425,7 @@ export function SettingsPane() {
               }`}
             >
               <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                autoPrimer ? 'translate-x-4.5' : 'translate-x-0.5'
+                autoPrimer ? 'translate-x-5' : 'translate-x-0.5'
               }`} />
             </button>
             <div className="flex flex-col gap-0.5">
@@ -474,7 +474,7 @@ export function SettingsPane() {
               }`}
             >
               <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                soloLearning ? 'translate-x-4.5' : 'translate-x-0.5'
+                soloLearning ? 'translate-x-5' : 'translate-x-0.5'
               }`} />
             </button>
             <div className="flex flex-col gap-0.5">
@@ -497,7 +497,7 @@ export function SettingsPane() {
               }`}
             >
               <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                autoReprime ? 'translate-x-4.5' : 'translate-x-0.5'
+                autoReprime ? 'translate-x-5' : 'translate-x-0.5'
               }`} />
             </button>
             <div className="flex flex-col gap-0.5">
@@ -521,7 +521,7 @@ export function SettingsPane() {
               }`}
             >
               <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
-                autoIndex ? 'translate-x-4.5' : 'translate-x-0.5'
+                autoIndex ? 'translate-x-5' : 'translate-x-0.5'
               }`} />
             </button>
             <div className="flex flex-col gap-0.5">

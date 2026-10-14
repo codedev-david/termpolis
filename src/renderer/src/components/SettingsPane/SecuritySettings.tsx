@@ -262,7 +262,7 @@ export function SecuritySettings() {
           data-testid="security-strict-gemini-toggle"
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${strictGemini ? 'bg-[#dc2626]' : 'bg-[#555]'}`}
         >
-          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${strictGemini ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${strictGemini ? 'translate-x-5' : 'translate-x-0.5'}`} />
         </button>
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium text-[#FFB4B4] flex items-center gap-2">
@@ -439,7 +439,7 @@ export function SecuritySettings() {
           data-testid="security-commit-shield-toggle"
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${commitShield ? 'bg-[#0d9488]' : 'bg-[#555]'}`}
         >
-          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${commitShield ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${commitShield ? 'translate-x-5' : 'translate-x-0.5'}`} />
         </button>
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium flex items-center gap-2">
@@ -507,7 +507,7 @@ export function SecuritySettings() {
           data-testid="security-egress-guard-toggle"
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${egressGuard ? 'bg-[#0d9488]' : 'bg-[#555]'}`}
         >
-          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${egressGuard ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${egressGuard ? 'translate-x-5' : 'translate-x-0.5'}`} />
         </button>
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium flex items-center gap-2">
@@ -528,7 +528,7 @@ export function SecuritySettings() {
           data-testid="security-memory-scrub-toggle"
           className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${memoryScrub ? 'bg-[#0d9488]' : 'bg-[#555]'}`}
         >
-          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${memoryScrub ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${memoryScrub ? 'translate-x-5' : 'translate-x-0.5'}`} />
         </button>
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium flex items-center gap-2">
@@ -631,7 +631,7 @@ export function SecuritySettings() {
             data-testid="security-audit-toggle"
             className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${auditEnabled ? 'bg-[#0078d4]' : 'bg-[#555]'}`}
           >
-            <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${auditEnabled ? 'translate-x-4.5' : 'translate-x-0.5'}`} />
+            <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${auditEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
           </button>
           <div className="flex flex-col gap-0.5 flex-1">
             <span className="text-sm font-medium">Cloud-bound audit log</span>
