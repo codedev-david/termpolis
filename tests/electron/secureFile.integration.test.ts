@@ -139,14 +139,22 @@ describe('writeSecureFile — real filesystem integration', () => {
     // same-named local account instead of the user. Each case first proves the user really is shut
     // out — to an ordinary reader, cmd's `type` — and ends with that reader getting the new content.
     describe('Windows: a file an older Termpolis locked', () => {
+      // A session that writes through any DACL would write in place and never meet the lockout;
+      // the read-only attribute refuses the write to every session, so the repair runs there too.
+      const refuseWritesEverywhere = (f: string): void => {
+        if (nodeOpensForWrite(f)) chmodSync(f, 0o444)
+      }
+
       it('an empty DACL: the token is written and the user can read it again', () => {
         const f = join(userDataLike(), 'f')
         writeFileSync(f, 'old')
         icacls(f, '/inheritance:r') // what the old first call left when its grant then failed
         expect(typeFile(f).ok, 'premise: the user is shut out').toBe(false)
+        refuseWritesEverywhere(f)
 
         const r = writeSecureFile(f, 'new', { replaceIfLocked: true })
         expect(r.aclApplied).toBe(true)
+        expect(r.writeRetries, 'the repair ran, after every ordinary attempt was refused').toBeGreaterThanOrEqual(4)
         expect(typeFile(f)).toEqual({ ok: true, text: 'new' })
         expect(lockdownProblems(f, user)).toEqual([])
       })
@@ -159,12 +167,11 @@ describe('writeSecureFile — real filesystem integration', () => {
         icacls(f, '/inheritance:r', '/grant:r', '*S-1-5-19:F')
         expect(daclAces(daclSddl(f)).map((a) => a.trustee)).toEqual(['LS'])
         expect(typeFile(f).ok, 'premise: the user is shut out').toBe(false)
-        // A session that writes through any DACL would write in place and never meet the lockout;
-        // the read-only attribute refuses the write to every session, so the repair runs there too.
-        if (nodeOpensForWrite(f)) chmodSync(f, 0o444)
+        refuseWritesEverywhere(f)
 
         const r = writeSecureFile(f, 'new', { replaceIfLocked: true })
         expect(r.aclApplied).toBe(true)
+        expect(r.writeRetries, 'the repair ran, after every ordinary attempt was refused').toBeGreaterThanOrEqual(4)
         expect(typeFile(f)).toEqual({ ok: true, text: 'new' })
         expect(daclAces(daclSddl(f)).map((a) => a.trustee)).not.toContain('LS')
         expect(lockdownProblems(f, user)).toEqual([])
