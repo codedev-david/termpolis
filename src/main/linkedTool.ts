@@ -12,9 +12,11 @@
 // data, `{ error }`, worded for the agent to act on or pass on.
 //
 // Everything that came from the other machine is untrusted text: a job's output
-// and error, and any refusal the other side worded. All of it goes through
-// `inspect` (the gateway's injection guard) before an agent reads it, and the
-// output always arrives under a label saying whose it is (`frame`).
+// and error, and any refusal the other side worded. All of it goes through the
+// gateway's injection guard before an agent reads it. A job's output and error
+// always arrive under a label saying whose they are (`frame`): a failed run's
+// error is its stderr, as much the agent's own text as its output. A refusal
+// is checked for injection only (`inspect`).
 //
 // Credentials don't cross: the prompt is screened before it leaves, and the
 // answer when it arrives, in case the other machine runs a version that doesn't
@@ -55,9 +57,10 @@ export interface LinkedToolDeps {
   enabled(): boolean
   localName(): string
   /** riskBanner(inspectResult(text, 210_000), machine, agent): flagged only. For the short things
-   *  the other machine words: an error, a refusal. */
+   *  the other machine words about a call: a refusal, a note. */
   inspect(text: string, machine: string, agent: string): string
-  /** peerAnswerBanner(inspectResult(text, 210_000), machine, agent): an answer, always labelled. */
+  /** peerAnswerBanner(inspectResult(text, 210_000), machine, agent): a job's output or error,
+   *  always labelled. */
   frame(text: string, machine: string, agent: string): string
   /** aiSecurity.screenText. */
   screen(text: string): SecretScreen
@@ -235,11 +238,6 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
   const sent = new Map<string, SentJob>()
   const checked = new Map<string, Checked>()
 
-  /** Words from the other machine, made safe to hand an agent. */
-  function guarded(text: string, name: string, agent: string, max: number): string {
-    return deps.inspect(clip(text, max), name, agent)
-  }
-
   function reportSecrets(finding: LinkedSecretFinding): void {
     if (!deps.onSecrets || !foundAny(finding)) return
     try {
@@ -249,8 +247,8 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     }
   }
 
-  /** A job's output and error as an agent may read them: screened, the output labelled, the
-   *  error checked for injection, with notes for what screening found. Once per finished job. */
+  /** A job's output and error as an agent may read them: screened and labelled, with notes for
+   *  what screening found. Once per finished job. */
   function check(job: Followed, view: JobView): Checked {
     const finished = view.status !== 'running'
     const known = finished ? checked.get(job.jobId) : undefined
@@ -264,7 +262,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     const out: Checked = {
       ...(output ? { output: deps.frame(output.text, job.name, view.agent) } : {}),
       ...(long ? { truncated: true } : {}),
-      ...(error ? { error: guarded(error.text, job.name, view.agent, MAX_ERROR_CHARS) } : {}),
+      ...(error ? { error: deps.frame(clip(error.text, MAX_ERROR_CHARS), job.name, view.agent) } : {}),
       notes: secretNotes(found, 'this answer'),
     }
     if (finished) {
@@ -275,14 +273,14 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
   }
 
   /** Why a call to `name` failed, as a sentence. The bridge's own two words are
-   *  translated; anything else was worded by the other machine and is guarded. */
+   *  translated; anything else was worded by the other machine and is checked for injection. */
   function failure(message: string, name: string, agent: string): string {
     if (message === 'offline') return offline(name)
     if (message === 'timed out') return `"${name}" did not answer in time.`
     if (message === OLD_VERSION_REFUSAL) {
       return `"${name}" runs a version of Termpolis without Linked machines. Update Termpolis there.`
     }
-    return guarded(message, name, agent, MAX_REFUSAL_CHARS)
+    return deps.inspect(clip(message, MAX_REFUSAL_CHARS), name, agent)
   }
 
   /** Record a job's status for the activity view, once per change. */

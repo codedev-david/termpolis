@@ -1317,8 +1317,9 @@ audit log.
     that server.
 - **Answers are labelled and scanned.** What comes back from another machine
   passes the gateway's prompt-injection scan before your agent sees it. That
-  covers the answer, its error and any refusal worded over there. Every answer
-  arrives under a label saying it is data from another computer, not
+  covers the answer, its error and any refusal worded over there. Every answer,
+  and a failed job's error (its stderr, as much the agent's own text as its
+  output), arrives under a label saying it is data from another computer, not
   instructions from the user; a flagged one gets the **UNTRUSTED CONTENT**
   banner instead, telling the agent not to follow it.
 - **Credentials don't cross.** Prompts and answers are screened with the AI

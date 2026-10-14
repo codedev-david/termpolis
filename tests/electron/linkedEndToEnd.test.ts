@@ -929,7 +929,8 @@ describe('what the other computer allows', () => {
       machine: BUILDBOX_ON_LAPTOP,
       agent: 'codex',
       status: 'cancelled',
-      error: `Cancelled: ${BUILDBOX} no longer lets this computer's agents edit files or run commands there.`,
+      // The other computer's words, labelled as everything a job sends back is.
+      error: answered(BUILDBOX_ON_LAPTOP, 'codex', `Cancelled: ${BUILDBOX} no longer lets this computer's agents edit files or run commands there.`),
       durationMs: expect.any(Number),
     })
   })
