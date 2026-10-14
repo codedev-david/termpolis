@@ -545,7 +545,7 @@ The tools come in seven groups. The authoritative list is the one your agent sho
 | Token Headroom | `retrieve_full` | Expand a tool result that Token Headroom shortened |
 | Linked machines | `linked_machines` | Have a Claude, Codex or Gemini agent on another linked machine do a task headlessly and return its final answer: `list` the machines, `run` a task, and fetch the `result` of one still running. See [§30](#30-linked-machines) |
 
-The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log.
+The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. Both files are readable only by your account: mode `600` on macOS and Linux; on Windows an access list that removes what the folder passes down and grants your account full control, so other local users get nothing (SYSTEM and Administrators, who can read every file anyway, are left as they are). An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log.
 
 ### Connecting your coding agents
 
@@ -817,7 +817,7 @@ The bottom strip shows, left to right:
 
 - **No free port.** The server tries port 9315, then the next four (up to 9319). If all five are taken — usually by stray Termpolis processes left behind by a crash — it can't start. Kill any stray `termpolis` processes and relaunch.
 - **Firewall blocking localhost.** Rare but possible. Add an exception for `termpolis.exe` / the Termpolis binary.
-- **Token file write failed.** `mcp-token` in the data directory (see [First run](#first-run)) couldn't be written due to permissions. Fix that folder's permissions so your user account can write to it.
+- **Token file write failed.** `mcp-token` in the data directory (see [First run](#first-run)) couldn't be written due to permissions; the app log says `[mcp-token] could not write`. The rest of Termpolis still starts. Termpolis first tries to repair a token file it locked itself out of (versions up to 1.52 could do that on Windows when the account name had a space or an accent), so if this persists, fix that folder's permissions so your user account can write to it.
 
 **An agent doesn't see Termpolis's tools or memory.** Since v1.49, Termpolis registers itself with Claude Code, Codex and Gemini CLI only after you connect them. Check **Settings → Agent Integration**, connect if needed, then start a new agent session.
 

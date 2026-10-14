@@ -12,10 +12,10 @@
 // is reserved for folders opened via command-line args, drag-drop, or
 // session restoration where the user may not realize what's being run.
 
-import { existsSync, readFileSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { dirname, resolve, sep } from 'path'
 import { app, dialog, BrowserWindow } from 'electron'
-import { writeSecureFile } from './secureFile'
+import { readSecureFile, writeSecureFile } from './secureFile'
 
 let storePath: string | null = null
 const trusted = new Set<string>()
@@ -37,7 +37,9 @@ export function initWorkspaceTrust(overrideUserDataDir?: string) {
     trusted.clear()
     if (existsSync(storePath)) {
       try {
-        const parsed = JSON.parse(readFileSync(storePath, 'utf-8'))
+        // readSecureFile reopens a store an older Termpolis's ACL locked its owner out of.
+        // Read as empty instead, the next trust or revoke would save over the user's list.
+        const parsed = JSON.parse(readSecureFile(storePath))
         const paths = Array.isArray(parsed?.paths) ? parsed.paths : []
         for (const p of paths) {
           if (typeof p === 'string' && p.length > 0) trusted.add(normalize(p))

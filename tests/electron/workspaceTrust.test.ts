@@ -113,6 +113,25 @@ describe('workspaceTrust store', () => {
     expect(m.listTrustedWorkspaces()).toEqual([])
   })
 
+  it('reads the store through readSecureFile, so one an older ACL locked keeps its list', async () => {
+    // The real case is a file plain readFileSync gets EPERM on: the old two-call icacls left it
+    // with an empty DACL. readSecureFile's repair is tested in secureFile.test.ts; this pins that
+    // the store is read through it rather than read as empty and then saved over.
+    const store = join(dir, 'trusted-workspaces.json')
+    const p = join(dir, 'locked-but-trusted')
+    writeFileSync(store, 'readFileSync cannot open this in the real case')
+    const readSecureFile = vi.fn(() => JSON.stringify({ paths: [p] }))
+    vi.doMock('../../src/main/secureFile', () => ({ readSecureFile, writeSecureFile: vi.fn() }))
+    try {
+      const m = await freshModule()
+      m.initWorkspaceTrust(dir)
+      expect(readSecureFile).toHaveBeenCalledWith(store)
+      expect(m.isWorkspaceTrusted(p)).toBe(true)
+    } finally {
+      vi.doUnmock('../../src/main/secureFile')
+    }
+  })
+
   it('ignores non-string entries in paths array', async () => {
     writeFileSync(
       join(dir, 'trusted-workspaces.json'),

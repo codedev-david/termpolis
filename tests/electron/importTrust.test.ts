@@ -9,7 +9,7 @@
 // block that deliberately exercises the real node:fs defaults.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -632,5 +632,27 @@ describe('importTrust real node:fs defaults', () => {
     mkdirSync(join(dir, 'imported-artifacts.json')) // readFileSync -> EISDIR
     expect(() => initImportTrust(dir)).not.toThrow()
     expect(listImported()).toEqual([])
+  })
+
+  it('reads the store through readSecureFile, so one an older ACL locked keeps its approvals', async () => {
+    // The real case is a file plain readFileSync gets EPERM on: the old two-call icacls left it
+    // with an empty DACL. readSecureFile's repair is tested in secureFile.test.ts; this pins that
+    // the default reader goes through it rather than reading "no approvals" and saving over them.
+    const store = join(dir, 'imported-artifacts.json')
+    writeFileSync(store, 'readFileSync cannot open this in the real case')
+    const hash = artifactHash([{ path: 'SKILL.md', content: 'approved before the lockout' }])
+    const artifacts = [{ id: 'kept', name: 'Kept', kind: 'skill', hash, approvedAt: NOW, riskLevel: 'green', targets: [] }]
+    const readSecureFile = vi.fn(() => JSON.stringify({ artifacts }))
+    vi.resetModules()
+    vi.doMock('../../src/main/secureFile', () => ({ readSecureFile, writeSecureFile: vi.fn() }))
+    try {
+      const fresh = await import('../../src/main/importTrust')
+      fresh.initImportTrust(dir)
+      expect(readSecureFile).toHaveBeenCalledWith(store)
+      expect(fresh.isApproved(hash)).toBe(true)
+    } finally {
+      vi.doUnmock('../../src/main/secureFile')
+      vi.resetModules()
+    }
   })
 })

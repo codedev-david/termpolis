@@ -20,11 +20,11 @@
 // bump, and "user clicks through the scary dialog" is exactly the attack a
 // feature like Safe Import invites.
 
-import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
 import { dirname, join } from 'path'
 import { normalizeNewlines } from './lineEndings'
-import { writeSecureFile } from './secureFile'
+import { readSecureFile, writeSecureFile } from './secureFile'
 
 const STORE_FILE = 'imported-artifacts.json'
 
@@ -53,7 +53,9 @@ export interface ImportTrustDeps {
 const realDeps: ImportTrustDeps = {
   readFile: (p) => {
     try {
-      return existsSync(p) ? readFileSync(p, 'utf-8') : null
+      // readSecureFile reopens a store an older Termpolis's ACL locked its owner out of;
+      // read as "no approvals" instead, the next save would erase every approval in it.
+      return existsSync(p) ? readSecureFile(p) : null
     } catch {
       // Unreadable (EISDIR, EACCES, a locked file mid-sync) reads as "no
       // approvals". Fail closed — worst case the user re-approves.

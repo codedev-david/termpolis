@@ -35,6 +35,8 @@ const M = vi.hoisted(() => ({
   userData: '',
   // when set, the secureFile passthrough reports the ACL as refused with this reason
   aclError: '',
+  // when set, the secureFile passthrough throws for mcp-token, as an unwritable file does
+  failTokenWrite: false,
   // child_process
   execSync: vi.fn(),
   execFileSync: vi.fn(),
@@ -197,6 +199,9 @@ vi.mock('../../src/main/secureFile', async (importOriginal) => {
   return {
     ...actual,
     writeSecureFile: (...args: Parameters<typeof actual.writeSecureFile>) => {
+      if (M.failTokenWrite && args[0].endsWith('mcp-token')) {
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
+      }
       const result = actual.writeSecureFile(...args)
       return M.aclError ? { ...result, aclApplied: false, aclError: M.aclError } : result
     },
@@ -471,6 +476,7 @@ beforeEach(() => {
   mockWebContents.send.mockClear()
   M.execFileSync.mockReset()
   M.aclError = ''
+  M.failTokenWrite = false
   M.failLinkedStart = false
   delete process.env.TERMPOLIS_SKIP_ACL
 })
@@ -578,6 +584,21 @@ describe('MCP token file', () => {
     expect(warns.some((w) => w.includes('[mcp-token] ACL not applied'))).toBe(false)
     expect(logs.some((l) => l.includes('MCP token written to'))).toBe(true)
     expect(readFileSync(join(M.userData, 'mcp-token'), 'utf8')).toBe('fake-token')
+  })
+
+  it('a token file that cannot be written costs the token, not the rest of the boot', async () => {
+    // The write sits mid-way through whenReady, and an older Termpolis's ACL could leave the
+    // file unwritable. Unguarded, its throw skipped everything after it: the port file, Remote,
+    // Linked machines, agent integration and the global hotkeys.
+    M.failTokenWrite = true
+    await boot()
+
+    expect(errors).toContain(`[mcp-token] could not write ${join(M.userData, 'mcp-token')}: EPERM: operation not permitted`)
+    expect(logs.some((l) => l.includes('MCP token written to'))).toBe(false)
+    // ...and the rest of the boot still happened.
+    expect(M.recordBootRuntime).toHaveBeenCalledTimes(1)
+    expect(M.registerHotkey).toHaveBeenCalledTimes(2)
+    expect(await invoke('remote:status')).toMatchObject({ success: true })
   })
 })
 

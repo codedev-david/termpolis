@@ -4477,12 +4477,20 @@ async function semanticPoolOptions(
     // Write token to a file so AI agents can discover it. On Windows the
     // 0o600 mode is a no-op, so writeSecureFile also applies an NTFS ACL
     // restricting the file to the current user.
+    //
+    // Guarded because everything below it in this callback — the port file, Remote, Linked
+    // machines, agent integration, the global hotkeys — would otherwise die with it. A token file
+    // that can't be written costs agents their MCP connection; it must not cost the rest.
     const tokenPath = join(app.getPath('userData'), 'mcp-token')
-    const tokenWrite = writeSecureFile(tokenPath, getMcpAuthToken())
-    if (!tokenWrite.aclApplied) {
-      console.warn(`[mcp-token] ACL not applied on ${tokenPath}: ${tokenWrite.aclError}`)
+    try {
+      const tokenWrite = writeSecureFile(tokenPath, getMcpAuthToken())
+      if (!tokenWrite.aclApplied) {
+        console.warn(`[mcp-token] ACL not applied on ${tokenPath}: ${tokenWrite.aclError}`)
+      }
+      console.log(`MCP token written to: ${tokenPath}`)
+    } catch (e) {
+      console.error(`[mcp-token] could not write ${tokenPath}:`, (e as Error)?.message)
     }
-    console.log(`MCP token written to: ${tokenPath}`)
     // Write the actual port (may differ from 9315 if port was taken).
     // awaitMcpPortBound resolves when server.listen succeeds on any of the
     // 5 candidate ports — unlike the old setTimeout(500, ...) this can't race.
