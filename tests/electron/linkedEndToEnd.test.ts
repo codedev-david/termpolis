@@ -25,6 +25,7 @@ import {
   type ExecResult,
 } from '../../src/main/headlessExec'
 import type { DeliverOpts } from '../../src/main/secondOpinion'
+import { isDelegatedSession } from '../../src/shared/headlessPrompt'
 import type { RemoteEvent, RemoteHost } from '../../src/main/remoteBridgeHost'
 import type { LinkedEvent, LinkedStatusView } from '../../src/main/linkedHost'
 import type { LinkedGrants } from '../../src/main/linkedStore'
@@ -591,6 +592,34 @@ describe('delegating a job', () => {
     }
     // Text another machine asked for never becomes a later primer here.
     expect(remember).not.toHaveBeenCalled()
+  })
+
+  it("tells the agent over there not to save the session when its CLI can, and its memory would skip one that was saved", async () => {
+    const { a, b } = await linkedPair({ onB: EDIT })
+    const spawned: Array<{ bin: string; args: string[]; prompt: string }> = []
+    const probe = vi.fn(async () => true)
+    b.agent = (req) =>
+      runHeadless(req, {
+        deliver: async (bin, args, prompt) => {
+          spawned.push({ bin, args, prompt })
+          return { stdout: `${bin} finished\n`, code: 0 }
+        },
+        primer: async (cwd) => `Project notes for ${cwd}`,
+        noPersist: probe,
+      })
+
+    await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Find the flaky test.', cwd: b.work })
+    await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'claude', prompt: 'Fix it.', cwd: b.work, write: true })
+    expect(probe.mock.calls).toEqual([['codex'], ['claude']])
+    const [codex, claude] = spawned
+    expect(codex.args).toContain('--ephemeral')
+    expect(codex.args.indexOf('--ephemeral')).toBeLessThan(codex.args.indexOf(PROMPT_TOKEN))
+    expect(claude.args).toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--no-session-persistence', '--strict-mcp-config'])
+    // An older CLI on the build box would have saved the session anyway: the prompt it was given
+    // is exactly what the build box's memory indexer recognises and leaves out.
+    for (const run of spawned) {
+      expect(isDelegatedSession([{ role: 'user', text: run.prompt }, { role: 'assistant', text: 'done' }])).toBe(true)
+    }
   })
 
   it('hands back a jobId for a long job, and `result` collects it -- woken by the job finishing, not by its wait', async () => {

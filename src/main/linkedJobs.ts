@@ -12,8 +12,11 @@
 // index, read-only (linkedJob; the stdio adapter enforces it), the job marked in its
 // environment so a nested delegation is refused, nothing written to the brain
 // (output another machine asked for must not become a later run's primer), and
-// read-only unless the write grant is held. The memory primer IS kept: a job
-// run here should start as warm as one started here.
+// read-only unless the write grant is held. The session the agent's CLI saves is
+// kept out of memory too: the CLI is told not to save it where it can be
+// (cliFlagProbe), and the indexer skips one it finds by the delegation header
+// (shared/headlessPrompt). The memory primer IS kept: a job run here should
+// start as warm as one started here.
 //
 // Jobs live in memory only. A restart forgets them, and the asking machine's
 // next poll gets `unknown job`.

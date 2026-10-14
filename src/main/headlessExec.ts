@@ -177,6 +177,22 @@ export interface LinkedJobArgs {
   claudeMcpConfig?: string
   /** codex only: its config.toml holds Termpolis's own server. */
   codexHasTermpolis?: boolean
+  /** The agent's CLI can run without saving its session (cliFlagProbe), so it is told to: the
+   *  session another computer asked for is never written for this computer's memory to read. */
+  noPersist?: boolean
+}
+
+/** Claude's switch for that. It works only with `--print`, which every shape here uses. */
+const CLAUDE_NO_PERSIST = '--no-session-persistence'
+
+/** Codex's, an option of `codex exec`. */
+const CODEX_NO_PERSIST = '--ephemeral'
+
+/** `args` with `flags` just ahead of `-p`: after every variadic list, so none of them takes a
+ *  flag for one more value. */
+function beforePrint(args: string[], flags: readonly string[]): string[] {
+  const i = args.indexOf('-p')
+  return [...args.slice(0, i), ...flags, ...args.slice(i)]
 }
 
 /** The marker as codex is handed it in a `-c` value. codex parses a bare value as TOML first,
@@ -235,9 +251,11 @@ function claudeLinkedReadOnlyArgs(model: string | undefined, mcpConfig: string):
  *  file (`--strict-mcp-config` drops the user's other servers), codex with the marker set on the
  *  server for the run. Missing those, the server is switched off for the run as before: claude
  *  gets `--strict-mcp-config` alone, codex CODEX_ISOLATE_MCP_ARGS. agy has no per-run switch; it
- *  passes its own environment, marker included, to the adapter. `opts.cwd` is the spawn's to use,
- *  and codex is also told it with `-C`. The caller checks it first: runHeadless takes only an
- *  absolute path, which can never be read as a flag. */
+ *  passes its own environment, marker included, to the adapter. A job whose CLI can run without
+ *  saving its session (`noPersist`) is told to: claude's flag goes ahead of `-p`, codex's with its
+ *  other options; agy has none. `opts.cwd` is the spawn's to use, and codex is also told it with
+ *  `-C`. The caller checks it first: runHeadless takes only an absolute path, which can never be
+ *  read as a flag. */
 export function execCommand(
   agent: ExecAgent,
   model: string | undefined,
@@ -257,24 +275,33 @@ export function execCommand(
       if (i >= 0 && args[i + 1] === 'read-only') args[i + 1] = 'workspace-write'
     }
     // Options go before the positional prompt, which `codex exec` takes last.
-    args.splice(args.indexOf(PROMPT_TOKEN), 0, ...(job ? codexLinkedJobArgs(job) : []), ...(opts.cwd ? ['-C', opts.cwd] : []))
+    args.splice(
+      args.indexOf(PROMPT_TOKEN),
+      0,
+      ...(job ? codexLinkedJobArgs(job) : []),
+      ...(job?.noPersist ? [CODEX_NO_PERSIST] : []),
+      ...(opts.cwd ? ['-C', opts.cwd] : []),
+    )
     return { bin: base.bin, args }
   }
   const bin = agent === 'claude' ? 'claude' : 'agy'
+  const noPersist = agent === 'claude' && job?.noPersist === true
   if (write) {
     // Only for a linked job: a plain `termpolis exec --write` keeps the user's own MCP servers.
     const mcp = job && agent === 'claude'
       ? ['--strict-mcp-config', ...(job.claudeMcpConfig ? ['--mcp-config', job.claudeMcpConfig] : [])]
       : []
-    return { bin, args: ['-p', PROMPT_TOKEN, ...modelArgs(agent, model), '--dangerously-skip-permissions', ...mcp] }
-  }
-  if (agent === 'claude') {
+    // The flag ahead of the variadic --mcp-config, which would take it for one more file.
     return {
       bin,
-      args: job?.claudeMcpConfig
-        ? claudeLinkedReadOnlyArgs(model, job.claudeMcpConfig)
-        : claudeReadOnlyArgs(model, EXEC_READ_ONLY_CLAUDE_TOOLS),
+      args: ['-p', PROMPT_TOKEN, ...modelArgs(agent, model), '--dangerously-skip-permissions', ...(noPersist ? [CLAUDE_NO_PERSIST] : []), ...mcp],
     }
+  }
+  if (agent === 'claude') {
+    const args = job?.claudeMcpConfig
+      ? claudeLinkedReadOnlyArgs(model, job.claudeMcpConfig)
+      : claudeReadOnlyArgs(model, EXEC_READ_ONLY_CLAUDE_TOOLS)
+    return { bin, args: noPersist ? beforePrint(args, [CLAUDE_NO_PERSIST]) : args }
   }
   return { bin, args: agyReadOnlyArgs(model, timeoutMs) }
 }
@@ -294,6 +321,10 @@ export interface ExecDeps {
   /** What a Linked machines job needs to keep Termpolis's MCP server, restricted (see
    *  LinkedJobMcp). Absent, or null for a run, and the job runs with the server switched off. */
   linkedJobMcp?: (jobId: string, agent: ExecAgent) => LinkedJobMcp | null
+  /** Whether the agent's CLI can run without saving its session (cliFlagProbe). Asked only for a
+   *  Linked machines job, whose session must not become this computer's memory. Absent, or failing,
+   *  and the job runs without the flag, as on a CLI that has none. */
+  noPersist?: (agent: ExecAgent) => Promise<boolean>
 }
 
 /** Per-run MCP plumbing for one Linked machines job. */
@@ -350,11 +381,14 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
   const prompt = buildExecPrompt(req.task, primer)
   const primerChars = prompt.length - req.task.length
   const timeoutMs = req.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS
+  // Asked before the job's MCP plumbing is made, so nothing is left to dispose of while it waits.
+  const noPersist = req.linkedJob !== undefined && (await canRunUnsaved(deps, agent))
   const mcp = req.linkedJob === undefined ? null : linkedJobMcpFor(deps, req.linkedJob, agent)
   const linkedJob: LinkedJobArgs | undefined = req.linkedJob === undefined ? undefined : {
     id: req.linkedJob,
     ...(mcp?.claudeMcpConfig ? { claudeMcpConfig: mcp.claudeMcpConfig } : {}),
     ...(mcp?.codexHasTermpolis ? { codexHasTermpolis: true } : {}),
+    ...(noPersist ? { noPersist: true } : {}),
   }
   const { bin, args } = execCommand(agent, req.model, req.write === true, timeoutMs, {
     ...(linkedJob ? { linkedJob } : {}),
@@ -410,6 +444,17 @@ export async function runHeadless(req: ExecRequest, deps: ExecDeps): Promise<Exe
     } catch {
       /* a temp file left behind must not change the run's outcome */
     }
+  }
+}
+
+/** Whether the job's agent can run without saving its session. A probe that fails counts as no:
+ *  the job then runs as it would on a CLI without the flag. */
+async function canRunUnsaved(deps: ExecDeps, agent: ExecAgent): Promise<boolean> {
+  if (!deps.noPersist) return false
+  try {
+    return (await deps.noPersist(agent)) === true
+  } catch {
+    return false
   }
 }
 

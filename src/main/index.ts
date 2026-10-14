@@ -98,6 +98,7 @@ import { join, dirname, isAbsolute } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
 import { runSecondOpinion, type SecondOpinionAgent } from './secondOpinion'
 import { createSecondOpinionDeliver } from './secondOpinionDeliver'
+import { createNoPersistProbe } from './cliFlagProbe'
 import {
   builtinCatalog,
   catalogIsStale,
@@ -3190,6 +3191,9 @@ const secondOpinionRuns = createSecondOpinionDeliver({
   env: () => ({ ...process.env, PATH: getExtendedPath() }),
 })
 const deliverSecondOpinion = secondOpinionRuns.deliver
+// Whether this computer's claude / codex can run a linked job without saving its session, asked
+// through the same deliver and kept ten minutes (cliFlagProbe.ts).
+const linkedNoPersist = createNoPersistProbe({ deliver: deliverSecondOpinion })
 
 /** The memory primer a headless run starts with, scoped to the folder it runs in. One function
  *  for `termpolis exec` and for jobs a linked computer starts here, so both start equally warm. */
@@ -4546,7 +4550,8 @@ async function semanticPoolOptions(
       // rooms instead of coming up for phones and being restarted a moment later for links.
       // Delegated jobs run headless with the same deliver and primer as `termpolis exec`, and
       // deliberately without `remember`: text another machine asked for must never become a
-      // later run's primer here.
+      // later run's primer here. For the same reason the agent's CLI is told not to save the
+      // session wherever it can be (`noPersist`).
       //
       // While another computer's job runs here, the system must not idle-sleep under it, nor
       // macOS put the app in App Nap: a sleeping machine drops off the relay. 'prevent-app-suspension'
@@ -4559,7 +4564,7 @@ async function semanticPoolOptions(
           version: app.getVersion(),
           sendStatus: (status) => { try { mainWindow?.webContents.send('linked:status-changed', status) } catch { /* window gone */ } },
           sendEvent: (event) => { try { mainWindow?.webContents.send('linked:event', event) } catch { /* window gone */ } },
-          runHeadless: (req) => runHeadless(req, { deliver: deliverSecondOpinion, primer: headlessPrimer, linkedJobMcp }),
+          runHeadless: (req) => runHeadless(req, { deliver: deliverSecondOpinion, primer: headlessPrimer, linkedJobMcp, noPersist: linkedNoPersist }),
           agentsInstalled: async () => {
             const found = await detectInstalledAgents()
             return { claude: found.claude === true, codex: found.codex === true, gemini: found.gemini === true }

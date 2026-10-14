@@ -561,3 +561,72 @@ describe('headlessExec/runHeadless', () => {
     }
   })
 })
+
+// A linked job's session must not be saved for this computer's memory to read, where the agent's
+// CLI can be told so (cliFlagProbe). Each flag goes where its CLI takes it, ahead of the prompt and
+// of every variadic list, and only when the probe found it.
+describe('headlessExec/a linked job told not to save its session (noPersist)', () => {
+  const CONFIG = '/tmp/termpolis-linked-job1.mcp.json'
+  const job = { id: 'job1', noPersist: true }
+
+  it("puts claude's flag just ahead of -p in both read-only shapes", () => {
+    const plain = execCommand('claude', 'opus', false).args
+    const pIndex = plain.indexOf('-p')
+    expect(execCommand('claude', 'opus', false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job }).args)
+      .toEqual([...plain.slice(0, pIndex), '--no-session-persistence', '-p', PROMPT_TOKEN])
+    const linked = execCommand('claude', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { ...job, claudeMcpConfig: CONFIG } }).args
+    expect(linked.slice(-3)).toEqual(['--no-session-persistence', '-p', PROMPT_TOKEN])
+    // After the variadic --allowedTools list, which a flag ends.
+    expect(linked.indexOf('--allowedTools')).toBeLessThan(linked.indexOf('--no-session-persistence'))
+  })
+
+  it("puts claude's flag after --dangerously-skip-permissions on a write job, ahead of the variadic --mcp-config", () => {
+    expect(execCommand('claude', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { ...job, claudeMcpConfig: CONFIG } }).args)
+      .toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--no-session-persistence', '--strict-mcp-config', '--mcp-config', CONFIG])
+  })
+
+  it("adds codex's --ephemeral with its other options, read-only and write", () => {
+    expect(execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job, cwd: '/work/repo' }).args)
+      .toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...CODEX_MCP_OFF, '--ephemeral', '-C', '/work/repo', PROMPT_TOKEN])
+    expect(execCommand('codex', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job }).args)
+      .toEqual(['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', ...CODEX_MCP_OFF, '--ephemeral', PROMPT_TOKEN])
+  })
+
+  it('gives agy nothing: it has no such flag', () => {
+    for (const write of [false, true]) {
+      expect(execCommand('gemini', undefined, write, 30_000, { linkedJob: job }).args).toEqual(execCommand('gemini', undefined, write, 30_000).args)
+    }
+  })
+
+  it('asks the probe for a linked job and passes the flag on only when it says yes', async () => {
+    for (const [agent, flag] of [['claude', '--no-session-persistence'], ['codex', '--ephemeral']] as const) {
+      const yes = okDeliver('ok')
+      const probe = vi.fn(async () => true)
+      await runHeadless({ task: 't', agent, linkedJob: 'job1' }, { deliver: yes, noPersist: probe, isDirectory: anyDir })
+      expect(probe).toHaveBeenCalledWith(agent)
+      expect(vi.mocked(yes).mock.calls[0][1]).toContain(flag)
+
+      const no = okDeliver('ok')
+      await runHeadless({ task: 't', agent, linkedJob: 'job1' }, { deliver: no, noPersist: async () => false })
+      expect(vi.mocked(no).mock.calls[0][1]).not.toContain(flag)
+    }
+  })
+
+  it('runs the job without the flag when the probe fails', async () => {
+    const deliver = okDeliver('ok')
+    const res = await runHeadless({ task: 't', agent: 'codex', linkedJob: 'job1' }, {
+      deliver,
+      noPersist: async () => { throw new Error('probe broke') },
+    })
+    expect(res.ok).toBe(true)
+    expect(vi.mocked(deliver).mock.calls[0][1]).not.toContain('--ephemeral')
+  })
+
+  it("never asks the probe, or adds a flag, for a run that isn't a linked job: the user's own runs are kept", async () => {
+    const deliver = okDeliver('ok')
+    const probe = vi.fn(async () => true)
+    await runHeadless({ task: 't', agent: 'claude' }, { deliver, noPersist: probe })
+    expect(probe).not.toHaveBeenCalled()
+    expect(vi.mocked(deliver).mock.calls[0][1]).not.toContain('--no-session-persistence')
+  })
+})
