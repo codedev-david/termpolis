@@ -704,6 +704,22 @@ describe('MCP HTTP server', () => {
     }
   })
 
+  it('tools/call: a write to LOCKED memory tells the agent why, in the lock\'s own words', async () => {
+    // swarmMemory's assertWritable message, as it crosses back from the memory host: fixed text,
+    // nothing internal in it, and the agent needs it to stop retrying and tell the user.
+    const locked = "Memory is locked (key-unreadable): this computer couldn't unwrap its memory key. Nothing new is being saved; open the Memory panel to see why."
+    handlers.memoryWrite.mockRejectedValueOnce(new Error(locked))
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'memory_write', arguments: { agentId: 'a1', content: 'fact' } },
+      id: 202,
+    })
+    const body = JSON.parse(res.body)
+    expect(body.result.isError).toBe(true)
+    expect(body.result.content[0].text).toBe(`Error: ${locked}`)
+  })
+
   // --- Additional tool calls ---
 
   it('tools/call close_terminal calls handler', async () => {

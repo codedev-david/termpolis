@@ -545,7 +545,7 @@ The tools come in seven groups. The authoritative list is the one your agent sho
 | Token Headroom | `retrieve_full` | Expand a tool result that Token Headroom shortened |
 | Linked machines | `linked_machines` | Have a Claude, Codex or Gemini agent on another linked machine do a task headlessly and return its final answer: `list` the machines, `run` a task, and fetch the `result` of one still running. See [§30](#30-linked-machines) |
 
-The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. Both files are readable only by your account: mode `600` on macOS and Linux; on Windows an access list that removes what the folder passes down and grants your account full control, so other local users get nothing (SYSTEM and Administrators, who can read every file anyway, are left as they are). An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log (`mcp-audit.log`). A workflow's Skill steps call the same tools in-process and are held to the same limits and written to the same log, marked `"via": "workflow"`.
+The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. Both files are readable only by your account: mode `600` on macOS and Linux; on Windows an access list that removes what the folder passes down and grants your account full control, so other local users get nothing (entries set on the file itself, which can include SYSTEM and Administrators, who can read every file anyway, are left alone). An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log (`mcp-audit.log`). A workflow's Skill steps call the same tools in-process and are held to the same limits and written to the same log, marked `"via": "workflow"`.
 
 ### Connecting your coding agents
 
@@ -714,7 +714,7 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 
 - **Embeddings are local & offline.** A bundled `bge-small-en-v1.5` model (q8, 384-dim, MIT) runs in-process via `onnxruntime-web` (WASM) — no Ollama, no server, and **zero native binaries** in the installer. If the model is absent, search degrades gracefully to keyword matching.
 - **Shared across all three agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`), once you connect them (see [Connecting your coding agents](#connecting-your-coding-agents)). One store backs Claude/Codex/Gemini, so a fact one learns is instantly available to the others.
-- **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with embeddings at startup. When an OS keychain is available, each line is encrypted at rest (AES-256-GCM) with a random per-device key that the keychain protects; without one, the file stays plain text. Aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`, in the same folder) are written under the same key; entries an earlier version archived stay plain text for now. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A hot window of up to 500k chunks is kept in RAM for vector search; the on-disk log retains everything written.
+- **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with embeddings at startup. When an OS keychain is available, each line is encrypted at rest (AES-256-GCM) with a random per-device key that the keychain protects; without one, the file stays plain text. Aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`, in the same folder) are written under the same key; entries an earlier version archived stay plain text for now. The link graph (`memory-graph.jsonl`) and the corrections log (`memory-corrections.jsonl`, which holds the text of any amended memory and why) are not encrypted. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A hot window of up to 500k chunks is kept in RAM for vector search; the on-disk log retains everything written.
 - **The memory key is never overwritten or deleted.** The key lives in `memory-sync.key` in the same folder, wrapped by the OS keychain. Termpolis creates one only when there is none, and never writes over an existing one. If this computer can't open it (the keychain isn't available, a password reset or a moved profile changed what the keychain can unwrap, or the file is damaged), memory comes up **locked** instead of starting over:
   - nothing new is saved, and agents get a clear error rather than a write into a store they can't read;
   - the background indexer, reflection and consolidation pause, and they pick up where they stopped once memory unlocks;
@@ -1011,8 +1011,8 @@ hides the controls it isn't allowed to use.
   encrypted with the OS keychain (DPAPI / Keychain / libsecret) where one is
   available. On Linux without a keyring it is stored unencrypted in the data
   directory, and *Settings → Remote* and *→ Linked machines* both say so. If
-  a keyring turns up later, **Encrypt keys now** in either pane encrypts the
-  keys saved without one (the identity key and the file of links this
+  a keyring turns up later, restart Termpolis: **Encrypt keys now** in either
+  pane then encrypts the keys saved without one (the identity key and the file of links this
   computer joined), and from then on they open only while the keyring does.
   `remote-devices.json` (labels, public keys, room ids, grants) is plain. The
   phone makes a new key pair per desktop and keeps it in the iOS Keychain,
@@ -1095,9 +1095,11 @@ by its user.*
 
 **Job history on this computer** lists every job other computers started here,
 joined to how it ended, and every one this computer refused, with the reason.
-Unlike Activity it is kept across restarts (see *Records* below). Each row shows
-the machine, the agent, **edit** for a job with edit permission, the folder, the
-first line of the prompt and any credential rules screening matched.
+Unlike Activity it is kept across restarts (see *Records* below). A job's row
+shows the machine, the agent, **edit** for a job with edit permission, the
+folder, the first line of the prompt and any credential rules screening matched;
+a refusal's row shows the machine, the reason and how many more came that
+minute.
 
 **Notify me when a linked computer starts a job here** is on by default. Each
 job another computer starts here then shows a system notification naming the
@@ -1330,7 +1332,8 @@ audit log.
   output), arrives under a label saying it is data from another computer, not
   instructions from the user; a flagged one gets the **UNTRUSTED CONTENT**
   banner instead, telling the agent not to follow it.
-- **Credentials don't cross.** Prompts and answers are screened with the AI
+- **Vendor tokens and private keys don't cross.** Prompts and answers are
+  screened with the AI
   Security secret rules on both computers: the prompt before it leaves and when
   it arrives, the answer before it leaves and when it arrives (in case the other
   computer runs a version that doesn't screen). The screen has two tiers:
@@ -1378,8 +1381,9 @@ audit log.
   what the agent was given because it only looked like one. A computer's
   refusals within one minute after the
   first are written as one line with their count, so a computer refused again
-  and again can't push the real history out. Never the prompt or the answer.
-  Past 2 MB the file moves to `linked-jobs.prev.jsonl`, replacing the one there.
+  and again adds at most two lines a minute, not one for every request. Never
+  the prompt or the answer.
+  Past 2 MiB the file moves to `linked-jobs.prev.jsonl`, replacing the one there.
   It is a record, not evidence: a Claude or Gemini job with *edit* permission
   runs as you and could rewrite it like any other file you own.
 

@@ -873,11 +873,13 @@ export async function executeTool(
   }
 }
 
-/** A thrown tool error as it may be repeated: our own argument and unknown-tool messages, and a
- *  generic line for anything else, which can carry internals (a path, a connection string). */
+/** A thrown tool error as it may be repeated: our own argument and unknown-tool messages, LOCKED
+ *  memory's refusal (fixed text that tells the agent to stop and send the user to the Memory panel),
+ *  and a generic line for anything else, which can carry internals (a path, a connection string). */
 function safeToolMessage(e: unknown): string {
   const message = (e as { message?: unknown } | null | undefined)?.message
-  return typeof message === 'string' && (message.includes('Unknown tool') || message.includes('Invalid'))
+  return typeof message === 'string' &&
+    (message.includes('Unknown tool') || message.includes('Invalid') || message.startsWith('Memory is locked ('))
     ? message
     : 'Tool execution failed'
 }
