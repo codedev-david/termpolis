@@ -550,8 +550,9 @@ export function requiredLiteral(pattern: RegExp): string | null {
   for (; i < src.length; i++) {
     const c = src[i]
     if (c === '\\') {
-      // An escaped letter or digit is a class or an anchor (\d, \s, \b, \1), not a character.
-      const next = src[i + 1] ?? ''
+      // An escaped letter or digit is a class or an anchor (\d, \s, \b, \1), not a character. A
+      // source never ends in a lone backslash, so there is always a next one.
+      const next = src[i + 1]
       if (!/^[!-/:-@[-`{-~]$/.test(next)) break
       run += next
       i++

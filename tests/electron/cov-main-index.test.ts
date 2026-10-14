@@ -1580,6 +1580,24 @@ describe('linked machines wiring', () => {
     expect(deps.linkedJobMcp('0123456789ab', 'codex')).toBeNull()
   })
 
+  it("tells a delegated job's CLI not to save its session where it can, and only a delegated job's", async () => {
+    await linked().runHeadless({ task: 'delegated', agent: 'claude', noRemember: true })
+    const [, deps] = M.runHeadless.mock.calls.at(-1)! as any[]
+    expect(typeof deps.noPersist).toBe('function')
+    await mcp().agentExec({ prompt: 'p' })
+    const [, execDeps] = M.runHeadless.mock.calls.at(-1)! as any[]
+    expect(execDeps).not.toHaveProperty('noPersist')
+  })
+
+  it('screens what crosses to another computer with the AI Security rules, and audits what it found', async () => {
+    const { screenText } = await import('../../src/main/aiSecurity')
+    expect(linked().screenSecrets).toBe(screenText)
+    M.appendAudit.mockClear()
+    const entry = { agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: 'answer from "linux": gh_pat x1' }
+    await linked().audit(entry)
+    expect(M.appendAudit).toHaveBeenCalledWith(entry)
+  })
+
   it('tells a linked computer which agents are installed, from the agents:detect probe', async () => {
     // Forced, so the answer does not depend on what this machine has installed.
     process.env.TERMPOLIS_FORCE_MISSING_AGENTS = 'claude,codex,gemini'

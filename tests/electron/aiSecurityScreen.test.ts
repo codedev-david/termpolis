@@ -142,6 +142,7 @@ describe('the rule changes every scan sees', () => {
 
 describe('requiredLiteral', () => {
   it('reads the literal start of a pattern, after a leading word boundary', () => {
+    expect(requiredLiteral(/-----BEGIN PGP-----/g)).toBe('-----BEGIN PGP-----')
     expect(requiredLiteral(/\bglpat-[A-Za-z0-9_-]{20,}\b/g)).toBe('glpat-')
     expect(requiredLiteral(/\bsk-ant-[A-Za-z0-9_-]{20,}\b/g)).toBe('sk-ant-')
     expect(requiredLiteral(/\/\/registry\.npmjs\.org\/:_authToken=[A-Za-z0-9_-]+/g)).toBe('//registry.npmjs.org/:_authToken=')
