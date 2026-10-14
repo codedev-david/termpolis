@@ -16,7 +16,7 @@
  *
  * Centralising it means a new spec inherits both fixes instead of rediscovering them.
  */
-import { test, type ElectronApplication, type Page } from '@playwright/test'
+import { test, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
 import { spawnSync, type ChildProcess } from 'child_process'
 import fs from 'fs'
 import os from 'os'
@@ -227,6 +227,56 @@ export async function quitApp(app: ElectronApplication | null | undefined): Prom
   }
   proc.stdout?.off('data', keep)
   proc.stderr?.off('data', keep)
+}
+
+/** The one failure probeAppVersion retries: the main process's context torn down mid-evaluate. */
+const CONTEXT_DESTROYED = /Execution context was destroyed/
+const PROBE_ATTEMPTS = 3
+
+/**
+ * The version the RUNNING BUILD reports, asked of a short throwaway launch, so a spec that seeds
+ * `session.json` writes a faithful fixture rather than an invented one.
+ *
+ * `app.getVersion()` reads the package.json next to the app path. Launched unpackaged the way
+ * Playwright does it, the app path is `out/main` — which has no package.json — so Electron falls
+ * back to reporting its OWN version, NOT the one in the repo's package.json. Guessing from
+ * package.json therefore writes a session the app throws away, and the spec fails for a reason
+ * that has nothing to do with what it tests.
+ *
+ * Bounded every way it can hang or flake, because it runs in a beforeAll that takes the whole file
+ * down with it:
+ *  - it asks only once the first window is up. Asked straight after launch on a cold Windows
+ *    runner, the main process's context was once destroyed mid-evaluate, and all four tests in
+ *    workflow-schedule-filewatch-trigger were skipped;
+ *  - that error, and only that one, gets up to PROBE_ATTEMPTS launches. Anything else is a real
+ *    failure — a startup crash must still fail the spec — and is thrown at once;
+ *  - every launch ends through quitApp, never an unbounded close().
+ *
+ * Its own user-data dir per launch, so the session it writes on quit can never touch a fixture.
+ * `label` only shapes that temp dir's name.
+ */
+export async function probeAppVersion(label = 'probe'): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const ud = fs.mkdtempSync(path.join(os.tmpdir(), `termpolis-${label}-`))
+    let probe: ElectronApplication | undefined
+    try {
+      probe = await electron.launch({
+        args: [
+          path.resolve('out/main/index.js'),
+          `--user-data-dir=${ud}`,
+          ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
+        ],
+        env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_SMOKE_SKIP_PICKERS: '1' },
+      })
+      await probe.firstWindow()
+      return await probe.evaluate(({ app }) => app.getVersion())
+    } catch (e) {
+      if (attempt >= PROBE_ATTEMPTS || !CONTEXT_DESTROYED.test((e as Error)?.message ?? '')) throw e
+    } finally {
+      await quitApp(probe)
+      try { fs.rmSync(ud, { recursive: true, force: true }) } catch { /* temp dir */ }
+    }
+  }
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))

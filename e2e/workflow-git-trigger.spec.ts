@@ -33,7 +33,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { execFileSync } from 'child_process'
-import { quitApp } from './helpers/launch'
+import { probeAppVersion, quitApp } from './helpers/launch'
 
 let app: ElectronApplication | null = null
 let page: Page | null = null
@@ -64,38 +64,6 @@ function git(...args: string[]): string {
   }).toString()
 }
 
-/**
- * The version the running build reports, asked of the app itself, so the seeded
- * `session.json` is a faithful fixture rather than an invented one.
- *
- * `app.getVersion()` reads the package.json next to the app path. Launched
- * unpackaged the way Playwright does it, the app path is `out/main` — which has
- * no package.json — so Electron falls back to reporting its OWN version
- * (30.5.1), NOT the one in the repo's package.json. Guessing the version from
- * package.json therefore writes a session the app throws away, and the spec
- * fails for a reason that has nothing to do with triggers.
- *
- * So: a short throwaway launch that just asks. Its own user-data dir, so the
- * session it writes on quit can never touch the fixture.
- */
-async function probeAppVersion(): Promise<string> {
-  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitwf-probe-'))
-  const probe = await electron.launch({
-    args: [
-      path.resolve('out/main/index.js'),
-      `--user-data-dir=${ud}`,
-      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
-    ],
-    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_SMOKE_SKIP_PICKERS: '1' },
-  })
-  try {
-    return await probe.evaluate(({ app: a }) => a.getVersion())
-  } finally {
-    try { await probe.close() } catch { /* already gone */ }
-    try { fs.rmSync(ud, { recursive: true, force: true }) } catch { /* temp dir */ }
-  }
-}
-
 test.beforeAll(async () => {
   // A build plus two Electron launches does not fit the config's 120s hook budget
   // on a cold runner.
@@ -103,7 +71,9 @@ test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
-  const appVersion = await probeAppVersion()
+  // The version the running build reports, so the seeded session.json is one the app keeps
+  // (see probeAppVersion for why it cannot be read from package.json).
+  const appVersion = await probeAppVersion('gitwf-probe')
 
   // ── a real repository ─────────────────────────────────────────────────────
   repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-gitwf-')))

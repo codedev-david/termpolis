@@ -31,7 +31,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
-import { quitApp } from './helpers/launch'
+import { probeAppVersion, quitApp } from './helpers/launch'
 
 let app: ElectronApplication | null = null
 let page: Page | null = null
@@ -55,31 +55,6 @@ function runCount(id: string): number {
 function lastRun(id: string): Record<string, unknown> {
   const lines = fs.readFileSync(runsFile(id), 'utf8').trim().split('\n').filter(Boolean)
   return JSON.parse(lines[lines.length - 1])
-}
-
-/**
- * The version the RUNNING BUILD reports. `app.getVersion()` is Electron's own
- * version when Playwright launches `out/main/index.js` (there's no package.json
- * at that path), so this has to be asked of the app rather than read from disk,
- * keeping the seeded `session.json` a faithful fixture. The terminal it seeds is
- * never reopened — the supervisor only arms the project at its cwd.
- */
-async function probeAppVersion(): Promise<string> {
-  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-trigwf-probe-'))
-  const probe = await electron.launch({
-    args: [
-      path.resolve('out/main/index.js'),
-      `--user-data-dir=${ud}`,
-      ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
-    ],
-    env: { ...process.env, NODE_ENV: 'test', TERMPOLIS_TEST_AGENTS: '1', TERMPOLIS_SMOKE_SKIP_PICKERS: '1' },
-  })
-  try {
-    return await probe.evaluate(({ app: a }) => a.getVersion())
-  } finally {
-    try { await probe.close() } catch { /* already gone */ }
-    try { fs.rmSync(ud, { recursive: true, force: true }) } catch { /* temp dir */ }
-  }
 }
 
 /** A control-only workflow. Command and Agent steps drive a pty, and a headless
@@ -110,7 +85,9 @@ test.beforeAll(async () => {
   const { execSync } = await import('child_process')
   execSync('npx electron-vite build', { cwd: path.resolve('.'), stdio: 'pipe' })
 
-  const appVersion = await probeAppVersion()
+  // The version the running build reports (see probeAppVersion). The terminal the session seeds
+  // is never reopened — the supervisor only arms the project at its cwd.
+  const appVersion = await probeAppVersion('trigwf-probe')
 
   // ── a real project directory ──────────────────────────────────────────────
   // realpath because macOS hands out /var/... symlinks for tmpdir and the
