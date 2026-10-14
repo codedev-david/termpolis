@@ -1938,7 +1938,7 @@ describe('keys that cannot be opened', () => {
     expect(linkedInitForRemote().links).toEqual([])
     expect(h.bridge.refresh).toHaveBeenCalled()
     expect(res.data).toMatchObject({ keyStorage: 'keychain', machines: [{ ref: devRef(P), confirmed: false }] })
-    expect(res.data.keyLockLinksOnly).toBeUndefined()
+    expect(res.data!.keyLockLinksOnly).toBeUndefined()
   })
 
   it('Start over with only the links file locked writes over a file that will not move', async () => {
