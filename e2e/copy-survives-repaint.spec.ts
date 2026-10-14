@@ -84,31 +84,72 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
     await expect(term).toBeVisible({ timeout: 15000 })
     const box = (await term.boundingBox())!
 
-    // Behave like Claude Code: mouse tracking on, clear + repaint IN PLACE, forever. The frame is
-    // deliberately short enough to fit the viewport (marker + 25 lines) so the marker stays on
-    // row 0 and never scrolls — while the rate of rewriting still buries the selection.
+    // The app's own read-only hook. It reads xterm's buffer, scrollback included, so it works
+    // whichever renderer paints.
+    const screenText = async (): Promise<string> =>
+      await page.evaluate(() => {
+        const read = (window as unknown as { __termpolis_terminal_text?: (id?: string) => string })
+          .__termpolis_terminal_text
+        return read ? read() : ''
+      })
+
+    // What the drag was aimed at, for a failure message: where the terminal sits, what its last
+    // rows hold, and how big the window and the desktop are. GitHub's Windows runners have a
+    // 1024x768 desktop, which clamps the window to a 98-column pane — that is what once wrapped
+    // every 100-character line and scrolled the marker off row 0.
+    const diagnostics = async (): Promise<string> => {
+      const sizes = await app.evaluate(({ BrowserWindow, screen }) => ({
+        window: BrowserWindow.getAllWindows()[0]?.getContentBounds(),
+        workArea: screen.getPrimaryDisplay().workAreaSize,
+      }))
+      return JSON.stringify({ xtermBox: box, ...sizes, screenTail: (await screenText()).split('\n').slice(-8) }, null, 2)
+    }
+
+    // Behave like Claude Code: mouse tracking on, clear + repaint IN PLACE, forever. Each frame is
+    // sized from the terminal's LIVE size, re-read every frame: lines two columns short of the
+    // width so none wraps, and at most rows-3 of them (marker + lines + the cursor's line, with a
+    // row to spare) so the frame never scrolls. That keeps the marker on row 0 at any window size,
+    // while the rate of rewriting still buries the selection.
     await term.click()
     // The shell is powershell on Windows and bash everywhere else (see session.json above) — this
     // used to type PowerShell unconditionally, so on Linux CI `Write-Host` was just an unknown
     // command, no repaint loop ever started, and the drag below selected the bash prompt instead of
-    // the marker. Same frame, written twice.
+    // the marker. Same frame, written twice. Both shells report the pty's size: PowerShell through
+    // $Host.UI.RawUI.WindowSize, interactive bash through COLUMNS/LINES, which checkwinsize
+    // refreshes after every external command (the loop's own `sleep`).
     if (process.platform === 'win32') {
       const esc = '$([char]27)'
       await page.keyboard.type(
         `Write-Host -NoNewline "${esc}[?1002h${esc}[?1006h"; ` +
-        `while($true){ Write-Host -NoNewline "${esc}[2J${esc}[H"; Write-Host "${MARKER} keep me"; ` +
-        `1..25 | %{ Write-Host ("x" * 100) }; Start-Sleep -Milliseconds 25 }`,
+        `while($true){ $s=$Host.UI.RawUI.WindowSize; $w=[Math]::Max(20,$s.Width-2); ` +
+        `$n=[Math]::Max(1,[Math]::Min(25,$s.Height-3)); ` +
+        `Write-Host -NoNewline "${esc}[2J${esc}[H"; Write-Host "${MARKER} keep me"; ` +
+        `1..$n | %{ Write-Host ("x" * $w) }; Start-Sleep -Milliseconds 25 }`,
       )
     } else {
       const esc = '\\033'
       await page.keyboard.type(
         `printf '${esc}[?1002h${esc}[?1006h'; ` +
-        `while :; do printf '${esc}[2J${esc}[H'; echo "${MARKER} keep me"; ` +
-        `for i in $(seq 25); do printf 'x%.0s' $(seq 100); echo; done; sleep 0.025; done`,
+        `while :; do w=$(( \${COLUMNS:-80} - 2 )); n=$(( \${LINES:-24} - 3 )); ` +
+        `[ $n -gt 25 ] && n=25; [ $n -lt 1 ] && n=1; ` +
+        `printf '${esc}[2J${esc}[H'; echo "${MARKER} keep me"; ` +
+        `for i in $(seq $n); do printf 'x%.0s' $(seq $w); echo; done; sleep 0.025; done`,
       )
     }
     await page.keyboard.press('Enter')
-    await page.waitForTimeout(2500)
+
+    // Premise: the loop is really painting. Only its OUTPUT can satisfy this — the marker alone on
+    // a line. The command just typed contains the marker too, but never as a whole line, so this
+    // cannot pass on the echo of the typing (a drag then would select the prompt).
+    const frameMarker = new RegExp(`^${MARKER} keep me\\s*$`, 'm')
+    try {
+      await expect.poll(async () => frameMarker.test(await screenText()), { timeout: 20000 }).toBe(true)
+    } catch (e) {
+      throw new Error(`${(e as Error).message}\n\nthe repaint loop never drew a frame:\n${await diagnostics()}`)
+    }
+    // Then let several frames paint before the button goes down. A left mousedown holds output
+    // back from xterm while the selection is made, so row 0 keeps whatever it held at that moment.
+    await page.waitForTimeout(500)
 
     const y = box.y + 12 // row 0 — the marker line of every repainted frame
     const x0 = box.x + 4
@@ -128,7 +169,11 @@ test.describe.serial('reserved Copy hotkey keeps working in a repainting mouse-t
     await page.keyboard.press('Control+Shift+C')
     await page.waitForTimeout(400)
     const viaKeyboard = await app.evaluate(async ({ clipboard }) => clipboard.readText())
-    expect(viaKeyboard, 'the drag did not land on the marker row — fix the test, not the app').toContain(MARKER)
+    expect(
+      viaKeyboard,
+      'the drag did not land on the marker row — fix the test, not the app' +
+        (viaKeyboard.includes(MARKER) ? '' : `\n${await diagnostics()}`),
+    ).toContain(MARKER)
 
     // --- the real scenario: select, let the repaint bury it, THEN right-click ---
     await app.evaluate(async ({ clipboard }) => clipboard.writeText('__NOTHING__'))
