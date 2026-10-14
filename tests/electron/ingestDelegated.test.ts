@@ -95,6 +95,59 @@ describe('delegated sessions', () => {
     expect(delegated).toEqual([old.map((c) => c.hash)])
   })
 
+  it("skips the transcript of a subagent a delegated session started, judged by that session's own file", async () => {
+    // Claude Code keeps a subagent's transcript beside its session's: <sid>/subagents/agent-*.jsonl.
+    const project = path.join('projects', '-home-me-repos-app')
+    const parent = path.join(project, 's-job.jsonl')
+    const sub = path.join(project, 's-job', 'subagents', 'agent-a1.jsonl')
+    const subContent = claudeSession('s-job', 'Find every caller of parse() and list them.', 'Three callers.')
+    const files = {
+      [parent]: { source: 'claude' as const, content: claudeSession('s-job', `${HEADER}\n\nReview the parser.`, 'Reviewed.') },
+      [sub]: { source: 'claude' as const, content: subContent },
+    }
+    const reads: string[] = []
+    const { stats, written, delegated } = await ingest(files, {
+      readFile: async (f) => {
+        reads.push(f)
+        return files[f].content
+      },
+    })
+    expect(written).toEqual([])
+    expect(stats.delegatedSkipped).toBe(2)
+    // The subagent's chunks are reported as well, so the one-time pass finds what 1.52 stored of them.
+    expect(delegated).toContainEqual(oldChunks('claude', subContent).map((c) => c.hash))
+    // The session's file is read once for itself and once for its subagent, in either order.
+    expect(reads.filter((f) => f === parent)).toHaveLength(2)
+  })
+
+  it("keeps a subagent of the user's own session, and one whose session can't be read", async () => {
+    const project = path.join('projects', '-home-me-repos-app')
+    const sub = (session: string, name: string): string => path.join(project, session, 'subagents', `agent-${name}.jsonl`)
+    const task = (what: string): string => claudeSession('x', what, 'Done.')
+    const all = {
+      [path.join(project, 's-own.jsonl')]: { source: 'claude' as const, content: claudeSession('s-own', 'Fix the lexer.', 'Fixed.') },
+      [sub('s-own', 'b2')]: { source: 'claude' as const, content: task('Find every caller of parse().') },
+      // Two subagents of one session: its file is read once for both.
+      [sub('s-own', 'b3')]: { source: 'claude' as const, content: task('List the lexer tests.') },
+      // A session whose file is gone: there is no telling, so it is kept as before.
+      [sub('s-gone', 'c3')]: { source: 'claude' as const, content: task('Explain the grammar.') },
+    }
+    const reads: string[] = []
+    const { stats, written } = await ingest(all, {
+      readFile: async (f) => {
+        reads.push(f)
+        if (!(f in all)) throw new Error('ENOENT')
+        return all[f].content
+      },
+    })
+    expect(stats.delegatedSkipped).toBeUndefined()
+    for (const what of ['Find every caller of parse().', 'List the lexer tests.', 'Explain the grammar.']) {
+      expect(written.some((c) => c.text.includes(what))).toBe(true)
+    }
+    expect(reads.filter((f) => f === path.join(project, 's-own.jsonl'))).toHaveLength(2)
+    expect(reads.filter((f) => f === path.join(project, 's-gone.jsonl'))).toHaveLength(1)
+  })
+
   it('still skips a delegated session when nothing listens for it, or the listener throws', async () => {
     const files = { 'a.jsonl': { source: 'claude' as const, content: claudeSession('s-a', `${HEADER}\n\nGo.`, 'Done.') } }
     expect((await ingest(files, { onDelegated: undefined })).stats.delegatedSkipped).toBe(1)

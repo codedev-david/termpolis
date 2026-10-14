@@ -1359,7 +1359,7 @@ audit log.
   told not to save the session (`--no-session-persistence`, `codex exec
   --ephemeral`) when the installed version can be, and the memory indexer and
   the learning reflex skip a session another computer started even if it was
-  saved. What versions 1.50 to 1.52 had already stored from such jobs is demoted
+  saved, and the indexer skips the transcripts of the subagents it ran too. What versions 1.50 to 1.52 had already stored from such jobs is demoted
   once, whole sessions at a time, the first time the indexer finishes a full
   pass after the update (a demotion can be revoked with `memory_correct`).
   Gemini jobs run through `agy`, whose own conversation store Termpolis doesn't

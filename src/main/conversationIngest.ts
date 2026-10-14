@@ -15,8 +15,8 @@
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
-import { ownDialogue } from '../shared/headlessPrompt'
+import { basename, dirname, join } from 'path'
+import { isDelegatedSession, ownDialogue } from '../shared/headlessPrompt'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini'
 
@@ -392,6 +392,14 @@ export function parseBySource(source: ConversationSource, content: string, fileP
   }
 }
 
+/** The session file a Claude Code subagent's transcript belongs to: Claude keeps one at
+ *  `<sid>/subagents/agent-*.jsonl`, beside its session's `<sid>.jsonl`. Null for any other file. */
+export function parentSessionFile(source: ConversationSource, filePath: string): string | null {
+  if (source !== 'claude') return null
+  const dir = dirname(filePath)
+  return basename(dir) === 'subagents' ? `${dirname(dir)}.jsonl` : null
+}
+
 // Read every transcript, chunk it, and write new (unseen) chunks. Idempotent:
 // chunks whose content hash is already stored are skipped, so re-running over a
 // growing set of transcripts only embeds genuinely new content. Tolerant of
@@ -403,6 +411,17 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
   const maxChunks = deps.maxChunks ?? Infinity
   const stats: IngestStats = { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false }
   let sinceYield = 0
+  // Per session file, whether another computer started it: asked once a pass however many
+  // subagents it ran, and false for one that can't be read -- there is no telling then.
+  const delegatedParents = new Map<string, Promise<boolean>>()
+  const parentDelegated = (parent: string): Promise<boolean> => {
+    let known = delegatedParents.get(parent)
+    if (!known) {
+      known = deps.readFile(parent).then((text) => isDelegatedSession(parseClaudeTranscript(text)), () => false)
+      delegatedParents.set(parent, known)
+    }
+    return known
+  }
   // Skipped-but-cwd-bearing chunks → project backfill for legacy entries.
   const pendingPatches: Array<{ hash: string; project: string }> = []
   const flushPatches = (): void => {
@@ -432,8 +451,10 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
       const parsed = parseBySource(source, content, filePath)
       // A session another computer started here over Linked machines is that computer's job, not
       // this one's memory, and the primer a headless run opened with is memory already. Both are
-      // left out (shared/headlessPrompt).
-      const turns = ownDialogue(parsed)
+      // left out (shared/headlessPrompt). A subagent's transcript opens with the task its session
+      // gave it, not with the session's prompt: it is another computer's work when its session is.
+      const parent = parentSessionFile(source, filePath)
+      const turns = parent !== null && (await parentDelegated(parent)) ? null : ownDialogue(parsed)
       if (!turns) {
         stats.delegatedSkipped = (stats.delegatedSkipped ?? 0) + 1
         if (deps.onDelegated) {
