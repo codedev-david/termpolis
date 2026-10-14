@@ -189,7 +189,7 @@ describe('every rule in linear time on text another computer wrote', () => {
   // minutes (a second on 3,000 of `pwd.`), contextual_secret a third of a second, and jwt and
   // basic_auth_url a tenth each. Every rule now takes a few milliseconds at most.
   const RUNS = [
-    'pwd.', 'PWD-', 'pwdpwd.', `${'pwd.'.repeat(24)} `, '"pwd.', 'apikey.\n', 'eyJ-', 'a.', 'h.', 'token=', 'token ',
+    'pwd.', 'PWD-', 'pwdpwd.', `${'pwd.'.repeat(24)} `, '"pwd.', 'apikey.\n', 'apikey', 'eyJ-', 'a.', 'h.', 'token=', 'token ',
     'secret:', 'x:', 'https://a:', '1', 'a', '-', '=', ' ', '\\n', `${'A'.repeat(39)}\\n`,
     '-----BEGIN PRIVATE KEY-----\n', '-----BEGIN PRIVATE KEY-----\\n', 'DefaultEndpointsProtocol=https;AccountName=x;',
   ]
