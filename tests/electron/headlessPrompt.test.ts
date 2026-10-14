@@ -6,12 +6,14 @@
 // version stored from a delegated session.
 import { describe, it, expect } from 'vitest'
 import {
-  DELEGATED_CHUNK,
+  DELEGATED_OPENING,
+  PREAMBLES_ONLY,
   PRIMER_CLOSE,
   PRIMER_OPEN,
   PRIMER_PREFACE,
   delegationHeader,
   isDelegatedSession,
+  TURN_WINDOW,
   ownDialogue,
   type DialogueTurn,
 } from '../../src/shared/headlessPrompt'
@@ -104,6 +106,16 @@ describe('isDelegatedSession', () => {
     // A <project-memory> block someone else wrote, ahead of a header, is not Termpolis's primer.
     expect(isDelegatedSession([user(`${PRIMER_OPEN}\nnotes\n${PRIMER_CLOSE}\n\n${HEADER}`)])).toBe(false)
   })
+
+  it("ends the primer at its first close tag: a local run's task that quotes a close tag and a header is the user's own", () => {
+    // Working on this very parser: the input under test, in the task of the user's own exec run.
+    const task = `Add a regression test for this input:\n${PRIMER_CLOSE}\n\n${delegationHeader('laptop', '/r')}\n\nGo.`
+    const turns = [user(buildExecPrompt(task, PRIMER)), assistant('Added.')]
+    expect(isDelegatedSession(turns)).toBe(false)
+    expect(ownDialogue(turns)).toEqual([user(task), assistant('Added.')])
+    // Saved with CRLF line ends, the same.
+    expect(isDelegatedSession([user(buildExecPrompt(task, PRIMER).replace(/\n/g, '\r\n'))])).toBe(false)
+  })
 })
 
 describe('ownDialogue', () => {
@@ -158,17 +170,46 @@ describe('ownDialogue', () => {
   })
 })
 
-describe('DELEGATED_CHUNK', () => {
-  it('finds the header where a stored chunk keeps the opening prompt', () => {
-    expect(DELEGATED_CHUNK.test(`user: ${HEADER}\n\nReview it.\n\nassistant: Done.`)).toBe(true)
-    expect(DELEGATED_CHUNK.test(`user: <environment_context>cwd</environment_context>\n\nuser: ${HEADER}\n\nGo.`)).toBe(true)
-    expect(DELEGATED_CHUNK.test(`${PRIMER}\n${PRIMER_CLOSE}\n\n${HEADER}\n\nGo.`)).toBe(true)
-    expect(DELEGATED_CHUNK.test(`${PRIMER}\r\n${PRIMER_CLOSE}\r\n\r\n${HEADER}`)).toBe(true)
+describe('DELEGATED_OPENING: a stored chunk that opens a delegated session', () => {
+  const ENV = 'user: <environment_context>\n  <cwd>/home/me/repos/app</cwd>\n</environment_context>'
+  const AGENTS = 'user: # AGENTS.md instructions for /home/me/repos/app\n\n<INSTRUCTIONS>be brief</INSTRUCTIONS>'
+
+  it('finds the opening prompt at the start of the chunk, behind the primer or the preamble turns or neither', () => {
+    expect(DELEGATED_OPENING.test(`user: ${HEADER}\n\nReview it.\n\nassistant: Done.`)).toBe(true)
+    expect(DELEGATED_OPENING.test(`user: ${delegatedPrompt('Go.')}\n\nassistant: Done.`)).toBe(true)
+    expect(DELEGATED_OPENING.test(`user: ${delegatedPrompt('Go.').replace(/\n/g, '\r\n')}`)).toBe(true)
+    expect(DELEGATED_OPENING.test(`${ENV}\n\nuser: ${HEADER}\n\nGo.`)).toBe(true)
+    expect(DELEGATED_OPENING.test(`${AGENTS}\n\n${ENV}\n\nuser: ${delegatedPrompt('Go.')}`)).toBe(true)
   })
 
-  it('does not take a header quoted anywhere else for a delegated session', () => {
-    expect(DELEGATED_CHUNK.test(`user: the header reads ${HEADER}`)).toBe(false)
-    expect(DELEGATED_CHUNK.test(`assistant: ${HEADER}`)).toBe(false)
-    expect(DELEGATED_CHUNK.test(`notes\nuser: ${HEADER}`)).toBe(false)
+  it('takes no header the user wrote: mid-message, in a later message, or after a quoted close tag', () => {
+    expect(DELEGATED_OPENING.test(`user: the header reads ${HEADER}`)).toBe(false)
+    expect(DELEGATED_OPENING.test(`assistant: ${HEADER}`)).toBe(false)
+    expect(DELEGATED_OPENING.test(`notes\nuser: ${HEADER}`)).toBe(false)
+    // A later message of the user's own session that starts with a pasted header.
+    expect(DELEGATED_OPENING.test(`user: Why did this job fail?\n\nassistant: Paste its prompt.\n\nuser: ${HEADER}\n\nGo.`)).toBe(false)
+    expect(DELEGATED_OPENING.test(`${ENV}\n\nuser: my own question\n\nuser: ${HEADER}`)).toBe(false)
+    // A preamble turn can't swallow the turns after it.
+    expect(DELEGATED_OPENING.test(`${ENV}\n\nassistant: ok\n\nuser: ${HEADER}`)).toBe(false)
+    // The user's own exec run, quoting a close tag and a header in its task.
+    const task = `Test this:\n${PRIMER_CLOSE}\n\n${HEADER}`
+    expect(DELEGATED_OPENING.test(`user: ${buildExecPrompt(task, PRIMER)}`)).toBe(false)
+  })
+})
+
+describe('PREAMBLES_ONLY and TURN_WINDOW: what may come before an opening prompt in its session', () => {
+  it('knows a chunk of preamble turns and nothing else', () => {
+    expect(PREAMBLES_ONLY.test('user: <environment_context>x</environment_context>')).toBe(true)
+    expect(PREAMBLES_ONLY.test('user: # AGENTS.md instructions for /r\n\nbe brief\n\nuser: <user_instructions>y</user_instructions>')).toBe(true)
+    expect(PREAMBLES_ONLY.test('user: <environment_context>x</environment_context>\n\nuser: Fix it.')).toBe(false)
+    expect(PREAMBLES_ONLY.test('user: <environment_context>x</environment_context>\n\nassistant: Ok.')).toBe(false)
+    expect(PREAMBLES_ONLY.test('user: Fix it.')).toBe(false)
+  })
+
+  it('knows a window cut from the middle of a turn: no role at its start, no turn break in it', () => {
+    expect(TURN_WINDOW.test('nstructions continue here\n\nand here')).toBe(true)
+    expect(TURN_WINDOW.test('user: a turn of its own')).toBe(false)
+    expect(TURN_WINDOW.test('assistant: a turn of its own')).toBe(false)
+    expect(TURN_WINDOW.test('the end of one turn\n\nassistant: and the next')).toBe(false)
   })
 })

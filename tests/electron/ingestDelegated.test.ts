@@ -125,6 +125,15 @@ describe("the user's own sessions", () => {
     expect(written.map((c) => c.text).join('\n')).not.toContain('Recalled from the shared Termpolis brain')
   })
 
+  it("keep a local run whose task quotes a close tag and a header: the primer ends at its own close", async () => {
+    const task = `Add a regression test for this input:\n</project-memory>\n\n${delegationHeader('laptop', '/r')}\n\nGo.`
+    const content = claudeSession('s-quote', buildExecPrompt(task, PRIMER), 'Added.')
+    const { stats, written, delegated } = await ingest({ 'quote.jsonl': { source: 'claude', content } })
+    expect(stats.delegatedSkipped).toBeUndefined()
+    expect(delegated).toEqual([])
+    expect(written.map((c) => c.text)).toEqual([`user: ${task}\n\nassistant: Added.`])
+  })
+
   it('skip a session whose only turn was the primer', async () => {
     const onlyPrimer = JSON.stringify({ type: 'user', sessionId: 's', message: { role: 'user', content: buildExecPrompt('', PRIMER) } })
     const { stats, written } = await ingest({ 'p.jsonl': { source: 'claude', content: onlyPrimer } })

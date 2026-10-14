@@ -141,17 +141,88 @@ describe('what it reads', () => {
 
 describe('what it demotes', () => {
   it('a whole delegated session, user and assistant chunks, both ways from the header', async () => {
+    // Codex's preamble turns ahead of the prompt: an AGENTS.md long enough to be cut into windows,
+    // and its environment, each a chunk the prompt's own comes after.
     const job = session('job', [
-      { role: 'user', text: 'x'.repeat(1_990) },
+      { role: 'user', text: `# AGENTS.md instructions for /home/me/repos/app\n\n${'x'.repeat(4_500)}` },
+      { role: 'user', text: `<environment_context>${'e'.repeat(1_900)}</environment_context>` },
       { role: 'user', text: `${HEADER}\n\nReview the parser.` },
       { role: 'assistant', text: 'y'.repeat(1_990) },
       { role: 'assistant', text: 'Reviewed: two bugs.' },
-    ], T0)
+    ], T0, { agentId: 'codex-history' })
     const own = session('own', [{ role: 'user', text: 'Fix the lexer.' }, { role: 'assistant', text: 'Fixed.' }], T0 + DAY)
     const h = run([...job.chunks, ...own.chunks], [...job.edges, ...own.edges])
-    expect(job.chunks.length).toBeGreaterThanOrEqual(3)
+    expect(job.chunks.length).toBeGreaterThanOrEqual(6)
     expect(await h.result).toEqual({ checked: job.chunks.length + own.chunks.length, demoted: job.chunks.length })
     expect(h.demoted.sort()).toEqual(ids(job.chunks).sort())
+  })
+
+  it("not the user's own session, where a later message starts with a pasted header, wherever it falls", async () => {
+    // Debugging a job: its prompt pasted at the start of a later message, in the chunk with the
+    // user's own first turn...
+    const inline = session('own-1', [
+      { role: 'user', text: 'Why did the linked job fail?' },
+      { role: 'assistant', text: 'Paste the prompt it was sent.' },
+      { role: 'user', text: `${HEADER}\n\nReview the parser.` },
+      { role: 'assistant', text: 'The folder does not exist there.' },
+    ], T0)
+    expect(inline.chunks).toHaveLength(1)
+    // ...or starting a chunk of its own, after the user's long turns...
+    const own = session('own-2', [
+      { role: 'user', text: `Why did it fail? ${'w'.repeat(1_980)}` },
+      { role: 'assistant', text: 'a'.repeat(1_990) },
+      { role: 'user', text: `${HEADER}\n\nReview the parser.` },
+      { role: 'assistant', text: 'Checked.' },
+    ], T0 + 10)
+    expect(own.chunks.some((c) => c.content.startsWith(`user: ${HEADER}`))).toBe(true)
+    // ...or after a window of the user's own long message.
+    const long = session('own-3', [
+      { role: 'user', text: `Here is the log:\n${'l'.repeat(3_500)}` },
+      { role: 'user', text: `${HEADER}\n\nGo.` },
+    ], T0 + 20)
+    const h = run([...inline.chunks, ...own.chunks, ...long.chunks], [...inline.edges, ...own.edges, ...long.edges])
+    expect((await h.result).demoted).toBe(0)
+  })
+
+  it('not a chunk that only looks like an opening: after a window whose start is gone, or where the backbone forks', async () => {
+    const opening: StoredChunk = { id: 'p', ts: T0 + 2, agentId: 'codex-history', content: `user: ${HEADER}\n\nGo.`, project: 'app' }
+    // A window of some long turn, its first window never stored: it can't be told from the user's own.
+    const window: StoredChunk = { id: 'w', ts: T0 + 1, agentId: 'codex-history', content: 'ns continue', project: 'app' }
+    const orphan = run([window, opening], [{ from: 'w', to: 'p', relation: 'follows' }])
+    expect((await orphan.result).demoted).toBe(0)
+    // Two chunks before it, which no ingest pass writes.
+    const env = (id: string): StoredChunk => ({ id, ts: T0, agentId: 'codex-history', content: 'user: <environment_context>x</environment_context>', project: 'app' })
+    const forked = run([env('e1'), env('e2'), opening], [
+      { from: 'e1', to: 'p', relation: 'follows' },
+      { from: 'e2', to: 'p', relation: 'follows' },
+    ])
+    expect((await forked.result).demoted).toBe(0)
+    // More chunks before it than any run of preambles takes.
+    const lead = Array.from({ length: 33 }, (_, i): StoredChunk => (
+      i === 0 ? env('l0') : { id: `l${i}`, ts: T0 + i / 100, agentId: 'codex-history', content: 'more of it', project: 'app' }
+    ))
+    const edges = [...lead.slice(1), opening].map((c, i) => ({ from: lead[i].id, to: c.id, relation: 'follows' }))
+    const far = run([...lead, opening], edges)
+    expect((await far.result).demoted).toBe(0)
+  })
+
+  it('not an opening read on past a fork, or past where a whole opening turn would have ended', async () => {
+    // A long opening's first window, whose header would come in the next: but the backbone forks.
+    const head: StoredChunk = { id: 'h', ts: T0, agentId: 'claude-history', content: `user: [${'z'.repeat(1_990)}`, project: 'app' }
+    const a: StoredChunk = { id: 'a', ts: T0 + 1, agentId: 'claude-history', content: HEADER.slice(1), project: 'app' }
+    const b: StoredChunk = { ...a, id: 'b', ts: T0 + 2 }
+    const forked = run([head, a, b], [{ from: 'h', to: 'a', relation: 'follows' }, { from: 'h', to: 'b', relation: 'follows' }])
+    expect((await forked.result).demoted).toBe(0)
+    // Windows that never reach a header within the length a primer and a header take.
+    const windows = Array.from({ length: 8 }, (_, i): StoredChunk => ({
+      id: `n${i}`,
+      ts: T0 + 10 + i,
+      agentId: 'claude-history',
+      content: i === 0 ? `user: [${'n'.repeat(1_990)}` : i === 7 ? `]${HEADER}` : 'n'.repeat(2_000),
+      project: 'app',
+    }))
+    const long = run(windows, windows.slice(1).map((c, i) => ({ from: windows[i].id, to: c.id, relation: 'follows' })))
+    expect((await long.result).demoted).toBe(0)
   })
 
   it('every window of a 4,500-character primer, and the answer after it', async () => {

@@ -14,14 +14,18 @@
 // travels with it. Finding the whole session takes three steps, because a stored chunk does not
 // carry its session id:
 //   1. Seeds. A chunk whose hash is one the indexer just computed for a delegated session still
-//      on disk; or a chunk that holds the delegation header where a session's opening prompt puts
-//      it, read together with the chunk after it, since a long opening turn is cut into 2,000
-//      character windows and the header can fall across a cut.
+//      on disk. Or, for one no longer on disk, a chunk that opens its session with a delegated
+//      prompt, as the indexer's own rule reads a session: from the chunk's start, only the
+//      preamble turns a CLI writes and then the prompt with the header (read on into the chunks
+//      after it, since a long opening turn is cut into 2,000-character windows and the header can
+//      fall into a later one or across a cut), with nothing before the chunk in its session but
+//      chunks of those preamble turns. A header the user pasted into a later message of their own
+//      session is not a seed, wherever it falls.
 //   2. The rest of each session: the indexer links a session's consecutive chunks with `follows`
 //      edges, walked both ways, within one agent's history and one project.
 //   3. Only chunks from when Linked machines existed: nothing older can be a delegated session.
 
-import { DELEGATED_CHUNK } from '../shared/headlessPrompt'
+import { DELEGATED_OPENING, PREAMBLES_ONLY, TURN_WINDOW } from '../shared/headlessPrompt'
 
 export interface StoredChunk {
   id: string
@@ -78,6 +82,15 @@ export interface LinkedRecheckResult {
 const PAGE = 500
 /** Ids per edge lookup, so no one message to the memory host is huge. */
 const EDGE_BATCH = 1_000
+/** How far an opening turn is read on into the windows after its first: a primer of up to 6,000
+ *  characters (headlessExec's EXEC_MAX_PRIMER_CHARS) and a header naming a folder of up to 4,096. */
+const MAX_OPENING_CHARS = 12_000
+/** How many chunks may come before an opening prompt in its session: the preamble turns, or the
+ *  windows of one long enough to be cut (an AGENTS.md of up to ~60,000 characters). */
+const MAX_LEAD_CHUNKS = 32
+/** A chunk whose first turn may go on past it: one cut into windows that opens with the primer
+ *  or with what may be the header. Only these are read on. */
+const LONG_OPENING = /^user: \s*(?:<project-memory>|\[)/
 const YIELD_EVERY_DEMOTIONS = 25
 const YIELD_EVERY_CHUNKS = 500
 const macrotask = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve))
@@ -130,13 +143,52 @@ export async function recheckLinkedHistory(deps: LinkedRecheckDeps): Promise<Lin
     }
   }
 
+  /** The chunks along `edges` from `chunk` that are in its session. */
+  const linked = (edges: Map<string, string[]>, chunk: StoredChunk): StoredChunk[] => {
+    const scope = scopeOf(chunk)
+    return (edges.get(chunk.id) ?? []).map((id) => byId.get(id) as StoredChunk).filter((c) => scopeOf(c) === scope)
+  }
+
+  /** Whether `chunk` opens with a delegated prompt, read on into the windows of a long one: they
+   *  are cut from the turn end to end, so together they are the turn. Ingest links each chunk to
+   *  one next one; past a fork nothing is read. */
+  const opensWithDelegation = (chunk: StoredChunk): boolean => {
+    let text = chunk.content
+    if (DELEGATED_OPENING.test(text)) return true
+    if (!LONG_OPENING.test(text)) return false
+    for (let next = linked(nextOf, chunk); next.length === 1 && text.length < MAX_OPENING_CHARS; next = linked(nextOf, next[0])) {
+      text += next[0].content
+      if (DELEGATED_OPENING.test(text)) return true
+    }
+    return false
+  }
+
+  /** Whether nothing comes before `chunk` in its session but preamble turns, walking the backbone
+   *  back: whole chunks of them, and windows of one too long for a chunk, back to the window it
+   *  starts in. A chunk with nothing before it opens its session as far as the store can tell (an
+   *  ingest pass links nothing back to what an earlier one wrote); a window whose start is missing
+   *  can't be told from a window of the user's own long message, so it opens nothing, and neither
+   *  does a fork, which ingest never writes. */
+  const opensSession = (chunk: StoredChunk): boolean => {
+    let windowed = false
+    let at = chunk
+    for (let hops = 0; hops < MAX_LEAD_CHUNKS; hops++) {
+      const before = linked(prevOf, at)
+      if (before.length === 0) return !windowed
+      if (before.length > 1) return false
+      at = before[0]
+      windowed = TURN_WINDOW.test(at.content)
+      if (!windowed && !PREAMBLES_ONLY.test(at.content)) return false
+    }
+    return false
+  }
+
   const seeds: string[] = []
   let matched = 0
   for (const chunk of byId.values()) {
     const seed =
       (chunk.hash !== undefined && deps.delegatedHashes?.has(chunk.hash) === true) ||
-      DELEGATED_CHUNK.test(chunk.content) ||
-      (nextOf.get(chunk.id) ?? []).some((next) => DELEGATED_CHUNK.test(chunk.content + (byId.get(next) as StoredChunk).content))
+      (opensWithDelegation(chunk) && opensSession(chunk))
     if (seed) seeds.push(chunk.id)
     if (++matched % YIELD_EVERY_CHUNKS === 0) await pause()
   }

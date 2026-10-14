@@ -38,12 +38,13 @@ const NL = String.raw`\r?\n`
  *  Both are lazy, so each ends at the first place the rest of the header fits. */
 const HEADER = String.raw`\[Delegated by "[^\r\n]{1,80}?" over Termpolis Linked machines\. Working folder: [\s\S]{1,4096}?\. Your final message is returned to the agent that asked\.\]`
 
-/** buildExecPrompt's block, up to its close tag. Lazy: it ends at the first `</project-memory>`
- *  line that what follows allows. A recalled memory can't end it early, since each one is a single
- *  line behind "- [" (contextPrimer's renderLine). */
+/** buildExecPrompt's block, up to its close tag: the first line that is `</project-memory>`, and
+ *  never past it, so text after the block (a close tag and a header the task quotes) can't stretch
+ *  it. A recalled memory can't hold such a line, since each is a single line behind "- ["
+ *  (contextPrimer's renderLine). */
 const PRIMER_BLOCK =
   `${escape(PRIMER_OPEN)}${NL}${escape(PRIMER_PREFACE[0])}${NL}${escape(PRIMER_PREFACE[1])}${NL}` +
-  `[\\s\\S]*?${NL}${escape(PRIMER_CLOSE)}`
+  `(?:(?!${NL}${escape(PRIMER_CLOSE)})[\\s\\S])*${NL}${escape(PRIMER_CLOSE)}`
 
 /** A delegated job's opening prompt: the header first, or straight after the primer block and the
  *  blank line under it. Anchored at the start of the turn, so nothing the asking computer wrote
@@ -54,14 +55,32 @@ const DELEGATED_PROMPT = new RegExp(`^\\s*(?:${PRIMER_BLOCK}${NL}${NL})?${HEADER
  *  saved prompt (trimmed, as every parser keeps it) held nothing else. */
 const LEADING_PRIMER = new RegExp(`^\\s*${PRIMER_BLOCK}(?:${NL}${NL}|\\s*$)`)
 
-/** A stored memory chunk that holds a delegation header where a session's opening prompt puts
- *  it: at the start of a user turn (chunkTurns writes `user: ` and joins turns with a blank line),
- *  or right after the primer block. For memory written before delegated sessions were skipped. */
-export const DELEGATED_CHUNK = new RegExp(`(?:^user: |\\n\\nuser: |${escape(PRIMER_CLOSE)}${NL}${NL})${HEADER}`)
-
 /** User turns a CLI writes ahead of the prompt it was given: Codex's environment and the AGENTS.md
  *  instructions, in either order. */
 const PREAMBLES = ['<environment_context>', '<user_instructions>', '# AGENTS.md instructions']
+
+/** Where one turn ends and the next starts in a stored memory chunk: chunkTurns writes each turn
+ *  as `role: text` and joins them with a blank line. */
+const TURN_BREAK = String.raw`\n\n(?:user|assistant): `
+
+/** One of PREAMBLES as a stored chunk holds it: the whole turn, up to the next one. */
+const STORED_PREAMBLE = `user: \\s*(?:${PREAMBLES.map(escape).join('|')})(?:(?!${TURN_BREAK})[\\s\\S])*`
+
+/** A stored memory chunk that opens a delegated session, for memory written before delegated
+ *  sessions were skipped: from its start, nothing but the preamble turns a CLI writes, then the
+ *  opening prompt with the header, behind the primer or not. Anchored at the start of the chunk,
+ *  as the parser anchors the prompt at the start of its turn: a header pasted at the start of a
+ *  later message, after the user's own words, isn't a delegation. A chunk can open with a prompt
+ *  and still not open its session -- one that starts a later message does too -- so the caller
+ *  also checks what comes before it (linkedHistoryRecheck). */
+export const DELEGATED_OPENING = new RegExp(`^(?:${STORED_PREAMBLE}\\n\\n)*user: \\s*(?:${PRIMER_BLOCK}${NL}${NL})?${HEADER}`)
+
+/** A stored chunk of preamble turns and nothing else: one a session's opening prompt can follow. */
+export const PREAMBLES_ONLY = new RegExp(`^${STORED_PREAMBLE}(?:\\n\\n${STORED_PREAMBLE})*$`)
+
+/** A stored chunk cut from the middle or the end of a turn too long for one: no role of its own at
+ *  its start, and no turn break in it. */
+export const TURN_WINDOW = new RegExp(`^(?!(?:user|assistant): )(?:(?!${TURN_BREAK})[\\s\\S])*$`)
 
 export interface DialogueTurn {
   role: 'user' | 'assistant'
