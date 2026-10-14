@@ -782,7 +782,7 @@ The workflow automatically downloads the latest bundled CLI tools before packagi
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | [Electron](https://www.electronjs.org/) 30 |
+| Framework | [Electron](https://www.electronjs.org/) 43 |
 | Build Tool | [electron-vite](https://electron-vite.org/) |
 | Renderer | [React](https://react.dev/) 18 + TypeScript |
 | Terminal Emulator | [xterm.js](https://xtermjs.org/) 5 + addons (fit, unicode11, web-links) |
@@ -790,7 +790,7 @@ The workflow automatically downloads the latest bundled CLI tools before packagi
 | State Management | [Zustand](https://zustand-demo.pmnd.rs/) |
 | Code Editor | [Monaco Editor](https://microsoft.github.io/monaco-editor/) (lazy-loaded) |
 | MCP Server | HTTP/SSE on localhost:9315 |
-| Icons | [Font Awesome](https://fontawesome.com/) 6 |
+| Icons | [Font Awesome](https://fontawesome.com/) 7 |
 | Styling | [Tailwind CSS](https://tailwindcss.com/) 4 |
 | Testing | [Vitest](https://vitest.dev/) + React Testing Library |
 | Packaging | [electron-builder](https://www.electron.build/) |
