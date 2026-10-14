@@ -26,10 +26,11 @@ export interface SecureFileResult {
 
 // Transient Windows errors we retry on: OneDrive sync holding the file,
 // AV scanner briefly locking it, cloud backup agents, indexer, etc.
-const RETRYABLE_ERRNO = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'])
+// Typed to admit an absent code: not everything thrown is an errno error.
+const RETRYABLE_ERRNO: ReadonlySet<string | undefined> = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'])
 // What Windows reports when a file's ACL shuts us out. Both are transient codes
 // above too, so a file only counts as locked out once every retry has failed.
-const ACCESS_DENIED = new Set(['EPERM', 'EACCES'])
+const ACCESS_DENIED: ReadonlySet<string | undefined> = new Set(['EPERM', 'EACCES'])
 const MAX_WRITE_ATTEMPTS = 4
 const BACKOFF_MS = [50, 120, 250]
 const WRITE_OPTIONS = { encoding: 'utf-8', mode: 0o600 } as const
