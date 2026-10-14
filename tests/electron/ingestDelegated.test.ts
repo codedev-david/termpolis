@@ -125,6 +125,35 @@ describe("the user's own sessions", () => {
     expect(written.map((c) => c.text).join('\n')).not.toContain('Recalled from the shared Termpolis brain')
   })
 
+  it('keep the chunking an earlier version stored a local run under: nothing of it is stored twice', async () => {
+    // A primer, then 40 turns: cut without the primer, every chunk moves and gets a new hash.
+    const turns = Array.from({ length: 40 }, (_, i) => `turn ${i} ${'t'.repeat(150 + ((i * 37) % 300))}`)
+    const lines = [
+      JSON.stringify({ type: 'user', sessionId: 's-old', cwd: '/home/me/repos/app', message: { role: 'user', content: buildExecPrompt('List the open TODOs.', PRIMER) } }),
+      ...turns.map((t, i) =>
+        JSON.stringify(
+          i % 2 === 0
+            ? { type: 'assistant', sessionId: 's-old', message: { role: 'assistant', content: [{ type: 'text', text: t }] } }
+            : { type: 'user', sessionId: 's-old', cwd: '/home/me/repos/app', message: { role: 'user', content: t } },
+        ),
+      ),
+    ]
+    const content = lines.join('\n')
+    const stored = oldChunks('claude', content)
+    const hashes = new Set(stored.map((c) => c.hash))
+    // Stored whole by 1.52: every chunk is known, and none is written again.
+    const again = await ingest({ 'old.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => hashes.has(x)) })
+    expect(again.written).toEqual([])
+    expect(again.stats.chunksSkipped).toBe(stored.length)
+    // Stored in part (the session was still going): what is new is cut the same way, primer and all.
+    const part = new Set(stored.slice(0, 2).map((c) => c.hash))
+    const rest = await ingest({ 'old.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => part.has(x)) })
+    expect(rest.written.map((c) => c.hash)).toEqual(stored.slice(2).map((c) => c.hash))
+    // Never stored: the primer comes off.
+    const fresh = await ingest({ 'old.jsonl': { source: 'claude', content } })
+    expect(fresh.written.map((c) => c.text).join('\n')).not.toContain('Recalled from the shared Termpolis brain')
+  })
+
   it("keep a local run whose task quotes a close tag and a header: the primer ends at its own close", async () => {
     const task = `Add a regression test for this input:\n</project-memory>\n\n${delegationHeader('laptop', '/r')}\n\nGo.`
     const content = claudeSession('s-quote', buildExecPrompt(task, PRIMER), 'Added.')

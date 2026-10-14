@@ -442,12 +442,24 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         continue
       }
       if (turns.length === 0) continue
-      const chunks = [...chunkTurns(turns, deps.chunkOptions)]
+      let chunks = [...chunkTurns(turns, deps.chunkOptions)]
       if (chunks.length === 0) continue
       // One membership query per FILE, resolved BEFORE the write loop, so the predicate below stays
       // synchronous. `known` is then kept current as we write: two identical chunks in one file must
       // dedup to one, exactly as they did when hasHash read the live store.
-      const known = await knownHashes(deps, chunks.map((c) => c.hash))
+      let known = await knownHashes(deps, chunks.map((c) => c.hash))
+      // The primer came off this session's opening prompt. One an earlier version stored with it
+      // keeps the chunking it was stored under: the shorter first turn moves every cut after it, so
+      // re-cut, the whole session would get new hashes and be stored and embedded a second time,
+      // beside the old copy.
+      if (turns !== parsed && known.size === 0) {
+        const whole = chunkTurns(parsed, deps.chunkOptions)
+        const stored = await knownHashes(deps, whole.map((c) => c.hash))
+        if (stored.size > 0) {
+          chunks = whole
+          known = stored
+        }
+      }
       for (const chunk of chunks) {
         if (known.has(chunk.hash)) {
           stats.chunksSkipped++
