@@ -10,7 +10,10 @@
 //   3. icacls failure doesn't break the caller — file is already on disk
 //   4. USERNAME is validated, never edited: a name carrying icacls syntax
 //      (an injected "/grant everyone:F") is refused before any spawn
-//   5. A file the old two-call sequence locked out is reopened, not fatal
+//   5. A file the old two-call sequence locked out is recovered without
+//      keeping its old DACL: replaced when the caller rewrites the whole
+//      file, swapped for a fresh copy once read otherwise — and a store this
+//      process could not read is never written over
 //
 // USERDOMAIN is set or deleted in EVERY win32 case: the Windows CI runner has
 // one and Linux/macOS don't, so a case that inherits it passes on one OS and
@@ -18,11 +21,12 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const { mockWriteFileSync, mockReadFileSync, mockExistsSync, mockUnlinkSync, mockExecFileSync } = vi.hoisted(() => ({
+const { mockWriteFileSync, mockReadFileSync, mockExistsSync, mockUnlinkSync, mockRenameSync, mockExecFileSync } = vi.hoisted(() => ({
   mockWriteFileSync: vi.fn(),
   mockReadFileSync: vi.fn(),
   mockExistsSync: vi.fn(),
   mockUnlinkSync: vi.fn(),
+  mockRenameSync: vi.fn(),
   mockExecFileSync: vi.fn(),
 }))
 
@@ -32,6 +36,7 @@ vi.mock('fs', () => {
     readFileSync: mockReadFileSync,
     existsSync: mockExistsSync,
     unlinkSync: mockUnlinkSync,
+    renameSync: mockRenameSync,
   }
   return { ...fs, default: fs }
 })
@@ -60,6 +65,7 @@ describe('writeSecureFile', () => {
     mockReadFileSync.mockReset()
     mockExistsSync.mockReset()
     mockUnlinkSync.mockReset()
+    mockRenameSync.mockReset()
     mockExecFileSync.mockReset()
     originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
     for (const k of ENV_KEYS) saved[k] = process.env[k]
@@ -355,43 +361,58 @@ describe('writeSecureFile', () => {
     })
   })
 
-  // Before the single call, icacls ran twice: /inheritance:r, then /grant:r. When the grant named
-  // no account (the old sanitizer made "David Engelhart" into "DavidEngelhart") the first call had
-  // already emptied the DACL, and every later write of that file failed with EPERM — on the boot
-  // path, before Remote, linked machines and agent integration start.
-  describe('a file the old two-call ACL locked out', () => {
-    it('is reopened by the grant, then written', async () => {
-      onWindows('David Engelhart', 'PC')
-      mockExistsSync.mockReturnValue(true)
+  // Before the single call, icacls ran twice: /inheritance:r, then /grant:r of the bare, stripped
+  // name. Two ways that locked the user out of a file for good: a grant that named no account
+  // ("David Engelhart" stripped to "DavidEngelhart") left an EMPTY DACL, and a bare name a same-named
+  // local account captures gave THAT account full control instead. Every later write of mcp-token
+  // then failed with EPERM — on the boot path, before Remote, linked machines and agents start.
+  describe('a whole-content file locked against this user (replaceIfLocked)', () => {
+    const TOKEN = 'C:\\ud\\mcp-token'
+
+    /** Writes fail with `code` for the first `n` attempts, then succeed; returns the attempt count. */
+    function failFirstWrites(n: number, code = 'EPERM'): () => number {
       let writes = 0
       mockWriteFileSync.mockImplementation(() => {
-        if (++writes <= 4) throw errno('EPERM', 'EPERM: operation not permitted')
+        if (++writes <= n) throw errno(code, `${code}: attempt ${writes}`)
       })
+      return () => writes
+    }
+
+    it('is replaced, not reopened in place: the old DACL goes with the old file', async () => {
+      // Granting INTO the old DACL would reopen it but keep whatever else it held, so the local
+      // account an older version granted would read every live token from then on.
+      onWindows('David Engelhart', 'PC')
+      mockExistsSync.mockReturnValue(true)
+      const writes = failFirstWrites(4)
       const { writeSecureFile } = await import('../../src/main/secureFile')
-      const r = writeSecureFile('C:\\ud\\mcp-token', 'tok')
-      // Four failed attempts, the grant, the write that now succeeds — then the usual lockdown.
-      expect(writes).toBe(5)
-      expect(mockExecFileSync).toHaveBeenCalledTimes(2)
-      expect(granted(0)).toBe('PC\\David Engelhart:F')
-      expect(mockUnlinkSync).not.toHaveBeenCalled()
+      const r = writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })
+
+      expect(mockUnlinkSync).toHaveBeenCalledWith(TOKEN)
+      // Four refused writes, the delete, the write that makes the new file — then the usual lockdown,
+      // which is the ONLY icacls call: nothing was granted into the old file first.
+      expect(writes()).toBe(5)
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1)
+      expect(mockUnlinkSync.mock.invocationCallOrder[0]).toBeLessThan(mockExecFileSync.mock.invocationCallOrder[0])
+      expect(granted()).toBe('PC\\David Engelhart:F')
       expect(r).toMatchObject({ aclApplied: true, writeRetries: 4 })
     }, 10000)
 
-    it('is replaced when the grant cannot reopen it', async () => {
+    it('is reopened with the grant when the folder will not let it go', async () => {
+      // The owner keeps WRITE_DAC whatever the DACL says, so the grant still gets the user back in.
       onWindows('david', 'PC')
       mockExistsSync.mockReturnValue(true)
-      let writes = 0
-      mockWriteFileSync.mockImplementation(() => {
-        if (++writes <= 5) throw errno('EACCES', 'EACCES: permission denied')
-      })
+      mockUnlinkSync.mockImplementation(() => { throw errno('EPERM', 'unlink refused') })
+      const writes = failFirstWrites(4, 'EACCES')
       const { writeSecureFile } = await import('../../src/main/secureFile')
-      const r = writeSecureFile('C:\\ud\\mcp-token', 'tok')
-      expect(mockUnlinkSync).toHaveBeenCalledWith('C:\\ud\\mcp-token')
-      expect(writes).toBe(6)
-      expect(r).toMatchObject({ aclApplied: true, writeRetries: 5 })
+      const r = writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })
+
+      expect(writes()).toBe(5)
+      // The grant that reopens it, then the usual lockdown.
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2)
+      expect(r).toMatchObject({ aclApplied: true, writeRetries: 4 })
     }, 10000)
 
-    it('rethrows the original error when it cannot be replaced either', async () => {
+    it('rethrows the original error when it can be neither replaced nor reopened', async () => {
       onWindows('david', 'PC')
       mockExistsSync.mockReturnValue(true)
       let writes = 0
@@ -400,7 +421,18 @@ describe('writeSecureFile', () => {
       })
       mockUnlinkSync.mockImplementation(() => { throw errno('EPERM', 'unlink refused') })
       const { writeSecureFile } = await import('../../src/main/secureFile')
-      expect(() => writeSecureFile('C:\\ud\\mcp-token', 'tok')).toThrowError('the fourth attempt')
+      expect(() => writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })).toThrowError('the fourth attempt')
+    }, 10000)
+
+    it('a replacement that cannot be created fails with its own error, after its own retries', async () => {
+      // The old file is gone by then, so there is nothing left to grant: the new file's error is the answer.
+      onWindows('david', 'PC')
+      mockExistsSync.mockReturnValue(true)
+      const writes = failFirstWrites(8)
+      const { writeSecureFile } = await import('../../src/main/secureFile')
+      expect(() => writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })).toThrowError('EPERM: attempt 8')
+      expect(writes()).toBe(8)
+      expect(mockExecFileSync).not.toHaveBeenCalled()
     }, 10000)
 
     it('an access-denied on a file that is not there is not a lockout', async () => {
@@ -409,7 +441,7 @@ describe('writeSecureFile', () => {
       mockExistsSync.mockReturnValue(false)
       mockWriteFileSync.mockImplementation(() => { throw errno('EPERM') })
       const { writeSecureFile } = await import('../../src/main/secureFile')
-      expect(() => writeSecureFile('C:\\ud\\mcp-token', 'tok')).toThrowError('EPERM')
+      expect(() => writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })).toThrowError('EPERM')
       expect(mockExecFileSync).not.toHaveBeenCalled()
       expect(mockUnlinkSync).not.toHaveBeenCalled()
     }, 10000)
@@ -419,8 +451,9 @@ describe('writeSecureFile', () => {
       mockExistsSync.mockReturnValue(true)
       mockWriteFileSync.mockImplementation(() => { throw errno('EBUSY') })
       const { writeSecureFile } = await import('../../src/main/secureFile')
-      expect(() => writeSecureFile('C:\\ud\\mcp-token', 'tok')).toThrowError('EBUSY')
+      expect(() => writeSecureFile(TOKEN, 'tok', { replaceIfLocked: true })).toThrowError('EBUSY')
       expect(mockExecFileSync).not.toHaveBeenCalled()
+      expect(mockUnlinkSync).not.toHaveBeenCalled()
     }, 10000)
 
     it('off Windows, an EPERM is just a failed write', async () => {
@@ -428,34 +461,94 @@ describe('writeSecureFile', () => {
       mockExistsSync.mockReturnValue(true)
       mockWriteFileSync.mockImplementation(() => { throw errno('EPERM') })
       const { writeSecureFile } = await import('../../src/main/secureFile')
-      expect(() => writeSecureFile('/tmp/t', 'x')).toThrowError('EPERM')
+      expect(() => writeSecureFile('/tmp/t', 'x', { replaceIfLocked: true })).toThrowError('EPERM')
       expect(mockExecFileSync).not.toHaveBeenCalled()
       expect(mockUnlinkSync).not.toHaveBeenCalled()
     }, 10000)
   })
 
+  // The trust stores. Their content must survive, and a store this process could not read at boot
+  // reads as EMPTY in memory: replacing it, or granting into it and writing, would save that empty
+  // list over every approval on disk. readSecureFile is where a locked store gets reopened.
+  it('without replaceIfLocked, a locked file is left exactly as it is and the error rethrown', async () => {
+    onWindows('david', 'PC')
+    mockExistsSync.mockReturnValue(true)
+    mockWriteFileSync.mockImplementation(() => { throw errno('EPERM', 'store locked') })
+    const { writeSecureFile } = await import('../../src/main/secureFile')
+    expect(() => writeSecureFile('C:\\ud\\imported-artifacts.json', '{"artifacts":[]}')).toThrowError('store locked')
+    expect(mockWriteFileSync).toHaveBeenCalledTimes(4)
+    expect(mockExecFileSync).not.toHaveBeenCalled()
+    expect(mockUnlinkSync).not.toHaveBeenCalled()
+  }, 10000)
+
   describe('readSecureFile', () => {
+    const STORE = 'C:\\ud\\trusted-workspaces.json'
+    const SWAP = `${STORE}.${process.pid}.swap`
+    const LIST = '{"paths":["C:\\\\repo"]}'
+
+    /** The store refuses its first read, as a locked one does, then reads as LIST once reopened. */
+    function lockedThenReadable(): void {
+      mockExistsSync.mockReturnValue(true)
+      mockReadFileSync
+        .mockImplementationOnce(() => { throw errno('EPERM') })
+        .mockReturnValueOnce(LIST)
+    }
+
     it('reads the file as UTF-8, with no icacls when nothing is wrong', async () => {
       onWindows('david', 'PC')
       mockReadFileSync.mockReturnValue('{"paths":[]}')
       const { readSecureFile } = await import('../../src/main/secureFile')
-      expect(readSecureFile('C:\\ud\\trusted-workspaces.json')).toBe('{"paths":[]}')
-      expect(mockReadFileSync).toHaveBeenCalledWith('C:\\ud\\trusted-workspaces.json', 'utf-8')
+      expect(readSecureFile(STORE)).toBe('{"paths":[]}')
+      expect(mockReadFileSync).toHaveBeenCalledWith(STORE, 'utf-8')
       expect(mockExecFileSync).not.toHaveBeenCalled()
+      expect(mockWriteFileSync).not.toHaveBeenCalled()
     })
 
-    it('reopens a locked-out file with the grant, then reads it', async () => {
-      // Without this a trust store the old ACL locked reads as empty on every boot, and the next
-      // save overwrites the user's real list with that empty one.
+    it('reopens a locked-out file with the grant, reads it, then swaps in a fresh copy', async () => {
+      // Without the grant a trust store the old ACL locked reads as empty on every boot, and the
+      // next save overwrites the user's real list with that empty one. The grant went INTO the old
+      // DACL, though, which keeps any other account's grant — so the content just read is written
+      // to a new file beside it and renamed over it, and the old DACL goes with the old file.
       onWindows('david', 'PC')
-      mockExistsSync.mockReturnValue(true)
-      mockReadFileSync
-        .mockImplementationOnce(() => { throw errno('EPERM') })
-        .mockReturnValueOnce('{"paths":["C:\\\\repo"]}')
+      lockedThenReadable()
       const { readSecureFile } = await import('../../src/main/secureFile')
-      expect(readSecureFile('C:\\ud\\trusted-workspaces.json')).toBe('{"paths":["C:\\\\repo"]}')
+      expect(readSecureFile(STORE)).toBe(LIST)
+
+      expect(mockWriteFileSync).toHaveBeenCalledWith(SWAP, LIST, { encoding: 'utf-8', mode: 0o600 })
+      expect(mockRenameSync).toHaveBeenCalledWith(SWAP, STORE)
+      // The grant that reopened the old file, then the lockdown of the new one.
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2)
+      expect(mockExecFileSync.mock.calls.map((c) => c[1][0])).toEqual([STORE, STORE])
+      expect(mockRenameSync.mock.invocationCallOrder[0]).toBeLessThan(mockExecFileSync.mock.invocationCallOrder[1])
+    })
+
+    it('a fresh copy that cannot be renamed into place is removed, and the reopened original serves', async () => {
+      onWindows('david', 'PC')
+      lockedThenReadable()
+      mockRenameSync.mockImplementation(() => { throw errno('EBUSY') })
+      const { readSecureFile } = await import('../../src/main/secureFile')
+      expect(readSecureFile(STORE)).toBe(LIST)
+      expect(mockUnlinkSync).toHaveBeenCalledWith(SWAP)
+      expect(mockUnlinkSync).not.toHaveBeenCalledWith(STORE)
       expect(mockExecFileSync).toHaveBeenCalledTimes(1)
-      expect(granted()).toBe('PC\\david:F')
+    })
+
+    it('a stray copy that cannot even be removed still leaves the content in hand', async () => {
+      onWindows('david', 'PC')
+      lockedThenReadable()
+      mockRenameSync.mockImplementation(() => { throw errno('EBUSY') })
+      mockUnlinkSync.mockImplementation(() => { throw errno('EBUSY') })
+      const { readSecureFile } = await import('../../src/main/secureFile')
+      expect(readSecureFile(STORE)).toBe(LIST)
+    })
+
+    it('a fresh copy that cannot be written is never renamed over the original', async () => {
+      onWindows('david', 'PC')
+      lockedThenReadable()
+      mockWriteFileSync.mockImplementation(() => { throw errno('ENOSPC') })
+      const { readSecureFile } = await import('../../src/main/secureFile')
+      expect(readSecureFile(STORE)).toBe(LIST)
+      expect(mockRenameSync).not.toHaveBeenCalled()
     })
 
     it('throws when the file is still unreadable after the grant', async () => {

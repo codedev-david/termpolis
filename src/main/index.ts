@@ -4481,9 +4481,12 @@ async function semanticPoolOptions(
     // Guarded because everything below it in this callback — the port file, Remote, Linked
     // machines, agent integration, the global hotkeys — would otherwise die with it. A token file
     // that can't be written costs agents their MCP connection; it must not cost the rest.
+    //
+    // replaceIfLocked: the token is new every launch, so a token file an older Termpolis locked
+    // is deleted and written afresh, which also drops any other account that old ACL let in.
     const tokenPath = join(app.getPath('userData'), 'mcp-token')
     try {
-      const tokenWrite = writeSecureFile(tokenPath, getMcpAuthToken())
+      const tokenWrite = writeSecureFile(tokenPath, getMcpAuthToken(), { replaceIfLocked: true })
       if (!tokenWrite.aclApplied) {
         console.warn(`[mcp-token] ACL not applied on ${tokenPath}: ${tokenWrite.aclError}`)
       }
@@ -4496,7 +4499,7 @@ async function semanticPoolOptions(
     // 5 candidate ports — unlike the old setTimeout(500, ...) this can't race.
     const portPath = join(app.getPath('userData'), 'mcp-port')
     awaitMcpPortBound().then((boundPort) => {
-      const portWrite = writeSecureFile(portPath, String(boundPort))
+      const portWrite = writeSecureFile(portPath, String(boundPort), { replaceIfLocked: true })
       if (!portWrite.aclApplied) {
         console.warn(`[mcp-port] ACL not applied on ${portPath}: ${portWrite.aclError}`)
       }

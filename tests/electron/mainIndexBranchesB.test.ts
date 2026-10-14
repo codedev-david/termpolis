@@ -37,6 +37,8 @@ const M = vi.hoisted(() => ({
   aclError: '',
   // when set, the secureFile passthrough throws for mcp-token, as an unwritable file does
   failTokenWrite: false,
+  // every writeSecureFile call's arguments, in order
+  secureWrites: [] as unknown[][],
   // child_process
   execSync: vi.fn(),
   execFileSync: vi.fn(),
@@ -199,6 +201,7 @@ vi.mock('../../src/main/secureFile', async (importOriginal) => {
   return {
     ...actual,
     writeSecureFile: (...args: Parameters<typeof actual.writeSecureFile>) => {
+      M.secureWrites.push(args)
       if (M.failTokenWrite && args[0].endsWith('mcp-token')) {
         throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
       }
@@ -477,6 +480,7 @@ beforeEach(() => {
   M.execFileSync.mockReset()
   M.aclError = ''
   M.failTokenWrite = false
+  M.secureWrites = []
   M.failLinkedStart = false
   delete process.env.TERMPOLIS_SKIP_ACL
 })
@@ -584,6 +588,17 @@ describe('MCP token file', () => {
     expect(warns.some((w) => w.includes('[mcp-token] ACL not applied'))).toBe(false)
     expect(logs.some((l) => l.includes('MCP token written to'))).toBe(true)
     expect(readFileSync(join(M.userData, 'mcp-token'), 'utf8')).toBe('fake-token')
+  })
+
+  it('mcp-token and mcp-port, rewritten whole every launch, may be replaced when locked', async () => {
+    // replaceIfLocked lets an older Termpolis's locked file be deleted and written afresh, which
+    // drops any other account its ACL let in. Only these two may: they hold nothing to lose.
+    await boot()
+
+    const optsFor = (name: string): unknown =>
+      M.secureWrites.find((args) => String(args[0]) === join(M.userData, name))?.[2]
+    expect(optsFor('mcp-token')).toEqual({ replaceIfLocked: true })
+    expect(optsFor('mcp-port')).toEqual({ replaceIfLocked: true })
   })
 
   it('a token file that cannot be written costs the token, not the rest of the boot', async () => {

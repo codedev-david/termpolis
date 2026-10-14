@@ -14,7 +14,7 @@
 // every boot is exactly the permission change an endpoint monitor flags. So
 // the switches stay the two every boot has always run, now in a single call.
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 
 export interface SecureFileResult {
@@ -22,6 +22,16 @@ export interface SecureFileResult {
   aclApplied: boolean
   aclError?: string
   writeRetries?: number
+}
+
+export interface SecureFileOptions {
+  /**
+   * The caller writes the file's WHOLE content afresh every time (mcp-token, mcp-port), so a file
+   * locked against this user may be deleted and written anew (see reopenAndWrite). Never set it
+   * for a file whose content must survive, like the trust stores: a store this process could not
+   * read at boot reads as empty in memory, and writing that over it would erase what it holds.
+   */
+  replaceIfLocked?: boolean
 }
 
 // Transient Windows errors we retry on: OneDrive sync holding the file,
@@ -56,12 +66,12 @@ function sleepSync(ms: number) {
   while (Date.now() < until) { /* spin */ }
 }
 
-export function writeSecureFile(path: string, content: string): SecureFileResult {
+export function writeSecureFile(path: string, content: string, opts: SecureFileOptions = {}): SecureFileResult {
   let attempts: number
   try {
     attempts = writeWithRetries(path, content)
   } catch (e) {
-    if (!lockedOut(e, path)) throw e
+    if (!opts.replaceIfLocked || !lockedOut(e, path)) throw e
     attempts = MAX_WRITE_ATTEMPTS + reopenAndWrite(path, content, e)
   }
 
@@ -74,18 +84,43 @@ export function writeSecureFile(path: string, content: string): SecureFileResult
 }
 
 /**
- * readFileSync(path, 'utf-8') for a file writeSecureFile manages, which also reopens one an
- * older Termpolis locked its owner out of (see reopenAndWrite). Without the repair a locked
- * trust store reads as empty on every boot, and the next save replaces the user's real list.
+ * readFileSync(path, 'utf-8') for a file writeSecureFile manages, which also gets back into one an
+ * older Termpolis locked its owner out of (see reopenAndWrite). Without that a locked trust store
+ * reads as empty on every boot, and the next save replaces the user's real list.
  */
 export function readSecureFile(path: string): string {
   try {
     return readFileSync(path, 'utf-8')
   } catch (e) {
     if (!lockedOut(e, path)) throw e
-    lockToCurrentUser(path)
-    return readFileSync(path, 'utf-8')
   }
+  // The owner keeps WRITE_DAC whatever the DACL says, so the grant lets this user back in...
+  lockToCurrentUser(path)
+  const content = readFileSync(path, 'utf-8')
+  // ...but it went INTO the old DACL, which keeps whatever else it held, another account's grant
+  // included. The content is in hand now, so a fresh copy can take the file's place and leave
+  // that DACL behind. Failing that, the reopened original still serves.
+  try {
+    swapInFreshCopy(path, content)
+  } catch { /* keep the reopened original */ }
+  return content
+}
+
+/**
+ * Replace `path` with a new file holding `content`, written beside it and renamed over it, so the
+ * original is never gone before its replacement is complete. A new file takes the folder's ACL,
+ * not the old file's, and is then locked down like any other write.
+ */
+function swapInFreshCopy(path: string, content: string): void {
+  const fresh = `${path}.${process.pid}.swap`
+  writeFileSync(fresh, content, WRITE_OPTIONS)
+  try {
+    renameSync(fresh, path)
+  } catch (e) {
+    try { unlinkSync(fresh) } catch { /* a stray copy is harmless; the original is intact */ }
+    throw e
+  }
+  lockToCurrentUser(path)
 }
 
 function writeWithRetries(path: string, content: string): number {
@@ -110,27 +145,33 @@ function errnoCode(e: unknown): string | undefined {
 }
 
 /**
- * Get back into a file the older two-call icacls sequence locked. It stripped inheritance in
- * one call and granted in a second, and when the grant named no account — its sanitizer made
- * "David Engelhart" into "DavidEngelhart" — the file was left with an EMPTY DACL, which every
- * later write and read hit as EPERM. The owner keeps WRITE_DAC whatever the DACL says, so the
- * grant alone reopens it; failing that, the folder's delete-child right lets it be replaced
- * outright, which loses nothing because every caller writes the whole file. Returns the
- * extra attempts it took, or throws `cause` when neither worked.
+ * Get back into a whole-content file locked against this user. The older two-call icacls sequence
+ * did that: it stripped inheritance in one call and granted the bare, stripped USERNAME in a
+ * second. A grant that named no account ("David Engelhart" became "DavidEngelhart") left an EMPTY
+ * DACL; a bare name a same-named LOCAL account captures (Windows looks local accounts up before
+ * the domain) left that account with full control and the real user with nothing.
+ *
+ * So the file is replaced, not reopened: deleting it takes only the folder's delete-child right,
+ * and the new file starts from the folder's ACL, so whatever the old DACL held goes with it.
+ * Granting into the old DACL would reopen it but keep the other account's ACE, and that account
+ * would then read every live token written after it. The grant is only the fallback for a folder
+ * that will not let the file go: the owner keeps WRITE_DAC whatever the DACL says. Returns the
+ * extra attempts it took; throws the new file's own error if it cannot be created, or `cause`
+ * when the file can be neither replaced nor reopened.
  */
 function reopenAndWrite(path: string, content: string, cause: unknown): number {
-  lockToCurrentUser(path)
-  try {
-    writeFileSync(path, content, WRITE_OPTIONS)
-    return 1
-  } catch { /* still shut out: replace the file */ }
   try {
     unlinkSync(path)
-    writeFileSync(path, content, WRITE_OPTIONS)
-    return 2
   } catch {
-    throw cause
+    lockToCurrentUser(path)
+    try {
+      writeFileSync(path, content, WRITE_OPTIONS)
+      return 1
+    } catch {
+      throw cause
+    }
   }
+  return writeWithRetries(path, content)
 }
 
 interface AclPrincipal {
