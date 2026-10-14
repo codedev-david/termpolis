@@ -195,7 +195,7 @@ vi.mock('../../src/main/aiSecurity', async (importOriginal) => ({
 vi.mock('../../src/main/mcpServer', () => ({
   startMcpServer: H.startMcpServer, stopMcpServer: vi.fn(),
   getMcpAuthToken: vi.fn(() => 'fake-token'), getMcpPort: vi.fn(() => 9315),
-  initAuditLog: vi.fn(), executeTool: vi.fn(),
+  initAuditLog: vi.fn(), executeTool: vi.fn(), executeToolForWorkflow: vi.fn(),
   awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
 }))
 vi.mock('../../src/main/swarmManager', () => ({

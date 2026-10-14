@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { executeControlStep, executeCommandStep, executeAgentStep, executeSkillStep } from '../../src/main/workflow/executors'
+import { makeToolInvoker } from '../../src/main/workflow/adapters'
 import type { ControlStep, CommandStep, AgentStep, SkillStep, StepResult } from '../../src/renderer/src/types'
 
 const timer = { sleep: vi.fn(async () => {}) }
@@ -137,6 +138,19 @@ describe('skill executor', () => {
     const step: SkillStep = { id: 's', type: 'skill', name: 'x', tool: 'nope' }
     const r = await executeSkillStep(step, {}, tools as any)
     expect(r.status).toBe('failed'); expect(r.error).toBe('no such tool')
+  })
+  it("hands the invoker the step's own timeout, and 2 minutes when it sets none", async () => {
+    const tools = { invoke: vi.fn(async (_tool: string, _args: unknown, _timeoutMs: number) => ({ output: '', ok: true })) }
+    await executeSkillStep({ id: 's', type: 'skill', name: 'x', tool: 't', timeoutMs: 5_000 }, {}, tools)
+    await executeSkillStep({ id: 's', type: 'skill', name: 'x', tool: 't' }, {}, tools)
+    expect(tools.invoke.mock.calls.map((c) => c[2])).toEqual([5_000, 120_000])
+  })
+  it('a call the rate limit refused fails the step with the reason, through the real invoker', async () => {
+    const tools = makeToolInvoker({} as any, async () => { throw new Error('Rate limit exceeded for linked_machines') })
+    const step: SkillStep = { id: 's', type: 'skill', name: 'x', tool: 'linked_machines', args: { action: 'list' } }
+    expect(await executeSkillStep(step, {}, tools)).toEqual({
+      stepId: 's', status: 'failed', output: '', error: 'Rate limit exceeded for linked_machines',
+    })
   })
 })
 

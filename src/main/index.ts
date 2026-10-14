@@ -174,7 +174,7 @@ import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeTool, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
 import { randomUUID } from 'node:crypto'
 import { detectAgentStatus } from '../shared/agentStatusDetector'
 import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
@@ -4445,7 +4445,9 @@ async function semanticPoolOptions(
         (out: string, name?: string) => detectAgentStatus(out, name || 'claude'),
         (agent) => wfAgentLaunch[agent],
       )
-      const wfTools = makeToolInvoker(mcpHandlers, executeTool)
+      // Through the same rate limits and audit log as an agent's call (mcpServer.ts): a looping
+      // workflow must not be the one way past either.
+      const wfTools = makeToolInvoker(mcpHandlers, executeToolForWorkflow)
       // Trigger supervisor: arms schedule/gitCommit/gitPush/fileWatch workflows
       // and drives them through the SAME startRun the Run button uses. Created
       // before the IPC so it can be handed the change callbacks, and given

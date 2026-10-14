@@ -203,6 +203,7 @@ const M = vi.hoisted(() => ({
   makeTerminalRunner: vi.fn(() => ({ kind: 'terminal-runner' })),
   makeAgentRunner: vi.fn(() => ({ kind: 'agent-runner' })),
   makeToolInvoker: vi.fn(() => ({ kind: 'tool-invoker' })),
+  executeToolForWorkflow: vi.fn(async () => ({ ok: true })),
   registerWorkflowIpc: vi.fn<(...a: any[]) => any>(() => ({ startRun: M_startRun })),
   wfStartRun: vi.fn<(...a: any[]) => any>(() => ({ ok: true, done: Promise.resolve() })),
   oncePerVersion: vi.fn((_d: string, _v: string, _fs: unknown, cb: () => void) => { cb() }),
@@ -387,6 +388,7 @@ vi.mock('../../src/main/mcpServer', () => ({
   initAuditLog: vi.fn(),
   awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
   executeTool: vi.fn(async () => ({ ok: true })),
+  executeToolForWorkflow: M.executeToolForWorkflow,
 }))
 vi.mock('../../src/main/swarmManager', () => ({
   sendMessage: vi.fn(), readMessages: vi.fn(() => []), getAllMessages: vi.fn(() => []),
@@ -1683,6 +1685,10 @@ describe('learning signal deps', () => {
 // Workflow wiring closures.
 // ===========================================================================
 describe('workflow orchestrator wiring', () => {
+  it("calls a Skill step's tool through the rate-limited, audited path, not executeTool itself", () => {
+    expect(M.makeToolInvoker.mock.calls.at(-1)![1]).toBe(M.executeToolForWorkflow)
+  })
+
   it('resolves a logical shell type to an executable before spawning a Command step', async () => {
     const spawnDeps = M.makeTerminalRunner.mock.calls.at(-1)![0] as any
     const onData = vi.fn()

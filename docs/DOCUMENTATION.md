@@ -403,7 +403,7 @@ Four kinds, in any order:
 
 - **Command** — a shell line (inline or a script file) on a real terminal, with its own shell and timeout.
 - **Agent** — launches Claude Code, OpenAI Codex, or Gemini CLI on a prompt and waits for it to finish.
-- **Skill** — calls one of Termpolis's own tools: code search, memory, git.
+- **Skill** — calls one of Termpolis's own tools: code search, memory, git. The step fails when the tool answers with an error or takes longer than the step's timeout (2 minutes unless you set one). Skill steps count toward the MCP server's rate limits: `linked_machines` shares its 30 calls a minute with your agents, while the other limited tools, and a workflow's calls overall, have separate workflow limits, so a looping workflow can't get your agents refused. Every call is written to the MCP audit log.
 - **Control** — `wait`, `branch`, `loop`, or `notify`.
 
 Each step takes an optional `when` gate and an optional *continue even if this step fails*. Later steps read earlier results (`${steps.build.exitCode}`, a step's captured output) inside gates, branch conditions, loop guards, and notify messages. Expressions run through a small, pure, sandboxed evaluator — never `eval`.
@@ -545,7 +545,7 @@ The tools come in seven groups. The authoritative list is the one your agent sho
 | Token Headroom | `retrieve_full` | Expand a tool result that Token Headroom shortened |
 | Linked machines | `linked_machines` | Have a Claude, Codex or Gemini agent on another linked machine do a task headlessly and return its final answer: `list` the machines, `run` a task, and fetch the `result` of one still running. See [§30](#30-linked-machines) |
 
-The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log.
+The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log (`mcp-audit.log`). A workflow's Skill steps call the same tools in-process and are held to the same limits and written to the same log, marked `"via": "workflow"`.
 
 ### Connecting your coding agents
 
@@ -1181,8 +1181,9 @@ worded for the agent to act on or pass on to you.
 
 Termpolis never pre-approves this tool. Claude Code asks you before using it,
 unless the session skips permission prompts (as swarm workers do), and Codex is
-not told to trust it. Agents can call it at most 30 times a minute; a workflow
-step that calls it is not counted.
+not told to trust it. Agents and workflow steps together can call it at most 30
+times a minute, and every call, a workflow's included, is written to the MCP
+audit log.
 
 ### Limits
 
