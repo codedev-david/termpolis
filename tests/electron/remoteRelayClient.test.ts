@@ -462,6 +462,27 @@ describe('relay client', () => {
     }
   })
 
+  it('keeps the spacing to one second when the wall clock steps back', () => {
+    // NTP corrections and manual changes move the wall clock both ways. A
+    // spacing measured against it would hold this greeting for as long as the
+    // step -- an hour here -- and the peer that came back would wait that long.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      connect(sock, p)
+      control(sock, { kind: 'peer-gone', role: 'device' })
+      vi.setSystemTime(Date.now() - 60 * 60_000)
+      control(sock, { kind: 'peer-joined', role: 'device' })
+      vi.advanceTimersByTime(GREET_INTERVAL_MS)
+      expect(sock.sent).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('holds the peer greeting that arrives first, and answers it once it has greeted', async () => {
     // The peer greets the moment it is seated, so its greeting can land while
     // this end's is still held back. Accepting it then would attach a session
