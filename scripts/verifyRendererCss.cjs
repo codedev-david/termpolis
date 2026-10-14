@@ -18,7 +18,9 @@
  * Only Tailwind's own output is checked: the cascade layers it emits, in the
  * stylesheet that holds its utilities layer. Font Awesome, xterm and the font
  * faces are bundled into that same file un-layered, and monaco's CSS into its
- * own; a rule of theirs must not fail this.
+ * own; a rule of theirs must not fail this. The exception is a condition wrapped
+ * around a layer, which can only show outside the layers and which none of that
+ * CSS has (see checkStylesheet).
  */
 const { readFileSync, readdirSync, existsSync } = require('fs')
 const { join, resolve } = require('path')
@@ -33,7 +35,6 @@ const MIN_UTILITY_RULES = 750
 
 /** What a stock v4 setup emits and the parity layer exists to prevent. */
 const FORBIDDEN = [
-  [/@media\s+source\(/, '`@media source(...)`: postcss-import wrapped the utilities import, so Tailwind no longer sees `source(none)`'],
   [/:where\(\s*\.space-[xy]/, "v4's space-x/space-y rule, which loses to a child's own margin (index.css keeps the v3 rules)"],
   [/@media\s*\(\s*hover\s*:\s*hover\s*\)/, "hover: wrapped in @media (hover: hover), v4's default (tailwind-v3-theme.css restores v3's)"],
 ]
@@ -50,6 +51,20 @@ const PREFLIGHT_MARKERS = [
   ['::placeholder', 'color', '#9ca3af'],
   ['[role="button"]', 'cursor', 'pointer'],
 ]
+
+/** Rules only v4's Preflight has. Imported beside v3's, it passes the markers above while its
+ *  reset zeroes every table cell's padding. v4 nests its placeholder colour in @supports. */
+const V4_PREFLIGHT_MARKERS = [
+  ['::file-selector-button', 'padding', '0'],
+  ['::placeholder', 'color', 'color-mix(in oklab, currentcolor 50%, transparent)'],
+]
+
+/** Checks that do not trust tailwind-v3-theme.css, since a v4-style edit can change that file
+ *  along with the build: v3's palette is all hex where v4's is OKLCH, one v3 colour is pinned
+ *  here outright, and v3's line heights are rem where v4's are calc() ratios. */
+const V3_HEX = /^#(?:[0-9a-f]{3}){1,2}$/i
+const V3_GREEN_400 = '#4ade80'
+const V4_LINE_HEIGHT = /^calc\(/
 
 /** The custom properties the v3 parity theme defines, by name. `--color-*: initial` is not one. */
 function readTheme(source) {
@@ -70,17 +85,55 @@ function tailwindStylesheets(assetsDir) {
     .filter(({ css }) => /@layer\s+utilities\s*\{/.test(css))
 }
 
+/** The at-rule, other than a layer, that a node sits inside, if any. */
+function conditionAround(node) {
+  for (let parent = node.parent; parent && parent.type !== 'root'; parent = parent.parent) {
+    if (parent.type === 'atrule' && parent.name !== 'layer') return parent
+  }
+  return undefined
+}
+
+/** Whether any of the layers gives a selector containing `selector` the declaration `prop: value`,
+ *  counting one inside an at-rule nested in the rule. */
+function declares(layers, [selector, prop, value]) {
+  let found = false
+  for (const layer of layers) {
+    layer.walkDecls(prop, (decl) => {
+      let rule = decl.parent
+      while (rule.type !== 'rule' && rule !== layer) rule = rule.parent
+      if (rule !== layer && rule.selector.includes(selector) && decl.value === value) found = true
+    })
+  }
+  return found
+}
+
 /** Everything wrong with one built stylesheet, measured against the parity theme. */
 function checkStylesheet(css, theme) {
   const problems = []
+  const root = postcss.parse(css)
   const layers = []
-  postcss.parse(css).walkAtRules('layer', (layer) => {
+  root.walkAtRules('layer', (layer) => {
     if (layer.nodes) layers.push(layer)
   })
-  const rulesIn = (name) => {
-    const rules = []
-    for (const layer of layers) if (layer.params === name) layer.walkRules((rule) => rules.push(rule))
-    return rules
+  const named = (name) => layers.filter((layer) => layer.params === name)
+
+  // postcss-import inlines an @import inside an at-rule for each of its conditions, outside the
+  // layer it names: `layer(utilities) source(none)` becomes `@media source(none) { @layer
+  // utilities {...} }`, and Tailwind has to unwrap it. Chromium takes a condition it does not know
+  // as false, so a wrapper left in place switches off every rule in the layer, and the checks
+  // below, which read the layers' contents, still pass. Hence these two look at the whole file.
+  root.walkAtRules('media', (media) => {
+    if (/\bsource\(/.test(media.params)) {
+      problems.push(`has \`@media ${media.params}\`: postcss-import wrapped the utilities import, so Tailwind no longer sees \`source(none)\``)
+    }
+  })
+  for (const layer of layers) {
+    const condition = conditionAround(layer)
+    if (condition) {
+      problems.push(
+        `has \`@layer ${layer.params}\` inside \`@${condition.name} ${condition.params}\`, so the layer applies only where that holds (postcss-import puts an @import's conditions there)`,
+      )
+    }
   }
 
   // Tested on the layers as written, so a minifier's rewrite shows.
@@ -92,31 +145,50 @@ function checkStylesheet(css, theme) {
     if (!tailwind.includes(text)) problems.push(`lacks \`${text}\`: ${why}`)
   }
 
-  const base = rulesIn('base')
-  for (const [selector, prop, value] of PREFLIGHT_MARKERS) {
-    const found = base.some(
-      (rule) => rule.selector.includes(selector) && rule.nodes.some((n) => n.prop === prop && n.value === value),
-    )
-    if (!found) problems.push(`lacks v3 Preflight's \`${selector} { ${prop}: ${value} }\` (tailwind-v3-preflight.css)`)
+  const base = named('base')
+  for (const marker of PREFLIGHT_MARKERS) {
+    const [selector, prop, value] = marker
+    if (!declares(base, marker)) problems.push(`lacks v3 Preflight's \`${selector} { ${prop}: ${value} }\` (tailwind-v3-preflight.css)`)
+  }
+  for (const marker of V4_PREFLIGHT_MARKERS) {
+    const [selector, prop, value] = marker
+    if (declares(base, marker)) {
+      problems.push(`has v4 Preflight's \`${selector} { ${prop}: ${value} }\`: tailwindcss/preflight.css is imported beside or instead of tailwind-v3-preflight.css`)
+    }
   }
 
   // Tailwind emits a theme variable only where a class uses it, so the colours present depend on
   // the app. Each one present must be v3's, and one outside v3's palette means v4's came back.
   let colours = 0
-  for (const layer of layers) {
-    if (layer.params !== 'theme') continue
+  for (const layer of named('theme')) {
     layer.walkDecls(/^--(color|text|font)-/, (decl) => {
-      if (decl.prop.startsWith('--color-')) colours++
-      if (!theme.has(decl.prop)) {
-        if (decl.prop.startsWith('--color-')) problems.push(`emits \`${decl.prop}\`, which is not in v3's palette`)
-      } else if (decl.value !== theme.get(decl.prop)) {
-        problems.push(`emits \`${decl.prop}: ${decl.value}\`; tailwind-v3-theme.css says \`${theme.get(decl.prop)}\``)
+      const colour = decl.prop.startsWith('--color-')
+      if (colour) colours++
+      const expected = theme.get(decl.prop)
+      // The first two measure the build against tailwind-v3-theme.css. The rest are reached when
+      // the file agrees with the build or does not set the value, so they catch an edit of the
+      // file itself.
+      if (expected !== undefined && decl.value !== expected) {
+        problems.push(`emits \`${decl.prop}: ${decl.value}\`; tailwind-v3-theme.css says \`${expected}\``)
+      } else if (colour && expected === undefined) {
+        problems.push(`emits \`${decl.prop}\`, which is not in v3's palette`)
+      } else if (colour && !V3_HEX.test(decl.value)) {
+        problems.push(`emits \`${decl.prop}: ${decl.value}\`, as tailwind-v3-theme.css now says, but v3's palette is all hex`)
+      } else if (decl.prop === '--color-green-400' && decl.value !== V3_GREEN_400) {
+        problems.push(`emits \`${decl.prop}: ${decl.value}\`, as tailwind-v3-theme.css now says, but v3's is \`${V3_GREEN_400}\``)
+      } else if (decl.prop.endsWith('--line-height') && V4_LINE_HEIGHT.test(decl.value)) {
+        problems.push(`emits \`${decl.prop}: ${decl.value}\`, v4's unitless ratio, where v3's line heights are rem`)
       }
     })
   }
   if (colours === 0) problems.push('emits no theme colours at all, so tailwind-v3-theme.css never reached the build')
 
-  const utilities = rulesIn('utilities').length
+  let utilities = 0
+  for (const layer of named('utilities')) {
+    layer.walkRules(() => {
+      utilities++
+    })
+  }
   if (utilities < MIN_UTILITY_RULES) {
     problems.push(`has ${utilities} utility rules, under ${MIN_UTILITY_RULES}: Tailwind is not scanning src/ as the @source glob says`)
   }

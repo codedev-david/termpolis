@@ -16,6 +16,7 @@ const guard = require('../../scripts/verifyRendererCss.cjs')
 const THEME = `@theme {
   --font-sans: ui-sans-serif, system-ui, sans-serif;
   --color-*: initial;
+  --color-white: #fff;
   --color-green-400: #4ade80;
   --color-gray-200: #e5e7eb;
   --text-xs: 0.75rem;
@@ -26,14 +27,8 @@ const THEME = `@theme {
 
 const UTILITIES = Array.from({ length: guard.MIN_UTILITY_RULES }, (_, i) => `  .u-${i} {\n    order: ${i};\n  }`)
 
-/** A stylesheet shaped like the parity build's, with any part swapped out. */
-function stylesheet(parts: { theme?: string; base?: string; utilities?: string[]; extra?: string } = {}): string {
-  const theme = parts.theme ?? `    --font-sans: ui-sans-serif, system-ui, sans-serif;
-    --color-green-400: #4ade80;
-    --color-gray-200: #e5e7eb;
-    --text-xs: 0.75rem;
-    --text-xs--line-height: 1rem;`
-  const base = parts.base ?? `  *,
+/** The rules of v3's Preflight the guard looks for, as the parity build emits them. */
+const V3_PREFLIGHT = `  *,
 ::before,
 ::after {
     box-sizing: border-box;
@@ -48,7 +43,48 @@ textarea::placeholder {
 [role="button"] {
     cursor: pointer;
   }`
-  const utilities = parts.utilities ?? UTILITIES
+
+/** The rules of v4's Preflight that v3's lacks, as the real build emits them: the reset that
+ *  zeroes every table cell's padding, and the placeholder colour, nested in @supports twice. */
+const V4_PREFLIGHT = `  *,
+::after,
+::before,
+::backdrop,
+::file-selector-button {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid;
+  }
+  ::placeholder {
+    opacity: 1;
+  }
+  @supports (not (-webkit-appearance: -apple-pay-button))  or
+  (contain-intrinsic-size: 1px) {
+    ::placeholder {
+      color: currentcolor;
+      @supports (color: color-mix(in lab, red, red)) {
+        color: color-mix(in oklab, currentcolor 50%, transparent);
+      }
+    }
+  }`
+
+/** A stylesheet shaped like the parity build's, with any part swapped out. `utilitiesIn` puts the
+ *  utilities layer inside an at-rule, outside the layer, which is where postcss-import puts an
+ *  @import condition that Tailwind leaves in place. */
+function stylesheet(
+  parts: { theme?: string; base?: string; utilities?: string[]; utilitiesIn?: string; extra?: string } = {},
+): string {
+  const theme = parts.theme ?? `    --font-sans: ui-sans-serif, system-ui, sans-serif;
+    --color-white: #fff;
+    --color-green-400: #4ade80;
+    --color-gray-200: #e5e7eb;
+    --text-xs: 0.75rem;
+    --text-xs--line-height: 1rem;`
+  const base = parts.base ?? V3_PREFLIGHT
+  const utilities = `@layer utilities {
+${(parts.utilities ?? UTILITIES).join('\n')}
+}`
   return `/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
 @layer theme, base, components, utilities;
 @layer theme {
@@ -59,9 +95,7 @@ ${theme}
 @layer base {
 ${base}
 }
-@layer utilities {
-${utilities.join('\n')}
-}
+${parts.utilitiesIn ? `${parts.utilitiesIn} {\n${utilities}\n}` : utilities}
 ${parts.extra ?? ''}`
 }
 
@@ -97,11 +131,45 @@ describe('checking one built stylesheet', () => {
   })
 
   it.each([
-    ['postcss-import wrapped the utilities in `@media source(none)`', '  @media source(none) {\n    .x { order: 1; }\n  }', /@media source/],
     ["v4's space-y rule came back", '  :where(.space-y-4 > :not(:last-child)) {\n    margin-bottom: 1rem;\n  }', /space-x\/space-y/],
     ['hover: is wrapped in @media (hover: hover) again', '  @media (hover: hover) {\n    .hover\\:x:hover { order: 1; }\n  }', /hover: hover/],
   ])('fails when %s', (_, rule, message) => {
     expect(problems(stylesheet({ utilities: [...UTILITIES, rule] }))).toEqual([expect.stringMatching(message)])
+  })
+
+  it('fails the utilities layer inside `@media source(none)`, where postcss-import puts it if Tailwind stops unwrapping it', () => {
+    // Every other check passes this build: the wrapper sits outside every layer, and the rules
+    // inside it still count. Chromium reads `source(none)` as false and drops all of them.
+    expect(problems(stylesheet({ utilitiesIn: '@media source(none)' }))).toEqual([
+      expect.stringContaining('has `@media source(none)`: postcss-import wrapped the utilities import'),
+      expect.stringContaining('has `@layer utilities` inside `@media source(none)`'),
+    ])
+  })
+
+  it('fails `@media source(...)` inside a layer as well', () => {
+    const rule = '  @media source(none) {\n    .x { order: 1; }\n  }'
+    expect(problems(stylesheet({ utilities: [...UTILITIES, rule] }))).toEqual([
+      expect.stringContaining('has `@media source(none)`'),
+    ])
+  })
+
+  it.each([['@media print'], ['@supports (display: grid)']])(
+    'fails a utilities layer that an @import condition left inside `%s`',
+    (wrapper) => {
+      expect(problems(stylesheet({ utilitiesIn: wrapper }))).toEqual([
+        expect.stringContaining(`has \`@layer utilities\` inside \`${wrapper}\``),
+      ])
+    },
+  )
+
+  it('fails any Tailwind layer inside a condition, not only the utilities layer', () => {
+    const extra = '@media print {\n  @layer base {\n    button { cursor: pointer; }\n  }\n}'
+    expect(problems(stylesheet({ extra }))).toEqual([expect.stringContaining('has `@layer base` inside `@media print`')])
+  })
+
+  it('does not take a layer inside another layer for a condition', () => {
+    const extra = '@layer base {\n  @layer reset {\n    button { cursor: pointer; }\n  }\n}'
+    expect(problems(stylesheet({ extra }))).toEqual([])
   })
 
   it('fails minified output, which rewrites the CSS the parity layer pins', () => {
@@ -109,23 +177,25 @@ describe('checking one built stylesheet', () => {
     expect(problems(minified)).toEqual([expect.stringContaining('lacks `--text-xs--line-height: 1rem`')])
   })
 
-  it("fails v4's Preflight in place of v3's, naming each missing v3 rule", () => {
-    const v4 = stylesheet({
-      base: `  *,
-::after,
-::before {
-    box-sizing: border-box;
-    border: 0 solid;
-  }
-  ::placeholder {
-    color: currentcolor;
-  }`,
-    })
-    expect(problems(v4)).toEqual([
+  it("fails v4's Preflight in place of v3's, naming each missing v3 rule and each v4 one", () => {
+    expect(problems(stylesheet({ base: V4_PREFLIGHT }))).toEqual([
       expect.stringContaining('`::after { border-color: #e5e7eb }`'),
       expect.stringContaining('`::placeholder { color: #9ca3af }`'),
       expect.stringContaining('`[role="button"] { cursor: pointer }`'),
+      expect.stringContaining("has v4 Preflight's `::file-selector-button { padding: 0 }`"),
+      expect.stringContaining("has v4 Preflight's `::placeholder { color: color-mix(in oklab, currentcolor 50%, transparent) }`"),
     ])
+  })
+
+  it("fails v4's Preflight beside v3's, which has every v3 rule", () => {
+    expect(problems(stylesheet({ base: `${V4_PREFLIGHT}\n${V3_PREFLIGHT}` }))).toEqual([
+      expect.stringContaining("has v4 Preflight's `::file-selector-button { padding: 0 }`"),
+      expect.stringContaining("has v4 Preflight's `::placeholder { color: color-mix(in oklab, currentcolor 50%, transparent) }`"),
+    ])
+  })
+
+  it('reads a Preflight declaration only off a rule, not off an at-rule such as @page', () => {
+    expect(problems(stylesheet({ base: `${V3_PREFLIGHT}\n  @page {\n    padding: 0;\n  }` }))).toEqual([])
   })
 
   it("does not count a utility that happens to match a Preflight rule as the Preflight", () => {
@@ -139,6 +209,39 @@ describe('checking one built stylesheet', () => {
   it("fails a colour that is v4's OKLCH value instead of v3's hex, saying what it should be", () => {
     const css = stylesheet({ theme: '    --color-green-400: oklch(79.2% 0.209 151.711);\n    --text-xs--line-height: 1rem;' })
     expect(problems(css)).toEqual(['emits `--color-green-400: oklch(79.2% 0.209 151.711)`; tailwind-v3-theme.css says `#4ade80`'])
+  })
+
+  it("fails v4's colours put in tailwind-v3-theme.css itself, which the build then agrees with", () => {
+    const edited = guard.readTheme(THEME.replace('#4ade80', 'oklch(79.2% 0.209 151.711)'))
+    const css = stylesheet({ theme: '    --color-green-400: oklch(79.2% 0.209 151.711);\n    --text-xs--line-height: 1rem;' })
+    expect(guard.checkStylesheet(css, edited)).toEqual([
+      'emits `--color-green-400: oklch(79.2% 0.209 151.711)`, as tailwind-v3-theme.css now says, but v3\'s palette is all hex',
+    ])
+  })
+
+  it("fails v4's green-400 written in hex, even when tailwind-v3-theme.css agrees", () => {
+    const edited = guard.readTheme(THEME.replace('#4ade80', '#05df72'))
+    const css = stylesheet({ theme: '    --color-green-400: #05df72;\n    --text-xs--line-height: 1rem;' })
+    expect(guard.checkStylesheet(css, edited)).toEqual([
+      'emits `--color-green-400: #05df72`, as tailwind-v3-theme.css now says, but v3\'s is `#4ade80`',
+    ])
+  })
+
+  it("fails v4's ratio for a line height, whether tailwind-v3-theme.css now says it or stopped setting it", () => {
+    const edited = guard.readTheme(THEME.replace('--text-xs--line-height: 1rem;', '--text-xs--line-height: calc(1 / 0.75);'))
+    const css = stylesheet({
+      theme: '    --color-green-400: #4ade80;\n    --text-xs--line-height: calc(1 / 0.75);\n    --text-sm--line-height: calc(1.25 / 0.875);',
+    })
+    expect(guard.checkStylesheet(css, edited)).toEqual([
+      expect.stringContaining('lacks `--text-xs--line-height: 1rem`'),
+      "emits `--text-xs--line-height: calc(1 / 0.75)`, v4's unitless ratio, where v3's line heights are rem",
+      "emits `--text-sm--line-height: calc(1.25 / 0.875)`, v4's unitless ratio, where v3's line heights are rem",
+    ])
+  })
+
+  it("leaves alone v3's unitless line height of 1, which the large text sizes have", () => {
+    const css = stylesheet({ theme: '    --color-green-400: #4ade80;\n    --text-xs--line-height: 1rem;\n    --text-5xl--line-height: 1;' })
+    expect(problems(css)).toEqual([])
   })
 
   it("fails a colour from v4's palette that v3 never had", () => {
@@ -157,7 +260,9 @@ describe('checking one built stylesheet', () => {
   })
 
   it('leaves alone a theme value the parity theme does not set, since v4 and v3 agree on it', () => {
-    const css = stylesheet({ theme: '    --font-mono: ui-monospace, monospace;\n    --color-green-400: #4ade80;\n    --text-xs--line-height: 1rem;' })
+    const css = stylesheet({
+      theme: '    --font-mono: ui-monospace, monospace;\n    --color-green-400: #4ade80;\n    --text-sm: 0.875rem;\n    --text-xs--line-height: 1rem;',
+    })
     expect(problems(css)).toEqual([])
   })
 
