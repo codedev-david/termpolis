@@ -1116,7 +1116,7 @@ permission at any time:
 | Permission | Default | What it allows |
 |---|---|---|
 | **Run agents here (read-only)** | on | Start a headless agent here in its own read-only mode. It can read any file you can read. Claude runs with only Read, Grep and Glob, Codex in its `read-only` sandbox, and Gemini (`agy`) in plan mode. Each gets this machine's memory and code index as read-only Termpolis tools (see *Read-only tools* below). Codex and `agy` keep MCP servers you added to their own configs. |
-| **Let agents edit files and run commands here** | off | The agent here runs unattended, as you. **Claude and Gemini get full access**: permission prompts skipped and a shell, so they can read and change any file you can, use your Termpolis terminals and reach your other linked computers. **Codex** runs in its `workspace-write` sandbox: it changes files only in the job's folder, and Termpolis switches the sandbox's network off for the job (`-c sandbox_workspace_write.network_access=false`), whatever your Codex config says. Turning it on turns on *Run agents here* too. |
+| **Let agents edit files and run commands here** | off | The agent here runs unattended, as you. **Claude and Gemini get full access**: permission prompts skipped and a shell, so they can read and change any file you can, use your Termpolis terminals and reach your other linked computers. **Codex** runs in its `workspace-write` sandbox: it changes files only in the job's folder and temporary folders, and Termpolis switches the sandbox's network off for the job (`-c sandbox_workspace_write.network_access=false`), whatever your Codex config says. Codex's sandbox is what enforces both. Turning it on turns on *Run agents here* too. |
 
 *Edit* is never chosen along with a code. Whoever enters a code first hasn't
 had its words checked yet, so a new link can at most run read-only agents. To
@@ -1312,8 +1312,9 @@ audit log.
   - These limits bind read-only jobs. A Claude or Gemini job with *edit*
     permission has a shell and runs as you, so it can get around them, for
     example by calling Termpolis's local MCP server with its token: treat
-    *edit* as full access. A Codex edit job's commands run in its sandbox with
-    the network switched off, so they can't reach that server.
+    *edit* as full access. A Codex edit job's commands run in Codex's sandbox
+    with its network switched off, and that sandbox is what keeps them from
+    that server.
 - **Answers are labelled and scanned.** What comes back from another machine
   passes the gateway's prompt-injection scan before your agent sees it. That
   covers the answer, its error and any refusal worded over there. Every answer

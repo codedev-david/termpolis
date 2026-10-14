@@ -245,7 +245,7 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
           A linked computer can do only what you allow it under its name below. With read-only, its
           agents can have an agent here read any file you can read and send it back. With edit, which
           you turn on from its row once its words are confirmed, a Claude or Gemini agent it starts here
-          has full access as you, and a Codex agent changes files only in its folder, with no network.
+          has full access as you, and a Codex agent runs in its sandbox, network off.
           Nothing asks you per job, but each one another computer starts here shows a notification and
           stays in the job history below. Every job shows under Activity on both computers, and Unlink
           ends the link on both.

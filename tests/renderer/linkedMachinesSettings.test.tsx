@@ -727,7 +727,8 @@ describe('LinkedMachinesSettings machines', () => {
     // What edit hands over, per agent, in amber, where it is granted.
     const risk = screen.getByTestId('linked-grant-device:bbbb-write-risk')
     expect(risk.textContent).toContain('full access as you')
-    expect(risk.textContent).toContain('Codex changes files only in its folder, with no network')
+    expect(risk.textContent).toContain('Codex runs in its own sandbox: it changes files only in its folder and temporary folders')
+    expect(risk.textContent).toContain('its network switched off')
     expect(risk.className).toContain('e5c07b')
     expect(row.textContent).toContain('without asking')
     // A computer that may edit says so at a glance; one that may not doesn't.
@@ -829,7 +830,8 @@ describe('LinkedMachinesSettings machines', () => {
     expect(panel.textContent).toContain('Claude and Gemini: full access.')
     expect(panel.textContent).toContain('reach your other linked computers')
     expect(panel.textContent).toContain('Codex: in its sandbox.')
-    expect(panel.textContent).toContain('no network')
+    expect(panel.textContent).toContain('temporary folders')
+    expect(panel.textContent).toContain('switches its network off')
   })
 
   it('leaves edit off when the question is cancelled', async () => {

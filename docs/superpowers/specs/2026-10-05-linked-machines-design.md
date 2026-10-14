@@ -154,7 +154,7 @@ The `write` grant means *"an agent on that machine may start an autonomous, perm
 What it hands over depends on the agent:
 
 - **Claude and Gemini (`agy`): full access as the user.** The job has a shell, so the adapter's tool limits (§4.5) bind only read-only jobs: an edit job can read the MCP token file and call the local MCP server directly, reaching terminals, memory writes and other linked machines. Nothing can be enforced against a process running as the same user, so the copy says so instead of implying a boundary.
-- **Codex: its `workspace-write` sandbox, with no network.** Termpolis pins `-c sandbox_workspace_write.network_access=false` on linked write jobs (verified against codex-cli 0.153.4's config schema), so the job's commands can't reach the MCP port whatever the user's `config.toml` says. Codex's own MCP connection to Termpolis runs outside the sandbox and keeps the restricted tools.
+- **Codex: its `workspace-write` sandbox, with no network.** Writes are confined to the job's folder and temporary folders (plus any `writable_roots` the user configured). Termpolis pins `-c sandbox_workspace_write.network_access=false` on linked write jobs, whatever the user's `config.toml` says, so Codex's sandbox is what keeps the job's commands off the network, the MCP port included. The key was checked against codex-cli 0.153.4 (`codex exec --help` documents `-c` dotted overrides, and the binary's config schema has `[sandbox_workspace_write] network_access`); a live check that such a job fails to reach the port is still to be done on Linux and Windows. Codex's own MCP connection to Termpolis runs outside the sandbox and keeps the restricted tools.
 
 Mitigation follows the Remote §4.5 pattern, tightened:
 

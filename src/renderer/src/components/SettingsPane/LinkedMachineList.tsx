@@ -46,7 +46,8 @@ function EditConfirm({
         </li>
         <li>
           <span className="text-[#e5c07b]">Codex: in its sandbox.</span> It can change files only in the
-          job&apos;s folder, and its commands get no network. It can still read any file you can.
+          job&apos;s folder and temporary folders, and Termpolis switches its network off, for Codex&apos;s
+          sandbox to enforce. It can still read any file you can.
         </li>
       </ul>
       <p className="text-xs text-[#9ca3af]">
@@ -160,7 +161,7 @@ export function LinkedMachineRow({
           {machine.grants.write && (
             <span
               data-testid={`linked-full-access-${machine.ref}`}
-              title="Its Claude and Gemini agents run here with full access as you; Codex in its sandbox, with no network."
+              title="Its Claude and Gemini agents run here with full access as you; Codex in its sandbox, network off."
               className="text-[10px] px-1.5 py-0.5 rounded border border-[#5a2d2d] bg-[#2a1919] text-[#f28b82] whitespace-nowrap"
             >
               full access

@@ -27,8 +27,8 @@ const GRANTS: GrantRow[] = [
     hint:
       'Its agents can start an agent here that edits files and runs commands without asking you. Claude and Gemini run ' +
       'with full access as you: they can change any file you can, use your Termpolis terminals and reach your other ' +
-      'linked computers. Codex changes files only in its folder, with no network. Allow this only for a computer you ' +
-      'trust as much as this one.',
+      'linked computers. Codex runs in its own sandbox: it changes files only in its folder and temporary folders, with ' +
+      'its network switched off. Allow this only for a computer you trust as much as this one.',
     risk: true,
   },
 ]
