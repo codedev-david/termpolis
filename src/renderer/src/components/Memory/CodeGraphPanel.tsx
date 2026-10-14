@@ -125,7 +125,7 @@ export function CodeGraphPanel({ cwd }: Props): JSX.Element {
       <div className="flex gap-2 mb-2">
         <input
           data-testid="code-graph-search"
-          className="flex-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm outline-none focus:border-[#0078d4]"
+          className="flex-1 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm outline-hidden focus:border-[#0078d4]"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {

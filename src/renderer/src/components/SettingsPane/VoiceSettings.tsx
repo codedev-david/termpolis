@@ -104,7 +104,7 @@ export function VoiceSettings() {
               data-testid="voice-model-select"
               value={v.groqModel}
               onChange={(e) => set({ groqModel: e.target.value })}
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-none"
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-hidden"
             >
               {GROQ_MODELS.map((m) => (
                 <option key={m.id} value={m.id}>
@@ -122,7 +122,7 @@ export function VoiceSettings() {
               data-testid="voice-hotkey-input"
               value={v.pushToTalkKey}
               onChange={(e) => set({ pushToTalkKey: e.target.value })}
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-none font-mono"
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-hidden font-mono"
             />
           </label>
 
@@ -135,7 +135,7 @@ export function VoiceSettings() {
                 const m = e.target.value
                 set({ pushToTalkMode: m === 'toggle' ? 'toggle' : m === 'tapSpace' ? 'tapSpace' : 'tapOrHold' })
               }}
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-none"
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-hidden"
             >
               <option value="tapOrHold">Tap to start/stop, or hold to talk (recommended)</option>
               <option value="toggle">Tap to start, tap again to stop (hands-free)</option>
@@ -157,7 +157,7 @@ export function VoiceSettings() {
                   if (kb) set({ sendKey: kb })
                 }}
                 placeholder="Press a key…"
-                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-none font-mono"
+                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-hidden font-mono"
               />
               <span className="text-xs text-[#9ca3af]">Click the field, then press the key that stops &amp; sends dictation (default Space).</span>
             </label>

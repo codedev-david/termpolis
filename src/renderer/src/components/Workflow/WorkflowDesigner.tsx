@@ -69,7 +69,7 @@ function TriggerField({
         placeholder={placeholder}
         aria-label={label}
         onChange={e => onChange(e.target.value)}
-        className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+        className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE]"
       />
       <span className="block text-[11px] text-[#6b7280] mt-1">{hint}</span>
     </label>
@@ -226,7 +226,7 @@ export function WorkflowDesigner({
         <span className="block text-[10px] uppercase tracking-wider text-[#9ca3af] mb-1">Workflow name</span>
         <input
           aria-label="Workflow name"
-          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1.5 text-sm text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1.5 text-sm text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE]"
           value={wf.name}
           onChange={e => setWf(w => ({ ...w, name: e.target.value }))}
         />
@@ -259,7 +259,7 @@ export function WorkflowDesigner({
         <input
           aria-label="Category"
           placeholder="Optional — groups this workflow into a sidebar folder"
-          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1.5 text-sm text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+          className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1.5 text-sm text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE]"
           value={wf.category ?? ''}
           onChange={e => setWf(w => ({ ...w, category: e.target.value }))}
         />
@@ -294,7 +294,7 @@ export function WorkflowDesigner({
                 <input
                   aria-label={`Input ${i + 1} name`}
                   placeholder="name"
-                  className={`w-28 bg-[#2d2d2d] border rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE] ${
+                  className={`w-28 bg-[#2d2d2d] border rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE] ${
                     INPUT_NAME_RE.test(inp.name) ? 'border-[#3c3c3c]' : 'border-[#ef4444]'
                   }`}
                   value={inp.name}
@@ -303,14 +303,14 @@ export function WorkflowDesigner({
                 <input
                   aria-label={`Input ${i + 1} label`}
                   placeholder="Prompt shown at run time"
-                  className="flex-1 min-w-[8rem] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+                  className="flex-1 min-w-[8rem] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE]"
                   value={inp.label ?? ''}
                   onChange={e => updateInput(i, { label: e.target.value })}
                 />
                 <input
                   aria-label={`Input ${i + 1} default`}
                   placeholder="default"
-                  className="w-28 bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+                  className="w-28 bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE]"
                   value={inp.default ?? ''}
                   onChange={e => updateInput(i, { default: e.target.value })}
                 />
@@ -451,7 +451,7 @@ export function WorkflowDesigner({
               <i className={`fa-solid ${iconFor(step.type)} text-[#22D3EE]`}></i>
               <input
                 aria-label="Step name"
-                className="flex-1 bg-transparent text-sm text-[#d4d4d4] focus:outline-none"
+                className="flex-1 bg-transparent text-sm text-[#d4d4d4] focus:outline-hidden"
                 value={step.name}
                 onChange={e => updateStep(i, { name: e.target.value })}
               />

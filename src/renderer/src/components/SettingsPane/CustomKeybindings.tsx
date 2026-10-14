@@ -12,7 +12,7 @@ interface Props {
 
 const NEW_ID = 'custom-new'
 const inputClass =
-  'bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm text-[#d4d4d4] outline-none focus:border-[#0078d4]'
+  'bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm text-[#d4d4d4] outline-hidden focus:border-[#0078d4]'
 
 /**
  * User-defined "macro" shortcuts: a combo that types a snippet (optionally

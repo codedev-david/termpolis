@@ -19,7 +19,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 const inputCls =
-  'w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]'
+  'w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE]'
 const labelCls = 'block text-[10px] uppercase tracking-wider text-[#9ca3af] mb-1'
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

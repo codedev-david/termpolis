@@ -178,7 +178,7 @@ export function GroqConnectModal({ onClose }: { onClose: () => void }) {
                   placeholder="gsk_…"
                   autoComplete="off"
                   spellCheck={false}
-                  className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm font-mono focus:outline-none focus:border-[#0078d4]"
+                  className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm font-mono focus:outline-hidden focus:border-[#0078d4]"
                 />
                 {error && (
                   <p data-testid="groq-error" className="text-xs text-[#ff8a8a]">

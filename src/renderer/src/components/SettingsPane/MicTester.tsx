@@ -134,7 +134,7 @@ export function MicTester() {
           data-testid="voice-device-select"
           value={inputDeviceId}
           onChange={(e) => set({ inputDeviceId: e.target.value })}
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-none"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-72 focus:outline-hidden"
         >
           <option value="">System default</option>
           {devices.map((d) => (

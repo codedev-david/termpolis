@@ -376,8 +376,8 @@ function GrowthChart({ timeline, lessons }: { timeline: Array<{ t: number; total
         <path d={lessonPath.line} fill="none" stroke="#e2c08d" strokeWidth={1.6} strokeDasharray="3 3" />
       </svg>
       <div className="flex gap-4 text-[11px] font-mono text-[#9ca3af]">
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-[#22D3EE]" />cumulative memories</span>
-        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-[#e2c08d]" />lessons distilled ({compactNumber(lessons)}, own scale)</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-xs bg-[#22D3EE]" />cumulative memories</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-2 h-2 rounded-xs bg-[#e2c08d]" />lessons distilled ({compactNumber(lessons)}, own scale)</span>
       </div>
     </div>
   )

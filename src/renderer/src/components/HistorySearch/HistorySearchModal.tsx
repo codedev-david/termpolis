@@ -39,7 +39,7 @@ export function HistorySearchModal({ onClose }: Props) {
             placeholder="Search command history…"
             value={query}
             onChange={e => setQuery(e.target.value)}
-            className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm focus:outline-none focus:border-[#0078d4]"
+            className="w-full bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm focus:outline-hidden focus:border-[#0078d4]"
           />
         </div>
         <div className="overflow-y-auto max-h-80">

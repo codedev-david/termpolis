@@ -2036,7 +2036,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   value=""
                   onClick={(e) => e.stopPropagation()}
                   title={`${label} must be installed to switch models.`}
-                  className="text-[10px] font-medium text-[#9ca3af] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded px-1.5 py-1 outline-none"
+                  className="text-[10px] font-medium text-[#9ca3af] bg-[#2d2d2d]/90 border border-[#3c3c3c] rounded px-1.5 py-1 outline-hidden"
                   onChange={(e) => e.stopPropagation()}
                 >
                   <option value="">Model — needs {label}</option>
@@ -2079,7 +2079,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 }}
                 disabled={relaunchInFlight}
                 title={`Switch this ${label} agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens).`}
-                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none disabled:opacity-60"
+                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-hidden disabled:opacity-60"
               >
                 <option value="">{options.length === 0 ? 'Model — none found' : 'Model…'}</option>
                 {options.length === 0 && <option value={REFRESH_MODELS_VALUE}>Retry discovery</option>}
@@ -2103,7 +2103,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 onClick={(e) => e.stopPropagation()}
                 onChange={(e) => { e.stopPropagation(); void handleSecondOpinion(e.target.value) }}
                 title="Get a second opinion — another installed agent (or a different Claude model) reviews the most recent response in this terminal and pastes concise feedback back here."
-                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-none disabled:opacity-60"
+                className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-hidden disabled:opacity-60"
               >
                 <option value="">{secondOpinionBusy ? 'Reviewing…' : 'Second Opinion…'}</option>
                 {so.groups.map((g) => (

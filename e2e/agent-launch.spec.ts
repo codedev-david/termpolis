@@ -442,7 +442,7 @@ test.describe.serial('5. Loading Overlay', () => {
 
     if (visible) {
       // Click the overlay to dismiss
-      const overlayContainer = page.locator('.backdrop-blur-sm').first()
+      const overlayContainer = page.getByTestId('agent-launch-overlay')
       await overlayContainer.click()
       await page.waitForTimeout(300)
 

@@ -60,7 +60,7 @@ export function TabPopover({ name, color, fontSize, theme, fontFamily, anchorEl,
       <input
         value={editName}
         onChange={e => setEditName(e.target.value)}
-        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none focus:border-[#0078d4]"
+        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden focus:border-[#0078d4]"
       />
 
       {/* Font Size */}
@@ -77,7 +77,7 @@ export function TabPopover({ name, color, fontSize, theme, fontFamily, anchorEl,
             max={32}
             value={editFontSize}
             onChange={e => handleFontSizeChange(Number(e.target.value))}
-            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none w-14 text-center"
+            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden w-14 text-center"
             aria-label="Font size"
           />
           <button
@@ -119,7 +119,7 @@ export function TabPopover({ name, color, fontSize, theme, fontFamily, anchorEl,
         <select
           value={editFontFamily}
           onChange={e => setEditFontFamily(e.target.value)}
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
           aria-label="Font family"
         >
           {FONT_FAMILY_OPTIONS.map(f => (

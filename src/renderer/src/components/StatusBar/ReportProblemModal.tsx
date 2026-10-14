@@ -163,7 +163,7 @@ export function ReportProblemModal({ onClose }: { onClose: () => void }) {
               onChange={e => setTitle(e.target.value)}
               maxLength={MAX_TITLE_LEN + 10}
               placeholder="Short summary of what went wrong"
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE]"
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE]"
               data-testid="report-title-input"
             />
             <span className={`text-[10px] text-right ${title.length > MAX_TITLE_LEN ? 'text-red-400' : 'text-[#6b7280]'}`}>
@@ -178,7 +178,7 @@ export function ReportProblemModal({ onClose }: { onClose: () => void }) {
               onChange={e => setDescription(e.target.value)}
               rows={6}
               placeholder={'Steps to reproduce, what you expected, what happened instead.\n\nCtrl+Enter to submit.'}
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE] resize-none font-mono"
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-2 text-sm text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE] resize-none font-mono"
               data-testid="report-description-input"
             />
             <span className={`text-[10px] text-right ${descriptionTooLong ? 'text-red-400' : 'text-[#6b7280]'}`}>

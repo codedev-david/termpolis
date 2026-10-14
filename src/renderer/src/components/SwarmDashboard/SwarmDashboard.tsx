@@ -166,7 +166,7 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
               }`}
             >
               {task.status === 'in_progress' && (
-                <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-blue-400 to-transparent animate-shimmer"></div>
+                <div className="absolute top-0 left-0 right-0 h-0.5 bg-linear-to-r/srgb from-transparent via-blue-400 to-transparent animate-shimmer"></div>
               )}
               <div className="text-sm font-medium mb-1 flex items-center gap-2">
                 {task.status === 'in_progress' && (

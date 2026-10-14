@@ -207,7 +207,7 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
 
         <div className="flex flex-col gap-1">
           <input
-            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-none focus:border-[#22D3EE]"
+            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-hidden focus:border-[#22D3EE]"
             placeholder="What are you working on?"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -290,7 +290,7 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
                   <div className="text-[11px] text-[#FFB74D]"><i className="fa-solid fa-lock mr-1"></i>Encrypted memory found — enter the passphrase to unlock it on this device.</div>
                   <input
                     type="password"
-                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-none focus:border-[#22D3EE]"
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-hidden focus:border-[#22D3EE]"
                     placeholder="Passphrase"
                     value={passphrase}
                     onChange={(e) => setPassphrase(e.target.value)}
@@ -309,7 +309,7 @@ export function Memory({ onClose, activeTerminalId, activeCwd }: Props): JSX.Ele
                   <div className="text-[11px] text-[#777] leading-relaxed">Encrypt at rest so the sync provider (Dropbox / iCloud) can&apos;t read it. Use the <strong>same passphrase</strong> on every device.</div>
                   <input
                     type="password"
-                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-none focus:border-[#22D3EE]"
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-[#d4d4d4] text-[12px] outline-hidden focus:border-[#22D3EE]"
                     placeholder="Passphrase"
                     value={passphrase}
                     onChange={(e) => setPassphrase(e.target.value)}

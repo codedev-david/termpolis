@@ -202,7 +202,7 @@ test.describe.serial('Conductor Wizard', () => {
               id="mock-task-textarea"
               placeholder='e.g. "Build a tic-tac-toe game in React, write unit tests for the game logic, and create documentation on how to play"'
               rows="5"
-              class="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
+              class="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-hidden resize-none"
             ></textarea>
             <div class="mt-3 p-2.5 bg-[#1e1e1e] border border-[#3c3c3c] rounded-lg">
               <p class="text-[10px] text-[#6b7280] mb-1.5 font-semibold uppercase tracking-wider">Tips for better results</p>

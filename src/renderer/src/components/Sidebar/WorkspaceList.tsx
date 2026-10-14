@@ -149,7 +149,7 @@ export function WorkspaceList() {
                   if (e.key === 'Escape') setEditingId(null)
                 }}
                 onBlur={commitRename}
-                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-0.5 text-xs focus:outline-none flex-1 min-w-0"
+                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-0.5 text-xs focus:outline-hidden flex-1 min-w-0"
               />
             </div>
           ) : (
@@ -192,7 +192,7 @@ export function WorkspaceList() {
                 if (e.key === 'Enter') { addWorkspace(wsName.trim() || 'Workspace'); setSaving(false) }
                 if (e.key === 'Escape') setSaving(false)
               }}
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs focus:outline-none"
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs focus:outline-hidden"
             />
             <div className="flex gap-1">
               <button onClick={() => setSaving(false)} className="text-xs px-2 py-0.5 rounded hover:bg-[#3c3c3c]">Cancel</button>

@@ -281,7 +281,7 @@ export function SettingsPane() {
             <select
               value={defaultShell}
               onChange={e => setDefaultShell(e.target.value as ShellType)}
-              className="bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-none"
+              className="bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-sm w-48 focus:outline-hidden"
             >
               {shells.map(s => <option key={s.type} value={s.type}>{s.label}</option>)}
             </select>
@@ -335,7 +335,7 @@ export function SettingsPane() {
                     data-testid="settings-default-font-size"
                     value={termDefaults.fontSize}
                     onChange={e => setTermDefaults(setTerminalDefaults({ fontSize: clampFontSize(Number(e.target.value)) }))}
-                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none w-14 text-center"
+                    className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden w-14 text-center"
                   />
                   <button
                     onClick={() => setTermDefaults(setTerminalDefaults({ fontSize: clampFontSize(termDefaults.fontSize + 1) }))}
@@ -349,7 +349,7 @@ export function SettingsPane() {
                   data-testid="settings-default-font-family"
                   value={termDefaults.fontFamily}
                   onChange={e => setTermDefaults(setTerminalDefaults({ fontFamily: e.target.value }))}
-                  className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+                  className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
                 >
                   {FONT_FAMILY_OPTIONS.map(f => (
                     <option key={f.label} value={f.value}>{f.label}</option>

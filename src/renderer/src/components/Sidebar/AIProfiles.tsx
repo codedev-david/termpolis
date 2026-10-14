@@ -54,20 +54,20 @@ function AddProfileModal({ availableShells, onSave, onCancel }: AddProfileModalP
       >
         <h3 className="text-sm font-semibold text-[#d4d4d4]">Add AI Profile</h3>
         <input
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-hidden focus:border-[#22D3EE]"
           placeholder="Name (e.g. My Agent)"
           value={name}
           onChange={e => setName(e.target.value)}
           autoFocus
         />
         <input
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-hidden focus:border-[#22D3EE]"
           placeholder="Command (e.g. claude --model opus)"
           value={command}
           onChange={e => setCommand(e.target.value)}
         />
         <select
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-hidden focus:border-[#22D3EE]"
           value={effectiveShell}
           onChange={e => setShell(e.target.value as ShellType)}
           title="Shells detected on this machine"
@@ -80,7 +80,7 @@ function AddProfileModal({ availableShells, onSave, onCancel }: AddProfileModalP
           )}
         </select>
         <select
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-hidden focus:border-[#22D3EE]"
           value={model}
           onChange={e => setModel(e.target.value)}
           title="Claude model for this profile (appended as --model on launch). Cheaper models save tokens."

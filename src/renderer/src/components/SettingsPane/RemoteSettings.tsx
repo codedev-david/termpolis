@@ -270,7 +270,7 @@ export function RemoteSettings(): JSX.Element {
             // typed the suggestion verbatim got a relay that could never connect,
             // and no hint that the address was the reason.
             placeholder="wss://relay.termpolis.com"
-            className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+            className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
           />
           <button
             data-testid="remote-relay-save"
@@ -291,7 +291,7 @@ export function RemoteSettings(): JSX.Element {
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             placeholder="Phone"
-            className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+            className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
           />
           <button
             data-testid="remote-pair-button"

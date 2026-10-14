@@ -791,7 +791,7 @@ The workflow automatically downloads the latest bundled CLI tools before packagi
 | Code Editor | [Monaco Editor](https://microsoft.github.io/monaco-editor/) (lazy-loaded) |
 | MCP Server | HTTP/SSE on localhost:9315 |
 | Icons | [Font Awesome](https://fontawesome.com/) 6 |
-| Styling | [Tailwind CSS](https://tailwindcss.com/) 3 |
+| Styling | [Tailwind CSS](https://tailwindcss.com/) 4 |
 | Testing | [Vitest](https://vitest.dev/) + React Testing Library |
 | Packaging | [electron-builder](https://www.electron.build/) |
 

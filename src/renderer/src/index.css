@@ -1,14 +1,50 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind CSS v4, set up to render exactly what the Tailwind 3.4 build did. Every departure
+   from a stock v4 setup is there for pixel parity, with the reason beside it.
+   Keep every @import above every other statement: Vite inlines @import with postcss-import,
+   which only accepts @import at the top of the file. */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+/* Tailwind 3.4.19's Preflight, with its theme() values resolved. v4's own Preflight changes the
+   placeholder colour, the default border colour, the button cursor, form-control backgrounds
+   and td/th padding. */
+@import "./tailwind-v3-preflight.css" layer(base);
+/* source(none): scan only the @source glob below, as v3's `content` did, not the whole repo. */
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+/* v3's colour palette, font sizes and line heights, font-sans, and hover on every device. */
+@import "./tailwind-v3-theme.css";
+
+/* Every .ts, .tsx, .js and .jsx file under src/, which is what tailwind.config.js `content` listed. */
+@source "../../**/*.{ts,tsx,js,jsx}";
+
+/* translate-x-4.5 is not a v3 class, so v3 emitted nothing for it and the Settings toggles'
+   knobs never moved. Blocked so this upgrade changes no pixels. */
+@source not inline("translate-x-4.5");
+
+/* v4 moved space-y-* to margin-bottom on :not(:last-child) at zero specificity, which changes
+   the gap wherever a child sets its own margin (StartSwarmModal). These are the v3 rules. */
+@source not inline("space-y-{0.5,1,1.5,2,3,4}");
+
+@layer utilities {
+  .space-y-0\.5 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.125rem; margin-bottom: 0; }
+  .space-y-1 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.25rem; margin-bottom: 0; }
+  .space-y-1\.5 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.375rem; margin-bottom: 0; }
+  .space-y-2 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.5rem; margin-bottom: 0; }
+  .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.75rem; margin-bottom: 0; }
+  .space-y-4 > :not([hidden]) ~ :not([hidden]) { margin-top: 1rem; margin-bottom: 0; }
+}
+
+/* Smooth transitions for interactive elements.
+   In v3 every utility class out-ranked this element selector. v4 puts utilities in a cascade
+   layer and an un-layered rule beats every layer, so this rule lives in the base layer. */
+@layer base {
+  button, [role="button"] {
+    transition: background-color 150ms ease, color 150ms ease, opacity 150ms ease;
+  }
+}
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; padding: 0; background: #1e1e1e; color: #d4d4d4; font-family: 'Segoe UI', system-ui, sans-serif; }
-
-/* Smooth transitions for interactive elements */
-button, [role="button"] {
-  transition: background-color 150ms ease, color 150ms ease, opacity 150ms ease;
-}
 
 /* Fade-in animation for modals and overlays */
 @keyframes fadeIn {

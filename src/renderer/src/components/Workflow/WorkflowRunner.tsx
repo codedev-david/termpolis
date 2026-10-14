@@ -100,7 +100,7 @@ export function WorkflowRunner({
                 aria-label={inp.label?.trim() || inp.name}
                 disabled={running}
                 placeholder={inp.description ?? ''}
-                className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-sm text-[#d4d4d4] focus:outline-none focus:border-[#22D3EE] disabled:opacity-50"
+                className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1 text-sm text-[#d4d4d4] focus:outline-hidden focus:border-[#22D3EE] disabled:opacity-50"
                 value={values[inp.name] ?? ''}
                 onChange={e => setValues(v => ({ ...v, [inp.name]: e.target.value }))}
               />

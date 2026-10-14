@@ -696,7 +696,7 @@ export function SecuritySettings() {
           onChange={e => setScanInput(e.target.value)}
           rows={4}
           placeholder="Paste the prompt or output you're considering sending to an AI agent…"
-          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded p-2 text-xs text-[#d4d4d4] font-mono focus:outline-none focus:border-[#0078d4]"
+          className="bg-[#1e1e1e] border border-[#3c3c3c] rounded p-2 text-xs text-[#d4d4d4] font-mono focus:outline-hidden focus:border-[#0078d4]"
         />
         <div className="flex items-center gap-2">
           <button

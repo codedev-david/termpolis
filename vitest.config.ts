@@ -25,6 +25,13 @@ process.stderr.write = ((chunk: any, ...rest: any[]) => {
 export default defineConfig({
   plugins: [react()],
   customLogger: logger,
+  // An inline PostCSS config, so a test run never loads postcss.config.js. Vitest empties every
+  // stylesheet a test imports, but Vite's CSS plugin still loads a PostCSS config to process the
+  // empty file. postcss.config.js loads @tailwindcss/postcss, a build-only devDependency, so on a
+  // machine whose node_modules predates Tailwind 4 every test that imports a stylesheet (monaco's
+  // modules import their own) would fail with "Failed to load PostCSS config". An emptied
+  // stylesheet needs no PostCSS plugins.
+  css: { postcss: { plugins: [] } },
   test: {
     globals: true,
     environment: 'jsdom',

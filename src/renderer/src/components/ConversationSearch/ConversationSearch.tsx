@@ -149,7 +149,7 @@ export function ConversationSearch({ onClose }: Props) {
             placeholder="Search AI conversations..."
             value={query}
             onChange={e => setQuery(e.target.value)}
-            className="flex-1 bg-transparent text-sm text-[#d4d4d4] outline-none placeholder-[#9ca3af]"
+            className="flex-1 bg-transparent text-sm text-[#d4d4d4] outline-hidden placeholder-[#9ca3af]"
           />
           <kbd className="text-[10px] text-[#9ca3af] bg-[#1e1e1e] rounded px-1.5 py-0.5 border border-[#3c3c3c]">Esc</kbd>
         </div>

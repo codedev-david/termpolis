@@ -105,7 +105,7 @@ export function InterventionControls({ terminalId, agentLabel, writer }: Props) 
           onChange={(e) => setSteerText(e.target.value)}
           onKeyDown={handleSteerKey}
           placeholder="Steer the agent…"
-          className="flex-1 bg-[#252526] border border-[#3c3c3c] text-xs text-[#cccccc] px-2 py-1 rounded focus:outline-none focus:border-[#007acc]"
+          className="flex-1 bg-[#252526] border border-[#3c3c3c] text-xs text-[#cccccc] px-2 py-1 rounded focus:outline-hidden focus:border-[#007acc]"
           data-testid="intervention-steer-input"
           aria-label="Steer message"
         />

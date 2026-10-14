@@ -385,7 +385,7 @@ export function GitPanel({ onClose }: GitPanelProps) {
               onChange={e => setCommitMsg(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && commitMsg.trim()) handleCommit() }}
               placeholder="Commit message..."
-              className="flex-1 bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5 text-xs text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-none"
+              className="flex-1 bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5 text-xs text-[#d4d4d4] placeholder-[#777] focus:border-[#22D3EE] outline-hidden"
             />
             <button
               onClick={handleCommit}

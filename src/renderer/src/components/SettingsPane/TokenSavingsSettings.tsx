@@ -350,7 +350,7 @@ export function TokenSavingsSettings() {
               value={settings.mode}
               onChange={(e) => update({ mode: e.target.value as Mode })}
               disabled={!settings.enabled}
-              className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none disabled:opacity-50"
+              className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden disabled:opacity-50"
             >
               <option value="conservative" className="bg-[#2d2d2d] text-[#d4d4d4]">Conservative</option>
               <option value="balanced" className="bg-[#2d2d2d] text-[#d4d4d4]">Balanced</option>
@@ -383,7 +383,7 @@ export function TokenSavingsSettings() {
               data-testid="hr-thinking-cap"
               value={String(settings.thinkingCap)}
               onChange={(e) => update({ thinkingCap: Number(e.target.value) })}
-              className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+              className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
             >
               {THINKING_CAPS.map((c) => (
                 <option key={c.value} value={String(c.value)} className="bg-[#2d2d2d] text-[#d4d4d4]">{c.label}</option>

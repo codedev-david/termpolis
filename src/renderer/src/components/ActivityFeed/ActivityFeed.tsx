@@ -75,7 +75,7 @@ export function ActivityFeed({ terminalId, onClose }: Props) {
           placeholder="Search activity…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full bg-[#1e1e1e] border border-[#3c3c3c] text-xs text-[#cccccc] px-2 py-1 rounded focus:outline-none focus:border-[#007acc]"
+          className="w-full bg-[#1e1e1e] border border-[#3c3c3c] text-xs text-[#cccccc] px-2 py-1 rounded focus:outline-hidden focus:border-[#007acc]"
           aria-label="Search activity"
         />
         <div className="flex gap-2">

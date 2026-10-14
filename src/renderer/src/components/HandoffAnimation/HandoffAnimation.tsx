@@ -32,12 +32,12 @@ export function HandoffAnimation({
       role="status"
       aria-live="polite"
     >
-      <div className="flex items-center gap-4 bg-[#1e1e1e]/90 backdrop-blur-sm border border-[#3c5f8a] rounded-full px-6 py-3 shadow-xl">
+      <div className="flex items-center gap-4 bg-[#1e1e1e]/90 backdrop-blur-xs border border-[#3c5f8a] rounded-full px-6 py-3 shadow-xl">
         <span className="text-[#cccccc] text-sm font-medium">
           {fromAgent ?? 'Conductor'}
         </span>
         <span
-          className="inline-block w-16 h-[2px] bg-gradient-to-r from-[#22d3ee] to-[#d7a45a] animate-pulse"
+          className="inline-block w-16 h-[2px] bg-linear-to-r/srgb from-[#22d3ee] to-[#d7a45a] animate-pulse"
           data-testid="handoff-arrow"
         />
         <i className="fa-solid fa-arrow-right text-[#22d3ee] text-xs"></i>

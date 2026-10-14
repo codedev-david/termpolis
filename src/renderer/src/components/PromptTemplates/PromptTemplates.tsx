@@ -36,14 +36,14 @@ function AddTemplateForm({ onSave, onCancel }: AddTemplateFormProps) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-2 p-3 border-t border-[#3c3c3c]">
       <input
-        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE]"
+        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-hidden focus:border-[#22D3EE]"
         placeholder="Template name"
         value={name}
         onChange={e => setName(e.target.value)}
         autoFocus
       />
       <textarea
-        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-none focus:border-[#22D3EE] resize-none"
+        className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-3 py-1.5 text-sm text-[#d4d4d4] outline-hidden focus:border-[#22D3EE] resize-none"
         placeholder="Prompt text..."
         rows={3}
         value={text}

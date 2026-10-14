@@ -214,7 +214,7 @@ export function AuditLogModal({ onClose, coverage, auditPath }: Props): JSX.Elem
               onChange={(e) => setQ(e.target.value)}
               placeholder="Filter by event, agent, or note…"
               data-testid="audit-filter"
-              className="flex-1 text-xs px-2 py-1.5 rounded bg-[#1e1e1e] border border-[#3c3c3c] outline-none focus:border-[#22D3EE]"
+              className="flex-1 text-xs px-2 py-1.5 rounded bg-[#1e1e1e] border border-[#3c3c3c] outline-hidden focus:border-[#22D3EE]"
             />
             <label className="text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
               <input type="checkbox" checked={onlyNotable} onChange={() => setOnlyNotable((x) => !x)} data-testid="audit-only-notable" />

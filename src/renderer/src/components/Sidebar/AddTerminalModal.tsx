@@ -61,7 +61,7 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, defaultCwd, 
           <input
             value={name}
             onChange={e => setName(e.target.value)}
-            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none focus:border-[#0078d4]"
+            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden focus:border-[#0078d4]"
           />
         </label>
 
@@ -76,7 +76,7 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, defaultCwd, 
               onChange={e => setCwd(e.target.value)}
               placeholder="Home directory"
               spellCheck={false}
-              className="flex-1 min-w-0 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none focus:border-[#0078d4]"
+              className="flex-1 min-w-0 bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden focus:border-[#0078d4]"
             />
             <button
               onClick={handleBrowse}
@@ -92,7 +92,7 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, defaultCwd, 
             <select
               value={shellType}
               onChange={e => setShellType(e.target.value as ShellType)}
-              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+              className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
             >
               {shells.map(s => <option key={s.type} value={s.type}>{s.label}</option>)}
             </select>
@@ -110,7 +110,7 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, defaultCwd, 
                 max={32}
                 value={fontSize}
                 onChange={e => handleFontSizeChange(Number(e.target.value))}
-                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none w-14 text-center"
+                className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden w-14 text-center"
               />
               <button
                 onClick={() => handleFontSizeChange(fontSize + 1)}
@@ -152,7 +152,7 @@ export function AddTerminalModal({ shells, nextIndex, defaultShell, defaultCwd, 
           <select
             value={fontFamily}
             onChange={e => setFontFamily(e.target.value)}
-            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+            className="bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
           >
             {FONT_FAMILY_OPTIONS.map(f => (
               <option key={f.label} value={f.value}>{f.label}</option>

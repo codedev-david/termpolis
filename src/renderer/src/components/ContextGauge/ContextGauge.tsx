@@ -44,7 +44,7 @@ export function ContextGauge({ terminalId, model, onClick }: Props) {
       data-testid="context-gauge"
     >
       <div
-        className="w-16 h-2 rounded-sm overflow-hidden bg-[#2d2d2d]"
+        className="w-16 h-2 rounded-xs overflow-hidden bg-[#2d2d2d]"
         aria-hidden="true"
       >
         <div

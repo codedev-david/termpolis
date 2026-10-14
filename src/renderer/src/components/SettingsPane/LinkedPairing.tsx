@@ -183,7 +183,7 @@ export function LinkedJoinForm({
         rows={3}
         spellCheck={false}
         placeholder="termpolis-link:…"
-        className="w-full font-mono text-[11px] bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 focus:outline-none disabled:opacity-60"
+        className="w-full font-mono text-[11px] bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 focus:outline-hidden disabled:opacity-60"
       />
       <div className="text-xs text-[#6b7280] mt-2 mb-1">What that computer may do here:</div>
       <LinkedGrantToggles
@@ -254,7 +254,7 @@ export function LinkedPendingCard({ item, onConfirm, onCancel }: LinkedPendingCa
               value={name}
               maxLength={64}
               onChange={(e) => setName(e.target.value)}
-              className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-none"
+              className="flex-1 bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
             />
           </label>
         </>

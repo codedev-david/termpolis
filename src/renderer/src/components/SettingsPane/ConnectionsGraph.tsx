@@ -220,7 +220,7 @@ export function ConnectionsGraph({ nodes, edges, totalNodes, totalEdges }: Props
       {selected && (
         <div className="absolute top-2 right-2 w-56 max-w-[62%] bg-[#12161f]/95 border border-[#22D3EE]/40 rounded-lg p-2.5 shadow-lg backdrop-blur" data-testid="ml-graph-card">
           <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: typeColor(selected.node.type) }} />
+            <span className="w-2.5 h-2.5 rounded-xs shrink-0" style={{ background: typeColor(selected.node.type) }} />
             <span className="font-bold text-xs text-[#e6edf3] truncate" title={selected.node.label}>{selected.node.label}</span>
             <button onClick={() => setSelected(null)} className="ml-auto text-[#9ca3af] hover:text-[#e6edf3] text-xs leading-none px-1">✕</button>
           </div>
@@ -240,7 +240,7 @@ export function ConnectionsGraph({ nodes, edges, totalNodes, totalEdges }: Props
       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2.5">
         {present.map((t) => (
           <span key={t} className="inline-flex items-center gap-1.5 text-[11px] font-mono text-[#9ca3af]">
-            <span className="w-2 h-2 rounded-sm" style={{ background: typeColor(t) }} />{t}
+            <span className="w-2 h-2 rounded-xs" style={{ background: typeColor(t) }} />{t}
           </span>
         ))}
         <span className="text-[11px] font-mono text-[#6b7280]">— click a node to trace its connections</span>

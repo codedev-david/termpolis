@@ -277,7 +277,7 @@ export function PastAISessions({ open, onClose }: Props) {
             placeholder="Filter by project, branch, or first message..."
             value={filter}
             onChange={e => setFilter(e.target.value)}
-            className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:outline-none focus:border-[#0078d4]"
+            className="w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:outline-hidden focus:border-[#0078d4]"
           />
         </div>
 

@@ -69,7 +69,7 @@ export function LinkedMachineRow({
               if (e.key === 'Enter') void commit()
               else if (e.key === 'Escape') setDraft(null)
             }}
-            className="min-w-0 flex-1 bg-transparent hover:bg-[#2d2d2d] focus:bg-[#2d2d2d] text-sm text-[#e0e0e0] border border-transparent focus:border-[#3c3c3c] rounded px-1 py-0.5 focus:outline-none"
+            className="min-w-0 flex-1 bg-transparent hover:bg-[#2d2d2d] focus:bg-[#2d2d2d] text-sm text-[#e0e0e0] border border-transparent focus:border-[#3c3c3c] rounded px-1 py-0.5 focus:outline-hidden"
           />
           <span data-testid={`linked-online-${machine.ref}`} className="text-xs text-[#6b7280]">
             {machine.online ? 'online' : 'offline'}

@@ -350,7 +350,7 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd, initialGoal =
   }
 
   function renderDescribeStep() {
-    const fieldClass = "w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-none resize-none"
+    const fieldClass = "w-full bg-[#2d2d2d] border border-[#3c3c3c] rounded-lg px-4 py-3 text-sm text-[#d4d4d4] placeholder-[#555] focus:border-[#22D3EE] outline-hidden resize-none"
 
     return (
       <div className="space-y-4">

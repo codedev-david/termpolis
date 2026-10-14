@@ -92,7 +92,7 @@ export function TerminalSearch({
         placeholder="Find in terminal"
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={handleKeyDown}
-        className="bg-transparent text-sm text-[#d4d4d4] outline-none placeholder-[#9ca3af] w-44"
+        className="bg-transparent text-sm text-[#d4d4d4] outline-hidden placeholder-[#9ca3af] w-44"
       />
       <span
         data-testid="terminal-search-count"

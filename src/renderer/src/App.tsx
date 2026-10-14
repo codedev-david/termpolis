@@ -994,7 +994,8 @@ export default function App() {
           {renderMain()}
           {launchingAgent && (
             <div
-              className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-[#1e1e1e]/85 backdrop-blur-sm cursor-pointer"
+              className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-[#1e1e1e]/85 backdrop-blur-xs cursor-pointer"
+              data-testid="agent-launch-overlay"
               onClick={() => setLaunchingAgent(null)}
             >
               <div className="relative mb-6">
