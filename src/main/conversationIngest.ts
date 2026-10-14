@@ -472,11 +472,12 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
       // The primer came off this session's opening prompt. One an earlier version stored with it
       // keeps the chunking it was stored under: the shorter first turn moves every cut after it, so
       // re-cut, the whole session would get new hashes and be stored and embedded a second time,
-      // beside the old copy.
-      if (turns !== parsed && known.size === 0) {
+      // beside the old copy. Its first chunk, primer and all, tells: only an earlier version stores
+      // that one, where a later chunk can be cut the same with the primer or without.
+      if (turns !== parsed) {
         const whole = chunkTurns(parsed, deps.chunkOptions)
         const stored = await knownHashes(deps, whole.map((c) => c.hash))
-        if (stored.size > 0) {
+        if (stored.has(whole[0].hash)) {
           chunks = whole
           known = stored
         }

@@ -17,7 +17,7 @@ import {
   type IngestMemory,
 } from '../../src/main/conversationIngest'
 import { buildExecPrompt } from '../../src/main/headlessExec'
-import { delegationHeader } from '../../src/shared/headlessPrompt'
+import { delegationHeader, ownDialogue } from '../../src/shared/headlessPrompt'
 
 const HEADER = delegationHeader('laptop', '/home/me/repos/app')
 const PRIMER = ['Past conversations in app:', '- [claude · 2d ago] the parser lives in src/parse.ts'].join('\n')
@@ -205,6 +205,28 @@ describe("the user's own sessions", () => {
     // Never stored: the primer comes off.
     const fresh = await ingest({ 'old.jsonl': { source: 'claude', content } })
     expect(fresh.written.map((c) => c.text).join('\n')).not.toContain('Recalled from the shared Termpolis brain')
+  })
+
+  it('tell the two chunkings apart by the first chunk, where later ones can be cut the same in both', async () => {
+    // A turn too long for a chunk is cut into windows on its own: the same windows with or without
+    // the primer, so both chunkings share them.
+    const line = (role: 'user' | 'assistant', text: string): string =>
+      JSON.stringify(role === 'user'
+        ? { type: 'user', sessionId: 's-twin', cwd: '/home/me/repos/app', message: { role: 'user', content: text } }
+        : { type: 'assistant', sessionId: 's-twin', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+    const content = [line('user', buildExecPrompt('Explain the log.', PRIMER)), line('user', `log:\n${'L'.repeat(3_000)}`), line('assistant', 'A retry loop.')].join('\n')
+    const whole = oldChunks('claude', content)
+    const stripped = chunkTurns(ownDialogue(parseBySource('claude', content))!)
+    const shared = whole.filter((c) => stripped.some((s) => s.hash === c.hash))
+    expect(shared.length).toBeGreaterThan(0)
+    // Stored whole by 1.52: nothing new, though some of the new cuts are known too.
+    const all = new Set(whole.map((c) => c.hash))
+    const old = await ingest({ 'twin.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => all.has(x)) })
+    expect(old.written).toEqual([])
+    // Stored without the primer by this version: the primer never comes back.
+    const mine = new Set(stripped.slice(1).map((c) => c.hash))
+    const now = await ingest({ 'twin.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => mine.has(x)) })
+    expect(now.written.map((c) => c.text)).toEqual(['user: Explain the log.'])
   })
 
   it("keep a local run whose task quotes a close tag and a header: the primer ends at its own close", async () => {
