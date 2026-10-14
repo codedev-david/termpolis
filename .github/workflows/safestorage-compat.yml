@@ -1,0 +1,97 @@
+name: safeStorage compat
+
+# Can an Electron upgrade still unwrap what the previous Electron wrapped? The memory brain's key
+# (memory-sync.key) is a safeStorage blob, and an Electron major upgrade reaches every user through
+# auto-update with their existing profile. Each OS: the OLD Electron wraps a secret in a fresh
+# profile, the NEW one unwraps it from that same profile (the upgrade), then the reverse (a
+# downgrade). Windows is DPAPI plus the AES key in <userData>/Local State, so the runner is
+# representative. macOS keychain access is tied to the code signature, so two unsigned Electrons
+# can prompt or fail there where two signed Termpolis builds would not. A Linux runner has no
+# keyring, so it only covers the basic_text fallback.
+on:
+  workflow_dispatch:
+    inputs:
+      old:
+        description: Electron version the profile was written by
+        required: false
+        default: 30.5.1
+      new:
+        description: Electron version that must read it
+        required: false
+        default: 43.7.9
+
+jobs:
+  compat:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install both Electrons
+        shell: bash
+        run: |
+          for v in "${{ inputs.old }}" "${{ inputs.new }}"; do
+            mkdir -p "$RUNNER_TEMP/e-$v" && cd "$RUNNER_TEMP/e-$v"
+            npm init -y > /dev/null
+            npm install --no-audit --no-fund "electron@$v"
+            # Electron 42+ no longer fetches its binary at install: it has a bin for that.
+            if [ -e node_modules/.bin/install-electron ]; then npx --no-install install-electron; fi
+            node -e "console.log(require('electron'))"
+          done
+      - name: Write the probe
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/probe.js" <<'EOF'
+          const { app, safeStorage } = require('electron')
+          const fs = require('fs')
+          const path = require('path')
+          const [mode, dir] = process.argv.slice(-2)
+          app.setName('termpolis')
+          app.setPath('userData', dir)
+          app.whenReady().then(() => {
+            const blob = path.join(dir, 'blob.txt')
+            try {
+              const backend = process.platform === 'linux' && safeStorage.getSelectedStorageBackend ? safeStorage.getSelectedStorageBackend() : '-'
+              console.log(`electron ${process.versions.electron} available=${safeStorage.isEncryptionAvailable()} backend=${backend}`)
+              if (mode === 'write') {
+                fs.writeFileSync(blob, safeStorage.encryptString('termpolis-compat-ok').toString('base64'))
+                console.log('wrote', fs.readFileSync(blob, 'utf8').length, 'base64 chars')
+              } else {
+                const s = safeStorage.decryptString(Buffer.from(fs.readFileSync(blob, 'utf8'), 'base64'))
+                console.log('read back:', s)
+                if (s !== 'termpolis-compat-ok') process.exitCode = 1
+              }
+            } catch (e) {
+              console.error('FAILED:', e && e.message)
+              process.exitCode = 1
+            }
+            app.quit()
+          })
+          EOF
+      - name: Upgrade (old writes, new reads) and downgrade (new writes, old reads)
+        shell: bash
+        run: |
+          run() {
+            local v="$1" mode="$2" dir="$3"
+            local bin
+            bin="$(cd "$RUNNER_TEMP/e-$v" && node -e "process.stdout.write(require('electron'))")"
+            if [ "$RUNNER_OS" = Windows ]; then bin="$(cygpath -u "$bin")"; fi
+            if [ "$RUNNER_OS" = Linux ]; then
+              xvfb-run --auto-servernum "$bin" --no-sandbox "$RUNNER_TEMP/probe.js" "$mode" "$dir"
+            else
+              "$bin" "$RUNNER_TEMP/probe.js" "$mode" "$dir"
+            fi
+          }
+          fail=0
+          up="$RUNNER_TEMP/profile-up"; mkdir -p "$up"
+          echo "== upgrade: ${{ inputs.old }} writes, ${{ inputs.new }} reads"
+          run "${{ inputs.old }}" write "$up" && run "${{ inputs.new }}" read "$up" || fail=1
+          down="$RUNNER_TEMP/profile-down"; mkdir -p "$down"
+          echo "== downgrade: ${{ inputs.new }} writes, ${{ inputs.old }} reads"
+          run "${{ inputs.new }}" write "$down" && run "${{ inputs.old }}" read "$down" || fail=1
+          exit $fail
