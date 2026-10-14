@@ -252,7 +252,7 @@ The computer doing the work doesn't ask you per job: the permissions are the dec
 
 **Security.**
 
-- **End-to-end encrypted through the relay**, with the same X25519 pairing and ChaCha20-Poly1305 sealing as Termpolis Remote. Prompts, answers, folders and machine names are sealed, and every connection gets fresh session keys, so prompts and answers recorded today can't be decrypted later. Making or entering a code requires a `wss://` relay, and the relay's source is in [`relay/`](relay/) if you'd rather run your own.
+- **End-to-end encrypted through the relay**, with the same X25519 pairing and ChaCha20-Poly1305 sealing as Termpolis Remote. Prompts, answers, folders and machine names are sealed, and every connection gets fresh session keys, so prompts and answers recorded today can't be decrypted later. Termpolis connects only through a `wss://` relay (plain `ws://` only to a relay on the same computer), for codes and for every reconnect, and the relay's source is in [`relay/`](relay/) if you'd rather run your own.
 - **What the relay does see:** both computers' IP addresses, a room id for the link, when each connects, the size and timing of each frame, and each frame's unencrypted header (public keys while pairing and connecting, a frame counter). Each agent's AI provider sees what that agent is asked and answers, as always.
 - **Read-only by default.** Every request is checked on the computer that would do the work, before any agent starts there.
 - **Keys.** The computer that enters a code makes a new key pair for that link. Private keys are encrypted with the OS keychain where one is available; on Linux without a keyring they're stored unencrypted in the data directory.
