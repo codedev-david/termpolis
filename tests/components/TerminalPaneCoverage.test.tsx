@@ -1378,9 +1378,12 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       })
     })
 
-    it("a PowerShell prompt's `~\\` is this machine's home: expanded and published", () => {
+    it("a PowerShell prompt's `~\\` is this machine's home: published, and expanded on Windows", () => {
       // The parser reports `PS ~\proj>` as PowerShell's own dialect (a prompt function that
       // abbreviates $HOME), so it is followed like `PS C:\...>`, not withdrawn like an ssh `~`.
+      // Platform-pinned like the cases above: only on Windows is `~\` a home-relative path, so
+      // elsewhere the normalizer has no native form for it and the shell's own text is published.
+      const expected = process.platform === 'win32' ? 'C:\\Users\\dev\\proj' : '~\\proj'
       __setHomedirForTests('C:\\Users\\dev')
       try {
         useTimers()
@@ -1388,8 +1391,8 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
         render(<TerminalPane {...defaultProps} shellType="powershell" />)
         emitPty('PS ~\\proj> ')
 
-        expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: 'C:\\Users\\dev\\proj' })
-        expect(screen.getByTestId('sb-cwd')).toHaveTextContent('C:\\Users\\dev\\proj')
+        expect(H.updateTerminal).toHaveBeenCalledWith('term-1', { cwd: expected })
+        expect(screen.getByTestId('sb-cwd')).toHaveTextContent(expected)
       } finally {
         __setHomedirForTests(null)
       }
