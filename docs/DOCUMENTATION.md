@@ -1369,7 +1369,10 @@ audit log.
   the data directory: a line when a job starts (the machine, agent, read-only or
   edit, folder, the first line of the screened prompt and the credential rules
   matched), a line when it ends (how, and how long it took), and a line for each
-  refusal with its reason. A computer's refusals within one minute after the
+  refusal with its reason. The prompt's first line is kept, and shown in the
+  job's notification, with anything that might be a credential taken out, even
+  what the agent was given because it only looked like one. A computer's
+  refusals within one minute after the
   first are written as one line with their count, so a computer refused again
   and again can't push the real history out. Never the prompt or the answer.
   Past 2 MB the file moves to `linked-jobs.prev.jsonl`, replacing the one there.

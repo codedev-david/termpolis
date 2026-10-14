@@ -705,6 +705,29 @@ export function screenText(input: string): SecretScreen {
   return { text, removed, flagged }
 }
 
+/** `input` for showing, not sending: every match of every rule replaced by `[REDACTED:<rule>]`, the
+ *  heuristic ones too. For the few words of a job that are written to a local log or shown on screen
+ *  (a notification can show on a lock screen): there nobody needs the code to stay usable, and a
+ *  possible credential is as well left out. Linear, as screenText is. */
+export function maskForDisplay(input: string): string {
+  if (typeof input !== 'string' || !input) return input ?? ''
+  const spans: Span[] = []
+  forEachMatch(input, (rule, m) => spans.push({ rule: rule.id, from: m.index, to: m.index + m[0].length }))
+  spans.sort((a, b) => a.from - b.from)
+  let text = ''
+  let at = 0
+  for (const span of spans) {
+    // One that starts inside a cut already made widens it: none of it is shown.
+    if (span.from < at) {
+      at = Math.max(at, span.to)
+      continue
+    }
+    text += `${input.slice(at, span.from)}[REDACTED:${span.rule}]`
+    at = span.to
+  }
+  return text + input.slice(at)
+}
+
 /** Whether `span` overlaps one of `cuts`, which are sorted and disjoint: only the last cut that
  *  starts before the span ends can. */
 function overlapsCut(cuts: Span[], span: Span): boolean {

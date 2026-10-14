@@ -1647,8 +1647,10 @@ describe('linked machines wiring', () => {
   })
 
   it('screens what crosses to another computer with the AI Security rules, and audits what it found', async () => {
-    const { screenText } = await import('../../src/main/aiSecurity')
+    const { screenText, maskForDisplay } = await import('../../src/main/aiSecurity')
     expect(linked().screenSecrets).toBe(screenText)
+    // ...and a job's summary is masked, both tiers, before the history keeps it or a notification shows it.
+    expect(linked().maskSecrets).toBe(maskForDisplay)
     M.appendAudit.mockClear()
     const entry = { agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: 'answer from "linux": gh_pat x1' }
     await linked().audit(entry)

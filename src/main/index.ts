@@ -136,6 +136,7 @@ import {
   setAuditEnabled,
   scanText as aiSecurityScan,
   screenText as aiSecurityScreen,
+  maskForDisplay as aiSecurityMask,
   processOutboundChunk,
   stripPasteMarkers,
   appendAudit as aiSecurityAppend,
@@ -4597,6 +4598,9 @@ async function semanticPoolOptions(
           // Every prompt and answer that crosses between two computers is screened for
           // credentials on both, and what was found goes to the AI Security audit log.
           screenSecrets: aiSecurityScreen,
+          // ...and a job's summary has every possible one taken out before the job history
+          // keeps it or a notification shows it.
+          maskSecrets: aiSecurityMask,
           audit: (entry) => aiSecurityAppend(entry),
           keepAwake: (on) => {
             if (on && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start('prevent-app-suspension')

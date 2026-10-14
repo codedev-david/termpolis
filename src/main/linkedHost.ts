@@ -181,6 +181,11 @@ export interface LinkedHostBinding {
    *  goes through, on both. Bound by the app rather than imported, as every
    *  other dependency here is. */
   screenSecrets(text: string): SecretScreen
+  /** aiSecurity.maskForDisplay: a job's summary with every possible credential taken out, the
+   *  heuristic ones too, before it is written to the job history or shown in a notification.
+   *  screenSecrets leaves those in what crosses, which has to stay usable code; neither of these
+   *  does, and a notification can show on a lock screen. */
+  maskSecrets(text: string): string
   /** aiSecurity.appendAudit, for what screening found: rule ids and counts. */
   audit?(entry: LinkedAuditEntry): Promise<void> | void
   /** Show an OS notification: a job another computer started here, unless the user switched them
@@ -605,6 +610,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
    *  notified. Notified, not asked: the grant is the consent, and a job waiting on a click would
    *  time out on a computer nobody is sitting at -- which is what this feature is for. */
   function jobStarted(a: LinkedActivity): void {
+    // Masked, both tiers: the summary was screened for what crosses, which leaves a possible
+    // credential in, and the history persists it and a notification shows it.
+    const summary = maskSummary(a.summary)
     writeLog({
       ts: a.startedAt,
       event: 'started',
@@ -615,7 +623,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       // linkedJobs sets these on every job it reports; one it left out is left out of the line.
       write: a.write,
       cwd: a.cwd,
-      summary: a.summary,
+      summary,
       secretRules: a.secretRules,
     })
     if (!b.notifyJob || !notifiesJobs(settings)) return
@@ -624,8 +632,18 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     const last = notices.get(a.ref)
     const more = last ? last.more + 1 : 0
     notices.set(a.ref, { since: last?.since ?? at, more })
-    const notice = jobNotice(a, more)
+    const notice = jobNotice({ ...a, summary }, more)
     guarded(() => b.notifyJob?.(notice))
+  }
+
+  /** A summary as the history and a notification may hold it. A mask that throws withholds it:
+   *  the job is already running, and its line and notification still say who started what where. */
+  function maskSummary(summary: string): string {
+    try {
+      return b.maskSecrets(summary)
+    } catch {
+      return ''
+    }
   }
 
   function jobEnded(a: LinkedActivity): void {

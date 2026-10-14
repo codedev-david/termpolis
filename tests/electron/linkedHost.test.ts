@@ -10,7 +10,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { setSafeStorage } from '../../src/main/secureKeyStore'
-import { screenText } from '../../src/main/aiSecurity'
+import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
 import { deriveVerificationPhrase, fromHex, generateIdentity, toHex } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import { createPairingOffer } from '../../src/main/remoteBridge/pairing'
@@ -248,6 +248,8 @@ interface BootOptions {
   /** The audit sink; a spy by default, and none at all for null. */
   audit?: ((entry: LinkedAuditEntry) => Promise<void> | void) | null
   notifyJob?: (notice: LinkedJobNotice) => void
+  /** aiSecurity.maskForDisplay by default. */
+  maskSecrets?: (text: string) => string
 }
 
 function boot(opts: BootOptions = {}) {
@@ -279,6 +281,7 @@ function boot(opts: BootOptions = {}) {
     runHeadless,
     agentsInstalled,
     screenSecrets: screenText,
+    maskSecrets: opts.maskSecrets ?? maskForDisplay,
     ...(audit ? { audit } : {}),
     bridge: bridge.access,
     machineName: opts.machineName ?? 'laptop',
@@ -392,6 +395,7 @@ describe('starting and stopping', () => {
       runHeadless: vi.fn(),
       agentsInstalled: vi.fn(),
       screenSecrets: screenText,
+      maskSecrets: maskForDisplay,
       bridge: other.access,
     })
     expect(other.listeners.size).toBe(0)
@@ -443,6 +447,7 @@ describe('starting and stopping', () => {
       runHeadless: vi.fn(),
       agentsInstalled: vi.fn(),
       screenSecrets: screenText,
+      maskSecrets: maskForDisplay,
     })
     const s = ((await handlers.get('linked:status')!(null)) as Envelope).data!
     expect(s).toMatchObject({ running: false, relayUrl: DEFAULT_RELAY_URL, thisMachine: localDesktopName() || 'Computer' })
@@ -469,6 +474,7 @@ describe('starting and stopping', () => {
       runHeadless: vi.fn(),
       agentsInstalled: vi.fn(),
       screenSecrets: screenText,
+      maskSecrets: maskForDisplay,
       bridge: { ...bridge.access, port: { ...bridge.access.port, send: throwing } },
       machineName: 'laptop',
     })
@@ -2156,6 +2162,44 @@ describe('the job history, notifications and Stop', () => {
     // The pane rereads when this moves: once per line.
     expect((await h.status()).jobLogVersion).toBe(2)
     expect(await history(h, 1)).toHaveLength(1)
+  })
+
+  it('keeps a possible credential out of the history and the notification, though it crossed for the agent', async () => {
+    const notifyJob = vi.fn()
+    const { h, run, finishers } = serving({ notifyJob })
+    const prompt = 'Run migrations against postgres://admin:s3cretPw0rd@db.internal/prod'
+    const reply = await run({ prompt })
+    // What the agent here was given keeps it: screening only reports a heuristic match.
+    expect(h.runHeadless.mock.calls[0][0].task).toContain('postgres://admin:s3cretPw0rd@db.internal/prod')
+    expect(notifyJob.mock.lastCall![0].body).toBe(
+      `Codex · read-only · ${path.basename(dir)}\nTask: “Run migrations against [REDACTED:postgres_url]”`,
+    )
+    finishers[0]()
+    await vi.waitFor(async () => expect(await history(h)).toHaveLength(2))
+    const began = (await history(h)).find((r) => r.event === 'started')!
+    expect(began).toMatchObject({ jobId: jobOf(reply).jobId, summary: 'Run migrations against [REDACTED:postgres_url]' })
+    expect(began.secretRules).toEqual(expect.arrayContaining(['postgres_url']))
+    expect(JSON.stringify(await history(h))).not.toContain('s3cretPw0rd')
+  })
+
+  it('withholds the summary from the history and the notification when it cannot be masked', async () => {
+    const notifyJob = vi.fn()
+    const P = peer()
+    const h = boot({
+      enabled: true,
+      state: { links: [], meta: [meta(devRef(P), { name: 'build-box' })] },
+      notifyJob,
+      maskSecrets: () => {
+        throw new Error('mask broke')
+      },
+    })
+    h.bridge.peers = [P]
+    asked(h, 'run-1', { via: 'device', id: P.id }, { kind: 'peerRun', agent: 'codex', prompt: 'Review the parser', cwd: dir })
+    await vi.waitFor(() => expect(h.replyTo('run-1')).toBeDefined())
+    expect(h.replyTo('run-1')!.ok).toBe(true)
+    expect(notifyJob.mock.lastCall![0].body).toBe(`Codex · read-only · ${path.basename(dir)}\nTask: “”`)
+    await vi.waitFor(async () => expect((await history(h)).some((r) => r.event === 'started')).toBe(true))
+    expect((await history(h)).find((r) => r.event === 'started')).toMatchObject({ summary: '' })
   })
 
   it('notifies each job another computer starts, from what this computer knows, and nothing else', async () => {

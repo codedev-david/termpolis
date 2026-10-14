@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
-import { RULES, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
+import { RULES, maskForDisplay, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
 
 const ANTHROPIC = `sk-ant-${'a'.repeat(30)}`
 const GH = `ghp_${'b'.repeat(36)}`
@@ -157,6 +157,29 @@ describe('screenText', () => {
       expect(performance.now() - t).toBeLessThan(1_500)
     }
     expect(screenText(tokens).removed.slack_token).toBe(9_000)
+  })
+})
+
+describe('maskForDisplay', () => {
+  it('takes out every match, the heuristic ones screenText leaves in, for text shown or kept here', () => {
+    expect(maskForDisplay('Run migrations against postgres://admin:s3cretPw0rd@db.internal/prod')).toBe(
+      'Run migrations against [REDACTED:postgres_url]',
+    )
+    expect(maskForDisplay(`Deploy with ${GH} and const password = "hunter2hunter2"`)).toBe(
+      'Deploy with [REDACTED:gh_pat] and const [REDACTED:password_literal]',
+    )
+    expect(maskForDisplay('plain prose with nothing in it')).toBe('plain prose with nothing in it')
+    expect(maskForDisplay('')).toBe('')
+    expect(maskForDisplay(undefined as unknown as string)).toBe('')
+  })
+
+  it('takes overlapping matches out as one, however far the later one reaches', () => {
+    // http_basic_auth runs to the end of the URL, past basic_auth_url's `@`: none of it shows.
+    const out = maskForDisplay('curl https://admin:changeme@localhost:8080/health then stop')
+    expect(out).toBe('curl [REDACTED:http_basic_auth] then stop')
+    expect(out).not.toContain('changeme')
+    // A Mailchimp key starts inside a Mailgun-shaped one and ends four characters past it.
+    expect(maskForDisplay(`key-${'a'.repeat(32)}-us1 done`)).toBe('[REDACTED:mailgun_key] done')
   })
 })
 

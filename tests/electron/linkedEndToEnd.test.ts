@@ -26,7 +26,7 @@ import {
 } from '../../src/main/headlessExec'
 import type { DeliverOpts } from '../../src/main/secondOpinion'
 import { isDelegatedSession } from '../../src/shared/headlessPrompt'
-import { screenText } from '../../src/main/aiSecurity'
+import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
 import type { RemoteEvent, RemoteHost } from '../../src/main/remoteBridgeHost'
 import type { LinkedAuditEntry, LinkedEvent, LinkedJobRecord, LinkedStatusView } from '../../src/main/linkedHost'
 import type { LinkedGrants } from '../../src/main/linkedStore'
@@ -314,6 +314,7 @@ async function machine(
     },
     agentsInstalled: async () => ({ claude: true, codex: true, gemini: false }),
     screenSecrets: screenText,
+    maskSecrets: maskForDisplay,
     audit: (entry) => {
       audits.push(entry)
     },

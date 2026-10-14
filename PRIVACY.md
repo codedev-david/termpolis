@@ -69,7 +69,8 @@ upload it.
   passes 2 MB): one line when another computer starts a job here, one when it
   ends and one when a request is refused, with the computer's name, the agent,
   read-only or edit, the folder, the first line of the screened prompt (at most
-  80 characters), the credential rules matched, how it ended and why a request
+  80 characters, with anything that might be a credential taken out), the
+  credential rules matched, how it ended and why a request
   was refused. Never the prompt or the answer.
 
 The `userData` directory lives at:
