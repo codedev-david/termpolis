@@ -53,17 +53,20 @@ const BROAD_AUDIENCE = new Set(['WD', 'BU', 'AU'])
  * What stops `path` from counting as locked to `user`, or [] when nothing does:
  *  - the lockdown ran: the DACL is protected ("D:P"). icacls /inheritance:r always sets that, and a
  *    file Windows has just created never has it. Nothing else tells a locked file from one born in
- *    a folder that passes nothing down, whose ACEs are all explicit too: a CI runner's TEMP is such
- *    a folder, and there every other check below passes with no lockdown at all;
- *  - nothing is inherited: no ACE carries ID ("(I)" in the listing);
+ *    a folder that passes nothing down, whose ACEs are all explicit too: there every other check
+ *    below passes with no lockdown at all;
+ *  - nothing is inherited: no ACE carries ID. Read from the SDDL, not the listing: where a DACL lacks
+ *    the auto-inherited flag (AI), icacls lists an ID ACE without "(I)";
  *  - no broad audience: no Everyone, BUILTIN\Users or Authenticated Users ACE;
  *  - the user holds full control.
  *
- * SYSTEM and Administrators MAY remain. A file born in a folder that passes nothing inheritable gets
- * the creating token's default DACL as explicit ACEs (SYSTEM and Administrators beside the user, on
- * a CI runner or in any elevated session), and the app's one icacls call leaves explicit ACEs alone
- * by design: both can read every file on the machine anyway, and a Termpolis child process stripping
- * them at every boot is the permission change endpoint monitors flag.
+ * SYSTEM and Administrators MAY remain, because the app's one icacls call leaves the ACEs it counts
+ * as explicit alone, by design: both can read every file on the machine anyway, and a Termpolis
+ * child process stripping them at every boot is the permission change endpoint monitors flag. A
+ * file born in a folder that passes nothing inheritable gets them from the creating token's default
+ * DACL. On a GitHub Windows runner, TEMP's DACL lacks AI: a file made under it inherits SYSTEM,
+ * Administrators and the user as ID ACEs, which icacls neither lists as "(I)" nor drops with
+ * /inheritance:r. It keeps them as explicit ACEs.
  */
 export function lockdownProblems(path: string, user: string): string[] {
   const sddl = daclSddl(path)

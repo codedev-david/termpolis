@@ -5,14 +5,16 @@
 // the current user full control. Without it, other local users on a shared
 // machine could read the MCP auth token through those inherited grants.
 //
-// What that call deliberately leaves alone: explicit ACEs the file was BORN
-// with. When the parent folder passes nothing inheritable (an fs.mkdtemp
-// directory, say), Windows stamps the creating token's default DACL onto the
-// new file instead — SYSTEM and Administrators beside the user. Both can read
-// every file on the machine anyway, so removing them would change no one's
-// access, while a Termpolis child process stripping SYSTEM/Administrators at
-// every boot is exactly the permission change an endpoint monitor flags. So
-// the switches stay the two every boot has always run, now in a single call.
+// What that call deliberately leaves alone: ACEs icacls counts as explicit,
+// which can include SYSTEM and Administrators beside the user. A file born in
+// a folder that passes nothing inheritable gets the creating token's default
+// DACL; and where a folder's DACL lacks the auto-inherited flag (a GitHub
+// Windows runner's TEMP), icacls keeps the ACEs a file inherited from it as
+// explicit ones. Both can read every file on the machine anyway, so removing
+// them would change no one's access, while a Termpolis child process stripping
+// SYSTEM/Administrators at every boot is exactly the permission change an
+// endpoint monitor flags. So the switches stay the two every boot has always
+// run, now in a single call.
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'

@@ -73,8 +73,8 @@ describe('writeSecureFile — real filesystem integration', () => {
       try { closeSync(openSync(p, 'r+')); return true } catch { return false }
     }
     // A folder shaped like an installed userData: it hands the user's full control down to every
-    // file made in it, and nothing else. A CI runner's TEMP passes nothing inheritable, so a file
-    // born there carries explicit ACEs for the user that /inheritance:r never removes, and no
+    // file made in it, and nothing else. A CI runner's TEMP will not do: its DACL lacks the
+    // auto-inherited flag, so /inheritance:r keeps the user's ACE a file inherits there, and no
     // lockout can be built from it; built in here, one shuts the user out on any machine.
     const userDataLike = (): string => {
       const d = join(dir, 'userData')
@@ -103,10 +103,11 @@ describe('writeSecureFile — real filesystem integration', () => {
     })
 
     it('Windows: a file born in a folder that passes nothing inheritable is locked the same way', () => {
-      // The CI runner's shape, reproduced on any machine. There the e2e userData folder hands
-      // files no inheritable ACE, so mcp-token was born with explicit SYSTEM, Administrators and
-      // user ACEs — the case the e2e caught. The folder here gets the app's own two switches:
-      // a grant with no (OI)(CI), so nothing it holds is passed to the files made inside it.
+      // A folder that passes nothing down, so a file made in it is born with explicit ACEs only,
+      // from the creating token's default DACL. The folder gets the app's own two switches: a grant
+      // with no (OI)(CI), so nothing it holds is passed to the files made inside it. On a GitHub
+      // runner the switches cannot strip what it inherited from TEMP (see below); the lockdown must
+      // hold either way.
       const bare = join(dir, 'no-inherit')
       mkdirSync(bare)
       icacls(bare, '/inheritance:r', '/grant:r', `${principal}:F`)
@@ -131,7 +132,19 @@ describe('writeSecureFile — real filesystem integration', () => {
       const p = join(bare, 'never-locked')
       writeFileSync(p, 'x')
 
-      expect(lockdownProblems(p, user)).toEqual([expect.stringContaining('the lockdown never ran')])
+      // A GitHub runner's TEMP DACL lacks the auto-inherited flag, so icacls reads what this folder
+      // inherited from it as explicit and /inheritance:r keeps it, (OI)(CI) and all: there the file
+      // inherits SYSTEM, Administrators and the user, and the inherited-ACE check catches it too.
+      // Where the folder really passes nothing down, the protected flag is the only check that does.
+      const passesDown = daclAces(daclSddl(bare)).some((a) => a.flags.includes('OI'))
+      expect(lockdownProblems(p, user)).toEqual(
+        passesDown
+          ? expect.arrayContaining([
+            expect.stringContaining('the lockdown never ran'),
+            expect.stringContaining('an inherited ACE survived'),
+          ])
+          : [expect.stringContaining('the lockdown never ran')],
+      )
     })
 
     // Files an older Termpolis locked. Its two-call sequence (/inheritance:r, then /grant:r of the

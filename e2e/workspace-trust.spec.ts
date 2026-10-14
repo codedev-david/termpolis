@@ -105,13 +105,12 @@ test('mcp-token file is written under userData with restricted ACL (win32)', asy
     // user holds full control — matched against the raw USERNAME, which the app grants exactly as
     // Windows has it (spaces, accents and all).
     //
-    // The protected flag is the check with teeth on a CI runner: its userData (a mkdtemp folder)
-    // passes nothing inheritable, so mcp-token is BORN with explicit ACEs only, and would pass all
-    // the others with no lockdown at all. NT AUTHORITY\SYSTEM and BUILTIN\Administrators MAY appear,
-    // as explicit ACEs from the creating token's default DACL: the app's one icacls call leaves
-    // them alone by design. lockdownProblems (tests/windowsAcl.ts) says why;
-    // tests/electron/secureFile.integration.test.ts holds the same line and reproduces that
-    // folder on any machine.
+    // On a CI runner the userData (a mkdtemp folder under TEMP) hands mcp-token SYSTEM,
+    // Administrators and the user. TEMP's DACL there lacks the auto-inherited flag, so icacls lists
+    // those ACEs without "(I)" and /inheritance:r keeps them as explicit ACEs: NT AUTHORITY\SYSTEM
+    // and BUILTIN\Administrators MAY appear, and the app's one icacls call leaves them by design.
+    // lockdownProblems (tests/windowsAcl.ts) says why, and reads inheritance from the SDDL, not the
+    // listing; tests/electron/secureFile.integration.test.ts holds the same line.
     expect(lockdownProblems(tokenPath, process.env.USERNAME || '')).toEqual([])
   }
 })
