@@ -87,7 +87,7 @@ import {
   chunkTurns,
   ingestConversations,
   discoverTranscriptFiles,
-  findLatestTranscriptFile,
+  newestTranscriptFiles,
   type IngestTurn,
   type IngestDeps,
 } from '../../src/main/conversationIngest'
@@ -346,7 +346,7 @@ describe('ingestConversations — a readable file with no dialogue in it', () =>
 // conversationIngest — on-disk discovery
 // =========================================================================================
 
-describe('discoverTranscriptFiles / findLatestTranscriptFile — default roots, depth cap, bad entries', () => {
+describe('discoverTranscriptFiles / newestTranscriptFiles — default roots, depth cap, bad entries', () => {
   let home: string
   const savedHome = process.env.HOME
   const savedProfile = process.env.USERPROFILE
@@ -424,7 +424,7 @@ describe('discoverTranscriptFiles / findLatestTranscriptFile — default roots, 
     expect(files.map((f) => path.basename(f))).toEqual(['good.jsonl'])
   })
 
-  it('findLatestTranscriptFile picks by mtime, not by directory order', async () => {
+  it('newestTranscriptFiles orders by mtime, not by directory order', async () => {
     const root = join(home, 'latest')
     realFs.mkdirSync(root, { recursive: true })
     const newest = join(root, 'a-newest.jsonl') // read FIRST (alphabetical)
@@ -433,10 +433,10 @@ describe('discoverTranscriptFiles / findLatestTranscriptFile — default roots, 
     realFs.writeFileSync(older, 'x')
     realFs.utimesSync(newest, new Date(9_000_000), new Date(9_000_000))
     realFs.utimesSync(older, new Date(1_000_000), new Date(1_000_000))
-    expect(await findLatestTranscriptFile('claude', root)).toBe(newest)
+    expect(await newestTranscriptFiles('claude', 5, root)).toEqual([newest, older])
   })
 
-  it('findLatestTranscriptFile skips an unstattable file and still returns the best of the rest', async () => {
+  it('newestTranscriptFiles skips an unstattable file and still returns the rest', async () => {
     const root = join(home, 'latest2')
     realFs.mkdirSync(root, { recursive: true })
     const broken = join(root, 'a-broken.jsonl')
@@ -444,7 +444,7 @@ describe('discoverTranscriptFiles / findLatestTranscriptFile — default roots, 
     realFs.writeFileSync(broken, 'x')
     realFs.writeFileSync(ok, 'x')
     fsCtl.rules.push({ op: 'stat', match: 'a-broken', err: new Error('EPERM') })
-    expect(await findLatestTranscriptFile('claude', root)).toBe(ok)
+    expect(await newestTranscriptFiles('claude', 5, root)).toEqual([ok])
   })
 })
 

@@ -12,7 +12,8 @@ export interface AgentRunSpec { stepId: string; agent: 'claude' | 'codex' | 'gem
 export interface AgentRunResult { output: string; ok: boolean; error?: string }
 export interface AgentRunner { run(spec: AgentRunSpec, onChunk?: (s: string) => void): Promise<AgentRunResult>; cancel(stepId: string): void }
 
-export interface ToolInvoker { invoke(tool: string, args: Record<string, unknown>, timeoutMs: number): Promise<{ output: string; ok: boolean; error?: string }> }
+/** `timeoutMs` is the step's own: a step that sets none waits as long as its tool takes. */
+export interface ToolInvoker { invoke(tool: string, args: Record<string, unknown>, timeoutMs?: number): Promise<{ output: string; ok: boolean; error?: string }> }
 export interface Timer { sleep(ms: number): Promise<void> }
 
 export interface EngineDeps {

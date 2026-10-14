@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { x25519 } from '@noble/curves/ed25519.js'
 import {
   COUNTER_BYTES,
+  MAX_COUNTER,
   SEAL_OVERHEAD_BYTES,
   deriveVerificationPhrase,
   fromHex,
@@ -293,18 +294,23 @@ describe('wire vectors: pairing', () => {
 })
 
 describe('wire vectors: session', () => {
+  // Counter 0, through the seam: production draws the greeting counter at
+  // random (§6.1), and 0 is what every peer before that sent -- so these bytes
+  // are still exactly what a 1.52 desktop and a 1.1.0 phone put on the wire.
   const pair = () => ({
     d: new Handshake({
       ownSecretKey: DESKTOP_SK,
       peerPublicKey: DEVICE_PK,
       role: 'desktop',
       ephemeralSecretKey: DESKTOP_EPH,
+      greetingCounter: 0,
     }),
     p: new Handshake({
       ownSecretKey: DEVICE_SK,
       peerPublicKey: DESKTOP_PK,
       role: 'device',
       ephemeralSecretKey: DEVICE_EPH,
+      greetingCounter: 0,
     }),
   })
 
@@ -324,6 +330,39 @@ describe('wire vectors: session', () => {
     expect(d.greeting[0]).toBe(FRAME_SESSION_HELLO)
     expect(toHex(d.greeting.subarray(1, GREETING_HEADER_BYTES))).toBe(pub(DESKTOP_EPH))
     expect(toHex(p.greeting.subarray(1, GREETING_HEADER_BYTES))).toBe(pub(DEVICE_EPH))
+  })
+
+  it('pins a greeting at the last counter, and the other end opens it', () => {
+    // The far end of the counter's range. A port that keeps the counter in a
+    // 32-bit integer, or writes it little-endian, gets 0 right and this wrong --
+    // and since 1.53 a desktop greets anywhere in the range.
+    const d = new Handshake({
+      ownSecretKey: DESKTOP_SK,
+      peerPublicKey: DEVICE_PK,
+      role: 'desktop',
+      ephemeralSecretKey: DESKTOP_EPH,
+      greetingCounter: MAX_COUNTER,
+    })
+    expect(toHex(d.greeting)).toBe(
+      '037b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14ffffffffffff64' +
+        'a4732d4393586252fa4b9de6b567895e8b1d57727d47a0c3e4c6df1c9fb2d214304b96b44b08dc',
+    )
+    const p = new Handshake({
+      ownSecretKey: DEVICE_SK,
+      peerPublicKey: DESKTOP_PK,
+      role: 'device',
+      ephemeralSecretKey: DEVICE_EPH,
+      greetingCounter: 0,
+    })
+    const ps = p.accept(d.greeting)
+    // And the session is the very one the counter-0 vectors below pin: the
+    // greeting counter moves the greeting's nonce and nothing else.
+    const down0 = d.accept(p.greeting).seal(new Uint8Array([FRAME_SESSION]), bytes('{"kind":"ok","id":1,"data":null}'))
+    expect(toHex(down0)).toBe(
+      '04000000000000bffaf517d1df8789618e3ca2997945eb3c91937be39b360bc1d86dde6043cc98d7' +
+        '9abd82e8c05592fb9c34e8ef0eda17',
+    )
+    expect(text(ps.open(down0, SESSION_HEADER_BYTES))).toBe('{"kind":"ok","id":1,"data":null}')
   })
 
   it('pins the first frames in both directions', () => {

@@ -403,7 +403,7 @@ Four kinds, in any order:
 
 - **Command** — a shell line (inline or a script file) on a real terminal, with its own shell and timeout.
 - **Agent** — launches Claude Code, OpenAI Codex, or Gemini CLI on a prompt and waits for it to finish.
-- **Skill** — calls one of Termpolis's own tools: code search, memory, git.
+- **Skill** — calls one of Termpolis's own tools: code search, memory, git. The step fails when the tool answers with an error or takes longer than a timeout you set on the step. With the Timeout left empty (none) the step waits as long as the tool takes, and a tool with a limit of its own, such as run_and_wait or agent_exec, keeps it. Skill steps count toward the MCP server's rate limits: `linked_machines` shares its 30 calls a minute with your agents, while the other limited tools, and a workflow's calls overall, have separate workflow limits, so a looping workflow can't get your agents refused. Every call is written to the MCP audit log.
 - **Control** — `wait`, `branch`, `loop`, or `notify`.
 
 Each step takes an optional `when` gate and an optional *continue even if this step fails*. Later steps read earlier results (`${steps.build.exitCode}`, a step's captured output) inside gates, branch conditions, loop guards, and notify messages. Expressions run through a small, pure, sandboxed evaluator — never `eval`.
@@ -545,7 +545,7 @@ The tools come in seven groups. The authoritative list is the one your agent sho
 | Token Headroom | `retrieve_full` | Expand a tool result that Token Headroom shortened |
 | Linked machines | `linked_machines` | Have a Claude, Codex or Gemini agent on another linked machine do a task headlessly and return its final answer: `list` the machines, `run` a task, and fetch the `result` of one still running. See [§30](#30-linked-machines) |
 
-The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. Both files are readable only by your account: mode `600` on macOS and Linux; on Windows an access list that removes what the folder passes down and grants your account full control, so other local users get nothing (SYSTEM and Administrators, who can read every file anyway, are left as they are). An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log.
+The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. Both files are readable only by your account: mode `600` on macOS and Linux; on Windows an access list that removes what the folder passes down and grants your account full control, so other local users get nothing (SYSTEM and Administrators, who can read every file anyway, are left as they are). An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log (`mcp-audit.log`). A workflow's Skill steps call the same tools in-process and are held to the same limits and written to the same log, marked `"via": "workflow"`.
 
 ### Connecting your coding agents
 
@@ -707,14 +707,22 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 
 ### What's in it
 
-- **Past AI conversations** — Claude Code (`~/.claude/projects/**`), Codex (`~/.codex/sessions/**`), and Gemini (`~/.gemini/tmp/**`) transcripts are parsed, noise-stripped (tool calls / reasoning / system prompts removed), chunked, and embedded.
+- **Past AI conversations** — Claude Code (`~/.claude/projects/**`), Codex (`~/.codex/sessions/**`), and Gemini (`~/.gemini/tmp/**`) transcripts are parsed, noise-stripped (tool calls / reasoning / system prompts removed), chunked, and embedded. Two things are left out on the way: the `<project-memory>` block a headless run (`termpolis-cli exec`, `agent_exec`) opens with, which is memory recalled from this store and would otherwise be stored again, and any session another computer started here over [Linked machines](#30-linked-machines), which is that computer's work, not this one's.
 - **Your repo's code** — git-tracked files (so `node_modules`/`dist` are excluded), chunked by line-window. The indexer reuses the **same sensitive-file denylist as the read watcher**, so `.env`, keys, and cloud credentials are never embedded.
 
 ### How it works
 
 - **Embeddings are local & offline.** A bundled `bge-small-en-v1.5` model (q8, 384-dim, MIT) runs in-process via `onnxruntime-web` (WASM) — no Ollama, no server, and **zero native binaries** in the installer. If the model is absent, search degrades gracefully to keyword matching.
 - **Shared across all three agents** over the MCP server (`memory_search` / `memory_write` / `memory_list`), once you connect them (see [Connecting your coding agents](#connecting-your-coding-agents)). One store backs Claude/Codex/Gemini, so a fact one learns is instantly available to the others.
-- **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with embeddings at startup. When an OS keychain is available, each line is encrypted at rest (AES-256-GCM) with a random per-device key that the keychain protects; without one, the file stays plain text. Aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`, in the same folder) are currently written there in plain text either way. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A hot window of up to 500k chunks is kept in RAM for vector search; the on-disk log retains everything written.
+- **Durable across restarts, updates, and reinstalls.** Stored as JSONL in Termpolis's app-data folder — `%APPDATA%\termpolis\swarm-memory.jsonl` on Windows, `~/Library/Application Support/termpolis/` on macOS, `~/.config/termpolis/` on Linux — and reloaded with embeddings at startup. When an OS keychain is available, each line is encrypted at rest (AES-256-GCM) with a random per-device key that the keychain protects; without one, the file stays plain text. Aged memories that idle consolidation moves to the cold archive (`swarm-memory.archive.jsonl`, in the same folder) are written under the same key; entries an earlier version archived stay plain text for now. Because it lives in your user profile, not the install folder, it **survives app updates and even an uninstall/reinstall** (the uninstaller leaves app data in place). A hot window of up to 500k chunks is kept in RAM for vector search; the on-disk log retains everything written.
+- **The memory key is never overwritten or deleted.** The key lives in `memory-sync.key` in the same folder, wrapped by the OS keychain. Termpolis creates one only when there is none, and never writes over an existing one. If this computer can't open it (the keychain isn't available, a password reset or a moved profile changed what the keychain can unwrap, or the file is damaged), memory comes up **locked** instead of starting over:
+  - nothing new is saved, and agents get a clear error rather than a write into a store they can't read;
+  - the background indexer, reflection and consolidation pause, and they pick up where they stopped once memory unlocks;
+  - the Memory panel says why it is locked.
+
+  If the key comes back, restart Termpolis and every memory returns. If it won't, click **Start a new memory key** in the Memory panel. The old key file is renamed aside (`memory-sync.key.retired-<time>`), never deleted, and a new key is created so memory saves again. Older memories stay on disk, unreadable until the old key works again; Termpolis tries every retired key at every launch, so they come back by themselves if it ever does.
+- **Turning encryption off is all-or-nothing.** It decrypts every file of the store (including rotated `swarm-memory.<n>.jsonl` generations and the archive), reads the result back to check it, and only then retires the key. If any step fails, nothing changes.
+- **Backing up an encrypted brain.** Copy `memory-sync.key` along with the `swarm-memory*.jsonl` files. The key is wrapped by the OS keychain, so it opens only under the same OS user account; on Windows the wrap also depends on the `Local State` file in the same folder, so back that up too. A backup without them can't be decrypted.
 - **Feeds itself.** A background indexer runs ~10 s after launch and every 30 min, ingesting new sessions. Ingestion is idempotent (content-hash dedup), so steady-state runs only embed genuinely new chunks.
 - **Pre-context primer.** `memory:build-primer` pulls the most relevant memories for a query and formats a shell-paste-safe block that can be injected as an agent's first input — so it starts already knowing the context (the token-saver). With **Auto-recall context on agent launch** on (Settings → General; on by default), every agent you launch is pointed at it: Claude through its system prompt, Codex and Gemini through a one-line pointer typed into their input. The pointer waits while the agent's screen shows something waiting for an answer, such as a trust or approval prompt, or can't be read, so its Enter never answers a prompt for you. If you connected Claude Code with the optional SessionStart hook, sessions you start outside Termpolis load your project memory too.
 - **Current-directory precedence.** The primer leads with context for the project you're standing in — past conversations from this repo first, then its code/notes — and anything from other projects is appended under a "may NOT apply" label. Ingested chunks are tagged with their project (derived from the transcript cwd / repo root), legacy chunks get back-tagged on the next indexer pass, and `memory_search` accepts a `project` filter so agents can scope recall themselves.
@@ -735,7 +743,8 @@ Open the panel with **Ctrl+Shift+M**, or from **Settings → General → Open th
 - **Search** — type what you're working on and hit **Search** for a semantic lookup across your past conversations and indexed code.
 - **Inject primer** — type a topic and click **Inject primer** to paste the most relevant memories straight into the *active agent's* terminal, so it starts already knowing the context. This is the token-saver: you stop re-explaining background every session.
 - **Index this repo's code** — pull the current project's git-tracked files into memory on demand (`.env`/keys are always skipped). Conversations index themselves automatically; code indexing is opt-in per repo so you decide what's searchable.
-- **Sync across machines — leave it off for now.** This setting points the memory at a folder you already sync, but it doesn't work reliably in current versions: Termpolis forgets the chosen folder when it restarts, and turning it on for a store that is already encrypted can conflict with that store's key. Each computer keeps its own memory. To use what another of your computers knows, link the two with [Linked machines](#30-linked-machines).
+- **Sync across machines — unavailable in this version.** The earlier design (a shared synced folder) could lock or overwrite a computer's memory, so it is switched off while it is rebuilt: the panel shows it as unavailable, and Termpolis refuses to turn it on. If you had it on, turning it off simply reopens this computer's own memory as it was left. Each computer keeps its own memory. To use what another of your computers knows, link the two with [Linked machines](#30-linked-machines).
+- **If memory is locked**, a banner at the top of the panel says why and offers **Start a new memory key** (see [How it works](#how-it-works)). It asks before doing anything.
 
 **Why it matters:** when Claude figures out how your auth module works, Codex doesn't need to re-discover it, and you stop burning 20–50k tokens re-pasting context every session. The store is JSONL in your app-data folder (see above); without an OS keychain it stays plain text, readable and hand-editable.
 
@@ -888,7 +897,13 @@ Store, first week free for new subscribers). The desktop app stays free.
    a Durable Object), and pointing the setting at your own deployment is
    supported. The phone takes the address from the pairing QR code and only
    accepts `wss://`; phones paired before a change keep using the old relay and
-   must pair again.
+   must pair again. The field takes a `wss://` address only, or plain `ws://`
+   for a relay on this computer (`localhost` or `127.0.0.1`): over plain `ws://`
+   to another computer, anyone on the network in between could see when your
+   devices connect and take their place in the relay first. A plain `ws://`
+   address saved by a version before 1.53 is kept but no longer used. Nothing
+   connects through it, and the Remote and Linked machines panes both say so
+   until you save a `wss://` address or click **Use the default relay**.
 3. Under **Pair a device**, type a label for the phone (it defaults to
    "Phone") and tick what it will be allowed to do. Only **Read terminal
    output** is ticked to begin with. Press **Pair a device**.
@@ -994,11 +1009,25 @@ hides the controls it isn't allowed to use.
   swarm or other tools; an agent it types into still has its own.
 - **Keys.** The desktop's identity key never reaches the renderer, and is
   encrypted with the OS keychain (DPAPI / Keychain / libsecret) where one is
-  available; on Linux without a keyring it is stored unencrypted in the data
-  directory. `remote-devices.json` (labels, public keys, room ids, grants) is plain. The
+  available. On Linux without a keyring it is stored unencrypted in the data
+  directory, and *Settings → Remote* and *→ Linked machines* both say so. If
+  a keyring turns up later, **Encrypt keys now** in either pane encrypts the
+  keys saved without one (the identity key and the file of links this
+  computer joined), and from then on they open only while the keyring does.
+  `remote-devices.json` (labels, public keys, room ids, grants) is plain. The
   phone makes a new key pair per desktop and keeps it in the iOS Keychain,
   available only while the device is unlocked and never synced to another
   device.
+- **A key the keychain can't open is never replaced.** That happens when the
+  keyring is locked or not running, after a password reset, or when the data
+  folder came from another computer or user account. Nothing that needs that
+  key starts, nothing is written over it, and the panes say why.
+  Restart Termpolis once the keychain is back and every pairing returns. For a
+  key that will never open, **Start over** renames the identity, the links file
+  and `remote-devices.json` aside (`<name>.retired-<time>`, never deleted) and
+  makes a new identity; every phone and linked computer then has to pair
+  again. Versions before 1.53 replaced such a key without a word, which lost
+  every pairing.
 
 Privacy details are in `PRIVACY.md`; the combined policy for the desktop app,
 the phone app and the relay is at <https://termpolis.com/privacy.html>.
@@ -1030,14 +1059,14 @@ connect.
 1. Tick **Let this computer link with my other computers**. The pane shows the
    relay in use, which you change under *Settings → Remote*. It has to be an
    encrypted `wss://` address.
-2. On one computer, go to **Link a computer**. Choose what the new computer may
-   do here (see below) and click **Create code**. A code starting
+2. On one computer, go to **Link a computer**. Choose whether the new computer
+   may run read-only agents here (see below) and click **Create code**. A code starting
    `termpolis-link:` appears with **Copy**, a countdown and **Cancel**. It works
    **once** and expires after **5 minutes**.
 3. Carry the code to the other computer any way you like: a chat message, a
    shared folder, or typing it. Paste it under **Enter a code from another
-   computer**, choose what the first computer may do there, and click
-   **Link**.
+   computer**, choose whether the first computer may run read-only agents
+   there, and click **Link**.
 4. Both screens show the **same eight words**, and each suggests the other
    computer's hostname as its name. Change the name to whatever you want to
    call that machine. Compare the words, then click **They match — link** on
@@ -1053,29 +1082,54 @@ Each linked computer gets a row in **Linked computers**:
 - an online dot;
 - its name, which you can rename by clicking it (Enter saves, Escape cancels);
 - *waiting for confirmation*, until you confirm it;
-- its two permissions;
+- its two permissions, and a **full access** badge while it may edit;
 - when it last did anything;
 - **Unlink**, which asks you to click again.
 
 Names are yours, and each computer names the other. Two machines given the same
 name are numbered: `linux`, `linux (2)`. **Activity** lists the 20 latest jobs
 in both directions, with the machine, the agent, the first line of the prompt,
-the status and how long each took.
+the status and how long each took. A job another computer is running here has
+a **Stop** button; the computer that asked is told *Stopped on <this computer>
+by its user.*
+
+**Job history on this computer** lists every job other computers started here,
+joined to how it ended, and every one this computer refused, with the reason.
+Unlike Activity it is kept across restarts (see *Records* below). Each row shows
+the machine, the agent, **edit** for a job with edit permission, the folder, the
+first line of the prompt and any credential rules screening matched.
+
+**Notify me when a linked computer starts a job here** is on by default. Each
+job another computer starts here then shows a system notification naming the
+computer, the agent, read-only or edit, and the folder, with the task's first
+line quoted under them; several from one computer within a minute share one
+notification. Click it to open this pane. A refused request never notifies, and
+neither does anything while the switch is off. The notification is not a
+question: the job is already running, and **Stop** is how to end it.
 
 ### What a linked computer may do here
 
 Each computer decides what the **other** may do **on it**, per linked machine.
-You choose when the link is made, and you can change it at any time:
+You choose *Run agents here* when the link is made, and you can change either
+permission at any time:
 
 | Permission | Default | What it allows |
 |---|---|---|
 | **Run agents here (read-only)** | on | Start a headless agent here in its own read-only mode. It can read any file you can read. Claude runs with only Read, Grep and Glob, Codex in its `read-only` sandbox, and Gemini (`agy`) in plan mode. Each gets this machine's memory and code index as read-only Termpolis tools (see *Read-only tools* below). Codex and `agy` keep MCP servers you added to their own configs. |
-| **Let agents edit files and run commands here** | off | The agent here runs unattended, as you: Claude and Gemini with permission prompts skipped, Codex in its `workspace-write` sandbox. Turning it on turns on *Run agents here* too. |
+| **Let agents edit files and run commands here** | off | The agent here runs unattended, as you. **Claude and Gemini get full access**: permission prompts skipped and a shell, so they can read and change any file you can, use your Termpolis terminals and reach your other linked computers. **Codex** runs in its `workspace-write` sandbox: it changes files only in the job's folder and temporary folders, and Termpolis switches the sandbox's network off for the job (`-c sandbox_workspace_write.network_access=false`), whatever your Codex config says. Codex's sandbox is what enforces both. **On a Windows computer, treat a Codex edit job as full access too**: there Codex sandboxes with separate user accounts and firewall rules, and that they keep a job from the computer's own local services, Termpolis's MCP server among them, hasn't been confirmed; the pane says so on Windows. Turning it on turns on *Run agents here* too. |
+
+*Edit* is never chosen along with a code. Whoever enters a code first hasn't
+had its words checked yet, so a new link can at most run read-only agents. To
+let a computer edit, confirm its words first, then tick the permission on its
+row: a panel says what it means for each agent, and only **Allow edit** turns
+it on. Switching it off needs no confirmation. A link made with *edit* by an
+earlier version keeps it if its words were already confirmed, and loses it
+when they are confirmed if they weren't.
 
 The risk is stated plainly. A machine with *Run agents here* can have an agent
-read any file you can read on this computer and send it back. With *edit*, it
-can change files and run commands. Grant *edit* only to a machine you trust as
-much as this one.
+read any file you can read on this computer and send it back. With *edit*, a
+Claude or Gemini agent it starts here can do anything you can. Grant *edit*
+only to a machine you trust as much as this one.
 
 Permissions are checked **on the computer that does the work**, before any
 agent starts. They are checked again when you change them:
@@ -1152,8 +1206,9 @@ worded for the agent to act on or pass on to you.
 
 Termpolis never pre-approves this tool. Claude Code asks you before using it,
 unless the session skips permission prompts (as swarm workers do), and Codex is
-not told to trust it. Agents can call it at most 30 times a minute; a workflow
-step that calls it is not counted.
+not told to trust it. Agents and workflow steps together can call it at most 30
+times a minute, and every call, a workflow's included, is written to the MCP
+audit log.
 
 ### Limits
 
@@ -1185,7 +1240,8 @@ step that calls it is not counted.
 - **Up to 16 linked machines** per computer, counting the ones this computer
   made codes for and the ones whose codes it entered.
 - **Jobs live in memory.** Quitting Termpolis stops every job it is running for
-  other computers, and forgets the finished ones.
+  other computers, and forgets the finished ones. The job history keeps a line
+  for each.
 
 ### How it is secured
 
@@ -1198,8 +1254,11 @@ step that calls it is not counted.
   keys, so prompts and answers recorded today can't be decrypted later, even if a
   computer's long-term key leaks.
 - **An encrypted relay.** Making or entering a code requires a `wss://` relay
-  (`ws://` only to localhost). Keep *Settings → Remote* on a `wss://` address:
-  links this computer created reconnect through that setting. The relay's
+  (`ws://` only to localhost), and *Settings → Remote* accepts nothing else.
+  Links this computer created reconnect through that setting; if it still holds
+  a plain `ws://` address saved by an older version, Termpolis connects none of
+  them through it and both panes say so until it is changed. Links made by
+  entering another computer's code use that computer's relay. The relay's
   source is in [`relay/`](../relay/), so you can run your own.
 - **What the relay does see:** both computers' IP addresses, a room id for the
   link, when each computer connects, the size and timing of each frame, and each
@@ -1208,9 +1267,21 @@ step that calls it is not counted.
   metadata.
 - **Keys.** The computer that enters a code makes a fresh key pair for that
   link alone, as a phone does for each desktop. The computer that made the code
-  uses its one identity key for all its links. Private keys are encrypted with
-  the OS keychain (DPAPI, Keychain or libsecret) where one is available; on
-  Linux without a keyring they are stored unencrypted in the data directory.
+  uses its one identity key, the one its phones pair with, for all its links.
+  A separate key per link there would protect nothing more: every key sits in
+  the same data folder under the same OS account, so whatever can read one can
+  read them all. Private keys are encrypted with the OS keychain (DPAPI,
+  Keychain or libsecret) where one is available; on Linux without a keyring
+  they are stored unencrypted in the data directory, and this pane says so. A
+  key the keychain can't open is never replaced: no link can be made or changed
+  until it opens again, or until you choose **Start over**, which costs every
+  link and every phone (see
+  [Remote's keys](#29-termpolis-remote-phone-app)). When only the file of links
+  can't be opened and the identity still can, this pane says so, and its
+  **Start over** sets that file alone aside: the links this computer joined
+  have to be made again, and a computer that entered a code from this one has
+  to be confirmed again, but every phone keeps working. The file is written in
+  one step, so a crash mid-save can't leave half of it.
 - **Confirmed on each computer.** A computer runs nothing for another until you
   confirm the eight words on it. Before that, the other computer can learn only
   this one's name and Termpolis version. Treat the code like a one-time
@@ -1218,11 +1289,12 @@ step that calls it is not counted.
   screen shows no words or different ones.
 - **Read-only by default.** Every request is checked on the computer that would
   do the work, before any agent starts. The computer doing the work doesn't ask
-  you per job: the permissions are the decision.
+  you per job, but it tells you: each job shows a notification and is kept in
+  the job history, and a running one can be stopped from Activity.
 - **Jobs, nothing else.** A linked computer is never given a phone's abilities.
   It cannot list, read or type into your terminals; it can only ask for the
-  jobs described here. A job with *edit* permission runs as you, though, and
-  can do whatever you can.
+  jobs described here. A Claude or Gemini job with *edit* permission runs as
+  you, though, and can do whatever you can.
 - **Read-only tools, and no passing the work on (v1.51).**
   - A delegated job keeps Termpolis's MCP server, cut down to this machine's
     memory and code index: `memory_search`, `memory_list`, `memory_related`,
@@ -1242,24 +1314,73 @@ step that calls it is not counted.
     that one run, and the tools pre-approved, when its `config.toml` holds
     Termpolis's own server; otherwise the server is switched off for the run.
     `agy` passes its environment, marker included, to the server itself.
-  - A job with *edit* permission has a shell and runs as you, so it could reach
-    Termpolis's local MCP server directly.
-- **Answers are scanned.** What comes back from another machine passes the
-  gateway's prompt-injection scan before your agent sees it. That covers the
-  answer, its error and any refusal worded over there. A flagged answer
-  arrives under an **UNTRUSTED CONTENT** banner telling the agent not to
-  follow it; a clean one arrives as it is. Prompts and answers are not scanned
-  for secrets, so don't put secrets in a prompt.
+  - These limits bind read-only jobs. A Claude or Gemini job with *edit*
+    permission has a shell and runs as you, so it can get around them, for
+    example by calling Termpolis's local MCP server with its token: treat
+    *edit* as full access. A Codex edit job's commands run in Codex's sandbox
+    with its network switched off, and that sandbox is what keeps them from
+    that server. On Windows that hasn't been confirmed (Codex's sandbox there
+    is separate user accounts and firewall rules, which may not cover the
+    computer's own local services), so treat a Codex edit job on Windows as
+    full access too.
+- **Answers are labelled and scanned.** What comes back from another machine
+  passes the gateway's prompt-injection scan before your agent sees it. That
+  covers the answer, its error and any refusal worded over there. Every answer,
+  and a failed job's error (its stderr, as much the agent's own text as its
+  output), arrives under a label saying it is data from another computer, not
+  instructions from the user; a flagged one gets the **UNTRUSTED CONTENT**
+  banner instead, telling the agent not to follow it.
+- **Credentials don't cross.** Prompts and answers are screened with the AI
+  Security secret rules on both computers: the prompt before it leaves and when
+  it arrives, the answer before it leaves and when it arrives (in case the other
+  computer runs a version that doesn't screen). The screen has two tiers:
+  - **A credential whose own shape names it is removed** and replaced with
+    `[REDACTED:<rule>]`: vendor tokens such as `sk-ant-…`, `ghp_…`,
+    `github_pat_…`, `AKIA…`, `xox…`, and whole private-key blocks, including
+    an indented one (a YAML secret) and one whose lines are `\n` escapes (a JSON
+    service-account file). A key block counts once it holds key material: a
+    long body line or its END line. The answer tells your agent how many it
+    removed and by which rules.
+  - **Anything that only looks like a credential is left as it is**, because a
+    delegated job's answer is usually code, and its test fixtures and examples
+    look like credentials too (`password = "hunter2"`, a `postgres://user:pass@`
+    URL, a JWT, a value assigned to `API_KEY`, a shape with no vendor's name in
+    it such as a Discord or Telegram bot token, or a private-key header with no
+    key under it, as a PEM parser writes). The answer gets a note naming the
+    rules that matched: *possible credential, not removed*.
+  Both tiers write a line to the AI Security audit log on the computer that
+  screened: the rule ids and how often each matched, never the value. A
+  credential you deliberately want on the other computer should live in a file
+  there, not in the prompt.
 - **Memory.** The agent doing the work starts with that computer's own memory
   primer (up to 6,000 characters), as a local run would, so its answer can
-  quote that machine's memory. Termpolis doesn't write the answer into memory
-  there itself, but a Claude or Codex job's session is saved like any other, and
-  the memory indexer can pick it up.
+  quote that machine's memory. Nothing of the job becomes that computer's own
+  memory: Termpolis doesn't write the answer there, Claude Code and Codex are
+  told not to save the session (`--no-session-persistence`, `codex exec
+  --ephemeral`) when the installed version can be, and the memory indexer and
+  the learning reflex skip a session another computer started even if it was
+  saved, and the indexer skips the transcripts of the subagents it ran too. What versions 1.50 to 1.52 had already stored from such jobs is demoted
+  once, whole sessions at a time, the first time the indexer finishes a full
+  pass after the update (a demotion can be revoked with `memory_correct`).
+  Gemini jobs run through `agy`, whose own conversation store Termpolis doesn't
+  read.
 - **Your AI providers.** Each agent's provider sees what that agent is asked
   and answers, as always, and a job uses the doing computer's AI account.
 - **Records.** The asking computer's MCP audit log records each call an agent
-  makes over MCP (not the prompt). The doing computer keeps its *Activity* list in memory until
-  Termpolis quits.
+  makes over MCP (not the prompt). The doing computer keeps its *Activity* list
+  in memory until Termpolis quits, and its job history in `linked-jobs.jsonl` in
+  the data directory: a line when a job starts (the machine, agent, read-only or
+  edit, folder, the first line of the screened prompt and the credential rules
+  matched), a line when it ends (how, and how long it took), and a line for each
+  refusal with its reason. The prompt's first line is kept, and shown in the
+  job's notification, with anything that might be a credential taken out, even
+  what the agent was given because it only looked like one. A computer's
+  refusals within one minute after the
+  first are written as one line with their count, so a computer refused again
+  and again can't push the real history out. Never the prompt or the answer.
+  Past 2 MB the file moves to `linked-jobs.prev.jsonl`, replacing the one there.
+  It is a record, not evidence: a Claude or Gemini job with *edit* permission
+  runs as you and could rewrite it like any other file you own.
 
 ### Unlinking
 

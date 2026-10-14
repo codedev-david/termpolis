@@ -271,6 +271,7 @@ const api: TermpolisAPI = {
   memoryDisableSyncEncryption: () => ipcRenderer.invoke('memory:disable-sync-encryption'),
   memoryEnableLocalEncryption: () => ipcRenderer.invoke('memory:enable-local-encryption'), // WP-F
   memoryDisableEncryption: () => ipcRenderer.invoke('memory:disable-encryption'), // WP-F
+  memoryStartNewKey: () => ipcRenderer.invoke('memory:start-new-key'), // the only way past a LOCKED brain
 
   // Test-only (inert in production — handlers registered only under NODE_ENV=test):
   // feed synthetic terminal output and read back raw terminal writes, so e2e can
@@ -560,6 +561,8 @@ contextBridge.exposeInMainWorld('remote', {
     ipcRenderer.invoke('remote:set-capabilities', { deviceId, capabilities }),
   verificationPhrase: (deviceId: string) =>
     ipcRenderer.invoke('remote:verification-phrase', { deviceId }),
+  encryptKeys: () => ipcRenderer.invoke('remote:encrypt-keys'),
+  startOver: () => ipcRenderer.invoke('remote:start-over'),
   onStatus: (cb: (status: RemoteStatusView) => void) => {
     const handler = (_: Electron.IpcRendererEvent, status: RemoteStatusView) => cb(status)
     ipcRenderer.on('remote:status-changed', handler)
@@ -584,8 +587,14 @@ const linked: LinkedAPI = {
   cancelJoin: () => ipcRenderer.invoke('linked:cancel-join'),
   confirm: (ref, name) => ipcRenderer.invoke('linked:confirm', { ref, name }),
   rename: (ref, name) => ipcRenderer.invoke('linked:rename', { ref, name }),
-  setGrants: (ref, grants) => ipcRenderer.invoke('linked:set-grants', { ref, grants }),
+  setGrants: (ref, grants, confirmWrite) =>
+    ipcRenderer.invoke('linked:set-grants', { ref, grants, ...(confirmWrite ? { confirmWrite: true } : {}) }),
   unlink: (ref) => ipcRenderer.invoke('linked:unlink', { ref }),
+  encryptKeys: () => ipcRenderer.invoke('linked:encrypt-keys'),
+  startOver: () => ipcRenderer.invoke('linked:start-over'),
+  setNotify: (enabled) => ipcRenderer.invoke('linked:set-notify', { enabled }),
+  stopJob: (id) => ipcRenderer.invoke('linked:stop-job', { id }),
+  jobLog: (limit) => ipcRenderer.invoke('linked:job-log', { limit }),
   onStatus: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, status: LinkedStatusView) => cb(status)
     ipcRenderer.on('linked:status-changed', handler)
@@ -595,6 +604,12 @@ const linked: LinkedAPI = {
     const handler = (_: Electron.IpcRendererEvent, event: LinkedEvent) => cb(event)
     ipcRenderer.on('linked:event', handler)
     return () => ipcRenderer.removeListener('linked:event', handler)
+  },
+  // Sent when a job notification is clicked. Nothing rides with it: what to show is the pane's.
+  onShow: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('linked:show', handler)
+    return () => ipcRenderer.removeListener('linked:show', handler)
   },
 }
 contextBridge.exposeInMainWorld('linked', linked)

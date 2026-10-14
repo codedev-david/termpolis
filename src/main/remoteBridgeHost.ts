@@ -10,12 +10,23 @@ import {
   type TerminalSize,
 } from './remoteBridge/protocol'
 import { deriveVerificationPhrase } from './remoteBridge/sealedChannel'
-import { getOrCreateRemoteIdentity, type RemoteIdentity } from './remoteIdentityStore'
+import { isSecureRelayUrl } from './remoteBridge/relayUrl'
+import { resolveRemoteIdentity, type IdentityResolution } from './remoteIdentityStore'
 import { loadRemoteDevices, saveRemoteDevices } from './remoteDeviceStore'
+import { encryptKeyFiles, retireRemoteKeyFiles, unencryptedKeyFiles } from './remoteKeyFiles'
+import { keyStorageBackend, keyStorageMode } from './secureKeyStore'
 import { DEFAULT_REMOTE_SETTINGS, loadRemoteSettings, saveRemoteSettings } from './remoteSettings'
 import { createOutputPump, type OutputPump } from './remoteOutputPump'
 import { createStatusPump, type StatusPump, type TerminalSnapshot } from './remoteStatusPump'
 import { detectAgentStatus } from '../shared/agentStatusDetector'
+// The renderer's own type, as linkedHost.ts reads it: both panes show these facts.
+import type { KeyStorageView } from '../renderer/src/types'
+
+export type { KeyStorageView }
+
+/** Told to whoever just tried to start the bridge while this computer's keys can't be opened. */
+export const REMOTE_KEYS_LOCKED =
+  "This computer's keys can't be opened right now, so no phone or linked computer can connect. Nothing was changed."
 
 type InitParams = Omit<Extract<HostToBridge, { kind: 'init' }>, 'kind'>
 
@@ -71,6 +82,10 @@ export interface RemoteHostDeps {
    *  `refreshLinked()`. Optional: absent means Linked machines is off, which is
    *  what every host built before it existed meant. */
   linkedInit?: () => LinkedInit
+  /** Linked machines' half of "Start over": forget every link it holds in
+   *  memory, before the bridge comes back and asks `linkedInit` again. Its file
+   *  has been set aside by then. Absent, there is nothing to forget. */
+  linkedStartOver?: () => void
 }
 
 /** One paired device as the renderer sees it.
@@ -113,7 +128,7 @@ export interface RemotePairingView {
   expiresAt: number
 }
 
-export interface RemoteStatusView {
+export interface RemoteStatusView extends KeyStorageView {
   enabled: boolean
   /** The bridge PROCESS is up -- what the pairing channels gate on. Says
    *  nothing about the relay: one dialling a refusing address runs too. */
@@ -123,9 +138,15 @@ export interface RemoteStatusView {
   /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
   disabled: boolean
   relayUrl: string
+  /** `relayUrl` is plain `ws://` to another computer -- saved by a version
+   *  before 1.53, since a save refuses one now. Kept, never dialled: the bridge
+   *  opens none of this desktop's rooms on it, and both panes say so until the
+   *  address changes. */
+  relayInsecure: boolean
   /** This desktop's X25519 public key, hex. Safe to show: it is half of what a
-   *  device needs to pair, and the half that is meant to be published. */
-  publicKey: string
+   *  device needs to pair, and the half that is meant to be published. Null
+   *  while the keys are locked, when there is no identity to show. */
+  publicKey: string | null
   pairing: RemotePairingView | null
   devices: RemoteDeviceView[]
 }
@@ -165,6 +186,9 @@ export interface LinkedBridgePort {
   /** Where the bridge stands on this machine's relay, as it last reported.
    *  Rooms only: a link this machine joined sits on the other one's relay. */
   relay(): RelayReach
+  /** The keys under every room, as the Remote pane shows them. Never mints the
+   *  identity: until something has needed it, it is not known to be locked. */
+  keys(): KeyStorageView
 }
 
 export interface RemoteHost {
@@ -194,6 +218,13 @@ export interface RemoteHost {
    *  has since replaced it is left alone. */
   cancelLinkPairing(): void
   linkedPort(): LinkedBridgePort
+  /** "Encrypt keys now": seal the key files saved in the clear. Throws with
+   *  what went wrong; a file sealed before that stays sealed. */
+  encryptKeys(): void
+  /** "Start over": set the identity, the joined links and the devices aside,
+   *  and come back with a new identity if a switch is on. Throws, with nothing
+   *  changed, when the identity can't be set aside. The caller decides when. */
+  startOver(): void
 }
 
 /** Which kind of device an offer pairs. */
@@ -224,7 +255,11 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   // is settled.
   let settings = DEFAULT_REMOTE_SETTINGS
   let devices: PairedDevice[] = []
-  let identity: RemoteIdentity | null = null
+  let identity: IdentityResolution | null = null
+  /** Whether a key file is saved in the clear while a keychain could seal it.
+   *  Looked at when first asked and again after each key action, not on every
+   *  status: each look reads both files, and the views are read on every push. */
+  let unencrypted: boolean | null = null
   const attached = new Set<string>()
   let pairing: RemotePairingView | null = null
   let pump: OutputPump | null = null
@@ -263,14 +298,33 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   /** What the running bridge last said about the relay. */
   let relay: RelayReach = 'idle'
 
-  /** The long-term X25519 identity, minted on first use.
+  /** The long-term X25519 identity, minted on first use -- or why it can't be
+   *  opened.
    *
    *  Lazy on purpose: a user who never turns remote on never gets a key file
    *  written into their profile. Once minted it is stable, so a device paired
-   *  last week still lands in the room this desktop dials today. */
-  function ownIdentity(): RemoteIdentity {
-    if (!identity) identity = getOrCreateRemoteIdentity(deps.userDataDir)
+   *  last week still lands in the room this desktop dials today.
+   *
+   *  Held for the session either way. A locked key opens again only after a
+   *  restart (the keychain is decided at launch), and asking on every status
+   *  read could mean a Keychain prompt each time on a Mac. */
+  function ownIdentity(): IdentityResolution {
+    if (!identity) identity = resolveRemoteIdentity(deps.userDataDir)
     return identity
+  }
+
+  /** Where the keys stand, from what is known so far: the identity is locked
+   *  only once something has tried it. */
+  function keys(): KeyStorageView {
+    const backend = keyStorageBackend()
+    const view: KeyStorageView =
+      identity?.kind === 'locked'
+        ? { keyStorage: 'locked', keyLockReason: identity.reason, keysUnencrypted: false }
+        : {
+            keyStorage: keyStorageMode(),
+            keysUnencrypted: (unencrypted ??= unencryptedKeyFiles(deps.userDataDir).length > 0),
+          }
+    return backend ? { ...view, keyBackend: backend } : view
   }
 
   /** Push at the renderer, which may have been destroyed a moment ago.
@@ -554,6 +608,17 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
    *  exist in a utilityProcess, so the child cannot read the identity for
    *  itself, and it must never travel to the renderer. */
   function launch(): void {
+    // Resolved here and not in the factory: the factory also runs inside the
+    // supervisor's crash-respawn handler, where a throw from the key store would
+    // have no caller to land on.
+    const resolved = ownIdentity()
+    if (resolved.kind === 'locked') {
+      // Never a new identity over one that can't be opened now: every phone and
+      // computer paired with it would be orphaned for good. Nothing starts until
+      // it opens again or the user starts over, and both panes say so meanwhile.
+      if (settings.enabled) push(() => deps.sendEvent({ kind: 'error', message: REMOTE_KEYS_LOCKED }))
+      return
+    }
     pump?.stop()
     statusPump?.stop()
     // The pumps exist to stream terminals to a phone. A bridge running for
@@ -565,10 +630,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     offerAsks = []
     offerLive = null
     respawn = false
-    // Resolved here and not in the factory: the factory also runs inside the
-    // supervisor's crash-respawn handler, where a throw from the key store would
-    // have no caller to land on.
-    const secretKey = ownIdentity().secretKey
+    const secretKey = resolved.identity.secretKey
     deps.startBridge(() => initParams(secretKey), settings.relayUrl)
   }
 
@@ -613,7 +675,9 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   }
 
   function status(): RemoteStatusView {
+    const resolved = ownIdentity()
     return {
+      ...keys(),
       enabled: settings.enabled,
       // What the Remote pane means by running: phones can reach this desktop.
       // The bridge also runs for Linked machines alone, with no phone room open.
@@ -621,7 +685,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
       relay,
       disabled: deps.isDisabled(),
       relayUrl: settings.relayUrl,
-      publicKey: ownIdentity().publicKey,
+      relayInsecure: !isSecureRelayUrl(settings.relayUrl),
+      publicKey: resolved.kind === 'ok' ? resolved.identity.publicKey : null,
       // Computed at read time rather than cleared by a timer: a timer would have
       // to be cancelled on every path out of pairing, and forgetting one leaves a
       // stale callback holding this closure.
@@ -652,7 +717,8 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
   function verificationPhraseFor(deviceId: string): string | null {
     const device = devices.find((d) => d.id === deviceId)
     if (!device) return null
-    return deriveVerificationPhrase(ownIdentity().publicKey, device.publicKey)
+    const resolved = ownIdentity()
+    return resolved.kind === 'ok' ? deriveVerificationPhrase(resolved.identity.publicKey, device.publicKey) : null
   }
 
   const port: LinkedBridgePort = {
@@ -675,6 +741,7 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     relayUrl: () => settings.relayUrl,
     linkOfferLive,
     relay: () => relay,
+    keys,
   }
 
   return {
@@ -786,5 +853,38 @@ export function createRemoteHost(deps: RemoteHostDeps): RemoteHost {
     },
 
     linkedPort: () => port,
+
+    encryptKeys(): void {
+      try {
+        encryptKeyFiles(deps.userDataDir)
+      } finally {
+        // Looked at again either way: a failure part-way leaves the first one sealed.
+        unencrypted = null
+        emitStatus()
+      }
+    },
+
+    startOver(): void {
+      // Set aside first: when the identity can't be, this throws with nothing
+      // changed -- the bridge still up, if it was.
+      retireRemoteKeyFiles(deps.userDataDir)
+      // Nothing of the old identity may stay seated on the relay.
+      shutdown()
+      identity = null
+      unencrypted = null
+      // Written at once rather than with the next device list: a file that could
+      // not be set aside would otherwise bring every old room back at the next
+      // launch, dialled under the new identity.
+      devices = []
+      saveRemoteDevices(deps.userDataDir, devices)
+      try {
+        deps.linkedStartOver?.()
+      } catch {
+        /* Linked machines' fault is its own; the bridge below asks it afresh */
+      }
+      // A new identity, minted as the bridge comes back -- if a switch wants it.
+      reconcile(linkedState())
+      emitStatus()
+    },
   }
 }

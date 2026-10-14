@@ -121,13 +121,14 @@ export async function recheckStoredLessons(deps: RecheckDeps): Promise<RecheckRe
   return { checked, demoted }
 }
 
-/** Whether the pass has run, kept in userData. Unreadable counts as not run: running it twice only
- *  re-judges lessons, and an already-demoted one is skipped as corrected. */
+/** Whether the pass has run, kept in userData under `name`. Unreadable counts as not run: running
+ *  a pass twice only re-judges what it judged, and an already-demoted entry is skipped as corrected.
+ *  The linked-history pass keeps its own marker the same way (linkedHistoryRecheck). */
 export function recheckMarker(userDataPath: string, fs: {
   exists: (p: string) => boolean
   write: (p: string, text: string) => void
-}, join: (...parts: string[]) => string): Pick<RecheckDeps, 'done' | 'markDone'> {
-  const file = join(userDataPath, 'mneme-lesson-recheck.json')
+}, join: (...parts: string[]) => string, name = 'mneme-lesson-recheck.json'): Pick<RecheckDeps, 'done' | 'markDone'> {
+  const file = join(userDataPath, name)
   return {
     done: () => {
       try { return fs.exists(file) } catch { return false }

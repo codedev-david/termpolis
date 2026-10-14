@@ -56,18 +56,20 @@ What is missing is the link between two desktops and a small job protocol on top
 ### 3.1 Settings ▸ Linked machines
 
 - **Off by default.** The section has its own enable switch, **Let this computer link with my other computers**. While it is off, no linked room opens and every request from another computer is refused.
-- **Link a computer (host side).** The user picks what the new machine may do *here*, then gets a one-time pairing code shown as text with a Copy button, a countdown and Cancel. The code is single-use and expires after 5 minutes (§6.1). The user moves it to the other machine by any means: chat, a shared folder, or typing it.
-- **Enter a code from another computer (joiner side).** The user pastes the code and picks what the host machine may do *here*.
+- **Link a computer (host side).** The user picks whether the new machine may run read-only agents *here* (never edit, §4.6), then gets a one-time pairing code shown as text with a Copy button, a countdown and Cancel. The code is single-use and expires after 5 minutes (§6.1). The user moves it to the other machine by any means: chat, a shared folder, or typing it.
+- **Enter a code from another computer (joiner side).** The user pastes the code and picks whether the host machine may run read-only agents *here*.
 - **Confirmation on both screens.** Both sides show the same 8 safety words and the other machine's suggested name (its hostname). Each side gets a name field so the user can call the machine whatever they want. The user clicks **"They match — link"** on both. A link is active only after that confirmation. This is stronger than phone pairing on purpose, because nobody may be watching a desktop.
 - **Machine list.** Each entry shows:
   - the name, renamable inline;
   - online/offline;
   - two permission toggles for what *that* machine may do *on this one*:
     - **Run agents here (read-only)**, on by default;
-    - **Let agents edit files and run commands here**, off by default, with the risk stated next to it;
+    - **Let agents edit files and run commands here**, off by default, with the risk stated next to it per agent. It can be ticked only once the machine is confirmed, and ticking it opens an inline panel; only its **Allow edit** turns it on (§4.6). A row with it on shows a **full access** badge;
   - last activity;
   - **Unlink** (two clicks), which revokes on both sides. The goodbye is best effort, so a machine that is offline at the time keeps its record until it is unlinked there too.
-- **Activity.** The 20 most recent jobs in and out, each with time, direction, machine, agent, the first line of the prompt, status and duration.
+- **Activity.** The 20 most recent jobs in and out, each with time, direction, machine, agent, the first line of the prompt, status and duration. An inbound job that is running has a **Stop** button (`linked:stop-job`): it is cancelled with *Stopped on <machine> by its user.*
+- **Job history on this computer.** Every inbound job, its start joined to its end, and every refused request, read from `linked-jobs.jsonl` (§7) through `linked:job-log`. The status view's `jobLogVersion` moves with each line written, and the pane reads the file again only then.
+- **Job notifications.** **Notify me when a linked computer starts a job here**, on by default (`linked:set-notify`). Each inbound job that passed its checks shows an OS notification: the title and the line under it come from this computer's own data (the machine's name here, the agent, read-only or edit, the folder's name), and the task's first line follows in quotes after a fixed `Task:` label, control and bidi characters stripped and every possible credential masked (it can show on a lock screen). Jobs from one machine within 60 s share one notification (`+N more jobs from …`). A click brings the window forward and opens this pane (`linked:show`). Refusals never notify. It is a notification, not a gate: an approval prompt would time out on an unattended machine, which is the feature's main use.
 - **Cap.** At most 16 linked machines. A 17th pairing is refused with a clear message.
 
 ### 3.2 Agents
@@ -147,12 +149,21 @@ Delegated jobs run through the existing headless executor with these extra rules
 
 ### 4.6 Accepted risk — the `write` grant
 
-The `write` grant means *"an agent on that machine may start an autonomous, permission-bypassed agent here"*. That is equivalent to running `termpolis-cli exec --write` locally. It is useful because it is exactly what David asked for ("Codex on linux implements"), so it cannot be blocked. Mitigation follows the Remote §4.5 pattern:
+The `write` grant means *"an agent on that machine may start an autonomous, permission-bypassed agent here"*. That is equivalent to running `termpolis-cli exec --write` locally. It is useful because it is exactly what David asked for ("Codex on linux implements"), so it cannot be blocked.
 
-- the grant is off by default;
-- it is granted per machine, with the risk stated where it is granted;
+What it hands over depends on the agent:
+
+- **Claude and Gemini (`agy`): full access as the user.** The job has a shell, so the adapter's tool limits (§4.5) bind only read-only jobs: an edit job can read the MCP token file and call the local MCP server directly, reaching terminals, memory writes and other linked machines. Nothing can be enforced against a process running as the same user, so the copy says so instead of implying a boundary.
+- **Codex: its `workspace-write` sandbox, with no network.** Writes are confined to the job's folder and temporary folders (plus any `writable_roots` the user configured). Termpolis pins `-c sandbox_workspace_write.network_access=false` on linked write jobs, whatever the user's `config.toml` says, so Codex's sandbox is what keeps the job's commands off the network, the MCP port included. The key was checked against codex-cli 0.153.4 (`codex exec --help` documents `-c` dotted overrides, and the binary's config schema has `[sandbox_workspace_write] network_access`); a live check that such a job fails to reach the port is still to be done on Linux and Windows, and is on the release smoke checklist. On Windows, Codex sandboxes with separate user accounts and firewall rules, which may not filter loopback, so until that check passes there the pane on a Windows computer calls a Codex edit job full access too (`codexEditAccess`), in the grant's hint, the confirm panel and the badge's tooltip. Codex's own MCP connection to Termpolis runs outside the sandbox and keeps the restricted tools.
+
+Mitigation follows the Remote §4.5 pattern, tightened:
+
+- the grant is off by default, and never granted with a code: `createCode` and `joinLink` force `write: false` whatever the payload says, because whoever redeems a code first has not had its words checked;
+- it is turned on per machine from that machine's row, only once the machine is confirmed (else `LINKED_WRITE_NEEDS_CONFIRM`) and only by a request carrying `confirmWrite: true`, which only the confirm panel's Allow sends (else `LINKED_WRITE_NEEDS_ACK`); turning it off needs neither;
+- a link an earlier version granted write along with its code loses it when its words are confirmed, and one already confirmed keeps it;
+- the risk is stated per agent where it is granted, and a row with it on shows a **full access** badge;
 - it is revocable at any time, and revoking it cancels a write job that is already running;
-- every job appears in the activity view on both machines.
+- every job appears in the activity view on both machines, and an edit run's answer tells the asking agent what kind of access the job had.
 
 ---
 
@@ -204,7 +215,7 @@ The link code is `termpolis-link:` + base64url(JSON), where the JSON is the exis
 
 Either refusal shows an error on the host and leaves the offer unspent. The marker is checked before the one-time secret, so the right machine can still finish. A link offer also refuses a hello once the host holds 16 links.
 
-The joiner gets no answer and gives up after 60 s with *No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer.*
+The joiner gets no answer and gives up after 60 s with *No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer. If that computer is asking you to confirm a link you did not make there, cancel it: someone else used the code.* The second sentence is there because an intercepted code looks exactly like this from the joiner's side: whoever redeemed the code first is the one the host is asking to confirm.
 
 `PAIRING_ACK` is unchanged. Its optional `name` carries the host's machine name.
 
@@ -254,9 +265,10 @@ Handling rules:
 
 | Where | File | Contents |
 |---|---|---|
-| main | `linked-settings.json` | `{ enabled: boolean }`, default `false` |
+| main | `linked-settings.json` | `{ enabled: boolean, notifyJobs?: false }`: off by default, notifications on unless `notifyJobs: false` |
 | main | `linked-machines` (via `secureKeyStore`: `osk:v1:` when a keyring exists, otherwise honest plaintext) | `{ v: 1, links: JoinedLink[], meta: LinkMeta[] }` |
 | bridge registry → main | `remote-devices.json` (existing) | the host's side of each link, as a `PairedDevice` with `kind: 'desktop'` (the field is kept by the loader) |
+| main | `linked-jobs.jsonl` (`linkedJobLog.ts`), rotated at 2 MiB to `linked-jobs.prev.jsonl` | the job history: `{ ts, event: 'started' \| 'finished' \| 'refused', jobId?, ref, machine, agent?, write?, cwd?, summary?, status?, durationMs?, reason?, count?, secretRules? }`, one line per event, appended asynchronously on one queue. No prompt and no output; `summary` is the screened prompt's first line with every rule's match masked, heuristic ones too (`maskForDisplay`), as the job's notification shows it. Refusals coalesce per machine per minute (`count`). Read back field by field, from at most the last 2 MiB of each file: a write job can rewrite it, so it is a record, not evidence |
 
 ```ts
 interface JoinedLink { id: string /* deviceId the host assigned = sha256(linkPk)[:16] */;
@@ -269,7 +281,7 @@ interface LinkMeta { ref: string /* 'device:<id>' | 'link:<id>' */; name: string
 - Names are unique across all links, case-insensitively. Duplicates are numbered `name (2)`, as on the phone.
 - At most 16 links per install, counting hosted and joined together.
 - Desktop peers are exempt from the 30-day idle expiry, which counts only inbound requests. A link is a deliberate machine relationship that the user ends by unlinking.
-- The jobs and activity log live in memory only: up to 100 finished jobs, kept for 2 h. The activity view shows the latest 20.
+- The jobs and the activity view live in memory only: up to 100 finished jobs, kept for 2 h. The activity view shows the latest 20. What the history file keeps of them outlives a restart.
 
 ---
 

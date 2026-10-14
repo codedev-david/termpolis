@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { executeTool } from '../../src/main/mcpServer'
+import { executeTool, executeToolForWorkflow, initAuditLog } from '../../src/main/mcpServer'
 import { initMemoryAudit, readMemoryAudit, _resetMemoryAuditForTests } from '../../src/main/memoryAudit'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
@@ -53,5 +53,26 @@ describe('MCP recall/inject audit (WP-E)', () => {
       { events: Array<{ event: string }>; summary: Record<string, number> }
     expect(out.summary).toMatchObject({ recall: 1, inject: 1 })
     expect(out.events.map((e) => e.event).sort()).toEqual(['inject', 'recall'])
+  })
+})
+
+describe("a workflow step's tool call", () => {
+  it("is audited as an agent's is: the recall trail, and an mcp-audit.log line marked via workflow", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpaudit-wf-'))
+    _resetMemoryAuditForTests()
+    initMemoryAudit(tmp)
+    initAuditLog(tmp)
+    try {
+      await executeToolForWorkflow('memory_search', { query: 'alpha', agentId: 'wf' }, handlers)
+      expect(readMemoryAudit().find((e) => e.event === 'recall')).toMatchObject({ agentId: 'wf', results: 3 })
+      // The audit stream writes asynchronously.
+      await vi.waitFor(() => {
+        const lines = fs.readFileSync(path.join(tmp, 'mcp-audit.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+        expect(lines).toContainEqual(expect.objectContaining({ method: 'tools/call', tool: 'memory_search', status: 'ok', via: 'workflow' }))
+      })
+    } finally {
+      _resetMemoryAuditForTests()
+      try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* the audit stream may still hold it */ }
+    }
   })
 })

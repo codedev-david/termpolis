@@ -110,10 +110,32 @@ describe('linkedStore persistence', () => {
     }
   })
 
-  it('reads an encrypted file as empty when the keyring has gone', () => {
+  it('reads an encrypted file it cannot open as no links -- and says it is locked, not absent', () => {
+    // The only copy of every joined link's key. Read as plain "no links", the
+    // next save would write an empty state over it.
     saveLinkedState(dir, { links: [link()], meta: [meta()] })
+    const before = fs.readFileSync(file())
     setSafeStorage(null)
-    expect(loadLinkedState(dir)).toEqual({ links: [], meta: [] })
+    expect(loadLinkedState(dir)).toEqual({ links: [], meta: [], locked: 'no-keychain' })
+    setSafeStorage({ ...fakeSafeStorage(), decryptString: () => { throw new Error('refused') } })
+    expect(loadLinkedState(dir)).toEqual({ links: [], meta: [], locked: 'unwrap-failed' })
+    expect(fs.readFileSync(file()).equals(before)).toBe(true)
+    // And it reads in full again once the keyring is back.
+    setSafeStorage(fakeSafeStorage())
+    expect(loadLinkedState(dir)).toEqual({ links: [link()], meta: [meta()] })
+  })
+
+  it('reads a sealed file that opens to something other than JSON as locked, not damaged', () => {
+    // A keychain other than the one that sealed it can hand back garbage instead
+    // of refusing. In the clear that would only be damage; sealed, it is kept.
+    setSafeStorage({ ...fakeSafeStorage(), decryptString: () => 'garbage, not a state' })
+    saveLinkedState(dir, { links: [link()], meta: [meta()] })
+    expect(loadLinkedState(dir)).toEqual({ links: [], meta: [], locked: 'unwrap-failed' })
+  })
+
+  it('reads a state file that will not read at all as locked', () => {
+    fs.mkdirSync(file())
+    expect(loadLinkedState(dir)).toEqual({ links: [], meta: [], locked: 'unreadable' })
   })
 
   it('reads the records whatever version the file claims', () => {

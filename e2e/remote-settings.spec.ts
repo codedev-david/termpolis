@@ -64,6 +64,15 @@ test.describe.serial('Remote settings', () => {
     const field = page.locator('[data-testid="remote-relay-url"]')
     await expect(field).toHaveValue(/^wss:\/\//)
 
+    // Plain ws:// to another computer is refused by main, not just by the field:
+    // its room ids would cross the network in the clear.
+    await field.fill('ws://relay.example.com/ws')
+    await page.locator('[data-testid="remote-relay-save"]').click()
+    await expect(page.locator('[data-testid="remote-error"]')).toContainText('must be a wss:// address', {
+      timeout: 10000,
+    })
+
+    // Loopback is the exception, and saving it clears the refusal.
     await field.fill(DEAD_RELAY)
     await page.locator('[data-testid="remote-relay-save"]').click()
     // The field follows the SAVED value once the draft clears, so this reads

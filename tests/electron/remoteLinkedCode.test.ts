@@ -4,7 +4,6 @@ import {
   LINK_OFFER_TTL_MS,
   encodeLinkCode,
   isBridgeLink,
-  isLinkRelayUrl,
   parseLinkCode,
 } from '../../src/main/remoteBridge/linkCode'
 import { createPairingOffer } from '../../src/main/remoteBridge/pairing'
@@ -120,22 +119,6 @@ describe('link code', () => {
       expect(parseLinkCode(wrap(payload({ relayUrl })))?.relayUrl).toBe(relayUrl)
     },
   )
-})
-
-describe('relay URLs a link may name', () => {
-  it.each([
-    ['wss://relay.termpolis.com', true],
-    ['wss://relay.test:8443', true],
-    ['ws://127.0.0.1:1', true],
-    ['ws://localhost:8787', true],
-    ['ws://10.0.0.5', false],
-    ['ws://localhost.example.com', false],
-    ['https://relay.test', false],
-    ['not a url', false],
-    [undefined, false],
-  ])('%s -> %s', (url, ok) => {
-    expect(isLinkRelayUrl(url)).toBe(ok)
-  })
 })
 
 describe('a joined link as main hands it to the bridge', () => {

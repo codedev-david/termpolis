@@ -16,7 +16,7 @@ import {
   type PairedDevice,
 } from '../../src/main/remoteBridge/protocol'
 import { loadRemoteDevices, saveRemoteDevices } from '../../src/main/remoteDeviceStore'
-import { getOrCreateRemoteIdentity } from '../../src/main/remoteIdentityStore'
+import { identityOf } from './fixtures/remoteIdentity'
 import { saveRemoteSettings } from '../../src/main/remoteSettings'
 import {
   createRemoteHost,
@@ -325,7 +325,7 @@ describe('one bridge for two switches', () => {
   it('resolves the identity before the bridge is spawned, not inside the factory', () => {
     h.setLinked({ enabled: true, links: [] })
     h.host.start()
-    expect(h.lastInit().identitySecretKey).toBe(getOrCreateRemoteIdentity(dir).secretKey)
+    expect(h.lastInit().identitySecretKey).toBe(identityOf(dir).secretKey)
     expect(h.lastInit()).toMatchObject({ mcpPort: 3369, mcpToken: 'mcp-token' })
   })
 })
@@ -1105,7 +1105,7 @@ describe('the port', () => {
     saveRemoteDevices(dir, [computer()])
     h.host.start()
     expect(h.port.verificationPhraseFor(COMPUTER_ID)).toBe(
-      deriveVerificationPhrase(getOrCreateRemoteIdentity(dir).publicKey, COMPUTER.publicKey),
+      deriveVerificationPhrase(identityOf(dir).publicKey, COMPUTER.publicKey),
     )
     expect(h.port.verificationPhraseFor('nobody')).toBeNull()
   })

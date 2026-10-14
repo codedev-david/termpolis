@@ -62,6 +62,16 @@ upload it.
   paired device (`userData/remote-devices.json`: its label, its public key, the
   capabilities you granted it, and when it paired and was last seen), and the
   Remote settings themselves (`userData/remote-settings.json`).
+- If you turn on **Linked machines**: its settings (`userData/linked-settings.json`),
+  the links and what each linked computer may do here (`userData/linked-machines`,
+  encrypted at rest through the OS keystore where one is available), and a job
+  history (`userData/linked-jobs.jsonl`, plus `linked-jobs.prev.jsonl` once it
+  passes 2 MB): one line when another computer starts a job here, one when it
+  ends and one when a request is refused, with the computer's name, the agent,
+  read-only or edit, the folder, the first line of the screened prompt (at most
+  80 characters, with anything that might be a credential taken out), the
+  credential rules matched, how it ended and why a request
+  was refused. Never the prompt or the answer.
 
 The `userData` directory lives at:
 
@@ -258,6 +268,14 @@ locally and every log stays on the machine.
 - **Local audit log** (`ai-security-audit.jsonl` in `userData`) — every
   AI-agent terminal launch, optionally with byte counts and hit counts.
   Append-only, 10MB-rotated, wipeable from Settings.
+- **Linked machines.** A prompt or an answer passed between two of your
+  computers is screened with the same rules on both: a credential whose own
+  shape names it (a vendor token such as `sk-ant-` / `ghp_` / `AKIA`, a
+  private-key block) is replaced with `[REDACTED:<rule>]` before it leaves and
+  again when it arrives; a value that only looks like one (a password in a test
+  fixture, a URL with a user and password) is left in and named in a note to
+  the agent. Each finding adds a line to the audit log on the computer that
+  screened it, with the rule ids and counts only, never the value.
 
 The redaction scanner is **not a comprehensive DLP solution** — it targets
 high-confidence patterns to keep false-positive rates low. Custom corporate

@@ -13,17 +13,22 @@
 import { randomBytes } from 'crypto'
 import { promises as fsp } from 'fs'
 import { homedir } from 'os'
+import * as path from 'path'
 import { ok, err } from './ipcResult'
-import type { ExecRequest, ExecResult } from './headlessExec'
+import { isExecAgent, type ExecRequest, type ExecResult } from './headlessExec'
 import { isSafeModelId } from './modelCatalog'
-import { inspectResult, riskBanner } from './mcpGateway/guard'
+import { inspectResult, peerAnswerBanner, riskBanner } from './mcpGateway/guard'
+import type { SecretScreen } from './aiSecurity'
 import {
+  REMOTE_KEYS_NOT_LOCKED,
   beginRemoteLinkPairing,
   cancelRemoteLinkPairing,
+  encryptRemoteKeys,
   refreshRemoteLinked,
   remoteLinkedPort,
+  startOverRemoteKeys,
 } from './remoteHost'
-import type { LinkedBridgePort, LinkedInit } from './remoteBridgeHost'
+import type { KeyStorageView, LinkedBridgePort, LinkedInit } from './remoteBridgeHost'
 import {
   MAX_LINKED_MACHINES,
   type BridgeLink,
@@ -35,9 +40,12 @@ import {
 } from './remoteBridge/protocol'
 import { generateIdentity } from './remoteBridge/sealedChannel'
 import { isBridgeLink, parseLinkCode } from './remoteBridge/linkCode'
+import { isSecureRelayUrl } from './remoteBridge/relayUrl'
 import { localDesktopName } from './remoteBridge/desktopName'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
-import { loadLinkedSettings, saveLinkedSettings, type LinkedSettings } from './linkedSettings'
+import { loadLinkedSettings, notifiesJobs, saveLinkedSettings, type LinkedSettings } from './linkedSettings'
+import { createLinkedJobLog, MAX_REASON_CHARS, type LinkedJobRecord } from './linkedJobLog'
+import { retireLinkedStateFile } from './remoteKeyFiles'
 import {
   DEFAULT_GRANTS,
   DEFAULT_MACHINE_NAME,
@@ -49,10 +57,11 @@ import {
   type JoinedLink,
   type LinkedGrants,
   type LinkedState,
+  type LoadedLinkedState,
   type LinkMeta,
 } from './linkedStore'
 import { machineViews, pruneMeta, uniqueName, type LinkedMachineView } from './linkedDirectory'
-import { createLinkedJobs, type LinkedActivity } from './linkedJobs'
+import { createLinkedJobs, type LinkedActivity, type LinkedSecretFinding } from './linkedJobs'
 import { createLinkedTool, type LinkedToolArgs } from './linkedTool'
 // The renderer's own types, not a copy of them: what this module pushes and
 // answers is exactly what Settings ▸ Linked machines reads, and a field either
@@ -60,9 +69,85 @@ import { createLinkedTool, type LinkedToolArgs } from './linkedTool'
 // undefined. Type-only, so nothing of the renderer is bundled into main.
 import type { LinkedActivityView, LinkedEvent, LinkedStatusView } from '../renderer/src/types'
 
-export type { LinkedActivityView, LinkedEvent, LinkedStatusView }
+export type { LinkedActivityView, LinkedEvent, LinkedStatusView, LinkedJobRecord }
 
 type AgentsInstalled = { claude: boolean; codex: boolean; gemini: boolean }
+
+/** One audit-log line about a screen, as aiSecurity.appendAudit takes it: rule
+ *  ids and counts in `notes`, never the text. */
+export interface LinkedAuditEntry {
+  agent: string
+  event: 'linked_secret_removed' | 'linked_secret_flagged'
+  hitCount: number
+  notes: string
+}
+
+/** Where the screened text was going, as the audit line says it. */
+const HOP_WORDS: Record<LinkedSecretFinding['hop'], string> = {
+  'prompt-out': 'prompt to',
+  'prompt-in': 'prompt from',
+  'answer-out': 'answer to',
+  'answer-in': 'answer from',
+}
+
+/** A screen's findings as audit lines: one for what was removed, one for what
+ *  was left in, each naming the rules and how often each matched. */
+export function linkedAuditEntries(f: LinkedSecretFinding): LinkedAuditEntry[] {
+  const lines: LinkedAuditEntry[] = []
+  const where = `${HOP_WORDS[f.hop]} "${f.machine}"`
+  for (const [event, counts] of [['linked_secret_removed', f.removed], ['linked_secret_flagged', f.flagged]] as const) {
+    const rules = Object.entries(counts)
+    if (rules.length === 0) continue
+    lines.push({
+      agent: f.agent,
+      event,
+      hitCount: rules.reduce((sum, [, n]) => sum + n, 0),
+      notes: `${where}: ${rules.map(([rule, n]) => `${rule} x${n}`).join(', ')}`,
+    })
+  }
+  return lines
+}
+
+/** An OS notification for a job another computer started here: what the binding shows. One per
+ *  `tag` at a time -- a newer one from the same computer replaces it. */
+export interface LinkedJobNotice {
+  tag: string
+  title: string
+  body: string
+}
+
+/** What a computer is called where this one has no name for it. */
+export const UNKNOWN_COMPUTER = 'unknown computer'
+
+/** Jobs one computer starts within this long of its first share one notification. */
+export const NOTICE_GROUP_MS = 60_000
+
+/** Refusals of one computer's jobs within this long of its first are written as one line. */
+export const REFUSAL_WINDOW_MS = 60_000
+
+const AGENT_NAMES: Record<string, string> = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' }
+
+/** Text another computer had a say in, made plain for a notification: no control characters and
+ *  none that change the direction text runs in, which could make it read as something else. */
+export function plainText(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').trim()
+}
+
+/** A job's notification. The title and the line under it say only what this computer knows -- the
+ *  name the user gave the other computer, the agent, read-only or edit, the folder -- and the task
+ *  comes after them, quoted behind a fixed label: the other computer chose its words, so they never
+ *  lead. `more` is how many jobs from the same computer came in the last minute before this one. */
+export function jobNotice(a: LinkedActivity, more: number): LinkedJobNotice {
+  const machine = plainText(a.machine) || UNKNOWN_COMPUTER
+  const mode = a.write ? 'can edit files and run commands' : 'read-only'
+  const folder = a.cwd ? plainText(path.basename(a.cwd) || a.cwd) : ''
+  const lines = [
+    [AGENT_NAMES[a.agent] ?? 'An agent', mode, folder].filter(Boolean).join(' \u00b7 '),
+    `Task: \u201c${plainText(a.summary)}\u201d`,
+  ]
+  if (more > 0) lines.push(`+${more} more job${more === 1 ? '' : 's'} from ${machine} in the last minute`)
+  return { tag: a.ref, title: `${machine} started a job here`, body: lines.join('\n') }
+}
 
 /** The bridge as this module reaches it. The app's is remoteHost's; a test
  *  stands in a fake. */
@@ -72,6 +157,10 @@ export interface LinkedBridgeAccess {
   refresh(): void
   beginLinkPairing(label?: string): void
   cancelLinkPairing(): void
+  /** Remote's two key actions, which cover this module's file too. Null when
+   *  done, else what to tell the user. */
+  encryptKeys(): string | null
+  startOver(): string | null
 }
 
 export interface LinkedHostBinding {
@@ -88,6 +177,20 @@ export interface LinkedHostBinding {
   runHeadless(req: ExecRequest): Promise<ExecResult>
   /** Which agents are installed here. Probed afresh on every call; cached here. */
   agentsInstalled(): Promise<AgentsInstalled>
+  /** aiSecurity.screenText, which every prompt and answer between two computers
+   *  goes through, on both. Bound by the app rather than imported, as every
+   *  other dependency here is. */
+  screenSecrets(text: string): SecretScreen
+  /** aiSecurity.maskForDisplay: a job's summary with every possible credential taken out, the
+   *  heuristic ones too, before it is written to the job history or shown in a notification.
+   *  screenSecrets leaves those in what crosses, which has to stay usable code; neither of these
+   *  does, and a notification can show on a lock screen. */
+  maskSecrets(text: string): string
+  /** aiSecurity.appendAudit, for what screening found: rule ids and counts. */
+  audit?(entry: LinkedAuditEntry): Promise<void> | void
+  /** Show an OS notification: a job another computer started here, unless the user switched them
+   *  off. Not a gate -- the job is running by then. Absent, nothing is shown. */
+  notifyJob?(notice: LinkedJobNotice): void
   /** `true` when a job another computer started begins running here and none
    *  was; `false` when the last one ends -- done, failed, cancelled, or the
    *  service stopped. In between the app keeps this computer from idle-sleeping:
@@ -120,12 +223,29 @@ export const LINKED_UNKNOWN_MACHINE = 'That computer is not linked with this one
 export const LINKED_NAME_REQUIRED = 'A name is required'
 export const LINKED_UNLINK_NEEDS_BRIDGE =
   'Turn Linked machines on first: the relay has to be told to drop a computer that entered a code from this one.'
+/** Main's backstop for a bridge that never answered a join. Says what the
+ *  bridge's own timeout says about an intercepted code: the joiner is the one
+ *  who sees no words, so it is the joiner who has to be told to look. */
 export const LINKED_JOIN_NO_ANSWER =
-  'No answer from the other computer. Check the code is still showing under Settings ▸ Linked machines there, then try again.'
+  'No answer from the other computer. Check the code is still showing under Settings ▸ Linked machines there, then try again. ' +
+  'If that computer is asking you to confirm a link you did not make there, cancel it: someone else used the code.'
 export const LINKED_CODE_LOST =
   'The connection to the relay restarted, so that code no longer works. Create a new one.'
 export const LINKED_JOIN_BAD_ANSWER =
   'The other computer answered with a link this computer cannot use. Create a new code and try again.'
+/** Stop asked of a job that isn't running here -- finished, or never this computer's. */
+export const LINKED_UNKNOWN_JOB = 'That job is not running on this computer.'
+/** Answered while the keys are locked: the identity under every room, or the
+ *  file holding the links this computer joined. */
+export const LINKED_KEYS_LOCKED =
+  "This computer's link keys can't be opened right now, so links can't be made or changed. Nothing was changed."
+/** Edit is a shell here as the user for Claude and Gemini (spec §4.6), so it is
+ *  only ever turned on for a computer whose words were checked on this one... */
+export const LINKED_WRITE_NEEDS_CONFIRM = 'Confirm the safety words before letting this computer edit files here.'
+/** ...and only by a request that says the user was shown what it means: the
+ *  pane's confirm panel sends it. */
+export const LINKED_WRITE_NEEDS_ACK =
+  "Edit permission wasn't confirmed. Turn it on from the computer's row under Settings ▸ Linked machines and click \"Allow edit\"."
 
 /** How much longer than a linked call's own timeout main waits for the
  *  bridge's answer -- the bridge times the call out itself, so this only fires
@@ -163,6 +283,13 @@ interface PendingCall {
   timer: ReturnType<typeof setTimeout>
 }
 
+/** The minute after a computer's refusal was written: the ones after it, counted. */
+interface RefusalWindow {
+  count: number
+  last: LinkedJobRecord
+  timer: ReturnType<typeof setTimeout>
+}
+
 interface PendingJoin {
   publicKey: string
   secretKey: string
@@ -185,6 +312,13 @@ interface LinkedHost {
   rename(input: unknown): unknown
   setGrants(input: unknown): unknown
   unlink(input: unknown): Promise<unknown>
+  encryptKeys(): unknown
+  startOver(): unknown
+  setNotify(input: unknown): unknown
+  stopJob(input: unknown): unknown
+  jobLog(input: unknown): Promise<unknown>
+  /** Remote's call, in the middle of its own Start over. */
+  forgetAll(): void
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
@@ -201,6 +335,12 @@ function hostedId(ref: string): string | null {
   return ref.startsWith(DEVICE_REF) ? ref.slice(DEVICE_REF.length) : null
 }
 
+/** Grants with edit taken off. A computer is never granted edit along with a code, made or
+ *  entered: only from its row, once its words are confirmed here (setGrants). */
+function readOnly(g: LinkedGrants): LinkedGrants {
+  return { run: g.run, write: false }
+}
+
 /** The bridge's half of a joined link: everything but when it was made. */
 function bridgeLinkOf(l: JoinedLink): BridgeLink {
   return { id: l.id, hostPublicKey: l.hostPublicKey, relayUrl: l.relayUrl, sessionRoomId: l.sessionRoomId, secretKey: l.secretKey }
@@ -214,6 +354,8 @@ function appBridge(): LinkedBridgeAccess {
     refresh: refreshRemoteLinked,
     beginLinkPairing: beginRemoteLinkPairing,
     cancelLinkPairing: cancelRemoteLinkPairing,
+    encryptKeys: encryptRemoteKeys,
+    startOver: startOverRemoteKeys,
   }
 }
 
@@ -228,6 +370,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   let started = false
   let settings: LinkedSettings = { enabled: false }
   let state: LinkedState = { links: [], meta: [] }
+  /** Why the state file couldn't be opened at start, while it still can't be:
+   *  `state` is then empty only because it was unreadable, not because it is. */
+  let stateLocked: LoadedLinkedState['locked'] | null = null
   let unsubscribe: (() => void) | null = null
   /** The code on screen, as the bridge announced it. Shown only while the
    *  bridge still holds a link offer (`linkOfferLive`): a respawn, a phone QR
@@ -255,6 +400,13 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   /** What `keepAwake` was last told. */
   let awake = false
   let agentsCache: { at: number; value: Promise<AgentsInstalled> } | null = null
+  const jobLog = createLinkedJobLog(b.userDataDir)
+  /** Bumped per line queued, for the pane: it reads the history again when this moves. */
+  let jobLogVersion = 0
+  /** Per computer: when its latest notification's minute began, and how many came after it. */
+  const notices = new Map<string, { since: number; more: number }>()
+  /** Per computer, for the minute after a refusal was written: how many more came, and the last. */
+  const refusals = new Map<string, RefusalWindow>()
 
   function guarded(fn: () => void): void {
     try {
@@ -289,6 +441,10 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   }
 
   function save(): void {
+    // A state file that couldn't be opened is the only copy of every joined
+    // link's key, and an empty state written over it would lose them all.
+    // Nothing is written until it opens again or the user starts over.
+    if (stateLocked) return
     saveLinkedState(b.userDataDir, state)
   }
 
@@ -401,18 +557,33 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       }))
   }
 
+  /** The Remote pane's key facts, and this module's own file on top: locked
+   *  too while it couldn't be opened, even with the identity fine. */
+  function keys(): KeyStorageView {
+    const shared = port.keys()
+    if (!stateLocked || shared.keyStorage === 'locked') return shared
+    return { ...shared, keyStorage: 'locked', keyLockReason: stateLocked, keysUnencrypted: false, keyLockLinksOnly: true }
+  }
+
   function status(): LinkedStatusView {
     const live = code && code.expiresAt > now() && port.linkOfferLive() ? { ...code } : null
     return {
+      ...keys(),
       enabled: settings.enabled,
       running: settings.enabled && port.running(),
       relay: port.relay(),
       relayUrl: port.relayUrl(),
+      // The bridge opens none of this machine's rooms on such a relay, so a
+      // computer that entered a code from this one stays offline until it is
+      // changed -- worth saying here, where that computer is listed.
+      relayInsecure: !isSecureRelayUrl(port.relayUrl()),
       thisMachine: machineName || DEFAULT_MACHINE_NAME,
       code: live,
       joining: join !== null,
       machines: machines(),
       activity: recentActivity(),
+      notifyJobs: notifiesJobs(settings),
+      jobLogVersion,
     }
   }
 
@@ -428,11 +599,111 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     guarded(() => b.keepAwake?.(on))
   }
 
+  // ── The job history and notifications ─────────────────────────────────────
+
+  function writeLog(record: LinkedJobRecord): void {
+    jobLog.append(record)
+    jobLogVersion++
+  }
+
+  /** Every job another computer starts here is written down and, unless the user said not to,
+   *  notified. Notified, not asked: the grant is the consent, and a job waiting on a click would
+   *  time out on a computer nobody is sitting at -- which is what this feature is for. */
+  function jobStarted(a: LinkedActivity): void {
+    // Masked, both tiers: the summary was screened for what crosses, which leaves a possible
+    // credential in, and the history persists it and a notification shows it.
+    const summary = maskSummary(a.summary)
+    writeLog({
+      ts: a.startedAt,
+      event: 'started',
+      jobId: a.id,
+      ref: a.ref,
+      machine: a.machine,
+      agent: a.agent as LinkedJobRecord['agent'],
+      // linkedJobs sets these on every job it reports; one it left out is left out of the line.
+      write: a.write,
+      cwd: a.cwd,
+      summary,
+      secretRules: a.secretRules,
+    })
+    if (!b.notifyJob || !notifiesJobs(settings)) return
+    const at = now()
+    for (const [ref, n] of [...notices]) if (at - n.since >= NOTICE_GROUP_MS) notices.delete(ref)
+    const last = notices.get(a.ref)
+    const more = last ? last.more + 1 : 0
+    notices.set(a.ref, { since: last?.since ?? at, more })
+    const notice = jobNotice({ ...a, summary }, more)
+    guarded(() => b.notifyJob?.(notice))
+  }
+
+  /** A summary as the history and a notification may hold it. A mask that throws withholds it:
+   *  the job is already running, and its line and notification still say who started what where. */
+  function maskSummary(summary: string): string {
+    try {
+      return b.maskSecrets(summary)
+    } catch {
+      return ''
+    }
+  }
+
+  function jobEnded(a: LinkedActivity): void {
+    writeLog({
+      ts: now(),
+      event: 'finished',
+      jobId: a.id,
+      ref: a.ref,
+      machine: a.machine,
+      agent: a.agent as LinkedJobRecord['agent'],
+      status: a.status as NonNullable<LinkedJobRecord['status']>,
+      durationMs: a.durationMs,
+      secretRules: a.secretRules,
+    })
+  }
+
+  /** A minute's refusals of one computer, as one line: the last of them, and how many there were.
+   *  Without this a computer whose every request is refused could push the real history out
+   *  through rotation, one line per attempt. */
+  function closeRefusals(ref: string, w: RefusalWindow): void {
+    refusals.delete(ref)
+    clearTimeout(w.timer)
+    if (w.count > 0) writeLog({ ...w.last, ts: now(), count: w.count })
+  }
+
+  /** A job another computer asked for and this one refused, written down so a grant that held
+   *  shows as plainly as one that let a job through. Not notified: a computer could otherwise
+   *  fill the screen with refusals. */
+  function jobRefused(from: LinkTarget, req: Extract<PeerRequest, { kind: 'peerRun' }>, reason: string): void {
+    const target = targetOf(refOf(from))
+    const ref = target ? refOf(target) : ''
+    const record: LinkedJobRecord = {
+      ts: now(),
+      event: 'refused',
+      ref,
+      // Its name here; one that paired a moment ago has no record yet, only the directory's.
+      machine: (target && (metaFor(ref)?.name ?? views().find((v) => v.ref === ref)?.name ?? goneNames.get(ref))) || UNKNOWN_COMPUTER,
+      ...(isExecAgent(req.agent) ? { agent: req.agent } : {}),
+      ...(typeof req.write === 'boolean' ? { write: req.write } : {}),
+      reason: reason.length > MAX_REASON_CHARS ? `${reason.slice(0, MAX_REASON_CHARS - 1)}\u2026` : reason,
+    }
+    const w = refusals.get(ref)
+    if (w) {
+      w.count++
+      w.last = record
+      return
+    }
+    writeLog(record)
+    const opened: RefusalWindow = { count: 0, last: record, timer: setTimeout(() => closeRefusals(ref, opened), REFUSAL_WINDOW_MS) }
+    refusals.set(ref, opened)
+  }
+
   function noteActivity(a: LinkedActivity): void {
     if (a.direction === 'in') {
       if (a.status === 'running') runningHere.add(a.id)
       else runningHere.delete(a.id)
       stayAwake()
+      // linkedJobs reports each job twice: as it starts, and once as it ends.
+      if (a.status === 'running') jobStarted(a)
+      else jobEnded(a)
     }
     const key = `${a.direction}:${a.id}`
     activity.set(key, { ...a })
@@ -500,6 +771,19 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     return entry.value
   }
 
+  /** What a screen found, to the audit log. A log that can't be written loses
+   *  the line, never the job. */
+  function auditSecrets(f: LinkedSecretFinding): void {
+    if (!b.audit) return
+    for (const entry of linkedAuditEntries(f)) {
+      try {
+        void Promise.resolve(b.audit(entry)).catch(() => undefined)
+      } catch {
+        /* the next line may still be written */
+      }
+    }
+  }
+
   const jobs = createLinkedJobs({
     runHeadless: (req) => b.runHeadless(req),
     agentsInstalled,
@@ -513,9 +797,23 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     now,
     randomId: () => randomBytes(6).toString('hex'),
     onActivity: noteActivity,
+    screen: (text) => b.screenSecrets(text),
+    onSecrets: auditSecrets,
   })
 
   async function serve(from: LinkTarget, request: PeerRequest): Promise<unknown> {
+    try {
+      return await answerPeer(from, request)
+    } catch (e) {
+      const r: unknown = request
+      if (typeof r === 'object' && r !== null && (r as { kind?: unknown }).kind === 'peerRun') {
+        jobRefused(from, request as Extract<PeerRequest, { kind: 'peerRun' }>, messageOf(e))
+      }
+      throw e
+    }
+  }
+
+  async function answerPeer(from: LinkTarget, request: PeerRequest): Promise<unknown> {
     const here = machineName || 'the other computer'
     if (!settings.enabled) throw new Error(`Linked machines is off on ${here}.`)
     const target = targetOf(refOf(from))
@@ -540,6 +838,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     enabled: () => settings.enabled,
     localName: () => machineName,
     inspect: (text, machine, agent) => riskBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
+    frame: (text, machine, agent) => peerAnswerBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
+    screen: (text) => b.screenSecrets(text),
+    onSecrets: auditSecrets,
     onActivity: noteActivity,
     now,
   })
@@ -780,8 +1081,8 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
 
   function setEnabled(input: unknown): unknown {
     // `=== true`, so a malformed payload turns it OFF: the safe direction for a
-    // switch that lets another computer start agents here.
-    settings = { enabled: field(input, 'enabled') === true }
+    // switch that lets another computer start agents here. The rest is kept.
+    settings = { ...settings, enabled: field(input, 'enabled') === true }
     saveLinkedSettings(b.userDataDir, settings)
     if (!settings.enabled) quiesce()
     refresh()
@@ -792,6 +1093,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   /** Why a new link cannot be made right now, or null when it can. */
   function cannotLink(): string | null {
     if (!settings.enabled) return LINKED_OFF
+    // Ahead of the relay: with the identity locked the bridge never starts, and
+    // with the file locked a new link's key could not be saved.
+    if (keys().keyStorage === 'locked') return LINKED_KEYS_LOCKED
     // Checked first: a request posted to a bridge that is down is dropped, and
     // the pane would wait for a code nothing is making.
     if (!port.running()) return LINKED_NOT_CONNECTED
@@ -804,7 +1108,8 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     if (!grants) return err(LINKED_BAD_GRANTS)
     const refusal = cannotLink()
     if (refusal) return err(refusal)
-    codeGrants = grants
+    // Whatever the payload says: whoever enters the code first has not had its words checked.
+    codeGrants = readOnly(grants)
     // The bridge replaces any code it holds; the old one is spent from here.
     code = null
     // Unnamed: the joiner's hello carries its own name, which the user then
@@ -833,7 +1138,12 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     // A fresh keypair for this one link, minted here because the bridge has no
     // key store; the secret stays in main until the link is kept.
     const keys = generateIdentity()
-    join = { publicKey: keys.publicKey, secretKey: keys.secretKey, grants, timer: setTimeout(onJoinTimeout, JOIN_ANSWER_TIMEOUT_MS) }
+    join = {
+      publicKey: keys.publicKey,
+      secretKey: keys.secretKey,
+      grants: readOnly(grants),
+      timer: setTimeout(onJoinTimeout, JOIN_ANSWER_TIMEOUT_MS),
+    }
     send({ kind: 'joinLink', code: text, secretKey: keys.secretKey, label: machineName })
     changed()
     return ok(status())
@@ -847,11 +1157,18 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   }
 
   function confirm(input: unknown): unknown {
+    // A change that can't be saved would hold for this run only, and quietly
+    // undo itself at the next launch.
+    if (stateLocked) return err(LINKED_KEYS_LOCKED)
     const view = viewFor(field(input, 'ref'))
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
     const typed = sanitizeDeviceLabel(field(input, 'name'))
     const name = uniqueName(takenNames(view.ref), typed || view.name)
-    putMeta({ ...metaOrView(view), name, confirmed: true })
+    const meta = metaOrView(view)
+    // Edit an older version let the user choose along with the code waits for the row like any
+    // other: it was given before anyone saw these words.
+    const grants = view.confirmed ? meta.grants : readOnly(meta.grants)
+    putMeta({ ...meta, name, grants, confirmed: true })
     renameHosted(view.ref, name)
     tell({ kind: 'linked', ref: view.ref, name })
     changed()
@@ -859,6 +1176,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   }
 
   function rename(input: unknown): unknown {
+    if (stateLocked) return err(LINKED_KEYS_LOCKED)
     const view = viewFor(field(input, 'ref'))
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
     const typed = sanitizeDeviceLabel(field(input, 'name'))
@@ -873,8 +1191,14 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
   function setGrants(input: unknown): unknown {
     const grants = normalizeGrants(field(input, 'grants'))
     if (!grants) return err(LINKED_BAD_GRANTS)
+    if (stateLocked) return err(LINKED_KEYS_LOCKED)
     const view = viewFor(field(input, 'ref'))
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
+    // Turning edit on, never off or left as it is: off is always allowed, and stops what it allowed.
+    if (grants.write && !view.grants.write) {
+      if (!view.confirmed) return err(LINKED_WRITE_NEEDS_CONFIRM)
+      if (field(input, 'confirmWrite') !== true) return err(LINKED_WRITE_NEEDS_ACK)
+    }
     putMeta({ ...metaOrView(view), grants })
     // A permission switched off stops what it allowed, not only what comes next.
     jobs.revoke(targetOf(view.ref) as LinkTarget, grants)
@@ -919,10 +1243,83 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     return ok(status())
   }
 
+  function setNotify(input: unknown): unknown {
+    // Only `false` switches them off: they are how a job here is seen, so a malformed payload
+    // leaves them on. On is written as nothing at all (linkedSettings.ts).
+    const { notifyJobs: _was, ...rest } = settings
+    settings = field(input, 'enabled') === false ? { ...rest, notifyJobs: false } : rest
+    saveLinkedSettings(b.userDataDir, settings)
+    changed()
+    return ok(status())
+  }
+
+  function stopJob(input: unknown): unknown {
+    const id = field(input, 'id')
+    // Only a job another computer is running here: this one's own jobs run over there.
+    if (typeof id !== 'string' || !jobs.stopLocal(id)) return err(LINKED_UNKNOWN_JOB)
+    return ok(status())
+  }
+
+  async function readJobLog(input: unknown): Promise<unknown> {
+    const limit = field(input, 'limit')
+    return ok(await jobLog.recent(typeof limit === 'number' ? limit : undefined))
+  }
+
+  function encryptKeys(): unknown {
+    const problem = bridge.encryptKeys()
+    if (problem) return err(problem)
+    changed()
+    return ok(status())
+  }
+
+  function startOver(): unknown {
+    // Only for keys that can't be opened, like Remote's own: any other day this
+    // would throw away every link that works.
+    const locked = keys()
+    if (locked.keyStorage !== 'locked') return err(REMOTE_KEYS_NOT_LOCKED)
+    // Only this module's file: the identity opens, and with it every phone and
+    // every computer that entered a code from this one. Remote's own Start over
+    // retires the identity, and refuses while it opens; so does this.
+    if (locked.keyLockLinksOnly) {
+      retireLinkedStateFile(b.userDataDir)
+      forgetLinks()
+      // The bridge drops the rooms of the links this computer joined.
+      refresh()
+      changed()
+      return ok(status())
+    }
+    // Remote does the whole of it -- the identity, the devices and this
+    // module's file -- and calls forgetAll() on the way.
+    const problem = bridge.startOver()
+    if (problem) return err(problem)
+    return ok(status())
+  }
+
+  /** What the links file held is gone: every link this computer joined, and
+   *  the name, permissions and confirmation of every linked computer. Nothing
+   *  half done is kept either. A fresh file takes the place of the one set
+   *  aside -- or its place outright, if it couldn't be moved: the user chose to
+   *  forget it. */
+  function forgetLinks(): void {
+    quiesce()
+    state = { links: [], meta: [] }
+    stateLocked = null
+    save()
+  }
+
+  /** Remote's Start over: every link went with the keys, hosted ones too. */
+  function forgetAll(): void {
+    forgetLinks()
+    leaving.clear()
+    changed()
+  }
+
   return {
     start(): void {
       settings = loadLinkedSettings(b.userDataDir)
-      state = loadLinkedState(b.userDataDir)
+      const loaded = loadLinkedState(b.userDataDir)
+      state = { links: loaded.links, meta: loaded.meta }
+      stateLocked = loaded.locked ?? null
       // Once, for the life of the service: the port outlives Remote's own
       // stop/start, and hears a bridge whichever feature started it.
       unsubscribe = port.onMessage(onBridge)
@@ -942,6 +1339,8 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       endJoin()
       // Released whatever the jobs above reported: a stopped service holds nothing.
       stayAwake()
+      // Refusals still being counted are written now, not lost with their timers.
+      for (const [ref, w] of [...refusals]) closeRefusals(ref, w)
     },
 
     status,
@@ -959,6 +1358,12 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     rename,
     setGrants,
     unlink,
+    encryptKeys,
+    startOver,
+    setNotify,
+    stopJob,
+    jobLog: readJobLog,
+    forgetAll,
   }
 }
 
@@ -992,6 +1397,12 @@ export function linkedInitForRemote(): LinkedInit {
   return host ? host.initForRemote() : { enabled: false, links: [] }
 }
 
+/** Linked machines' half of Remote's "Start over": forget every link held in
+ *  memory. Nothing to forget before the service has started. */
+export function linkedStartOverForRemote(): void {
+  host?.forgetAll()
+}
+
 export interface LinkedIpcLike {
   handle(channel: string, listener: (event: unknown, input?: unknown) => unknown): void
 }
@@ -1015,6 +1426,11 @@ export function registerLinkedIpc(ipc: LinkedIpcLike): void {
   on('linked:rename', (h, input) => h.rename(input))
   on('linked:set-grants', (h, input) => h.setGrants(input))
   on('linked:unlink', (h, input) => h.unlink(input))
+  on('linked:encrypt-keys', (h) => h.encryptKeys())
+  on('linked:start-over', (h) => h.startOver())
+  on('linked:set-notify', (h, input) => h.setNotify(input))
+  on('linked:stop-job', (h, input) => h.stopJob(input))
+  on('linked:job-log', (h, input) => h.jobLog(input))
 }
 
 /** @internal test-only */

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { generateIdentity, fromHex, toHex } from '../../src/main/remoteBridge/sealedChannel'
+import { generateIdentity, fromHex, toHex, readCounter, MAX_COUNTER } from '../../src/main/remoteBridge/sealedChannel'
 import {
   Handshake,
   deriveSessionRoomId,
@@ -18,6 +18,8 @@ import {
 const bytes = (s: string) => new TextEncoder().encode(s)
 const text = (b: Uint8Array) => new TextDecoder().decode(b)
 const H = new Uint8Array([FRAME_SESSION])
+/** The counter a greeting was sealed at, read where the wire carries it. */
+const counterOf = (greeting: Uint8Array): number => readCounter(greeting.subarray(GREETING_HEADER_BYTES))
 
 /** Build a greeting the way a SECOND implementation would, with a payload of the
  *  test's choosing.
@@ -260,6 +262,63 @@ describe('Handshake', () => {
     const { ds } = handshake()
     const own = ds.seal(H, bytes('mine'))
     expect(() => ds.open(own, 1)).toThrow()
+  })
+
+  it('seals every greeting at a counter of its own', () => {
+    // The handshake key depends on the two identity keys alone, so it is the
+    // same for every greeting between them -- and at a fixed counter, so was the
+    // nonce. Two greetings under one (key, nonce) hand the relay the Poly1305 key.
+    const desktop = generateIdentity()
+    const device = generateIdentity()
+    const greetingAt = () =>
+      counterOf(
+        new Handshake({ ownSecretKey: desktop.secretKey, peerPublicKey: device.publicKey, role: 'desktop' })
+          .greeting,
+      )
+    expect(new Set(Array.from({ length: 8 }, greetingAt)).size).toBe(8)
+  })
+
+  it.each([0, 1, 0x1234_5678_9abc, MAX_COUNTER])(
+    'opens a greeting sealed at counter %s, and the session still counts from 0',
+    (counter) => {
+      // 0 is every peer before the random counter -- a 1.1.0 phone, a 1.52
+      // desktop -- so this is also the mixed-version case.
+      const desktop = generateIdentity()
+      const device = generateIdentity()
+      const d = new Handshake({
+        ownSecretKey: desktop.secretKey,
+        peerPublicKey: device.publicKey,
+        role: 'desktop',
+        greetingCounter: counter,
+      })
+      const p = new Handshake({ ownSecretKey: device.secretKey, peerPublicKey: desktop.publicKey, role: 'device' })
+      expect(counterOf(d.greeting)).toBe(counter)
+
+      const ps = p.accept(d.greeting)
+      const ds = d.accept(p.greeting)
+      // Only the greeting moves. The session's keys are new for this connection,
+      // so both of its directions start at 0 as they always have.
+      const down = ds.seal(H, bytes('down'))
+      const up = ps.seal(H, bytes('up'))
+      expect(readCounter(down.subarray(1))).toBe(0)
+      expect(readCounter(up.subarray(1))).toBe(0)
+      expect(text(ps.open(down, 1))).toBe('down')
+      expect(text(ds.open(up, 1))).toBe('up')
+    },
+  )
+
+  it.each([-1, 0.5, MAX_COUNTER + 1])('refuses a greeting counter it cannot seal at: %s', (counter) => {
+    const desktop = generateIdentity()
+    const device = generateIdentity()
+    expect(
+      () =>
+        new Handshake({
+          ownSecretKey: desktop.secretKey,
+          peerPublicKey: device.publicKey,
+          role: 'desktop',
+          greetingCounter: counter,
+        }),
+    ).toThrow(RangeError)
   })
 
   it('keeps a long conversation in both directions at once', () => {

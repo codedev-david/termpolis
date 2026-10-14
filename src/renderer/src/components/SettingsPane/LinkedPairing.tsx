@@ -12,6 +12,19 @@ import { LinkedGrantToggles } from './LinkedGrantToggles'
 const PRIMARY = 'px-3 py-1 text-xs rounded bg-[#0078d4] hover:bg-[#106ebe] text-white disabled:opacity-50'
 const SECONDARY = 'px-3 py-1 text-xs rounded bg-[#3c3c3c] hover:bg-[#4a4a4a] text-[#e0e0e0]'
 
+/** The only grant offered before a link exists (spec §4.6). */
+const RUN_ONLY: readonly GrantKey[] = ['run']
+
+/** Where edit went: it is turned on from the computer's row, after the words. */
+function EditLater({ testId }: { testId: string }): JSX.Element {
+  return (
+    <p data-testid={testId} className="text-xs text-[#6b7280] mt-1">
+      To let it edit files here too, turn that on from its row under Linked computers once you have
+      confirmed its safety words.
+    </p>
+  )
+}
+
 /** Main's clipboard first: `navigator.clipboard` is refused from a button
  *  click in Electron (see lib/clipboard.ts). The browser API is only the
  *  fallback for a renderer without main's channel. */
@@ -115,13 +128,16 @@ export function LinkedCodeOffer({
       </p>
       <div className="text-xs text-[#6b7280] mb-1">What the new computer may do here:</div>
       {/* Locked while a code is out: its grants were sent with it, so changing
-          the boxes now would change nothing and only look as if it had. */}
+          the boxes now would change nothing and only look as if it had. Run
+          only: whoever enters the code first has not had its words checked. */}
       <LinkedGrantToggles
         grants={grants}
         onToggle={onToggleGrant}
         testIdPrefix="linked-grant-new"
         disabled={live !== null || awaiting}
+        keys={RUN_ONLY}
       />
+      <EditLater testId="linked-grant-new-edit-later" />
       {live ? (
         <LiveCode key={live.code} code={live.code} remaining={remaining} onCancel={onCancel} />
       ) : awaiting ? (
@@ -191,7 +207,9 @@ export function LinkedJoinForm({
         onToggle={onToggleGrant}
         testIdPrefix="linked-join-grant"
         disabled={joining}
+        keys={RUN_ONLY}
       />
+      <EditLater testId="linked-join-grant-edit-later" />
       {joining ? (
         <div className="flex items-center gap-2 mt-2">
           <span data-testid="linked-joining" className="text-xs text-[#9ca3af]">
@@ -236,9 +254,19 @@ export function LinkedPendingCard({ item, onConfirm, onCancel }: LinkedPendingCa
       <div className="text-sm text-[#e5c07b]">Confirm the link with {item.suggestedName}</div>
       {item.phrase ? (
         <>
-          <p className="text-xs text-[#9ca3af]">
-            Check that the other computer shows the same 8 words, in the same order. If they match,
-            nobody is sitting in the middle of the connection. If they do not, cancel.
+          {/* Which side this is decides what an interception looks like. Whoever
+              redeems a code first gets this card on the computer that made it;
+              the person who meant to use the code is left with no words at all,
+              on a screen still contacting or saying "No answer". So the host has
+              to be told that nothing on the other screen is the warning sign. */}
+          <p data-testid="linked-phrase-advice" className="text-xs text-[#9ca3af]">
+            {item.ref.startsWith('device:')
+              ? 'A computer just used your code. Check that it shows these same 8 words, in the same ' +
+                'order. If its words are different, or it shows no words at all (it may still say ' +
+                '“Contacting the other computer…” or “No answer”), someone else used your code: ' +
+                'click Cancel.'
+              : 'Check that the other computer shows these same 8 words, in the same order. If it ' +
+                'shows different words or none, click Cancel.'}
           </p>
           <div
             data-testid="linked-phrase"

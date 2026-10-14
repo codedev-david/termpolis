@@ -33,8 +33,10 @@ const RATE_LIMITS: Record<string, { max: number; windowMs: number }> = {
   _global: { max: 200, windowMs: 60_000 },           // 200 total requests per minute
 }
 
-export function checkRateLimit(key: string): boolean {
-  const limit = RATE_LIMITS[key] || RATE_LIMITS._global
+/** Counts one call in the bucket `key`, held to the RATE_LIMITS entry `limitKey` names: the same
+ *  name, except for a second bucket kept at another's limit (a workflow's, below). */
+export function checkRateLimit(key: string, limitKey: string = key): boolean {
+  const limit = RATE_LIMITS[limitKey] || RATE_LIMITS._global
   const now = Date.now()
   const bucket = rateBuckets.get(key)
 
@@ -111,6 +113,7 @@ function logMcpRequest(
   status: 'ok' | 'error' | 'denied' | 'rate_limited',
   detail?: string,
   device?: string | null,
+  via?: 'workflow',
 ): void {
   const entry = {
     ts: new Date().toISOString(),
@@ -122,6 +125,9 @@ function logMcpRequest(
     // in this file carrying a `device` is then a line a phone caused, which is
     // the query the trail exists for.
     ...(device ? { device } : {}),
+    // A workflow step's call, made in-process rather than over HTTP: the same
+    // query for what an automation did.
+    ...(via ? { via } : {}),
   }
   const line = JSON.stringify(entry) + '\n'
   console.log(`[MCP audit] ${line.trimEnd()}`)
@@ -846,7 +852,7 @@ export async function executeTool(
       return await handlers.retrieveFull(args.token)
     case 'linked_machines':
       // Handed over whole: which fields matter depends on the action, and the handler checks
-      // them. `?? {}` because the workflow engine calls executeTool without tools/call's default.
+      // them. `?? {}` because a caller other than tools/call need not pass its default.
       return await handlers.linkedMachines(args ?? {})
     // --- operator verbs (CLI-only; see McpToolHandlers) ---
     case 'agent_exec':
@@ -864,6 +870,54 @@ export async function executeTool(
       return await handlers.recallBench({ project: args.project, limit: args.limit, save: args.save })
     default:
       throw new Error(`Unknown tool: ${name}`)
+  }
+}
+
+/** A thrown tool error as it may be repeated: our own argument and unknown-tool messages, and a
+ *  generic line for anything else, which can carry internals (a path, a connection string). */
+function safeToolMessage(e: unknown): string {
+  const message = (e as { message?: unknown } | null | undefined)?.message
+  return typeof message === 'string' && (message.includes('Unknown tool') || message.includes('Invalid'))
+    ? message
+    : 'Tool execution failed'
+}
+
+/** The bucket every workflow call counts in, at the agents' global limit. Its own, so a looping
+ *  workflow can't get the user's agents refused, nor busy agents a workflow's steps. */
+const WORKFLOW_GLOBAL = '_global_workflow'
+
+/** The one limited tool whose bucket a workflow shares with agents: what it costs lands on another
+ *  computer and on the user's AI bill, whoever calls it. A workflow's calls to the other limited
+ *  tools, all local, count in buckets of their own at the same limits. */
+const SHARED_WITH_WORKFLOWS = 'linked_machines'
+
+/**
+ * A workflow Skill step's tool call (workflow/adapters.ts): executeTool, held to the rate limits
+ * an agent's call is held to and written to the same audit log, marked `via: 'workflow'`. The
+ * engine calls in-process, so none of the HTTP handler's checks would otherwise apply. A refusal
+ * throws, which fails the step -- or not, when the step continues on error.
+ */
+export async function executeToolForWorkflow(name: string, args: unknown, handlers: McpToolHandlers): Promise<unknown> {
+  if (!checkRateLimit(WORKFLOW_GLOBAL, '_global')) {
+    logMcpRequest('tools/call', name, 'rate_limited', 'workflow limit exceeded', null, 'workflow')
+    throw new Error('Rate limit exceeded for workflow tool calls')
+  }
+  // Own properties only: a step names its tool, and 'constructor' is not a limit.
+  if (Object.prototype.hasOwnProperty.call(RATE_LIMITS, name)) {
+    const bucket = name === SHARED_WITH_WORKFLOWS ? name : `wf:${name}`
+    if (!checkRateLimit(bucket, name)) {
+      logMcpRequest('tools/call', name, 'rate_limited', `${name} limit exceeded`, null, 'workflow')
+      throw new Error(`Rate limit exceeded for ${name}`)
+    }
+  }
+  try {
+    const result = await executeTool(name, args ?? {}, handlers)
+    logMcpRequest('tools/call', name, 'ok', undefined, null, 'workflow')
+    return result
+  } catch (e) {
+    // Thrown, the step shows the whole message; the audit file gets only what an agent would.
+    logMcpRequest('tools/call', name, 'error', safeToolMessage(e), null, 'workflow')
+    throw e
   }
 }
 
@@ -910,14 +964,11 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: st
         result: { content: [{ type: 'text', text: compressToolResult(name, result) }] },
         id,
       }
-    } catch (e: any) {
+    } catch (e) {
       // Sanitize error: don't leak internal stack traces or property names
-      const safeMessage = e.message?.includes('Unknown tool') || e.message?.includes('Invalid')
-        ? e.message
-        : 'Tool execution failed'
       return {
         jsonrpc: '2.0',
-        result: { content: [{ type: 'text', text: `Error: ${safeMessage}` }], isError: true },
+        result: { content: [{ type: 'text', text: `Error: ${safeToolMessage(e)}` }], isError: true },
         id,
       }
     }

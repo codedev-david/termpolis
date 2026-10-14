@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { RelayClient, backoffDelay, KEEPALIVE_MS } from '../../src/main/remoteBridge/relayClient'
+import { RelayClient, backoffDelay, GREET_INTERVAL_MS, KEEPALIVE_MS } from '../../src/main/remoteBridge/relayClient'
 import type { SessionRelayDeps } from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES } from '../../src/main/remoteBridge/outputChunker'
 import type { RelayControlFrame } from '../../src/main/remoteBridge/protocol'
@@ -10,6 +10,7 @@ import {
   FRAME_PAIRING_HELLO,
   FRAME_PAIRING_ACK,
   FRAME_SESSION,
+  FRAME_SESSION_HELLO,
   type SealedSession,
 } from '../../src/main/remoteBridge/sessionCrypto'
 // The relay's own encoder and its idle window, imported from the relay package
@@ -360,38 +361,237 @@ describe('relay client', () => {
     // which means without `peer-gone` clearing the session, the returning phone's
     // greeting reaches the FRAME path, fails to open, and is dropped. The socket
     // then sits connected, reporting itself attached, and permanently mute.
-    const p = pair()
-    const sock = fakeSocket()
-    const states: string[] = []
-    const onRequest = vi.fn().mockResolvedValue({ kind: 'ok', id: 2, data: null })
-    const c = client(sock, p, onRequest, (s) => states.push(s))
-    c.start()
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const states: string[] = []
+      const onRequest = vi.fn().mockResolvedValue({ kind: 'ok', id: 2, data: null })
+      const c = client(sock, p, onRequest, (s) => states.push(s))
+      c.start()
 
-    const first = connect(sock, p)
-    const stale = first.seal(H, envelope(1))
+      const first = connect(sock, p)
+      const stale = first.seal(H, envelope(1))
 
-    control(sock, { kind: 'peer-gone', role: 'device' })
-    // Online, NOT offline. This desktop is still seated and still reachable;
-    // saying otherwise blames the wrong machine for the phone walking away.
-    expect(c.state).toBe('online')
-    expect(states).not.toContain('offline')
-    expect(sock.closed).toBe(false)
+      control(sock, { kind: 'peer-gone', role: 'device' })
+      // Online, NOT offline. This desktop is still seated and still reachable;
+      // saying otherwise blames the wrong machine for the phone walking away.
+      expect(c.state).toBe('online')
+      expect(states).not.toContain('offline')
+      expect(sock.closed).toBe(false)
 
-    control(sock, { kind: 'peer-joined', role: 'device' })
-    // A second greeting on the SAME socket, with an ephemeral key of its own --
-    // re-sending the first would hand two different phones one session key.
-    expect(sock.sent).toHaveLength(1)
-    const phone = p.phone()
-    const second = phone.accept(sock.sent.shift()!)
-    sock.emit('message', Buffer.from(phone.greeting), true)
-    expect(c.state).toBe('attached')
+      // Back inside the same second, so this greeting waits out the spacing.
+      control(sock, { kind: 'peer-joined', role: 'device' })
+      vi.advanceTimersByTime(GREET_INTERVAL_MS)
+      // A second greeting on the SAME socket, with an ephemeral key of its own --
+      // re-sending the first would hand two different phones one session key.
+      expect(sock.sent).toHaveLength(1)
+      const phone = p.phone()
+      const second = phone.accept(sock.sent.shift()!)
+      sock.emit('message', Buffer.from(phone.greeting), true)
+      expect(c.state).toBe('attached')
 
-    sock.emit('message', Buffer.from(stale), true)
-    await new Promise((r) => setTimeout(r, 20))
-    expect(onRequest).not.toHaveBeenCalled()
+      sock.emit('message', Buffer.from(stale), true)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(onRequest).not.toHaveBeenCalled()
 
-    sock.emit('message', Buffer.from(second.seal(H, envelope(2))), true)
-    await vi.waitFor(() => expect(onRequest).toHaveBeenCalledOnce())
+      sock.emit('message', Buffer.from(second.seal(H, envelope(2))), true)
+      await vi.waitFor(() => expect(onRequest).toHaveBeenCalledOnce())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('greets at most once a second on one socket, however often the relay asks', () => {
+    // `hello` and `peer-joined` are the relay's words, and every greeting goes
+    // out under the one handshake key. Answering each ask would let a hostile
+    // relay collect greetings as fast as this end can seal them -- and with
+    // them, sooner or later, two at one counter. Interleaving `peer-gone` does
+    // not reset the clock: it is the relay's word too.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      sock.emit('open')
+      seat(sock, false)
+      const greetings = (): number => sock.sent.filter((f) => f[0] === FRAME_SESSION_HELLO).length
+
+      control(sock, { kind: 'peer-joined', role: 'device' })
+      expect(greetings()).toBe(1)
+      for (let step = 0; step < 100; step++) {
+        for (let i = 0; i < 20; i++) {
+          control(sock, { kind: 'peer-gone', role: 'device' })
+          control(sock, { kind: 'peer-joined', role: 'device' })
+        }
+        vi.advanceTimersByTime(GREET_INTERVAL_MS / 10)
+      }
+      // Ten seconds of asking, four thousand times: ten more greetings.
+      expect(greetings()).toBe(11)
+      expect(sock.closed).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sends a held-back greeting when its second is up, and attaches on it', () => {
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      connect(sock, p)
+      control(sock, { kind: 'peer-gone', role: 'device' })
+      control(sock, { kind: 'peer-joined', role: 'device' })
+
+      // Held, not dropped: a peer that really did come back gets its greeting.
+      expect(sock.sent).toHaveLength(0)
+      vi.advanceTimersByTime(GREET_INTERVAL_MS - 1)
+      expect(sock.sent).toHaveLength(0)
+      vi.advanceTimersByTime(1)
+      expect(sock.sent).toHaveLength(1)
+
+      const phone = p.phone()
+      phone.accept(sock.sent[0])
+      sock.emit('message', Buffer.from(phone.greeting), true)
+      expect(c.state).toBe('attached')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the spacing to one second when the wall clock steps back', () => {
+    // NTP corrections and manual changes move the wall clock both ways. A
+    // spacing measured against it would hold this greeting for as long as the
+    // step -- an hour here -- and the peer that came back would wait that long.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      connect(sock, p)
+      control(sock, { kind: 'peer-gone', role: 'device' })
+      vi.setSystemTime(Date.now() - 60 * 60_000)
+      control(sock, { kind: 'peer-joined', role: 'device' })
+      vi.advanceTimersByTime(GREET_INTERVAL_MS)
+      expect(sock.sent).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds the peer greeting that arrives first, and answers it once it has greeted', async () => {
+    // The peer greets the moment it is seated, so its greeting can land while
+    // this end's is still held back. Accepting it then would attach a session
+    // whose frames could reach the peer before the greeting that keys them; and
+    // with no handshake in hand, the old path would close the socket instead.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const onRequest = vi.fn().mockResolvedValue({ kind: 'ok', id: 9, data: { terminals: [] } })
+      const c = client(sock, p, onRequest)
+      c.start()
+      connect(sock, p)
+      control(sock, { kind: 'peer-gone', role: 'device' })
+      control(sock, { kind: 'peer-joined', role: 'device' })
+
+      const phone = p.phone()
+      sock.emit('message', Buffer.from(phone.greeting), true)
+      expect(sock.closed).toBe(false)
+      expect(c.state).toBe('online')
+      expect(sock.sent).toHaveLength(0)
+
+      vi.advanceTimersByTime(GREET_INTERVAL_MS)
+      // This end greets, then attaches on the greeting it held -- in that order.
+      expect(sock.sent).toHaveLength(1)
+      expect(c.state).toBe('attached')
+
+      const phoneSide = phone.accept(sock.sent.shift()!)
+      sock.emit('message', Buffer.from(phoneSide.seal(H, envelope(9))), true)
+      await vi.waitFor(() => expect(sock.sent).toHaveLength(1))
+      expect(JSON.parse(new TextDecoder().decode(phoneSide.open(sock.sent[0], 1)))).toEqual({
+        kind: 'ok',
+        id: 9,
+        data: { terminals: [] },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['the peer leaves again', (sock: ReturnType<typeof fakeSocket>) => control(sock, { kind: 'peer-gone', role: 'device' })],
+    ['the socket drops', (sock: ReturnType<typeof fakeSocket>) => sock.emit('close')],
+  ])('forgets a held-back greeting when %s', (_label, cut) => {
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const o = opener()
+      const c = build(p, o.open)
+      c.start()
+      const sock = o.sockets[0]
+      connect(sock, p)
+      control(sock, { kind: 'peer-gone', role: 'device' })
+      control(sock, { kind: 'peer-joined', role: 'device' })
+      sock.emit('message', Buffer.from(p.phone().greeting), true)
+
+      cut(sock)
+      vi.advanceTimersByTime(10 * GREET_INTERVAL_MS)
+      // Nothing went out for a peer that is gone, and the greeting it left behind
+      // was not answered into an empty room.
+      expect(sock.sent).toHaveLength(0)
+      expect(c.state).not.toBe('attached')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('forgets a held-back greeting when stopped', () => {
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const sock = fakeSocket()
+      const c = client(sock, p, vi.fn())
+      c.start()
+      connect(sock, p)
+      control(sock, { kind: 'peer-gone', role: 'device' })
+      control(sock, { kind: 'peer-joined', role: 'device' })
+      c.stop()
+      vi.advanceTimersByTime(10 * GREET_INTERVAL_MS)
+      expect(sock.sent).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('greets at once on a new socket, however recently the last one greeted', () => {
+    // The spacing is per socket. A redial is already paced by the backoff, and a
+    // connection that had to wait out the last socket's second would make every
+    // quick reconnect slower for no gain.
+    vi.useFakeTimers()
+    try {
+      const p = pair()
+      const o = opener()
+      // Jitter at the bottom of its range, so the redial lands inside the second.
+      const c = build(p, o.open, { random: () => 0 })
+      c.start()
+      connect(o.sockets[0], p)
+      o.sockets[0].emit('close')
+      const redial = backoffDelay(0, () => 0)
+      expect(redial).toBeLessThan(GREET_INTERVAL_MS)
+      vi.advanceTimersByTime(redial)
+      o.sockets[1].emit('open')
+      seat(o.sockets[1], true)
+      expect(o.sockets[1].sent).toHaveLength(1)
+      expect(c.state).toBe('online')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('drops the connection when the peer greeting will not open', () => {

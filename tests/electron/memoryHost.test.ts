@@ -580,12 +580,12 @@ describe('key provisioning — main owns the keychain, because the child cannot'
   it('honours the opt-out', () => {
     installMainSafe(fakeSafe)
     fs.writeFileSync(path.join(tmp, ENCRYPTION_OPTOUT_FILE), '1')
-    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false })
+    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false, readKeys: [], problem: null })
   })
 
   it('stays honestly PLAINTEXT with no OS keychain (never writes a key in the clear)', () => {
     installMainSafe(null)
-    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false })
+    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false, readKeys: [], problem: null })
     expect(fs.existsSync(path.join(tmp, KEY_CACHE_FILE))).toBe(false)
   })
 
@@ -674,9 +674,15 @@ describe('enableLocalEncryption — the mint happens where a keychain exists', (
   })
 })
 
-describe('setSyncPassphrase — main persists the key the child cannot', () => {
-  it('unlocks the synced store AND caches the key OS-wrapped (never plaintext)', async () => {
+describe('setSyncPassphrase — never writes the device key file', () => {
+  it('unlocks the synced store, and the passphrase key goes NOWHERE near memory-sync.key', async () => {
+    // v1 cached the passphrase key in memory-sync.key — the file holding the DEVICE key the local
+    // brain is encrypted under — overwriting it. That file is now off limits to every sync path.
     installMainSafe(fakeSafe)
+    const keyFile = path.join(tmp, KEY_CACHE_FILE)
+    const deviceKey = Buffer.alloc(32, 3)
+    fs.writeFileSync(keyFile, 'osk:v1:' + fakeSafe.encryptString(deviceKey.toString('base64')).toString('base64'))
+    const before = fs.readFileSync(keyFile)
     const syncDir = path.join(tmp, 'sync')
     const { mode } = await startWithFake({}, syncDir)
     expect(mode).toBe('host')
@@ -692,15 +698,12 @@ describe('setSyncPassphrase — main persists the key the child cannot', () => {
     const list = await memoryList()
     expect(list.map((e) => e.content)).toContain('SYNCSECRETMARKER content')
 
-    // ...and the derived key was cached BY MAIN, OS-wrapped. The child's writeSecret would have
-    // dropped it on disk in the clear; the keychain guard made that impossible, so main did it.
-    const keyFile = path.join(tmp, KEY_CACHE_FILE)
-    expect(fs.existsSync(keyFile)).toBe(true)
-    const raw = fs.readFileSync(keyFile, 'utf8')
-    expect(raw.startsWith('osk:v1:')).toBe(true)
-    // The literal key bytes must not be sitting there in base64.
+    // ...and the device key file is byte-for-byte what it was. The passphrase key is nowhere on disk.
+    expect(fs.readFileSync(keyFile).equals(before)).toBe(true)
     const key = deriveKey('correct horse battery staple', fs.readFileSync(path.join(syncDir, SALT_FILE)))
-    expect(raw).not.toContain(key.toString('base64'))
+    for (const f of fs.readdirSync(tmp).filter((n) => n.startsWith(KEY_CACHE_FILE))) {
+      expect(fs.readFileSync(path.join(tmp, f), 'utf8')).not.toContain(key.toString('base64'))
+    }
   })
 
   it('a wrong passphrase is REJECTED (and no key is cached)', async () => {
@@ -750,23 +753,96 @@ describe('enableLocalEncryption — the paths that must NOT mint in main', () =>
   })
 })
 
-describe('provisionMemoryKey — degrades safely', () => {
-  it('a CORRUPT key file is replaced, not trusted (a short key would decrypt nothing)', () => {
+// Decision 1: a key file is NEVER overwritten. This suite used to assert the opposite ("a CORRUPT key
+// file is replaced") — and that path is the one that makes a 1.1 GB brain unreadable for good the
+// first time a keychain refuses an unwrap. Every unusable file below is left byte-for-byte as it was,
+// and the reason is handed to the store, which comes up LOCKED.
+describe('provisionMemoryKey — never overwrites a key file', () => {
+  const keyFile = (): string => path.join(tmp, KEY_CACHE_FILE)
+  const wrap = (b64: string): string => 'osk:v1:' + fakeSafe.encryptString(b64).toString('base64')
+  const throwingSafe: SafeStorageLike = {
+    isEncryptionAvailable: () => true,
+    encryptString: () => { throw new Error('keychain locked') },
+    decryptString: () => { throw new Error('keychain locked') },
+  }
+
+  it('a WRONG-LENGTH key is left untouched and reported, never replaced (a short key decrypts nothing)', () => {
     installMainSafe(fakeSafe)
-    fs.writeFileSync(path.join(tmp, KEY_CACHE_FILE), 'osk:v1:' + fakeSafe.encryptString('dG9vc2hvcnQ=').toString('base64'))
-    const { key, minted } = provisionMemoryKey(tmp, null) // 8 bytes, not 32 → must not be adopted
-    expect(minted).toBe(true)
-    expect(key).toHaveLength(32)
+    fs.writeFileSync(keyFile(), wrap('dG9vc2hvcnQ=')) // 8 bytes, not 32
+    const before = fs.readFileSync(keyFile())
+    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false, readKeys: [], problem: 'key-invalid' })
+    expect(fs.readFileSync(keyFile()).equals(before)).toBe(true)
+  })
+
+  it('a key the keychain REFUSES to unwrap is left untouched and reported (no mint over it)', () => {
+    installMainSafe(fakeSafe)
+    fs.writeFileSync(keyFile(), wrap(Buffer.alloc(32, 1).toString('base64')))
+    const before = fs.readFileSync(keyFile())
+    installMainSafe(throwingSafe) // DPAPI after a password reset, an Electron upgrade, a locked keyring...
+    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false, readKeys: [], problem: 'key-unreadable' })
+    expect(fs.readFileSync(keyFile()).equals(before)).toBe(true)
+    expect(fs.readdirSync(tmp)).toEqual([KEY_CACHE_FILE]) // no temp file, no retired copy — nothing written
+  })
+
+  it('a wrapped key with NO keychain at all is reported as keychain-unavailable and left alone', () => {
+    installMainSafe(fakeSafe)
+    fs.writeFileSync(keyFile(), wrap(Buffer.alloc(32, 2).toString('base64')))
+    const before = fs.readFileSync(keyFile())
+    installMainSafe(null)
+    expect(provisionMemoryKey(tmp, null).problem).toBe('keychain-unavailable')
+    expect(fs.readFileSync(keyFile()).equals(before)).toBe(true)
+  })
+
+  it('a key that reads causes ZERO writes (the file is not even re-saved)', () => {
+    installMainSafe(fakeSafe)
+    const first = provisionMemoryKey(tmp, null)
+    const old = new Date(Date.now() - 60_000)
+    fs.utimesSync(keyFile(), old, old)
+    const before = fs.readFileSync(keyFile())
+    const mtime = fs.statSync(keyFile()).mtimeMs
+    const again = provisionMemoryKey(tmp, null)
+    expect(again).toEqual({ key: first.key, minted: false, readKeys: [], problem: null })
+    expect(fs.statSync(keyFile()).mtimeMs).toBe(mtime)
+    expect(fs.readFileSync(keyFile()).equals(before)).toBe(true)
   })
 
   it('a keychain that THROWS on write leaves no key behind (fail closed)', () => {
+    installMainSafe(throwingSafe)
+    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false, readKeys: [], problem: null })
+    expect(fs.existsSync(keyFile())).toBe(false)
+    expect(fs.readdirSync(tmp)).toEqual([])
+  })
+
+  it('retired keys that still unwrap come back as the read ring; ones that do not are skipped', () => {
+    installMainSafe(fakeSafe)
+    const k1 = Buffer.alloc(32, 7)
+    const k2 = Buffer.alloc(32, 8)
+    fs.writeFileSync(`${keyFile()}.retired-100`, wrap(k1.toString('base64')))
+    fs.writeFileSync(`${keyFile()}.retired-200`, wrap(k2.toString('base64')))
+    fs.writeFileSync(`${keyFile()}.retired-300`, wrap('dG9vc2hvcnQ=')) // too short: no use to anyone
+    fs.writeFileSync(`${keyFile()}.retired-400`, wrap(k2.toString('base64'))) // the same key twice
+    const { readKeys, minted } = provisionMemoryKey(tmp, null)
+    expect(minted).toBe(true) // no current key file → a fresh one, as before
+    expect(readKeys.map((k) => k.toString('hex'))).toEqual([k2.toString('hex'), k1.toString('hex')])
+  })
+
+  it('a key file that appears between the look and the write is USED, never clobbered', () => {
+    const theirs = Buffer.alloc(32, 9)
+    const theirsOnDisk = wrap(theirs.toString('base64'))
+    // Another process wins the race: its file lands while ours is being wrapped, i.e. after we looked
+    // and before our exclusive create publishes.
     installMainSafe({
       isEncryptionAvailable: () => true,
-      encryptString: () => { throw new Error('keychain locked') },
-      decryptString: () => { throw new Error('keychain locked') },
+      encryptString: (s: string) => {
+        if (!fs.existsSync(keyFile())) fs.writeFileSync(keyFile(), theirsOnDisk)
+        return fakeSafe.encryptString(s)
+      },
+      decryptString: fakeSafe.decryptString,
     })
-    expect(provisionMemoryKey(tmp, null)).toEqual({ key: null, minted: false })
-    expect(fs.existsSync(path.join(tmp, KEY_CACHE_FILE))).toBe(false)
+    const got = provisionMemoryKey(tmp, null)
+    expect(got.minted).toBe(false)
+    expect(got.key?.equals(theirs)).toBe(true)
+    expect(fs.readFileSync(keyFile(), 'utf8')).toBe(theirsOnDisk)
   })
 })
 
@@ -914,6 +990,7 @@ describe('client ⇄ host name drift', () => {
       ['setSyncPassphrase', () => c.setSyncPassphrase('pw')],     // throws: sync not enabled
       ['disableEncryption', () => c.disableEncryption()],
       ['setSyncDir', () => c.setSyncDir(null)],
+      ['startNewMemoryKey', () => c.startNewMemoryKey()],         // throws: no keychain here
       ['memoryClear', () => c.memoryClear()],
     ]
 
@@ -980,15 +1057,283 @@ describe('lifecycle', () => {
     expect(fs.readFileSync(path.join(tmp, KEY_CACHE_FILE), 'utf8')).toBe(before) // same key
   })
 
-  it('setSyncPassphrase still returns a status if the keychain write fails (session works; no plaintext key)', async () => {
+  it('setSyncPassphrase works for the session and leaves no key file behind at all', async () => {
     installMainSafe(fakeSafe)
     const syncDir = path.join(tmp, 'sync')
     await startWithFake({}, syncDir)
-    // Break the keychain right before the cache write: the store is already unlocked, so the call
-    // must still succeed — the cost is re-entering the passphrase next launch, never a key in the clear.
     const status = await setSyncPassphrase('pw one')
     expect(status.encrypted).toBe(true)
-    const raw = fs.readFileSync(path.join(tmp, KEY_CACHE_FILE), 'utf8')
-    expect(raw.startsWith('osk:v1:')).toBe(true)
+    // A synced store mints no device key, and the passphrase key is never persisted by v1 any more.
+    expect(fs.existsSync(path.join(tmp, KEY_CACHE_FILE))).toBe(false)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Decision 3 — key material survives every internal re-init. setVectorQuantization re-ran
+// initSwarmMemory WITHOUT the key main injected: in the child (which has no keychain) an encrypted
+// brain read as EMPTY, and the indexer then re-appended the whole history to it in plaintext. These go
+// through the FakeHost, whose child side has no keychain — exactly the production shape.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('internal re-inits keep the injected key (Decision 3)', () => {
+  const storeFile = (): string => path.join(tmp, 'swarm-memory.jsonl')
+  const lastLine = (): string => fs.readFileSync(storeFile(), 'utf8').trim().split('\n').pop() as string
+
+  async function encryptedStoreInChild(): Promise<void> {
+    installMainSafe(fakeSafe)
+    await startWithFake() // main mints the device key; the child adopts it
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'QUANTMARKER one' })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'QUANTMARKER two' })
+    await expect(getSyncStatus()).resolves.toMatchObject({ encrypted: true, ownLocked: false })
+  }
+
+  it('setVectorQuantization(true) keeps the count, keeps the store encrypted, and appends no plaintext', async () => {
+    await encryptedStoreInChild()
+    const { setVectorQuantization } = await import('../../src/main/memoryClient')
+    const bytesBefore = fs.readFileSync(storeFile())
+    await setVectorQuantization(true)
+    await expect(memoryCount()).resolves.toBe(2)
+    await expect(getSyncStatus()).resolves.toMatchObject({ encrypted: true, ownLocked: false })
+    expect(fs.readFileSync(storeFile()).equals(bytesBefore)).toBe(true) // the toggle wrote nothing
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'QUANTMARKER after' })
+    expect(lastLine().startsWith('enc:v1:')).toBe(true)
+    expect(fs.readFileSync(storeFile(), 'utf8')).not.toContain('QUANTMARKER')
+  })
+
+  it('turning it back OFF — a reload from disk for the exact floats — keeps the key too', async () => {
+    await encryptedStoreInChild()
+    const { setVectorQuantization } = await import('../../src/main/memoryClient')
+    await setVectorQuantization(true)
+    await setVectorQuantization(false)
+    await expect(memoryCount()).resolves.toBe(2)
+    await expect(getSyncStatus()).resolves.toMatchObject({ encrypted: true, ownLocked: false })
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'QUANTMARKER off' })
+    expect(lastLine().startsWith('enc:v1:')).toBe(true)
+    expect((await memoryList()).map((e) => e.content)).toEqual(expect.arrayContaining(['QUANTMARKER one', 'QUANTMARKER two', 'QUANTMARKER off']))
+  })
+
+  it('a respawn comes back on the sync folder chosen this session — and off it once sync is turned off', async () => {
+    // SYNC-1: setSyncDir was a bare RPC, so a child that died mid-session came back on the BOOT value.
+    const { hosts } = await startWithFake()
+    const { setSyncDir } = await import('../../src/main/memoryClient')
+    const syncDir = path.join(tmp, 'sync')
+    const initOf = (h: FakeHost): Extract<HostRequest, { kind: 'init' }> => h.posted.find((m) => m.kind === 'init') as Extract<HostRequest, { kind: 'init' }>
+
+    await setSyncDir(syncDir)
+    hosts[hosts.length - 1].crash()
+    await expect(getSyncStatus()).resolves.toMatchObject({ syncing: true, dir: syncDir })
+    expect(initOf(hosts[hosts.length - 1]).syncDir).toBe(syncDir)
+
+    await setSyncDir(null)
+    hosts[hosts.length - 1].crash()
+    await expect(getSyncStatus()).resolves.toMatchObject({ syncing: false })
+    expect(initOf(hosts[hosts.length - 1]).syncDir).toBeNull()
+  })
+
+  it('setSyncDir(null) on a store that is not syncing changes nothing at all', async () => {
+    await encryptedStoreInChild()
+    const bytesBefore = fs.readFileSync(storeFile())
+    const { setSyncDir } = await import('../../src/main/memoryClient')
+    await expect(setSyncDir(null)).resolves.toMatchObject({ syncing: false, encrypted: true, ownLocked: false, count: 2 })
+    expect(fs.readFileSync(storeFile()).equals(bytesBefore)).toBe(true)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Decisions 1-2 through the real seam. A key main can't open → the child comes up LOCKED, refuses
+// writes with a reason, and no byte on disk changes. "Start a new memory key" is the only way out: it
+// retires the old key (renamed, verified, never deleted), leaves every older memory on disk, and the
+// old memories come back by themselves the day the old key opens again.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('LOCKED, and the way out (Decisions 1-2)', () => {
+  const storeFile = (): string => path.join(tmp, 'swarm-memory.jsonl')
+  const keyFile = (): string => path.join(tmp, KEY_CACHE_FILE)
+  const retiredKeys = (): string[] => fs.readdirSync(tmp).filter((f) => f.startsWith(`${KEY_CACHE_FILE}.retired-`))
+  // The OS secret was reset (a Windows password reset, a new login keyring): blobs wrapped before it
+  // are refused, new ones are fine.
+  const resetSafe: SafeStorageLike = {
+    isEncryptionAvailable: () => true,
+    encryptString: (s: string) => Buffer.from('NEW:' + s, 'utf8'),
+    decryptString: (b: Buffer) => {
+      const t = b.toString('utf8')
+      if (!t.startsWith('NEW:')) throw new Error('DPAPI: the data is invalid')
+      return t.slice(4)
+    },
+  }
+  // ...and then the old secret was restored, so both kinds open.
+  const restoredSafe: SafeStorageLike = {
+    ...resetSafe,
+    decryptString: (b: Buffer) => { const t = b.toString('utf8'); return t.startsWith('NEW:') ? t.slice(4) : fakeSafe.decryptString(b) },
+  }
+
+  const relaunch = (): void => {
+    _resetForTests(); _resetHostForTests(); _resetMemoryClientForTests(); _setEmbeddingsAvailable(false)
+  }
+
+  /** A real encrypted brain from a previous launch, then a relaunch whose keychain refuses its key. */
+  async function lockedBrain(): Promise<{ storeBytes: Buffer; keyBytes: Buffer; hosts: FakeHost[] }> {
+    installMainSafe(fakeSafe)
+    await startWithFake()
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'OLDKEYMARKER from before' })
+    relaunch()
+    const storeBytes = fs.readFileSync(storeFile())
+    const keyBytes = fs.readFileSync(keyFile())
+    installMainSafe(resetSafe)
+    const { hosts } = await startWithFake()
+    return { storeBytes, keyBytes, hosts }
+  }
+
+  it('a key the keychain refuses → LOCKED: writes refused with the reason, and not one byte changes', async () => {
+    const { storeBytes, keyBytes } = await lockedBrain()
+    await expect(getSyncStatus()).resolves.toMatchObject({ ownLocked: true, lockReason: 'key-unreadable', encrypted: false })
+    await expect(memoryWrite({ agentId: 'a', kind: 'fact', content: 'must not land' })).rejects.toThrow(/Memory is locked \(key-unreadable\)/)
+    await expect(memoryDelete('anything')).rejects.toThrow(/Memory is locked/)
+    expect(fs.readFileSync(storeFile()).equals(storeBytes)).toBe(true)
+    expect(fs.readFileSync(keyFile()).equals(keyBytes)).toBe(true)
+    expect(retiredKeys()).toEqual([])
+  })
+
+  it('no keychain at all → LOCKED as keychain-unavailable, and no new key can be started without one', async () => {
+    installMainSafe(fakeSafe)
+    await startWithFake()
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'locked away' })
+    relaunch()
+    installMainSafe(null)
+    await startWithFake()
+    await expect(getSyncStatus()).resolves.toMatchObject({ ownLocked: true, lockReason: 'keychain-unavailable' })
+    const { startNewMemoryKey } = await import('../../src/main/memoryClient')
+    await expect(startNewMemoryKey()).rejects.toThrow(/no OS keychain/)
+    expect(retiredKeys()).toEqual([])
+  })
+
+  it('a key file that is GONE over an encrypted log: main mints, the child sees the mismatch, and rewrites NOTHING', async () => {
+    // The critique's case: a fresh mint over an old encrypted log used to trigger the one-time
+    // "ciphertext-ify" rewrite of the whole (1.1 GB) log — under a key that reads none of it.
+    installMainSafe(fakeSafe)
+    await startWithFake()
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'orphaned by a lost key' })
+    relaunch()
+    fs.renameSync(keyFile(), path.join(tmp, 'lost-somewhere.key')) // the key is simply not there any more
+    const storeBytes = fs.readFileSync(storeFile())
+    await startWithFake()
+    expect(fs.existsSync(keyFile())).toBe(true) // Decision 1: a MISSING key file is minted...
+    await expect(getSyncStatus()).resolves.toMatchObject({ ownLocked: true, lockReason: 'key-mismatch' })
+    expect(fs.readFileSync(storeFile()).equals(storeBytes)).toBe(true) // ...but nothing is rewritten under it
+  })
+
+  it('Start a new memory key: the old key is retired byte-for-byte, a new one is minted, and the store writes again', async () => {
+    const { storeBytes, keyBytes } = await lockedBrain()
+    const { startNewMemoryKey } = await import('../../src/main/memoryClient')
+    const status = await startNewMemoryKey()
+    expect(status).toMatchObject({ ownLocked: false, lockReason: null, encrypted: true })
+
+    const retired = retiredKeys()
+    expect(retired).toHaveLength(1)
+    expect(fs.readFileSync(path.join(tmp, retired[0])).equals(keyBytes)).toBe(true) // renamed, never deleted
+    expect(fs.readFileSync(keyFile(), 'utf8').startsWith('osk:v1:')).toBe(true)
+    expect(fs.readFileSync(keyFile()).equals(keyBytes)).toBe(false)
+
+    // Older memories stay on disk exactly as they were: the log only GREW, by one key-epoch marker.
+    const now = fs.readFileSync(storeFile())
+    expect(now.subarray(0, storeBytes.length).equals(storeBytes)).toBe(true)
+    expect(now.toString('utf8').slice(storeBytes.length).trim().startsWith('enc:v1:')).toBe(true)
+
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'NEWKEYMARKER after' })
+    expect(fs.readFileSync(storeFile(), 'utf8')).not.toContain('NEWKEYMARKER')
+    expect((await memoryList()).map((e) => e.content)).toContain('NEWKEYMARKER after')
+  })
+
+  it('the next launch is NOT locked, and once the old key opens again its memories come back', async () => {
+    await lockedBrain()
+    const { startNewMemoryKey } = await import('../../src/main/memoryClient')
+    await startNewMemoryKey()
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'NEWKEYMARKER after' })
+
+    // Same keychain: the new key opens, the old one still doesn't. The marker keeps it unlocked.
+    relaunch()
+    installMainSafe(resetSafe)
+    await startWithFake()
+    await expect(getSyncStatus()).resolves.toMatchObject({ ownLocked: false, encrypted: true })
+    let contents = (await memoryList()).map((e) => e.content)
+    expect(contents).toContain('NEWKEYMARKER after')
+    expect(contents).not.toContain('OLDKEYMARKER from before') // still on disk, still dark
+
+    // The old secret comes back: the retired key unwraps, joins the read ring, and the old memory returns.
+    relaunch()
+    installMainSafe(restoredSafe)
+    await startWithFake()
+    contents = (await memoryList()).map((e) => e.content)
+    expect(contents).toEqual(expect.arrayContaining(['OLDKEYMARKER from before', 'NEWKEYMARKER after']))
+    await expect(getSyncStatus()).resolves.toMatchObject({ ownLocked: false })
+  })
+
+  it('a child that dies after a new key respawns ON the new key (initParams follow it)', async () => {
+    const { hosts } = await lockedBrain()
+    const { startNewMemoryKey } = await import('../../src/main/memoryClient')
+    await startNewMemoryKey()
+    hosts[hosts.length - 1].crash()
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'AFTERRESPAWN marker' })
+    const init = hosts[hosts.length - 1].posted.find((m) => m.kind === 'init') as Extract<HostRequest, { kind: 'init' }>
+    expect(init.keyProblem).toBeNull()
+    expect(init.encKeyB64).toBe(resetSafe.decryptString(Buffer.from(fs.readFileSync(keyFile(), 'utf8').slice('osk:v1:'.length), 'base64')))
+    await expect(getSyncStatus()).resolves.toMatchObject({ ownLocked: false, encrypted: true })
+    expect(fs.readFileSync(storeFile(), 'utf8')).not.toContain('AFTERRESPAWN')
+  })
+
+  it('a key file that vanished before the click is simply replaced — there is nothing to retire', async () => {
+    await lockedBrain()
+    fs.renameSync(keyFile(), path.join(tmp, 'moved-away-by-the-user.key'))
+    const { startNewMemoryKey } = await import('../../src/main/memoryClient')
+    await expect(startNewMemoryKey()).resolves.toMatchObject({ ownLocked: false, encrypted: true })
+    expect(retiredKeys()).toEqual([])
+    expect(fs.readFileSync(keyFile(), 'utf8').startsWith('osk:v1:')).toBe(true)
+  })
+
+  it('refuses to start a new key on a store that is not locked, or before the store has started', async () => {
+    const c = await import('../../src/main/memoryClient')
+    await expect(c.startNewMemoryKey()).rejects.toThrow(/startMemoryHost\(\) has not been called/)
+    installMainSafe(fakeSafe)
+    await startWithFake()
+    const before = fs.readFileSync(keyFile())
+    await expect(c.startNewMemoryKey()).rejects.toThrow(/isn't locked/)
+    expect(fs.readFileSync(keyFile()).equals(before)).toBe(true)
+    expect(retiredKeys()).toEqual([])
+  })
+})
+
+describe('startNewMemoryKeyB64 — key material crosses the wire as base64', () => {
+  it('a missing key is refused by the store, and a malformed ring is treated as empty', async () => {
+    const { startNewMemoryKeyB64, readKeysOf } = await import('../../src/main/memoryHost')
+    initSwarmMemory(tmp)
+    expect(() => startNewMemoryKeyB64(undefined as unknown as string, [])).toThrow(/32-byte/)
+    expect(readKeysOf('not an array')).toEqual([])
+    expect(readKeysOf([Buffer.alloc(32, 1).toString('base64')])[0]).toHaveLength(32)
+  })
+})
+
+describe('enableLocalEncryption — never over a key file it could not open', () => {
+  it('refuses, naming the problem, and leaves the file exactly as it was', async () => {
+    installMainSafe(fakeSafe)
+    fs.writeFileSync(path.join(tmp, ENCRYPTION_OPTOUT_FILE), '1') // so the boot itself mints nothing
+    fs.writeFileSync(path.join(tmp, KEY_CACHE_FILE), 'osk:v1:' + fakeSafe.encryptString(Buffer.from('short').toString('base64')).toString('base64'))
+    const before = fs.readFileSync(path.join(tmp, KEY_CACHE_FILE))
+    await startWithFake()
+    await expect(enableLocalEncryption()).rejects.toThrow(/key-invalid/)
+    expect(fs.readFileSync(path.join(tmp, KEY_CACHE_FILE)).equals(before)).toBe(true)
+  })
+})
+
+describe('disableEncryption — a respawn after it must not quietly re-key the store', () => {
+  it('initParams drop the key (keeping it readable) once the store has decrypted', async () => {
+    installMainSafe(fakeSafe)
+    const { hosts } = await startWithFake()
+    await memoryWrite({ agentId: 'a', kind: 'fact', content: 'DISABLEMARKER plain soon' })
+    const c = await import('../../src/main/memoryClient')
+    await expect(c.disableEncryption()).resolves.toMatchObject({ encrypted: false })
+    hosts[hosts.length - 1].crash()
+    await expect(getSyncStatus()).resolves.toMatchObject({ encrypted: false, ownLocked: false })
+    const init = hosts[hosts.length - 1].posted.find((m) => m.kind === 'init') as Extract<HostRequest, { kind: 'init' }>
+    expect(init.encKeyB64).toBeNull()
+    expect(init.readKeysB64).toHaveLength(1) // the old key, still able to read anything left under it
+    expect(fs.readFileSync(path.join(tmp, 'swarm-memory.jsonl'), 'utf8')).toContain('DISABLEMARKER')
   })
 })

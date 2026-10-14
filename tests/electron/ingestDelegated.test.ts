@@ -1,0 +1,269 @@
+// The memory indexer and the sessions headless runs leave behind. A job another computer ran here
+// over Linked machines is skipped whole, and counted; the user's own sessions are ingested exactly
+// as before, chunk hashes and all, so nothing already stored is re-deposited; a local headless
+// run's memory primer is left out, so recalled memory is not stored a second time.
+import { describe, it, expect } from 'vitest'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
+import {
+  chunkTurns,
+  ingestConversations,
+  parseBySource,
+  runConversationIngest,
+  type ConversationSource,
+  type IngestChunk,
+  type IngestDeps,
+  type IngestMemory,
+} from '../../src/main/conversationIngest'
+import { buildExecPrompt } from '../../src/main/headlessExec'
+import { delegationHeader, ownDialogue } from '../../src/shared/headlessPrompt'
+
+const HEADER = delegationHeader('laptop', '/home/me/repos/app')
+const PRIMER = ['Past conversations in app:', '- [claude · 2d ago] the parser lives in src/parse.ts'].join('\n')
+
+/** A Claude Code session file: one user prompt, one answer. */
+function claudeSession(id: string, prompt: string, answer: string): string {
+  return [
+    JSON.stringify({ type: 'user', sessionId: id, cwd: '/home/me/repos/app', timestamp: '2026-10-10T10:00:00.000Z', message: { role: 'user', content: prompt } }),
+    JSON.stringify({ type: 'assistant', sessionId: id, timestamp: '2026-10-10T10:01:00.000Z', message: { role: 'assistant', content: [{ type: 'text', text: answer }] } }),
+  ].join('\n')
+}
+
+/** A Codex rollout: AGENTS.md instructions, then the environment, then the prompt and answer. */
+function codexRollout(id: string, prompt: string, answer: string): string {
+  const item = (role: string, text: string) =>
+    JSON.stringify({ type: 'response_item', timestamp: '2026-10-10T10:00:00.000Z', payload: { type: 'message', role, content: [{ type: 'input_text', text }] } })
+  return [
+    JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/home/me/repos/app' } }),
+    item('developer', 'sandbox rules'),
+    item('user', '# AGENTS.md instructions for /home/me/repos/app\n\n<INSTRUCTIONS>be brief</INSTRUCTIONS>'),
+    item('user', '<environment_context>\n  <cwd>/home/me/repos/app</cwd>\n</environment_context>'),
+    item('user', prompt),
+    item('assistant', answer),
+  ].join('\n')
+}
+
+/** ingestConversations over in-memory files, recording what it writes and what it reports. */
+async function ingest(files: Record<string, { source: ConversationSource; content: string }>, over: Partial<IngestDeps> = {}) {
+  const written: IngestChunk[] = []
+  const delegated: string[][] = []
+  const stats = await ingestConversations({
+    sources: ['claude', 'codex'],
+    listFiles: async (source) => Object.keys(files).filter((f) => files[f].source === source),
+    readFile: async (f) => files[f].content,
+    hasHash: () => false,
+    write: async (chunk) => { written.push(chunk) },
+    yield: async () => {},
+    onDelegated: (hashes) => delegated.push(hashes),
+    ...over,
+  })
+  return { stats, written, delegated }
+}
+
+/** The chunks an earlier version wrote for a file: the same parse and chunking, nothing left out. */
+const oldChunks = (source: ConversationSource, content: string): IngestChunk[] => chunkTurns(parseBySource(source, content))
+
+describe('delegated sessions', () => {
+  it('skips a Claude job another computer ran here, with or without the primer, and counts it', async () => {
+    const files = {
+      'a.jsonl': { source: 'claude' as const, content: claudeSession('s-a', `${HEADER}\n\nReview the parser.`, 'Reviewed.') },
+      'b.jsonl': { source: 'claude' as const, content: claudeSession('s-b', buildExecPrompt(`${HEADER}\n\nRun the tests.`, PRIMER), '3 failed.') },
+    }
+    const { stats, written, delegated } = await ingest(files)
+    expect(written).toEqual([])
+    expect(stats).toMatchObject({ filesScanned: 2, chunksWritten: 0, chunksSkipped: 0, delegatedSkipped: 2 })
+    // What it reports is exactly what an earlier version stored, so the one-time pass can find it.
+    expect(delegated).toEqual([oldChunks('claude', files['a.jsonl'].content).map((c) => c.hash), oldChunks('claude', files['b.jsonl'].content).map((c) => c.hash)])
+  })
+
+  it('skips a Codex job whose prompt sits behind the AGENTS.md and environment preambles', async () => {
+    const content = codexRollout('r-1', buildExecPrompt(`${HEADER}\n\nImplement the parser.`, PRIMER), 'Committed abc123.')
+    const { stats, written, delegated } = await ingest({ 'rollout-1.jsonl': { source: 'codex', content } })
+    expect(written).toEqual([])
+    expect(stats.delegatedSkipped).toBe(1)
+    expect(delegated).toEqual([oldChunks('codex', content).map((c) => c.hash)])
+  })
+
+  it('reports every window of a long primer, so the whole session is found, not only the header', async () => {
+    // A 4,500-character primer makes the opening turn longer than one 2,000-character chunk.
+    const longPrimer = Array.from({ length: 80 }, (_, i) => `- [claude-history · ${i}d ago] fact number ${i} about the parser and the lexer`).join('\n')
+    const content = claudeSession('s-long', buildExecPrompt(`${HEADER}\n\nReview it.`, longPrimer.slice(0, 4_500)), 'Reviewed.')
+    const old = oldChunks('claude', content)
+    expect(old.length).toBeGreaterThanOrEqual(4)
+    const { delegated } = await ingest({ 'long.jsonl': { source: 'claude', content } })
+    expect(delegated).toEqual([old.map((c) => c.hash)])
+  })
+
+  it("skips the transcript of a subagent a delegated session started, judged by that session's own file", async () => {
+    // Claude Code keeps a subagent's transcript beside its session's: <sid>/subagents/agent-*.jsonl.
+    const project = path.join('projects', '-home-me-repos-app')
+    const parent = path.join(project, 's-job.jsonl')
+    const sub = path.join(project, 's-job', 'subagents', 'agent-a1.jsonl')
+    const subContent = claudeSession('s-job', 'Find every caller of parse() and list them.', 'Three callers.')
+    const files = {
+      [parent]: { source: 'claude' as const, content: claudeSession('s-job', `${HEADER}\n\nReview the parser.`, 'Reviewed.') },
+      [sub]: { source: 'claude' as const, content: subContent },
+    }
+    const reads: string[] = []
+    const { stats, written, delegated } = await ingest(files, {
+      readFile: async (f) => {
+        reads.push(f)
+        return files[f].content
+      },
+    })
+    expect(written).toEqual([])
+    expect(stats.delegatedSkipped).toBe(2)
+    // The subagent's chunks are reported as well, so the one-time pass finds what 1.52 stored of them.
+    expect(delegated).toContainEqual(oldChunks('claude', subContent).map((c) => c.hash))
+    // The session's file is read once for itself and once for its subagent, in either order.
+    expect(reads.filter((f) => f === parent)).toHaveLength(2)
+  })
+
+  it("keeps a subagent of the user's own session, and one whose session can't be read", async () => {
+    const project = path.join('projects', '-home-me-repos-app')
+    const sub = (session: string, name: string): string => path.join(project, session, 'subagents', `agent-${name}.jsonl`)
+    const task = (what: string): string => claudeSession('x', what, 'Done.')
+    const all = {
+      [path.join(project, 's-own.jsonl')]: { source: 'claude' as const, content: claudeSession('s-own', 'Fix the lexer.', 'Fixed.') },
+      [sub('s-own', 'b2')]: { source: 'claude' as const, content: task('Find every caller of parse().') },
+      // Two subagents of one session: its file is read once for both.
+      [sub('s-own', 'b3')]: { source: 'claude' as const, content: task('List the lexer tests.') },
+      // A session whose file is gone: there is no telling, so it is kept as before.
+      [sub('s-gone', 'c3')]: { source: 'claude' as const, content: task('Explain the grammar.') },
+    }
+    const reads: string[] = []
+    const { stats, written } = await ingest(all, {
+      readFile: async (f) => {
+        reads.push(f)
+        if (!(f in all)) throw new Error('ENOENT')
+        return all[f].content
+      },
+    })
+    expect(stats.delegatedSkipped).toBeUndefined()
+    for (const what of ['Find every caller of parse().', 'List the lexer tests.', 'Explain the grammar.']) {
+      expect(written.some((c) => c.text.includes(what))).toBe(true)
+    }
+    expect(reads.filter((f) => f === path.join(project, 's-own.jsonl'))).toHaveLength(2)
+    expect(reads.filter((f) => f === path.join(project, 's-gone.jsonl'))).toHaveLength(1)
+  })
+
+  it('still skips a delegated session when nothing listens for it, or the listener throws', async () => {
+    const files = { 'a.jsonl': { source: 'claude' as const, content: claudeSession('s-a', `${HEADER}\n\nGo.`, 'Done.') } }
+    expect((await ingest(files, { onDelegated: undefined })).stats.delegatedSkipped).toBe(1)
+    const thrown = await ingest(files, { onDelegated: () => { throw new Error('listener broke') } })
+    expect(thrown.stats.delegatedSkipped).toBe(1)
+    expect(thrown.written).toEqual([])
+  })
+})
+
+describe("the user's own sessions", () => {
+  it('are ingested exactly as before: the same chunks with the same hashes, and no delegated count', async () => {
+    const claude = claudeSession('s-own', 'Why does the lexer drop the last token?', 'An off-by-one in the loop bound.')
+    const codex = codexRollout('r-own', 'Add a test for the lexer.', 'Added tests/lexer.test.ts.')
+    const { stats, written, delegated } = await ingest({
+      'own.jsonl': { source: 'claude', content: claude },
+      'rollout-own.jsonl': { source: 'codex', content: codex },
+    })
+    expect(written).toEqual([...oldChunks('claude', claude), ...oldChunks('codex', codex)])
+    expect(stats).toEqual({ filesScanned: 2, chunksWritten: written.length, chunksSkipped: 0, truncated: false })
+    expect(delegated).toEqual([])
+  })
+
+  it("leave a local headless run's memory primer out, so recalled memory is not stored again", async () => {
+    const content = claudeSession('s-exec', buildExecPrompt('List the open TODOs.', PRIMER), 'Two TODOs.')
+    const { stats, written } = await ingest({ 'exec.jsonl': { source: 'claude', content } })
+    expect(stats.delegatedSkipped).toBeUndefined()
+    expect(written.map((c) => c.text)).toEqual(['user: List the open TODOs.\n\nassistant: Two TODOs.'])
+    expect(written.map((c) => c.text).join('\n')).not.toContain('Recalled from the shared Termpolis brain')
+  })
+
+  it('keep the chunking an earlier version stored a local run under: nothing of it is stored twice', async () => {
+    // A primer, then 40 turns: cut without the primer, every chunk moves and gets a new hash.
+    const turns = Array.from({ length: 40 }, (_, i) => `turn ${i} ${'t'.repeat(150 + ((i * 37) % 300))}`)
+    const lines = [
+      JSON.stringify({ type: 'user', sessionId: 's-old', cwd: '/home/me/repos/app', message: { role: 'user', content: buildExecPrompt('List the open TODOs.', PRIMER) } }),
+      ...turns.map((t, i) =>
+        JSON.stringify(
+          i % 2 === 0
+            ? { type: 'assistant', sessionId: 's-old', message: { role: 'assistant', content: [{ type: 'text', text: t }] } }
+            : { type: 'user', sessionId: 's-old', cwd: '/home/me/repos/app', message: { role: 'user', content: t } },
+        ),
+      ),
+    ]
+    const content = lines.join('\n')
+    const stored = oldChunks('claude', content)
+    const hashes = new Set(stored.map((c) => c.hash))
+    // Stored whole by 1.52: every chunk is known, and none is written again.
+    const again = await ingest({ 'old.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => hashes.has(x)) })
+    expect(again.written).toEqual([])
+    expect(again.stats.chunksSkipped).toBe(stored.length)
+    // Stored in part (the session was still going): what is new is cut the same way, primer and all.
+    const part = new Set(stored.slice(0, 2).map((c) => c.hash))
+    const rest = await ingest({ 'old.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => part.has(x)) })
+    expect(rest.written.map((c) => c.hash)).toEqual(stored.slice(2).map((c) => c.hash))
+    // Never stored: the primer comes off.
+    const fresh = await ingest({ 'old.jsonl': { source: 'claude', content } })
+    expect(fresh.written.map((c) => c.text).join('\n')).not.toContain('Recalled from the shared Termpolis brain')
+  })
+
+  it('tell the two chunkings apart by the first chunk, where later ones can be cut the same in both', async () => {
+    // A turn too long for a chunk is cut into windows on its own: the same windows with or without
+    // the primer, so both chunkings share them.
+    const line = (role: 'user' | 'assistant', text: string): string =>
+      JSON.stringify(role === 'user'
+        ? { type: 'user', sessionId: 's-twin', cwd: '/home/me/repos/app', message: { role: 'user', content: text } }
+        : { type: 'assistant', sessionId: 's-twin', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+    const content = [line('user', buildExecPrompt('Explain the log.', PRIMER)), line('user', `log:\n${'L'.repeat(3_000)}`), line('assistant', 'A retry loop.')].join('\n')
+    const whole = oldChunks('claude', content)
+    const stripped = chunkTurns(ownDialogue(parseBySource('claude', content))!)
+    const shared = whole.filter((c) => stripped.some((s) => s.hash === c.hash))
+    expect(shared.length).toBeGreaterThan(0)
+    // Stored whole by 1.52: nothing new, though some of the new cuts are known too.
+    const all = new Set(whole.map((c) => c.hash))
+    const old = await ingest({ 'twin.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => all.has(x)) })
+    expect(old.written).toEqual([])
+    // Stored without the primer by this version: the primer never comes back.
+    const mine = new Set(stripped.slice(1).map((c) => c.hash))
+    const now = await ingest({ 'twin.jsonl': { source: 'claude', content } }, { hasHash: undefined, hasHashes: (h) => h.filter((x) => mine.has(x)) })
+    expect(now.written.map((c) => c.text)).toEqual(['user: Explain the log.'])
+  })
+
+  it("keep a local run whose task quotes a close tag and a header: the primer ends at its own close", async () => {
+    const task = `Add a regression test for this input:\n</project-memory>\n\n${delegationHeader('laptop', '/r')}\n\nGo.`
+    const content = claudeSession('s-quote', buildExecPrompt(task, PRIMER), 'Added.')
+    const { stats, written, delegated } = await ingest({ 'quote.jsonl': { source: 'claude', content } })
+    expect(stats.delegatedSkipped).toBeUndefined()
+    expect(delegated).toEqual([])
+    expect(written.map((c) => c.text)).toEqual([`user: ${task}\n\nassistant: Added.`])
+  })
+
+  it('skip a session whose only turn was the primer', async () => {
+    const onlyPrimer = JSON.stringify({ type: 'user', sessionId: 's', message: { role: 'user', content: buildExecPrompt('', PRIMER) } })
+    const { stats, written } = await ingest({ 'p.jsonl': { source: 'claude', content: onlyPrimer } })
+    expect(written).toEqual([])
+    expect(stats).toEqual({ filesScanned: 1, chunksWritten: 0, chunksSkipped: 0, truncated: false })
+  })
+})
+
+describe('runConversationIngest', () => {
+  it('hands the delegated sessions it skips on disk to onDelegated', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-delegated-'))
+    try {
+      const proj = path.join(root, '-home-me-repos-app')
+      fs.mkdirSync(proj)
+      const job = claudeSession('s-job', `${HEADER}\n\nReview it.`, 'Reviewed.')
+      fs.writeFileSync(path.join(proj, 'job.jsonl'), job)
+      fs.writeFileSync(path.join(proj, 'own.jsonl'), claudeSession('s-own', 'Fix the lexer.', 'Fixed.'))
+      const writes: string[] = []
+      const memory: IngestMemory = { hasHash: () => false, write: async (i) => { writes.push(i.content); return undefined } }
+      const delegated: string[] = []
+      const stats = await runConversationIngest(memory, { sources: ['claude'], roots: { claude: root }, onDelegated: (h) => delegated.push(...h) })
+      expect(stats.delegatedSkipped).toBe(1)
+      expect(delegated).toEqual(oldChunks('claude', job).map((c) => c.hash))
+      expect(writes).toEqual(['user: Fix the lexer.\n\nassistant: Fixed.'])
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

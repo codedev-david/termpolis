@@ -42,6 +42,7 @@ const VERDICT_STYLE: Record<AuditVerdict, { box: string; icon: string }> = {
 const NOTABLE = new Set([
   'prompt_secret_sent', 'redaction_hit', 'env_dump_sent',
   'commit_blocked', 'push_blocked', 'import_blocked', 'egress_violation', 'sensitive_file_read',
+  'linked_secret_removed', 'linked_secret_flagged',
 ])
 
 const EVENT_LABEL: Record<string, string> = {
@@ -57,6 +58,8 @@ const EVENT_LABEL: Record<string, string> = {
   egress_violation: 'Egress to an unexpected host',
   sensitive_file_read: 'Sensitive file read',
   memory_scrub: 'Secret scrubbed from a memory',
+  linked_secret_removed: 'Credential removed (linked machine)',
+  linked_secret_flagged: 'Possible credential left in (linked machine)',
   import_scan: 'Import scanned',
   commit_scan: 'Commit scanned',
   manual_scan: 'Manual scan',
@@ -189,7 +192,7 @@ export function AuditLogModal({ onClose, coverage, auditPath }: Props): JSX.Elem
 
           {/* Counts, split by escape route. Code chunks and env dumps are kept OUT of the secret
               count on purpose — "you pasted a big file" is not "you leaked a key". */}
-          <div className="grid grid-cols-4 gap-2 text-xs" data-testid="audit-counts">
+          <div className="grid grid-cols-5 gap-2 text-xs" data-testid="audit-counts">
             {([
               ['Secrets to a model', summary.secretsToModels, '#FFB4B4'],
               ['Secrets at git', summary.secretsBlockedAtGit, '#FFB74D'],
@@ -199,6 +202,8 @@ export function AuditLogModal({ onClose, coverage, auditPath }: Props): JSX.Elem
               ['Egress flags', summary.egressViolations, '#FFB74D'],
               ['Sensitive reads', summary.sensitiveReads, '#9ca3af'],
               ['Memories scrubbed', summary.memoriesScrubbed, '#7ee2a3'],
+              ['Linked: removed', summary.linkedSecretsRemoved, '#7ee2a3'],
+              ['Linked: possible', summary.linkedSecretsFlagged, '#FFB74D'],
             ] as [string, number, string][]).map(([label, n, color]) => (
               <div key={label} className="flex flex-col p-2 rounded bg-[#1e1e1e]">
                 <span className="text-[10px] text-[#9ca3af]">{label}</span>

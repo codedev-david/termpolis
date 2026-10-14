@@ -17,7 +17,7 @@ import { McpServersSettings } from './McpServersSettings'
 import { AgentIntegrationSettings } from './AgentIntegrationSettings'
 import { ProcessesSettings } from './ProcessesSettings'
 import { PrivacySettings } from './PrivacySettings'
-import { consumePendingSettingsTab, type SettingsTab } from '../../lib/settingsNav'
+import { useSettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled, setAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { isSoloLearningEnabled, setSoloLearningEnabled } from '../../lib/sessionReflection'
 import { isAutoReprimeOnCompactionEnabled, setAutoReprimeOnCompactionEnabled } from '../../lib/compactionReprime'
@@ -108,7 +108,8 @@ export function SettingsPane() {
   const [appVersion, setAppVersion] = useState<string>('')
   const [updateStatus, setUpdateStatus] = useState<string>('')
   const [updateChecking, setUpdateChecking] = useState(false)
-  const [activeTab, setActiveTab] = useState<SettingsTab>(() => consumePendingSettingsTab() ?? 'general')
+  // The tab a caller asked for, before Settings opened or while it is open (settingsNav).
+  const [activeTab, setActiveTab] = useSettingsTab()
 
   useEffect(() => {
     void window.termpolis.memoryGetPrimerLimit?.()?.then((res) => {

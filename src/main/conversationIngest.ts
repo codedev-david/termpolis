@@ -15,7 +15,8 @@
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { homedir } from 'os'
-import { join } from 'path'
+import { basename, dirname, join } from 'path'
+import { isDelegatedSession, ownDialogue } from '../shared/headlessPrompt'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini'
 
@@ -305,6 +306,8 @@ export interface IngestStats {
   chunksWritten: number
   chunksSkipped: number // already present (content-hash dedup)
   truncated: boolean    // maxChunks halted this pass early — backlog remains for the next run
+  /** Sessions another computer started over Linked machines, left out. Absent when there were none. */
+  delegatedSkipped?: number
 }
 
 // A macrotask yield. Embedding is CPU-heavy and runs in-process on the main
@@ -368,6 +371,9 @@ export interface IngestDeps {
   /** Asked before each file. True ends the pass there: the app is quitting, and a read already
    *  under way is one more request its exit has to wait out. */
   stopped?: () => boolean
+  /** Told the chunk hashes a delegated session would have had, for the one-time pass that finds
+   *  the ones an earlier version stored (linkedHistoryRecheck). */
+  onDelegated?: (hashes: string[]) => void
 }
 
 // Sources with stable, documented on-disk transcripts.
@@ -386,6 +392,14 @@ export function parseBySource(source: ConversationSource, content: string, fileP
   }
 }
 
+/** The session file a Claude Code subagent's transcript belongs to: Claude keeps one at
+ *  `<sid>/subagents/agent-*.jsonl`, beside its session's `<sid>.jsonl`. Null for any other file. */
+export function parentSessionFile(source: ConversationSource, filePath: string): string | null {
+  if (source !== 'claude') return null
+  const dir = dirname(filePath)
+  return basename(dir) === 'subagents' ? `${dirname(dir)}.jsonl` : null
+}
+
 // Read every transcript, chunk it, and write new (unseen) chunks. Idempotent:
 // chunks whose content hash is already stored are skipped, so re-running over a
 // growing set of transcripts only embeds genuinely new content. Tolerant of
@@ -397,6 +411,17 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
   const maxChunks = deps.maxChunks ?? Infinity
   const stats: IngestStats = { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false }
   let sinceYield = 0
+  // Per session file, whether another computer started it: asked once a pass however many
+  // subagents it ran, and false for one that can't be read -- there is no telling then.
+  const delegatedParents = new Map<string, Promise<boolean>>()
+  const parentDelegated = (parent: string): Promise<boolean> => {
+    let known = delegatedParents.get(parent)
+    if (!known) {
+      known = deps.readFile(parent).then((text) => isDelegatedSession(parseClaudeTranscript(text)), () => false)
+      delegatedParents.set(parent, known)
+    }
+    return known
+  }
   // Skipped-but-cwd-bearing chunks → project backfill for legacy entries.
   const pendingPatches: Array<{ hash: string; project: string }> = []
   const flushPatches = (): void => {
@@ -423,14 +448,40 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
         continue
       }
       stats.filesScanned++
-      const turns = parseBySource(source, content, filePath)
+      const parsed = parseBySource(source, content, filePath)
+      // A session another computer started here over Linked machines is that computer's job, not
+      // this one's memory, and the primer a headless run opened with is memory already. Both are
+      // left out (shared/headlessPrompt). A subagent's transcript opens with the task its session
+      // gave it, not with the session's prompt: it is another computer's work when its session is.
+      const parent = parentSessionFile(source, filePath)
+      const turns = parent !== null && (await parentDelegated(parent)) ? null : ownDialogue(parsed)
+      if (!turns) {
+        stats.delegatedSkipped = (stats.delegatedSkipped ?? 0) + 1
+        if (deps.onDelegated) {
+          try { deps.onDelegated(chunkTurns(parsed, deps.chunkOptions).map((c) => c.hash)) } catch { /* best effort */ }
+        }
+        continue
+      }
       if (turns.length === 0) continue
-      const chunks = [...chunkTurns(turns, deps.chunkOptions)]
+      let chunks = [...chunkTurns(turns, deps.chunkOptions)]
       if (chunks.length === 0) continue
       // One membership query per FILE, resolved BEFORE the write loop, so the predicate below stays
       // synchronous. `known` is then kept current as we write: two identical chunks in one file must
       // dedup to one, exactly as they did when hasHash read the live store.
-      const known = await knownHashes(deps, chunks.map((c) => c.hash))
+      let known = await knownHashes(deps, chunks.map((c) => c.hash))
+      // The primer came off this session's opening prompt. One an earlier version stored with it
+      // keeps the chunking it was stored under: the shorter first turn moves every cut after it, so
+      // re-cut, the whole session would get new hashes and be stored and embedded a second time,
+      // beside the old copy. Its first chunk, primer and all, tells: only an earlier version stores
+      // that one, where a later chunk can be cut the same with the primer or without.
+      if (turns !== parsed) {
+        const whole = chunkTurns(parsed, deps.chunkOptions)
+        const stored = await knownHashes(deps, whole.map((c) => c.hash))
+        if (stored.has(whole[0].hash)) {
+          chunks = whole
+          known = stored
+        }
+      }
       for (const chunk of chunks) {
         if (known.has(chunk.hash)) {
           stats.chunksSkipped++
@@ -519,23 +570,25 @@ export async function discoverTranscriptFiles(source: ConversationSource, root?:
   return out
 }
 
-// Newest matching transcript file for a source — used by solo-session learning to read
-// the ACTIVE session. Reuses the PROVEN discovery above (correct roots + patterns +
-// depth-6 recursion), so it handles Codex's nested `sessions/YYYY/MM/DD/rollout-*.jsonl`
-// and Gemini's `tmp/<proj>/chats/session-*.json` layouts — where the old per-agent
-// watcher finders silently found nothing. Newest by mtime; null when nothing matches.
-export async function findLatestTranscriptFile(source: ConversationSource, root?: string): Promise<string | null> {
+// The newest transcript files for a source, newest first by mtime — used by solo-session learning
+// to read the ACTIVE session. Several rather than one: the newest can be a job another computer
+// ran here, which the reader then passes over (liveTranscript). Reuses the PROVEN discovery above
+// (correct roots + patterns + depth-6 recursion), so it handles Codex's nested
+// `sessions/YYYY/MM/DD/rollout-*.jsonl` and Gemini's `tmp/<proj>/chats/session-*.json` layouts —
+// where the old per-agent watcher finders silently found nothing. Files with the same mtime keep
+// discovery order. Empty when nothing matches.
+export async function newestTranscriptFiles(source: ConversationSource, limit: number, root?: string): Promise<string[]> {
   const files = await discoverTranscriptFiles(source, root)
-  let best: { path: string; mtime: number } | null = null
+  const dated: Array<{ path: string; mtime: number }> = []
   for (const f of files) {
     try {
-      const mtime = (await fsp.stat(f)).mtimeMs
-      if (!best || mtime > best.mtime) best = { path: f, mtime }
+      dated.push({ path: f, mtime: (await fsp.stat(f)).mtimeMs })
     } catch {
       /* skip an unreadable file */
     }
   }
-  return best ? best.path : null
+  dated.sort((a, b) => b.mtime - a.mtime)
+  return dated.slice(0, Math.max(0, limit)).map((d) => d.path)
 }
 
 export interface IngestMemory {
@@ -557,7 +610,7 @@ export interface IngestMemory {
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
   memory: IngestMemory,
-  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number; stopped?: () => boolean } = {},
+  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number; stopped?: () => boolean; onDelegated?: (hashes: string[]) => void } = {},
 ): Promise<IngestStats> {
   // BB6: track the last-written chunk id per session so we can lay down a 'follows'
   // edge between consecutive same-session chunks. Idempotent: already-stored chunks
@@ -569,6 +622,7 @@ export async function runConversationIngest(
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
     stopped: opts.stopped,
+    onDelegated: opts.onDelegated,
     listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
     hasHash: memory.hasHash,

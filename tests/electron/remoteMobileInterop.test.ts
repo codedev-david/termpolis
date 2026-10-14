@@ -6,6 +6,7 @@ import { join, parse, sep } from 'path'
 // The desktop bridge, exactly as it ships.
 import * as desktopPairing from '../../src/main/remoteBridge/pairing'
 import {
+  MAX_COUNTER,
   deriveVerificationPhrase as desktopPhrase,
   fromHex as desktopFromHex,
   toHex as desktopToHex,
@@ -350,6 +351,50 @@ describe('stage 5: the session handshake', () => {
 
     const fromPhone = phone.seal(header, utf8Encode('up'))
     expect(utf8Decode(desktop.open(fromPhone, SESSION_HEADER_BYTES))).toBe('up')
+  })
+
+  it.each([
+    ['a random counter, as a desktop draws it', undefined],
+    ['counter 0, as a desktop before 1.53 sent it', 0],
+    ['the last counter', MAX_COUNTER],
+  ])('the shipped phone takes a desktop greeting at %s, and the session works both ways', (_label, counter) => {
+    // The phone's wire code is the 1.1.0 code in the App Store. It reads the
+    // counter off the frame and opens the greeting on a fresh session, so the
+    // desktop drawing its greeting counter at random needs nothing new from it.
+    const desktopHs = new DesktopHandshake({
+      ownSecretKey: DESKTOP_SK,
+      peerPublicKey: PHONE_PK,
+      role: 'desktop',
+      greetingCounter: counter,
+    })
+    const phoneHs = new PhoneHandshake('device', PHONE_SK, DESKTOP_PK)
+    const phone = phoneHs.accept(desktopHs.greeting)
+    expect(phoneHs.lastRejection).toBeNull()
+    const desktop = desktopHs.accept(phoneHs.greeting())
+    const header = Uint8Array.from([FRAME_SESSION])
+
+    const down = desktop.seal(header, utf8Encode('down'))
+    expect(utf8Decode(phone!.open(down, SESSION_HEADER_BYTES)!)).toBe('down')
+    const up = phone!.seal(header, utf8Encode('up'))
+    expect(utf8Decode(desktop.open(up, SESSION_HEADER_BYTES))).toBe('up')
+  })
+
+  it('a phone that greets at counter 0 every time still connects to a desktop again and again', () => {
+    // Termpolis Remote 1.1.0 greets at 0 on every connection. Each reconnect is
+    // a fresh handshake on both ends, so the desktop opens the same counter as
+    // new every time -- it is not a replay of the last connection's greeting.
+    for (let i = 0; i < 3; i++) {
+      const desktopHs = new DesktopHandshake({ ownSecretKey: DESKTOP_SK, peerPublicKey: PHONE_PK, role: 'desktop' })
+      const phoneHs = new PhoneHandshake('device', PHONE_SK, DESKTOP_PK)
+      const phoneGreeting = phoneHs.greeting()
+      expect([...phoneGreeting.subarray(33, 39)]).toEqual([0, 0, 0, 0, 0, 0])
+      const desktop = desktopHs.accept(phoneGreeting)
+      const phone = phoneHs.accept(desktopHs.greeting)!
+      const header = Uint8Array.from([FRAME_SESSION])
+      expect(utf8Decode(phone.open(desktop.seal(header, utf8Encode(`down ${i}`)), SESSION_HEADER_BYTES)!)).toBe(
+        `down ${i}`,
+      )
+    }
   })
 
   it('the phone refuses a greeting sealed for the wrong role', () => {

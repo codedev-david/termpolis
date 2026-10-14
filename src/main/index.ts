@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import { gpuPolicy } from './gpuPolicy'
 import {
@@ -98,6 +98,7 @@ import { join, dirname, isAbsolute } from 'path'
 import { writeFileSync, readFileSync, mkdirSync, readdirSync, statSync, unlinkSync, existsSync, appendFileSync, rmSync } from 'fs'
 import { runSecondOpinion, type SecondOpinionAgent } from './secondOpinion'
 import { createSecondOpinionDeliver } from './secondOpinionDeliver'
+import { createNoPersistProbe } from './cliFlagProbe'
 import {
   builtinCatalog,
   catalogIsStale,
@@ -134,6 +135,8 @@ import {
   getSettings as getAiSecuritySettings,
   setAuditEnabled,
   scanText as aiSecurityScan,
+  screenText as aiSecurityScreen,
+  maskForDisplay as aiSecurityMask,
   processOutboundChunk,
   stripPasteMarkers,
   appendAudit as aiSecurityAppend,
@@ -172,7 +175,7 @@ import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeTool, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
 import { randomUUID } from 'node:crypto'
 import { detectAgentStatus } from '../shared/agentStatusDetector'
 import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
@@ -234,6 +237,7 @@ import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
 import { recheckMarker, recheckStoredLessons } from './mnemeLessonRecheck'
+import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
 import { renderReceiptMarkdown, renderReceiptJson, type SignedReceipt } from './headroom/receiptArtifact'
@@ -254,12 +258,13 @@ import { initRecallBench, loadBenchBaseline, saveBenchBaseline } from './recallB
 import {
   startMemoryHost, setMemoryHostSpawner, createMemoryHostTransport, stopMemoryHost, memoryHostMode, memoryHostPid,
   graphStats, graphRelationStats,
-  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
+  memoryWrite, memorySearch, memoryRelated, memoryLink, memoryGraphQuery, memoryFeedback, memoryList, memoryCount, memoryClear, memoryKnownHashes, edgeKeysIncident, memoryStats, memoryDashboardStats, memoryGraphSample, memoryRecentActivity, embeddingsReady, memorySourceById, memoryDelete, consolidationCandidates, consolidationSimOf,
   memoryPatchProjects, normalizeProjectSlug, memoryLessons, memoryPruneCodePath, warmProbeEmbeddings, compactSelfShard,
   entrySimMatrix,
   setMemoryScrubber,
   weaveCandidates, weaveNeighboursBatch, backfillCodeRefs, symbolHistory, memoryArchive, searchArchive,
   getSyncStatus, setSyncDir, reloadMemoryFromSync, setSyncPassphrase, disableSyncEncryption, enableLocalEncryption, disableEncryption,
+  startNewMemoryKey,
   persistMemoryIndex,
   entityDedupHash, projectKeyOf,
   type MemoryEntry,
@@ -523,6 +528,7 @@ import {
 import { createRemoteTerminals } from './remoteTerminals'
 import {
   linkedInitForRemote,
+  linkedStartOverForRemote,
   linkedToolCall,
   registerLinkedIpc,
   startLinkedHost,
@@ -2173,11 +2179,15 @@ ipcMain.handle('memory:graph-sample', async (_e, opts: { limit?: number } = {}) 
   } catch (e: any) { return err(e.message) }
 })
 
+// What a bulk writer says when the brain is LOCKED (Decision 2) — the panel's banner says why.
+const MEMORY_LOCKED = 'Memory is locked, so nothing new can be saved. Open the Memory panel to see why.'
+
 // Ingest past AI sessions (Claude/Codex/Gemini transcripts on disk) into the
 // shared memory so every agent can semantically recall them. Idempotent — only
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
+    if (await memoryIsLocked()) return err(MEMORY_LOCKED)
     const stats = await runConversationIngest(ingestMemoryDeps(), { stopped: () => appQuitting })
     return ok(stats)
   } catch (e: any) { return err(e.message) }
@@ -2189,6 +2199,7 @@ ipcMain.handle('memory:ingest-conversations', async () => {
 ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
   try {
     if (!opts?.repoRoot) return err('repoRoot required')
+    if (await memoryIsLocked()) return err(MEMORY_LOCKED)
     // hasHashES, not hasHash: the sync per-chunk predicate cannot be answered by an out-of-process
     // store, and an async one would report every chunk as already-indexed (a Promise is truthy) —
     // the repo would appear to index and nothing would be written.
@@ -2600,6 +2611,9 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
 ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; cwd: string; agent: string }) => {
   try {
     if (!opts?.terminalId || !opts?.cwd || !opts?.agent) return ok({ fired: false, lessons: 0 })
+    // LOCKED: every lesson write would be refused, yet the cursor would still advance past the turns —
+    // and they would never be reflected. Leave the cursor where it is; the first pass after unlock does it.
+    if (await memoryIsLocked()) return ok({ fired: false, lessons: 0 })
     const project = normalizeProjectSlug(opts.cwd)
     const cursorKey = sessionCursorKey(opts.cwd, opts.agent)
     const res = await reflectSoloSession(
@@ -2643,23 +2657,22 @@ ipcMain.handle('memory:sync-status', async () => {
   try { return ok(await getSyncStatus()) } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
-  try { return ok(await setSyncDir(opts?.dir ?? null)) } catch (e: any) { return err(e.message) }
-})
+// Decision 5: v1 sync can LOCK or overwrite a brain (it copied the local log into the folder, cached
+// the passphrase key over the device key, and snapshotted the union back over the local file on the
+// way out). Turning it ON is refused here, in main, whatever the renderer sends — the panel no longer
+// offers it, and this holds even against a devtools call. Turning it OFF stays allowed: it only ever
+// reopens the local brain as it was left. The v2 flow replaces this.
+const SYNC_TEMPORARILY_DISABLED = "SYNC_TEMPORARILY_DISABLED: cross-machine sync is unavailable in this version — each computer keeps its own memory."
 
-// Native folder picker → enable sync to the chosen folder in one step.
-ipcMain.handle('memory:choose-sync-dir', async () => {
+ipcMain.handle('memory:set-sync-dir', async (_, opts: { dir: string | null }) => {
   try {
-    const res = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Choose a synced folder for Termpolis memory (e.g. inside Dropbox or Syncthing)',
-      // Not Downloads, Electron 43's default, where a new sync folder would be easy to create by mistake.
-      defaultPath: homedir(),
-      properties: ['openDirectory', 'createDirectory'],
-    })
-    if (res.canceled || !res.filePaths[0]) return ok(await getSyncStatus())
-    return ok(await setSyncDir(res.filePaths[0]))
+    if (opts?.dir) return err(SYNC_TEMPORARILY_DISABLED)
+    return ok(await setSyncDir(null))
   } catch (e: any) { return err(e.message) }
 })
+
+// Was: a native folder picker that turned sync on in one step. Refused before any dialog opens.
+ipcMain.handle('memory:choose-sync-dir', async () => err(SYNC_TEMPORARILY_DISABLED))
 
 // At-rest encryption of the synced folder. Set/enter the passphrase (encrypts
 // this device's shard + unlocks peers' encrypted shards); the key is derived
@@ -2681,6 +2694,24 @@ ipcMain.handle('memory:enable-local-encryption', async () => {
 ipcMain.handle('memory:disable-encryption', async () => {
   try { return ok(await disableEncryption()) } catch (e: any) { return err(e.message) }
 })
+
+// Decision 1: the ONLY way past a LOCKED brain, and only ever on the user's click in the Memory panel.
+// The old key file is retired (renamed aside, never deleted) and a new one minted; older memories stay
+// on disk, readable again whenever the old key works — they are never rewritten.
+ipcMain.handle('memory:start-new-key', async () => {
+  try { return ok(await startNewMemoryKey()) } catch (e: any) { return err(e.message) }
+})
+
+/**
+ * Decision 2: is the brain LOCKED? The store refuses every write itself; this is for the BULK writers,
+ * so they skip a pass instead of reading every transcript to attempt (and fail) every chunk — and so
+ * nothing that records "done" (a session's reflection cursor, the lesson recheck marker) advances over
+ * memories that were never saved. They are all picked up again on the first pass after it unlocks.
+ * A store that can't even answer is not reported as locked: its own writes will fail loudly enough.
+ */
+async function memoryIsLocked(): Promise<boolean> {
+  try { return (await getSyncStatus()).ownLocked === true } catch { return false }
+}
 
 // Swarm Review: run the project's test runner and capture stdout/stderr/exitCode.
 // Locked down to an allowlist of known test runners (npm/yarn/pytest/cargo/…)
@@ -3163,6 +3194,9 @@ const secondOpinionRuns = createSecondOpinionDeliver({
   env: () => ({ ...process.env, PATH: getExtendedPath() }),
 })
 const deliverSecondOpinion = secondOpinionRuns.deliver
+// Whether this computer's claude / codex can run a linked job without saving its session, asked
+// through the same deliver and kept ten minutes (cliFlagProbe.ts).
+const linkedNoPersist = createNoPersistProbe({ deliver: deliverSecondOpinion })
 
 /** The memory primer a headless run starts with, scoped to the folder it runs in. One function
  *  for `termpolis exec` and for jobs a linked computer starts here, so both start equally warm. */
@@ -4157,15 +4191,38 @@ async function semanticPoolOptions(
     // quick follow-up whenever a pass reports more backlog).
     startIndexer({
       run: async () => {
+        // LOCKED (Decision 2): no ingest, no lesson recheck, no consolidation, no Weave, no index
+        // persist — every one of them either writes to a brain that refuses writes or decides things
+        // from a hot window missing everything that can't be decrypted. Nothing is marked done, so the
+        // first pass after an unlock picks it all up.
+        if (await memoryIsLocked()) return { written: 0 }
         // Pick up entries other machines synced into the shared folder (no-op
         // when cross-machine sync is off).
         try { await reloadMemoryFromSync() } catch { /* best effort */ }
+        // The chunk hashes of every delegated session the pass skips, for the linked-history
+        // recheck below.
+        const delegatedHashes = new Set<string>()
         const stats = await runConversationIngest(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
-          { maxChunks: 250, stopped: () => appQuitting },
+          { maxChunks: 250, stopped: () => appQuitting, onDelegated: (hashes) => { for (const h of hashes) delegatedHashes.add(h) } },
         )
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
+        // Once per install: demote the sessions other computers' jobs left in memory through 1.52
+        // (linkedHistoryRecheck.ts). Only after a pass that read every transcript, so it knows
+        // every delegated session still on disk; a pass cut short leaves it for the next one.
+        if (!stats.truncated) {
+          try {
+            await recheckLinkedHistory({
+              list: (opts) => memoryList(opts),
+              edgeKeys: (ids) => edgeKeysIncident(ids),
+              delegatedHashes,
+              isCorrected: (id) => correctionForMemory(id) !== null,
+              demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+              ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, LINKED_RECHECK_MARKER),
+            })
+          } catch { /* the store wasn't readable: the next complete pass tries again */ }
+        }
         // Once per install: demote the junk lessons the extractor wrote through 1.50.0
         // (mnemeLessonRecheck.ts). A no-op on every later pass.
         try {
@@ -4292,6 +4349,7 @@ async function semanticPoolOptions(
       // of past sessions on disk (it stats, not re-reads, the cold ones).
       fastIntervalMs: 90_000,
       fastRun: async () => {
+        if (await memoryIsLocked()) return { written: 0 } // see run: nothing is marked done while LOCKED
         const stats = await runConversationIngest(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
           // F16: the fast pass re-reads the ACTIVE session — emit only sealed chunks so a
@@ -4388,7 +4446,9 @@ async function semanticPoolOptions(
         (out: string, name?: string) => detectAgentStatus(out, name || 'claude'),
         (agent) => wfAgentLaunch[agent],
       )
-      const wfTools = makeToolInvoker(mcpHandlers, executeTool)
+      // Through the same rate limits and audit log as an agent's call (mcpServer.ts): a looping
+      // workflow must not be the one way past either.
+      const wfTools = makeToolInvoker(mcpHandlers, executeToolForWorkflow)
       // Trigger supervisor: arms schedule/gitCommit/gitPush/fileWatch workflows
       // and drives them through the SAME startRun the Run button uses. Created
       // before the IPC so it can be handed the change callbacks, and given
@@ -4525,24 +4585,35 @@ async function semanticPoolOptions(
       // rooms instead of coming up for phones and being restarted a moment later for links.
       // Delegated jobs run headless with the same deliver and primer as `termpolis exec`, and
       // deliberately without `remember`: text another machine asked for must never become a
-      // later run's primer here.
+      // later run's primer here. For the same reason the agent's CLI is told not to save the
+      // session wherever it can be (`noPersist`).
       //
       // While another computer's job runs here, the system must not idle-sleep under it, nor
       // macOS put the app in App Nap: a sleeping machine drops off the relay. 'prevent-app-suspension'
       // still lets the display sleep. One blocker, held by id; powerSaveBlocker is read only when
       // called, never at load.
       let sleepBlocker: number | null = null
+      // The latest job notification per linked computer: a newer one from the same computer
+      // replaces it rather than stacking, and holding it keeps its click handler alive.
+      const linkedNotices = new Map<string, Notification>()
       try {
         startLinkedHost({
           userDataDir: app.getPath('userData'),
           version: app.getVersion(),
           sendStatus: (status) => { try { mainWindow?.webContents.send('linked:status-changed', status) } catch { /* window gone */ } },
           sendEvent: (event) => { try { mainWindow?.webContents.send('linked:event', event) } catch { /* window gone */ } },
-          runHeadless: (req) => runHeadless(req, { deliver: deliverSecondOpinion, primer: headlessPrimer, linkedJobMcp }),
+          runHeadless: (req) => runHeadless(req, { deliver: deliverSecondOpinion, primer: headlessPrimer, linkedJobMcp, noPersist: linkedNoPersist }),
           agentsInstalled: async () => {
             const found = await detectInstalledAgents()
             return { claude: found.claude === true, codex: found.codex === true, gemini: found.gemini === true }
           },
+          // Every prompt and answer that crosses between two computers is screened for
+          // credentials on both, and what was found goes to the AI Security audit log.
+          screenSecrets: aiSecurityScreen,
+          // ...and a job's summary has every possible one taken out before the job history
+          // keeps it or a notification shows it.
+          maskSecrets: aiSecurityMask,
+          audit: (entry) => aiSecurityAppend(entry),
           keepAwake: (on) => {
             if (on && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start('prevent-app-suspension')
             else if (!on && sleepBlocker !== null) {
@@ -4550,6 +4621,27 @@ async function semanticPoolOptions(
               sleepBlocker = null
               powerSaveBlocker.stop(id)
             }
+          },
+          // A job another computer started here. Windows needs the AppUserModelId set at the top
+          // of this file; Linux without a notification daemon reports no support, and gets none.
+          // A click opens Settings ▸ Linked machines, where the job can be stopped.
+          notifyJob: (notice) => {
+            if (!Notification.isSupported()) return
+            linkedNotices.get(notice.tag)?.close()
+            const toast = new Notification({ title: notice.title, body: notice.body })
+            toast.on('click', () => {
+              // Brought forward first, so the pane opens where the user is looking. A window that
+              // has gone away (null, or destroyed) throws on the way, and the click opens nothing.
+              try {
+                const win = mainWindow as BrowserWindow
+                if (win.isMinimized()) win.restore()
+                win.show()
+                win.focus()
+                win.webContents.send('linked:show')
+              } catch { /* window gone */ }
+            })
+            linkedNotices.set(notice.tag, toast)
+            toast.show()
           },
         })
       } catch (e) {
@@ -4573,6 +4665,8 @@ async function semanticPoolOptions(
           createTransport: realBridgeTransport,
           // Asked at every bridge start and crash respawn: answered from memory, synchronously.
           linkedInit: () => linkedInitForRemote(),
+          // "Start over" covers the links too: forgotten before the bridge comes back and asks.
+          linkedStartOver: () => linkedStartOverForRemote(),
         })
       } catch (e) {
         // A wiring fault here must not fatal `whenReady` -- the app-boot rule. Remote

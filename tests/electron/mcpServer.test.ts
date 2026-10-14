@@ -13,6 +13,7 @@ const {
   awaitMcpPortBound,
   _resetPortStateForTest,
   executeTool,
+  executeToolForWorkflow,
 } = await import('../../src/main/mcpServer')
 
 const LINKED_OFF = { error: 'Linked machines is off. Turn it on under Settings ▸ Linked machines.' }
@@ -1017,6 +1018,141 @@ describe('MCP HTTP server', () => {
     const body = JSON.parse(res.body)
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toContain('Unknown tool')
+  })
+
+  // --- A workflow's calls next to an agent's ---
+
+  const call = (name: string, args: object = {}) =>
+    jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/call', params: { name, arguments: args }, id: 700 })
+
+  it('agents and workflows share the linked_machines limit: 30 a minute between them', async () => {
+    // Its cost lands on another computer and on the AI bill, whoever calls.
+    for (let i = 0; i < 20; i++) await executeToolForWorkflow('linked_machines', { action: 'list' }, handlers as any)
+    for (let i = 0; i < 10; i++) expect((await call('linked_machines', { action: 'list' })).statusCode).toBe(200)
+    expect((await call('linked_machines', { action: 'list' })).statusCode).toBe(429)
+    await expect(executeToolForWorkflow('linked_machines', { action: 'list' }, handlers as any)).rejects.toThrow(
+      'Rate limit exceeded for linked_machines',
+    )
+    expect(handlers.linkedMachines).toHaveBeenCalledTimes(30)
+  })
+
+  it("a workflow's other limited tools count in buckets of their own, at the same limits", async () => {
+    for (let i = 0; i < 60; i++) await executeToolForWorkflow('run_command', { terminalId: 't1', command: 'x' }, handlers as any)
+    await expect(executeToolForWorkflow('run_command', { terminalId: 't1', command: 'x' }, handlers as any)).rejects.toThrow(
+      'Rate limit exceeded for run_command',
+    )
+    // A looping workflow leaves the user's agents their own 60.
+    expect((await call('run_command', { terminalId: 't1', command: 'y' })).statusCode).toBe(200)
+    // ...and agents that used theirs up leave the workflow its 10 terminals.
+    for (let i = 0; i < 10; i++) expect((await call('create_terminal', { name: 'T' })).statusCode).toBe(200)
+    expect((await call('create_terminal', { name: 'T' })).statusCode).toBe(429)
+    await expect(executeToolForWorkflow('create_terminal', { name: 'T' }, handlers as any)).resolves.toMatchObject({ terminalId: 't-new-1' })
+  })
+
+  it("a workflow's calls have a global bucket of their own: 200 of them leave an agent's request alone", async () => {
+    for (let i = 0; i < 200; i++) await executeToolForWorkflow('swarm_list_agents', {}, handlers as any)
+    await expect(executeToolForWorkflow('swarm_list_agents', {}, handlers as any)).rejects.toThrow(
+      'Rate limit exceeded for workflow tool calls',
+    )
+    expect((await call('swarm_list_agents')).statusCode).toBe(200)
+  })
+})
+
+// --- A workflow's tool calls ---
+
+describe('executeToolForWorkflow', () => {
+  let log: ReturnType<typeof vi.spyOn>
+  /** The audit lines written so far, parsed: each is console.logged as it is written. */
+  const lines = (): Record<string, unknown>[] =>
+    log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((s) => s.startsWith('[MCP audit] '))
+      .map((s) => JSON.parse(s.slice('[MCP audit] '.length)))
+
+  beforeEach(() => {
+    resetRateLimits()
+    log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+  afterEach(() => {
+    log.mockRestore()
+    resetRateLimits()
+  })
+
+  it("runs the tool and writes one audit line marked via 'workflow', with no device", async () => {
+    const handlers = createMockHandlers()
+    expect(await executeToolForWorkflow('list_terminals', {}, handlers as any)).toEqual([
+      { id: 't1', name: 'Test', shellType: 'bash', cwd: '/home' },
+    ])
+    expect(lines()).toEqual([{ ts: expect.any(String), method: 'tools/call', tool: 'list_terminals', status: 'ok', via: 'workflow' }])
+  })
+
+  it('gives the tool an empty object when a step passes no arguments', async () => {
+    const handlers = createMockHandlers()
+    await executeToolForWorkflow('linked_machines', undefined, handlers as any)
+    expect(handlers.linkedMachines).toHaveBeenCalledWith({})
+  })
+
+  it('logs an answer given as { error } data as ok, as the HTTP path does: the call itself worked', async () => {
+    const handlers = createMockHandlers()
+    expect(await executeToolForWorkflow('linked_machines', { action: 'list' }, handlers as any)).toEqual(LINKED_OFF)
+    expect(lines()).toEqual([expect.objectContaining({ tool: 'linked_machines', status: 'ok', via: 'workflow' })])
+  })
+
+  it('refuses a limited call before it runs, and logs it rate_limited', async () => {
+    const handlers = createMockHandlers()
+    for (let i = 0; i < 10; i++) await executeToolForWorkflow('create_terminal', { name: 'T' }, handlers as any)
+    await expect(executeToolForWorkflow('create_terminal', { name: 'T' }, handlers as any)).rejects.toThrow(
+      'Rate limit exceeded for create_terminal',
+    )
+    expect(handlers.createTerminal).toHaveBeenCalledTimes(10)
+    expect(lines().at(-1)).toEqual({
+      ts: expect.any(String), method: 'tools/call', tool: 'create_terminal', status: 'rate_limited',
+      detail: 'create_terminal limit exceeded', via: 'workflow',
+    })
+  })
+
+  it('logs the global refusal too', async () => {
+    const handlers = createMockHandlers()
+    for (let i = 0; i < 200; i++) await executeToolForWorkflow('list_terminals', {}, handlers as any)
+    await expect(executeToolForWorkflow('swarm_list_tasks', {}, handlers as any)).rejects.toThrow()
+    expect(lines().at(-1)).toMatchObject({ tool: 'swarm_list_tasks', status: 'rate_limited', detail: 'workflow limit exceeded', via: 'workflow' })
+  })
+
+  it("an agent's 200 requests leave a workflow's calls alone", async () => {
+    for (let i = 0; i < 200; i++) checkRateLimit('_global')
+    expect(checkRateLimit('_global')).toBe(false)
+    await expect(executeToolForWorkflow('list_terminals', {}, createMockHandlers() as any)).resolves.toBeDefined()
+  })
+
+  it('rethrows a tool that threw, whole, and writes only what an agent would see to the audit file', async () => {
+    const handlers = createMockHandlers()
+    handlers.listTerminals.mockImplementationOnce(() => {
+      throw new Error('EACCES: /home/me/private/notes.txt')
+    })
+    await expect(executeToolForWorkflow('list_terminals', {}, handlers as any)).rejects.toThrow('EACCES: /home/me/private/notes.txt')
+    expect(lines()).toEqual([
+      { ts: expect.any(String), method: 'tools/call', tool: 'list_terminals', status: 'error', detail: 'Tool execution failed', via: 'workflow' },
+    ])
+  })
+
+  it("keeps an unknown tool's own message in the audit line, as an agent would see it", async () => {
+    await expect(executeToolForWorkflow('nope', {}, createMockHandlers() as any)).rejects.toThrow('Unknown tool: nope')
+    expect(lines()).toEqual([expect.objectContaining({ tool: 'nope', status: 'error', detail: 'Unknown tool: nope' })])
+  })
+
+  it("holds a step naming 'constructor' to no limit that isn't one", async () => {
+    // RATE_LIMITS is a plain object: a step's tool name must not reach its prototype.
+    await expect(executeToolForWorkflow('constructor', {}, createMockHandlers() as any)).rejects.toThrow('Unknown tool: constructor')
+    expect(lines()).toEqual([expect.objectContaining({ tool: 'constructor', status: 'error' })])
+  })
+
+  it('resetRateLimits clears the workflow buckets too', async () => {
+    const handlers = createMockHandlers()
+    for (let i = 0; i < 30; i++) await executeToolForWorkflow('linked_machines', { action: 'list' }, handlers as any)
+    for (let i = 0; i < 170; i++) await executeToolForWorkflow('list_terminals', {}, handlers as any)
+    await expect(executeToolForWorkflow('list_terminals', {}, handlers as any)).rejects.toThrow()
+    resetRateLimits()
+    await expect(executeToolForWorkflow('linked_machines', { action: 'list' }, handlers as any)).resolves.toEqual(LINKED_OFF)
   })
 })
 

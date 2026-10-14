@@ -18,13 +18,8 @@ import { chunkOutbound, MAX_PAYLOAD_BYTES } from './outputChunker'
 import { RelayClient, type RelayClientDeps, type RelayState } from './relayClient'
 import { Handshake, deriveSessionRoomId } from './sessionCrypto'
 import { deriveVerificationPhrase, fromHex, toHex } from './sealedChannel'
-import {
-  LINK_OFFER_TTL_MS,
-  encodeLinkCode,
-  isBridgeLink,
-  isLinkRelayUrl,
-  parseLinkCode,
-} from './linkCode'
+import { LINK_OFFER_TTL_MS, encodeLinkCode, isBridgeLink, parseLinkCode } from './linkCode'
+import { isSecureRelayUrl } from './relayUrl'
 import { CapabilityError } from './remotePolicy'
 import {
   DEFAULT_RELAY_URL,
@@ -121,13 +116,18 @@ const PHONES_OFF = 'Phone pairing is off. Switch on "Allow phones to connect" fi
 const LINK_CAP = `This computer already has ${MAX_LINKED_MACHINES} linked machines. Unlink one before linking another.`
 const LINK_RELAY_UNENCRYPTED =
   'Linked machines needs an encrypted relay (wss://). Change the relay under Settings ▸ Remote.'
+const PHONE_RELAY_UNENCRYPTED =
+  'Remote needs an encrypted relay (wss://). Change the relay under Settings ▸ Remote.'
 const JOIN_NOT_A_CODE =
   'That is not a link code. Copy the whole code from Settings ▸ Linked machines on the other computer.'
 const JOIN_OWN_CODE = 'That code was made on this computer. Enter it on the other one.'
 const JOIN_BAD_KEY = 'This computer could not make a key for the link. Try again.'
 const JOIN_PEER_GONE = 'The other computer stopped showing that code.'
+/** Also what an intercepted code looks like from here: whoever redeemed it
+ *  first is the one the other computer is asking to confirm. */
 const JOIN_TIMED_OUT =
-  'No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer.'
+  'No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer. ' +
+  'If that computer is asking you to confirm a link you did not make there, cancel it: someone else used the code.'
 const JOIN_BAD_ACK =
   'The other computer answered for a different key than this one sent. Create a new code and try again.'
 
@@ -223,6 +223,13 @@ export interface BridgeCore {
 
 export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   const desktopName = deps.desktopName ?? localDesktopName()
+  /** Whether this desktop's own rooms may be dialled at all: its phones', the
+   *  computers that entered its codes, and the room each code or QR names. All
+   *  of them sit on `deps.relayUrl`. Over plain `ws://` to another computer
+   *  none of them is ever dialled, whatever main sent -- main shows why, and a
+   *  relay URL handed in any other way gets the same answer. Links this machine
+   *  joined dial the other computer's relay, checked when the code was read. */
+  const relaySecure = isSecureRelayUrl(deps.relayUrl)
   let registry = new DeviceRegistry()
   let dispatcher: RequestDispatcher | null = null
   let pairing: PairingSession | null = null
@@ -458,6 +465,10 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   }
 
   function openRoom(dev: PairedDevice): void {
+    // Not dialled, so the device stays offline: that is the whole of failing
+    // closed here. Its record stays, and its room opens once the relay is
+    // fixed, which restarts this process.
+    if (!relaySecure) return
     const current = rooms.get(dev.id)
     // A device id is a hash of the phone's public key, and so is the session room,
     // so re-pairing the same phone lands on the same room and the live socket is
@@ -1034,11 +1045,12 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
           report(LINK_CAP, true)
           return
         }
-        // Remote takes a plain ws:// relay anywhere; a joining computer takes one
-        // only on loopback (`isLinkRelayUrl`). A code minted over any other would
-        // be refused over there as "not a link code" -- so say why here instead.
-        if (link && !isLinkRelayUrl(deps.relayUrl)) {
-          report(LINK_RELAY_UNENCRYPTED, true)
+        // The offer's room is on this relay, and so is the room the paired
+        // device would then use -- neither may be dialled over plain ws:// to
+        // another computer. A phone would refuse such a QR anyway, and a
+        // joining computer such a code, as "not a link code".
+        if (!relaySecure) {
+          report(link ? LINK_RELAY_UNENCRYPTED : PHONE_RELAY_UNENCRYPTED, link)
           return
         }
         requestedKind = link ? 'desktop' : 'phone'

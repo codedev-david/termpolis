@@ -1,8 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+
+// A mutable copy, so a test can make one file operation fail the way a held-open file does.
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>()
+  return { ...actual, default: { ...actual } }
+})
+
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { setSafeStorage } from '../../src/main/secureKeyStore'
+import { listRetiredSecrets, setSafeStorage, writeSecret } from '../../src/main/secureKeyStore'
 import {
   deriveVerificationPhrase,
   generateIdentity,
@@ -15,13 +22,16 @@ import {
   type PairedDevice,
   type TerminalSize,
 } from '../../src/main/remoteBridge/protocol'
-import { loadRemoteDevices, saveRemoteDevices } from '../../src/main/remoteDeviceStore'
-import { getOrCreateRemoteIdentity } from '../../src/main/remoteIdentityStore'
+import { loadRemoteDevices, remoteDevicesPath, saveRemoteDevices } from '../../src/main/remoteDeviceStore'
+import { remoteIdentityPath } from '../../src/main/remoteIdentityStore'
+import { identityOf } from './fixtures/remoteIdentity'
 import { loadRemoteSettings, saveRemoteSettings } from '../../src/main/remoteSettings'
 import {
+  REMOTE_KEYS_LOCKED,
   createRemoteHost,
   type RemoteEvent,
   type RemoteHost,
+  type RemoteHostDeps,
   type RemoteStatusView,
 } from '../../src/main/remoteBridgeHost'
 
@@ -53,8 +63,9 @@ let dir: string
 let harness: ReturnType<typeof makeHarness>
 
 /** The host with every seam recorded: the supervisor, the renderer and the
- *  terminal buffers are all injected, so nothing here touches Electron. */
-function makeHarness() {
+ *  terminal buffers are all injected, so nothing here touches Electron.
+ *  `extra` adds or replaces deps for one test. */
+function makeHarness(extra: Partial<RemoteHostDeps> = {}) {
   const started: Array<{ init: Omit<Extract<HostToBridge, { kind: 'init' }>, 'kind'>; relayUrl: string }> = []
   const posted: HostToBridge[] = []
   const statuses: RemoteStatusView[] = []
@@ -104,6 +115,7 @@ function makeHarness() {
     clearTimer: () => {
       cleared++
     },
+    ...extra,
   })
 
   return {
@@ -171,7 +183,7 @@ describe('remote bridge host', () => {
   it('spawns with the persisted identity, devices and relay URL when enabled', () => {
     saveRemoteSettings(dir, { enabled: true, relayUrl: 'wss://relay.example/ws' })
     saveRemoteDevices(dir, [pairedDevice()])
-    const identity = getOrCreateRemoteIdentity(dir)
+    const identity = identityOf(dir)
 
     harness.host.start()
     expect(harness.started).toHaveLength(1)
@@ -213,7 +225,7 @@ describe('remote bridge host', () => {
     // key that reaches a window is a key in a devtools console.
     saveRemoteSettings(dir, { enabled: true })
     harness.host.start()
-    const identity = getOrCreateRemoteIdentity(dir)
+    const identity = identityOf(dir)
     harness.fromBridge({ kind: 'devicesChanged', devices: [pairedDevice()] })
     harness.fromBridge({ kind: 'pairingCode', qrPayload: 'qr', expiresAt: 9e15 })
 
@@ -308,7 +320,7 @@ describe('remote bridge host', () => {
     saveRemoteSettings(dir, { enabled: true })
     saveRemoteDevices(dir, [pairedDevice()])
     harness.host.start()
-    const identity = getOrCreateRemoteIdentity(dir)
+    const identity = identityOf(dir)
     expect(harness.host.verificationPhraseFor('dev1')).toBe(
       deriveVerificationPhrase(identity.publicKey, PHONE.publicKey),
     )
@@ -691,11 +703,211 @@ describe('remote bridge host', () => {
     harness.host.start()
     const status = harness.host.status()
     expect(status.publicKey).toMatch(/^[0-9a-f]{64}$/)
-    expect(status.publicKey).toBe(getOrCreateRemoteIdentity(dir).publicKey)
+    expect(status.publicKey).toBe(identityOf(dir).publicKey)
     // And it is the key the session room is derived from, so a device paired
     // against it lands in a room this desktop actually dials.
-    expect(deriveSessionRoomId(getOrCreateRemoteIdentity(dir).secretKey, PHONE.publicKey)).toMatch(
+    expect(deriveSessionRoomId(identityOf(dir).secretKey, PHONE.publicKey)).toMatch(
       /^[0-9a-f]{32}$/,
     )
+  })
+})
+
+/** A keychain that opens only what it sealed itself: the one on another
+ *  computer or user account, or after a password reset. */
+function anotherKeychain() {
+  const mark = 0x99
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (s: string) => Buffer.from([mark, ...Buffer.from(s, 'utf8')]),
+    decryptString: (b: Buffer) => {
+      if (b[0] !== mark) throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.')
+      return b.subarray(1).toString('utf8')
+    },
+  }
+}
+
+/** This userData's identity, sealed by the usual keychain -- and from now on a
+ *  keychain that can't open it. */
+function lockedIdentity(): { secretKey: string; publicKey: string; bytes: Buffer } {
+  const id = identityOf(dir)
+  setSafeStorage(anotherKeychain())
+  return { ...id, bytes: fs.readFileSync(remoteIdentityPath(dir)) }
+}
+
+describe('keys that cannot be opened', () => {
+  // The data-loss guard. Such a key used to read as "no identity", and the one
+  // minted over it orphaned every phone and computer paired with it, for good.
+  it('are never minted over: nothing starts, the status says locked, and nothing throws', () => {
+    const locked = lockedIdentity()
+    saveRemoteSettings(dir, { enabled: true })
+    harness.host.start()
+    expect(harness.started).toEqual([])
+    expect(harness.host.status()).toMatchObject({
+      keyStorage: 'locked',
+      keyLockReason: 'unwrap-failed',
+      keysUnencrypted: false,
+      publicKey: null,
+      running: false,
+    })
+    // One error, for the one attempt to start.
+    expect(harness.events).toEqual([{ kind: 'error', message: REMOTE_KEYS_LOCKED }])
+    expect(fs.readFileSync(remoteIdentityPath(dir)).equals(locked.bytes)).toBe(true)
+    expect(listRetiredSecrets(remoteIdentityPath(dir))).toEqual([])
+  })
+
+  it('tell the phone pane only while Remote is on, once per attempt to start', () => {
+    lockedIdentity()
+    harness = makeHarness({ linkedInit: () => ({ enabled: true, links: [] }) })
+    // For Linked machines alone: nothing for the phone pane to hear.
+    harness.host.start()
+    expect(harness.started).toEqual([])
+    expect(harness.events).toEqual([])
+    harness.host.setEnabled(true)
+    harness.host.setEnabled(false)
+    harness.host.setEnabled(true)
+    expect(harness.events).toEqual([
+      { kind: 'error', message: REMOTE_KEYS_LOCKED },
+      { kind: 'error', message: REMOTE_KEYS_LOCKED },
+    ])
+  })
+
+  it('make no safety words: those come from the identity', () => {
+    lockedIdentity()
+    saveRemoteDevices(dir, [pairedDevice()])
+    harness.host.start()
+    expect(harness.host.verificationPhraseFor('dev1')).toBeNull()
+  })
+
+  it('are tried once a session, not on every status read', () => {
+    // On a Mac each try can be a Keychain prompt.
+    identityOf(dir)
+    const decrypt = vi.fn(anotherKeychain().decryptString)
+    setSafeStorage({ ...anotherKeychain(), decryptString: decrypt })
+    harness.host.start()
+    harness.host.status()
+    harness.host.status()
+    harness.host.linkedPort().keys()
+    expect(decrypt).toHaveBeenCalledTimes(1)
+  })
+
+  it('show through the port, for the Linked machines pane', () => {
+    lockedIdentity()
+    harness.host.start()
+    harness.host.status()
+    expect(harness.host.linkedPort().keys()).toEqual({ keyStorage: 'locked', keyLockReason: 'unwrap-failed', keysUnencrypted: false })
+  })
+
+  it('Start over sets the identity and the devices aside, and comes back with a new identity and nothing paired', () => {
+    const old = lockedIdentity()
+    saveRemoteSettings(dir, { enabled: true })
+    saveRemoteDevices(dir, [pairedDevice()])
+    const forget = vi.fn()
+    harness = makeHarness({ linkedStartOver: forget })
+    harness.host.start()
+    expect(harness.host.status().keyStorage).toBe('locked')
+    harness.statuses.length = 0
+
+    harness.host.startOver()
+
+    expect(forget).toHaveBeenCalledTimes(1)
+    const status = harness.host.status()
+    expect(status.keyStorage).toBe('keychain')
+    expect(status.publicKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(status.publicKey).not.toBe(old.publicKey)
+    expect(status.devices).toEqual([])
+    expect(harness.statuses.at(-1)?.publicKey).toBe(status.publicKey)
+    // Back under the new identity, with no room of the old one to dial.
+    expect(harness.started).toHaveLength(1)
+    expect(harness.started[0].init.identitySecretKey).not.toBe(old.secretKey)
+    expect(harness.started[0].init.devices).toEqual([])
+    // Nothing deleted: the old key and device list sit beside the new ones.
+    const [aside] = listRetiredSecrets(remoteIdentityPath(dir))
+    expect(fs.readFileSync(aside).equals(old.bytes)).toBe(true)
+    expect(listRetiredSecrets(remoteDevicesPath(dir))).toHaveLength(1)
+    expect(loadRemoteDevices(dir)).toEqual([])
+  })
+
+  it('Start over that cannot set the identity aside changes nothing', () => {
+    // There, and unreadable: locked, and it will not move either.
+    fs.mkdirSync(remoteIdentityPath(dir))
+    saveRemoteDevices(dir, [pairedDevice()])
+    const forget = vi.fn()
+    harness = makeHarness({ linkedStartOver: forget })
+    harness.host.start()
+    expect(harness.host.status().keyLockReason).toBe('unreadable')
+    expect(() => harness.host.startOver()).toThrow()
+    expect(forget).not.toHaveBeenCalled()
+    expect(harness.host.status().keyStorage).toBe('locked')
+    expect(loadRemoteDevices(dir)).toHaveLength(1)
+  })
+
+  it('Start over goes on when Linked machines fails to forget: the bridge asks it afresh anyway', () => {
+    lockedIdentity()
+    saveRemoteSettings(dir, { enabled: true })
+    harness = makeHarness({
+      linkedStartOver: () => {
+        throw new Error('boom')
+      },
+    })
+    harness.host.start()
+    expect(() => harness.host.startOver()).not.toThrow()
+    expect(harness.host.status().keyStorage).toBe('keychain')
+    expect(harness.started).toHaveLength(1)
+  })
+
+  it('Start over with both switches off starts nothing', () => {
+    lockedIdentity()
+    harness.host.start()
+    harness.host.startOver()
+    expect(harness.started).toEqual([])
+    expect(harness.host.status().keyStorage).toBe('keychain')
+  })
+})
+
+describe('keys saved in the clear', () => {
+  it("are plaintext without a keychain, with Electron's name for its store as small print", () => {
+    setSafeStorage({ ...fakeSafeStorage(), isEncryptionAvailable: () => false, getSelectedStorageBackend: () => 'basic_text' })
+    harness.host.start()
+    expect(harness.host.status()).toMatchObject({ keyStorage: 'plaintext', keyBackend: 'basic_text', keysUnencrypted: false })
+    // Minted all the same, in the clear -- which is what the warning says.
+    expect(fs.readFileSync(remoteIdentityPath(dir), 'utf8')).toBe(identityOf(dir).secretKey)
+  })
+
+  it('are flagged once a keychain is here, and Encrypt keys now seals them, looks again and says so', () => {
+    const secretKey = 'ab'.repeat(32)
+    fs.writeFileSync(remoteIdentityPath(dir), secretKey) // saved by a launch with no keyring
+    harness.host.start()
+    expect(harness.host.status()).toMatchObject({ keyStorage: 'keychain', keysUnencrypted: true })
+    harness.statuses.length = 0
+    harness.host.encryptKeys()
+    expect(fs.readFileSync(remoteIdentityPath(dir), 'utf8').startsWith('osk:v1:')).toBe(true)
+    expect(harness.statuses.at(-1)?.keysUnencrypted).toBe(false)
+    // The same identity, sealed: nothing paired with it notices.
+    expect(identityOf(dir).secretKey).toBe(secretKey)
+    expect(harness.host.status().publicKey).toBe(identityOf(dir).publicKey)
+  })
+
+  it('a failed Encrypt keys now still looks again and says so', () => {
+    fs.writeFileSync(remoteIdentityPath(dir), 'ab'.repeat(32))
+    harness.host.start()
+    expect(harness.host.status().keysUnencrypted).toBe(true)
+    harness.statuses.length = 0
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('in use'), { code: 'EBUSY' })
+    })
+    expect(() => harness.host.encryptKeys()).toThrow(/in use/)
+    rename.mockRestore()
+    expect(harness.statuses).toHaveLength(1)
+    expect(harness.statuses[0].keysUnencrypted).toBe(true)
+  })
+
+  it('are looked at without minting: the facts alone never write a key file', () => {
+    // The Linked pane reads them at every launch, Remote on or not.
+    harness.host.start()
+    expect(harness.host.linkedPort().keys()).toEqual({ keyStorage: 'keychain', keysUnencrypted: false })
+    expect(fs.existsSync(remoteIdentityPath(dir))).toBe(false)
+    // And they are read once: a file sealed since is not looked at again unasked.
+    writeSecret(remoteIdentityPath(dir), 'ab'.repeat(32))
+    expect(harness.host.linkedPort().keys().keysUnencrypted).toBe(false)
   })
 })

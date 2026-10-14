@@ -23,6 +23,7 @@ import {
   reloadMemoryFromSync,
   setSyncPassphrase,
   disableSyncEncryption,
+  exportMemorySnapshot,
   _resetForTests,
   _setEmbedFnForTests,
   _setMaxEntriesForTests,
@@ -145,7 +146,7 @@ describe('cross-machine sync — control + status', () => {
     expect(s.deviceId).toMatch(/^[0-9a-f]{16}$/)
   })
 
-  it('setSyncDir turns sync on, then off snapshots back to the local store', async () => {
+  it('setSyncDir turns sync on, then off reopens the local store exactly as it was left (no snapshot)', async () => {
     initSwarmMemory(userDir)
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'pre' })
     let st = setSyncDir(syncDir)
@@ -154,7 +155,9 @@ describe('cross-machine sync — control + status', () => {
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'during-sync' })
     st = setSyncDir(null)
     expect(st.syncing).toBe(false)
-    expect(memoryList().some((e) => e.content === 'during-sync')).toBe(true)
+    // Decision 5: nothing is snapshotted over the local file any more. What was written while syncing
+    // stays in the folder's shard; the local brain is the one this computer left.
+    expect(memoryList().map((e) => e.content)).toEqual(['pre'])
   })
 
   it('persisted sync config is honored on a fresh init with no opts', async () => {
@@ -299,16 +302,20 @@ describe('cross-machine sync — at-rest encryption', () => {
     }
   })
 
-  it('auto-unlocks on re-init via the locally-cached key (no re-prompt)', async () => {
+  it('the passphrase key is NOT cached in the device key file: a relaunch asks again, and the passphrase still opens it', async () => {
+    // v1 cached it in memory-sync.key, overwriting the device key (Decision 1). Until v2 gives it a
+    // file of its own, the passphrase is entered again after a relaunch — v1's unlock still works on a
+    // LOCKED shard, because the passphrase is checked against the ciphertext before anything is touched.
     initSwarmMemory(userDir, { syncDir })
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'persist-encrypted' })
     setSyncPassphrase('remember-me')
+    expect(fs.existsSync(path.join(userDir, 'memory-sync.key'))).toBe(false)
     _resetForTests()
     _setEmbedFnForTests(async () => null)
-    initSwarmMemory(userDir, { syncDir }) // same device → key cached in userDir
-    const st = getSyncStatus()
-    expect(st.encrypted).toBe(true)
-    expect(st.locked).toBe(false)
+    initSwarmMemory(userDir, { syncDir })
+    expect(getSyncStatus()).toMatchObject({ encrypted: false, locked: true, ownLocked: true, lockReason: 'key-mismatch' })
+    const st = setSyncPassphrase('remember-me')
+    expect(st).toMatchObject({ encrypted: true, locked: false, ownLocked: false })
     expect(memoryList().some((e) => e.content === 'persist-encrypted')).toBe(true)
   })
 
@@ -332,7 +339,7 @@ describe('cross-machine sync — at-rest encryption', () => {
     expect(() => setSyncPassphrase('   ')).toThrow(/passphrase required/)
   })
 
-  it('caches the encryption key in the OS keychain (encrypted at rest) and still auto-unlocks', async () => {
+  it('with an OS keychain present, the passphrase key still goes nowhere near memory-sync.key', async () => {
     const K = 0x5a
     const fake = {
       isEncryptionAvailable: () => true,
@@ -343,36 +350,29 @@ describe('cross-machine sync — at-rest encryption', () => {
     try {
       initSwarmMemory(userDir, { syncDir })
       setSyncPassphrase('keychain-pass')
-      // the on-disk key file is OS-keychain-encrypted, NOT a plaintext base64 key
-      const keyFile = fs.readFileSync(path.join(userDir, 'memory-sync.key'), 'utf8')
-      expect(keyFile.startsWith('osk:v1:')).toBe(true)
-      // relaunch same device → auto-unlocks via the keychain-decrypted key (no prompt)
-      _resetForTests()
-      _setEmbedFnForTests(async () => null)
-      initSwarmMemory(userDir, { syncDir })
       expect(getSyncStatus().encrypted).toBe(true)
-      expect(getSyncStatus().locked).toBe(false)
+      expect(fs.readdirSync(userDir).filter((f) => f.startsWith('memory-sync.key'))).toEqual([])
     } finally {
       setSafeStorage(null)
     }
   })
 })
 
-describe('cross-machine sync — packed-vector reconstruction on snapshot', () => {
-  it('turning sync off reconstructs packed EMBED_DIM vectors into the local store', async () => {
+describe('cross-machine sync — packed vectors leave the store as base64', () => {
+  it('a synced, packed EMBED_DIM vector is reconstructed into an export as `emb`', async () => {
     initSwarmMemory(userDir, { syncDir })
     const vec = new Array(384).fill(0)
     vec[42] = 1
     _setEmbedFnForTests(async () => vec) // 384-dim → gets packed (number[] dropped from the stored entry)
     await memoryWrite({ agentId: 'a', kind: 'fact', content: 'packed-and-synced' })
-    setSyncDir(null) // snapshots the unioned set back to the local file
-    const legacy = fs.readFileSync(path.join(userDir, 'swarm-memory.jsonl'), 'utf8')
-    expect(legacy).toContain('packed-and-synced')
-    // v1.28: the vector is still reconstructed from the packed store (the point of this test) — but
-    // as base64 `emb`, never as 384 JSON decimals. Asserting the ABSENCE of "embedding" is what
-    // catches a silent regression to the old encoding, which cost ~7.7 KB of text per memory, was
-    // 100% of the store's growth, and is what drove the shard past V8's string limit in v1.27.4.
-    expect(legacy).toContain('"emb"')
-    expect(legacy).not.toContain('"embedding"')
+    const out = exportMemorySnapshot().join('\n')
+    expect(out).toContain('packed-and-synced')
+    // v1.28: the vector is reconstructed from the packed store (the point of this test) — but as
+    // base64 `emb`, never as 384 JSON decimals. Asserting the ABSENCE of "embedding" is what catches a
+    // silent regression to the old encoding, which cost ~7.7 KB of text per memory, was 100% of the
+    // store's growth, and is what drove the shard past V8's string limit in v1.27.4. (This used to be
+    // asserted on the sync-off snapshot, which no longer exists — Decision 5.)
+    expect(out).toContain('"emb"')
+    expect(out).not.toContain('"embedding"')
   })
 })

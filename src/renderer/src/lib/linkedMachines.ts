@@ -1,7 +1,7 @@
 // Pure helpers for Settings ▸ Linked machines. Nothing here touches React or
 // `window`, so every rule the pane follows -- write implies run, which pending
 // links still need confirming, how a time is worded -- is tested on its own.
-import type { LinkedActivityView, LinkedGrants, LinkedMachineView } from '../types'
+import type { LinkedActivityView, LinkedGrants, LinkedJobRecord, LinkedMachineView } from '../types'
 
 /** Mirrors `MAX_LINKED_MACHINES` in main/remoteBridge/protocol.ts. The bridge
  *  enforces the cap; the pane only explains it before a 17th pairing is refused. */
@@ -22,6 +22,24 @@ export function toggleGrant(grants: LinkedGrants, key: GrantKey): LinkedGrants {
   }
   const run = !grants.run
   return { run, write: run && grants.write }
+}
+
+/** What a Codex edit job is held to on this computer, the one that runs it, as the pane says it.
+ *  Termpolis switches the network of Codex's `workspace-write` sandbox off for the job, and the
+ *  sandbox enforces it. On Windows that sandbox is separate user accounts and firewall rules, and
+ *  that they keep a job from this computer's own local services (Termpolis's MCP server, with its
+ *  memory and terminals, among them) has not been checked there: on Windows it is said to be full
+ *  access, as Claude and Gemini are, until a live run shows otherwise. */
+export function codexEditAccess(platform: string): { full: boolean; sentence: string } {
+  if (platform === 'win32') {
+    return {
+      full: true,
+      sentence:
+        'On Windows, treat it as full access too: Termpolis switches its network off, but whether its sandbox keeps ' +
+        "it from this computer's own local services, Termpolis's among them, isn't confirmed.",
+    }
+  }
+  return { full: false, sentence: 'Termpolis switches its network off, for its sandbox to enforce.' }
 }
 
 export function secondsLeft(expiresAt: number, now: number): number {
@@ -52,6 +70,97 @@ export function formatDuration(ms: number): string {
   const mins = Math.floor(secs / 60)
   if (mins < 60) return `${mins}m ${secs % 60}s`
   return `${Math.floor(mins / 60)}h ${mins % 60}m`
+}
+
+/** The job history shows this many rows. */
+export const HISTORY_ROWS = 50
+
+/** How many lines of the history file the pane asks for: two a job, so enough for its rows. */
+export const HISTORY_READ = 200
+
+/** A job in the history, its start and end lines joined. `running` only while it is still
+ *  running here; `unrecorded` for one whose end was never written -- Termpolis quit or crashed
+ *  before the line landed. */
+export interface HistoryJobRow {
+  kind: 'job'
+  key: string
+  ts: number
+  machine: string
+  agent?: string
+  write?: boolean
+  cwd?: string
+  summary?: string
+  status: 'running' | 'done' | 'failed' | 'cancelled' | 'unrecorded'
+  durationMs?: number
+  /** Credential rules screening matched, in the prompt or the answer. */
+  secretRules: string[]
+}
+
+export interface HistoryRefusalRow {
+  kind: 'refused'
+  key: string
+  ts: number
+  machine: string
+  agent?: string
+  write?: boolean
+  reason: string
+  /** More refusals of the same computer in that minute. */
+  count?: number
+}
+
+export type HistoryRow = HistoryJobRow | HistoryRefusalRow
+
+/** The history's lines as rows, newest first: one per job, however many of its lines survived
+ *  rotation, and one per refusal line. `running` is the ids of the jobs running here now, which
+ *  the file alone can't tell from ones whose end was never written. */
+export function historyRows(records: LinkedJobRecord[], running: ReadonlySet<string>, limit = HISTORY_ROWS): HistoryRow[] {
+  const jobs = new Map<string, HistoryJobRow>()
+  const rows: HistoryRow[] = []
+  const started = new Set(records.filter((r) => r.event === 'started').map((r) => r.jobId))
+  records.forEach((r, i) => {
+    if (r.event === 'refused') {
+      rows.push({
+        kind: 'refused',
+        key: `refused-${r.ts}-${i}`,
+        ts: r.ts,
+        machine: r.machine,
+        ...(r.agent ? { agent: r.agent } : {}),
+        ...(r.write !== undefined ? { write: r.write } : {}),
+        reason: r.reason ?? '',
+        ...(r.count ? { count: r.count } : {}),
+      })
+      return
+    }
+    if (!r.jobId) return
+    let row = jobs.get(r.jobId)
+    if (!row) {
+      row = {
+        kind: 'job',
+        key: r.jobId,
+        ts: r.ts,
+        machine: r.machine,
+        status: running.has(r.jobId) ? 'running' : 'unrecorded',
+        secretRules: [],
+      }
+      jobs.set(r.jobId, row)
+      rows.push(row)
+    }
+    row.agent = row.agent ?? r.agent
+    row.secretRules = [...new Set([...row.secretRules, ...(r.secretRules ?? [])])].sort()
+    if (r.event === 'started') {
+      row.ts = r.ts
+      row.machine = r.machine
+      if (r.write !== undefined) row.write = r.write
+      if (r.cwd !== undefined) row.cwd = r.cwd
+      if (r.summary !== undefined) row.summary = r.summary
+    } else {
+      if (r.status) row.status = r.status
+      if (r.durationMs !== undefined) row.durationMs = r.durationMs
+      // Its start line was rotated away: when it started, as near as the end line says.
+      if (!started.has(r.jobId)) row.ts = r.ts - (r.durationMs ?? 0)
+    }
+  })
+  return rows.sort((x, y) => y.ts - x.ts).slice(0, limit)
 }
 
 /** Newest first, capped. Sorted here rather than trusted, so the pane shows

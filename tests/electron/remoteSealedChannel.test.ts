@@ -3,7 +3,11 @@ import {
   generateIdentity,
   SealedDirection,
   SEAL_OVERHEAD_BYTES,
+  COUNTER_BYTES,
+  MAX_COUNTER,
   deriveVerificationPhrase,
+  readCounter,
+  toHex,
   PHRASE_WORDS,
 } from '../../src/main/remoteBridge/sealedChannel'
 import { SAFETY_WORDS } from '../../src/main/remoteBridge/wordlist'
@@ -134,6 +138,42 @@ describe('SealedDirection', () => {
     // The counter is 48 bits wide, so a direction has to be able to say how close
     // it is before the host decides to rotate.
     expect(tx.sentFrames).toBe(2)
+  })
+
+  it('starts counting where it is told to, and a fresh receiver takes it', () => {
+    // A greeting starts at a random counter. The receiver must not care: its
+    // high-water mark starts at -1, so any first counter is new to it.
+    const tx = new SealedDirection(key(), 1_234_567)
+    const rx = new SealedDirection(key())
+    const first = tx.seal(H, enc.encode('one'))
+    const second = tx.seal(H, enc.encode('two'))
+    expect(readCounter(first.subarray(H.length))).toBe(1_234_567)
+    expect(readCounter(second.subarray(H.length))).toBe(1_234_568)
+    expect(dec.decode(rx.open(first, 1))).toBe('one')
+    expect(dec.decode(rx.open(second, 1))).toBe('two')
+    // Frames sealed, not the counter they reached.
+    expect(tx.sentFrames).toBe(2)
+  })
+
+  it.each([-1, 0.5, Number.NaN, MAX_COUNTER + 1, Number.POSITIVE_INFINITY])(
+    'refuses a first counter six bytes cannot carry: %s',
+    (first) => {
+      // Coerced instead, the nonce would come from one number and the counter
+      // on the wire would say another, and no receiver could open the frame.
+      expect(() => new SealedDirection(key(), first)).toThrow(RangeError)
+    },
+  )
+
+  it('seals at the last counter once, then refuses rather than wrapping to 0', () => {
+    const tx = new SealedDirection(key(), MAX_COUNTER)
+    const rx = new SealedDirection(key())
+    const last = tx.seal(H, enc.encode('last'))
+    expect(toHex(last.subarray(H.length, H.length + COUNTER_BYTES))).toBe('ff'.repeat(COUNTER_BYTES))
+    expect(dec.decode(rx.open(last, 1))).toBe('last')
+    // `writeCounter` keeps six bytes, so the next value would go out as counter
+    // 0: a nonce this key has already used.
+    expect(() => tx.seal(H, enc.encode('one too many'))).toThrow(/exhausted/)
+    expect(tx.sentFrames).toBe(1)
   })
 })
 

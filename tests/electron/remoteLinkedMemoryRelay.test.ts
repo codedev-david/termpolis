@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createMemoryRelay, relayOpener, type MemorySocket } from './fixtures/memoryRelay'
-import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
-import { Handshake } from '../../src/main/remoteBridge/sessionCrypto'
+import { generateIdentity, readCounter } from '../../src/main/remoteBridge/sealedChannel'
+import { FRAME_SESSION_HELLO, GREETING_HEADER_BYTES, Handshake } from '../../src/main/remoteBridge/sessionCrypto'
 import { RelayClient } from '../../src/main/remoteBridge/relayClient'
 import type { RemoteEnvelope } from '../../src/main/remoteBridge/protocol'
 
@@ -213,4 +213,86 @@ describe('the in-memory relay', () => {
     await expect(dev.request({ kind: 'peerHello' }, 5_000)).resolves.toBe('host heard peerHello')
     expect(relay.refusals).toEqual([])
   })
+})
+
+describe('greetings across versions', () => {
+  it.each(['desktop', 'device'] as const)(
+    'a peer greeting at counter 0, as 1.50-1.52 do, stays linked with one that draws its counter, from the %s seat, through three reconnects',
+    async (oldSeat) => {
+      // Mixed versions are the normal state of a link: the two computers update
+      // on their own schedules. Each reconnect also lands inside the greeting
+      // spacing of the end that stayed, so this crosses the held-greeting path
+      // too, in both directions.
+      const relay = createMemoryRelay()
+      const host = generateIdentity()
+      const joiner = generateIdentity()
+      const open = relayOpener(relay)
+      const attaches = { desktop: 0, device: 0 }
+      const counter = (seat: 'desktop' | 'device') => (seat === oldSeat ? { greetingCounter: 0 } : {})
+      const answer = (who: string) => async (env: RemoteEnvelope) => ({
+        kind: 'ok' as const,
+        id: env.id,
+        data: `${who} heard ${env.request.kind}`,
+      })
+
+      const desk = open({
+        url: 'wss://relay.test',
+        roomId: ROOM,
+        handshake: () =>
+          new Handshake({
+            ownSecretKey: host.secretKey,
+            peerPublicKey: joiner.publicKey,
+            role: 'desktop',
+            ...counter('desktop'),
+          }),
+        onRequest: answer('host'),
+        onStateChange: (s) => {
+          if (s === 'attached') attaches.desktop++
+        },
+      }) as RelayClient
+      const dev = open({
+        url: 'wss://relay.test',
+        roomId: ROOM,
+        role: 'device',
+        handshake: () =>
+          new Handshake({
+            ownSecretKey: joiner.secretKey,
+            peerPublicKey: host.publicKey,
+            role: 'device',
+            ...counter('device'),
+          }),
+        onRequest: answer('joiner'),
+        onStateChange: (s) => {
+          if (s === 'attached') attaches.device++
+        },
+      }) as RelayClient
+      clients.push(desk, dev)
+      desk.start()
+      dev.start()
+      await vi.waitFor(() => expect(attaches).toEqual({ desktop: 1, device: 1 }))
+
+      for (const [round, dropped] of (['device', 'desktop', 'device'] as const).entries()) {
+        relay.drop(ROOM, dropped)
+        // Both ends attach again, on fresh keys, without anyone touching them.
+        await vi.waitFor(() => expect(attaches).toEqual({ desktop: round + 2, device: round + 2 }), {
+          timeout: 5_000,
+        })
+        await expect(desk.request({ kind: 'peerHello' }, 5_000)).resolves.toBe('joiner heard peerHello')
+        await expect(dev.request({ kind: 'peerHello' }, 5_000)).resolves.toBe('host heard peerHello')
+      }
+
+      // One greeting per attach from each end: the old one always at 0, the new
+      // one never.
+      const greetingCounters = (seat: 'desktop' | 'device'): number[] =>
+        relay.sockets
+          .filter((s) => s.role === seat)
+          .flatMap((s) => s.written.filter((f) => f[0] === FRAME_SESSION_HELLO))
+          .map((g) => readCounter(g.subarray(GREETING_HEADER_BYTES)))
+      const newSeat = oldSeat === 'desktop' ? 'device' : 'desktop'
+      expect(greetingCounters(oldSeat)).toEqual([0, 0, 0, 0])
+      expect(greetingCounters(newSeat)).toHaveLength(4)
+      expect(greetingCounters(newSeat).every((c) => c !== 0)).toBe(true)
+      expect(relay.refusals).toEqual([])
+    },
+  )
 })

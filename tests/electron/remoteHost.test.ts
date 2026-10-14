@@ -5,7 +5,8 @@ import * as path from 'path'
 import { setSafeStorage } from '../../src/main/secureKeyStore'
 import { _resetSupervisorForTests, type BridgeHandle } from '../../src/main/remoteBridgeSupervisor'
 import { generateIdentity } from '../../src/main/remoteBridge/sealedChannel'
-import { getOrCreateRemoteIdentity } from '../../src/main/remoteIdentityStore'
+import { identityOf } from './fixtures/remoteIdentity'
+import { remoteIdentityPath } from '../../src/main/remoteIdentityStore'
 import { saveRemoteDevices } from '../../src/main/remoteDeviceStore'
 import { saveRemoteSettings, loadRemoteSettings } from '../../src/main/remoteSettings'
 import {
@@ -16,12 +17,22 @@ import {
 } from '../../src/main/remoteBridge/protocol'
 import type { RemoteEvent, RemoteStatusView } from '../../src/main/remoteBridgeHost'
 import {
+  REMOTE_KEYS_LOCKED,
+  REMOTE_KEYS_NOT_ENCRYPTED,
+  REMOTE_KEYS_NOT_LOCKED,
+  REMOTE_KEYS_NO_KEYCHAIN,
   REMOTE_NOT_RUNNING,
+  REMOTE_RELAY_INSECURE,
+  REMOTE_RELAY_URL_RULE,
+  REMOTE_START_OVER_FAILED,
   REMOTE_UNAVAILABLE,
   _resetRemoteHostForTests,
+  encryptRemoteKeys,
   noteTerminalClosed,
   noteTerminalOutput,
   registerRemoteIpc,
+  remoteLinkedPort,
+  startOverRemoteKeys,
   startRemoteBridgeHost,
   stopRemoteBridgeHost,
 } from '../../src/main/remoteHost'
@@ -228,7 +239,7 @@ describe('remoteHost lifecycle', () => {
     // profile. `start()` alone is not use: it runs on every launch.
     saveRemoteSettings(dir, { enabled: false })
     harness.start()
-    expect(fs.existsSync(path.join(dir, 'remote-identity.json'))).toBe(false)
+    expect(fs.existsSync(remoteIdentityPath(dir))).toBe(false)
   })
 
   it('brings the bridge up on start when the setting is already on', () => {
@@ -240,7 +251,7 @@ describe('remoteHost lifecycle', () => {
     expect(init.kind).toBe('init')
     expect(init.mcpPort).toBe(4711)
     expect(init.mcpToken).toBe('mcp-token')
-    expect(init.identitySecretKey).toBe(getOrCreateRemoteIdentity(dir).secretKey)
+    expect(init.identitySecretKey).toBe(identityOf(dir).secretKey)
   })
 
   it('hands the stored devices to the child so a paired phone survives a restart', () => {
@@ -312,16 +323,68 @@ describe('remote IPC surface', () => {
   })
 
   it('rejects a relay URL the store will not keep, and leaves the bridge alone', () => {
-    // The store answers a refused address by keeping the old one, so without the
-    // effective-value check the field would look saved while every device kept
+    // The store answers a refused address by keeping the old one, so without an
+    // explicit refusal the field would look saved while every device kept
     // using the previous relay.
     saveRemoteSettings(dir, { enabled: true, relayUrl: 'wss://relay.example/ws' })
     harness.start()
-    const res = harness.call('remote:set-relay-url', { relayUrl: 'http://relay.example' })
-    expect(res.success).toBe(false)
-    expect(res.error).toMatch(/ws:\/\/ or wss:\/\//)
+    for (const relayUrl of ['http://relay.example', 'ws://relay.example/ws', 'ws://10.0.0.5:8787']) {
+      const res = harness.call('remote:set-relay-url', { relayUrl })
+      expect(res.success).toBe(false)
+      expect(res.error).toBe(REMOTE_RELAY_URL_RULE)
+    }
     expect(harness.forks).toHaveLength(1)
     expect(loadRemoteSettings(dir).relayUrl).toBe('wss://relay.example/ws')
+  })
+
+  it('refuses the plain ws:// address an older version saved, even typed again unchanged', () => {
+    // That address IS the effective value, so reading the store back after the
+    // save would have called it saved -- and nothing would ever connect.
+    fs.writeFileSync(
+      path.join(dir, 'remote-settings.json'),
+      JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }),
+    )
+    harness.start()
+    expect(harness.call('remote:set-relay-url', { relayUrl: 'ws://relay.example/ws' })).toEqual({
+      success: false,
+      error: REMOTE_RELAY_URL_RULE,
+    })
+    expect(harness.forks).toHaveLength(1)
+  })
+
+  it('says a stored plain ws:// relay is insecure, until a wss:// one replaces it', () => {
+    fs.writeFileSync(
+      path.join(dir, 'remote-settings.json'),
+      JSON.stringify({ enabled: true, relayUrl: 'ws://relay.example/ws' }),
+    )
+    harness.start()
+    const before = harness.call('remote:status').data as RemoteStatusView
+    expect(before).toMatchObject({ relayUrl: 'ws://relay.example/ws', relayInsecure: true })
+    // Handed to the bridge as it is: the bridge opens none of this desktop's rooms
+    // on it, and still dials the links this machine joined, on their own relays.
+    expect(harness.child().relayUrl).toBe('ws://relay.example/ws')
+
+    const res = harness.call('remote:set-relay-url', { relayUrl: 'wss://relay.example/ws' })
+    expect(res.success).toBe(true)
+    expect(res.data as RemoteStatusView).toMatchObject({ relayUrl: 'wss://relay.example/ws', relayInsecure: false })
+    // Moved to the new address, which is the only way the refused rooms come back.
+    expect(harness.forks).toHaveLength(2)
+    expect(harness.child().relayUrl).toBe('wss://relay.example/ws')
+  })
+
+  it('refuses to start pairing while the saved relay is insecure', () => {
+    // The bridge would refuse too, but only after the pairing dialog had opened
+    // to wait for a code that is not coming.
+    fs.writeFileSync(
+      path.join(dir, 'remote-settings.json'),
+      JSON.stringify({ enabled: true, relayUrl: 'ws://10.0.0.5:8787' }),
+    )
+    harness.start()
+    expect(harness.call('remote:begin-pairing', { label: 'Pixel' })).toEqual({
+      success: false,
+      error: REMOTE_RELAY_INSECURE,
+    })
+    expect(harness.child().posted.filter((m) => m.kind === 'beginPairing')).toEqual([])
   })
 
   it('rejects a relay URL that is not a string at all', () => {
@@ -546,5 +609,126 @@ describe('renderer pushes and terminal hooks', () => {
     stopRemoteBridgeHost()
     expect(() => noteTerminalOutput('t1')).not.toThrow()
     expect(() => noteTerminalClosed('t1')).not.toThrow()
+  })
+})
+
+describe('the keys over IPC', () => {
+  /** A keychain that opens only what it sealed itself: the one on another
+   *  computer or user account, or after a password reset. */
+  function anotherKeychain() {
+    const mark = 0x99
+    return {
+      isEncryptionAvailable: () => true,
+      encryptString: (s: string) => Buffer.from([mark, ...Buffer.from(s, 'utf8')]),
+      decryptString: (b: Buffer) => {
+        if (b[0] !== mark) throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.')
+        return b.subarray(1).toString('utf8')
+      },
+    }
+  }
+
+  /** Remote on, a phone paired, and the identity sealed by a keychain this run can't use. */
+  function lockedAndEnabled(): string {
+    const { secretKey } = identityOf(dir)
+    setSafeStorage(anotherKeychain() as never)
+    saveRemoteSettings(dir, { enabled: true })
+    saveRemoteDevices(dir, [pairedDevice()])
+    harness.start()
+    return secretKey
+  }
+
+  it('locked: nothing forks, the status has no key, and every channel that needs one says why', () => {
+    lockedAndEnabled()
+    expect(harness.forks).toHaveLength(0)
+    expect(harness.call('remote:status').data).toMatchObject({ keyStorage: 'locked', publicKey: null, running: false })
+    expect(harness.events).toEqual([{ kind: 'error', message: REMOTE_KEYS_LOCKED }])
+    // Not "switch it on": the switch is on, and the keys are why nothing runs.
+    const needsKeys: Array<[string, unknown]> = [
+      ['remote:begin-pairing', { label: 'Pixel' }],
+      ['remote:revoke-device', { deviceId: 'dev1' }],
+      ['remote:set-capabilities', { deviceId: 'dev1', capabilities: { ...NO_CAPABILITIES, read: true } }],
+      ['remote:verification-phrase', { deviceId: 'dev1' }],
+    ]
+    for (const [channel, input] of needsKeys) {
+      expect(harness.call(channel, input)).toEqual({ success: false, error: REMOTE_KEYS_LOCKED })
+    }
+  })
+
+  it('Start over is refused for keys that open: it would throw away every pairing that works', () => {
+    saveRemoteDevices(dir, [pairedDevice()])
+    harness.start()
+    expect(harness.call('remote:start-over')).toEqual({ success: false, error: REMOTE_KEYS_NOT_LOCKED })
+    expect((harness.call('remote:status').data as RemoteStatusView).devices).toHaveLength(1)
+  })
+
+  it('Start over, while locked, brings the bridge up under a new identity with no device', () => {
+    const old = lockedAndEnabled()
+    const res = harness.call('remote:start-over')
+    expect(res.success).toBe(true)
+    expect(res.data).toMatchObject({ keyStorage: 'keychain', devices: [] })
+    expect(harness.forks).toHaveLength(1)
+    const init = harness.child().posted[0] as Extract<HostToBridge, { kind: 'init' }>
+    expect(init.identitySecretKey).toMatch(/^[0-9a-f]{64}$/)
+    expect(init.identitySecretKey).not.toBe(old)
+    expect(init.devices).toEqual([])
+  })
+
+  it('Start over that cannot set the identity aside says so, with nothing changed', () => {
+    // There, and unreadable: locked, and it will not move either.
+    fs.mkdirSync(remoteIdentityPath(dir))
+    harness.start()
+    const res = harness.call('remote:start-over')
+    expect(res.success).toBe(false)
+    expect(res.error!.startsWith(REMOTE_START_OVER_FAILED)).toBe(true)
+    expect(fs.statSync(remoteIdentityPath(dir)).isDirectory()).toBe(true)
+  })
+
+  it('Encrypt keys now seals a key saved in the clear, and answers the status', () => {
+    fs.writeFileSync(remoteIdentityPath(dir), 'ab'.repeat(32)) // saved by a launch with no keyring
+    harness.start()
+    expect((harness.call('remote:status').data as RemoteStatusView).keysUnencrypted).toBe(true)
+    const res = harness.call('remote:encrypt-keys')
+    expect(res.success).toBe(true)
+    expect((res.data as RemoteStatusView).keysUnencrypted).toBe(false)
+    expect(fs.readFileSync(remoteIdentityPath(dir), 'utf8').startsWith('osk:v1:')).toBe(true)
+  })
+
+  it('Encrypt keys now with no keychain to seal with says so', () => {
+    setSafeStorage(null as never)
+    harness.start()
+    expect(harness.call('remote:encrypt-keys')).toEqual({ success: false, error: REMOTE_KEYS_NO_KEYCHAIN })
+  })
+
+  it('Encrypt keys now that fails says what failed', () => {
+    fs.writeFileSync(remoteIdentityPath(dir), 'ab'.repeat(32))
+    // A keychain whose seal does not open again: the sealed copy never replaces the key.
+    setSafeStorage({ ...fakeSafeStorage(), decryptString: () => 'something else' } as never)
+    harness.start()
+    const res = harness.call('remote:encrypt-keys')
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(new RegExp(`^${REMOTE_KEYS_NOT_ENCRYPTED} .*could not be read back`))
+    expect(fs.readFileSync(remoteIdentityPath(dir), 'utf8')).toBe('ab'.repeat(32))
+  })
+
+  it('Encrypt keys now puts whatever the keychain threw into words', () => {
+    fs.writeFileSync(remoteIdentityPath(dir), 'ab'.repeat(32))
+    setSafeStorage({
+      ...fakeSafeStorage(),
+      encryptString: () => {
+        throw 'keychain is busy'
+      },
+    } as never)
+    harness.start()
+    expect(harness.call('remote:encrypt-keys')).toEqual({ success: false, error: `${REMOTE_KEYS_NOT_ENCRYPTED} keychain is busy` })
+    // Sealed before anything touches the disk: the refusal left nothing behind.
+    expect(fs.readdirSync(dir)).toEqual(['remote-identity-key'])
+  })
+
+  it("asked before Remote starts, the key actions say it isn't running, and the port says what it can", () => {
+    expect(encryptRemoteKeys()).toBe(REMOTE_UNAVAILABLE)
+    expect(startOverRemoteKeys()).toBe(REMOTE_UNAVAILABLE)
+    expect(remoteLinkedPort().keys()).toEqual({ keyStorage: 'keychain', keysUnencrypted: false })
+    harness.start()
+    expect(remoteLinkedPort().keys()).toEqual({ keyStorage: 'keychain', keysUnencrypted: false })
   })
 })

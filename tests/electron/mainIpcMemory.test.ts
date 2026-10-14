@@ -164,6 +164,7 @@ const mem = vi.hoisted(() => ({
   exportMemorySnapshot: vi.fn(async () => ''),
   importMemorySnapshot: vi.fn(async () => ({ imported: 0 })),
   memoryKnownHashes: vi.fn(async () => [] as string[]),
+  edgeKeysIncident: vi.fn(async () => [] as string[]),
   weaveNeighboursBatch: vi.fn(async () => ({ w1: [{ id: 'w2', score: 0.9 }] }) as Record<string, any[]>),
 
   initSwarmMemory: vi.fn(),
@@ -208,6 +209,7 @@ const mem = vi.hoisted(() => ({
   disableSyncEncryption: vi.fn(async () => ({ ok: true })),
   enableLocalEncryption: vi.fn(async () => ({ ok: true })),
   disableEncryption: vi.fn(async () => ({ ok: true })),
+  startNewMemoryKey: vi.fn(async () => ({ ownLocked: false, lockReason: null })),
   persistMemoryIndex: vi.fn(async () => {}),
   entityDedupHash: vi.fn((n: string, key?: string) => `edh:${n}:${key ?? ''}`),
   projectKeyOf: vi.fn((p: string) => `pk:${p}`),
@@ -1832,12 +1834,62 @@ describe('memory indexer passes', () => {
     const out = await indexerOpts().run()
     expect(out).toEqual({ written: 4, more: false })
     expect(mem.reloadMemoryFromSync).toHaveBeenCalled()
-    expect(mneme.runConversationIngest).toHaveBeenCalledWith(expect.anything(), { maxChunks: 250, stopped: expect.any(Function) })
+    expect(mneme.runConversationIngest).toHaveBeenCalledWith(expect.anything(), { maxChunks: 250, stopped: expect.any(Function), onDelegated: expect.any(Function) })
     expect(mem.persistMemoryIndex).toHaveBeenCalled()
     expect(mneme.runConsolidation).toHaveBeenCalled()
     expect(mneme.runSummarization).toHaveBeenCalled()
     expect(mneme.runWeave).toHaveBeenCalled()
     expect(mneme.auditMemory).toHaveBeenCalledWith(expect.objectContaining({ event: 'learn', kind: 'consolidate' }))
+  })
+
+  // Once per install, after a pass that read every transcript: the sessions other computers' jobs
+  // left in memory through 1.52 are demoted whole (linkedHistoryRecheck.ts).
+  it('the full pass re-checks linked-job history once it has read every transcript, with the sessions it skipped', async () => {
+    const { delegationHeader } = await import('../../src/shared/headlessPrompt')
+    const { LINKED_RECHECK_MARKER, LINKED_SINCE } = await import('../../src/main/linkedHistoryRecheck')
+    const { correctionForMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+    const at = LINKED_SINCE + 1_000
+    // The job's opening chunk carries the header; the chunk after it is reached along `follows`,
+    // and one from a later pass only by the hash the ingest reported.
+    // Nothing for any other history, nor for the lesson recheck's page of mneme lessons.
+    mem.memoryList.mockImplementation(async (opts: { agentId?: string }) =>
+      opts.agentId === 'claude-history'
+        ? [
+            { id: 'job-0', ts: at + 2, agentId: 'claude-history', content: `user: ${delegationHeader('laptop', '/r')}\n\nGo.`, project: 'r' },
+            { id: 'job-1', ts: at + 1, agentId: 'claude-history', content: 'assistant: done', project: 'r' },
+            { id: 'job-2', ts: at, agentId: 'claude-history', content: 'assistant: more', hash: 'h-later', project: 'r' },
+            { id: 'own-0', ts: at, agentId: 'claude-history', content: 'user: my own work', project: 'r' },
+          ]
+        : [],
+    )
+    mem.edgeKeysIncident.mockResolvedValue(['job-0\u0000job-1\u0000follows'])
+    mneme.runConversationIngest.mockImplementationOnce(async (_deps: unknown, opts: { onDelegated: (h: string[]) => void }) => {
+      opts.onDelegated(['h-later'])
+      return { chunksWritten: 0, truncated: false }
+    })
+    await indexerOpts().run()
+    expect(mem.memoryList).toHaveBeenCalledWith({ agentId: 'claude-history', kind: 'message', since: LINKED_SINCE, limit: 500 })
+    expect(mem.edgeKeysIncident).toHaveBeenCalledWith(['job-0', 'job-1', 'job-2', 'own-0'])
+    for (const id of ['job-0', 'job-1', 'job-2']) expect(correctionForMemory(id)).toMatchObject({ kind: 'demote', by: 'termpolis' })
+    expect(correctionForMemory('own-0')).toBeNull()
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, LINKED_RECHECK_MARKER), JSON.stringify({ version: 1 }))
+    resetMemoryCorrections()
+    mem.memoryList.mockReset()
+    mem.memoryList.mockReturnValue([{ id: 'l1' }])
+  })
+
+  it('leaves the linked-history recheck for a later pass when this one was cut short, or the store is unreadable', async () => {
+    const { LINKED_RECHECK_MARKER } = await import('../../src/main/linkedHistoryRecheck')
+    const marked = () => fsMock.writeFileSync.mock.calls.filter(([f]) => String(f).endsWith(LINKED_RECHECK_MARKER))
+    mneme.runConversationIngest.mockResolvedValueOnce({ chunksWritten: 250, truncated: true })
+    await indexerOpts().run()
+    expect(mem.edgeKeysIncident).not.toHaveBeenCalled()
+    expect(marked()).toHaveLength(0)
+    // The store can't be listed: the pass is not marked, and the indexer carries on.
+    mem.memoryList.mockRejectedValueOnce(new Error('host down'))
+    await expect(indexerOpts().run()).resolves.toEqual({ written: 4, more: false })
+    expect(marked()).toHaveLength(0)
   })
 
   // v1.26 — THE PLANNER CONTRACT. runConsolidation and runWeave are SYNC and runSummarization hands
@@ -1957,6 +2009,66 @@ describe('memory indexer passes', () => {
     await indexerOpts().fastRun()
     mneme.runConversationIngest.mock.calls[1][0].link('c', 'd', 'follows', 0.3, 8)
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'c', to: 'd', relation: 'follows', weight: 0.3, ts: 8, createdBy: 'ingest' })
+  })
+})
+
+// ===========================================================================
+// Decision 2 — a LOCKED brain. The store refuses every write itself; main makes the BULK writers skip
+// the pass entirely, so nothing that records "done" (a reflection cursor, the lesson recheck marker)
+// advances over memories that were never saved, and no pass reads every transcript to fail every chunk.
+// ===========================================================================
+describe('a LOCKED brain — the bulk writers stand down', () => {
+  const lockedOnce = (n = 1): void => {
+    for (let i = 0; i < n; i++) mem.getSyncStatus.mockResolvedValueOnce({ ownLocked: true, lockReason: 'key-unreadable' } as never)
+  }
+
+  it('the full indexer pass does nothing at all — no ingest, recheck, consolidation, weave or persist', async () => {
+    lockedOnce()
+    await expect(indexer.run()).resolves.toEqual({ written: 0 })
+    expect(mem.reloadMemoryFromSync).not.toHaveBeenCalled()
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+    expect(mem.persistMemoryIndex).not.toHaveBeenCalled()
+    expect(mneme.runConsolidation).not.toHaveBeenCalled()
+    expect(mneme.runWeave).not.toHaveBeenCalled()
+  })
+
+  it('the fast pass does nothing either', async () => {
+    lockedOnce()
+    await expect(indexer.fastRun()).resolves.toEqual({ written: 0 })
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+  })
+
+  it('reflect-session fires nothing and leaves the cursor where it was', async () => {
+    lockedOnce()
+    const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    expect(r).toEqual({ success: true, data: { fired: false, lessons: 0 } })
+    expect(mneme.reflectSoloSession).not.toHaveBeenCalled()
+  })
+
+  it('a user-triggered ingest says the brain is locked instead of failing every chunk', async () => {
+    lockedOnce(2)
+    expect(await invoke('memory:ingest-conversations')).toEqual({ success: false, error: expect.stringMatching(/^Memory is locked/) })
+    expect(await invoke('memory:ingest-code', { repoRoot: '/r' })).toEqual({ success: false, error: expect.stringMatching(/^Memory is locked/) })
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+    expect(mneme.runCodeIngest).not.toHaveBeenCalled()
+  })
+
+  it('a store that cannot even answer is not treated as locked — its own writes fail loudly enough', async () => {
+    mem.getSyncStatus.mockRejectedValueOnce(new Error('memory host exited') as never)
+    await expect(indexer.fastRun()).resolves.toEqual({ written: 4, more: false })
+    expect(mneme.runConversationIngest).toHaveBeenCalled()
+  })
+})
+
+describe('memory:start-new-key — the only way past LOCKED (Decision 1)', () => {
+  it('returns the new status', async () => {
+    expect(await invoke('memory:start-new-key')).toEqual({ success: true, data: { ownLocked: false, lockReason: null } })
+    expect(mem.startNewMemoryKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces a refusal as {success:false,error}', async () => {
+    mem.startNewMemoryKey.mockRejectedValueOnce(new Error("Memory isn't locked — there is no need to start a new key.") as never)
+    expect(await invoke('memory:start-new-key')).toEqual({ success: false, error: "Memory isn't locked — there is no need to start a new key." })
   })
 })
 

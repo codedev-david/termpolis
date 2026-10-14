@@ -1,4 +1,5 @@
 import type { BridgeLink } from './protocol'
+import { isSecureRelayUrl } from './relayUrl'
 
 /** What every link code starts with.
  *
@@ -34,30 +35,8 @@ const KEY_RE = /^[0-9a-f]{64}$/
 const DEVICE_ID_RE = /^[0-9a-f]{16}$/
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/
 
-/** The only hosts a link may reach without TLS. */
-const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost']
-
 function isHex(value: unknown, re: RegExp): value is string {
   return typeof value === 'string' && re.test(value)
-}
-
-/** `wss:`, or `ws:` on this machine only.
- *
- *  The phone accepts `wss:` and nothing else (`mobile/src/wire/qr.ts`), and so
- *  does this outside one exception: a relay on loopback, which is what the tests
- *  and a relay run locally with wrangler use. Nothing on loopback crosses a
- *  network, so there is no middlebox to read room ids off the wire -- which is
- *  the whole reason `ws:` is refused everywhere else. */
-export function isLinkRelayUrl(value: unknown): value is string {
-  if (typeof value !== 'string') return false
-  let url: URL
-  try {
-    url = new URL(value)
-  } catch {
-    return false
-  }
-  if (url.protocol === 'wss:') return true
-  return url.protocol === 'ws:' && LOOPBACK_HOSTS.includes(url.hostname)
 }
 
 /** The QR payload, as text a person can carry: prefix + base64url(utf8).
@@ -72,7 +51,8 @@ export function encodeLinkCode(qrPayloadJson: string): string {
  *
  *  `null` rather than a throw because the input is whatever the user pasted.
  *  Validated exactly as the phone validates a scanned QR (`mobile/src/wire/qr.ts`)
- *  -- the two describe the same offer -- with the loopback exception above.
+ *  -- the two describe the same offer -- except that the relay may also be
+ *  plain `ws:` on loopback (`isSecureRelayUrl`).
  *
  *  Whitespace anywhere is ignored: a code that crossed a chat window can come
  *  back wrapped, and base64url has no whitespace of its own to lose. */
@@ -98,7 +78,7 @@ export function parseLinkCode(text: string): LinkOffer | null {
     unknown
   >
   if (v !== 1) return null
-  if (!isLinkRelayUrl(relayUrl)) return null
+  if (!isSecureRelayUrl(relayUrl)) return null
   if (!isHex(pairingId, PAIRING_ID_RE)) return null
   if (!isHex(desktopPublicKey, KEY_RE)) return null
   if (!isHex(oneTimeSecret, KEY_RE)) return null
@@ -118,7 +98,7 @@ export function isBridgeLink(value: unknown): value is BridgeLink {
   return (
     isHex(l.id, DEVICE_ID_RE) &&
     isHex(l.hostPublicKey, KEY_RE) &&
-    isLinkRelayUrl(l.relayUrl) &&
+    isSecureRelayUrl(l.relayUrl) &&
     isHex(l.sessionRoomId, PAIRING_ID_RE) &&
     isHex(l.secretKey, KEY_RE)
   )

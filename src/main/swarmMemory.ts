@@ -23,7 +23,7 @@ import { sampleGraph, graphNodeLabel, type GraphSample } from './memoryGraphSamp
 import { weeklyGrowth, activityOp, type TimeBucket } from './memoryTimeline'
 import { type ConsolEntry } from './mnemeConsolidate'
 import { HnswIndex, type SerializedHnsw } from './hnswIndex'
-import { readSecret, writeSecret, isOsEncryptionAvailable } from './secureKeyStore'
+import { inspectSecret, createSecretExclusive, retireSecretFile, listRetiredSecrets, keyStorageMode } from './secureKeyStore'
 import { projectKeyOf } from './projectKey'
 import type { CodeRef } from './codeGraph'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
@@ -164,6 +164,9 @@ let scrubFn: MemoryScrubber | null = null   // WP-G: injected secret scrubber (n
 let scrubbedWrites = 0                      // WP-G: writes whose content was redacted before storage
 let secretsRedacted = 0                     // WP-G: total secrets redacted out of those writes
 let encKey: Buffer | null = null      // AES key for at-rest shard encryption (null = plaintext)
+let readRing: Buffer[] = []           // retired keys that still unwrap: tried after encKey, never written under
+let keyProblem: KeyFileProblem | null = null // the key FILE is there but can't be used (see KeyFileProblem)
+let ownLock: LockReason | null = null // LOCKED: nothing may be appended to, or rewritten in, the own log
 let lockedShards = false              // encrypted shards present that we couldn't read (need passphrase)
 let initDegraded = false              // F5: init failed and fell back to a local writable store (writes still persist)
 let corruptLinesSkipped = 0           // F28: unparseable shard lines dropped on the last reload (surfaced, not silent)
@@ -235,6 +238,96 @@ export const SALT_FILE = '.termpolis-salt'      // lives in the SYNC folder — 
 export const KEY_CACHE_FILE = 'memory-sync.key' // lives in userData — LOCAL to this device, never synced
 export const ENCRYPTION_OPTOUT_FILE = 'memory-encryption.optout' // WP-F: presence = user turned default-on encryption OFF
 const DELETES_FILE = 'memory-deletes.json' // userData — device-local DURABLE floor of clearEpoch + tombstones
+
+/** Why the key FILE can't be used right now. MAIN finds out (it holds the only keychain) and tells the
+ *  store, which comes up LOCKED with this as the reason. None of them means the key is gone, which is
+ *  exactly why the file is never touched: the keychain comes back, the old profile is restored, and
+ *  the same file opens again. */
+export type KeyFileProblem = 'keychain-unavailable' | 'key-unreadable' | 'key-invalid'
+/** Why the store is LOCKED: the key file can't be used, or the key it holds opens none of the newest
+ *  encrypted lines of this device's own log (a different key wrote them). */
+export type LockReason = KeyFileProblem | 'key-mismatch'
+
+/** How many of the newest encrypted own-log lines the mismatch check samples. One that opens is enough:
+ *  a key that wrote recently is the key in force. */
+const MISMATCH_PROBE_LINES = 32
+
+// The key material MAIN injected, kept for the rest of the session. setVectorQuantization and
+// setSyncDir re-run initSwarmMemory, and the memory host has no keychain to fall back on: a re-init
+// that dropped the injected key read the whole encrypted brain as EMPTY, and the indexer then
+// re-appended the entire history to it in plaintext. So a re-init without an explicit key reuses this,
+// and every in-session key change (adopt, a new key, disable) updates it. Null for a store nobody
+// injected keys into (the in-process path), which reads its key file afresh on every init instead.
+let sessionKeys: { dir: string; encKey: Buffer | null; readKeys: Buffer[]; keyProblem: KeyFileProblem | null } | null = null
+
+/** The device key in `keyPath`, or why it can't be used. `absent` is the only state in which a key may
+ *  be minted; in every other one the file stays exactly as it is (Decision 1). */
+export function inspectMemoryKey(keyPath: string): { key: Buffer | null; absent: boolean; problem: KeyFileProblem | null } {
+  const found = inspectSecret(keyPath)
+  if (found.state === 'absent') return { key: null, absent: true, problem: null }
+  if (found.state === 'locked') return { key: null, absent: false, problem: found.reason === 'no-keychain' ? 'keychain-unavailable' : 'key-unreadable' }
+  const key = Buffer.from(found.value as string, 'base64')
+  return key.length === 32 ? { key, absent: false, problem: null } : { key: null, absent: false, problem: 'key-invalid' }
+}
+
+/** Retired device keys that still unwrap, newest first: the read ring. Memories written under an older
+ *  key stay readable for as long as that key does. */
+export function retiredMemoryKeys(keyPath: string): Buffer[] {
+  const out: Buffer[] = []
+  for (const f of listRetiredSecrets(keyPath)) {
+    const { key } = inspectMemoryKey(f)
+    if (key && !out.some((k) => k.equals(key))) out.push(key)
+  }
+  return out
+}
+
+/** Keep a key we are stepping away from in the read ring, so nothing still under it goes dark. */
+function keepInRing(k: Buffer | null): void {
+  if (k && !readRing.some((x) => x.equals(k))) readRing.unshift(k)
+}
+
+/** Record the key material in force now, so the next internal re-init keeps it (see sessionKeys). */
+function rememberKeys(): void {
+  if (sessionKeys) sessionKeys = { ...sessionKeys, encKey, readKeys: [...readRing], keyProblem }
+}
+
+/** Put this session's key material in force: what main injected, else the key file on disk. */
+function applyKeyMaterial(): void {
+  if (sessionKeys) {
+    encKey = sessionKeys.encKey
+    readRing = [...sessionKeys.readKeys]
+    keyProblem = sessionKeys.keyProblem
+  } else {
+    const p = path.join(userDataDir as string, KEY_CACHE_FILE)
+    const found = inspectMemoryKey(p)
+    encKey = found.key
+    keyProblem = found.problem
+    readRing = retiredMemoryKeys(p)
+  }
+  ownLock = keyProblem
+}
+
+/** Open one encrypted line with whichever key we hold: the key in force first, then the retired ones. */
+function decryptWithRing(line: string): string | null {
+  if (encKey) { const d = decryptLine(encKey, line); if (d !== null) return d }
+  for (const k of readRing) { const d = decryptLine(k, line); if (d !== null) return d }
+  return null
+}
+
+// What each lock reason means, in the words an agent whose write was refused needs. The Memory panel
+// carries its own, longer copy.
+const LOCK_MESSAGES: Record<LockReason, string> = {
+  'keychain-unavailable': "the OS keychain that protects this computer's memory key isn't available",
+  'key-unreadable': "this computer couldn't unwrap its memory key",
+  'key-invalid': 'the memory key file is damaged',
+  'key-mismatch': "the memory key doesn't match the memories on disk",
+}
+
+/** Decision 2: while LOCKED every call that would append to, or rewrite, the own log refuses — with an
+ *  error that says why, never a plaintext line beside the ciphertext or a line under the wrong key. */
+function assertWritable(): void {
+  if (ownLock) throw new Error(`Memory is locked (${ownLock}): ${LOCK_MESSAGES[ownLock]}. Nothing new is being saved; open the Memory panel to see why.`)
+}
 // F1: reject a clear epoch further than this into the future — a mis-clocked (dead-CMOS/
 // drifted-VM) or corrupt peer must never be able to poison the global epoch and wipe the brain.
 const MAX_CLOCK_SKEW_MS = 2 * 86_400_000
@@ -434,7 +527,7 @@ function classifyShardLine(line: string): ShardLineClass {
   if (!s) return { t: 'skip' }
   let plain: string = s
   if (isEncryptedLine(s)) {
-    const dec = encKey ? decryptLine(encKey, s) : null
+    const dec = decryptWithRing(s)
     if (dec === null) return { t: 'locked' } // no key / wrong key → can't read this entry
     plain = dec
   }
@@ -468,6 +561,22 @@ function classifyShardLine(line: string): ShardLineClass {
   }
   if (obj.id && typeof obj.content === 'string') return { t: 'add', entry: obj as unknown as MemoryEntry }
   return { t: 'skip' }
+}
+
+/** Does the own log hold encrypted lines of which none of the newest MISMATCH_PROBE_LINES opened?
+ *  Files are walked oldest first — the rotated generations in order, then the active shard, which
+ *  ownShardSet lists first — so "newest" means the end of the log as it was appended. */
+function ownLogKeyMismatch(ownFiles: string[], seen: Map<string, { enc: number; lastOk: number }>): boolean {
+  let total = 0
+  let newestOk = -1
+  for (const f of ownFiles.slice(1).concat(ownFiles.slice(0, 1))) {
+    const s = seen.get(path.resolve(f))
+    if (!s) continue // unreadable: F31 already reports it, and it says nothing about the key
+    if (s.lastOk >= 0) newestOk = total + s.lastOk
+    total += s.enc
+  }
+  // The window is the last MISMATCH_PROBE_LINES encrypted lines — or all of them, in a shorter log.
+  return total > 0 && newestOk < Math.max(0, total - MISMATCH_PROBE_LINES)
 }
 
 // Rebuild the hot window from a set of shard files: union of adds, minus
@@ -510,15 +619,26 @@ function reloadFromImpl(paths: string[]): void {
   // path.resolve. It now covers the rotated generations too (see ownShardSet) — they are this
   // device's own writes, so its entries must get the same causal exemption from a peer's clear
   // epoch that the active shard's do, and compaction must be able to see them.
-  const ownSet = new Set(ownShardSet().map((f) => path.resolve(f)))
+  const ownFiles = ownShardSet()
+  const ownSet = new Set(ownFiles.map((f) => path.resolve(f)))
+  // Decision 2: for each own file, how many encrypted lines it holds and the index of the last one that
+  // opened — enough to tell whether ANY of the newest encrypted lines of the whole log opened.
+  const encSeen = new Map<string, { enc: number; lastOk: number }>()
   for (const p of paths) {
     const isOwn = ownSet.has(path.resolve(p))
     const shardAdds: string[] = [] // own-shard add ids seen so far — marked vulnerable when a clear line follows
+    const seen = { enc: 0, lastOk: -1 }
     // Classify ONE LINE AT A TIME straight from the shard's bytes; never decode the whole file into a
     // single string, which fatals V8 uncatchably past ~512 MiB (see forEachShardLine / the v1.27.4 fix).
     const onLine = (line: string): void => {
-      if (isOwn && line.trim()) ownLineCount++
       const c = classifyShardLine(line)
+      if (isOwn) {
+        const s = line.trim()
+        if (s) {
+          ownLineCount++
+          if (isEncryptedLine(s)) { if (c.t !== 'locked') seen.lastOk = seen.enc; seen.enc++ }
+        }
+      }
       switch (c.t) {
         case 'add':
           adds.push(c.entry)
@@ -572,7 +692,15 @@ function reloadFromImpl(paths: string[]): void {
       recordSwarmError('swarmMemory.shard.unreadable', err, { shard: p })
       continue
     }
+    if (isOwn) encSeen.set(path.resolve(p), seen)
   }
+  // Decision 2 — LOCKED. A key file we can't use locks the store outright. Otherwise the store is
+  // locked when its own log holds encrypted lines and none of the newest MISMATCH_PROBE_LINES open:
+  // a different key wrote them, so anything written now would sit beside them under the wrong key (or
+  // in plaintext), and the indexer would re-append every memory it can no longer see. A store the user
+  // deliberately turned plaintext (opted out, no key) has no key to mismatch: lines left encrypted
+  // there were unreadable before it was turned off, and they don't make the plaintext log a liar.
+  ownLock = keyProblem ?? (ownLogKeyMismatch(ownFiles, encSeen) && !(encKey === null && encryptionOptedOut()) ? 'key-mismatch' : null)
   // Publish what we learned about our own shard, so compaction can be gated from memory
   // instead of by re-reading and re-decrypting the entire thing.
   ownShardLines = ownLineCount
@@ -659,10 +787,10 @@ function reloadFromImpl(paths: string[]): void {
 
 // v1.26: an at-rest key handed in by the CALLER, already unwrapped. The memory store now runs in
 // an Electron `utilityProcess`, and that child has no `safeStorage` (DPAPI / Keychain / libsecret
-// are main-process-only) — so it cannot run loadCachedKey() itself. Main unwraps the key and
-// injects it here. It MUST be a 32-byte AES-256 key: a short/garbage buffer is a caller bug, and
-// silently falling back to loadCachedKey() (which returns null in the child) would present a fully
-// populated encrypted store as EMPTY — the single worst failure mode this module has. Fail loud.
+// are main-process-only) — so it cannot read its own key file. Main unwraps the key and injects it
+// here. It MUST be a 32-byte AES-256 key: a short/garbage buffer is a caller bug, and silently
+// falling back to the key file (which the child cannot open) would present a fully populated
+// encrypted store as EMPTY — the single worst failure mode this module has. Fail loud.
 function normalizeInjectedKey(k: Buffer | null | undefined): Buffer | null {
   if (k === undefined || k === null) return null
   if (!Buffer.isBuffer(k) || k.length !== 32) {
@@ -671,18 +799,31 @@ function normalizeInjectedKey(k: Buffer | null | undefined): Buffer | null {
   return k
 }
 
+/** Retired keys main handed over: 32-byte Buffers only, each once. */
+function normalizeRing(keys: Buffer[] | undefined): Buffer[] {
+  const out: Buffer[] = []
+  for (const k of keys ?? []) if (Buffer.isBuffer(k) && k.length === 32 && !out.some((x) => x.equals(k))) out.push(k)
+  return out
+}
+
 export function initSwarmMemory(
   userDataPath: string,
-  opts: { syncDir?: string | null; encKey?: Buffer | null } = {},
+  opts: { syncDir?: string | null; encKey?: Buffer | null; readKeys?: Buffer[]; keyProblem?: KeyFileProblem | null } = {},
 ): void {
   if (!userDataPath || typeof userDataPath !== 'string' || !path.isAbsolute(userDataPath)) {
     throw new Error('initSwarmMemory: absolute userDataPath required')
   }
   // Validated up-front, BEFORE any state is touched, so a bad key can't leave a half-initialised
-  // store behind. An injected key is AUTHORITATIVE — it wins over loadCachedKey() everywhere below.
-  // Absent (every existing caller, every existing test) the key resolution is byte-for-byte as before.
+  // store behind. Injected key material — even an injected null — is AUTHORITATIVE: main read the key
+  // file with the only keychain there is, and this process must not second-guess it. A re-init that
+  // passes no key (setVectorQuantization, setSyncDir) reuses what was injected for this data dir.
   const injectedKey = normalizeInjectedKey(opts.encKey)
   const resolved = path.resolve(userDataPath)
+  if (opts.encKey !== undefined) {
+    sessionKeys = { dir: resolved, encKey: injectedKey, readKeys: normalizeRing(opts.readKeys), keyProblem: opts.keyProblem ?? null }
+  } else if (sessionKeys && sessionKeys.dir !== resolved) {
+    sessionKeys = null
+  }
   userDataDir = resolved
   legacyPath = path.join(resolved, 'swarm-memory.jsonl')
   initMemoryGraph(resolved)
@@ -708,7 +849,6 @@ export function initSwarmMemory(
   unreadableShards = []
   activeShardBytes = -1
   initDegraded = false
-  encKey = null
   seq = 0
   embeddingsAvailable = null
   // Tier-1: honor the quantization gate and (re)build the packed store in the chosen mode BEFORE any
@@ -725,11 +865,16 @@ export function initSwarmMemory(
       : quantizeVectors || process.env.TERMPOLIS_MEM_QUANTIZE === '1'
   vectorStore = newVectorStore()
   rowToEntry.clear()
+  // Load the device key (and any retired ones) BEFORE reading, so ciphertext decrypts — otherwise
+  // every encrypted line is skipped and a full store looks empty. It is the same key in every branch
+  // below, the degraded fallback included.
+  applyKeyMaterial()
 
   try {
     if (syncDir) {
       fs.mkdirSync(syncDir, { recursive: true })
       memPath = path.join(syncDir, `${deviceId}.jsonl`)
+      restoreInterruptedSwaps(memPath) // before the existence check below can recreate it empty
       // One-time migration: seed this device's shard from the legacy local store
       // so existing memories join the synced set.
       if (!fs.existsSync(memPath)) {
@@ -740,16 +885,10 @@ export function initSwarmMemory(
         }
       }
       ensureTrailingNewline(memPath) // F27: heal a torn tail before any new append
-      // Load this device's locally-cached encryption key (if the user enabled
-      // encryption previously) so reloadFrom can decrypt — auto-unlocks on launch.
-      // v1.26: an injected key (from the memory utilityProcess's parent) wins.
-      encKey = injectedKey ?? loadCachedKey()
       reloadFrom(shardFiles())
     } else {
       memPath = legacyPath
-      // WP-F: load a device key created on a prior launch BEFORE reading, so local ciphertext
-      // decrypts (otherwise encrypted lines would be skipped and the store would look empty).
-      encKey = injectedKey ?? loadCachedKey()
+      restoreInterruptedSwaps(memPath) // before the existence check below can recreate it empty
       if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom(shardFiles()) }
       else fs.writeFileSync(memPath, '')
     }
@@ -763,7 +902,6 @@ export function initSwarmMemory(
     recordAnomaly('degraded-init', 'memory init failed — degraded to the local fallback store')
     try {
       memPath = legacyPath
-      if (!encKey) encKey = injectedKey ?? loadCachedKey() // WP-F: decrypt local ciphertext on the fallback path too
       if (memPath) {
         if (fs.existsSync(memPath)) { ensureTrailingNewline(memPath); reloadFrom(shardFiles()) }
         else fs.writeFileSync(memPath, '')
@@ -793,6 +931,10 @@ export function _resetForTests(): void {
   tombstonedHashes.clear()
   clearEpoch = 0
   encKey = null
+  readRing = []
+  keyProblem = null
+  ownLock = null
+  sessionKeys = null
   lockedShards = false
   unreadableShards = []
   activeShardBytes = -1
@@ -943,6 +1085,7 @@ export function isForgettable(
  *  Never overwrites an existing tag. Returns how many entries were patched. */
 export function memoryPatchProjects(patches: Array<{ hash: string; project: string }>): number {
   if (!Array.isArray(patches) || patches.length === 0) return 0
+  assertWritable()
   const byHash = new Map<string, MemoryEntry>()
   for (const e of entries) { if (e.hash && !e.project) byHash.set(e.hash, e) }
   let patched = 0
@@ -1016,23 +1159,39 @@ export function vectorRamStats(): VectorRamStats {
  * Turn int8 quantization on or off and REBUILD the packed store in the new mode.
  *
  * Safe and lossless in both directions, which is the whole reason this can be a runtime toggle
- * instead of a migration: the JSONL on disk always holds EXACT floats, so a rebuild simply re-packs
- * from the source of truth. Turning it off restores full precision; nothing was ever destroyed.
+ * instead of a migration: the JSONL on disk always holds EXACT floats. Turning it off restores full
+ * precision; nothing was ever destroyed.
  *
- * The rebuild is just `initSwarmMemory` — the same path taken at every launch — so it is well
- * trodden rather than a bespoke mutation of live state.
+ * On: the exact floats are in RAM right now, so the store is re-packed in place (repackVectors) — no
+ * disk read at all. Off: an int8 row can't give the exact float back, so those are re-read from disk
+ * through initSwarmMemory, the path taken at every launch. That re-init used to run WITHOUT the key
+ * main injected: in the memory host it read an encrypted brain as empty, and the indexer then
+ * re-appended the whole history to it in plaintext. It now keeps the session's key material
+ * (sessionKeys), and only runs when the mode actually changes.
  *
- * Note the persisted HNSW graph survives this untouched: it stores only ADJACENCY (row -> neighbour
- * rows) plus a vector accessor, and it is validated against an *entries* fingerprint that does not
- * change here. So the graph reloads and simply reads from the new store. A graph whose links were
- * chosen with exact float distances is, if anything, better than one built from int8 — which is why
- * enabling this LATER costs nothing and is mildly preferable to having shipped it on.
+ * The HNSW graph survives either way: it stores only ADJACENCY (row -> neighbour rows) plus a vector
+ * accessor, the re-pack keeps every row number, and a reload validates the persisted graph against
+ * an *entries* fingerprint that does not change here. A graph whose links were chosen with exact
+ * float distances is, if anything, better than one built from int8 — which is why enabling this
+ * LATER costs nothing and is mildly preferable to having shipped it on.
  */
 export function setVectorQuantization(on: boolean): VectorRamStats {
   quantizeExplicit = on === true
   quantizeVectors = quantizeExplicit
-  if (userDataDir) initSwarmMemory(userDataDir, { syncDir })
+  // Before the store exists this is a pure flag write: initSwarmMemory allocates in the chosen mode.
+  if (!userDataDir || vectorStore.quantized === quantizeVectors) return vectorRamStats()
+  if (quantizeVectors) repackVectors()
+  else initSwarmMemory(userDataDir, { syncDir })
   return vectorRamStats()
+}
+
+/** Re-pack the vector store in the current mode, row for row, so every row number — and with them the
+ *  row↔entry maps and the HNSW graph, in memory and on disk — stays valid. A stored row re-adds
+ *  cleanly: it was already a normalised, non-zero vector of the right dimension. */
+function repackVectors(): void {
+  const next = newVectorStore()
+  for (let r = 0; r < vectorStore.size; r++) next.add(vectorStore.get(r) as Float32Array)
+  vectorStore = next
 }
 
 export interface MemoryDashboardStats {
@@ -1045,6 +1204,9 @@ export interface MemoryDashboardStats {
   /** F31: shard files the last reload could not read at all. NON-ZERO means every number above is a
    *  floor, not the truth — the UI must say "couldn't load your brain", never "your brain is empty". */
   unreadableShards: number
+  /** Decision 2: LOCKED. The same rule as unreadableShards: the numbers cover only what this key could
+   *  open, so the UI must never call a locked brain empty. */
+  locked: boolean
 }
 
 /** One row of the dashboard's live activity ticker. */
@@ -1079,6 +1241,7 @@ export function memoryDashboardStats(): MemoryDashboardStats {
     lessons,
     timeline,
     unreadableShards: unreadableShards.length,
+    locked: ownLock !== null,
   }
 }
 
@@ -1236,6 +1399,7 @@ export function symbolHistory(query: string, projectKey?: string): MemoryEntry[]
  *  bakes it into the add via the mutated entry. No-op if the entry is gone or already anchored. */
 export function backfillCodeRefs(id: string, refs: CodeRef[]): void {
   if (!id || !Array.isArray(refs) || refs.length === 0) return
+  assertWritable()
   const e = entries.find((x) => x.id === id)
   if (!e || (e.codeRefs && e.codeRefs.length > 0)) return
   e.codeRefs = refs
@@ -1295,6 +1459,7 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (!input || typeof input.content !== 'string' || !input.content.trim()) {
     throw new Error('memoryWrite: content required')
   }
+  assertWritable()
   const kind = input.kind || 'note'
   const projectSlug = input.project ? normalizeProjectSlug(input.project) : ''
   const projectKey = input.project ? projectKeyOf(input.project) : undefined // F19
@@ -1435,7 +1600,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
 // failed write succeeded (F6). F26: `fsync` forces the OS to flush before returning,
 // so a power loss right after can't roll back an acknowledged high-value write.
 function appendShardLine(raw: string, ctx: string, opts: { fsync?: boolean } = {}): boolean {
-  if (!memPath) return false
+  // LOCKED (Decision 2): every public writer refuses before it gets here; this is the backstop, so no
+  // path can ever put a plaintext line, or one under the wrong key, into a log we can't read.
+  if (!memPath || ownLock) return false
   const line = (encKey ? encryptLine(encKey, raw) : raw) + '\n'
   const bytes = Buffer.byteLength(line)
   rotateShardIfNeeded(bytes) // F31: roll over BEFORE the write, so this line's id belongs to the new shard
@@ -1808,7 +1975,9 @@ function loadPersistedHnsw(): HnswIndex | null {
 // statement, is exactly the shape of a freeze that shows up "randomly" every couple of minutes.
 function savePersistedHnsw(): void {
   const p = hnswFile()
-  if (!p || !hnsw) return
+  // LOCKED: the graph over a hot window missing everything we can't decrypt must not replace the
+  // persisted one built over the whole brain.
+  if (!p || !hnsw || ownLock) return
   try {
     fs.writeFileSync(p, JSON.stringify({ fp: entriesFingerprint(), graph: hnsw!.toJSON() }))
   } catch { /* best effort */ }
@@ -2505,6 +2674,9 @@ export function memoryLessons(limit = 200): MemoryEntry[] {
 }
 
 export function memoryClear(): void {
+  // LOCKED: a local clear truncates the log, and most of what a locked log holds is memories this
+  // session can't even see. Clearing them is the one thing never to do on their behalf.
+  assertWritable()
   const liveIds = entries.map(e => e.id) // F23: capture the concrete live set BEFORE wiping
   const liveHashes = entries.map(e => e.hash).filter((h): h is string => typeof h === 'string')
   entries.length = 0
@@ -2604,6 +2776,7 @@ export function consolidationSimOf(): (a: ConsolEntry, b: ConsolEntry) => number
 
 export function memoryDelete(id: string): void {
   if (!id) return
+  assertWritable()
   let removedHash: string | undefined
   const idx = entries.findIndex((e) => e.id === id)
   if (idx !== -1) {
@@ -2664,12 +2837,16 @@ export function _archiveReadCountForTests(): number { return archiveReadCount }
  *  tombstoned, so the same information may legitimately return later. */
 export function memoryArchive(id: string): void {
   if (!id) return
+  assertWritable()
   const idx = entries.findIndex((e) => e.id === id)
   if (idx === -1) return
   const [removed] = entries.splice(idx, 1)
   if (!removed) return
-  const ap = archivePath()
-  if (ap) { try { fs.appendFileSync(ap, JSON.stringify(removed) + '\n') } catch { /* best effort — worst case it stays in the shard */ } }
+  // The archive is the same memories, colder: kept under the same key as the log it came from, and
+  // part of every encryption rewrite (rewriteEncryptionSet). An entry in the hot window means the
+  // store is initialised, so the archive has a path.
+  const raw = JSON.stringify(removed)
+  try { fs.appendFileSync(archivePath() as string, (encKey ? encryptLine(encKey, raw) : raw) + '\n') } catch { /* best effort — worst case it stays in the shard */ }
   if (removed.hash) seenHashes.delete(removed.hash)
   const r = entryRow.get(removed)
   if (r !== undefined) rowToEntry.delete(r)
@@ -2699,8 +2876,11 @@ export function searchArchive(query: string, limit = 20): MemoryEntry[] {
       // Stream the archive JSONL from bytes — it can grow as large as the live shard, and reading a
       // >512 MiB file as one 'utf8' string fatals V8 uncatchably (see forEachShardLine).
       forEachShardLine(ap, (line) => {
-        if (!line.trim()) return
-        try { parsed.push(JSON.parse(line) as MemoryEntry) } catch { /* skip corrupt line */ }
+        const s = line.trim()
+        if (!s) return
+        const plain = isEncryptedLine(s) ? decryptWithRing(s) : s
+        if (plain === null) return // under a key this session doesn't hold: skipped, like a locked shard line
+        try { parsed.push(JSON.parse(plain) as MemoryEntry) } catch { /* skip corrupt line */ }
       })
     } catch { return [] }
     archiveCache = parsed
@@ -2724,6 +2904,7 @@ export function searchArchive(query: string, limit = 20): MemoryEntry[] {
  *  so unchanged regions can be re-written on the same pass. Returns how many were pruned. */
 export function memoryPruneCodePath(filePath: string): number {
   if (!filePath || typeof filePath !== 'string') return 0
+  assertWritable()
   const prefix = `${filePath}:`
   const victims = entries.filter(e => e.source === 'code' && typeof e.content === 'string' && e.content.startsWith(prefix))
   for (const v of victims) {
@@ -2812,6 +2993,7 @@ export function memoryForget(opts: { now?: number; max?: number } = {}): number 
 export function memoryFeedback(input: { id: string; helpful?: boolean; query?: string }): { id: string; used: number } {
   const id = input?.id
   if (!id || typeof id !== 'string') return { id: '', used: 0 }
+  assertWritable()
   const delta = input.helpful === false ? -1 : 1 // WP-C: negative feedback is a real signal now
   const used = (usageMap.get(id) ?? 0) + delta
   usageMap.set(id, used)
@@ -2836,6 +3018,10 @@ export interface SyncStatus {
   count: number
   encrypted: boolean // this device holds the key and writes ciphertext at rest
   locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
+  /** Decision 2 — LOCKED: nothing new is being saved, because the memory key can't be used or doesn't
+   *  match the memories on disk. Stronger than `locked`, which only says some lines didn't open. */
+  ownLocked: boolean
+  lockReason: LockReason | null
   degraded: boolean  // F5: init failed and fell back to a local writable store (sync unavailable)
   corruptLinesSkipped: number // F28: unparseable shard lines dropped on the last reload
   unreadableShards: number    // F31: shard files the last reload couldn't open/read at all
@@ -2887,6 +3073,8 @@ export function getSyncStatus(): SyncStatus {
     count: entries.length,
     encrypted: encKey !== null,
     locked: lockedShards,
+    ownLocked: ownLock !== null,
+    lockReason: ownLock,
     degraded: initDegraded,
     corruptLinesSkipped,
     unreadableShards: unreadableShards.length,
@@ -2896,11 +3084,12 @@ export function getSyncStatus(): SyncStatus {
 
 // ---- At-rest encryption ----
 //
-// When on, every shard line is AES-256-GCM encrypted under a key derived (scrypt)
-// from the user's passphrase + a per-store salt (the salt lives in the sync
-// folder; the derived key is cached LOCALLY, never synced). The sync provider
-// sees only ciphertext; Termpolis, holding the key, reads it. Plaintext and
-// ciphertext lines coexist, so enabling/disabling never corrupts a store.
+// When on, every shard line is AES-256-GCM encrypted: a local store under a random per-device key
+// that the OS keychain wraps (memory-sync.key), a v1 synced store under a key derived (scrypt) from
+// the user's passphrase + a per-store salt (the salt lives in the sync folder; the derived key is
+// held for the session only, never synced and never written to the device key's file). The sync
+// provider sees only ciphertext; Termpolis, holding the key, reads it. Plaintext and ciphertext
+// lines coexist, so enabling/disabling never corrupts a store.
 
 function keyCachePath(): string | null { return userDataDir ? path.join(userDataDir, KEY_CACHE_FILE) : null }
 function saltPath(): string | null { return syncDir ? path.join(syncDir, SALT_FILE) : null }
@@ -2913,46 +3102,68 @@ function encryptionOptedOut(): boolean { const p = optoutPath(); return !!p && f
 // deliberately NOT auto-keyed here — a per-device key can't be shared across peers, so those use the
 // passphrase model (setSyncPassphrase). Honest: if the OS keychain is unavailable we stay plaintext
 // (never write a plaintext key) and getSyncStatus reports encrypted:false. Idempotent + migration-safe:
-// enabling rewrites this device's shard atomically and plaintext/ciphertext lines coexist.
+// enabling rewrites this device's whole own set (see rewriteEncryptionSet) and plaintext/ciphertext
+// lines coexist.
+//
+// It mints ONLY when there is no key file at all (Decision 1). A file that is there but didn't open is
+// a key the keychain refused, not a missing one: minting over it is how a brain loses its key. A file
+// that did open is already in force (encKey) and a damaged one has LOCKED the store, so both returned
+// above; createSecretExclusive refuses whatever might have appeared since.
 function maybeAutoEncrypt(): void {
-  if (syncDir || encKey) return          // synced (passphrase-driven) or already encrypted
-  if (encryptionOptedOut()) return       // the user turned it off
-  if (!isOsEncryptionAvailable()) return // no keychain → honest plaintext, encrypted:false
-  const p = keyCachePath()
-  if (!p || !memPath) return
+  if (syncDir || encKey || ownLock) return // synced (passphrase-driven), already encrypted, or LOCKED
+  if (encryptionOptedOut()) return         // the user turned it off
+  if (keyStorageMode() !== 'keychain') return // no keychain → honest plaintext, encrypted:false
+  if (!memPath) return
+  const key = crypto.randomBytes(32)
   try {
-    const key = crypto.randomBytes(32)
-    writeSecret(p, key.toString('base64')) // OS-encrypted at rest
-    encKey = key
-    rewriteSelfShard((plain) => encryptLine(key, plain)) // ciphertext-ify any existing plaintext
-    reloadFrom(shardFiles())
+    createSecretExclusive(keyCachePath() as string, key.toString('base64')) // OS-encrypted at rest, never over an existing file
   } catch (err) {
-    encKey = null
     recordSwarmError('swarmMemory.autoEncrypt.failed', err, {})
+    return
   }
+  // The key is on disk from here on, so it is in force whatever the rewrite does: a rewrite that fails
+  // leaves the old lines as readable plaintext, and new ones are ciphertext.
+  encKey = key
+  rememberKeys()
+  try { rewriteEncryptionSet(key) } catch (err) { recordSwarmError('swarmMemory.autoEncrypt.rewriteFailed', err, {}) }
+  reloadFrom(shardFiles())
 }
 
 /** WP-F: explicitly turn ON transparent at-rest encryption for a local store (also clears an opt-out).
  *  Reports honestly (encrypted:false) and is a no-op when the OS keychain is unavailable. */
 export function enableLocalEncryption(): SyncStatus {
   if (!userDataDir) throw new Error('enableLocalEncryption: memory not initialised')
+  assertWritable()
   const op = optoutPath()
   if (op) { try { fs.rmSync(op, { force: true }) } catch { /* ignore */ } } // clear the opt-out so it stays on
   maybeAutoEncrypt()
   return getSyncStatus()
 }
 
-/** WP-F: turn OFF at-rest encryption for a local store — decrypt this device's shard back to plaintext,
- *  drop the device key, and REMEMBER the opt-out so default-on won't re-enable on the next launch.
- *  (For a cross-machine synced store, use disableSyncEncryption.) */
+/** WP-F: turn OFF at-rest encryption for a local store — decrypt this device's WHOLE own set and the
+ *  archive back to plaintext, retire the device key, and REMEMBER the opt-out so default-on won't
+ *  re-enable on the next launch. (For a cross-machine synced store, use disableSyncEncryption.)
+ *
+ *  The old version decrypted only the active shard — and swallowed even that failure — then deleted
+ *  the key: every rotated generation was left as ciphertext under a key that no longer existed. Now
+ *  the rewrite covers everything and proves it read back BEFORE the key moves, a failure throws with
+ *  nothing changed, and the key is retired (renamed aside), never deleted (Decisions 1 and 4). */
 export function disableEncryption(): SyncStatus {
   if (!userDataDir) throw new Error('disableEncryption: memory not initialised')
-  if (encKey) rewriteSelfShard((plain) => plain) // decrypt on read, write plaintext (must run WHILE encKey is set)
-  encKey = null
-  const p = keyCachePath()
-  if (p) { try { fs.rmSync(p, { force: true }) } catch { /* ignore */ } }
+  assertWritable()
+  if (encKey) {
+    rewriteEncryptionSet(null) // decrypts with the key still set; throws if anything didn't read back
+    keepInRing(encKey) // a line we couldn't open was copied through as-is: it stays readable this session
+    encKey = null
+  }
+  const p = keyCachePath() as string
+  if (!inspectMemoryKey(p).absent) {
+    // Moved aside so the next launch doesn't pick it back up — and kept, in the read ring, for good.
+    try { retireSecretFile(p, 'encryption-disabled') } catch (err) { recordSwarmError('swarmMemory.disableEncryption.retireFailed', err, {}) }
+  }
   const op = optoutPath()
   if (op) { try { fs.writeFileSync(op, '1') } catch { /* ignore */ } } // remember the choice across launches
+  rememberKeys()
   reloadFrom(shardFiles())
   return getSyncStatus()
 }
@@ -2972,11 +3183,14 @@ export function disableEncryption(): SyncStatus {
  * Re-keying is REFUSED, not silently applied: a different key would render every existing ciphertext
  * line permanently unreadable.
  *
- * CONTRACT: this ALWAYS rewrites this device's shard, so call it only when the key is genuinely NEW
- * (main just minted it, or the user re-enabled encryption) — never on every launch, or a 475 MB store
- * gets decrypted and re-encrypted at every boot. Passing the key that is already in force is legal
- * (it is how a fresh mint ciphertext-ifies a store that initSwarmMemory just read as plaintext), but
- * it is not free.
+ * CONTRACT: this ALWAYS rewrites this device's whole own set and the archive, so call it only when the
+ * key is genuinely NEW (main just minted it, or the user re-enabled encryption) — never on every
+ * launch, or a 475 MB store gets decrypted and re-encrypted at every boot. Passing the key that is
+ * already in force is legal (it is how a fresh mint ciphertext-ifies a store that initSwarmMemory just
+ * read as plaintext), but it is not free.
+ *
+ * A rewrite that fails throws — with the key still in force, since it is already on disk: new lines
+ * are ciphertext, and the lines it didn't get to stay readable plaintext.
  */
 export function adoptEncryptionKey(key: Buffer): SyncStatus {
   if (!userDataDir) throw new Error('adoptEncryptionKey: memory not initialised')
@@ -2985,21 +3199,51 @@ export function adoptEncryptionKey(key: Buffer): SyncStatus {
   if (encKey && !encKey.equals(k)) {
     throw new Error('adoptEncryptionKey: a different key is already active — refusing to re-key')
   }
+  assertWritable()
   const op = optoutPath()
   if (op) { try { fs.rmSync(op, { force: true }) } catch { /* ignore */ } } // adopting a key clears the opt-out
   encKey = k
-  rewriteSelfShard((plain) => encryptLine(k, plain)) // ciphertext-ify any plaintext still in our shard
+  rememberKeys()
+  try {
+    rewriteEncryptionSet(k) // ciphertext-ify any plaintext still in our own set and the archive
+  } catch (err) {
+    recordSwarmError('swarmMemory.adoptKey.rewriteFailed', err, {})
+    throw err
+  }
   reloadFrom(shardFiles())
   return getSyncStatus()
 }
 
-function loadCachedKey(): Buffer | null {
-  const p = keyCachePath()
-  if (!p) return null
-  const b64 = readSecret(p) // transparently OS-decrypts (or reads legacy plaintext)
-  if (!b64) return null
-  const k = Buffer.from(b64, 'base64')
-  return k.length === 32 ? k : null
+/**
+ * Decision 1 — the ONLY way past LOCKED: start writing under a NEW key.
+ *
+ * Main has already moved the old key file aside (renamed, byte-verified, never deleted) and minted this
+ * one exclusively; it passes every retired key that still unwraps. Nothing is rewritten: memories under
+ * the old key stay on disk exactly as they are, readable again the moment that key works (it is
+ * retried on every launch). The one line appended is an encrypted key-epoch marker — the newest
+ * encrypted line of the log now opens under the key in force, so the next launch's mismatch check
+ * passes instead of locking the store all over again.
+ */
+export function startNewMemoryKey(key: Buffer, readKeys: Buffer[] = []): SyncStatus {
+  if (!userDataDir) throw new Error('startNewMemoryKey: memory not initialised')
+  const k = normalizeInjectedKey(key)
+  if (!k) throw new Error('startNewMemoryKey: key required')
+  const before = { encKey, readRing: [...readRing], keyProblem, ownLock }
+  keepInRing(encKey) // the key we are leaving may still open older lines
+  for (const r of normalizeRing(readKeys)) keepInRing(r)
+  readRing = readRing.filter((r) => !r.equals(k))
+  encKey = k
+  keyProblem = null
+  ownLock = null
+  if (!appendShardLine(JSON.stringify({ keyEpoch: Date.now() }), 'key-epoch', { fsync: true })) {
+    // Without the marker the next launch would lock again; say so now instead, and stay as we were.
+    ;({ encKey, readRing, keyProblem, ownLock } = before)
+    throw new Error('Could not write to the memory log, so the new key was not started. Nothing was changed.')
+  }
+  try { fs.rmSync(path.join(userDataDir, ENCRYPTION_OPTOUT_FILE), { force: true }) } catch { /* ignore */ } // a new key means encryption is on
+  rememberKeys()
+  bumpSearchGen()
+  return getSyncStatus()
 }
 
 function loadOrCreateSalt(): Buffer {
@@ -3047,27 +3291,145 @@ function findAnyEncryptedLine(): string | null {
   return null
 }
 
-// Rewrite this device's shard in place, mapping each line's plaintext through
-// `xform`. Lines we can't decrypt are kept verbatim (never dropped).
-function rewriteSelfShard(xform: (plain: string) => string): void {
-  if (!memPath) return
-  // Stream from bytes — never decode a whole (possibly >512 MiB) shard into one string (see
-  // forEachShardLine). Enabling/rotating encryption rewrites the own shard, which can be the huge one.
-  const out: string[] = []
+// ---- Decision 4: the encryption rewrite ----
+
+const REKEY_SUFFIX = '.rekey.tmp'
+
+/**
+ * Re-encode every line this device owns under `target` — or as plaintext, for null: the WHOLE own set
+ * (every rotated generation, not only the active file) and the archive.
+ *
+ * Its predecessor rewrote only the active file and swallowed its own failures, and its callers then
+ * deleted the key. On a rotated store that left whole generations as ciphertext under a key that no
+ * longer existed. So, in this order — and the caller retires nothing until it returns:
+ *   1. every file is streamed into `<file>.rekey.tmp` and fsync'd; the originals are untouched;
+ *   2. every temp file is read BACK from disk and must hold exactly the lines that were written, each
+ *      one we re-encoded opening under the target and parsing — else every temp is dropped and it
+ *      throws, having changed nothing;
+ *   3. only then does each temp replace its original.
+ * A crash in 1-2 changes nothing. A crash in 3 leaves some files old and some new, and the ring reads
+ * both, because the caller still holds every key. Lines this session can't open, and torn lines, are
+ * copied through byte for byte — never re-encoded, never dropped.
+ */
+function rewriteEncryptionSet(target: Buffer | null): void {
+  const files = [...ownShardSet(), archivePath() as string].filter((f) => fs.existsSync(f))
+  const staged: string[] = []
   try {
-    forEachShardLine(memPath, (line) => {
+    for (const file of files) {
+      const tmp = file + REKEY_SUFFIX
+      staged.push(tmp)
+      verifyTranscoded(tmp, target, transcodeFile(file, tmp, target))
+    }
+  } catch (err) {
+    for (const tmp of staged) { try { fs.rmSync(tmp, { force: true }) } catch { /* ignore */ } }
+    throw err
+  }
+  // A swap that fails partway leaves some files new and some old — every caller still holds every key,
+  // so both read — but it must not leave the unswapped temps lying beside them.
+  let swapped = 0
+  try {
+    for (const file of files) { replaceFile(file + REKEY_SUFFIX, file); swapped++ }
+  } finally {
+    for (const file of files.slice(swapped)) { try { fs.rmSync(file + REKEY_SUFFIX, { force: true }) } catch { /* ignore */ } }
+    activeShardBytes = -1 // rewritten from scratch — re-stat on the next append
+    archiveCache = null
+    archiveCacheKey = ''
+  }
+}
+
+function parsesAsJson(s: string): boolean {
+  try { JSON.parse(s); return true } catch { return false }
+}
+
+/** Stream `src` into `tmp`, re-encoding every line we can open, and fsync it. Never holds the file:
+ *  this is the own log, which is the one that can be past V8's string cliff (see forEachShardLine).
+ *  Returns what the read-back must find. */
+function transcodeFile(src: string, tmp: string, target: Buffer | null): { lines: number; readable: number } {
+  let lines = 0
+  let readable = 0
+  const fd = fs.openSync(tmp, 'w')
+  try {
+    let buf = ''
+    forEachShardLine(src, (line) => {
       const s = line.trim()
       if (!s) return
-      const plain = isEncryptedLine(s) ? (encKey ? decryptLine(encKey, s) : null) : s
-      out.push(plain === null ? s : xform(plain))
+      lines++
+      const plain = isEncryptedLine(s) ? decryptWithRing(s) : s
+      let out = s // not ours to re-encode: copied through as it is
+      if (plain !== null && parsesAsJson(plain)) { out = target ? encryptLine(target, plain) : plain; readable++ }
+      buf += out + '\n'
+      if (buf.length >= 4 * 1024 * 1024) { fs.writeFileSync(fd, buf); buf = '' }
     })
-  } catch { return }
+    if (buf) fs.writeFileSync(fd, buf)
+    fs.fsyncSync(fd)
+  } finally { fs.closeSync(fd) }
+  return { lines, readable }
+}
+
+/** Read a transcoded file back from DISK: the same number of lines, and every line we re-encoded
+ *  opening under the target and parsing. Anything else means what is on disk is not what we wrote. */
+function verifyTranscoded(tmp: string, target: Buffer | null, wrote: { lines: number; readable: number }): void {
+  let lines = 0
+  let readable = 0
+  // Our own output has no blank lines, so every line counts — a blank one would be a mismatch.
+  forEachShardLine(tmp, (line) => {
+    const s = line.trim()
+    lines++
+    const enc = isEncryptedLine(s)
+    const plain = target ? (enc ? decryptLine(target, s) : null) : (enc ? null : s)
+    if (plain !== null && parsesAsJson(plain)) readable++
+  })
+  if (lines !== wrote.lines || readable !== wrote.readable) {
+    throw new Error(`encryption rewrite: ${path.basename(tmp)} did not read back as written (${readable}/${wrote.readable} readable, ${lines}/${wrote.lines} lines) — nothing was changed`)
+  }
+}
+
+const ASIDE_SUFFIX = '.replaced'
+
+/**
+ * Rename `tmp` over `target`. Windows refuses a rename over a file something holds open, and the usual
+ * fix — delete the target, then rename — would destroy the only copy if the retry failed too. So the
+ * target is moved aside instead, moved back if the swap can't complete, and only dropped once the new
+ * file is in place. (A crash between the two renames is repaired at the next init: see
+ * restoreInterruptedSwaps.)
+ */
+function replaceFile(tmp: string, target: string): void {
+  try { fs.renameSync(tmp, target); return } catch { /* held open: swap it aside */ }
+  const aside = target + ASIDE_SUFFIX
+  try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
+  fs.renameSync(target, aside)
+  try { fs.renameSync(tmp, target) }
+  catch (err) { try { fs.renameSync(aside, target) } catch { /* ignore */ } throw err }
+  try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
+}
+
+/**
+ * A crash between replaceFile's two renames leaves an original ONLY under `<file>.replaced`. Left like
+ * that, init would recreate `<file>` empty — the memories in it invisible — and the next swap of that
+ * file would clear the aside, deleting the only copy. So before anything recreates an own file (the
+ * active shard, a rotated generation, the archive), one found only as its aside is put back. Restoring
+ * the original is always safe: whoever was swapping still held every key that reads it. Nothing is
+ * deleted; an aside whose file exists was a completed swap, and the next swap clears it.
+ */
+function restoreInterruptedSwaps(active: string): void {
+  const dir = path.dirname(active)
+  const prefix = rotationPrefix(active)
+  const targets = [archivePath() as string]
   try {
-    atomicWriteLines(memPath, out) // F7/F33: never truncate mid-rewrite
-  } catch (err) {
-    // The atomic write kept the ORIGINAL shard intact — surface the failure instead of
-    // silently leaving a truncated/half-rewritten store.
-    recordSwarmError('swarmMemory.rewriteShard.failed', err, { memPath })
+    for (const n of fs.readdirSync(dir)) {
+      if (!n.endsWith(ASIDE_SUFFIX)) continue
+      const base = n.slice(0, -ASIDE_SUFFIX.length)
+      if (base === path.basename(active) || rotationGen(base, prefix) !== null) targets.push(path.join(dir, base))
+    }
+  } catch { /* an unreadable folder: init reports it in a moment */ }
+  for (const target of targets) {
+    if (fs.existsSync(target) || !fs.existsSync(target + ASIDE_SUFFIX)) continue
+    try {
+      fs.renameSync(target + ASIDE_SUFFIX, target)
+      recordAnomaly('swap-restored', `${path.basename(target)} was restored from an interrupted rewrite`)
+    } catch (err) {
+      recordSwarmError('swarmMemory.swap.restoreFailed', err, { target })
+    }
   }
 }
 
@@ -3173,7 +3535,9 @@ export function compactSelfShard(opts?: { force?: boolean }): { compacted: boole
 }
 
 function compactSelfShardImpl(opts?: { force?: boolean }): { compacted: boolean; before: number; after: number } {
-  if (!memPath) return { compacted: false, before: 0, after: 0 }
+  // LOCKED: compaction rewrites the own log from what it can read, and a locked log is mostly what
+  // it can't. It already aborts on the first unreadable line; this says so before reading a byte.
+  if (!memPath || ownLock) return { compacted: false, before: 0, after: 0 }
   // Tier-2: a LOCAL-only store (no syncDir) is now compactable too — but ONLY when nothing has been
   // evicted, else on-disk entries outside the 500k hot window would be dropped. Sync shards: as before.
   if (!syncDir && evictedAny) return { compacted: false, before: 0, after: 0 }
@@ -3334,19 +3698,8 @@ function writeOwnSet(out: Iterable<string>): void {
       if (buf) fs.writeFileSync(fd, buf)
       fs.fsyncSync(fd)
     } finally { fs.closeSync(fd); fd = null }
-    try { fs.renameSync(tmp, target) }
-    catch {
-      // Windows: rename over an existing file fails while anything holds it open. The usual fix is
-      // to delete the target first — but NOT here. This target is the active shard, and if the
-      // retry then failed too we would have destroyed the only on-disk copy of everything it held.
-      // Move it aside instead, so there is always something to put back.
-      const aside = target + '.replaced'
-      try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
-      fs.renameSync(target, aside)
-      try { fs.renameSync(tmp, target) }
-      catch (err) { try { fs.renameSync(aside, target) } catch { /* ignore */ } throw err }
-      try { fs.rmSync(aside, { force: true }) } catch { /* ignore */ }
-    }
+    // The target can be the active shard: replaceFile never deletes it before the new one is in place.
+    replaceFile(tmp, target)
     fresh.push(target)
   }
   try {
@@ -3402,6 +3755,7 @@ export function exportMemorySnapshot(): string[] {
  *  so they inherit at-rest encryption if this store is encrypted. Returns how many rows were added. */
 export function importMemorySnapshot(lines: string[]): { imported: number } {
   if (!memPath || !lines || lines.length === 0) return { imported: 0 }
+  assertWritable()
   let imported = 0
   for (const line of lines) {
     const s = line.trim()
@@ -3419,8 +3773,14 @@ export function importMemorySnapshot(lines: string[]): { imported: number } {
 
 // Enable encryption (first time) OR unlock an already-encrypted store on a new
 // device: derive the key from the passphrase + the store's salt, validate it
-// against any existing ciphertext, cache it locally, (re-)encrypt this device's
-// shard, and reload.
+// against any existing ciphertext, (re-)encrypt this device's shard set, and reload.
+//
+// It is also v1's way past a locked SYNC shard, so it is the one writer that runs while LOCKED: the
+// passphrase is checked against the ciphertext before anything is re-encoded.
+//
+// The passphrase key is NOT persisted. v1 cached it in memory-sync.key — the DEVICE key's own file —
+// overwriting the key the local brain is encrypted under (Decision 1). It lives for this session, and
+// the key it replaces stays in the read ring, so nothing goes dark mid-session.
 export function setSyncPassphrase(passphrase: string): SyncStatus {
   if (!syncDir) throw new Error('setSyncPassphrase: cross-machine sync is not enabled')
   if (!passphrase || !passphrase.trim()) throw new Error('setSyncPassphrase: passphrase required')
@@ -3430,54 +3790,49 @@ export function setSyncPassphrase(passphrase: string): SyncStatus {
   if (sample && decryptLine(key, sample) === null) {
     throw new Error('Incorrect passphrase for the existing encrypted memory.')
   }
+  const prev = encKey
+  keepInRing(prev)
   encKey = key
-  const p = keyCachePath()
-  if (p) { try { writeSecret(p, key.toString('base64')) } catch { /* best effort */ } } // OS-keychain at rest
-  rewriteSelfShard((plain) => encryptLine(key, plain)) // ciphertext-ify our own shard
+  try {
+    rewriteEncryptionSet(key) // the own sync shard set and the archive
+  } catch (err) {
+    // Nothing was re-keyed, so nothing should be written under the new key either. It stays in the
+    // ring all the same: a rewrite that died while swapping files may have left one of them under it.
+    keepInRing(key)
+    encKey = prev
+    throw err
+  }
   reloadFrom(shardFiles())
   return getSyncStatus()
 }
 
-// Turn encryption off: decrypt this device's shard back to plaintext and drop the
-// local key. (Peers stay encrypted until they do the same.)
+// Turn encryption off: decrypt this device's shard set back to plaintext. (Peers stay encrypted until
+// they do the same.) It never touches a key file (Decision 5): v1 deleted memory-sync.key here, and
+// that file is the DEVICE key, which the local brain needs whatever this folder does.
 export function disableSyncEncryption(): SyncStatus {
   if (!syncDir) throw new Error('disableSyncEncryption: cross-machine sync is not enabled')
-  if (encKey) rewriteSelfShard((plain) => plain) // decrypts on read, writes plaintext
-  encKey = null
-  const p = keyCachePath()
-  if (p) { try { fs.rmSync(p, { force: true }) } catch { /* best effort */ } }
+  assertWritable()
+  if (encKey) {
+    rewriteEncryptionSet(null) // decrypts with the key still set; throws having changed nothing
+    keepInRing(encKey)
+    encKey = null
+  }
   reloadFrom(shardFiles())
   return getSyncStatus()
 }
 
 // Turn cross-machine sync on (point at a synced folder) or off (null = local-only).
-// Persists the choice and re-initialises from the new location.
+// Persists the choice and re-initialises from the new location, with this session's key material.
 export function setSyncDir(dir: string | null): SyncStatus {
   if (!userDataDir) throw new Error('setSyncDir: memory not initialised')
   const clean = dir && dir.trim() ? path.resolve(dir.trim()) : null
-  // Turning sync OFF: snapshot the current (unioned) memories into the local store so we
-  // don't appear to lose everything synced from peers. F3: ALSO serialize the usage
-  // (reinforcement) deltas so the learning layer survives the round-trip (serializeEntry
-  // emits ONLY entries, so usageMap was silently lost before), plus tombstones for
-  // deletion durability. Write it ATOMICALLY and ABORT the switch on failure so a disk
-  // hiccup never drops the user onto a stale/empty local store. (clearEpoch is carried by
-  // the device-local floor, NOT written here — a clear line after the entries would
-  // wrongly mark these post-clear survivors epoch-vulnerable on the next reload.)
-  if (!clean && syncDir && legacyPath) {
-    const lines: string[] = entries.map(serializeEntry)
-    const reinforce = [...usageMap.entries()].filter(([, u]) => u !== 0).map(([id, used]) => ({ id, used, ts: Date.now() }))
-    if (reinforce.length > 0) lines.push(JSON.stringify({ reinforce }))
-    for (const id of tombstones) lines.push(JSON.stringify({ deleted: id }))
-    try {
-      // atomicWriteLines (not join('\n')): the store can be >512 MiB, and lines.join would build one
-      // string past V8's max length → RangeError → "turn sync off" silently broken for a big store.
-      // atomicWriteLines streams in 4 MB chunks; byte-identical output ('\n' after every line).
-      atomicWriteLines(legacyPath, lines)
-    } catch (err) {
-      recordSwarmError('swarmMemory.syncOff.snapshot.failed', err, { legacyPath })
-      throw new Error('Could not snapshot memory to the local store — sync left ON to avoid data loss. Retry once the disk is writable.')
-    }
-  }
+  // Already off: nothing to do. This used to re-run init anyway — a full reload of the brain for
+  // nothing, and in the memory host a reload without its key (Decision 3).
+  if (!clean && !syncDir) return getSyncStatus()
+  // Turning sync OFF never writes the local brain file (Decision 5). v1 snapshotted the merged union
+  // OVER swarm-memory.jsonl: this computer's own log, encrypted under the device key, replaced by a
+  // copy made under whatever key sync happened to be using. Now the local log is simply reopened as
+  // it was left. Memories written while syncing stay in the folder's shard, where nothing removes them.
   writeSyncConfig(userDataDir, clean)
   initSwarmMemory(userDataDir, { syncDir: clean })
   return getSyncStatus()

@@ -3224,57 +3224,35 @@ describe('memory cross-machine sync handlers', () => {
     expect(typeof res.data.deviceId).toBe('string')
   })
 
-  it('memory:set-sync-dir turns sync on, then off again', async () => {
+  // Decision 5: turning v1 sync ON can lock or overwrite a brain, so main refuses it outright —
+  // whatever the renderer sends — and never touches the folder it was pointed at.
+  it('memory:set-sync-dir refuses to turn sync on, and leaves the folder alone', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-sync-'))
     try {
       const on = await invokeHandler('memory:set-sync-dir', { dir })
-      expect(on.success).toBe(true)
-      expect(on.data.syncing).toBe(true) // setSyncDir directly controls this
+      expect(on.success).toBe(false)
+      expect(on.error).toMatch(/^SYNC_TEMPORARILY_DISABLED/)
+      expect(fs.readdirSync(dir)).toEqual([]) // no shard, no salt — nothing was written there
+      const status = await invokeHandler('memory:sync-status')
+      expect(status.data.syncing).toBe(false)
     } finally {
-      const off = await invokeHandler('memory:set-sync-dir', { dir: null })
-      expect(off.success).toBe(true)
-      expect(off.data.syncing).toBe(false)
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it('memory:choose-sync-dir returns success when the picker is cancelled', async () => {
+  it('memory:set-sync-dir(null) — turning it off — is still allowed', async () => {
+    const off = await invokeHandler('memory:set-sync-dir', { dir: null })
+    expect(off.success).toBe(true)
+    expect(off.data.syncing).toBe(false)
+  })
+
+  it('memory:choose-sync-dir is refused before any folder picker opens', async () => {
     const { dialog } = (await import('electron')) as any
-    dialog.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    dialog.showOpenDialog.mockClear()
     const res = await invokeHandler('memory:choose-sync-dir')
-    expect(res.success).toBe(true) // cancelled → returns current status, no throw
-  })
-
-  it('memory:choose-sync-dir enables sync to the picked folder', async () => {
-    const { dialog } = (await import('electron')) as any
-    const picked = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-pick-'))
-    dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [picked] })
-    try {
-      const res = await invokeHandler('memory:choose-sync-dir')
-      expect(res.success).toBe(true)
-      expect(res.data.syncing).toBe(true)
-      // From home: Electron 43 would otherwise open Downloads, an easy place to make a sync folder by mistake.
-      expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ defaultPath: os.homedir() }))
-    } finally {
-      await invokeHandler('memory:set-sync-dir', { dir: null }) // restore local-only
-      fs.rmSync(picked, { recursive: true, force: true })
-    }
-  })
-
-  it('memory:set-sync-passphrase then disable-sync-encryption round-trip', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mp-enc-'))
-    try {
-      await invokeHandler('memory:set-sync-dir', { dir })
-      const enc = await invokeHandler('memory:set-sync-passphrase', { passphrase: 'mp-secret' })
-      expect(enc.success).toBe(true)
-      expect(enc.data.encrypted).toBe(true)
-      const dis = await invokeHandler('memory:disable-sync-encryption')
-      expect(dis.success).toBe(true)
-      expect(dis.data.encrypted).toBe(false)
-    } finally {
-      await invokeHandler('memory:set-sync-dir', { dir: null })
-      fs.rmSync(dir, { recursive: true, force: true })
-    }
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/^SYNC_TEMPORARILY_DISABLED/)
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled()
   })
 
   it('memory:set-sync-passphrase returns an error (no crash) when sync is off', async () => {

@@ -8,6 +8,7 @@ import {
   teachingRows,
   competenceRows,
   isBrainEmpty,
+  isBrainLocked,
   hasUnreadableShards,
   svgLine,
   portabilityRows,
@@ -158,6 +159,16 @@ describe('memoryDashboard — transforms', () => {
     // Absent (an older main process) reads as zero, not as a failure.
     const legacy = mm({ store: { total: 0, capacity: 1, byType: {}, bySource: {}, lessons: 0, timeline: [] } })
     expect(hasUnreadableShards(legacy)).toBe(false)
+  })
+
+  // A LOCKED brain loads as zero entries too — every line is under a key this computer can't open.
+  it('isBrainLocked reports a locked store, and suppresses the empty-brain note the same way', () => {
+    const store = { total: 0, capacity: 1, byType: {}, bySource: {}, lessons: 0, timeline: [] }
+    expect(isBrainLocked(mm({ store }))).toBe(false) // absent (an older main) reads as not locked
+    expect(isBrainLocked(mm({ store: { ...store, locked: false } }))).toBe(false)
+    const locked = mm({ store: { ...store, locked: true } })
+    expect(isBrainLocked(locked)).toBe(true)
+    expect(isBrainEmpty(locked)).toBe(false) // never "your brain is empty" over a brain it can't open
   })
 
   it('isBrainEmpty is true only when nothing is stored', () => {

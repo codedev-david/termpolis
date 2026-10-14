@@ -10,7 +10,7 @@ import {
   parseBySource,
   ingestConversations,
   discoverTranscriptFiles,
-  findLatestTranscriptFile,
+  newestTranscriptFiles,
   runConversationIngest,
   type ConversationSource,
   type IngestTurn,
@@ -368,7 +368,7 @@ describe('discoverTranscriptFiles', () => {
   })
 })
 
-describe('findLatestTranscriptFile — newest matching session for solo-session learning', () => {
+describe('newestTranscriptFiles — the newest sessions, for solo-session learning', () => {
   let root: string
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-latest-'))
@@ -377,7 +377,7 @@ describe('findLatestTranscriptFile — newest matching session for solo-session 
     try { fs.rmSync(root, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  it('finds the newest codex rollout across a nested YYYY/MM/DD layout (the real Codex bug)', async () => {
+  it('finds the newest codex rollouts across a nested YYYY/MM/DD layout (the real Codex bug)', async () => {
     const deep = path.join(root, '2026', '02', '05')
     fs.mkdirSync(deep, { recursive: true })
     const older = path.join(deep, 'rollout-a.jsonl')
@@ -386,7 +386,7 @@ describe('findLatestTranscriptFile — newest matching session for solo-session 
     fs.writeFileSync(newer, 'x')
     fs.utimesSync(older, new Date(1000_000), new Date(1000_000))
     fs.utimesSync(newer, new Date(5000_000), new Date(5000_000))
-    expect(await findLatestTranscriptFile('codex', root)).toBe(newer)
+    expect(await newestTranscriptFiles('codex', 5, root)).toEqual([newer, older])
   })
 
   it('finds the newest gemini session-*.json under tmp/<proj>/chats, ignoring logs.json (the real Gemini bug)', async () => {
@@ -399,14 +399,25 @@ describe('findLatestTranscriptFile — newest matching session for solo-session 
     fs.writeFileSync(path.join(chats, 'logs.json'), 'x') // wrong file — must be ignored
     fs.utimesSync(s1, new Date(1000_000), new Date(1000_000))
     fs.utimesSync(s2, new Date(9000_000), new Date(9000_000))
-    expect(await findLatestTranscriptFile('gemini', root)).toBe(s2)
+    expect(await newestTranscriptFiles('gemini', 5, root)).toEqual([s2, s1])
   })
 
-  it('returns null for a missing root, for an unknown source, and when nothing matches the pattern', async () => {
-    expect(await findLatestTranscriptFile('codex', path.join(root, 'nope'))).toBeNull()
-    expect(await findLatestTranscriptFile('unknown' as ConversationSource, root)).toBeNull()
+  it('returns at most `limit` files, newest first, and none for a limit of zero or less', async () => {
+    const files = [1, 2, 3].map((n) => path.join(root, `rollout-${n}.jsonl`))
+    files.forEach((f, i) => {
+      fs.writeFileSync(f, 'x')
+      fs.utimesSync(f, new Date((i + 1) * 1000_000), new Date((i + 1) * 1000_000))
+    })
+    expect(await newestTranscriptFiles('codex', 2, root)).toEqual([files[2], files[1]])
+    expect(await newestTranscriptFiles('codex', 0, root)).toEqual([])
+    expect(await newestTranscriptFiles('codex', -1, root)).toEqual([])
+  })
+
+  it('returns none for a missing root, for an unknown source, and when nothing matches the pattern', async () => {
+    expect(await newestTranscriptFiles('codex', 5, path.join(root, 'nope'))).toEqual([])
+    expect(await newestTranscriptFiles('unknown' as ConversationSource, 5, root)).toEqual([])
     fs.writeFileSync(path.join(root, 'notes.txt'), 'x')
-    expect(await findLatestTranscriptFile('gemini', root)).toBeNull()
+    expect(await newestTranscriptFiles('gemini', 5, root)).toEqual([])
   })
 })
 

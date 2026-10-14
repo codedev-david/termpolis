@@ -533,6 +533,8 @@ export interface TermpolisAPI {
   // preload's own object literal failed to typecheck — silently, because nothing typechecked.
   memoryEnableLocalEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
   memoryDisableEncryption: () => Promise<IpcResponse<MemorySyncStatus>>
+  /** Retire the memory key and start a new one: the only way past a LOCKED brain. Never automatic. */
+  memoryStartNewKey: () => Promise<IpcResponse<MemorySyncStatus>>
 
   // Clipboard — native Electron clipboard (focus/permission-immune), used by the
   // terminal context menu where navigator.clipboard silently rejects.
@@ -740,7 +742,14 @@ export interface MemorySyncStatus {
   count: number
   encrypted: boolean // this device holds the key and writes ciphertext at rest
   locked: boolean    // encrypted shards present that we can't read yet (passphrase needed)
+  /** LOCKED: nothing new is being saved — the memory key can't be used, or doesn't match the memories
+   *  on disk. Optional because builds before this one never sent it. */
+  ownLocked?: boolean
+  lockReason?: MemoryLockReason | null
 }
+
+/** Why memory is LOCKED (see swarmMemory.LockReason). */
+export type MemoryLockReason = 'keychain-unavailable' | 'key-unreadable' | 'key-invalid' | 'key-mismatch'
 
 export interface MemoryWriteInput {
   agentId: string
@@ -811,6 +820,9 @@ export interface MemoryMetrics {
      *  Optional so a main process that predates the field (stale utility process mid-upgrade)
      *  still deserialises; absent is read as 0. */
     unreadableShards?: number
+    /** LOCKED: the memory key can't open the store, so these numbers cover only what it could.
+     *  Optional for the same reason as unreadableShards; absent is read as false. */
+    locked?: boolean
   }
   graph: { nodes: number; edges: number; byRelation: Record<string, number> }
   competence: Array<{ domain: string; attempts: number; confidence: number }>
@@ -1055,7 +1067,26 @@ export interface RemotePairingView {
   expiresAt: number
 }
 
-export interface RemoteStatusView {
+/** Where the keys that identify this computer to its phones and linked computers stand. One set of
+ *  facts for both panes: Remote and Linked machines stand on the same identity. */
+export interface KeyStorageView {
+  /** 'keychain': sealed by the OS keychain. 'plaintext': there is none, so they are saved
+   *  unencrypted. 'locked': a key file is there but can't be opened now -- nothing that needs it
+   *  starts, and nothing is written over it. */
+  keyStorage: 'keychain' | 'plaintext' | 'locked'
+  /** Why, while 'locked'. */
+  keyLockReason?: 'no-keychain' | 'unwrap-failed' | 'unreadable'
+  /** Linked machines only, while 'locked': the identity opens, and only the file of links can't be.
+   *  Start over then sets aside that file alone, and the phones keep working. */
+  keyLockLinksOnly?: boolean
+  /** A key file saved in the clear before a keychain was there to seal it: what "Encrypt keys now"
+   *  is for. Only ever true with a keychain. */
+  keysUnencrypted: boolean
+  /** Electron's own name for its key store (Linux), shown as small print beside the warning. */
+  keyBackend?: string
+}
+
+export interface RemoteStatusView extends KeyStorageView {
   enabled: boolean
   running: boolean
   /** Seated (`online`), dialling/redialling (`connecting`), or no room because
@@ -1064,7 +1095,11 @@ export interface RemoteStatusView {
   /** The supervisor gave up after a crash loop. The switch says on; nothing is. */
   disabled: boolean
   relayUrl: string
-  publicKey: string
+  /** `relayUrl` is plain ws:// to another computer, saved by an older version.
+   *  Kept but never dialled, and the pane says so until it changes. */
+  relayInsecure: boolean
+  /** Null while the keys are locked: there is no identity to show. */
+  publicKey: string | null
   pairing: RemotePairingView | null
   devices: RemoteDeviceView[]
 }
@@ -1094,6 +1129,10 @@ export interface RemoteAPI {
   revokeDevice: (deviceId: string) => Promise<IpcResponse<RemoteStatusView>>
   setCapabilities: (deviceId: string, capabilities: RemoteCapabilities) => Promise<IpcResponse<RemoteStatusView>>
   verificationPhrase: (deviceId: string) => Promise<IpcResponse<{ deviceId: string; phrase: string }>>
+  /** Seal the key files saved in the clear, now that a keychain can (`keysUnencrypted`). */
+  encryptKeys: () => Promise<IpcResponse<RemoteStatusView>>
+  /** Only while `keyStorage` is 'locked': a new identity, and no phone or linked computer. */
+  startOver: () => Promise<IpcResponse<RemoteStatusView>>
   onStatus: (cb: (status: RemoteStatusView) => void) => () => void
   onEvent: (cb: (event: RemoteEvent) => void) => () => void
 }
@@ -1137,7 +1176,40 @@ export interface LinkedActivityView {
   durationMs?: number
 }
 
-export interface LinkedStatusView {
+/** One line of the job history on this computer (`linked-jobs.jsonl` in userData): a job another
+ *  computer started here, the same job ending, or one it was refused. Main rebuilds each line field
+ *  by field as it reads it back. */
+export interface LinkedJobRecord {
+  ts: number
+  event: 'started' | 'finished' | 'refused'
+  /** The job, on `started` and `finished`. */
+  jobId?: string
+  /** The linked computer's ref, or '' when a refused request couldn't say which it was. */
+  ref: string
+  /** That computer's name on this one, at the time: 'unknown computer' when it had none. */
+  machine: string
+  agent?: 'claude' | 'codex' | 'gemini'
+  /** Edit was asked for: granted on `started`, the reason for some refusals. */
+  write?: boolean
+  /** The folder it ran in, on `started`. */
+  cwd?: string
+  /** The first line of the screened prompt, at most 80 characters, on `started`. */
+  summary?: string
+  /** How it ended, on `finished`. */
+  status?: 'done' | 'failed' | 'cancelled'
+  durationMs?: number
+  /** Why it was refused, at most 200 characters. */
+  reason?: string
+  /** On a refusal written as a minute of them ends: how many more there were. */
+  count?: number
+  /** The credential rules screening matched: the prompt's on `started`, the answer's on `finished`. */
+  secretRules?: string[]
+}
+
+/** `keyStorage` is 'locked' when the identity is, or when the file holding the links this computer
+ *  joined can't be opened -- then nothing about them can change until it opens or the user starts
+ *  over. */
+export interface LinkedStatusView extends KeyStorageView {
   enabled: boolean
   running: boolean
   /** This machine's rooms on its relay, as the bridge reports them (see
@@ -1145,6 +1217,10 @@ export interface LinkedStatusView {
   relay: 'idle' | 'connecting' | 'online'
   /** The Remote relay. Shown read-only here; it is set under Settings ▸ Remote. */
   relayUrl: string
+  /** That relay is plain ws:// to another computer (see RemoteStatusView). No
+   *  room of this machine's is dialled on it, so computers that entered a code
+   *  from this one stay offline and no code can be made. */
+  relayInsecure: boolean
   /** This computer's own name, which the other side is offered as a suggestion. */
   thisMachine: string
   /** The live link code, while one is being offered. */
@@ -1153,6 +1229,10 @@ export interface LinkedStatusView {
   joining: boolean
   machines: LinkedMachineView[]
   activity: LinkedActivityView[]
+  /** A notification for each job another computer starts here. On unless switched off. */
+  notifyJobs: boolean
+  /** Bumped with every line written to the job history, so the pane reads it again only then. */
+  jobLogVersion: number
 }
 
 export type LinkedEvent =
@@ -1171,10 +1251,23 @@ export interface LinkedAPI {
   cancelJoin(): Promise<IpcResponse<LinkedStatusView>>
   confirm(ref: string, name: string): Promise<IpcResponse<LinkedStatusView>>
   rename(ref: string, name: string): Promise<IpcResponse<LinkedStatusView>>
-  setGrants(ref: string, grants: LinkedGrants): Promise<IpcResponse<LinkedStatusView>>
+  /** `confirmWrite` only from the pane's confirm panel: main refuses to turn edit on without it,
+   *  or for a computer whose words are not confirmed yet. */
+  setGrants(ref: string, grants: LinkedGrants, confirmWrite?: boolean): Promise<IpcResponse<LinkedStatusView>>
   unlink(ref: string): Promise<IpcResponse<LinkedStatusView>>
+  /** The Remote pane's two key actions, on the same keys (see RemoteAPI). */
+  encryptKeys(): Promise<IpcResponse<LinkedStatusView>>
+  startOver(): Promise<IpcResponse<LinkedStatusView>>
+  /** Notifications for jobs another computer starts here: anything but `false` leaves them on. */
+  setNotify(enabled: boolean): Promise<IpcResponse<LinkedStatusView>>
+  /** Stop a job another computer is running here. */
+  stopJob(id: string): Promise<IpcResponse<LinkedStatusView>>
+  /** The job history on this computer, newest first. */
+  jobLog(limit?: number): Promise<IpcResponse<LinkedJobRecord[]>>
   onStatus(cb: (s: LinkedStatusView) => void): () => void
   onEvent(cb: (e: LinkedEvent) => void): () => void
+  /** A job notification was clicked: open Settings ▸ Linked machines. */
+  onShow(cb: () => void): () => void
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

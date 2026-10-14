@@ -39,6 +39,9 @@ const M = vi.hoisted(() => ({
   // electron powerSaveBlocker: an id per blocker, as Electron hands them out
   powerSaveStart: vi.fn(() => 42),
   powerSaveStop: vi.fn(),
+  // electron Notification: every one built, so a test can read and click it
+  notifications: [] as Array<{ opts: unknown; handlers: Record<string, () => void>; shown: number; closed: number }>,
+  notificationSupported: vi.fn(() => true),
   // lifecycle collaborators
   initAutoUpdater: vi.fn(),
   startMcpServer: vi.fn(() => ({ id: 'mcp-server-handle' })),
@@ -195,6 +198,7 @@ const M = vi.hoisted(() => ({
   registerLinkedIpc: vi.fn(),
   linkedToolCall: vi.fn<(...a: any[]) => any>(async () => ({ thisMachine: 'here', machines: [] })),
   linkedInitForRemote: vi.fn(() => ({ enabled: true, links: [] })),
+  linkedStartOverForRemote: vi.fn(),
   // learning signals
   startLearningSignals: vi.fn(),
   stopLearningSignals: vi.fn(),
@@ -202,6 +206,7 @@ const M = vi.hoisted(() => ({
   makeTerminalRunner: vi.fn(() => ({ kind: 'terminal-runner' })),
   makeAgentRunner: vi.fn(() => ({ kind: 'agent-runner' })),
   makeToolInvoker: vi.fn(() => ({ kind: 'tool-invoker' })),
+  executeToolForWorkflow: vi.fn(async () => ({ ok: true })),
   registerWorkflowIpc: vi.fn<(...a: any[]) => any>(() => ({ startRun: M_startRun })),
   wfStartRun: vi.fn<(...a: any[]) => any>(() => ({ ok: true, done: Promise.resolve() })),
   oncePerVersion: vi.fn((_d: string, _v: string, _fs: unknown, cb: () => void) => { cb() }),
@@ -223,7 +228,7 @@ const mockWebContents = { send: vi.fn(), executeJavaScript: vi.fn(), session: un
 const mockMainWindow = {
   minimize: vi.fn(), maximize: vi.fn(), unmaximize: vi.fn(),
   isMaximized: vi.fn(() => false), isMinimized: vi.fn(() => false),
-  restore: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(),
+  restore: vi.fn(), show: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(),
   setIcon: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(),
   webContents: mockWebContents,
 }
@@ -270,6 +275,19 @@ vi.mock('electron', () => ({
     decryptString: (b: Buffer) => b.toString('utf8'),
   },
   powerSaveBlocker: { start: M.powerSaveStart, stop: M.powerSaveStop },
+  Notification: Object.assign(
+    function MockNotification(opts: unknown) {
+      const n = {
+        opts, handlers: {} as Record<string, () => void>, shown: 0, closed: 0,
+        on(event: string, fn: () => void) { n.handlers[event] = fn; return n },
+        show() { n.shown++ },
+        close() { n.closed++ },
+      }
+      M.notifications.push(n)
+      return n
+    },
+    { isSupported: () => M.notificationSupported() },
+  ),
 }))
 
 // ---------------------------------------------------------------------------
@@ -386,6 +404,7 @@ vi.mock('../../src/main/mcpServer', () => ({
   initAuditLog: vi.fn(),
   awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
   executeTool: vi.fn(async () => ({ ok: true })),
+  executeToolForWorkflow: M.executeToolForWorkflow,
 }))
 vi.mock('../../src/main/swarmManager', () => ({
   sendMessage: vi.fn(), readMessages: vi.fn(() => []), getAllMessages: vi.fn(() => []),
@@ -460,6 +479,7 @@ vi.mock('../../src/main/linkedHost', () => ({
   registerLinkedIpc: M.registerLinkedIpc,
   startLinkedHost: M.startLinkedHost, stopLinkedHost: M.stopLinkedHost,
   linkedToolCall: M.linkedToolCall, linkedInitForRemote: M.linkedInitForRemote,
+  linkedStartOverForRemote: M.linkedStartOverForRemote,
 }))
 vi.mock('../../src/main/mcpGatewayRuntime', () => ({
   initMcpGateway: vi.fn(),
@@ -1494,6 +1514,11 @@ describe('remote bridge host wiring', () => {
     expect(opts().linkedInit()).toEqual({ enabled: true, links: [{ id: 'x' }] })
     expect(M.linkedInitForRemote).toHaveBeenCalled()
   })
+
+  it("hands Linked machines its half of Start over: the links forgotten with the keys", () => {
+    opts().linkedStartOver()
+    expect(M.linkedStartOverForRemote).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ===========================================================================
@@ -1525,6 +1550,45 @@ describe('linked machines wiring', () => {
     linked().sendEvent({ kind: 'error', message: 'x' })
     expect(mockWebContents.send).toHaveBeenCalledWith('linked:status-changed', { enabled: true })
     expect(mockWebContents.send).toHaveBeenCalledWith('linked:event', { kind: 'error', message: 'x' })
+  })
+
+  it('notifies a job another computer started, one notification per computer at a time', () => {
+    M.notifications.length = 0
+    linked().notifyJob({ tag: 'device:aa', title: 'build-box started a job here', body: 'b1' })
+    linked().notifyJob({ tag: 'device:aa', title: 'build-box started a job here', body: 'b2' })
+    linked().notifyJob({ tag: 'link:bb', title: 'desk started a job here', body: 'b3' })
+    // The newer one from the same computer replaces the older; another computer's stands.
+    expect(M.notifications.map((n) => [n.opts, n.shown, n.closed])).toEqual([
+      [{ title: 'build-box started a job here', body: 'b1' }, 1, 1],
+      [{ title: 'build-box started a job here', body: 'b2' }, 1, 0],
+      [{ title: 'desk started a job here', body: 'b3' }, 1, 0],
+    ])
+  })
+
+  it('opens Settings ▸ Linked machines on a click, with the window brought forward first', () => {
+    M.notifications.length = 0
+    linked().notifyJob({ tag: 'device:aa', title: 't', body: 'b' })
+    mockMainWindow.restore.mockClear()
+    mockMainWindow.isMinimized.mockReturnValueOnce(true)
+    mockWebContents.send.mockClear()
+    M.notifications[0].handlers.click()
+    expect(mockMainWindow.restore).toHaveBeenCalledTimes(1)
+    expect(mockMainWindow.show).toHaveBeenCalled()
+    expect(mockMainWindow.focus).toHaveBeenCalled()
+    expect(mockWebContents.send).toHaveBeenCalledWith('linked:show')
+    // Not minimized: nothing to restore.
+    M.notifications[0].handlers.click()
+    expect(mockMainWindow.restore).toHaveBeenCalledTimes(1)
+    // A window that has gone away opens nothing, and the click doesn't throw.
+    mockMainWindow.show.mockImplementationOnce(() => { throw new Error('Object has been destroyed') })
+    expect(() => M.notifications[0].handlers.click()).not.toThrow()
+  })
+
+  it('shows nothing where the system has no notifications', () => {
+    M.notifications.length = 0
+    M.notificationSupported.mockReturnValueOnce(false)
+    linked().notifyJob({ tag: 'device:aa', title: 't', body: 'b' })
+    expect(M.notifications).toEqual([])
   })
 
   it('swallows a send into a window that has gone away', () => {
@@ -1571,6 +1635,26 @@ describe('linked machines wiring', () => {
     expect(M.codexHasTermpolisServer).toHaveBeenCalledWith(M.agentPaths)
     M.codexHasTermpolisServer.mockReturnValueOnce(false)
     expect(deps.linkedJobMcp('0123456789ab', 'codex')).toBeNull()
+  })
+
+  it("tells a delegated job's CLI not to save its session where it can, and only a delegated job's", async () => {
+    await linked().runHeadless({ task: 'delegated', agent: 'claude', noRemember: true })
+    const [, deps] = M.runHeadless.mock.calls.at(-1)! as any[]
+    expect(typeof deps.noPersist).toBe('function')
+    await mcp().agentExec({ prompt: 'p' })
+    const [, execDeps] = M.runHeadless.mock.calls.at(-1)! as any[]
+    expect(execDeps).not.toHaveProperty('noPersist')
+  })
+
+  it('screens what crosses to another computer with the AI Security rules, and audits what it found', async () => {
+    const { screenText, maskForDisplay } = await import('../../src/main/aiSecurity')
+    expect(linked().screenSecrets).toBe(screenText)
+    // ...and a job's summary is masked, both tiers, before the history keeps it or a notification shows it.
+    expect(linked().maskSecrets).toBe(maskForDisplay)
+    M.appendAudit.mockClear()
+    const entry = { agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: 'answer from "linux": gh_pat x1' }
+    await linked().audit(entry)
+    expect(M.appendAudit).toHaveBeenCalledWith(entry)
   })
 
   it('tells a linked computer which agents are installed, from the agents:detect probe', async () => {
@@ -1658,6 +1742,10 @@ describe('learning signal deps', () => {
 // Workflow wiring closures.
 // ===========================================================================
 describe('workflow orchestrator wiring', () => {
+  it("calls a Skill step's tool through the rate-limited, audited path, not executeTool itself", () => {
+    expect(M.makeToolInvoker.mock.calls.at(-1)![1]).toBe(M.executeToolForWorkflow)
+  })
+
   it('resolves a logical shell type to an executable before spawning a Command step', async () => {
     const spawnDeps = M.makeTerminalRunner.mock.calls.at(-1)![0] as any
     const onData = vi.fn()
@@ -1947,30 +2035,28 @@ describe('memory handlers return err() instead of rejecting the IPC call', () =>
   it('memory:set-sync-dir turns a missing dir into an explicit null (disable)', async () => {
     MEMC.setSyncDir.mockResolvedValueOnce({ enabled: false, dir: null } as never)
     expect(await invoke('memory:set-sync-dir', {})).toEqual({ success: true, data: { enabled: false, dir: null } })
-    // `?? null`: undefined would read as "no argument supplied" and could leave sync on.
+    // undefined would read as "no argument supplied" and could leave sync on.
     expect(MEMC.setSyncDir).toHaveBeenLastCalledWith(null)
     MEMC.setSyncDir.mockRejectedValueOnce(new Error('not writable') as never)
-    expect(await invoke('memory:set-sync-dir', { dir: '/x' })).toEqual({ success: false, error: 'not writable' })
+    expect(await invoke('memory:set-sync-dir', { dir: null })).toEqual({ success: false, error: 'not writable' })
   })
 
-  it('memory:choose-sync-dir leaves sync untouched when the picker is cancelled', async () => {
-    M.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] } as never)
+  it('memory:set-sync-dir REFUSES a folder (Decision 5) without ever reaching the store', async () => {
     MEMC.setSyncDir.mockClear()
-    MEMC.getSyncStatus.mockResolvedValueOnce({ enabled: false, dir: null } as never)
-    expect(await invoke('memory:choose-sync-dir')).toEqual({ success: true, data: { enabled: false, dir: null } })
-    // Cancel must not disable an already-configured sync.
+    const res = await invoke('memory:set-sync-dir', { dir: '/Dropbox/brain' }) as { success: boolean; error: string }
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/^SYNC_TEMPORARILY_DISABLED/)
     expect(MEMC.setSyncDir).not.toHaveBeenCalled()
   })
 
-  it('memory:choose-sync-dir enables sync to the chosen folder in one step', async () => {
-    M.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/Dropbox/brain'] } as never)
-    MEMC.setSyncDir.mockResolvedValueOnce({ enabled: true, dir: '/Dropbox/brain' } as never)
-    expect(await invoke('memory:choose-sync-dir')).toEqual({ success: true, data: { enabled: true, dir: '/Dropbox/brain' } })
-  })
-
-  it('memory:choose-sync-dir', async () => {
-    M.showOpenDialog.mockRejectedValueOnce(new Error('no window'))
-    expect(await invoke('memory:choose-sync-dir')).toEqual({ success: false, error: 'no window' })
+  it('memory:choose-sync-dir is refused before a picker opens, so nothing can turn sync on', async () => {
+    M.showOpenDialog.mockClear()
+    MEMC.setSyncDir.mockClear()
+    const res = await invoke('memory:choose-sync-dir') as { success: boolean; error: string }
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/^SYNC_TEMPORARILY_DISABLED/)
+    expect(M.showOpenDialog).not.toHaveBeenCalled()
+    expect(MEMC.setSyncDir).not.toHaveBeenCalled()
   })
 
   it('memory:disable-sync-encryption', async () => {

@@ -10,6 +10,11 @@ const NONCE_BYTES = 12
  *  fits exactly in a JS number, so the check stays integer-exact with no BigInt. */
 export const COUNTER_BYTES = 6
 
+/** The last counter six bytes can carry. `writeCounter` keeps only the low six
+ *  bytes, so the value after it would go on the wire as 0 -- a nonce the key
+ *  has already sealed under. */
+export const MAX_COUNTER = 2 ** 48 - 1
+
 /** What `seal` adds beyond the header and the plaintext.
  *
  *  Summed from the parts rather than written as a literal, so it cannot drift
@@ -41,7 +46,12 @@ export function readCounter(buf: Uint8Array): number {
  *  A key seals in exactly ONE direction, so its counter never repeats and neither
  *  does the nonce — uniqueness is structural, with no birthday bound to reason
  *  about, and 12 bytes per frame stay off the wire. The leading zeros pad a
- *  6-byte counter out to ChaCha20's 12-byte nonce. */
+ *  6-byte counter out to ChaCha20's 12-byte nonce.
+ *
+ *  That holds while one `SealedDirection` owns the key. The handshake key is the
+ *  exception: it depends on the two identity keys alone, and every greeting
+ *  builds a new direction over it -- which is why a greeting starts at a random
+ *  counter (`Handshake`) and that one case does have a birthday bound. */
 function nonceFor(counter: number): Uint8Array {
   const nonce = new Uint8Array(NONCE_BYTES)
   writeCounter(nonce.subarray(NONCE_BYTES - COUNTER_BYTES), counter)
@@ -75,13 +85,23 @@ export function generateIdentity(): { secretKey: string; publicKey: string } {
  */
 export class SealedDirection {
   private readonly key: Uint8Array
+  /** The counter the first `seal` uses. 0 for everything but a session
+   *  greeting, whose key never changes -- see `Handshake`. */
+  private readonly firstCounter: number
   private frames = 0
   /** Highest counter accepted from the peer. Frames at or below it are replays.
    *  Starts at -1 so counter 0 — the peer's first frame — is accepted. */
   private peerHighWater = -1
 
-  constructor(key: Uint8Array) {
+  constructor(key: Uint8Array, firstCounter = 0) {
+    // Refused rather than coerced: a fraction or a value past six bytes would
+    // derive a nonce from a number the counter field cannot carry, and the
+    // receiver would read back a different one.
+    if (!Number.isInteger(firstCounter) || firstCounter < 0 || firstCounter > MAX_COUNTER) {
+      throw new RangeError(`first counter out of range: ${firstCounter}`)
+    }
     this.key = key
+    this.firstCounter = firstCounter
   }
 
   get sentFrames(): number {
@@ -100,7 +120,11 @@ export class SealedDirection {
    *  the nonce, so raising it makes decryption fail and lowering it trips the
    *  replay check below. */
   seal(header: Uint8Array, plaintext: Uint8Array): Uint8Array {
-    const counter = this.frames
+    const counter = this.firstCounter + this.frames
+    // A throw, not a wrap. Counting up from 0 this is out of reach, but a
+    // direction can now START at the last value, and the next frame would go
+    // out at counter 0 -- a nonce this key has used.
+    if (counter > MAX_COUNTER) throw new Error('sealed direction exhausted: no counter left')
     const ct = chacha20poly1305(this.key, nonceFor(counter), header).encrypt(plaintext)
     this.frames++
     const out = new Uint8Array(header.length + COUNTER_BYTES + ct.length)

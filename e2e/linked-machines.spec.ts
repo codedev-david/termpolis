@@ -117,9 +117,36 @@ test.describe.serial('Linked machines settings', () => {
     await expect(byId('linked-relay')).toHaveText(DEAD_RELAY, { timeout: 15000 })
     await expect(byId('linked-create-code')).toBeEnabled()
     await expect(byId('linked-join-input')).toBeVisible()
-    // Run on, write off: the grant a user gives without thinking is the harmless one.
+    // Run on, and nothing more on offer: edit is never granted along with a code, only from a
+    // linked computer's row once its words are confirmed.
     await expect(byId('linked-grant-new-run')).toBeChecked()
-    await expect(byId('linked-grant-new-write')).not.toBeChecked()
+    await expect(byId('linked-grant-new-write')).toHaveCount(0)
+    await expect(byId('linked-join-grant-run')).toBeChecked()
+    await expect(byId('linked-join-grant-write')).toHaveCount(0)
+    expect(savedLinkedSetting()).toEqual({ enabled: true })
+  })
+
+  test('3b. the keys warning is there exactly when this computer has no keychain', async () => {
+    // Main decides by safeStorage alone, so the pane is held to what safeStorage
+    // says here, not to a fixed platform: the Linux runners have no Secret
+    // Service, and there the keys are saved in the clear and the pane says so.
+    const sealed = await app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable())
+    if (sealed) await expect(byId('linked-keys-warning')).toHaveCount(0)
+    else await expect(byId('linked-keys-warning')).toHaveAttribute('data-keys', 'plaintext')
+  })
+
+  test('3c. the job history starts empty, and job notifications switch off and on through the file', async () => {
+    // Read from linked-jobs.jsonl through main: on a fresh profile there is none, and the pane says so.
+    await expect(byId('linked-history-empty')).toHaveText('No other computer has asked this one for a job yet.', {
+      timeout: 15000,
+    })
+    // On by default, and on is written as nothing at all, so the file is as test 3 left it.
+    await expect(byId('linked-notify')).toBeChecked()
+    await byId('linked-notify').click()
+    await expect(byId('linked-notify')).not.toBeChecked({ timeout: 15000 })
+    expect(savedLinkedSetting()).toEqual({ enabled: true, notifyJobs: false })
+    await byId('linked-notify').click()
+    await expect(byId('linked-notify')).toBeChecked({ timeout: 15000 })
     expect(savedLinkedSetting()).toEqual({ enabled: true })
   })
 
@@ -144,7 +171,7 @@ test.describe.serial('Linked machines settings', () => {
     await expect(byId('linked-error')).toHaveCount(0)
     // Locked while the code is out: its grants were chosen with it.
     await expect(byId('linked-grant-new-run')).toBeDisabled()
-    await expect(byId('linked-grant-new-write')).toBeDisabled()
+    await expect(byId('linked-grant-new-write')).toHaveCount(0)
   })
 
   test('5. Copy puts exactly the code on the clipboard', async () => {

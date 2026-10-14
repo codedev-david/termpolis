@@ -12,13 +12,18 @@
 // index, read-only (linkedJob; the stdio adapter enforces it), the job marked in its
 // environment so a nested delegation is refused, nothing written to the brain
 // (output another machine asked for must not become a later run's primer), and
-// read-only unless the write grant is held. The memory primer IS kept: a job
-// run here should start as warm as one started here.
+// read-only unless the write grant is held. The session the agent's CLI saves is
+// kept out of memory too: the CLI is told not to save it where it can be
+// (cliFlagProbe), and the indexer skips one it finds by the delegation header
+// (shared/headlessPrompt). The memory primer IS kept: a job run here should
+// start as warm as one started here.
 //
 // Jobs live in memory only. A restart forgets them, and the asking machine's
-// next poll gets `unknown job`.
+// next poll gets `unknown job`. What ran is written down by linkedHost, in the
+// job history (linkedJobLog), from what this reports in `onActivity`.
 import path from 'path'
 import { normalizeShellPath } from '../shared/cwdPath'
+import { delegationHeader } from '../shared/headlessPrompt'
 import {
   EXEC_DEFAULT_TIMEOUT_MS,
   clampExecTimeout,
@@ -28,6 +33,41 @@ import {
 } from './headlessExec'
 import type { LinkTarget, PeerAgent, PeerHelloInfo, PeerJobView, PeerRequest } from './remoteBridge/protocol'
 import { normalizeGrants, refOf, type LinkedGrants, type LinkMeta } from './linkedStore'
+import type { SecretScreen } from './aiSecurity'
+
+/** What screening text on its way between two computers found, for the audit log: rule ids and
+ *  counts, never the text. */
+export interface LinkedSecretFinding {
+  /** Which way the text was going, seen from this computer. */
+  hop: 'prompt-out' | 'prompt-in' | 'answer-out' | 'answer-in'
+  /** The other computer, by the name this one knows it by. */
+  machine: string
+  agent: string
+  /** Credentials taken out, by rule. */
+  removed: Record<string, number>
+  /** Possible credentials left in, by rule. */
+  flagged: Record<string, number>
+}
+
+/** Several screens' findings, added up. */
+export function mergeScreens(screens: Array<SecretScreen | null>): Pick<SecretScreen, 'removed' | 'flagged'> {
+  const removed: Record<string, number> = {}
+  const flagged: Record<string, number> = {}
+  for (const s of screens) {
+    if (!s) continue
+    for (const [rule, n] of Object.entries(s.removed)) removed[rule] = (removed[rule] ?? 0) + n
+    for (const [rule, n] of Object.entries(s.flagged)) flagged[rule] = (flagged[rule] ?? 0) + n
+  }
+  return { removed, flagged }
+}
+
+/** Whether a screen found anything at all. */
+export const foundAny = (s: Pick<SecretScreen, 'removed' | 'flagged'>): boolean =>
+  Object.keys(s.removed).length > 0 || Object.keys(s.flagged).length > 0
+
+/** The rules a screen matched, removed or left in, once each: what the job history names. */
+const rulesOf = (s: Pick<SecretScreen, 'removed' | 'flagged'>): string[] =>
+  [...new Set([...Object.keys(s.removed), ...Object.keys(s.flagged)])].sort()
 
 /** One row of the activity view, for a job either machine started. */
 export interface LinkedActivity {
@@ -41,6 +81,13 @@ export interface LinkedActivity {
   status: 'running' | 'done' | 'failed' | 'cancelled'
   startedAt: number
   durationMs?: number
+  /** Inbound only: started with the write grant. */
+  write?: boolean
+  /** Inbound only: the folder it runs in. */
+  cwd?: string
+  /** Inbound only, when screening matched any: the prompt's rules while running, the answer's
+   *  once it ends. */
+  secretRules?: string[]
 }
 
 export interface LinkedJobsDeps {
@@ -61,6 +108,11 @@ export interface LinkedJobsDeps {
   randomId(): string
   /** Called when a job starts and on every status change, under the same id. */
   onActivity(a: LinkedActivity): void
+  /** aiSecurity.screenText: credentials out of the prompt before it runs here, and out of the
+   *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. */
+  screen(text: string): SecretScreen
+  /** Told what a screen found, for the audit log. */
+  onSecrets?(finding: LinkedSecretFinding): void
 }
 
 /** The longest prompt another machine may send. Below the 24,000 the spec
@@ -128,7 +180,11 @@ interface Job {
   agent: PeerAgent
   /** Started with the write grant: the one grant it stops running without. */
   write: boolean
+  cwd: string
   summary: string
+  /** What screening matched in the prompt, and in the answer once there is one. */
+  promptRules: string[]
+  answerRules: string[]
   startedAt: number
   status: JobStatus
   finishedAt: number
@@ -154,6 +210,10 @@ function printable(text: string): string {
   const clean = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
   return clean.length > MAX_ECHO_CHARS ? `${clean.slice(0, MAX_ECHO_CHARS - 1)}\u2026` : clean
 }
+
+/** What goes back in place of output or an error that couldn't be checked for
+ *  credentials: nothing leaves this computer unscreened. */
+export const WITHHELD = '[Termpolis could not check this for credentials, so it was withheld.]'
 
 /** What the activity view shows for a prompt: its first line with text in it,
  *  flattened to plain spaces, at most 80 characters. */
@@ -203,6 +263,7 @@ function outcomeOf(r: ExecResult): Outcome {
 export function createLinkedJobs(deps: LinkedJobsDeps): {
   handle(from: LinkTarget, meta: LinkMeta, req: PeerRequest): Promise<unknown>
   revoke(from: LinkTarget, grants: LinkedGrants | null): void
+  stopLocal(id: string): boolean
   cancelAll(): void
 } {
   const jobs = new Map<string, Job>()
@@ -223,7 +284,28 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
   }
 
+  /** deps.screen for what leaves, failing closed. A screen that throws must not
+   *  throw out of finish(), which nothing above would catch. */
+  function screenOrWithhold(text: string): SecretScreen {
+    try {
+      return deps.screen(text)
+    } catch {
+      return { text: WITHHELD, removed: {}, flagged: {} }
+    }
+  }
+
+  function reportSecrets(job: Job, hop: LinkedSecretFinding['hop'], found: Pick<SecretScreen, 'removed' | 'flagged'>): void {
+    if (!deps.onSecrets || !foundAny(found)) return
+    try {
+      // The counts only: a screen's text still holds what it left in.
+      deps.onSecrets({ hop, machine: job.machine, agent: job.agent, removed: found.removed, flagged: found.flagged })
+    } catch {
+      /* the job outlives an audit log that broke */
+    }
+  }
+
   function emit(job: Job): void {
+    const rules = job.status === 'running' ? job.promptRules : job.answerRules
     try {
       deps.onActivity({
         id: job.id,
@@ -235,6 +317,9 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
         status: job.status,
         startedAt: job.startedAt,
         ...(job.durationMs !== undefined ? { durationMs: job.durationMs } : {}),
+        write: job.write,
+        cwd: job.cwd,
+        ...(rules.length > 0 ? { secretRules: rules } : {}),
       })
     } catch {
       /* the job outlives a listener that broke */
@@ -264,12 +349,25 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     job.status = outcome.status
     job.finishedAt = now
     job.durationMs = Math.max(0, now - job.startedAt)
+    // Credentials go before the answer leaves. Its tail is taken first, so a huge stdout is never
+    // screened whole on the main thread, and capped again after: a marker can be longer than what
+    // it replaced.
+    let output: SecretScreen | null = null
     if (outcome.output !== undefined) {
-      const { text, cut } = capOutput(outcome.output)
+      const tail = capTail(outcome.output, MAX_OUTPUT_CHARS)
+      output = screenOrWithhold(tail.text)
+      const { text, cut } = capOutput(output.text)
       job.output = text
-      if (cut) job.truncated = true
+      if (tail.cut || cut) job.truncated = true
     }
-    if (outcome.error !== undefined) job.error = capError(outcome.error)
+    let error: SecretScreen | null = null
+    if (outcome.error !== undefined) {
+      error = screenOrWithhold(capError(outcome.error))
+      job.error = capError(error.text)
+    }
+    const found = mergeScreens([output, error])
+    job.answerRules = rulesOf(found)
+    reportSecrets(job, 'answer-out', found)
     job.settle()
     emit(job)
     prune()
@@ -361,9 +459,22 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
     const agent = req.agent
     if (!isExecAgent(agent)) throw new Error('Invalid agent: expected claude, codex or gemini.')
-    const prompt = req.prompt
-    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > MAX_PROMPT_CHARS) {
+    const raw = req.prompt
+    if (typeof raw !== 'string' || !raw.trim() || raw.length > MAX_PROMPT_CHARS) {
       throw new Error(`Invalid prompt: expected 1 to ${MAX_PROMPT_CHARS} characters.`)
+    }
+    // A new asking computer screens its own prompt; this is the backstop for a 1.50-1.52 one,
+    // which doesn't. What runs here, and what the activity view shows, is the screened text, and
+    // a prompt that can't be screened doesn't run.
+    let screened: SecretScreen
+    try {
+      screened = deps.screen(raw)
+    } catch {
+      throw new Error(`${here()} could not check the prompt for credentials, so it did not run it. Try again.`)
+    }
+    const prompt = screened.text
+    if (prompt.length > MAX_PROMPT_CHARS) {
+      throw new Error(`Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`)
     }
     const model = absent(req.model) ? undefined : req.model
     if (model !== undefined && (typeof model !== 'string' || !deps.isSafeModel(model))) {
@@ -405,7 +516,10 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       machine: meta.name,
       agent,
       write,
+      cwd,
       summary: activitySummary(prompt),
+      promptRules: rulesOf(screened),
+      answerRules: [],
       startedAt: deps.now(),
       status: 'running',
       finishedAt: 0,
@@ -415,11 +529,12 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
     jobs.set(id, job)
     emit(job)
+    reportSecrets(job, 'prompt-in', screened)
 
     const request: ExecRequest = {
-      task:
-        `[Delegated by "${meta.name}" over Termpolis Linked machines. Working folder: ${cwd}. ` +
-        `Your final message is returned to the agent that asked.]\n\n${prompt}`,
+      // The header is also how this computer's memory indexer knows the session, once the agent's
+      // CLI has saved it, as one it must not learn from (shared/headlessPrompt).
+      task: `${delegationHeader(meta.name, cwd)}\n\n${prompt}`,
       agent,
       ...(model !== undefined ? { model } : {}),
       cwd,
@@ -514,6 +629,16 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
         job.controller.abort()
         finish(job, { status: 'cancelled', error: why })
       }
+    },
+
+    /** The user here stopped one job, from Settings: true when it was running. The
+     *  asking machine's next poll reads why. */
+    stopLocal(id) {
+      const job = jobs.get(id)
+      if (!job || job.status !== 'running') return false
+      job.controller.abort()
+      finish(job, { status: 'cancelled', error: `Stopped on ${here()} by its user.` })
+      return true
     },
 
     /** Stop every running job, for when linked machines is switched off or the

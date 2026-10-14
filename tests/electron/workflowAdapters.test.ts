@@ -100,6 +100,102 @@ describe('tool invoker adapter', () => {
     const r = await runner.invoke('nope', {}, 1000)
     expect(r.ok).toBe(false); expect(r.error).toBe('bad tool')
   })
+  it('a tool that answers { error } as data fails the step, its answer kept as the output', async () => {
+    // linked_machines answers every failure this way, so an agent can read why. A step has no agent.
+    const answer = { error: '"linux" is offline — Termpolis must be running there.', machine: 'linux' }
+    const runner = makeToolInvoker({} as any, async () => answer)
+    expect(await runner.invoke('linked_machines', { action: 'run' }, 1000)).toEqual({
+      output: JSON.stringify(answer), ok: false, error: answer.error,
+    })
+  })
+  it('an empty or non-string error field is not a failure', async () => {
+    for (const res of [{ error: '' }, { error: null }, { error: 3 }, ['error'], 'error', null]) {
+      const runner = makeToolInvoker({} as any, async () => res)
+      expect((await runner.invoke('t', {}, 1000)).ok).toBe(true)
+    }
+  })
+  it('a tool that answers nothing gives an empty output, not undefined', async () => {
+    const runner = makeToolInvoker({} as any, async () => undefined)
+    expect(await runner.invoke('run_command', {}, 1000)).toEqual({ output: '', ok: true })
+  })
+  it("fails a step whose tool outlasts the step's timeout, and drops the late answer", async () => {
+    vi.useFakeTimers()
+    try {
+      let answer!: (v: unknown) => void
+      const runner = makeToolInvoker({} as any, () => new Promise((resolve) => { answer = resolve }))
+      const pending = runner.invoke('memory_search', {}, 5_000)
+      await vi.advanceTimersByTimeAsync(4_999)
+      let settled = false
+      void pending.then(() => { settled = true })
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await pending).toEqual({ output: '', ok: false, error: 'memory_search timed out after 5000ms' })
+      answer({ late: true })
+      await Promise.resolve()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it('waits as long as the tool takes when the step sets no timeout, with no timer at all', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer!: (v: unknown) => void
+      const runner = makeToolInvoker({} as any, () => new Promise((resolve) => { answer = resolve }))
+      for (const none of [undefined, null]) {
+        const pending = runner.invoke('agent_exec', {}, none as unknown as undefined)
+        expect(vi.getTimerCount()).toBe(0)
+        await vi.advanceTimersByTimeAsync(3_600_000)
+        answer({ ok: true })
+        expect(await pending).toEqual({ output: '{"ok":true}', ok: true })
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it('clears its timer once the tool answers, and on a throw', async () => {
+    vi.useFakeTimers()
+    try {
+      const ok = makeToolInvoker({} as any, async () => 'done')
+      expect(await ok.invoke('t', {}, 60_000)).toEqual({ output: 'done', ok: true })
+      const bad = makeToolInvoker({} as any, async () => { throw new Error('x') })
+      await bad.invoke('t', {}, 60_000)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it("holds a timeout past setTimeout's ceiling to the ceiling instead of firing at once", async () => {
+    vi.useFakeTimers()
+    try {
+      const runner = makeToolInvoker({} as any, () => new Promise(() => {}))
+      const pending = runner.invoke('t', {}, Number.POSITIVE_INFINITY)
+      await vi.advanceTimersByTimeAsync(60_000)
+      let settled = false
+      void pending.then(() => { settled = true })
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(2_147_483_647)
+      expect((await pending).error).toBe('t timed out after 2147483647ms')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it('reads a timeout that is not a number as none left', async () => {
+    vi.useFakeTimers()
+    try {
+      const runner = makeToolInvoker({} as any, () => new Promise(() => {}))
+      const pending = runner.invoke('t', {}, Number.NaN)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(await pending).toEqual({ output: '', ok: false, error: 't timed out after 0ms' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it('reports a thrown non-Error as its text', async () => {
+    const runner = makeToolInvoker({} as any, async () => { throw 'plain' })
+    expect(await runner.invoke('t', {}, 1000)).toEqual({ output: '', ok: false, error: 'plain' })
+  })
 })
 
 describe('realTimer', () => {

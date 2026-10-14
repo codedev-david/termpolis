@@ -6,10 +6,12 @@ import { LinkedMachinesSettings } from '../../src/renderer/src/components/Settin
 import type {
   LinkedActivityView,
   LinkedEvent,
+  LinkedJobRecord,
   LinkedMachineView,
   LinkedStatusView,
 } from '../../src/renderer/src/types'
 import { DEFAULT_RELAY_URL } from '../../src/main/remoteBridge/protocol'
+import { __setPlatformForTests } from '../../src/renderer/src/lib/platform'
 
 const ok = <T,>(data: T) => ({ success: true as const, data })
 const fail = (error: string) => ({ success: false as const, error })
@@ -41,11 +43,16 @@ const statusView = (over: Partial<LinkedStatusView> = {}): LinkedStatusView => (
   running: true,
   relay: 'idle',
   relayUrl: DEFAULT_RELAY_URL,
+  relayInsecure: false,
   thisMachine: 'laptop',
   code: null,
   joining: false,
   machines: [],
   activity: [],
+  keyStorage: 'keychain',
+  keysUnencrypted: false,
+  notifyJobs: true,
+  jobLogVersion: 0,
   ...over,
 })
 
@@ -87,6 +94,9 @@ beforeEach(() => {
     rename: vi.fn().mockResolvedValue(ok(statusView())),
     setGrants: vi.fn().mockResolvedValue(ok(statusView())),
     unlink: vi.fn().mockResolvedValue(ok(statusView())),
+    setNotify: vi.fn().mockResolvedValue(ok(statusView({ notifyJobs: false }))),
+    stopJob: vi.fn().mockResolvedValue(ok(statusView())),
+    jobLog: vi.fn().mockResolvedValue(ok([])),
     onStatus: vi.fn((cb: (s: LinkedStatusView) => void) => {
       pushStatus = cb
       return offStatus
@@ -97,10 +107,13 @@ beforeEach(() => {
     }),
   }
   win.linked = api
+  // The edit copy for Codex depends on this computer's OS; tests pick one rather than inherit the runner's.
+  __setPlatformForTests('linux')
 })
 
 afterEach(() => {
   cleanup()
+  __setPlatformForTests(null)
   delete win.linked
   delete win.termpolis
   delete (navigator as unknown as { clipboard?: unknown }).clipboard
@@ -230,6 +243,38 @@ describe('LinkedMachinesSettings switch and relay', () => {
     expect(text()).toBe('(connected to the relay)')
   })
 
+  it('warns while the Remote relay is plain ws:// to another computer, and does not call it connecting', async () => {
+    // This machine's rooms are never dialled on that relay, so a computer that
+    // entered its code will not come back by waiting. Links it joined still can.
+    api.status.mockResolvedValue(
+      ok(
+        statusView({
+          relayUrl: 'ws://10.0.0.5:8787',
+          relayInsecure: true,
+          machines: [machine({ ref: 'device:bbbb', online: false })],
+        }),
+      ),
+    )
+    await mount()
+    const warning = screen.getByTestId('linked-relay-insecure')
+    expect(warning.textContent).toContain('not encrypted')
+    expect(warning.textContent).toContain('Settings ▸ Remote')
+    expect(screen.getByTestId('linked-relay').textContent).toBe('ws://10.0.0.5:8787')
+    expect(screen.getByTestId('linked-running').textContent).toBe('(not connected)')
+
+    // A link this machine joined is on the other computer's relay, and online.
+    act(() =>
+      pushStatus(
+        statusView({ relayUrl: 'ws://10.0.0.5:8787', relayInsecure: true, machines: [machine({ online: true })] }),
+      ),
+    )
+    expect(screen.getByTestId('linked-running').textContent).toBe('(connected to the relay)')
+    expect(screen.getByTestId('linked-relay-insecure')).toBeTruthy()
+
+    act(() => pushStatus(statusView()))
+    expect(screen.queryByTestId('linked-relay-insecure')).toBeNull()
+  })
+
   it('says so when the bridge is not connected', async () => {
     api.status.mockResolvedValue(ok(statusView({ running: false })))
     await mount()
@@ -264,30 +309,26 @@ describe('LinkedMachinesSettings link a computer', () => {
   it('offers run, and only run, before a code is made', async () => {
     await mount()
     expect(input('linked-grant-new-run').checked).toBe(true)
-    expect(input('linked-grant-new-write').checked).toBe(false)
+    // Edit is never chosen with a code: whoever enters it first has not had its words checked.
+    expect(screen.queryByTestId('linked-grant-new-write')).toBeNull()
+    expect(screen.queryByTestId('linked-grant-new-write-risk')).toBeNull()
     const section = within(screen.getByTestId('linked-link-section'))
     expect(section.getByText('Run agents here (read-only)')).toBeTruthy()
-    expect(section.getByText('Let agents edit files and run commands here')).toBeTruthy()
-    // The risky grant says what it risks, in amber, where it is granted.
-    const risk = screen.getByTestId('linked-grant-new-write-risk')
-    expect(risk.textContent).toContain('without asking')
-    expect(risk.className).toContain('e5c07b')
+    expect(section.queryByText('Let agents edit files and run commands here')).toBeNull()
+    // ...and the form says where it went.
+    expect(screen.getByTestId('linked-grant-new-edit-later').textContent).toContain('from its row')
   })
 
-  it('creates a code with exactly the grants ticked', async () => {
+  it('creates a code with exactly the grant ticked', async () => {
     await mount()
-    fireEvent.click(screen.getByTestId('linked-grant-new-write'))
-    // Write implies run, so ticking write leaves run ticked.
-    expect(input('linked-grant-new-run').checked).toBe(true)
     fireEvent.click(screen.getByTestId('linked-create-code'))
-    await waitFor(() => expect(api.createCode).toHaveBeenCalledWith({ run: true, write: true }))
+    await waitFor(() => expect(api.createCode).toHaveBeenCalledWith({ run: true, write: false }))
   })
 
-  it('takes write away with run', async () => {
+  it('creates a code that may do nothing yet, when run is unticked', async () => {
     await mount()
-    fireEvent.click(screen.getByTestId('linked-grant-new-write'))
     fireEvent.click(screen.getByTestId('linked-grant-new-run'))
-    expect(input('linked-grant-new-write').checked).toBe(false)
+    expect(input('linked-grant-new-run').checked).toBe(false)
     fireEvent.click(screen.getByTestId('linked-create-code'))
     await waitFor(() => expect(api.createCode).toHaveBeenCalledWith({ run: false, write: false }))
   })
@@ -300,9 +341,8 @@ describe('LinkedMachinesSettings link a computer', () => {
     expect(screen.getByTestId('linked-copy').textContent).toContain('Copy')
     expect(screen.getByTestId('linked-cancel-code')).toBeTruthy()
     expect(screen.queryByTestId('linked-create-code')).toBeNull()
-    // The grants were sent with the code; changing the boxes now would change nothing.
+    // The grants were sent with the code; changing the box now would change nothing.
     expect(input('linked-grant-new-run').disabled).toBe(true)
-    expect(input('linked-grant-new-write').disabled).toBe(true)
   })
 
   it('waits visibly for a code the bridge has not minted yet', async () => {
@@ -446,10 +486,11 @@ describe('LinkedMachinesSettings link a computer', () => {
 })
 
 describe('LinkedMachinesSettings enter a code', () => {
-  it('links with the pasted code, trimmed, and the grants ticked', async () => {
+  it('links with the pasted code, trimmed, and the grant ticked', async () => {
     await mount()
     expect(input('linked-join-grant-run').checked).toBe(true)
-    expect(input('linked-join-grant-write').checked).toBe(false)
+    expect(screen.queryByTestId('linked-join-grant-write')).toBeNull()
+    expect(screen.getByTestId('linked-join-grant-edit-later').textContent).toContain('confirmed its safety words')
     fireEvent.change(screen.getByTestId('linked-join-input'), { target: { value: `  ${CODE}\n` } })
     fireEvent.click(screen.getByTestId('linked-join-button'))
     await waitFor(() => expect(api.join).toHaveBeenCalledWith(CODE, { run: true, write: false }))
@@ -465,15 +506,12 @@ describe('LinkedMachinesSettings enter a code', () => {
     expect(button('linked-join-button').disabled).toBe(false)
   })
 
-  it('applies write-implies-run to the joining grants too', async () => {
+  it('links read-only or with nothing at all, never with edit', async () => {
     await mount()
-    fireEvent.click(screen.getByTestId('linked-join-grant-write'))
-    expect(input('linked-join-grant-run').checked).toBe(true)
-    expect(input('linked-join-grant-write').checked).toBe(true)
+    fireEvent.click(screen.getByTestId('linked-join-grant-run'))
     fireEvent.change(screen.getByTestId('linked-join-input'), { target: { value: CODE } })
     fireEvent.click(screen.getByTestId('linked-join-button'))
-    await waitFor(() => expect(api.join).toHaveBeenCalledWith(CODE, { run: true, write: true }))
-    expect(screen.getByTestId('linked-join-grant-write-risk').className).toContain('e5c07b')
+    await waitFor(() => expect(api.join).toHaveBeenCalledWith(CODE, { run: false, write: false }))
   })
 
   it('shows progress while joining, and cancels it', async () => {
@@ -518,6 +556,31 @@ describe('LinkedMachinesSettings confirmation', () => {
     expect(within(card).getByTestId('linked-phrase').textContent).toBe(PHRASE)
     expect((within(card).getByTestId('linked-name-input') as HTMLInputElement).value).toBe('linux-box')
     expect(within(card).getByTestId('linked-confirm').textContent).toBe('They match — link')
+  })
+
+  it('tells the computer that made the code that no words on the other screen means someone else used it', async () => {
+    // The interception symptom. Whoever redeems a code first gets this card;
+    // the person who meant to use it sees no words at all, still contacting or
+    // timed out -- so "they do not match" alone never fires.
+    await mount()
+    act(() => pushEvent(pending({ ref: 'device:bbbb' })))
+    const advice = within(screen.getByTestId('linked-pending-device:bbbb')).getByTestId('linked-phrase-advice')
+    expect(advice.textContent).toContain('A computer just used your code')
+    expect(advice.textContent).toContain('no words at all')
+    expect(advice.textContent).toContain('Contacting the other computer…')
+    expect(advice.textContent).toContain('No answer')
+    expect(advice.textContent).toContain('someone else used your code')
+  })
+
+  it('tells the computer that entered a code to cancel on different words or none', async () => {
+    await mount()
+    act(() => pushEvent(pending({ ref: 'link:aaaa' })))
+    const advice = within(screen.getByTestId('linked-pending-link:aaaa')).getByTestId('linked-phrase-advice')
+    expect(advice.textContent).toContain('these same 8 words, in the same order')
+    expect(advice.textContent).toContain('different words or none')
+    // Its own screen is the one that has words, so the host's long form would
+    // describe a situation this side cannot be in.
+    expect(advice.textContent).not.toContain('used your code')
   })
 
   it('confirms with the name the user chose', async () => {
@@ -586,6 +649,7 @@ describe('LinkedMachinesSettings confirmation', () => {
     await mount()
     const card = screen.getByTestId('linked-pending-link:aaaa')
     expect(within(card).getByTestId('linked-phrase-missing').textContent).toContain('Cancel it')
+    expect(within(card).queryByTestId('linked-phrase-advice')).toBeNull()
     expect(within(card).queryByTestId('linked-confirm')).toBeNull()
     expect(within(card).queryByTestId('linked-name-input')).toBeNull()
     expect(within(card).getByTestId('linked-cancel-pending')).toBeTruthy()
@@ -664,7 +728,32 @@ describe('LinkedMachinesSettings machines', () => {
     expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
     expect(input('linked-grant-device:bbbb-write').checked).toBe(true)
     const row = screen.getByTestId('linked-machine-device:bbbb')
+    // What edit hands over, per agent, in amber, where it is granted.
+    const risk = screen.getByTestId('linked-grant-device:bbbb-write-risk')
+    expect(risk.textContent).toContain('full access as you')
+    expect(risk.textContent).toContain('Codex runs in its own sandbox: it changes files only in its folder and temporary folders')
+    expect(risk.textContent).toContain('Termpolis switches its network off, for its sandbox to enforce.')
+    expect(risk.textContent).toContain('Allow this only for a computer you trust as much as this one.')
+    expect(risk.className).toContain('e5c07b')
     expect(row.textContent).toContain('without asking')
+    // A computer that may edit says so at a glance; one that may not doesn't.
+    expect(screen.getByTestId('linked-full-access-device:bbbb').textContent).toBe('full access')
+    expect(screen.getByTestId('linked-full-access-device:bbbb').title).toContain('Codex in its sandbox, network off')
+    expect(screen.queryByTestId('linked-full-access-link:aaaa')).toBeNull()
+  })
+
+  it('on a Windows computer, calls a Codex edit job full access too: its sandbox is unconfirmed there', async () => {
+    __setPlatformForTests('win32')
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine({ ref: 'device:bbbb', grants: { run: true, write: true } }), machine()] })))
+    await mount()
+    const risk = screen.getByTestId('linked-grant-device:bbbb-write-risk')
+    expect(risk.textContent).toContain('On Windows, treat it as full access too')
+    expect(risk.textContent).not.toContain('for its sandbox to enforce')
+    expect(screen.getByTestId('linked-full-access-device:bbbb').title).toContain('on Windows Codex too')
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    const panel = screen.getByTestId('linked-write-confirm-link:aaaa')
+    expect(panel.textContent).toContain('Codex: in its sandbox.')
+    expect(panel.textContent).toContain("isn't confirmed")
   })
 
   it('renames on Enter and then follows the saved name', async () => {
@@ -747,14 +836,102 @@ describe('LinkedMachinesSettings machines', () => {
     await waitFor(() => expect(field.value).toBe('linux'))
   })
 
-  it('sends the whole grants object, granting run along with write', async () => {
+  it('asks before turning edit on, in the row, and saying what it means per agent', async () => {
     api.status.mockResolvedValue(
       ok(statusView({ machines: [machine({ grants: { run: false, write: false } })] })),
     )
     await mount()
     fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    // Nothing is sent by the tick itself, and the box follows main, so it stays clear.
+    expect(api.setGrants).not.toHaveBeenCalled()
+    expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
+    const panel = screen.getByTestId('linked-write-confirm-link:aaaa')
+    expect(panel.textContent).toContain('Let linux edit files and run commands here?')
+    expect(panel.textContent).toContain('Claude and Gemini: full access.')
+    expect(panel.textContent).toContain('reach your other linked computers')
+    expect(panel.textContent).toContain('Codex: in its sandbox.')
+    expect(panel.textContent).toContain('temporary folders')
+    expect(panel.textContent).toContain('switches its network off')
+  })
+
+  it('leaves edit off when the question is cancelled', async () => {
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine()] })))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    fireEvent.click(screen.getByTestId('linked-write-cancel-link:aaaa'))
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+    expect(api.setGrants).not.toHaveBeenCalled()
+    expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
+  })
+
+  it('turns edit on with Allow, sending the whole grants object and the say-so main asks for', async () => {
+    api.status.mockResolvedValue(
+      ok(statusView({ machines: [machine({ grants: { run: false, write: false } })] })),
+    )
+    api.setGrants.mockResolvedValue(
+      ok(statusView({ machines: [machine({ grants: { run: true, write: true } })] })),
+    )
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    fireEvent.click(screen.getByTestId('linked-write-allow-link:aaaa'))
     await waitFor(() =>
-      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: true, write: true }),
+      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: true, write: true }, true),
+    )
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+    await waitFor(() => expect(input('linked-grant-link:aaaa-write').checked).toBe(true))
+    expect(screen.getByTestId('linked-full-access-link:aaaa')).toBeTruthy()
+  })
+
+  it('shows a refused Allow and leaves edit off', async () => {
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine()] })))
+    api.setGrants.mockResolvedValue(fail('Confirm the safety words before letting this computer edit files here.'))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    fireEvent.click(screen.getByTestId('linked-write-allow-link:aaaa'))
+    expect((await screen.findByTestId('linked-error')).textContent).toContain('safety words')
+    expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
+  })
+
+  it('closes the question when edit arrives some other way', async () => {
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine()] })))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    expect(screen.getByTestId('linked-write-confirm-link:aaaa')).toBeTruthy()
+    act(() => pushStatus(statusView({ machines: [machine({ grants: { run: true, write: true } })] })))
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+  })
+
+  it('offers edit only once the safety words are confirmed', async () => {
+    api.status.mockResolvedValue(
+      ok(
+        statusView({
+          machines: [
+            machine({ confirmed: false, phrase: PHRASE }),
+            // Edit an older version granted with a code: it can still be switched off.
+            machine({ ref: 'device:bbbb', name: 'mac', confirmed: false, grants: { run: true, write: true } }),
+          ],
+        }),
+      ),
+    )
+    await mount()
+    expect(input('linked-grant-link:aaaa-write').disabled).toBe(true)
+    expect(input('linked-grant-link:aaaa-run').disabled).toBe(false)
+    expect(input('linked-grant-device:bbbb-write').disabled).toBe(false)
+    fireEvent.click(screen.getByTestId('linked-grant-device:bbbb-write'))
+    await waitFor(() =>
+      expect(api.setGrants).toHaveBeenCalledWith('device:bbbb', { run: true, write: false }, undefined),
+    )
+  })
+
+  it('turns edit off at once: switching it off needs no question', async () => {
+    api.status.mockResolvedValue(
+      ok(statusView({ machines: [machine({ grants: { run: true, write: true } })] })),
+    )
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+    await waitFor(() =>
+      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: true, write: false }, undefined),
     )
   })
 
@@ -768,7 +945,7 @@ describe('LinkedMachinesSettings machines', () => {
     await mount()
     fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-run'))
     await waitFor(() =>
-      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: false, write: false }),
+      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: false, write: false }, undefined),
     )
     await waitFor(() => expect(input('linked-grant-link:aaaa-write').checked).toBe(false))
   })
@@ -845,6 +1022,158 @@ describe('LinkedMachinesSettings activity', () => {
   })
 })
 
+describe('LinkedMachinesSettings: stopping a job another computer runs here', () => {
+  it('offers Stop on a job running here, and only there', async () => {
+    api.status.mockResolvedValue(
+      ok(
+        statusView({
+          activity: [
+            job({ id: 'in-run', direction: 'in', status: 'running' }),
+            job({ id: 'in-done', direction: 'in', status: 'done' }),
+            job({ id: 'out-run', direction: 'out', status: 'running' }),
+          ],
+        }),
+      ),
+    )
+    await mount()
+    expect(screen.getByTestId('linked-stop-in-run')).toBeTruthy()
+    expect(screen.queryByTestId('linked-stop-in-done')).toBeNull()
+    // One this computer asked for runs over there: it is stopped there.
+    expect(screen.queryByTestId('linked-stop-out-run')).toBeNull()
+    fireEvent.click(screen.getByTestId('linked-stop-in-run'))
+    await waitFor(() => expect(api.stopJob).toHaveBeenCalledWith('in-run'))
+  })
+
+  it('shows a refused Stop', async () => {
+    api.status.mockResolvedValue(ok(statusView({ activity: [job({ id: 'x', direction: 'in', status: 'running' })] })))
+    api.stopJob.mockResolvedValue(fail('That job is not running on this computer.'))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-stop-x'))
+    expect((await screen.findByTestId('linked-error')).textContent).toContain('not running')
+  })
+})
+
+describe('LinkedMachinesSettings: job notifications', () => {
+  it('shows the switch as main has it, and sends the change', async () => {
+    await mount()
+    expect(input('linked-notify').checked).toBe(true)
+    fireEvent.click(screen.getByTestId('linked-notify'))
+    await waitFor(() => expect(api.setNotify).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(input('linked-notify').checked).toBe(false))
+  })
+})
+
+describe('LinkedMachinesSettings: job history', () => {
+  const T = Date.now() - 3_600_000
+  const record = (over: Partial<LinkedJobRecord>): LinkedJobRecord => ({
+    ts: T,
+    event: 'started',
+    jobId: '0123456789ab',
+    ref: 'device:bbbb',
+    machine: 'build-box',
+    ...over,
+  })
+
+  it('says so when no computer has asked for a job yet', async () => {
+    await mount()
+    await waitFor(() => expect(api.jobLog).toHaveBeenCalledWith(200))
+    expect(screen.getByTestId('linked-history-empty').textContent).toContain('No other computer')
+  })
+
+  it('says it is reading until the history arrives, and keeps what it had when a read fails', async () => {
+    let answer: (v: unknown) => void = () => {}
+    api.jobLog.mockReturnValue(new Promise((r) => (answer = r)))
+    await mount()
+    expect(screen.getByTestId('linked-history-empty').textContent).toContain('Reading')
+    await act(async () => answer(fail('Linked machines is not running in this session')))
+    expect(screen.getByTestId('linked-history-empty').textContent).toContain('Reading')
+  })
+
+  it('lists each job once, joined to how it ended, with edit, the folder and what screening found', async () => {
+    api.jobLog.mockResolvedValue(
+      ok([
+        record({ ts: T + 60_000, event: 'finished', status: 'done', durationMs: 65_000, agent: 'claude', secretRules: ['gh_pat'] }),
+        record({ agent: 'claude', write: true, cwd: '/home/me/repos/app', summary: 'Fix the parser', secretRules: ['password_literal'] }),
+      ]),
+    )
+    await mount()
+    const row = await screen.findByTestId('linked-history-0123456789ab')
+    expect(row.textContent).toContain('from build-box')
+    expect(row.textContent).toContain('claude')
+    expect(row.textContent).toContain('Fix the parser')
+    expect(row.textContent).toContain('done')
+    expect(row.textContent).toContain('1m 5s')
+    expect(row.textContent).toContain('in app')
+    expect(within(row).getByTitle('/home/me/repos/app')).toBeTruthy()
+    expect(screen.getByTestId('linked-history-edit-0123456789ab').textContent).toBe('edit')
+    expect(screen.getByTestId('linked-history-secrets-0123456789ab').textContent).toBe(
+      'credentials screened: gh_pat, password_literal',
+    )
+    expect(screen.getAllByTestId(/^linked-history-0123456789ab$/)).toHaveLength(1)
+  })
+
+  it('shows a job known only by its end, and a folder that is a root as it is', async () => {
+    api.jobLog.mockResolvedValue(
+      ok([
+        record({ jobId: '111111111111', event: 'finished', status: 'cancelled', durationMs: 1_000 }),
+        record({ jobId: '222222222222', cwd: '/', summary: 'At the root' }),
+      ]),
+    )
+    await mount()
+    const ended = await screen.findByTestId('linked-history-111111111111')
+    expect(ended.textContent).toContain('cancelled')
+    expect(ended.textContent).not.toContain('undefined')
+    expect(screen.getByTestId('linked-history-222222222222').textContent).toContain('in /')
+  })
+
+  it('lists a refusal with its reason, and how many more came that minute', async () => {
+    api.jobLog.mockResolvedValue(
+      ok([
+        record({ ts: T + 1, event: 'refused', jobId: undefined, reason: 'build-box does not let this computer edit files.', count: 3 }),
+        record({ ts: T, event: 'refused', jobId: undefined, ref: '', machine: 'unknown computer', reason: 'Malformed linked-machine request.' }),
+      ]),
+    )
+    await mount()
+    const rows = await screen.findAllByTestId(/^linked-history-refused-/)
+    expect(rows).toHaveLength(2)
+    expect(rows[0].textContent).toContain('refused')
+    expect(rows[0].textContent).toContain('does not let this computer edit files. (and 3 more that minute)')
+    expect(rows[1].textContent).toContain('from unknown computer')
+    expect(rows[1].textContent).not.toContain('more that minute')
+  })
+
+  it("says a job is running while it is, and that its end wasn't recorded once it isn't", async () => {
+    api.status.mockResolvedValue(ok(statusView({ activity: [job({ id: '0123456789ab', direction: 'in', status: 'running' })] })))
+    api.jobLog.mockResolvedValue(ok([record({ agent: 'codex', summary: 'Still going' })]))
+    await mount()
+    const row = await screen.findByTestId('linked-history-0123456789ab')
+    expect(within(row).getByText('running')).toBeTruthy()
+    // No longer running, and no end line: Termpolis quit before it could be written.
+    act(() => pushStatus(statusView()))
+    expect(within(screen.getByTestId('linked-history-0123456789ab')).getByText('no end recorded')).toBeTruthy()
+  })
+
+  it('reads the history again only when main says a line was written', async () => {
+    await mount()
+    await waitFor(() => expect(api.jobLog).toHaveBeenCalledTimes(1))
+    act(() => pushStatus(statusView({ relay: 'online' })))
+    expect(api.jobLog).toHaveBeenCalledTimes(1)
+    api.jobLog.mockResolvedValue(ok([record({ summary: 'New job' })]))
+    act(() => pushStatus(statusView({ jobLogVersion: 1 })))
+    await waitFor(() => expect(api.jobLog).toHaveBeenCalledTimes(2))
+    expect((await screen.findByTestId('linked-history-0123456789ab')).textContent).toContain('New job')
+  })
+
+  it('drops an answer that comes back after the pane has gone', async () => {
+    let answer: (v: unknown) => void = () => {}
+    api.jobLog.mockReturnValue(new Promise((r) => (answer = r)))
+    await mount()
+    cleanup()
+    await act(async () => answer(ok([record({})])))
+    expect(screen.queryByTestId('linked-history-0123456789ab')).toBeNull()
+  })
+})
+
 describe('LinkedMachinesSettings clock', () => {
   it('refreshes relative times once a minute', async () => {
     vi.useFakeTimers()
@@ -865,5 +1194,66 @@ describe('LinkedMachinesSettings clock', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('LinkedMachinesSettings: the keys', () => {
+  // The banner is Remote's own component; these hold this pane to its half: the
+  // status it reads, and the channels its two buttons call.
+  it('says nothing while the keys are sealed by a keychain', async () => {
+    await mount()
+    expect(screen.queryByTestId('linked-keys-warning')).toBeNull()
+  })
+
+  it('locked: Start over, after its warning, goes through this pane and takes the answer', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'locked', keyLockReason: 'unwrap-failed' })))
+    api.startOver = vi.fn().mockResolvedValue(ok(statusView()))
+    await mount()
+    expect(screen.getByTestId('linked-keys-warning').textContent).toContain('password reset')
+    fireEvent.click(button('linked-keys-start-over'))
+    expect(api.startOver).not.toHaveBeenCalled()
+    fireEvent.click(button('linked-keys-start-over-confirm'))
+    await waitFor(() => expect(api.startOver).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId('linked-keys-warning')).toBeNull())
+  })
+
+  it('only the links file locked: says the phones keep working, and that Start over costs the links only', async () => {
+    for (const reason of ['no-keychain', 'unwrap-failed', 'unreadable', undefined] as const) {
+      api.status.mockResolvedValue(ok(statusView({ keyStorage: 'locked', keyLockReason: reason, keyLockLinksOnly: true })))
+      await mount()
+      const banner = screen.getByTestId('linked-keys-warning')
+      expect(banner.textContent).toContain("the file that holds this computer's links to your other computers")
+      expect(banner.textContent).toContain('your phones keep working')
+      expect(banner.textContent).not.toContain('every pairing is kept')
+      fireEvent.click(button('linked-keys-start-over'))
+      expect(banner.textContent).toContain("Phones and this computer's identity are kept.")
+      expect(banner.textContent).not.toContain('makes a new identity')
+      cleanup()
+    }
+  })
+
+  it('a refused Start over shows the reason as the pane error', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'locked' })))
+    api.startOver = vi.fn().mockResolvedValue(fail("Start over is only for keys this computer can't open."))
+    await mount()
+    fireEvent.click(button('linked-keys-start-over'))
+    fireEvent.click(button('linked-keys-start-over-confirm'))
+    await waitFor(() => expect(screen.getByTestId('linked-error').textContent).toContain('only for keys'))
+  })
+
+  it('plaintext: the warning, here too', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keyStorage: 'plaintext', keyBackend: 'basic_text' })))
+    await mount()
+    expect(screen.getByTestId('linked-keys-warning').getAttribute('data-keys')).toBe('plaintext')
+    expect(screen.getByTestId('linked-keys-backend').textContent).toContain('basic_text')
+  })
+
+  it('Encrypt keys now goes through this pane, and the banner goes', async () => {
+    api.status.mockResolvedValue(ok(statusView({ keysUnencrypted: true })))
+    api.encryptKeys = vi.fn().mockResolvedValue(ok(statusView()))
+    await mount()
+    fireEvent.click(button('linked-keys-encrypt'))
+    await waitFor(() => expect(api.encryptKeys).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByTestId('linked-keys-warning')).toBeNull())
   })
 })

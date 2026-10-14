@@ -679,19 +679,43 @@ describe('showing a link code', () => {
     expect(ctx.rooms).toEqual([])
   })
 
-  it('will not hand out a code over a relay the other computer would refuse', () => {
-    // Remote accepts a plain ws:// relay anywhere; a joiner accepts one only on
-    // loopback. A code minted over a LAN ws:// relay would be refused on the
-    // other machine as "not a link code" -- say the real reason here instead.
+  it('will not hand out a code or a QR over plain ws:// to another computer', () => {
+    // The offer's room, and the room the device would use after it, are both on
+    // this relay, with their ids in the clear. A joiner would refuse such a code
+    // as "not a link code" and a phone such a QR -- say the real reason here.
     const ctx = core({}, { relayUrl: 'ws://192.168.1.20:8787' })
     ctx.c.handleHostMessage({ kind: 'beginPairing', label: '', link: true })
-    expect(ctx.last('error')?.message).toMatch(/needs an encrypted relay/)
+    expect(ctx.last('error')).toEqual({
+      kind: 'error',
+      message: expect.stringMatching(/^Linked machines needs an encrypted relay/),
+      scope: 'link',
+    })
+
+    // A phone QR is refused the same way, and the refusal is the phone pane's.
+    ctx.c.handleHostMessage({ kind: 'beginPairing', label: '' })
+    expect(ctx.last('error')).toEqual({
+      kind: 'error',
+      message: expect.stringMatching(/^Remote needs an encrypted relay/),
+    })
     expect(ctx.all('pairingCode')).toEqual([])
     expect(ctx.rooms).toEqual([])
+  })
 
-    // A phone QR over the same relay is still Remote's business, as before.
-    ctx.c.handleHostMessage({ kind: 'beginPairing', label: '' })
-    expect(ctx.all('pairingCode')).toHaveLength(1)
+  it('opens no room of its own over plain ws:// to another computer, and still dials the links it joined', () => {
+    // Failing closed: a phone or a computer that entered this machine's code
+    // simply stays offline, rather than meeting it on a relay any network in
+    // between can read room ids off. A link this machine joined dials the
+    // OTHER computer's relay, which its code proved secure.
+    const L = joinedLink()
+    const ctx = core({ devices: [hostedComputer(), phone()], phones: true, links: [L.link] }, { relayUrl: 'ws://192.168.1.20:8787' })
+    expect(ctx.rooms.map((r) => [r.deps.url, r.deps.roomId])).toEqual([[L.link.relayUrl, L.link.sessionRoomId]])
+    expect(ctx.last('relayState')?.state).toBe('idle')
+  })
+
+  it('opens every room on a relay on this computer, as tests and wrangler use', () => {
+    const ctx = core({ devices: [hostedComputer(), phone()], phones: true }, { relayUrl: 'ws://127.0.0.1:8787' })
+    expect(ctx.rooms).toHaveLength(2)
+    expect(ctx.rooms.every((r) => r.deps.url === 'ws://127.0.0.1:8787')).toBe(true)
   })
 
   it('refuses a seventeenth machine, counting hosted and joined together', () => {
@@ -860,6 +884,9 @@ describe('joining a link', () => {
     expect(last('joinFailed')).toBeUndefined()
     vi.advanceTimersByTime(1)
     expect(last('joinFailed')?.message).toMatch(/^No answer\./)
+    // The joiner is who an intercepted code leaves with no words and this
+    // message, so it is the joiner who has to be told what that can mean.
+    expect(last('joinFailed')?.message).toContain('someone else used the code')
     expect(room!.stopped).toBe(true)
   })
 

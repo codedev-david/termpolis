@@ -54,23 +54,32 @@ export function mangleCwd(cwd: string): string {
  * Returns null if no matching directory or no JSONL files found.
  */
 export function findLatestSessionFile(cwd: string): string | null {
+  return listSessionFiles(cwd)[0] ?? null
+}
+
+/**
+ * Every JSONL transcript for a given cwd, newest first. Empty if there is no matching directory.
+ * The newest can be a job another computer ran in this folder, which a reader then passes over
+ * (liveTranscript); the watcher above only ever wants the newest.
+ */
+export function listSessionFiles(cwd: string): string[] {
   const mangled = mangleCwd(cwd)
-  if (!mangled) return null
+  if (!mangled) return []
 
   const dir = path.join(CLAUDE_PROJECTS_DIR, mangled)
   let stat: fs.Stats
   try {
     stat = fs.statSync(dir)
   } catch {
-    return null
+    return []
   }
-  if (!stat.isDirectory()) return null
+  if (!stat.isDirectory()) return []
 
   let entries: string[]
   try {
     entries = fs.readdirSync(dir)
   } catch {
-    return null
+    return []
   }
 
   const files = entries
@@ -92,7 +101,7 @@ export function findLatestSessionFile(cwd: string): string | null {
     .filter((x): x is { path: string; mtime: number } => x !== null)
     .sort((a, b) => b.mtime - a.mtime)
 
-  return files.length > 0 ? files[0].path : null
+  return files.map((f) => f.path)
 }
 
 interface ClaudeEntry {

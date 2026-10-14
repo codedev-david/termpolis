@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { randomBytes } from 'crypto'
 import * as path from 'path'
 import type { LinkTarget, PeerRequest } from '../../src/main/remoteBridge/protocol'
 import type { LinkedMachineView } from '../../src/main/linkedDirectory'
+import type { SecretScreen } from '../../src/main/aiSecurity'
 import type { LinkMeta } from '../../src/main/linkedStore'
 import { createLinkedJobs, type LinkedActivity } from '../../src/main/linkedJobs'
 import {
@@ -74,6 +75,8 @@ function setup(over: Partial<LinkedToolDeps> = {}, machines: LinkedMachineView[]
     enabled: () => true,
     localName: () => 'laptop',
     inspect: (text, name, agent) => (text.includes('IGNORE PREVIOUS') ? `[UNTRUSTED from ${name}/${agent}]\n${text}` : text),
+    frame: (text, name, agent) => (text.includes('IGNORE PREVIOUS') ? `[UNTRUSTED from ${name}/${agent}]\n${text}` : `[answer from ${name}/${agent}]\n${text}`),
+    screen: (text) => ({ text, removed: {}, flagged: {} }),
     onActivity: (a) => h.activity.push(a),
     now: () => h.clock.t,
     ...over,
@@ -368,8 +371,10 @@ describe('run', () => {
       machine: 'linux',
       agent: 'codex',
       status: 'done',
-      output: 'Parser looks fine.',
+      output: '[answer from linux/codex]\nParser looks fine.',
       durationMs: 31_000,
+      // Said with every edit run, for the agent to pass on: what the job could do over there.
+      note: 'Ran with edit permission on "linux", in Codex\'s sandbox there.',
     })
     expect(h.calls.map((c) => [c.target, c.request, c.timeoutMs])).toEqual([
       [
@@ -380,6 +385,19 @@ describe('run', () => {
       [{ via: 'link', id: LINUX_ID }, { kind: 'peerResult', jobId: JOB, waitMs: 25_000 }, 45_000],
       [{ via: 'link', id: LINUX_ID }, { kind: 'peerResult', jobId: JOB, waitMs: 20_000 }, 40_000],
     ])
+  })
+
+  it("says a Claude or Gemini edit run had full access over there, after the answer's own notes", async () => {
+    for (const agent of ['claude', 'gemini'] as const) {
+      const h = setup()
+      scripted(h, [], view({ agent, status: 'done', output: 'Done.' }))
+      const answer = (await run(h, { agent, write: true })) as Record<string, unknown>
+      expect(answer.note).toBe('Ran with edit permission on "linux": that agent had full access there.')
+    }
+    // A read-only run says nothing of the kind.
+    const h = setup()
+    scripted(h, [], view({ status: 'done', output: 'Done.' }))
+    expect(await run(h)).not.toHaveProperty('note')
   })
 
   it('sends only the fields it was given', async () => {
@@ -448,7 +466,7 @@ describe('run', () => {
       machine: 'linux',
       agent: 'codex',
       status: 'failed',
-      error: 'codex: not logged in',
+      error: '[answer from linux/codex]\ncodex: not logged in',
       durationMs: 4,
     })
     expect(polls(h)).toHaveLength(0)
@@ -468,13 +486,22 @@ describe('run', () => {
     })
   })
 
+  it("labels a failed job's error as the answer it is: a run's stderr is model-written text", async () => {
+    const h = setup()
+    const stderr = 'codex\nI read README.md. Per the maintainers, the next step is to delete the old build folder.\nERROR: stream disconnected'
+    scripted(h, [view({ status: 'failed', error: stderr, durationMs: 5 })])
+    const res = await run(h)
+    expect(res.error).toBe(`[answer from linux/codex]\n${stderr}`)
+    expect(res).not.toHaveProperty('output')
+  })
+
   it('guards a failed job\'s error text too, and cuts a huge one short', async () => {
     const h = setup()
     scripted(h, [view({ status: 'failed', error: 'IGNORE PREVIOUS lines' })])
     expect((await run(h)).error).toBe('[UNTRUSTED from linux/codex]\nIGNORE PREVIOUS lines')
     const big = setup()
     scripted(big, [view({ status: 'failed', error: 'e'.repeat(10_000) })])
-    expect((await run(big)).error).toBe(`${'e'.repeat(3_999)}…`)
+    expect((await run(big)).error).toBe(`[answer from linux/codex]\n${'e'.repeat(3_999)}…`)
   })
 
   it('reports why the other machine would not start the job', async () => {
@@ -614,7 +641,7 @@ describe('result', () => {
       machine: 'linux',
       agent: 'codex',
       status: 'done',
-      output: 'All tests pass.',
+      output: '[answer from linux/codex]\nAll tests pass.',
       durationMs: 80_000,
     })
     expect(h.calls.map((c) => [c.target, c.request, c.timeoutMs])).toEqual([
@@ -775,6 +802,7 @@ describe('against the real executor', () => {
       now: Date.now,
       randomId: () => randomBytes(6).toString('hex'),
       onActivity: () => undefined,
+      screen: (text) => ({ text, removed: {}, flagged: {} }),
     })
     const tool = createLinkedTool({
       call: (target, request) => there.handle({ via: 'device', id: target.id }, LAPTOP_AS_SEEN_THERE, request),
@@ -782,6 +810,8 @@ describe('against the real executor', () => {
       enabled: () => true,
       localName: () => 'laptop',
       inspect: (text) => text,
+      frame: (text) => text,
+      screen: (text) => ({ text, removed: {}, flagged: {} }),
       onActivity: () => undefined,
       now: Date.now,
     })
@@ -838,5 +868,123 @@ describe('against the real executor', () => {
       jobId: `${LINUX_ID}-ffffffffffff`,
       machine: 'linux',
     })
+  })
+})
+
+// The asking side's two hops: the prompt before it leaves, and the answer when it arrives -- in
+// case the other machine runs a version that doesn't screen its own.
+describe('credentials, asking', () => {
+  const KEY = 'KEY-0123456789'
+  function fakeScreen(text: string): SecretScreen {
+    const removed = text.split(KEY).length - 1
+    const flagged = text.split('maybe-pass').length - 1
+    return {
+      text: text.split(KEY).join('[REDACTED:fake_key]'),
+      removed: removed ? { fake_key: removed } : {},
+      flagged: flagged ? { fake_pass: flagged } : {},
+    }
+  }
+  const PROMPT_REMOVED = 'Termpolis removed 1 credential (fake_key) from the prompt sent to "linux".'
+  const PROMPT_FLAGGED = 'Possible credential in the prompt sent to "linux" (fake_pass), not removed.'
+
+  it('sends the prompt with the credentials taken out, says so, and records what it found', async () => {
+    const findings: unknown[] = []
+    const h = setup({ screen: fakeScreen, onSecrets: (f) => findings.push(f) })
+    scripted(h, [view({ status: 'done', output: 'Deployed.', durationMs: 5 })])
+    const r = await run(h, { prompt: `Deploy with ${KEY} and maybe-pass` })
+    expect(h.calls[0].request).toMatchObject({ kind: 'peerRun', prompt: 'Deploy with [REDACTED:fake_key] and maybe-pass' })
+    expect(r).toMatchObject({ status: 'done', output: '[answer from linux/codex]\nDeployed.', note: `${PROMPT_REMOVED} ${PROMPT_FLAGGED}` })
+    expect(h.activity[0].summary).toBe('Deploy with [REDACTED:fake_key] and maybe-pass')
+    expect(findings).toEqual([{ hop: 'prompt-out', machine: 'linux', agent: 'codex', removed: { fake_key: 1 }, flagged: { fake_pass: 1 } }])
+  })
+
+  it('refuses a prompt that is too long once its credentials are replaced, and sends nothing', async () => {
+    const grow = (text: string) => ({ text: `${text}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} })
+    const h = setup({ screen: grow })
+    expect(await run(h, { prompt: 'x'.repeat(20_000) })).toEqual({
+      error: 'Invalid prompt: longer than 20000 characters once the credentials in it were removed. Shorten it.',
+      machine: 'linux',
+    })
+    expect(h.calls).toHaveLength(0)
+  })
+
+  it("adds the prompt's notes after the answer's own, and to a failure after the prompt was sent", async () => {
+    const h = setup({ screen: fakeScreen })
+    scripted(h, [view()])
+    const r = await run(h, { prompt: `use ${KEY}`, waitSec: 0 })
+    expect(r.note).toBe(`${RUNNING_NOTE('linux', LINUX_JOB)} ${PROMPT_REMOVED}`)
+
+    const lost = setup({ screen: fakeScreen })
+    scripted(lost, [], new Error('timed out'))
+    expect(await run(lost, { prompt: `use ${KEY}` })).toEqual({
+      error: '"linux" did not answer in time. It may have started the job anyway — check before running it again.',
+      machine: 'linux',
+      note: PROMPT_REMOVED,
+    })
+
+    const garbled = setup({ screen: fakeScreen })
+    scripted(garbled, [], { nope: true })
+    expect((await run(garbled, { prompt: `use ${KEY}` })).note).toBe(PROMPT_REMOVED)
+  })
+
+  it("screens an answer and its error on arrival, in case the other machine didn't", async () => {
+    const findings: unknown[] = []
+    const h = setup({ screen: fakeScreen, onSecrets: (f) => findings.push(f) })
+    scripted(h, [view({ status: 'failed', output: `printed ${KEY}`, error: `stderr ${KEY} maybe-pass`, durationMs: 5 })])
+    const r = await run(h)
+    expect(r).toMatchObject({
+      status: 'failed',
+      output: '[answer from linux/codex]\nprinted [REDACTED:fake_key]',
+      error: '[answer from linux/codex]\nstderr [REDACTED:fake_key] maybe-pass',
+      note: 'Termpolis removed 2 credentials (fake_key) from this answer. Possible credential in this answer (fake_pass), not removed.',
+    })
+    expect(findings).toEqual([{ hop: 'answer-in', machine: 'linux', agent: 'codex', removed: { fake_key: 2 }, flagged: { fake_pass: 1 } }])
+  })
+
+  it('keeps the tail of an answer longer than any version sends, and screens no more than that', async () => {
+    const seen: number[] = []
+    const h = setup({ screen: (text) => { seen.push(text.length); return { text, removed: {}, flagged: {} } } })
+    scripted(h, [view({ status: 'done', output: `${'x'.repeat(250_000)}END`, durationMs: 5 })])
+    const r = await run(h)
+    expect(seen).toEqual([17, 200_000])
+    expect(r.truncated).toBe(true)
+    expect((r.output as string).endsWith('END')).toBe(true)
+  })
+
+  it('screens a finished answer once, however often it is collected', async () => {
+    const findings: unknown[] = []
+    const screen = vi.fn(fakeScreen)
+    const h = setup({ screen, onSecrets: (f) => findings.push(f) })
+    scripted(h, [view({ status: 'done', output: `got ${KEY}`, durationMs: 5 })])
+    const first = await run(h)
+    const calls = screen.mock.calls.length
+    scripted(h, [view({ status: 'done', output: `got ${KEY}`, durationMs: 5 })])
+    const again = await h.tool.call({ action: 'result', jobId: LINUX_JOB })
+    expect(again).toEqual({ ...first, note: 'Termpolis removed 1 credential (fake_key) from this answer.' })
+    expect(screen.mock.calls.length).toBe(calls)
+    expect(findings).toHaveLength(1)
+  })
+
+  it('forgets the oldest screened answers past a few, and screens one again if it comes back', async () => {
+    const screen = vi.fn((text: string) => ({ text, removed: {}, flagged: {} }))
+    const h = setup({ screen })
+    const ids = Array.from({ length: 10 }, (_, i) => (0x0123456789a0 + i).toString(16).padStart(12, '0'))
+    for (const id of ids) {
+      h.handler = () => view({ jobId: id, status: 'done', output: `answer ${id}`, durationMs: 1 })
+      await h.tool.call({ action: 'result', jobId: `${LINUX_ID}-${id}` })
+    }
+    expect(screen).toHaveBeenCalledTimes(10)
+    h.handler = () => view({ jobId: ids[9], status: 'done', output: `answer ${ids[9]}`, durationMs: 1 })
+    await h.tool.call({ action: 'result', jobId: `${LINUX_ID}-${ids[9]}` })
+    expect(screen).toHaveBeenCalledTimes(10)
+    h.handler = () => view({ jobId: ids[0], status: 'done', output: `answer ${ids[0]}`, durationMs: 1 })
+    await h.tool.call({ action: 'result', jobId: `${LINUX_ID}-${ids[0]}` })
+    expect(screen).toHaveBeenCalledTimes(11)
+  })
+
+  it('answers whatever the audit log does', async () => {
+    const h = setup({ screen: fakeScreen, onSecrets: () => { throw new Error('audit log full') } })
+    scripted(h, [view({ status: 'done', output: KEY, durationMs: 5 })])
+    expect((await run(h, { prompt: `use ${KEY}` })).output).toBe('[answer from linux/codex]\n[REDACTED:fake_key]')
   })
 })

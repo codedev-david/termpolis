@@ -118,10 +118,11 @@ describe('memory brain — grand end-to-end', () => {
     for (let i = 0; i < 6; i++) await memoryWrite({ agentId: 'x', kind: 'note', content: `filler ${i}` })
     setSyncPassphrase('correct horse battery staple')
 
-    // The synced shard on disk is ciphertext; the cached key is OS-keychain-encrypted.
+    // The synced shard on disk is ciphertext — and the passphrase key was NOT written into
+    // memory-sync.key, the device key's file, which v1 used to overwrite with it.
     const shard = fs.readdirSync(syncDir).find((f) => f.endsWith('.jsonl'))!
     expect(fs.readFileSync(path.join(syncDir, shard), 'utf8')).toContain('enc:v1:')
-    expect(fs.readFileSync(path.join(userDir, 'memory-sync.key'), 'utf8').startsWith('osk:v1:')).toBe(true)
+    expect(fs.existsSync(path.join(userDir, 'memory-sync.key'))).toBe(false)
 
     // Device B: fresh machine, SAME synced folder + SAME OS keychain + passphrase.
     const userDirB = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-e2e-userB-'))

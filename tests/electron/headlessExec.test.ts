@@ -6,6 +6,7 @@ import {
   truncatePrimer,
   buildExecPrompt,
   execCommand,
+  CODEX_LINKED_WRITE_ARGS,
   runHeadless,
   isExecAgent,
   clampExecTimeout,
@@ -228,8 +229,27 @@ describe('headlessExec/execCommand for a linked job (linkedJob, cwd)', () => {
 
   it('puts every codex flag before the positional prompt, on a write run too', () => {
     expect(execCommand('codex', 'gpt-5.6-sol', true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' }, cwd: '/work/repo' }).args).toEqual([
-      'exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...CODEX_MCP_OFF, '-C', '/work/repo', PROMPT_TOKEN,
+      'exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...CODEX_MCP_OFF,
+      ...CODEX_LINKED_WRITE_ARGS, '-C', '/work/repo', PROMPT_TOKEN,
     ])
+  })
+
+  it("switches a codex edit job's sandbox network off, and only a linked edit job's", () => {
+    // Verified against codex-cli 0.153.4: `-c` takes a dotted config key, and the workspace-write
+    // sandbox's table holds network_access. Without it, the job's commands could reach this
+    // computer's MCP server and every tool the adapter keeps from them.
+    expect(CODEX_LINKED_WRITE_ARGS).toEqual(['-c', 'sandbox_workspace_write.network_access=false'])
+    const linkedWrite = execCommand('codex', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1', codexHasTermpolis: true } }).args
+    expect(linkedWrite.slice(-3)).toEqual([...CODEX_LINKED_WRITE_ARGS, PROMPT_TOKEN])
+    // Read-only jobs have no network to switch off, and a plain `termpolis exec --write` keeps
+    // the user's own sandbox settings.
+    const readOnly = execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' } }).args
+    const plainWrite = execCommand('codex', undefined, true).args
+    for (const args of [readOnly, plainWrite]) expect(args.join(' ')).not.toContain('network_access')
+    // Not claude's or agy's: neither has a switch for it, which is why their edit jobs have full access.
+    for (const agent of ['claude', 'gemini'] as const) {
+      expect(execCommand(agent, undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' } }).args.join(' ')).not.toContain('network_access')
+    }
   })
 
   it('leaves agy alone: it has no per-run MCP switch and passes the marker on itself', () => {
@@ -559,5 +579,74 @@ describe('headlessExec/runHeadless', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// A linked job's session must not be saved for this computer's memory to read, where the agent's
+// CLI can be told so (cliFlagProbe). Each flag goes where its CLI takes it, ahead of the prompt and
+// of every variadic list, and only when the probe found it.
+describe('headlessExec/a linked job told not to save its session (noPersist)', () => {
+  const CONFIG = '/tmp/termpolis-linked-job1.mcp.json'
+  const job = { id: 'job1', noPersist: true }
+
+  it("puts claude's flag just ahead of -p in both read-only shapes", () => {
+    const plain = execCommand('claude', 'opus', false).args
+    const pIndex = plain.indexOf('-p')
+    expect(execCommand('claude', 'opus', false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job }).args)
+      .toEqual([...plain.slice(0, pIndex), '--no-session-persistence', '-p', PROMPT_TOKEN])
+    const linked = execCommand('claude', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { ...job, claudeMcpConfig: CONFIG } }).args
+    expect(linked.slice(-3)).toEqual(['--no-session-persistence', '-p', PROMPT_TOKEN])
+    // After the variadic --allowedTools list, which a flag ends.
+    expect(linked.indexOf('--allowedTools')).toBeLessThan(linked.indexOf('--no-session-persistence'))
+  })
+
+  it("puts claude's flag after --dangerously-skip-permissions on a write job, ahead of the variadic --mcp-config", () => {
+    expect(execCommand('claude', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { ...job, claudeMcpConfig: CONFIG } }).args)
+      .toEqual(['-p', PROMPT_TOKEN, '--dangerously-skip-permissions', '--no-session-persistence', '--strict-mcp-config', '--mcp-config', CONFIG])
+  })
+
+  it("adds codex's --ephemeral with its other options, read-only and write", () => {
+    expect(execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job, cwd: '/work/repo' }).args)
+      .toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...CODEX_MCP_OFF, '--ephemeral', '-C', '/work/repo', PROMPT_TOKEN])
+    expect(execCommand('codex', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job }).args)
+      .toEqual(['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', ...CODEX_MCP_OFF, ...CODEX_LINKED_WRITE_ARGS, '--ephemeral', PROMPT_TOKEN])
+  })
+
+  it('gives agy nothing: it has no such flag', () => {
+    for (const write of [false, true]) {
+      expect(execCommand('gemini', undefined, write, 30_000, { linkedJob: job }).args).toEqual(execCommand('gemini', undefined, write, 30_000).args)
+    }
+  })
+
+  it('asks the probe for a linked job and passes the flag on only when it says yes', async () => {
+    for (const [agent, flag] of [['claude', '--no-session-persistence'], ['codex', '--ephemeral']] as const) {
+      const yes = okDeliver('ok')
+      const probe = vi.fn(async () => true)
+      await runHeadless({ task: 't', agent, linkedJob: 'job1' }, { deliver: yes, noPersist: probe, isDirectory: anyDir })
+      expect(probe).toHaveBeenCalledWith(agent)
+      expect(vi.mocked(yes).mock.calls[0][1]).toContain(flag)
+
+      const no = okDeliver('ok')
+      await runHeadless({ task: 't', agent, linkedJob: 'job1' }, { deliver: no, noPersist: async () => false })
+      expect(vi.mocked(no).mock.calls[0][1]).not.toContain(flag)
+    }
+  })
+
+  it('runs the job without the flag when the probe fails', async () => {
+    const deliver = okDeliver('ok')
+    const res = await runHeadless({ task: 't', agent: 'codex', linkedJob: 'job1' }, {
+      deliver,
+      noPersist: async () => { throw new Error('probe broke') },
+    })
+    expect(res.ok).toBe(true)
+    expect(vi.mocked(deliver).mock.calls[0][1]).not.toContain('--ephemeral')
+  })
+
+  it("never asks the probe, or adds a flag, for a run that isn't a linked job: the user's own runs are kept", async () => {
+    const deliver = okDeliver('ok')
+    const probe = vi.fn(async () => true)
+    await runHeadless({ task: 't', agent: 'claude' }, { deliver, noPersist: probe })
+    expect(probe).not.toHaveBeenCalled()
+    expect(vi.mocked(deliver).mock.calls[0][1]).not.toContain('--no-session-persistence')
   })
 })

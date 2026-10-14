@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { executeControlStep, executeCommandStep, executeAgentStep, executeSkillStep } from '../../src/main/workflow/executors'
+import { makeToolInvoker } from '../../src/main/workflow/adapters'
 import type { ControlStep, CommandStep, AgentStep, SkillStep, StepResult } from '../../src/renderer/src/types'
 
 const timer = { sleep: vi.fn(async () => {}) }
@@ -137,6 +138,31 @@ describe('skill executor', () => {
     const step: SkillStep = { id: 's', type: 'skill', name: 'x', tool: 'nope' }
     const r = await executeSkillStep(step, {}, tools as any)
     expect(r.status).toBe('failed'); expect(r.error).toBe('no such tool')
+  })
+  it("hands the invoker the step's own timeout, and none when it sets none", async () => {
+    const tools = { invoke: vi.fn(async (_tool: string, _args: unknown, _timeoutMs?: number) => ({ output: '', ok: true })) }
+    await executeSkillStep({ id: 's', type: 'skill', name: 'x', tool: 't', timeoutMs: 5_000 }, {}, tools)
+    await executeSkillStep({ id: 's', type: 'skill', name: 'x', tool: 't' }, {}, tools)
+    expect(tools.invoke.mock.calls.map((c) => c[2])).toEqual([5_000, undefined])
+  })
+  it('lets a tool with no step timeout run as long as it takes, as 1.52 did: run_and_wait may take 10 minutes', async () => {
+    vi.useFakeTimers()
+    try {
+      const tools = makeToolInvoker({} as any, () => new Promise((resolve) => setTimeout(() => resolve({ exitCode: 0, output: 'ok' }), 180_000)))
+      const step: SkillStep = { id: 's1', type: 'skill', name: 'tests', tool: 'run_and_wait', args: { command: 'npm test', timeoutMs: 300_000 } }
+      const pending = executeSkillStep(step, {}, tools)
+      await vi.advanceTimersByTimeAsync(180_000)
+      expect(await pending).toEqual({ stepId: 's1', status: 'succeeded', output: JSON.stringify({ exitCode: 0, output: 'ok' }), error: undefined })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+  it('a call the rate limit refused fails the step with the reason, through the real invoker', async () => {
+    const tools = makeToolInvoker({} as any, async () => { throw new Error('Rate limit exceeded for linked_machines') })
+    const step: SkillStep = { id: 's', type: 'skill', name: 'x', tool: 'linked_machines', args: { action: 'list' } }
+    expect(await executeSkillStep(step, {}, tools)).toEqual({
+      stepId: 's', status: 'failed', output: '', error: 'Rate limit exceeded for linked_machines',
+    })
   })
 })
 
