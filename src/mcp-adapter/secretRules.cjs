@@ -11,10 +11,11 @@
 //
 // DRIFT IS IMPOSSIBLE, NOT MERELY DISCOURAGED: tests/electron/secretRulesSync.test.ts asserts
 // this table is equivalent to RULES in src/main/aiSecurity.ts (same ids, labels, precisions,
-// pattern sources and flags, same order). Add a rule to one and CI goes red. Do not "fix" that
-// test by loosening it — regenerate this file instead. The hook blocks on any rule; `precision`
-// matters only to the app, which removes `high` matches from text crossing to another computer
-// and only reports `heuristic` ones.
+// key-material checks, pattern sources and flags, same order). Add a rule to one and CI goes red.
+// Do not "fix" that test by loosening it — regenerate this file instead. The hook blocks on any
+// rule; `precision` and `keyMaterial` matter only to the app, which removes `high` matches from
+// text crossing to another computer (a key block only with key material in it) and only reports
+// the rest.
 
 module.exports = [
   // === AWS ===
@@ -47,9 +48,9 @@ module.exports = [
   // === Slack / chat ===
   { id: 'slack_token', label: 'Slack token', precision: 'high', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
   { id: 'slack_webhook', label: 'Slack incoming webhook', precision: 'high', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}\b/g },
-  { id: 'discord_bot', label: 'Discord bot token', precision: 'high', pattern: /\b[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27,}\b/g },
+  { id: 'discord_bot', label: 'Discord bot token', precision: 'heuristic', pattern: /\b[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27,}\b/g },
   { id: 'discord_webhook', label: 'Discord webhook', precision: 'high', pattern: /\bhttps:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]{40,}\b/g },
-  { id: 'telegram_bot', label: 'Telegram bot token', precision: 'high', pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
+  { id: 'telegram_bot', label: 'Telegram bot token', precision: 'heuristic', pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
   // === Payments ===
   { id: 'stripe_secret', label: 'Stripe secret key', precision: 'high', pattern: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
   { id: 'stripe_pub', label: 'Stripe publishable key (info)', precision: 'heuristic', pattern: /\bpk_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
@@ -120,15 +121,15 @@ module.exports = [
   { id: 'honeycomb_key', label: 'Honeycomb API key (named)', precision: 'heuristic', pattern: /\b(?:HONEYCOMB_API_KEY|honeycomb_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
   { id: 'lightstep_token', label: 'Lightstep access token (named)', precision: 'heuristic', pattern: /\b(?:LIGHTSTEP_ACCESS_TOKEN|lightstep_token)\s*[:=]\s*["']?([A-Za-z0-9]{40,})["']?/gi },
   // === SSH / GPG ===
-  { id: 'ssh_dsa_pubkey', label: 'SSH DSA private key block', precision: 'high', pattern: /-----BEGIN DSA PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END DSA PRIVATE KEY-----)?/g },
-  { id: 'gpg_block', label: 'GPG/PGP private key block', precision: 'high', pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END PGP PRIVATE KEY BLOCK-----)?/g },
+  { id: 'ssh_dsa_pubkey', label: 'SSH DSA private key block', precision: 'high', keyMaterial: /-----END |[A-Za-z0-9+/=]{40}/, pattern: /-----BEGIN DSA PRIVATE KEY-----(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n\\]*)(?=\r?\n|\\(?:r\\)?n|["']|$)){0,400}(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)-----END DSA PRIVATE KEY-----)?/g },
+  { id: 'gpg_block', label: 'GPG/PGP private key block', precision: 'high', keyMaterial: /-----END |[A-Za-z0-9+/=]{40}/, pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n\\]*)(?=\r?\n|\\(?:r\\)?n|["']|$)){0,400}(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)-----END PGP PRIVATE KEY BLOCK-----)?/g },
   // === Auth tokens that show up in headers ===
   { id: 'bearer_token_named', label: 'Bearer token in named env (named)', precision: 'heuristic', pattern: /\b(?:AUTH_BEARER|AUTHORIZATION|BEARER_TOKEN)\s*[:=]\s*["']?(?:Bearer\s+)?([A-Za-z0-9._-]{40,})["']?/gi },
   // === Crypto / financial ===
   { id: 'coinbase_pat', label: 'Coinbase API key (named)', precision: 'heuristic', pattern: /\b(?:COINBASE_API_KEY|coinbase_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
   // === Generic high-confidence shapes ===
   { id: 'jwt', label: 'JWT (3-part base64url)', precision: 'heuristic', pattern: /\b(?<!-)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
-  { id: 'private_key', label: 'PEM private key block', precision: 'high', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)?/g },
+  { id: 'private_key', label: 'PEM private key block', precision: 'high', keyMaterial: /-----END |[A-Za-z0-9+/=]{40}/, pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n\\]*)(?=\r?\n|\\(?:r\\)?n|["']|$)){0,400}(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)?/g },
   // === .env-style — last because it's the loosest catch-all. ===
   // === Named secrets — the ones you can actually ACT on =================================
   //

@@ -24,6 +24,7 @@ const hookRules = require_('../../src/mcp-adapter/secretRules.cjs') as {
   id: string
   label: string
   precision: string
+  keyMaterial?: RegExp
   pattern: RegExp
 }[]
 
@@ -50,6 +51,12 @@ describe('secret rules — the app and the git hook must never diverge', () => {
 
   it('every rule has the same precision in both (what Linked machines removes rather than reports)', () => {
     expect(hookRules.map((r) => r.precision)).toEqual(RULES.map((r) => r.precision))
+  })
+
+  it('every key-material check is the same in both (when a key block counts as a key)', () => {
+    const shape = (r: { keyMaterial?: RegExp }): string | null => (r.keyMaterial ? `${r.keyMaterial.source}//${r.keyMaterial.flags}` : null)
+    expect(hookRules.map(shape)).toEqual(RULES.map(shape))
+    expect(RULES.filter((r) => r.keyMaterial).map((r) => r.id)).toEqual(['ssh_dsa_pubkey', 'gpg_block', 'private_key'])
   })
 
   it('every hook rule is well-formed (real RegExp, non-empty id and label, a known precision)', () => {

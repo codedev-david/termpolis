@@ -13,6 +13,8 @@ const GH = `ghp_${'b'.repeat(36)}`
 const AWS = `AKIA${'C'.repeat(16)}`
 const SLACK = `xoxb-${'1'.repeat(12)}`
 const PEM = ['-----BEGIN RSA PRIVATE KEY-----', 'MIIEpAIBAAKCAQEA' + 'q'.repeat(48), 'r'.repeat(40) + '==', '-----END RSA PRIVATE KEY-----'].join('\n')
+/** A key's body lines, 64 characters each as PEM writes them. */
+const BODY = ['MIIEvQIBADANBgkq' + 'Q'.repeat(48), 'R'.repeat(64), 'S'.repeat(64), 'T'.repeat(40) + '==']
 
 /** Test data a code-review or implement job hands back all the time: every one is a heuristic
  *  match, and removing any of them would corrupt the code. */
@@ -31,13 +33,14 @@ const FIXTURES = [
 describe('precision', () => {
   it('splits the 97 rules into the vendor-shaped ones it removes and the rest it reports', () => {
     const high = RULES.filter((r) => r.precision === 'high').map((r) => r.id)
-    expect(high).toHaveLength(40)
-    expect(RULES.filter((r) => r.precision === 'heuristic')).toHaveLength(57)
+    expect(high).toHaveLength(38)
+    expect(RULES.filter((r) => r.precision === 'heuristic')).toHaveLength(59)
     for (const id of ['anthropic_key', 'openai_key', 'gh_pat', 'gh_fine_grained', 'aws_access_key', 'slack_token', 'private_key', 'gpg_block', 'ssh_dsa_pubkey']) {
       expect(high).toContain(id)
     }
-    // A name, a nearby word, a URL or a value meant to sit in code is not enough to remove it.
-    for (const id of ['contextual_secret', 'password_literal', 'yaml_secret', 'conn_string_password', 'basic_auth_url', 'json_secret', 'env_secret', 'postgres_url', 'jwt', 'stripe_pub', 'aws_secret']) {
+    // A name, a nearby word, a URL, a value meant to sit in code, or a shape with no vendor's
+    // name in it (Discord's and Telegram's bot tokens) is not enough to remove it.
+    for (const id of ['contextual_secret', 'password_literal', 'yaml_secret', 'conn_string_password', 'basic_auth_url', 'json_secret', 'env_secret', 'postgres_url', 'jwt', 'stripe_pub', 'aws_secret', 'discord_bot', 'telegram_bot']) {
       expect(high).not.toContain(id)
     }
   })
@@ -56,6 +59,49 @@ describe('screenText', () => {
     const r = screenText(`Here it is:\n${PEM}\nThen restart the service.`)
     expect(r.text).toBe('Here it is:\n[REDACTED:private_key]\nThen restart the service.')
     expect(r.removed).toEqual({ private_key: 1 })
+  })
+
+  it('takes the key out of a JSON service-account file, whose lines are \\n escapes', () => {
+    const json = `{"type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----\\n${BODY.join('\\n')}\\n-----END PRIVATE KEY-----\\n", "client_id": "1"}`
+    const r = screenText(json)
+    expect(r.text).toBe('{"type": "service_account", "private_key": "[REDACTED:private_key]\\n", "client_id": "1"}')
+    expect(r.removed).toEqual({ private_key: 1 })
+    expect(r.flagged).toEqual({ gcp_sa_json: 1 })
+    // ...and with \r\n escapes, cut short with no END line.
+    const crlf = `"-----BEGIN RSA PRIVATE KEY-----\\r\\n${BODY.join('\\r\\n')}"`
+    expect(screenText(crlf).text).toBe('"[REDACTED:private_key]"')
+  })
+
+  it('takes an indented key block whole: a YAML block scalar, CRLF, or one cut short', () => {
+    const yaml = ['stringData:', '  tls.key: |', '    -----BEGIN RSA PRIVATE KEY-----', ...BODY.map((l) => `    ${l}`), '    -----END RSA PRIVATE KEY-----', '  tls.crt: x'].join('\n')
+    const r = screenText(yaml)
+    expect(r.text).toBe('stringData:\n  tls.key: |\n    [REDACTED:private_key]\n  tls.crt: x')
+    expect(r.removed).toEqual({ private_key: 1 })
+    const crlf = yaml.replace(/\n/g, '\r\n')
+    expect(screenText(crlf).text).toBe('stringData:\r\n  tls.key: |\r\n    [REDACTED:private_key]\r\n  tls.crt: x')
+    const cut = `\t-----BEGIN EC PRIVATE KEY-----\n${BODY.map((l) => `\t${l}`).join('\n')}`
+    expect(screenText(cut).text).toBe('\t[REDACTED:private_key]')
+  })
+
+  it('leaves code that only names a key header, or looks like a bot token, byte for byte', () => {
+    const code = [
+      'export function isPem(pem: string): boolean {',
+      "  return pem.trimStart().startsWith('-----BEGIN PRIVATE KEY-----')",
+      '}',
+      'const t = NetworkConnectionManager.config.defaultTimeoutMillisecondsValue',
+      'const header = "-----BEGIN PGP PRIVATE KEY BLOCK-----\\n" + armor',
+    ].join('\n')
+    const r = screenText(code)
+    expect(r.text).toBe(code)
+    expect(r.removed).toEqual({})
+    // Reported, so the agent is told, but not taken: there is no key under either header.
+    expect(r.flagged).toEqual({ private_key: 1, gpg_block: 1, discord_bot: 1 })
+    // A body too short to be key material, with no END line, is a header too (and a value right
+    // after the words "private key", which the contextual rule reports)...
+    const short = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nThen run the tests.'
+    expect(screenText(short)).toEqual({ text: short, removed: {}, flagged: { private_key: 1, contextual_secret: 1 } })
+    // ...where an END line, however short the body, makes it a key.
+    expect(screenText('-----BEGIN DSA PRIVATE KEY-----\nMIIB\n-----END DSA PRIVATE KEY-----').removed).toEqual({ ssh_dsa_pubkey: 1 })
   })
 
   it('leaves heuristic matches byte for byte, and reports each rule that matched', () => {

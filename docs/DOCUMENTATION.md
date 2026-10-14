@@ -1327,12 +1327,17 @@ audit log.
   computer runs a version that doesn't screen). The screen has two tiers:
   - **A credential whose own shape names it is removed** and replaced with
     `[REDACTED:<rule>]`: vendor tokens such as `sk-ant-…`, `ghp_…`,
-    `github_pat_…`, `AKIA…`, `xox…`, and whole private-key blocks. The answer
-    tells your agent how many it removed and by which rules.
+    `github_pat_…`, `AKIA…`, `xox…`, and whole private-key blocks, including
+    an indented one (a YAML secret) and one whose lines are `\n` escapes (a JSON
+    service-account file). A key block counts once it holds key material: a
+    long body line or its END line. The answer tells your agent how many it
+    removed and by which rules.
   - **Anything that only looks like a credential is left as it is**, because a
     delegated job's answer is usually code, and its test fixtures and examples
     look like credentials too (`password = "hunter2"`, a `postgres://user:pass@`
-    URL, a JWT, a value assigned to `API_KEY`). The answer gets a note naming the
+    URL, a JWT, a value assigned to `API_KEY`, a shape with no vendor's name in
+    it such as a Discord or Telegram bot token, or a private-key header with no
+    key under it, as a PEM parser writes). The answer gets a note naming the
     rules that matched: *possible credential, not removed*.
   Both tiers write a line to the AI Security audit log on the computer that
   screened: the rule ids and how often each matched, never the value. A

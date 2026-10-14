@@ -93,6 +93,10 @@ interface RedactionRule {
    *  Those are as often examples, fixtures and test data, and removing them corrupts the code a
    *  delegated job came back with, so they are only reported. */
   precision: 'high' | 'heuristic'
+  /** A `high` rule whose match holds a credential only when this matches inside it too: a
+   *  private-key block is key material once it has a long body line or its END line. Its header
+   *  alone is what a PEM parser or a test helper writes, so screenText reports that and leaves it. */
+  keyMaterial?: RegExp
   pattern: RegExp
   /** Capture group holding the secret's NAME (e.g. `DB_PASSWORD`, `apiKey`). We log the name
    *  and never the value — that is what tells you what to rotate, without us storing it. */
@@ -149,9 +153,9 @@ export const RULES: RedactionRule[] = [
   // === Slack / chat ===
   { id: 'slack_token', label: 'Slack token', precision: 'high', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
   { id: 'slack_webhook', label: 'Slack incoming webhook', precision: 'high', pattern: /\bhttps:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]{20,}\b/g },
-  { id: 'discord_bot', label: 'Discord bot token', precision: 'high', pattern: /\b[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27,}\b/g },
+  { id: 'discord_bot', label: 'Discord bot token', precision: 'heuristic', pattern: /\b[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27,}\b/g },
   { id: 'discord_webhook', label: 'Discord webhook', precision: 'high', pattern: /\bhttps:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/\d+\/[A-Za-z0-9_-]{40,}\b/g },
-  { id: 'telegram_bot', label: 'Telegram bot token', precision: 'high', pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
+  { id: 'telegram_bot', label: 'Telegram bot token', precision: 'heuristic', pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/g },
   // === Payments ===
   { id: 'stripe_secret', label: 'Stripe secret key', precision: 'high', pattern: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
   { id: 'stripe_pub', label: 'Stripe publishable key (info)', precision: 'heuristic', pattern: /\bpk_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
@@ -222,15 +226,15 @@ export const RULES: RedactionRule[] = [
   { id: 'honeycomb_key', label: 'Honeycomb API key (named)', precision: 'heuristic', pattern: /\b(?:HONEYCOMB_API_KEY|honeycomb_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
   { id: 'lightstep_token', label: 'Lightstep access token (named)', precision: 'heuristic', pattern: /\b(?:LIGHTSTEP_ACCESS_TOKEN|lightstep_token)\s*[:=]\s*["']?([A-Za-z0-9]{40,})["']?/gi },
   // === SSH / GPG ===
-  { id: 'ssh_dsa_pubkey', label: 'SSH DSA private key block', precision: 'high', pattern: /-----BEGIN DSA PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END DSA PRIVATE KEY-----)?/g },
-  { id: 'gpg_block', label: 'GPG/PGP private key block', precision: 'high', pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END PGP PRIVATE KEY BLOCK-----)?/g },
+  { id: 'ssh_dsa_pubkey', label: 'SSH DSA private key block', precision: 'high', keyMaterial: /-----END |[A-Za-z0-9+/=]{40}/, pattern: /-----BEGIN DSA PRIVATE KEY-----(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n\\]*)(?=\r?\n|\\(?:r\\)?n|["']|$)){0,400}(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)-----END DSA PRIVATE KEY-----)?/g },
+  { id: 'gpg_block', label: 'GPG/PGP private key block', precision: 'high', keyMaterial: /-----END |[A-Za-z0-9+/=]{40}/, pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n\\]*)(?=\r?\n|\\(?:r\\)?n|["']|$)){0,400}(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)-----END PGP PRIVATE KEY BLOCK-----)?/g },
   // === Auth tokens that show up in headers ===
   { id: 'bearer_token_named', label: 'Bearer token in named env (named)', precision: 'heuristic', pattern: /\b(?:AUTH_BEARER|AUTHORIZATION|BEARER_TOKEN)\s*[:=]\s*["']?(?:Bearer\s+)?([A-Za-z0-9._-]{40,})["']?/gi },
   // === Crypto / financial ===
   { id: 'coinbase_pat', label: 'Coinbase API key (named)', precision: 'heuristic', pattern: /\b(?:COINBASE_API_KEY|coinbase_api_key)\s*[:=]\s*["']?([A-Za-z0-9]{32})["']?/gi },
   // === Generic high-confidence shapes ===
   { id: 'jwt', label: 'JWT (3-part base64url)', precision: 'heuristic', pattern: /\b(?<!-)eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
-  { id: 'private_key', label: 'PEM private key block', precision: 'high', pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----(?:\r?\n(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n]*)(?=\r?\n|$)){0,400}(?:\r?\n-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)?/g },
+  { id: 'private_key', label: 'PEM private key block', precision: 'high', keyMaterial: /-----END |[A-Za-z0-9+/=]{40}/, pattern: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)(?:[A-Za-z0-9+/=]*|[A-Za-z][A-Za-z-]*: [^\r\n\\]*)(?=\r?\n|\\(?:r\\)?n|["']|$)){0,400}(?:(?:\r?\n[ \t]*|\\(?:r\\)?n)-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----)?/g },
   // === .env-style — last because it's the loosest catch-all. ===
   // === Named secrets — the ones you can actually ACT on =================================
   //
@@ -644,8 +648,8 @@ export interface SecretScreen {
   text: string
   /** High-precision rules, and how many of their matches were taken out. */
   removed: Record<string, number>
-  /** Heuristic rules, and how many matches were left in. One that overlaps a removed match isn't
-   *  counted: the credential in it went with that. */
+  /** Heuristic rules, and a private-key header with no key under it, and how many matches were left
+   *  in. One that overlaps a removed match isn't counted: the credential in it went with that. */
   flagged: Record<string, number>
 }
 
@@ -672,7 +676,7 @@ export function screenText(input: string): SecretScreen {
   const looks: Span[] = []
   forEachMatch(input, (rule, m) => {
     const span = { rule: rule.id, from: m.index, to: m.index + m[0].length }
-    if (rule.precision === 'high') taken.push(span)
+    if (rule.precision === 'high' && (!rule.keyMaterial || rule.keyMaterial.test(m[0]))) taken.push(span)
     else looks.push(span)
   })
   // Sorted by start; a stable sort keeps table order among matches that start together.
