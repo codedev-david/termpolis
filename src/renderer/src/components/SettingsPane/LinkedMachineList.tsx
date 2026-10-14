@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import type { LinkedActivityView, LinkedGrants, LinkedMachineView } from '../../types'
-import { formatDuration, latestActivity, relativeTime, toggleGrant, type GrantKey } from '../../lib/linkedMachines'
+import type { LinkedActivityView, LinkedGrants, LinkedJobRecord, LinkedMachineView } from '../../types'
+import {
+  formatDuration,
+  historyRows,
+  latestActivity,
+  relativeTime,
+  toggleGrant,
+  type GrantKey,
+  type HistoryRow,
+} from '../../lib/linkedMachines'
 import { LinkedGrantToggles } from './LinkedGrantToggles'
 
 export interface LinkedMachineRowProps {
@@ -221,13 +229,16 @@ const STATUS_CLASS: Record<LinkedActivityView['status'], string> = {
 }
 
 /** The latest jobs in both directions. Kept in memory by main only, so it
- *  starts empty after a restart. */
+ *  starts empty after a restart. A job another computer is running here can be
+ *  stopped from its row. */
 export function LinkedActivityList({
   activity,
   now,
+  onStop,
 }: {
   activity: LinkedActivityView[]
   now: number
+  onStop(id: string): void
 }): JSX.Element {
   const rows = latestActivity(activity)
   return (
@@ -260,9 +271,123 @@ export function LinkedActivityList({
                   <span className="text-[#6b7280] whitespace-nowrap">{formatDuration(row.durationMs)}</span>
                 )}
                 <span className="text-[#6b7280] whitespace-nowrap">{relativeTime(row.startedAt, now)}</span>
+                {row.direction === 'in' && row.status === 'running' && (
+                  <button
+                    data-testid={`linked-stop-${row.id}`}
+                    onClick={() => onStop(row.id)}
+                    title={`Stop this job. ${row.machine} is told it was stopped here.`}
+                    className="px-2 py-0.5 text-xs rounded bg-[#3c3c3c] hover:bg-[#a33] text-[#e0e0e0]"
+                  >
+                    Stop
+                  </button>
+                )}
               </li>
             )
           })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+const HISTORY_STATUS: Record<Exclude<HistoryRow, { kind: 'refused' }>['status'], { word: string; className: string }> = {
+  running: { word: 'running', className: STATUS_CLASS.running },
+  done: { word: 'done', className: STATUS_CLASS.done },
+  failed: { word: 'failed', className: STATUS_CLASS.failed },
+  cancelled: { word: 'cancelled', className: STATUS_CLASS.cancelled },
+  unrecorded: { word: 'no end recorded', className: 'text-[#6b7280]' },
+}
+
+/** The last part of a folder path, for a row that has no room for all of it. */
+function folderName(cwd: string): string {
+  const parts = cwd.split(/[\\/]+/).filter(Boolean)
+  return parts.at(-1) ?? cwd
+}
+
+/** Every job other computers started here, and every one they were refused, from the history
+ *  file main keeps (linked-jobs.jsonl): unlike Activity, it is still there after a restart.
+ *  `records` is null until it has been read. */
+export function LinkedJobHistory({
+  records,
+  running,
+  now,
+}: {
+  records: LinkedJobRecord[] | null
+  running: ReadonlySet<string>
+  now: number
+}): JSX.Element {
+  const rows = records ? historyRows(records, running) : []
+  return (
+    <div data-testid="linked-history" className="mt-4">
+      <div className="text-xs text-[#9ca3af] mb-1">Job history on this computer</div>
+      <p className="text-xs text-[#6b7280] mb-2">
+        Every job another computer started here, and every one this computer refused, kept across
+        restarts.
+      </p>
+      {rows.length === 0 ? (
+        <p data-testid="linked-history-empty" className="text-xs text-[#6b7280]">
+          {records ? 'No other computer has asked this one for a job yet.' : 'Reading the job history…'}
+        </p>
+      ) : (
+        <ul className="flex flex-col">
+          {rows.map((row) =>
+            row.kind === 'refused' ? (
+              <li
+                key={row.key}
+                data-testid={`linked-history-${row.key}`}
+                className="flex items-start gap-2 text-xs text-[#d4d4d4] border-b border-[#2d2d2d] py-1"
+              >
+                <span className="text-[#f28b82] whitespace-nowrap">refused</span>
+                <span className="text-[#9ca3af] w-28 truncate flex-shrink-0">from {row.machine}</span>
+                <span className="flex-1 min-w-0 break-words text-[#9ca3af]">
+                  {row.reason}
+                  {row.count ? ` (and ${row.count} more that minute)` : ''}
+                </span>
+                <span className="text-[#6b7280] whitespace-nowrap">{relativeTime(row.ts, now)}</span>
+              </li>
+            ) : (
+              <li
+                key={row.key}
+                data-testid={`linked-history-${row.key}`}
+                className="flex flex-col gap-0.5 text-xs text-[#d4d4d4] border-b border-[#2d2d2d] py-1"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[#9ca3af] w-28 truncate flex-shrink-0">from {row.machine}</span>
+                  <span className="text-[#9ca3af] w-14 flex-shrink-0">{row.agent ?? ''}</span>
+                  {row.write && (
+                    <span
+                      data-testid={`linked-history-edit-${row.key}`}
+                      className="text-[10px] px-1.5 py-0.5 rounded border border-[#5a2d2d] bg-[#2a1919] text-[#f28b82] whitespace-nowrap"
+                    >
+                      edit
+                    </span>
+                  )}
+                  <span className="flex-1 min-w-0 truncate" title={row.summary}>
+                    {row.summary ?? ''}
+                  </span>
+                  <span className={HISTORY_STATUS[row.status].className}>{HISTORY_STATUS[row.status].word}</span>
+                  {row.durationMs !== undefined && (
+                    <span className="text-[#6b7280] whitespace-nowrap">{formatDuration(row.durationMs)}</span>
+                  )}
+                  <span className="text-[#6b7280] whitespace-nowrap">{relativeTime(row.ts, now)}</span>
+                </div>
+                {(row.cwd || row.secretRules.length > 0) && (
+                  <div className="flex items-center gap-2 pl-[7.5rem] text-[#6b7280]">
+                    {row.cwd && (
+                      <span className="font-mono truncate" title={row.cwd}>
+                        in {folderName(row.cwd)}
+                      </span>
+                    )}
+                    {row.secretRules.length > 0 && (
+                      <span data-testid={`linked-history-secrets-${row.key}`} className="text-[#e5c07b]">
+                        credentials screened: {row.secretRules.join(', ')}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </li>
+            ),
+          )}
         </ul>
       )}
     </div>

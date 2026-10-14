@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import { gpuPolicy } from './gpuPolicy'
 import {
@@ -4580,6 +4580,9 @@ async function semanticPoolOptions(
       // still lets the display sleep. One blocker, held by id; powerSaveBlocker is read only when
       // called, never at load.
       let sleepBlocker: number | null = null
+      // The latest job notification per linked computer: a newer one from the same computer
+      // replaces it rather than stacking, and holding it keeps its click handler alive.
+      const linkedNotices = new Map<string, Notification>()
       try {
         startLinkedHost({
           userDataDir: app.getPath('userData'),
@@ -4602,6 +4605,27 @@ async function semanticPoolOptions(
               sleepBlocker = null
               powerSaveBlocker.stop(id)
             }
+          },
+          // A job another computer started here. Windows needs the AppUserModelId set at the top
+          // of this file; Linux without a notification daemon reports no support, and gets none.
+          // A click opens Settings ▸ Linked machines, where the job can be stopped.
+          notifyJob: (notice) => {
+            if (!Notification.isSupported()) return
+            linkedNotices.get(notice.tag)?.close()
+            const toast = new Notification({ title: notice.title, body: notice.body })
+            toast.on('click', () => {
+              // Brought forward first, so the pane opens where the user is looking. A window that
+              // has gone away (null, or destroyed) throws on the way, and the click opens nothing.
+              try {
+                const win = mainWindow as BrowserWindow
+                if (win.isMinimized()) win.restore()
+                win.show()
+                win.focus()
+                win.webContents.send('linked:show')
+              } catch { /* window gone */ }
+            })
+            linkedNotices.set(notice.tag, toast)
+            toast.show()
           },
         })
       } catch (e) {

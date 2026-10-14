@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
   ACTIVITY_ROWS,
+  HISTORY_ROWS,
   LINKED_MACHINE_LIMIT,
   formatCountdown,
   formatDuration,
+  historyRows,
   latestActivity,
   pendingConfirmations,
   reconcileAnnouncements,
@@ -14,7 +16,7 @@ import {
   type Announcements,
 } from '../../src/renderer/src/lib/linkedMachines'
 import { MAX_LINKED_MACHINES } from '../../src/main/remoteBridge/protocol'
-import type { LinkedActivityView, LinkedMachineView } from '../../src/renderer/src/types'
+import type { LinkedActivityView, LinkedJobRecord, LinkedMachineView } from '../../src/renderer/src/types'
 
 const machine = (over: Partial<LinkedMachineView> = {}): LinkedMachineView => ({
   ref: 'link:aaaa',
@@ -215,5 +217,68 @@ describe('pendingConfirmations', () => {
         'link:aaaa': { phrase: 'w', suggestedName: 'linux', seen: true },
       }),
     ).toEqual([])
+  })
+})
+
+describe('historyRows', () => {
+  const rec = (over: Partial<LinkedJobRecord>): LinkedJobRecord => ({
+    ts: 1_000,
+    event: 'started',
+    jobId: 'aaaaaaaaaaaa',
+    ref: 'device:bbbb',
+    machine: 'build-box',
+    ...over,
+  })
+  const none = new Set<string>()
+
+  it("joins a job's start and end into one row, newest first, with refusals among them", () => {
+    const rows = historyRows(
+      [
+        rec({ ts: 5_000, event: 'refused', jobId: undefined, reason: 'busy', count: 2, agent: 'codex', write: true }),
+        rec({ ts: 4_000, event: 'finished', status: 'failed', durationMs: 3_000, agent: 'codex' }),
+        rec({ ts: 1_000, agent: 'codex', write: false, cwd: '/w', summary: 'Do it', secretRules: ['b_rule', 'a_rule'] }),
+      ],
+      none,
+    )
+    expect(rows).toEqual([
+      { kind: 'refused', key: 'refused-5000-0', ts: 5_000, machine: 'build-box', agent: 'codex', write: true, reason: 'busy', count: 2 },
+      {
+        kind: 'job',
+        key: 'aaaaaaaaaaaa',
+        ts: 1_000,
+        machine: 'build-box',
+        agent: 'codex',
+        write: false,
+        cwd: '/w',
+        summary: 'Do it',
+        status: 'failed',
+        durationMs: 3_000,
+        secretRules: ['a_rule', 'b_rule'],
+      },
+    ])
+  })
+
+  it('places a job whose start line was rotated away at its start, worked out from its end', () => {
+    const [row] = historyRows([rec({ ts: 9_000, event: 'finished', status: 'done', durationMs: 4_000 })], none)
+    expect(row).toMatchObject({ kind: 'job', ts: 5_000, status: 'done' })
+    const [bare] = historyRows([rec({ ts: 9_000, event: 'finished' })], none)
+    expect(bare).toMatchObject({ ts: 9_000, status: 'unrecorded' })
+  })
+
+  it('calls a job without an end running only while it runs here', () => {
+    expect(historyRows([rec({})], new Set(['aaaaaaaaaaaa']))[0]).toMatchObject({ status: 'running' })
+    expect(historyRows([rec({})], none)[0]).toMatchObject({ status: 'unrecorded' })
+  })
+
+  it('skips a job line without an id, and a refusal without a reason reads empty', () => {
+    expect(historyRows([rec({ jobId: undefined })], none)).toEqual([])
+    expect(historyRows([rec({ event: 'refused', jobId: undefined })], none)[0]).toMatchObject({ reason: '' })
+  })
+
+  it(`shows at most ${HISTORY_ROWS} rows`, () => {
+    const many = Array.from({ length: 80 }, (_, i) => rec({ ts: i, jobId: i.toString(16).padStart(12, '0') }))
+    const rows = historyRows(many, none)
+    expect(rows).toHaveLength(HISTORY_ROWS)
+    expect(rows[0].ts).toBe(79)
   })
 })

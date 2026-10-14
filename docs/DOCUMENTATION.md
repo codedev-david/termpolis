@@ -1089,7 +1089,23 @@ Each linked computer gets a row in **Linked computers**:
 Names are yours, and each computer names the other. Two machines given the same
 name are numbered: `linux`, `linux (2)`. **Activity** lists the 20 latest jobs
 in both directions, with the machine, the agent, the first line of the prompt,
-the status and how long each took.
+the status and how long each took. A job another computer is running here has
+a **Stop** button; the computer that asked is told *Stopped on <this computer>
+by its user.*
+
+**Job history on this computer** lists every job other computers started here,
+joined to how it ended, and every one this computer refused, with the reason.
+Unlike Activity it is kept across restarts (see *Records* below). Each row shows
+the machine, the agent, **edit** for a job with edit permission, the folder, the
+first line of the prompt and any credential rules screening matched.
+
+**Notify me when a linked computer starts a job here** is on by default. Each
+job another computer starts here then shows a system notification naming the
+computer, the agent, read-only or edit, and the folder, with the task's first
+line quoted under them; several from one computer within a minute share one
+notification. Click it to open this pane. A refused request never notifies, and
+neither does anything while the switch is off. The notification is not a
+question: the job is already running, and **Stop** is how to end it.
 
 ### What a linked computer may do here
 
@@ -1224,7 +1240,8 @@ audit log.
 - **Up to 16 linked machines** per computer, counting the ones this computer
   made codes for and the ones whose codes it entered.
 - **Jobs live in memory.** Quitting Termpolis stops every job it is running for
-  other computers, and forgets the finished ones.
+  other computers, and forgets the finished ones. The job history keeps a line
+  for each.
 
 ### How it is secured
 
@@ -1267,7 +1284,8 @@ audit log.
   screen shows no words or different ones.
 - **Read-only by default.** Every request is checked on the computer that would
   do the work, before any agent starts. The computer doing the work doesn't ask
-  you per job: the permissions are the decision.
+  you per job, but it tells you: each job shows a notification and is kept in
+  the job history, and a running one can be stopped from Activity.
 - **Jobs, nothing else.** A linked computer is never given a phone's abilities.
   It cannot list, read or type into your terminals; it can only ask for the
   jobs described here. A Claude or Gemini job with *edit* permission runs as
@@ -1334,8 +1352,17 @@ audit log.
 - **Your AI providers.** Each agent's provider sees what that agent is asked
   and answers, as always, and a job uses the doing computer's AI account.
 - **Records.** The asking computer's MCP audit log records each call an agent
-  makes over MCP (not the prompt). The doing computer keeps its *Activity* list in memory until
-  Termpolis quits.
+  makes over MCP (not the prompt). The doing computer keeps its *Activity* list
+  in memory until Termpolis quits, and its job history in `linked-jobs.jsonl` in
+  the data directory: a line when a job starts (the machine, agent, read-only or
+  edit, folder, the first line of the screened prompt and the credential rules
+  matched), a line when it ends (how, and how long it took), and a line for each
+  refusal with its reason. A computer's refusals within one minute after the
+  first are written as one line with their count, so a computer refused again
+  and again can't push the real history out. Never the prompt or the answer.
+  Past 2 MB the file moves to `linked-jobs.prev.jsonl`, replacing the one there.
+  It is a record, not evidence: a Claude or Gemini job with *edit* permission
+  runs as you and could rewrite it like any other file you own.
 
 ### Unlinking
 

@@ -1173,6 +1173,36 @@ export interface LinkedActivityView {
   durationMs?: number
 }
 
+/** One line of the job history on this computer (`linked-jobs.jsonl` in userData): a job another
+ *  computer started here, the same job ending, or one it was refused. Main rebuilds each line field
+ *  by field as it reads it back. */
+export interface LinkedJobRecord {
+  ts: number
+  event: 'started' | 'finished' | 'refused'
+  /** The job, on `started` and `finished`. */
+  jobId?: string
+  /** The linked computer's ref, or '' when a refused request couldn't say which it was. */
+  ref: string
+  /** That computer's name on this one, at the time: 'unknown computer' when it had none. */
+  machine: string
+  agent?: 'claude' | 'codex' | 'gemini'
+  /** Edit was asked for: granted on `started`, the reason for some refusals. */
+  write?: boolean
+  /** The folder it ran in, on `started`. */
+  cwd?: string
+  /** The first line of the screened prompt, at most 80 characters, on `started`. */
+  summary?: string
+  /** How it ended, on `finished`. */
+  status?: 'done' | 'failed' | 'cancelled'
+  durationMs?: number
+  /** Why it was refused, at most 200 characters. */
+  reason?: string
+  /** On a refusal written as a minute of them ends: how many more there were. */
+  count?: number
+  /** The credential rules screening matched: the prompt's on `started`, the answer's on `finished`. */
+  secretRules?: string[]
+}
+
 /** `keyStorage` is 'locked' when the identity is, or when the file holding the links this computer
  *  joined can't be opened -- then nothing about them can change until it opens or the user starts
  *  over. */
@@ -1196,6 +1226,10 @@ export interface LinkedStatusView extends KeyStorageView {
   joining: boolean
   machines: LinkedMachineView[]
   activity: LinkedActivityView[]
+  /** A notification for each job another computer starts here. On unless switched off. */
+  notifyJobs: boolean
+  /** Bumped with every line written to the job history, so the pane reads it again only then. */
+  jobLogVersion: number
 }
 
 export type LinkedEvent =
@@ -1221,8 +1255,16 @@ export interface LinkedAPI {
   /** The Remote pane's two key actions, on the same keys (see RemoteAPI). */
   encryptKeys(): Promise<IpcResponse<LinkedStatusView>>
   startOver(): Promise<IpcResponse<LinkedStatusView>>
+  /** Notifications for jobs another computer starts here: anything but `false` leaves them on. */
+  setNotify(enabled: boolean): Promise<IpcResponse<LinkedStatusView>>
+  /** Stop a job another computer is running here. */
+  stopJob(id: string): Promise<IpcResponse<LinkedStatusView>>
+  /** The job history on this computer, newest first. */
+  jobLog(limit?: number): Promise<IpcResponse<LinkedJobRecord[]>>
   onStatus(cb: (s: LinkedStatusView) => void): () => void
   onEvent(cb: (e: LinkedEvent) => void): () => void
+  /** A job notification was clicked: open Settings ▸ Linked machines. */
+  onShow(cb: () => void): () => void
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

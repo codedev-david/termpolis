@@ -19,7 +19,8 @@
 // start as warm as one started here.
 //
 // Jobs live in memory only. A restart forgets them, and the asking machine's
-// next poll gets `unknown job`.
+// next poll gets `unknown job`. What ran is written down by linkedHost, in the
+// job history (linkedJobLog), from what this reports in `onActivity`.
 import path from 'path'
 import { normalizeShellPath } from '../shared/cwdPath'
 import { delegationHeader } from '../shared/headlessPrompt'
@@ -64,6 +65,10 @@ export function mergeScreens(screens: Array<SecretScreen | null>): Pick<SecretSc
 export const foundAny = (s: Pick<SecretScreen, 'removed' | 'flagged'>): boolean =>
   Object.keys(s.removed).length > 0 || Object.keys(s.flagged).length > 0
 
+/** The rules a screen matched, removed or left in, once each: what the job history names. */
+const rulesOf = (s: Pick<SecretScreen, 'removed' | 'flagged'>): string[] =>
+  [...new Set([...Object.keys(s.removed), ...Object.keys(s.flagged)])].sort()
+
 /** One row of the activity view, for a job either machine started. */
 export interface LinkedActivity {
   /** The executor's job id for an inbound job; `<link id>-<job id>` for an outbound one. */
@@ -76,6 +81,13 @@ export interface LinkedActivity {
   status: 'running' | 'done' | 'failed' | 'cancelled'
   startedAt: number
   durationMs?: number
+  /** Inbound only: started with the write grant. */
+  write?: boolean
+  /** Inbound only: the folder it runs in. */
+  cwd?: string
+  /** Inbound only, when screening matched any: the prompt's rules while running, the answer's
+   *  once it ends. */
+  secretRules?: string[]
 }
 
 export interface LinkedJobsDeps {
@@ -168,7 +180,11 @@ interface Job {
   agent: PeerAgent
   /** Started with the write grant: the one grant it stops running without. */
   write: boolean
+  cwd: string
   summary: string
+  /** What screening matched in the prompt, and in the answer once there is one. */
+  promptRules: string[]
+  answerRules: string[]
   startedAt: number
   status: JobStatus
   finishedAt: number
@@ -247,6 +263,7 @@ function outcomeOf(r: ExecResult): Outcome {
 export function createLinkedJobs(deps: LinkedJobsDeps): {
   handle(from: LinkTarget, meta: LinkMeta, req: PeerRequest): Promise<unknown>
   revoke(from: LinkTarget, grants: LinkedGrants | null): void
+  stopLocal(id: string): boolean
   cancelAll(): void
 } {
   const jobs = new Map<string, Job>()
@@ -288,6 +305,7 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
   }
 
   function emit(job: Job): void {
+    const rules = job.status === 'running' ? job.promptRules : job.answerRules
     try {
       deps.onActivity({
         id: job.id,
@@ -299,6 +317,9 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
         status: job.status,
         startedAt: job.startedAt,
         ...(job.durationMs !== undefined ? { durationMs: job.durationMs } : {}),
+        write: job.write,
+        cwd: job.cwd,
+        ...(rules.length > 0 ? { secretRules: rules } : {}),
       })
     } catch {
       /* the job outlives a listener that broke */
@@ -344,7 +365,9 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       error = screenOrWithhold(capError(outcome.error))
       job.error = capError(error.text)
     }
-    reportSecrets(job, 'answer-out', mergeScreens([output, error]))
+    const found = mergeScreens([output, error])
+    job.answerRules = rulesOf(found)
+    reportSecrets(job, 'answer-out', found)
     job.settle()
     emit(job)
     prune()
@@ -493,7 +516,10 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       machine: meta.name,
       agent,
       write,
+      cwd,
       summary: activitySummary(prompt),
+      promptRules: rulesOf(screened),
+      answerRules: [],
       startedAt: deps.now(),
       status: 'running',
       finishedAt: 0,
@@ -603,6 +629,16 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
         job.controller.abort()
         finish(job, { status: 'cancelled', error: why })
       }
+    },
+
+    /** The user here stopped one job, from Settings: true when it was running. The
+     *  asking machine's next poll reads why. */
+    stopLocal(id) {
+      const job = jobs.get(id)
+      if (!job || job.status !== 'running') return false
+      job.controller.abort()
+      finish(job, { status: 'cancelled', error: `Stopped on ${here()} by its user.` })
+      return true
     },
 
     /** Stop every running job, for when linked machines is switched off or the

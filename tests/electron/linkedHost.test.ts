@@ -31,6 +31,7 @@ import type { KeyStorageView, LinkedBridgePort } from '../../src/main/remoteBrid
 import { REMOTE_KEYS_NOT_LOCKED, _resetRemoteHostForTests } from '../../src/main/remoteHost'
 import { localDesktopName } from '../../src/main/remoteBridge/desktopName'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
+import type { LinkedActivity } from '../../src/main/linkedJobs'
 import { loadLinkedSettings, saveLinkedSettings } from '../../src/main/linkedSettings'
 import {
   DEFAULT_GRANTS,
@@ -57,21 +58,29 @@ import {
   LINKED_OFF,
   LINKED_TOOL_OFF,
   LINKED_UNAVAILABLE,
+  LINKED_UNKNOWN_JOB,
   LINKED_UNKNOWN_MACHINE,
   LINKED_UNLINK_NEEDS_BRIDGE,
   LINKED_WRITE_NEEDS_ACK,
   LINKED_WRITE_NEEDS_CONFIRM,
+  NOTICE_GROUP_MS,
+  REFUSAL_WINDOW_MS,
+  UNKNOWN_COMPUTER,
   _resetLinkedHostForTests,
+  jobNotice,
   linkedAuditEntries,
   linkedInitForRemote,
   linkedStartOverForRemote,
   linkedToolCall,
+  plainText,
   registerLinkedIpc,
   startLinkedHost,
   stopLinkedHost,
   type LinkedAuditEntry,
   type LinkedBridgeAccess,
   type LinkedEvent,
+  type LinkedJobNotice,
+  type LinkedJobRecord,
   type LinkedStatusView,
 } from '../../src/main/linkedHost'
 
@@ -238,6 +247,7 @@ interface BootOptions {
   keepAwake?: (on: boolean) => void
   /** The audit sink; a spy by default, and none at all for null. */
   audit?: ((entry: LinkedAuditEntry) => Promise<void> | void) | null
+  notifyJob?: (notice: LinkedJobNotice) => void
 }
 
 function boot(opts: BootOptions = {}) {
@@ -275,6 +285,7 @@ function boot(opts: BootOptions = {}) {
     ...(opts.now ? { now: opts.now } : {}),
     // Only when a test asks: every other test runs without one, as a binding may.
     ...(opts.keepAwake ? { keepAwake: opts.keepAwake } : {}),
+    ...(opts.notifyJob ? { notifyJob: opts.notifyJob } : {}),
   })
   const invoke = async (channel: string, input?: unknown): Promise<Envelope> =>
     (await handlers.get(channel)!(null, input)) as Envelope
@@ -297,6 +308,9 @@ const CHANNELS = [
   'linked:unlink',
   'linked:encrypt-keys',
   'linked:start-over',
+  'linked:set-notify',
+  'linked:stop-job',
+  'linked:job-log',
 ]
 
 describe('before the service starts', () => {
@@ -362,6 +376,8 @@ describe('starting and stopping', () => {
         { ref: linkRef(L), name: 'linux', online: false, confirmed: true, grants: { run: true, write: false }, linkedAt: 1_000 },
       ],
       activity: [],
+      notifyJobs: true,
+      jobLogVersion: 0,
     })
   })
 
@@ -1996,5 +2012,316 @@ describe('credentials between two computers', () => {
     const again = (await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: `use ${GH}`, waitSec: 5 })) as Record<string, unknown>
     expect(again.note).toBe('Termpolis removed 1 credential (gh_pat) from this answer. Termpolis removed 1 credential (gh_pat) from the prompt sent to "linux".')
     expect(quiet.audit).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ── What another computer does here, seen: the job history, notifications and Stop ──
+
+describe('the job history, notifications and Stop', () => {
+  const asked = (h: ReturnType<typeof boot>, callId: string, from: unknown, request: unknown): void =>
+    h.bridge.emit({ kind: 'peerRequest', callId, from, request })
+
+  /** The job view a reply carried; a refusal here is the test failing. */
+  function jobOf(reply: PeerReply): PeerJobView {
+    if (!reply.ok) throw new Error(`refused: ${reply.message}`)
+    return reply.data as PeerJobView
+  }
+
+  /** The history as the pane reads it. */
+  async function history(h: ReturnType<typeof boot>, limit?: number): Promise<LinkedJobRecord[]> {
+    const res = (await h.handlers.get('linked:job-log')!(null, limit === undefined ? {} : { limit })) as {
+      success: boolean
+      data: LinkedJobRecord[]
+    }
+    expect(res.success).toBe(true)
+    return res.data
+  }
+
+  /** A computer linked and confirmed here, and an agent that runs until the test lets it end. */
+  function serving(
+    opts: {
+      name?: string
+      grants?: { run: boolean; write: boolean }
+      now?: () => number
+      notifyJob?: (n: LinkedJobNotice) => void
+      /** Each job ends as soon as it starts: past the cap of two running per computer. */
+      instant?: boolean
+    } = {},
+  ) {
+    const P = peer()
+    const finishers: Array<() => void> = []
+    const h = boot({
+      enabled: true,
+      state: { links: [], meta: [meta(devRef(P), { name: opts.name ?? 'build-box', grants: opts.grants ?? { run: true, write: false } })] },
+      ...(opts.now ? { now: opts.now } : {}),
+      ...(opts.notifyJob ? { notifyJob: opts.notifyJob } : {}),
+      runHeadless: (req) =>
+        new Promise((resolve) => {
+          const end = () => resolve({ ok: true, agent: req.agent ?? 'claude', output: 'done', code: 0, durationMs: 5, primerChars: 0 })
+          if (opts.instant) return end()
+          finishers.push(end)
+          req.signal?.addEventListener('abort', end)
+        }),
+    })
+    h.bridge.peers = [P]
+    let seq = 0
+    /** One job request from P; resolves with its reply once main has answered. */
+    async function run(request: Record<string, unknown> = {}): Promise<PeerReply> {
+      const callId = `run-${++seq}`
+      asked(h, callId, { via: 'device', id: P.id }, { kind: 'peerRun', agent: 'codex', prompt: 'Review the parser', cwd: dir, ...request })
+      await vi.waitFor(() => expect(h.replyTo(callId)).toBeDefined())
+      return h.replyTo(callId)!
+    }
+    return { h, P, run, finishers }
+  }
+
+  it('writes a line when a job starts and when it ends, for the history the pane reads', async () => {
+    const { h, P, run, finishers } = serving({ grants: { run: true, write: true } })
+    const reply = await run({ write: true, prompt: `Deploy with ghp_${'a'.repeat(36)}` })
+    const jobId = jobOf(reply).jobId
+    finishers[0]()
+    await vi.waitFor(async () => expect(await history(h)).toHaveLength(2))
+    const [ended, began] = await history(h)
+    expect(began).toEqual({
+      ts: expect.any(Number),
+      event: 'started',
+      jobId,
+      ref: devRef(P),
+      machine: 'build-box',
+      agent: 'codex',
+      write: true,
+      cwd: dir,
+      // The screened prompt's first line, never the prompt: the token never reaches the file.
+      summary: 'Deploy with [REDACTED:gh_pat]',
+      secretRules: ['gh_pat'],
+    })
+    expect(ended).toEqual({
+      ts: expect.any(Number),
+      event: 'finished',
+      jobId,
+      ref: devRef(P),
+      machine: 'build-box',
+      agent: 'codex',
+      status: 'done',
+      durationMs: expect.any(Number),
+    })
+    expect(JSON.stringify(await history(h))).not.toContain('ghp_')
+    // The pane rereads when this moves: once per line.
+    expect((await h.status()).jobLogVersion).toBe(2)
+    expect(await history(h, 1)).toHaveLength(1)
+  })
+
+  it('notifies each job another computer starts, from what this computer knows, and nothing else', async () => {
+    let clock = 1_000_000
+    const notifyJob = vi.fn()
+    const { run } = serving({ now: () => clock, notifyJob, instant: true })
+    await run()
+    expect(notifyJob).toHaveBeenCalledTimes(1)
+    expect(notifyJob).toHaveBeenLastCalledWith({
+      tag: expect.stringMatching(/^device:/),
+      title: 'build-box started a job here',
+      body: `Codex · read-only · ${path.basename(dir)}\nTask: “Review the parser”`,
+    })
+    // A second within the minute replaces the first, saying how many came.
+    clock += 30_000
+    await run({ prompt: 'Run the tests' })
+    expect(notifyJob).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('+1 more job from build-box in the last minute') }),
+    )
+    clock += 20_000
+    await run({ prompt: 'And lint' })
+    expect(notifyJob.mock.lastCall![0].body).toContain('+2 more jobs from build-box in the last minute')
+    // A minute after the first, a fresh one.
+    clock += 10_000
+    await run({ prompt: 'Once more' })
+    expect(notifyJob.mock.lastCall![0].body).not.toContain('more job')
+  })
+
+  it('notifies nothing for a refusal, and nothing once the user has switched notifications off', async () => {
+    const notifyJob = vi.fn()
+    const { h, run } = serving({ notifyJob })
+    expect((await run({ write: true })).ok).toBe(false)
+    expect(notifyJob).not.toHaveBeenCalled()
+
+    const off = await h.invoke('linked:set-notify', { enabled: false })
+    expect(off).toMatchObject({ success: true, data: { notifyJobs: false } })
+    expect(loadLinkedSettings(dir)).toEqual({ enabled: true, notifyJobs: false })
+    expect((await run()).ok).toBe(true)
+    expect(notifyJob).not.toHaveBeenCalled()
+    // Still written down: the history doesn't depend on the notifications.
+    expect((await history(h)).map((r) => r.event)).toContain('started')
+
+    // Switching Linked off and on keeps the choice.
+    await h.invoke('linked:set-enabled', { enabled: false })
+    await h.invoke('linked:set-enabled', { enabled: true })
+    expect(loadLinkedSettings(dir)).toEqual({ enabled: true, notifyJobs: false })
+    // Anything but an explicit false turns them back on, and on is written as nothing.
+    expect(await h.invoke('linked:set-notify', { enabled: 'no' })).toMatchObject({ data: { notifyJobs: true } })
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'linked-settings.json'), 'utf8'))).toEqual({ enabled: true })
+  })
+
+  it('keeps the job when the notification fails to show', async () => {
+    const { run } = serving({
+      notifyJob: () => {
+        throw new Error('no notification daemon')
+      },
+    })
+    expect((await run()).ok).toBe(true)
+  })
+
+  it('writes a refusal with its reason and the machine, and a minute of them as one more line', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { h, P, run } = serving()
+    for (let i = 0; i < 4; i++) expect((await run({ write: true })).ok).toBe(false)
+    let lines = await history(h)
+    expect(lines).toEqual([
+      {
+        ts: expect.any(Number),
+        event: 'refused',
+        ref: devRef(P),
+        machine: 'build-box',
+        agent: 'codex',
+        write: true,
+        reason: expect.stringContaining("does not let this computer's agents edit files"),
+      },
+    ])
+    vi.advanceTimersByTime(REFUSAL_WINDOW_MS)
+    lines = await history(h)
+    expect(lines[0]).toMatchObject({ event: 'refused', ref: devRef(P), count: 3 })
+    // A new minute: written at once again.
+    expect((await run({ agent: 'bash' })).ok).toBe(false)
+    lines = await history(h)
+    expect(lines).toHaveLength(3)
+    expect(lines[0]).not.toHaveProperty('agent')
+    expect(lines[0].reason).toBe('Invalid agent: expected claude, codex or gemini.')
+  })
+
+  it('writes the refusals still being counted when the service stops', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { h, run } = serving()
+    await run({ write: true })
+    await run({ write: true })
+    expect(await history(h)).toHaveLength(1)
+    stopLinkedHost()
+    // Read through a fresh service on the same folder: the line landed.
+    const again = boot()
+    await vi.waitFor(async () => expect((await history(again))[0]).toMatchObject({ event: 'refused', count: 1 }))
+  })
+
+  it('names a computer it has no record of "unknown computer", and keeps an over-long reason short', async () => {
+    const stranger = peer('stranger')
+    const h = boot({ enabled: true })
+    h.bridge.peers = []
+    asked(h, 'r1', { via: 'device', id: stranger.id }, { kind: 'peerRun', agent: 'codex', prompt: 'x' })
+    asked(h, 'r2', { via: 'nowhere', id: 'zz' }, { kind: 'peerRun', agent: 'codex', prompt: 'x' })
+    await vi.waitFor(() => expect([h.replyTo('r1'), h.replyTo('r2')]).not.toContain(undefined))
+    const lines = await history(h)
+    expect(lines.map((r) => [r.ref, r.machine]).sort()).toEqual([
+      ['', 'unknown computer'],
+      [devRef(stranger), 'unknown computer'],
+    ])
+    // Requests that aren't jobs are not job history.
+    asked(h, 'h1', { via: 'device', id: stranger.id }, { kind: 'peerResult', jobId: 'ffffffffffff' })
+    await vi.waitFor(() => expect(h.replyTo('h1')).toBeDefined())
+    expect(await history(h)).toHaveLength(2)
+
+    // One that paired a moment ago has no record yet, but the directory lists it by its label;
+    // one the bridge has just dropped is named as it was.
+    const fresh = peer('fresh-box')
+    const dropped = peer('old-box')
+    h.bridge.peers = [fresh, dropped]
+    h.bridge.emit({ kind: 'paired', device: dropped })
+    h.bridge.peers = [fresh]
+    h.bridge.emit({ kind: 'devicesChanged', devices: [fresh] })
+    asked(h, 'f1', { via: 'device', id: fresh.id }, { kind: 'peerRun', agent: 'codex', prompt: 'x' })
+    asked(h, 'd1', { via: 'device', id: dropped.id }, { kind: 'peerRun', agent: 'codex', prompt: 'x' })
+    await vi.waitFor(() => expect([h.replyTo('f1'), h.replyTo('d1')]).not.toContain(undefined))
+    const named = new Map((await history(h)).map((r) => [r.ref, r.machine]))
+    expect(named.get(devRef(fresh))).toBe('fresh-box')
+    expect(named.get(devRef(dropped))).toBe('old-box')
+
+    // Another computer's own service: one at a time, as in the app.
+    _resetLinkedHostForTests()
+    const long = joined()
+    const quiet = boot({ enabled: true, state: { links: [long], meta: [meta(linkRef(long), { name: 'desk' })] } })
+    asked(quiet, 'c1', { via: 'link', id: long.id }, { kind: 'peerRun', agent: 'codex', prompt: 'x', cwd: `/${'d'.repeat(300)}` })
+    await vi.waitFor(() => expect(quiet.replyTo('c1')).toBeDefined())
+    const [line] = await history(quiet)
+    expect(line.machine).toBe('desk')
+    expect(line.reason!.length).toBeLessThanOrEqual(200)
+    expect(line.reason!.endsWith('…')).toBe(true)
+  })
+
+  it('stops a job another computer is running here, and tells that computer who stopped it', async () => {
+    const { h, P, run } = serving()
+    const reply = await run()
+    const jobId = jobOf(reply).jobId
+    const res = await h.invoke('linked:stop-job', { id: jobId })
+    expect(res.success).toBe(true)
+    expect(res.data!.activity.find((a) => a.id === jobId)?.status).toBe('cancelled')
+    asked(h, 'p1', { via: 'device', id: P.id }, { kind: 'peerResult', jobId })
+    await vi.waitFor(() => expect(h.replyTo('p1')).toBeDefined())
+    expect(jobOf(h.replyTo('p1')!)).toMatchObject({ status: 'cancelled', error: 'Stopped on laptop by its user.' })
+    // Only a job running here: stopped already, unknown, or not an id at all.
+    for (const id of [jobId, 'ffffffffffff', 7, undefined]) {
+      expect(await h.invoke('linked:stop-job', { id })).toEqual({ success: false, error: LINKED_UNKNOWN_JOB })
+    }
+  })
+
+  it("can't stop a job this computer asked another for: that one runs over there", async () => {
+    const L = joined()
+    const h = boot({ enabled: true, state: { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] } })
+    h.bridge.emit({ kind: 'linkStateChanged', id: L.id, attached: true })
+    h.bridge.answer = answering((req) =>
+      req.kind === 'peerRun' ? { jobId: 'a1b2c3d4e5f6', agent: 'codex', status: 'running', startedAt: 1 } : null,
+    )
+    await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: 'x', waitSec: 0 })
+    const out = (await h.status()).activity.find((a) => a.direction === 'out')!
+    expect(await h.invoke('linked:stop-job', { id: out.id })).toEqual({ success: false, error: LINKED_UNKNOWN_JOB })
+  })
+})
+
+describe('jobNotice', () => {
+  const activity = (over: Partial<LinkedActivity> = {}): LinkedActivity => ({
+    id: '0123456789ab',
+    direction: 'in',
+    ref: 'device:a1b2c3d4e5f60718',
+    machine: 'build-box',
+    agent: 'claude',
+    summary: 'Fix the parser',
+    status: 'running',
+    startedAt: 1,
+    ...over,
+  })
+
+  it('leads with what this computer knows, and quotes the task behind a fixed label', () => {
+    expect(jobNotice(activity({ write: true, cwd: '/home/me/repos/app' }), 0)).toEqual({
+      tag: 'device:a1b2c3d4e5f60718',
+      title: 'build-box started a job here',
+      body: 'Claude · can edit files and run commands · app\nTask: “Fix the parser”',
+    })
+    expect(jobNotice(activity({ agent: 'gemini' }), 1).body).toBe(
+      'Gemini · read-only\nTask: “Fix the parser”\n+1 more job from build-box in the last minute',
+    )
+    expect(jobNotice(activity({ agent: 'mystery' }), 0).body.startsWith('An agent · read-only')).toBe(true)
+  })
+
+  it('strips what could make text another computer chose read as something else', () => {
+    // Right-to-left overrides, isolates and control characters: none survives into the notice.
+    const sly = '\u202eexe.\u2066gnirts\u2069\u0007\u200f'
+    const n = jobNotice(activity({ machine: `box${sly}`, summary: `Update ${sly}`, cwd: `/srv/app${sly}` }), 0)
+    // Line by line: the body's own line breaks are the notice's, not the other computer's.
+    for (const text of [n.title, ...n.body.split('\n')]) {
+      expect(text).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/)
+    }
+    expect(n.title).toBe('boxexe.gnirts started a job here')
+    expect(plainText('\u0000\u061c ok \u200e')).toBe('ok')
+    // A name with nothing left to show is the unknown computer, and a folder that is a root is shown whole.
+    expect(jobNotice(activity({ machine: '\u202e' }), 0).title).toBe(`${UNKNOWN_COMPUTER} started a job here`)
+    expect(jobNotice(activity({ cwd: '/' }), 0).body.split('\n')[0]).toBe('Claude \u00b7 read-only \u00b7 /')
+  })
+
+  it('groups a minute of jobs, and only a minute', () => {
+    expect([NOTICE_GROUP_MS, REFUSAL_WINDOW_MS]).toEqual([60_000, 60_000])
   })
 })

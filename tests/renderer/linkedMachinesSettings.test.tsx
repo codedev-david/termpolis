@@ -6,6 +6,7 @@ import { LinkedMachinesSettings } from '../../src/renderer/src/components/Settin
 import type {
   LinkedActivityView,
   LinkedEvent,
+  LinkedJobRecord,
   LinkedMachineView,
   LinkedStatusView,
 } from '../../src/renderer/src/types'
@@ -49,6 +50,8 @@ const statusView = (over: Partial<LinkedStatusView> = {}): LinkedStatusView => (
   activity: [],
   keyStorage: 'keychain',
   keysUnencrypted: false,
+  notifyJobs: true,
+  jobLogVersion: 0,
   ...over,
 })
 
@@ -90,6 +93,9 @@ beforeEach(() => {
     rename: vi.fn().mockResolvedValue(ok(statusView())),
     setGrants: vi.fn().mockResolvedValue(ok(statusView())),
     unlink: vi.fn().mockResolvedValue(ok(statusView())),
+    setNotify: vi.fn().mockResolvedValue(ok(statusView({ notifyJobs: false }))),
+    stopJob: vi.fn().mockResolvedValue(ok(statusView())),
+    jobLog: vi.fn().mockResolvedValue(ok([])),
     onStatus: vi.fn((cb: (s: LinkedStatusView) => void) => {
       pushStatus = cb
       return offStatus
@@ -991,6 +997,158 @@ describe('LinkedMachinesSettings activity', () => {
     api.status.mockResolvedValue(ok(statusView({ activity })))
     await mount()
     expect(within(screen.getByTestId('linked-activity')).getAllByTestId(/^linked-activity-/)).toHaveLength(20)
+  })
+})
+
+describe('LinkedMachinesSettings: stopping a job another computer runs here', () => {
+  it('offers Stop on a job running here, and only there', async () => {
+    api.status.mockResolvedValue(
+      ok(
+        statusView({
+          activity: [
+            job({ id: 'in-run', direction: 'in', status: 'running' }),
+            job({ id: 'in-done', direction: 'in', status: 'done' }),
+            job({ id: 'out-run', direction: 'out', status: 'running' }),
+          ],
+        }),
+      ),
+    )
+    await mount()
+    expect(screen.getByTestId('linked-stop-in-run')).toBeTruthy()
+    expect(screen.queryByTestId('linked-stop-in-done')).toBeNull()
+    // One this computer asked for runs over there: it is stopped there.
+    expect(screen.queryByTestId('linked-stop-out-run')).toBeNull()
+    fireEvent.click(screen.getByTestId('linked-stop-in-run'))
+    await waitFor(() => expect(api.stopJob).toHaveBeenCalledWith('in-run'))
+  })
+
+  it('shows a refused Stop', async () => {
+    api.status.mockResolvedValue(ok(statusView({ activity: [job({ id: 'x', direction: 'in', status: 'running' })] })))
+    api.stopJob.mockResolvedValue(fail('That job is not running on this computer.'))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-stop-x'))
+    expect((await screen.findByTestId('linked-error')).textContent).toContain('not running')
+  })
+})
+
+describe('LinkedMachinesSettings: job notifications', () => {
+  it('shows the switch as main has it, and sends the change', async () => {
+    await mount()
+    expect(input('linked-notify').checked).toBe(true)
+    fireEvent.click(screen.getByTestId('linked-notify'))
+    await waitFor(() => expect(api.setNotify).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(input('linked-notify').checked).toBe(false))
+  })
+})
+
+describe('LinkedMachinesSettings: job history', () => {
+  const T = Date.now() - 3_600_000
+  const record = (over: Partial<LinkedJobRecord>): LinkedJobRecord => ({
+    ts: T,
+    event: 'started',
+    jobId: '0123456789ab',
+    ref: 'device:bbbb',
+    machine: 'build-box',
+    ...over,
+  })
+
+  it('says so when no computer has asked for a job yet', async () => {
+    await mount()
+    await waitFor(() => expect(api.jobLog).toHaveBeenCalledWith(200))
+    expect(screen.getByTestId('linked-history-empty').textContent).toContain('No other computer')
+  })
+
+  it('says it is reading until the history arrives, and keeps what it had when a read fails', async () => {
+    let answer: (v: unknown) => void = () => {}
+    api.jobLog.mockReturnValue(new Promise((r) => (answer = r)))
+    await mount()
+    expect(screen.getByTestId('linked-history-empty').textContent).toContain('Reading')
+    await act(async () => answer(fail('Linked machines is not running in this session')))
+    expect(screen.getByTestId('linked-history-empty').textContent).toContain('Reading')
+  })
+
+  it('lists each job once, joined to how it ended, with edit, the folder and what screening found', async () => {
+    api.jobLog.mockResolvedValue(
+      ok([
+        record({ ts: T + 60_000, event: 'finished', status: 'done', durationMs: 65_000, agent: 'claude', secretRules: ['gh_pat'] }),
+        record({ agent: 'claude', write: true, cwd: '/home/me/repos/app', summary: 'Fix the parser', secretRules: ['password_literal'] }),
+      ]),
+    )
+    await mount()
+    const row = await screen.findByTestId('linked-history-0123456789ab')
+    expect(row.textContent).toContain('from build-box')
+    expect(row.textContent).toContain('claude')
+    expect(row.textContent).toContain('Fix the parser')
+    expect(row.textContent).toContain('done')
+    expect(row.textContent).toContain('1m 5s')
+    expect(row.textContent).toContain('in app')
+    expect(within(row).getByTitle('/home/me/repos/app')).toBeTruthy()
+    expect(screen.getByTestId('linked-history-edit-0123456789ab').textContent).toBe('edit')
+    expect(screen.getByTestId('linked-history-secrets-0123456789ab').textContent).toBe(
+      'credentials screened: gh_pat, password_literal',
+    )
+    expect(screen.getAllByTestId(/^linked-history-0123456789ab$/)).toHaveLength(1)
+  })
+
+  it('shows a job known only by its end, and a folder that is a root as it is', async () => {
+    api.jobLog.mockResolvedValue(
+      ok([
+        record({ jobId: '111111111111', event: 'finished', status: 'cancelled', durationMs: 1_000 }),
+        record({ jobId: '222222222222', cwd: '/', summary: 'At the root' }),
+      ]),
+    )
+    await mount()
+    const ended = await screen.findByTestId('linked-history-111111111111')
+    expect(ended.textContent).toContain('cancelled')
+    expect(ended.textContent).not.toContain('undefined')
+    expect(screen.getByTestId('linked-history-222222222222').textContent).toContain('in /')
+  })
+
+  it('lists a refusal with its reason, and how many more came that minute', async () => {
+    api.jobLog.mockResolvedValue(
+      ok([
+        record({ ts: T + 1, event: 'refused', jobId: undefined, reason: 'build-box does not let this computer edit files.', count: 3 }),
+        record({ ts: T, event: 'refused', jobId: undefined, ref: '', machine: 'unknown computer', reason: 'Malformed linked-machine request.' }),
+      ]),
+    )
+    await mount()
+    const rows = await screen.findAllByTestId(/^linked-history-refused-/)
+    expect(rows).toHaveLength(2)
+    expect(rows[0].textContent).toContain('refused')
+    expect(rows[0].textContent).toContain('does not let this computer edit files. (and 3 more that minute)')
+    expect(rows[1].textContent).toContain('from unknown computer')
+    expect(rows[1].textContent).not.toContain('more that minute')
+  })
+
+  it("says a job is running while it is, and that its end wasn't recorded once it isn't", async () => {
+    api.status.mockResolvedValue(ok(statusView({ activity: [job({ id: '0123456789ab', direction: 'in', status: 'running' })] })))
+    api.jobLog.mockResolvedValue(ok([record({ agent: 'codex', summary: 'Still going' })]))
+    await mount()
+    const row = await screen.findByTestId('linked-history-0123456789ab')
+    expect(within(row).getByText('running')).toBeTruthy()
+    // No longer running, and no end line: Termpolis quit before it could be written.
+    act(() => pushStatus(statusView()))
+    expect(within(screen.getByTestId('linked-history-0123456789ab')).getByText('no end recorded')).toBeTruthy()
+  })
+
+  it('reads the history again only when main says a line was written', async () => {
+    await mount()
+    await waitFor(() => expect(api.jobLog).toHaveBeenCalledTimes(1))
+    act(() => pushStatus(statusView({ relay: 'online' })))
+    expect(api.jobLog).toHaveBeenCalledTimes(1)
+    api.jobLog.mockResolvedValue(ok([record({ summary: 'New job' })]))
+    act(() => pushStatus(statusView({ jobLogVersion: 1 })))
+    await waitFor(() => expect(api.jobLog).toHaveBeenCalledTimes(2))
+    expect((await screen.findByTestId('linked-history-0123456789ab')).textContent).toContain('New job')
+  })
+
+  it('drops an answer that comes back after the pane has gone', async () => {
+    let answer: (v: unknown) => void = () => {}
+    api.jobLog.mockReturnValue(new Promise((r) => (answer = r)))
+    await mount()
+    cleanup()
+    await act(async () => answer(ok([record({})])))
+    expect(screen.queryByTestId('linked-history-0123456789ab')).toBeNull()
   })
 })
 

@@ -62,6 +62,15 @@ upload it.
   paired device (`userData/remote-devices.json`: its label, its public key, the
   capabilities you granted it, and when it paired and was last seen), and the
   Remote settings themselves (`userData/remote-settings.json`).
+- If you turn on **Linked machines**: its settings (`userData/linked-settings.json`),
+  the links and what each linked computer may do here (`userData/linked-machines`,
+  encrypted at rest through the OS keystore where one is available), and a job
+  history (`userData/linked-jobs.jsonl`, plus `linked-jobs.prev.jsonl` once it
+  passes 2 MB): one line when another computer starts a job here, one when it
+  ends and one when a request is refused, with the computer's name, the agent,
+  read-only or edit, the folder, the first line of the screened prompt (at most
+  80 characters), the credential rules matched, how it ended and why a request
+  was refused. Never the prompt or the answer.
 
 The `userData` directory lives at:
 

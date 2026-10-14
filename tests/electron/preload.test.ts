@@ -1149,6 +1149,16 @@ describe('preload: event bridges that only ever fire from main', () => {
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('linked:status-changed', handler)
   })
 
+  it('linked.onShow calls back with nothing from main, and unsubscribes cleanly', () => {
+    const cb = vi.fn()
+    const cleanup = exposed.linked.onShow(cb)
+    const handler = mockIpcRenderer.on.mock.calls.find(c => c[0] === 'linked:show')![1] as Function
+    handler({}, { anything: 'main might send' })
+    expect(cb).toHaveBeenCalledWith()
+    cleanup()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith('linked:show', handler)
+  })
+
   it('linked.onEvent forwards the event and unsubscribes cleanly', () => {
     const cb = vi.fn()
     const cleanup = exposed.linked.onEvent(cb)
@@ -1187,6 +1197,9 @@ describe('preload: linked machines', () => {
     ['unlink', ['device:0011223344556677'], 'linked:unlink', { ref: 'device:0011223344556677' }],
     ['encryptKeys', [], 'linked:encrypt-keys', undefined],
     ['startOver', [], 'linked:start-over', undefined],
+    ['setNotify', [false], 'linked:set-notify', { enabled: false }],
+    ['stopJob', ['0123456789ab'], 'linked:stop-job', { id: '0123456789ab' }],
+    ['jobLog', [200], 'linked:job-log', { limit: 200 }],
   ])('linked.%s invokes its channel with its payload', async (method, args, channel, payload) => {
     await exposed.linked[method](...args)
     if (payload === undefined) expect(mockIpcRenderer.invoke).toHaveBeenCalledWith(channel)

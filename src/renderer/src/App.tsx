@@ -57,6 +57,7 @@ import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
+import { setPendingSettingsTab } from './lib/settingsNav'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -776,6 +777,16 @@ export default function App() {
 
     return () => clearInterval(interval)
   }, [])
+
+  // A Linked machines job notification, clicked: main has brought the window forward, and this
+  // opens the pane listing that job, where it can be stopped.
+  useEffect(() => {
+    const off = window.linked?.onShow(() => {
+      setPendingSettingsTab('linked')
+      setShowSettings(true)
+    })
+    return () => off?.()
+  }, [setShowSettings])
 
   // Auto-dismiss swarm notification after 15 seconds
   useEffect(() => {

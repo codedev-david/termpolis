@@ -39,6 +39,9 @@ const M = vi.hoisted(() => ({
   // electron powerSaveBlocker: an id per blocker, as Electron hands them out
   powerSaveStart: vi.fn(() => 42),
   powerSaveStop: vi.fn(),
+  // electron Notification: every one built, so a test can read and click it
+  notifications: [] as Array<{ opts: unknown; handlers: Record<string, () => void>; shown: number; closed: number }>,
+  notificationSupported: vi.fn(() => true),
   // lifecycle collaborators
   initAutoUpdater: vi.fn(),
   startMcpServer: vi.fn(() => ({ id: 'mcp-server-handle' })),
@@ -225,7 +228,7 @@ const mockWebContents = { send: vi.fn(), executeJavaScript: vi.fn(), session: un
 const mockMainWindow = {
   minimize: vi.fn(), maximize: vi.fn(), unmaximize: vi.fn(),
   isMaximized: vi.fn(() => false), isMinimized: vi.fn(() => false),
-  restore: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(),
+  restore: vi.fn(), show: vi.fn(), focus: vi.fn(), close: vi.fn(), on: vi.fn(),
   setIcon: vi.fn(), loadURL: vi.fn(), loadFile: vi.fn(),
   webContents: mockWebContents,
 }
@@ -272,6 +275,19 @@ vi.mock('electron', () => ({
     decryptString: (b: Buffer) => b.toString('utf8'),
   },
   powerSaveBlocker: { start: M.powerSaveStart, stop: M.powerSaveStop },
+  Notification: Object.assign(
+    function MockNotification(opts: unknown) {
+      const n = {
+        opts, handlers: {} as Record<string, () => void>, shown: 0, closed: 0,
+        on(event: string, fn: () => void) { n.handlers[event] = fn; return n },
+        show() { n.shown++ },
+        close() { n.closed++ },
+      }
+      M.notifications.push(n)
+      return n
+    },
+    { isSupported: () => M.notificationSupported() },
+  ),
 }))
 
 // ---------------------------------------------------------------------------
@@ -1534,6 +1550,45 @@ describe('linked machines wiring', () => {
     linked().sendEvent({ kind: 'error', message: 'x' })
     expect(mockWebContents.send).toHaveBeenCalledWith('linked:status-changed', { enabled: true })
     expect(mockWebContents.send).toHaveBeenCalledWith('linked:event', { kind: 'error', message: 'x' })
+  })
+
+  it('notifies a job another computer started, one notification per computer at a time', () => {
+    M.notifications.length = 0
+    linked().notifyJob({ tag: 'device:aa', title: 'build-box started a job here', body: 'b1' })
+    linked().notifyJob({ tag: 'device:aa', title: 'build-box started a job here', body: 'b2' })
+    linked().notifyJob({ tag: 'link:bb', title: 'desk started a job here', body: 'b3' })
+    // The newer one from the same computer replaces the older; another computer's stands.
+    expect(M.notifications.map((n) => [n.opts, n.shown, n.closed])).toEqual([
+      [{ title: 'build-box started a job here', body: 'b1' }, 1, 1],
+      [{ title: 'build-box started a job here', body: 'b2' }, 1, 0],
+      [{ title: 'desk started a job here', body: 'b3' }, 1, 0],
+    ])
+  })
+
+  it('opens Settings ▸ Linked machines on a click, with the window brought forward first', () => {
+    M.notifications.length = 0
+    linked().notifyJob({ tag: 'device:aa', title: 't', body: 'b' })
+    mockMainWindow.restore.mockClear()
+    mockMainWindow.isMinimized.mockReturnValueOnce(true)
+    mockWebContents.send.mockClear()
+    M.notifications[0].handlers.click()
+    expect(mockMainWindow.restore).toHaveBeenCalledTimes(1)
+    expect(mockMainWindow.show).toHaveBeenCalled()
+    expect(mockMainWindow.focus).toHaveBeenCalled()
+    expect(mockWebContents.send).toHaveBeenCalledWith('linked:show')
+    // Not minimized: nothing to restore.
+    M.notifications[0].handlers.click()
+    expect(mockMainWindow.restore).toHaveBeenCalledTimes(1)
+    // A window that has gone away opens nothing, and the click doesn't throw.
+    mockMainWindow.show.mockImplementationOnce(() => { throw new Error('Object has been destroyed') })
+    expect(() => M.notifications[0].handlers.click()).not.toThrow()
+  })
+
+  it('shows nothing where the system has no notifications', () => {
+    M.notifications.length = 0
+    M.notificationSupported.mockReturnValueOnce(false)
+    linked().notifyJob({ tag: 'device:aa', title: 't', body: 'b' })
+    expect(M.notifications).toEqual([])
   })
 
   it('swallows a send into a window that has gone away', () => {

@@ -591,6 +591,9 @@ const linked: LinkedAPI = {
   unlink: (ref) => ipcRenderer.invoke('linked:unlink', { ref }),
   encryptKeys: () => ipcRenderer.invoke('linked:encrypt-keys'),
   startOver: () => ipcRenderer.invoke('linked:start-over'),
+  setNotify: (enabled) => ipcRenderer.invoke('linked:set-notify', { enabled }),
+  stopJob: (id) => ipcRenderer.invoke('linked:stop-job', { id }),
+  jobLog: (limit) => ipcRenderer.invoke('linked:job-log', { limit }),
   onStatus: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, status: LinkedStatusView) => cb(status)
     ipcRenderer.on('linked:status-changed', handler)
@@ -600,6 +603,12 @@ const linked: LinkedAPI = {
     const handler = (_: Electron.IpcRendererEvent, event: LinkedEvent) => cb(event)
     ipcRenderer.on('linked:event', handler)
     return () => ipcRenderer.removeListener('linked:event', handler)
+  },
+  // Sent when a job notification is clicked. Nothing rides with it: what to show is the pane's.
+  onShow: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('linked:show', handler)
+    return () => ipcRenderer.removeListener('linked:show', handler)
   },
 }
 contextBridge.exposeInMainWorld('linked', linked)

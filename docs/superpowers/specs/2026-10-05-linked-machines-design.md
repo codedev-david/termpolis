@@ -67,7 +67,9 @@ What is missing is the link between two desktops and a small job protocol on top
     - **Let agents edit files and run commands here**, off by default, with the risk stated next to it per agent. It can be ticked only once the machine is confirmed, and ticking it opens an inline panel; only its **Allow edit** turns it on (§4.6). A row with it on shows a **full access** badge;
   - last activity;
   - **Unlink** (two clicks), which revokes on both sides. The goodbye is best effort, so a machine that is offline at the time keeps its record until it is unlinked there too.
-- **Activity.** The 20 most recent jobs in and out, each with time, direction, machine, agent, the first line of the prompt, status and duration.
+- **Activity.** The 20 most recent jobs in and out, each with time, direction, machine, agent, the first line of the prompt, status and duration. An inbound job that is running has a **Stop** button (`linked:stop-job`): it is cancelled with *Stopped on <machine> by its user.*
+- **Job history on this computer.** Every inbound job, its start joined to its end, and every refused request, read from `linked-jobs.jsonl` (§7) through `linked:job-log`. The status view's `jobLogVersion` moves with each line written, and the pane reads the file again only then.
+- **Job notifications.** **Notify me when a linked computer starts a job here**, on by default (`linked:set-notify`). Each inbound job that passed its checks shows an OS notification: the title and the line under it come from this computer's own data (the machine's name here, the agent, read-only or edit, the folder's name), and the task's first line follows in quotes after a fixed `Task:` label, control and bidi characters stripped. Jobs from one machine within 60 s share one notification (`+N more jobs from …`). A click brings the window forward and opens this pane (`linked:show`). Refusals never notify. It is a notification, not a gate: an approval prompt would time out on an unattended machine, which is the feature's main use.
 - **Cap.** At most 16 linked machines. A 17th pairing is refused with a clear message.
 
 ### 3.2 Agents
@@ -263,9 +265,10 @@ Handling rules:
 
 | Where | File | Contents |
 |---|---|---|
-| main | `linked-settings.json` | `{ enabled: boolean }`, default `false` |
+| main | `linked-settings.json` | `{ enabled: boolean, notifyJobs?: false }`: off by default, notifications on unless `notifyJobs: false` |
 | main | `linked-machines` (via `secureKeyStore`: `osk:v1:` when a keyring exists, otherwise honest plaintext) | `{ v: 1, links: JoinedLink[], meta: LinkMeta[] }` |
 | bridge registry → main | `remote-devices.json` (existing) | the host's side of each link, as a `PairedDevice` with `kind: 'desktop'` (the field is kept by the loader) |
+| main | `linked-jobs.jsonl` (`linkedJobLog.ts`), rotated at 2 MiB to `linked-jobs.prev.jsonl` | the job history: `{ ts, event: 'started' \| 'finished' \| 'refused', jobId?, ref, machine, agent?, write?, cwd?, summary?, status?, durationMs?, reason?, count?, secretRules? }`, one line per event, appended asynchronously on one queue. No prompt and no output. Refusals coalesce per machine per minute (`count`). Read back field by field, from at most the last 2 MiB of each file: a write job can rewrite it, so it is a record, not evidence |
 
 ```ts
 interface JoinedLink { id: string /* deviceId the host assigned = sha256(linkPk)[:16] */;
@@ -278,7 +281,7 @@ interface LinkMeta { ref: string /* 'device:<id>' | 'link:<id>' */; name: string
 - Names are unique across all links, case-insensitively. Duplicates are numbered `name (2)`, as on the phone.
 - At most 16 links per install, counting hosted and joined together.
 - Desktop peers are exempt from the 30-day idle expiry, which counts only inbound requests. A link is a deliberate machine relationship that the user ends by unlinking.
-- The jobs and activity log live in memory only: up to 100 finished jobs, kept for 2 h. The activity view shows the latest 20.
+- The jobs and the activity view live in memory only: up to 100 finished jobs, kept for 2 h. The activity view shows the latest 20. What the history file keeps of them outlives a restart.
 
 ---
 

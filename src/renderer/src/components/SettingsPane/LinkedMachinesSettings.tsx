@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { IpcResponse, LinkedAPI, LinkedEvent, LinkedGrants, LinkedStatusView } from '../../types'
+import type { IpcResponse, LinkedAPI, LinkedEvent, LinkedGrants, LinkedJobRecord, LinkedStatusView } from '../../types'
 import {
+  HISTORY_READ,
   LINKED_MACHINE_LIMIT,
   pendingConfirmations,
   reconcileAnnouncements,
@@ -10,7 +11,7 @@ import {
 } from '../../lib/linkedMachines'
 import { InfoTip } from './InfoTip'
 import { LinkedCodeOffer, LinkedJoinForm, LinkedPendingCard } from './LinkedPairing'
-import { LinkedActivityList, LinkedMachineRow } from './LinkedMachineList'
+import { LinkedActivityList, LinkedJobHistory, LinkedMachineRow } from './LinkedMachineList'
 import { KeyStorageBanner } from './KeyStorageBanner'
 
 /** Run on, write off: the grant a user gives without thinking is the harmless one. */
@@ -78,6 +79,8 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
   const [awaitingCode, setAwaitingCode] = useState(false)
   const [announced, setAnnounced] = useState<Announcements>({})
   const [now, setNow] = useState(() => Date.now())
+  // The job history file, read again only when main says a line was written to it.
+  const [history, setHistory] = useState<LinkedJobRecord[] | null>(null)
 
   useEffect(() => {
     let live = true
@@ -128,6 +131,18 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [expiresAt])
+
+  const jobLogVersion = status?.jobLogVersion
+  useEffect(() => {
+    if (jobLogVersion === undefined) return
+    let live = true
+    void api.jobLog(HISTORY_READ).then((res) => {
+      if (live && res.success) setHistory(res.data)
+    })
+    return () => {
+      live = false
+    }
+  }, [api, jobLogVersion])
 
   // Retire announcements a status has overtaken. `announced` is a dependency
   // too, because the status that lists a link can arrive before its event.
@@ -193,6 +208,14 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
     apply(await api.unlink(ref))
   }
 
+  const setNotify = async (enabled: boolean): Promise<void> => {
+    apply(await api.setNotify(enabled))
+  }
+
+  const stopJob = async (id: string): Promise<void> => {
+    apply(await api.stopJob(id))
+  }
+
   const encryptKeys = async (): Promise<void> => {
     apply(await api.encryptKeys())
   }
@@ -223,7 +246,9 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
           agents can have an agent here read any file you can read and send it back. With edit, which
           you turn on from its row once its words are confirmed, a Claude or Gemini agent it starts here
           has full access as you, and a Codex agent changes files only in its folder, with no network.
-          Every job shows under Activity on both computers, and Unlink ends the link on both.
+          Nothing asks you per job, but each one another computer starts here shows a notification and
+          stays in the job history below. Every job shows under Activity on both computers, and Unlink
+          ends the link on both.
         </InfoTip>
       </h2>
       <p className="text-xs text-[#9ca3af] mb-4">
@@ -268,6 +293,22 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
         <span>Let this computer link with my other computers</span>
         <span className="text-xs text-[#9ca3af]" data-testid="linked-running">
           {runningText(status)}
+        </span>
+      </label>
+      <label className="flex items-start gap-2 text-xs text-[#d4d4d4] mb-3">
+        <input
+          type="checkbox"
+          data-testid="linked-notify"
+          checked={status.notifyJobs}
+          onChange={(e) => void setNotify(e.target.checked)}
+          className="mt-0.5"
+        />
+        <span>
+          <span>Notify me when a linked computer starts a job here</span>
+          <span className="block text-[#6b7280]">
+            Nothing asks you before a job runs; this is how you see one start. Click the notification
+            to see the job here, where you can stop it.
+          </span>
         </span>
       </label>
 
@@ -351,7 +392,12 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
         </div>
       )}
 
-      <LinkedActivityList activity={status.activity} now={now} />
+      <LinkedActivityList activity={status.activity} now={now} onStop={(id) => void stopJob(id)} />
+      <LinkedJobHistory
+        records={history}
+        running={new Set(status.activity.filter((a) => a.direction === 'in' && a.status === 'running').map((a) => a.id))}
+        now={now}
+      />
     </div>
   )
 }

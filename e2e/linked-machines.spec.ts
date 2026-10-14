@@ -136,6 +136,21 @@ test.describe.serial('Linked machines settings', () => {
     else await expect(byId('linked-keys-warning')).toHaveAttribute('data-keys', 'plaintext')
   })
 
+  test('3c. the job history starts empty, and job notifications switch off and on through the file', async () => {
+    // Read from linked-jobs.jsonl through main: on a fresh profile there is none, and the pane says so.
+    await expect(byId('linked-history-empty')).toHaveText('No other computer has asked this one for a job yet.', {
+      timeout: 15000,
+    })
+    // On by default, and on is written as nothing at all, so the file is as test 3 left it.
+    await expect(byId('linked-notify')).toBeChecked()
+    await byId('linked-notify').click()
+    await expect(byId('linked-notify')).not.toBeChecked({ timeout: 15000 })
+    expect(savedLinkedSetting()).toEqual({ enabled: true, notifyJobs: false })
+    await byId('linked-notify').click()
+    await expect(byId('linked-notify')).toBeChecked({ timeout: 15000 })
+    expect(savedLinkedSetting()).toEqual({ enabled: true })
+  })
+
   test('4. Create code shows a termpolis-link code minted inside the bridge, with a countdown', async () => {
     await byId('linked-create-code').click()
     await expect(byId('linked-code')).toBeVisible({ timeout: 20000 })

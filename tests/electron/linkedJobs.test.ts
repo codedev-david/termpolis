@@ -400,6 +400,9 @@ describe('running a job', () => {
       agent: 'codex',
       summary: 'Review the parser in src/',
       startedAt: 1_000_000,
+      // What the job history writes down: read-only, and the folder it ran in -- home, as none was asked for.
+      write: false,
+      cwd: HOME,
     }
     expect(h.activity).toEqual([
       { ...base, status: 'running' },
@@ -745,6 +748,49 @@ describe('cancelAll', () => {
     expect(await poll(h, a.jobId)).toMatchObject({ status: 'cancelled', error: 'Cancelled on linux.' })
     expect(await poll(h, b.jobId, 0, OTHER)).toMatchObject({ status: 'cancelled' })
     expect((await poll(h, c.jobId, 0, OTHER)).status).toBe('done')
+  })
+})
+
+describe('stopLocal', () => {
+  it('stops the one job the user here picked, and tells the asking machine who stopped it', async () => {
+    const h = setup()
+    const picked = await start(h, FROM)
+    const other = await start(h, OTHER)
+    expect(h.jobs.stopLocal(picked.jobId)).toBe(true)
+    expect(h.runs.map((r) => r.req.signal?.aborted)).toEqual([true, false])
+    expect(await poll(h, picked.jobId)).toMatchObject({ status: 'cancelled', error: 'Stopped on linux by its user.' })
+    expect(h.activity.at(-1)).toMatchObject({ id: picked.jobId, status: 'cancelled' })
+    // Once only: a stopped, finished or unknown job is not running, so there is nothing to stop.
+    expect(h.jobs.stopLocal(picked.jobId)).toBe(false)
+    h.runs[1].resolve(result())
+    await flush()
+    expect(h.jobs.stopLocal(other.jobId)).toBe(false)
+    expect(h.jobs.stopLocal('ffffffffffff')).toBe(false)
+    // The run that winds down after it was stopped doesn't turn it back into a failure.
+    h.runs[0].reject(new Error('killed'))
+    await flush()
+    expect((await poll(h, picked.jobId)).status).toBe('cancelled')
+  })
+})
+
+describe('what the job history is told', () => {
+  it('reports an edit job with its folder, and the rules screening matched in the prompt, then the answer', async () => {
+    const h = setup({ screen: fakeScreen })
+    await start(h, FROM, WRITER, { write: true, cwd: REPO, prompt: `Deploy with ${KEY} and maybe-pass` })
+    h.runs[0].resolve(result({ output: 'used maybe-pass' }))
+    await flush()
+    expect(h.activity.map((a) => [a.status, a.write, a.cwd, a.secretRules])).toEqual([
+      ['running', true, REPO, ['fake_key', 'fake_pass']],
+      ['done', true, REPO, ['fake_pass']],
+    ])
+  })
+
+  it('names no rules for a job screening found nothing in', async () => {
+    const h = setup()
+    await start(h)
+    h.runs[0].resolve(result())
+    await flush()
+    for (const a of h.activity) expect(a).not.toHaveProperty('secretRules')
   })
 })
 
