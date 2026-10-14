@@ -664,7 +664,11 @@ export function screenText(input: string): SecretScreen {
   }
   text += input.slice(at)
   for (const look of looks) {
-    if (!overlapsCut(cuts, look)) flagged[look.rule] = (flagged[look.rule] ?? 0) + 1
+    if (overlapsCut(cuts, look)) continue
+    // Text screened once already is screened again where it arrives, and `KEY=[REDACTED:gh_pat]`
+    // looks like an assignment: a match around a marker is about a value that is gone.
+    if (input.slice(look.from, look.to).includes('[REDACTED:')) continue
+    flagged[look.rule] = (flagged[look.rule] ?? 0) + 1
   }
   return { text, removed, flagged }
 }

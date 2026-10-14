@@ -10,6 +10,7 @@ import {
   MAX_OUTPUT_CHARS,
   MAX_OUTPUT_JSON_BYTES,
   MAX_PROMPT_CHARS,
+  WITHHELD,
   activitySummary,
   createLinkedJobs,
   type LinkedActivity,
@@ -891,5 +892,27 @@ describe('credentials on the way in and out', () => {
     broken.runs[0].resolve(result({ output: KEY }))
     await flush()
     expect((await poll(broken, w.jobId)).output).toBe('[REDACTED:fake_key]')
+  })
+})
+
+describe('a screen that fails', () => {
+  it('runs nothing for a prompt it could not check', async () => {
+    const h = setup({ screen: () => { throw new Error('screen broke') } })
+    await expect(start(h)).rejects.toThrow('linux could not check the prompt for credentials, so it did not run it. Try again.')
+    expect(h.runs).toHaveLength(0)
+  })
+
+  it('withholds an answer and an error it could not check, and the job still finishes', async () => {
+    let calls = 0
+    const h = setup({
+      screen: (text) => {
+        if (++calls > 1) throw new Error('screen broke')
+        return { text, removed: {}, flagged: {} }
+      },
+    })
+    const v = await start(h)
+    h.runs[0].resolve(result({ ok: false, output: 'secret-ish output', error: 'secret-ish stderr', code: 1 }))
+    await flush()
+    expect(await poll(h, v.jobId)).toMatchObject({ status: 'failed', output: WITHHELD, error: WITHHELD })
   })
 })

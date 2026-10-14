@@ -195,6 +195,10 @@ function printable(text: string): string {
   return clean.length > MAX_ECHO_CHARS ? `${clean.slice(0, MAX_ECHO_CHARS - 1)}\u2026` : clean
 }
 
+/** What goes back in place of output or an error that couldn't be checked for
+ *  credentials: nothing leaves this computer unscreened. */
+export const WITHHELD = '[Termpolis could not check this for credentials, so it was withheld.]'
+
 /** What the activity view shows for a prompt: its first line with text in it,
  *  flattened to plain spaces, at most 80 characters. */
 export function activitySummary(prompt: string): string {
@@ -263,6 +267,16 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
   }
 
+  /** deps.screen for what leaves, failing closed. A screen that throws must not
+   *  throw out of finish(), which nothing above would catch. */
+  function screenOrWithhold(text: string): SecretScreen {
+    try {
+      return deps.screen(text)
+    } catch {
+      return { text: WITHHELD, removed: {}, flagged: {} }
+    }
+  }
+
   function reportSecrets(job: Job, hop: LinkedSecretFinding['hop'], found: Pick<SecretScreen, 'removed' | 'flagged'>): void {
     if (!deps.onSecrets || !foundAny(found)) return
     try {
@@ -320,14 +334,14 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     let output: SecretScreen | null = null
     if (outcome.output !== undefined) {
       const tail = capTail(outcome.output, MAX_OUTPUT_CHARS)
-      output = deps.screen(tail.text)
+      output = screenOrWithhold(tail.text)
       const { text, cut } = capOutput(output.text)
       job.output = text
       if (tail.cut || cut) job.truncated = true
     }
     let error: SecretScreen | null = null
     if (outcome.error !== undefined) {
-      error = deps.screen(capError(outcome.error))
+      error = screenOrWithhold(capError(outcome.error))
       job.error = capError(error.text)
     }
     reportSecrets(job, 'answer-out', mergeScreens([output, error]))
@@ -426,9 +440,15 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     if (typeof raw !== 'string' || !raw.trim() || raw.length > MAX_PROMPT_CHARS) {
       throw new Error(`Invalid prompt: expected 1 to ${MAX_PROMPT_CHARS} characters.`)
     }
-    // The asking computer screens its own prompt from 1.53 on; this is the backstop for one that
-    // doesn't. What runs here, and what the activity view shows, is the screened text.
-    const screened = deps.screen(raw)
+    // A new asking computer screens its own prompt; this is the backstop for a 1.50-1.52 one,
+    // which doesn't. What runs here, and what the activity view shows, is the screened text, and
+    // a prompt that can't be screened doesn't run.
+    let screened: SecretScreen
+    try {
+      screened = deps.screen(raw)
+    } catch {
+      throw new Error(`${here()} could not check the prompt for credentials, so it did not run it. Try again.`)
+    }
     const prompt = screened.text
     if (prompt.length > MAX_PROMPT_CHARS) {
       throw new Error(`Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`)

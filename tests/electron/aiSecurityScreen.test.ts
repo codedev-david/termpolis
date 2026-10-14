@@ -83,6 +83,16 @@ describe('screenText', () => {
     expect(around.flagged).toEqual({ password_literal: 1, contextual_secret: 1, yaml_secret: 1 })
   })
 
+  it('screens its own output again to the same text, and finds nothing new in it', () => {
+    const once = screenText(`OPENAI_API_KEY=${ANTHROPIC}\nGH=${GH}\nconst password = "hunter2hunter2"`)
+    const twice = screenText(once.text)
+    expect(twice.text).toBe(once.text)
+    expect(twice.removed).toEqual({})
+    // The look-alikes are still reported; the markers' assignments are not.
+    expect(twice.flagged).toEqual(once.flagged)
+    expect(twice.flagged).toEqual({ password_literal: 1, contextual_secret: 1 })
+  })
+
   it('counts every occurrence, and returns empty text and nothing found for nothing', () => {
     expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {} })
     expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {} })
