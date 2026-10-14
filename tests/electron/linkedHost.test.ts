@@ -821,6 +821,9 @@ describe('entering a code (this machine joins)', () => {
     expect(h.events).toEqual([])
     vi.advanceTimersByTime(1)
     expect(h.events).toEqual([{ kind: 'error', message: LINKED_JOIN_NO_ANSWER }])
+    // The same warning as the bridge's own timeout: no words here and a request
+    // to confirm over there is what an intercepted code looks like.
+    expect(LINKED_JOIN_NO_ANSWER).toContain('someone else used the code')
     expect(h.bridge.sent.at(-1)).toEqual({ kind: 'cancelJoin' })
     expect(h.statuses.at(-1)!.joining).toBe(false)
   })

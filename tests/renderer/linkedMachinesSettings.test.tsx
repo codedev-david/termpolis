@@ -553,6 +553,31 @@ describe('LinkedMachinesSettings confirmation', () => {
     expect(within(card).getByTestId('linked-confirm').textContent).toBe('They match — link')
   })
 
+  it('tells the computer that made the code that no words on the other screen means someone else used it', async () => {
+    // The interception symptom. Whoever redeems a code first gets this card;
+    // the person who meant to use it sees no words at all, still contacting or
+    // timed out -- so "they do not match" alone never fires.
+    await mount()
+    act(() => pushEvent(pending({ ref: 'device:bbbb' })))
+    const advice = within(screen.getByTestId('linked-pending-device:bbbb')).getByTestId('linked-phrase-advice')
+    expect(advice.textContent).toContain('A computer just used your code')
+    expect(advice.textContent).toContain('no words at all')
+    expect(advice.textContent).toContain('Contacting the other computer…')
+    expect(advice.textContent).toContain('No answer')
+    expect(advice.textContent).toContain('someone else used your code')
+  })
+
+  it('tells the computer that entered a code to cancel on different words or none', async () => {
+    await mount()
+    act(() => pushEvent(pending({ ref: 'link:aaaa' })))
+    const advice = within(screen.getByTestId('linked-pending-link:aaaa')).getByTestId('linked-phrase-advice')
+    expect(advice.textContent).toContain('these same 8 words, in the same order')
+    expect(advice.textContent).toContain('different words or none')
+    // Its own screen is the one that has words, so the host's long form would
+    // describe a situation this side cannot be in.
+    expect(advice.textContent).not.toContain('used your code')
+  })
+
   it('confirms with the name the user chose', async () => {
     api.confirm.mockResolvedValue(
       ok(statusView({ machines: [machine({ ref: 'device:bbbb', name: 'Build box' })] })),
@@ -619,6 +644,7 @@ describe('LinkedMachinesSettings confirmation', () => {
     await mount()
     const card = screen.getByTestId('linked-pending-link:aaaa')
     expect(within(card).getByTestId('linked-phrase-missing').textContent).toContain('Cancel it')
+    expect(within(card).queryByTestId('linked-phrase-advice')).toBeNull()
     expect(within(card).queryByTestId('linked-confirm')).toBeNull()
     expect(within(card).queryByTestId('linked-name-input')).toBeNull()
     expect(within(card).getByTestId('linked-cancel-pending')).toBeTruthy()

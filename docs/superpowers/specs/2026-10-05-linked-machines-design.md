@@ -204,7 +204,7 @@ The link code is `termpolis-link:` + base64url(JSON), where the JSON is the exis
 
 Either refusal shows an error on the host and leaves the offer unspent. The marker is checked before the one-time secret, so the right machine can still finish. A link offer also refuses a hello once the host holds 16 links.
 
-The joiner gets no answer and gives up after 60 s with *No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer.*
+The joiner gets no answer and gives up after 60 s with *No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer. If that computer is asking you to confirm a link you did not make there, cancel it: someone else used the code.* The second sentence is there because an intercepted code looks exactly like this from the joiner's side: whoever redeemed the code first is the one the host is asking to confirm.
 
 `PAIRING_ACK` is unchanged. Its optional `name` carries the host's machine name.
 

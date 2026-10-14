@@ -884,6 +884,9 @@ describe('joining a link', () => {
     expect(last('joinFailed')).toBeUndefined()
     vi.advanceTimersByTime(1)
     expect(last('joinFailed')?.message).toMatch(/^No answer\./)
+    // The joiner is who an intercepted code leaves with no words and this
+    // message, so it is the joiner who has to be told what that can mean.
+    expect(last('joinFailed')?.message).toContain('someone else used the code')
     expect(room!.stopped).toBe(true)
   })
 

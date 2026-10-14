@@ -123,8 +123,11 @@ const JOIN_NOT_A_CODE =
 const JOIN_OWN_CODE = 'That code was made on this computer. Enter it on the other one.'
 const JOIN_BAD_KEY = 'This computer could not make a key for the link. Try again.'
 const JOIN_PEER_GONE = 'The other computer stopped showing that code.'
+/** Also what an intercepted code looks like from here: whoever redeemed it
+ *  first is the one the other computer is asking to confirm. */
 const JOIN_TIMED_OUT =
-  'No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer.'
+  'No answer. Check the code is still showing under Settings ▸ Linked machines on the other computer. ' +
+  'If that computer is asking you to confirm a link you did not make there, cancel it: someone else used the code.'
 const JOIN_BAD_ACK =
   'The other computer answered for a different key than this one sent. Create a new code and try again.'
 

@@ -236,9 +236,19 @@ export function LinkedPendingCard({ item, onConfirm, onCancel }: LinkedPendingCa
       <div className="text-sm text-[#e5c07b]">Confirm the link with {item.suggestedName}</div>
       {item.phrase ? (
         <>
-          <p className="text-xs text-[#9ca3af]">
-            Check that the other computer shows the same 8 words, in the same order. If they match,
-            nobody is sitting in the middle of the connection. If they do not, cancel.
+          {/* Which side this is decides what an interception looks like. Whoever
+              redeems a code first gets this card on the computer that made it;
+              the person who meant to use the code is left with no words at all,
+              on a screen still contacting or saying "No answer". So the host has
+              to be told that nothing on the other screen is the warning sign. */}
+          <p data-testid="linked-phrase-advice" className="text-xs text-[#9ca3af]">
+            {item.ref.startsWith('device:')
+              ? 'A computer just used your code. Check that it shows these same 8 words, in the same ' +
+                'order. If its words are different, or it shows no words at all (it may still say ' +
+                '“Contacting the other computer…” or “No answer”), someone else used your code: ' +
+                'click Cancel.'
+              : 'Check that the other computer shows these same 8 words, in the same order. If it ' +
+                'shows different words or none, click Cancel.'}
           </p>
           <div
             data-testid="linked-phrase"

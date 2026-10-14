@@ -121,8 +121,12 @@ export const LINKED_UNKNOWN_MACHINE = 'That computer is not linked with this one
 export const LINKED_NAME_REQUIRED = 'A name is required'
 export const LINKED_UNLINK_NEEDS_BRIDGE =
   'Turn Linked machines on first: the relay has to be told to drop a computer that entered a code from this one.'
+/** Main's backstop for a bridge that never answered a join. Says what the
+ *  bridge's own timeout says about an intercepted code: the joiner is the one
+ *  who sees no words, so it is the joiner who has to be told to look. */
 export const LINKED_JOIN_NO_ANSWER =
-  'No answer from the other computer. Check the code is still showing under Settings ▸ Linked machines there, then try again.'
+  'No answer from the other computer. Check the code is still showing under Settings ▸ Linked machines there, then try again. ' +
+  'If that computer is asking you to confirm a link you did not make there, cancel it: someone else used the code.'
 export const LINKED_CODE_LOST =
   'The connection to the relay restarted, so that code no longer works. Create a new one.'
 export const LINKED_JOIN_BAD_ANSWER =
