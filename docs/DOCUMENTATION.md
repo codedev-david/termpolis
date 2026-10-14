@@ -707,7 +707,7 @@ A local, cross-agent memory store that **never forgets and feeds itself**, so ev
 
 ### What's in it
 
-- **Past AI conversations** — Claude Code (`~/.claude/projects/**`), Codex (`~/.codex/sessions/**`), and Gemini (`~/.gemini/tmp/**`) transcripts are parsed, noise-stripped (tool calls / reasoning / system prompts removed), chunked, and embedded.
+- **Past AI conversations** — Claude Code (`~/.claude/projects/**`), Codex (`~/.codex/sessions/**`), and Gemini (`~/.gemini/tmp/**`) transcripts are parsed, noise-stripped (tool calls / reasoning / system prompts removed), chunked, and embedded. Two things are left out on the way: the `<project-memory>` block a headless run (`termpolis-cli exec`, `agent_exec`) opens with, which is memory recalled from this store and would otherwise be stored again, and any session another computer started here over [Linked machines](#30-linked-machines), which is that computer's work, not this one's.
 - **Your repo's code** — git-tracked files (so `node_modules`/`dist` are excluded), chunked by line-window. The indexer reuses the **same sensitive-file denylist as the read watcher**, so `.env`, keys, and cloud credentials are never embedded.
 
 ### How it works
@@ -1283,17 +1283,41 @@ step that calls it is not counted.
     `agy` passes its environment, marker included, to the server itself.
   - A job with *edit* permission has a shell and runs as you, so it could reach
     Termpolis's local MCP server directly.
-- **Answers are scanned.** What comes back from another machine passes the
-  gateway's prompt-injection scan before your agent sees it. That covers the
-  answer, its error and any refusal worded over there. A flagged answer
-  arrives under an **UNTRUSTED CONTENT** banner telling the agent not to
-  follow it; a clean one arrives as it is. Prompts and answers are not scanned
-  for secrets, so don't put secrets in a prompt.
+- **Answers are labelled and scanned.** What comes back from another machine
+  passes the gateway's prompt-injection scan before your agent sees it. That
+  covers the answer, its error and any refusal worded over there. Every answer
+  arrives under a label saying it is data from another computer, not
+  instructions from the user; a flagged one gets the **UNTRUSTED CONTENT**
+  banner instead, telling the agent not to follow it.
+- **Credentials don't cross.** Prompts and answers are screened with the AI
+  Security secret rules on both computers: the prompt before it leaves and when
+  it arrives, the answer before it leaves and when it arrives (in case the other
+  computer runs a version that doesn't screen). The screen has two tiers:
+  - **A credential whose own shape names it is removed** and replaced with
+    `[REDACTED:<rule>]`: vendor tokens such as `sk-ant-…`, `ghp_…`,
+    `github_pat_…`, `AKIA…`, `xox…`, and whole private-key blocks. The answer
+    tells your agent how many it removed and by which rules.
+  - **Anything that only looks like a credential is left as it is**, because a
+    delegated job's answer is usually code, and its test fixtures and examples
+    look like credentials too (`password = "hunter2"`, a `postgres://user:pass@`
+    URL, a JWT, a value assigned to `API_KEY`). The answer gets a note naming the
+    rules that matched: *possible credential, not removed*.
+  Both tiers write a line to the AI Security audit log on the computer that
+  screened: the rule ids and how often each matched, never the value. A
+  credential you deliberately want on the other computer should live in a file
+  there, not in the prompt.
 - **Memory.** The agent doing the work starts with that computer's own memory
   primer (up to 6,000 characters), as a local run would, so its answer can
-  quote that machine's memory. Termpolis doesn't write the answer into memory
-  there itself, but a Claude or Codex job's session is saved like any other, and
-  the memory indexer can pick it up.
+  quote that machine's memory. Nothing of the job becomes that computer's own
+  memory: Termpolis doesn't write the answer there, Claude Code and Codex are
+  told not to save the session (`--no-session-persistence`, `codex exec
+  --ephemeral`) when the installed version can be, and the memory indexer and
+  the learning reflex skip a session another computer started even if it was
+  saved. What versions 1.50 to 1.52 had already stored from such jobs is demoted
+  once, whole sessions at a time, the first time the indexer finishes a full
+  pass after the update (a demotion can be revoked with `memory_correct`).
+  Gemini jobs run through `agy`, whose own conversation store Termpolis doesn't
+  read.
 - **Your AI providers.** Each agent's provider sees what that agent is asked
   and answers, as always, and a job uses the doing computer's AI account.
 - **Records.** The asking computer's MCP audit log records each call an agent

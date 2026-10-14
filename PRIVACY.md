@@ -258,6 +258,14 @@ locally and every log stays on the machine.
 - **Local audit log** (`ai-security-audit.jsonl` in `userData`) — every
   AI-agent terminal launch, optionally with byte counts and hit counts.
   Append-only, 10MB-rotated, wipeable from Settings.
+- **Linked machines.** A prompt or an answer passed between two of your
+  computers is screened with the same rules on both: a credential whose own
+  shape names it (a vendor token such as `sk-ant-` / `ghp_` / `AKIA`, a
+  private-key block) is replaced with `[REDACTED:<rule>]` before it leaves and
+  again when it arrives; a value that only looks like one (a password in a test
+  fixture, a URL with a user and password) is left in and named in a note to
+  the agent. Each finding adds a line to the audit log on the computer that
+  screened it, with the rule ids and counts only, never the value.
 
 The redaction scanner is **not a comprehensive DLP solution** — it targets
 high-confidence patterns to keep false-positive rates low. Custom corporate
