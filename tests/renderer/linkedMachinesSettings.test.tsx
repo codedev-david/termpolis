@@ -299,30 +299,26 @@ describe('LinkedMachinesSettings link a computer', () => {
   it('offers run, and only run, before a code is made', async () => {
     await mount()
     expect(input('linked-grant-new-run').checked).toBe(true)
-    expect(input('linked-grant-new-write').checked).toBe(false)
+    // Edit is never chosen with a code: whoever enters it first has not had its words checked.
+    expect(screen.queryByTestId('linked-grant-new-write')).toBeNull()
+    expect(screen.queryByTestId('linked-grant-new-write-risk')).toBeNull()
     const section = within(screen.getByTestId('linked-link-section'))
     expect(section.getByText('Run agents here (read-only)')).toBeTruthy()
-    expect(section.getByText('Let agents edit files and run commands here')).toBeTruthy()
-    // The risky grant says what it risks, in amber, where it is granted.
-    const risk = screen.getByTestId('linked-grant-new-write-risk')
-    expect(risk.textContent).toContain('without asking')
-    expect(risk.className).toContain('e5c07b')
+    expect(section.queryByText('Let agents edit files and run commands here')).toBeNull()
+    // ...and the form says where it went.
+    expect(screen.getByTestId('linked-grant-new-edit-later').textContent).toContain('from its row')
   })
 
-  it('creates a code with exactly the grants ticked', async () => {
+  it('creates a code with exactly the grant ticked', async () => {
     await mount()
-    fireEvent.click(screen.getByTestId('linked-grant-new-write'))
-    // Write implies run, so ticking write leaves run ticked.
-    expect(input('linked-grant-new-run').checked).toBe(true)
     fireEvent.click(screen.getByTestId('linked-create-code'))
-    await waitFor(() => expect(api.createCode).toHaveBeenCalledWith({ run: true, write: true }))
+    await waitFor(() => expect(api.createCode).toHaveBeenCalledWith({ run: true, write: false }))
   })
 
-  it('takes write away with run', async () => {
+  it('creates a code that may do nothing yet, when run is unticked', async () => {
     await mount()
-    fireEvent.click(screen.getByTestId('linked-grant-new-write'))
     fireEvent.click(screen.getByTestId('linked-grant-new-run'))
-    expect(input('linked-grant-new-write').checked).toBe(false)
+    expect(input('linked-grant-new-run').checked).toBe(false)
     fireEvent.click(screen.getByTestId('linked-create-code'))
     await waitFor(() => expect(api.createCode).toHaveBeenCalledWith({ run: false, write: false }))
   })
@@ -335,9 +331,8 @@ describe('LinkedMachinesSettings link a computer', () => {
     expect(screen.getByTestId('linked-copy').textContent).toContain('Copy')
     expect(screen.getByTestId('linked-cancel-code')).toBeTruthy()
     expect(screen.queryByTestId('linked-create-code')).toBeNull()
-    // The grants were sent with the code; changing the boxes now would change nothing.
+    // The grants were sent with the code; changing the box now would change nothing.
     expect(input('linked-grant-new-run').disabled).toBe(true)
-    expect(input('linked-grant-new-write').disabled).toBe(true)
   })
 
   it('waits visibly for a code the bridge has not minted yet', async () => {
@@ -481,10 +476,11 @@ describe('LinkedMachinesSettings link a computer', () => {
 })
 
 describe('LinkedMachinesSettings enter a code', () => {
-  it('links with the pasted code, trimmed, and the grants ticked', async () => {
+  it('links with the pasted code, trimmed, and the grant ticked', async () => {
     await mount()
     expect(input('linked-join-grant-run').checked).toBe(true)
-    expect(input('linked-join-grant-write').checked).toBe(false)
+    expect(screen.queryByTestId('linked-join-grant-write')).toBeNull()
+    expect(screen.getByTestId('linked-join-grant-edit-later').textContent).toContain('confirmed its safety words')
     fireEvent.change(screen.getByTestId('linked-join-input'), { target: { value: `  ${CODE}\n` } })
     fireEvent.click(screen.getByTestId('linked-join-button'))
     await waitFor(() => expect(api.join).toHaveBeenCalledWith(CODE, { run: true, write: false }))
@@ -500,15 +496,12 @@ describe('LinkedMachinesSettings enter a code', () => {
     expect(button('linked-join-button').disabled).toBe(false)
   })
 
-  it('applies write-implies-run to the joining grants too', async () => {
+  it('links read-only or with nothing at all, never with edit', async () => {
     await mount()
-    fireEvent.click(screen.getByTestId('linked-join-grant-write'))
-    expect(input('linked-join-grant-run').checked).toBe(true)
-    expect(input('linked-join-grant-write').checked).toBe(true)
+    fireEvent.click(screen.getByTestId('linked-join-grant-run'))
     fireEvent.change(screen.getByTestId('linked-join-input'), { target: { value: CODE } })
     fireEvent.click(screen.getByTestId('linked-join-button'))
-    await waitFor(() => expect(api.join).toHaveBeenCalledWith(CODE, { run: true, write: true }))
-    expect(screen.getByTestId('linked-join-grant-write-risk').className).toContain('e5c07b')
+    await waitFor(() => expect(api.join).toHaveBeenCalledWith(CODE, { run: false, write: false }))
   })
 
   it('shows progress while joining, and cancels it', async () => {
@@ -725,7 +718,15 @@ describe('LinkedMachinesSettings machines', () => {
     expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
     expect(input('linked-grant-device:bbbb-write').checked).toBe(true)
     const row = screen.getByTestId('linked-machine-device:bbbb')
+    // What edit hands over, per agent, in amber, where it is granted.
+    const risk = screen.getByTestId('linked-grant-device:bbbb-write-risk')
+    expect(risk.textContent).toContain('full access as you')
+    expect(risk.textContent).toContain('Codex changes files only in its folder, with no network')
+    expect(risk.className).toContain('e5c07b')
     expect(row.textContent).toContain('without asking')
+    // A computer that may edit says so at a glance; one that may not doesn't.
+    expect(screen.getByTestId('linked-full-access-device:bbbb').textContent).toBe('full access')
+    expect(screen.queryByTestId('linked-full-access-link:aaaa')).toBeNull()
   })
 
   it('renames on Enter and then follows the saved name', async () => {
@@ -808,14 +809,101 @@ describe('LinkedMachinesSettings machines', () => {
     await waitFor(() => expect(field.value).toBe('linux'))
   })
 
-  it('sends the whole grants object, granting run along with write', async () => {
+  it('asks before turning edit on, in the row, and saying what it means per agent', async () => {
     api.status.mockResolvedValue(
       ok(statusView({ machines: [machine({ grants: { run: false, write: false } })] })),
     )
     await mount()
     fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    // Nothing is sent by the tick itself, and the box follows main, so it stays clear.
+    expect(api.setGrants).not.toHaveBeenCalled()
+    expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
+    const panel = screen.getByTestId('linked-write-confirm-link:aaaa')
+    expect(panel.textContent).toContain('Let linux edit files and run commands here?')
+    expect(panel.textContent).toContain('Claude and Gemini: full access.')
+    expect(panel.textContent).toContain('reach your other linked computers')
+    expect(panel.textContent).toContain('Codex: in its sandbox.')
+    expect(panel.textContent).toContain('no network')
+  })
+
+  it('leaves edit off when the question is cancelled', async () => {
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine()] })))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    fireEvent.click(screen.getByTestId('linked-write-cancel-link:aaaa'))
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+    expect(api.setGrants).not.toHaveBeenCalled()
+    expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
+  })
+
+  it('turns edit on with Allow, sending the whole grants object and the say-so main asks for', async () => {
+    api.status.mockResolvedValue(
+      ok(statusView({ machines: [machine({ grants: { run: false, write: false } })] })),
+    )
+    api.setGrants.mockResolvedValue(
+      ok(statusView({ machines: [machine({ grants: { run: true, write: true } })] })),
+    )
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    fireEvent.click(screen.getByTestId('linked-write-allow-link:aaaa'))
     await waitFor(() =>
-      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: true, write: true }),
+      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: true, write: true }, true),
+    )
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+    await waitFor(() => expect(input('linked-grant-link:aaaa-write').checked).toBe(true))
+    expect(screen.getByTestId('linked-full-access-link:aaaa')).toBeTruthy()
+  })
+
+  it('shows a refused Allow and leaves edit off', async () => {
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine()] })))
+    api.setGrants.mockResolvedValue(fail('Confirm the safety words before letting this computer edit files here.'))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    fireEvent.click(screen.getByTestId('linked-write-allow-link:aaaa'))
+    expect((await screen.findByTestId('linked-error')).textContent).toContain('safety words')
+    expect(input('linked-grant-link:aaaa-write').checked).toBe(false)
+  })
+
+  it('closes the question when edit arrives some other way', async () => {
+    api.status.mockResolvedValue(ok(statusView({ machines: [machine()] })))
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    expect(screen.getByTestId('linked-write-confirm-link:aaaa')).toBeTruthy()
+    act(() => pushStatus(statusView({ machines: [machine({ grants: { run: true, write: true } })] })))
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+  })
+
+  it('offers edit only once the safety words are confirmed', async () => {
+    api.status.mockResolvedValue(
+      ok(
+        statusView({
+          machines: [
+            machine({ confirmed: false, phrase: PHRASE }),
+            // Edit an older version granted with a code: it can still be switched off.
+            machine({ ref: 'device:bbbb', name: 'mac', confirmed: false, grants: { run: true, write: true } }),
+          ],
+        }),
+      ),
+    )
+    await mount()
+    expect(input('linked-grant-link:aaaa-write').disabled).toBe(true)
+    expect(input('linked-grant-link:aaaa-run').disabled).toBe(false)
+    expect(input('linked-grant-device:bbbb-write').disabled).toBe(false)
+    fireEvent.click(screen.getByTestId('linked-grant-device:bbbb-write'))
+    await waitFor(() =>
+      expect(api.setGrants).toHaveBeenCalledWith('device:bbbb', { run: true, write: false }, undefined),
+    )
+  })
+
+  it('turns edit off at once: switching it off needs no question', async () => {
+    api.status.mockResolvedValue(
+      ok(statusView({ machines: [machine({ grants: { run: true, write: true } })] })),
+    )
+    await mount()
+    fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-write'))
+    expect(screen.queryByTestId('linked-write-confirm-link:aaaa')).toBeNull()
+    await waitFor(() =>
+      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: true, write: false }, undefined),
     )
   })
 
@@ -829,7 +917,7 @@ describe('LinkedMachinesSettings machines', () => {
     await mount()
     fireEvent.click(screen.getByTestId('linked-grant-link:aaaa-run'))
     await waitFor(() =>
-      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: false, write: false }),
+      expect(api.setGrants).toHaveBeenCalledWith('link:aaaa', { run: false, write: false }, undefined),
     )
     await waitFor(() => expect(input('linked-grant-link:aaaa-write').checked).toBe(false))
   })

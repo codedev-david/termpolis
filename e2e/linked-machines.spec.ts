@@ -118,9 +118,12 @@ test.describe.serial('Linked machines settings', () => {
     await expect(byId('linked-relay')).toHaveText(DEAD_RELAY, { timeout: 15000 })
     await expect(byId('linked-create-code')).toBeEnabled()
     await expect(byId('linked-join-input')).toBeVisible()
-    // Run on, write off: the grant a user gives without thinking is the harmless one.
+    // Run on, and nothing more on offer: edit is never granted along with a code, only from a
+    // linked computer's row once its words are confirmed.
     await expect(byId('linked-grant-new-run')).toBeChecked()
-    await expect(byId('linked-grant-new-write')).not.toBeChecked()
+    await expect(byId('linked-grant-new-write')).toHaveCount(0)
+    await expect(byId('linked-join-grant-run')).toBeChecked()
+    await expect(byId('linked-join-grant-write')).toHaveCount(0)
     expect(savedLinkedSetting()).toEqual({ enabled: true })
   })
 
@@ -154,7 +157,7 @@ test.describe.serial('Linked machines settings', () => {
     await expect(byId('linked-error')).toHaveCount(0)
     // Locked while the code is out: its grants were chosen with it.
     await expect(byId('linked-grant-new-run')).toBeDisabled()
-    await expect(byId('linked-grant-new-write')).toBeDisabled()
+    await expect(byId('linked-grant-new-write')).toHaveCount(0)
   })
 
   test('5. Copy puts exactly the code on the clipboard', async () => {

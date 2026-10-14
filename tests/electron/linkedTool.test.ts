@@ -373,6 +373,8 @@ describe('run', () => {
       status: 'done',
       output: '[answer from linux/codex]\nParser looks fine.',
       durationMs: 31_000,
+      // Said with every edit run, for the agent to pass on: what the job could do over there.
+      note: 'Ran with edit permission on "linux", in Codex\'s sandbox there.',
     })
     expect(h.calls.map((c) => [c.target, c.request, c.timeoutMs])).toEqual([
       [
@@ -383,6 +385,19 @@ describe('run', () => {
       [{ via: 'link', id: LINUX_ID }, { kind: 'peerResult', jobId: JOB, waitMs: 25_000 }, 45_000],
       [{ via: 'link', id: LINUX_ID }, { kind: 'peerResult', jobId: JOB, waitMs: 20_000 }, 40_000],
     ])
+  })
+
+  it("says a Claude or Gemini edit run had full access over there, after the answer's own notes", async () => {
+    for (const agent of ['claude', 'gemini'] as const) {
+      const h = setup()
+      scripted(h, [], view({ agent, status: 'done', output: 'Done.' }))
+      const answer = (await run(h, { agent, write: true })) as Record<string, unknown>
+      expect(answer.note).toBe('Ran with edit permission on "linux": that agent had full access there.')
+    }
+    // A read-only run says nothing of the kind.
+    const h = setup()
+    scripted(h, [], view({ status: 'done', output: 'Done.' }))
+    expect(await run(h)).not.toHaveProperty('note')
   })
 
   it('sends only the fields it was given', async () => {

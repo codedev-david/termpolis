@@ -1176,6 +1176,14 @@ describe('preload: linked machines', () => {
     ['confirm', ['link:0011223344556677', 'linux'], 'linked:confirm', { ref: 'link:0011223344556677', name: 'linux' }],
     ['rename', ['link:0011223344556677', 'mac'], 'linked:rename', { ref: 'link:0011223344556677', name: 'mac' }],
     ['setGrants', ['device:0011223344556677', grants], 'linked:set-grants', { ref: 'device:0011223344556677', grants }],
+    // Only the edit confirm panel's Allow sends it, and main turns edit on for nothing else.
+    [
+      'setGrants',
+      ['device:0011223344556677', { run: true, write: true }, true],
+      'linked:set-grants',
+      { ref: 'device:0011223344556677', grants: { run: true, write: true }, confirmWrite: true },
+    ],
+    ['setGrants', ['device:0011223344556677', grants, false], 'linked:set-grants', { ref: 'device:0011223344556677', grants }],
     ['unlink', ['device:0011223344556677'], 'linked:unlink', { ref: 'device:0011223344556677' }],
     ['encryptKeys', [], 'linked:encrypt-keys', undefined],
     ['startOver', [], 'linked:start-over', undefined],

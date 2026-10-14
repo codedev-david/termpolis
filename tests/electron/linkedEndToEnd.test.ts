@@ -382,7 +382,14 @@ async function confirm(m: Machine, ref: string, name: string): Promise<void> {
   expect(await m.ipc('linked:confirm', { ref, name })).toMatchObject({ success: true })
 }
 
-/** The laptop and the build box, linked and confirmed on both sides. */
+/** Let `ref` edit files on `m`, as the pane does it: from the computer's row once its words are
+ *  confirmed, through the confirm panel's Allow. Edit is never granted with a code. */
+async function allowEdit(m: Machine, ref: string): Promise<void> {
+  expect(await m.ipc('linked:set-grants', { ref, grants: EDIT, confirmWrite: true })).toMatchObject({ success: true })
+}
+
+/** The laptop and the build box, linked and confirmed on both sides. Edit, where asked for, is
+ *  turned on after the confirmation, the only way it can be. */
 async function linkedPair(grants: { onA?: LinkedGrants; onB?: LinkedGrants } = {}) {
   const relay = newRelay()
   const a = await machine(relay, LAPTOP)
@@ -392,6 +399,8 @@ async function linkedPair(grants: { onA?: LinkedGrants; onB?: LinkedGrants } = {
   const l = await link(a, b, grants)
   await confirm(a, l.onA, BUILDBOX_ON_LAPTOP)
   await confirm(b, l.onB, LAPTOP_ON_BUILDBOX)
+  if (grants.onA?.write) await allowEdit(a, l.onA)
+  if (grants.onB?.write) await allowEdit(b, l.onB)
   return { relay, a, b, ...l }
 }
 
@@ -607,6 +616,27 @@ describe('delegating a job', () => {
     }
     // Text another machine asked for never becomes a later primer here.
     expect(remember).not.toHaveBeenCalled()
+
+    // A Codex edit job runs in Codex's sandbox with its network switched off, whatever codex's
+    // own config says, and the agent that asked is told what kind of access it had.
+    const edit = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Fix it.', cwd: b.work, write: true })
+    expect(edit).toMatchObject({ status: 'done', note: `Ran with edit permission on "${BUILDBOX_ON_LAPTOP}", in Codex's sandbox there.` })
+    expect(spawned[2].args).toEqual([
+      'exec',
+      '--sandbox',
+      'workspace-write',
+      '--skip-git-repo-check',
+      '-c',
+      'mcp_servers.termpolis.enabled=false',
+      '-c',
+      'mcp_servers.termpolis.command=termpolis-mcp-disabled',
+      '-c',
+      'sandbox_workspace_write.network_access=false',
+      '-C',
+      b.work,
+      PROMPT_TOKEN,
+    ])
+    expect(write).toMatchObject({ note: `Ran with edit permission on "${BUILDBOX_ON_LAPTOP}": that agent had full access there.` })
   })
 
   it('takes a credential out of the prompt before it leaves, and out of the answer before it comes back', async () => {
@@ -832,7 +862,10 @@ describe('what the other computer allows', () => {
     expect(b.execs).toEqual([])
     expect((await a.tool({ action: 'list' })).machines?.[0]).toMatchObject({ canRun: true, canWrite: false })
 
-    expect(await b.ipc('linked:set-grants', { ref: onB, grants: EDIT })).toMatchObject({ success: true })
+    // Not without the confirm panel's Allow: a bare request is refused, and nothing changes.
+    expect(await b.ipc('linked:set-grants', { ref: onB, grants: EDIT })).toMatchObject({ success: false })
+    expect((await a.tool({ action: 'list' })).machines?.[0]).toMatchObject({ canRun: true, canWrite: false })
+    await allowEdit(b, onB)
     expect((await a.tool({ action: 'list' })).machines?.[0]).toMatchObject({ canRun: true, canWrite: true })
     expect(await a.tool(ask)).toMatchObject({ status: 'done', output: answered(BUILDBOX_ON_LAPTOP, 'codex', `${BUILDBOX} did it`) })
     expect(b.execs).toHaveLength(1)

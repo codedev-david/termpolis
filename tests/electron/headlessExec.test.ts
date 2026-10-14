@@ -6,6 +6,7 @@ import {
   truncatePrimer,
   buildExecPrompt,
   execCommand,
+  CODEX_LINKED_WRITE_ARGS,
   runHeadless,
   isExecAgent,
   clampExecTimeout,
@@ -228,8 +229,27 @@ describe('headlessExec/execCommand for a linked job (linkedJob, cwd)', () => {
 
   it('puts every codex flag before the positional prompt, on a write run too', () => {
     expect(execCommand('codex', 'gpt-5.6-sol', true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' }, cwd: '/work/repo' }).args).toEqual([
-      'exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...CODEX_MCP_OFF, '-C', '/work/repo', PROMPT_TOKEN,
+      'exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-m', 'gpt-5.6-sol', ...CODEX_MCP_OFF,
+      ...CODEX_LINKED_WRITE_ARGS, '-C', '/work/repo', PROMPT_TOKEN,
     ])
+  })
+
+  it("switches a codex edit job's sandbox network off, and only a linked edit job's", () => {
+    // Verified against codex-cli 0.153.4: `-c` takes a dotted config key, and the workspace-write
+    // sandbox's table holds network_access. Without it, the job's commands could reach this
+    // computer's MCP server and every tool the adapter keeps from them.
+    expect(CODEX_LINKED_WRITE_ARGS).toEqual(['-c', 'sandbox_workspace_write.network_access=false'])
+    const linkedWrite = execCommand('codex', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1', codexHasTermpolis: true } }).args
+    expect(linkedWrite.slice(-3)).toEqual([...CODEX_LINKED_WRITE_ARGS, PROMPT_TOKEN])
+    // Read-only jobs have no network to switch off, and a plain `termpolis exec --write` keeps
+    // the user's own sandbox settings.
+    const readOnly = execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' } }).args
+    const plainWrite = execCommand('codex', undefined, true).args
+    for (const args of [readOnly, plainWrite]) expect(args.join(' ')).not.toContain('network_access')
+    // Not claude's or agy's: neither has a switch for it, which is why their edit jobs have full access.
+    for (const agent of ['claude', 'gemini'] as const) {
+      expect(execCommand(agent, undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: { id: 'job1' } }).args.join(' ')).not.toContain('network_access')
+    }
   })
 
   it('leaves agy alone: it has no per-run MCP switch and passes the marker on itself', () => {
@@ -589,7 +609,7 @@ describe('headlessExec/a linked job told not to save its session (noPersist)', (
     expect(execCommand('codex', undefined, false, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job, cwd: '/work/repo' }).args)
       .toEqual(['exec', '--sandbox', 'read-only', '--skip-git-repo-check', ...CODEX_MCP_OFF, '--ephemeral', '-C', '/work/repo', PROMPT_TOKEN])
     expect(execCommand('codex', undefined, true, EXEC_DEFAULT_TIMEOUT_MS, { linkedJob: job }).args)
-      .toEqual(['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', ...CODEX_MCP_OFF, '--ephemeral', PROMPT_TOKEN])
+      .toEqual(['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', ...CODEX_MCP_OFF, ...CODEX_LINKED_WRITE_ARGS, '--ephemeral', PROMPT_TOKEN])
   })
 
   it('gives agy nothing: it has no such flag', () => {

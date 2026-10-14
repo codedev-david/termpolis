@@ -133,6 +133,13 @@ const checkLater = (jobId: string): string =>
   `The job may still be running there: call linked_machines with action "result" and jobId "${jobId}" to check on it.`
 const tooLongScreened = `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`
 
+/** What an edit job could do over there, for the agent that started one to pass on: Claude and
+ *  Gemini run with full access as that computer's user, Codex in its own sandbox (spec §4.6). */
+const editNote = (name: string, agent: PeerAgent): string =>
+  agent === 'codex'
+    ? `Ran with edit permission on "${name}", in Codex's sandbox there.`
+    : `Ran with edit permission on "${name}": that agent had full access there.`
+
 const ruleList = (counts: Record<string, number>): string => Object.keys(counts).join(', ')
 
 /** What a screen did, as sentences for the agent: what was removed, and what was left in. */
@@ -488,7 +495,8 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     if (!first) return withNotes({ error: malformed(view.name), machine: view.name }, notes)
     const job: Followed = { target, name: view.name, remoteId: first.jobId, jobId: `${target.id}-${first.jobId}` }
     record(job, first, { summary: activitySummary(screened.text), startedAt: started })
-    return withNotes(await follow(job, first, started + waitSec * 1000), notes)
+    const edit = write ? [editNote(view.name, first.agent)] : []
+    return withNotes(await follow(job, first, started + waitSec * 1000), [...notes, ...edit])
   }
 
   async function result(args: LinkedToolArgs): Promise<Answer> {

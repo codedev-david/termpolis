@@ -1214,7 +1214,9 @@ export interface LinkedAPI {
   cancelJoin(): Promise<IpcResponse<LinkedStatusView>>
   confirm(ref: string, name: string): Promise<IpcResponse<LinkedStatusView>>
   rename(ref: string, name: string): Promise<IpcResponse<LinkedStatusView>>
-  setGrants(ref: string, grants: LinkedGrants): Promise<IpcResponse<LinkedStatusView>>
+  /** `confirmWrite` only from the pane's confirm panel: main refuses to turn edit on without it,
+   *  or for a computer whose words are not confirmed yet. */
+  setGrants(ref: string, grants: LinkedGrants, confirmWrite?: boolean): Promise<IpcResponse<LinkedStatusView>>
   unlink(ref: string): Promise<IpcResponse<LinkedStatusView>>
   /** The Remote pane's two key actions, on the same keys (see RemoteAPI). */
   encryptKeys(): Promise<IpcResponse<LinkedStatusView>>

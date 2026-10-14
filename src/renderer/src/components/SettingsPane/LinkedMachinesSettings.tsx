@@ -185,8 +185,8 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
     apply(await api.rename(ref, name))
   }
 
-  const setGrants = async (ref: string, grants: LinkedGrants): Promise<void> => {
-    apply(await api.setGrants(ref, grants))
+  const setGrants = async (ref: string, grants: LinkedGrants, confirmWrite?: boolean): Promise<void> => {
+    apply(await api.setGrants(ref, grants, confirmWrite))
   }
 
   const unlink = async (ref: string): Promise<void> => {
@@ -220,9 +220,10 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
         Linked machines
         <InfoTip label="What a linked computer can do" testId="linked-info" wide>
           A linked computer can do only what you allow it under its name below. With read-only, its
-          agents can have an agent here read any file you can read and send it back. With edit, they
-          can also change files and run commands here. Every job shows under Activity on both
-          computers, and Unlink ends the link on both.
+          agents can have an agent here read any file you can read and send it back. With edit, which
+          you turn on from its row once its words are confirmed, a Claude or Gemini agent it starts here
+          has full access as you, and a Codex agent changes files only in its folder, with no network.
+          Every job shows under Activity on both computers, and Unlink ends the link on both.
         </InfoTip>
       </h2>
       <p className="text-xs text-[#9ca3af] mb-4">
@@ -343,7 +344,7 @@ function LinkedMachinesPane({ api }: { api: LinkedAPI }): JSX.Element {
               machine={machine}
               now={now}
               onRename={rename}
-              onSetGrants={(ref, grants) => void setGrants(ref, grants)}
+              onSetGrants={(ref, grants, confirmWrite) => void setGrants(ref, grants, confirmWrite)}
               onUnlink={(ref) => void unlink(ref)}
             />
           ))}

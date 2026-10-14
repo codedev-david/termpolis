@@ -185,6 +185,13 @@ export const LINKED_JOIN_BAD_ANSWER =
  *  file holding the links this computer joined. */
 export const LINKED_KEYS_LOCKED =
   "This computer's link keys can't be opened right now, so links can't be made or changed. Nothing was changed."
+/** Edit is a shell here as the user for Claude and Gemini (spec §4.6), so it is
+ *  only ever turned on for a computer whose words were checked on this one... */
+export const LINKED_WRITE_NEEDS_CONFIRM = 'Confirm the safety words before letting this computer edit files here.'
+/** ...and only by a request that says the user was shown what it means: the
+ *  pane's confirm panel sends it. */
+export const LINKED_WRITE_NEEDS_ACK =
+  "Edit permission wasn't confirmed. Turn it on from the computer's row under Settings ▸ Linked machines and click Allow."
 
 /** How much longer than a linked call's own timeout main waits for the
  *  bridge's answer -- the bridge times the call out itself, so this only fires
@@ -262,6 +269,12 @@ const DEVICE_REF = 'device:'
 /** The device id in a hosted machine's ref, or null for a joined link's. */
 function hostedId(ref: string): string | null {
   return ref.startsWith(DEVICE_REF) ? ref.slice(DEVICE_REF.length) : null
+}
+
+/** Grants with edit taken off. A computer is never granted edit along with a code, made or
+ *  entered: only from its row, once its words are confirmed here (setGrants). */
+function readOnly(g: LinkedGrants): LinkedGrants {
+  return { run: g.run, write: false }
 }
 
 /** The bridge's half of a joined link: everything but when it was made. */
@@ -910,7 +923,8 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     if (!grants) return err(LINKED_BAD_GRANTS)
     const refusal = cannotLink()
     if (refusal) return err(refusal)
-    codeGrants = grants
+    // Whatever the payload says: whoever enters the code first has not had its words checked.
+    codeGrants = readOnly(grants)
     // The bridge replaces any code it holds; the old one is spent from here.
     code = null
     // Unnamed: the joiner's hello carries its own name, which the user then
@@ -939,7 +953,12 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     // A fresh keypair for this one link, minted here because the bridge has no
     // key store; the secret stays in main until the link is kept.
     const keys = generateIdentity()
-    join = { publicKey: keys.publicKey, secretKey: keys.secretKey, grants, timer: setTimeout(onJoinTimeout, JOIN_ANSWER_TIMEOUT_MS) }
+    join = {
+      publicKey: keys.publicKey,
+      secretKey: keys.secretKey,
+      grants: readOnly(grants),
+      timer: setTimeout(onJoinTimeout, JOIN_ANSWER_TIMEOUT_MS),
+    }
     send({ kind: 'joinLink', code: text, secretKey: keys.secretKey, label: machineName })
     changed()
     return ok(status())
@@ -960,7 +979,11 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
     const typed = sanitizeDeviceLabel(field(input, 'name'))
     const name = uniqueName(takenNames(view.ref), typed || view.name)
-    putMeta({ ...metaOrView(view), name, confirmed: true })
+    const meta = metaOrView(view)
+    // Edit an older version let the user choose along with the code waits for the row like any
+    // other: it was given before anyone saw these words.
+    const grants = view.confirmed ? meta.grants : readOnly(meta.grants)
+    putMeta({ ...meta, name, grants, confirmed: true })
     renameHosted(view.ref, name)
     tell({ kind: 'linked', ref: view.ref, name })
     changed()
@@ -986,6 +1009,11 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     if (stateLocked) return err(LINKED_KEYS_LOCKED)
     const view = viewFor(field(input, 'ref'))
     if (!view) return err(LINKED_UNKNOWN_MACHINE)
+    // Turning edit on, never off or left as it is: off is always allowed, and stops what it allowed.
+    if (grants.write && !view.grants.write) {
+      if (!view.confirmed) return err(LINKED_WRITE_NEEDS_CONFIRM)
+      if (field(input, 'confirmWrite') !== true) return err(LINKED_WRITE_NEEDS_ACK)
+    }
     putMeta({ ...metaOrView(view), grants })
     // A permission switched off stops what it allowed, not only what comes next.
     jobs.revoke(targetOf(view.ref) as LinkTarget, grants)

@@ -188,6 +188,14 @@ const CLAUDE_NO_PERSIST = '--no-session-persistence'
 /** Codex's, an option of `codex exec`. */
 const CODEX_NO_PERSIST = '--ephemeral'
 
+/** A linked edit job's commands get no network in Codex's `workspace-write` sandbox, whatever the
+ *  user's config.toml says: without it they could reach this computer's own MCP server, and every
+ *  tool the adapter keeps from the job, or another linked computer. Codex's own MCP connections
+ *  are outside the sandbox, so the job keeps its restricted Termpolis tools. The key is the
+ *  `[sandbox_workspace_write]` table's `network_access` in codex-cli 0.153.4's config schema, set
+ *  with the `-c` dotted override `codex exec --help` documents. */
+export const CODEX_LINKED_WRITE_ARGS: readonly string[] = ['-c', 'sandbox_workspace_write.network_access=false']
+
 /** `args` with `flags` just ahead of `-p`: after every variadic list, so none of them takes a
  *  flag for one more value. */
 function beforePrint(args: string[], flags: readonly string[]): string[] {
@@ -251,7 +259,9 @@ function claudeLinkedReadOnlyArgs(model: string | undefined, mcpConfig: string):
  *  file (`--strict-mcp-config` drops the user's other servers), codex with the marker set on the
  *  server for the run. Missing those, the server is switched off for the run as before: claude
  *  gets `--strict-mcp-config` alone, codex CODEX_ISOLATE_MCP_ARGS. agy has no per-run switch; it
- *  passes its own environment, marker included, to the adapter. A job whose CLI can run without
+ *  passes its own environment, marker included, to the adapter. A codex edit job also has its
+ *  sandbox's network switched off (CODEX_LINKED_WRITE_ARGS); claude and agy edit jobs run with
+ *  full access, which the write grant says (spec §4.6). A job whose CLI can run without
  *  saving its session (`noPersist`) is told to: claude's flag goes ahead of `-p`, codex's with its
  *  other options; agy has none. `opts.cwd` is the spawn's to use, and codex is also told it with
  *  `-C`. The caller checks it first: runHeadless takes only an absolute path, which can never be
@@ -279,6 +289,7 @@ export function execCommand(
       args.indexOf(PROMPT_TOKEN),
       0,
       ...(job ? codexLinkedJobArgs(job) : []),
+      ...(job && write ? CODEX_LINKED_WRITE_ARGS : []),
       ...(job?.noPersist ? [CODEX_NO_PERSIST] : []),
       ...(opts.cwd ? ['-C', opts.cwd] : []),
     )

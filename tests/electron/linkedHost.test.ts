@@ -59,6 +59,8 @@ import {
   LINKED_UNAVAILABLE,
   LINKED_UNKNOWN_MACHINE,
   LINKED_UNLINK_NEEDS_BRIDGE,
+  LINKED_WRITE_NEEDS_ACK,
+  LINKED_WRITE_NEEDS_CONFIRM,
   _resetLinkedHostForTests,
   linkedAuditEntries,
   linkedInitForRemote,
@@ -605,7 +607,7 @@ describe('a code for another computer (this machine hosts)', () => {
     const taken = peer('build-box')
     const h = boot({ enabled: true, state: { links: [], meta: [meta(devRef(taken), { name: 'build-box' })] } })
     h.bridge.peers = [taken]
-    await h.invoke('linked:create-code', { grants: { run: false, write: true } })
+    await h.invoke('linked:create-code', { grants: { run: false, write: false } })
     h.bridge.offerLive = true
     h.bridge.emit({ kind: 'pairingCode', qrPayload: '{}', expiresAt: Date.now() + 60_000, linkCode: 'termpolis-link:abc' })
     h.bridge.offerLive = false
@@ -623,8 +625,7 @@ describe('a code for another computer (this machine hosts)', () => {
       online: false,
       confirmed: false,
       phrase: PHRASE,
-      // write forces run.
-      grants: { run: true, write: true },
+      grants: { run: false, write: false },
       linkedAt: expect.any(Number),
     })
     expect(loadLinkedState(dir).meta.find((m) => m.ref === devRef(P))).toMatchObject({ confirmed: false, phrase: PHRASE })
@@ -632,14 +633,23 @@ describe('a code for another computer (this machine hosts)', () => {
 
   it('spends the grants on the pairing they were chosen for', async () => {
     const h = boot({ enabled: true })
-    await h.invoke('linked:create-code', { grants: { run: true, write: true } })
+    await h.invoke('linked:create-code', { grants: { run: false, write: false } })
     const first = peer('one')
     const second = peer('two')
     h.bridge.emit({ kind: 'paired', device: first })
     h.bridge.emit({ kind: 'paired', device: second })
     const state = loadLinkedState(dir)
-    expect(state.meta.find((m) => m.ref === devRef(first))!.grants).toEqual({ run: true, write: true })
+    expect(state.meta.find((m) => m.ref === devRef(first))!.grants).toEqual({ run: false, write: false })
     expect(state.meta.find((m) => m.ref === devRef(second))!.grants).toEqual(DEFAULT_GRANTS)
+  })
+
+  it('never grants edit with a code, whatever the request asks: whoever enters it has not had its words checked', async () => {
+    const h = boot({ enabled: true })
+    // An edit-only request still means run: write forces run, then edit is taken off.
+    await h.invoke('linked:create-code', { grants: { run: false, write: true } })
+    const P = peer()
+    h.bridge.emit({ kind: 'paired', device: P })
+    expect(loadLinkedState(dir).meta.find((m) => m.ref === devRef(P))!.grants).toEqual({ run: true, write: false })
   })
 
   it("keeps what it knows of a computer that pairs again, and ignores a phone's pairing and words", async () => {
@@ -700,6 +710,7 @@ describe('entering a code (this machine joins)', () => {
   it('mints a key for the link here, hands the bridge the code, and keeps the link it makes', async () => {
     const h = boot({ enabled: true, machineName: 'laptop' })
     const code = linkCode()
+    // Edit asked for along with the code is not granted: it waits for the row, after the words.
     const res = await h.invoke('linked:join', { code, grants: { run: true, write: true } })
     expect(res.data!.joining).toBe(true)
     const asked = h.bridge.sent.find((m) => m.kind === 'joinLink') as Extract<HostToBridge, { kind: 'joinLink' }>
@@ -735,7 +746,7 @@ describe('entering a code (this machine joins)', () => {
         online: false,
         confirmed: false,
         phrase: PHRASE,
-        grants: { run: true, write: true },
+        grants: { run: true, write: false },
         linkedAt: expect.any(Number),
       },
     ])
@@ -870,7 +881,7 @@ describe('confirm, rename and grants', () => {
       },
     })
     h.bridge.peers = [P, other]
-    return { h, P, L }
+    return { h, P, L, other }
   }
 
   it('confirms under the name typed, made unique, and tells the bridge the name of a hosted machine', async () => {
@@ -926,14 +937,62 @@ describe('confirm, rename and grants', () => {
   })
 
   it('sets grants, forcing run on with write, and refuses anything else', async () => {
-    const { h, L } = seeded()
-    expect(await h.invoke('linked:set-grants', { ref: linkRef(L), grants: { run: false } })).toEqual({
+    const { h, other } = seeded()
+    const ref = devRef(other)
+    expect(await h.invoke('linked:set-grants', { ref, grants: { run: false } })).toEqual({
       success: false,
       error: LINKED_BAD_GRANTS,
     })
-    const res = await h.invoke('linked:set-grants', { ref: linkRef(L), grants: { run: false, write: true } })
-    expect(res.data!.machines.find((m) => m.ref === linkRef(L))!.grants).toEqual({ run: true, write: true })
-    expect(loadLinkedState(dir).meta.find((m) => m.ref === linkRef(L))!.grants).toEqual({ run: true, write: true })
+    const res = await h.invoke('linked:set-grants', { ref, grants: { run: false, write: true }, confirmWrite: true })
+    expect(res.data!.machines.find((m) => m.ref === ref)!.grants).toEqual({ run: true, write: true })
+    expect(loadLinkedState(dir).meta.find((m) => m.ref === ref)!.grants).toEqual({ run: true, write: true })
+  })
+
+  it('turns edit on only for a confirmed computer, and only when the request says the user allowed it', async () => {
+    const { h, P, other } = seeded()
+    const EDIT = { run: true, write: true }
+    // Its words were never checked here: no click makes it an edit machine.
+    expect(await h.invoke('linked:set-grants', { ref: devRef(P), grants: EDIT, confirmWrite: true })).toEqual({
+      success: false,
+      error: LINKED_WRITE_NEEDS_CONFIRM,
+    })
+    // Confirmed, but asked without the panel's say-so: refused, whatever stands in for it.
+    for (const confirmWrite of [undefined, false, 'true', 1]) {
+      expect(await h.invoke('linked:set-grants', { ref: devRef(other), grants: EDIT, confirmWrite })).toEqual({
+        success: false,
+        error: LINKED_WRITE_NEEDS_ACK,
+      })
+    }
+    const stored = (): LinkMeta[] => loadLinkedState(dir).meta
+    expect(stored().find((m) => m.ref === devRef(P))!.grants).toEqual({ run: true, write: false })
+    expect(stored().find((m) => m.ref === devRef(other))!.grants).toEqual({ run: true, write: false })
+    expect(await h.invoke('linked:set-grants', { ref: devRef(other), grants: EDIT, confirmWrite: true })).toMatchObject({ success: true })
+    expect(stored().find((m) => m.ref === devRef(other))!.grants).toEqual(EDIT)
+    // Sent again as it is, it changes nothing and asks nothing; off never needs asking either.
+    expect(await h.invoke('linked:set-grants', { ref: devRef(other), grants: EDIT })).toMatchObject({ success: true })
+    expect(await h.invoke('linked:set-grants', { ref: devRef(other), grants: { run: true, write: false } })).toMatchObject({ success: true })
+    expect(stored().find((m) => m.ref === devRef(other))!.grants).toEqual({ run: true, write: false })
+  })
+
+  it("takes away edit an older version granted with a code, when the words are confirmed, and keeps a confirmed computer's", async () => {
+    const P = peer('build-box')
+    const Q = peer('linux')
+    const h = boot({
+      enabled: true,
+      state: {
+        links: [],
+        meta: [
+          meta(devRef(P), { name: 'build-box', confirmed: false, phrase: PHRASE, grants: { run: true, write: true } }),
+          meta(devRef(Q), { name: 'linux', grants: { run: true, write: true } }),
+        ],
+      },
+    })
+    h.bridge.peers = [P, Q]
+    await h.invoke('linked:confirm', { ref: devRef(P), name: 'build-box' })
+    await h.invoke('linked:confirm', { ref: devRef(Q), name: 'linux' })
+    const stored = loadLinkedState(dir).meta
+    expect(stored.find((m) => m.ref === devRef(P))).toMatchObject({ confirmed: true, grants: { run: true, write: false } })
+    expect(stored.find((m) => m.ref === devRef(Q))).toMatchObject({ confirmed: true, grants: { run: true, write: true } })
   })
 
   it('acts on a computer it has no record of yet, from what the directory shows', async () => {

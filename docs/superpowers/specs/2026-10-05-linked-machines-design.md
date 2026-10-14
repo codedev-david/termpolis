@@ -56,15 +56,15 @@ What is missing is the link between two desktops and a small job protocol on top
 ### 3.1 Settings ▸ Linked machines
 
 - **Off by default.** The section has its own enable switch, **Let this computer link with my other computers**. While it is off, no linked room opens and every request from another computer is refused.
-- **Link a computer (host side).** The user picks what the new machine may do *here*, then gets a one-time pairing code shown as text with a Copy button, a countdown and Cancel. The code is single-use and expires after 5 minutes (§6.1). The user moves it to the other machine by any means: chat, a shared folder, or typing it.
-- **Enter a code from another computer (joiner side).** The user pastes the code and picks what the host machine may do *here*.
+- **Link a computer (host side).** The user picks whether the new machine may run read-only agents *here* (never edit, §4.6), then gets a one-time pairing code shown as text with a Copy button, a countdown and Cancel. The code is single-use and expires after 5 minutes (§6.1). The user moves it to the other machine by any means: chat, a shared folder, or typing it.
+- **Enter a code from another computer (joiner side).** The user pastes the code and picks whether the host machine may run read-only agents *here*.
 - **Confirmation on both screens.** Both sides show the same 8 safety words and the other machine's suggested name (its hostname). Each side gets a name field so the user can call the machine whatever they want. The user clicks **"They match — link"** on both. A link is active only after that confirmation. This is stronger than phone pairing on purpose, because nobody may be watching a desktop.
 - **Machine list.** Each entry shows:
   - the name, renamable inline;
   - online/offline;
   - two permission toggles for what *that* machine may do *on this one*:
     - **Run agents here (read-only)**, on by default;
-    - **Let agents edit files and run commands here**, off by default, with the risk stated next to it;
+    - **Let agents edit files and run commands here**, off by default, with the risk stated next to it per agent. It can be ticked only once the machine is confirmed, and ticking it opens an inline panel; only its **Allow edit** turns it on (§4.6). A row with it on shows a **full access** badge;
   - last activity;
   - **Unlink** (two clicks), which revokes on both sides. The goodbye is best effort, so a machine that is offline at the time keeps its record until it is unlinked there too.
 - **Activity.** The 20 most recent jobs in and out, each with time, direction, machine, agent, the first line of the prompt, status and duration.
@@ -147,12 +147,21 @@ Delegated jobs run through the existing headless executor with these extra rules
 
 ### 4.6 Accepted risk — the `write` grant
 
-The `write` grant means *"an agent on that machine may start an autonomous, permission-bypassed agent here"*. That is equivalent to running `termpolis-cli exec --write` locally. It is useful because it is exactly what David asked for ("Codex on linux implements"), so it cannot be blocked. Mitigation follows the Remote §4.5 pattern:
+The `write` grant means *"an agent on that machine may start an autonomous, permission-bypassed agent here"*. That is equivalent to running `termpolis-cli exec --write` locally. It is useful because it is exactly what David asked for ("Codex on linux implements"), so it cannot be blocked.
 
-- the grant is off by default;
-- it is granted per machine, with the risk stated where it is granted;
+What it hands over depends on the agent:
+
+- **Claude and Gemini (`agy`): full access as the user.** The job has a shell, so the adapter's tool limits (§4.5) bind only read-only jobs: an edit job can read the MCP token file and call the local MCP server directly, reaching terminals, memory writes and other linked machines. Nothing can be enforced against a process running as the same user, so the copy says so instead of implying a boundary.
+- **Codex: its `workspace-write` sandbox, with no network.** Termpolis pins `-c sandbox_workspace_write.network_access=false` on linked write jobs (verified against codex-cli 0.153.4's config schema), so the job's commands can't reach the MCP port whatever the user's `config.toml` says. Codex's own MCP connection to Termpolis runs outside the sandbox and keeps the restricted tools.
+
+Mitigation follows the Remote §4.5 pattern, tightened:
+
+- the grant is off by default, and never granted with a code: `createCode` and `joinLink` force `write: false` whatever the payload says, because whoever redeems a code first has not had its words checked;
+- it is turned on per machine from that machine's row, only once the machine is confirmed (else `LINKED_WRITE_NEEDS_CONFIRM`) and only by a request carrying `confirmWrite: true`, which only the confirm panel's Allow sends (else `LINKED_WRITE_NEEDS_ACK`); turning it off needs neither;
+- a link an earlier version granted write along with its code loses it when its words are confirmed, and one already confirmed keeps it;
+- the risk is stated per agent where it is granted, and a row with it on shows a **full access** badge;
 - it is revocable at any time, and revoking it cancels a write job that is already running;
-- every job appears in the activity view on both machines.
+- every job appears in the activity view on both machines, and an edit run's answer tells the asking agent what kind of access the job had.
 
 ---
 

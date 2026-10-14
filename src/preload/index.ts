@@ -586,7 +586,8 @@ const linked: LinkedAPI = {
   cancelJoin: () => ipcRenderer.invoke('linked:cancel-join'),
   confirm: (ref, name) => ipcRenderer.invoke('linked:confirm', { ref, name }),
   rename: (ref, name) => ipcRenderer.invoke('linked:rename', { ref, name }),
-  setGrants: (ref, grants) => ipcRenderer.invoke('linked:set-grants', { ref, grants }),
+  setGrants: (ref, grants, confirmWrite) =>
+    ipcRenderer.invoke('linked:set-grants', { ref, grants, ...(confirmWrite ? { confirmWrite: true } : {}) }),
   unlink: (ref) => ipcRenderer.invoke('linked:unlink', { ref }),
   encryptKeys: () => ipcRenderer.invoke('linked:encrypt-keys'),
   startOver: () => ipcRenderer.invoke('linked:start-over'),

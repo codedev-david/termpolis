@@ -1059,14 +1059,14 @@ connect.
 1. Tick **Let this computer link with my other computers**. The pane shows the
    relay in use, which you change under *Settings → Remote*. It has to be an
    encrypted `wss://` address.
-2. On one computer, go to **Link a computer**. Choose what the new computer may
-   do here (see below) and click **Create code**. A code starting
+2. On one computer, go to **Link a computer**. Choose whether the new computer
+   may run read-only agents here (see below) and click **Create code**. A code starting
    `termpolis-link:` appears with **Copy**, a countdown and **Cancel**. It works
    **once** and expires after **5 minutes**.
 3. Carry the code to the other computer any way you like: a chat message, a
    shared folder, or typing it. Paste it under **Enter a code from another
-   computer**, choose what the first computer may do there, and click
-   **Link**.
+   computer**, choose whether the first computer may run read-only agents
+   there, and click **Link**.
 4. Both screens show the **same eight words**, and each suggests the other
    computer's hostname as its name. Change the name to whatever you want to
    call that machine. Compare the words, then click **They match — link** on
@@ -1082,7 +1082,7 @@ Each linked computer gets a row in **Linked computers**:
 - an online dot;
 - its name, which you can rename by clicking it (Enter saves, Escape cancels);
 - *waiting for confirmation*, until you confirm it;
-- its two permissions;
+- its two permissions, and a **full access** badge while it may edit;
 - when it last did anything;
 - **Unlink**, which asks you to click again.
 
@@ -1094,17 +1094,26 @@ the status and how long each took.
 ### What a linked computer may do here
 
 Each computer decides what the **other** may do **on it**, per linked machine.
-You choose when the link is made, and you can change it at any time:
+You choose *Run agents here* when the link is made, and you can change either
+permission at any time:
 
 | Permission | Default | What it allows |
 |---|---|---|
 | **Run agents here (read-only)** | on | Start a headless agent here in its own read-only mode. It can read any file you can read. Claude runs with only Read, Grep and Glob, Codex in its `read-only` sandbox, and Gemini (`agy`) in plan mode. Each gets this machine's memory and code index as read-only Termpolis tools (see *Read-only tools* below). Codex and `agy` keep MCP servers you added to their own configs. |
-| **Let agents edit files and run commands here** | off | The agent here runs unattended, as you: Claude and Gemini with permission prompts skipped, Codex in its `workspace-write` sandbox. Turning it on turns on *Run agents here* too. |
+| **Let agents edit files and run commands here** | off | The agent here runs unattended, as you. **Claude and Gemini get full access**: permission prompts skipped and a shell, so they can read and change any file you can, use your Termpolis terminals and reach your other linked computers. **Codex** runs in its `workspace-write` sandbox: it changes files only in the job's folder, and Termpolis switches the sandbox's network off for the job (`-c sandbox_workspace_write.network_access=false`), whatever your Codex config says. Turning it on turns on *Run agents here* too. |
+
+*Edit* is never chosen along with a code. Whoever enters a code first hasn't
+had its words checked yet, so a new link can at most run read-only agents. To
+let a computer edit, confirm its words first, then tick the permission on its
+row: a panel says what it means for each agent, and only **Allow edit** turns
+it on. Switching it off needs no confirmation. A link made with *edit* by an
+earlier version keeps it if its words were already confirmed, and loses it
+when they are confirmed if they weren't.
 
 The risk is stated plainly. A machine with *Run agents here* can have an agent
-read any file you can read on this computer and send it back. With *edit*, it
-can change files and run commands. Grant *edit* only to a machine you trust as
-much as this one.
+read any file you can read on this computer and send it back. With *edit*, a
+Claude or Gemini agent it starts here can do anything you can. Grant *edit*
+only to a machine you trust as much as this one.
 
 Permissions are checked **on the computer that does the work**, before any
 agent starts. They are checked again when you change them:
@@ -1261,8 +1270,8 @@ audit log.
   you per job: the permissions are the decision.
 - **Jobs, nothing else.** A linked computer is never given a phone's abilities.
   It cannot list, read or type into your terminals; it can only ask for the
-  jobs described here. A job with *edit* permission runs as you, though, and
-  can do whatever you can.
+  jobs described here. A Claude or Gemini job with *edit* permission runs as
+  you, though, and can do whatever you can.
 - **Read-only tools, and no passing the work on (v1.51).**
   - A delegated job keeps Termpolis's MCP server, cut down to this machine's
     memory and code index: `memory_search`, `memory_list`, `memory_related`,
@@ -1282,8 +1291,11 @@ audit log.
     that one run, and the tools pre-approved, when its `config.toml` holds
     Termpolis's own server; otherwise the server is switched off for the run.
     `agy` passes its environment, marker included, to the server itself.
-  - A job with *edit* permission has a shell and runs as you, so it could reach
-    Termpolis's local MCP server directly.
+  - These limits bind read-only jobs. A Claude or Gemini job with *edit*
+    permission has a shell and runs as you, so it can get around them, for
+    example by calling Termpolis's local MCP server with its token: treat
+    *edit* as full access. A Codex edit job's commands run in its sandbox with
+    the network switched off, so they can't reach that server.
 - **Answers are labelled and scanned.** What comes back from another machine
   passes the gateway's prompt-injection scan before your agent sees it. That
   covers the answer, its error and any refusal worded over there. Every answer
