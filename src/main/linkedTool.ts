@@ -13,12 +13,28 @@
 //
 // Everything that came from the other machine is untrusted text: a job's output
 // and error, and any refusal the other side worded. All of it goes through
-// `inspect` (the gateway's injection guard) before an agent reads it.
+// `inspect` (the gateway's injection guard) before an agent reads it, and the
+// output always arrives under a label saying whose it is (`frame`).
+//
+// Credentials don't cross: the prompt is screened before it leaves, and the
+// answer when it arrives, in case the other machine runs a version that doesn't
+// screen its own (aiSecurity.screenText). A credential-shaped token is removed;
+// a possible one is left in and named in a note, because the text is usually
+// code and its fixtures and examples look like credentials too.
 import type { LinkTarget, PeerAgent, PeerJobView, PeerRequest } from './remoteBridge/protocol'
+import type { SecretScreen } from './aiSecurity'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { resolveMachine, type LinkedMachineView } from './linkedDirectory'
 import { refOf, targetOf } from './linkedStore'
-import { MAX_PROMPT_CHARS, activitySummary, type LinkedActivity } from './linkedJobs'
+import {
+  MAX_OUTPUT_CHARS,
+  MAX_PROMPT_CHARS,
+  activitySummary,
+  foundAny,
+  mergeScreens,
+  type LinkedActivity,
+  type LinkedSecretFinding,
+} from './linkedJobs'
 
 export interface LinkedToolArgs {
   action?: string
@@ -38,8 +54,15 @@ export interface LinkedToolDeps {
   machines(): LinkedMachineView[]
   enabled(): boolean
   localName(): string
-  /** riskBanner(inspectResult(text, 210_000), machine, agent). */
+  /** riskBanner(inspectResult(text, 210_000), machine, agent): flagged only. For the short things
+   *  the other machine words: an error, a refusal. */
   inspect(text: string, machine: string, agent: string): string
+  /** peerAnswerBanner(inspectResult(text, 210_000), machine, agent): an answer, always labelled. */
+  frame(text: string, machine: string, agent: string): string
+  /** aiSecurity.screenText. */
+  screen(text: string): SecretScreen
+  /** Told what a screen found, for the audit log. */
+  onSecrets?(finding: LinkedSecretFinding): void
   onActivity(a: LinkedActivity): void
   now(): number
 }
@@ -69,6 +92,11 @@ export const MAX_POLLS_PER_CALL = 8
 
 /** Outbound jobs remembered for the activity view, the oldest forgotten first. */
 const MAX_REMEMBERED_JOBS = 100
+
+/** Finished answers kept screened and framed, the oldest forgotten first. Screening an answer of
+ *  up to 200,000 characters is main-thread work, so an agent that asks for one again is answered
+ *  from here. A few are enough: an agent asks again for the job it is waiting on. */
+const MAX_CHECKED_ANSWERS = 8
 
 const MAX_ERROR_CHARS = 4_000
 const MAX_REFUSAL_CHARS = 1_000
@@ -103,6 +131,29 @@ const stillRunning = (name: string, jobId: string): string =>
   `Still running on "${name}". Call linked_machines with action "result" and jobId "${jobId}" to collect the answer.`
 const checkLater = (jobId: string): string =>
   `The job may still be running there: call linked_machines with action "result" and jobId "${jobId}" to check on it.`
+const tooLongScreened = `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`
+
+const ruleList = (counts: Record<string, number>): string => Object.keys(counts).join(', ')
+
+/** What a screen did, as sentences for the agent: what was removed, and what was left in. */
+function secretNotes(found: Pick<SecretScreen, 'removed' | 'flagged'>, what: string): string[] {
+  const notes: string[] = []
+  const removed = Object.values(found.removed).reduce((a, b) => a + b, 0)
+  if (removed > 0) {
+    notes.push(`Termpolis removed ${removed} credential${removed === 1 ? '' : 's'} (${ruleList(found.removed)}) from ${what}.`)
+  }
+  if (Object.keys(found.flagged).length > 0) {
+    notes.push(`Possible credential in ${what} (${ruleList(found.flagged)}), not removed.`)
+  }
+  return notes
+}
+
+/** `answer` with `notes` after any note it has. */
+function withNotes(answer: Answer, notes: string[]): Answer {
+  if (notes.length === 0) return answer
+  const note = [typeof answer.note === 'string' ? answer.note : '', ...notes].filter(Boolean).join(' ')
+  return { ...answer, note }
+}
 
 type Answer = Record<string, unknown>
 
@@ -115,6 +166,15 @@ interface JobView {
   truncated?: boolean
   error?: string
   durationMs?: number
+}
+
+/** A job's output and error, checked: what `answer` hands the agent. */
+interface Checked {
+  output?: string
+  /** Cut here: the other machine sent more than it may. */
+  truncated?: boolean
+  error?: string
+  notes: string[]
 }
 
 /** What this machine remembers of a job it sent, for the activity view. */
@@ -166,10 +226,45 @@ function jobViewOf(v: unknown, expectedId?: string): JobView | null {
 
 export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolArgs): Promise<unknown> } {
   const sent = new Map<string, SentJob>()
+  const checked = new Map<string, Checked>()
 
   /** Words from the other machine, made safe to hand an agent. */
   function guarded(text: string, name: string, agent: string, max: number): string {
     return deps.inspect(clip(text, max), name, agent)
+  }
+
+  function reportSecrets(finding: LinkedSecretFinding): void {
+    if (!deps.onSecrets || !foundAny(finding)) return
+    try {
+      deps.onSecrets(finding)
+    } catch {
+      /* the answer still goes back to the agent */
+    }
+  }
+
+  /** A job's output and error as an agent may read them: screened, the output labelled, the
+   *  error checked for injection, with notes for what screening found. Once per finished job. */
+  function check(job: Followed, view: JobView): Checked {
+    const finished = view.status !== 'running'
+    const known = finished ? checked.get(job.jobId) : undefined
+    if (known) return known
+    // The tail, as the other machine keeps it, so a version that sent more is not screened whole.
+    const long = view.output !== undefined && view.output.length > MAX_OUTPUT_CHARS
+    const output = view.output === undefined ? null : deps.screen(long ? (view.output as string).slice(-MAX_OUTPUT_CHARS) : (view.output as string))
+    const error = view.error === undefined ? null : deps.screen(clip(view.error, MAX_ERROR_CHARS))
+    const found = mergeScreens([output, error])
+    reportSecrets({ hop: 'answer-in', machine: job.name, agent: view.agent, removed: found.removed, flagged: found.flagged })
+    const out: Checked = {
+      ...(output ? { output: deps.frame(output.text, job.name, view.agent) } : {}),
+      ...(long ? { truncated: true } : {}),
+      ...(error ? { error: guarded(error.text, job.name, view.agent, MAX_ERROR_CHARS) } : {}),
+      notes: secretNotes(found, 'this answer'),
+    }
+    if (finished) {
+      checked.set(job.jobId, out)
+      if (checked.size > MAX_CHECKED_ANSWERS) checked.delete(checked.keys().next().value as string)
+    }
+    return out
   }
 
   /** Why a call to `name` failed, as a sentence. The bridge's own two words are
@@ -220,17 +315,19 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
   }
 
   function answer(job: Followed, view: JobView, note?: string): Answer {
-    return {
+    const c = check(job, view)
+    const base: Answer = {
       jobId: job.jobId,
       machine: job.name,
       agent: view.agent,
       status: view.status,
-      ...(view.output !== undefined ? { output: deps.inspect(view.output, job.name, view.agent) } : {}),
-      ...(view.truncated ? { truncated: true } : {}),
-      ...(view.error !== undefined ? { error: guarded(view.error, job.name, view.agent, MAX_ERROR_CHARS) } : {}),
+      ...(c.output !== undefined ? { output: c.output } : {}),
+      ...(view.truncated || c.truncated ? { truncated: true } : {}),
+      ...(c.error !== undefined ? { error: c.error } : {}),
       ...(view.durationMs !== undefined ? { durationMs: view.durationMs } : {}),
       ...(note ? { note } : {}),
     }
+    return withNotes(base, c.notes)
   }
 
   /** Long-poll a job until it is no longer running or the deadline passes.
@@ -361,14 +458,20 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     const target = usable(view)
     if (typeof target === 'string') return { error: target, machine: view.name }
 
+    // What leaves this computer is the screened prompt. The notes go back with whatever answer
+    // this call gets, so the agent knows what the other machine was not sent.
+    const screened = deps.screen(prompt)
+    if (screened.text.length > MAX_PROMPT_CHARS) return { error: tooLongScreened, machine: view.name }
+    const notes = secretNotes(screened, `the prompt sent to "${view.name}"`)
     const request: PeerRequest = {
       kind: 'peerRun',
       agent: agent as PeerAgent,
-      prompt,
+      prompt: screened.text,
       ...(cwd?.trim() ? { cwd } : {}),
       ...(write ? { write: true } : {}),
       ...(model?.trim() ? { model } : {}),
     }
+    reportSecrets({ hop: 'prompt-out', machine: view.name, agent: agent as string, removed: screened.removed, flagged: screened.flagged })
     let reply: unknown
     try {
       reply = await deps.call(target, request, RUN_TIMEOUT_MS)
@@ -376,16 +479,16 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
       const message = messageOf(err)
       const why = failure(message, view.name, agent as string)
       // The start may have arrived and only its answer been lost.
-      return {
+      return withNotes({
         error: message === 'timed out' ? `${why} It may have started the job anyway — check before running it again.` : why,
         machine: view.name,
-      }
+      }, notes)
     }
     const first = jobViewOf(reply)
-    if (!first) return { error: malformed(view.name), machine: view.name }
+    if (!first) return withNotes({ error: malformed(view.name), machine: view.name }, notes)
     const job: Followed = { target, name: view.name, remoteId: first.jobId, jobId: `${target.id}-${first.jobId}` }
-    record(job, first, { summary: activitySummary(prompt), startedAt: started })
-    return follow(job, first, started + waitSec * 1000)
+    record(job, first, { summary: activitySummary(screened.text), startedAt: started })
+    return withNotes(await follow(job, first, started + waitSec * 1000), notes)
   }
 
   async function result(args: LinkedToolArgs): Promise<Answer> {

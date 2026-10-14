@@ -135,6 +135,7 @@ import {
   getSettings as getAiSecuritySettings,
   setAuditEnabled,
   scanText as aiSecurityScan,
+  screenText as aiSecurityScreen,
   processOutboundChunk,
   stripPasteMarkers,
   appendAudit as aiSecurityAppend,
@@ -4588,6 +4589,10 @@ async function semanticPoolOptions(
             const found = await detectInstalledAgents()
             return { claude: found.claude === true, codex: found.codex === true, gemini: found.gemini === true }
           },
+          // Every prompt and answer that crosses between two computers is screened for
+          // credentials on both, and what was found goes to the AI Security audit log.
+          screenSecrets: aiSecurityScreen,
+          audit: (entry) => aiSecurityAppend(entry),
           keepAwake: (on) => {
             if (on && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start('prevent-app-suspension')
             else if (!on && sleepBlocker !== null) {

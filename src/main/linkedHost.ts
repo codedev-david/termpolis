@@ -16,7 +16,8 @@ import { homedir } from 'os'
 import { ok, err } from './ipcResult'
 import type { ExecRequest, ExecResult } from './headlessExec'
 import { isSafeModelId } from './modelCatalog'
-import { inspectResult, riskBanner } from './mcpGateway/guard'
+import { inspectResult, peerAnswerBanner, riskBanner } from './mcpGateway/guard'
+import type { SecretScreen } from './aiSecurity'
 import {
   REMOTE_KEYS_NOT_LOCKED,
   beginRemoteLinkPairing,
@@ -57,7 +58,7 @@ import {
   type LinkMeta,
 } from './linkedStore'
 import { machineViews, pruneMeta, uniqueName, type LinkedMachineView } from './linkedDirectory'
-import { createLinkedJobs, type LinkedActivity } from './linkedJobs'
+import { createLinkedJobs, type LinkedActivity, type LinkedSecretFinding } from './linkedJobs'
 import { createLinkedTool, type LinkedToolArgs } from './linkedTool'
 // The renderer's own types, not a copy of them: what this module pushes and
 // answers is exactly what Settings ▸ Linked machines reads, and a field either
@@ -68,6 +69,41 @@ import type { LinkedActivityView, LinkedEvent, LinkedStatusView } from '../rende
 export type { LinkedActivityView, LinkedEvent, LinkedStatusView }
 
 type AgentsInstalled = { claude: boolean; codex: boolean; gemini: boolean }
+
+/** One audit-log line about a screen, as aiSecurity.appendAudit takes it: rule
+ *  ids and counts in `notes`, never the text. */
+export interface LinkedAuditEntry {
+  agent: string
+  event: 'linked_secret_removed' | 'linked_secret_flagged'
+  hitCount: number
+  notes: string
+}
+
+/** Where the screened text was going, as the audit line says it. */
+const HOP_WORDS: Record<LinkedSecretFinding['hop'], string> = {
+  'prompt-out': 'prompt to',
+  'prompt-in': 'prompt from',
+  'answer-out': 'answer to',
+  'answer-in': 'answer from',
+}
+
+/** A screen's findings as audit lines: one for what was removed, one for what
+ *  was left in, each naming the rules and how often each matched. */
+export function linkedAuditEntries(f: LinkedSecretFinding): LinkedAuditEntry[] {
+  const lines: LinkedAuditEntry[] = []
+  const where = `${HOP_WORDS[f.hop]} "${f.machine}"`
+  for (const [event, counts] of [['linked_secret_removed', f.removed], ['linked_secret_flagged', f.flagged]] as const) {
+    const rules = Object.entries(counts)
+    if (rules.length === 0) continue
+    lines.push({
+      agent: f.agent,
+      event,
+      hitCount: rules.reduce((sum, [, n]) => sum + n, 0),
+      notes: `${where}: ${rules.map(([rule, n]) => `${rule} x${n}`).join(', ')}`,
+    })
+  }
+  return lines
+}
 
 /** The bridge as this module reaches it. The app's is remoteHost's; a test
  *  stands in a fake. */
@@ -97,6 +133,12 @@ export interface LinkedHostBinding {
   runHeadless(req: ExecRequest): Promise<ExecResult>
   /** Which agents are installed here. Probed afresh on every call; cached here. */
   agentsInstalled(): Promise<AgentsInstalled>
+  /** aiSecurity.screenText, which every prompt and answer between two computers
+   *  goes through, on both. Bound by the app rather than imported, as every
+   *  other dependency here is. */
+  screenSecrets(text: string): SecretScreen
+  /** aiSecurity.appendAudit, for what screening found: rule ids and counts. */
+  audit?(entry: LinkedAuditEntry): Promise<void> | void
   /** `true` when a job another computer started begins running here and none
    *  was; `false` when the last one ends -- done, failed, cancelled, or the
    *  service stopped. In between the app keeps this computer from idle-sleeping:
@@ -543,6 +585,19 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     return entry.value
   }
 
+  /** What a screen found, to the audit log. A log that can't be written loses
+   *  the line, never the job. */
+  function auditSecrets(f: LinkedSecretFinding): void {
+    if (!b.audit) return
+    for (const entry of linkedAuditEntries(f)) {
+      try {
+        void Promise.resolve(b.audit(entry)).catch(() => undefined)
+      } catch {
+        /* the next line may still be written */
+      }
+    }
+  }
+
   const jobs = createLinkedJobs({
     runHeadless: (req) => b.runHeadless(req),
     agentsInstalled,
@@ -556,6 +611,8 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     now,
     randomId: () => randomBytes(6).toString('hex'),
     onActivity: noteActivity,
+    screen: (text) => b.screenSecrets(text),
+    onSecrets: auditSecrets,
   })
 
   async function serve(from: LinkTarget, request: PeerRequest): Promise<unknown> {
@@ -583,6 +640,9 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     enabled: () => settings.enabled,
     localName: () => machineName,
     inspect: (text, machine, agent) => riskBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
+    frame: (text, machine, agent) => peerAnswerBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
+    screen: (text) => b.screenSecrets(text),
+    onSecrets: auditSecrets,
     onActivity: noteActivity,
     now,
   })

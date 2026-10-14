@@ -32,6 +32,37 @@ import {
 } from './headlessExec'
 import type { LinkTarget, PeerAgent, PeerHelloInfo, PeerJobView, PeerRequest } from './remoteBridge/protocol'
 import { normalizeGrants, refOf, type LinkedGrants, type LinkMeta } from './linkedStore'
+import type { SecretScreen } from './aiSecurity'
+
+/** What screening text on its way between two computers found, for the audit log: rule ids and
+ *  counts, never the text. */
+export interface LinkedSecretFinding {
+  /** Which way the text was going, seen from this computer. */
+  hop: 'prompt-out' | 'prompt-in' | 'answer-out' | 'answer-in'
+  /** The other computer, by the name this one knows it by. */
+  machine: string
+  agent: string
+  /** Credentials taken out, by rule. */
+  removed: Record<string, number>
+  /** Possible credentials left in, by rule. */
+  flagged: Record<string, number>
+}
+
+/** Several screens' findings, added up. */
+export function mergeScreens(screens: Array<SecretScreen | null>): Pick<SecretScreen, 'removed' | 'flagged'> {
+  const removed: Record<string, number> = {}
+  const flagged: Record<string, number> = {}
+  for (const s of screens) {
+    if (!s) continue
+    for (const [rule, n] of Object.entries(s.removed)) removed[rule] = (removed[rule] ?? 0) + n
+    for (const [rule, n] of Object.entries(s.flagged)) flagged[rule] = (flagged[rule] ?? 0) + n
+  }
+  return { removed, flagged }
+}
+
+/** Whether a screen found anything at all. */
+export const foundAny = (s: Pick<SecretScreen, 'removed' | 'flagged'>): boolean =>
+  Object.keys(s.removed).length > 0 || Object.keys(s.flagged).length > 0
 
 /** One row of the activity view, for a job either machine started. */
 export interface LinkedActivity {
@@ -65,6 +96,11 @@ export interface LinkedJobsDeps {
   randomId(): string
   /** Called when a job starts and on every status change, under the same id. */
   onActivity(a: LinkedActivity): void
+  /** aiSecurity.screenText: credentials out of the prompt before it runs here, and out of the
+   *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. */
+  screen(text: string): SecretScreen
+  /** Told what a screen found, for the audit log. */
+  onSecrets?(finding: LinkedSecretFinding): void
 }
 
 /** The longest prompt another machine may send. Below the 24,000 the spec
@@ -227,6 +263,16 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
   }
 
+  function reportSecrets(job: Job, hop: LinkedSecretFinding['hop'], found: Pick<SecretScreen, 'removed' | 'flagged'>): void {
+    if (!deps.onSecrets || !foundAny(found)) return
+    try {
+      // The counts only: a screen's text still holds what it left in.
+      deps.onSecrets({ hop, machine: job.machine, agent: job.agent, removed: found.removed, flagged: found.flagged })
+    } catch {
+      /* the job outlives an audit log that broke */
+    }
+  }
+
   function emit(job: Job): void {
     try {
       deps.onActivity({
@@ -268,12 +314,23 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     job.status = outcome.status
     job.finishedAt = now
     job.durationMs = Math.max(0, now - job.startedAt)
+    // Credentials go before the answer leaves. Its tail is taken first, so a huge stdout is never
+    // screened whole on the main thread, and capped again after: a marker can be longer than what
+    // it replaced.
+    let output: SecretScreen | null = null
     if (outcome.output !== undefined) {
-      const { text, cut } = capOutput(outcome.output)
+      const tail = capTail(outcome.output, MAX_OUTPUT_CHARS)
+      output = deps.screen(tail.text)
+      const { text, cut } = capOutput(output.text)
       job.output = text
-      if (cut) job.truncated = true
+      if (tail.cut || cut) job.truncated = true
     }
-    if (outcome.error !== undefined) job.error = capError(outcome.error)
+    let error: SecretScreen | null = null
+    if (outcome.error !== undefined) {
+      error = deps.screen(capError(outcome.error))
+      job.error = capError(error.text)
+    }
+    reportSecrets(job, 'answer-out', mergeScreens([output, error]))
     job.settle()
     emit(job)
     prune()
@@ -365,9 +422,16 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
     const agent = req.agent
     if (!isExecAgent(agent)) throw new Error('Invalid agent: expected claude, codex or gemini.')
-    const prompt = req.prompt
-    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > MAX_PROMPT_CHARS) {
+    const raw = req.prompt
+    if (typeof raw !== 'string' || !raw.trim() || raw.length > MAX_PROMPT_CHARS) {
       throw new Error(`Invalid prompt: expected 1 to ${MAX_PROMPT_CHARS} characters.`)
+    }
+    // The asking computer screens its own prompt from 1.53 on; this is the backstop for one that
+    // doesn't. What runs here, and what the activity view shows, is the screened text.
+    const screened = deps.screen(raw)
+    const prompt = screened.text
+    if (prompt.length > MAX_PROMPT_CHARS) {
+      throw new Error(`Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`)
     }
     const model = absent(req.model) ? undefined : req.model
     if (model !== undefined && (typeof model !== 'string' || !deps.isSafeModel(model))) {
@@ -419,6 +483,7 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
     jobs.set(id, job)
     emit(job)
+    reportSecrets(job, 'prompt-in', screened)
 
     const request: ExecRequest = {
       // The header is also how this computer's memory indexer knows the session, once the agent's

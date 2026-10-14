@@ -238,6 +238,22 @@ describe('summarizeAudit — the other escape routes', () => {
     expect(s.memoriesScrubbed).toBe(4)
   })
 
+  it("counts what Linked machines screened, apart from secrets sent to a model", () => {
+    const s = summarizeAudit(
+      [
+        e('linked_secret_removed', { hitCount: 3, notes: 'answer from "linux": gh_pat x3' }),
+        e('linked_secret_removed', { notes: 'prompt to "linux": aws_access_key x1' }),
+        e('linked_secret_flagged', { hitCount: 2, notes: 'answer from "linux": jwt x2' }),
+      ],
+      WATCHING,
+    )
+    expect(s.linkedSecretsRemoved).toBe(4)
+    expect(s.linkedSecretsFlagged).toBe(2)
+    // Taken out on the way, or only looked like one: neither is a secret that reached a model.
+    expect(s.secretsToModels).toBe(0)
+    expect(s.verdict).toBe('clean')
+  })
+
   it('reports the window it can actually speak for', () => {
     const s = summarizeAudit(
       [e('terminal_open', { ts: '2026-07-12T12:00:00.000Z' }), e('terminal_open', { ts: '2026-07-10T09:00:00.000Z' })],

@@ -71,6 +71,11 @@ export interface AuditSummary {
   egressViolations: number
   sensitiveReads: number
   memoriesScrubbed: number
+  /** Linked machines: credentials taken out of a prompt or an answer on its way between two
+   *  computers, and possible ones left in. Neither reached the other computer's agent as a value
+   *  Termpolis could tell was live, so neither counts as a secret sent to a model. */
+  linkedSecretsRemoved: number
+  linkedSecretsFlagged: number
   totalEvents: number
   /** The oldest entry we hold — the log can only speak for the window since then. */
   watchingSince: string | null
@@ -148,6 +153,8 @@ export function summarizeAudit(entries: AuditEntry[], cov: AuditCoverage): Audit
   const secretsBlockedAtGit = sumHits(rows, isEvent('commit_blocked', 'push_blocked'))
   const egressViolations = sumHits(rows, isEvent('egress_violation'))
   const memoriesScrubbed = sumHits(rows, isEvent('memory_scrub'))
+  const linkedSecretsRemoved = sumHits(rows, isEvent('linked_secret_removed'))
+  const linkedSecretsFlagged = sumHits(rows, isEvent('linked_secret_flagged'))
   const unsafeImportsBlocked = countOf(rows, 'import_blocked')
   const sensitiveReads = countOf(rows, 'sensitive_file_read')
   const codeChunksSent = countOf(rows, 'code_chunk_sent')
@@ -167,6 +174,8 @@ export function summarizeAudit(entries: AuditEntry[], cov: AuditCoverage): Audit
     egressViolations,
     sensitiveReads,
     memoriesScrubbed,
+    linkedSecretsRemoved,
+    linkedSecretsFlagged,
     totalEvents: rows.length,
     watchingSince,
     byEvent,

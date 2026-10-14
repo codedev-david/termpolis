@@ -707,6 +707,23 @@ describe('SecuritySettings — audit log modal', () => {
     expect(screen.getByTestId('audit-rows').textContent).toMatch(/SECRET SENT to a model/)
   })
 
+  it('shows what Linked machines screened, apart from secrets sent to a model', async () => {
+    ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: true })
+    ;(window as any).aiSecurity.recentAudit = auditOf([
+      { ts: new Date().toISOString(), agent: 'codex', event: 'linked_secret_removed', hitCount: 2, notes: 'answer from "linux": gh_pat x2' },
+      { ts: new Date().toISOString(), agent: 'codex', event: 'linked_secret_flagged', hitCount: 1, notes: 'answer from "linux": jwt x1' },
+    ])
+    await openModal()
+
+    expect(screen.getByTestId('audit-verdict').textContent).toMatch(/No secret has reached a model/i)
+    const counts = screen.getByTestId('audit-counts').textContent || ''
+    expect(counts).toMatch(/Linked: removed\s*2/)
+    expect(counts).toMatch(/Linked: possible\s*1/)
+    const rows = screen.getByTestId('audit-rows').textContent || ''
+    expect(rows).toMatch(/Credential removed \(linked machine\)/)
+    expect(rows).toMatch(/Possible credential left in \(linked machine\)/)
+  })
+
   it('does not count a code_chunk_sent as a secret, but does show it', async () => {
     ;(window as any).aiSecurity.getStatus = statusWith({ auditEnabled: true })
     ;(window as any).aiSecurity.recentAudit = auditOf([

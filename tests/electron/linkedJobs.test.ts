@@ -3,6 +3,7 @@ import * as path from 'path'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import type { LinkTarget, PeerJobView } from '../../src/main/remoteBridge/protocol'
 import type { LinkMeta } from '../../src/main/linkedStore'
+import type { SecretScreen } from '../../src/main/aiSecurity'
 import {
   JOB_RETENTION_MS,
   MAX_FINISHED_JOBS,
@@ -55,9 +56,23 @@ function setup(over: Partial<LinkedJobsDeps> = {}) {
     now: () => clock.t,
     randomId: () => (++seq).toString(16).padStart(12, '0'),
     onActivity: (a) => activity.push(a),
+    screen: (text) => ({ text, removed: {}, flagged: {} }),
     ...over,
   }
   return { jobs: createLinkedJobs(deps), deps, runs, activity, clock }
+}
+
+/** A screen with one credential shape and one possible one, so these tests don't lean on the real
+ *  rule table (aiSecurityScreen.test.ts covers that). */
+const KEY = 'KEY-0123456789'
+function fakeScreen(text: string): SecretScreen {
+  const removed = text.split(KEY).length - 1
+  const flagged = text.split('maybe-pass').length - 1
+  return {
+    text: text.split(KEY).join('[REDACTED:fake_key]'),
+    removed: removed ? { fake_key: removed } : {},
+    flagged: flagged ? { fake_pass: flagged } : {},
+  }
 }
 
 const result = (over: Partial<ExecResult> = {}): ExecResult => ({
@@ -808,5 +823,73 @@ describe('activitySummary', () => {
   it('is empty when the prompt has no text', () => {
     expect(activitySummary('')).toBe('')
     expect(activitySummary(' \n\t\n ')).toBe('')
+  })
+})
+
+// The doing side's two hops: the prompt that arrives, and the answer that leaves. A computer on
+// 1.50-1.52 sends its prompt unscreened, and every answer leaves here screened.
+describe('credentials on the way in and out', () => {
+  it('runs, and shows, the prompt with the credentials taken out, and reports what was found', async () => {
+    const findings: unknown[] = []
+    const h = setup({ screen: fakeScreen, onSecrets: (f) => findings.push(f) })
+    const v = await start(h, FROM, META, { prompt: `Deploy with ${KEY} and maybe-pass` })
+    expect(h.runs[0].req.task).toMatch(/\n\nDeploy with \[REDACTED:fake_key\] and maybe-pass$/)
+    expect(h.activity[0].summary).toBe('Deploy with [REDACTED:fake_key] and maybe-pass')
+    expect(findings).toEqual([{ hop: 'prompt-in', machine: 'laptop', agent: 'codex', removed: { fake_key: 1 }, flagged: { fake_pass: 1 } }])
+    expect(v.status).toBe('running')
+  })
+
+  it('refuses a prompt that is too long once the credentials in it were replaced', async () => {
+    const grow = (text: string) => ({ text: text.replace(/x/g, 'xx'), removed: { grow: 1 }, flagged: {} })
+    const h = setup({ screen: grow })
+    await expect(start(h, FROM, META, { prompt: 'x'.repeat(MAX_PROMPT_CHARS) })).rejects.toThrow(
+      `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`,
+    )
+    expect(h.runs).toHaveLength(0)
+  })
+
+  it('screens the answer and the error before they leave, and reports both together', async () => {
+    const findings: Array<{ hop: string; removed: unknown; flagged: unknown }> = []
+    const h = setup({ screen: fakeScreen, onSecrets: (f) => findings.push(f) })
+    const v = await start(h)
+    h.runs[0].resolve(result({ ok: false, output: `token ${KEY}`, error: `stderr maybe-pass ${KEY}`, code: 2 }))
+    await flush()
+    const done = await poll(h, v.jobId)
+    expect(done).toMatchObject({ status: 'failed', output: 'token [REDACTED:fake_key]', error: 'stderr maybe-pass [REDACTED:fake_key]' })
+    expect(findings).toEqual([{ hop: 'answer-out', machine: 'laptop', agent: 'codex', removed: { fake_key: 2 }, flagged: { fake_pass: 1 } }])
+  })
+
+  it('screens only the tail of a huge stdout, then caps what a marker added', async () => {
+    const seen: number[] = []
+    const h = setup({
+      screen: (text) => {
+        seen.push(text.length)
+        return { text: `${text}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} }
+      },
+    })
+    const v = await start(h)
+    h.runs[0].resolve(result({ output: 'x'.repeat(5_000_000) }))
+    await flush()
+    const done = await poll(h, v.jobId)
+    expect(seen[seen.length - 1]).toBe(MAX_OUTPUT_CHARS)
+    expect(done.output?.length).toBe(MAX_OUTPUT_CHARS)
+    expect(done.output?.endsWith('[REDACTED:grown]')).toBe(true)
+    expect(done.truncated).toBe(true)
+  })
+
+  it('reports nothing when nothing was found, and outlives a report that throws', async () => {
+    const onSecrets = vi.fn()
+    const clean = setup({ onSecrets })
+    const v = await start(clean)
+    clean.runs[0].resolve(result())
+    await flush()
+    expect((await poll(clean, v.jobId)).output).toBe('the answer')
+    expect(onSecrets).not.toHaveBeenCalled()
+
+    const broken = setup({ screen: fakeScreen, onSecrets: () => { throw new Error('audit log full') } })
+    const w = await start(broken, FROM, META, { prompt: `use ${KEY}` })
+    broken.runs[0].resolve(result({ output: KEY }))
+    await flush()
+    expect((await poll(broken, w.jobId)).output).toBe('[REDACTED:fake_key]')
   })
 })
