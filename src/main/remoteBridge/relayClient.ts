@@ -115,6 +115,17 @@ const MAX_DELAY_MS = 60_000
  *  phone finds an empty room. 120 s leaves room for one lost frame. */
 export const KEEPALIVE_MS = 120_000
 
+/** The least time between two greetings on one socket.
+ *
+ *  A greeting answers `hello{peer}` and `peer-joined`, and both are the relay's
+ *  words. Unspaced, a hostile relay could ask for greetings as fast as this end
+ *  can seal them, and every one goes out under the same handshake key: their
+ *  random counters (`Handshake`) make a repeated nonce a birthday event, about
+ *  2^24 greetings for even odds, and one a second puts that months away. A real
+ *  peer never needs two inside a second -- it arrives once per connection -- and
+ *  a new connection greets at once. */
+export const GREET_INTERVAL_MS = 1000
+
 /** Limits that mean this client is the problem, and so must stop dialing.
  *
  *  The relay names the limit precisely so a client can tell "you sent too much"
@@ -182,6 +193,18 @@ export class RelayClient {
    *  Both are per-attachment, and both die with the peer or with the socket. */
   private pending: Handshake | null = null
   private session: SealedSession | null = null
+  /** When this socket may greet again -- see `GREET_INTERVAL_MS`. Reset by every
+   *  dial, so the spacing never delays a new connection's first greeting. */
+  private greetAt = 0
+  /** A greeting held back by that spacing, due when it ends. Held rather than
+   *  dropped: dropping it strands a peer that really did arrive, and two ends
+   *  each dropping the other's would redial into each other's spacing. */
+  private greetTimer: ReturnType<typeof setTimeout> | null = null
+  /** The peer's greeting, when it landed while this end's was held back. It is
+   *  accepted only after this end has greeted: accepting it first would attach
+   *  a session whose frames could reach the peer ahead of the greeting that
+   *  keys them, where they would be taken for a greeting and fail. */
+  private heldGreeting: Uint8Array | null = null
   /** Requests this end has asked and not yet had answered, by envelope id.
    *
    *  A link carries requests in BOTH directions over one session, and the two
@@ -216,6 +239,7 @@ export class RelayClient {
       this.deps.openSocket ?? ((url: string) => new WebSocket(url) as unknown as SocketLike)
     const sock = open(`${this.deps.url}/v1/pair/${this.deps.roomId}?role=${this.deps.role ?? 'desktop'}`)
     this.socket = sock
+    this.greetAt = 0
 
     sock.on('open', (() => {
       // Reaching an open socket is what proves the relay is up, which is what the
@@ -262,6 +286,13 @@ export class RelayClient {
         void this.handleFrame(deps, frame)
         return
       }
+      // This end's greeting is being held back, so the peer's waits for it.
+      // The latest one wins: a peer greets once per arrival, and anything
+      // else in this window is the relay's to answer for.
+      if (this.greetTimer) {
+        this.heldGreeting = frame
+        return
+      }
       this.acceptGreeting(sock, frame)
     }) as never)
 
@@ -282,6 +313,7 @@ export class RelayClient {
       // sits connected and permanently mute.
       this.pending = null
       this.session = null
+      this.dropHeldGreeting()
       this.failCalls()
       this.setState('offline')
       this.retry()
@@ -327,6 +359,8 @@ export class RelayClient {
         // open -- leaving a socket that is connected, attached, and mute.
         this.pending = null
         this.session = null
+        // A greeting held back for that peer has nobody left to read it.
+        this.dropHeldGreeting()
         // Anything asked over that session can only be answered over it.
         this.failCalls()
         this.setState('online')
@@ -347,15 +381,39 @@ export class RelayClient {
    *
    *  Once per PEER rather than once per socket. A phone that drops and comes back
    *  while the desktop's connection holds gets a session key that is new at both
-   *  ends, because `peer-gone` cleared the last one and `peer-joined` lands here. */
+   *  ends, because `peer-gone` cleared the last one and `peer-joined` lands here.
+   *
+   *  At most one a `GREET_INTERVAL_MS` on a socket. One asked for sooner goes out
+   *  when the interval ends, and every ask in between is that same greeting. */
   private greet(sock: SocketLike): void {
     const { deps } = this
     // A pairing room has nobody to greet. The peer arriving there is a phone this
     // desktop has never seen, so there is no identity key to handshake against --
     // the phone speaks first, with a hello sealed under the QR's own root.
     if (deps.mode === 'pairing') return
+    const wait = this.greetAt - Date.now()
+    if (wait > 0) {
+      this.greetTimer ??= setTimeout(() => {
+        this.greetTimer = null
+        this.greet(sock)
+      }, wait)
+      return
+    }
+    this.greetAt = Date.now() + GREET_INTERVAL_MS
     this.pending = deps.handshake()
     sock.send(this.pending.greeting)
+    // Now that this end has greeted, the peer's greeting can be answered.
+    const held = this.heldGreeting
+    this.heldGreeting = null
+    if (held) this.acceptGreeting(sock, held)
+  }
+
+  /** Forget a greeting the spacing is holding back, and the peer's that waited
+   *  on it. Both belong to one peer on one socket, and die with either. */
+  private dropHeldGreeting(): void {
+    if (this.greetTimer) clearTimeout(this.greetTimer)
+    this.greetTimer = null
+    this.heldGreeting = null
   }
 
   /** The peer's first binary frame must be its greeting. Anything else is an
@@ -542,6 +600,7 @@ export class RelayClient {
     this.socket = null
     this.pending = null
     this.session = null
+    this.dropHeldGreeting()
     this.failCalls()
     this.setState('offline')
   }

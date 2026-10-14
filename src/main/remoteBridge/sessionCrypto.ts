@@ -1,7 +1,8 @@
 import { x25519 } from '@noble/curves/ed25519.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { SealedDirection, fromHex, toHex } from './sealedChannel'
+import { randomBytes } from 'crypto'
+import { COUNTER_BYTES, SealedDirection, fromHex, readCounter, toHex } from './sealedChannel'
 
 export type Role = 'desktop' | 'device'
 
@@ -54,10 +55,14 @@ export class SealedSession {
     private readonly rx: SealedDirection,
   ) {}
 
-  static fromRoot(root: Uint8Array, role: Role): SealedSession {
-    const d2p = new SealedDirection(hkdf(sha256, root, undefined, D2P, KEY_BYTES))
-    const p2d = new SealedDirection(hkdf(sha256, root, undefined, P2D, KEY_BYTES))
-    return role === 'desktop' ? new SealedSession(d2p, p2d) : new SealedSession(p2d, d2p)
+  /** `txFirstCounter` is where this end's sealing direction starts. Only a
+   *  greeting moves it (see `Handshake`): every other session keeps 0, which is
+   *  sound because its key is new for each connection. */
+  static fromRoot(root: Uint8Array, role: Role, opts: { txFirstCounter?: number } = {}): SealedSession {
+    const d2p = hkdf(sha256, root, undefined, D2P, KEY_BYTES)
+    const p2d = hkdf(sha256, root, undefined, P2D, KEY_BYTES)
+    const [tx, rx] = role === 'desktop' ? [d2p, p2d] : [p2d, d2p]
+    return new SealedSession(new SealedDirection(tx, opts.txFirstCounter), new SealedDirection(rx))
   }
 
   seal(header: Uint8Array, plaintext: Uint8Array): Uint8Array {
@@ -129,6 +134,10 @@ export class Handshake {
     role: Role
     /** Injected in tests so a handshake is reproducible. Production omits it. */
     ephemeralSecretKey?: string
+    /** The counter the greeting is sealed at. Injected in tests: the wire
+     *  vectors pin 0, which is also what every desktop before 1.53 sent.
+     *  Production omits it and draws one -- see below. */
+    greetingCounter?: number
   }) {
     this.ownSecretKey = opts.ownSecretKey
     this.peerPublicKey = opts.peerPublicKey
@@ -147,13 +156,25 @@ export class Handshake {
     header[0] = FRAME_SESSION_HELLO
     header.set(this.ephemeralPublic, 1)
     const payload: GreetingPayload = { v: PROTOCOL_VERSION, role: opts.role }
-    this.greeting = this.handshakeSession().seal(header, label(JSON.stringify(payload)))
+    // At a RANDOM counter. The handshake key depends on the two identity keys
+    // alone, so it is the same for every greeting this end sends that peer --
+    // and at a fixed counter the nonce was the same too. Two greetings under
+    // one (key, nonce) hand whoever saw both, the relay first of all, the
+    // Poly1305 key, and with it a greeting it could forge around an ephemeral
+    // key of its own. 48 random bits make a repeat a birthday event, and the
+    // relay cannot ask for greetings fast enough to reach one (`RelayClient`
+    // spaces them out). No version bump: every receiver ever shipped reads the
+    // counter off the frame and opens a greeting on a fresh session, where any
+    // counter is new.
+    const counter = opts.greetingCounter ?? readCounter(randomBytes(COUNTER_BYTES))
+    this.greeting = this.handshakeSession(counter).seal(header, label(JSON.stringify(payload)))
   }
 
   /** A fresh one each time: `SealedSession` carries counter state, and the seal in
-   *  the constructor and the open in `accept` are independent counters that both
-   *  start at zero. */
-  private handshakeSession(): SealedSession {
+   *  the constructor and the open in `accept` are independent counters. The open
+   *  starts at the high-water mark of a new session, so it takes the peer's
+   *  greeting at whatever counter the peer drew. */
+  private handshakeSession(txFirstCounter?: number): SealedSession {
     return SealedSession.fromRoot(
       hkdf(
         sha256,
@@ -163,6 +184,7 @@ export class Handshake {
         KEY_BYTES,
       ),
       this.role,
+      { txFirstCounter },
     )
   }
 

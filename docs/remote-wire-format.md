@@ -221,9 +221,11 @@ seal(key, counter, header, plaintext):
 - **The nonce is derived, never random.** A key seals in exactly one direction,
   so its counter never repeats and neither does the nonce. Uniqueness is
   structural, with no birthday bound to reason about, and 12 bytes per frame
-  stay off the wire.
+  stay off the wire. The one exception is the greeting's key, which every
+  greeting reuses; that is why a greeting starts at a random counter (§6.1).
 - Counters are 6 bytes: 2^48 frames, which fits exactly in a JS number, so the
-  arithmetic stays integer-exact with no BigInt.
+  arithmetic stays integer-exact with no BigInt. A direction refuses to seal
+  past 2^48 − 1 rather than wrap to 0, a nonce it has used.
 
 Opening, in order:
 
@@ -281,12 +283,42 @@ handshakeRoot = HKDF(SHA-256, DH(ownIdSk, peerIdPk),
 
 header    = 0x03 ‖ ownEphemeralPk[32]
 plaintext = {"v":2,"role":"desktop"}          // or "device"
-greeting  = seal(handshakeRoot → tx key for your role, counter 0, header, plaintext)
+counter   = 48 bits from a CSPRNG, drawn for each greeting
+greeting  = seal(handshakeRoot → tx key for your role, counter, header, plaintext)
 ```
 
+**Why the counter is random.** `handshakeRoot` depends on the two identity keys
+alone, so every greeting one end sends the other is sealed under the same key.
+At a fixed counter the nonce would be the same too, and two ChaCha20-Poly1305
+frames under one (key, nonce) give whoever saw both (the relay, first of all)
+the Poly1305 key, and with it a greeting it could forge around an ephemeral key
+of its own. The forgery cannot produce a working session, because the session
+root also needs the static DH below, but it can make an end report itself
+attached to nobody. With a random counter a repeat is a birthday event: about
+n²/2^49 after n greetings in one direction.
+
+Desktops draw the counter from 1.53. Desktops before that, and Termpolis Remote
+1.1.0, greet at counter 0; the phone draws it from the first build after 1.1.0
+that contains this change. **A receiver MUST accept a greeting at any counter.**
+It opens the greeting on a fresh session whose high-water mark is −1 (§5.1), so
+every counter is new to it, and every receiver ever shipped already does this.
+The golden vectors (§12) pin counter 0, and one more at 2^48 − 1.
+
+**How many greetings the relay can ask for.** A peer greets on `hello` with
+`peer: true` and on `peer-joined` (§3.4), and both are the relay's words. A
+desktop greets at most once a second on one socket: a greeting asked for sooner
+waits out the second rather than being dropped, every further ask in that
+second is the same greeting, and a peer greeting that lands meanwhile is held
+until this end has greeted, then accepted. Forcing more takes a new connection,
+and each redial waits out the backoff (at least 0.5 s). That holds a hostile
+relay to about two greetings a second per room: months of continuous forcing
+for the ~2^24 greetings that give even odds of a repeat, and a repeat buys only
+the denial of service the relay can always cause by dropping frames. A clean
+fix needs a handshake key salted per connection, which changes the key every
+shipped peer derives, so it waits for the next `PROTOCOL_VERSION` (§11).
+
 Build a **fresh** `handshakeRoot` session for the seal and for the open. They
-are independent counters that both start at zero; reusing one object makes the
-second operation fail.
+are independent counters; reusing one object makes the second operation fail.
 
 **Accepting a greeting:**
 
@@ -751,7 +783,7 @@ f52cc31caaeaf5b503a2689cdd271e925ecab97466b3a7ecb3fba9bd3cd247ce0f2ea6ee5313cf1
 6c24be770d00f17470eb1a8f69659a9cccb79167
 ```
 
-**`SESSION_HELLO`**, desktop then device:
+**`SESSION_HELLO`**, desktop then device, both at counter 0:
 
 ```
 037b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b140000000000004e
@@ -759,6 +791,16 @@ f52cc31caaeaf5b503a2689cdd271e925ecab97466b3a7ecb3fba9bd3cd247ce0f2ea6ee5313cf1
 
 03ff2ee45601ec1b67310c7790404585ae697331eee1c1f8cf2419731c1fff3e6b000000000000ff
 9d3f9caf2252eda92794b52a8c84ca560016a24ef17718cc2a72c02262d859e881a5d8aac2a7
+```
+
+**`SESSION_HELLO`**, desktop, at counter 2^48 − 1 (§6.1: production draws the
+counter at random). A port that keeps the counter in 32 bits, or writes it
+little-endian, gets counter 0 right and this one wrong. Accepting it yields the
+same session as the counter-0 greeting; `SESSION` below is unchanged:
+
+```
+037b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14ffffffffffff64
+a4732d4393586252fa4b9de6b567895e8b1d57727d47a0c3e4c6df1c9fb2d214304b96b44b08dc
 ```
 
 **`SESSION`** — desktop→phone counter 0, then counter 1 under the same key, then
