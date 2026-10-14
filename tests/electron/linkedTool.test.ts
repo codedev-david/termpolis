@@ -77,6 +77,7 @@ function setup(over: Partial<LinkedToolDeps> = {}, machines: LinkedMachineView[]
     inspect: (text, name, agent) => (text.includes('IGNORE PREVIOUS') ? `[UNTRUSTED from ${name}/${agent}]\n${text}` : text),
     frame: (text, name, agent) => (text.includes('IGNORE PREVIOUS') ? `[UNTRUSTED from ${name}/${agent}]\n${text}` : `[answer from ${name}/${agent}]\n${text}`),
     screen: (text) => ({ text, removed: {}, flagged: {} }),
+    mask: (text) => text,
     onActivity: (a) => h.activity.push(a),
     now: () => h.clock.t,
     ...over,
@@ -803,6 +804,7 @@ describe('against the real executor', () => {
       randomId: () => randomBytes(6).toString('hex'),
       onActivity: () => undefined,
       screen: (text) => ({ text, removed: {}, flagged: {} }),
+      mask: (text) => text,
     })
     const tool = createLinkedTool({
       call: (target, request) => there.handle({ via: 'device', id: target.id }, LAPTOP_AS_SEEN_THERE, request),
@@ -812,6 +814,7 @@ describe('against the real executor', () => {
       inspect: (text) => text,
       frame: (text) => text,
       screen: (text) => ({ text, removed: {}, flagged: {} }),
+      mask: (text) => text,
       onActivity: () => undefined,
       now: Date.now,
     })
@@ -896,6 +899,24 @@ describe('credentials, asking', () => {
     expect(r).toMatchObject({ status: 'done', output: '[answer from linux/codex]\nDeployed.', note: `${PROMPT_REMOVED} ${PROMPT_FLAGGED}` })
     expect(h.activity[0].summary).toBe('Deploy with [REDACTED:fake_key] and maybe-pass')
     expect(findings).toEqual([{ hop: 'prompt-out', machine: 'linux', agent: 'codex', removed: { fake_key: 1 }, flagged: { fake_pass: 1 } }])
+  })
+
+  it('shows a job it sent with the possible credentials masked too, and with no summary when it cannot be masked', async () => {
+    const mask = (text: string): string => text.split('maybe-pass').join('[REDACTED:fake_pass]')
+    const h = setup({ screen: fakeScreen, mask })
+    scripted(h, [view({ status: 'done', output: 'Deployed.', durationMs: 5 })])
+    await run(h, { prompt: `Deploy with ${KEY} and maybe-pass` })
+    // What crosses keeps the possible one, which only looked like a credential; what is shown doesn't.
+    expect(h.calls[0].request).toMatchObject({ prompt: 'Deploy with [REDACTED:fake_key] and maybe-pass' })
+    expect(h.activity.map((a) => [a.status, a.summary])).toEqual([
+      ['running', 'Deploy with [REDACTED:fake_key] and [REDACTED:fake_pass]'],
+      ['done', 'Deploy with [REDACTED:fake_key] and [REDACTED:fake_pass]'],
+    ])
+
+    const broken = setup({ mask: () => { throw new Error('mask broke') } })
+    scripted(broken, [view({ status: 'done', output: 'Deployed.', durationMs: 5 })])
+    expect(await run(broken)).toMatchObject({ status: 'done', output: '[answer from linux/codex]\nDeployed.' })
+    expect(broken.activity.map((a) => a.summary)).toEqual(['', ''])
   })
 
   it('refuses a prompt that is too long once its credentials are replaced, and sends nothing', async () => {

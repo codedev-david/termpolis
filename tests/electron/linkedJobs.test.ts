@@ -58,6 +58,7 @@ function setup(over: Partial<LinkedJobsDeps> = {}) {
     randomId: () => (++seq).toString(16).padStart(12, '0'),
     onActivity: (a) => activity.push(a),
     screen: (text) => ({ text, removed: {}, flagged: {} }),
+    mask: (text) => text,
     ...over,
   }
   return { jobs: createLinkedJobs(deps), deps, runs, activity, clock }
@@ -849,27 +850,58 @@ describe('names in messages', () => {
 })
 
 describe('activitySummary', () => {
+  /** A mask with nothing to take out: the summary as the formatting alone makes it. */
+  const plain = (text: string): string => text
+
   it('is the first line with text in it', () => {
-    expect(activitySummary('Review the parser')).toBe('Review the parser')
-    expect(activitySummary('\n \r\n  Fix the build  \nthen test')).toBe('Fix the build')
-    expect(activitySummary('first\rsecond')).toBe('first')
+    expect(activitySummary('Review the parser', plain)).toBe('Review the parser')
+    expect(activitySummary('\n \r\n  Fix the build  \nthen test', plain)).toBe('Fix the build')
+    expect(activitySummary('first\rsecond', plain)).toBe('first')
   })
 
   it('flattens control characters and runs of whitespace', () => {
-    expect(activitySummary('a\tb\u001b[31m  c\u0000d\u0085e')).toBe('a b [31m c d e')
+    expect(activitySummary('a\tb\u001b[31m  c\u0000d\u0085e', plain)).toBe('a b [31m c d e')
   })
 
   it('is at most 80 characters, with an ellipsis when cut', () => {
-    expect(activitySummary('x'.repeat(80))).toBe('x'.repeat(80))
-    const cut = activitySummary('y'.repeat(100))
+    expect(activitySummary('x'.repeat(80), plain)).toBe('x'.repeat(80))
+    const cut = activitySummary('y'.repeat(100), plain)
     expect(cut).toBe(`${'y'.repeat(79)}\u2026`)
     expect(cut).toHaveLength(80)
-    expect(activitySummary(`${'z'.repeat(78)} word`)).toBe(`${'z'.repeat(78)}\u2026`)
+    expect(activitySummary(`${'z'.repeat(78)} word`, plain)).toBe(`${'z'.repeat(78)}\u2026`)
   })
 
   it('is empty when the prompt has no text', () => {
-    expect(activitySummary('')).toBe('')
-    expect(activitySummary(' \n\t\n ')).toBe('')
+    expect(activitySummary('', plain)).toBe('')
+    expect(activitySummary(' \n\t\n ', plain)).toBe('')
+  })
+
+  // Stand-ins for aiSecurity.maskForDisplay, each with one rule that, like the real ones, matches
+  // only a whole credential: cut short, it is no match at all.
+
+  it('masks the line before it is cut, so a credential the cut runs through never shows', () => {
+    const mask = (text: string): string => text.replace(/pw=[a-z]+;/g, '[REDACTED:pw]')
+    const prompt = `${'w'.repeat(50)} pw=${'s'.repeat(30)}; and the rest of it`
+    expect(activitySummary(prompt, mask)).toBe(`${'w'.repeat(50)} [REDACTED:pw] and the rest o\u2026`)
+  })
+
+  it('masks the whole prompt first, for a credential that runs on past the end of its line', () => {
+    // A value that may hold a line break, as a JSON string's may.
+    const mask = (text: string): string => text.replace(/pw=[a-z\n]+;/g, '[REDACTED:pw]')
+    expect(activitySummary('Use pw=abc\ndefghij; then deploy', mask)).toBe('Use [REDACTED:pw] then deploy')
+  })
+
+  it('masks the line again once it is flattened, for a credential the flattening completes', () => {
+    // A rule that wants white space between a name and its value: a control character there
+    // becomes a space only in the summary.
+    const mask = (text: string): string => text.replace(/key:\s[a-z]+;/g, '[REDACTED:key]')
+    expect(activitySummary('Use key:\u0085abcdefghij; now', mask)).toBe('Use [REDACTED:key] now')
+  })
+
+  it('is empty when the mask throws: withheld, never shown as it is', () => {
+    expect(activitySummary('Review the parser', () => {
+      throw new Error('mask broke')
+    })).toBe('')
   })
 })
 
@@ -884,6 +916,20 @@ describe('credentials on the way in and out', () => {
     expect(h.activity[0].summary).toBe('Deploy with [REDACTED:fake_key] and maybe-pass')
     expect(findings).toEqual([{ hop: 'prompt-in', machine: 'laptop', agent: 'codex', removed: { fake_key: 1 }, flagged: { fake_pass: 1 } }])
     expect(v.status).toBe('running')
+  })
+
+  it('shows the job with the possible credentials masked too, and with no summary when it cannot be masked', async () => {
+    const mask = (text: string): string => text.split('maybe-pass').join('[REDACTED:fake_pass]')
+    const h = setup({ screen: fakeScreen, mask })
+    await start(h, FROM, META, { prompt: `Deploy with ${KEY} and maybe-pass` })
+    // What runs keeps the possible one, which only looked like a credential; what is shown doesn't.
+    expect(h.runs[0].req.task).toMatch(/\n\nDeploy with \[REDACTED:fake_key\] and maybe-pass$/)
+    expect(h.activity[0].summary).toBe('Deploy with [REDACTED:fake_key] and [REDACTED:fake_pass]')
+
+    const broken = setup({ mask: () => { throw new Error('mask broke') } })
+    expect((await start(broken)).status).toBe('running')
+    expect(broken.runs).toHaveLength(1)
+    expect(broken.activity[0].summary).toBe('')
   })
 
   it('refuses a prompt that is too long once the credentials in it were replaced', async () => {

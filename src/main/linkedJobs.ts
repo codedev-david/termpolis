@@ -111,6 +111,10 @@ export interface LinkedJobsDeps {
   /** aiSecurity.screenText: credentials out of the prompt before it runs here, and out of the
    *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. */
   screen(text: string): SecretScreen
+  /** aiSecurity.maskForDisplay: every possible credential out of a job's summary, the ones
+   *  screening leaves in for the agent too, before the activity view shows it, the job history
+   *  keeps it and a notification shows it (activitySummary). */
+  mask(text: string): string
   /** Told what a screen found, for the audit log. */
   onSecrets?(finding: LinkedSecretFinding): void
 }
@@ -215,14 +219,32 @@ function printable(text: string): string {
  *  credentials: nothing leaves this computer unscreened. */
 export const WITHHELD = '[Termpolis could not check this for credentials, so it was withheld.]'
 
-/** What the activity view shows for a prompt: its first line with text in it,
- *  flattened to plain spaces, at most 80 characters. */
-export function activitySummary(prompt: string): string {
-  const line =
-    prompt
+/** The first line of `text` with text in it, flattened to plain spaces. */
+function firstLine(text: string): string {
+  return (
+    text
       .split(/\r\n|\r|\n/)
       .map((l) => l.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, ' ').trim())
       .find((l) => l.length > 0) ?? ''
+  )
+}
+
+/** What the activity view, the job history and a job's notification show for a prompt: its first
+ *  line with text in it, flattened to plain spaces, with anything that might be a credential taken
+ *  out by `mask` (aiSecurity.maskForDisplay), at most 80 characters. Masked before it is cut: cut
+ *  first, a credential the cut ran through would no longer match its rule, and all of it up to the
+ *  cut would show. Empty when `mask` throws: a summary that can't be masked is withheld, never
+ *  shown as it is. */
+export function activitySummary(prompt: string, mask: (text: string) => string): string {
+  let line: string
+  try {
+    // The whole prompt first, for a credential that runs on past the end of its line; then the
+    // line once flattened, for one the flattening completes (a control character between a name
+    // and its value becomes a space).
+    line = mask(firstLine(mask(prompt)))
+  } catch {
+    return ''
+  }
   return line.length > SUMMARY_CHARS ? `${line.slice(0, SUMMARY_CHARS - 1).trimEnd()}\u2026` : line
 }
 
@@ -464,8 +486,8 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       throw new Error(`Invalid prompt: expected 1 to ${MAX_PROMPT_CHARS} characters.`)
     }
     // A new asking computer screens its own prompt; this is the backstop for a 1.50-1.52 one,
-    // which doesn't. What runs here, and what the activity view shows, is the screened text, and
-    // a prompt that can't be screened doesn't run.
+    // which doesn't. What runs here is the screened text, what the activity view shows is that
+    // masked too, and a prompt that can't be screened doesn't run.
     let screened: SecretScreen
     try {
       screened = deps.screen(raw)
@@ -517,7 +539,7 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       agent,
       write,
       cwd,
-      summary: activitySummary(prompt),
+      summary: activitySummary(prompt, (text) => deps.mask(text)),
       promptRules: rulesOf(screened),
       answerRules: [],
       startedAt: deps.now(),

@@ -64,6 +64,8 @@ export interface LinkedToolDeps {
   frame(text: string, machine: string, agent: string): string
   /** aiSecurity.screenText. */
   screen(text: string): SecretScreen
+  /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary). */
+  mask(text: string): string
   /** Told what a screen found, for the audit log. */
   onSecrets?(finding: LinkedSecretFinding): void
   onActivity(a: LinkedActivity): void
@@ -492,7 +494,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     const first = jobViewOf(reply)
     if (!first) return withNotes({ error: malformed(view.name), machine: view.name }, notes)
     const job: Followed = { target, name: view.name, remoteId: first.jobId, jobId: `${target.id}-${first.jobId}` }
-    record(job, first, { summary: activitySummary(screened.text), startedAt: started })
+    record(job, first, { summary: activitySummary(screened.text, (text) => deps.mask(text)), startedAt: started })
     const edit = write ? [editNote(view.name, first.agent)] : []
     return withNotes(await follow(job, first, started + waitSec * 1000), [...notes, ...edit])
   }

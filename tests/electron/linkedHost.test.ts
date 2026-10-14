@@ -98,6 +98,18 @@ const publicKeyOf = (secretKey: string): string => toHex(x25519.getPublicKey(fro
 const PHRASE = deriveVerificationPhrase(generateIdentity().publicKey, generateIdentity().publicKey)
 const OTHER_PHRASE = deriveVerificationPhrase(generateIdentity().publicKey, generateIdentity().publicKey)
 
+/** A prompt whose credential starts before the 80th character and ends after it. Cut there first,
+ *  what was left of the URL matched no rule, and all of it up to the cut was shown. */
+const STRADDLED = `admin:${'Pw0rd'.repeat(3)}@db.internal/prod`
+const STRADDLING = `Run the nightly billing migrations, then check on postgres://${STRADDLED} and report back`
+/** ...and the summary of it every view shows: masked whole, then cut. */
+const STRADDLING_SHOWN = 'Run the nightly billing migrations, then check on [REDACTED:postgres_url] and r…'
+
+/** That no stretch of the straddling credential, four characters or more, is in `text`. */
+function expectNoneOfTheStraddled(text: string): void {
+  for (let i = 0; i + 4 <= STRADDLED.length; i++) expect(text).not.toContain(STRADDLED.slice(i, i + 4))
+}
+
 /** A computer that entered a code this machine showed, as the bridge lists it. */
 function peer(label = 'build-box'): PairedDevice {
   const key = generateIdentity()
@@ -1753,6 +1765,17 @@ describe('asking another machine (the linked_machines tool)', () => {
     expect(s.machines[0].lastActivityAt).toEqual(expect.any(Number))
   })
 
+  it('lists a job it sent with a credential the 80-character cut runs through masked, though it crossed', async () => {
+    const { h } = online()
+    runner(h, 'Migrated.')
+    await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: STRADDLING, waitSec: 5 })
+    // What crossed keeps it: screening only reports a heuristic match.
+    expect(h.bridge.calls()[0]).toMatchObject({ request: { kind: 'peerRun', prompt: STRADDLING } })
+    const listed = (await h.status()).activity[0].summary
+    expect(listed).toBe(STRADDLING_SHOWN)
+    expectNoneOfTheStraddled(listed)
+  })
+
   it('labels clean output as another computer\'s, and passes it through otherwise unchanged', async () => {
     const { h } = online()
     runner(h, 'The parser is fixed; tests pass.')
@@ -2182,7 +2205,28 @@ describe('the job history, notifications and Stop', () => {
     expect(JSON.stringify(await history(h))).not.toContain('s3cretPw0rd')
   })
 
-  it('withholds the summary from the history and the notification when it cannot be masked', async () => {
+  it('masks a credential the 80-character cut runs through, in the history, the notification and the Activity list', async () => {
+    const notifyJob = vi.fn()
+    const { h, run, finishers } = serving({ notifyJob })
+    const at = STRADDLING.indexOf('postgres://')
+    expect(at).toBeLessThan(79)
+    expect(at + `postgres://${STRADDLED}`.length).toBeGreaterThan(80)
+    await run({ prompt: STRADDLING })
+    // What the agent here was given keeps it: screening only reports a heuristic match.
+    expect(h.runHeadless.mock.calls[0][0].task).toContain(STRADDLED)
+    finishers[0]()
+    await vi.waitFor(async () => expect(await history(h)).toHaveLength(2))
+    const line = (await history(h)).find((r) => r.event === 'started')!.summary!
+    const body: string = notifyJob.mock.lastCall![0].body
+    const task = body.slice(body.indexOf('Task:'))
+    const listed = (await h.status()).activity[0].summary
+    expect(line).toBe(STRADDLING_SHOWN)
+    expect(task).toBe(`Task: “${STRADDLING_SHOWN}”`)
+    expect(listed).toBe(STRADDLING_SHOWN)
+    for (const text of [line, task, listed]) expectNoneOfTheStraddled(text)
+  })
+
+  it('withholds the summary from the history, the notification and the Activity list when it cannot be masked', async () => {
     const notifyJob = vi.fn()
     const P = peer()
     const h = boot({
@@ -2200,6 +2244,7 @@ describe('the job history, notifications and Stop', () => {
     expect(notifyJob.mock.lastCall![0].body).toBe(`Codex · read-only · ${path.basename(dir)}\nTask: “”`)
     await vi.waitFor(async () => expect((await history(h)).some((r) => r.event === 'started')).toBe(true))
     expect((await history(h)).find((r) => r.event === 'started')).toMatchObject({ summary: '' })
+    expect((await h.status()).activity.map((a) => a.summary)).toEqual([''])
   })
 
   it('notifies each job another computer starts, from what this computer knows, and nothing else', async () => {
