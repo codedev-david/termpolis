@@ -43,21 +43,23 @@ export function hasNoNewPrivs(
   }
 }
 
-/** Waits for the process in $1 to exit, then runs the remaining arguments in its place. A process
- *  that has exited but that its parent hasn't reaped yet still answers kill -0, so a zombie counts
- *  as gone. It gives up after about two minutes: while the old Termpolis runs it holds the
- *  single-instance lock, so a copy started then would only quit again. `sleep 1` covers a sleep
- *  that rejects fractions. */
-export const RELAUNCH_SCRIPT = [
-  'pid=$1; shift',
+/** Waits for the process in $pid to exit. A process that has exited but that its parent hasn't
+ *  reaped yet still answers kill -0, so a zombie counts as gone. It gives up, with exit 1, after
+ *  about two minutes: while the old Termpolis runs it holds the single-instance lock, so a copy
+ *  started then would only quit again. `sleep 1` covers a sleep that rejects fractions. Shared
+ *  with the .deb update runner (debUpdate.ts). */
+export const WAIT_FOR_EXIT = [
   'i=0',
   'while kill -0 "$pid" 2>/dev/null; do',
   '  case "$(ps -o stat= -p "$pid" 2>/dev/null)" in *Z*) break ;; esac',
   '  i=$((i + 1)); [ "$i" -gt 600 ] && exit 1',
   '  sleep 0.2 2>/dev/null || sleep 1',
   'done',
-  'exec "$@"',
-].join('\n')
+]
+
+/** Waits for the process in $1 to exit (WAIT_FOR_EXIT), then runs the remaining arguments in its
+ *  place. */
+export const RELAUNCH_SCRIPT = ['pid=$1; shift', ...WAIT_FOR_EXIT, 'exec "$@"'].join('\n')
 
 export interface RelaunchTarget {
   pid: number
@@ -72,11 +74,15 @@ export function currentTarget(): RelaunchTarget {
   return { pid: process.pid, execPath: process.execPath, argv: process.argv, env: process.env }
 }
 
-/** The command that starts Termpolis again once `pid` has exited. An AppImage restarts from its
- *  .AppImage file, because execPath is inside the image's mount, which goes away when it exits. */
+/** The program and arguments that start Termpolis again. An AppImage restarts from its .AppImage
+ *  file, because execPath is inside the image's mount, which goes away when it exits. */
+export function relaunchArgv(t: RelaunchTarget): string[] {
+  return [t.env.APPIMAGE || t.execPath, ...t.argv.slice(1)]
+}
+
+/** The command that starts Termpolis again once `pid` has exited. */
 export function relaunchCommand(t: RelaunchTarget): string[] {
-  const program = t.env.APPIMAGE || t.execPath
-  return ['/bin/sh', '-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', String(t.pid), program, ...t.argv.slice(1)]
+  return ['/bin/sh', '-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', String(t.pid), ...relaunchArgv(t)]
 }
 
 interface SpawnedChild {

@@ -13,6 +13,8 @@ const {
   parseNoNewPrivs,
   hasNoNewPrivs,
   RELAUNCH_SCRIPT,
+  WAIT_FOR_EXIT,
+  relaunchArgv,
   relaunchCommand,
   relaunchWithoutNoNewPrivs,
   systemdRelaunchArgs,
@@ -89,6 +91,12 @@ describe('relaunchCommand', () => {
       '/bin/sh', '-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', '4242',
       '/opt/Termpolis/termpolis', '--no-sandbox', '--disable-gpu',
     ])
+    expect(relaunchCommand(TARGET).slice(5)).toEqual(relaunchArgv(TARGET))
+  })
+
+  it('waits with the loop it shares with the .deb update runner', () => {
+    expect(RELAUNCH_SCRIPT).toBe(['pid=$1; shift', ...WAIT_FOR_EXIT, 'exec "$@"'].join('\n'))
+    expect(WAIT_FOR_EXIT.join('\n')).toContain('*Z*) break')
   })
 
   it('restarts an AppImage from its file, not from the mount that disappears with it', () => {
