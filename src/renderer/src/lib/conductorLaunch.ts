@@ -154,8 +154,22 @@ const EXIT_LINE = /^\[termpolis-conductor-exited\]\s*(-?\d+)$/
 // stripping the move would glue two lines of the screen into one.
 const ROW_MOVE = /\x1b\[\d*(?:;\d*)?[Hf]|\x1b\[\d*[ABEFd]/g
 
+/** A backspace takes back the character before it: PSReadLine echoes a typed line that way. One
+ *  pass over the line, since this runs on every monitor tick and every Debug refresh. */
+function applyBackspaces(line: string): string {
+  if (!line.includes('\b')) return line
+  const kept: string[] = []
+  for (const ch of line) {
+    if (ch === '\b') kept.pop()
+    else kept.push(ch)
+  }
+  return kept.join('')
+}
+
 function screenLines(output: string): string[] {
-  return stripAnsi(output.replace(ROW_MOVE, '\n')).split(/\r\n|\r|\n/).map((line) => line.trimEnd())
+  return stripAnsi(output.replace(ROW_MOVE, '\n'))
+    .split(/\r\n|\r|\n/)
+    .map((line) => applyBackspaces(line).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trimEnd())
 }
 
 /** The run script's report that claude exited, read from the conductor terminal's output since
@@ -178,6 +192,11 @@ export function findConductorExit(output: string): ConductorExit | null {
     return { code: Number(m[1]), lastLines: printed.slice(-EXIT_TAIL_LINES) }
   }
   return null
+}
+
+/** The conductor terminal's output as plain text, for the dashboard's read-only Debug view. */
+export function conductorScreenText(output: string): string {
+  return screenLines(output).join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 /**

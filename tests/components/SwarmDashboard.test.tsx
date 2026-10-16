@@ -11,6 +11,7 @@ let mockSetSwarmAgents = vi.fn()
 let mockSetActiveTerminal = vi.fn()
 let mockRemoveTerminal = vi.fn()
 let mockConductorStatus = 'idle'
+let mockConductorTerminalId: string | null = null
 
 // ---------- window mocks ----------
 beforeAll(() => {
@@ -22,6 +23,7 @@ beforeAll(() => {
     createTerminal: vi.fn().mockResolvedValue({ success: true }),
     writeToTerminal: vi.fn(),
     killTerminal: vi.fn().mockResolvedValue({ success: true }),
+    readTerminalBuffer: vi.fn().mockResolvedValue({ success: true, data: { output: '' } }),
     loadSession: vi.fn().mockResolvedValue({ success: true, data: { terminals: [], workspaces: [] } }),
     saveSession: vi.fn(),
   }
@@ -76,8 +78,7 @@ vi.mock('../../src/renderer/src/lib/swarmBridgeManager', () => ({
 
 vi.mock('../../src/renderer/src/lib/conductorManager', () => ({
   stopConductor: vi.fn(),
-  getConductorState: vi.fn(() => ({ status: mockConductorStatus })),
-  revealConductor: vi.fn(),
+  getConductorState: vi.fn(() => ({ status: mockConductorStatus, terminalId: mockConductorTerminalId })),
 }))
 
 vi.mock('../../src/renderer/src/components/SwarmDashboard/StartSwarmModal', () => ({
@@ -159,6 +160,7 @@ beforeEach(() => {
   mockSetActiveTerminal = vi.fn()
   mockRemoveTerminal = vi.fn()
   mockConductorStatus = 'idle'
+  mockConductorTerminalId = null
   vi.clearAllMocks()
   ;(window.swarmAPI.getMessages as any).mockResolvedValue({ success: true, data: [] })
   ;(window.swarmAPI.getTasks as any).mockResolvedValue({ success: true, data: [] })
@@ -542,24 +544,39 @@ describe('SwarmDashboard', () => {
   // 10. Debug button
   // ------------------------------------------------------------------
   describe('Debug button', () => {
-    it('is visible when swarm is active', () => {
+    it('is visible while a conductor terminal exists', () => {
       mockSwarmActive = true
+      mockConductorTerminalId = 'cond-1'
       render(<SwarmDashboard onClose={vi.fn()} />)
       expect(screen.getByText('Debug')).toBeInTheDocument()
     })
 
-    it('is not visible when swarm is not active', () => {
+    it('stays available after the conductor exited, when its output matters most', () => {
       mockSwarmActive = false
+      mockConductorStatus = 'error'
+      mockConductorTerminalId = 'cond-1'
+      render(<SwarmDashboard onClose={vi.fn()} />)
+      expect(screen.getByText('Debug')).toBeInTheDocument()
+    })
+
+    it('is not visible without a conductor terminal, swarm or no swarm', () => {
+      mockSwarmActive = true // startConductor sets this before the terminal exists
       render(<SwarmDashboard onClose={vi.fn()} />)
       expect(screen.queryByText('Debug')).not.toBeInTheDocument()
     })
 
-    it('calls revealConductor when clicked', async () => {
+    it("shows the conductor's output inside the dashboard when clicked", async () => {
       mockSwarmActive = true
-      const { revealConductor } = await import('../../src/renderer/src/lib/conductorManager')
+      mockConductorTerminalId = 'cond-1'
+      ;(window.termpolis.readTerminalBuffer as any).mockResolvedValue({
+        success: true,
+        data: { output: "\x1b[31merror: unknown option '-NoProfile'\x1b[0m\r\n[termpolis-conductor-exited] 1\r\n" },
+      })
       render(<SwarmDashboard onClose={vi.fn()} />)
       fireEvent.click(screen.getByText('Debug'))
-      expect(revealConductor).toHaveBeenCalled()
+      const text = await screen.findByTestId('conductor-output-text')
+      expect(text.textContent).toBe("error: unknown option '-NoProfile'\n[termpolis-conductor-exited] 1")
+      expect(window.termpolis.readTerminalBuffer).toHaveBeenCalledWith('cond-1')
     })
   })
 

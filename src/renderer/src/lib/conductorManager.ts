@@ -465,7 +465,7 @@ function startMonitoring(): void {
         if (elapsed > 60000 && tasks.length === 0 && posted.length === 0) {
           stallWarned = true
           store.setSwarmNotification({
-            message: 'Conductor has not created any tasks or agents yet. Click Debug to reveal conductor terminal and check for errors.',
+            message: 'Conductor has not created any tasks or agents yet. Click Debug in the Swarm Dashboard to see its output and check for errors.',
             type: 'error',
           })
         }
@@ -512,7 +512,7 @@ async function endOnConductorExit(
     monitoringInterval = null
   }
   store.setSwarmNotification({
-    message: `${error}. Its last output is in the Swarm Dashboard's Messages tab.`,
+    message: `${error}. Its last output is in the Swarm Dashboard's Messages tab, and Debug there shows all of it.`,
     type: 'error',
   })
   store.setSwarmActive(false)
@@ -546,12 +546,4 @@ export function stopConductor(): void {
   }
 
   conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
-}
-
-// Reveal conductor terminal for debugging
-export function revealConductor(): void {
-  if (!conductorState.terminalId) return
-  const store = useTerminalStore.getState()
-  store.updateTerminal(conductorState.terminalId, { hidden: false })
-  store.setActiveTerminal(conductorState.terminalId)
 }

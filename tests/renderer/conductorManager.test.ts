@@ -43,7 +43,6 @@ import {
   getConductorState,
   startConductor,
   stopConductor,
-  revealConductor,
   sendTask,
   getPreSwarmSha,
 } from '../../src/renderer/src/lib/conductorManager'
@@ -169,21 +168,13 @@ describe('conductorManager', () => {
     expect(state.terminalId).toBeNull()
   })
 
-  it('revealConductor updates terminal hidden flag to false', async () => {
-    const promise = startConductor('/tmp/project')
-    await vi.advanceTimersByTimeAsync(2000)
-    await vi.advanceTimersByTimeAsync(5000)
-    await promise
-
-    // The conductor terminal should exist in the store as hidden
-    const termBefore = useTerminalStore.getState().terminals.find(t => t.id === 'conductor-uuid-1')
-    expect(termBefore?.hidden).toBe(true)
-
-    revealConductor()
-
-    const termAfter = useTerminalStore.getState().terminals.find(t => t.id === 'conductor-uuid-1')
-    expect(termAfter?.hidden).toBe(false)
-    expect(useTerminalStore.getState().activeTerminalId).toBe('conductor-uuid-1')
+  it('keeps the conductor terminal hidden for the whole run', async () => {
+    // Debug shows its output read-only inside the dashboard (ConductorOutput): mounted as a pane,
+    // the memory primer would type into the conductor's console and its shell would run that.
+    await launchConductor()
+    await vi.advanceTimersByTimeAsync(15000)
+    const conductor = useTerminalStore.getState().terminals.find(t => t.id === 'conductor-uuid-1')
+    expect(conductor).toMatchObject({ hidden: true, isConductor: true })
   })
 
   it('sendTask calls swarmAPI.sendMessage with conductor info', async () => {

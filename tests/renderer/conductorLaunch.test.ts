@@ -3,6 +3,7 @@ import {
   conductorRunScript,
   conductorLaunchCommand,
   findConductorExit,
+  conductorScreenText,
   CONDUCTOR_EXIT_SENTINEL,
   CONDUCTOR_START_LINE,
 } from '../../src/renderer/src/lib/conductorLaunch'
@@ -202,6 +203,27 @@ describe('findConductorExit', () => {
       code: 4,
       lastLines: ['[termpolis-conductor-exited] 1', 'again'],
     })
+  })
+})
+
+describe('conductorScreenText', () => {
+  it('turns raw terminal output into plain lines, with no escapes and no runs of blank lines', () => {
+    const out = '\x1b]0;title\x07\x1b[2J\x1b[1;1HWindows PowerShell\r\n\r\n\r\n\r\n\x1b[2;1H\x1b[33mPS C:\\proj>\x1b[0m run  \r\nspinner\rspinner done\r\n'
+    expect(conductorScreenText(out)).toBe('Windows PowerShell\n\nPS C:\\proj> run\nspinner\nspinner done')
+  })
+
+  it('is empty for no output', () => {
+    expect(conductorScreenText('')).toBe('')
+  })
+
+  it('applies backspaces, as PSReadLine echoes a typed line, and drops other control characters', () => {
+    expect(conductorScreenText('\x1b[93m$\x1b[m\x1b[92m\x08$p\x1b[90m=1\r\n')).toBe('$p=1')
+    expect(conductorScreenText('ab\x08\x08c\x07d\r\n\x08start')).toBe('cd\nstart')
+  })
+
+  it('takes back as many characters as there are backspaces, and no more', () => {
+    expect(conductorScreenText('x'.repeat(16_000) + '\x08'.repeat(16_000) + 'left')).toBe('left')
+    expect(conductorScreenText('keep' + 'x'.repeat(500) + '\x08'.repeat(500) + '!')).toBe('keep!')
   })
 })
 

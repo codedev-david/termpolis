@@ -48,7 +48,6 @@ import {
   stopConductor,
   sendTask,
   waitForAuth,
-  revealConductor,
   getConductorState,
 } from '../../src/renderer/src/lib/conductorManager'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -1003,17 +1002,5 @@ describe('conductorManager — uncovered branches', () => {
     await vi.advanceTimersByTimeAsync(60000)
     expect(notifSpy.mock.calls.some(([a]) => a?.message?.includes('not created any tasks'))).toBe(true)
     expect(getConductorState().status).toBe('running')
-  })
-
-  // ---- revealConductor ----
-
-  it('revealConductor is a no-op when no conductor exists', () => {
-    stopConductor()
-    useTerminalStore.setState({ activeTerminalId: 'user-term', terminals: [] })
-
-    revealConductor()
-
-    // It must not steal focus or mutate the store when there is nothing to show.
-    expect(useTerminalStore.getState().activeTerminalId).toBe('user-term')
   })
 })
