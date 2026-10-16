@@ -340,6 +340,7 @@ describe('initAutoUpdater — missing app-update.yml is benign (Sentry ELECTRON-
     'net::ERR_CONNECTION_CLOSED',
     'net::ERR_ADDRESS_UNREACHABLE',
     'net::ERR_PROXY_CONNECTION_FAILED',
+    'net::ERR_SOCKET_NOT_CONNECTED', // GitHub #37
     '429 Too Many Requests\nHeaders: {}',
     '503 \n"method: GET url: https://github.com/o/r/releases.atom"\nHeaders: {}',
   ])('shows no error and reports nothing for %j', async (message) => {

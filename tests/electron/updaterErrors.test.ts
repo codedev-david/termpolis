@@ -106,6 +106,10 @@ describe('isTransientNetworkError', () => {
     'net::ERR_CONNECTION_FAILED',
     'net::ERR_TUNNEL_CONNECTION_FAILED',
     'net::ERR_EMPTY_RESPONSE',
+    'net::ERR_SOCKET_NOT_CONNECTED', // #37 — the connection under the request was gone
+    'net::ERR_SOCKS_CONNECTION_FAILED',
+    'net::ERR_SOCKS_CONNECTION_HOST_UNREACHABLE',
+    'net::ERR_HTTP2_PING_FAILED',
     'net::err_internet_disconnected',
     'getaddrinfo ENOTFOUND github.com',
     'getaddrinfo EAI_AGAIN github.com',
@@ -140,6 +144,13 @@ describe('isTransientNetworkError', () => {
     expect(isTransientNetworkError(new Error('403 Forbidden\nHeaders: {\n  "x-error": "ETIMEDOUT"\n}'))).toBe(false)
     // A Chromium code is a whole word too.
     expect(isTransientNetworkError(new Error('net::ERR_TIMED_OUT_X'))).toBe(false)
+    expect(isTransientNetworkError(new Error('net::ERR_SOCKET_NOT_CONNECTED_X'))).toBe(false)
+  })
+
+  it('still reports a socket error that is a bug rather than a network state', () => {
+    // Its sibling in Chromium's list: using a socket that is already connected is a caller's mistake.
+    expect(isTransientNetworkError(new Error('net::ERR_SOCKET_IS_CONNECTED'))).toBe(false)
+    expect(classifyUpdaterError(new Error('net::ERR_SOCKET_IS_CONNECTED'))).toBe('genuine')
   })
 
   it('does NOT swallow genuine update failures', () => {
@@ -296,6 +307,7 @@ describe('classifyUpdaterError', () => {
     ['disk-full', DISK_FULL_ASAR],
     ['disk-full', 'ENOSPC: no space left on device, write'],
     ['transient', 'net::ERR_INTERNET_DISCONNECTED'],
+    ['transient', 'net::ERR_SOCKET_NOT_CONNECTED'],
     ['transient', 'socket hang up'],
     ['transient', GATEWAY_TIMEOUT],
     ['transient', 'Cannot download "https://github.com/o/r/releases/download/v1/T.zip", status 503: '],
@@ -443,6 +455,7 @@ describe('shouldDropSentryEvent — the second reporting path (#22)', () => {
   it('drops the captureMessage form telemetry produces', () => {
     expect(shouldDropSentryEvent({ message: `updater error: ${READ_ONLY}` })).toBe(true)
     expect(shouldDropSentryEvent({ message: 'updater error: net::ERR_INTERNET_DISCONNECTED' })).toBe(true)
+    expect(shouldDropSentryEvent({ message: 'updater error: net::ERR_SOCKET_NOT_CONNECTED' })).toBe(true) // #37, verbatim
     expect(shouldDropSentryEvent({ message: `updater error: ${GATEWAY_TIMEOUT}` })).toBe(true) // #28
   })
 
