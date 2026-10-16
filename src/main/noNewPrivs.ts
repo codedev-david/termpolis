@@ -16,11 +16,12 @@
 // quit and opened again. Checked against Electron 30.5.1 and Electron's main branch.
 //
 // Node's child_process never sets the bit, so a detached shell that waits for this process to
-// exit and then starts Termpolis again keeps the new copy exactly as privileged as this one. It
-// must be spawned from the main process itself: Chromium starts its own child processes with the
-// bit set, so anything routed through a utility process (procHost) would carry it.
+// exit and then starts Termpolis again keeps the new copy exactly as privileged as this one: what
+// the .deb's install runner does (debUpdate.ts). It must be spawned from the main process itself:
+// Chromium starts its own child processes with the bit set, so anything routed through a utility
+// process (procHost) would carry it.
 
-import { spawn, spawnSync } from 'child_process'
+import { spawnSync } from 'child_process'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -83,39 +84,6 @@ export function relaunchArgv(t: RelaunchTarget): string[] {
 /** The command that starts Termpolis again once `pid` has exited. */
 export function relaunchCommand(t: RelaunchTarget): string[] {
   return ['/bin/sh', '-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', String(t.pid), ...relaunchArgv(t)]
-}
-
-interface SpawnedChild {
-  on(event: 'error', listener: (err: Error) => void): unknown
-  unref(): void
-}
-
-type DetachedOpts = { detached: true; stdio: 'ignore' }
-
-export interface RelaunchDeps {
-  target: RelaunchTarget
-  spawn: (cmd: string, args: string[], opts: DetachedOpts) => SpawnedChild
-}
-
-export function spawnDetached(cmd: string, args: string[], opts: DetachedOpts): SpawnedChild {
-  return spawn(cmd, args, opts)
-}
-
-export function defaultRelaunchDeps(): RelaunchDeps {
-  return { target: currentTarget(), spawn: spawnDetached }
-}
-
-/** Restart Termpolis without setting no_new_privs (see the header). Call it, then quit. */
-export function relaunchWithoutNoNewPrivs(deps: RelaunchDeps): boolean {
-  const [cmd, ...args] = relaunchCommand(deps.target)
-  try {
-    const child = deps.spawn(cmd, args, { detached: true, stdio: 'ignore' })
-    child.on('error', () => { /* no /bin/sh: the app just doesn't come back, as if quit */ })
-    child.unref()
-    return true
-  } catch {
-    return false
-  }
 }
 
 // systemd sets these itself for every service it starts; copying this process's values would

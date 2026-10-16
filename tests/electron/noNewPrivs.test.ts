@@ -4,10 +4,10 @@ import { spawn, spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-// Nothing here may call relaunchWithoutNoNewPrivs or relaunchViaSystemd with their real deps: a
-// real relaunch shell started from a test waits for the test runner to exit and then runs it
-// again. (vi.mock does not reach Node built-ins in this suite, so a mocked child_process is no
-// guard.) The real helpers are exercised only with commands that do nothing.
+// Nothing here may call relaunchViaSystemd with its real deps: a real relaunch shell started from
+// a test waits for the test runner to exit and then runs it again. (vi.mock does not reach Node
+// built-ins in this suite, so a mocked child_process is no guard.) The real helpers are exercised
+// only with commands that do nothing.
 
 const {
   parseNoNewPrivs,
@@ -16,7 +16,6 @@ const {
   WAIT_FOR_EXIT,
   relaunchArgv,
   relaunchCommand,
-  relaunchWithoutNoNewPrivs,
   systemdRelaunchArgs,
   canRelaunchViaSystemd,
   relaunchViaSystemd,
@@ -25,8 +24,6 @@ const {
   scheduleNoNewPrivsNotice,
   currentTarget,
   NOTICE_FILE,
-  spawnDetached,
-  defaultRelaunchDeps,
   runSync,
   defaultSystemdDeps,
 } = await import('../../src/main/noNewPrivs')
@@ -106,35 +103,6 @@ describe('relaunchCommand', () => {
 
   it('describes this process by default', () => {
     expect(currentTarget()).toEqual({ pid: process.pid, execPath: process.execPath, argv: process.argv, env: process.env })
-  })
-})
-
-describe('relaunchWithoutNoNewPrivs', () => {
-  it('starts the waiting shell detached from this process, and lets it outlive it', () => {
-    const child = { on: vi.fn(), unref: vi.fn() }
-    const spawn = vi.fn(() => child)
-    expect(relaunchWithoutNoNewPrivs({ target: TARGET, spawn })).toBe(true)
-    const [cmd, ...rest] = relaunchCommand(TARGET)
-    expect(spawn).toHaveBeenCalledWith(cmd, rest, { detached: true, stdio: 'ignore' })
-    expect(child.unref).toHaveBeenCalled()
-    // A spawn failure arrives as an 'error' event; unheard, it would crash the main process.
-    expect(child.on).toHaveBeenCalledWith('error', expect.any(Function))
-    expect(() => (child.on.mock.calls[0] as unknown as [string, (e: Error) => void])[1](new Error('ENOENT'))).not.toThrow()
-  })
-
-  it('reports a spawn that throws', () => {
-    expect(relaunchWithoutNoNewPrivs({ target: TARGET, spawn: () => { throw new Error('EAGAIN') } })).toBe(false)
-  })
-
-  it("restarts this process through child_process's spawn by default, never Electron's relauncher", () => {
-    expect(defaultRelaunchDeps()).toEqual({ target: currentTarget(), spawn: spawnDetached })
-  })
-
-  it('spawnDetached starts a process that can outlive this one', async () => {
-    const child = spawnDetached(process.execPath, ['-e', ''], { detached: true, stdio: 'ignore' })
-    const code = await new Promise<number | null>((resolve) => (child as unknown as import('child_process').ChildProcess).on('exit', resolve))
-    child.unref()
-    expect(code).toBe(0)
   })
 })
 

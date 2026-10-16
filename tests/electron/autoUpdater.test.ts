@@ -6,6 +6,15 @@ import type { UpdaterHost } from '../../src/main/autoUpdater'
 import { MOVE_FAILED_DIALOG, MOVE_OFFER_DIALOG, updateBlockerHint } from '../../src/main/updaterLocation'
 import { DISK_FULL_MESSAGE, NO_UPDATE_FEED_MESSAGE, UPDATE_SERVER_UNREACHABLE_MESSAGE } from '../../src/main/updaterErrors'
 import { NO_NEW_PRIVS_UPDATE_MESSAGE } from '../../src/main/autoUpdater'
+import { hasNoNewPrivs } from '../../src/main/noNewPrivs'
+import {
+  DEB_BUSY_MESSAGE,
+  DEB_CANCELLED_MESSAGE,
+  DEB_NOT_STARTED_LEAD,
+  DEB_RESULT_FILE,
+  debManualInstallMessage,
+  type DebInstallStart,
+} from '../../src/main/debUpdate'
 
 // Capture event handlers + IPC handlers registered by initAutoUpdater
 const eventHandlers: Record<string, Function> = {}
@@ -73,17 +82,24 @@ const diskFull = () =>
       "No space left on device\nditto: Couldn't read pkzip signature.",
   )
 
-// Deterministic whatever OS runs the suite: no macOS location check, no Move offer.
-// The Linux-only pieces are pinned too: a CI container can run the suite with no_new_privs set, and
-// nothing here may ever restart the test runner.
+// Deterministic whatever OS runs the suite: no macOS location check, no Move offer. An AppImage,
+// which installs through electron-updater's quitAndInstall as macOS and Windows do.
+// The .deb pieces are pinned too, for every test that switches to a .deb: a CI container can run
+// the suite with no_new_privs set, and nothing here may ever start the real install runner (it
+// would wait for the test runner to exit, ask for the administrator password, then start it
+// again), quit the test runner, or read the real userData.
 const LINUX_HOST: Partial<UpdaterHost> = {
   platform: 'linux',
   exePath: '/opt/Termpolis/termpolis',
-  appImage: false,
+  appImage: true,
   noNewPrivs: () => false,
-  relaunch: () => true,
-  onQuitForUpdate: () => {},
+  installDeb: () => ({ started: false, message: 'a test reached the .deb install' }),
+  takeDebNotice: () => null,
+  quit: () => {},
 }
+/** The .deb, Termpolis's Linux system package (debUpdate.ts). */
+const DEB_HOST: Partial<UpdaterHost> = { ...LINUX_HOST, appImage: false }
+const DEB = '/home/d/.cache/termpolis-updater/pending/termpolis_9.9.9_amd64.deb'
 
 /** A fresh copy of the module, wired to the fake updater, on the host a test picks. */
 async function freshAutoUpdater(host: Partial<UpdaterHost> = LINUX_HOST) {
@@ -984,6 +1000,21 @@ describe('initAutoUpdater on macOS — where the app runs decides whether it can
     expect(existsSync(prefsFile)).toBe(false)
   })
 
+  it('never lets the location check escape as an unhandled rejection', async () => {
+    // The hint it stands down with can't reach a window that is being torn down mid-launch.
+    const mod = await freshAutoUpdater({ platform: 'darwin', exePath: DMG_EXE, probe: readOnlyDisk })
+    mod.__setUpdateConfigExistsForTests(() => true)
+    const send = vi.fn(() => {
+      throw new Error('Object has been destroyed')
+    })
+    const rejections = await unhandledRejectionsDuring(async () => {
+      mod.initAutoUpdater(() => ({ webContents: { send } }) as any)
+      await settle()
+    })
+    expect(rejections).toEqual([])
+    expect(send).toHaveBeenCalled()
+  })
+
   it('never lets the offer escape as an unhandled rejection', async () => {
     const host = offeringHost({
       prefsPath: () => {
@@ -1079,76 +1110,267 @@ describe('initAutoUpdater dev/test short-circuit', () => {
     expect(mockAutoUpdater.on).not.toHaveBeenCalled()
     expect(await ipcHandlers.get('updater:check')!()).toEqual({ success: false, error: 'electron-updater unavailable' })
   })
+
+  it("loads electron-updater's own autoUpdater by default, and gives up quietly when it won't load", async () => {
+    // Outside Electron, as here, building electron-updater's autoUpdater throws: it needs
+    // Electron's app. The default loader turns that into "unavailable".
+    vi.resetModules()
+    ipcHandlers.clear()
+    const mod = await import('../../src/main/autoUpdater')
+    mod.__setUpdaterHostForTests(LINUX_HOST)
+    expect(() => mod.initAutoUpdater(() => null)).not.toThrow()
+    expect(mockAutoUpdater.on).not.toHaveBeenCalled()
+    expect(await ipcHandlers.get('updater:check')!()).toEqual({ success: false, error: 'electron-updater unavailable' })
+  })
 })
 
-describe('initAutoUpdater on Linux — reopening after an update keeps sudo working (no_new_privs)', () => {
-  // electron-updater's .deb/.rpm/pacman installers reopen the app with app.relaunch(), which on
-  // Linux leaves the new copy with no_new_privs: sudo then fails in every terminal (noNewPrivs.ts).
-  async function setup(host: Partial<UpdaterHost>) {
-    delete (mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall
+describe('initAutoUpdater for a Linux .deb — Restart installs from outside Termpolis, and quitting never installs', () => {
+  // electron-updater installs a .deb with spawnSync on the main thread, so the window froze behind
+  // the administrator prompt and dpkg (debUpdate.ts has the whole chain). Restart now hands the
+  // download to the install runner and quits at once; the runner starts Termpolis again.
+  async function setup(host: Partial<UpdaterHost> = {}) {
+    for (const key of ['autoInstallOnAppQuit', 'autoRunAppAfterInstall']) delete (mockAutoUpdater as Record<string, unknown>)[key]
     mockAutoUpdater.quitAndInstall.mockReset()
-    let listener: (() => void) | undefined
-    const relaunch = vi.fn(() => true)
-    const onQuitForUpdate = vi.fn((fn: () => void) => { listener = fn })
-    const mod = await freshAutoUpdater({ ...LINUX_HOST, appImage: false, relaunch, onQuitForUpdate, ...host })
-    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
-    return { relaunch, onQuitForUpdate, quitForUpdate: () => listener?.() }
+    const calls: string[] = []
+    const installDeb = vi.fn((_deb: string | undefined, _version: string | undefined): DebInstallStart => {
+      calls.push('install')
+      return { started: true }
+    })
+    const quit = vi.fn(() => { calls.push('quit') })
+    const onBefore = vi.fn((armed?: boolean) => { calls.push(`bypass ${armed}`) })
+    const send = vi.fn()
+    const mod = await freshAutoUpdater({ ...DEB_HOST, installDeb, quit, ...host })
+    mod.initAutoUpdater(() => ({ webContents: { send } }) as any, { onBeforeQuitAndInstall: onBefore })
+    return { installDeb, quit, onBefore, send, calls }
+  }
+  const restart = () => ipcHandlers.get('updater:quit-and-install')!()
+  const tick = () => new Promise((resolve) => setImmediate(resolve))
+
+  it('never lets electron-updater install a .deb: not on quit, and not through app.relaunch()', async () => {
+    await setup()
+    // Its install on quit runs the same blocking install from Electron's quit event, the prompt
+    // appearing after the window has gone, out of reach of the will-quit watchdog.
+    expect((mockAutoUpdater as Record<string, unknown>).autoInstallOnAppQuit).toBe(false)
+    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBe(false)
+  })
+
+  it.each<[string, Partial<UpdaterHost>]>([
+    ['an AppImage', { appImage: true }],
+    ['macOS', { platform: 'darwin', exePath: '/usr/local/bin/termpolis' }],
+    ['Windows', { platform: 'win32', exePath: 'C:\\Program Files\\Termpolis\\Termpolis.exe' }],
+  ])('leaves %s to electron-updater, installing on quit as before', async (_name, host) => {
+    const { installDeb } = await setup(host)
+    expect((mockAutoUpdater as Record<string, unknown>).autoInstallOnAppQuit).toBe(true)
+    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBeUndefined()
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    expect(restart()).toEqual({ success: true })
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+    expect(installDeb).not.toHaveBeenCalled()
+  })
+
+  it('hands the downloaded .deb to the install runner, then quits at once with the close guard bypassed', async () => {
+    const { installDeb, quit, calls } = await setup()
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    expect(restart()).toEqual({ success: true })
+    // electron-updater has already checked the file against the sha512 in latest-linux.yml.
+    expect(installDeb).toHaveBeenCalledWith(DEB, '9.9.9')
+    expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
+    // A tick later, so the renderer has its answer first.
+    expect(quit).not.toHaveBeenCalled()
+    await tick()
+    expect(calls).toEqual(['install', 'bypass true', 'quit'])
+  })
+
+  it('keeps the bypass armed through an updater error once the runner waits: the quit must still come', async () => {
+    const { onBefore } = await setup()
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    restart()
+    eventHandlers['error']?.(new Error('sha512 checksum mismatch'))
+    expect(onBefore.mock.calls).toEqual([[true]])
+  })
+
+  it.each<[string, Extract<DebInstallStart, { started: false }>]>([
+    ['there is no way to ask for administrator rights', { started: false, message: debManualInstallMessage(DEB) }],
+    ['another Termpolis is already installing it', { started: false, message: DEB_BUSY_MESSAGE, busy: true }],
+  ])('says why, stays open and changes nothing when %s', async (_why, start) => {
+    const { send, quit, onBefore } = await setup({ installDeb: () => start })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    send.mockClear()
+    mockRecordUpdaterEvent.mockClear()
+    expect(restart()).toEqual({ success: false, error: start.message })
+    const hint = { status: 'error', error: start.message, reason: 'deb-install' }
+    expect(send).toHaveBeenCalledWith('updater:state', hint)
+    expect(ipcHandlers.get('updater:status')!()).toEqual(hint)
+    // Something for the user to do, not a failure to report.
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalled()
+    await tick()
+    expect(quit).not.toHaveBeenCalled()
+    expect(onBefore).not.toHaveBeenCalled()
+    expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
+  it("treats a runner that throws as one that couldn't start", async () => {
+    const { quit } = await setup({ installDeb: () => { throw new Error('EMFILE') } })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    const message = debManualInstallMessage(DEB, DEB_NOT_STARTED_LEAD)
+    expect(restart()).toEqual({ success: false, error: message })
+    expect(ipcHandlers.get('updater:status')!()).toEqual({ status: 'error', error: message, reason: 'deb-install' })
+    await tick()
+    expect(quit).not.toHaveBeenCalled()
+  })
+
+  it('passes on an update-downloaded that named no file, for the runner to refuse', async () => {
+    const { installDeb } = await setup()
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    restart()
+    expect(installDeb).toHaveBeenCalledWith(undefined, '9.9.9')
+  })
+
+  it('installs only an update that has finished downloading', async () => {
+    const { installDeb } = await setup()
+    expect(restart()).toEqual({ success: false, error: 'no update ready' })
+    expect(installDeb).not.toHaveBeenCalled()
+  })
+})
+
+describe('initAutoUpdater for a Linux .deb — the launch after an install says what became of it', () => {
+  const CANCELLED = DEB_CANCELLED_MESSAGE
+  async function setup(host: Partial<UpdaterHost> = {}) {
+    const send = vi.fn()
+    const takeDebNotice = vi.fn((): string | null => CANCELLED)
+    const mod = await freshAutoUpdater({ ...DEB_HOST, takeDebNotice, ...host })
+    mod.initAutoUpdater(() => ({ webContents: { send } }) as any)
+    return { send, takeDebNotice }
   }
 
-  it("stops electron-updater's app.relaunch() and reopens Termpolis itself after Restart", async () => {
-    const { relaunch, quitForUpdate } = await setup({})
-    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBe(false)
-    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
-    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
-    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
-    quitForUpdate()
-    expect(relaunch).toHaveBeenCalledTimes(1)
+  it('reads the result once, at launch, and tells it at once without reporting it', async () => {
+    const { send, takeDebNotice } = await setup()
+    expect(takeDebNotice).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledWith('updater:state', { status: 'idle', notice: CANCELLED })
+    // The banner asks for the state when it mounts, which can be after this was sent.
+    expect(ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle', notice: CANCELLED })
+    expect(mockRecordUpdaterEvent).not.toHaveBeenCalled()
   })
 
-  it('does not reopen after an install on quit, which nobody asked to restart from', async () => {
-    const { relaunch, quitForUpdate } = await setup({})
-    quitForUpdate()
-    expect(relaunch).not.toHaveBeenCalled()
+  it('keeps telling it through the next check, beside the update that check finds ready again', async () => {
+    const { send } = await setup()
+    eventHandlers['checking-for-update']?.()
+    expect(send).toHaveBeenLastCalledWith('updater:state', { status: 'checking', notice: CANCELLED })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    expect(send).toHaveBeenLastCalledWith('updater:state', { status: 'downloaded', version: '9.9.9', notice: CANCELLED })
+    // Telemetry hears of the update and never of the notice, which can name the user's home folder.
+    expect(mockRecordUpdaterEvent).toHaveBeenLastCalledWith({ status: 'downloaded', version: '9.9.9' })
+    // A check that gets no answer goes back to where it was, notice and all.
+    eventHandlers['error']?.(new Error('net::ERR_INTERNET_DISCONNECTED'))
+    expect(send).toHaveBeenLastCalledWith('updater:state', { status: 'downloaded', version: '9.9.9', notice: CANCELLED })
   })
 
-  it('does not reopen when the install failed', async () => {
-    const { relaunch, quitForUpdate } = await setup({})
-    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+  it('stops telling it once Restart is tried again', async () => {
+    const { send } = await setup({ installDeb: () => ({ started: false, message: DEB_BUSY_MESSAGE, busy: true }) })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
     ipcHandlers.get('updater:quit-and-install')!()
-    eventHandlers['error']?.(new Error('sha512 checksum mismatch'))
-    quitForUpdate()
-    expect(relaunch).not.toHaveBeenCalled()
+    expect(send).toHaveBeenLastCalledWith('updater:state', { status: 'error', error: DEB_BUSY_MESSAGE, reason: 'deb-install' })
+    eventHandlers['checking-for-update']?.()
+    expect(send).toHaveBeenLastCalledWith('updater:state', { status: 'checking' })
   })
 
-  it('leaves an AppImage to its own updater, which starts the new image without the flag', async () => {
-    const { onQuitForUpdate } = await setup({ appImage: true })
-    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBeUndefined()
-    expect(onQuitForUpdate).not.toHaveBeenCalled()
+  it('tells nothing when there is nothing to tell, or the result cannot be read', async () => {
+    for (const takeDebNotice of [() => null, () => { throw new Error('EACCES') }]) {
+      const { send } = await setup({ takeDebNotice })
+      expect(send).not.toHaveBeenCalled()
+      expect(ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle' })
+    }
   })
 
-  it('changes nothing on Windows', async () => {
-    const { onQuitForUpdate } = await setup({ platform: 'win32', exePath: 'C:\Program Files\Termpolis\Termpolis.exe' })
-    expect((mockAutoUpdater as Record<string, unknown>).autoRunAppAfterInstall).toBeUndefined()
-    expect(onQuitForUpdate).not.toHaveBeenCalled()
+  it.each<[string, Partial<UpdaterHost>]>([
+    ['an AppImage', { appImage: true }],
+    ['macOS', { platform: 'darwin', exePath: '/usr/local/bin/termpolis' }],
+    ['Windows', { platform: 'win32', exePath: 'C:\\Program Files\\Termpolis\\Termpolis.exe' }],
+  ])('reads no result for %s, which never writes one', async (_name, host) => {
+    const { takeDebNotice } = await setup(host)
+    expect(takeDebNotice).not.toHaveBeenCalled()
+  })
+
+  it('reads no result in a dev or test run, which never installs', async () => {
+    process.env.NODE_ENV = 'test'
+    const { takeDebNotice } = await setup()
+    expect(takeDebNotice).not.toHaveBeenCalled()
   })
 })
 
-describe('updater:quit-and-install on Linux — a window with no_new_privs cannot install', () => {
+describe("initAutoUpdater for a Linux .deb — by default, through debUpdate and Electron's own app", () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'au-deb-'))
+    Object.assign(electron.app, { getPath: vi.fn(() => dir), getVersion: vi.fn(() => '1.54.0'), quit: vi.fn() })
+  })
+  afterEach(() => {
+    for (const key of ['getPath', 'getVersion', 'quit']) delete electron.app[key]
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('tells nothing when no install left a result', async () => {
+    const { takeDebNotice: _t, ...host } = DEB_HOST
+    const mod = await freshAutoUpdater(host)
+    const send = vi.fn()
+    mod.initAutoUpdater(() => ({ webContents: { send } }) as any)
+    expect(ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle' })
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it("takes the last install's result from userData, read for the version running now", async () => {
+    writeFileSync(join(dir, DEB_RESULT_FILE), JSON.stringify({ info: { from: '1.54.0', target: '1.54.1' }, code: 126, tailHex: '' }))
+    const { takeDebNotice: _t, ...host } = DEB_HOST
+    const mod = await freshAutoUpdater(host)
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    expect(ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle', notice: DEB_CANCELLED_MESSAGE })
+    expect(existsSync(join(dir, DEB_RESULT_FILE))).toBe(false)
+  })
+
+  it('hands Restart to debUpdate, from userData', async () => {
+    // Safe only because update-downloaded names no file: startDebInstall refuses that before it
+    // looks for pkexec or spawns anything. Never give this test a real .deb path.
+    const { installDeb: _i, ...host } = DEB_HOST
+    const mod = await freshAutoUpdater(host)
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({
+      success: false,
+      error: debManualInstallMessage(undefined, DEB_NOT_STARTED_LEAD),
+    })
+    expect(electron.app.getPath).toHaveBeenCalledWith('userData')
+  })
+
+  it("quits through Electron's app once the runner has started", async () => {
+    const { quit: _q, ...host } = DEB_HOST
+    const mod = await freshAutoUpdater({ ...host, installDeb: () => ({ started: true }) })
+    mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(electron.app.quit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('updater:quit-and-install for a Linux .deb — a window with no_new_privs cannot install', () => {
   async function load(host: Partial<UpdaterHost>) {
     mockAutoUpdater.quitAndInstall.mockReset()
     const onBefore = vi.fn()
-    const mod = await freshAutoUpdater({ ...LINUX_HOST, ...host })
+    const installDeb = vi.fn((_deb: string | undefined, _version: string | undefined): DebInstallStart => ({ started: true }))
+    const mod = await freshAutoUpdater({ ...DEB_HOST, installDeb, ...host })
     const send = vi.fn()
     mod.initAutoUpdater(() => ({ webContents: { send } }) as any, { onBeforeQuitAndInstall: onBefore })
-    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
     send.mockClear()
     mockRecordUpdaterEvent.mockClear()
-    return { send, onBefore }
+    return { send, onBefore, installDeb }
   }
 
-  it("says why instead of quitting into a pkexec that can't run", async () => {
-    const { send, onBefore } = await load({ noNewPrivs: () => true })
+  it("says why instead of starting an install whose pkexec can't run", async () => {
+    // The runner would inherit the flag, and pkexec or sudo then fail outright.
+    const { send, onBefore, installDeb } = await load({ noNewPrivs: () => true })
     expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: false, error: NO_NEW_PRIVS_UPDATE_MESSAGE })
+    expect(installDeb).not.toHaveBeenCalled()
     expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
     expect(onBefore).not.toHaveBeenCalled()
     const hint = { status: 'error', error: NO_NEW_PRIVS_UPDATE_MESSAGE, reason: 'no-new-privs' }
@@ -1160,24 +1382,30 @@ describe('updater:quit-and-install on Linux — a window with no_new_privs canno
 
   it('installs as usual when the flag is clear or unknown', async () => {
     for (const noNewPrivs of [() => false, () => null]) {
-      await load({ noNewPrivs })
+      const { installDeb } = await load({ noNewPrivs })
       expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
-      expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+      expect(installDeb).toHaveBeenCalledWith(DEB, '9.9.9')
     }
   })
 
   it('lets an AppImage install, since replacing its own file needs no root', async () => {
-    await load({ noNewPrivs: () => true, appImage: true })
+    const { installDeb } = await load({ noNewPrivs: () => true, appImage: true })
     expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+    expect(installDeb).not.toHaveBeenCalled()
   })
 
   it('reads the real flag by default', async () => {
-    const { appImage: _a, noNewPrivs: _n, ...host } = LINUX_HOST
-    mockAutoUpdater.quitAndInstall.mockReset()
-    const mod = await freshAutoUpdater({ ...host, appImage: true })
+    const { noNewPrivs: _n, ...host } = DEB_HOST
+    const installDeb = vi.fn((_deb: string | undefined, _version: string | undefined): DebInstallStart => ({ started: true }))
+    const mod = await freshAutoUpdater({ ...host, installDeb })
     mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
-    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
-    // An AppImage never consults it, so this proves only that the default host wires up cleanly.
-    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({ success: true })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    // Whatever this machine's answer is (a CI container can have the flag set), Restart follows it.
+    const flagged = hasNoNewPrivs() === true
+    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual(
+      flagged ? { success: false, error: NO_NEW_PRIVS_UPDATE_MESSAGE } : { success: true },
+    )
+    expect(installDeb).toHaveBeenCalledTimes(flagged ? 0 : 1)
   })
 })
