@@ -45,6 +45,11 @@ describe('conductorRunScript on Windows', () => {
   it('still probes for a claude binary that answers --version', () => {
     expect(script).toContain('function Resolve-WorkingClaude {')
     expect(script).toContain('$claudeExe = Resolve-WorkingClaude')
+    // Only a program or a script, the first one PATH gives: any command type made 5.1 search its
+    // modules when claude was missing, and the narrowed lookup lists every match on PATH.
+    expect(script).toContain(
+      'Get-Command claude -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object Source',
+    )
   })
 
   it('leaves --mcp-config out when there is no config path, rather than pass it empty', () => {

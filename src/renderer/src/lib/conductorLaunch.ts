@@ -30,11 +30,16 @@ const NO_CLAUDE = 'No working claude binary found. Install Claude Code natively 
 // didn't run or the platform-native optional dep was skipped. PowerShell's PATH then resolves
 // `claude` to a .ps1 shim that calls the stub → "not a valid application for this OS platform" →
 // the conductor silently dies and the swarm stalls at 0 tasks. So the script probes candidate
-// locations and picks the first that actually responds to `--version`.
+// locations and picks the first that actually responds to `--version`. Only programs and scripts
+// are looked up: an alias or a function has no path to run, and when `claude` isn't on PATH,
+// asking for every command type makes 5.1 search its installed modules for one (7 s with a cold
+// module cache, against under 3 s for these two types). With -CommandType, Get-Command lists every
+// match on PATH (the npm folder's extensionless `claude` too), so -First 1 keeps the one
+// PowerShell itself would run.
 const RESOLVE_WORKING_CLAUDE = [
   'function Resolve-WorkingClaude {',
   '  $candidates = @()',
-  '  try { $candidates += (Get-Command claude -ErrorAction SilentlyContinue | ForEach-Object Source) } catch {}',
+  '  try { $candidates += (Get-Command claude -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object Source) } catch {}',
   '  $candidates += "$env:USERPROFILE\\.local\\bin\\claude.exe"',
   '  $candidates += "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\node_modules\\@anthropic-ai\\claude-code-win32-x64\\claude.exe"',
   '  $candidates += "$env:LOCALAPPDATA\\Programs\\claude-code\\claude.exe"',
