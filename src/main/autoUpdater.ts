@@ -220,9 +220,6 @@ export function initAutoUpdater(
   // From "Restart" until the app quits. An updater error in between means that quit isn't coming
   // (Squirrel.Mac failing to unpack, an installer that won't start), so the guard must guard again.
   let restartRequested = false
-  // Assigned once setState exists below; until then no update can be 'downloaded', so nothing
-  // calls it.
-  let showHint: (error: string, reason: 'no-new-privs' | 'deb-install') => void
   const cancelRestart = () => {
     if (!restartRequested) return
     restartRequested = false
@@ -346,7 +343,11 @@ export function initAutoUpdater(
       })
     } catch { /* never let telemetry crash the updater */ }
   }
-  showHint = (error, reason) => setState({ status: 'error', error, reason }, { record: false })
+  // Restart's hints. A declaration, so the handler above can name it: nothing calls it before
+  // setState exists, since until then no update can be 'downloaded'.
+  function showHint(error: string, reason: 'no-new-privs' | 'deb-install'): void {
+    setState({ status: 'error', error, reason }, { record: false })
+  }
 
   // The launch after a .deb install: what became of it, read and removed once. Only a system
   // package's runner writes it, and never a dev or test run, which returned above.
