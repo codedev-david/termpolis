@@ -762,7 +762,8 @@ describe('conductorManager — uncovered branches', () => {
         const psWrite = tp().writeConfigFile.mock.calls.find(([p]) =>
           typeof p === 'string' && p.endsWith('.termpolis-conductor-run.ps1'))
         const body = psWrite![1] as string
-        expect(body).toContain('node e2e/mocks/mock-claude.cjs -p $task')
+        // Same stdin delivery as production (GitHub #36), just without the probe.
+        expect(body).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+' \| node e2e\/mocks\/mock-claude\.cjs -p /m)
         expect(body).not.toContain('Resolve-WorkingClaude')
         expect(body).toContain('exit $LASTEXITCODE')
       } finally {

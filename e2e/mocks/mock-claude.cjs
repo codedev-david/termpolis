@@ -6,11 +6,17 @@
  *
  * Three modes:
  *   1. `--version`               → print a version banner and exit 0
- *   2. `-p "<prompt>"`           → run as the Swarm Conductor: drive MCP tools
+ *   2. `-p` / `-p "<prompt>"`    → run as the Swarm Conductor: drive MCP tools
  *                                  to create tasks, spawn agent terminals, mark
  *                                  them complete, and signal SWARM COMPLETE.
+ *                                  With no value after -p the prompt is read
+ *                                  from stdin, which is how Termpolis launches
+ *                                  the conductor (GitHub #36).
  *   3. (no recognized args)      → interactive stub used by swarm-integration
  *                                  (trust prompt + `I'll help with: X` echoes).
+ *
+ * In mode 2, MOCK_CLAUDE_RECORD=<file> writes the argv and prompt received there
+ * as JSON, so a spec can check what the conductor was actually handed.
  */
 
 const fs = require('fs');
@@ -26,39 +32,86 @@ if (argv.includes('--version')) {
   process.exit(0);
 }
 
-// --- Mode 2: -p <prompt> (smart conductor) ---
+// --- Mode 2: -p [prompt] (smart conductor) ---
 const pIdx = argv.indexOf('-p');
 if (pIdx !== -1) {
-  // MOCK_CLAUDE_BYPASS_MCP=1 simulates the v1.11.5 production failure mode:
-  // Claude Code runs the conductor prompt but its MCP registration failed
-  // (because ~/.mcp.json points at a missing adapter file), so the conductor
-  // answers directly without calling any MCP tools. We print the exact
-  // "swarm MCP tools weren't available" message that real Claude Code
-  // emitted in the production bug, then exit 0 — the renderer's
-  // conductorManager monitoring loop should detect this and surface an
-  // error notification to the user.
-  if (process.env.MOCK_CLAUDE_BYPASS_MCP === '1') {
-    console.log('[Mock Conductor] BYPASS mode — simulating MCP-unavailable path');
-    console.log('');
-    // Pick the phrasing based on the variant env — `1` uses the v1.11.5
-    // original phrasing, `v2` uses the v1.11.6 phrasing observed in prod
-    // (same root cause, different words). The regex in conductorManager
-    // must catch both.
-    if (process.env.MOCK_CLAUDE_BYPASS_PHRASING === 'v2') {
-      console.log("Note: the orchestration MCP tools (`swarm_send_message`, `swarm_create_task`, `create_terminal`, etc.) aren't registered in this session, so I built the SPA directly rather than sitting idle.");
-    } else {
-      console.log("Note: swarm MCP tools weren't available in this session, so I built it directly rather than orchestrating multiple agents.");
-    }
-    console.log('');
-    console.log('I have completed the task. No further swarm coordination required.');
-    process.exit(0);
-  }
-  runConductor(argv[pIdx + 1] || '').catch((err) => {
-    console.error('[Mock Conductor] fatal:', err && err.stack ? err.stack : err);
+  // Like the real CLI, an option it doesn't know ends the run before anything
+  // happens. That is what a prompt cut up on the command line did to the
+  // conductor on Windows (GitHub #36): a piece such as `--watch …` arrived as
+  // an option, and claude exited with "error: unknown option".
+  const unknown = unknownOption(argv);
+  if (unknown) {
+    console.error(`error: unknown option '${unknown}'`);
     process.exit(1);
-  });
+  }
+  readPrompt(argv, pIdx)
+    .then((prompt) => {
+      if (process.env.MOCK_CLAUDE_RECORD) {
+        fs.writeFileSync(process.env.MOCK_CLAUDE_RECORD, JSON.stringify({ argv, prompt }));
+      }
+      if (!prompt) {
+        console.error('Error: Input must be provided either through stdin or as a prompt argument when using --print');
+        process.exit(1);
+      }
+      // MOCK_CLAUDE_BYPASS_MCP=1 simulates the v1.11.5 production failure mode:
+      // Claude Code runs the conductor prompt but its MCP registration failed
+      // (because ~/.mcp.json points at a missing adapter file), so the conductor
+      // answers directly without calling any MCP tools. We print the exact
+      // "swarm MCP tools weren't available" message that real Claude Code
+      // emitted in the production bug, then exit 0 — the renderer's
+      // conductorManager monitoring loop should detect this and surface an
+      // error notification to the user.
+      if (process.env.MOCK_CLAUDE_BYPASS_MCP === '1') {
+        console.log('[Mock Conductor] BYPASS mode — simulating MCP-unavailable path');
+        console.log('');
+        // Pick the phrasing based on the variant env — `1` uses the v1.11.5
+        // original phrasing, `v2` uses the v1.11.6 phrasing observed in prod
+        // (same root cause, different words). The regex in conductorManager
+        // must catch both.
+        if (process.env.MOCK_CLAUDE_BYPASS_PHRASING === 'v2') {
+          console.log("Note: the orchestration MCP tools (`swarm_send_message`, `swarm_create_task`, `create_terminal`, etc.) aren't registered in this session, so I built the SPA directly rather than sitting idle.");
+        } else {
+          console.log("Note: swarm MCP tools weren't available in this session, so I built it directly rather than orchestrating multiple agents.");
+        }
+        console.log('');
+        console.log('I have completed the task. No further swarm coordination required.');
+        process.exit(0);
+      }
+      return runConductor(prompt);
+    })
+    .catch((err) => {
+      console.error('[Mock Conductor] fatal:', err && err.stack ? err.stack : err);
+      process.exit(1);
+    });
 } else {
   runInteractive();
+}
+
+// The options the conductor launch can pass, each with how many values it takes.
+// -p takes the prompt as its value only when one follows; otherwise it's on stdin.
+function unknownOption(args) {
+  const values = { '--mcp-config': 1, '--model': 1, '--output-format': 1 };
+  const flags = new Set(['-p', '--print', '--dangerously-skip-permissions', '--verbose']);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (values[a]) { i += values[a]; continue; }
+    if (flags.has(a)) continue;
+    if (a.startsWith('-')) return a;
+  }
+  return null;
+}
+
+function readPrompt(args, at) {
+  const next = args[at + 1];
+  if (next !== undefined && !next.startsWith('-')) return Promise.resolve(next);
+  if (process.stdin.isTTY) return Promise.resolve('');
+  return new Promise((resolve, reject) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c) => { data += c; });
+    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('error', reject);
+  });
 }
 
 // ───────────────────────────────────────────────────────────────────────────

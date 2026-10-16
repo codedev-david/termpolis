@@ -2,6 +2,7 @@ import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../store/terminalStore'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
+import { conductorRunScript, conductorLaunchCommand } from './conductorLaunch'
 import { getTerminalDefaults } from './terminalDefaults'
 import { recordSwarmError } from './sentry'
 
@@ -184,122 +185,21 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const mcpCfgRes = await window.termpolis.getMcpConfigPath()
   const mcpConfigPath = mcpCfgRes.success && mcpCfgRes.data ? mcpCfgRes.data : ''
 
-  // Launch Claude Code with -p flag reading from the temp file.
+  // Launch Claude Code with -p, its prompt piped in from the temp file (see conductorLaunch.ts).
   // Claude -p with --dangerously-skip-permissions HAS full tool access
   // (MCP tools, file read/write, bash execution) — it's just non-interactive.
   //
-  // The npm-global Claude Code install can end up with a broken bin/claude.exe
-  // stub when postinstall didn't run or the platform-native optional dep was
-  // skipped. In that case PowerShell's PATH resolves `claude` to a .ps1 shim
-  // that calls the stub → "not a valid application for this OS platform" →
-  // conductor silently dies and the swarm stalls at 0 tasks. The script below
-  // probes candidate locations and picks the first one that actually responds
-  // to `--version`, so the conductor survives broken installs.
+  // In E2E test mode the command is substituted to a node-based mock shim, which can't pass
+  // the production script's `--version` probe, so the script runs it directly instead.
   const claudeCmd = resolveAgentCommand('claude')
-  // In E2E test mode the command is substituted to a node-based mock shim.
-  // The production Resolve-WorkingClaude preamble probes PATH + well-known
-  // install locations and verifies the binary prints "Claude Code" — the mock
-  // doesn't pass that check, so in test mode we skip the preamble and invoke
-  // the substituted command directly (same as the pre-regression path).
-  const isTestMode = claudeCmd !== 'claude'
-  let runCmd: string
-  if (isWindows) {
-    const scriptFile = homeSlash + '/.termpolis-conductor-run.ps1'
-    const taskPath = tempFile.replace(/\//g, '\\')
-    const mcpConfigWin = mcpConfigPath.replace(/\//g, '\\')
-    // Only emit the --mcp-config flag when we actually have a path; an empty
-    // value would turn into `--mcp-config ""` and Claude would error out.
-    const mcpFlag = mcpConfigWin
-      ? ` --mcp-config "${mcpConfigWin}"`
-      : ''
-    const psScript = isTestMode
-      ? [
-          `$task = Get-Content -Raw "${taskPath}"`,
-          `${claudeCmd} -p $task${mcpFlag} --dangerously-skip-permissions`,
-          'exit $LASTEXITCODE',
-          '',
-        ].join('\n')
-      : [
-          'function Resolve-WorkingClaude {',
-          '  $candidates = @()',
-          '  try { $candidates += (Get-Command claude -ErrorAction SilentlyContinue | ForEach-Object Source) } catch {}',
-          '  $candidates += "$env:USERPROFILE\\.local\\bin\\claude.exe"',
-          '  $candidates += "$env:APPDATA\\npm\\node_modules\\@anthropic-ai\\claude-code\\node_modules\\@anthropic-ai\\claude-code-win32-x64\\claude.exe"',
-          '  $candidates += "$env:LOCALAPPDATA\\Programs\\claude-code\\claude.exe"',
-          '  foreach ($c in $candidates) {',
-          '    if (-not $c) { continue }',
-          '    if (-not (Test-Path $c)) { continue }',
-          '    try {',
-          '      $out = & $c --version 2>&1',
-          '      if ($LASTEXITCODE -eq 0 -and "$out" -match "Claude Code") { return $c }',
-          '    } catch {}',
-          '  }',
-          '  Write-Error "No working claude binary found. Install Claude Code natively or run: npm install -g @anthropic-ai/claude-code --force"',
-          '  exit 1',
-          '}',
-          '$claudeExe = Resolve-WorkingClaude',
-          `$task = Get-Content -Raw "${taskPath}"`,
-          `& $claudeExe -p $task${mcpFlag} --dangerously-skip-permissions`,
-          'exit $LASTEXITCODE',
-          '',
-        ].join('\n')
-    await window.termpolis.writeConfigFile(scriptFile, psScript)
-    // Launch inline from the pwsh 7 / PS 5.1 conductor terminal using a
-    // pure PowerShell one-liner. No dependency on PATH for `cmd` or bare
-    // `powershell`:
-    //   - pwsh 7 intentionally omits Windows PowerShell from its PATH, so
-    //     bare `powershell` fails.
-    //   - If the renderer process inherited a stripped PATH that's missing
-    //     System32, bare `cmd` also fails (this was the v1.11.4 regression).
-    // Invoking PS 5.1 by its canonical absolute path, with the current
-    // interpreter as a fallback, sidesteps PATH entirely. Test-Path and the
-    // call operator `&` are built-in PowerShell language — guaranteed to
-    // work in any PS session.
-    const scriptFileWin = scriptFile.replace(/\//g, '\\')
-    const ps51Path = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
-    runCmd =
-      `$p='${ps51Path}'; ` +
-      `if (-not (Test-Path $p)) { $p=(Get-Process -Id $PID).Path }; ` +
-      `& $p -ExecutionPolicy Bypass -File '${scriptFileWin}'`
-  } else {
-    const scriptFile = homeSlash + '/.termpolis-conductor-run.sh'
-    // Single-quote the path so bash doesn't interpret it; apostrophes in
-    // Windows-style home dirs don't happen on Unix so single-quoting is safe.
-    const mcpFlagSh = mcpConfigPath
-      ? ` --mcp-config '${mcpConfigPath}'`
-      : ''
-    const shScript = isTestMode
-      ? [
-          '#!/bin/bash',
-          `${claudeCmd} -p "$(cat '${tempFile}')"${mcpFlagSh} --dangerously-skip-permissions`,
-          '',
-        ].join('\n')
-      : [
-          '#!/bin/bash',
-          'resolve_claude() {',
-          '  local cands=()',
-          '  command -v claude >/dev/null 2>&1 && cands+=("$(command -v claude)")',
-          '  cands+=("$HOME/.local/bin/claude")',
-          '  cands+=("/usr/local/bin/claude")',
-          '  cands+=("/opt/homebrew/bin/claude")',
-          '  for c in "${cands[@]}"; do',
-          '    [ -x "$c" ] || continue',
-          '    if out=$("$c" --version 2>&1) && echo "$out" | grep -q "Claude Code"; then',
-          '      echo "$c"; return 0',
-          '    fi',
-          '  done',
-          '  return 1',
-          '}',
-          'CLAUDE_EXE=$(resolve_claude) || {',
-          '  echo "No working claude binary found. Install Claude Code natively or run: npm install -g @anthropic-ai/claude-code --force" >&2',
-          '  exit 1',
-          '}',
-          `"$CLAUDE_EXE" -p "$(cat '${tempFile}')"${mcpFlagSh} --dangerously-skip-permissions`,
-          '',
-        ].join('\n')
-    await window.termpolis.writeConfigFile(scriptFile, shScript)
-    runCmd = `bash "${scriptFile}"`
-  }
+  const testCommand = claudeCmd !== 'claude' ? claudeCmd : undefined
+  const native = (p: string): string => (isWindows ? p.replace(/\//g, '\\') : p)
+  const scriptFile = homeSlash + (isWindows ? '/.termpolis-conductor-run.ps1' : '/.termpolis-conductor-run.sh')
+  await window.termpolis.writeConfigFile(
+    scriptFile,
+    conductorRunScript(isWindows, { taskFile: native(tempFile), mcpConfigPath: native(mcpConfigPath), testCommand }),
+  )
+  const runCmd = conductorLaunchCommand(isWindows, native(scriptFile))
   window.termpolis.writeToTerminal(id, runCmd + '\r')
   // Diagnostic hook — E2E tests read this to verify the launch command shape
   // without having to monkey-patch the frozen contextBridge-exposed termpolis API.

@@ -854,14 +854,40 @@ describe('conductorManager', () => {
       )
       const psBody = (psCall?.[1] as string) ?? ''
       expect(psBody).toContain('--mcp-config')
-      // Windows-backslash form of the mocked userData path
-      expect(psBody).toMatch(/--mcp-config "[^"]*claude-mcp-config\.json"/)
+      // Windows-backslash form of the mocked userData path, as a single-quoted literal
+      expect(psBody).toMatch(/--mcp-config '[^']*\\userData\\claude-mcp-config\.json'/)
       // --mcp-config must precede --dangerously-skip-permissions so headless
       // Claude sees the MCP config (order matters less to the CLI, but we
       // want a deterministic shape so future edits don't silently drop it).
       expect(psBody.indexOf('--mcp-config')).toBeLessThan(
         psBody.indexOf('--dangerously-skip-permissions'),
       )
+    })
+
+    // GitHub #36 — 5.1 passes a native argument in quotes and escapes nothing, so with the
+    // prompt in argv every `"` in it ended the argument and `--watch`-like words arrived as
+    // options. claude rejected them and exited before it did anything.
+    it('ps1 script pipes the task file into claude on stdin, never on its command line', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const psCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.ps1'),
+      )
+      const psBody = (psCall?.[1] as string) ?? ''
+      expect(psBody).toMatch(
+        /^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']*\\\.termpolis-conductor-task\.md' \| & \$claudeExe -p --mcp-config '[^']+' --dangerously-skip-permissions$/m,
+      )
+      expect(psBody).not.toContain('$task')
+    })
+
+    it('ps1 script sets $OutputEncoding and the console input encoding to UTF-8 without a BOM', async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const psCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.ps1'),
+      )
+      const psBody = (psCall?.[1] as string) ?? ''
+      expect(psBody).toContain('$enc = New-Object System.Text.UTF8Encoding $false')
+      expect(psBody).toMatch(/^\$OutputEncoding = \$enc$/m)
+      expect(psBody).toMatch(/\[Console\]::InputEncoding = \$enc/)
     })
 
     it('ps1 script fetches the MCP config path via the IPC bridge at launch', async () => {
@@ -993,6 +1019,24 @@ describe('conductorManager', () => {
       expect(shBody.indexOf('--mcp-config')).toBeLessThan(
         shBody.indexOf('--dangerously-skip-permissions'),
       )
+    })
+
+    // `-p "$(cat file)"` quoted correctly, but one argument is capped at 128 KiB on Linux.
+    it('sh script feeds the task file on stdin rather than as an argument', async () => {
+      const startPromise = startConductor('/tmp/project')
+      await vi.advanceTimersByTimeAsync(2000)
+      await vi.advanceTimersByTimeAsync(5000)
+      await startPromise
+      await sendTask('Build', '/tmp/project')
+
+      const writeConfigCalls = (window.termpolis.writeConfigFile as ReturnType<typeof vi.fn>).mock.calls
+      const shCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.sh'),
+      )
+      const shBody = (shCall?.[1] as string) ?? ''
+      expect(shBody).toContain("TASK_FILE='/tmp/.termpolis-conductor-task.md'")
+      expect(shBody).toMatch(/^"\$CLAUDE_EXE" -p --mcp-config '[^']+' --dangerously-skip-permissions < "\$TASK_FILE"$/m)
+      expect(shBody).not.toContain('$(cat')
     })
   })
 })

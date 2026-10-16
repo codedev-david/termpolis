@@ -212,8 +212,11 @@ test.describe.serial('Swarm End-to-End', () => {
   })
 
   test('5. Fill in Goal and click Launch Swarm', async () => {
+    // Double quotes and option-like words on purpose (GitHub #36): on the command line through
+    // Windows PowerShell 5.1 they split the prompt, and the mock, like claude, exits on the
+    // `--watch` piece. On stdin they reach the conductor untouched.
     const goalText =
-      'Build a small contact-form feature — capture name/email/message, validate inputs, and show a confirmation message.'
+      'Build a small contact-form feature — capture "name", "email" and "message", validate inputs (as "npm test --watch -NoProfile" would), and show a confirmation message.'
 
     const goal = wizard().locator('textarea[placeholder*="contact form"]').first()
     await goal.click()
@@ -256,7 +259,7 @@ test.describe.serial('Swarm End-to-End', () => {
     expect(content).toContain('Swarm Conductor')
     expect(content).toContain('swarm_create_task')
     expect(content).toContain('create_terminal')
-    expect(content).toContain('contact-form')
+    expect(content).toContain('capture "name", "email" and "message"')
   })
 
   test('8. Smart mock conductor creates 2 tasks via MCP (swarm_create_task)', async () => {

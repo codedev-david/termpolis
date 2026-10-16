@@ -15,6 +15,7 @@
 
 import path from 'path'
 import { isSafeModelId } from './modelCatalog'
+import { psQuote } from '../shared/shellQuote'
 
 export type SecondOpinionAgent = 'claude' | 'codex' | 'gemini'
 
@@ -150,11 +151,6 @@ export function secondOpinionCommand(agent: SecondOpinionAgent, model?: string, 
       return { bin: 'agy', args: agyReadOnlyArgs(model, timeoutMs, ['--disable-slash-commands']) }
   }
 }
-
-/** A PowerShell single-quoted literal. Nothing inside one is special except a single quote, which
- *  doubles, and PowerShell reads the typographic ones (U+2018 to U+201B) as single quotes too.
- *  Doubling only `'` once let a folder name holding `\u2019` close the literal and run the rest. */
-const psQuote = (s: string): string => `'${s.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`
 
 /** What 5.1 counts as whitespace when it decides to wrap a native argument in quotes: .NET's
  *  char.IsWhiteSpace. JS's `\s` differs by NEL (U+0085, .NET only) and the BOM (U+FEFF, JS
