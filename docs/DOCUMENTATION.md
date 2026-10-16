@@ -838,7 +838,19 @@ The bottom strip shows, left to right:
 
 ### Updates & performance
 
-**Update notification appears but the update doesn't install.** The auto-updater needs write access to the app bundle. On Windows, run the installer manually from GitHub Releases if the in-app updater fails. On macOS, drag the new DMG contents over the existing app (it'll prompt for admin). On Linux, download and replace the AppImage.
+**Update notification appears but the update doesn't install.** The auto-updater needs write access to the app bundle. On Windows, run the installer manually from GitHub Releases if the in-app updater fails. On macOS, drag the new DMG contents over the existing app (it'll prompt for admin). On Linux, download and replace the AppImage, or see below for the .deb.
+
+**How an update of the Linux .deb installs (1.54.0 and later).** When the banner says an update is ready, **Restart now** closes Termpolis at once. Your desktop then asks for your administrator password, once, in its own dialog ("Authentication is needed to run `/bin/sh' as the super user"), and installs the downloaded package. Termpolis opens again by itself: the new version, or the one you had if nothing was installed. Quitting Termpolis never installs the update and never asks for your password, so **Restart now** is the only way in, and the banner keeps offering it until you use it. When Termpolis opens again without the new version, the banner says why:
+
+- **"Update not installed: the administrator prompt was cancelled."** You closed the password dialog. **Restart now** comes back with the next update check, a few seconds after Termpolis opens, or press **Check for updates** in Settings.
+- **"…couldn't get administrator rights to install it…"** No password dialog could be shown (no polkit authentication agent is running, or the system said no). The banner gives the command to run in a terminal instead, `sudo apt install` and the downloaded file.
+- **"Update not installed."** followed by an error. dpkg or apt-get failed, and that is their error. The full output is in `update-install.log` in the data directory.
+
+When the new version does open but dpkg or apt-get reported a problem on the way, the banner says so ("Termpolis 1.54.1 is installed, but the installer reported a problem"), with their error.
+
+On a system without pkexec, Termpolis asks through `sudo -A` and its own password dialog (zenity, kdialog or ssh-askpass), which shows the whole command. With neither, the banner gives the command to run. If you open Termpolis yourself while the password dialog is up, **Restart now** there says an update is already being installed rather than starting a second one.
+
+**Updating from 1.53 to 1.54 (Linux .deb).** This one update still runs 1.53's installer, which waits for the install inside the window. When you click **Restart now**, Termpolis stops responding while the password dialog is up and the install runs, and your desktop may say it is not responding: click **Wait**, and Termpolis restarts on 1.54.0 once the install has finished. (After Force Quit, open Termpolis again: the install usually finished anyway.) With the update downloaded, quitting 1.53 asks for your password after the window has closed; entering it installs 1.54.0, so give it a minute before you open Termpolis again. Or install 1.54.0 yourself: quit Termpolis, download `termpolis_1.54.0_amd64.deb` from GitHub Releases, and run `sudo apt install ./termpolis_1.54.0_amd64.deb` in your desktop's terminal, in the folder you saved it to. Updates after 1.54.0 install as described above.
 
 **App is slow to start / very high memory.** A corrupted session file occasionally causes runaway restoration. Back up `session.json` in your data directory, then delete it and relaunch — you lose restored workspace state but the app is back to a clean baseline.
 

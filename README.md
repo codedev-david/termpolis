@@ -344,17 +344,17 @@ Full docs with screenshots: **[termpolis.com/docs](https://termpolis.com/docs.ht
 
 ### Installing the Linux .deb
 
-Use `dpkg`, **not** `sudo apt install ./termpolis*.deb`. On Ubuntu 22.04+ apt drops to a sandboxed `_apt` user that can't read files in your home directory, which fails with *"Permission denied / pkgAcquireRun: 13"*. `dpkg` doesn't drop privileges, so it works regardless of where the .deb is saved:
+Install it with apt, in the folder you saved it to. apt also installs anything it depends on that is missing (libgtk, libnss3, …):
 
 ```bash
-sudo dpkg -i ./termpolis_*.deb
+sudo apt install ./termpolis_*.deb
 ```
 
-That's the only command you need on v1.11.31+. The package's postinst takes care of the rest automatically:
+From a folder in your home directory apt prints a notice that the download *"is performed unsandboxed as root"* because its `_apt` user can't read the file (*"pkgAcquire::Run (13: Permission denied)"*). That is only a notice: the install goes ahead. `sudo dpkg -i ./termpolis_*.deb` works too, but installs no missing dependency; if it says any are missing, run `sudo apt-get install -f` after it.
 
-- runs `apt-get install -f -y` to pull any missing transitive deps (libgtk, libnss3, …),
-- refreshes the desktop + hicolor icon caches so the launcher icon shows up without a logout, and
-- the .desktop entry passes `--no-sandbox` on its `Exec=` line, so clicking the dock icon starts the app even where Chromium's sandbox can't (Ubuntu 24.04 restricts the user namespaces it needs).
+The package refreshes the desktop and hicolor icon caches, so the launcher icon shows up without a logout. Its .desktop entry passes `--no-sandbox` on its `Exec=` line, so clicking the dock icon starts the app even where Chromium's sandbox can't (Ubuntu 24.04 restricts the user namespaces it needs).
+
+**Updates.** Termpolis downloads updates itself, and the banner offers **Restart now** once one is ready. Since v1.54.0, Restart closes Termpolis at once, your desktop asks for your administrator password once, and Termpolis opens again on the new version; if you cancel the password dialog, it opens again on the version you had and says so. Quitting Termpolis no longer installs an update, or asks for your password. **The update from 1.53 to 1.54 still runs 1.53's installer:** the window stops responding while the password dialog is up and the install runs, and your desktop may offer to Force Quit it. Click **Wait**, and Termpolis restarts on 1.54.0. Or quit Termpolis and install 1.54.0 from a terminal with `sudo apt install ./termpolis_1.54.0_amd64.deb`. More in [Troubleshooting](docs/DOCUMENTATION.md#updates--performance).
 
 If you ever need to launch from a shell with the same flag: `/opt/Termpolis/termpolis --no-sandbox`. If the window opens blank or black (some NVIDIA / Wayland drivers), start it with `TERMPOLIS_DISABLE_GPU=1` to turn the GPU off.
 
