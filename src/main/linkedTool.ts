@@ -29,8 +29,10 @@ import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { resolveMachine, type LinkedMachineView } from './linkedDirectory'
 import { refOf, targetOf } from './linkedStore'
 import {
+  MAX_ERROR_CHARS,
   MAX_OUTPUT_CHARS,
   MAX_PROMPT_CHARS,
+  SCREEN_LOOKBACK_CHARS,
   activitySummary,
   foundAny,
   mergeScreens,
@@ -62,8 +64,8 @@ export interface LinkedToolDeps {
   /** peerAnswerBanner(inspectResult(text, 210_000), machine, agent): a job's output or error,
    *  always labelled. */
   frame(text: string, machine: string, agent: string): string
-  /** aiSecurity.screenText. */
-  screen(text: string): SecretScreen
+  /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters. */
+  screen(text: string, keep?: number): SecretScreen
   /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary). */
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
@@ -103,7 +105,6 @@ const MAX_REMEMBERED_JOBS = 100
  *  from here. A few are enough: an agent asks again for the job it is waiting on. */
 const MAX_CHECKED_ANSWERS = 8
 
-const MAX_ERROR_CHARS = 4_000
 const MAX_REFUSAL_CHARS = 1_000
 
 const PEER_AGENTS: readonly PeerAgent[] = ['claude', 'codex', 'gemini']
@@ -218,6 +219,11 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
+/** `text`'s end, behind an ellipsis, when it is longer than `max`. */
+function clipEnd(text: string, max: number): string {
+  return text.length > max ? `…${text.slice(text.length - (max - 1))}` : text
+}
+
 function jobViewOf(v: unknown, expectedId?: string): JobView | null {
   if (!isRecord(v)) return null
   const { jobId, agent, status, output, truncated, error, durationMs } = v
@@ -249,22 +255,32 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     }
   }
 
+  /** The last `keep` characters of `text`, screened before they are cut from the rest, with as much
+   *  before them in view as a credential the cut runs through can reach back (linkedJobs'
+   *  screenTail, which the other machine runs on its side). A version that sent more than it may
+   *  is not screened whole. */
+  function screenTail(text: string, keep: number): SecretScreen {
+    return deps.screen(text.slice(Math.max(0, text.length - keep - SCREEN_LOOKBACK_CHARS)), keep)
+  }
+
   /** A job's output and error as an agent may read them: screened and labelled, with notes for
    *  what screening found. Once per finished job. */
   function check(job: Followed, view: JobView): Checked {
     const finished = view.status !== 'running'
     const known = finished ? checked.get(job.jobId) : undefined
     if (known) return known
-    // The tail, as the other machine keeps it, so a version that sent more is not screened whole.
+    // The tails, as the other machine keeps them: the output's, and the error's behind an ellipsis.
     const long = view.output !== undefined && view.output.length > MAX_OUTPUT_CHARS
-    const output = view.output === undefined ? null : deps.screen(long ? (view.output as string).slice(-MAX_OUTPUT_CHARS) : (view.output as string))
-    const error = view.error === undefined ? null : deps.screen(clip(view.error, MAX_ERROR_CHARS))
+    const output = view.output === undefined ? null : screenTail(view.output, MAX_OUTPUT_CHARS)
+    const longError = view.error !== undefined && view.error.length > MAX_ERROR_CHARS
+    const error = view.error === undefined ? null : screenTail(view.error, longError ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS)
     const found = mergeScreens([output, error])
     reportSecrets({ hop: 'answer-in', machine: job.name, agent: view.agent, removed: found.removed, flagged: found.flagged })
     const out: Checked = {
       ...(output ? { output: deps.frame(output.text, job.name, view.agent) } : {}),
       ...(long ? { truncated: true } : {}),
-      ...(error ? { error: deps.frame(clip(error.text, MAX_ERROR_CHARS), job.name, view.agent) } : {}),
+      // Cut again after, from the end: a marker can be longer than what it replaced.
+      ...(error ? { error: deps.frame(clipEnd(longError ? `…${error.text}` : error.text, MAX_ERROR_CHARS), job.name, view.agent) } : {}),
       notes: secretNotes(found, 'this answer'),
     }
     if (finished) {

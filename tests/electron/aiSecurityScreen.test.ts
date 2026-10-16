@@ -7,6 +7,10 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
 import { RULES, maskForDisplay, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
+import { MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS } from '../../src/main/linkedJobs'
+
+/** The most an answer is screened on: its tail, and the lookback before it. */
+const LARGEST = MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS
 
 const ANTHROPIC = `sk-ant-${'a'.repeat(30)}`
 const GH = `ghp_${'b'.repeat(36)}`
@@ -139,6 +143,29 @@ describe('screenText', () => {
     expect(twice.flagged).toEqual({ password_literal: 1, contextual_secret: 1 })
   })
 
+  it('keeps only the tail it is asked for, screened with what came before it in view', () => {
+    const before = 'log line\n'.repeat(10)
+    // A key block the cut runs through, 40 characters in (past its BEGIN line): found whole, and
+    // the tail starts with its marker.
+    const block = `${before}${PEM}\nDone.`
+    const r = screenText(block, block.length - before.length - 40)
+    expect(r).toEqual({ text: '[REDACTED:private_key]\nDone.', removed: { private_key: 1 }, flagged: {} })
+    // A token the cut runs through two characters in: the same.
+    const token = `${before}use ${GH} now`
+    expect(screenText(token, token.length - before.length - 6)).toEqual({ text: '[REDACTED:gh_pat] now', removed: { gh_pat: 1 }, flagged: {} })
+    // What is wholly before the cut is not counted: it is not in what is kept.
+    const gone = `${GH}\nconst password = "hunter2hunter2"\n${before}${AWS}`
+    expect(screenText(gone, before.length + AWS.length)).toEqual({ text: `${before}[REDACTED:aws_access_key]`, removed: { aws_access_key: 1 }, flagged: {} })
+    // A possible credential the cut runs through is reported, and left as it is.
+    const look = `${before}const password = "hunter2hunter2"`
+    expect(screenText(look, 10)).toEqual({ text: 'r2hunter2"', removed: {}, flagged: { password_literal: 1, contextual_secret: 1 } })
+    // A cut between two matches keeps the text between them as it is.
+    expect(screenText(`${GH} middle ${AWS}`, ` middle ${AWS}`.length).text).toBe(' middle [REDACTED:aws_access_key]')
+    // A tail as long as the text is the whole text.
+    expect(screenText(block, block.length)).toEqual(screenText(block))
+    expect(screenText(block, block.length + 5)).toEqual(screenText(block))
+  })
+
   it('counts every occurrence, and returns empty text and nothing found for nothing', () => {
     expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {} })
     expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {} })
@@ -146,17 +173,18 @@ describe('screenText', () => {
     expect(screenText(undefined as unknown as string)).toEqual({ text: '', removed: {}, flagged: {} })
   })
 
-  it('stays fast on a crafted 200 KB answer: thousands of tokens, near-miss lookaheads, open key blocks', () => {
-    const tokens = Array.from({ length: 9_000 }, (_, i) => `xoxb-${String(i).padStart(12, '0')}`).join(' ')
-    const hex = `${Array.from({ length: 5_000 }, () => 'a'.repeat(37)).join(' ')} cloudflare`
-    const blocks = `-----BEGIN RSA PRIVATE KEY-----\n${'A'.repeat(64)}\n`.repeat(2_000)
+  it('stays fast on the most of a crafted answer it screens: thousands of tokens, near-miss lookaheads, open key blocks', () => {
+    const tokens = Array.from({ length: 15_000 }, (_, i) => `xoxb-${String(i).padStart(12, '0')}`).join(' ')
+    const hex = `${Array.from({ length: 7_000 }, () => 'a'.repeat(37)).join(' ')} cloudflare`
+    const blocks = `-----BEGIN RSA PRIVATE KEY-----\n${'A'.repeat(64)}\n`.repeat(2_800)
     for (const text of [tokens, hex, blocks]) {
+      expect(text.length).toBeGreaterThan(LARGEST)
       const t = performance.now()
-      screenText(text.slice(0, 200_000))
+      screenText(text.slice(0, LARGEST), MAX_OUTPUT_CHARS)
       // Generous for a loaded CI box; the unbounded patterns took seconds on the first input.
       expect(performance.now() - t).toBeLessThan(1_500)
     }
-    expect(screenText(tokens).removed.slack_token).toBe(9_000)
+    expect(screenText(tokens).removed.slack_token).toBe(15_000)
   })
 })
 
@@ -220,11 +248,14 @@ describe('every rule in linear time on text another computer wrote', () => {
     }
   })
 
-  it('screens 200,000 characters of any of them in well under a second (an answer is at most 200,000)', () => {
+  it('screens the most an answer is screened on, of any of them, in well under a second', () => {
+    // An answer keeps its last 200,000 characters, and is screened with the 65,536 before them
+    // (linkedJobs' MAX_OUTPUT_CHARS and SCREEN_LOOKBACK_CHARS): 265,536 in all.
+    expect(LARGEST).toBe(265_536)
     for (const unit of RUNS) {
-      const text = run(unit, 200_000)
+      const text = run(unit, LARGEST)
       // A quadratic rule takes ten seconds here, which the test above can't always tell from noise.
-      expect(bestOf3(() => screenText(text)), JSON.stringify(unit)).toBeLessThan(1_000)
+      expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS)), JSON.stringify(unit)).toBeLessThan(1_000)
     }
   })
 })

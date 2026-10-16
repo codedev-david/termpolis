@@ -179,8 +179,9 @@ export interface LinkedHostBinding {
   agentsInstalled(): Promise<AgentsInstalled>
   /** aiSecurity.screenText, which every prompt and answer between two computers
    *  goes through, on both. Bound by the app rather than imported, as every
-   *  other dependency here is. */
-  screenSecrets(text: string): SecretScreen
+   *  other dependency here is. With `keep`, what it made of the last `keep`
+   *  characters only: an answer is screened before it is cut to its tail. */
+  screenSecrets(text: string, keep?: number): SecretScreen
   /** aiSecurity.maskForDisplay: a job's summary with every possible credential taken out, the
    *  heuristic ones too, before the Activity list shows it, the job history keeps it or a
    *  notification shows it. screenSecrets leaves those in what crosses, which has to stay usable
@@ -787,7 +788,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     now,
     randomId: () => randomBytes(6).toString('hex'),
     onActivity: noteActivity,
-    screen: (text) => b.screenSecrets(text),
+    screen: (text, keep) => b.screenSecrets(text, keep),
     mask: (text) => b.maskSecrets(text),
     onSecrets: auditSecrets,
   })
@@ -830,7 +831,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     localName: () => machineName,
     inspect: (text, machine, agent) => riskBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
     frame: (text, machine, agent) => peerAnswerBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
-    screen: (text) => b.screenSecrets(text),
+    screen: (text, keep) => b.screenSecrets(text, keep),
     mask: (text) => b.maskSecrets(text),
     onSecrets: auditSecrets,
     onActivity: noteActivity,

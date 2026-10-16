@@ -3,18 +3,21 @@ import * as path from 'path'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import type { LinkTarget, PeerJobView } from '../../src/main/remoteBridge/protocol'
 import type { LinkMeta } from '../../src/main/linkedStore'
-import type { SecretScreen } from '../../src/main/aiSecurity'
+import { maskForDisplay, screenText, type SecretScreen } from '../../src/main/aiSecurity'
 import {
   JOB_RETENTION_MS,
+  MAX_ERROR_CHARS,
   MAX_FINISHED_JOBS,
   MAX_OUTPUT_CHARS,
   MAX_OUTPUT_JSON_BYTES,
   MAX_PROMPT_CHARS,
+  SCREEN_LOOKBACK_CHARS,
   WITHHELD,
   activitySummary,
   createLinkedJobs,
   type LinkedActivity,
   type LinkedJobsDeps,
+  type LinkedSecretFinding,
 } from '../../src/main/linkedJobs'
 
 const HOME = path.resolve('/home/tester')
@@ -952,11 +955,11 @@ describe('credentials on the way in and out', () => {
     expect(findings).toEqual([{ hop: 'answer-out', machine: 'laptop', agent: 'codex', removed: { fake_key: 2 }, flagged: { fake_pass: 1 } }])
   })
 
-  it('screens only the tail of a huge stdout, then caps what a marker added', async () => {
-    const seen: number[] = []
+  it('screens only the tail of a huge stdout and what a cut through it could reach, then caps what a marker added', async () => {
+    const seen: Array<[number, number | undefined]> = []
     const h = setup({
-      screen: (text) => {
-        seen.push(text.length)
+      screen: (text, keep) => {
+        seen.push([text.length, keep])
         return { text: `${text}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} }
       },
     })
@@ -964,7 +967,15 @@ describe('credentials on the way in and out', () => {
     h.runs[0].resolve(result({ output: 'x'.repeat(5_000_000) }))
     await flush()
     const done = await poll(h, v.jobId)
-    expect(seen[seen.length - 1]).toBe(MAX_OUTPUT_CHARS)
+    // The prompt whole, then the answer's tail with the lookback before it.
+    expect(seen).toEqual([[17, undefined], [MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS, MAX_OUTPUT_CHARS]])
+    // One within that reach is screened whole; of a long stderr, the end it keeps and the
+    // lookback before it.
+    const w = await start(h)
+    h.runs[1].resolve(result({ ok: false, output: 'x'.repeat(250_000), error: 'e'.repeat(1_000_000), code: 1 }))
+    await flush()
+    await poll(h, w.jobId)
+    expect(seen.slice(2)).toEqual([[17, undefined], [250_000, MAX_OUTPUT_CHARS], [MAX_ERROR_CHARS - 1 + SCREEN_LOOKBACK_CHARS, MAX_ERROR_CHARS - 1]])
     expect(done.output?.length).toBe(MAX_OUTPUT_CHARS)
     expect(done.output?.endsWith('[REDACTED:grown]')).toBe(true)
     expect(done.truncated).toBe(true)
@@ -987,6 +998,96 @@ describe('credentials on the way in and out', () => {
   })
 })
 
+// The real rules, because what matters here is how they meet the cut: a credential the cut runs
+// through must still be found whole, BEGIN line or prefix and all.
+describe('an answer longer than it may be: screened, then cut', () => {
+  /** A key's body lines, in both cases as base64 is, each its own. */
+  const BODY = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
+  const BLOCK = ['-----BEGIN RSA PRIVATE KEY-----', ...BODY, '-----END RSA PRIVATE KEY-----', ''].join('\n')
+  /** Anything of a key's body: 12 characters of a line, or a line's own number. */
+  const BODY_PIECE = /(?:Ab){6}|\d{8}/
+  const SECRET = 'q'.repeat(36)
+  const TOKEN = `ghp_${SECRET}`
+  /** More log than the lookback reaches over, so what is screened is itself cut from the answer. */
+  const LOG = 'log line\n'.repeat(10_000)
+
+  /** A long log with `inside` in it, placed so that keeping the last `keep` characters cuts `inside`
+   *  `at` characters in. */
+  function across(inside: string, at: number, keep: number): string {
+    return `${LOG}${inside}${'.'.repeat(keep - (inside.length - at))}`
+  }
+
+  async function answer(over: Partial<ExecResult>) {
+    const findings: LinkedSecretFinding[] = []
+    const h = setup({ screen: screenText, mask: maskForDisplay, onSecrets: (f) => findings.push(f) })
+    const v = await start(h)
+    h.runs[0].resolve(result(over))
+    await flush()
+    return { done: await poll(h, v.jobId), findings }
+  }
+
+  /** What the audit log is told of an answer `removed` was taken out of. */
+  const removedOut = (removed: Record<string, number>) => [{ hop: 'answer-out', machine: 'laptop', agent: 'codex', removed, flagged: {} }]
+
+  it('takes a key block the output cut runs through, from its BEGIN line, which the cut left out', async () => {
+    // 40 characters in: past the BEGIN line, into the first body line.
+    expect(LOG.length).toBeGreaterThan(SCREEN_LOOKBACK_CHARS)
+    const { done, findings } = await answer({ output: across(BLOCK, 40, MAX_OUTPUT_CHARS) })
+    expect(done.truncated).toBe(true)
+    expect(done.output?.startsWith('[REDACTED:private_key]\n...')).toBe(true)
+    expect(done.output).not.toMatch(BODY_PIECE)
+    expect(done.output).not.toContain('-----END')
+    expect(findings).toEqual(removedOut({ private_key: 1 }))
+  })
+
+  it('takes a token the output cut runs through, from the prefix the cut left out', async () => {
+    const { done, findings } = await answer({ output: across(`token: ${TOKEN}\n`, 'token: '.length + 2, MAX_OUTPUT_CHARS) })
+    expect(done.output?.startsWith('[REDACTED:gh_pat]\n...')).toBe(true)
+    expect(done.output).not.toContain(SECRET.slice(0, 6))
+    expect(findings).toEqual(removedOut({ gh_pat: 1 }))
+  })
+
+  it('does the same for stderr, cut to its last 4,000 characters', async () => {
+    const block = await answer({ ok: false, output: '', error: across(BLOCK, 40, MAX_ERROR_CHARS - 1), code: 1 })
+    expect(block.done.error?.startsWith('…[REDACTED:private_key]\n...')).toBe(true)
+    expect(block.done.error).not.toMatch(BODY_PIECE)
+    expect(block.done.error?.length).toBeLessThanOrEqual(MAX_ERROR_CHARS)
+    expect(block.findings).toEqual(removedOut({ private_key: 1 }))
+    const token = await answer({ ok: false, output: '', error: across(`export GITHUB_TOKEN=${TOKEN}\n`, 'export GITHUB_TOKEN='.length + 2, MAX_ERROR_CHARS - 1), code: 1 })
+    expect(token.done.error?.startsWith('…[REDACTED:gh_pat]\n...')).toBe(true)
+    expect(token.done.error).not.toContain(SECRET.slice(0, 6))
+    expect(token.findings).toEqual(removedOut({ gh_pat: 1 }))
+  })
+
+  it('reports only what is in the tail that goes back', async () => {
+    // Wholly in what the cut leaves out: removed with it, and not said to be in the answer.
+    const { done, findings } = await answer({ output: `${TOKEN}\n${'.'.repeat(MAX_OUTPUT_CHARS)}` })
+    expect(done.output).toBe('.'.repeat(MAX_OUTPUT_CHARS))
+    expect(findings).toEqual([])
+  })
+
+  it('reaches back past the longest key block a rule takes, to the BEGIN line of one cut through its last line', async () => {
+    // A rule takes at most 400 lines under the BEGIN line, and a key file writes them 76 characters
+    // wide at most. Here they are indented and end in CRLF, as in a YAML file saved on Windows, and
+    // the cut runs through the last of them, 32,817 characters past the BEGIN line.
+    const lines = Array.from({ length: 400 }, (_, i) => `    ${'Ab'.repeat(34)}${String(i).padStart(8, '0')}`)
+    const longest = ['    -----BEGIN PGP PRIVATE KEY BLOCK-----', ...lines, '    -----END PGP PRIVATE KEY BLOCK-----', ''].join('\r\n')
+    const at = longest.indexOf('\r\n    -----END') - 20
+    expect(at - longest.indexOf('-----BEGIN')).toBe(32_817)
+    const { done, findings } = await answer({ output: across(longest, at, MAX_OUTPUT_CHARS) })
+    expect(done.output?.startsWith('[REDACTED:gpg_block]\r\n...')).toBe(true)
+    expect(done.output).not.toMatch(BODY_PIECE)
+    expect(findings).toEqual(removedOut({ gpg_block: 1 }))
+    // What a rule takes ends 400 lines under the BEGIN line, so no key block it takes is longer:
+    // a rule that took more would need a longer lookback.
+    const over = [...lines, `    ${'Ab'.repeat(34)}00000400`]
+    for (const [rule, kind] of [['private_key', 'RSA PRIVATE KEY'], ['gpg_block', 'PGP PRIVATE KEY BLOCK'], ['ssh_dsa_pubkey', 'DSA PRIVATE KEY']]) {
+      const block = [`-----BEGIN ${kind}-----`, ...over, `-----END ${kind}-----`].join('\n')
+      expect(screenText(block).text, rule).toBe(`[REDACTED:${rule}]\n${over[400]}\n-----END ${kind}-----`)
+    }
+  })
+})
+
 describe('a screen that fails', () => {
   it('runs nothing for a prompt it could not check', async () => {
     const h = setup({ screen: () => { throw new Error('screen broke') } })
@@ -1006,5 +1107,11 @@ describe('a screen that fails', () => {
     h.runs[0].resolve(result({ ok: false, output: 'secret-ish output', error: 'secret-ish stderr', code: 1 }))
     await flush()
     expect(await poll(h, v.jobId)).toMatchObject({ status: 'failed', output: WITHHELD, error: WITHHELD })
+    // Long ones the same, with no ellipsis before the error's: nothing of it is kept.
+    calls = 0
+    const w = await start(h)
+    h.runs[1].resolve(result({ ok: false, output: 'o'.repeat(MAX_OUTPUT_CHARS + 1), error: 'e'.repeat(MAX_ERROR_CHARS + 1), code: 1 }))
+    await flush()
+    expect(await poll(h, w.jobId)).toMatchObject({ status: 'failed', output: WITHHELD, truncated: true, error: WITHHELD })
   })
 })

@@ -122,6 +122,10 @@ interface RedactionRule {
 // password_literal starts only where a name starts, and a JWT not right after a `-`: with either
 // starting inside a run, `pwd.pwd.…` or `eyJ-eyJ-…` cost seconds per 20,000 characters.
 // aiSecurityScreen.test.ts times every rule on such runs.
+//
+// An answer cut to its tail is screened with what came before the cut, as far back as the longest
+// match a rule makes in real text: a private-key block of 400 lines (linkedJobs'
+// SCREEN_LOOKBACK_CHARS). A rule that takes more needs that raised with it.
 export const RULES: RedactionRule[] = [
   // === AWS ===
   { id: 'aws_access_key', label: 'AWS Access Key ID', precision: 'high', pattern: /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ASCA)[0-9A-Z]{16}\b/g },
@@ -667,11 +671,18 @@ interface Span {
  *  The other computer controls this text, so it runs in linear time: the output is built in one
  *  pass over the matches, where scanText rewrites the whole text once per match. Overlapping
  *  matches (an Anthropic key is an OpenAI-shaped one too) are taken once, under the first rule in
- *  table order. */
-export function screenText(input: string): SecretScreen {
+ *  table order.
+ *
+ *  `keep`, for text that is cut to its tail: all of `input` is screened, and what comes back is what
+ *  that made of its last `keep` characters, counting only the matches in them. Cut first, a
+ *  credential the cut ran through would lose its start (a key block its BEGIN line, a token its
+ *  prefix) and match no rule, and the rest of it would go out as it is. A match the cut runs
+ *  through is taken whole, and the tail starts with its marker. */
+export function screenText(input: string, keep?: number): SecretScreen {
   const removed: Record<string, number> = {}
   const flagged: Record<string, number> = {}
   if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged }
+  const from = keep !== undefined && input.length > keep ? input.length - Math.max(0, keep) : 0
   const taken: Span[] = []
   const looks: Span[] = []
   forEachMatch(input, (rule, m) => {
@@ -688,15 +699,17 @@ export function screenText(input: string): SecretScreen {
     else cuts.push({ ...t })
   }
   let text = ''
-  let at = 0
+  let at = from
   for (const cut of cuts) {
+    // Wholly before the tail: not in what is kept.
+    if (cut.to <= from) continue
     removed[cut.rule] = (removed[cut.rule] ?? 0) + 1
-    text += `${input.slice(at, cut.from)}[REDACTED:${cut.rule}]`
+    text += `${input.slice(at, Math.max(at, cut.from))}[REDACTED:${cut.rule}]`
     at = cut.to
   }
   text += input.slice(at)
   for (const look of looks) {
-    if (overlapsCut(cuts, look)) continue
+    if (look.to <= from || overlapsCut(cuts, look)) continue
     // Text screened once already is screened again where it arrives, and `KEY=[REDACTED:gh_pat]`
     // looks like an assignment: a match around a marker is about a value that is gone.
     if (input.slice(look.from, look.to).includes('[REDACTED:')) continue

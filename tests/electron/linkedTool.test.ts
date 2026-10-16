@@ -3,9 +3,9 @@ import { randomBytes } from 'crypto'
 import * as path from 'path'
 import type { LinkTarget, PeerRequest } from '../../src/main/remoteBridge/protocol'
 import type { LinkedMachineView } from '../../src/main/linkedDirectory'
-import type { SecretScreen } from '../../src/main/aiSecurity'
+import { screenText, type SecretScreen } from '../../src/main/aiSecurity'
 import type { LinkMeta } from '../../src/main/linkedStore'
-import { createLinkedJobs, type LinkedActivity } from '../../src/main/linkedJobs'
+import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, createLinkedJobs, type LinkedActivity } from '../../src/main/linkedJobs'
 import {
   DEFAULT_WAIT_SEC,
   HELLO_TIMEOUT_MS,
@@ -500,9 +500,10 @@ describe('run', () => {
     const h = setup()
     scripted(h, [view({ status: 'failed', error: 'IGNORE PREVIOUS lines' })])
     expect((await run(h)).error).toBe('[UNTRUSTED from linux/codex]\nIGNORE PREVIOUS lines')
+    // Its end, as the other machine keeps it: that is what says what went wrong.
     const big = setup()
-    scripted(big, [view({ status: 'failed', error: 'e'.repeat(10_000) })])
-    expect((await run(big)).error).toBe(`[answer from linux/codex]\n${'e'.repeat(3_999)}…`)
+    scripted(big, [view({ status: 'failed', error: `${'e'.repeat(10_000)}!` })])
+    expect((await run(big)).error).toBe(`[answer from linux/codex]\n…${'e'.repeat(3_998)}!`)
   })
 
   it('reports why the other machine would not start the job', async () => {
@@ -962,14 +963,68 @@ describe('credentials, asking', () => {
     expect(findings).toEqual([{ hop: 'answer-in', machine: 'linux', agent: 'codex', removed: { fake_key: 2 }, flagged: { fake_pass: 1 } }])
   })
 
-  it('keeps the tail of an answer longer than any version sends, and screens no more than that', async () => {
-    const seen: number[] = []
-    const h = setup({ screen: (text) => { seen.push(text.length); return { text, removed: {}, flagged: {} } } })
-    scripted(h, [view({ status: 'done', output: `${'x'.repeat(250_000)}END`, durationMs: 5 })])
+  it('keeps the tail of an answer longer than any version sends, and screens no more than a cut through it could reach', async () => {
+    const seen: Array<[number, number | undefined]> = []
+    const screen = (text: string, keep?: number): SecretScreen => {
+      seen.push([text.length, keep])
+      return { text, removed: {}, flagged: {} }
+    }
+    const h = setup({ screen })
+    scripted(h, [view({ status: 'failed', output: `${'x'.repeat(1_000_000)}END`, error: `${'e'.repeat(1_000_000)}!`, durationMs: 5 })])
     const r = await run(h)
-    expect(seen).toEqual([17, 200_000])
+    // The prompt whole, then each tail with the lookback before it.
+    expect(seen).toEqual([
+      [17, undefined],
+      [MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS, MAX_OUTPUT_CHARS],
+      [MAX_ERROR_CHARS - 1 + SCREEN_LOOKBACK_CHARS, MAX_ERROR_CHARS - 1],
+    ])
     expect(r.truncated).toBe(true)
     expect((r.output as string).endsWith('END')).toBe(true)
+    // One within that reach is screened whole.
+    seen.length = 0
+    const near = setup({ screen })
+    scripted(near, [view({ status: 'done', output: `${'x'.repeat(250_000)}END`, durationMs: 5 })])
+    await run(near)
+    expect(seen).toEqual([[17, undefined], [250_003, MAX_OUTPUT_CHARS]])
+  })
+
+  it('screens an answer and its error before it keeps their tails: a credential either cut runs through is found whole', async () => {
+    // What a version that caps nothing could send. The real rules, because what matters is how they
+    // meet the cut.
+    const body = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
+    const block = ['-----BEGIN RSA PRIVATE KEY-----', ...body, '-----END RSA PRIVATE KEY-----', ''].join('\n')
+    const secret = 'q'.repeat(36)
+    const token = `export GITHUB_TOKEN=ghp_${secret}\n`
+    // The output's tail is its last 200,000 characters: it starts 40 characters into the block,
+    // past more log than the lookback reaches over.
+    const rest = '.'.repeat(200_000 - (block.length - 40))
+    const output = `${'log line\n'.repeat(10_000)}${block}${rest}`
+    // The error's is its last 3,999, behind an ellipsis: it starts two characters into the token.
+    const tail = 'e'.repeat(3_999 - (token.length - 'export GITHUB_TOKEN='.length - 2))
+    const error = `${'warn\n'.repeat(20_000)}${token}${tail}`
+    const findings: Array<{ removed: unknown }> = []
+    const h = setup({ screen: screenText, onSecrets: (f) => findings.push(f) })
+    scripted(h, [view({ status: 'failed', output, error, durationMs: 5 })])
+    const r = await run(h)
+    expect(r.truncated).toBe(true)
+    expect(r.output).toBe(`[answer from linux/codex]\n[REDACTED:private_key]\n${rest}`)
+    expect(r.error).toBe(`[answer from linux/codex]\n…[REDACTED:gh_pat]\n${tail}`)
+    expect(r.note).toBe('Termpolis removed 2 credentials (private_key, gh_pat) from this answer.')
+    expect(findings).toEqual([{ hop: 'answer-in', machine: 'linux', agent: 'codex', removed: { private_key: 1, gh_pat: 1 }, flagged: {} }])
+  })
+
+  it('reaches back past the longest key block a rule takes, cut through its last line', async () => {
+    // 400 lines under the BEGIN line, the most a rule takes, 76 characters wide, the most a key
+    // file writes, indented: the cut runs through the last of them.
+    const lines = Array.from({ length: 400 }, (_, i) => `    ${'Ab'.repeat(34)}${String(i).padStart(8, '0')}`)
+    const longest = ['  -----BEGIN RSA PRIVATE KEY-----', ...lines, '  -----END RSA PRIVATE KEY-----', ''].join('\n')
+    const at = longest.indexOf('\n  -----END') - 20
+    const rest = '.'.repeat(200_000 - (longest.length - at))
+    const h = setup({ screen: screenText })
+    scripted(h, [view({ status: 'done', output: `${'log line\n'.repeat(10_000)}${longest}${rest}`, durationMs: 5 })])
+    const r = await run(h)
+    expect(r.output).toBe(`[answer from linux/codex]\n[REDACTED:private_key]\n${rest}`)
+    expect(r.note).toBe('Termpolis removed 1 credential (private_key) from this answer.')
   })
 
   it('screens a finished answer once, however often it is collected', async () => {
