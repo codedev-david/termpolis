@@ -49,18 +49,49 @@ import {
 } from '../../src/renderer/src/lib/conductorManager'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
+type Mock = ReturnType<typeof vi.fn>
+
 describe('conductorManager', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.clearAllMocks()
+    // clearAllMocks keeps implementations, so one test's buffer or bus would leak into the next.
+    ;(window.termpolis.readTerminalBuffer as Mock).mockResolvedValue({ success: true, data: { output: 'claude 1.0.0 ', length: 12 } })
+    ;(window.swarmAPI.sendMessage as Mock).mockResolvedValue({ success: true })
+    ;(window.swarmAPI.getTasks as Mock).mockResolvedValue({ success: true, data: [] })
+    ;(window.swarmAPI.getMessages as Mock).mockResolvedValue({ success: true, data: [] })
     // Reset store state
-    useTerminalStore.setState({ terminals: [], swarmActive: false, activeTerminalId: null })
+    useTerminalStore.setState({ terminals: [], swarmActive: false, activeTerminalId: null, swarmNotification: null })
   })
 
   afterEach(() => {
     stopConductor()
     vi.useRealTimers()
   })
+
+  /** An in-memory swarm bus behind the swarmAPI mocks, so a test sees what sendTask itself posts. */
+  function fakeBus() {
+    const messages: Array<{ id: string; from: string; to: string; type: string; content: string; timestamp: number; read: boolean }> = []
+    const tasks: Array<{ id: string; status: string }> = []
+    const post = (from: string, content: string, type = 'info') => {
+      const m = { id: `m${messages.length + 1}`, from, to: 'all', type, content, timestamp: Date.now(), read: false }
+      messages.push(m)
+      return m
+    }
+    ;(window.swarmAPI.sendMessage as Mock).mockImplementation(async (from: string, _to: string, type: string, content: string) => ({ success: true, data: post(from, content, type) }))
+    ;(window.swarmAPI.getMessages as Mock).mockImplementation(async () => ({ success: true, data: messages.map((m) => ({ ...m })) }))
+    ;(window.swarmAPI.getTasks as Mock).mockImplementation(async () => ({ success: true, data: tasks.map((t) => ({ ...t })) }))
+    return { messages, tasks, post }
+  }
+
+  /** Start the conductor and hand it a task, as the wizard does. */
+  async function launchConductor(task = 'Build') {
+    const startPromise = startConductor('/tmp/project')
+    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(5000)
+    await startPromise
+    await sendTask(task, '/tmp/project')
+  }
 
   it('checkClaudeInstalled returns true when claude is detected', async () => {
     const result = await checkClaudeInstalled()
@@ -196,12 +227,11 @@ describe('conductorManager', () => {
     await startPromise
 
     mockRecordSwarmError.mockClear()
+    await sendTask('Build something', '/tmp/project')
     // Simulate the monitoring loop hitting an exception inside the try block
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
       new Error('IPC bus crashed mid-swarm'),
     )
-
-    await sendTask('Build something', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(mockRecordSwarmError).toHaveBeenCalledWith(
@@ -220,6 +250,7 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
 
+    await sendTask('Build a tic-tac-toe game', '/tmp/project')
     // Mock tasks: all completed
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
@@ -228,8 +259,6 @@ describe('conductorManager', () => {
         { id: 't2', status: 'completed' },
       ],
     })
-
-    await sendTask('Build a tic-tac-toe game', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     const store = useTerminalStore.getState()
@@ -244,6 +273,7 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
 
+    await sendTask('Build something', '/tmp/project')
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [
@@ -251,8 +281,6 @@ describe('conductorManager', () => {
         { id: 't2', status: 'failed' },
       ],
     })
-
-    await sendTask('Build something', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(useTerminalStore.getState().swarmActive).toBe(false)
@@ -265,6 +293,7 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
 
+    await sendTask('Build something', '/tmp/project')
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [
@@ -272,8 +301,6 @@ describe('conductorManager', () => {
         { id: 't2', status: 'in-progress' },
       ],
     })
-
-    await sendTask('Build something', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     // Still running — swarmActive should remain true
@@ -289,6 +316,7 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
 
+    await sendTask('Build an app', '/tmp/project')
     // No tasks created — fallback to message detection
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
@@ -301,8 +329,6 @@ describe('conductorManager', () => {
         { type: 'result', content: 'SWARM COMPLETE: built the app' },
       ],
     })
-
-    await sendTask('Build an app', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(useTerminalStore.getState().swarmActive).toBe(false)
@@ -315,6 +341,7 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
 
+    await sendTask('Build an app', '/tmp/project')
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [],
@@ -325,8 +352,6 @@ describe('conductorManager', () => {
         { type: 'info', content: 'All tasks are completed — swarm finished' },
       ],
     })
-
-    await sendTask('Build an app', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(useTerminalStore.getState().swarmActive).toBe(false)
@@ -339,6 +364,7 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
 
+    await sendTask('Build an app', '/tmp/project')
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [],
@@ -350,8 +376,6 @@ describe('conductorManager', () => {
         { type: 'info', content: 'Agent 2 started tests...' },
       ],
     })
-
-    await sendTask('Build an app', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(useTerminalStore.getState().swarmActive).toBe(true)
@@ -360,34 +384,239 @@ describe('conductorManager', () => {
 
   // ---- stall detection ----
 
-  it('monitoring loop emits a stall notification after 60s with no tasks or messages', async () => {
-    const startPromise = startConductor('/tmp/project')
-    await vi.advanceTimersByTimeAsync(2000)
-    await vi.advanceTimersByTimeAsync(5000)
-    await startPromise
+  // GitHub #36: the warning required "no more than one message", but sendTask posts two of
+  // its own before monitoring starts, so it could never fire. Only messages someone other
+  // than the launcher posted after launch count now.
+  describe('stall warning', () => {
+    function stallCalls(spy: ReturnType<typeof vi.spyOn>) {
+      return spy.mock.calls.filter(([arg]: any[]) => arg?.message?.includes('not created any tasks'))
+    }
 
-    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+    it('fires a minute after launch although the launcher posted its own two messages', async () => {
+      const bus = fakeBus()
+      await launchConductor('Build an app')
+      expect(bus.messages.map((m) => m.from)).toEqual(['conductor', 'system'])
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
-    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
-      success: true,
-      data: [],
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(stallCalls(notifSpy)).toHaveLength(0) // not before the minute is up
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(stallCalls(notifSpy)).toHaveLength(1)
+      expect(stallCalls(notifSpy)[0][0]).toMatchObject({ type: 'error', message: expect.stringContaining('Click Debug') })
+      expect(getConductorState().status).toBe('running')
     })
-    ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValue({
-      success: true,
-      data: [{ type: 'info', content: 'Analyzing task...' }],
+
+    it('stays quiet once the conductor has said something', async () => {
+      const bus = fakeBus()
+      await launchConductor('Build an app')
+      bus.post('mcp-client', 'Plan: two tasks')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(90000)
+      expect(stallCalls(notifSpy)).toHaveLength(0)
     })
 
-    await sendTask('Build an app', '/tmp/project')
-    // First tick (15s) — monitoringStartTime set
-    await vi.advanceTimersByTimeAsync(15000)
-    // Advance past the 60s stall threshold
-    await vi.advanceTimersByTimeAsync(60000)
+    it('stays quiet once the conductor has created a task', async () => {
+      const bus = fakeBus()
+      await launchConductor('Build an app')
+      bus.tasks.push({ id: 't-new', status: 'pending' })
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
-    const stallCall = notifSpy.mock.calls.find(([arg]) =>
-      arg?.message?.includes('not created any tasks'),
-    )
-    expect(stallCall).toBeDefined()
-    expect(stallCall?.[0].type).toBe('error')
+      await vi.advanceTimersByTimeAsync(90000)
+      expect(stallCalls(notifSpy)).toHaveLength(0)
+    })
+
+    it('does not count a message an earlier swarm left on the bus', async () => {
+      const bus = fakeBus()
+      bus.post('mcp-client', 'Plan from the previous swarm')
+      await launchConductor('Build an app')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(75000)
+      expect(stallCalls(notifSpy)).toHaveLength(1)
+    })
+  })
+
+  // ---- conductor exit (GitHub #36) ----
+  //
+  // When claude exits, the conductor terminal's own shell lives on, so the "terminal still
+  // exists" check never fired and an early exit (a cut-up prompt, an auth problem, a usage limit)
+  // looked like a swarm running forever. The run script prints a sentinel line with claude's code.
+
+  describe('conductor exit', () => {
+    // What the terminal shows from launch on: the echoed launch line, then the script's first line.
+    const launchEcho =
+      "PS C:\\proj> $p='C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'; " +
+      "& $p -ExecutionPolicy Bypass -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n" +
+      '[termpolis-conductor-started]\r\n'
+    function screen(output: string, nextOffset = 4321) {
+      ;(window.termpolis.readTerminalBuffer as Mock).mockResolvedValue({ success: true, data: { output, length: output.length, nextOffset } })
+    }
+    const last = (bus: ReturnType<typeof fakeBus>) => bus.messages[bus.messages.length - 1]
+
+    it("ends the swarm on a non-zero exit and posts the code with the conductor's last output", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      screen(launchEcho + "error: unknown option '-NoProfile'\r\n[termpolis-conductor-exited] 1\r\nPS C:\\proj> ")
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+      expect(last(bus)).toMatchObject({ from: 'system', type: 'info', content: "Conductor exited (code 1): error: unknown option '-NoProfile'" })
+      expect(useTerminalStore.getState().swarmNotification).toMatchObject({ type: 'error', message: expect.stringContaining('Conductor exited (code 1)') })
+      expect(useTerminalStore.getState().swarmActive).toBe(false)
+      // And it stops watching.
+      ;(window.swarmAPI.getTasks as Mock).mockClear()
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(window.swarmAPI.getTasks).not.toHaveBeenCalled()
+    })
+
+    it('treats a zero exit with no task created as a failure too', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      screen('Done. The swarm tools were missing, so I stopped.\r\n[termpolis-conductor-exited] 0\r\n')
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 0)' })
+      expect(last(bus).content).toBe('Conductor exited (code 0): Done. The swarm tools were missing, so I stopped.')
+      expect(useTerminalStore.getState().swarmActive).toBe(false)
+    })
+
+    it('says so when the conductor printed nothing before it exited', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      screen(launchEcho + '[termpolis-conductor-exited] 3\r\n')
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(last(bus).content).toBe('Conductor exited (code 3): (no output)')
+    })
+
+    it('keeps the end of a long last line rather than flood the dashboard', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      screen(`${'x'.repeat(5000)}END\r\n[termpolis-conductor-exited] 1\r\n`)
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      const content = last(bus).content
+      expect(content.length).toBeLessThan(2100)
+      expect(content.startsWith('Conductor exited (code 1): …')).toBe(true)
+      expect(content.endsWith('END')).toBe(true)
+    })
+
+    it('leaves a zero exit after tasks were created to the task-based completion', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.tasks.push({ id: 't1', status: 'in_progress' }, { id: 't2', status: 'completed' })
+      screen('All work handed out.\r\n[termpolis-conductor-exited] 0\r\n')
+      const handover = () => bus.messages.filter((m) => m.content.startsWith('Conductor exited (code 0) with'))
+
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+      expect(useTerminalStore.getState().swarmActive).toBe(true)
+      expect(handover()).toHaveLength(1)
+      expect(handover()[0]).toMatchObject({ from: 'system', content: expect.stringContaining('with 1 of 2 tasks still open') })
+
+      await vi.advanceTimersByTimeAsync(15000) // said once, not every tick
+      expect(handover()).toHaveLength(1)
+
+      bus.tasks[0].status = 'completed'
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+      expect(useTerminalStore.getState().swarmCompletionSummary?.tasks).toHaveLength(2)
+    })
+
+    it('reports a non-zero exit even after tasks were created', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.tasks.push({ id: 't1', status: 'in_progress' })
+      screen('API Error: 529 Overloaded\r\n[termpolis-conductor-exited] 1\r\n')
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState().status).toBe('error')
+      expect(last(bus).content).toBe('Conductor exited (code 1): API Error: 529 Overloaded')
+    })
+
+    it('lets finished tasks win over the exit that follows them', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.tasks.push({ id: 't1', status: 'completed' })
+      screen('[termpolis-conductor-exited] 1\r\n')
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState().status).toBe('done')
+      expect(useTerminalStore.getState().swarmNotification?.type).toBe('success')
+    })
+
+    it('ignores the sentinel quoted in the middle of a line', async () => {
+      fakeBus()
+      await launchConductor()
+      screen('Claude: when I finish, the script prints [termpolis-conductor-exited] 1 for me\r\n')
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState().status).toBe('running')
+      expect(useTerminalStore.getState().swarmActive).toBe(true)
+    })
+
+    it('catches a sentinel split across two reads once its line is complete', async () => {
+      fakeBus()
+      await launchConductor()
+      screen('working\r\n[termpolis-conductor-exi')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+
+      screen('working\r\n[termpolis-conductor-exited] 1\r\n')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+    })
+
+    it('reads the conductor terminal only from where it stood at launch', async () => {
+      fakeBus()
+      screen('2.1.300 (Claude Code)\r\nPS C:\\proj> ', 777)
+      await launchConductor()
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(window.termpolis.readTerminalBuffer).toHaveBeenLastCalledWith('conductor-uuid-1', 777)
+    })
+  })
+
+  // ---- a second swarm in the same session ----
+  //
+  // The bus is emptied only by the dashboard's Clear, so "Start New Swarm" after a finished swarm
+  // found its completed tasks and SWARM COMPLETE still there, and the new swarm was declared done
+  // on its first monitoring tick.
+
+  describe('a swarm started after another one', () => {
+    it("is not ended by the previous swarm's finished tasks or SWARM COMPLETE", async () => {
+      const bus = fakeBus()
+      bus.tasks.push({ id: 'old-1', status: 'completed' })
+      bus.post('mcp-client', 'SWARM COMPLETE: the previous swarm', 'result')
+      await launchConductor()
+
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+
+      bus.tasks.push({ id: 'new-1', status: 'completed' })
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+      expect(useTerminalStore.getState().swarmCompletionSummary?.tasks.map((t) => t.id)).toEqual(['new-1'])
+    })
+
+    it('is not ended by its own goal, quoted in the launch message', async () => {
+      fakeBus()
+      await launchConductor('Make sure all tasks complete before the deploy')
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState().status).toBe('running')
+    })
   })
 
   // ---- stopConductor orphan cleanup ----
@@ -675,12 +904,11 @@ describe('conductorManager', () => {
     // swarmActive should be true after conductor starts
     expect(useTerminalStore.getState().swarmActive).toBe(true)
 
+    await sendTask('Build a game', '/tmp/project')
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [{ id: 't1', status: 'completed' }],
     })
-
-    await sendTask('Build a game', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     // After completion, swarmActive is false — a new swarm can start
@@ -747,12 +975,11 @@ describe('conductorManager', () => {
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
 
+    await sendTask('Build a game', '/tmp/project')
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [{ id: 't1', status: 'completed' }],
     })
-
-    await sendTask('Build a game', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     const summary = useTerminalStore.getState().swarmCompletionSummary
@@ -888,6 +1115,21 @@ describe('conductorManager', () => {
       expect(psBody).toContain('$enc = New-Object System.Text.UTF8Encoding $false')
       expect(psBody).toMatch(/^\$OutputEncoding = \$enc$/m)
       expect(psBody).toMatch(/\[Console\]::InputEncoding = \$enc/)
+    })
+
+    // GitHub #36 — claude exiting changed nothing the monitor could see: the conductor
+    // terminal's own shell lives on. The script reports the exit on a line of its own.
+    it("ps1 script reports claude's exit code on a line of its own, then exits with it", async () => {
+      const { writeConfigCalls } = await launchAndGetWrites()
+      const psCall = writeConfigCalls.find(([path]) =>
+        typeof path === 'string' && path.endsWith('.termpolis-conductor-run.ps1'),
+      )
+      const psBody = (psCall?.[1] as string) ?? ''
+      expect(psBody).toMatch(
+        / --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\nif \(\$null -eq \$code\) \{ \$code = 1 \}\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/,
+      )
+      // Its first line marks where the script's own output starts, after the echoed launch line.
+      expect(psBody.startsWith("Write-Output '[termpolis-conductor-started]'\n")).toBe(true)
     })
 
     it('ps1 script fetches the MCP config path via the IPC bridge at launch', async () => {

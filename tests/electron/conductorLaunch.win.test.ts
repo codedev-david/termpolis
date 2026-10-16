@@ -35,6 +35,8 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
       "process.stdin.on('end', () => {",
       "  fs.writeFileSync(process.env.TP_RECORD + '.stdin', Buffer.concat(chunks))",
       '  fs.writeFileSync(process.env.TP_RECORD, JSON.stringify(argv))',
+      // A last line with no newline, when asked: claude printing one must not swallow the report.
+      "  process.stdout.write(process.env.TP_SAY || '', () => process.exit(Number(process.env.TP_EXIT || 0)))",
       '})',
       '',
     ].join('\n'))
@@ -46,7 +48,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
   /** Runs one launch the way the conductor terminal does: an outer PowerShell types the launch
    *  line, which runs the script in PS 5.1. `utf8Console` leaves the console on code page 65001
    *  first, as a profile that sets UTF-8 does: that is when .NET writes a BOM into the pipe. */
-  function launch(name: string, opts: { bin?: Record<string, string>; testCommand?: string; utf8Console?: boolean }): { status: number | null; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
+  function launch(name: string, opts: { bin?: Record<string, string>; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
     const root = join(dir, name)
     const home = join(root, 'home')
     const bin = join(root, 'bin')
@@ -73,6 +75,8 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     env.APPDATA = join(home, 'AppData', 'Roaming')
     env.LOCALAPPDATA = join(home, 'AppData', 'Local')
     env.TP_RECORD = record
+    env.TP_EXIT = String(opts.exitCode ?? 0)
+    env.TP_SAY = opts.say ?? ''
     const r = spawnSync(powershellPath(), ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', outer], {
       cwd: root,
       env,
@@ -83,6 +87,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     })
     return {
       status: r.status,
+      stdout: r.stdout ?? '',
       stderr: r.stderr ?? '',
       argv: existsSync(record) ? (JSON.parse(readFileSync(record, 'utf8')) as string[]) : null,
       stdin: existsSync(record + '.stdin') ? readFileSync(record + '.stdin') : null,
@@ -103,10 +108,16 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
   ].join('\r\n')
   const cmdShim = (): string => `@"${process.execPath}" "${recorder}" %*\r\n`
 
-  function expectDelivered(r: ReturnType<typeof launch>): void {
+  function expectDelivered(r: ReturnType<typeof launch>, exitCode = 0): void {
     expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--dangerously-skip-permissions'])
     // Byte for byte: no BOM in front, nothing garbled, only the CRLF PowerShell appends.
     expect(r.stdin?.equals(Buffer.from(task + '\r\n', 'utf8')), r.stderr).toBe(true)
+    // The script's first line marks where its output starts; claude's exit is reported on a
+    // line of its own, and passed on as the script's exit code.
+    const lines = r.stdout.split(/\r?\n/)
+    expect(lines[0]).toBe('[termpolis-conductor-started]')
+    expect(lines).toContain(`[termpolis-conductor-exited] ${exitCode}`)
+    expect(r.status).toBe(exitCode)
   }
 
   it('hands the npm PowerShell shim the task on stdin and keeps the command line to flags', () => {
@@ -128,5 +139,25 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
   it('delivers the task intact to a native program in test mode, with no binary probe', () => {
     const r = launch('test', { testCommand: `& ${psQuote(process.execPath)} ${psQuote(recorder)}`, utf8Console: true })
     expectDelivered(r)
+  }, 60_000)
+
+  it("reports claude's own exit code through every kind of launcher", () => {
+    expectDelivered(launch('exit-ps1', { bin: { 'claude.ps1': npmShim() }, exitCode: 3 }), 3)
+    expectDelivered(launch('exit-cmd', { bin: { 'claude.cmd': cmdShim() }, exitCode: 4 }), 4)
+    expectDelivered(launch('exit-test', { testCommand: `& ${psQuote(process.execPath)} ${psQuote(recorder)}`, exitCode: 5 }), 5)
+  }, 120_000)
+
+  it("keeps the report on a line of its own when claude's last line has no newline", () => {
+    const r = launch('no-newline', { testCommand: `& ${psQuote(process.execPath)} ${psQuote(recorder)}`, exitCode: 2, say: 'Partial line' })
+    expectDelivered(r, 2) // the report is a whole line...
+    expect(r.stdout.split(/\r?\n/)).toContain('Partial line') // ...and did not join claude's
+  }, 60_000)
+
+  it('reports exit code 1, with the reason, when no claude binary answers', () => {
+    const r = launch('no-claude', {})
+    expect(r.argv).toBeNull()
+    expect(r.stdout).toContain('No working claude binary found')
+    expect(r.stdout.split(/\r?\n/)).toContain('[termpolis-conductor-exited] 1')
+    expect(r.status).toBe(1)
   }, 60_000)
 })

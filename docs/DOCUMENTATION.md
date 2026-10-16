@@ -586,7 +586,7 @@ You can also move a task along by hand: **Start** or **Cancel** a pending task, 
 
 ![Swarm messages tab](../e2e/screenshots/docs/20-swarm-messages-tab.png)
 
-A live stream of every message the conductor sends, every broadcast, every handoff. Think of it as the "Slack channel" for your agent team — useful for debugging, reviewing, or understanding exactly how a decision was made.
+A live stream of every message the conductor sends, every broadcast, every handoff. Think of it as the "Slack channel" for your agent team — useful for debugging, reviewing, or understanding exactly how a decision was made. Termpolis's own notes come from **system**: that the conductor was launched, and that it exited (see [When the conductor exits](#when-the-conductor-exits)).
 
 ### Trace tab
 
@@ -626,6 +626,17 @@ Click **Start Swarm** on the welcome screen, or in the swarm dashboard's header 
 - **Failure Conditions** — what would count as a failed result.
 
 Click **Launch Swarm**. The conductor spins up, reads the task, and the dashboard populates with subtasks within seconds. The conductor itself runs on Claude Code, so a swarm needs the `claude` CLI installed.
+
+Termpolis writes the conductor's instructions, with your task in them, to `.termpolis-conductor-task.md` in your home folder, and a run script next to it: `.termpolis-conductor-run.ps1`, which runs in Windows PowerShell 5.1, or `.termpolis-conductor-run.sh` for bash on macOS and Linux. The script finds a `claude` that answers `--version`, then pipes the task file into `claude -p --mcp-config <file> --dangerously-skip-permissions` on standard input, as UTF-8. Only those flags go on the command line, so double quotes, words that look like options (`--watch`, `-NoProfile`) and characters such as `—` or `✓` reach the conductor exactly as you wrote them, and no command-line length limit applies to the task.
+
+### When the conductor exits
+
+The run script prints `[termpolis-conductor-exited]` and `claude`'s exit code on a line of their own when the conductor exits, and Termpolis watches the conductor's terminal for that line.
+
+- **It exited with an error, or before it created any task.** The swarm ends. The Messages tab gets **Conductor exited (code N):** followed by up to the last 15 lines the conductor printed, an error banner appears, and you can start a new swarm. When no working `claude` is found, the script reports exit code 1 with that reason.
+- **It exited cleanly after handing out tasks.** The swarm keeps going: a message says how many tasks are still open, and the swarm ends when every task is completed or failed. You can mark one yourself with **Done** or **Fail** in the Tasks tab.
+
+If, a minute after launch, the conductor has created no task and posted no message, a banner says so. Termpolis's own launch messages don't count.
 
 ### Swarm permission flags
 
@@ -830,7 +841,7 @@ The bottom strip shows, left to right:
 
 **An agent doesn't see Termpolis's tools or memory.** Since v1.49, Termpolis registers itself with Claude Code, Codex and Gemini CLI only after you connect them. Check **Settings → Agent Integration**, connect if needed, then start a new agent session.
 
-**Swarm conductor doesn't launch.** The conductor runs Claude Code in a hidden terminal, so it needs `claude` on PATH (see agent troubleshooting above). While a swarm is active, press **Debug** in the Swarm Dashboard header to show that terminal and its startup output.
+**Swarm conductor doesn't launch.** The conductor runs Claude Code in a hidden terminal, so it needs `claude` installed (see agent troubleshooting above). If it exits, the swarm ends and the Swarm Dashboard's Messages tab shows **Conductor exited (code N):** with the last lines it printed (see [When the conductor exits](#when-the-conductor-exits)). While a swarm is active, press **Debug** in the Swarm Dashboard header to show that terminal and its startup output.
 
 **Swarm hangs mid-task / agents stop posting activity.** Open Activity Feed — if the agent is still running but not emitting events, its MCP connection may have dropped. Use the intervention controls in that agent's Activity Feed to recover: **Interrupt** stops what it is doing, and **Steer** gives it a new instruction (see [§23](#23-intervention-controls)). If a specific agent keeps dropping, restart Termpolis; the MCP server gets a fresh token at each launch.
 

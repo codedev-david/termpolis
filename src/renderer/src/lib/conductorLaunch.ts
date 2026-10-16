@@ -1,4 +1,5 @@
 import { psQuote, shQuote } from '../../../shared/shellQuote'
+import { stripAnsi } from './exportTerminal'
 
 // The scripts that start the swarm conductor (`claude -p`) in its hidden terminal, and the line
 // typed into that terminal to run them. Pure, so unit tests pin the shapes and
@@ -11,6 +12,18 @@ import { psQuote, shQuote } from '../../../shared/shellQuote'
 // options, and claude rejected them and exited before it did anything. The built-in conductor
 // prompt has double quotes of its own, so part of it was lost on every Windows run. A command line
 // is capped as well (32,767 chars on Windows, 128 KiB per argument on Linux); a pipe is not.
+//
+// When claude exits, the shell in the conductor terminal lives on, so nothing about the terminal
+// changes. The scripts therefore print CONDUCTOR_EXIT_SENTINEL and claude's exit code on a line of
+// their own, which findConductorExit reads back out of the terminal's output.
+
+/** What a run script prints, on its own line and followed by claude's exit code, when claude exits. */
+export const CONDUCTOR_EXIT_SENTINEL = '[termpolis-conductor-exited]'
+
+/** What a run script prints first, on its own line. An exit report quotes only what follows it:
+ *  before it is the terminal's echo of the launch line, which PSReadLine can draw more than once,
+ *  in pieces cut anywhere, so nothing in a line's text tells it from the conductor's output. */
+export const CONDUCTOR_START_LINE = '[termpolis-conductor-started]'
 
 /** Where a run script finds its inputs. Paths are native: backslashes on Windows. */
 export interface ConductorRunPaths {
@@ -51,10 +64,13 @@ const RESOLVE_WORKING_CLAUDE = [
   '      if ($LASTEXITCODE -eq 0 -and "$out" -match "Claude Code") { return $c }',
   '    } catch {}',
   '  }',
-  `  Write-Error "${NO_CLAUDE}"`,
-  '  exit 1',
   '}',
   '$claudeExe = Resolve-WorkingClaude',
+  'if (-not $claudeExe) {',
+  `  Write-Output ${psQuote(NO_CLAUDE)}`,
+  `  Write-Output '${CONDUCTOR_EXIT_SENTINEL} 1'`,
+  '  exit 1',
+  '}',
 ]
 
 // The same probe for bash: PATH first, then the native installer's, /usr/local's and Homebrew's
@@ -76,6 +92,7 @@ const RESOLVE_CLAUDE = [
   '}',
   'CLAUDE_EXE=$(resolve_claude) || {',
   `  echo "${NO_CLAUDE}" >&2`,
+  `  echo "${CONDUCTOR_EXIT_SENTINEL} 1"`,
   '  exit 1',
   '}',
 ]
@@ -88,6 +105,7 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
   const flags = `-p${mcpConfigPath ? ` --mcp-config ${quote(mcpConfigPath)}` : ''} --dangerously-skip-permissions`
   if (isWindows) {
     return [
+      `Write-Output '${CONDUCTOR_START_LINE}'`,
       ...(testCommand ? [] : RESOLVE_WORKING_CLAUDE),
       // UTF-8 without a BOM both ways. 5.1 pipes text to a native program in $OutputEncoding,
       // which is ASCII by default (every non-ASCII character became `?`), and when the console is
@@ -97,17 +115,69 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
       '$OutputEncoding = $enc',
       '[Console]::InputEncoding = $enc',
       `Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(taskFile)} | ${testCommand ?? '& $claudeExe'} ${flags}`,
-      'exit $LASTEXITCODE',
+      '$code = $LASTEXITCODE',
+      // A command that never started sets no exit code, and the report needs one.
+      'if ($null -eq $code) { $code = 1 }',
+      // The blank line first: output that ends mid-line would otherwise have the report join it.
+      "Write-Output ''",
+      `Write-Output "${CONDUCTOR_EXIT_SENTINEL} $code"`,
+      'exit $code',
       '',
     ].join('\n')
   }
   return [
     '#!/bin/bash',
+    `echo '${CONDUCTOR_START_LINE}'`,
     `TASK_FILE=${shQuote(taskFile)}`,
     ...(testCommand ? [] : RESOLVE_CLAUDE),
     `${testCommand ?? '"$CLAUDE_EXE"'} ${flags} < "$TASK_FILE"`,
+    'code=$?',
+    'echo',
+    `echo "${CONDUCTOR_EXIT_SENTINEL} $code"`,
+    'exit $code',
     '',
   ].join('\n')
+}
+
+export interface ConductorExit {
+  /** claude's exit code. */
+  code: number
+  /** The last non-empty lines the terminal showed before the report, oldest first. */
+  lastLines: string[]
+}
+
+/** How many of the conductor's last lines an exit report quotes. */
+const EXIT_TAIL_LINES = 15
+const EXIT_LINE = /^\[termpolis-conductor-exited\]\s*(-?\d+)$/
+
+// A cursor move to another row starts a new screen line. ConPTY draws its repaints that way, and
+// stripping the move would glue two lines of the screen into one.
+const ROW_MOVE = /\x1b\[\d*(?:;\d*)?[Hf]|\x1b\[\d*[ABEFd]/g
+
+function screenLines(output: string): string[] {
+  return stripAnsi(output.replace(ROW_MOVE, '\n')).split(/\r\n|\r|\n/).map((line) => line.trimEnd())
+}
+
+/** The run script's report that claude exited, read from the conductor terminal's output since
+ *  launch, or null while claude still runs. Only a whole line counts: a prompt, an echoed script
+ *  line or claude's own output that quotes the sentinel mid-line is no exit. Nor is the line still
+ *  being written, which a read can cut short in the middle of its code (the `1` of `127`). */
+export function findConductorExit(output: string): ConductorExit | null {
+  const lines = screenLines(output)
+  lines.pop()
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = EXIT_LINE.exec(lines[i].trim())
+    if (!m) continue
+    // What the script and claude printed: after the script's first line, so not the echoed launch
+    // line. Without that line (the buffer evicted it, and the echo before it), all that is left.
+    let from = 0
+    for (let j = i - 1; j >= 0; j--) {
+      if (lines[j].endsWith(CONDUCTOR_START_LINE)) { from = j + 1; break }
+    }
+    const printed = lines.slice(from, i).filter((line) => line.trim() !== '')
+    return { code: Number(m[1]), lastLines: printed.slice(-EXIT_TAIL_LINES) }
+  }
+  return null
 }
 
 /**

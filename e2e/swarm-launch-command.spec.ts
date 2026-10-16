@@ -25,6 +25,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp, ensureE2eBuild } from './helpers/launch'
+import { findConductorExit, type ConductorExit } from '../src/renderer/src/lib/conductorLaunch'
 
 let app: ElectronApplication
 let page: Page
@@ -155,6 +156,9 @@ test.describe.serial('Swarm launch command shape', () => {
       expect(psBody).toContain('$OutputEncoding = $enc')
       expect(psBody).toContain('[Console]::InputEncoding = $enc')
       expect(psBody).not.toContain('$task')
+      // It marks where its output starts, and reports claude's exit on a line of its own.
+      expect(psBody.startsWith("Write-Output '[termpolis-conductor-started]'\n")).toBe(true)
+      expect(psBody).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
     } else {
       for (let i = 0; i < 40 && !fs.existsSync(RUN_SH); i++) await page.waitForTimeout(250)
       expect(fs.existsSync(RUN_SH)).toBe(true)
@@ -163,6 +167,8 @@ test.describe.serial('Swarm launch command shape', () => {
       expect(shBody).toContain('--dangerously-skip-permissions')
       expect(shBody).toMatch(/ -p (--mcp-config '[^']+' )?--dangerously-skip-permissions < "\$TASK_FILE"$/m)
       expect(shBody).not.toContain('$(cat')
+      expect(shBody).toContain("\necho '[termpolis-conductor-started]'\n")
+      expect(shBody).toMatch(/< "\$TASK_FILE"\ncode=\$\?\necho\necho "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
     }
   })
 
@@ -247,5 +253,39 @@ test.describe.serial('Swarm launch command shape', () => {
     // PowerShell appends one CRLF to what it pipes; bash's `<` hands the file over as it is.
     expect(received!.prompt).toBe(process.platform === 'win32' ? task + '\r\n' : task)
     expect(received!.argv).toEqual(['-p', '--mcp-config', expect.stringMatching(/claude-mcp-config\.json$/), '--dangerously-skip-permissions'])
+  })
+
+  test('9. The conductor terminal shows the exit report, and the swarm ends on its tasks', async () => {
+    // GitHub #36: when claude exited, the conductor terminal's own shell lived on, so nothing told
+    // the monitor. The run script reports the exit on a line of its own. This reads it back out of
+    // the REAL terminal (ConPTY on Windows) the way the monitor does. The mock exits 0 once its
+    // tasks are done, so the completed tasks, not the exit, must end the swarm.
+    let exit: ConductorExit | null = null
+    let output = ''
+    for (let i = 0; i < 120 && !exit; i++) {
+      output = await page.evaluate(async () => {
+        const conductor = (window as any).__termpolis_test_state?.().terminals.find((t: any) => t.isConductor)
+        if (!conductor) return ''
+        const res = await (window as any).termpolis.readTerminalBuffer(conductor.id)
+        return res?.success && res.data ? res.data.output : ''
+      })
+      exit = findConductorExit(output)
+      if (!exit) await page.waitForTimeout(500)
+    }
+    fs.writeFileSync(path.join(SCREENSHOTS, 'conductor-output.txt'), output)
+    expect(exit, 'no [termpolis-conductor-exited] line in the conductor terminal (see conductor-output.txt)').toBeTruthy()
+    expect(exit!.code).toBe(0)
+    expect(exit!.lastLines.join('\n')).not.toContain('-ExecutionPolicy') // the echoed launch line is left out
+
+    let state: any = null
+    for (let i = 0; i < 60; i++) {
+      state = await page.evaluate(() => (window as any).__termpolis_test_state?.() ?? null)
+      if (state && !state.swarmActive && state.swarmCompletionSummary) break
+      await page.waitForTimeout(500)
+    }
+    expect(state?.swarmActive).toBe(false)
+    expect(state?.swarmCompletionSummary, 'the swarm should end on its completed tasks').toBeTruthy()
+    expect(state.swarmCompletionSummary.tasks.length).toBeGreaterThanOrEqual(2)
+    expect(state.swarmNotification?.message ?? '').not.toMatch(/Conductor exited/)
   })
 })

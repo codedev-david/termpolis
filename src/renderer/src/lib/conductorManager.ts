@@ -2,7 +2,7 @@ import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../store/terminalStore'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
-import { conductorRunScript, conductorLaunchCommand } from './conductorLaunch'
+import { conductorRunScript, conductorLaunchCommand, findConductorExit, type ConductorExit } from './conductorLaunch'
 import { getTerminalDefaults } from './terminalDefaults'
 import { recordSwarmError } from './sentry'
 
@@ -14,9 +14,26 @@ interface ConductorState {
   preSwarmSha: string | null
 }
 
+/** What was already there when the conductor was launched, and so says nothing about this run.
+ *  The swarm bus is emptied only by the dashboard's Clear: a swarm started after another one
+ *  found that swarm's finished tasks and SWARM COMPLETE still on it, and was declared done on its
+ *  first check. The launcher's own messages are set aside here too: the goal quoted in the first
+ *  one could read as a completion ("make sure all tasks complete"). */
+interface LaunchBaseline {
+  /** Where the conductor terminal's output stood. Before it: the shell, `claude --version`, and a
+   *  run launched earlier in the same terminal. */
+  outputOffset: number
+  taskIds: Set<string>
+  messageIds: Set<string>
+}
+
 let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
+let launch: LaunchBaseline = { outputOffset: 0, taskIds: new Set(), messageIds: new Set() }
+
+/** How much of the conductor's last output an exit report quotes, at most. */
+const EXIT_REPORT_MAX_CHARS = 2000
 
 export function getConductorState(): ConductorState {
   return { ...conductorState }
@@ -200,27 +217,49 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
     conductorRunScript(isWindows, { taskFile: native(tempFile), mcpConfigPath: native(mcpConfigPath), testCommand }),
   )
   const runCmd = conductorLaunchCommand(isWindows, native(scriptFile))
+  // Read before the line is typed, so nothing the new conductor does can land in the baseline.
+  launch = await readLaunchBaseline(id)
   window.termpolis.writeToTerminal(id, runCmd + '\r')
   // Diagnostic hook — E2E tests read this to verify the launch command shape
   // without having to monkey-patch the frozen contextBridge-exposed termpolis API.
   try { (window as any).__termpolis_last_launch_cmd = runCmd } catch {}
 
   // Post initial message to swarm bus
-  await window.swarmAPI.sendMessage(
-    'conductor',
-    'all',
-    'info',
-    `Conductor analyzing task: ${taskDescription.slice(0, 200)}...`
-  )
-  await window.swarmAPI.sendMessage(
-    'system',
-    'all',
-    'info',
-    `Conductor launched in ${isWindows ? 'PowerShell' : 'Bash'}. Click Debug to see conductor output. If nothing happens after 60s, the conductor may have an issue connecting to MCP tools.`
-  )
+  const posted = [
+    await window.swarmAPI.sendMessage(
+      'conductor',
+      'all',
+      'info',
+      `Conductor analyzing task: ${taskDescription.slice(0, 200)}...`
+    ),
+    await window.swarmAPI.sendMessage(
+      'system',
+      'all',
+      'info',
+      `Conductor launched in ${isWindows ? 'PowerShell' : 'Bash'}. Click Debug to see conductor output. If nothing happens after 60s, the conductor may have an issue connecting to MCP tools.`
+    ),
+  ]
+  for (const res of posted) if (res?.data?.id) launch.messageIds.add(res.data.id)
 
   // Start monitoring
   startMonitoring()
+}
+
+/** The baseline for a run (LaunchBaseline). A read that fails sets nothing aside, which is how
+ *  the monitor behaved before there was a baseline. */
+async function readLaunchBaseline(terminalId: string): Promise<LaunchBaseline> {
+  const [buffer, tasks, messages] = await Promise.allSettled([
+    window.termpolis.readTerminalBuffer(terminalId),
+    window.swarmAPI.getTasks(),
+    window.swarmAPI.getMessages(),
+  ])
+  const data = <T,>(r: PromiseSettledResult<{ success: boolean; data?: T } | undefined>): T | undefined =>
+    r.status === 'fulfilled' && r.value?.success ? r.value.data : undefined
+  return {
+    outputOffset: data(buffer)?.nextOffset ?? 0,
+    taskIds: new Set((data(tasks) ?? []).map((t) => t.id)),
+    messageIds: new Set((data(messages) ?? []).map((m) => m.id)),
+  }
 }
 
 // Monitoring loop
@@ -228,6 +267,7 @@ function startMonitoring(): void {
   if (monitoringInterval) clearInterval(monitoringInterval)
   monitoringStartTime = Date.now()
   let stallWarned = false
+  let exitNoted = false
 
   monitoringInterval = setInterval(async () => {
     if (conductorState.status !== 'running') {
@@ -248,8 +288,9 @@ function startMonitoring(): void {
       }
 
       // Check conductor output for errors and refusals
+      let exit: ConductorExit | null = null
       if (conductorState.terminalId) {
-        const bufferRes = await window.termpolis.readTerminalBuffer(conductorState.terminalId)
+        const bufferRes = await window.termpolis.readTerminalBuffer(conductorState.terminalId, launch.outputOffset)
         const output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
         const recent = output.slice(-3000)
 
@@ -357,46 +398,71 @@ function startMonitoring(): void {
             type: 'error',
           })
         }
+
+        exit = findConductorExit(output)
       }
 
       // Check task-based completion (conductor used swarm_create_task)
       const tasksRes = await window.swarmAPI.getTasks()
-      if (tasksRes.success && tasksRes.data && tasksRes.data.length > 0) {
-        const allCompleted = tasksRes.data.every(
-          (t: { status: string }) => t.status === 'completed' || t.status === 'failed'
-        )
+      const tasks = tasksRes.success && tasksRes.data ? tasksRes.data.filter((t) => !launch.taskIds.has(t.id)) : []
+      if (tasks.length > 0) {
+        const allCompleted = tasks.every((t) => t.status === 'completed' || t.status === 'failed')
         if (allCompleted) {
-          const completedCount = tasksRes.data.filter((t: { status: string }) => t.status === 'completed').length
-          const failedCount = tasksRes.data.filter((t: { status: string }) => t.status === 'failed').length
+          const completedCount = tasks.filter((t) => t.status === 'completed').length
+          const failedCount = tasks.filter((t) => t.status === 'failed').length
           const msg = failedCount > 0
             ? `${completedCount} task${completedCount !== 1 ? 's' : ''} succeeded, ${failedCount} failed`
             : `${completedCount} task${completedCount !== 1 ? 's' : ''} completed successfully`
-          markSwarmDone(store, msg, tasksRes.data)
+          markSwarmDone(store, msg, tasks)
           return
         }
       }
 
       // Also detect completion from messages (catches cases where conductor
-      // skipped swarm_create_task but still posted a result/completion message)
+      // skipped swarm_create_task but still posted a result/completion message).
+      // Only what the swarm posted since launch counts: not Termpolis's own notes.
       const msgsRes = await window.swarmAPI.getMessages()
-      if (msgsRes.success && msgsRes.data && msgsRes.data.length > 0) {
-        const recent = msgsRes.data.slice(-15)
-        const completionMsg = recent.find((m: { type: string; content: string }) =>
-          m.type === 'result' ||
-          /SWARM COMPLETE|TASK COMPLETE|all tasks.*complet|swarm.*finished/i.test(m.content)
-        )
-        if (completionMsg) {
-          markSwarmDone(store, completionMsg.content || 'Swarm finished')
+      const posted = msgsRes.success && msgsRes.data
+        ? msgsRes.data.filter((m) => !launch.messageIds.has(m.id) && m.from !== 'system')
+        : []
+      const completionMsg = posted.slice(-15).find((m) =>
+        m.type === 'result' ||
+        /SWARM COMPLETE|TASK COMPLETE|all tasks.*complet|swarm.*finished/i.test(m.content)
+      )
+      if (completionMsg) {
+        markSwarmDone(store, completionMsg.content || 'Swarm finished')
+        return
+      }
+
+      // claude has exited: the run script reported it (findConductorExit). Its terminal's own shell
+      // lives on, so the check above that the terminal exists never noticed. An exit with an error,
+      // or with no task created, ends the swarm. A clean exit after handing out tasks leaves them
+      // to finish it: the completion check above ends the swarm once every one is done.
+      if (exit) {
+        if (exit.code !== 0 || tasks.length === 0) {
+          await endOnConductorExit(store, exit)
           return
+        }
+        if (!exitNoted) {
+          exitNoted = true
+          const open = tasks.filter((t) => t.status !== 'completed' && t.status !== 'failed').length
+          try {
+            await window.swarmAPI.sendMessage(
+              'system',
+              'all',
+              'info',
+              `Conductor exited (code 0) with ${open} of ${tasks.length} task${tasks.length !== 1 ? 's' : ''} still open. ` +
+                'The swarm ends when every task is completed or failed (Done or Fail in the Tasks tab).',
+            )
+          } catch {}
         }
       }
 
-      // Stall detection — if no tasks and no messages after 60 seconds, warn user
+      // Stall detection — no task and no word from the conductor a minute after launch. The
+      // launcher's own two messages don't count (they were always there, so this never fired).
       if (!stallWarned) {
         const elapsed = Date.now() - monitoringStartTime
-        const hasTasks = tasksRes.success && tasksRes.data && tasksRes.data.length > 0
-        const hasMessages = msgsRes.success && msgsRes.data && msgsRes.data.length > 1 // >1 because we post the initial "analyzing" message
-        if (elapsed > 60000 && !hasTasks && !hasMessages) {
+        if (elapsed > 60000 && tasks.length === 0 && posted.length === 0) {
           stallWarned = true
           store.setSwarmNotification({
             message: 'Conductor has not created any tasks or agents yet. Click Debug to reveal conductor terminal and check for errors.',
@@ -430,6 +496,32 @@ function markSwarmDone(
     clearInterval(monitoringInterval)
     monitoringInterval = null
   }
+}
+
+/** The conductor exited with an error, or before it created a task: the swarm is over. Says so
+ *  where the user looks, with claude's exit code and what it printed last (GitHub #36: an early
+ *  exit used to leave the swarm "running" forever with nothing on the dashboard). */
+async function endOnConductorExit(
+  store: ReturnType<typeof useTerminalStore.getState>,
+  exit: ConductorExit,
+): Promise<void> {
+  const error = `Conductor exited (code ${exit.code})`
+  conductorState = { ...conductorState, status: 'error', error }
+  if (monitoringInterval) {
+    clearInterval(monitoringInterval)
+    monitoringInterval = null
+  }
+  store.setSwarmNotification({
+    message: `${error}. Its last output is in the Swarm Dashboard's Messages tab.`,
+    type: 'error',
+  })
+  store.setSwarmActive(false)
+  // The end of the output is what explains an exit, so a long tail loses its start.
+  const tail = exit.lastLines.join('\n')
+  const quoted = tail.length > EXIT_REPORT_MAX_CHARS ? `…${tail.slice(-EXIT_REPORT_MAX_CHARS)}` : tail
+  try {
+    await window.swarmAPI.sendMessage('system', 'all', 'info', `${error}: ${quoted || '(no output)'}`)
+  } catch {}
 }
 
 // Cleanup

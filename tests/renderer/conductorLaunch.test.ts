@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { conductorRunScript, conductorLaunchCommand } from '../../src/renderer/src/lib/conductorLaunch'
+import {
+  conductorRunScript,
+  conductorLaunchCommand,
+  findConductorExit,
+  CONDUCTOR_EXIT_SENTINEL,
+  CONDUCTOR_START_LINE,
+} from '../../src/renderer/src/lib/conductorLaunch'
 
 // GitHub #36: on Windows the conductor's whole prompt went on the command line through
 // Windows PowerShell 5.1, which ends a native argument at every embedded `"`. The rest of
@@ -93,6 +99,109 @@ describe('conductorRunScript on Linux and macOS', () => {
     expect(test).toContain(
       "node e2e/mocks/mock-claude.cjs -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --dangerously-skip-permissions < \"$TASK_FILE\"",
     )
+  })
+})
+
+// GitHub #36, item 2: when claude exited, the conductor terminal's own shell lived on, so
+// nothing told the monitor and the swarm looked "running" forever.
+describe('the run scripts report when claude exits', () => {
+  it('print the sentinel and claude\'s exit code on a line of their own, then exit with that code (Windows)', () => {
+    for (const script of [conductorRunScript(true, WIN), conductorRunScript(true, { ...WIN, testCommand: 'node e2e/mocks/mock-claude.cjs' })]) {
+      expect(script).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n/)
+      // The blank line first: claude's output ending mid-line would otherwise take the report in.
+      expect(script).toContain(`Write-Output ''\nWrite-Output "${CONDUCTOR_EXIT_SENTINEL} $code"\nexit $code\n`)
+      // A command that never started leaves no exit code; the sentinel still needs one.
+      expect(script).toContain('if ($null -eq $code) { $code = 1 }')
+    }
+  })
+
+  it('print the sentinel and claude\'s exit code on a line of their own, then exit with that code (bash)', () => {
+    for (const script of [conductorRunScript(false, UNIX), conductorRunScript(false, { ...UNIX, testCommand: 'node e2e/mocks/mock-claude.cjs' })]) {
+      expect(script.endsWith(` < "$TASK_FILE"\ncode=$?\necho\necho "${CONDUCTOR_EXIT_SENTINEL} $code"\nexit $code\n`)).toBe(true)
+    }
+  })
+
+  it('print a start line before anything else, so a report can leave out the echoed launch line', () => {
+    expect(conductorRunScript(true, WIN).startsWith(`Write-Output '${CONDUCTOR_START_LINE}'\nfunction Resolve-WorkingClaude {`)).toBe(true)
+    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).startsWith(`Write-Output '${CONDUCTOR_START_LINE}'\n$enc = `)).toBe(true)
+    expect(conductorRunScript(false, UNIX).startsWith(`#!/bin/bash\necho '${CONDUCTOR_START_LINE}'\nTASK_FILE=`)).toBe(true)
+  })
+
+  it('report exit code 1 when no claude binary answers, rather than leave without a word', () => {
+    const ps = conductorRunScript(true, WIN)
+    expect(ps).toContain(
+      "if (-not $claudeExe) {\n  Write-Output 'No working claude binary found. Install Claude Code natively or run: npm install -g @anthropic-ai/claude-code --force'\n" +
+        `  Write-Output '${CONDUCTOR_EXIT_SENTINEL} 1'\n  exit 1\n}\n`,
+    )
+    // The probe itself no longer exits the script, which skipped the report.
+    expect(ps.slice(0, ps.indexOf('$claudeExe = Resolve-WorkingClaude'))).not.toContain('exit 1')
+    const sh = conductorRunScript(false, UNIX)
+    expect(sh).toContain(`>&2\n  echo "${CONDUCTOR_EXIT_SENTINEL} 1"\n  exit 1\n}\n`)
+  })
+})
+
+describe('findConductorExit', () => {
+  it('reads the code and the last lines the terminal showed before the sentinel', () => {
+    const out = 'error: unknown option \'-NoProfile\'\r\n(Did you mean --no-profile?)\r\n[termpolis-conductor-exited] 1\r\nPS C:\\proj> '
+    expect(findConductorExit(out)).toEqual({ code: 1, lastLines: ["error: unknown option '-NoProfile'", '(Did you mean --no-profile?)'] })
+  })
+
+  it('counts only a whole line: the sentinel quoted mid-line or in an echoed script line is no exit', () => {
+    expect(findConductorExit('Claude said [termpolis-conductor-exited] 1 in passing\r\nnext\r\n')).toBeNull()
+    expect(findConductorExit('+ Write-Output "[termpolis-conductor-exited] $code"\r\n+ ~~~~\r\n')).toBeNull()
+    expect(findConductorExit('PS C:\\> echo [termpolis-conductor-exited] 0\r\n')).toBeNull()
+  })
+
+  it('waits for the line to end, so a read that cut it short is no exit, then finds it whole', () => {
+    expect(findConductorExit('done\r\n[termpolis-conductor-ex')).toBeNull()
+    // `1` of a code still arriving (`127`) must not be read as 1.
+    expect(findConductorExit('done\r\n[termpolis-conductor-exited] 1')).toBeNull()
+    expect(findConductorExit('done\r\n[termpolis-conductor-exited] 127\r\n')).toEqual({ code: 127, lastLines: ['done'] })
+  })
+
+  it('reads a ConPTY repaint, where a cursor move rather than a newline starts the next line', () => {
+    const out = '\x1b[?25l\x1b[4;1HError: Invalid MCP configuration\x1b[K\x1b[5;1H\x1b[32m[termpolis-conductor-exited] 1\x1b[0m\x1b[K\x1b[6;1HPS C:\\proj> \x1b[?25h'
+    expect(findConductorExit(out)).toEqual({ code: 1, lastLines: ['Error: Invalid MCP configuration'] })
+  })
+
+  // Captured from Windows PowerShell 5.1 through ConPTY, paths shortened. PSReadLine drew the
+  // typed launch line twice, the first time cut off mid-path, so filtering lines by what they
+  // say let a piece of it into the report. Everything before the start line is left out now.
+  it('leaves out every piece of the echoed launch line, as ConPTY really draws it', () => {
+    const typed = (end: string) => "$p\x1b[90m=\x1b[36m'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'\x1b[37m; " +
+      '\x1b[92mif \x1b[37m(\x1b[90m-not \x1b[37m(\x1b[93mTest-Path \x1b[92m$p\x1b[37m)) { \x1b[92m$p\x1b[90m=\x1b[37m(\x1b[93mGet-Process ' +
+      '\x1b[90m-Id \x1b[92m$PID\x1b[37m).\x1b[97mPath \x1b[37m}; & \x1b[92m$p \x1b[90m-ExecutionPolicy \x1b[37mBypass \x1b[90m-File ' +
+      "\x1b[36m'C:\\Users\\me\\" + end
+    const out = '\x1b[?25l\x1b[93m$\x1b[?25h\x1b[m\x1b[?25l\x1b[92m\x08' + typed('.termpolis-conductor') +
+      '\x1b[?25l\x1b[m\x1b[92m\x1b[2;63H' + typed(".termpolis-conductor-run.ps1'\r\n") +
+      '\x1b[?25h\x1b[m[termpolis-conductor-started]\r\nAll work handed out.\r\n\r\n[termpolis-conductor-exited] 0\r\n' +
+      '\x1b]9;9;C:\\proj\x07PS C:\\proj> '
+    expect(findConductorExit(out)).toEqual({ code: 0, lastLines: ['All work handed out.'] })
+  })
+
+  it('reads a negative code, as Windows reports a process ended by Ctrl+C', () => {
+    expect(findConductorExit('[termpolis-conductor-exited] -1073741510\r\n')?.code).toBe(-1073741510)
+  })
+
+  it('quotes at most the last 15 non-empty lines printed after the start line, not the echoed launch line', () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`)
+    const out = "PS C:\\> & $p -ExecutionPolicy Bypass -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n[termpolis-conductor-started]\r\n" +
+      lines.join('\r\n\r\n') + '\r\n[termpolis-conductor-exited] 2\r\n'
+    expect(findConductorExit(out)).toEqual({ code: 2, lastLines: lines.slice(-15) })
+    expect(findConductorExit("$ bash '/home/me/.termpolis-conductor-run.sh'\r\n[termpolis-conductor-started]\r\n\r\n[termpolis-conductor-exited] 0\r\n"))
+      .toEqual({ code: 0, lastLines: [] })
+  })
+
+  it('quotes everything before the report when the start line is no longer in the buffer', () => {
+    expect(findConductorExit('...the end of a long answer\r\n\r\n[termpolis-conductor-exited] 0\r\n'))
+      .toEqual({ code: 0, lastLines: ['...the end of a long answer'] })
+  })
+
+  it('takes the last report when the screen holds more than one', () => {
+    expect(findConductorExit('[termpolis-conductor-exited] 1\r\nagain\r\n[termpolis-conductor-exited] 4\r\n')).toEqual({
+      code: 4,
+      lastLines: ['[termpolis-conductor-exited] 1', 'again'],
+    })
   })
 })
 
