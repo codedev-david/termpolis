@@ -31,6 +31,7 @@ import {
   DEB_TAIL_BYTES,
   PKEXEC_DISMISSED,
   PKEXEC_NOT_AUTHORIZED,
+  createFresh,
   debErrorDetail,
   debFailedMessage,
   debIncompleteMessage,
@@ -519,6 +520,41 @@ describe('debInstallerRunning', () => {
     writeFileSync(pidFile(), String(process.pid))
     // This process is not the runner, on Linux; elsewhere there is no /proc to read.
     expect(debInstallerRunning(dir)).toBe(false)
+  })
+})
+
+describe('createFresh', () => {
+  /** The error code createFresh throws, with an unlink that leaves whatever is at the path, which
+   *  stands in for something put there between the removal and the open. */
+  function codeAfterPlant(path: string): string | undefined {
+    try {
+      closeSync(createFresh(path, () => {}))
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code
+    }
+    return undefined
+  }
+
+  it('creates the file when nothing is there', () => {
+    const file = join(dir, 'log')
+    closeSync(createFresh(file))
+    expect(lstatSync(file).isFile()).toBe(true)
+    expect(readFileSync(file, 'utf8')).toBe('')
+  })
+
+  it('fails, and leaves it alone, when a file is put at the path after the removal', () => {
+    const file = join(dir, 'log')
+    writeFileSync(file, 'planted')
+    expect(codeAfterPlant(file)).toBe('EEXIST')
+    expect(readFileSync(file, 'utf8')).toBe('planted')
+  })
+
+  it.runIf(posixOnly)('never opens through a symlink put at the path after the removal', () => {
+    const keep = join(dir, 'keep')
+    writeFileSync(keep, 'keep')
+    symlinkSync(keep, join(dir, 'log'))
+    expect(codeAfterPlant(join(dir, 'log'))).toBe('EEXIST')
+    expect(readFileSync(keep, 'utf8')).toBe('keep')
   })
 })
 

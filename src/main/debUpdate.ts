@@ -243,9 +243,10 @@ function isDebPath(deb: unknown): deb is string {
 }
 
 /** Removes whatever is at `path` (a symlink is removed, never followed), then creates a new file
- *  there, failing if anything else got there first. */
-function createFresh(path: string): number {
-  try { unlinkSync(path) } catch { /* nothing there */ }
+ *  there, failing if anything else got there first. `unlink` is a seam for the test that plants
+ *  something between the two steps. */
+export function createFresh(path: string, unlink: (path: string) => void = unlinkSync): number {
+  try { unlink(path) } catch { /* nothing there */ }
   return openSync(path, 'wx', 0o600)
 }
 

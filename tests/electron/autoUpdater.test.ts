@@ -88,15 +88,18 @@ const diskFull = () =>
 // the suite with no_new_privs set, and nothing here may ever start the real install runner (it
 // would wait for the test runner to exit, ask for the administrator password, then start it
 // again), quit the test runner, or read the real userData.
-const LINUX_HOST: Partial<UpdaterHost> = {
-  platform: 'linux',
-  exePath: '/opt/Termpolis/termpolis',
-  appImage: true,
+const DEB_PINS: Partial<UpdaterHost> = {
   noNewPrivs: () => false,
   installDeb: () => ({ started: false, message: 'a test reached the .deb install' }),
   takeDebNotice: () => null,
   debInstallerRunning: () => false,
   quit: () => {},
+}
+const LINUX_HOST: Partial<UpdaterHost> = {
+  platform: 'linux',
+  exePath: '/opt/Termpolis/termpolis',
+  appImage: true,
+  ...DEB_PINS,
 }
 /** The .deb, Termpolis's Linux system package (debUpdate.ts). */
 const DEB_HOST: Partial<UpdaterHost> = { ...LINUX_HOST, appImage: false }
@@ -791,12 +794,13 @@ describe('initAutoUpdater on macOS — where the app runs decides whether it can
     rmSync(dir, { recursive: true, force: true })
   })
 
-  /** Starts the updater on a Mac (unless the host says otherwise) and lets the location check settle. */
+  /** Starts the updater on a Mac (unless the host says otherwise) and lets the location check settle.
+   *  A host that says Linux and no AppImage is a .deb, so the .deb pieces stay pinned here too. */
   async function start(
     host: Partial<UpdaterHost>,
     opts?: { onBeforeQuitAndInstall?: (armed?: boolean) => void; noWindow?: boolean },
   ) {
-    const mod = await freshAutoUpdater({ platform: 'darwin', ...host })
+    const mod = await freshAutoUpdater({ platform: 'darwin', ...DEB_PINS, ...host })
     mod.__setUpdateConfigExistsForTests(() => true)
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     const fakeWindow = { webContents: { send: vi.fn() } } as any
