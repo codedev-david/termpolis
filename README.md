@@ -556,7 +556,7 @@ Once you connect your agents — on the first step of the first-run tour, or in 
 | `run_command` | Send a command to a terminal (types it and presses Enter) |
 | `run_and_wait` | Run a command to completion and return its exit code and output |
 | `read_output` | Read recent output from a terminal (last N lines) |
-| `write_to_terminal` | Write raw text to a terminal |
+| `write_to_terminal` | Write raw text to a terminal. With `submit: true` it waits until the agent in it is ready for input (up to 3 minutes), types the text, then presses Enter on its own and checks the agent took it |
 | `close_terminal` | Close a terminal by ID |
 | `get_file_tree` | List files and directories at a path |
 | `get_git_status` | Get git status, branch, and recent commits |

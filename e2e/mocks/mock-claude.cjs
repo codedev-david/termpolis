@@ -239,7 +239,9 @@ async function runConductor(prompt) {
   await mcp('run_command', { terminalId: term2Id, command: 'claude --dangerously-skip-permissions' });
   await sleep(200);
 
-  // STEP 5 — Send task prompts via write_to_terminal
+  // STEP 5 — Send task prompts via write_to_terminal. Raw, not with submit=true as the real
+  // conductor's prompt asks: these workers are the interactive stub below, which opens on a trust
+  // prompt and never shows an agent's input box, so submit would wait out its full 3 minutes.
   await mcp('write_to_terminal', {
     terminalId: term1Id,
     text: `You are in ${projectCwd}. Implement the feature. Task ID: ${task1Id}\r`,

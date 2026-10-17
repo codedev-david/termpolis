@@ -5,6 +5,8 @@ import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary } from './agentCommandSanitizer'
+import { detectAgentStatus, inputBoxRow, type AgentStatusResult } from '../shared/agentStatusDetector'
+import { screenOf } from '../shared/terminalScreen'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -260,6 +262,7 @@ const TOOLS: McpTool[] = [
       properties: {
         terminalId: { type: 'string', description: 'Terminal ID' },
         text: { type: 'string', description: 'Text to write' },
+        submit: { type: 'boolean', description: 'Wait until the agent is ready, type the text, then press Enter' },
       },
       required: ['terminalId', 'text'],
     },
@@ -680,6 +683,133 @@ export interface McpToolHandlers {
   recallBench: (opts: { project?: string; limit?: number; save?: boolean }) => Promise<unknown>
 }
 
+// write_to_terminal with `submit` (GitHub #36 item 4). A conductor that typed a task into a worker
+// right after starting it lost the task in three ways: Codex was still loading its MCP servers (one
+// to three minutes on a slow PC) and an Enter then only queues the prompt; an agent showing "tab to
+// queue message" does the same; and text with its \r in one write reads as a paste, so the Enter
+// becomes a newline. So: wait until the agent's screen shows it ready, type the text, let it settle,
+// press Enter on its own (SUBMIT_SETTLE_MS in remoteBridge/dispatcher.ts, which split it for the
+// phone), and check the agent took it, pressing Enter once more if it did not.
+
+/** How long `submit` waits for the agent to be ready. */
+export const SUBMIT_READY_TIMEOUT_MS = 180_000
+const SUBMIT_POLL_MS = 1000
+/** A terminal that printed nothing in this long is not one to type into. Generous: a cold Windows
+ *  PowerShell 5.1 on a slow PC can take many seconds to print its first prompt. */
+const SUBMIT_NO_OUTPUT_MS = 30_000
+/** How long the agent gets to take the prompt after each Enter. */
+const SUBMIT_CONFIRM_MS = 3000
+const SUBMIT_CONFIRM_POLL_MS = 500
+
+export interface SubmitClock {
+  now(): number
+  sleep(ms: number): Promise<void>
+}
+const realClock: SubmitClock = { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) }
+
+export interface SubmitResult {
+  submitted: boolean
+  /** How long the agent took to be ready for the text. */
+  waitedMs: number
+  error?: string
+}
+
+/** The pause between the text and its Enter: the remote dispatcher's 150 ms, up to 2 s for a long
+ *  prompt, which an agent reads in more than one go. */
+function settleMs(text: string): number {
+  return Math.min(2000, Math.max(150, text.length))
+}
+
+/** What a terminal shows, and what the agent in it is doing; null for a terminal with no output. */
+function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: string, previous: AgentStatusResult['status']) {
+  const raw = handlers.readOutput(terminalId, 1000)
+  if (!raw) return null
+  const screen = screenOf(raw)
+  const lines = screen.lines()
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+  return { lines, status: detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title: screen.title }) }
+}
+
+/** A long paste, as the agents show it in their input box instead of the text: Claude Code's and
+ *  agy's "[Pasted text #1 +20 lines]" (or "#1 4120 chars"), Codex's "[Pasted Content 4120 chars]". */
+const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+|Content \d+ chars)/
+
+/** Whether `text` still sits where it was typed: at the start of the agent's input box (not in the
+ *  footer under it, which a short text could match), or on a shell's last line. */
+function stillTyped(lines: string[], text: string): boolean {
+  const bottom = lines.slice(-12)
+  const row = inputBoxRow(bottom)
+  const flat = (s: string): string => s.replace(/\s+/g, ' ').trim()
+  const start = flat(text).slice(0, 24)
+  if (row < 0) return flat(bottom[bottom.length - 1] ?? '').includes(start)
+  const typed = flat(bottom[row].replace(/^(?:│\s)?[❯>›]/, ''))
+  return PASTE_PLACEHOLDER.test(typed) || typed.startsWith(start)
+}
+
+/** The terminal's name, for the agent-specific rules in the status detector. Workers the conductor
+ *  creates aren't in the saved session, so this is often '' and the screen rules carry it. */
+function terminalName(handlers: McpToolHandlers, terminalId: string): string {
+  try {
+    return handlers.listTerminals().find((t) => t.id === terminalId)?.name ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export async function submitToTerminal(
+  handlers: McpToolHandlers,
+  terminalId: string,
+  text: string,
+  clock: SubmitClock = realClock,
+): Promise<SubmitResult> {
+  const body = text.replace(/[\r\n]+$/, '')
+  const name = terminalName(handlers, terminalId)
+  const start = clock.now()
+  let sawOutput = false
+  let readyReads = 0
+  let status: AgentStatusResult = { status: 'starting', summary: '' }
+  // Ready on two reads in a row, a second apart: a screen mid-change can look ready for one frame.
+  while (readyReads < 2) {
+    const seen = readScreen(handlers, terminalId, name, status.status)
+    const waitedMs = clock.now() - start
+    if (seen) {
+      sawOutput = true
+      status = seen.status
+    } else if (sawOutput) {
+      return { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
+    } else if (waitedMs >= SUBMIT_NO_OUTPUT_MS) {
+      return { submitted: false, waitedMs, error: `Terminal ${terminalId} shows no output: it was closed, or it is not an ID create_terminal returned.` }
+    }
+    // A blocked agent doesn't get ready by being waited for.
+    if (status.status === 'blocked') return { submitted: false, waitedMs, error: `The agent is blocked: ${status.summary}.` }
+    readyReads = seen && status.status === 'idle' ? readyReads + 1 : 0
+    if (readyReads < 2) {
+      if (waitedMs >= SUBMIT_READY_TIMEOUT_MS) {
+        const now = status.summary ? `${status.status}: ${status.summary}` : status.status
+        return { submitted: false, waitedMs, error: `The agent was not ready for input after ${Math.round(waitedMs / 1000)} s (${now}). Check it with read_output.` }
+      }
+      await clock.sleep(SUBMIT_POLL_MS)
+    }
+  }
+  const waitedMs = clock.now() - start
+
+  if (body) {
+    handlers.writeToTerminal(terminalId, body)
+    await clock.sleep(settleMs(body))
+  }
+  for (let enter = 0; enter < 2; enter++) {
+    handlers.writeToTerminal(terminalId, '\r')
+    for (let t = 0; t < SUBMIT_CONFIRM_MS; t += SUBMIT_CONFIRM_POLL_MS) {
+      await clock.sleep(SUBMIT_CONFIRM_POLL_MS)
+      const seen = readScreen(handlers, terminalId, name, 'idle')
+      if (!seen) return { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
+      // Off its prompt (working, a dialog, a limit) or the text gone from the input: it took it.
+      if (seen.status.status !== 'idle' || !body || !stillTyped(seen.lines, body)) return { submitted: true, waitedMs }
+    }
+  }
+  return { submitted: false, waitedMs, error: 'The text is still in the agent\'s input after Enter was pressed twice. Check it with read_output.' }
+}
+
 export async function executeTool(
   name: string,
   args: any,
@@ -733,6 +863,9 @@ export async function executeTool(
       handlers.closeTerminal(args.terminalId)
       return { success: true }
     case 'write_to_terminal':
+      // Raw unless asked: scripts rely on every byte arriving as sent, at once (remoteBridge/
+      // dispatcher.ts writeThenSubmit says why the Enter split isn't the default).
+      if (args.submit === true) return submitToTerminal(handlers, args.terminalId, String(args.text ?? ''))
       handlers.writeToTerminal(args.terminalId, args.text)
       return { success: true }
     case 'get_file_tree':

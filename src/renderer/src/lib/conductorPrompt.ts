@@ -52,7 +52,7 @@ YOUR MCP TOOLS:
 - create_terminal: create a new terminal (name, shell, cwd)
 - run_command: run a command in a terminal (terminalId, command)
 - read_output: read terminal output (terminalId)
-- write_to_terminal: send text to a terminal (terminalId, text)
+- write_to_terminal: send text to a terminal (terminalId, text, submit)
 
 REQUIRED STEPS — follow in order:
 
@@ -88,18 +88,20 @@ ${modelGuidanceBlock}  Then post a status update via swarm_send_message.
   Agents launched with -p or --sandbox CANNOT write files or use tools.
   The ONLY correct way to send a task prompt is via write_to_terminal in STEP 5.
 
-STEP 5 — Send task prompts (wait ~15 seconds after STEP 4 for agents to initialize):
-  For each agent call write_to_terminal(terminalId='[id]', text='[task prompt]\r')
+STEP 5 — Send task prompts:
+  For each agent call write_to_terminal(terminalId='[id]', text='[task prompt]', submit=true)
   This types the prompt into the agent's interactive session — the ONLY supported method.
+  submit=true waits until the agent is ready for input (Codex can take minutes to load its MCP servers),
+  then types the prompt and presses Enter. It returns submitted=true once the agent has taken the prompt;
+  if it returns submitted=false, read the error and read_output(terminalId='[id]'), then send it again.
   Include the taskId in the prompt so the agent knows which task to update when done.
   The prompt should instruct the agent to actually write/modify files, not just print output.
-  IMPORTANT: The text MUST end with \r (carriage return) to submit the prompt.
 
 STEP 6 — Monitor progress:
   Periodically call swarm_list_tasks and swarm_read_messages (every 15-20 seconds).
   Read agent output with read_output(terminalId='[id]') to check progress.
   Post status updates via swarm_send_message as you go.
-  If an agent appears stuck, send guidance via write_to_terminal.
+  If an agent appears stuck, send guidance via write_to_terminal(..., submit=true).
 
 STEP 7 — Mark tasks complete as agents finish:
   When you confirm an agent has finished its work, call:
@@ -117,8 +119,8 @@ WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
   create_terminal(name='Claude (Build UI)', shell='${shell}', cwd='${options.projectCwd}')
   → terminalId: 'term-001'
   run_command(terminalId='term-001', command='claude --dangerously-skip-permissions')
-  // wait ~15 seconds...
-  write_to_terminal(terminalId='term-001', text='You are working in ${options.projectCwd}. Create the dashboard component. Task ID: task-abc-123\\r')
+  write_to_terminal(terminalId='term-001', text='You are working in ${options.projectCwd}. Create the dashboard component. Task ID: task-abc-123', submit=true)
+  → submitted: true
 
   === Gemini agent for "Write Docs" ===
   swarm_create_task(title='Write Docs', description='Write project documentation', createdBy='conductor')
@@ -126,8 +128,8 @@ WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
   create_terminal(name='Gemini (Docs)', shell='${shell}', cwd='${options.projectCwd}')
   → terminalId: 'term-002'
   run_command(terminalId='term-002', command='agy --dangerously-skip-permissions')
-  // wait ~15 seconds...
-  write_to_terminal(terminalId='term-002', text='You are working in ${options.projectCwd}. Write project documentation. Task ID: task-def-456\\r')
+  write_to_terminal(terminalId='term-002', text='You are working in ${options.projectCwd}. Write project documentation. Task ID: task-def-456', submit=true)
+  → submitted: true
 
   ✗ WRONG: run_command(command='claude -p "Build the login page"')     — no -p flag!
   ✗ WRONG: run_command(command='gemini -p "Write docs"')               — no -p flag!

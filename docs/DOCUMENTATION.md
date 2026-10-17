@@ -545,6 +545,8 @@ The tools come in seven groups. The authoritative list is the one your agent sho
 | Token Headroom | `retrieve_full` | Expand a tool result that Token Headroom shortened |
 | Linked machines | `linked_machines` | Have a Claude, Codex or Gemini agent on another linked machine do a task headlessly and return its final answer: `list` the machines, `run` a task, and fetch the `result` of one still running. See [§30](#30-linked-machines) |
 
+`write_to_terminal` writes exactly the text it is given, at once, and presses nothing. Pass `submit: true` to have a prompt typed into an agent the way a person would: Termpolis waits until the agent's screen shows it ready for input (up to 3 minutes, so a Codex still loading its MCP servers, which would only queue the prompt, gets the time it needs), types the text without its trailing carriage return, waits a moment, presses Enter on its own, and checks that the agent took the prompt, pressing Enter once more if it didn't. The answer is `{ submitted, waitedMs }`, or `submitted: false` with the reason: the terminal is gone, the agent never became ready, it is blocked (it needs a restart, say), or the text was still in its input after the second Enter.
+
 The server is authenticated via a token generated at each launch, which Termpolis writes to `mcp-token` in its data directory, next to `mcp-port`. Both files are readable only by your account: mode `600` on macOS and Linux; on Windows an access list that removes what the folder passes down and grants your account full control, so other local users get nothing (entries set on the file itself, which can include SYSTEM and Administrators, who can read every file anyway, are left alone). An agent's Termpolis MCP entry starts a small stdio adapter that reads both. Misuse resistance includes tight origin checks, rate limits, and an audit log (`mcp-audit.log`). A workflow's Skill steps call the same tools in-process and are held to the same limits and written to the same log, marked `"via": "workflow"`.
 
 ### Connecting your coding agents
@@ -612,7 +614,7 @@ The conductor is a **dedicated Claude Code instance** that runs headless in a hi
 2. Posts its plan to the swarm's messages.
 3. Creates a task record for every subtask, so the plan shows up on the dashboard.
 4. Opens a terminal for each subtask and starts an agent in it (see [Swarm permission flags](#swarm-permission-flags)).
-5. Types each agent's task prompt into its terminal.
+5. Types each agent's task prompt into its terminal with `write_to_terminal`'s `submit`, which waits until the agent is ready for input, then presses Enter (see [Available tools](#available-tools)).
 6. Checks the task list, the messages and each agent's output every 15–20 seconds, and sends guidance to an agent that looks stuck.
 7. Marks each task completed as its agent finishes, then posts a final summary.
 

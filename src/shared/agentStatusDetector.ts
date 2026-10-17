@@ -19,9 +19,20 @@ export interface AgentStatusResult {
   summary: string
 }
 
-// Strip ANSI escape codes for clean pattern matching
+export interface DetectOptions {
+  /** The input is a rendered screen (TerminalScreen's lines joined with '\n', src/shared/
+   *  terminalScreen.ts), not a raw tail. What it shows is current, so an agent's input box and
+   *  busy line can be read off it; in a raw tail they linger after they are gone. */
+  screen?: boolean
+  /** With `screen`: the window title the output last set. */
+  title?: string
+}
+
+// Strip ANSI escape codes for clean pattern matching. A cursor-forward is a run of spaces: ConPTY
+// moves over every cell that didn't change, so on Windows "You've ESC[1C hit" reads "You've hit".
 function stripAnsi(text: string): string {
   return text
+    .replace(/\x1b\[(\d*)C/g, (_, n: string) => ' '.repeat(Math.min(Number(n) || 1, 200)))
     .replace(/\x1b\[\??[0-9;]*[a-zA-Z]/g, '')
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b[()][A-Z0-9]/g, '')
@@ -30,7 +41,8 @@ function stripAnsi(text: string): string {
 /**
  * Detect the current status of a swarm agent from its terminal output.
  *
- * @param recentOutput - The last ~2-4KB of the terminal's output buffer
+ * @param recentOutput - The last ~2-4KB of the terminal's output buffer, or with `screen` a
+ *   rendered screen
  * @param agentName - The agent type (e.g. "Claude", "Codex", "Gemini")
  * @param previousStatus - The agent's previous status (for hysteresis)
  */
@@ -38,11 +50,15 @@ export function detectAgentStatus(
   recentOutput: string,
   agentName: string,
   previousStatus: AgentStatus = 'starting',
+  options: DetectOptions = {},
 ): AgentStatusResult {
+  if (options.screen) return detectOnScreen(recentOutput, agentName, previousStatus, options.title ?? '')
   const clean = stripAnsi(recentOutput)
   // Focus on the tail for recency — most signals are at the end
-  const tail = clean.slice(-1500)
+  return detectInText(clean.slice(-1500), agentName, previousStatus)
+}
 
+function detectInText(tail: string, agentName: string, previousStatus: AgentStatus): AgentStatusResult {
   // --- Priority 1: Blocked — agent is dead/stalled, needs restart ---
   // Must outrank waiting_for_input: a "please re-authenticate" or
   // "gemini auth"-hint message contains auth keywords but the agent
@@ -96,11 +112,77 @@ export function detectAgentStatus(
   return { status: previousStatus, summary: '' }
 }
 
+// ---- A rendered screen ----
+
+/** The rows at the bottom of a screen, where each agent draws its input box, footer and status
+ *  line, and where a limit message or a dialog appears. What is above them is history: what the
+ *  agent did, not what it is doing. */
+const SCREEN_BOTTOM_ROWS = 12
+
+// What the three agents show while they work, all seen on real screens (GitHub #36). Claude Code
+// 2.1.302's footer and Codex 0.153.4's status line say "esc to interrupt", agy 1.4.0's footer "esc to
+// cancel". Codex's header says "model: loading" until it is up: its input box is already drawn then,
+// and an Enter only queues the prompt, which it lists above the box.
+const BUSY_ON_SCREEN: readonly RegExp[] = [
+  /\besc to interrupt\b/,
+  /\besc to cancel\b/,
+  /\bmodel:\s+loading\b/,
+  /\bQueued follow-up inputs\b|\bMessages to be submitted after next tool call\b/,
+]
+/** A window title led by a spinner: Claude Code's ◐◓◑◒ and Codex's braille frames, redrawn while
+ *  they work, so the title is current even after their footer has left the buffer. */
+const BUSY_TITLE = /^[\u2800-\u28ff\u25d0-\u25d3]/
+const RULE = /^[─━]{20,}$/
+/** A menu's cursor on a numbered option ("› 1. Update now", "❯ 1. Yes"): no input box. */
+const OPTION_ROW = /^(?:│\s)?[❯>›]\s?\d+\.\s/
+/** A status line led by a spinner frame or a bullet: Claude Code's "✢ Doing…", agy's "⡿ Generating...",
+ *  Codex's "• Working (31s • esc to interrupt)". */
+const STATUS_ROW = /^\s*(?:[\u2800-\u28ff]|[✢✳✶✻✽*·•◦])\s+(\S.*)$/
+
+function detectOnScreen(screen: string, agentName: string, previousStatus: AgentStatus, title: string): AgentStatusResult {
+  const rows = screen.split('\n')
+  while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
+  const bottom = rows.slice(-SCREEN_BOTTOM_ROWS)
+  const text = bottom.join('\n')
+  if (isBlocked(text, agentName)) return { status: 'blocked', summary: extractBlockedSummary(text, agentName) }
+  if (BUSY_TITLE.test(title) || BUSY_ON_SCREEN.some((p) => p.test(text))) {
+    return { status: 'working', summary: busySummary(bottom) }
+  }
+  if (inputBoxRow(bottom) >= 0) return { status: 'idle', summary: 'Waiting at prompt' }
+  // Not one of the three agents' screens (a shell, a dialog): read it as text.
+  return detectInText(text, agentName, previousStatus)
+}
+
+/** The row of an agent's input box, or -1. Claude Code's ❯ and agy's > sit right under the box's
+ *  top rule (an older Claude Code drew a ╭ box with │ > in it); Codex's › is the last such row, at
+ *  the bottom. Their history repeats each prompt the same way, which is why it is the lowest one. */
+export function inputBoxRow(rows: readonly string[]): number {
+  for (let i = rows.length - 1; i > 0; i--) {
+    const row = rows[i]
+    // Claude Code puts a no-break space after its ❯, so any space will do.
+    const boxed = (/^[❯>](?:\s|$)/.test(row) && RULE.test(rows[i - 1])) || (/^│\s[❯>](?:\s|$)/.test(row) && /^╭/.test(rows[i - 1]))
+    if (boxed) return OPTION_ROW.test(row) ? -1 : i
+  }
+  for (let i = rows.length - 1; i >= Math.max(0, rows.length - 6); i--) {
+    if (/^›(?:\s|$)/.test(rows[i])) return OPTION_ROW.test(rows[i]) ? -1 : i
+  }
+  return -1
+}
+
+function busySummary(rows: readonly string[]): string {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = STATUS_ROW.exec(rows[i])
+    if (m) return m[1].replace(/\s*\([^()]*\besc to \w+[^()]*\)\s*$/, '').slice(0, 120)
+  }
+  return 'Working...'
+}
+
 // ---- Detection helpers ----
 
 function isWaitingForInput(tail: string, agentName: string): boolean {
-  // Trust folder prompts
-  if (/do you trust.*files|trust this folder|allow access/i.test(tail)) return true
+  // Trust folder prompts. Codex 0.153.4 and agy 1.4.0 ask "Do you trust the contents of this
+  // directory?" / "... of this project?" (both seen on real screens).
+  if (/do you trust.*files|trust this folder|allow access|do you trust the contents of this/i.test(tail)) return true
   // Auth prompts
   if (/sign in|log in|authenticate|visit.*to sign in|enter.*api.?key/i.test(tail)) return true
   // Interactive questions from agents
