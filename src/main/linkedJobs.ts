@@ -110,8 +110,9 @@ export interface LinkedJobsDeps {
   onActivity(a: LinkedActivity): void
   /** aiSecurity.screenText: credentials out of the prompt before it runs here, and out of the
    *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. With `keep`,
-   *  only what the screen made of the last `keep` characters comes back (screenTail). */
-  screen(text: string, keep?: number): SecretScreen
+   *  only what the screen made of the last `keep` characters comes back, and with `lookback` no more
+   *  than that much before them is screened with them (screenTail). */
+  screen(text: string, keep?: number, lookback?: number): SecretScreen
   /** aiSecurity.maskForDisplay: every possible credential out of a job's summary, the ones
    *  screening leaves in for the agent too, before the activity view shows it, the job history
    *  keeps it and a notification shows it (activitySummary). */
@@ -318,9 +319,9 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
 
   /** deps.screen for what leaves, failing closed. A screen that throws must not
    *  throw out of finish(), which nothing above would catch. */
-  function screenOrWithhold(text: string, keep?: number): SecretScreen {
+  function screenOrWithhold(text: string, keep?: number, lookback?: number): SecretScreen {
     try {
-      return deps.screen(text, keep)
+      return deps.screen(text, keep, lookback)
     } catch {
       return { text: WITHHELD, removed: {}, flagged: {} }
     }
@@ -330,9 +331,10 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
    *  before them in view as a credential the cut runs through can reach back (a key block's BEGIN
    *  line, a token's prefix), so it is found whole. Cut first, what was left of it would match no
    *  rule and go back as it is. No more than that is screened, however long `text` is: this runs
-   *  on the main thread. */
+   *  on the main thread. The screen is given all of `text` and told how far back to look, not a
+   *  slice of it: where a slice started, a rule would see the start of a word. */
   function screenTail(text: string, keep: number): SecretScreen {
-    return screenOrWithhold(text.slice(Math.max(0, text.length - keep - SCREEN_LOOKBACK_CHARS)), keep)
+    return screenOrWithhold(text, keep, SCREEN_LOOKBACK_CHARS)
   }
 
   function reportSecrets(job: Job, hop: LinkedSecretFinding['hop'], found: Pick<SecretScreen, 'removed' | 'flagged'>): void {

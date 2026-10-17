@@ -64,8 +64,9 @@ export interface LinkedToolDeps {
   /** peerAnswerBanner(inspectResult(text, 210_000), machine, agent): a job's output or error,
    *  always labelled. */
   frame(text: string, machine: string, agent: string): string
-  /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters. */
-  screen(text: string, keep?: number): SecretScreen
+  /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters, and with
+   *  `lookback`, screening no more than that much before them. */
+  screen(text: string, keep?: number, lookback?: number): SecretScreen
   /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary). */
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
@@ -258,9 +259,10 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
   /** The last `keep` characters of `text`, screened before they are cut from the rest, with as much
    *  before them in view as a credential the cut runs through can reach back (linkedJobs'
    *  screenTail, which the other machine runs on its side). A version that sent more than it may
-   *  is not screened whole. */
+   *  is not screened whole; the screen is told how far back to look rather than given a slice,
+   *  where a rule would see the start of a word. */
   function screenTail(text: string, keep: number): SecretScreen {
-    return deps.screen(text.slice(Math.max(0, text.length - keep - SCREEN_LOOKBACK_CHARS)), keep)
+    return deps.screen(text, keep, SCREEN_LOOKBACK_CHARS)
   }
 
   /** A job's output and error as an agent may read them: screened and labelled, with notes for

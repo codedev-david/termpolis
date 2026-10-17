@@ -607,20 +607,25 @@ export function requiredLiteral(pattern: RegExp): string | null {
 /** Each rule's literal, worked out once. */
 const LITERALS = new Map<RedactionRule, string | null>(RULES.map((rule) => [rule, requiredLiteral(rule.pattern)]))
 
-/** Every match of every rule, rule by rule in table order. A rule whose literal (requiredLiteral)
- *  is missing from the text is not run: it cannot match. Most text carries none of the vendor
- *  prefixes, so most of the table is skipped by a substring search. */
-function forEachMatch(input: string, visit: (rule: RedactionRule, m: RegExpExecArray) => void): void {
+/** Every match of every rule, rule by rule in table order, that starts at `start` or after (every
+ *  rule is global, so its search starts there). The text before `start` is still the text's: a \b, a
+ *  lookbehind or a line start there sees it, as in the whole text. A rule whose literal
+ *  (requiredLiteral) is missing from the text it searches is not run: it cannot match. Most text
+ *  carries none of the vendor prefixes, so most of the table is skipped by a substring search. */
+function forEachMatch(input: string, visit: (rule: RedactionRule, m: RegExpExecArray) => void, start = 0): void {
+  // A literal is where its match starts, so one that starts at `start` or after has it in here.
+  const searched = start > 0 ? input.slice(start) : input
   let lower: string | undefined
   for (const rule of RULES) {
     const literal = LITERALS.get(rule)
     if (literal) {
       // Every literal is printable ASCII, which a case-insensitive pattern matches only as its
-      // ASCII self or its other case: lower-casing the whole text loses no match.
-      const hay = rule.pattern.flags.includes('i') ? (lower ??= input.toLowerCase()) : input
+      // ASCII self or its other case: lower-casing the text loses no match.
+      const hay = rule.pattern.flags.includes('i') ? (lower ??= searched.toLowerCase()) : searched
       if (!hay.includes(literal)) continue
     }
     const re = new RegExp(rule.pattern.source, rule.pattern.flags)
+    re.lastIndex = start
     let m: RegExpExecArray | null
     while ((m = re.exec(input)) !== null) {
       visit(rule, m)
@@ -675,23 +680,33 @@ interface Span {
  *  matches (an Anthropic key is an OpenAI-shaped one too) are taken once, under the first rule in
  *  table order.
  *
- *  `keep`, for text that is cut to its tail: all of `input` is screened, and what comes back is what
- *  that made of its last `keep` characters, counting only the matches in them. Cut first, a
- *  credential the cut ran through would lose its start (a key block its BEGIN line, a token its
- *  prefix) and match no rule, and the rest of it would go out as it is. A match the cut runs
- *  through is taken whole, and the tail starts with its marker. */
-export function screenText(input: string, keep?: number): SecretScreen {
+ *  `keep`, for text that is cut to its tail: `input` is screened, and what comes back is what that
+ *  made of its last `keep` characters, counting only the matches in them. Cut first, a credential
+ *  the cut ran through would lose its start (a key block its BEGIN line, a token its prefix) and
+ *  match no rule, and the rest of it would go out as it is. A match the cut runs through is taken
+ *  whole, and the tail starts with its marker.
+ *
+ *  `lookback`, with `keep`: how much of `input` before the tail is screened with it, however long
+ *  `input` is; all of it without. A match is looked for from there as in the whole text, where a
+ *  \b or a lookbehind sees what comes before. Sliced off instead, the text there would start as a
+ *  word does, and a rule could start a match in the middle of one. */
+export function screenText(input: string, keep?: number, lookback?: number): SecretScreen {
   const removed: Record<string, number> = {}
   const flagged: Record<string, number> = {}
   if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged }
   const from = keep !== undefined && input.length > keep ? input.length - Math.max(0, keep) : 0
+  const start = lookback !== undefined ? Math.max(0, from - Math.max(0, lookback)) : 0
   const taken: Span[] = []
   const looks: Span[] = []
-  forEachMatch(input, (rule, m) => {
-    const span = { rule: rule.id, from: m.index, to: m.index + m[0].length }
-    if (rule.precision === 'high' && (!rule.keyMaterial || rule.keyMaterial.test(m[0]))) taken.push(span)
-    else looks.push(span)
-  })
+  forEachMatch(
+    input,
+    (rule, m) => {
+      const span = { rule: rule.id, from: m.index, to: m.index + m[0].length }
+      if (rule.precision === 'high' && (!rule.keyMaterial || rule.keyMaterial.test(m[0]))) taken.push(span)
+      else looks.push(span)
+    },
+    start,
+  )
   // Sorted by start; a stable sort keeps table order among matches that start together.
   taken.sort((a, b) => a.from - b.from)
   const cuts: Span[] = []

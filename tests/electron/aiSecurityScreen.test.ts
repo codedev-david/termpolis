@@ -168,6 +168,34 @@ describe('screenText', () => {
     expect(screenText(block, block.length + 5)).toEqual(screenText(block))
   })
 
+  it('looks back no further than it is told, and reads what it looks at as part of the whole text', () => {
+    // Every rule is global, so its search can start where the lookback does (forEachMatch).
+    for (const rule of RULES) expect(rule.pattern.global, rule.id).toBe(true)
+    // A match that would start further back is not looked for: no credential is that long, and an
+    // answer is screened on the main thread. The rule's prefix is in what is looked at too, once
+    // where no match starts, so the rule is run there.
+    const run = `sk-${'a'.repeat(1_000)}Qsk-${'a'.repeat(100)}`
+    expect(screenText(run, 100).removed).toEqual({ openai_key: 1 })
+    expect(screenText(run, 100, 100)).toEqual({ text: 'a'.repeat(100), removed: {}, flagged: {} })
+    expect(screenText(run, 100, 2_000)).toEqual(screenText(run, 100))
+    // One that starts where the lookback does is found; a character further back, it is not.
+    const reach = `${'.'.repeat(10)}${GH}`
+    expect(screenText(reach, 5, GH.length - 5)).toEqual({ text: '[REDACTED:gh_pat]', removed: { gh_pat: 1 }, flagged: {} })
+    expect(screenText(reach, 5, GH.length - 6)).toEqual({ text: GH.slice(-5), removed: {}, flagged: {} })
+    // Where the lookback starts, a rule still sees what comes before it. Here it starts on the `s`
+    // of `Qsk-` in a base64url run, where no match starts in the whole text, a letter being before
+    // it; screened as a text of its own, it would start with an OpenAI-shaped key that runs on
+    // into the tail.
+    const blob = `{"data":"${'Ab0_'.repeat(50)}Qsk-${'b'.repeat(300)}"}\nDone.\n`
+    const at = blob.indexOf('sk-')
+    expect(screenText(blob.slice(at), 100).removed).toEqual({ openai_key: 1 })
+    expect(screenText(blob, 100, blob.length - 100 - at)).toEqual({ text: blob.slice(-100), removed: {}, flagged: {} })
+    // A lookbehind the same: a name longer than password_literal takes, cut where the lookback starts.
+    const named = `${'a'.repeat(80)}_password = "hunter2hunter2"\nDone.\n`
+    expect(screenText(named.slice(70), 10).flagged).toEqual({ password_literal: 1 })
+    expect(screenText(named, 10, named.length - 10 - 70)).toEqual({ text: named.slice(-10), removed: {}, flagged: {} })
+  })
+
   it('counts every occurrence, and returns empty text and nothing found for nothing', () => {
     expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {} })
     expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {} })

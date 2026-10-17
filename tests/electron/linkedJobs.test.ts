@@ -956,26 +956,30 @@ describe('credentials on the way in and out', () => {
   })
 
   it('screens only the tail of a huge stdout and what a cut through it could reach, then caps what a marker added', async () => {
-    const seen: Array<[number, number | undefined]> = []
+    const seen: Array<[number, number | undefined, number | undefined]> = []
     const h = setup({
-      screen: (text, keep) => {
-        seen.push([text.length, keep])
-        return { text: `${text}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} }
+      screen: (text, keep, lookback) => {
+        seen.push([text.length, keep, lookback])
+        return { text: `${keep === undefined ? text : text.slice(-keep)}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} }
       },
     })
     const v = await start(h)
     h.runs[0].resolve(result({ output: 'x'.repeat(5_000_000) }))
     await flush()
     const done = await poll(h, v.jobId)
-    // The prompt whole, then the answer's tail with the lookback before it.
-    expect(seen).toEqual([[17, undefined], [MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS, MAX_OUTPUT_CHARS]])
-    // One within that reach is screened whole; of a long stderr, the end it keeps and the
-    // lookback before it.
+    // The prompt whole, then the answer, told to keep its tail and look back no further than the
+    // lookback before it: all of it, not a slice, so a rule sees the text where the lookback starts.
+    expect(seen).toEqual([[17, undefined, undefined], [5_000_000, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS]])
+    // Of a long stderr, the end it keeps, the same.
     const w = await start(h)
     h.runs[1].resolve(result({ ok: false, output: 'x'.repeat(250_000), error: 'e'.repeat(1_000_000), code: 1 }))
     await flush()
     await poll(h, w.jobId)
-    expect(seen.slice(2)).toEqual([[17, undefined], [250_000, MAX_OUTPUT_CHARS], [MAX_ERROR_CHARS - 1 + SCREEN_LOOKBACK_CHARS, MAX_ERROR_CHARS - 1]])
+    expect(seen.slice(2)).toEqual([
+      [17, undefined, undefined],
+      [250_000, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS],
+      [1_000_000, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS],
+    ])
     expect(done.output?.length).toBe(MAX_OUTPUT_CHARS)
     expect(done.output?.endsWith('[REDACTED:grown]')).toBe(true)
     expect(done.truncated).toBe(true)
@@ -1057,6 +1061,25 @@ describe('an answer longer than it may be: screened, then cut', () => {
     expect(token.done.error?.startsWith('…[REDACTED:gh_pat]\n...')).toBe(true)
     expect(token.done.error).not.toContain(SECRET.slice(0, 6))
     expect(token.findings).toEqual(removedOut({ gh_pat: 1 }))
+  })
+
+  it('reads what it screens before the tail as part of the answer, as a rule would read the whole of it', async () => {
+    // A base64url run longer than the lookback, with `Qsk-` in it where the lookback starts. In the
+    // whole answer a letter comes before that `s`, so no rule starts a match there; screened as a
+    // text of its own, the lookback would start with an OpenAI-shaped key that runs on into the
+    // kept end, and take that much of the run with it.
+    const before = `${LOG}{"name":"report.pdf","data":"${'Ab0_'.repeat(100)}Q`
+    const stretch = `sk-${'b'.repeat(SCREEN_LOOKBACK_CHARS + 1_000)}"}\nDone.\n`
+    for (const [cap, over] of [
+      [MAX_OUTPUT_CHARS, (text: string): Partial<ExecResult> => ({ output: text })],
+      [MAX_ERROR_CHARS - 1, (text: string): Partial<ExecResult> => ({ ok: false, output: '', error: text, code: 1 })],
+    ] as const) {
+      const text = `${before}${stretch}${'.'.repeat(cap + SCREEN_LOOKBACK_CHARS - stretch.length)}`
+      expect(text.length - cap - SCREEN_LOOKBACK_CHARS).toBe(before.length)
+      const { done, findings } = await answer(over(text))
+      expect(cap === MAX_OUTPUT_CHARS ? done.output : done.error).toBe(`${cap === MAX_OUTPUT_CHARS ? '' : '…'}${text.slice(-cap)}`)
+      expect(findings).toEqual([])
+    }
   })
 
   it('reports only what is in the tail that goes back', async () => {

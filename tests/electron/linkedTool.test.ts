@@ -964,28 +964,24 @@ describe('credentials, asking', () => {
   })
 
   it('keeps the tail of an answer longer than any version sends, and screens no more than a cut through it could reach', async () => {
-    const seen: Array<[number, number | undefined]> = []
-    const screen = (text: string, keep?: number): SecretScreen => {
-      seen.push([text.length, keep])
-      return { text, removed: {}, flagged: {} }
+    const seen: Array<[number, number | undefined, number | undefined]> = []
+    const screen = (text: string, keep?: number, lookback?: number): SecretScreen => {
+      seen.push([text.length, keep, lookback])
+      return { text: keep === undefined ? text : text.slice(-keep), removed: {}, flagged: {} }
     }
     const h = setup({ screen })
     scripted(h, [view({ status: 'failed', output: `${'x'.repeat(1_000_000)}END`, error: `${'e'.repeat(1_000_000)}!`, durationMs: 5 })])
     const r = await run(h)
-    // The prompt whole, then each tail with the lookback before it.
+    // The prompt whole, then each, told to keep its tail and look back no further than the
+    // lookback before it: all of it, not a slice, so a rule sees the text where the lookback starts.
     expect(seen).toEqual([
-      [17, undefined],
-      [MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS, MAX_OUTPUT_CHARS],
-      [MAX_ERROR_CHARS - 1 + SCREEN_LOOKBACK_CHARS, MAX_ERROR_CHARS - 1],
+      [17, undefined, undefined],
+      [1_000_003, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS],
+      [1_000_001, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS],
     ])
     expect(r.truncated).toBe(true)
-    expect((r.output as string).endsWith('END')).toBe(true)
-    // One within that reach is screened whole.
-    seen.length = 0
-    const near = setup({ screen })
-    scripted(near, [view({ status: 'done', output: `${'x'.repeat(250_000)}END`, durationMs: 5 })])
-    await run(near)
-    expect(seen).toEqual([[17, undefined], [250_003, MAX_OUTPUT_CHARS]])
+    expect(r.output).toBe(`[answer from linux/codex]\n${'x'.repeat(MAX_OUTPUT_CHARS - 3)}END`)
+    expect(r.error).toBe(`[answer from linux/codex]\n…${'e'.repeat(MAX_ERROR_CHARS - 2)}!`)
   })
 
   it('screens an answer and its error before it keeps their tails: a credential either cut runs through is found whole', async () => {
@@ -1011,6 +1007,25 @@ describe('credentials, asking', () => {
     expect(r.error).toBe(`[answer from linux/codex]\n…[REDACTED:gh_pat]\n${tail}`)
     expect(r.note).toBe('Termpolis removed 2 credentials (private_key, gh_pat) from this answer.')
     expect(findings).toEqual([{ hop: 'answer-in', machine: 'linux', agent: 'codex', removed: { private_key: 1, gh_pat: 1 }, flagged: {} }])
+  })
+
+  it('reads what it screens before a tail as part of the answer, as a rule would read the whole of it', async () => {
+    // From a version that caps nothing: a base64url run longer than the lookback, with `Qsk-` in
+    // it where the lookback starts. In the whole answer a letter comes before that `s`, so no rule
+    // starts a match there; screened as a text of its own, the lookback would start with an
+    // OpenAI-shaped key that runs on into the kept end.
+    const before = `${'log line\n'.repeat(10_000)}{"name":"report.pdf","data":"${'Ab0_'.repeat(100)}Q`
+    const stretch = `sk-${'b'.repeat(SCREEN_LOOKBACK_CHARS + 1_000)}"}\nDone.\n`
+    const output = `${before}${stretch}${'.'.repeat(MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS - stretch.length)}`
+    const error = `${before}${stretch}${'.'.repeat(MAX_ERROR_CHARS - 1 + SCREEN_LOOKBACK_CHARS - stretch.length)}`
+    const findings: unknown[] = []
+    const h = setup({ screen: screenText, onSecrets: (f) => findings.push(f) })
+    scripted(h, [view({ status: 'failed', output, error, durationMs: 5 })])
+    const r = await run(h)
+    expect(r.output).toBe(`[answer from linux/codex]\n${output.slice(-MAX_OUTPUT_CHARS)}`)
+    expect(r.error).toBe(`[answer from linux/codex]\n…${error.slice(-(MAX_ERROR_CHARS - 1))}`)
+    expect(r.note).toBeUndefined()
+    expect(findings).toEqual([])
   })
 
   it('reaches back past the longest key block a rule takes, cut through its last line', async () => {
