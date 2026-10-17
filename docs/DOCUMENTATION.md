@@ -58,7 +58,7 @@ Termpolis is a cross-platform desktop terminal manager (Windows, macOS, Linux) b
 - **Activity observability**: every token, every tool call, every message from every agent is visible in real time.
 - **Intervention controls**: pause, cancel, or steer any agent mid-task without leaving the feed.
 - **Shared memory**: a RAG-backed memory store that any agent can read and write via MCP.
-- **MCP-native end to end**: all three agents speak MCP — no terminal-output bridges, no parser glue, no special-case code paths.
+- **MCP-native end to end**: all three agents speak MCP. Tasks are completed only through MCP (`swarm_update_task`), never by what an agent prints; for Codex and Gemini workers Termpolis also passes what their screens show to the conductor, as hints.
 - **Share-ready output**: three fixed copy shortcuts turn any terminal selection into plain text, a Slack/Teams-ready message, or a code block for a PR. See [Copy for Slack / Teams / PRs](#copy-for-slack--teams--prs).
 
 Everything is built around the idea that **you're not writing code alone anymore** — you're orchestrating a team, and you need the tools to do it well, securely.
@@ -590,6 +590,8 @@ You can also move a task along by hand: **Start** or **Cancel** a pending task, 
 
 A live stream of every message the conductor sends, every broadcast, every handoff. Think of it as the "Slack channel" for your agent team — useful for debugging, reviewing, or understanding exactly how a decision was made. Termpolis's own notes come from **system**: that the conductor was launched, and that it exited (see [When the conductor exits](#when-the-conductor-exits)).
 
+Messages from a Codex or Gemini worker by name, such as **Codex**, are what Termpolis read off that worker's screen, for the conductor to act on. When the screen reads as finished, the message is a hint, typed `info`, that says "screen suggests it may be done; check with read_output", and the conductor looks and decides. Nothing a worker prints completes its task or ends the swarm.
+
 ### Trace tab
 
 ![Swarm trace tab](../e2e/screenshots/docs/21-swarm-trace-tab.png)
@@ -619,6 +621,8 @@ The conductor is a **dedicated Claude Code instance** that runs headless in a hi
 7. Marks each task completed as its agent finishes, then posts a final summary.
 
 The conductor is **not keyword matching** — it reasons with the same capability as any frontier model, because it *is* one. Follow what it's doing in the dashboard's [Trace tab](#trace-tab).
+
+A task is completed or failed only by the conductor (`swarm_update_task`) or by you (**Done** or **Fail** in the Tasks tab), never by what a worker's screen says. The swarm ends when every task is completed or failed, or when the conductor posts its final summary, a `result` message that starts with `SWARM COMPLETE`.
 
 ### Starting a swarm
 

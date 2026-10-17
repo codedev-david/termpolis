@@ -88,7 +88,7 @@ describe('startBridgeForAgent', () => {
     expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
   })
 
-  it('posts a message when a completion signal is detected', async () => {
+  it('posts a screen that reads finished as an info hint for the conductor', async () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
       .mockResolvedValue({
         success: true,
@@ -100,46 +100,44 @@ describe('startBridgeForAgent', () => {
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith(
       'Gemini',
       'all',
-      expect.any(String),
-      expect.stringContaining('Gemini'),
+      'info',
+      '[Gemini] screen suggests it may be done; check with read_output\nTask is now complete and done.',
     )
   })
 
-  it('auto-completes in-progress task when result signal detected', async () => {
+  // GitHub #36 item 3: a worker's screen said "done" ("=== ... DONE exit=0 ===" from a script, or
+  // "the review is complete" halfway through), and the bridge marked its task completed.
+  it('never completes a task, whatever the screen says: only swarm_update_task does', async () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
       .mockResolvedValue({
         success: true,
-        data: { output: 'All done — work is finished successfully', length: 40, nextOffset: 40, missed: 0 },
+        data: { output: '=== build DONE exit=0 === the review is complete, all tests pass', length: 64, nextOffset: 64, missed: 0 },
       })
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
       success: true,
       data: [{ id: 'task-1', assignedTo: 't1', status: 'in_progress' }],
     })
 
-    startBridgeForAgent('t1', 'Gemini')
-    await vi.advanceTimersByTimeAsync(5000)
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(15000)
 
-    expect(window.swarmAPI.updateTask).toHaveBeenCalledWith(
-      'task-1',
-      'completed',
-      expect.any(String),
-    )
+    expect(window.swarmAPI.updateTask).not.toHaveBeenCalled()
+    expect(window.swarmAPI.getTasks).not.toHaveBeenCalled()
+    for (const call of (window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(call[2]).not.toBe('result')
+    }
   })
 
-  it('does not update tasks if there is no matching in-progress task', async () => {
+  it('posts other signals with their own type, and nothing for a read that failed', async () => {
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        success: true,
-        data: { output: 'All done — work is finished', length: 27, nextOffset: 27, missed: 0 },
-      })
-    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValue({
-      success: true,
-      data: [{ id: 'task-2', assignedTo: 'other-terminal', status: 'in_progress' }],
-    })
+      .mockResolvedValueOnce({ success: false, error: 'gone' })
+      .mockResolvedValue({ success: true, data: { output: 'x'.repeat(30) + ' Build failed with 3 errors', length: 57, nextOffset: 57, missed: 0 } })
 
-    startBridgeForAgent('t1', 'Gemini')
+    startBridgeForAgent('t1', 'Codex')
     await vi.advanceTimersByTimeAsync(5000)
-    expect(window.swarmAPI.updateTask).not.toHaveBeenCalled()
+    expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith('Codex', 'all', 'error', expect.stringContaining('[Codex] '))
   })
 
   it('does not crash when readTerminalBuffer rejects with an unexpected error', async () => {

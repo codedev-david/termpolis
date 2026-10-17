@@ -316,37 +316,59 @@ describe('conductorManager', () => {
     ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [
-        { type: 'info', content: 'Starting work...' },
-        { type: 'result', content: 'SWARM COMPLETE: built the app' },
+        { from: 'mcp-client', type: 'info', content: 'Starting work...' },
+        { from: 'mcp-client', type: 'result', content: 'SWARM COMPLETE: built the app' },
       ],
     })
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(useTerminalStore.getState().swarmActive).toBe(false)
     expect(getConductorState().status).toBe('done')
+    expect(useTerminalStore.getState().swarmCompletionSummary?.message).toBe('SWARM COMPLETE: built the app')
   })
 
-  it('monitoring loop marks done when message content matches SWARM COMPLETE pattern', async () => {
-    const startPromise = startConductor('/tmp/project')
-    await vi.advanceTimersByTimeAsync(2000)
-    await vi.advanceTimersByTimeAsync(5000)
-    await startPromise
-
-    await sendTask('Build an app', '/tmp/project')
-    ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      success: true,
-      data: [],
+  // GitHub #36 item 3: the swarm ends when every task is completed or failed, or on the conductor's
+  // STEP 8 message, and on nothing else.
+  describe('what ends a swarm', () => {
+    it('ends on STEP 8\'s message, sent as the conductor or, through MCP, as mcp-client', async () => {
+      for (const from of ['conductor', 'mcp-client']) {
+        stopConductor()
+        const bus = fakeBus()
+        await launchConductor()
+        bus.post(from, '  swarm complete: two features built', 'result')
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getConductorState().status).toBe('done')
+      }
     })
-    ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      success: true,
-      data: [
-        { type: 'info', content: 'All tasks are completed — swarm finished' },
-      ],
-    })
-    await vi.advanceTimersByTimeAsync(15000)
 
-    expect(useTerminalStore.getState().swarmActive).toBe(false)
-    expect(getConductorState().status).toBe('done')
+    it.each([
+      ['a message that only says the work is complete', 'mcp-client', 'info', 'All tasks are completed — swarm finished'],
+      ['a Claude worker reporting its own task done', 'mcp-client', 'result', 'Implemented the login page; tests pass'],
+      ['a worker\'s screen quoting the words', 'Codex', 'info', '[Codex] SWARM COMPLETE: echoed from its instructions'],
+      ['a bridge or a stranger sending STEP 8\'s words', 'Codex', 'result', 'SWARM COMPLETE: not from the conductor'],
+      ['Termpolis\'s own note', 'system', 'result', 'SWARM COMPLETE: system'],
+      ['a result that starts some other way', 'conductor', 'result', 'Not yet. SWARM COMPLETE will follow'],
+    ])('is not ended by %s', async (_name, from, type, content) => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post(from, content, type)
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+      expect(useTerminalStore.getState().swarmActive).toBe(true)
+    })
+
+    it('is not ended by an open task, however its worker\'s screen reads, until the task is closed', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.tasks.push({ id: 't1', status: 'in_progress' })
+      bus.post('Codex', '[Codex] screen suggests it may be done; check with read_output\n=== DONE exit=0 ===')
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(getConductorState().status).toBe('running')
+
+      bus.tasks[0].status = 'completed'
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+    })
   })
 
   it('monitoring loop does NOT mark done when messages have no completion signal', async () => {

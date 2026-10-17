@@ -418,19 +418,18 @@ function startMonitoring(): void {
         }
       }
 
-      // Also detect completion from messages (catches cases where conductor
-      // skipped swarm_create_task but still posted a result/completion message).
-      // Only what the swarm posted since launch counts: not Termpolis's own notes.
+      // The conductor's own word that the swarm is done (STEP 8 of its prompt), for a conductor that
+      // skipped swarm_create_task. Only what the swarm posted since launch counts: not Termpolis's
+      // own notes. Nothing else ends a swarm (GitHub #36 item 3): a worker's screen or a message
+      // that merely says "complete" used to, and so did any message typed `result`, which a Claude
+      // worker reporting on its own task sends too. MCP posts every message as 'mcp-client'.
       const msgsRes = await window.swarmAPI.getMessages()
       const posted = msgsRes.success && msgsRes.data
         ? msgsRes.data.filter((m) => !launch.messageIds.has(m.id) && m.from !== 'system')
         : []
-      const completionMsg = posted.slice(-15).find((m) =>
-        m.type === 'result' ||
-        /SWARM COMPLETE|TASK COMPLETE|all tasks.*complet|swarm.*finished/i.test(m.content)
-      )
+      const completionMsg = posted.find(isSwarmComplete)
       if (completionMsg) {
-        markSwarmDone(store, completionMsg.content || 'Swarm finished')
+        markSwarmDone(store, completionMsg.content)
         return
       }
 
@@ -480,6 +479,12 @@ function startMonitoring(): void {
       })
     }
   }, testDelay(15000))
+}
+
+/** STEP 8's message: swarm_send_message(type='result', content='SWARM COMPLETE: ...') from the
+ *  conductor, which MCP posts as 'mcp-client'. */
+function isSwarmComplete(m: { from: string; type: string; content: string }): boolean {
+  return m.type === 'result' && (m.from === 'conductor' || m.from === 'mcp-client') && /^\s*SWARM COMPLETE\b/i.test(m.content)
 }
 
 function markSwarmDone(

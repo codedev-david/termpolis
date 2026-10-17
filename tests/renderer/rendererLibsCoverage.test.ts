@@ -915,15 +915,18 @@ describe('conductorManager — uncovered branches', () => {
     })
   })
 
-  it('an empty result message still yields a readable completion notification', async () => {
+  it('an empty result message is no word that the swarm is done; STEP 8\'s message is, and it is the notification', async () => {
     await start()
     await sendTask('Build', '/tmp/project')
     sw().getTasks.mockResolvedValue({ success: true, data: [] })
     sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r1', from: 'mcp-client', type: 'result', content: '' }] })
     await vi.advanceTimersByTimeAsync(15000)
+    expect(getConductorState().status).toBe('running')
 
+    sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r2', from: 'mcp-client', type: 'result', content: 'SWARM COMPLETE:' }] })
+    await vi.advanceTimersByTimeAsync(15000)
     expect(useTerminalStore.getState().swarmNotification).toEqual({
-      message: 'Swarm finished',
+      message: 'SWARM COMPLETE:',
       type: 'success',
     })
     expect(getConductorState().status).toBe('done')

@@ -444,7 +444,7 @@ No AI company has built a tool that brings together competing models to work as 
 - **Agent Install Status** — the AI Agents sidebar shows green checkmarks for installed agents and red X icons for missing ones. Clicking a missing agent's icon shows installation instructions.
 - **Message Bus** — agents communicate through a shared message queue with typed messages (task, result, question, info, review)
 - **Task Queue** — create tasks, assign to agents, track status across Pending → In Progress → Completed
-- **MCP-native end to end** — Claude Code, Codex, and Gemini CLI all speak MCP. No terminal-output bridges, no parser glue, no special-case code paths.
+- **MCP-native end to end** — Claude Code, Codex, and Gemini CLI all speak MCP. A task is completed only through MCP (`swarm_update_task`), never by what an agent prints; for Codex and Gemini workers Termpolis also passes what their screens show to the conductor, as hints.
 - **6 swarm MCP tools** — `swarm_send_message`, `swarm_read_messages`, `swarm_create_task`, `swarm_list_tasks`, `swarm_update_task`, `swarm_list_agents`
 
 ### AI Observability

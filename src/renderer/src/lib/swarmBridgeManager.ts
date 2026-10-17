@@ -41,27 +41,20 @@ export function startBridgeForAgent(terminalId: string, agentName: string): void
         // empty string forever, going permanently blind to this agent's signals.
         outputOffsets.set(terminalId, bufRes.data.nextOffset)
 
-        // Post detected signals to the swarm bus
-        if (signal.type) {
+        // Post detected signals to the swarm bus. A screen that reads like a finished task is a
+        // hint for the conductor, never a result: only swarm_update_task completes a task, and the
+        // conductor decides (GitHub #36 item 3). A worker's screen says "done" or "complete" for
+        // a script's "=== DONE exit=0 ===", or "the review is complete" halfway through its work,
+        // and this used to mark the task completed, and could end the swarm.
+        if (signal.type === 'result') {
           await window.swarmAPI.sendMessage(
             agentName,
             'all',
-            signal.type,
-            `[${agentName}] ${signal.content}`,
+            'info',
+            `[${agentName}] screen suggests it may be done; check with read_output\n${signal.content}`,
           )
-
-          // If it looks like task completion, auto-complete the agent's in-progress task
-          if (signal.type === 'result') {
-            const tasks = await window.swarmAPI.getTasks()
-            if (tasks.success && tasks.data) {
-              const myTask = tasks.data.find(
-                (t) => t.assignedTo === terminalId && t.status === 'in_progress',
-              )
-              if (myTask) {
-                await window.swarmAPI.updateTask(myTask.id, 'completed', signal.content)
-              }
-            }
-          }
+        } else if (signal.type) {
+          await window.swarmAPI.sendMessage(agentName, 'all', signal.type, `[${agentName}] ${signal.content}`)
         }
       }
 
