@@ -1364,16 +1364,21 @@ audit log.
   BEGIN line of any key block a rule takes (at most 400 lines under it, which a
   key file writes 64 to 76 characters wide) and the start of any token, so a
   key or token the cut runs through is still found and removed whole, and the
-  end that is kept starts with its whole marker. Only what is in that end is
-  counted.
+  end that is kept starts with its whole marker. A credential wholly before
+  the end is not counted.
   Where the end is cut again from its start (markers made it longer than it may
   be, or it must fit one relay frame), the characters cut are ones outside
   markers: every marker in its way stays, whole, so each credential counted
-  still shows. A marker can be longer than the credential it replaced, so where
-  the cut falls a few characters before a short one (an AWS key is 20
-  characters, its marker 25), the end starts with a little of the text before
-  the marker. Only where the markers alone are longer than the end may be do
-  the first of them go, whole.
+  still shows. A marker can be longer than the credential it replaced; where
+  that makes the end too long, the characters cut are the ones before the
+  marker, and where there are fewer of those than the marker added, the first
+  ones after it (a cut 2 characters before an AWS key, which is 20 characters
+  with a marker of 25, takes those 2 and the next 3). Only where the markers
+  alone are longer than the end may be do the first of them go, whole; they
+  are still counted. Text in the answer that already reads like a marker
+  (`[REDACTED:…]` in a log printed again, say) is kept the same way, so when
+  the end is cut to fit a relay frame, such text from the part cut off can
+  move to its front.
   This holds where the computer doing the job runs a version after 1.53: 1.53
   cut first and screened what was left, and 1.50 to 1.52 sent it unscreened,
   so a key or token their cut ran through arrives without its start (a BEGIN

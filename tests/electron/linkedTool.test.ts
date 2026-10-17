@@ -1068,6 +1068,24 @@ describe('credentials, asking', () => {
     expect(r.note).toBe('Termpolis removed 1 credential (private_key) from this answer.')
   })
 
+  it('keeps an error of exactly 4,000 characters whole, and puts one character longer behind an ellipsis', async () => {
+    const exact = `A${'e'.repeat(MAX_ERROR_CHARS - 2)}Z`
+    for (const [error, expected] of [[exact, exact], [`A${exact}`, `…${exact.slice(1)}`]]) {
+      const h = setup({ screen: screenText })
+      scripted(h, [view({ status: 'failed', error, durationMs: 5 })])
+      expect((await run(h)).error).toBe(`[answer from linux/codex]\n${expected}`)
+    }
+  })
+
+  it('keeps an output of exactly 200,000 characters whole, and says nothing was cut', async () => {
+    const output = 'x'.repeat(MAX_OUTPUT_CHARS)
+    const h = setup({ screen: screenText })
+    scripted(h, [view({ status: 'done', output, durationMs: 5 })])
+    const r = await run(h)
+    expect(r.output).toBe(`[answer from linux/codex]\n${output}`)
+    expect(r).not.toHaveProperty('truncated')
+  })
+
   it('screens a finished answer once, however often it is collected', async () => {
     const findings: unknown[] = []
     const screen = vi.fn(fakeScreen)

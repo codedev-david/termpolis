@@ -1064,6 +1064,12 @@ describe('an answer longer than it may be: screened, then cut', () => {
     expect(token.findings).toEqual(removedOut({ gh_pat: 1 }))
   })
 
+  it('keeps an error of exactly 4,000 characters whole, and puts one character longer behind an ellipsis', async () => {
+    const exact = `A${'e'.repeat(MAX_ERROR_CHARS - 2)}Z`
+    expect((await answer({ ok: false, output: '', error: exact, code: 1 })).done.error).toBe(exact)
+    expect((await answer({ ok: false, output: '', error: `A${exact}`, code: 1 })).done.error).toBe(`…${exact.slice(1)}`)
+  })
+
   it('never cuts a marker short, though the cut leaves less of the credential than its marker is long', async () => {
     // The kept end starts j characters before the credential's end: in it, or a few characters
     // before one shorter than its marker (an AWS key is 20 characters, its marker 25). The marker
