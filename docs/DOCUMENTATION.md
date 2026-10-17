@@ -1250,7 +1250,8 @@ audit log.
 - **The end of a long answer is kept.** That is up to the last 200,000
   characters, fewer if the answer is dense with control characters, so it
   still fits in one relay frame. Agents put their conclusion last. A
-  shortened answer says `truncated: true`.
+  shortened answer says `truncated: true`. A failed job's error keeps its end
+  too: past 4,000 characters, its last 3,999 behind an ellipsis (`…`).
 - **Up to 16 linked machines** per computer, counting the ones this computer
   made codes for and the ones whose codes it entered.
 - **Jobs live in memory.** Quitting Termpolis stops every job it is running for
@@ -1347,15 +1348,18 @@ audit log.
 - **Vendor tokens and private keys don't cross.** Prompts and answers are
   screened with the AI
   Security secret rules on both computers: the prompt before it leaves and when
-  it arrives, the answer before it leaves and when it arrives (in case the other
-  computer runs a version that doesn't screen). The screen has two tiers:
+  it arrives, the answer and its error before they leave and when they arrive
+  (in case the other computer runs a version that doesn't screen). The screen
+  has two tiers:
   - **A credential whose own shape names it is removed** and replaced with
     `[REDACTED:<rule>]`: vendor tokens such as `sk-ant-…`, `ghp_…`,
     `github_pat_…`, `AKIA…`, `xox…`, and whole private-key blocks, including
     an indented one (a YAML secret) and one whose lines are `\n` escapes (a JSON
     service-account file). A key block counts once it holds key material: a
-    long body line or its END line. The answer tells your agent how many it
-    removed and by which rules.
+    long body line or its END line. A note tells your agent how many this
+    computer removed, and by which rules, from the prompt it sent and from an
+    answer that arrived with one still in it; one the other computer removed
+    shows only as its marker.
   - **Anything that only looks like a credential is left as it is**, because a
     delegated job's answer is usually code, and its test fixtures and examples
     look like credentials too (`password = "hunter2"`, a `postgres://user:pass@`
@@ -1367,6 +1371,30 @@ audit log.
   screened: the rule ids and how often each matched, never the value. A
   credential you deliberately want on the other computer should live in a file
   there, not in the prompt.
+  An answer and its error are screened before they are cut to their ends, with
+  up to 65,536 characters before the cut in view. That reaches back past the
+  BEGIN line of any key block a rule takes (at most 400 lines under it, which a
+  key file writes 64 to 76 characters wide) and the start of any token, so a
+  key or token the cut runs through is still found and removed whole, and the
+  end that is kept starts with its whole marker. A credential wholly before
+  the end is not counted.
+  Where the end is cut again from its start (markers made it longer than it may
+  be, or it must fit one relay frame), the characters cut are ones outside
+  markers: every marker in its way stays, whole, so each credential counted
+  still shows. A marker can be longer than the credential it replaced; where
+  that makes the end too long, the characters cut are the ones before the
+  marker, and where there are fewer of those than the marker added, the first
+  ones after it (a cut 2 characters before an AWS key, which is 20 characters
+  with a marker of 25, takes those 2 and the next 3). Only where the markers
+  alone are longer than the end may be do the first of them go, whole; they
+  are still counted. Text in the answer that already reads like a marker
+  (`[REDACTED:…]` in a log printed again, say) is kept the same way, so when
+  the end is cut to fit a relay frame, such text from the part cut off can
+  move to its front.
+  This holds where the computer doing the job runs a version after 1.53: 1.53
+  cut first and screened what was left, and 1.50 to 1.52 sent it unscreened,
+  so a key or token their cut ran through arrives without its start (a BEGIN
+  line, a `ghp_` prefix), which no rule recognises, and the rest of it crosses.
 - **Memory.** The agent doing the work starts with that computer's own memory
   primer (up to 6,000 characters), as a local run would, so its answer can
   quote that machine's memory. Nothing of the job becomes that computer's own

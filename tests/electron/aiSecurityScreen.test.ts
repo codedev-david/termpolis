@@ -7,6 +7,10 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
 import { RULES, maskForDisplay, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
+import { MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, keepEnd } from '../../src/main/linkedJobs'
+
+/** The most an answer is screened on: its tail, and the lookback before it. */
+const LARGEST = MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS
 
 const ANTHROPIC = `sk-ant-${'a'.repeat(30)}`
 const GH = `ghp_${'b'.repeat(36)}`
@@ -139,6 +143,66 @@ describe('screenText', () => {
     expect(twice.flagged).toEqual({ password_literal: 1, contextual_secret: 1 })
   })
 
+  it('keeps only the tail it is asked for, screened with what came before it in view', () => {
+    const before = 'log line\n'.repeat(10)
+    // A key block the cut runs through, 40 characters in (past its BEGIN line): found whole, and
+    // the tail starts with its marker.
+    const block = `${before}${PEM}\nDone.`
+    const r = screenText(block, block.length - before.length - 40)
+    expect(r).toEqual({ text: '[REDACTED:private_key]\nDone.', removed: { private_key: 1 }, flagged: {} })
+    // A token the cut runs through two characters in: the same.
+    const token = `${before}use ${GH} now`
+    expect(screenText(token, token.length - before.length - 6)).toEqual({ text: '[REDACTED:gh_pat] now', removed: { gh_pat: 1 }, flagged: {} })
+    // What is wholly before the cut is not counted: it is not in what is kept.
+    const gone = `${GH}\nconst password = "hunter2hunter2"\n${before}${AWS}`
+    expect(screenText(gone, before.length + AWS.length)).toEqual({ text: `${before}[REDACTED:aws_access_key]`, removed: { aws_access_key: 1 }, flagged: {} })
+    // A possible credential the cut runs through is reported, and left as it is; one that ends
+    // where the tail starts is not in it.
+    const look = `${before}const password = "hunter2hunter2"`
+    expect(screenText(look, 10)).toEqual({ text: 'r2hunter2"', removed: {}, flagged: { password_literal: 1, contextual_secret: 1 } })
+    expect(screenText(`${look}\nDone.\n`, 7)).toEqual({ text: '\nDone.\n', removed: {}, flagged: {} })
+    // A cut between two matches keeps the text between them as it is.
+    expect(screenText(`${GH} middle ${AWS}`, ` middle ${AWS}`.length).text).toBe(' middle [REDACTED:aws_access_key]')
+    // A tail as long as the text is the whole text.
+    expect(screenText(block, block.length)).toEqual(screenText(block))
+    expect(screenText(block, block.length + 5)).toEqual(screenText(block))
+  })
+
+  it('makes for each rule a marker no cut to the end of an answer runs through', () => {
+    for (const rule of RULES) {
+      const marker = `[REDACTED:${rule.id}]`
+      expect(keepEnd(`x${marker}yz`, marker.length + 1), rule.id).toBe(`${marker}z`)
+    }
+  })
+
+  it('looks back no further than it is told, and reads what it looks at as part of the whole text', () => {
+    // Every rule is global, so its search can start where the lookback does (forEachMatch).
+    for (const rule of RULES) expect(rule.pattern.global, rule.id).toBe(true)
+    // A match that would start further back is not looked for: no credential is that long, and an
+    // answer is screened on the main thread. The rule's prefix is in what is looked at too, once
+    // where no match starts, so the rule is run there.
+    const run = `sk-${'a'.repeat(1_000)}Qsk-${'a'.repeat(100)}`
+    expect(screenText(run, 100).removed).toEqual({ openai_key: 1 })
+    expect(screenText(run, 100, 100)).toEqual({ text: 'a'.repeat(100), removed: {}, flagged: {} })
+    expect(screenText(run, 100, 2_000)).toEqual(screenText(run, 100))
+    // One that starts where the lookback does is found; a character further back, it is not.
+    const reach = `${'.'.repeat(10)}${GH}`
+    expect(screenText(reach, 5, GH.length - 5)).toEqual({ text: '[REDACTED:gh_pat]', removed: { gh_pat: 1 }, flagged: {} })
+    expect(screenText(reach, 5, GH.length - 6)).toEqual({ text: GH.slice(-5), removed: {}, flagged: {} })
+    // Where the lookback starts, a rule still sees what comes before it. Here it starts on the `s`
+    // of `Qsk-` in a base64url run, where no match starts in the whole text, a letter being before
+    // it; screened as a text of its own, it would start with an OpenAI-shaped key that runs on
+    // into the tail.
+    const blob = `{"data":"${'Ab0_'.repeat(50)}Qsk-${'b'.repeat(300)}"}\nDone.\n`
+    const at = blob.indexOf('sk-')
+    expect(screenText(blob.slice(at), 100).removed).toEqual({ openai_key: 1 })
+    expect(screenText(blob, 100, blob.length - 100 - at)).toEqual({ text: blob.slice(-100), removed: {}, flagged: {} })
+    // A lookbehind the same: a name longer than password_literal takes, cut where the lookback starts.
+    const named = `${'a'.repeat(80)}_password = "hunter2hunter2"\nDone.\n`
+    expect(screenText(named.slice(70), 10).flagged).toEqual({ password_literal: 1 })
+    expect(screenText(named, 10, named.length - 10 - 70)).toEqual({ text: named.slice(-10), removed: {}, flagged: {} })
+  })
+
   it('counts every occurrence, and returns empty text and nothing found for nothing', () => {
     expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {} })
     expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {} })
@@ -146,17 +210,18 @@ describe('screenText', () => {
     expect(screenText(undefined as unknown as string)).toEqual({ text: '', removed: {}, flagged: {} })
   })
 
-  it('stays fast on a crafted 200 KB answer: thousands of tokens, near-miss lookaheads, open key blocks', () => {
-    const tokens = Array.from({ length: 9_000 }, (_, i) => `xoxb-${String(i).padStart(12, '0')}`).join(' ')
-    const hex = `${Array.from({ length: 5_000 }, () => 'a'.repeat(37)).join(' ')} cloudflare`
-    const blocks = `-----BEGIN RSA PRIVATE KEY-----\n${'A'.repeat(64)}\n`.repeat(2_000)
+  it('stays fast on the most of a crafted answer it screens: thousands of tokens, near-miss lookaheads, open key blocks', () => {
+    const tokens = Array.from({ length: 15_000 }, (_, i) => `xoxb-${String(i).padStart(12, '0')}`).join(' ')
+    const hex = `${Array.from({ length: 7_000 }, () => 'a'.repeat(37)).join(' ')} cloudflare`
+    const blocks = `-----BEGIN RSA PRIVATE KEY-----\n${'A'.repeat(64)}\n`.repeat(2_800)
     for (const text of [tokens, hex, blocks]) {
+      expect(text.length).toBeGreaterThan(LARGEST)
       const t = performance.now()
-      screenText(text.slice(0, 200_000))
+      screenText(text.slice(0, LARGEST), MAX_OUTPUT_CHARS)
       // Generous for a loaded CI box; the unbounded patterns took seconds on the first input.
       expect(performance.now() - t).toBeLessThan(1_500)
     }
-    expect(screenText(tokens).removed.slack_token).toBe(9_000)
+    expect(screenText(tokens).removed.slack_token).toBe(15_000)
   })
 })
 
@@ -192,6 +257,9 @@ describe('every rule in linear time on text another computer wrote', () => {
     'pwd.', 'PWD-', 'pwdpwd.', `${'pwd.'.repeat(24)} `, '"pwd.', 'apikey.\n', 'apikey', 'eyJ-', 'a.', 'h.', 'token=', 'token ',
     'secret:', 'x:', 'https://a:', '1', 'a', '-', '=', ' ', '\\n', `${'A'.repeat(39)}\\n`,
     '-----BEGIN PRIVATE KEY-----\n', '-----BEGIN PRIVATE KEY-----\\n', 'DefaultEndpointsProtocol=https;AccountName=x;',
+    // One Azure header, then an account part that never ends: the rule once tried every
+    // `AccountName=` in it, each to the end of the run, 3.5 s on 265,536 characters.
+    `DefaultEndpointsProtocol=https;${'AccountName='.repeat(23_000)}`,
   ]
   const run = (unit: string, chars: number): string => unit.repeat(Math.ceil(chars / unit.length)).slice(0, chars)
 
@@ -220,11 +288,14 @@ describe('every rule in linear time on text another computer wrote', () => {
     }
   })
 
-  it('screens 200,000 characters of any of them in well under a second (an answer is at most 200,000)', () => {
+  it('screens the most an answer is screened on, of any of them, in well under a second', () => {
+    // An answer keeps its last 200,000 characters, and is screened with the 65,536 before them
+    // (linkedJobs' MAX_OUTPUT_CHARS and SCREEN_LOOKBACK_CHARS): 265,536 in all.
+    expect(LARGEST).toBe(265_536)
     for (const unit of RUNS) {
-      const text = run(unit, 200_000)
+      const text = run(unit, LARGEST)
       // A quadratic rule takes ten seconds here, which the test above can't always tell from noise.
-      expect(bestOf3(() => screenText(text)), JSON.stringify(unit)).toBeLessThan(1_000)
+      expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS)), JSON.stringify(unit)).toBeLessThan(1_000)
     }
   })
 })

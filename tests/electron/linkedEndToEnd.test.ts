@@ -659,6 +659,22 @@ describe('delegating a job', () => {
     expect(b.audits).toEqual([{ agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: `answer to "${LAPTOP_ON_BUILDBOX}": gh_pat x1` }])
   })
 
+  it('takes a key out of an answer too long to send whole, though the cut to its tail runs through it', async () => {
+    const { a, b } = await linkedPair()
+    const body = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
+    const block = ['-----BEGIN RSA PRIVATE KEY-----', ...body, '-----END RSA PRIVATE KEY-----', ''].join('\n')
+    // The tail an answer keeps is its last 200,000 characters: it starts 40 characters into the block,
+    // after more log than the build box screens before a tail.
+    const rest = 'step ok\n'.repeat(25_000).slice(0, 200_000 - (block.length - 40))
+    b.agent = async (req) => finished(req, `${'log line\n'.repeat(10_000)}${block}${rest}`)
+    const answer = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Print the deploy log.', cwd: b.work })
+    expect(answer).toMatchObject({ status: 'done', truncated: true, output: answered(BUILDBOX_ON_LAPTOP, 'codex', `[REDACTED:private_key]\n${rest}`) })
+    expect(answer.output).not.toMatch(/(?:Ab){6}|\d{8}/)
+    // One finding, on the build box, which took it out; this side had nothing left to find.
+    expect(b.audits).toEqual([{ agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: `answer to "${LAPTOP_ON_BUILDBOX}": private_key x1` }])
+    expect(a.audits).toEqual([])
+  })
+
   it('hands back code with test fixtures in it byte for byte, naming what looked like credentials', async () => {
     const { a, b } = await linkedPair()
     const code = [

@@ -109,8 +109,10 @@ export interface LinkedJobsDeps {
   /** Called when a job starts and on every status change, under the same id. */
   onActivity(a: LinkedActivity): void
   /** aiSecurity.screenText: credentials out of the prompt before it runs here, and out of the
-   *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. */
-  screen(text: string): SecretScreen
+   *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. With `keep`,
+   *  only what the screen made of the last `keep` characters comes back, and with `lookback` no more
+   *  than that much before them is screened with them (screenTail). */
+  screen(text: string, keep?: number, lookback?: number): SecretScreen
   /** aiSecurity.maskForDisplay: every possible credential out of a job's summary, the ones
    *  screening leaves in for the agent too, before the activity view shows it, the job history
    *  keeps it and a notification shows it (activitySummary). */
@@ -153,7 +155,16 @@ export const MAX_FINISHED_JOBS = 100
 export const MAX_RESULT_WAIT_MS = 50_000
 
 /** An error is stderr, which can be a whole log; its end says what went wrong. */
-const MAX_ERROR_CHARS = 4_000
+export const MAX_ERROR_CHARS = 4_000
+
+/** How much of an answer before the part that is kept is screened with it, so a credential the
+ *  cut runs through is found whole. Most rules set no limit on how long a match is, so this
+ *  reaches back past the longest one real text holds, a private-key block (aiSecurity's RULES): a
+ *  rule takes its BEGIN line, at most 400 lines under it and its END line. That gives each of the
+ *  400 lines 160 characters, over twice the 76 a key file writes at most (OpenPGP's limit; PEM
+ *  and GnuPG write 64, OpenSSH 70), for indentation and line breaks, and 1,536 for the BEGIN and
+ *  END lines. A token is a few hundred characters at most. */
+export const SCREEN_LOOKBACK_CHARS = 65_536
 
 /** Longer than any real path; refused before it reaches the file system. */
 const MAX_CWD_CHARS = 4_096
@@ -248,8 +259,42 @@ export function activitySummary(prompt: string, mask: (text: string) => string):
   return line.length > SUMMARY_CHARS ? `${line.slice(0, SUMMARY_CHARS - 1).trimEnd()}\u2026` : line
 }
 
-function capTail(text: string, max: number): { text: string; cut: boolean } {
-  return text.length > max ? { text: text.slice(text.length - max), cut: true } : { text, cut: false }
+/** The longest marker keepEnd keeps whole: `[REDACTED:<rule>]` for a rule id of up to 53
+ *  characters. Every one screenText puts in place of a credential is one: rule ids are lower-case
+ *  words, 20 characters at most. */
+const MAX_MARKER_CHARS = 64
+const MARKER_RE = /\[REDACTED:[a-z0-9_]{1,53}\]/g
+
+/** Where the end of `text` from `cut` may start: `cut`, or the end of the marker it falls in. */
+function outsideMarker(text: string, cut: number): number {
+  const re = new RegExp(MARKER_RE.source, 'g')
+  re.lastIndex = Math.max(0, cut - MAX_MARKER_CHARS)
+  for (let m = re.exec(text); m && m.index < cut; m = re.exec(text)) {
+    if (re.lastIndex > cut) return re.lastIndex
+  }
+  return cut
+}
+
+/** Screened text cut to `max` characters from its start, with every marker in it kept whole: the
+ *  characters cut are the first ones outside markers, as many as `max` asks for. A marker can be
+ *  longer than what it replaced, so a screened end can be longer than its cap. Cut from the front
+ *  as it is, `[REDACTED:gh_pat]` could arrive as `t]`, or be cut out by the markers further on
+ *  that made the end too long, and nobody could tell a credential had been counted there. Never
+ *  longer than `max`: where the markers alone are longer, the end starts where the cut falls, or
+ *  after the marker it falls in. */
+export function keepEnd(text: string, max: number): string {
+  const cut = text.length - Math.max(0, max)
+  if (cut <= 0) return text
+  const re = new RegExp(MARKER_RE.source, 'g')
+  let kept = ''
+  let left = cut
+  let at = 0
+  for (let m = re.exec(text); m && m.index - at < left; m = re.exec(text)) {
+    left -= m.index - at
+    kept += m[0]
+    at = re.lastIndex
+  }
+  return text.length - at >= left ? kept + text.slice(at + left) : text.slice(outsideMarker(text, cut))
 }
 
 const jsonBytes = (text: string): number => Buffer.byteLength(JSON.stringify(text), 'utf8')
@@ -258,10 +303,11 @@ const jsonBytes = (text: string): number => Buffer.byteLength(JSON.stringify(tex
  *  tail that fits on average, a little under, and measures again: the tail may
  *  be denser than the whole. Every pass keeps at most 95%, so it ends. */
 function capOutput(output: string): { text: string; cut: boolean } {
-  let { text, cut } = capTail(output, MAX_OUTPUT_CHARS)
+  let text = keepEnd(output, MAX_OUTPUT_CHARS)
+  let cut = output.length > MAX_OUTPUT_CHARS
   let bytes = jsonBytes(text)
   while (bytes > MAX_OUTPUT_JSON_BYTES) {
-    text = text.slice(text.length - Math.floor((text.length * MAX_OUTPUT_JSON_BYTES * 0.95) / bytes))
+    text = keepEnd(text, Math.floor((text.length * MAX_OUTPUT_JSON_BYTES * 0.95) / bytes))
     cut = true
     bytes = jsonBytes(text)
   }
@@ -269,7 +315,7 @@ function capOutput(output: string): { text: string; cut: boolean } {
 }
 
 function capError(text: string): string {
-  return text.length > MAX_ERROR_CHARS ? `\u2026${text.slice(text.length - (MAX_ERROR_CHARS - 1))}` : text
+  return text.length > MAX_ERROR_CHARS ? `\u2026${keepEnd(text, MAX_ERROR_CHARS - 1)}` : text
 }
 
 function outcomeOf(r: ExecResult): Outcome {
@@ -308,12 +354,22 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
 
   /** deps.screen for what leaves, failing closed. A screen that throws must not
    *  throw out of finish(), which nothing above would catch. */
-  function screenOrWithhold(text: string): SecretScreen {
+  function screenOrWithhold(text: string, keep?: number, lookback?: number): SecretScreen {
     try {
-      return deps.screen(text)
+      return deps.screen(text, keep, lookback)
     } catch {
       return { text: WITHHELD, removed: {}, flagged: {} }
     }
+  }
+
+  /** The last `keep` characters of `text`, screened before they are cut from the rest: with as much
+   *  before them in view as a credential the cut runs through can reach back (a key block's BEGIN
+   *  line, a token's prefix), so it is found whole. Cut first, what was left of it would match no
+   *  rule and go back as it is. No more than that is screened, however long `text` is: this runs
+   *  on the main thread. The screen is given all of `text` and told how far back to look, not a
+   *  slice of it: where a slice started, a rule would see the start of a word. */
+  function screenTail(text: string, keep: number): SecretScreen {
+    return screenOrWithhold(text, keep, SCREEN_LOOKBACK_CHARS)
   }
 
   function reportSecrets(job: Job, hop: LinkedSecretFinding['hop'], found: Pick<SecretScreen, 'removed' | 'flagged'>): void {
@@ -371,21 +427,22 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     job.status = outcome.status
     job.finishedAt = now
     job.durationMs = Math.max(0, now - job.startedAt)
-    // Credentials go before the answer leaves. Its tail is taken first, so a huge stdout is never
-    // screened whole on the main thread, and capped again after: a marker can be longer than what
-    // it replaced.
+    // Credentials go before the answer leaves. Its tail is screened with what came before it in
+    // view (screenTail), and capped again after, never into a marker (keepEnd): a marker can be
+    // longer than what it replaced.
     let output: SecretScreen | null = null
     if (outcome.output !== undefined) {
-      const tail = capTail(outcome.output, MAX_OUTPUT_CHARS)
-      output = screenOrWithhold(tail.text)
+      output = screenTail(outcome.output, MAX_OUTPUT_CHARS)
       const { text, cut } = capOutput(output.text)
       job.output = text
-      if (tail.cut || cut) job.truncated = true
+      if (outcome.output.length > MAX_OUTPUT_CHARS || cut) job.truncated = true
     }
     let error: SecretScreen | null = null
     if (outcome.error !== undefined) {
-      error = screenOrWithhold(capError(outcome.error))
-      job.error = capError(error.text)
+      // The end of stderr, behind an ellipsis when there was more.
+      const long = outcome.error.length > MAX_ERROR_CHARS
+      error = screenTail(outcome.error, long ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS)
+      job.error = capError(long && error.text !== WITHHELD ? `\u2026${error.text}` : error.text)
     }
     const found = mergeScreens([output, error])
     job.answerRules = rulesOf(found)

@@ -31,7 +31,7 @@ import type { KeyStorageView, LinkedBridgePort } from '../../src/main/remoteBrid
 import { REMOTE_KEYS_NOT_LOCKED, _resetRemoteHostForTests } from '../../src/main/remoteHost'
 import { localDesktopName } from '../../src/main/remoteBridge/desktopName'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
-import type { LinkedActivity } from '../../src/main/linkedJobs'
+import { MAX_OUTPUT_CHARS, type LinkedActivity } from '../../src/main/linkedJobs'
 import { loadLinkedSettings, saveLinkedSettings } from '../../src/main/linkedSettings'
 import {
   DEFAULT_GRANTS,
@@ -2059,6 +2059,47 @@ describe('credentials between two computers', () => {
     await vi.waitFor(() => expect(h.runHeadless).toHaveBeenCalled())
     expect((h.runHeadless.mock.calls[0][0] as ExecRequest).task).toContain('deploy with [REDACTED:gh_pat]')
     expect(h.audit).toBeUndefined()
+  })
+
+  /** Answers too long to send whole, and what each keeps: a key wholly before the end that is kept,
+   *  which is not in it and so not reported, and a run longer than the lookback, which no rule
+   *  takes for a credential that starts further back than a cut through it could reach. */
+  const LONG_ANSWERS = [`${'x'.repeat(40_000)}\n${'AKIA'}${'A'.repeat(16)}\n${'x'.repeat(260_000)}`, `sk-${'a'.repeat(300_000)}`]
+  const KEPT = ['x'.repeat(MAX_OUTPUT_CHARS), 'a'.repeat(MAX_OUTPUT_CHARS)]
+
+  it('screens the end of an answer too long to send whole, for the machine that asked for it', async () => {
+    const P = peer()
+    let output = ''
+    const runHeadless = async (req: ExecRequest): Promise<ExecResult> => ({ ok: true, agent: req.agent ?? 'claude', output, code: 0, durationMs: 5, primerChars: 0 })
+    const h = boot({ enabled: true, runHeadless, state: { links: [], meta: [meta(devRef(P), { name: 'laptop2' })] } })
+    for (const [i, answer] of LONG_ANSWERS.entries()) {
+      output = answer
+      asked(h, `r${i}`, { via: 'device', id: P.id }, { kind: 'peerRun', agent: 'claude', prompt: 'print the log' })
+      await vi.waitFor(() => expect(h.replyTo(`r${i}`)).toBeDefined())
+      const { jobId } = (h.replyTo(`r${i}`) as Extract<PeerReply, { ok: true }>).data as PeerJobView
+      asked(h, `p${i}`, { via: 'device', id: P.id }, { kind: 'peerResult', jobId, waitMs: 5_000 })
+      await vi.waitFor(() => expect(h.replyTo(`p${i}`)).toBeDefined())
+      expect(h.replyTo(`p${i}`)).toMatchObject({ ok: true, data: { status: 'done', truncated: true, output: KEPT[i] } })
+    }
+    expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  it('screens the end of an answer longer than any version sends, as the machine that ran it would', async () => {
+    const L = joined()
+    const h = boot({ enabled: true, state: { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] } })
+    h.bridge.emit({ kind: 'linkStateChanged', id: L.id, attached: true })
+    for (const [i, answer] of LONG_ANSWERS.entries()) {
+      h.bridge.answer = (call) => {
+        const view = { jobId: `a1b2c3d4e5f${i}`, agent: 'codex', startedAt: 1 }
+        if (call.request.kind === 'peerRun') return { kind: 'linkCallResult', callId: call.callId, ok: true, data: { ...view, status: 'running' } }
+        return { kind: 'linkCallResult', callId: call.callId, ok: true, data: { ...view, status: 'done', output: answer, durationMs: 5 } }
+      }
+      const r = (await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: 'p', waitSec: 5 })) as Record<string, unknown>
+      expect(r).toMatchObject({ status: 'done', truncated: true })
+      expect((r.output as string).split('\n---\n')[1]).toBe(KEPT[i])
+      expect(r.note).toBeUndefined()
+    }
+    expect(h.audit).not.toHaveBeenCalled()
   })
 
   it("audits what it took out of another machine's answer, and still answers when the log fails", async () => {

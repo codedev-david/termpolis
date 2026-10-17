@@ -119,9 +119,15 @@ interface RedactionRule {
 // 200 characters ahead, contextual_secret 64 into its value), the name around a password or secret
 // keyword (64 characters before it, 48 after), a URL scheme (32), the stretch between an Azure
 // account's name and its key (1,024), and a private-key block (400 lines after its BEGIN line).
+// An Azure connection string's account part ends at its first `AccountName=`: it once tried every
+// one in a run, each to the run's end, 3.5 s on 265,536 characters of them.
 // password_literal starts only where a name starts, and a JWT not right after a `-`: with either
 // starting inside a run, `pwd.pwd.…` or `eyJ-eyJ-…` cost seconds per 20,000 characters.
 // aiSecurityScreen.test.ts times every rule on such runs.
+//
+// An answer cut to its tail is screened with what came before the cut, as far back as the longest
+// match a rule makes in real text: a private-key block of 400 lines (linkedJobs'
+// SCREEN_LOOKBACK_CHARS). A rule that takes more needs that raised with it.
 export const RULES: RedactionRule[] = [
   // === AWS ===
   { id: 'aws_access_key', label: 'AWS Access Key ID', precision: 'high', pattern: /\b(?:AKIA|ASIA|AROA|AIDA|ANPA|ANVA|ASCA)[0-9A-Z]{16}\b/g },
@@ -144,7 +150,7 @@ export const RULES: RedactionRule[] = [
   // === Azure ===
   { id: 'azure_storage_key', label: 'Azure Storage AccountKey', precision: 'heuristic', pattern: /AccountKey\s*=\s*([A-Za-z0-9+/=]{86,90})/g },
   { id: 'azure_sas', label: 'Azure SAS signature', precision: 'heuristic', pattern: /[?&]sig=([A-Za-z0-9%]{40,})/g },
-  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]{0,1024}AccountKey=[^;\s]+/g },
+  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;(?:(?!AccountName=)[^;\s])*AccountName=[^;\s]+;[^\s]{0,1024}AccountKey=[^;\s]+/g },
   { id: 'azure_devops_pat', label: 'Azure DevOps PAT', precision: 'heuristic', pattern: /\b(?:AZURE_DEVOPS_PAT|ADO_PAT|VSTS_PAT|SYSTEM_ACCESSTOKEN)\s*[:=]\s*["']?([a-z0-9]{52})["']?/gi },
   { id: 'azure_client_secret', label: 'Azure AD client secret (named)', precision: 'heuristic', pattern: /\b(?:AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|client[_-]?secret)\s*[:=]\s*["']?([A-Za-z0-9~_.-]{34,})["']?/gi },
   // === GCP ===
@@ -601,20 +607,25 @@ export function requiredLiteral(pattern: RegExp): string | null {
 /** Each rule's literal, worked out once. */
 const LITERALS = new Map<RedactionRule, string | null>(RULES.map((rule) => [rule, requiredLiteral(rule.pattern)]))
 
-/** Every match of every rule, rule by rule in table order. A rule whose literal (requiredLiteral)
- *  is missing from the text is not run: it cannot match. Most text carries none of the vendor
- *  prefixes, so most of the table is skipped by a substring search. */
-function forEachMatch(input: string, visit: (rule: RedactionRule, m: RegExpExecArray) => void): void {
+/** Every match of every rule, rule by rule in table order, that starts at `start` or after (every
+ *  rule is global, so its search starts there). The text before `start` is still the text's: a \b, a
+ *  lookbehind or a line start there sees it, as in the whole text. A rule whose literal
+ *  (requiredLiteral) is missing from the text it searches is not run: it cannot match. Most text
+ *  carries none of the vendor prefixes, so most of the table is skipped by a substring search. */
+function forEachMatch(input: string, visit: (rule: RedactionRule, m: RegExpExecArray) => void, start = 0): void {
+  // A literal is where its match starts, so one that starts at `start` or after has it in here.
+  const searched = start > 0 ? input.slice(start) : input
   let lower: string | undefined
   for (const rule of RULES) {
     const literal = LITERALS.get(rule)
     if (literal) {
       // Every literal is printable ASCII, which a case-insensitive pattern matches only as its
-      // ASCII self or its other case: lower-casing the whole text loses no match.
-      const hay = rule.pattern.flags.includes('i') ? (lower ??= input.toLowerCase()) : input
+      // ASCII self or its other case: lower-casing the text loses no match.
+      const hay = rule.pattern.flags.includes('i') ? (lower ??= searched.toLowerCase()) : searched
       if (!hay.includes(literal)) continue
     }
     const re = new RegExp(rule.pattern.source, rule.pattern.flags)
+    re.lastIndex = start
     let m: RegExpExecArray | null
     while ((m = re.exec(input)) !== null) {
       visit(rule, m)
@@ -667,18 +678,35 @@ interface Span {
  *  The other computer controls this text, so it runs in linear time: the output is built in one
  *  pass over the matches, where scanText rewrites the whole text once per match. Overlapping
  *  matches (an Anthropic key is an OpenAI-shaped one too) are taken once, under the first rule in
- *  table order. */
-export function screenText(input: string): SecretScreen {
+ *  table order.
+ *
+ *  `keep`, for text that is cut to its tail: `input` is screened, and what comes back is what that
+ *  made of its last `keep` characters, counting only the matches in them. Cut first, a credential
+ *  the cut ran through would lose its start (a key block its BEGIN line, a token its prefix) and
+ *  match no rule, and the rest of it would go out as it is. A match the cut runs through is taken
+ *  whole, and the tail starts with its marker.
+ *
+ *  `lookback`, with `keep`: how much of `input` before the tail is screened with it, however long
+ *  `input` is; all of it without. A match is looked for from there as in the whole text, where a
+ *  \b or a lookbehind sees what comes before. Sliced off instead, the text there would start as a
+ *  word does, and a rule could start a match in the middle of one. */
+export function screenText(input: string, keep?: number, lookback?: number): SecretScreen {
   const removed: Record<string, number> = {}
   const flagged: Record<string, number> = {}
   if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged }
+  const from = keep !== undefined && input.length > keep ? input.length - Math.max(0, keep) : 0
+  const start = lookback !== undefined ? Math.max(0, from - Math.max(0, lookback)) : 0
   const taken: Span[] = []
   const looks: Span[] = []
-  forEachMatch(input, (rule, m) => {
-    const span = { rule: rule.id, from: m.index, to: m.index + m[0].length }
-    if (rule.precision === 'high' && (!rule.keyMaterial || rule.keyMaterial.test(m[0]))) taken.push(span)
-    else looks.push(span)
-  })
+  forEachMatch(
+    input,
+    (rule, m) => {
+      const span = { rule: rule.id, from: m.index, to: m.index + m[0].length }
+      if (rule.precision === 'high' && (!rule.keyMaterial || rule.keyMaterial.test(m[0]))) taken.push(span)
+      else looks.push(span)
+    },
+    start,
+  )
   // Sorted by start; a stable sort keeps table order among matches that start together.
   taken.sort((a, b) => a.from - b.from)
   const cuts: Span[] = []
@@ -688,15 +716,17 @@ export function screenText(input: string): SecretScreen {
     else cuts.push({ ...t })
   }
   let text = ''
-  let at = 0
+  let at = from
   for (const cut of cuts) {
+    // Wholly before the tail: not in what is kept.
+    if (cut.to <= from) continue
     removed[cut.rule] = (removed[cut.rule] ?? 0) + 1
-    text += `${input.slice(at, cut.from)}[REDACTED:${cut.rule}]`
+    text += `${input.slice(at, Math.max(at, cut.from))}[REDACTED:${cut.rule}]`
     at = cut.to
   }
   text += input.slice(at)
   for (const look of looks) {
-    if (overlapsCut(cuts, look)) continue
+    if (look.to <= from || overlapsCut(cuts, look)) continue
     // Text screened once already is screened again where it arrives, and `KEY=[REDACTED:gh_pat]`
     // looks like an assignment: a match around a marker is about a value that is gone.
     if (input.slice(look.from, look.to).includes('[REDACTED:')) continue
