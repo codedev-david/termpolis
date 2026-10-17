@@ -156,9 +156,11 @@ describe('screenText', () => {
     // What is wholly before the cut is not counted: it is not in what is kept.
     const gone = `${GH}\nconst password = "hunter2hunter2"\n${before}${AWS}`
     expect(screenText(gone, before.length + AWS.length)).toEqual({ text: `${before}[REDACTED:aws_access_key]`, removed: { aws_access_key: 1 }, flagged: {} })
-    // A possible credential the cut runs through is reported, and left as it is.
+    // A possible credential the cut runs through is reported, and left as it is; one that ends
+    // where the tail starts is not in it.
     const look = `${before}const password = "hunter2hunter2"`
     expect(screenText(look, 10)).toEqual({ text: 'r2hunter2"', removed: {}, flagged: { password_literal: 1, contextual_secret: 1 } })
+    expect(screenText(`${look}\nDone.\n`, 7)).toEqual({ text: '\nDone.\n', removed: {}, flagged: {} })
     // A cut between two matches keeps the text between them as it is.
     expect(screenText(`${GH} middle ${AWS}`, ` middle ${AWS}`.length).text).toBe(' middle [REDACTED:aws_access_key]')
     // A tail as long as the text is the whole text.
