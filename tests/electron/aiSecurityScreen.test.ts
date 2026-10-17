@@ -7,7 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
 import { RULES, maskForDisplay, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
-import { MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS } from '../../src/main/linkedJobs'
+import { MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, keepEnd } from '../../src/main/linkedJobs'
 
 /** The most an answer is screened on: its tail, and the lookback before it. */
 const LARGEST = MAX_OUTPUT_CHARS + SCREEN_LOOKBACK_CHARS
@@ -166,6 +166,13 @@ describe('screenText', () => {
     // A tail as long as the text is the whole text.
     expect(screenText(block, block.length)).toEqual(screenText(block))
     expect(screenText(block, block.length + 5)).toEqual(screenText(block))
+  })
+
+  it('makes for each rule a marker no cut to the end of an answer runs through', () => {
+    for (const rule of RULES) {
+      const marker = `[REDACTED:${rule.id}]`
+      expect(keepEnd(`x${marker}yz`, marker.length + 1), rule.id).toBe(`${marker}z`)
+    }
   })
 
   it('looks back no further than it is told, and reads what it looks at as part of the whole text', () => {

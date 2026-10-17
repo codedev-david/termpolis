@@ -15,6 +15,7 @@ import {
   WITHHELD,
   activitySummary,
   createLinkedJobs,
+  keepEnd,
   type LinkedActivity,
   type LinkedJobsDeps,
   type LinkedSecretFinding,
@@ -1063,6 +1064,80 @@ describe('an answer longer than it may be: screened, then cut', () => {
     expect(token.findings).toEqual(removedOut({ gh_pat: 1 }))
   })
 
+  it('never cuts a marker short, though the cut leaves less of the credential than its marker is long', async () => {
+    // The kept end starts j characters before the credential's end: in it, or a few characters
+    // before one shorter than its marker (an AWS key is 20 characters, its marker 25). The marker
+    // is longer than what it replaced there, so the screened end is longer than its cap and is cut
+    // again: from what is around the marker, as many characters as it is longer, never into it.
+    const AWS = `AKIA${'A'.repeat(16)}`
+    for (const [credential, rule] of [[TOKEN, 'gh_pat'], [AWS, 'aws_access_key'], [BLOCK.trimEnd(), 'private_key']]) {
+      const marker = `[REDACTED:${rule}]`
+      const inside = `token: ${credential}\nDone.\n`
+      for (let j = 1; j <= marker.length + 1; j++) {
+        const at = 'token: '.length + credential.length - j
+        for (const [cap, over] of [
+          [MAX_OUTPUT_CHARS, (text: string): Partial<ExecResult> => ({ output: text })],
+          [MAX_ERROR_CHARS - 1, (text: string): Partial<ExecResult> => ({ ok: false, output: '', error: text, code: 1 })],
+        ] as const) {
+          const text = across(inside, at, cap)
+          // The kept end, before and after screening, and what the marker added to it.
+          const end = text.slice(-cap)
+          const before = end.slice(0, Math.max(0, j - credential.length))
+          const screened = `${before}${marker}${end.slice(j)}`
+          const extra = screened.length - cap
+          const expected = extra <= before.length ? screened.slice(Math.max(0, extra)) : `${marker}${end.slice(j + extra - before.length)}`
+          const { done, findings } = await answer(over(text))
+          const kept = cap === MAX_OUTPUT_CHARS ? done.output : done.error
+          expect(kept, `${rule}, ${j} characters in`).toBe(`${cap === MAX_OUTPUT_CHARS ? '' : '…'}${expected}`)
+          expect(findings).toEqual(removedOut({ [rule]: 1 }))
+        }
+      }
+    }
+  })
+
+  it('keeps each marker whole where keeping one runs the cut into the next', async () => {
+    // Two credentials a line apart, the cut ten characters from the end of the first. Both markers
+    // are longer than what they replaced, by 12 characters in all: cut again after the first marker
+    // by that much, the cut would land in the second's.
+    const AWS = `AKIA${'A'.repeat(16)}`
+    const inside = `${TOKEN}\n${AWS}\nDone.\n`
+    const { done, findings } = await answer({ output: across(inside, TOKEN.length - 10, MAX_OUTPUT_CHARS) })
+    expect(done.output?.startsWith('[REDACTED:gh_pat][REDACTED:aws_access_key].')).toBe(true)
+    expect(done.output?.length).toBe(MAX_OUTPUT_CHARS)
+    expect(findings).toEqual(removedOut({ gh_pat: 1, aws_access_key: 1 }))
+  })
+
+  it('shows every credential it counts, where markers further on make the cut pass the first', async () => {
+    // A token cut one character in, its marker 16 characters longer than that, and an AWS key
+    // later on, its marker 5 longer: 21 characters to take from the front, past the token's
+    // marker. They come from the text after it, and both markers stay.
+    const AWS = `AKIA${'A'.repeat(16)}`
+    const inside = `token: ${TOKEN}\n${'step ok\n'.repeat(5)}aws: ${AWS}\nDone.\n`
+    const { done, findings } = await answer({ output: across(inside, 'token: '.length + TOKEN.length - 1, MAX_OUTPUT_CHARS) })
+    expect(done.output?.startsWith(`[REDACTED:gh_pat] ok\n${'step ok\n'.repeat(2)}aws: [REDACTED:aws_access_key]\nDone.\n.`)).toBe(true)
+    expect(done.output?.length).toBe(MAX_OUTPUT_CHARS)
+    expect(findings).toEqual(removedOut({ gh_pat: 1, aws_access_key: 1 }))
+  })
+
+  it('never cuts a marker short, nor takes it out, where an answer dense with control characters is cut to fit a relay frame', async () => {
+    // Cut for its size as JSON, which does not depend on where in it the marker is: found once
+    // with the marker far from the cut, then placed across it, then well before it.
+    const dense = (before: number) => `${'\u0001'.repeat(before)}${TOKEN}${'\u0001'.repeat(MAX_OUTPUT_CHARS - before - TOKEN.length)}`
+    const first = await answer({ output: dense(MAX_OUTPUT_CHARS - TOKEN.length) })
+    const kept = first.done.output?.length as number
+    expect(kept).toBeLessThan(MAX_OUTPUT_CHARS / 2)
+    expect(first.done.output?.endsWith('[REDACTED:gh_pat]')).toBe(true)
+    // Screened, the answer is shorter by what the marker saves: the cut is that much nearer its start.
+    const cut = MAX_OUTPUT_CHARS - (TOKEN.length - '[REDACTED:gh_pat]'.length) - kept
+    for (const before of [cut - 8, 1_000]) {
+      const { done, findings } = await answer({ output: dense(before) })
+      expect(done.output?.startsWith('[REDACTED:gh_pat]\u0001'), String(before)).toBe(true)
+      expect(done.output?.length).toBe(kept)
+      expect(done.truncated).toBe(true)
+      expect(findings).toEqual(removedOut({ gh_pat: 1 }))
+    }
+  })
+
   it('reads what it screens before the tail as part of the answer, as a rule would read the whole of it', async () => {
     // A base64url run longer than the lookback, with `Qsk-` in it where the lookback starts. In the
     // whole answer a letter comes before that `s`, so no rule starts a match there; screened as a
@@ -1108,6 +1183,54 @@ describe('an answer longer than it may be: screened, then cut', () => {
       const block = [`-----BEGIN ${kind}-----`, ...over, `-----END ${kind}-----`].join('\n')
       expect(screenText(block).text, rule).toBe(`[REDACTED:${rule}]\n${over[400]}\n-----END ${kind}-----`)
     }
+  })
+})
+
+describe('keepEnd', () => {
+  const GH = '[REDACTED:gh_pat]'
+  const AWS = '[REDACTED:aws_access_key]'
+
+  it('keeps the last characters, all of a text that fits and none for nothing', () => {
+    expect(keepEnd('abcdef', 6)).toBe('abcdef')
+    expect(keepEnd('abcdef', 3)).toBe('def')
+    expect(keepEnd('abcdef', 0)).toBe('')
+    expect(keepEnd('abcdef', -1)).toBe('')
+    // A cut at a marker's start or end keeps it or leaves it out whole.
+    expect(keepEnd(`ab${GH}cd`, GH.length + 2)).toBe(`${GH}cd`)
+    expect(keepEnd(`ab${GH}cd`, 2)).toBe('cd')
+  })
+
+  it('keeps a marker the cut runs through whole, and as many characters after it go instead', () => {
+    // Two characters into it, two characters after it go; one, one.
+    expect(keepEnd(`ab${GH}cdefgh`, GH.length + 4)).toBe(`${GH}efgh`)
+    expect(keepEnd(`ab${GH}cdefgh`, GH.length + 5)).toBe(`${GH}defgh`)
+    // A marker those characters run into is kept whole too, and the cut moves on past it.
+    expect(keepEnd(`a${GH}b${AWS}cdefghij`, GH.length + AWS.length + 4)).toBe(`${GH}${AWS}ghij`)
+    // So is one wholly in what is cut: the characters cut are all from outside markers.
+    expect(keepEnd(`${GH}x${AWS}${'y'.repeat(30)}`, 52)).toBe(`${GH}${AWS}${'y'.repeat(10)}`)
+    // A marker is no longer than 64 characters, and one that long is kept whole like any other,
+    // wherever in it the cut falls.
+    const longest = `[REDACTED:${'a'.repeat(53)}]`
+    expect(longest).toHaveLength(64)
+    const text = `ab${longest}${'c'.repeat(100)}`
+    expect(keepEnd(text, text.length - 3)).toBe(`${longest}${'c'.repeat(99)}`)
+    expect(keepEnd(text, text.length - 65)).toBe(`${longest}${'c'.repeat(37)}`)
+    // Text that only ends like a marker is cut as any text is, and so is one too long to be one.
+    expect(keepEnd('REDACTED:gh_pat]cd', 4)).toBe('t]cd')
+    const long = `[REDACTED:${'a'.repeat(54)}]`
+    expect(keepEnd(`${long}cd`, 4)).toBe('a]cd')
+  })
+
+  it('is never longer than it may be: where the markers alone are longer, those at the start go whole', () => {
+    // 18 characters to cut, and two outside markers: the end starts where the cut falls, or after
+    // the marker it falls in.
+    expect(keepEnd(`ab${GH}${GH}`, GH.length + 1)).toBe(GH)
+    expect(keepEnd(`${GH}x${GH}`, GH.length + 1)).toBe(`x${GH}`)
+    // Exactly as long as the end may be, they all stay.
+    expect(keepEnd(`a${GH}b${AWS}c`, GH.length + AWS.length)).toBe(`${GH}${AWS}`)
+    // Found wherever in a marker the cut falls, the longest one too.
+    const longest = `[REDACTED:${'a'.repeat(53)}]`
+    expect(keepEnd(`${longest}${longest}`, 70)).toBe(longest)
   })
 })
 

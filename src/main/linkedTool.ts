@@ -35,6 +35,7 @@ import {
   SCREEN_LOOKBACK_CHARS,
   activitySummary,
   foundAny,
+  keepEnd,
   mergeScreens,
   type LinkedActivity,
   type LinkedSecretFinding,
@@ -220,9 +221,10 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
-/** `text`'s end, behind an ellipsis, when it is longer than `max`. */
+/** `text`'s end, behind an ellipsis, when it is longer than `max`; screened text, so no marker in it
+ *  is cut short (keepEnd). */
 function clipEnd(text: string, max: number): string {
-  return text.length > max ? `…${text.slice(text.length - (max - 1))}` : text
+  return text.length > max ? `…${keepEnd(text, max - 1)}` : text
 }
 
 function jobViewOf(v: unknown, expectedId?: string): JobView | null {

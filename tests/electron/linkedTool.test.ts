@@ -1009,6 +1009,32 @@ describe('credentials, asking', () => {
     expect(findings).toEqual([{ hop: 'answer-in', machine: 'linux', agent: 'codex', removed: { private_key: 1, gh_pat: 1 }, flagged: {} }])
   })
 
+  it("never cuts a marker short in a long error's end, though the cut leaves less of the credential than its marker is long", async () => {
+    // From a version that caps nothing. The error's end is its last 3,999 characters behind an
+    // ellipsis, starting j characters before the credential's end: in it, or a few characters
+    // before an AWS key, which is shorter than its marker. Screened, the end holds the whole
+    // marker, and cut again it loses characters from around the marker, never part of it.
+    for (const [credential, rule] of [[`ghp_${'q'.repeat(36)}`, 'gh_pat'], [`AKIA${'A'.repeat(16)}`, 'aws_access_key']]) {
+      const marker = `[REDACTED:${rule}]`
+      for (let j = 1; j <= marker.length + 1; j++) {
+        const inside = `export GITHUB_TOKEN=${credential}\nexit 1\n`
+        const tail = 'e'.repeat(3_999 - j - '\nexit 1\n'.length)
+        const error = `${'warn\n'.repeat(20_000)}${inside}${tail}`
+        const h = setup({ screen: screenText })
+        scripted(h, [view({ status: 'failed', error, durationMs: 5 })])
+        const r = await run(h)
+        // The end, before and after screening, and what the marker added to it.
+        const end = error.slice(-3_999)
+        const before = end.slice(0, Math.max(0, j - credential.length))
+        const screened = `${before}${marker}${end.slice(j)}`
+        const extra = screened.length - 3_999
+        const expected = extra <= before.length ? screened.slice(Math.max(0, extra)) : `${marker}${end.slice(j + extra - before.length)}`
+        expect(r.error, `${rule}, ${j} characters in`).toBe(`[answer from linux/codex]\n…${expected}`)
+        expect(r.note).toBe(`Termpolis removed 1 credential (${rule}) from this answer.`)
+      }
+    }
+  })
+
   it('reads what it screens before a tail as part of the answer, as a rule would read the whole of it', async () => {
     // From a version that caps nothing: a base64url run longer than the lookback, with `Qsk-` in
     // it where the lookback starts. In the whole answer a letter comes before that `s`, so no rule
