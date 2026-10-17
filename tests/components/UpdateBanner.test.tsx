@@ -7,11 +7,15 @@ type UpdaterStatus = {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
   version?: string
   error?: string
-  reason?: 'read-only-location' | 'disk-full' | 'no-new-privs'
+  reason?: 'read-only-location' | 'disk-full' | 'no-new-privs' | 'deb-install'
+  notice?: string
 }
 
 const READ_ONLY_HINT = "Termpolis is running from a read-only disk, so it can't update itself."
 const DISK_FULL_HINT = 'Not enough free disk space to download the update.'
+// What the launch after a Linux .deb install says about it (debUpdate.ts).
+const CANCELLED = 'Update not installed: the administrator prompt was cancelled.'
+const BUSY = 'An update is already being installed. Once it has finished, quit Termpolis and open it again.'
 
 let listeners: Array<(s: UpdaterStatus) => void>
 let getStatusMock: ReturnType<typeof vi.fn>
@@ -303,5 +307,79 @@ describe('UpdateBanner', () => {
     const { unmount } = render(<UpdateBanner />)
     await waitFor(() => expect(getStatusMock).toHaveBeenCalled())
     expect(() => unmount()).not.toThrow()
+  })
+
+  it('shows a .deb install hint, Restart couldn’t start, like any other hint', async () => {
+    installUpdaterBridge({ status: 'error', error: BUSY, reason: 'deb-install' })
+    render(<UpdateBanner />)
+    const hint = await screen.findByRole('status')
+    expect(hint).toHaveTextContent(BUSY)
+    expect(hint.querySelector('i.fa-circle-info')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Restart now' })).not.toBeInTheDocument()
+  })
+})
+
+describe('UpdateBanner — what became of the last Linux .deb install', () => {
+  it('says so at launch, with nothing else to show', async () => {
+    installUpdaterBridge({ status: 'idle', notice: CANCELLED })
+    render(<UpdateBanner />)
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveTextContent(CANCELLED)
+    expect(notice.querySelector('i.fa-circle-info')).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Restart now' })).not.toBeInTheDocument()
+  })
+
+  it('says so above Restart once the update is ready again, so it can be tried again', async () => {
+    installUpdaterBridge({ status: 'idle', notice: CANCELLED })
+    render(<UpdateBanner />)
+    await screen.findByRole('status')
+    act(() => {
+      emit({ status: 'downloaded', version: '1.54.1', notice: CANCELLED })
+    })
+    expect(await screen.findByRole('button', { name: 'Restart now' })).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(CANCELLED)
+    expect(screen.getByText(/v1\.54\.1/)).toBeInTheDocument()
+  })
+
+  it('shows it beside a hint, each dismissed on its own', async () => {
+    installUpdaterBridge({ status: 'error', error: DISK_FULL_HINT, reason: 'disk-full', notice: CANCELLED })
+    render(<UpdateBanner />)
+    await waitFor(() => expect(screen.getAllByRole('status')).toHaveLength(2))
+    fireEvent.click(screen.getByLabelText('Dismiss update notice'))
+    expect(screen.getByRole('status')).toHaveTextContent(DISK_FULL_HINT)
+  })
+
+  it('stays dismissed while main keeps sending it, and goes once main stops', async () => {
+    installUpdaterBridge({ status: 'idle', notice: CANCELLED })
+    const { container } = render(<UpdateBanner />)
+    fireEvent.click(await screen.findByLabelText('Dismiss update notice'))
+    expect(container.firstChild).toBeNull()
+    act(() => {
+      emit({ status: 'checking', notice: CANCELLED })
+      emit({ status: 'downloaded', version: '1.54.1', notice: CANCELLED })
+    })
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Restart now' })).toBeInTheDocument()
+  })
+
+  it('shows a different notice that comes later, though an earlier one was dismissed', async () => {
+    installUpdaterBridge({ status: 'idle', notice: CANCELLED })
+    render(<UpdateBanner />)
+    fireEvent.click(await screen.findByLabelText('Dismiss update notice'))
+    const other = 'Update not installed. E: Could not get lock /var/lib/dpkg/lock-frontend (full output: /l)'
+    act(() => {
+      emit({ status: 'idle', notice: other })
+    })
+    expect(await screen.findByRole('status')).toHaveTextContent(other)
+  })
+
+  it('goes once main stops sending it', async () => {
+    installUpdaterBridge({ status: 'idle', notice: CANCELLED })
+    const { container } = render(<UpdateBanner />)
+    await screen.findByRole('status')
+    act(() => {
+      emit({ status: 'checking' })
+    })
+    expect(container.firstChild).toBeNull()
   })
 })

@@ -45,10 +45,18 @@ export function isMissingUpdateConfigError(err: unknown): boolean {
   return /ENOENT/i.test(msg) && /app-update\.yml/i.test(msg)
 }
 
-// "Couldn't reach the server", and nothing more: Chromium's net errors (electron-updater requests
-// through `electron.net`) and Node's socket errnos.
+// "Couldn't reach the server, or lost it", and nothing more: Chromium's net errors (electron-updater
+// requests through `electron.net`) and Node's socket errnos. #37 added the connection that was gone
+// by the time the request used it, and the siblings that are the same state:
+//   • SOCKET_NOT_CONNECTED — Chromium's ENOTCONN: the network went away under the request (the
+//     machine slept, Wi-Fi or a VPN switched).
+//   • SOCKS_CONNECTION_FAILED / SOCKS_CONNECTION_HOST_UNREACHABLE — PROXY_CONNECTION_FAILED and
+//     ADDRESS_UNREACHABLE, for a SOCKS proxy.
+//   • HTTP2_PING_FAILED — an HTTP/2 connection that stopped answering: the network dropped.
+// Not SOCKET_IS_CONNECTED, which is a caller's mistake, and not CONTENT_LENGTH_MISMATCH: a body cut
+// short is also what a proxy that truncates every download looks like, and that would stay muted.
 const NET_ERROR =
-  /net::ERR_(?:INTERNET_DISCONNECTED|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|NETWORK_ACCESS_DENIED|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|CONNECTION_(?:RESET|REFUSED|CLOSED|TIMED_OUT|ABORTED|FAILED)|TIMED_OUT|ADDRESS_UNREACHABLE|PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED|EMPTY_RESPONSE)\b/i
+  /net::ERR_(?:INTERNET_DISCONNECTED|NETWORK_CHANGED|NETWORK_IO_SUSPENDED|NETWORK_ACCESS_DENIED|NAME_NOT_RESOLVED|NAME_RESOLUTION_FAILED|CONNECTION_(?:RESET|REFUSED|CLOSED|TIMED_OUT|ABORTED|FAILED)|TIMED_OUT|ADDRESS_UNREACHABLE|PROXY_CONNECTION_FAILED|TUNNEL_CONNECTION_FAILED|EMPTY_RESPONSE|SOCKET_NOT_CONNECTED|SOCKS_CONNECTION_(?:FAILED|HOST_UNREACHABLE)|HTTP2_PING_FAILED)\b/i
 const SOCKET_ERRNO = /\b(?:ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ENETDOWN)\b/
 // What Node's and builder-util-runtime's HTTP clients say when a connection drops or stalls. Too
 // generic to mute on sight: it only counts when it is known to be the updater's (isUpdaterNoise).
@@ -60,8 +68,9 @@ const DROPPED_REQUEST = /\bsocket hang up\b|\bRequest timed out\b|\bRequest has 
 // "socket hang up" / "Request timed out". Auto-update simply can't reach the server — there's
 // nothing to fix and the user did nothing wrong — so it must NEVER be reported to Sentry as a
 // production error (was Sentry issue ELECTRON-9 / GitHub #15:
-// "updater error: net::ERR_INTERNET_DISCONNECTED"; and GitHub #19 / ELECTRON-B:
-// "net::ERR_NETWORK_IO_SUSPENDED" — the machine slept mid-check). Matches only connectivity
+// "updater error: net::ERR_INTERNET_DISCONNECTED"; GitHub #19 / ELECTRON-B:
+// "net::ERR_NETWORK_IO_SUSPENDED" — the machine slept mid-check; and GitHub #37 / ELECTRON-12:
+// "net::ERR_SOCKET_NOT_CONNECTED"). Matches only connectivity
 // failures, so genuine errors (e.g. sha512 mismatch) still report — and only in the error's own
 // words: a 404 whose page happens to mention ECONNRESET is a 404.
 export function isTransientNetworkError(err: unknown): boolean {
