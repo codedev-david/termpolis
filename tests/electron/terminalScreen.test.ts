@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { Terminal as HeadlessTerminal } from '@xterm/headless'
-import { TerminalScreen, screenOf, screenSizeOf, DEFAULT_SCREEN } from '../../src/shared/terminalScreen'
+import { TerminalScreen, screenOf, screenOfReplay, screenSizeOf, DEFAULT_SCREEN } from '../../src/shared/terminalScreen'
 import fixtures from '../fixtures/agentScreens.json'
 
 const E = '\x1b'
@@ -106,6 +106,21 @@ describe('TerminalScreen', () => {
     const screen = new TerminalScreen({ cols: 0, rows: -3 })
     screen.write('xyz')
     expect(screen.lines()).toEqual(['z'])
+  })
+})
+
+describe('screenOfReplay', () => {
+  it('replays a read of all main holds as the terminal drew it: its size, its modes, past a cut sequence', () => {
+    // 10 columns: "0123456789ab" wraps after the 10th. The window opens with the rest of a cut
+    // sequence ("2;1H"), and the evicted output before it had turned autowrap off.
+    const wraps = screenOfReplay({ output: '2;1H0123456789ab', skip: 4, cols: 10, rows: 3 })
+    expect(wraps.lines()).toEqual(['0123456789', 'ab', ''])
+    const unwrapped = screenOfReplay({ output: '2;1H0123456789ab', skip: 4, preamble: `${E}[?7l`, cols: 10, rows: 3 })
+    expect(unwrapped.lines()).toEqual(['012345678b', '', ''])
+  })
+
+  it('without a size, takes the one its output reaches', () => {
+    expect(screenOfReplay({ output: `${E}[30;100Hx` }).lines()).toHaveLength(30)
   })
 })
 

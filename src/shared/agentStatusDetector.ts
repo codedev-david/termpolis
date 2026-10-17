@@ -194,7 +194,83 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
   return false
 }
 
+// A plan's usage limit, in each CLI's own words (GitHub #36 item 5). Full phrases only, copied from
+// the CLI that prints them: a loose keyword is how "done" on a worker's screen came to end a swarm
+// (item 3), and a log, a test or a source file that mentions a limit would match one. None may
+// follow a letter or a quote, so a phrase quoted in code or prose is no limit either. Sources:
+//  - Claude Code 2.1.302 (its claude.exe): "You've hit your " + session limit, weekly limit, Opus
+//    limit, Sonnet limit, Fable limit, usage limit, limit, monthly spend limit, team's shared
+//    budget..., then " · resets 3pm (America/New_York)"; its status line "Usage limit reached ·
+//    continuing automatically..."; "You're out of usage credits", "You're out of extra usage",
+//    "Your org is out of usage · add funds to continue".
+//  - Codex 0.153.4 (codex.exe): "You've hit your usage limit. Upgrade to Plus to continue using Codex
+//    (https://chatgpt.com/explore/plus), or try again at 3:04 PM.", "You've hit your usage limit
+//    for <model>. Switch to another model now, ..."; for a workspace "Your workspace is out of
+//    credits.", "You hit your spend cap set in your workspace.", "You've reached your workspace
+//    credit limit", "Request a limit increase from your owner to continue using codex."
+//  - Antigravity CLI 1.4.0 (agy.exe): "You have exhausted your quota on this model.", "Your AI
+//    credits balance is too low to continue."
+//  - Gemini CLI 0.59.0 (bundle/interactiveCli-*.js): "Usage limit reached for <model>." then
+//    "Access resets at <time>."
+const NOT_QUOTED = String.raw`(?<![\w'"\`’])`
+const USAGE_LIMIT: readonly RegExp[] = [
+  new RegExp(`${NOT_QUOTED}You['’]ve hit your [\\w'’ ]{1,40}?(?:limit|budget)\\b`, 'g'),
+  new RegExp(`${NOT_QUOTED}Usage limit reached(?: again)? · `, 'g'),
+  new RegExp(`${NOT_QUOTED}Usage limit reached for \\S+\\.`, 'g'),
+  new RegExp(`${NOT_QUOTED}You['’]re out of (?:usage credits|extra usage)\\b`, 'g'),
+  new RegExp(`${NOT_QUOTED}Your org is out of usage\\b`, 'g'),
+  new RegExp(`${NOT_QUOTED}Your workspace is out of credits\\.`, 'g'),
+  new RegExp(`${NOT_QUOTED}You hit your spend cap set (?:in|by the owner of) your workspace\\.`, 'g'),
+  new RegExp(`${NOT_QUOTED}You['’]ve reached your workspace credit limit\\b`, 'g'),
+  new RegExp(`${NOT_QUOTED}Request a limit increase from your owner to continue using codex\\.`, 'g'),
+  new RegExp(`${NOT_QUOTED}You have exhausted your quota on this model\\.`, 'g'),
+  new RegExp(`${NOT_QUOTED}Your AI credits balance is too low to continue\\.`, 'g'),
+]
+/** When the limit lifts, as the CLI put it: Claude Code's "resets 3pm (America/New_York)", Gemini
+ *  CLI's "Access resets at 5:00 PM.", on the limit's own row; Codex's "or try again at 3:04 PM.",
+ *  which a narrow screen wraps. agy names no time. */
+const RESETS_AT = /\bresets (?:at )?([^·\n]{1,48}?)\.?\s*(?:·|$)/m
+const TRY_AGAIN_AT = /\btry again at (.{1,48}?)\.(?:\s|$)/
+
+// Menus that hold a worker until someone answers: Termpolis never picks a numbered option.
+//  - Codex 0.153.4's rate-limit prompt (codex.exe): "Approaching rate limits", "Switch to <model>
+//    for lower credit usage?", "Keep current model".
+//  - Codex's update offer, as it drew it at startup in a real session (GitHub #36): "✨ Update
+//    available! 0.153.4 -> 0.163.0", "› 1. Update now (runs `npm install -g @openai/codex`)",
+//    "2. Skip", "3. Skip until next version".
+const MENUS: ReadonlyArray<{ pattern: RegExp; summary: string }> = [
+  { pattern: /Approaching rate limits[\s\S]*Keep current model/, summary: 'Codex asks whether to switch to a model that uses fewer credits' },
+  { pattern: /Update available! \S+ -> \S+[\s\S]*Skip until next version/, summary: 'Codex offers to update itself' },
+]
+
+const LIMIT_SUMMARY = 'usage limit reached'
+const MENU_SUMMARY = 'waiting on a menu'
+
+/** A worker its plan's usage limit stopped, or one waiting on a menu: what the swarm tells the
+ *  conductor about, so it can give the task to another agent (GitHub #36 item 5). */
+export function isLimitOrMenu(result: AgentStatusResult): boolean {
+  return result.status === 'blocked' && (result.summary.startsWith(LIMIT_SUMMARY) || result.summary.startsWith(MENU_SUMMARY))
+}
+
+function limitSummary(tail: string): string | null {
+  let at = -1
+  for (const p of USAGE_LIMIT) {
+    for (const m of tail.matchAll(p)) at = Math.max(at, m.index!)
+  }
+  if (at < 0) return null
+  // The latest limit message, and the reset time that follows it.
+  const after = tail.slice(at)
+  const reset = RESETS_AT.exec(after) ?? TRY_AGAIN_AT.exec(after.replace(/\s*\n\s*/g, ' '))
+  return reset ? `${LIMIT_SUMMARY} (resets ${reset[1].trim()})` : LIMIT_SUMMARY
+}
+
+function menuSummary(tail: string): string | null {
+  const menu = MENUS.find((m) => m.pattern.test(tail))
+  return menu ? `${MENU_SUMMARY}: ${menu.summary}` : null
+}
+
 function isBlocked(tail: string, agentName: string): boolean {
+  if (limitSummary(tail) !== null || menuSummary(tail) !== null) return true
   // Codex self-update completed — the CLI exits and leaves this banner.
   // Without a restart the terminal is back to a plain shell prompt and
   // will silently ignore every MCP/swarm instruction sent to it.
@@ -311,6 +387,8 @@ function extractInputPrompt(tail: string, _agentName: string): string {
 }
 
 function extractBlockedSummary(tail: string, agentName: string): string {
+  const stopped = limitSummary(tail) ?? menuSummary(tail)
+  if (stopped !== null) return stopped
   if (/update ran successfully.*please restart codex/i.test(tail)) {
     return 'Codex self-updated — needs restart to resume'
   }

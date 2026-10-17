@@ -146,6 +146,7 @@ IMPORTANT RULES:
 - NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
+- If a message from system says an agent is blocked (usage limit reached, or waiting on a menu), give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
 - If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`

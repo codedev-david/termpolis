@@ -536,3 +536,21 @@ export function screenOf(raw: string, size: ScreenSize = screenSizeOf(raw)): Ter
   screen.write(raw)
   return screen
 }
+
+/** A read of all the output main holds for a terminal (`terminal:read-buffer` from its start),
+ *  which comes with what replaying it needs: the size it was drawn for, the modes the output before
+ *  it left set, and how much of its start finishes a sequence cut in half. */
+export interface ReplayRead {
+  output: string
+  cols?: number
+  rows?: number
+  preamble?: string
+  skip?: number
+}
+
+/** The screen a replay read shows, drawn as the terminal drew it. */
+export function screenOfReplay(read: ReplayRead): TerminalScreen {
+  const output = read.skip ? read.output.slice(read.skip) : read.output
+  const size = read.cols && read.rows ? { cols: read.cols, rows: read.rows } : screenSizeOf(output)
+  return screenOf((read.preamble ?? '') + output, size)
+}
