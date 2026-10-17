@@ -1,31 +1,28 @@
 /**
  * Swarm Bridge Manager — lifecycle management for non-MCP agent bridges.
  *
- * For each non-MCP agent terminal, polls the output buffer every 5 seconds,
- * detects meaningful signals, posts them to the swarm message bus, and
- * injects incoming swarm messages into the terminal.
+ * For each non-MCP agent terminal, reads what it printed every 5 seconds and posts what its
+ * screen settled on to the swarm message bus (swarmBridge.ts says what that is).
  */
 
-import { detectSwarmSignals } from './swarmBridge'
+import { WorkerFeed } from './swarmBridge'
 import { recordSwarmError } from './sentry'
 
 const POLL_INTERVAL_MS = 5000
 
 const activeBridges = new Map<string, ReturnType<typeof setInterval>>()
 const outputOffsets = new Map<string, number>()
-
-// Track which message IDs we have already injected to avoid duplicates
-const injectedMessageIds = new Map<string, Set<string>>()
+const feeds = new Map<string, WorkerFeed>()
 
 /**
  * Start a bridge for a non-MCP agent terminal.
- * Polls terminal output for signals and injects incoming swarm messages.
+ * Polls terminal output and posts what the agent's screen shows.
  */
 export function startBridgeForAgent(terminalId: string, agentName: string): void {
   if (activeBridges.has(terminalId)) return
 
   outputOffsets.set(terminalId, 0)
-  injectedMessageIds.set(terminalId, new Set())
+  feeds.set(terminalId, new WorkerFeed(agentName))
 
   const interval = setInterval(async () => {
     try {
@@ -33,29 +30,25 @@ export function startBridgeForAgent(terminalId: string, agentName: string): void
 
       // 1. Read new terminal output
       const bufRes = await window.termpolis.readTerminalBuffer(terminalId, offset)
-      if (bufRes.success && bufRes.data) {
-        const signal = detectSwarmSignals(bufRes.data.output, 0)
+      const feed = feeds.get(terminalId)
+      if (bufRes.success && bufRes.data && feed) {
+        let read = bufRes.data
+        // Resized larger (shown in a pane): read all main holds, which comes with the size it is
+        // drawn for, and start the screen over at that size.
+        if (read.cols === undefined && feed.outgrows(read.output)) {
+          const whole = await window.termpolis.readTerminalBuffer(terminalId)
+          if (whole.success && whole.data) read = whole.data
+        }
         // Echo back the offset the main process reports. Offsets index the whole output
         // stream while the buffer only retains the last 32 KB, so `offset + length` drifts
         // as soon as eviction starts — and once it ran past the window the bridge read the
         // empty string forever, going permanently blind to this agent's signals.
-        outputOffsets.set(terminalId, bufRes.data.nextOffset)
+        outputOffsets.set(terminalId, read.nextOffset)
 
-        // Post detected signals to the swarm bus. A screen that reads like a finished task is a
-        // hint for the conductor, never a result: only swarm_update_task completes a task, and the
-        // conductor decides (GitHub #36 item 3). A worker's screen says "done" or "complete" for
-        // a script's "=== DONE exit=0 ===", or "the review is complete" halfway through its work,
-        // and this used to mark the task completed, and could end the swarm.
-        if (signal.type === 'result') {
-          await window.swarmAPI.sendMessage(
-            agentName,
-            'all',
-            'info',
-            `[${agentName}] screen suggests it may be done; check with read_output\n${signal.content}`,
-          )
-        } else if (signal.type) {
-          await window.swarmAPI.sendMessage(agentName, 'all', signal.type, `[${agentName}] ${signal.content}`)
-        }
+        // Typed info whatever it says: a worker's screen is a hint for the conductor, never a
+        // result, and only swarm_update_task completes a task (GitHub #36 items 3 and 7).
+        const message = feed.update(read)
+        if (message) await window.swarmAPI.sendMessage(agentName, 'all', 'info', message)
       }
 
       // 2. Incoming messages for non-MCP agents are visible in the Swarm Dashboard.
@@ -87,7 +80,7 @@ export function stopBridgeForAgent(terminalId: string): void {
     activeBridges.delete(terminalId)
   }
   outputOffsets.delete(terminalId)
-  injectedMessageIds.delete(terminalId)
+  feeds.delete(terminalId)
 }
 
 /**

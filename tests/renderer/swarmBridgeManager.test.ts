@@ -88,20 +88,29 @@ describe('startBridgeForAgent', () => {
     expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
   })
 
-  it('posts a screen that reads finished as an info hint for the conductor', async () => {
-    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
-      .mockResolvedValue({
-        success: true,
-        data: { output: 'Task is now complete and done.', length: 30, nextOffset: 30, missed: 0 },
-      })
+  it('posts that a worker may be done, as info, once it is back at its prompt after a turn', async () => {
+    const E = '\x1b'
+    const RULE = '─'.repeat(80)
+    const box = `${E}[10;1H${RULE}${E}[11;1H❯ ${E}[12;1H${RULE}`
+    const reads = [
+      `${E}]0;✳ Claude Code\x07${box}`,
+      `${E}]0;◐ Claude Code\x07${E}[1;1H❯ Fix the bug. Task ID: t1${E}[3;1H✢ Doing…`,
+      `${E}]0;✳ Claude Code\x07${E}[3;1H${E}[2K● Fixed it.`,
+    ]
+    let n = 0
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      const output = reads[n++] ?? ''
+      return { success: true, data: { output, length: output.length, nextOffset: n * 100, missed: 0 } }
+    })
 
     startBridgeForAgent('t1', 'Gemini')
-    await vi.advanceTimersByTimeAsync(5000)
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith(
       'Gemini',
       'all',
       'info',
-      '[Gemini] screen suggests it may be done; check with read_output\nTask is now complete and done.',
+      '[Gemini] screen suggests it may be done; check with read_output\n● Fixed it.',
     )
   })
 
@@ -128,16 +137,65 @@ describe('startBridgeForAgent', () => {
     }
   })
 
-  it('posts other signals with their own type, and nothing for a read that failed', async () => {
+  it('posts an error on a worker\'s screen as info too, and nothing for a read that failed', async () => {
+    // "error", "failed" and "?" used to pick the message's type: keyword guessing (item 7).
+    const outputs = ['$ npm test\r\n', 'Build failed with 3 errors\r\nShould I retry?\r\n$ ']
+    let n = 0
     ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce({ success: false, error: 'gone' })
-      .mockResolvedValue({ success: true, data: { output: 'x'.repeat(30) + ' Build failed with 3 errors', length: 57, nextOffset: 57, missed: 0 } })
+      .mockImplementation(async () => {
+        const output = outputs[n++] ?? ''
+        return { success: true, data: { output, length: output.length, nextOffset: n * 50, missed: 0 } }
+      })
 
     startBridgeForAgent('t1', 'Codex')
+    // Read 1 fails, read 2 is the first look, read 3 adds the lines, read 4 finds them unchanged.
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith('Codex', 'all', 'info', '[Codex] Build failed with 3 errors\nShould I retry?')
+  })
+
+  it('reads a resized terminal again from the start, to replay it at the size main reports', async () => {
+    const E = '\x1b'
+    const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>
+    read
+      .mockResolvedValueOnce({ success: true, data: { output: 'hi', length: 2, nextOffset: 2, missed: 0, cols: 80, rows: 24 } })
+      .mockResolvedValueOnce({ success: true, data: { output: `${E}[40;1Hbig`, length: 9, nextOffset: 11, missed: 0 } })
+      .mockResolvedValueOnce({ success: true, data: { output: `hi${E}[40;1Hbig`, length: 11, nextOffset: 11, missed: 0, cols: 120, rows: 40 } })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 11, missed: 0 } })
+
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(read).toHaveBeenNthCalledWith(2, 't1', 2)
+    expect(read).toHaveBeenNthCalledWith(3, 't1')
     await vi.advanceTimersByTimeAsync(5000)
+    expect(read).toHaveBeenNthCalledWith(4, 't1', 11)
+  })
+
+  it('keeps going when that second read fails', async () => {
+    const E = '\x1b'
+    const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>
+    read
+      .mockResolvedValueOnce({ success: true, data: { output: 'hi', length: 2, nextOffset: 2, missed: 0, cols: 80, rows: 24 } })
+      .mockResolvedValueOnce({ success: true, data: { output: `${E}[40;1Hbig`, length: 9, nextOffset: 11, missed: 0 } })
+      .mockResolvedValueOnce({ success: false, error: 'gone' })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 11, missed: 0 } })
+
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(read).toHaveBeenNthCalledWith(4, 't1', 11)
+    expect(mockRecordSwarmError).not.toHaveBeenCalled()
+  })
+
+  it('posts nothing for a read that comes back after the bridge was stopped', async () => {
+    let finish: (v: unknown) => void = () => {}
+    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockReturnValue(new Promise((r) => { finish = r }))
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(5000)
+    stopBridgeForAgent('t1')
+    finish({ success: true, data: { output: 'late\r\n$ ', length: 9, nextOffset: 9, missed: 0 } })
+    await vi.advanceTimersByTimeAsync(0)
     expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(5000)
-    expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith('Codex', 'all', 'error', expect.stringContaining('[Codex] '))
   })
 
   it('does not crash when readTerminalBuffer rejects with an unexpected error', async () => {

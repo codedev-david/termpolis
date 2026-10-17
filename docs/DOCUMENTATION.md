@@ -590,7 +590,7 @@ You can also move a task along by hand: **Start** or **Cancel** a pending task, 
 
 A live stream of every message the conductor sends, every broadcast, every handoff. Think of it as the "Slack channel" for your agent team — useful for debugging, reviewing, or understanding exactly how a decision was made. Termpolis's own notes come from **system**: that the conductor was launched, and that it exited (see [When the conductor exits](#when-the-conductor-exits)).
 
-Messages from a Codex or Gemini worker by name, such as **Codex**, are what Termpolis read off that worker's screen, for the conductor to act on. When the screen reads as finished, the message is a hint, typed `info`, that says "screen suggests it may be done; check with read_output", and the conductor looks and decides. Nothing a worker prints completes its task or ends the swarm.
+Messages from a Codex or Gemini worker by name, such as **Codex**, are what Termpolis read off that worker's screen, for the conductor to act on. Its terminal is read every 5 seconds and drawn the way a terminal would draw it, and a message carries only what the screen settled on: lines of the worker's output that stayed the same from one read to the next or scrolled off the top, each posted once; its status line, without the spinner frame and the timer (`Status: Reading file...`), once it holds; and, once the worker is back at its prompt after working on a prompt it was sent, "screen suggests it may be done; check with read_output". The worker's banner, input box and footer, and the shell it runs in, are left out, and nothing is posted for what it showed before Termpolis first looked. These messages are hints, all typed `info`: nothing a worker prints completes its task or ends the swarm.
 
 ### Trace tab
 
