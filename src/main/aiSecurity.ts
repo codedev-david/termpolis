@@ -119,6 +119,8 @@ interface RedactionRule {
 // 200 characters ahead, contextual_secret 64 into its value), the name around a password or secret
 // keyword (64 characters before it, 48 after), a URL scheme (32), the stretch between an Azure
 // account's name and its key (1,024), and a private-key block (400 lines after its BEGIN line).
+// An Azure connection string's account part ends at its first `AccountName=`: it once tried every
+// one in a run, each to the run's end, 3.5 s on 265,536 characters of them.
 // password_literal starts only where a name starts, and a JWT not right after a `-`: with either
 // starting inside a run, `pwd.pwd.…` or `eyJ-eyJ-…` cost seconds per 20,000 characters.
 // aiSecurityScreen.test.ts times every rule on such runs.
@@ -148,7 +150,7 @@ export const RULES: RedactionRule[] = [
   // === Azure ===
   { id: 'azure_storage_key', label: 'Azure Storage AccountKey', precision: 'heuristic', pattern: /AccountKey\s*=\s*([A-Za-z0-9+/=]{86,90})/g },
   { id: 'azure_sas', label: 'Azure SAS signature', precision: 'heuristic', pattern: /[?&]sig=([A-Za-z0-9%]{40,})/g },
-  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;[^;\s]*AccountName=[^;\s]+;[^\s]{0,1024}AccountKey=[^;\s]+/g },
+  { id: 'azure_conn_string', label: 'Azure connection string', precision: 'heuristic', pattern: /DefaultEndpointsProtocol=https?;(?:(?!AccountName=)[^;\s])*AccountName=[^;\s]+;[^\s]{0,1024}AccountKey=[^;\s]+/g },
   { id: 'azure_devops_pat', label: 'Azure DevOps PAT', precision: 'heuristic', pattern: /\b(?:AZURE_DEVOPS_PAT|ADO_PAT|VSTS_PAT|SYSTEM_ACCESSTOKEN)\s*[:=]\s*["']?([a-z0-9]{52})["']?/gi },
   { id: 'azure_client_secret', label: 'Azure AD client secret (named)', precision: 'heuristic', pattern: /\b(?:AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|client[_-]?secret)\s*[:=]\s*["']?([A-Za-z0-9~_.-]{34,})["']?/gi },
   // === GCP ===

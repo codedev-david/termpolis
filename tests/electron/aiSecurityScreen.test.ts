@@ -222,6 +222,9 @@ describe('every rule in linear time on text another computer wrote', () => {
     'pwd.', 'PWD-', 'pwdpwd.', `${'pwd.'.repeat(24)} `, '"pwd.', 'apikey.\n', 'apikey', 'eyJ-', 'a.', 'h.', 'token=', 'token ',
     'secret:', 'x:', 'https://a:', '1', 'a', '-', '=', ' ', '\\n', `${'A'.repeat(39)}\\n`,
     '-----BEGIN PRIVATE KEY-----\n', '-----BEGIN PRIVATE KEY-----\\n', 'DefaultEndpointsProtocol=https;AccountName=x;',
+    // One Azure header, then an account part that never ends: the rule once tried every
+    // `AccountName=` in it, each to the end of the run, 3.5 s on 265,536 characters.
+    `DefaultEndpointsProtocol=https;${'AccountName='.repeat(23_000)}`,
   ]
   const run = (unit: string, chars: number): string => unit.repeat(Math.ceil(chars / unit.length)).slice(0, chars)
 
