@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { Terminal as HeadlessTerminal } from '@xterm/headless'
-import { TerminalScreen, screenOf, screenOfReplay, screenSizeOf, DEFAULT_SCREEN } from '../../src/shared/terminalScreen'
+import { TerminalScreen, screenOf, screenOfReplay, screenSizeOf, cursorExtentOf, resizeReportOf, DEFAULT_SCREEN } from '../../src/shared/terminalScreen'
 import fixtures from '../fixtures/agentScreens.json'
 
 const E = '\x1b'
@@ -56,6 +56,7 @@ describe('TerminalScreen against @xterm/headless', () => {
     ['a scroll region and a saved cursor on each screen', `${E}[3;6r${E}[2;2H${E}7${E}[?1049h${E}[8;8H${E}7${E}[1;4r${E}[4;1H\n\nalt${E}8A${E}[?1049l${E}8B\n${E}[6;1H\n\nm`],
     ['erasing the scrollback only', `abc${E}[3Jd`],
     ['cursor moves far past every edge', `${E}[999;999Hz${E}[0;0Ha${E}[99Ab${E}[99Bc${E}[99Dd${E}[2;99rx${E}[5;3ry`],
+    ['tab counts past the last stop, both ways', `ab${E}[300Ix${E}[2;5H${E}[300Zy${E}[3;9H${E}[2Zw`],
   ])('matches xterm on %s', async (_name, raw) => {
     expect(screenOf(raw, DEFAULT_SCREEN).lines()).toEqual(await xtermRows(raw))
   })
@@ -102,6 +103,18 @@ describe('TerminalScreen', () => {
     expect(off[off.length - 1]).toBe('r1202')
   })
 
+  it('moves a tab count no screen needs at once: CHT and CBT stop at the margin', () => {
+    // A worker's raw output reaches this from a file cat'ed to a shell, and the bridge and submit
+    // replay it every few seconds: a count that steps tab stops one by one froze the thread.
+    const started = Date.now()
+    expect(screenOf(`${E}[2147483647Iz`).lines()[0]).toBe(`${' '.repeat(79)}z`)
+    expect(screenOf(`${E}[1;50H${E}[2147483647Zz`).lines()[0]).toBe('z')
+    // A count parseInt reads as 1e20, and every other counted sequence with one.
+    expect(screenOf(`${E}[99999999999999999999Iz`).lines()[0]).toBe(`${' '.repeat(79)}z`)
+    expect(screenOf(`ab${E}[99999999999999999999@${E}[99999999999999999999X${E}[99999999999999999999Lc`).lines()[0]).toBe('c')
+    expect(Date.now() - started).toBeLessThan(500)
+  })
+
   it('clamps a nonsense size to one cell', () => {
     const screen = new TerminalScreen({ cols: 0, rows: -3 })
     screen.write('xyz')
@@ -136,5 +149,21 @@ describe('screenSizeOf', () => {
 
   it('caps an absurd position', () => {
     expect(screenSizeOf(`${E}[99999;99999H`)).toEqual({ cols: 1000, rows: 500 })
+  })
+})
+
+describe('cursorExtentOf', () => {
+  it('is the furthest cell addressed, however small, and 0 by 0 for none', () => {
+    expect(cursorExtentOf(`${E}[20;60Hx${E}[3Hy`)).toEqual({ cols: 60, rows: 20 })
+    expect(cursorExtentOf('plain output')).toEqual({ cols: 0, rows: 0 })
+    expect(cursorExtentOf(`${E}[99999;99999H`)).toEqual({ cols: 1000, rows: 500 })
+  })
+})
+
+describe('resizeReportOf', () => {
+  it("is the size of ConPTY's last resize report, or null", () => {
+    expect(resizeReportOf(`a${E}[8;40;160tb${E}[8;20;60tc`)).toEqual({ cols: 60, rows: 20 })
+    expect(resizeReportOf(`${E}[18;40;160t${E}[8;0;0t`)).toBeNull()
+    expect(resizeReportOf(`${E}[8;99999;99999t`)).toEqual({ cols: 1000, rows: 500 })
   })
 })

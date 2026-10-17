@@ -172,6 +172,27 @@ describe('startBridgeForAgent', () => {
     expect(read).toHaveBeenNthCalledWith(4, 't1', 11)
   })
 
+  it('reads a terminal again from the start when ConPTY reports it was resized, smaller too', async () => {
+    // Claude Code and agy draw their bottom rows with relative moves, so nothing they draw after a
+    // resize addresses a cell past the old size; ConPTY's own report of it is what says so.
+    const E = '\x1b'
+    const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>
+    read
+      .mockResolvedValueOnce({ success: true, data: { output: 'hi', length: 2, nextOffset: 2, missed: 0, cols: 80, rows: 24 } })
+      .mockResolvedValueOnce({ success: true, data: { output: `${E}[8;20;60tsmall`, length: 13, nextOffset: 15, missed: 0 } })
+      .mockResolvedValueOnce({ success: true, data: { output: `hi${E}[8;20;60tsmall`, length: 15, nextOffset: 15, missed: 0, cols: 60, rows: 20 } })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 15, missed: 0 } })
+
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(read).toHaveBeenNthCalledWith(3, 't1')
+    // Read on from there at 60x20: no whole read on every poll for a screen smaller than 80x24.
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(read).toHaveBeenNthCalledWith(4, 't1', 15)
+    expect(read).toHaveBeenNthCalledWith(6, 't1', 15)
+    expect(read).toHaveBeenCalledTimes(6)
+  })
+
   it('keeps going when that second read fails', async () => {
     const E = '\x1b'
     const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>

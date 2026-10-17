@@ -365,6 +365,43 @@ describe('MCP HTTP server', () => {
 
   // --- JSON-RPC: tools/call ---
 
+  // GitHub #36: a client that went away before its answer (a conductor that died, a tool call that
+  // timed out) left write_to_terminal's submit waiting on the agent, and it typed the task in later.
+  it('stops a submit whose client closed the connection: nothing is typed into the agent later', async () => {
+    // Real time, on both sides of the socket: a rate-limit test above leaves fake timers on.
+    vi.useRealTimers()
+    const E = '\x1b'
+    const RULE = '─'.repeat(80)
+    const busy = `${E}]0;◐ Claude Code\x07${E}[H${E}[2J${E}[1;1H✢ Doing…${E}[2;1H${RULE}${E}[3;1H❯ ${E}[4;1H${RULE}${E}[5;1H  esc to interrupt`
+    const idle = `${E}]0;✳ Claude Code\x07${E}[H${E}[2J${E}[1;1HClaude Code${E}[2;1H${RULE}${E}[3;1H❯ ${E}[4;1H${RULE}`
+    const { readOutput, writeToTerminal } = handlers
+    const started = Date.now()
+    // At its prompt two seconds in: a submit still waiting then types, twice ready a second apart.
+    const reads = vi.fn(() => (Date.now() - started < 2000 ? busy : idle))
+    handlers.readOutput = reads
+    handlers.writeToTerminal = vi.fn()
+    try {
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port,
+        path: '/mcp',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      })
+      req.on('error', () => {})
+      req.end(JSON.stringify({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'write_to_terminal', arguments: { terminalId: 't1', text: 'Write the docs', submit: true } } }))
+      await new Promise((r) => setTimeout(r, 300))
+      req.destroy()
+      await new Promise((r) => setTimeout(r, 4000))
+      expect(handlers.writeToTerminal).not.toHaveBeenCalled()
+      // It stopped looking at its next poll, a second in.
+      expect(reads.mock.calls.length).toBeLessThanOrEqual(2)
+    } finally {
+      handlers.readOutput = readOutput
+      handlers.writeToTerminal = writeToTerminal
+    }
+  }, 10_000)
+
   it('tools/call list_terminals calls handler and returns result', async () => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',

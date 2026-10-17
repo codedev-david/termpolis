@@ -6,7 +6,10 @@
  * someone acts. The swarm status poller (App.tsx) reads each worker's screen and hands every
  * status here; the first time a worker is stopped, and again only after it got going and stopped
  * again, the conductor is told on the swarm bus, which the dashboard's Messages tab shows too. The
- * conductor's prompt says to give the task to another installed agent.
+ * conductor's prompt says to close the worker and give its task to another installed agent.
+ *
+ * The report is addressed to the conductor. swarm_read_messages marks a broadcast read for every
+ * reader at once, so a Claude worker that read the bus first would have taken it.
  */
 
 import { isLimitOrMenu, type AgentStatusResult } from '../../../shared/agentStatusDetector'
@@ -20,13 +23,19 @@ export interface SwarmWorker {
 /** What stopped each worker, while it is stopped. */
 const stopped = new Map<string, string>()
 
+/** A stop, without when it lifts: a reset time the CLI redraws as a countdown is the same stop. */
+function stopKey(summary: string): string {
+  return summary.replace(/ \(resets .*\)$/, '')
+}
+
 export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
   if (!isLimitOrMenu(result)) {
     stopped.delete(worker.terminalId)
     return
   }
-  if (stopped.get(worker.terminalId) === result.summary) return
-  stopped.set(worker.terminalId, result.summary)
+  const key = stopKey(result.summary)
+  if (stopped.get(worker.terminalId) === key) return
+  stopped.set(worker.terminalId, key)
   // The conductor sent the task, so it knows which one this terminal has; when the task was
   // assigned to it, say which.
   let task = ''
@@ -37,13 +46,15 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
       : undefined
     if (open) task = ` Its task is "${open.title}" (taskId ${open.id}).`
   } catch {}
+  // Closed first: a Claude Code waiting out its limit carries on by itself once it lifts, on a
+  // task that is someone else's by then.
   try {
     await window.swarmAPI.sendMessage(
       'system',
-      'all',
+      'conductor',
       'info',
       `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ` +
-        'Give its task to another installed agent.',
+        'Close its terminal, then give its task to another installed agent.',
     )
   } catch {}
 }

@@ -101,8 +101,9 @@ vi.mock('../../src/main/terminalManager', () => ({
   // mockImplementation rejects — every existing terminal:status test body works unchanged.
   getTerminalCwdAsync: async (...args: any[]) => mockGetTerminalCwd(...args),
   // terminal:read-buffer hands a replaying pane the pty's size; no pty is known here.
-  getTerminalSize: () => null,
+  getTerminalSize: (...args: any[]) => mockGetTerminalSize(...args),
 }))
+const mockGetTerminalSize = vi.fn((..._args: any[]): { cols: number; rows: number } | null => null)
 
 const mockDetectAvailableShells = vi.fn()
 vi.mock('../../src/main/shellDetector', () => ({
@@ -2356,6 +2357,15 @@ describe('MCP handler callbacks', () => {
   it('readOutput returns empty for non-existent terminal', () => {
     const result = capturedMcpHandlers.readOutput('no-such-term', 50)
     expect(result).toBe('')
+  })
+
+  it("terminalSize hands write_to_terminal's submit the terminal's PTY size, or null for none", () => {
+    // GitHub #36: submit read a terminal shown in a pane at the size its output reached, and an
+    // idle agent at 160x40 as starting.
+    mockGetTerminalSize.mockReturnValueOnce({ cols: 160, rows: 40 })
+    expect(capturedMcpHandlers.terminalSize('pane-term')).toEqual({ cols: 160, rows: 40 })
+    expect(mockGetTerminalSize).toHaveBeenLastCalledWith('pane-term')
+    expect(capturedMcpHandlers.terminalSize('no-such-term')).toBeNull()
   })
 
   it('readOutput clamps lines to valid range', async () => {

@@ -33,9 +33,9 @@ export function startBridgeForAgent(terminalId: string, agentName: string): void
       const feed = feeds.get(terminalId)
       if (bufRes.success && bufRes.data && feed) {
         let read = bufRes.data
-        // Resized larger (shown in a pane): read all main holds, which comes with the size it is
-        // drawn for, and start the screen over at that size.
-        if (read.cols === undefined && feed.outgrows(read.output)) {
+        // Resized (shown in a pane): read all main holds, which comes with the size it is drawn
+        // for, and start the screen over at that size.
+        if (read.cols === undefined && feed.resized(read.output)) {
           const whole = await window.termpolis.readTerminalBuffer(terminalId)
           if (whole.success && whole.data) read = whole.data
         }

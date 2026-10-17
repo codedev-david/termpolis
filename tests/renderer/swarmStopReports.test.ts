@@ -24,12 +24,24 @@ describe('noteWorkerStatus', () => {
     const w = worker()
     for (let i = 0; i < 5; i++) await noteWorkerStatus(w, LIMIT)
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+    // To the conductor, not to all: swarm_read_messages marks a broadcast read for every reader,
+    // so a Claude worker reading the bus first took it. And the worker is to be closed first: a
+    // Claude Code that waits out its limit carries on by itself, on a task now someone else's.
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith(
       'system',
-      'all',
+      'conductor',
       'info',
-      `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). Give its task to another installed agent.`,
+      `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). ` +
+        'Close its terminal, then give its task to another installed agent.',
     )
+  })
+
+  it('tells it once while only the reset time redraws: the same stop, counting down', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, { status: 'blocked', summary: 'usage limit reached (resets in 4h 59m)' })
+    await noteWorkerStatus(w, { status: 'blocked', summary: 'usage limit reached (resets in 4h 58m)' })
+    await noteWorkerStatus(w, { status: 'blocked', summary: 'usage limit reached' })
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
   })
 
   it('tells it again when the worker stops again after getting going', async () => {
@@ -61,7 +73,8 @@ describe('noteWorkerStatus', () => {
     })
     await noteWorkerStatus(w, LIMIT)
     expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBe(
-      `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). Its task is "Write the tests" (taskId t7). Give its task to another installed agent.`,
+      `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). Its task is "Write the tests" (taskId t7). ` +
+        'Close its terminal, then give its task to another installed agent.',
     )
   })
 

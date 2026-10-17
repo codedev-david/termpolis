@@ -13,7 +13,8 @@
  *      `claude -p <prompt>` (again routed to the smart mock conductor)
  *   7. The smart mock conductor drives REAL MCP HTTP calls:
  *        swarm_send_message → swarm_create_task × 2 → create_terminal × 2 →
- *        run_command × 2 → write_to_terminal × 2 → swarm_update_task × 2 →
+ *        run_command × 2 → write_to_terminal × 2 (one with submit, into a
+ *        worker at its input box) → swarm_update_task × 2 →
  *        swarm_send_message('SWARM COMPLETE')
  *   8. The test verifies the renderer's store, the swarm bus, the monitoring
  *      loop, and the MCP HTTP surface all converge on the completed state.
@@ -130,6 +131,8 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       TERMPOLIS_TEST_PROJECT_CWD: PROJECT_ROOT,
+      // The mock conductor sends one worker its task with write_to_terminal's submit (test 9b).
+      MOCK_CLAUDE_SUBMIT: '1',
       ...e2eShimEnv('swarm-end-to-end'),
     },
   })
@@ -351,6 +354,38 @@ test.describe.serial('Swarm End-to-End', () => {
     const parsed = parseToolResult(listed)
     expect(Array.isArray(parsed)).toBeTruthy()
     await ss('09-agent-terminals')
+  })
+
+  test('9b. write_to_terminal with submit types a task into a worker at its input box, which takes it', async () => {
+    // GitHub #36 item 4. The worker started with a model is the mock's Claude Code at its input box;
+    // the mock conductor sends it its task with submit=true, as the real conductor's STEP 5 does,
+    // and posts the answer. Explicit polls, as test 10 explains.
+    const prefix = 'Sent the task to Claude (Implement feature): '
+    let answer: any = null
+    for (let i = 0; i < 90 && !answer; i++) {
+      const content = await page.evaluate(async (p) => {
+        const res = await (window as any).swarmAPI.getMessages()
+        const m = res?.success && Array.isArray(res.data) ? res.data.find((x: any) => typeof x.content === 'string' && x.content.startsWith(p)) : null
+        return m ? m.content : null
+      }, prefix)
+      if (content) answer = JSON.parse(content.slice(prefix.length))
+      else await page.waitForTimeout(1000)
+    }
+    expect(answer, 'the mock conductor never reported its submit').not.toBeNull()
+    expect(answer.submitted, JSON.stringify(answer)).toBe(true)
+
+    // And the worker took it: it prints what it was sent once it has worked on it.
+    let screen = ''
+    for (let i = 0; i < 20 && !screen.includes('● On it: You are in'); i++) {
+      screen = await page.evaluate(async () => {
+        const worker = (window as any).__termpolis_test_state?.().terminals.find((t: any) => t.isSwarm && /Implement feature/.test(t.name))
+        if (!worker) return ''
+        const res = await (window as any).termpolis.readTerminalBuffer(worker.id)
+        return res?.success && res.data ? res.data.output : ''
+      })
+      if (!screen.includes('● On it: You are in')) await page.waitForTimeout(500)
+    }
+    expect(screen).toContain('● On it: You are in')
   })
 
   test('10. All tasks reach completed status (conductor → swarm_update_task)', async () => {

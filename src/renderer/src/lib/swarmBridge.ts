@@ -11,7 +11,7 @@
  * when it finished a turn. Every message is typed info: only swarm_update_task completes a task.
  */
 
-import { TerminalScreen, screenSizeOf, type ScreenSize } from '../../../shared/terminalScreen'
+import { TerminalScreen, cursorExtentOf, resizeReportOf, screenSizeOf, type ScreenSize } from '../../../shared/terminalScreen'
 import { detectAgentStatus, inputBoxRow, type AgentStatus } from '../../../shared/agentStatusDetector'
 
 /** What the bridge says when a worker is back at its prompt after working on a prompt (item 3). */
@@ -32,6 +32,11 @@ const BOX = /^[╭╰│]/
 const PROMPT_ECHO = /^[❯›>]\s/
 /** A shell's prompt, with or without the command typed at it: the agent's launch, or its exit. */
 const SHELL_PROMPT = /^PS [A-Za-z]:\\[^>]*>|^[\w.-]+@[\w.-]+:\S*[$#](?:\s|$)|^[$#%](?:\s|$)/
+/** The start of a PowerShell prompt whose folder is too long for one row: its '>' wraps. */
+const SHELL_PROMPT_HEAD = /^PS [A-Za-z]:\\[^>]*$/
+/** The rest of a prompt the worker echoes, on the rows it wraps onto: indented under the glyph.
+ *  Not Claude Code's "⎿  Interrupted", which it puts right under the prompt it stopped. */
+const PROMPT_WRAP = /^\s+[^\s⎿]/
 /** Codex's startup tips ("Tip: Type / to open the command popup..."). */
 const TIP = /^\s*Tip: /
 /** A status line: led by a spinner frame (agy's braille, Claude Code's ✢✳✶✻✽ and · *), or Codex's
@@ -45,10 +50,12 @@ const CODEX_STATUS_ROW = /^\s*[•◦]\s.*\besc to (?:interrupt|cancel)\)\s*$/
 export interface WorkerView {
   /** The rows above its input box, top to bottom, chrome left out. */
   transcript: string[]
-  /** Prompts it was sent, as its history shows them. */
+  /** Prompts it was sent, as its history shows them, each with the rows it wraps onto. */
   prompts: string[]
   /** Its status line, spinner and timer left out; '' with none. */
   status: string
+  /** The shell it runs in: its prompts, and the commands typed at them, wrapped or not. */
+  shell: string[]
   agent: AgentStatus
 }
 
@@ -69,39 +76,68 @@ function isChrome(row: string): boolean {
   return row.trim() === '' || RULE.test(row.trim()) || LOGO.test(row) || BOX.test(row) || TIP.test(row)
 }
 
-/** Rows without the agent's furniture, its shell's prompts, or the rest of a command typed at
- *  one, which a full row wraps onto the rows below it (`& 'C:\Users\...\agy.exe' --danger...`). */
-function withoutChrome(rows: readonly string[], cols: number): string[] {
-  const kept: string[] = []
-  let wrapsOn = false
-  for (const row of rows) {
-    const atPrompt: boolean = wrapsOn || SHELL_PROMPT.test(row)
-    wrapsOn = atPrompt && row.length >= cols
-    if (!atPrompt && !isChrome(row)) kept.push(row)
-  }
-  return kept
+/** Rows sorted by what they are. The agent's furniture is in none of them. */
+interface SortedRows {
+  output: string[]
+  /** Prompts it was sent, and the rows each wraps onto. */
+  prompts: string[]
+  statuses: string[]
+  /** Its shell's prompts, and the rest of a command typed at one, which a full row wraps onto the
+   *  rows below it (`& 'C:\Users\...\agy.exe' --danger...`). */
+  shell: string[]
 }
 
-export function readWorkerScreen(screen: TerminalScreen, agentName: string, previous: AgentStatus): WorkerView {
+/**
+ * Sorts rows, top to bottom, in one pass: a row can be the rest of the one above it, a shell's
+ * prompt or a prompt the worker echoes, wrapped. `leadIn` are the rows right above them, which
+ * scrolled off the top this read: they only carry that over, so a row whose start went off the
+ * top with them is still known for what it is.
+ */
+function sortRows(rows: readonly string[], cols: number, leadIn: readonly string[] = []): SortedRows {
+  const sorted: SortedRows = { output: [], prompts: [], statuses: [], shell: [] }
+  let shellWraps = false
+  let inPrompt = false
+  const all = [...leadIn, ...rows]
+  for (let i = 0; i < all.length; i++) {
+    const row = all[i]
+    const atShell: boolean = shellWraps || SHELL_PROMPT.test(row) || (row.length >= cols && SHELL_PROMPT_HEAD.test(row))
+    shellWraps = atShell && row.length >= cols
+    // An echoed prompt goes on over indented rows up to the blank row under it: the agents put one
+    // between a prompt and what they answer.
+    inPrompt = !atShell && (PROMPT_ECHO.test(row) || (inPrompt && PROMPT_WRAP.test(row)))
+    if (i < leadIn.length) continue
+    if (atShell) sorted.shell.push(row)
+    else if (inPrompt) sorted.prompts.push(row)
+    else if (isChrome(row)) continue
+    else if (isStatusRow(row)) sorted.statuses.push(row)
+    else sorted.output.push(row)
+  }
+  return sorted
+}
+
+/** One read of a worker's screen. `scrolledOff` are the rows that went off its top since the
+ *  last read (takeScrolledOff): what the top rows continue. */
+export function readWorkerScreen(screen: TerminalScreen, agentName: string, previous: AgentStatus, scrolledOff: readonly string[] = []): WorkerView {
   const rows = screen.lines()
   while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
   const agent = detectAgentStatus(rows.join('\n'), agentName, previous, { screen: true, title: screen.title }).status
   // Everything from the input box down is the agent's own furniture: the box, its rules, the footer.
   const box = inputBoxRow(rows)
   const above = box < 0 ? rows : rows.slice(0, box)
-  const transcript: string[] = []
-  const prompts: string[] = []
-  let status = ''
-  for (const row of withoutChrome(above, screen.cols)) {
-    if (isStatusRow(row)) status = statusText(row)
-    else if (PROMPT_ECHO.test(row)) prompts.push(row)
-    else transcript.push(row)
-  }
-  return { transcript, prompts, status, agent }
+  const sorted = sortRows(above, screen.cols, scrolledOff)
+  const lastStatus = sorted.statuses[sorted.statuses.length - 1]
+  return { transcript: sorted.output, prompts: sorted.prompts, status: lastStatus === undefined ? '' : statusText(lastStatus), shell: sorted.shell, agent }
 }
 
 function isBusy(agent: AgentStatus): boolean {
   return agent === 'working' || agent === 'thinking' || agent === 'starting'
+}
+
+/** Whether output addresses a cell past a screen of this size. No floor: a terminal shown in a
+ *  narrow pane is smaller than a hidden one's 80x24. */
+function drawsPast(output: string, size: ScreenSize): boolean {
+  const reach = cursorExtentOf(output)
+  return reach.cols > size.cols || reach.rows > size.rows
 }
 
 /** One read of a terminal's output (window.termpolis.readTerminalBuffer). The size, preamble and
@@ -135,11 +171,16 @@ export class WorkerFeed {
 
   constructor(private readonly agentName: string) {}
 
-  /** Whether this output draws past the screen: the terminal was resized larger, and only a replay
-   *  read, which says how large, can rebuild the screen. */
-  outgrows(output: string): boolean {
-    const wanted = screenSizeOf(output)
-    return this.size !== null && (wanted.cols > this.size.cols || wanted.rows > this.size.rows)
+  /** Whether this output shows the terminal was resized since the screen was set up: ConPTY's
+   *  report of a new size (`ESC[8;rows;cols t`), or a cell addressed past the screen's edge.
+   *  Claude Code and agy draw their bottom rows with relative moves, so a resize they drew after,
+   *  and any to a smaller size, shows only in the report. Only a replay read, which says how
+   *  large, can rebuild the screen. */
+  resized(output: string): boolean {
+    if (this.size === null) return false
+    const reported = resizeReportOf(output)
+    if (reported) return reported.cols !== this.size.cols || reported.rows !== this.size.rows
+    return drawsPast(output, this.size)
   }
 
   /** What the terminal printed since the last read, turned into a message, or null. */
@@ -147,9 +188,12 @@ export class WorkerFeed {
     const { output } = read
     const size = read.cols && read.rows ? { cols: read.cols, rows: read.rows } : null
     const resized = size !== null && this.size !== null && (size.cols !== this.size.cols || size.rows !== this.size.rows)
-    const fresh = this.screen === null || (read.missed ?? 0) > 0 || resized || this.outgrows(output)
+    const fresh = this.screen === null || (read.missed ?? 0) > 0 || resized || this.resized(output)
     if (fresh) {
-      this.size = size ?? (this.outgrows(output) || !this.size ? screenSizeOf(output) : this.size)
+      // Main's size when the read came with one; else the one ConPTY reported, the one it was,
+      // or a guess from the output.
+      const kept = this.size !== null && !drawsPast(output, this.size) ? this.size : null
+      this.size = size ?? resizeReportOf(output) ?? kept ?? screenSizeOf(output)
       this.screen = new TerminalScreen(this.size)
     }
     const screen = this.screen!
@@ -157,18 +201,22 @@ export class WorkerFeed {
     // of the sequence the window's start cut in half, which is no text.
     if (fresh && read.preamble) screen.write(read.preamble)
     screen.write(fresh && read.skip ? output.slice(read.skip) : output)
-    const offTop = withoutChrome(screen.takeScrolledOff(), screen.cols)
-    const view = readWorkerScreen(screen, this.agentName, this.last?.agent ?? 'starting')
+    const scrolledOff = screen.takeScrolledOff()
+    const offTop = sortRows(scrolledOff, screen.cols)
+    const view = readWorkerScreen(screen, this.agentName, this.last?.agent ?? 'starting', scrolledOff)
     const last = this.last
     this.last = view
+    // The shell's rows are never news, however they read later: the rest of a launch line, once
+    // the row it starts on went off the top, is a row like any other.
+    for (const row of [...offTop.shell, ...view.shell]) this.remember(row)
     if (fresh || !last) {
-      for (const row of [...offTop, ...view.transcript, ...view.prompts]) this.remember(row)
+      for (const row of [...offTop.output, ...offTop.prompts, ...view.transcript, ...view.prompts]) this.remember(row)
       this.postedStatus = view.status
       return null
     }
 
     // A prompt it hadn't been sent before: it is working for the swarm from here.
-    for (const row of [...offTop.filter((r) => PROMPT_ECHO.test(r)), ...view.prompts]) {
+    for (const row of [...offTop.prompts, ...view.prompts]) {
       if (this.seen.has(row)) continue
       this.remember(row)
       this.prompted = true
@@ -181,7 +229,7 @@ export class WorkerFeed {
     // A worker at rest (at its prompt, asking, stopped) draws nothing more, so all it shows is final.
     const before = new Set(last.transcript)
     const visible = isBusy(view.agent) ? view.transcript.filter((r) => before.has(r)) : view.transcript
-    const settled = [...offTop.filter((r) => !PROMPT_ECHO.test(r) && !isStatusRow(r)), ...visible]
+    const settled = [...offTop.output, ...visible]
     const lines: string[] = []
     for (const row of settled) {
       if (this.seen.has(row)) continue

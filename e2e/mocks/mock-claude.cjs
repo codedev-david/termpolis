@@ -14,6 +14,9 @@
  *                                  the conductor (GitHub #36).
  *   3. (no recognized args)      → interactive stub used by swarm-integration
  *                                  (trust prompt + `I'll help with: X` echoes).
+ *      With `--model <alias>`, which STEP 4 lets a conductor add, the stub is a
+ *      Claude Code already past that dialog: at its input box, which
+ *      write_to_terminal's submit waits for, types into, and sends with Enter.
  *
  * In mode 2, MOCK_CLAUDE_RECORD=<file> writes the argv and prompt received there
  * as JSON, so a spec can check what the conductor was actually handed.
@@ -118,6 +121,7 @@ function readPrompt(args, at) {
 // Interactive stub (preserves existing swarm-integration.spec.ts behavior)
 // ───────────────────────────────────────────────────────────────────────────
 function runInteractive() {
+  if (argv.includes('--model')) return runAtInputBox();
   const readline = require('readline');
 
   // The workspace-trust dialog, rendered the way Claude Code 2.1.x renders it:
@@ -186,6 +190,53 @@ function runInteractive() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// A Claude Code at its input box, for write_to_terminal's submit (GitHub #36)
+// ───────────────────────────────────────────────────────────────────────────
+// Drawn the way the status detector reads Claude Code's screen: a rule, then `❯ `
+// with what is typed after it. Enter sends what was typed: the stub is busy for a
+// moment ("esc to interrupt", as Claude Code's footer says while it works), then
+// prints what it took and draws its box again. A paste is no keystroke, as in the
+// trust stub above, and an Enter in an empty box does nothing.
+function runAtInputBox() {
+  const RULE = '─'.repeat(60);
+  const out = (s) => process.stdout.write(s);
+  const drawBox = () => out(`${RULE}\r\n❯ `);
+  out('Claude Code v1.0.0 (mock)\r\n\r\n');
+  drawBox();
+
+  const stdin = process.stdin;
+  if (stdin.setRawMode) stdin.setRawMode(true);
+  stdin.resume();
+  stdin.on('end', () => process.exit(0));
+  let typed = '';
+  let busy = false;
+  stdin.on('data', (buf) => {
+    const s = buf.toString('utf8');
+    if (s.includes('\x03')) process.exit(0); // Ctrl+C
+    if (busy || s.includes('\x1b[200~')) return;
+    for (const ch of s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b./g, '')) {
+      if (ch === '\r' || ch === '\n') {
+        if (!typed) continue;
+        const prompt = typed;
+        typed = '';
+        busy = true;
+        out('\r\n✢ Working… (esc to interrupt)');
+        setTimeout(() => {
+          out(`\r\x1b[2K● On it: ${prompt}\r\n\r\n`);
+          drawBox();
+          busy = false;
+        }, 1500);
+        return;
+      }
+      if (ch >= ' ') {
+        typed += ch;
+        out(ch);
+      }
+    }
+  });
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // Smart conductor — drives MCP tools to simulate the real conductor flow
 // ───────────────────────────────────────────────────────────────────────────
 async function runConductor(prompt) {
@@ -232,20 +283,34 @@ async function runConductor(prompt) {
   );
   console.log('[Mock Conductor] Created terminals:', term1Id, term2Id);
 
-  // STEP 4 — Start agents in interactive mode (command stays as-is; agent will
-  // just report "command not found" in the PTY, which is fine — we only need
-  // the terminal objects to exist in the store)
-  await mcp('run_command', { terminalId: term1Id, command: 'claude --dangerously-skip-permissions' });
+  // STEP 4 — Start agents in interactive mode. MOCK_CLAUDE_SUBMIT=1 starts the first with a model,
+  // which makes the stub a Claude Code at its input box (runAtInputBox); otherwise both are the
+  // trust-dialog stub.
+  const submit = process.env.MOCK_CLAUDE_SUBMIT === '1';
+  await mcp('run_command', { terminalId: term1Id, command: `claude --dangerously-skip-permissions${submit ? ' --model haiku' : ''}` });
   await mcp('run_command', { terminalId: term2Id, command: 'claude --dangerously-skip-permissions' });
   await sleep(200);
 
-  // STEP 5 — Send task prompts via write_to_terminal. Raw, not with submit=true as the real
-  // conductor's prompt asks: these workers are the interactive stub below, which opens on a trust
-  // prompt and never shows an agent's input box, so submit would wait out its full 3 minutes.
-  await mcp('write_to_terminal', {
-    terminalId: term1Id,
-    text: `You are in ${projectCwd}. Implement the feature. Task ID: ${task1Id}\r`,
-  });
+  // STEP 5 — Send task prompts via write_to_terminal. To the worker at its input box with
+  // submit=true, as the real conductor's prompt asks: it waits until the worker is ready, types the
+  // task, presses Enter and checks it was taken. The answer is posted for the spec to read; past a
+  // minute the swarm goes on without it. The trust-dialog stub never shows an input box, so submit
+  // would wait out its 3 minutes there: its task is written raw.
+  const task1Text = `You are in ${projectCwd}. Implement the feature. Task ID: ${task1Id}`;
+  if (submit) {
+    const submitted = await Promise.race([
+      mcp('write_to_terminal', { terminalId: term1Id, text: task1Text, submit: true }),
+      sleep(60000).then(() => ({ submitted: false, error: 'no answer within 60 s' })),
+    ]).catch((err) => ({ submitted: false, error: String((err && err.message) || err) }));
+    await mcp('swarm_send_message', {
+      from: 'conductor',
+      to: 'all',
+      type: 'info',
+      content: `Sent the task to Claude (Implement feature): ${JSON.stringify(submitted)}`,
+    });
+  } else {
+    await mcp('write_to_terminal', { terminalId: term1Id, text: `${task1Text}\r` });
+  }
   await mcp('write_to_terminal', {
     terminalId: term2Id,
     text: `You are in ${projectCwd}. Add tests. Task ID: ${task2Id}\r`,

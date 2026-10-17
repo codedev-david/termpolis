@@ -181,6 +181,65 @@ describe('WorkerFeed', () => {
     expect(scrolled.update({ output: `${launch}\r\n${Array.from({ length: 30 }, (_, i) => `r${i}`).join('\r\n')}` })?.split('\n')[0]).toBe('[Gemini] r0')
   })
 
+  // GitHub #36 item 7. The rest of a typed line, or of a prompt the conductor sent, posted back as
+  // if the worker had printed it.
+  const BANNER = 'Windows PowerShell\r\nCopyright (C) Microsoft Corporation. All rights reserved.\r\n\r\n'
+  const CODEX_BOX = '╭──────────────────────────────────────────────────╮\r\n│ >_ OpenAI Codex (v0.162.1)                       │\r\n╰──────────────────────────────────────────────────╯\r\n\r\n'
+  const CODEX_IDLE = '› Ask Codex to do anything\r\n\r\n  gpt-5.6-sol medium · ~\\customer-portal'
+
+  it("leaves out the launch line typed at a prompt too long for the screen's first row", () => {
+    // 83 characters: the prompt's own '>' wraps onto the second row with the command after it.
+    const cwd = 'C:\\Users\\jared.roberts\\OneDrive - Contoso Ltd\\Documents\\GitHub\\customer-portal'
+    const feed = new WorkerFeed('Codex')
+    const posted = [
+      feed.update({ output: `${BANNER}PS ${cwd}> `, cols: 80, rows: 24 }),
+      feed.update({ output: `codex -a never -s workspace-write\r\n${CODEX_BOX}${CODEX_IDLE}` }),
+      feed.update({ output: '' }),
+    ].filter(Boolean)
+    expect(posted).toEqual([])
+  })
+
+  it('leaves out the rest of a launch line whose prompt row scrolled off before a later read', () => {
+    // The launch line wraps onto a second row, and agy's banner fills the screen under it. However
+    // much it prints next: with 4 lines only the prompt's row scrolls off, and the rest of the line
+    // is left at the top of the screen.
+    const cmd = "& 'C:\\Users\\Jared Roberts\\AppData\\Local\\agy\\bin\\agy.exe' --dangerously-skip-permissions"
+    const banner = Array.from({ length: 16 }, (_, i) => `  banner ${i + 1}`).join('\r\n')
+    for (let n = 1; n <= 8; n++) {
+      const feed = new WorkerFeed('Gemini')
+      const more = Array.from({ length: n }, (_, i) => `✓ Loaded extension ${i + 1}`).join('\r\n')
+      const posted = [
+        feed.update({ output: `${BANNER}PS C:\\work\\customer-portal> `, cols: 80, rows: 24 }),
+        feed.update({ output: `${cmd}\r\n\r\n  agy 1.4.0\r\n${banner}\r\n` }),
+        feed.update({ output: `${more}\r\n` }),
+        feed.update({ output: '' }),
+      ].filter(Boolean).join('\n')
+      expect(posted, `${n} lines`).not.toMatch(/dangerously-skip-permissions|agy\.exe/)
+      expect(posted, `${n} lines`).toContain('✓ Loaded extension 1')
+    }
+  })
+
+  it('leaves out the rows a prompt the conductor sent wraps onto, as the worker echoes it', () => {
+    const frame = (rows: string[]): string => `${E}[H${E}[2J` + rows.map((r, i) => `${E}[${i + 1};1H${r}`).join('')
+    const header = ['╭────────╮', '│ >_ OpenAI Codex │', '╰────────╯', '']
+    const idle = ['› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~\\customer-portal']
+    const echo = [
+      '› You are working in C:\\work\\customer-portal. Add the over-quota banner to the',
+      '  dashboard and a test for it. Write the files; do not just print them. Task ID:',
+      '  task-7f3c2a',
+    ]
+    const feed = new WorkerFeed('Codex')
+    const posted = [
+      feed.update({ output: frame([...header, ...idle]), cols: 80, rows: 24 }),
+      feed.update({ output: frame([...header, ...echo, '', '• Working (2s • esc to interrupt)', '', ...idle]) }),
+      feed.update({ output: frame([...header, ...echo, '', '• Edited src/Banner.tsx (+12 -0)', '', '• Working (9s • esc to interrupt)', '', ...idle]) }),
+      feed.update({ output: frame([...header, ...echo, '', '• Edited src/Banner.tsx (+12 -0)', '', '• Added the banner and its test.', '', ...idle]) }),
+    ].filter(Boolean).join('\n')
+    expect(posted).not.toMatch(/task-7f3c2a|dashboard and a test/)
+    expect(posted).toContain('• Added the banner and its test.')
+    expect(posted).toContain(DONE_HINT)
+  })
+
   it('starts over after output it missed, posting nothing for that read', () => {
     const feed = new WorkerFeed('Codex')
     feed.update({ output: screen([]) })
@@ -191,11 +250,35 @@ describe('WorkerFeed', () => {
 
   it('knows when output draws past its screen: the terminal was resized larger', () => {
     const feed = new WorkerFeed('Codex')
-    expect(feed.outgrows(`${E}[40;1Hx`)).toBe(false) // no screen yet: nothing to outgrow
+    expect(feed.resized(`${E}[40;1Hx`)).toBe(false) // no screen yet: nothing to outgrow
     feed.update({ output: screen([]) })
-    expect(feed.outgrows(`${E}[24;80Hx`)).toBe(false)
-    expect(feed.outgrows(`${E}[40;1Hx`)).toBe(true)
-    expect(feed.outgrows(`${E}[1;81Hx`)).toBe(true)
+    expect(feed.resized(`${E}[24;80Hx`)).toBe(false)
+    expect(feed.resized(`${E}[40;1Hx`)).toBe(true)
+    expect(feed.resized(`${E}[1;81Hx`)).toBe(true)
+  })
+
+  it("knows from ConPTY's report that the terminal was resized, larger or smaller", () => {
+    const feed = new WorkerFeed('Codex')
+    feed.update({ output: screen([]), cols: 80, rows: 24 })
+    expect(feed.resized(`${E}[8;40;160tx`)).toBe(true)
+    expect(feed.resized(`${E}[8;20;60tx`)).toBe(true)
+    expect(feed.resized(`${E}[8;20;60t${E}[8;24;80tx`)).toBe(false) // and back, in one read
+    // Starting over without main's size, at the size reported: at 80 columns "near" would wrap.
+    const box = `${E}[5;1H${'─'.repeat(100)}${E}[6;1H❯ ${E}[7;1H${'─'.repeat(100)}`
+    expect(feed.update({ output: `${E}[8;30;100t${E}[2J${box}` })).toBeNull()
+    expect(feed.update({ output: `${E}[2;1Hcol 1${E}[2;90Hnear` })).toBe(`[Codex] col 1${' '.repeat(84)}near`)
+  })
+
+  it('reads a worker narrower or shorter than 80x24 on, read after read, and posts what it shows', () => {
+    // Every read of a 60x20 screen used to count as drawn past it, against the 80x24 floor of the
+    // size guess, and start the screen over: such a worker posted nothing.
+    const narrow = (rows: string[]): string => `${E}[H${E}[2J` + [...rows, '─'.repeat(60), '❯ ', '─'.repeat(60)].map((r, i) => `${E}[${i + 1};1H${r}`).join('')
+    const feed = new WorkerFeed('Codex')
+    expect(feed.update({ output: narrow([]), cols: 60, rows: 20 })).toBeNull()
+    expect(feed.resized(narrow(['x']))).toBe(false)
+    expect(feed.update({ output: narrow(['• Edited src/app.ts (+3 -1)']) })).toBe('[Codex] • Edited src/app.ts (+3 -1)')
+    expect(feed.resized(`${E}[20;60Hx`)).toBe(false)
+    expect(feed.resized(`${E}[21;1Hx`)).toBe(true)
   })
 
   it('starts over at the size a replay read gives, and reads what follows at it', () => {
@@ -253,7 +336,22 @@ describe('WorkerFeed', () => {
 describe('readWorkerScreen', () => {
   it('splits a screen into transcript, prompts sent, status and the agent\'s state', () => {
     const view = readWorkerScreen(screenOf(screen(['❯ Do it', '● Done that'], { status: '✢ Wrapping up…', title: '◐ Claude Code' })), 'Claude', 'idle')
-    expect(view).toEqual({ transcript: ['● Done that'], prompts: ['❯ Do it'], status: 'Wrapping up…', agent: 'working' })
+    expect(view).toEqual({ transcript: ['● Done that'], prompts: ['❯ Do it'], status: 'Wrapping up…', shell: [], agent: 'working' })
+  })
+
+  it('reads the rows a screen\'s top row continues from the rows that scrolled off above it', () => {
+    // The prompt's own row went off the top: its echo and its wrapped rest, a launch line's too.
+    const s = screenOf(`  the rest of the task\r\n  and its last row\r\n\r\n● Done that\r\n`)
+    expect(readWorkerScreen(s, 'Claude', 'idle', ['❯ Do the first part of the task,']).prompts).toEqual(['  the rest of the task', '  and its last row'])
+    const launch = `PS C:\\pr> & 'C:\\Users\\Jared Roberts\\AppData\\Local\\agy\\bin\\agy.exe' --dangerously`
+    expect(launch).toHaveLength(80)
+    expect(readWorkerScreen(screenOf('-skip-permissions\r\nhello\r\n'), 'Gemini', 'idle', [launch])).toMatchObject({ shell: ['-skip-permissions'], transcript: ['hello'] })
+  })
+
+  it("keeps Claude Code's notice that it was interrupted, which it puts right under the prompt", () => {
+    const view = readWorkerScreen(screenOf('❯ Build the page\r\n  ⎿  Interrupted · What should Claude do instead?\r\n'), 'Claude', 'idle')
+    expect(view.prompts).toEqual(['❯ Build the page'])
+    expect(view.transcript).toEqual(['  ⎿  Interrupted · What should Claude do instead?'])
   })
 
   it('reads a screen with no input box as all transcript', () => {

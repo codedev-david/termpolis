@@ -33,15 +33,45 @@ describe('conductorRunScript on Windows', () => {
     expect(script).not.toContain('$task')
   })
 
+  it('starts with a BOM, so 5.1 reads the paths in it as UTF-8 and not in the ANSI code page', () => {
+    // The paths are under the user's home folder. Without a BOM, 5.1 read "José" as "JosÃ©", and
+    // the bytes of Ñ, ł or ’ as quotes that ended the literal before the path did.
+    expect(script.charCodeAt(0)).toBe(0xfeff)
+    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).charCodeAt(0)).toBe(0xfeff)
+    // bash reads its script as the UTF-8 it is.
+    expect(conductorRunScript(false, UNIX).charCodeAt(0)).toBe('#'.charCodeAt(0))
+  })
+
   it('sets both encodings to UTF-8 without a BOM before the pipe', () => {
     // $OutputEncoding alone is not enough: with the console on code page 65001, .NET writes
     // [Console]::InputEncoding's BOM into the pipe first.
     expect(script).toContain('$enc = New-Object System.Text.UTF8Encoding $false')
-    expect(script).toMatch(/^\$OutputEncoding = \$enc$/m)
+    expect(script).toMatch(/^ {2}\$OutputEncoding = \$enc$/m)
     expect(script).toMatch(/\[Console\]::InputEncoding = \$enc/)
     const pipe = script.indexOf('Get-Content -Raw')
     expect(script.indexOf('$OutputEncoding = $enc')).toBeLessThan(pipe)
     expect(script.indexOf('[Console]::InputEncoding = $enc')).toBeLessThan(pipe)
+  })
+
+  it('falls back to the stock UTF-8 under Constrained Language Mode, and says so in its output', () => {
+    // AppLocker and WDAC run an untrusted script, such as one in the home folder, in
+    // ConstrainedLanguage, which refuses New-Object and setting [Console]::InputEncoding. The
+    // defaults then turned every non-ASCII character of the prompt into '?', with no word of it.
+    expect(script).toContain(
+      "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {\n  $enc = New-Object System.Text.UTF8Encoding $false\n",
+    )
+    expect(script).toMatch(/\n\} else \{\n {2}\$OutputEncoding = \[System\.Text\.Encoding\]::UTF8\n {2}Write-Output '[^'\n]*ConstrainedLanguage[^'\n]*'\n\}\n/)
+    expect(script.indexOf('[System.Text.Encoding]::UTF8')).toBeLessThan(script.indexOf('Get-Content -Raw'))
+  })
+
+  it("clears the last exit code before the pipe: a claude that never starts reports 1, not the probe's 0", () => {
+    // Resolve-WorkingClaude's `--version` leaves $LASTEXITCODE at 0, so a pipe that failed before
+    // claude ran (a binding error, a binary gone) reported "exited 0". Global: a script-scope
+    // variable would hide the one the native command sets.
+    for (const s of [script, conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' })]) {
+      expect(s).toMatch(/\n\$global:LASTEXITCODE = \$null\nGet-Content -Raw /)
+      expect(s).toContain('if ($null -eq $code) { $code = 1 }')
+    }
   })
 
   it('never puts a path in double quotes, where a $ or a backtick in it would expand', () => {
@@ -109,8 +139,9 @@ describe('the run scripts report when claude exits', () => {
   it('print the sentinel and claude\'s exit code on a line of their own, then exit with that code (Windows)', () => {
     for (const script of [conductorRunScript(true, WIN), conductorRunScript(true, { ...WIN, testCommand: 'node e2e/mocks/mock-claude.cjs' })]) {
       expect(script).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n/)
-      // The blank line first: claude's output ending mid-line would otherwise take the report in.
-      expect(script).toContain(`Write-Output ''\nWrite-Output "${CONDUCTOR_EXIT_SENTINEL} $code"\nexit $code\n`)
+      // Two blank lines first: claude's output ending mid-line would otherwise take the report in,
+      // and ConPTY draws the first of them as nothing when that output filled its last row.
+      expect(script).toContain(`Write-Output ''\nWrite-Output ''\nWrite-Output "${CONDUCTOR_EXIT_SENTINEL} $code"\nexit $code\n`)
       // A command that never started leaves no exit code; the sentinel still needs one.
       expect(script).toContain('if ($null -eq $code) { $code = 1 }')
     }
@@ -123,8 +154,9 @@ describe('the run scripts report when claude exits', () => {
   })
 
   it('print a start line before anything else, so a report can leave out the echoed launch line', () => {
-    expect(conductorRunScript(true, WIN).startsWith(`Write-Output '${CONDUCTOR_START_LINE}'\nfunction Resolve-WorkingClaude {`)).toBe(true)
-    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).startsWith(`Write-Output '${CONDUCTOR_START_LINE}'\n$enc = `)).toBe(true)
+    // After the BOM, which is no line.
+    expect(conductorRunScript(true, WIN).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\nfunction Resolve-WorkingClaude {`)).toBe(true)
+    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\nif ($ExecutionContext`)).toBe(true)
     expect(conductorRunScript(false, UNIX).startsWith(`#!/bin/bash\necho '${CONDUCTOR_START_LINE}'\nTASK_FILE=`)).toBe(true)
   })
 
@@ -178,6 +210,23 @@ describe('findConductorExit', () => {
       '\x1b[?25h\x1b[m[termpolis-conductor-started]\r\nAll work handed out.\r\n\r\n[termpolis-conductor-exited] 0\r\n' +
       '\x1b]9;9;C:\\proj\x07PS C:\\proj> '
     expect(findConductorExit(out)).toEqual({ code: 0, lastLines: ['All work handed out.'] })
+  })
+
+  // Real ConPTY output at 80 columns, of a claude whose last 80 characters had no newline (killed or
+  // crashed mid-line). ConPTY draws a full row that the cursor left as a soft wrap, so one blank
+  // line put the report on the end of that row, where no whole-line rule finds it. With two, it
+  // moves the cursor to the report's row first.
+  it('finds the report after output that filled its last row with no newline', () => {
+    const x = 'x'.repeat(80)
+    expect(findConductorExit(`[termpolis-conductor-started]\r\n${x}[termpolis-conductor-exited] 4\r\n`)).toBeNull()
+    expect(findConductorExit(`[termpolis-conductor-started]\r\n${x}\x1b[24;1H[termpolis-conductor-exited] 4\r\n`))
+      .toEqual({ code: 4, lastLines: [x] })
+  })
+
+  it('reads a cursor-forward as the spaces it moves over: ConPTY draws a tab that way', () => {
+    const out = '[termpolis-conductor-started]\r\nName\x1b[4CStatus\x1b[2CAgent\r\nlogin-ui\x1b[Crunning\r\n[termpolis-conductor-exited] 2\r\n'
+    expect(findConductorExit(out)).toEqual({ code: 2, lastLines: ['Name    Status  Agent', 'login-ui running'] })
+    expect(conductorScreenText('a\x1b[3Cb')).toBe('a   b')
   })
 
   it('reads a negative code, as Windows reports a process ended by Ctrl+C', () => {

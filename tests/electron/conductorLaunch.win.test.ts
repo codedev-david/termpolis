@@ -15,6 +15,7 @@ import { powershellPath } from '../../src/main/secondOpinion'
 // binary probe can never find a real claude on a developer's machine.
 describe.runIf(process.platform === 'win32')('conductor run script on real Windows PowerShell', () => {
   let dir = ''
+  let recorderDir = ''
   let recorder = ''
   // Every hazard from the report: quotes, option-like words, non-ASCII, and a body past the
   // 32,767-char Windows command line.
@@ -22,14 +23,21 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
   for (let i = 0; task.length < 40_000; i++) task += `Line ${i}: "quoted" --flag-${i} -NoProfile — ✓ → 'single' $env:PATH \`tick\`\n`
 
   beforeAll(() => {
-    // A home folder name that needs the single-quoted literals: a space, an apostrophe and a $.
-    dir = mkdtempSync(join(tmpdir(), "tp-conductor O'Brien $x-"))
-    recorder = join(dir, 'recorder.cjs')
+    // A home folder name that needs the single-quoted literals (a space, an apostrophe and a $),
+    // and one 5.1 reads wrong from a BOM-less script: letters outside ASCII, and a typographic
+    // apostrophe, which PowerShell also takes as a quote.
+    dir = mkdtempSync(join(tmpdir(), "tp-conductor O'Brien O’Neil José MUÑOZ $x-"))
+    // The stand-ins below name the recorder in files of their own, BOM-less as npm writes its
+    // shims, which find their target at run time instead; so it lives in an ASCII folder.
+    recorderDir = mkdtempSync(join(tmpdir(), 'tp-recorder-'))
+    recorder = join(recorderDir, 'recorder.cjs')
     // Written to files rather than stdout so the check can't depend on console code pages.
     writeFileSync(recorder, [
       "const fs = require('fs')",
       'const argv = process.argv.slice(2)',
-      "if (argv.includes('--version')) { console.log('2.1.300 (Claude Code)'); process.exit(0) }",
+      // TP_VANISH: answer --version, then remove the launcher it was found by, as an uninstall
+      // between the probe and the pipe would.
+      "if (argv.includes('--version')) { if (process.env.TP_VANISH) fs.rmSync(process.env.TP_VANISH); console.log('2.1.300 (Claude Code)'); process.exit(0) }",
       'const chunks = []',
       "process.stdin.on('data', (c) => chunks.push(c))",
       "process.stdin.on('end', () => {",
@@ -43,12 +51,16 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
   })
   afterAll(() => {
     if (dir) rmSync(dir, { recursive: true, force: true })
+    if (recorderDir) rmSync(recorderDir, { recursive: true, force: true })
   })
 
   /** Runs one launch the way the conductor terminal does: an outer PowerShell types the launch
    *  line, which runs the script in PS 5.1. `utf8Console` leaves the console on code page 65001
-   *  first, as a profile that sets UTF-8 does: that is when .NET writes a BOM into the pipe. */
-  function launch(name: string, opts: { bin?: Record<string, string>; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
+   *  first, as a profile that sets UTF-8 does: that is when .NET writes a BOM into the pipe.
+   *  `constrained` runs the script in ConstrainedLanguage instead, as AppLocker or WDAC would: the
+   *  outer session switches to it and dot-sources the script, since a new powershell.exe would
+   *  start in FullLanguage again. `vanish` removes that bin file once its --version answered. */
+  function launch(name: string, opts: { bin?: Record<string, string>; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
     const root = join(dir, name)
     const home = join(root, 'home')
     const bin = join(root, 'bin')
@@ -64,7 +76,11 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     writeFileSync(script, conductorRunScript(true, { taskFile, mcpConfigPath: cfg, testCommand: opts.testCommand }))
     const outer = join(root, 'outer.ps1')
     const pre = opts.utf8Console ? '[Console]::InputEncoding = [Text.Encoding]::UTF8\r\n' : ''
-    writeFileSync(outer, `${pre}${conductorLaunchCommand(true, script)}\r\nexit $LASTEXITCODE\r\n`)
+    const run = opts.constrained
+      ? `$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\r\n. ${psQuote(script)}`
+      : conductorLaunchCommand(true, script)
+    // With a BOM: the app types this line, which reaches PowerShell as Unicode whatever the path.
+    writeFileSync(outer, `\uFEFF${pre}${run}\r\nexit $LASTEXITCODE\r\n`)
 
     const record = join(root, 'record.json')
     const env: NodeJS.ProcessEnv = { ...process.env }
@@ -77,6 +93,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     env.TP_RECORD = record
     env.TP_EXIT = String(opts.exitCode ?? 0)
     env.TP_SAY = opts.say ?? ''
+    if (opts.vanish) env.TP_VANISH = join(bin, opts.vanish)
     const r = spawnSync(powershellPath(), ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', outer], {
       cwd: root,
       env,
@@ -160,4 +177,28 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     expect(r.stdout.split(/\r?\n/)).toContain('[termpolis-conductor-exited] 1')
     expect(r.status).toBe(1)
   }, 60_000)
+
+  it('reports exit code 1 when the claude it found never starts, not the 0 its --version left', () => {
+    const r = launch('vanished', { bin: { 'claude.ps1': npmShim() }, vanish: 'claude.ps1' })
+    expect(r.stdout).not.toContain('No working claude binary found') // the probe found it...
+    expect(r.argv).toBeNull() // ...and it never ran with the task
+    expect(r.stdout.split(/\r?\n/)).toContain('[termpolis-conductor-exited] 1')
+    expect(r.status).toBe(1)
+  }, 60_000)
+
+  it('gets every character through in ConstrainedLanguage, behind a BOM, and says why', () => {
+    // On the console's own code page and on 65001: .NET writes one BOM for $OutputEncoding, and
+    // one more for [Console]::InputEncoding when that is UTF-8 too.
+    for (const utf8Console of [false, true]) {
+      const r = launch(utf8Console ? 'clm-utf8' : 'clm', { testCommand: `& ${psQuote(process.execPath)} ${psQuote(recorder)}`, constrained: true, utf8Console })
+      expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--dangerously-skip-permissions'])
+      let stdin = r.stdin ?? Buffer.alloc(0)
+      while (stdin.subarray(0, 3).toString('hex') === 'efbbbf') stdin = stdin.subarray(3)
+      expect(stdin.equals(Buffer.from(task + '\r\n', 'utf8')), r.stderr).toBe(true)
+      expect(r.stdout).toContain('ConstrainedLanguage')
+      expect(r.stderr).toBe('') // nothing it was refused
+      expect(r.stdout.split(/\r?\n/)).toContain('[termpolis-conductor-exited] 0')
+      expect(r.status).toBe(0)
+    }
+  }, 120_000)
 })

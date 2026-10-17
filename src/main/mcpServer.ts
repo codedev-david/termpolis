@@ -256,7 +256,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'write_to_terminal',
-    description: 'Write raw text to a terminal (without pressing Enter)',
+    description: 'Write raw text to a terminal (presses Enter only with submit)',
     inputSchema: {
       type: 'object',
       properties: {
@@ -443,7 +443,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_feedback',
-    description: 'Tell the shared brain whether a recalled memory was right. `helpful: true` lifts it; `helpful: false` demotes a WRONG or misleading one, and three of those suppress it from recall — use the negative path, it is how bad memories die. Termpolis also scores this automatically from how your work turns out, so this is for what an outcome cannot see. Pass your `agentId` to record cross-agent teaching.',
+    description: 'Tell the shared brain whether a recalled memory was right. `helpful: true` lifts it; `helpful: false` demotes a WRONG or misleading one, and three of those suppress it from recall — use the negative path, it is how bad memories die. Termpolis also scores this automatically from how your work turns out, so this is for what an outcome cannot see.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -637,6 +637,9 @@ export interface McpToolHandlers {
   runAndWait: (opts: { command: string; cwd?: string; shell?: string; timeoutMs?: number }) => Promise<{ exitCode: number; output: string; timedOut?: boolean }>
   testCoverage: (opts: { file: string; cwd?: string; startLine?: number; endLine?: number }) => { file: string; hasCoverage: boolean; hint?: string; covered?: number; total?: number; percent?: number | null; uncovered?: number[]; stale?: boolean; source?: string }
   readOutput: (terminalId: string, lines: number) => string
+  /** The terminal's PTY size, which its output can't tell (terminalScreen.ts screenSizeOf); null
+   *  for one that is gone. write_to_terminal's submit reads the agent's screen at it. */
+  terminalSize?: (terminalId: string) => { cols: number; rows: number } | null
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
@@ -687,9 +690,10 @@ export interface McpToolHandlers {
 // right after starting it lost the task in three ways: Codex was still loading its MCP servers (one
 // to three minutes on a slow PC) and an Enter then only queues the prompt; an agent showing "tab to
 // queue message" does the same; and text with its \r in one write reads as a paste, so the Enter
-// becomes a newline. So: wait until the agent's screen shows it ready, type the text, let it settle,
-// press Enter on its own (SUBMIT_SETTLE_MS in remoteBridge/dispatcher.ts, which split it for the
-// phone), and check the agent took it, pressing Enter once more if it did not.
+// becomes a newline. So: wait until the agent's screen shows it ready, type the text, wait until
+// the agent shows it, let it settle, press Enter on its own (SUBMIT_SETTLE_MS in remoteBridge/
+// dispatcher.ts, which split it for the phone), and check the agent took it, pressing Enter once
+// more if it did not.
 
 /** How long `submit` waits for the agent to be ready. */
 export const SUBMIT_READY_TIMEOUT_MS = 180_000
@@ -697,6 +701,11 @@ const SUBMIT_POLL_MS = 1000
 /** A terminal that printed nothing in this long is not one to type into. Generous: a cold Windows
  *  PowerShell 5.1 on a slow PC can take many seconds to print its first prompt. */
 const SUBMIT_NO_OUTPUT_MS = 30_000
+/** How long the agent gets to show the text it was typed. A Claude Code just started draws its
+ *  input box before it handles keys: on a real run the text showed 0.25 to 2.25 s after it was
+ *  typed, and an Enter pressed before that became a new line in it. */
+const SUBMIT_ECHO_MS = 10_000
+const SUBMIT_ECHO_POLL_MS = 250
 /** How long the agent gets to take the prompt after each Enter. */
 const SUBMIT_CONFIRM_MS = 3000
 const SUBMIT_CONFIRM_POLL_MS = 500
@@ -720,11 +729,14 @@ function settleMs(text: string): number {
   return Math.min(2000, Math.max(150, text.length))
 }
 
-/** What a terminal shows, and what the agent in it is doing; null for a terminal with no output. */
+/** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.
+ *  Read at the PTY's size: at the one the output reaches, an idle Claude Code at 160x40 read as
+ *  starting, and a Codex still loading at 120x30 as ready. */
 function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: string, previous: AgentStatusResult['status']) {
   const raw = handlers.readOutput(terminalId, 1000)
   if (!raw) return null
-  const screen = screenOf(raw)
+  const size = handlers.terminalSize?.(terminalId) ?? null
+  const screen = size ? screenOf(raw, size) : screenOf(raw)
   const lines = screen.lines()
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
   return { lines, status: detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title: screen.title }) }
@@ -734,16 +746,35 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
  *  agy's "[Pasted text #1 +20 lines]" (or "#1 4120 chars"), Codex's "[Pasted Content 4120 chars]". */
 const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+|Content \d+ chars)/
 
-/** Whether `text` still sits where it was typed: at the start of the agent's input box (not in the
- *  footer under it, which a short text could match), or on a shell's last line. */
+const flat = (s: string): string => s.replace(/\s+/g, ' ').trim()
+const INPUT_GLYPH = /^(?:│\s)?[❯>›]/
+
+/** Whether `text` sits where it was typed: at the start of the agent's input box (not in the footer
+ *  under it, which a short text could match), or on a shell's last line. By the start of its first
+ *  line: the box shows a text a line to a row, and a long one wrapped. */
 function stillTyped(lines: string[], text: string): boolean {
   const bottom = lines.slice(-12)
   const row = inputBoxRow(bottom)
-  const flat = (s: string): string => s.replace(/\s+/g, ' ').trim()
-  const start = flat(text).slice(0, 24)
+  const start = flat(text.trimStart().split('\n')[0]).slice(0, 24)
   if (row < 0) return flat(bottom[bottom.length - 1] ?? '').includes(start)
-  const typed = flat(bottom[row].replace(/^(?:│\s)?[❯>›]/, ''))
+  const typed = flat(bottom[row].replace(INPUT_GLYPH, ''))
   return PASTE_PLACEHOLDER.test(typed) || typed.startsWith(start)
+}
+
+/** Whether the agent's input box holds exactly `text`, over every row it takes there: an earlier
+ *  call typed it and its Enter didn't take. Not a text that starts the same, as the conductor's
+ *  prompts all do ("You are working in ..."), nor a paste placeholder, which could be any text:
+ *  typed again, the right prompt arrives twice; taken for this one, a wrong one would be sent. */
+function alreadyTyped(lines: string[], text: string): boolean {
+  const bottom = lines.slice(-12)
+  const row = inputBoxRow(bottom)
+  if (row < 0) return false
+  const rows = [bottom[row].replace(INPUT_GLYPH, '')]
+  // The rows a long or multi-line text wraps onto are indented under the glyph, down to the box's
+  // rule or the blank row under it. Compared without spaces: a row can end mid-word or at a space.
+  for (let i = row + 1; i < bottom.length && /^\s+\S/.test(bottom[i]); i++) rows.push(bottom[i])
+  const bare = (s: string): string => s.replace(/\s+/g, '')
+  return bare(text) !== '' && bare(rows.join('')) === bare(text)
 }
 
 /** The terminal's name, for the agent-specific rules in the status detector. Workers the conductor
@@ -756,25 +787,48 @@ function terminalName(handlers: McpToolHandlers, terminalId: string): string {
   }
 }
 
-export async function submitToTerminal(
+/** Each terminal's submits, the last one queued: one waits for the one before it (below). */
+const submitQueues = new Map<string, Promise<void>>()
+
+/** write_to_terminal's submit. One at a time per terminal: two at once, a conductor's parallel
+ *  calls, waited for the same ready screen and both typed, and the agent got the two texts run
+ *  together as one prompt. `abandoned` is the call's client going away (startMcpServer): nothing
+ *  is typed or pressed after that, which a conductor that died or a client that timed out and
+ *  retried would get later, or twice. */
+export function submitToTerminal(
   handlers: McpToolHandlers,
   terminalId: string,
   text: string,
   clock: SubmitClock = realClock,
+  abandoned?: AbortSignal,
 ): Promise<SubmitResult> {
+  const before = submitQueues.get(terminalId) ?? Promise.resolve()
+  const result = before.then(() => submitNow(handlers, terminalId, text, clock, abandoned))
+  const done = result.then(() => undefined, () => undefined)
+  submitQueues.set(terminalId, done)
+  void done.then(() => {
+    if (submitQueues.get(terminalId) === done) submitQueues.delete(terminalId)
+  })
+  return result
+}
+
+async function submitNow(handlers: McpToolHandlers, terminalId: string, text: string, clock: SubmitClock, abandoned?: AbortSignal): Promise<SubmitResult> {
   const body = text.replace(/[\r\n]+$/, '')
   const name = terminalName(handlers, terminalId)
   const start = clock.now()
   let sawOutput = false
   let readyReads = 0
   let status: AgentStatusResult = { status: 'starting', summary: '' }
+  let ready: { lines: string[] } = { lines: [] }
   // Ready on two reads in a row, a second apart: a screen mid-change can look ready for one frame.
   while (readyReads < 2) {
-    const seen = readScreen(handlers, terminalId, name, status.status)
     const waitedMs = clock.now() - start
+    if (abandoned?.aborted) return { submitted: false, waitedMs, error: 'The call was abandoned before the agent was ready, so nothing was typed.' }
+    const seen = readScreen(handlers, terminalId, name, status.status)
     if (seen) {
       sawOutput = true
       status = seen.status
+      ready = seen
     } else if (sawOutput) {
       return { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
     } else if (waitedMs >= SUBMIT_NO_OUTPUT_MS) {
@@ -792,18 +846,37 @@ export async function submitToTerminal(
     }
   }
   const waitedMs = clock.now() - start
+  const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
+  const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }
 
-  if (body) {
+  // Typed only when it isn't already in the input, from a call before whose Enter didn't take:
+  // typed again, it went in after that copy, and the agent got the prompt twice.
+  if (body && !alreadyTyped(ready.lines, body)) {
     handlers.writeToTerminal(terminalId, body)
-    await clock.sleep(settleMs(body))
+    // Enter only once the agent shows what was typed, the text itself or a paste placeholder. Not
+    // pressed at all when it never does, and reported: counting an empty input as the prompt taken
+    // told the conductor a task was sent that sat unsent.
+    let shown = false
+    for (let t = 0; t < SUBMIT_ECHO_MS && !shown; t += SUBMIT_ECHO_POLL_MS) {
+      await clock.sleep(SUBMIT_ECHO_POLL_MS)
+      const seen = readScreen(handlers, terminalId, name, 'idle')
+      if (!seen) return closed
+      shown = stillTyped(seen.lines, body)
+    }
+    if (!shown) {
+      return { submitted: false, waitedMs, error: 'The agent never showed the text in its input, so Enter was not pressed. Check it with read_output, then send the same text again.' }
+    }
   }
+  if (body) await clock.sleep(settleMs(body))
   for (let enter = 0; enter < 2; enter++) {
+    if (abandoned?.aborted) return unpressed
     handlers.writeToTerminal(terminalId, '\r')
     for (let t = 0; t < SUBMIT_CONFIRM_MS; t += SUBMIT_CONFIRM_POLL_MS) {
       await clock.sleep(SUBMIT_CONFIRM_POLL_MS)
       const seen = readScreen(handlers, terminalId, name, 'idle')
-      if (!seen) return { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
-      // Off its prompt (working, a dialog, a limit) or the text gone from the input: it took it.
+      if (!seen) return closed
+      // Off its prompt (working, a dialog, a limit), or the text it showed gone from its input: it
+      // took it.
       if (seen.status.status !== 'idle' || !body || !stillTyped(seen.lines, body)) return { submitted: true, waitedMs }
     }
   }
@@ -816,6 +889,8 @@ export async function executeTool(
   handlers: McpToolHandlers,
   /** The paired phone the request was made for, from the validated device tag. */
   device: string | null = null,
+  /** Aborted when the request's client goes away before the answer (startMcpServer). */
+  abandoned?: AbortSignal,
 ) {
   switch (name) {
     case 'list_terminals':
@@ -865,7 +940,7 @@ export async function executeTool(
     case 'write_to_terminal':
       // Raw unless asked: scripts rely on every byte arriving as sent, at once (remoteBridge/
       // dispatcher.ts writeThenSubmit says why the Enter split isn't the default).
-      if (args.submit === true) return submitToTerminal(handlers, args.terminalId, String(args.text ?? ''))
+      if (args.submit === true) return submitToTerminal(handlers, args.terminalId, String(args.text ?? ''), realClock, abandoned)
       handlers.writeToTerminal(args.terminalId, args.text)
       return { success: true }
     case 'get_file_tree':
@@ -1056,7 +1131,7 @@ export async function executeToolForWorkflow(name: string, args: unknown, handle
   }
 }
 
-async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: string | null) {
+async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: string | null, abandoned?: AbortSignal) {
   const { method, params, id } = request
 
   if (method === 'initialize') {
@@ -1093,7 +1168,7 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: st
   if (method === 'tools/call') {
     const { name, arguments: args } = params
     try {
-      const result = await executeTool(name, args || {}, handlers, device)
+      const result = await executeTool(name, args || {}, handlers, device, abandoned)
       return {
         jsonrpc: '2.0',
         result: { content: [{ type: 'text', text: compressToolResult(name, result) }] },
@@ -1232,6 +1307,13 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
         return
       }
 
+      // A client that went away before its answer (a conductor that died, a tool call that timed
+      // out) closed the connection: a call still waiting, write_to_terminal's submit, stops there.
+      const abandoned = new AbortController()
+      res.on('close', () => {
+        if (!res.writableFinished) abandoned.abort()
+      })
+
       const MAX_BODY = 1024 * 1024 // 1MB limit
       let body = ''
       let overflow = false
@@ -1262,7 +1344,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
             return
           }
 
-          const response = await handleJsonRpc(request, handlers, device)
+          const response = await handleJsonRpc(request, handlers, device, abandoned.signal)
           logMcpRequest(request.method || 'unknown', toolName, response.error ? 'error' : 'ok', undefined, device)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(response))

@@ -148,7 +148,10 @@ test.describe.serial('Swarm launch command shape', () => {
       // Poll in case of fs-flush delay
       for (let i = 0; i < 40 && !fs.existsSync(RUN_PS1); i++) await page.waitForTimeout(250)
       expect(fs.existsSync(RUN_PS1)).toBe(true)
-      const psBody = fs.readFileSync(RUN_PS1, 'utf-8')
+      const written = fs.readFileSync(RUN_PS1, 'utf-8')
+      // A BOM first, so Windows PowerShell 5.1 reads the paths in it as UTF-8, not as ANSI.
+      expect(written.charCodeAt(0)).toBe(0xfeff)
+      const psBody = written.slice(1)
       expect(psBody).toContain('claude')
       expect(psBody).toContain('--dangerously-skip-permissions')
       // The task is piped in, as UTF-8 without a BOM, and never put on the command line.
@@ -156,9 +159,11 @@ test.describe.serial('Swarm launch command shape', () => {
       expect(psBody).toContain('$OutputEncoding = $enc')
       expect(psBody).toContain('[Console]::InputEncoding = $enc')
       expect(psBody).not.toContain('$task')
-      // It marks where its output starts, and reports claude's exit on a line of its own.
+      // It marks where its output starts, and reports claude's exit on a line of its own: 1 when
+      // claude never started, after two blank lines.
       expect(psBody.startsWith("Write-Output '[termpolis-conductor-started]'\n")).toBe(true)
-      expect(psBody).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
+      expect(psBody).toContain('\n$global:LASTEXITCODE = $null\nGet-Content -Raw ')
+      expect(psBody).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
     } else {
       for (let i = 0; i < 40 && !fs.existsSync(RUN_SH); i++) await page.waitForTimeout(250)
       expect(fs.existsSync(RUN_SH)).toBe(true)

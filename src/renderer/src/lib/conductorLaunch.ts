@@ -38,6 +38,7 @@ export interface ConductorRunPaths {
 
 const PS51_PATH = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const NO_CLAUDE = 'No working claude binary found. Install Claude Code natively or run: npm install -g @anthropic-ai/claude-code --force'
+const CONSTRAINED = 'PowerShell runs this script in ConstrainedLanguage mode (AppLocker or WDAC), so the task goes to claude as UTF-8 with a byte order mark in front.'
 
 // The npm-global Claude Code install can end up with a broken bin/claude.exe stub when postinstall
 // didn't run or the platform-native optional dep was skipped. PowerShell's PATH then resolves
@@ -104,21 +105,38 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
   const quote = isWindows ? psQuote : shQuote
   const flags = `-p${mcpConfigPath ? ` --mcp-config ${quote(mcpConfigPath)}` : ''} --dangerously-skip-permissions`
   if (isWindows) {
-    return [
+    // A BOM first, which writeConfigFile writes as UTF-8's: 5.1 reads a .ps1 without one in the
+    // ANSI code page, and the paths here are under the user's home folder. "José" came out as
+    // "JosÃ©", and Ñ, ł or ’ as bytes that read as quotes and ended the literal early.
+    return '\uFEFF' + [
       `Write-Output '${CONDUCTOR_START_LINE}'`,
       ...(testCommand ? [] : RESOLVE_WORKING_CLAUDE),
       // UTF-8 without a BOM both ways. 5.1 pipes text to a native program in $OutputEncoding,
       // which is ASCII by default (every non-ASCII character became `?`), and when the console is
       // on code page 65001 .NET writes [Console]::InputEncoding's BOM into the pipe ahead of it.
       // Get-Content needs -Encoding as well: 5.1 reads a BOM-less file as ANSI (`—` became `â€”`).
-      '$enc = New-Object System.Text.UTF8Encoding $false',
-      '$OutputEncoding = $enc',
-      '[Console]::InputEncoding = $enc',
+      // ConstrainedLanguage (AppLocker or WDAC, for an untrusted script) refuses New-Object and
+      // setting [Console]::InputEncoding; its stock UTF-8 gets every character through, behind
+      // a BOM, which the output says.
+      "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {",
+      '  $enc = New-Object System.Text.UTF8Encoding $false',
+      '  $OutputEncoding = $enc',
+      '  [Console]::InputEncoding = $enc',
+      '} else {',
+      '  $OutputEncoding = [System.Text.Encoding]::UTF8',
+      `  Write-Output ${psQuote(CONSTRAINED)}`,
+      '}',
+      // The probe's `--version` left 0 here, and a pipe that fails before claude starts (a binary
+      // gone since, a parameter that won't bind) sets nothing: the report would say "exited 0".
+      // Global, or a script variable would hide the one the native command sets.
+      '$global:LASTEXITCODE = $null',
       `Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(taskFile)} | ${testCommand ?? '& $claudeExe'} ${flags}`,
       '$code = $LASTEXITCODE',
       // A command that never started sets no exit code, and the report needs one.
       'if ($null -eq $code) { $code = 1 }',
-      // The blank line first: output that ends mid-line would otherwise have the report join it.
+      // Blank lines first: output that ends mid-line would otherwise have the report join it. Two,
+      // because ConPTY draws the first as nothing after output that filled its last row.
+      "Write-Output ''",
       "Write-Output ''",
       `Write-Output "${CONDUCTOR_EXIT_SENTINEL} $code"`,
       'exit $code',
@@ -153,6 +171,9 @@ const EXIT_LINE = /^\[termpolis-conductor-exited\]\s*(-?\d+)$/
 // A cursor move to another row starts a new screen line. ConPTY draws its repaints that way, and
 // stripping the move would glue two lines of the screen into one.
 const ROW_MOVE = /\x1b\[\d*(?:;\d*)?[Hf]|\x1b\[\d*[ABEFd]/g
+// A cursor-forward is the cells it moves over: ConPTY draws a tab, or a run of cells that didn't
+// change, that way, and stripping it would glue the words either side together.
+const CURSOR_FORWARD = /\x1b\[(\d*)C/g
 
 /** A backspace takes back the character before it: PSReadLine echoes a typed line that way. One
  *  pass over the line, since this runs on every monitor tick and every Debug refresh. */
@@ -167,7 +188,8 @@ function applyBackspaces(line: string): string {
 }
 
 function screenLines(output: string): string[] {
-  return stripAnsi(output.replace(ROW_MOVE, '\n'))
+  const spaced = output.replace(CURSOR_FORWARD, (_, n: string) => ' '.repeat(Math.min(Number(n) || 1, 200)))
+  return stripAnsi(spaced.replace(ROW_MOVE, '\n'))
     .split(/\r\n|\r|\n/)
     .map((line) => applyBackspaces(line).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trimEnd())
 }

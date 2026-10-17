@@ -5,6 +5,7 @@ import { buildConductorPrompt } from './conductorPrompt'
 import { conductorRunScript, conductorLaunchCommand, findConductorExit, type ConductorExit } from './conductorLaunch'
 import { getTerminalDefaults } from './terminalDefaults'
 import { recordSwarmError } from './sentry'
+import { stopAllBridges } from './swarmBridgeManager'
 
 interface ConductorState {
   terminalId: string | null
@@ -217,6 +218,10 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
     conductorRunScript(isWindows, { taskFile: native(tempFile), mcpConfigPath: native(mcpConfigPath), testCommand }),
   )
   const runCmd = conductorLaunchCommand(isWindows, native(scriptFile))
+  // The last swarm's workers, which only Clear closes, are none of this one's: their bridges
+  // would post to the new conductor under their agents' names, and their stops be reported to it.
+  stopAllBridges()
+  useTerminalStore.getState().setSwarmAgents([])
   // Read before the line is typed, so nothing the new conductor does can land in the baseline.
   launch = await readLaunchBaseline(id)
   window.termpolis.writeToTerminal(id, runCmd + '\r')
@@ -287,18 +292,31 @@ function startMonitoring(): void {
         return
       }
 
-      // Check conductor output for errors and refusals
+      // The conductor's output since launch, and claude's exit when the run script reported it.
+      let output = ''
       let exit: ConductorExit | null = null
       if (conductorState.terminalId) {
         const bufferRes = await window.termpolis.readTerminalBuffer(conductorState.terminalId, launch.outputOffset)
-        const output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
-        const recent = output.slice(-3000)
+        output = bufferRes.success && bufferRes.data ? bufferRes.data.output : ''
+        exit = findConductorExit(output)
+      }
+      const recent = output.slice(-3000)
+      const tasksRes = await window.swarmAPI.getTasks()
+      const tasks = tasksRes.success && tasksRes.data ? tasksRes.data.filter((t) => !launch.taskIds.has(t.id)) : []
 
-        // Detect conductor refusal — Claude may refuse unethical/dangerous/illegal tasks
-        if (/I (?:can't|cannot|won't|will not|am unable to)|I'm not able to|refuse to|not (?:something|able)|against (?:my|the) (?:guidelines|policy|terms)|potentially (?:harmful|dangerous|illegal|unethical)/i.test(recent) &&
+      // The guesses below read the conductor's words, and `claude -p` prints only its final
+      // answer, as it exits: they would decide how every finished run is labelled. They decide
+      // only a run nothing else does (GitHub #36). A conductor that created a task had its tools
+      // and took the task on, so its tasks end the swarm; one that exited with an error gets its
+      // exit report, below.
+      const undecided = tasks.length === 0 && (exit === null || exit.code === 0)
+      if (undecided) {
+        // Detect conductor refusal — Claude may refuse unethical/dangerous/illegal tasks. Whole
+        // words: "Gemini cannot" holds "i cannot".
+        if (/\bI (?:can't|cannot|won't|will not|am unable to)\b|\bI'm not able to\b|\brefuse to\b|\bnot (?:something|able)\b|\bagainst (?:my|the) (?:guidelines|policy|terms)\b|\bpotentially (?:harmful|dangerous|illegal|unethical)\b/i.test(recent) &&
             !/swarm_create_task|create_terminal/i.test(recent)) {
           // Extract a snippet of the refusal for the notification
-          const refusalMatch = recent.match(/(I (?:can't|cannot|won't|will not)[^.]*\.)/i)
+          const refusalMatch = recent.match(/(\bI (?:can't|cannot|won't|will not)\b[^.]*\.)/i)
           const snippet = refusalMatch ? refusalMatch[1].slice(0, 150) : 'The conductor declined this task.'
           conductorState = { ...conductorState, status: 'error', error: 'Conductor refused the task' }
           store.setSwarmNotification({
@@ -390,21 +408,17 @@ function startMonitoring(): void {
           }
           return
         }
+      }
 
-        // Token limit errors
-        if (/context.*(limit|window|exceeded)|token.*(limit|budget)/i.test(recent)) {
-          store.setSwarmNotification({
-            message: 'Conductor reached token limit. Agents continue but without coordination.',
-            type: 'error',
-          })
-        }
-
-        exit = findConductorExit(output)
+      // Token limit errors
+      if (/context.*(limit|window|exceeded)|token.*(limit|budget)/i.test(recent)) {
+        store.setSwarmNotification({
+          message: 'Conductor reached token limit. Agents continue but without coordination.',
+          type: 'error',
+        })
       }
 
       // Check task-based completion (conductor used swarm_create_task)
-      const tasksRes = await window.swarmAPI.getTasks()
-      const tasks = tasksRes.success && tasksRes.data ? tasksRes.data.filter((t) => !launch.taskIds.has(t.id)) : []
       if (tasks.length > 0) {
         const allCompleted = tasks.every((t) => t.status === 'completed' || t.status === 'failed')
         if (allCompleted) {
@@ -458,10 +472,13 @@ function startMonitoring(): void {
       }
 
       // Stall detection — no task and no word from the conductor a minute after launch. The
-      // launcher's own two messages don't count (they were always there, so this never fired).
+      // launcher's own two messages don't count (they were always there, so this never fired), and
+      // nor does what Termpolis or a worker's bridge posts: only the conductor's own messages,
+      // which MCP posts as mcp-client.
       if (!stallWarned) {
         const elapsed = Date.now() - monitoringStartTime
-        if (elapsed > 60000 && tasks.length === 0 && posted.length === 0) {
+        const heard = posted.some((m) => m.from === 'conductor' || m.from === 'mcp-client')
+        if (elapsed > 60000 && tasks.length === 0 && !heard) {
           stallWarned = true
           store.setSwarmNotification({
             message: 'Conductor has not created any tasks or agents yet. Click Debug in the Swarm Dashboard to see its output and check for errors.',

@@ -176,6 +176,33 @@ describe('buildConductorPrompt', () => {
     expect(step4Block).toMatch(/conserve tokens/i)
   })
 
+  // ---- write_to_terminal's submit, and a blocked worker (GitHub #36) ----
+
+  const block = (prompt: string, from: string, to: string) => prompt.slice(prompt.indexOf(from), prompt.indexOf(to))
+
+  it('has a prompt that did not go through sent again as it was: submit types nothing already in the input', () => {
+    // Sending it as a new text appended it to the copy still in the input: the agent got it twice.
+    const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
+    expect(step5).toContain("text='[task prompt]', submit=true")
+    expect(step5).toMatch(/submitted=false[\s\S]*again\s+with the same text/)
+    expect(step5).toMatch(/types nothing that is already in the agent's input/)
+  })
+
+  it('reads the bus as the conductor, which is where a blocked worker is reported', () => {
+    expect(block(buildDefault(), 'STEP 6', 'STEP 7')).toContain("swarm_read_messages(terminalId='conductor')")
+  })
+
+  it('says submit reaches only an agent at its prompt, and to answer a question without it', () => {
+    const step6 = block(buildDefault(), 'STEP 6', 'STEP 7')
+    expect(step6).toMatch(/submit=true only reaches an agent that is at its prompt/)
+    expect(step6).toMatch(/answer a question or a choice[\s\S]*without submit/)
+  })
+
+  it('closes a blocked worker before its task goes to another agent: a limit can lift by itself', () => {
+    expect(buildDefault()).toContain('says an agent is blocked (usage limit reached, or waiting on a menu), close its terminal with close_terminal, then give its task to another installed agent')
+    expect(buildDefault()).toContain('- close_terminal: close a terminal (terminalId)')
+  })
+
   // ---- shellType branch coverage (line 12) ----
 
   it('honors explicit shellType="powershell"', () => {

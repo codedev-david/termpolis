@@ -144,11 +144,14 @@ function detectOnScreen(screen: string, agentName: string, previousStatus: Agent
   while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
   const bottom = rows.slice(-SCREEN_BOTTOM_ROWS)
   const text = bottom.join('\n')
-  if (isBlocked(text, agentName)) return { status: 'blocked', summary: extractBlockedSummary(text, agentName) }
+  // An input box says the CLI is up and taking input, whatever its history above says about an
+  // expired session or a restart: those words are a worker's answer or a file it showed.
+  const atPrompt = inputBoxRow(bottom) >= 0
+  if (isBlocked(text, agentName, atPrompt)) return { status: 'blocked', summary: extractBlockedSummary(text, agentName) }
   if (BUSY_TITLE.test(title) || BUSY_ON_SCREEN.some((p) => p.test(text))) {
     return { status: 'working', summary: busySummary(bottom) }
   }
-  if (inputBoxRow(bottom) >= 0) return { status: 'idle', summary: 'Waiting at prompt' }
+  if (atPrompt) return { status: 'idle', summary: 'Waiting at prompt' }
   // Not one of the three agents' screens (a shell, a dialog): read it as text.
   return detectInText(text, agentName, previousStatus)
 }
@@ -196,13 +199,19 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
 
 // A plan's usage limit, in each CLI's own words (GitHub #36 item 5). Full phrases only, copied from
 // the CLI that prints them: a loose keyword is how "done" on a worker's screen came to end a swarm
-// (item 3), and a log, a test or a source file that mentions a limit would match one. None may
-// follow a letter or a quote, so a phrase quoted in code or prose is no limit either. Sources:
+// (item 3). And only where the CLI puts it: at the start of a row, after nothing but an indent and
+// the CLI's own mark (Claude Code's ⎿ and its status line's spinner frame, Codex's ■, agy's and
+// Gemini CLI's ✕, the frame of Gemini CLI's dialog), with the words the CLI follows it with. A
+// worker's answer, a diff, a log line, a grep hit or a message bridged from another worker that
+// mentions a limit has other words first, a list's or a table's mark, or goes on with words of
+// its own ("you've hit your rate limit at 5,000 requests"), and is no limit; that includes the
+// phrase quoted in code or prose. Sources:
 //  - Claude Code 2.1.302 (its claude.exe): "You've hit your " + session limit, weekly limit, Opus
 //    limit, Sonnet limit, Fable limit, usage limit, limit, monthly spend limit, team's shared
-//    budget..., then " · resets 3pm (America/New_York)"; its status line "Usage limit reached ·
-//    continuing automatically..."; "You're out of usage credits", "You're out of extra usage",
-//    "Your org is out of usage · add funds to continue".
+//    budget..., then " · resets 3pm (America/New_York)", or "."; its status line "Usage limit
+//    reached · continuing automatically..."; "You're out of usage credits", "You're out of extra
+//    usage", "Your org is out of usage · add funds to continue". Not "You've hit your fast limit ·
+//    resets in 4h 59m": fast mode turns itself off, and the session goes on.
 //  - Codex 0.153.4 (codex.exe): "You've hit your usage limit. Upgrade to Plus to continue using Codex
 //    (https://chatgpt.com/explore/plus), or try again at 3:04 PM.", "You've hit your usage limit
 //    for <model>. Switch to another model now, ..."; for a workspace "Your workspace is out of
@@ -210,26 +219,32 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
 //    credit limit", "Request a limit increase from your owner to continue using codex."
 //  - Antigravity CLI 1.4.0 (agy.exe): "You have exhausted your quota on this model.", "Your AI
 //    credits balance is too low to continue."
-//  - Gemini CLI 0.59.0 (bundle/interactiveCli-*.js): "Usage limit reached for <model>." then
-//    "Access resets at <time>."
-const NOT_QUOTED = String.raw`(?<![\w'"\`’])`
+//  - Gemini CLI 0.59.0 (bundle/interactiveCli-*.js): "Usage limit reached for <model>.", then
+//    "Access resets at <time>." when it knows, then always "/stats model for usage details", in
+//    its quota dialog and in its history alike.
+const ROW_START = String.raw`^[ \t]*(?:[⎿■✕✗⚠][ \t]+)?`
+/** Claude Code's status line: its spinner's frame first, which can be a · or a *. */
+const STATUS_ROW_START = String.raw`^[ \t]*(?:[✢✳✶✻✽·*][ \t]+)?`
+/** Gemini CLI's quota dialog, inside its frame, or the same lines in its history. */
+const DIALOG_ROW_START = String.raw`^[ \t]*(?:[✕│][ \t]+)?`
 const USAGE_LIMIT: readonly RegExp[] = [
-  new RegExp(`${NOT_QUOTED}You['’]ve hit your [\\w'’ ]{1,40}?(?:limit|budget)\\b`, 'g'),
-  new RegExp(`${NOT_QUOTED}Usage limit reached(?: again)? · `, 'g'),
-  new RegExp(`${NOT_QUOTED}Usage limit reached for \\S+\\.`, 'g'),
-  new RegExp(`${NOT_QUOTED}You['’]re out of (?:usage credits|extra usage)\\b`, 'g'),
-  new RegExp(`${NOT_QUOTED}Your org is out of usage\\b`, 'g'),
-  new RegExp(`${NOT_QUOTED}Your workspace is out of credits\\.`, 'g'),
-  new RegExp(`${NOT_QUOTED}You hit your spend cap set (?:in|by the owner of) your workspace\\.`, 'g'),
-  new RegExp(`${NOT_QUOTED}You['’]ve reached your workspace credit limit\\b`, 'g'),
-  new RegExp(`${NOT_QUOTED}Request a limit increase from your owner to continue using codex\\.`, 'g'),
-  new RegExp(`${NOT_QUOTED}You have exhausted your quota on this model\\.`, 'g'),
-  new RegExp(`${NOT_QUOTED}Your AI credits balance is too low to continue\\.`, 'g'),
+  new RegExp(`${ROW_START}You['’]ve hit your (?!fast limit)[\\w'’ ]{0,40}?(?:limit|budget)(?: for [\\w.-]+?)?(?:\\.(?:\\s|$)|\\s+·|\\s*$)`, 'gm'),
+  new RegExp(`${STATUS_ROW_START}Usage limit reached(?: again)? · `, 'gm'),
+  // Its "/stats model for usage details" two rows on at most, however wide the dialog's rows are.
+  new RegExp(`${DIALOG_ROW_START}Usage limit reached for \\S+\\.[^\\n]*\\n(?:[^\\n]*\\n){0,2}?[^\\n]*/stats model for usage details`, 'gm'),
+  new RegExp(`${ROW_START}You['’]re out of (?:usage credits|extra usage)\\b`, 'gm'),
+  new RegExp(`${ROW_START}Your org is out of usage\\b`, 'gm'),
+  new RegExp(`${ROW_START}Your workspace is out of credits\\.`, 'gm'),
+  new RegExp(`${ROW_START}You hit your spend cap set (?:in|by the owner of) your workspace\\.`, 'gm'),
+  new RegExp(`${ROW_START}You['’]ve reached your workspace credit limit\\b`, 'gm'),
+  new RegExp(`${ROW_START}Request a limit increase from your owner to continue using codex\\.`, 'gm'),
+  new RegExp(`${ROW_START}You have exhausted your quota on this model\\.`, 'gm'),
+  new RegExp(`${ROW_START}Your AI credits balance is too low to continue\\.`, 'gm'),
 ]
 /** When the limit lifts, as the CLI put it: Claude Code's "resets 3pm (America/New_York)", Gemini
- *  CLI's "Access resets at 5:00 PM.", on the limit's own row; Codex's "or try again at 3:04 PM.",
- *  which a narrow screen wraps. agy names no time. */
-const RESETS_AT = /\bresets (?:at )?([^·\n]{1,48}?)\.?\s*(?:·|$)/m
+ *  CLI's "Access resets at 5:00 PM.", on the limit's own row or its dialog's next one; Codex's "or
+ *  try again at 3:04 PM.", which a narrow screen wraps. agy names no time. */
+const RESETS_AT = /\bresets (?:at )?([^·│\n]{1,48}?)\.?\s*(?:·|│|$)/m
 const TRY_AGAIN_AT = /\btry again at (.{1,48}?)\.(?:\s|$)/
 
 // Menus that hold a worker until someone answers: Termpolis never picks a numbered option.
@@ -269,8 +284,11 @@ function menuSummary(tail: string): string | null {
   return menu ? `${MENU_SUMMARY}: ${menu.summary}` : null
 }
 
-function isBlocked(tail: string, agentName: string): boolean {
+/** `alive`: the screen shows the agent's input box, so the CLI is running, and only a limit or a
+ *  menu can be holding it. The rest say the CLI exited or needs relaunching. */
+function isBlocked(tail: string, agentName: string, alive = false): boolean {
   if (limitSummary(tail) !== null || menuSummary(tail) !== null) return true
+  if (alive) return false
   // Codex self-update completed — the CLI exits and leaves this banner.
   // Without a restart the terminal is back to a plain shell prompt and
   // will silently ignore every MCP/swarm instruction sent to it.

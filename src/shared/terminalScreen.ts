@@ -27,6 +27,8 @@ export const DEFAULT_SCREEN: ScreenSize = { cols: 80, rows: 24 }
 
 /** How many rows scrolled off the top are kept for takeScrolledOff, at most. */
 const SCROLLED_OFF_MAX = 1000
+/** The largest CSI parameter: every count is bounded by the screen, and it is far beyond one. */
+const MAX_PARAM = 65535
 
 const GROUND = 0
 const ESCAPE = 1
@@ -346,9 +348,10 @@ export class TerminalScreen {
     const rest = prefix ? body.slice(1) : body
     // Intermediate bytes (` q`, `!p`, `$p`...) make it a sequence this model has no use for.
     if (/[ -/]/.test(rest)) return
+    // Capped as xterm.js caps them: no screen needs more, and a count is never a loop's length.
     const params = rest === '' ? [] : rest.split(';').map((p) => {
       const n = parseInt(p, 10)
-      return Number.isFinite(n) ? n : 0
+      return Number.isFinite(n) ? Math.min(n, MAX_PARAM) : 0
     })
     if (prefix === '?') {
       if (final === 'h' || final === 'l') this.privateModes(params, final === 'h')
@@ -389,11 +392,12 @@ export class TerminalScreen {
       case 'd':
         this.moveTo(this.x, n - 1)
         break
+      // A row has fewer tab stops than columns, so the cursor is at the margin by then.
       case 'I':
-        for (let i = 0; i < n; i++) this.moveTo((Math.floor(this.x / 8) + 1) * 8, this.y)
+        for (let i = 0; i < Math.min(n, this.cols); i++) this.moveTo((Math.floor(this.x / 8) + 1) * 8, this.y)
         break
       case 'Z':
-        for (let i = 0; i < n; i++) this.moveTo((Math.ceil(this.x / 8) - 1) * 8, this.y)
+        for (let i = 0; i < Math.min(n, this.cols); i++) this.moveTo((Math.ceil(this.x / 8) - 1) * 8, this.y)
         break
       case 'J':
         this.eraseInDisplay(params[0] || 0)
@@ -515,11 +519,21 @@ function rowText(row: string[]): string {
   return row.join('').trimEnd()
 }
 
-/** The size to replay a stream at: big enough for every cell its cursor moves address, and never
- *  smaller than a hidden terminal (DEFAULT_SCREEN). A worker that was never shown is that size
- *  exactly; one the user resized shows a larger extent the first time its bottom row is drawn. */
+/** A guess at the size to replay a stream at, for a reader that can't get the PTY's: big enough for
+ *  every cell its absolute cursor moves address, and never smaller than a hidden terminal
+ *  (DEFAULT_SCREEN). It is right for a worker that was never shown, which stays that size. For any
+ *  other terminal the size must come from the PTY: Claude Code and agy draw their bottom rows with
+ *  relative moves, so the stream may never address them, and ConPTY sends a resize only as a
+ *  report (`ESC[8;rows;cols t`) that a full window has long evicted. */
 export function screenSizeOf(raw: string): ScreenSize {
-  let { cols, rows } = DEFAULT_SCREEN
+  const reach = cursorExtentOf(raw)
+  return { cols: Math.max(DEFAULT_SCREEN.cols, reach.cols), rows: Math.max(DEFAULT_SCREEN.rows, reach.rows) }
+}
+
+/** The furthest cell a stream's absolute cursor moves address, with no floor: 0 by 0 for none. */
+export function cursorExtentOf(raw: string): ScreenSize {
+  let cols = 0
+  let rows = 0
   const cup = /\x1b\[(\d+)(?:;(\d+))?[Hf]/g
   let m: RegExpExecArray | null
   while ((m = cup.exec(raw)) !== null) {
@@ -527,6 +541,20 @@ export function screenSizeOf(raw: string): ScreenSize {
     if (m[2]) cols = Math.max(cols, Math.min(1000, Number(m[2])))
   }
   return { cols, rows }
+}
+
+/** The size the last resize a stream reports was to, or null: ConPTY tells the terminal of one as
+ *  `ESC[8;rows;cols t`, and that is all of a resize a stream on Windows shows. */
+export function resizeReportOf(raw: string): ScreenSize | null {
+  const report = /\x1b\[8;(\d+);(\d+)t/g
+  let last: ScreenSize | null = null
+  let m: RegExpExecArray | null
+  while ((m = report.exec(raw)) !== null) {
+    const rows = Math.min(500, Number(m[1]))
+    const cols = Math.min(1000, Number(m[2]))
+    if (rows > 0 && cols > 0) last = { cols, rows }
+  }
+  return last
 }
 
 /** Raw output replayed into a fresh screen. The output may begin anywhere, as Termpolis's rolling

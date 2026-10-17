@@ -46,6 +46,7 @@ import {
   sendTask,
   getPreSwarmSha,
 } from '../../src/renderer/src/lib/conductorManager'
+import { startBridgeForAgent, stopAllBridges } from '../../src/renderer/src/lib/swarmBridgeManager'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 type Mock = ReturnType<typeof vi.fn>
@@ -65,6 +66,7 @@ describe('conductorManager', () => {
 
   afterEach(() => {
     stopConductor()
+    stopAllBridges()
     vi.useRealTimers()
   })
 
@@ -449,6 +451,31 @@ describe('conductorManager', () => {
       await vi.advanceTimersByTimeAsync(75000)
       expect(stallCalls(notifSpy)).toHaveLength(1)
     })
+
+    it("counts only the conductor's own word: not a worker's screen, nor Termpolis's notes", async () => {
+      // A worker the previous swarm left running still has its bridge, which posts what its
+      // screen shows under its own name; that said nothing about this conductor.
+      const bus = fakeBus()
+      await launchConductor('Build an app')
+      bus.post('Codex', '[Codex] Status: Working')
+      bus.post('system', 'Codex (UI, terminal w7) is blocked: usage limit reached.')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(75000)
+      expect(stallCalls(notifSpy)).toHaveLength(1)
+    })
+  })
+
+  it("starts a new swarm with none of the last one's workers: their bridges stop, the dashboard drops them", async () => {
+    // They would post to the new conductor as if they were its own, and their stops be reported to it.
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'old-w1', agentName: 'Codex', role: 'UI', status: 'idle', summary: '' }] })
+    startBridgeForAgent('old-w1', 'Codex')
+    await launchConductor('Build an app')
+    expect(useTerminalStore.getState().swarmAgents).toEqual([])
+    ;(window.termpolis.readTerminalBuffer as Mock).mockClear()
+
+    await vi.advanceTimersByTimeAsync(10000)
+    expect((window.termpolis.readTerminalBuffer as Mock).mock.calls.filter(([id]) => id === 'old-w1')).toEqual([])
   })
 
   // ---- conductor exit (GitHub #36) ----
@@ -597,6 +624,88 @@ describe('conductorManager', () => {
       await vi.advanceTimersByTimeAsync(15000)
 
       expect(window.termpolis.readTerminalBuffer).toHaveBeenLastCalledWith('conductor-uuid-1', 777)
+    })
+  })
+
+  // ---- the conductor's final answer (GitHub #36) ----
+  //
+  // `claude -p` prints only its final answer, as it exits, and the refusal and bypass guesses read
+  // it before the tasks and the exit were looked at. A swarm whose tasks were all done ended as an
+  // error over "I cannot verify the deployed site", and a failed run's exit report was lost to
+  // "not able to reach". The guesses now decide only a run that created no task and didn't fail.
+
+  describe("the conductor's final answer", () => {
+    function exitsWith(answer: string, code = 0) {
+      const output = `[termpolis-conductor-started]\r\n${answer}\r\n\r\n\r\n[termpolis-conductor-exited] ${code}\r\n`
+      ;(window.termpolis.readTerminalBuffer as Mock).mockResolvedValue({ success: true, data: { output, length: output.length, nextOffset: 4321 } })
+    }
+    const answers = [
+      "SWARM COMPLETE. Both tasks are done. I can't run the browser tests from this session, so check them by hand.",
+      'Gemini was not able to finish the screenshots, so Codex took them over.',
+      'I cannot verify the deployed site from here; the build and its tests pass.',
+      "Codex's MCP tools weren't loaded at first, so I restarted it and it picked its task up.",
+      'Both agents worked in parallel rather than sitting idle while the review ran.',
+    ]
+
+    it.each(answers)('does not undo a swarm whose tasks all finished: %s', async (answer) => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.tasks.push({ id: 't1', status: 'completed' }, { id: 't2', status: 'completed' })
+      bus.post('mcp-client', 'SWARM COMPLETE: both tasks done', 'result')
+      exitsWith(answer)
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState().status).toBe('done')
+      expect(useTerminalStore.getState().swarmNotification?.type).toBe('success')
+      expect(useTerminalStore.getState().swarmCompletionSummary?.tasks).toHaveLength(2)
+    })
+
+    it.each(answers)('leaves a clean exit with tasks still open to those tasks: %s', async (answer) => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.tasks.push({ id: 't1', status: 'in_progress' }, { id: 't2', status: 'in_progress' })
+      exitsWith(answer)
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState().status).toBe('running')
+      expect(useTerminalStore.getState().swarmActive).toBe(true)
+      expect(bus.messages.filter((m) => m.content.includes('with 2 of 2 tasks still open'))).toHaveLength(1)
+      expect(useTerminalStore.getState().swarmNotification).toBeNull()
+    })
+
+    it("reports a failed exit as the exit it is, whatever its last line's words", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      exitsWith('Error: not able to reach api.anthropic.com (ECONNRESET)', 1)
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+      expect(bus.messages[bus.messages.length - 1].content).toBe('Conductor exited (code 1): Error: not able to reach api.anthropic.com (ECONNRESET)')
+    })
+
+    it('reads "I cannot" as the words they are: "Gemini cannot" is no refusal', async () => {
+      fakeBus()
+      await launchConductor()
+      exitsWith('Gemini cannot take screenshots, and Gemini will not be needed for the rest.')
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      // No task and a clean exit: ended, as an exit, not as a task the conductor refused.
+      expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 0)' })
+    })
+
+    it('still reads a refusal from a run that created no task', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      exitsWith("I can't help with this task. It asks for something against the guidelines.")
+
+      await vi.advanceTimersByTimeAsync(15000)
+
+      expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor refused the task' })
+      expect(bus.messages[bus.messages.length - 1].content).toBe("Task refused: I can't help with this task.")
     })
   })
 
@@ -1126,7 +1235,7 @@ describe('conductorManager', () => {
       )
       const psBody = (psCall?.[1] as string) ?? ''
       expect(psBody).toContain('$enc = New-Object System.Text.UTF8Encoding $false')
-      expect(psBody).toMatch(/^\$OutputEncoding = \$enc$/m)
+      expect(psBody).toMatch(/^\s*\$OutputEncoding = \$enc$/m)
       expect(psBody).toMatch(/\[Console\]::InputEncoding = \$enc/)
     })
 
@@ -1139,10 +1248,11 @@ describe('conductorManager', () => {
       )
       const psBody = (psCall?.[1] as string) ?? ''
       expect(psBody).toMatch(
-        / --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\nif \(\$null -eq \$code\) \{ \$code = 1 \}\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/,
+        / --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\nif \(\$null -eq \$code\) \{ \$code = 1 \}\nWrite-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/,
       )
-      // Its first line marks where the script's own output starts, after the echoed launch line.
-      expect(psBody.startsWith("Write-Output '[termpolis-conductor-started]'\n")).toBe(true)
+      // Its first line, after the BOM that has 5.1 read the script as UTF-8, marks where the
+      // script's own output starts, after the echoed launch line.
+      expect(psBody.startsWith("\uFEFFWrite-Output '[termpolis-conductor-started]'\n")).toBe(true)
     })
 
     it('ps1 script fetches the MCP config path via the IPC bridge at launch', async () => {

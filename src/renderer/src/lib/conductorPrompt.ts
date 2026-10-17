@@ -53,6 +53,7 @@ YOUR MCP TOOLS:
 - run_command: run a command in a terminal (terminalId, command)
 - read_output: read terminal output (terminalId)
 - write_to_terminal: send text to a terminal (terminalId, text, submit)
+- close_terminal: close a terminal (terminalId)
 
 REQUIRED STEPS — follow in order:
 
@@ -92,16 +93,19 @@ STEP 5 — Send task prompts:
   For each agent call write_to_terminal(terminalId='[id]', text='[task prompt]', submit=true)
   This types the prompt into the agent's interactive session — the ONLY supported method.
   submit=true waits until the agent is ready for input (Codex can take minutes to load its MCP servers),
-  then types the prompt and presses Enter. It returns submitted=true once the agent has taken the prompt;
-  if it returns submitted=false, read the error and read_output(terminalId='[id]'), then send it again.
+  then types the prompt and presses Enter. It returns submitted=true once the agent has taken the prompt.
+  If it returns submitted=false, read the error and read_output(terminalId='[id]'), then call it again
+  with the same text: it types nothing that is already in the agent's input, and presses Enter again.
   Include the taskId in the prompt so the agent knows which task to update when done.
   The prompt should instruct the agent to actually write/modify files, not just print output.
 
 STEP 6 — Monitor progress:
-  Periodically call swarm_list_tasks and swarm_read_messages (every 15-20 seconds).
+  Periodically call swarm_list_tasks and swarm_read_messages(terminalId='conductor') (every 15-20 seconds).
   Read agent output with read_output(terminalId='[id]') to check progress.
   Post status updates via swarm_send_message as you go.
   If an agent appears stuck, send guidance via write_to_terminal(..., submit=true).
+  submit=true only reaches an agent that is at its prompt. To answer a question or a choice the agent
+  shows, write the keys a person would press, without submit.
 
 STEP 7 — Mark tasks complete as agents finish:
   When you confirm an agent has finished its work, call:
@@ -146,7 +150,7 @@ IMPORTANT RULES:
 - NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
-- If a message from system says an agent is blocked (usage limit reached, or waiting on a menu), give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
+- If a message from system says an agent is blocked (usage limit reached, or waiting on a menu), close its terminal with close_terminal, then give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
 - If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`
