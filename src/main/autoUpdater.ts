@@ -20,13 +20,14 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import {
   DEB_NOT_STARTED_LEAD,
+  debInstallerRunning,
   debManualInstallMessage,
   defaultDebInstallDeps,
   readDebInstallNotice,
   startDebInstall,
   type DebInstallStart,
 } from './debUpdate'
-import { hasNoNewPrivs } from './noNewPrivs'
+import { hasNoNewPrivs, readPackageType, runsFromAppImage } from './noNewPrivs'
 import { sudoAskpassPath } from './sudoAskpass'
 import { recordUpdaterEvent } from './telemetry'
 import { classifyUpdaterError, DISK_FULL_MESSAGE, scrubUpdaterText, updaterFailureMessage } from './updaterErrors'
@@ -70,6 +71,18 @@ let currentState: UpdateState = { status: 'idle' }
 export const NO_NEW_PRIVS_UPDATE_MESSAGE =
   "This Termpolis window can't install the update: Linux has blocked it from asking for the administrator password. " +
   'Quit Termpolis and open it again from your applications menu, then install the update.'
+
+/** Shown, before it quits, by a Termpolis opened while a .deb update is being installed. */
+export const DEB_INSTALLING_DIALOG: UpdaterDialog = {
+  type: 'warning',
+  buttons: ['OK'],
+  defaultId: 0,
+  cancelId: 0,
+  message: 'Termpolis is being updated',
+  detail:
+    'Termpolis closes now and opens again by itself once the update is installed. If your desktop is asking for ' +
+    'your administrator password, answer it, or cancel it to keep the version you have.',
+}
 
 // Injectable resolver so unit tests can swap in a fake autoUpdater without
 // vi.mock() intercepting our lazy require() (which it doesn't for ESM tests).
@@ -148,7 +161,8 @@ export interface UpdaterHost {
   isInApplicationsFolder?: () => boolean
   moveToApplicationsFolder: () => boolean
   showMessageBox: (parent: BrowserWindow | null, options: UpdaterDialog) => Promise<{ response: number }>
-  /** Running from an AppImage (APPIMAGE is set). */
+  /** Running from an AppImage, decided as electron-updater decides which updater to use: by the
+   *  package-type of a .deb where there is one, since APPIMAGE can be inherited (noNewPrivs.ts). */
   appImage: boolean
   /** Whether this process has Linux's no_new_privs set (noNewPrivs.ts). */
   noNewPrivs: () => boolean | null
@@ -156,6 +170,8 @@ export interface UpdaterHost {
   installDeb: (deb: string | undefined, version: string | undefined) => DebInstallStart
   /** A .deb: what became of the last install, read once (debUpdate.ts); null when nothing is news. */
   takeDebNotice: () => string | null
+  /** A .deb: whether the install runner of an earlier Restart is still at work (debUpdate.ts). */
+  debInstallerRunning: () => boolean
   /** Quit, once the .deb's install runner is waiting for this process to exit. */
   quit: () => void
 }
@@ -174,11 +190,12 @@ function defaultHost(): UpdaterHost {
     moveToApplicationsFolder: () => app.moveToApplicationsFolder(),
     showMessageBox: (parent, options) =>
       parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options),
-    appImage: !!process.env.APPIMAGE,
+    appImage: runsFromAppImage(process.env, readPackageType()),
     noNewPrivs: () => hasNoNewPrivs(),
     installDeb: (deb, version) =>
       startDebInstall({ deb, from: app.getVersion(), target: version }, defaultDebInstallDeps(app.getPath('userData'), sudoAskpassPath())),
     takeDebNotice: () => readDebInstallNotice(app.getPath('userData'), app.getVersion())?.message ?? null,
+    debInstallerRunning: () => debInstallerRunning(app.getPath('userData')),
     quit: () => app.quit(),
   }
 }
@@ -226,8 +243,9 @@ export function initAutoUpdater(
     setQuitBypass(false)
   }
   // A Linux system package, which electron-updater would install with pkexec … dpkg through
-  // spawnSync on this thread. Only the .deb is handed to debUpdate: Termpolis ships no .rpm or
-  // pacman package.
+  // spawnSync on this thread. The package-type the package carries says so, as it says to
+  // electron-updater, and an APPIMAGE this Termpolis inherited doesn't change it (host.appImage).
+  // Only the .deb is handed to debUpdate: Termpolis ships no .rpm or pacman package.
   const systemPackage = host.platform === 'linux' && !host.appImage
   // The .deb that update-downloaded named, and the outcome of the last install the launch read.
   let downloadedDeb: string | undefined
@@ -350,12 +368,19 @@ export function initAutoUpdater(
   }
 
   // The launch after a .deb install: what became of it, read and removed once. Only a system
-  // package's runner writes it, and never a dev or test run, which returned above.
+  // package's runner writes it, and never a dev or test run, which returned above. A Termpolis
+  // opened while a runner is still at work reads nothing: that runner hasn't written its result.
+  let installing = false
   if (systemPackage) {
     try {
-      debNotice = host.takeDebNotice()
-    } catch { /* unreadable: there is nothing to say */ }
-    if (debNotice) setState(currentState, { record: false })
+      installing = host.debInstallerRunning()
+    } catch { /* can't tell: carry on as usual */ }
+    if (!installing) {
+      try {
+        debNotice = host.takeDebNotice()
+      } catch { /* unreadable: there is nothing to say */ }
+      if (debNotice) setState(currentState, { record: false })
+    }
   }
 
   // This copy can't install an update where it runs. One plain hint, and no more checks: each one
@@ -419,6 +444,20 @@ export function initAutoUpdater(
         setState({ status: 'error', error: scrubUpdaterText(err?.message || String(err)) })
     }
   })
+
+  // Opened by hand while the runner of an earlier Restart is at work, at the password dialog or in
+  // dpkg: this copy runs the version being replaced, and holds the single-instance lock that the
+  // Termpolis the runner starts afterwards needs. It says so, checks for nothing, and quits.
+  if (installing) {
+    void host.showMessageBox(getMainWindow(), DEB_INSTALLING_DIALOG)
+      .catch(() => null)
+      .then(() => {
+        setQuitBypass(true)
+        host.quit()
+      })
+      .catch(() => {})
+    return
+  }
 
   // If the update config is absent, every checkForUpdates() would only re-emit
   // the benign ENOENT above. Skip scheduling the periodic checks entirely. The

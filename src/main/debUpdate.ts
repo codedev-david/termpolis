@@ -18,18 +18,22 @@
 // command that runs both of electron-updater's steps; writes the outcome to update-result.json in
 // userData; and starts Termpolis again with the same arguments: the new version, or this one when
 // nothing was installed. The next launch reads the result once and says what happened. A
-// Termpolis opened by hand meanwhile can't start a second install: Restart there finds the runner
-// at work.
+// Termpolis opened by hand meanwhile says an update is being installed and closes again
+// (autoUpdater.ts), and Restart never starts a second install: not while the runner is at work,
+// nor once it has installed the update.
 //
-// The .deb is the file electron-updater downloaded and already checked against the sha512 in
-// latest-linux.yml. Its path reaches the runner, and dpkg, as an argument, never as shell text.
-// The runner writes only the user's own files in userData (the result, and the log through a
+// The .deb is the file electron-updater downloaded, which it checked against the sha512 in
+// latest-linux.yml when the download finished. Nothing checks it again before dpkg reads it, so a
+// program running as the user could replace it in between, as it could under electron-updater's
+// own install. Its path reaches the runner, and dpkg, as an argument, never as shell text. The
+// runner writes only the user's own files in userData (the result, and the log through a
 // descriptor Termpolis opened); only the install command runs as root.
 
 import { spawn } from 'child_process'
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import { homedir } from 'os'
 import { join, posix } from 'path'
-import { WAIT_FOR_EXIT, currentTarget, relaunchArgv, type RelaunchTarget } from './noNewPrivs'
+import { WAIT_FOR_EXIT, WAIT_GAVE_UP, currentTarget, type RelaunchTarget } from './noNewPrivs'
 
 /** The runner's $0: how a second Termpolis recognizes it in /proc, and the prefix of its lines in
  *  the log. */
@@ -42,8 +46,11 @@ export const DEB_RESULT_FILE = 'update-result.json'
 export const DEB_RUNNER_FILE = 'update-install.pid'
 
 /** electron-updater's two steps, `dpkg -i` and, when that fails, `apt-get install -f -y` for any
- *  dependency it left unmet, as one command, so they take one prompt. The .deb is $1. */
-export const DEB_INSTALL_COMMAND = 'dpkg -i "$1" || apt-get install -f -y'
+ *  dependency it left unmet, as one command, so they take one prompt. The .deb is $1. With
+ *  --no-remove apt-get removes nothing: where its only fix is to remove a package, the Termpolis
+ *  dpkg has just unpacked among them, it fails instead of removing it unasked. The new version
+ *  then starts, dpkg having unpacked it, and says what is left to fix. */
+export const DEB_INSTALL_COMMAND = 'dpkg -i "$1" || apt-get install -f -y --no-remove'
 
 /** How much of the end of the log the result keeps. */
 export const DEB_TAIL_BYTES = 6000
@@ -58,25 +65,35 @@ export const PKEXEC_NOT_AUTHORIZED = 127
  * `info` (JSON, written as given), how it asks (pkexec, or sudo), the tool, the askpass helper
  * (sudo only), the runner file, and then the program and arguments that start Termpolis again.
  *
- * - It waits as the relaunch does (WAIT_FOR_EXIT), so it gives up, installing nothing, if the old
- *   Termpolis is still running two minutes on.
+ * - Its work happens in a subshell. In sh, assigning to a name the environment exports changes it
+ *   for whatever is started afterwards, so the shell that starts Termpolis again assigns nothing:
+ *   a $log or $code of the user's own reaches Termpolis unchanged.
+ * - It waits as the relaunch does (WAIT_FOR_EXIT). If the old Termpolis is still running two
+ *   minutes on, it installs nothing and says so, in the log and the result, and still starts
+ *   Termpolis, which hands over to the old copy through the single-instance lock if that is
+ *   still running.
  * - The tool runs with LC_ALL=C, which pkexec and sudo pass on, so the log has dpkg's, apt-get's
  *   and their own errors in the words the next launch looks for, in any language. pkexec's prompt
  *   is the desktop's own, in the desktop's language.
  * - SUDO_ASKPASS goes to sudo alone, never into the Termpolis it starts.
- * - The result is written, readable by the user alone, to a temporary file under noclobber, which
- *   never opens a symlink planted at that name, and moved into place, which replaces whatever is
- *   at the result path rather than writing through it. Not over a folder, or a symlink to one: mv
- *   would move the result into it. The log's tail goes in as hex, so no byte of it can break the
- *   JSON.
+ * - The result is written, readable by the user alone, to a temporary file it has just removed,
+ *   under noclobber, then moved into place, which replaces whatever is at the result path rather
+ *   than writing through it. noclobber refuses a regular file, or a dangling symlink, that appeared
+ *   at the temporary name in between, though not a symlink to a FIFO or a device: only the user
+ *   could plant one there, in their own folder, between the rm and the write. Not over a folder,
+ *   or a symlink to one: mv would move the result into it. The log's tail goes in as hex, so no
+ *   byte of it can break the JSON.
  * - Termpolis starts with no output to the log, as from the applications menu.
  */
 export const DEB_INSTALL_SCRIPT = [
+  '(',
   'pid=$1; deb=$2; log=$3; result=$4; info=$5; how=$6; tool=$7; askpass=$8; runner=$9',
-  'shift 9',
   ...WAIT_FOR_EXIT,
   `install='${DEB_INSTALL_COMMAND}'`,
-  'if [ -f "$deb" ]; then',
+  `if ${WAIT_GAVE_UP}; then`,
+  `  printf '${DEB_RUNNER_NAME}: error: Termpolis was still running two minutes after Restart, so nothing was installed\\n'`,
+  '  code=1',
+  'elif [ -f "$deb" ]; then',
   `  printf '${DEB_RUNNER_NAME}: installing %s\\n' "$deb"`,
   '  case $how in',
   '    pkexec) LC_ALL=C "$tool" --disable-internal-agent /bin/sh -c "$install" sh "$deb" ;;',
@@ -103,6 +120,8 @@ export const DEB_INSTALL_SCRIPT = [
   '  rm -f "$tmp"',
   'fi',
   'rm -f "$runner"',
+  ')',
+  'shift 9',
   'exec "$@" </dev/null >/dev/null 2>&1',
 ].join('\n')
 
@@ -167,7 +186,9 @@ export interface DebInstallRequest {
   target?: string
 }
 
-/** The runner's command line; see DEB_INSTALL_SCRIPT. */
+/** The runner's command line; see DEB_INSTALL_SCRIPT. Termpolis starts again from the program dpkg
+ *  has replaced, with the same arguments, and never from an AppImage: only a .deb gets here, so an
+ *  APPIMAGE it has was inherited, from the terminal of some other AppImage it was started in. */
 export function debInstallCommand(
   target: RelaunchTarget,
   request: DebInstallRequest & { deb: string },
@@ -179,7 +200,7 @@ export function debInstallCommand(
     '/bin/sh', '-c', DEB_INSTALL_SCRIPT, DEB_RUNNER_NAME,
     String(target.pid), request.deb, files.log, files.result, info,
     tool.how, tool.path, tool.how === 'sudo' ? tool.askpass : '', files.runner,
-    ...relaunchArgv(target),
+    target.execPath, ...target.argv.slice(1),
   ]
 }
 
@@ -231,8 +252,9 @@ function createFresh(path: string): number {
 /**
  * Start the runner. On { started: true } the caller quits at once, with the quit guard bypassed:
  * the runner waits for this process to exit. Otherwise nothing has changed, and `message` says
- * what to do instead: another Termpolis is already installing an update (`busy`), there is no way
- * to ask for administrator rights, or the runner couldn't be started.
+ * what to do instead: another Termpolis is already installing an update (`busy`), an earlier
+ * Restart has installed this one already, there is no way to ask for administrator rights, or
+ * the runner couldn't be started.
  */
 export function startDebInstall(request: DebInstallRequest, deps: DebInstallDeps): DebInstallStart {
   const { deb } = request
@@ -241,6 +263,12 @@ export function startDebInstall(request: DebInstallRequest, deps: DebInstallDeps
   // offers Restart too.
   const running = deps.running ?? (() => debInstallerRunning(deps.userDataPath))
   if (running()) return { started: false, message: DEB_BUSY_MESSAGE, busy: true }
+  // Nor install again what an earlier runner has installed. Its result is still unread when the
+  // Termpolis it started found this one, opened by hand meanwhile, holding the single-instance
+  // lock and quit: this one still runs the version it started as, and finds the update as new as
+  // ever.
+  const installed = installedBefore(deps.userDataPath, request)
+  if (installed) return { started: false, message: debInstalledMessage(installed) }
   const tool = findDebTool(deps.target.env.PATH, deps.askpass, deps.isExecutable)
   if (!tool) return { started: false, message: debManualInstallMessage(deb) }
   const notStarted = { started: false, message: debManualInstallMessage(deb, DEB_NOT_STARTED_LEAD) } as const
@@ -253,7 +281,7 @@ export function startDebInstall(request: DebInstallRequest, deps: DebInstallDeps
     return notStarted
   }
   // An earlier attempt's result, never read, would otherwise be taken for this one's should this
-  // runner give up before writing its own.
+  // runner fail to write its own.
   try { unlinkSync(files.result) } catch { /* none, or a folder, which the runner leaves alone too */ }
   let child: RunnerChild
   try {
@@ -272,6 +300,17 @@ export function startDebInstall(request: DebInstallRequest, deps: DebInstallDeps
     createFreshText(files.runner, String(child.pid))
   } catch { /* only another Termpolis's busy check misses it */ }
   return { started: true }
+}
+
+/** The version an earlier runner installed for this same request, as its unread result says: a 0
+ *  from the version running now to the one asked for, with no error in its output. Null for
+ *  anything else, a result the next launch should hear about among it. */
+function installedBefore(userDataPath: string, request: DebInstallRequest): string | null {
+  const { from, target } = request
+  if (!target) return null
+  const found = readDebInstallResult(userDataPath)
+  if (!found || found.code !== 0 || found.target !== target || found.from !== from) return null
+  return debErrorDetail(withWholeLog(found, debInstallFiles(userDataPath).log).tail, false) ? null : target
 }
 
 function createFreshText(path: string, text: string): void {
@@ -305,16 +344,17 @@ export function debInstallerRunning(
 export const DEB_RESULT_MAX_BYTES = 64 * 1024
 /** Older than this, a result isn't news any more. */
 export const DEB_RESULT_MAX_AGE_MS = 24 * 60 * 60 * 1000
-
-const NOFOLLOW = constants.O_NOFOLLOW ?? 0
-const NONBLOCK = constants.O_NONBLOCK ?? 0
+/** How much of the log is read for the error, beyond the tail the result keeps. */
+export const DEB_LOG_MAX_BYTES = 1024 * 1024
 
 /** A regular file of at most `maxBytes`, and when it was last written; null for anything else.
  *  Never follows a symlink, and never waits on a FIFO. */
 export function readSmallFile(path: string, maxBytes: number): { text: string; mtimeMs: number } | null {
   let fd: number
   try {
-    fd = openSync(path, constants.O_RDONLY | NOFOLLOW | NONBLOCK)
+    // The flags are read here, not when the module loads: a test that mocks fs without its
+    // constants (mainProcess.test.ts, through index.ts) must still be able to load it.
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
   } catch {
     return null
   }
@@ -367,14 +407,27 @@ export function parseDebInstallResult(text: string): DebInstallResult | null {
   return result
 }
 
-/** The result of the last install, read once: it is gone afterwards, whatever it held. Null when
- *  there is none, or it is unreadable, too big, or more than a day old (or a day ahead). */
-export function takeDebInstallResult(userDataPath: string, now: number = Date.now()): DebInstallResult | null {
-  const file = debInstallFiles(userDataPath).result
-  const read = readSmallFile(file, DEB_RESULT_MAX_BYTES)
-  try { unlinkSync(file) } catch { /* nothing there, or a folder: nothing to take */ }
+/** The result of the last install, left where it is. Null when there is none, or it is
+ *  unreadable, too big, or more than a day old (or a day ahead). */
+export function readDebInstallResult(userDataPath: string, now: number = Date.now()): DebInstallResult | null {
+  const read = readSmallFile(debInstallFiles(userDataPath).result, DEB_RESULT_MAX_BYTES)
   if (!read || Math.abs(now - read.mtimeMs) > DEB_RESULT_MAX_AGE_MS) return null
   return parseDebInstallResult(read.text)
+}
+
+/** readDebInstallResult, once: the result is gone afterwards, whatever it held. */
+export function takeDebInstallResult(userDataPath: string, now: number = Date.now()): DebInstallResult | null {
+  const result = readDebInstallResult(userDataPath, now)
+  try { unlinkSync(debInstallFiles(userDataPath).result) } catch { /* nothing there, or a folder: nothing to take */ }
+  return result
+}
+
+/** The result with the whole log in place of its tail, where the log can be read: past a long
+ *  apt-get listing, dpkg's own error can be further back than the tail reaches. The log is the
+ *  user's own file beside the result, and a new attempt replaces the two together. */
+function withWholeLog(result: DebInstallResult, logPath: string): DebInstallResult {
+  const log = readSmallFile(logPath, DEB_LOG_MAX_BYTES)?.text
+  return log ? { ...result, tail: log } : result
 }
 
 // The runner's own error lines start with this; the user is shown what follows it.
@@ -390,8 +443,8 @@ const ERROR_LINE = new RegExp(
 const DETAIL_MAX = 300
 
 /** The error to show from the log's tail: the first error line and the indented lines that
- *  continue it, else the last line that says anything. */
-export function debErrorDetail(tail: string): string {
+ *  continue it, else, unless `lastLine` is false, the last line that says anything. */
+export function debErrorDetail(tail: string, lastLine = true): string {
   const lines = tail.split(/\r?\n/)
   const at = lines.findIndex((line) => ERROR_LINE.test(line))
   let text: string
@@ -400,7 +453,7 @@ export function debErrorDetail(tail: string): string {
     for (let i = at + 1; i < lines.length && /^\s+\S/.test(lines[i]); i++) parts.push(lines[i])
     text = parts.join(' ')
   } else {
-    text = [...lines].reverse().find((line) => line.trim()) ?? ''
+    text = lastLine ? ([...lines].reverse().find((line) => line.trim()) ?? '') : ''
   }
   text = text.replace(/\s+/g, ' ').trim()
   if (text.startsWith(RUNNER_ERROR)) text = text.slice(RUNNER_ERROR.length)
@@ -411,6 +464,11 @@ export const DEB_CANCELLED_MESSAGE = 'Update not installed: the administrator pr
 
 export const DEB_BUSY_MESSAGE =
   'An update is already being installed. Once it has finished, quit Termpolis and open it again.'
+
+/** Restart in a Termpolis that still runs the version an earlier Restart has since replaced. */
+export function debInstalledMessage(version: string): string {
+  return `Termpolis ${version} is installed. Quit Termpolis and open it again to start it.`
+}
 
 const RELEASES_URL = 'https://github.com/codedev-david/termpolis/releases/latest'
 
@@ -454,6 +512,21 @@ export interface DebInstallNotice {
   message: string
 }
 
+/** Where electron-updater keeps a downloaded update: its cache folder (XDG_CACHE_HOME, else
+ *  ~/.cache: getAppCacheDir), the updaterCacheDirName that app-update.yml names, then pending. */
+export function debPendingDir(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
+  return posix.join(env.XDG_CACHE_HOME || posix.join(home, '.cache'), 'termpolis-updater', 'pending')
+}
+
+/** The .deb a result names, when it is one electron-updater could have downloaded: a
+ *  termpolis_….deb right in its pending folder, with no control character in the path. Any
+ *  program running as the user can write the result, and this goes into a command the user is
+ *  told to run as root. */
+function downloadedDeb(deb: string | undefined, pendingDir: string): string | undefined {
+  if (!deb || [...deb].some((c) => c < ' ' || c === '\u007f')) return undefined
+  return posix.dirname(deb) === pendingDir && /^termpolis_.+\.deb$/.test(posix.basename(deb)) ? deb : undefined
+}
+
 const NO_AGENT = /No authentication agent found/
 // sudo's words when the askpass dialog was cancelled, which hands it an empty answer; and
 // Termpolis's helper (sudoAskpass.ts) finding no dialog program to ask through.
@@ -476,9 +549,15 @@ function notRun(result: DebInstallResult): 'cancelled' | 'manual' | null {
  * What the launch after an install tells the user, or null when there is nothing to say. Nothing
  * when the version running is neither the one that ran the install nor the one it installed:
  * Termpolis has changed some other way since. Running the new version, only an error from the
- * install itself is news.
+ * install itself is news. The command to run by hand names the result's .deb only when it is in
+ * electron-updater's `pendingDir`; a 0 that installed nothing shows only a line that says why.
  */
-export function debInstallNotice(result: DebInstallResult, currentVersion: string, logPath: string): DebInstallNotice | null {
+export function debInstallNotice(
+  result: DebInstallResult,
+  currentVersion: string,
+  logPath: string,
+  pendingDir: string = debPendingDir(),
+): DebInstallNotice | null {
   const installed = !!result.target && currentVersion === result.target
   if (!installed && result.from && currentVersion !== result.from) return null
   const why = result.code === 0 ? null : notRun(result)
@@ -488,15 +567,17 @@ export function debInstallNotice(result: DebInstallResult, currentVersion: strin
     return { kind: 'incomplete', message: debIncompleteMessage(debErrorDetail(result.tail), result.code, logPath, currentVersion) }
   }
   if (why === 'cancelled') return { kind: 'cancelled', message: DEB_CANCELLED_MESSAGE }
-  if (why === 'manual') return { kind: 'manual', message: debManualInstallMessage(result.deb) }
+  if (why === 'manual') return { kind: 'manual', message: debManualInstallMessage(downloadedDeb(result.deb, pendingDir)) }
   // Success, and no version to tell it by: believe it.
   if (result.code === 0 && !result.target) return null
-  // Anything else, a 0 among it: dpkg can fail and leave apt-get -f nothing to fix.
-  return { kind: 'failed', message: debFailedMessage(debErrorDetail(result.tail), result.code, logPath) }
+  // Anything else, a 0 among it: dpkg can fail and leave apt-get -f nothing to fix. After a 0,
+  // dpkg's last words are a trigger it ran, never a reason, should the version be unchanged.
+  return { kind: 'failed', message: debFailedMessage(debErrorDetail(result.tail, result.code !== 0), result.code, logPath) }
 }
 
-/** takeDebInstallResult and debInstallNotice, for the launch. */
+/** takeDebInstallResult and debInstallNotice, for the launch, the error looked for in the whole log. */
 export function readDebInstallNotice(userDataPath: string, currentVersion: string, now?: number): DebInstallNotice | null {
   const result = takeDebInstallResult(userDataPath, now)
-  return result ? debInstallNotice(result, currentVersion, debInstallFiles(userDataPath).log) : null
+  const { log } = debInstallFiles(userDataPath)
+  return result ? debInstallNotice(withWholeLog(result, log), currentVersion, log) : null
 }

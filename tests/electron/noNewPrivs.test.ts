@@ -5,15 +5,20 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 // Nothing here may call relaunchViaSystemd with its real deps: a real relaunch shell started from
-// a test waits for the test runner to exit and then runs it again. (vi.mock does not reach Node
-// built-ins in this suite, so a mocked child_process is no guard.) The real helpers are exercised
-// only with commands that do nothing.
+// a test waits for the test runner to exit and then runs it again. (A mocked child_process would
+// be no guard: vi.mock reaches a Node built-in that a module imports, never one it require()s.)
+// The real helpers are exercised only with commands that do nothing.
 
 const {
   parseNoNewPrivs,
   hasNoNewPrivs,
   RELAUNCH_SCRIPT,
   WAIT_FOR_EXIT,
+  WAIT_GAVE_UP,
+  PACKAGE_TYPE_FILE,
+  SYSTEM_PACKAGE_TYPES,
+  readPackageType,
+  runsFromAppImage,
   relaunchArgv,
   relaunchCommand,
   systemdRelaunchArgs,
@@ -91,18 +96,95 @@ describe('relaunchCommand', () => {
     expect(relaunchCommand(TARGET).slice(5)).toEqual(relaunchArgv(TARGET))
   })
 
-  it('waits with the loop it shares with the .deb update runner', () => {
-    expect(RELAUNCH_SCRIPT).toBe(['pid=$1; shift', ...WAIT_FOR_EXIT, 'exec "$@"'].join('\n'))
+  it('waits with the loop it shares with the .deb update runner, in a subshell, and starts nothing once it gave up', () => {
+    // In sh, assigning to a name the environment exports changes what a later exec passes on: the
+    // shell that execs Termpolis must assign nothing.
+    expect(RELAUNCH_SCRIPT).toBe(['(', 'pid=$1', ...WAIT_FOR_EXIT, `! ${WAIT_GAVE_UP}`, ') || exit 1', 'shift', 'exec "$@"'].join('\n'))
     expect(WAIT_FOR_EXIT.join('\n')).toContain('*Z*) break')
+    expect(WAIT_FOR_EXIT.join('\n')).toContain(`[ "$i" -gt 600 ] && break`)
+    expect(WAIT_GAVE_UP).toBe('[ "$i" -gt 600 ]')
   })
 
   it('restarts an AppImage from its file, not from the mount that disappears with it', () => {
-    const cmd = relaunchCommand({ ...TARGET, execPath: '/tmp/.mount_TermpoXYZ/termpolis', env: { APPIMAGE: '/home/d/Termpolis.AppImage' } })
-    expect(cmd[5]).toBe('/home/d/Termpolis.AppImage')
+    const appImage = '/home/d/Termpolis.AppImage'
+    const cmd = relaunchCommand({ ...TARGET, execPath: '/tmp/.mount_TermpoXYZ/termpolis', env: { APPIMAGE: appImage }, appImage })
+    expect(cmd[5]).toBe(appImage)
+  })
+
+  it('never restarts from an APPIMAGE that this Termpolis only inherited', () => {
+    // A .deb Termpolis started from the terminal of an editor shipped as an AppImage has that
+    // editor's APPIMAGE: restarting from it would start the editor instead.
+    const cmd = relaunchCommand({ ...TARGET, env: { APPIMAGE: '/home/d/Applications/Cursor-1.7.0-x86_64.AppImage' } })
+    expect(cmd[5]).toBe('/opt/Termpolis/termpolis')
   })
 
   it('describes this process by default', () => {
-    expect(currentTarget()).toEqual({ pid: process.pid, execPath: process.execPath, argv: process.argv, env: process.env })
+    // Outside Electron there is no resources folder, so no package-type: APPIMAGE alone decides.
+    const appImage = process.env.APPIMAGE ? { appImage: process.env.APPIMAGE } : {}
+    expect(currentTarget()).toEqual({ pid: process.pid, execPath: process.execPath, argv: process.argv, env: process.env, ...appImage })
+  })
+})
+
+describe('an AppImage or a system package', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'nnp-pkg-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  /** Runs `fn` with process.resourcesPath, which only Electron sets, and APPIMAGE as given. */
+  function asPackaged(resourcesPath: string, appImage: string | undefined, fn: () => void): void {
+    const saved = process.env.APPIMAGE
+    Object.defineProperty(process, 'resourcesPath', { value: resourcesPath, configurable: true, writable: true })
+    if (appImage === undefined) delete process.env.APPIMAGE
+    else process.env.APPIMAGE = appImage
+    try {
+      fn()
+    } finally {
+      delete (process as { resourcesPath?: string }).resourcesPath
+      if (saved === undefined) delete process.env.APPIMAGE
+      else process.env.APPIMAGE = saved
+    }
+  }
+
+  it('reads the package type electron-builder writes into the resources of a .deb', () => {
+    writeFileSync(join(dir, PACKAGE_TYPE_FILE), 'deb\n')
+    expect(readPackageType(dir)).toBe('deb')
+    expect(PACKAGE_TYPE_FILE).toBe('package-type')
+  })
+
+  it('finds none in an AppImage, outside Electron, or where it cannot be read', () => {
+    expect(readPackageType(dir)).toBeNull()
+    expect(readPackageType(undefined)).toBeNull()
+    expect(readPackageType(dir, () => { throw new Error('EACCES') })).toBeNull()
+  })
+
+  it("reads Electron's resources folder by default", () => {
+    expect(readPackageType()).toBeNull()
+    writeFileSync(join(dir, PACKAGE_TYPE_FILE), 'deb')
+    asPackaged(dir, undefined, () => expect(readPackageType()).toBe('deb'))
+  })
+
+  it('is an AppImage only where APPIMAGE is set and no package type names a system package, as electron-updater decides', () => {
+    // electron-updater picks DebUpdater, RpmUpdater or PacmanUpdater by package-type alone
+    // (main.js), and its AppImage updater for anything else.
+    const env = { APPIMAGE: '/home/d/Applications/Cursor-1.7.0-x86_64.AppImage' }
+    expect(SYSTEM_PACKAGE_TYPES).toEqual(['deb', 'rpm', 'pacman'])
+    for (const type of SYSTEM_PACKAGE_TYPES) expect(runsFromAppImage(env, type), type).toBe(false)
+    expect(runsFromAppImage(env, null)).toBe(true)
+    expect(runsFromAppImage(env, 'snap')).toBe(true)
+    expect(runsFromAppImage({}, null)).toBe(false)
+    expect(runsFromAppImage({ APPIMAGE: '' }, null)).toBe(false)
+  })
+
+  it("gives this process's target its AppImage, decided that way", () => {
+    const appImage = '/home/d/Termpolis.AppImage'
+    asPackaged(dir, appImage, () => {
+      expect(currentTarget().appImage).toBe(appImage)
+      expect(relaunchArgv(currentTarget())[0]).toBe(appImage)
+      // The .deb, started from an AppImage's terminal.
+      writeFileSync(join(dir, PACKAGE_TYPE_FILE), 'deb\n')
+      expect(currentTarget().appImage).toBeUndefined()
+      expect(relaunchArgv(currentTarget())[0]).toBe(process.execPath)
+    })
   })
 })
 
@@ -146,6 +228,30 @@ describe.runIf(process.platform !== 'win32')('RELAUNCH_SCRIPT, run by a real she
     const r = spawnSync('/bin/sh', ['-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', '999999999', '/bin/sh', '-c', ': > "$0"', out], { timeout: 10_000 })
     expect(r.status).toBe(0)
     expect(existsSync(out)).toBe(true)
+  })
+
+  it('passes on an environment that already had the names it waits with, unchanged', () => {
+    const out = join(dir, 'out')
+    const r = spawnSync('/bin/sh', [
+      '-c', RELAUNCH_SCRIPT, 'termpolis-relaunch', '999999999', '/bin/sh', '-c', 'printf "%s|%s" "$pid" "$i" > "$0"', out,
+    ], { env: { ...process.env, pid: 'mine', i: 'also mine' }, timeout: 10_000 })
+    expect(r.status).toBe(0)
+    expect(readFileSync(out, 'utf8')).toBe('mine|also mine')
+  })
+
+  it('starts nothing once it has given up waiting', () => {
+    // Three looks instead of 600, so it gives up in about half a second instead of two minutes.
+    const script = RELAUNCH_SCRIPT.split('-gt 600').join('-gt 3')
+    expect(script.split('-gt 3')).toHaveLength(3)
+    const old = spawn('sleep', ['30'], { stdio: 'ignore' })
+    try {
+      const out = join(dir, 'out')
+      const r = spawnSync('/bin/sh', ['-c', script, 'termpolis-relaunch', String(old.pid), '/bin/sh', '-c', ': > "$0"', out], { timeout: 20_000 })
+      expect(r.status).toBe(1)
+      expect(existsSync(out)).toBe(false)
+    } finally {
+      old.kill()
+    }
   })
 })
 

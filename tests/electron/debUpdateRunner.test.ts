@@ -16,6 +16,7 @@ import {
   DEB_RUNNER_FILE,
   DEB_TAIL_BYTES,
   debFailedMessage,
+  debIncompleteMessage,
   debInstallCommand,
   debInstallNotice,
   debManualInstallMessage,
@@ -68,7 +69,10 @@ describe.skipIf(!SH)('the .deb update runner, run by sh', () => {
 
   function stub(file: string, lines: string[]): void {
     mkdirSync(dirname(file), { recursive: true })
-    const body = lines.join('\n').replace(/@CALLS@/g, q(join(t, 'calls.txt'))).replace(/@OUT@/g, q(join(t, 'out.txt')))
+    const body = lines.join('\n')
+      .replace(/@CALLS@/g, q(join(t, 'calls.txt')))
+      .replace(/@OUT@/g, q(join(t, 'out.txt')))
+      .replace(/@ENV@/g, q(join(t, 'env.txt')))
     writeFileSync(file, `#!/bin/sh\n${body}\n`)
     chmodSync(file, 0o755)
   }
@@ -132,29 +136,56 @@ describe.skipIf(!SH)('the .deb update runner, run by sh', () => {
       'esac',
       "echo 'Unpacking termpolis (1.54.1) over (1.54.0) ...'",
     ])
-    stub(join(bin, 'apt-get'), [...record('apt-get'), 'exit "${TP_APT:-0}"'])
+    stub(join(bin, 'apt-get'), [
+      ...record('apt-get'),
+      // What apt-get install -f -y does when the only fix it finds is to remove what needs the
+      // missing dependency: it removes it, without asking, and exits 0.
+      'if [ "$TP_APT" = remove ]; then',
+      '  case " $* " in',
+      "    *' --no-remove '*) echo 'E: Packages need to be removed but remove is disabled.' >&2; exit 100 ;;",
+      '  esac',
+      "  echo 'The following packages will be REMOVED:'",
+      `  rm -f ${q(program)}`,
+      '  exit 0',
+      'fi',
+      'exit "${TP_APT:-0}"',
+    ])
     stub(program, [
       '{',
       '  echo started',
       '  for a in "$@"; do printf \'[%s]\\n\' "$a"; done',
       '  printf \'askpass=%s\\n\' "${SUDO_ASKPASS-unset}"',
       '} >@OUT@',
+      'env >@ENV@',
       "echo 'termpolis printed this'",
     ])
   })
   afterEach(() => rmSync(t, { recursive: true, force: true }))
 
   /** The runner, started with the command line Restart builds, its output going to the log as
-   *  startDebInstall arranges. The old Termpolis is a pid that is already gone unless given. */
-  function run(over: { tool?: 'pkexec' | 'sudo'; deb?: string; env?: NodeJS.ProcessEnv; pid?: number } = {}) {
+   *  startDebInstall arranges. The old Termpolis is a pid that is already gone unless given.
+   *  `targetEnv` is the environment debInstallCommand is given; `script` changes the script. */
+  function run(over: {
+    tool?: 'pkexec' | 'sudo'
+    deb?: string
+    env?: NodeJS.ProcessEnv
+    pid?: number
+    targetEnv?: NodeJS.ProcessEnv
+    script?: (script: string) => string
+  } = {}) {
     const tool: DebTool = over.tool === 'sudo'
       ? { how: 'sudo', path: shPath(join(bin, 'sudo')), askpass: '/opt/askpass helper' }
       : { how: 'pkexec', path: shPath(join(bin, 'pkexec')) }
     const files = { log: shPath(join(ud, DEB_LOG_FILE)), result: shPath(join(ud, DEB_RESULT_FILE)), runner: shPath(join(ud, DEB_RUNNER_FILE)) }
     writeFileSync(join(ud, DEB_RUNNER_FILE), '4242')
-    const target: RelaunchTarget = { pid: over.pid ?? 999999999, execPath: shPath(program), argv: ['termpolis', 'a b', '--flag'], env: {} }
+    const target: RelaunchTarget = { pid: over.pid ?? 999999999, execPath: shPath(program), argv: ['termpolis', 'a b', '--flag'], env: over.targetEnv ?? {} }
     const [cmd, ...args] = debInstallCommand(target, { deb: over.deb ?? shPath(debFile), from: '1.54.0', target: '1.54.1' }, tool, files)
     expect(cmd).toBe('/bin/sh')
+    if (over.script) {
+      const script = over.script(args[1])
+      expect(script).not.toBe(args[1])
+      args[1] = script
+    }
     const fd = openSync(join(ud, DEB_LOG_FILE), 'w')
     try {
       return spawnSync(SH!, args, { env: { ...baseEnv(), ...over.env }, stdio: ['ignore', fd, fd], timeout: 60_000 })
@@ -163,7 +194,7 @@ describe.skipIf(!SH)('the .deb update runner, run by sh', () => {
     }
   }
 
-  const INSTALL = '[/bin/sh] [-c] [dpkg -i "$1" || apt-get install -f -y] [sh]'
+  const INSTALL = '[/bin/sh] [-c] [dpkg -i "$1" || apt-get install -f -y --no-remove] [sh]'
 
   it('installs with one pkexec, then starts Termpolis with the same arguments, and leaves only its result', () => {
     expect(run().status).toBe(0)
@@ -190,7 +221,7 @@ describe.skipIf(!SH)('the .deb update runner, run by sh', () => {
     expect(calls()).toEqual([
       `pkexec [--disable-internal-agent] ${INSTALL} [${deb}]`,
       `dpkg [-i] [${deb}]`,
-      'apt-get [install] [-f] [-y]',
+      'apt-get [install] [-f] [-y] [--no-remove]',
     ])
     const result = takeDebInstallResult(ud)!
     expect(result.code).toBe(100)
@@ -206,6 +237,23 @@ describe.skipIf(!SH)('the .deb update runner, run by sh', () => {
     run({ env: { TP_DPKG: 'fail', TP_APT: '0' } })
     expect(calls()).toHaveLength(3)
     expect(takeDebInstallResult(ud)?.code).toBe(0)
+  })
+
+  it("leaves Termpolis installed when apt-get's only fix for what dpkg left unmet would remove it", () => {
+    // dpkg has unpacked the new version and left it unconfigured, over a dependency nothing can
+    // supply. apt-get install -f -y would remove Termpolis, without asking, and exit 0: nothing
+    // would be left to start, or to say what happened.
+    expect(run({ env: { TP_DPKG: 'fail', TP_APT: 'remove' } }).status).toBe(0)
+    expect(calls()[2]).toBe('apt-get [install] [-f] [-y] [--no-remove]')
+    expect(existsSync(program)).toBe(true)
+    expect(started()).toEqual(['started', '[a b]', '[--flag]', 'askpass=unset'])
+    const result = takeDebInstallResult(ud)!
+    expect(result.code).toBe(100)
+    // The new version starts, and says what is left to do.
+    expect(debInstallNotice(result, '1.54.1', '/log')).toEqual({
+      kind: 'incomplete',
+      message: debIncompleteMessage(`dpkg: error processing archive ${shPath(debFile)} (--install): dependency problems - leaving unconfigured`, 100, '/log', '1.54.1'),
+    })
   })
 
   it('installs nothing when the prompt is dismissed, and still starts Termpolis again', () => {
@@ -224,7 +272,7 @@ describe.skipIf(!SH)('the .deb update runner, run by sh', () => {
     expect(result.code).toBe(127)
     expect(result.tail).toContain('No authentication agent found.')
     expect(started()).not.toBeNull()
-    expect(debInstallNotice(result, '1.54.0', '/log')).toEqual({ kind: 'manual', message: debManualInstallMessage(shPath(debFile)) })
+    expect(debInstallNotice(result, '1.54.0', '/log', shPath(join(t, 'cache')))).toEqual({ kind: 'manual', message: debManualInstallMessage(shPath(debFile)) })
   })
 
   it('asks through sudo -A with the askpass helper, which only sudo is given', () => {
@@ -273,6 +321,45 @@ describe.skipIf(!SH)('the .deb update runner, run by sh', () => {
     expect(run({ pid: old.pid }).status).toBe(0)
     expect(Date.now() - at).toBeGreaterThanOrEqual(700)
     expect(calls()).toHaveLength(2)
+  })
+
+  it.runIf(!win)('says so, installs nothing, and still starts Termpolis when the old one is still running two minutes on', () => {
+    // Five looks instead of 600, so the wait gives up in about a second rather than two minutes.
+    const old = spawn('sleep', ['30'], { stdio: 'ignore' })
+    try {
+      expect(run({ pid: old.pid, script: (s) => s.split('-gt 600').join('-gt 5') }).status).toBe(0)
+      expect(calls()).toEqual([])
+      const result = takeDebInstallResult(ud)!
+      expect(result.code).toBe(1)
+      const why = 'Termpolis was still running two minutes after Restart, so nothing was installed'
+      expect(result.tail).toBe(`termpolis-deb-update: error: ${why}\n`)
+      expect(debInstallNotice(result, '1.54.0', '/log')?.message).toBe(debFailedMessage(why, 1, '/log'))
+      // The runner file goes, so no later Restart takes this for an install still at work. The
+      // Termpolis it starts hands over to the old one, through the single-instance lock, if that
+      // is still running.
+      expect(readdirSync(ud).sort()).toEqual([DEB_LOG_FILE])
+      expect(started()).toEqual(['started', '[a b]', '[--flag]', 'askpass=unset'])
+    } finally {
+      old.kill()
+    }
+  })
+
+  it('leaves the environment the new Termpolis inherits as it found it, the names the runner uses among it', () => {
+    // In sh, assigning to a name the environment exports changes it for whatever is started
+    // afterwards; the runner works in a subshell, so its names never reach Termpolis. (Windows
+    // can't tell tmp from TMP, which the environment here already has.)
+    const names = ['pid', 'deb', 'log', 'result', 'info', 'how', 'tool', 'askpass', 'runner', 'i', 'install', 'code', ...(win ? [] : ['tmp'])]
+    expect(run({ env: Object.fromEntries(names.map((n) => [n, `the user's ${n}`])) }).status).toBe(0)
+    expect(calls()).toHaveLength(2)
+    expect(takeDebInstallResult(ud)?.code).toBe(0)
+    const env = readFileSync(join(t, 'env.txt'), 'utf8').split('\n')
+    for (const n of names) expect(env, n).toContain(`${n}=the user's ${n}`)
+  })
+
+  it('starts the program it installed, whatever APPIMAGE this Termpolis inherited', () => {
+    // A .deb Termpolis started from the terminal of an editor shipped as an AppImage.
+    expect(run({ targetEnv: { APPIMAGE: shPath(join(t, 'Editor.AppImage')) } }).status).toBe(0)
+    expect(started()).toEqual(['started', '[a b]', '[--flag]', 'askpass=unset'])
   })
 
   it.runIf(!win)('replaces a symlink planted at the result path instead of writing through it', () => {

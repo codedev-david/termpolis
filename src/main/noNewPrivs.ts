@@ -45,22 +45,62 @@ export function hasNoNewPrivs(
 }
 
 /** Waits for the process in $pid to exit. A process that has exited but that its parent hasn't
- *  reaped yet still answers kill -0, so a zombie counts as gone. It gives up, with exit 1, after
- *  about two minutes: while the old Termpolis runs it holds the single-instance lock, so a copy
- *  started then would only quit again. `sleep 1` covers a sleep that rejects fractions. Shared
- *  with the .deb update runner (debUpdate.ts). */
+ *  reaped yet still answers kill -0, so a zombie counts as gone. It gives up after about two
+ *  minutes, leaving WAIT_GAVE_UP true: while the old Termpolis runs it holds the single-instance
+ *  lock, so a copy started then would only quit again. `sleep 1` covers a sleep that rejects
+ *  fractions. Shared with the .deb update runner (debUpdate.ts). Both run it in a subshell: in sh,
+ *  assigning to a name the environment exports changes it for whatever is started afterwards, so
+ *  the shell that starts Termpolis again must assign nothing, not even $i. */
 export const WAIT_FOR_EXIT = [
   'i=0',
   'while kill -0 "$pid" 2>/dev/null; do',
   '  case "$(ps -o stat= -p "$pid" 2>/dev/null)" in *Z*) break ;; esac',
-  '  i=$((i + 1)); [ "$i" -gt 600 ] && exit 1',
+  '  i=$((i + 1)); [ "$i" -gt 600 ] && break',
   '  sleep 0.2 2>/dev/null || sleep 1',
   'done',
 ]
 
+/** After WAIT_FOR_EXIT: true when it gave up, the process still running. */
+export const WAIT_GAVE_UP = '[ "$i" -gt 600 ]'
+
 /** Waits for the process in $1 to exit (WAIT_FOR_EXIT), then runs the remaining arguments in its
- *  place. */
-export const RELAUNCH_SCRIPT = ['pid=$1; shift', ...WAIT_FOR_EXIT, 'exec "$@"'].join('\n')
+ *  place; once the wait has given up, nothing. */
+export const RELAUNCH_SCRIPT = ['(', 'pid=$1', ...WAIT_FOR_EXIT, `! ${WAIT_GAVE_UP}`, ') || exit 1', 'shift', 'exec "$@"'].join('\n')
+
+// ---- An AppImage, or a system package ---------------------------------------------------------
+
+/** In the resources folder of a .deb, .rpm or pacman package, electron-builder writes which of the
+ *  three it is ('deb' for the .deb); never in an AppImage. */
+export const PACKAGE_TYPE_FILE = 'package-type'
+
+/** The package types electron-updater installs through the system's package manager rather than by
+ *  replacing an AppImage: DebUpdater, RpmUpdater and PacmanUpdater. */
+export const SYSTEM_PACKAGE_TYPES: readonly string[] = ['deb', 'rpm', 'pacman']
+
+/** What package-type says; null where there is none, as in an AppImage or outside Electron, or it
+ *  can't be read. Read as electron-updater reads it: the whole file, trimmed. */
+export function readPackageType(
+  resourcesPath: string | undefined = process.resourcesPath,
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): string | null {
+  if (!resourcesPath) return null
+  try {
+    return read(join(resourcesPath, PACKAGE_TYPE_FILE)).trim()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether this Termpolis runs from an AppImage. Decided as electron-updater decides which updater
+ * to use (main.js, doLoadAutoUpdater): a package type that names a system package says no,
+ * whatever APPIMAGE says. APPIMAGE is inherited like any other variable, so a .deb Termpolis
+ * started from the terminal of an AppImage, an editor say, has that one's. Only where there is no
+ * package type does APPIMAGE decide.
+ */
+export function runsFromAppImage(env: NodeJS.ProcessEnv, packageType: string | null): boolean {
+  return !!env.APPIMAGE && !SYSTEM_PACKAGE_TYPES.includes(packageType ?? '')
+}
 
 export interface RelaunchTarget {
   pid: number
@@ -69,16 +109,20 @@ export interface RelaunchTarget {
    *  app.relaunch() does. */
   argv: readonly string[]
   env: NodeJS.ProcessEnv
+  /** The .AppImage file this Termpolis runs from, when it runs from one (runsFromAppImage). */
+  appImage?: string
 }
 
 export function currentTarget(): RelaunchTarget {
-  return { pid: process.pid, execPath: process.execPath, argv: process.argv, env: process.env }
+  const target: RelaunchTarget = { pid: process.pid, execPath: process.execPath, argv: process.argv, env: process.env }
+  if (runsFromAppImage(process.env, readPackageType())) target.appImage = process.env.APPIMAGE
+  return target
 }
 
 /** The program and arguments that start Termpolis again. An AppImage restarts from its .AppImage
  *  file, because execPath is inside the image's mount, which goes away when it exits. */
 export function relaunchArgv(t: RelaunchTarget): string[] {
-  return [t.env.APPIMAGE || t.execPath, ...t.argv.slice(1)]
+  return [t.appImage || t.execPath, ...t.argv.slice(1)]
 }
 
 /** The command that starts Termpolis again once `pid` has exited. */

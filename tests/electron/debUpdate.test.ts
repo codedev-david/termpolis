@@ -3,17 +3,18 @@
 //
 // Nothing here may start the real runner. startDebInstall is only ever given a fake spawn, and
 // defaultDebInstallDeps is only inspected: a real runner waits for the test process to exit, asks
-// for the administrator password, and then starts the test process again. (vi.mock does not reach
-// Node built-ins in this suite, so a mocked child_process would be no guard.) The script itself
-// runs under a real sh, with stubs, in debUpdateRunner.test.ts.
+// for the administrator password, and then starts the test process again. The fake is handed in
+// rather than child_process mocked: vi.mock reaches a Node built-in that a module imports, but
+// never one it require()s, so a mock would be a guard a refactor could quietly undo. The script
+// itself runs under a real sh, with stubs, in debUpdateRunner.test.ts.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { spawnSync, type ChildProcess } from 'child_process'
 import {
   chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, symlinkSync,
   utimesSync, writeFileSync,
 } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { homedir, tmpdir } from 'os'
+import { join, posix } from 'path'
 import {
   DEB_BUSY_MESSAGE,
   DEB_CANCELLED_MESSAGE,
@@ -22,6 +23,7 @@ import {
   DEB_INSTALL_COMMAND,
   DEB_INSTALL_SCRIPT,
   DEB_LOG_FILE,
+  DEB_LOG_MAX_BYTES,
   DEB_RESULT_FILE,
   DEB_RESULT_MAX_AGE_MS,
   DEB_RUNNER_FILE,
@@ -33,15 +35,18 @@ import {
   debFailedMessage,
   debIncompleteMessage,
   debInstallCommand,
+  debInstalledMessage,
   debInstallFiles,
   debInstallNotice,
   debInstallerRunning,
   debManualInstallMessage,
+  debPendingDir,
   defaultDebInstallDeps,
   findDebTool,
   isExecutableFile,
   parseDebInstallResult,
   readDebInstallNotice,
+  readDebInstallResult,
   readSmallFile,
   spawnRunner,
   startDebInstall,
@@ -49,7 +54,7 @@ import {
   type DebInstallDeps,
   type DebInstallResult,
 } from '../../src/main/debUpdate'
-import { WAIT_FOR_EXIT, currentTarget, type RelaunchTarget } from '../../src/main/noNewPrivs'
+import { WAIT_FOR_EXIT, WAIT_GAVE_UP, currentTarget, type RelaunchTarget } from '../../src/main/noNewPrivs'
 
 const posixOnly = process.platform !== 'win32'
 const hex = (text: string) => Buffer.from(text, 'utf8').toString('hex')
@@ -60,7 +65,9 @@ const TARGET: RelaunchTarget = {
   argv: ['/opt/Termpolis/termpolis', '--no-sandbox', '--disable-gpu'],
   env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/home/d', DISPLAY: ':0' },
 }
-const DEB = '/home/d/.cache/termpolis-updater/pending/termpolis_1.54.1_amd64.deb'
+/** electron-updater's folder for a downloaded update, for the home folder of TARGET. */
+const PENDING = '/home/d/.cache/termpolis-updater/pending'
+const DEB = `${PENDING}/termpolis_1.54.1_amd64.deb`
 const REQUEST = { deb: DEB, from: '1.54.0', target: '1.54.1' }
 const FILES = {
   log: '/home/d/.config/termpolis/update-install.log',
@@ -74,17 +81,62 @@ let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'deb-update-')) })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
+describe('loading the module', () => {
+  it('needs nothing of fs at load time, so a test that mocks fs without its constants can still load index.ts', async () => {
+    // mainProcess.test.ts mocks fs with a handful of functions and no `constants`, then imports
+    // index.ts, which imports autoUpdater.ts, which imports this module. A flag read when the
+    // module loads made that whole file fail to load, its 240 tests with it.
+    vi.resetModules()
+    vi.doMock('fs', async () => {
+      const { constants: _constants, ...fs } = await vi.importActual<typeof import('fs')>('fs')
+      return { ...fs, default: fs }
+    })
+    try {
+      const mod = await import('../../src/main/debUpdate')
+      // Where the flags are wanted, their absence is a file that can't be read.
+      expect(mod.readSmallFile(join(dir, 'missing'), 100)).toBeNull()
+      expect(mod.isExecutableFile(dir)).toBe(false)
+    } finally {
+      vi.doUnmock('fs')
+      vi.resetModules()
+    }
+  })
+})
+
 describe('what the runner runs', () => {
   it("is electron-updater's two install steps in one command, so they take one prompt", () => {
     // DebUpdater runs `dpkg -i <deb>` and, when that fails, a second privileged
     // `apt-get install -f -y`. Here $1 is the .deb, so its path is never read as shell.
-    expect(DEB_INSTALL_COMMAND).toBe('dpkg -i "$1" || apt-get install -f -y')
+    expect(DEB_INSTALL_COMMAND).toBe('dpkg -i "$1" || apt-get install -f -y --no-remove')
     expect(DEB_INSTALL_SCRIPT).toContain(`install='${DEB_INSTALL_COMMAND}'`)
+  })
+
+  it('never lets apt-get remove a package to settle what dpkg left unmet, Termpolis least of all', () => {
+    // Where a dependency can't be had, apt-get install -f -y's answer is to remove whatever needs
+    // it, without asking, and exit 0. --no-remove makes it fail instead, having touched nothing.
+    expect(DEB_INSTALL_COMMAND.split('||')[1].trim().split(' ')).toEqual(['apt-get', 'install', '-f', '-y', '--no-remove'])
   })
 
   it('waits for the old Termpolis with the loop the relaunch uses, zombie check included', () => {
     expect(DEB_INSTALL_SCRIPT).toContain(WAIT_FOR_EXIT.join('\n'))
-    expect(DEB_INSTALL_SCRIPT.startsWith('pid=$1;')).toBe(true)
+    expect(DEB_INSTALL_SCRIPT.startsWith('(\npid=$1;')).toBe(true)
+  })
+
+  it('says why when it gave up waiting, rather than leaving nothing behind', () => {
+    // The old Termpolis still running two minutes on, stuck in native teardown say: nothing is
+    // installed, and the result and the log say so, for the next launch to tell.
+    expect(DEB_INSTALL_SCRIPT).toContain(
+      `if ${WAIT_GAVE_UP}; then\n` +
+        `  printf '${DEB_RUNNER_NAME}: error: Termpolis was still running two minutes after Restart, so nothing was installed\\n'\n` +
+        '  code=1\n',
+    )
+  })
+
+  it('works in a subshell, so the shell that starts Termpolis again has assigned nothing', () => {
+    // In sh, assigning to a name the environment exports changes it for whatever is started
+    // afterwards: a $log or $code of the user's own would reach the new Termpolis as the runner's.
+    expect(DEB_INSTALL_SCRIPT.endsWith(')\nshift 9\nexec "$@" </dev/null >/dev/null 2>&1')).toBe(true)
+    expect(DEB_INSTALL_SCRIPT.split('\n').filter((line) => line === ')')).toHaveLength(1)
   })
 
   it('asks through pkexec without its text agent, or through sudo -A, for that one command', () => {
@@ -205,9 +257,13 @@ describe('debInstallCommand', () => {
     expect(JSON.parse(cmd[8]).deb).toBe(deb)
   })
 
-  it('restarts an AppImage from its file, as the relaunch does', () => {
-    const cmd = debInstallCommand({ ...TARGET, env: { APPIMAGE: '/home/d/T.AppImage' } }, REQUEST, PKEXEC, FILES)
-    expect(cmd[13]).toBe('/home/d/T.AppImage')
+  it('restarts the program dpkg has replaced, never an AppImage that an inherited APPIMAGE names', () => {
+    // Only a .deb gets here. Started from the terminal of an editor shipped as an AppImage, this
+    // Termpolis has the editor's APPIMAGE, and restarting from that would start the editor.
+    const leaked = '/home/d/Applications/Cursor-1.7.0-x86_64.AppImage'
+    for (const target of [{ ...TARGET, env: { APPIMAGE: leaked } }, { ...TARGET, env: { APPIMAGE: leaked }, appImage: leaked }]) {
+      expect(debInstallCommand(target, REQUEST, PKEXEC, FILES).slice(13)).toEqual(['/opt/Termpolis/termpolis', '--no-sandbox', '--disable-gpu'])
+    }
   })
 })
 
@@ -296,6 +352,56 @@ describe('startDebInstall', () => {
     const { d, spawn } = deps({ running: () => true })
     expect(startDebInstall(REQUEST, d)).toEqual({ started: false, busy: true, message: DEB_BUSY_MESSAGE })
     expect(spawn).not.toHaveBeenCalled()
+  })
+
+  /** What an earlier runner left in userData, nobody having read it yet. */
+  const writeResult = (over: { code?: number; info?: Record<string, unknown>; tail?: string } = {}) =>
+    writeFileSync(
+      join(dir, DEB_RESULT_FILE),
+      JSON.stringify({ info: { from: '1.54.0', target: '1.54.1', deb: DEB, how: 'pkexec', ...over.info }, code: over.code ?? 0, tailHex: hex(over.tail ?? 'Setting up termpolis (1.54.1) ...\n') }),
+    )
+
+  it('refuses to install again what the runner of an earlier Restart installed, its result unread', () => {
+    // A Termpolis opened by hand while the password dialog was up still runs 1.54.0, and finds
+    // 1.54.1 as new as ever; the copy the runner started found it holding the single-instance
+    // lock and quit at once, so nobody read the result.
+    writeResult()
+    const { d, spawn } = deps()
+    expect(startDebInstall(REQUEST, d)).toEqual({ started: false, message: debInstalledMessage('1.54.1') })
+    expect(debInstalledMessage('1.54.1')).toBe('Termpolis 1.54.1 is installed. Quit Termpolis and open it again to start it.')
+    expect(spawn).not.toHaveBeenCalled()
+    // Left for the launch that runs 1.54.1, which has nothing to say about it.
+    expect(existsSync(join(dir, DEB_RESULT_FILE))).toBe(true)
+    expect(existsSync(join(dir, DEB_LOG_FILE))).toBe(false)
+  })
+
+  it("installs again when the earlier result isn't this update, installed", () => {
+    const cases: [string, () => void, typeof REQUEST | { deb: string; from: string }][] = [
+      ['the prompt was cancelled', () => writeResult({ code: PKEXEC_DISMISSED }), REQUEST],
+      ['another version', () => writeResult({ info: { target: '1.54.2' } }), REQUEST],
+      ['installed from another version', () => writeResult({ info: { from: '1.53.0' } }), REQUEST],
+      ['dpkg failed and apt-get -f had nothing to fix', () => writeResult({ tail: `dpkg-deb: error: '${DEB}' is not a Debian format archive\n` }), REQUEST],
+      ['a request with no version to tell it by', () => writeResult(), { deb: DEB, from: '1.54.0' }],
+      ['a day old', () => {
+        writeResult()
+        const at = (Date.now() - DEB_RESULT_MAX_AGE_MS - 60_000) / 1000
+        utimesSync(join(dir, DEB_RESULT_FILE), at, at)
+      }, REQUEST],
+      ["dpkg's error further back in the log than the result's tail", () => {
+        writeResult()
+        writeFileSync(join(dir, DEB_LOG_FILE), `dpkg: error processing archive ${DEB} (--install):\n failed to write (No space left on device)\n`)
+      }, REQUEST],
+    ]
+    for (const [why, arrange, request] of cases) {
+      rmSync(join(dir, DEB_RESULT_FILE), { force: true })
+      rmSync(join(dir, DEB_LOG_FILE), { force: true })
+      arrange()
+      const { d, spawn } = deps()
+      expect(startDebInstall(request, d), why).toEqual({ started: true })
+      expect(spawn, why).toHaveBeenCalledTimes(1)
+      // The new attempt's own result can't be mistaken for that one.
+      expect(existsSync(join(dir, DEB_RESULT_FILE)), why).toBe(false)
+    }
   })
 
   it('gives the command to run by hand, without starting anything, where there is neither pkexec nor sudo', () => {
@@ -479,6 +585,21 @@ describe('parseDebInstallResult', () => {
   })
 })
 
+describe('readDebInstallResult', () => {
+  it('reads the result and leaves it where it is', () => {
+    writeFileSync(join(dir, DEB_RESULT_FILE), JSON.stringify({ info: { from: '1.54.0', target: '1.54.1' }, code: 0, tailHex: '' }))
+    expect(readDebInstallResult(dir)).toEqual({ code: 0, tail: '', from: '1.54.0', target: '1.54.1' })
+    expect(readDebInstallResult(dir)).toEqual({ code: 0, tail: '', from: '1.54.0', target: '1.54.1' })
+    expect(existsSync(join(dir, DEB_RESULT_FILE))).toBe(true)
+  })
+
+  it('is null for no result, or one more than a day old', () => {
+    expect(readDebInstallResult(dir)).toBeNull()
+    writeFileSync(join(dir, DEB_RESULT_FILE), JSON.stringify({ code: 0, tailHex: '' }))
+    expect(readDebInstallResult(dir, Date.now() + DEB_RESULT_MAX_AGE_MS + 60_000)).toBeNull()
+  })
+})
+
 describe('takeDebInstallResult', () => {
   const file = () => join(dir, DEB_RESULT_FILE)
   const write = (body: unknown) => writeFileSync(file(), typeof body === 'string' ? body : JSON.stringify(body))
@@ -585,6 +706,13 @@ describe('debErrorDetail', () => {
     expect(debErrorDetail('\n \n')).toBe('')
   })
 
+  it('can be held to a line that says why, with no last line in its place', () => {
+    // After a clean dpkg run, the last line is a trigger, not a reason.
+    const clean = 'Setting up termpolis (1.54.1~test) ...\nProcessing triggers for desktop-file-utils (0.27-2build1) ...\n'
+    expect(debErrorDetail(clean, false)).toBe('')
+    expect(debErrorDetail(`${clean}E: boom\n`, false)).toBe('E: boom')
+  })
+
   it('collapses whitespace and cuts a long error short', () => {
     expect(debErrorDetail('E:   a\t\tb')).toBe('E: a b')
     const long = debErrorDetail(`E: ${'x'.repeat(1000)}`)
@@ -639,9 +767,39 @@ describe('debInstallNotice', () => {
 
   it('gives the command to run by hand for pkexec 127, or when there was no authentication agent', () => {
     const manual = { kind: 'manual', message: debManualInstallMessage(DEB) }
-    expect(debInstallNotice(result({ code: PKEXEC_NOT_AUTHORIZED }), '1.54.0', LOG)).toEqual(manual)
+    expect(debInstallNotice(result({ code: PKEXEC_NOT_AUTHORIZED }), '1.54.0', LOG, PENDING)).toEqual(manual)
     const noAgent = result({ code: 1, tail: 'Error executing command as another user: No authentication agent found.\n' })
-    expect(debInstallNotice(noAgent, '1.54.0', LOG)).toEqual(manual)
+    expect(debInstallNotice(noAgent, '1.54.0', LOG, PENDING)).toEqual(manual)
+  })
+
+  it('names in that command only a .deb that electron-updater could have downloaded', () => {
+    // Any program running as the user can write the result: the banner must not become its way to
+    // have the user run sudo apt install on a package of its choosing.
+    for (const deb of [
+      '/tmp/.x/termpolis_1.54.1_amd64.deb',
+      `${PENDING}/evil.deb`,
+      `${PENDING}/termpolis_1.54.1_amd64.rpm`,
+      `${PENDING}/sub/termpolis_1.54.1_amd64.deb`,
+      `${PENDING}/../termpolis_1.54.1_amd64.deb`,
+      `${PENDING}/termpolis_1.54.1\n_amd64.deb`,
+      `${PENDING}/termpolis_1.54.1\u001b[2K_amd64.deb`,
+      `${PENDING}/termpolis_1.54.1\u007f_amd64.deb`,
+    ]) {
+      expect(debInstallNotice(result({ code: PKEXEC_NOT_AUTHORIZED, deb }), '1.54.0', LOG, PENDING), JSON.stringify(deb)).toEqual({
+        kind: 'manual',
+        message: debManualInstallMessage(undefined),
+      })
+    }
+  })
+
+  it("looks for electron-updater's download folder where electron-updater puts it", () => {
+    // getAppCacheDir: XDG_CACHE_HOME, else ~/.cache; then app-update.yml's updaterCacheDirName.
+    expect(debPendingDir({}, '/home/d')).toBe(PENDING)
+    expect(debPendingDir({ XDG_CACHE_HOME: '/var/cache/d' }, '/home/d')).toBe('/var/cache/d/termpolis-updater/pending')
+    expect(debPendingDir()).toBe(posix.join(process.env.XDG_CACHE_HOME || posix.join(homedir(), '.cache'), 'termpolis-updater', 'pending'))
+    // By default, this process's: a result naming a .deb elsewhere gives the release page.
+    const elsewhere = '/nowhere/termpolis-updater/pending/termpolis_1.54.1_amd64.deb'
+    expect(debInstallNotice(result({ code: PKEXEC_NOT_AUTHORIZED, deb: elsewhere }), '1.54.0', LOG)?.message).toBe(debManualInstallMessage(undefined))
   })
 
   it("gives dpkg's error for anything else", () => {
@@ -657,6 +815,15 @@ describe('debInstallNotice', () => {
     expect(debInstallNotice(result({ code: 0, tail }), '1.54.0', LOG)?.message).toBe(
       debFailedMessage(`dpkg-deb: error: '${DEB}' is not a Debian format archive`, 0, LOG),
     )
+  })
+
+  it("never takes a clean dpkg run's last line for the error of a 0 that left the version as it was", () => {
+    // A package that installed cleanly but still says 1.54.0: dpkg's last words are a trigger.
+    const tail = 'Setting up termpolis (1.54.1~test) ...\nProcessing triggers for desktop-file-utils (0.27-2build1) ...\n'
+    expect(debInstallNotice(result({ code: 0, target: '1.54.1-test', tail }), '1.54.0', LOG)).toEqual({
+      kind: 'failed',
+      message: 'Update not installed: the installer finished without installing it (full output: /home/d/.config/termpolis/update-install.log).',
+    })
   })
 
   it("reads sudo's 126 and 127 as any other failure: only pkexec's are its own", () => {
@@ -676,7 +843,7 @@ describe('debInstallNotice', () => {
       how: 'sudo',
       tail: 'termpolis-askpass: no password dialog is installed (zenity, kdialog or ssh-askpass).\nRun the command yourself in a Termpolis terminal instead.\nsudo: no password was provided\n',
     })
-    expect(debInstallNotice(noDialog, '1.54.0', LOG)).toEqual({ kind: 'manual', message: debManualInstallMessage(DEB) })
+    expect(debInstallNotice(noDialog, '1.54.0', LOG, PENDING)).toEqual({ kind: 'manual', message: debManualInstallMessage(DEB) })
     // The same words from pkexec's command, or after a success, mean nothing of the kind.
     expect(debInstallNotice(result({ code: 1, tail: cancelled.tail }), '1.54.0', LOG)?.kind).toBe('failed')
     expect(debInstallNotice(result({ code: 0, how: 'sudo', tail: cancelled.tail }), '1.54.1', LOG)).toBeNull()
@@ -694,6 +861,41 @@ describe('readDebInstallNotice', () => {
     expect(readDebInstallNotice(dir, '1.54.0')).toEqual({ kind: 'failed', message: debFailedMessage('E: boom', 100, join(dir, DEB_LOG_FILE)) })
     expect(existsSync(join(dir, DEB_RESULT_FILE))).toBe(false)
     expect(readDebInstallNotice(dir, '1.54.0')).toBeNull()
+  })
+
+  /** A log whose first error, dpkg's, comes before 400 lines of apt-get: more than the tail keeps. */
+  const longLog = () => [
+    `termpolis-deb-update: installing ${DEB}`,
+    `dpkg: error processing archive ${DEB} (--install):`,
+    ' failed to write (No space left on device)',
+    'The following packages were automatically installed and are no longer required:',
+    ...Array.from({ length: 400 }, (_, i) => `  libno-longer-needed-${i}`),
+    'Use \'sudo apt autoremove\' to remove them.',
+    '0 upgraded, 0 newly installed, 0 to remove and 57 not upgraded.',
+    '',
+  ].join('\n')
+
+  it("finds dpkg's error in the whole log when apt-get's output pushed it out of the result's tail", () => {
+    const log = longLog()
+    const tail = Buffer.from(log).subarray(-DEB_TAIL_BYTES).toString('utf8')
+    expect(tail).not.toContain('dpkg: error')
+    writeFileSync(join(dir, DEB_LOG_FILE), log)
+    writeFileSync(join(dir, DEB_RESULT_FILE), JSON.stringify({ info: { from: '1.54.0', target: '1.54.1' }, code: 100, tailHex: hex(tail) }))
+    expect(readDebInstallNotice(dir, '1.54.0')).toEqual({
+      kind: 'failed',
+      message: debFailedMessage(`dpkg: error processing archive ${DEB} (--install): failed to write (No space left on device)`, 100, join(dir, DEB_LOG_FILE)),
+    })
+  })
+
+  it('falls back to the tail when the log is gone, empty, or too big to read', () => {
+    const tail = 'E: from the tail\n'
+    const expected = { kind: 'failed', message: debFailedMessage('E: from the tail', 100, join(dir, DEB_LOG_FILE)) }
+    for (const log of [null, '', `E: from the log\n${'x'.repeat(DEB_LOG_MAX_BYTES)}`]) {
+      rmSync(join(dir, DEB_LOG_FILE), { force: true })
+      if (log !== null) writeFileSync(join(dir, DEB_LOG_FILE), log)
+      writeFileSync(join(dir, DEB_RESULT_FILE), JSON.stringify({ info: { from: '1.54.0', target: '1.54.1' }, code: 100, tailHex: hex(tail) }))
+      expect(readDebInstallNotice(dir, '1.54.0'), String(log?.length)).toEqual(expected)
+    }
   })
 })
 

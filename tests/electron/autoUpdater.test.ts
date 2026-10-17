@@ -95,6 +95,7 @@ const LINUX_HOST: Partial<UpdaterHost> = {
   noNewPrivs: () => false,
   installDeb: () => ({ started: false, message: 'a test reached the .deb install' }),
   takeDebNotice: () => null,
+  debInstallerRunning: () => false,
   quit: () => {},
 }
 /** The .deb, Termpolis's Linux system package (debUpdate.ts). */
@@ -1298,6 +1299,101 @@ describe('initAutoUpdater for a Linux .deb — the launch after an install says 
   })
 })
 
+describe('initAutoUpdater for a Linux .deb — a Termpolis opened while an update is being installed', () => {
+  // Opened by hand while the runner of an earlier Restart waits at the password dialog, or while
+  // dpkg runs: it starts from the version being replaced, and holds the single-instance lock that
+  // the Termpolis the runner starts afterwards needs.
+  const tick = () => new Promise((resolve) => setImmediate(resolve))
+  async function setup(host: Partial<UpdaterHost> = {}) {
+    const showMessageBox = vi.fn((_parent: unknown, _options: unknown) => Promise.resolve({ response: 0 }))
+    const quit = vi.fn()
+    const takeDebNotice = vi.fn((): string | null => null)
+    const onBefore = vi.fn()
+    const win = { webContents: { send: vi.fn() } }
+    const mod = await freshAutoUpdater({ ...DEB_HOST, debInstallerRunning: () => true, showMessageBox, quit, takeDebNotice, ...host })
+    mod.__setUpdateConfigExistsForTests(() => true)
+    mod.initAutoUpdater(() => win as any, { onBeforeQuitAndInstall: onBefore })
+    return { mod, showMessageBox, quit, takeDebNotice, onBefore, win }
+  }
+
+  it('says an update is being installed, then quits, without reading a result or checking for updates', async () => {
+    const setIntervalSpy = vi.spyOn(global, 'setInterval')
+    try {
+      const { mod, showMessageBox, quit, takeDebNotice, onBefore, win } = await setup()
+      expect(showMessageBox).toHaveBeenCalledWith(win, mod.DEB_INSTALLING_DIALOG)
+      expect(quit).not.toHaveBeenCalled()
+      await tick()
+      // Past the close guard, as for any quit Termpolis chooses itself.
+      expect(onBefore.mock.calls).toEqual([[true]])
+      expect(quit).toHaveBeenCalledTimes(1)
+      // The runner hasn't written its result yet, and this copy has nothing to check for.
+      expect(takeDebNotice).not.toHaveBeenCalled()
+      expect(setIntervalSpy).not.toHaveBeenCalled()
+      // Quitting installs nothing, and a check asked for by hand still finds its error listener.
+      expect((mockAutoUpdater as Record<string, unknown>).autoInstallOnAppQuit).toBe(false)
+      expect(typeof eventHandlers['error']).toBe('function')
+    } finally {
+      setIntervalSpy.mockRestore()
+    }
+  })
+
+  it('tells the user Termpolis will open again by itself, and what to do with the password dialog', async () => {
+    const { mod } = await setup()
+    expect(mod.DEB_INSTALLING_DIALOG).toEqual({
+      type: 'warning',
+      buttons: ['OK'],
+      defaultId: 0,
+      cancelId: 0,
+      message: 'Termpolis is being updated',
+      detail:
+        'Termpolis closes now and opens again by itself once the update is installed. If your desktop is asking for ' +
+        'your administrator password, answer it, or cancel it to keep the version you have.',
+    })
+  })
+
+  it('still quits when the dialog cannot be shown', async () => {
+    const { quit } = await setup({ showMessageBox: () => Promise.reject(new Error('window gone')) })
+    await tick()
+    expect(quit).toHaveBeenCalledTimes(1)
+  })
+
+  it('raises nothing when the quit itself throws', async () => {
+    const quit = vi.fn(() => { throw new Error('quitting already') })
+    expect(await unhandledRejectionsDuring(() => setup({ quit }))).toEqual([])
+    expect(quit).toHaveBeenCalledTimes(1)
+  })
+
+  it('carries on as usual when it cannot tell whether an install is at work', async () => {
+    const { showMessageBox, quit, takeDebNotice } = await setup({ debInstallerRunning: () => { throw new Error('EACCES') } })
+    await tick()
+    expect(showMessageBox).not.toHaveBeenCalled()
+    expect(quit).not.toHaveBeenCalled()
+    expect(takeDebNotice).toHaveBeenCalledTimes(1)
+  })
+
+  it.each<[string, Partial<UpdaterHost>]>([
+    ['an AppImage', { appImage: true }],
+    ['macOS', { platform: 'darwin', exePath: '/usr/local/bin/termpolis' }],
+    ['Windows', { platform: 'win32', exePath: 'C:\\Program Files\\Termpolis\\Termpolis.exe' }],
+  ])('never looks for %s, which has no install runner', async (_name, host) => {
+    const debInstallerRunning = vi.fn(() => true)
+    const { showMessageBox, quit } = await setup({ ...host, debInstallerRunning })
+    await tick()
+    expect(debInstallerRunning).not.toHaveBeenCalled()
+    expect(showMessageBox).not.toHaveBeenCalled()
+    expect(quit).not.toHaveBeenCalled()
+  })
+
+  it('never looks in a dev or test run, which never installs', async () => {
+    process.env.NODE_ENV = 'test'
+    const debInstallerRunning = vi.fn(() => true)
+    const { quit } = await setup({ debInstallerRunning })
+    await tick()
+    expect(debInstallerRunning).not.toHaveBeenCalled()
+    expect(quit).not.toHaveBeenCalled()
+  })
+})
+
 describe("initAutoUpdater for a Linux .deb — by default, through debUpdate and Electron's own app", () => {
   let dir: string
   beforeEach(() => {
@@ -1309,13 +1405,15 @@ describe("initAutoUpdater for a Linux .deb — by default, through debUpdate and
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('tells nothing when no install left a result', async () => {
-    const { takeDebNotice: _t, ...host } = DEB_HOST
+  it('tells nothing when no install left a result, and finds no install at work', async () => {
+    const { takeDebNotice: _t, debInstallerRunning: _r, quit: _q, ...host } = DEB_HOST
     const mod = await freshAutoUpdater(host)
     const send = vi.fn()
     mod.initAutoUpdater(() => ({ webContents: { send } }) as any)
     expect(ipcHandlers.get('updater:status')!()).toEqual({ status: 'idle' })
     expect(send).not.toHaveBeenCalled()
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(electron.app.quit).not.toHaveBeenCalled()
   })
 
   it("takes the last install's result from userData, read for the version running now", async () => {
@@ -1328,17 +1426,78 @@ describe("initAutoUpdater for a Linux .deb — by default, through debUpdate and
   })
 
   it('hands Restart to debUpdate, from userData', async () => {
-    // Safe only because update-downloaded names no file: startDebInstall refuses that before it
-    // looks for pkexec or spawns anything. Never give this test a real .deb path.
+    // The real installDeb, with the real spawn. userData is a regular file here, so the log the
+    // runner's output goes to can't be created, and startDebInstall stops before it spawns,
+    // whatever .deb it is handed. A real runner would wait for the test process to exit, ask for
+    // the administrator password, then start the test process again.
+    const notAFolder = join(dir, 'not-a-folder')
+    writeFileSync(notAFolder, '')
+    electron.app.getPath = vi.fn(() => notAFolder)
     const { installDeb: _i, ...host } = DEB_HOST
     const mod = await freshAutoUpdater(host)
     mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
-    eventHandlers['update-downloaded']?.({ version: '9.9.9' })
-    expect(ipcHandlers.get('updater:quit-and-install')!()).toEqual({
-      success: false,
-      error: debManualInstallMessage(undefined, DEB_NOT_STARTED_LEAD),
-    })
+    eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+    const answer = ipcHandlers.get('updater:quit-and-install')!() as { success: boolean; error?: string }
+    expect(answer.success).toBe(false)
+    // With pkexec on this machine the log can't be created; without it there is no way to ask.
+    expect([debManualInstallMessage(DEB, DEB_NOT_STARTED_LEAD), debManualInstallMessage(DEB)]).toContain(answer.error)
     expect(electron.app.getPath).toHaveBeenCalledWith('userData')
+    expect(readFileSync(notAFolder, 'utf8')).toBe('')
+  })
+
+  describe('which kind of Linux package this is', () => {
+    // electron-updater picks DebUpdater by <resources>/package-type alone (main.js). APPIMAGE is
+    // inherited like any variable: a .deb started from the terminal of an editor shipped as an
+    // AppImage has the editor's.
+    let savedAppImage: string | undefined
+    beforeEach(() => {
+      savedAppImage = process.env.APPIMAGE
+      Object.defineProperty(process, 'resourcesPath', { value: dir, configurable: true, writable: true })
+      for (const key of ['autoInstallOnAppQuit', 'autoRunAppAfterInstall']) delete (mockAutoUpdater as Record<string, unknown>)[key]
+      mockAutoUpdater.quitAndInstall.mockReset()
+    })
+    afterEach(() => {
+      delete (process as { resourcesPath?: string }).resourcesPath
+      if (savedAppImage === undefined) delete process.env.APPIMAGE
+      else process.env.APPIMAGE = savedAppImage
+    })
+
+    /** Restart on the default host, with APPIMAGE and <resources>/package-type as given. */
+    async function restartWith(appImage: string | undefined, packageType: string | null) {
+      if (appImage === undefined) delete process.env.APPIMAGE
+      else process.env.APPIMAGE = appImage
+      if (packageType !== null) writeFileSync(join(dir, 'package-type'), packageType)
+      const { appImage: _a, ...host } = DEB_HOST
+      const installDeb = vi.fn((_deb: string | undefined, _version: string | undefined): DebInstallStart => ({ started: true }))
+      const mod = await freshAutoUpdater({ ...host, installDeb })
+      mod.initAutoUpdater(() => ({ webContents: { send: vi.fn() } }) as any)
+      eventHandlers['update-downloaded']?.({ version: '9.9.9', downloadedFile: DEB })
+      const answer = ipcHandlers.get('updater:quit-and-install')!()
+      return { installDeb, answer, updater: mockAutoUpdater as Record<string, unknown> }
+    }
+
+    it('takes a .deb for a .deb by its package-type, whatever APPIMAGE it inherited', async () => {
+      const { installDeb, answer, updater } = await restartWith('/home/u/Applications/Cursor-1.7.0-x86_64.AppImage', 'deb\n')
+      expect(updater.autoInstallOnAppQuit).toBe(false)
+      expect(updater.autoRunAppAfterInstall).toBe(false)
+      expect(answer).toEqual({ success: true })
+      expect(installDeb).toHaveBeenCalledWith(DEB, '9.9.9')
+      expect(mockAutoUpdater.quitAndInstall).not.toHaveBeenCalled()
+    })
+
+    it('leaves an AppImage, which has no package-type, to electron-updater', async () => {
+      const { installDeb, updater } = await restartWith('/home/u/Applications/Termpolis-1.54.0.AppImage', null)
+      expect(updater.autoInstallOnAppQuit).toBe(true)
+      expect(updater.autoRunAppAfterInstall).toBeUndefined()
+      expect(mockAutoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true)
+      expect(installDeb).not.toHaveBeenCalled()
+    })
+
+    it('takes a copy with neither for a system package, as before', async () => {
+      const { installDeb, updater } = await restartWith(undefined, null)
+      expect(updater.autoInstallOnAppQuit).toBe(false)
+      expect(installDeb).toHaveBeenCalledWith(DEB, '9.9.9')
+    })
   })
 
   it("quits through Electron's app once the runner has started", async () => {
