@@ -6,6 +6,7 @@ import wide from '../fixtures/agentScreensWide.json'
 import long from '../fixtures/longPromptScreens.json'
 import input from '../fixtures/agentScreensInput.json'
 import typed from '../fixtures/agentScreensTyped.json'
+import held from '../fixtures/agentScreensHeld.json'
 
 // write_to_terminal with `submit` (GitHub #36 item 4), against a fake terminal: a screen script that
 // changes as time passes and as the tool types, and a clock that only moves when the tool sleeps.
@@ -898,6 +899,77 @@ describe('submitToTerminal and a box that already holds other text', () => {
     const res = await submitToTerminal(t.handlers, 't1', text, t.clock)
     expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
     expect(t.writes).toEqual([text])
+  })
+
+  // R4-2: a task taller than what the box shows, typed behind a prompt left there. agy shows "↑ N more
+  // lines" over the task's end, and Claude Code's box grows past the screen's top: what was in front went
+  // out of sight with the task's start, and an Enter sent the two as one prompt.
+  /** A worker that shows `ready` until something is typed, `typedRaw` after, and works once Enter is pressed. */
+  const live = (ready: { raw: string; cols: number; rows: number }, typedRaw: string, name: string) =>
+    fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? typedRaw : ready.raw), name, ready)
+
+  it.each([
+    ['agy', 'agy-80x24-held-ready', 'agy-80x24-held-long', 'Gemini (Docs)'],
+    ['Claude Code', 'claude-80x17-held-ready', 'claude-80x17-held-tall', 'Claude (Build)'],
+  ] as const)("presses no Enter on a task taller than %s's box typed behind a prompt left there, though only the task's end shows", async (_agent, readyName, typedName, name) => {
+    const ready = held.screens[readyName]
+    const after = held.screens[typedName]
+    const t = live(ready, after.raw, name)
+    // What was left there is out of sight once the task is typed.
+    const rows = screenOf(after.raw, after).lines().join('\n')
+    expect(rows).not.toContain('ALPHA')
+    expect(rows).not.toContain(after.text.split('\n')[0].slice(0, 30))
+    const res = await submitToTerminal(t.handlers, 't1', after.text, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([after.text])
+  })
+
+  it("presses Enter on a paste typed again over Claude Code's placeholder for it, which it expands into one copy", async () => {
+    // Claude Code's footer says so: "paste again to expand". The copy is taller than the screen.
+    const ready = held.screens['claude-80x24-pasted-ready']
+    const after = held.screens['claude-80x24-pasted-again']
+    expect(screenOf(ready.raw, ready).lines().join('\n')).toContain('paste again to expand')
+    expect(after.text).toBe(ready.text)
+    const t = live(ready, after.raw, 'Claude (Build)')
+    expect(await submitToTerminal(t.handlers, 't1', after.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([after.text, '\r'])
+  })
+
+  /** Claude Code at 80x17 with `rows` in its box, the rule and the footer under it: all the box shows. */
+  const tallBox = (rows: string[]) => frame([...rows.slice(-15).map((r) => `  ${r}`), RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
+  const rowsOf = (text: string) => Array.from({ length: Math.ceil(text.length / 76) }, (_, i) => text.slice(i * 76, i * 76 + 76))
+
+  it('presses no Enter on a tall task behind a prompt left there, though the task repeats its own start further on', async () => {
+    // Read for the start anywhere in the box, the task's first words were in its end too, and the
+    // prompt in front of it, out of sight, went with it.
+    const text = Array.from({ length: 40 }, () => 'Write the docs for every route now. ').join('')
+    const ready = frame(['Claude Code', '', RULE, '❯ Fix the lint errors first.', RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
+    const after = tallBox(rowsOf(`Fix the lint errors first.${text}`))
+    const shown = screenOf(after, { cols: 80, rows: 17 }).lines().join('')
+    expect(shown).not.toContain('lint')
+    expect(shown.replace(/[^\p{L}\p{N}]/gu, '')).toContain('Writethedocsforeveryroutenow')
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? after : ready), 'Claude (Build)', { cols: 80, rows: 17 })
+    expect(await submitToTerminal(t.handlers, 't1', text, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([text])
+  })
+
+  it("presses no Enter on a paste typed again over Claude Code's placeholder with something typed in front of it", async () => {
+    // Expanded, the paste is taller than the screen, and what was typed in front went out of sight.
+    const paste = held.screens['claude-80x24-pasted-ready'].text
+    const ready = frame(['Claude Code', '', RULE, '❯ Fix it first. [Pasted text #1 +30 lines]', RULE, '  paste again to expand'], '✳ Claude Code')
+    const after = tallBox(['Fix it first. ', ...paste.split('\n')])
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? after : ready), 'Claude (Build)', { cols: 80, rows: 17 })
+    expect(await submitToTerminal(t.handlers, 't1', paste, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([paste])
+  })
+
+  it("presses no Enter on another paste typed behind Claude Code's placeholder: it adds a placeholder of its own", async () => {
+    const ready = held.screens['claude-80x24-pasted-other-ready']
+    const after = held.screens['claude-80x24-pasted-other']
+    expect(after.text).not.toBe(ready.text)
+    const t = live(ready, after.raw, 'Claude (Build)')
+    expect(await submitToTerminal(t.handlers, 't1', after.text, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([after.text])
   })
 })
 

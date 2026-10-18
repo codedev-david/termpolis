@@ -720,8 +720,8 @@ const SUBMIT_ECHO_POLL_MS = 250
 /** How long the agent gets to take the prompt after each Enter. */
 const SUBMIT_CONFIRM_MS = 3000
 const SUBMIT_CONFIRM_POLL_MS = 500
-/** How much of the text's end submit looks for on the screen: enough to be this text's, little
- *  enough to be in what a box shows of a long one. */
+/** How much of the text's end submit looks for on the screen, or of its start in a box that held
+ *  something before: enough to be this text's, little enough to be in what a box shows of a long one. */
 const SUBMIT_END_CHARS = 24
 /** How many of the screen's last rows a failed submit returns, for the conductor to read. */
 const SUBMIT_SCREEN_ROWS = 15
@@ -864,18 +864,25 @@ function showsTyped(seen: Seen, text: string, agent: boolean): boolean {
   return bare(joined(input)).includes(endOf(text)) || PASTE_PLACEHOLDER.test(input.join('\n'))
 }
 
+/** Claude Code's placeholder for a paste, alone in its box: pasted again, the same text expands it
+ *  into one copy ("paste again to expand", its footer says), and another adds a second placeholder. */
+const PASTED_ALONE = /^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/
+
 /** Whether the box shows something in front of the text just typed into it that the text doesn't
  *  account for: what an earlier call or a person left there, which an Enter would send with it as
- *  one prompt (R3-3). In front of the agent's placeholder for it, when it collapsed a long paste;
- *  else in front of the text's end, past what of the text's own start the box shows. A box that
- *  shows only the end of a text taller than itself shows nothing in front of it. */
-function otherTextInFront(input: readonly string[], text: string): boolean {
+ *  one prompt (R3-3). `held` is the box before the text was typed. In front of the agent's
+ *  placeholder for it, when it collapsed a long paste; else the box must start with the text, and
+ *  show nothing in front of its end but the text's own start. A box that shows only the end of a text
+ *  taller than itself can't show what is in front, which went out of sight with the text's start:
+ *  agy's "↑ 14 more lines", Claude Code's box past the screen's top (R4-2). */
+function otherTextInFront(input: readonly string[], text: string, held: readonly string[]): boolean {
   const box = boxText(input)
   const pastes = [...box.matchAll(PASTE_PLACEHOLDERS)]
   const paste = pastes[pastes.length - 1]
   if (paste?.index !== undefined && bare(box.slice(paste.index + paste[0].length)) === '') return bare(box.slice(0, paste.index)) !== ''
   const shown = bare(box)
   const all = bare(text)
+  if (!PASTED_ALONE.test(boxText(held).trim()) && !shown.startsWith(all.slice(0, SUBMIT_END_CHARS))) return true
   const end = endOf(text)
   const at = shown.lastIndexOf(end)
   return at >= 0 && !all.slice(0, all.length - end.length).endsWith(shown.slice(0, at))
@@ -1001,7 +1008,7 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
     }
     // A box that held something before the text was typed: a hint, which the first key replaced,
     // or other text, still in front of this. Not refused before typing, which can't tell the two.
-    if (agent && !emptyInputBox(ready.lines) && otherTextInFront(inputBoxRows(last.lines) ?? [], body)) {
+    if (agent && !emptyInputBox(ready.lines) && otherTextInFront(inputBoxRows(last.lines) ?? [], body, inputBoxRows(ready.lines) ?? [])) {
       return failed(waitedMs, "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
     }
   }
