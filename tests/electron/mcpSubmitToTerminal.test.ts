@@ -996,6 +996,46 @@ describe('write_to_terminal submit into a terminal whose agent is gone', () => {
     expect(writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
   })
 
+  // An agent prints an OSC 7501 query of its own as it starts, which is no prompt report: read as
+  // one, the agent's screen before it went missing, and a live agent was refused.
+  it("still types into an agent whose output carries its own OSC 7501 after its box", async () => {
+    let line = ''
+    const writes: string[] = []
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn(),
+      readOutput: () => `${E}]9;9;C:\\p\x07PS C:\\p> claude --dangerously-skip-permissions\r\n` + (line.endsWith('\r') ? busy() : idle(line)) + `${E}]7501;?\x07${E}[?25h`,
+      writeToTerminal: (_id: string, text: string) => { writes.push(text); line += text },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    await executeTool('run_command', { terminalId: 'up-3', command: 'claude --dangerously-skip-permissions' }, handlers)
+    expect(await submit(handlers, 'up-3', 'Write the docs. Task ID: t-1')).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+  })
+
+  it('still types into a plain shell that reports its folder at each prompt', async () => {
+    const report = `${E}]9;9;C:\\p\x07`
+    // A command run before: a banner and a bare prompt alone read as a shell still starting.
+    const lines = [...banner, 'PS C:\\p> dir', 'ok']
+    let line = ''
+    const writes: string[] = []
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn(),
+      readOutput: () => report + frame([...lines, `PS C:\\p> ${line}`]),
+      writeToTerminal: (_id: string, text: string) => {
+        writes.push(text)
+        if (text === '\r') {
+          lines.push(`PS C:\\p> ${line}`, 'hi')
+          line = ''
+        } else line += text
+      },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    expect((await submit(handlers, 'plain-1', 'echo hi')).submitted).toBe(true)
+    expect(writes).toEqual(['echo hi', '\r'])
+  })
+
   it('types into the agent once run_command has it up', async () => {
     const t = shellTerminal(false)
     await executeTool('run_command', { terminalId: 'up-1', command: 'claude --dangerously-skip-permissions' }, t.handlers)

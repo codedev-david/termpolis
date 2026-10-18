@@ -757,7 +757,8 @@ interface Seen {
 }
 
 /** What every Termpolis shell writes at each prompt it prints, its folder (shellIntegration.ts: OSC
- *  9;9 from PowerShell and cmd, OSC 7 from bash and zsh); an agent's own output has none. */
+ *  9;9 from PowerShell and cmd, OSC 7 from bash; zsh and fish get none); an agent's own output has
+ *  none (its OSC 7501 query is another code). */
 const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
 
 /** Whether the shell is back at its prompt: nothing after the last prompt it printed draws an input
@@ -971,7 +972,7 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   const agent = inputBoxRow(ready.lines) >= 0
   const waitedMs = clock.now() - start
   if ((!agent || ready.shell) && agentTerminals.has(terminalId)) {
-    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited or never started. Check it with read_output, and start the agent again with run_command before sending the text.", ready)
+    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited, never started, or is still starting. Check it with read_output: if the shell's prompt is the last thing there, start the agent again with run_command; if the agent is starting, send the text again once it shows its input.", ready)
   }
   const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
   const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }
