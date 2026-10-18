@@ -2368,6 +2368,22 @@ describe('MCP handler callbacks', () => {
     expect(capturedMcpHandlers.terminalSize('no-such-term')).toBeNull()
   })
 
+  it("outputOffset gives submit where a terminal's output ends, counting what the window let go", async () => {
+    // Submit marks it at a run_command that starts an agent, and reads the agent from what came after.
+    let dataCallback: Function | undefined
+    mockSpawnTerminal.mockImplementation((_id: string, _exec: string, _cwd: string, onData: Function) => {
+      dataCallback = onData
+    })
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'bash', label: 'Bash', executable: '/bin/bash' }])
+    await invokeHandler('terminal:create', { id: 'term-offset-test', shellType: 'bash', cwd: '/tmp', extraPaths: [] })
+    expect(capturedMcpHandlers.outputOffset('term-offset-test')).toBe(0)
+    dataCallback!('PS C:\\p> ')
+    dataCallback!('x'.repeat(40_000))
+    expect(capturedMcpHandlers.outputOffset('term-offset-test')).toBe(40_009)
+    expect(capturedMcpHandlers.readOutput('term-offset-test', 1000).length).toBeLessThan(40_009)
+    expect(capturedMcpHandlers.outputOffset('no-such-term')).toBe(0)
+  })
+
   it('readOutput clamps lines to valid range', async () => {
     // Create a terminal with data
     let dataCallback: Function | undefined

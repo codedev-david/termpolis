@@ -3569,6 +3569,7 @@ async function semanticPoolOptions(
         return readOutputTail(terminalOutputBuffers, terminalId, lines)
       },
       terminalSize: (terminalId) => getTerminalSize(terminalId),
+      outputOffset: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
       runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
         if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }
         // stepId only keys the runner's in-flight map, so per-call uniqueness is all it needs.

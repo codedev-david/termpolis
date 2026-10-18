@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { executeTool, submitToTerminal, SUBMIT_READY_TIMEOUT_MS, type McpToolHandlers, type SubmitClock } from '../../src/main/mcpServer'
 import { screenOf } from '../../src/shared/terminalScreen'
+import { inputBoxRow } from '../../src/shared/agentStatusDetector'
 import fixtures from '../fixtures/agentScreens.json'
 import wide from '../fixtures/agentScreensWide.json'
 import long from '../fixtures/longPromptScreens.json'
@@ -1127,6 +1128,245 @@ describe('write_to_terminal submit into a terminal whose agent is gone', () => {
     await executeTool('close_terminal', { terminalId: 'sh-2' }, u.handlers)
     expect((await submit(u.handlers, 'sh-2', 'echo hi')).submitted).toBe(true)
     expect(u.ran).toEqual(['echo hi'])
+  })
+})
+
+// The output since run_command started the agent, from where main says the command was typed
+// (outputOffset): an agent exited only once its shell printed a prompt after that, and its input is
+// one drawn after that. Read off the whole screen, the last frame an exited agent leaves, box and
+// all, read as its input: right after run_command started it again, submit refused as if it had
+// exited (the conductor then typed the command into the agent starting), and after a resize, whose
+// repaint draws that frame after the prompt, typed the task at the shell's prompt.
+describe('write_to_terminal submit and the output since run_command started the agent', () => {
+  const REPORT = `${E}]9;9;C:\\p\x07`
+  const PROMPT = `${REPORT}PS C:\\p> `
+  const CLAUDE = 'claude --dangerously-skip-permissions'
+  const box = (inBox = '') => idle(inBox)
+  /** The last frame Claude Code leaves when it exits, and its shell's prompt under it. */
+  const exited = (prompt = PROMPT) => `${box()}${E}[7;1HResume this session with: claude --resume 1234${E}[8;1H${prompt}`
+  /** A terminal as main keeps it: what it printed (the last `window` characters of it), whose end
+   *  outputOffset reports. run_command's command is echoed at once (`echo`), as at a prompt; `at`
+   *  prints more at a moment of the submit's clock, and `agentAt` starts drawing an agent then, which
+   *  shows what is typed and works on Enter. */
+  function terminal(size = { cols: 80, rows: 24 }, echo = true, window = Infinity) {
+    let now = 0
+    let out = ''
+    let agent = false
+    let inBox = ''
+    const later: { at: number; text: string; agent: boolean }[] = []
+    const writes: string[] = []
+    const times: number[] = []
+    const sync = () => {
+      later.sort((a, b) => a.at - b.at)
+      while (later.length > 0 && later[0].at <= now) {
+        const next = later.shift()!
+        out += next.text
+        if (next.agent) agent = true
+      }
+    }
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn((_id: string, command: string) => { if (echo) out += `${command}\r\n` }),
+      readOutput: () => { sync(); return Number.isFinite(window) ? out.slice(-window) : out },
+      outputOffset: () => { sync(); return out.length },
+      terminalSize: () => size,
+      writeToTerminal: (_id: string, text: string) => {
+        writes.push(text)
+        times.push(now)
+        if (!agent) out += text // at the shell's prompt: echoed there
+        else if (text === '\r') out += busy()
+        else out += box((inBox += text))
+      },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    const clock: SubmitClock = { now: () => now, sleep: async (ms) => { now += ms } }
+    return {
+      handlers, clock, writes, times,
+      print: (text: string) => { out += text },
+      at: (ms: number, text: string) => { later.push({ at: ms, text, agent: false }) },
+      agentAt: (ms: number, frame = box()) => { later.push({ at: ms, text: frame, agent: true }) },
+    }
+  }
+  const run = (t: { handlers: McpToolHandlers }, terminalId: string, command = CLAUDE) => executeTool('run_command', { terminalId, command }, t.handlers)
+
+  it('waits for an agent run_command starts again to draw its input, and types into that, not the frame the old one left', async () => {
+    const t = terminal()
+    t.print(PROMPT)
+    await run(t, 'again-1')
+    t.print(exited())
+    await run(t, 'again-1')
+    // Claude Code draws its box 2.5 s later; until then the old one sits above the echoed command.
+    t.agentAt(2500)
+    const res = await submitToTerminal(t.handlers, 'again-1', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+    expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
+
+  it('types nothing at the prompt an agent exited to, though a resize painted its last frame again after it', async () => {
+    const t = terminal({ cols: 100, rows: 30 })
+    t.print(PROMPT)
+    await run(t, 'resized-1')
+    t.print(exited())
+    // ConPTY on a resize: the new size, then the whole screen painted again, the old box and all.
+    const rows = ['Claude Code', '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on', 'Resume this session with: claude --resume 1234', 'PS C:\\p> ']
+    t.print(`${E}[?25l${E}[8;30;100t${E}[H${rows.map((r) => `${r}${E}[K`).join('\r\n')}${E}[?25h`)
+    expect(screenOf(`${PROMPT}${exited()}`).lines().join('\n')).toContain('❯')
+    const res = await submitToTerminal(t.handlers, 'resized-1', 'Run npm test and fix what fails. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt, not at the agent's input, so nothing was typed/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('types nothing at the prompt an agent exited to, though a resize that shrank the screen painted its frame again with no size reported', async () => {
+    // ConPTY reports the new size only when the screen grows; a shrink is a repaint from the top left.
+    const t = terminal({ cols: 80, rows: 24 })
+    t.print(PROMPT)
+    await run(t, 'shrunk-1')
+    t.print(exited())
+    const rows = ['Claude Code', '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on', 'Resume this session with: claude --resume 1234', 'PS C:\\p> ']
+    t.print(`${E}[?25l${E}[H${rows.map((r) => `${r}${E}[K`).join('\r\n')}${E}[?25h`)
+    expect(await submitToTerminal(t.handlers, 'shrunk-1', 'Run npm test. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('types nothing at the prompt of an agent that printed more since run_command than main keeps', async () => {
+    // The mark, and the prompts the shell printed before it, are gone from the window: what is left is
+    // all the agent's, and the prompt it exited to is no shell's first.
+    const t = terminal({ cols: 80, rows: 24 }, true, 32_768)
+    t.print(PROMPT)
+    await run(t, 'long-1')
+    t.print(Array.from({ length: 450 }, (_, i) => `● Step ${i}: read docs/file-${i}.md and wrote a line about it, nothing more.\r\n`).join(''))
+    t.print(exited())
+    const res = await submitToTerminal(t.handlers, 'long-1', 'Run npm test. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('reports a menu an agent opens with at once, though it has drawn no input yet', async () => {
+    // Codex's update offer, drawn after run_command: a stop, which waiting doesn't end.
+    const s = wide.screens['codex-160x40-update-menu']
+    const t = terminal({ cols: s.cols, rows: s.rows })
+    t.print(PROMPT)
+    await run(t, 'menu-1', 'codex -a never -s workspace-write -c check_for_update_on_startup=false')
+    t.print(s.raw)
+    expect(await submitToTerminal(t.handlers, 'menu-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, waitedMs: 0, error: expect.stringMatching(/^The agent is blocked: /) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('waits for an agent started again, not stopped by the limit the old one hit, which is still on the screen', async () => {
+    const t = terminal()
+    t.print(PROMPT)
+    await run(t, 'limit-1')
+    t.print(frame(['Claude Code', '❯ Build the page', "  ⎿  You've hit your session limit · resets 3pm", '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code'))
+    t.print(`${E}[9;1HResume this session with: claude --resume 1234${E}[10;1H${PROMPT}`)
+    await run(t, 'limit-1')
+    t.agentAt(2500)
+    const res = await submitToTerminal(t.handlers, 'limit-1', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: true })
+    expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
+
+  it('types nothing into an agent started again that exited at once, its old frame still on the screen', async () => {
+    const t = terminal()
+    t.print(PROMPT)
+    await run(t, 'again-2')
+    t.print(exited())
+    await run(t, 'again-2')
+    t.print(`Invalid API key · Please run /login\r\n${PROMPT}`)
+    const res = await submitToTerminal(t.handlers, 'again-2', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(res.waitedMs).toBe(1000)
+    expect(t.writes).toEqual([])
+  })
+
+  // create_terminal and run_command a moment apart: a cold Windows PowerShell takes seconds to print
+  // its first prompt, so the command is typed before it, and the shell prints that prompt after the
+  // command, then runs it. That prompt is no agent gone, though nothing on the screen is an agent yet.
+  // What a profile can print first: past 100 characters, a bare prompt reads as a shell at rest.
+  const slowProfile = 'posh-git, PSReadLine and Terminal-Icons are ready. Good morning!\r\nLast sign-in: Saturday 17 October 2026, on this PC.\r\n'
+  const longPrompt = 'PS C:\\Users\\TermpolisUserx\\repos\\portal> '
+  it.each([
+    ['one report', `${slowProfile}${REPORT}${longPrompt}`],
+    ['two, a prompt of its own reporting the folder too', `${slowProfile}${REPORT}${E}]9;9;C:\\Users\\TermpolisUserx\\repos\\portal\x07${longPrompt}`],
+  ])("waits out a shell that prints its first prompt after run_command typed the agent's command (%s)", async (how, first) => {
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    await run(t, `early-1-${how.length}`)
+    t.at(500, first)
+    // The command shows at the prompt 2 s later (PSReadLine's first start), the agent 2 s after that.
+    t.at(2500, `${CLAUDE}\r\n`)
+    t.agentAt(4500)
+    const res = await submitToTerminal(t.handlers, `early-1-${how.length}`, 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: true })
+    expect(t.times[0]).toBeGreaterThanOrEqual(4500)
+  })
+
+  it('types nothing into an agent that exited at once after the shell printed its first prompt late', async () => {
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    await run(t, 'early-2')
+    t.at(500, PROMPT)
+    t.at(1000, `${CLAUDE}\r\nclaude : The term 'claude' is not recognized as the name of a cmdlet\r\n${PROMPT}`)
+    const res = await submitToTerminal(t.handlers, 'early-2', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  // Where the shell reports no prompts (zsh, fish, a bash PROMPT_COMMAND of the user's own, the
+  // integration off), an input box drawn before run_command started the agent is still not its input.
+  it('waits for an agent started again in a shell that reports no prompts, and types into it once it draws', async () => {
+    const t = terminal()
+    t.print('PS C:\\p> ')
+    await run(t, 'quiet-1')
+    t.print(exited('PS C:\\p> '))
+    await run(t, 'quiet-1')
+    t.agentAt(2500)
+    const res = await submitToTerminal(t.handlers, 'quiet-1', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: true })
+    expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
+
+  it('says the agent is starting when one started again never draws its input there', async () => {
+    const t = terminal()
+    t.print('PS C:\\p> ')
+    await run(t, 'quiet-2')
+    t.print(exited('PS C:\\p> '))
+    await run(t, 'quiet-2')
+    const res = await submitToTerminal(t.handlers, 'quiet-2', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The agent was not ready for input after 180 s \(starting: /) })
+    expect(t.writes).toEqual([])
+  })
+
+  // S7, S13: drawn alone on a blank screen of the size its output reaches, an agent's screen at
+  // another size shows no box (idle Claude Code at 160x40 read as nothing), so the agent started
+  // never showed its input, or its shell's late first prompt read as one it exited to.
+  const boxAtReach = (raw: string) => {
+    const rows = screenOf(raw).lines()
+    while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
+    return inputBoxRow(rows)
+  }
+  const wideIdle = Object.entries(wide.screens).filter(([, s]) => s.truth === 'idle' && boxAtReach(s.raw) < 0)
+  it.each(wideIdle)("types into %s once run_command has it up, reading the output since at the PTY's size", async (name, s) => {
+    expect(wideIdle.length).toBeGreaterThanOrEqual(4)
+    // Its shell at its prompt when the command was typed, or printing its first prompt after it.
+    for (const late of [false, true]) {
+      const t = terminal({ cols: s.cols, rows: s.rows }, !late)
+      if (!late) t.print(PROMPT)
+      await run(t, `wide-${name}-${late}`)
+      if (late) t.print(`${PROMPT}${CLAUDE}\r\n`)
+      t.print(s.raw)
+      await submitToTerminal(t.handlers, `wide-${name}-${late}`, 'Write the docs. Task ID: t-1', t.clock)
+      expect({ late, typed: t.writes[0] }).toEqual({ late, typed: 'Write the docs. Task ID: t-1' })
+      expect(t.times[0]).toBe(1000)
+    }
+  })
+
+  it('reads every terminal from its own run_command: a mark is per terminal, and close_terminal forgets it', async () => {
+    const t = terminal()
+    t.print(PROMPT)
+    await run(t, 'own-1')
+    t.print(exited())
+    await executeTool('close_terminal', { terminalId: 'own-1' }, t.handlers)
+    // Gone from the agents, the terminal is a shell again: a command typed at its prompt runs.
+    expect((await submitToTerminal(t.handlers, 'own-1', 'echo hi', t.clock)).error).not.toMatch(/shell's prompt/)
   })
 })
 

@@ -6,7 +6,7 @@ import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from 
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
-import { screenOf } from '../shared/terminalScreen'
+import { screenOf, type ScreenSize } from '../shared/terminalScreen'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -641,6 +641,10 @@ export interface McpToolHandlers {
   /** The terminal's PTY size, which its output can't tell (terminalScreen.ts screenSizeOf); null
    *  for one that is gone. write_to_terminal's submit reads the agent's screen at it. */
   terminalSize?: (terminalId: string) => { cols: number; rows: number } | null
+  /** Where the terminal's output ends now, counting what the window let go (terminalOutputBuffer.ts
+   *  readOutputFrom's nextOffset). Submit marks it at a run_command that starts an agent, and reads
+   *  what the agent did from the output after it. */
+  outputOffset?: (terminalId: string) => number
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
@@ -752,7 +756,8 @@ interface Seen {
   lines: string[]
   title: string
   status: AgentStatusResult
-  /** The shell printed its prompt after the agent's last input box: the agent exited (atShellPrompt). */
+  /** Its shell printed a prompt since run_command started the agent, and nothing drew an input box
+   *  after it: the agent exited, or never started (sinceStarted). */
   shell: boolean
 }
 
@@ -760,18 +765,61 @@ interface Seen {
  *  9;9 from PowerShell and cmd, OSC 7 from bash; zsh and fish get none); an agent's own output has
  *  none (its OSC 7501 query is another code). */
 const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
+/** Where ConPTY paints the whole screen again when the PTY is resized: from its top left, with or
+ *  without its report of the new size before (terminalScreen.ts resizeReportOf; on the live runs only
+ *  a PTY's first resize had one). It paints an exited agent's last frame, box and all, again. */
+const REPAINT = /\x1b\[H/
+/** An agent run_command started that has drawn no input of its own yet, whatever the screen shows. */
+const STARTING: AgentStatusResult = { status: 'starting', summary: 'no input shown since run_command started it' }
 
-/** Whether the shell is back at its prompt: nothing after the last prompt it printed draws an input
- *  box. Claude Code and agy leave their last frame, box and all, above the prompt when they exit,
- *  and a task typed there went to the shell. */
-function atShellPrompt(raw: string, size: { cols: number; rows: number } | null): boolean {
-  let last = -1
-  for (const m of raw.matchAll(PROMPT_REPORT)) last = m.index ?? last
-  if (last < 0) return false
-  const after = raw.slice(last)
-  const lines = (size ? screenOf(after, size) : screenOf(after)).lines()
+/** `text` drawn on a blank screen of the terminal's size (of the size the output reaches, where main
+ *  has none), less the blank rows at its foot. */
+function drawn(text: string, size: ScreenSize | null): { lines: string[]; title: string } {
+  const screen = size ? screenOf(text, size) : screenOf(text)
+  const lines = screen.lines()
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-  return inputBoxRow(lines) < 0
+  return { lines, title: screen.title }
+}
+
+const drawsInputBox = (text: string, size: ScreenSize | null): boolean => inputBoxRow(drawn(text, size).lines) >= 0
+
+/** Where the prompts a shell printed start in `text`: at their first report. A prompt of the
+ *  user's own can write one of its own (oh-my-posh does, and Windows Terminal's docs show how), on
+ *  the same line: a report starts a prompt only with a line break since the one before. */
+function promptsIn(text: string): number[] {
+  const starts: number[] = []
+  let last = -1
+  for (const m of text.matchAll(PROMPT_REPORT)) {
+    const at = m.index ?? 0
+    if (last < 0 || text.slice(last, at).includes('\n')) starts.push(at)
+    last = at
+  }
+  return starts
+}
+
+/** The terminals whose last run_command started an agent, and where in the output it was typed
+ *  (McpToolHandlers.outputOffset; 0, all of it, where main can't say). Submit types into one only at
+ *  the agent's input, and reads what the agent did from the output after that: at its shell's
+ *  prompt the agent exited or never started, and a task typed there ran as a command while the
+ *  conductor was told it was sent (R3-4); and the last frame an exited agent leaves, box and all,
+ *  is no input of the one run_command started again. The terminal's name can't tell: workers the
+ *  conductor creates aren't in listTerminals. */
+const agentStarts = new Map<string, number>()
+
+/** What the output since an agent was started says, `from` on in `raw` (the shell's very first
+ *  output when `whole`): whether its shell is back at its prompt (shell), and whether the agent drew
+ *  its input box (started). The prompts that count are the ones printed after the command was typed:
+ *  a shell that had printed none before, still starting when create_terminal and run_command came a
+ *  moment apart (a cold Windows PowerShell takes seconds), prints its first after the command, then
+ *  runs it. At its prompt is nothing after the last one drawing an input box, up to a repaint. */
+function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null): { shell: boolean; started: boolean } {
+  const since = raw.slice(from)
+  const started = drawsInputBox(since, size)
+  const prompts = promptsIn(since).slice(whole && raw.slice(0, from).search(PROMPT_REPORT) < 0 ? 1 : 0)
+  if (prompts.length === 0) return { shell: false, started }
+  const after = since.slice(prompts[prompts.length - 1])
+  const repaint = after.search(REPAINT)
+  return { shell: !drawsInputBox(repaint < 0 ? after : after.slice(0, repaint), size), started }
 }
 
 /** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.
@@ -781,10 +829,22 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
   const raw = handlers.readOutput(terminalId, 1000)
   if (!raw) return null
   const size = handlers.terminalSize?.(terminalId) ?? null
-  const screen = size ? screenOf(raw, size) : screenOf(raw)
-  const lines = screen.lines()
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-  return { lines, title: screen.title, status: detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title: screen.title }), shell: atShellPrompt(raw, size) }
+  const { lines, title } = drawn(raw, size)
+  const status = detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title })
+  const mark = agentStarts.get(terminalId)
+  if (mark === undefined) return { lines, title, status, shell: false }
+  // `raw` ends where the output does.
+  const end = handlers.outputOffset?.(terminalId)
+  const from = end === undefined ? 0 : Math.max(0, raw.length - (end - mark))
+  const since = sinceStarted(raw, from, end === undefined || end === raw.length, size)
+  // An input box on the screen is the agent's only if drawn since it was started. With none, the
+  // screen is a shell's, which is the answer only from a shell that reports no prompts: one that
+  // does reports one once the agent is gone (shell).
+  if (since.shell || (inputBoxRow(lines) >= 0 ? since.started : raw.search(PROMPT_REPORT) < 0)) return { lines, title, status, shell: since.shell }
+  // Till then the agent is starting, whatever the screen drawn before shows (an exited agent's box,
+  // its limit), but for a stop it drew since: a menu Codex opens with.
+  const stop = detectAgentStatus(drawn(raw.slice(from), size).lines.join('\n'), agentName, previous, { screen: true, title })
+  return { lines, title, status: stop.status === 'blocked' ? stop : STARTING, shell: false }
 }
 
 /** A failed submit's answer, with the screen's last rows: the conductor reads them to decide. */
@@ -908,12 +968,6 @@ function terminalName(handlers: McpToolHandlers, terminalId: string): string {
   }
 }
 
-/** The terminals whose last run_command started an agent. Submit types into one only at the agent's
- *  input: at its shell's prompt the agent exited or never started, and a task typed there ran as a
- *  command while the conductor was told it was sent (R3-4). The terminal's name can't tell: workers
- *  the conductor creates aren't in listTerminals. */
-const agentTerminals = new Set<string>()
-
 /** Each terminal's submits, the last one queued: one waits for the one before it (below). */
 const submitQueues = new Map<string, Promise<void>>()
 
@@ -978,8 +1032,8 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   // An agent's input is its box; a shell's (submit into a plain shell) its last line.
   const agent = inputBoxRow(ready.lines) >= 0
   const waitedMs = clock.now() - start
-  if ((!agent || ready.shell) && agentTerminals.has(terminalId)) {
-    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited, never started, or is still starting. Check it with read_output: if the shell's prompt is the last thing there, start the agent again with run_command; if the agent is starting, send the text again once it shows its input.", ready)
+  if ((!agent || ready.shell) && agentStarts.has(terminalId)) {
+    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited or never started. Check it with read_output, then start the agent again with run_command and send the text again.", ready)
   }
   const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
   const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }
@@ -1076,9 +1130,10 @@ export async function executeTool(
       return { terminalId: tid, name: args.name }
     }
     case 'run_command':
-      // Whether the terminal hosts an agent now, for submit: its latest command says.
-      if (isAgentBinary(String(args.command ?? '').trim().split(/\s+/)[0])) agentTerminals.add(args.terminalId)
-      else agentTerminals.delete(args.terminalId)
+      // Whether the terminal hosts an agent now, for submit: its latest command says, and where in
+      // the output it was typed, marked before it is.
+      if (isAgentBinary(String(args.command ?? '').trim().split(/\s+/)[0])) agentStarts.set(args.terminalId, handlers.outputOffset?.(args.terminalId) ?? 0)
+      else agentStarts.delete(args.terminalId)
       handlers.runCommand(args.terminalId, args.command)
       return { success: true, terminalId: args.terminalId, command: args.command }
     case 'read_output':
@@ -1104,7 +1159,7 @@ export async function executeTool(
         endLine: args.endLine,
       })
     case 'close_terminal':
-      agentTerminals.delete(args.terminalId)
+      agentStarts.delete(args.terminalId)
       handlers.closeTerminal(args.terminalId)
       return { success: true }
     case 'write_to_terminal':
