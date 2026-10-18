@@ -790,7 +790,7 @@ function promptsIn(text: string): number[] {
   const starts: number[] = []
   let last = -1
   for (const m of text.matchAll(PROMPT_REPORT)) {
-    const at = m.index ?? 0
+    const at = m.index!
     if (last < 0 || text.slice(last, at).includes('\n')) starts.push(at)
     last = at
   }
