@@ -22,7 +22,7 @@
  * guard is a request that must never leave the adapter, or one it must
  * close, and only traffic shows that.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 import { spawn } from 'child_process'
@@ -30,6 +30,9 @@ import { createServer } from 'http'
 import { tmpdir } from 'os'
 import { createRequire } from 'module'
 import type { AddressInfo } from 'net'
+
+// The last block runs Termpolis's real MCP server, which asks Electron for a path only.
+vi.mock('electron', () => ({ app: { getPath: () => tmpdir() } }))
 
 const REPO_ROOT = resolve(__dirname, '..', '..')
 const ADAPTER = resolve(REPO_ROOT, 'src/mcp-adapter/stdio-adapter.cjs')
@@ -569,4 +572,86 @@ describe('stdio-adapter.cjs — a call its client gives up on', () => {
       await app.close()
     }
   })
+})
+
+// The same through Termpolis's real MCP server: write_to_terminal's submit, waiting for its agent to
+// be ready, stops when the client cancels the call, as it does when the client's connection closes.
+// A client that times out on a call cancels it and may send it again: typed later, the task went in
+// once for the cancelled call and once more for the retry.
+describe('stdio-adapter.cjs — a submit its client cancels, through the real MCP server', () => {
+  const E = '\x1b'
+  const RULE = '─'.repeat(80)
+  const busy = `${E}]0;◐ Claude Code\x07${E}[H${E}[2J${E}[1;1H✢ Doing…${E}[2;1H${RULE}${E}[3;1H❯ ${E}[4;1H${RULE}${E}[5;1H  esc to interrupt`
+  const idle = (inBox: string) => `${E}]0;✳ Claude Code\x07${E}[H${E}[2J${E}[1;1HClaude Code${E}[2;1H${RULE}${E}[3;1H❯ ${inBox}${E}[4;1H${RULE}`
+
+  it('types and presses nothing for the cancelled call, and the task once for the call sent again', async () => {
+    const mcp = await import('../../src/main/mcpServer')
+    // A Claude Code at work for the first 2.5 s of the call, then at its prompt: what is typed shows
+    // in its box, and an Enter sets it to work.
+    const writes: string[] = []
+    let typed = ''
+    let pressed = false
+    let readyAt = Infinity
+    let reads = 0
+    const handlers = {
+      listTerminals: () => [],
+      readOutput: () => { reads++; return pressed || Date.now() < readyAt ? busy : idle(typed) },
+      writeToTerminal: (_id: string, text: string) => {
+        writes.push(text)
+        if (text === '\r') pressed = true
+        else typed += text
+      },
+    } as unknown as Parameters<typeof mcp.startMcpServer>[0]
+    mcp._resetPortStateForTest()
+    const server = mcp.startMcpServer(handlers)
+    const port = await mcp.awaitMcpPortBound()
+    const root = mkdtempSync(join(tmpdir(), 'termpolis-adapter-submit-'))
+    const dir = dataDirUnder(root)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'mcp-token'), mcp.getMcpAuthToken())
+    writeFileSync(join(dir, 'mcp-port'), String(port))
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, XDG_CONFIG_HOME: root }
+    delete env.TERMPOLIS_LINKED_JOB
+    delete env.TERMPOLIS_READ_ONLY_RUN
+    const child = spawn(process.execPath, [ADAPTER], { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const exited = new Promise<void>((r) => child.on('exit', () => r()))
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    const replies = (): Rpc[] => stdout.split('\n').slice(0, -1).filter((l) => l.trim()).map((l) => JSON.parse(l) as Rpc)
+    const send = (msg: object) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n')
+    const until = async (done: () => boolean, what: string) => {
+      for (const started = Date.now(); !done(); await new Promise((r) => setTimeout(r, 20))) {
+        if (Date.now() - started > 15_000) throw new Error(`${what} never happened. stdout: ${stdout} stderr: ${stderr}`)
+      }
+    }
+    const call = (id: number) => ({ id, method: 'tools/call', params: { name: 'write_to_terminal', arguments: { terminalId: 't1', text: 'Write the docs. Task ID: t-1', submit: true } } })
+    try {
+      // The adapter is connected once it has said so.
+      await until(() => /adapter connected/.test(stderr), 'the adapter connecting')
+      readyAt = Date.now() + 2500
+      send(call(7))
+      await until(() => reads > 0, 'the submit reading the agent')
+      send({ method: 'notifications/cancelled', params: { requestId: 7, reason: 'Request timed out' } })
+      // Past the moment the agent is ready, read so twice a second apart, the text typed and shown.
+      await new Promise((r) => setTimeout(r, 5000))
+      expect(writes).toEqual([])
+      expect(replies()).toEqual([])
+
+      send(call(8))
+      await until(() => replies().some((r) => r.id === 8), 'the answer to the call sent again')
+      expect(JSON.parse(replies()[0].result!.content[0].text)).toMatchObject({ submitted: true })
+      expect(writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+      expect(replies().map((r) => r.id)).toEqual([8])
+    } finally {
+      child.stdin.end()
+      const killer = setTimeout(() => child.kill(), 5_000)
+      await exited
+      clearTimeout(killer)
+      server.closeAllConnections()
+      await new Promise<void>((r) => server.close(() => r()))
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 40_000)
 })
