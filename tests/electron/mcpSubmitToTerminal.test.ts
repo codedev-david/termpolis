@@ -957,6 +957,45 @@ describe('write_to_terminal submit into a terminal whose agent is gone', () => {
     expect(t.ran).toEqual([])
   })
 
+  // R4-1: Claude Code and agy leave their last frame, box and all, on screen when they exit, with the
+  // shell's prompt under it. That box read as the agent's: the task was typed at the prompt, and the
+  // next run_command went onto the same line, so the agent never started again.
+  it.each([
+    ['PowerShell', `${E}]9;9;C:\\p\x07`, 'PS C:\\p> '],
+    ['bash', `${E}]7;file://host/home/u/p\x07`, 'u@host:~/p$ '],
+  ])("types nothing under the last frame of an agent that exited to %s's prompt", async (_shell, report, prompt) => {
+    let raw = `${report}${prompt}`
+    const writes: string[] = []
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn((_id: string, command: string) => { raw += `${command}\r\n${idle()}` }),
+      readOutput: () => raw,
+      writeToTerminal: (_id: string, text: string) => { writes.push(text); raw += text },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    await executeTool('run_command', { terminalId: 'exit-1', command: 'claude --dangerously-skip-permissions' }, handlers)
+    raw += `${E}[7;1HResume this session with: claude --resume 1234${E}[8;1H${report}${prompt}`
+
+    const res = await submit(handlers, 'exit-1', 'You are working in C:\\p. Run npm test and fix what fails. Task ID: t-1')
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt, not at the agent's input, so nothing was typed/) })
+    expect(writes).toEqual([])
+  })
+
+  it('still types into an agent drawn after the prompt it was started from', async () => {
+    let line = ''
+    const writes: string[] = []
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn(),
+      readOutput: () => `${E}]9;9;C:\\p\x07PS C:\\p> claude --dangerously-skip-permissions\r\n` + (line.endsWith('\r') ? busy() : idle(line)),
+      writeToTerminal: (_id: string, text: string) => { writes.push(text); line += text },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    await executeTool('run_command', { terminalId: 'up-2', command: 'claude --dangerously-skip-permissions' }, handlers)
+    expect(await submit(handlers, 'up-2', 'Write the docs. Task ID: t-1')).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+  })
+
   it('types into the agent once run_command has it up', async () => {
     const t = shellTerminal(false)
     await executeTool('run_command', { terminalId: 'up-1', command: 'claude --dangerously-skip-permissions' }, t.handlers)

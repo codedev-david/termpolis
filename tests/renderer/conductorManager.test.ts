@@ -397,6 +397,22 @@ describe('conductorManager', () => {
       expect(getConductorState().status).toBe('running')
     })
 
+    // R4-1: judged again on every tick, a worker's result without a name ended the swarm as done
+    // once the worker's terminal left the store, and showed the worker's text as the summary.
+    it("is not ended by a worker's STEP 8 words without a name once that worker's terminal is gone", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      addWorker('w1')
+      bus.post('mcp-client', 'SWARM COMPLETE: my part (the docs) is done', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+
+      useTerminalStore.setState((s) => ({ terminals: s.terminals.filter((t) => t.id !== 'w1') }))
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+      expect(useTerminalStore.getState().swarmActive).toBe(true)
+    })
+
     it("is not ended by STEP 8's words without a name once a task exists: its worker can have sent them", async () => {
       const bus = fakeBus()
       await launchConductor()
@@ -525,6 +541,21 @@ describe('conductorManager', () => {
       const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
       await vi.advanceTimersByTimeAsync(70000)
+      expect(stallCalls(notifSpy)).toHaveLength(0)
+    })
+
+    // R4-1: a plan without its name stopped counting once a worker started, and the warning said
+    // no task or agent had been created although one was running.
+    it('stays quiet after a plan without a name that came before any worker, once a worker starts', async () => {
+      const bus = fakeBus()
+      await launchConductor('Build an app')
+      await vi.advanceTimersByTimeAsync(20000)
+      bus.post('mcp-client', 'Plan: two tasks')
+      await vi.advanceTimersByTimeAsync(25000)
+      addWorker('w1')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(45000)
       expect(stallCalls(notifSpy)).toHaveLength(0)
     })
   })

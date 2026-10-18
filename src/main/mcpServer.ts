@@ -752,6 +752,25 @@ interface Seen {
   lines: string[]
   title: string
   status: AgentStatusResult
+  /** The shell printed its prompt after the agent's last input box: the agent exited (atShellPrompt). */
+  shell: boolean
+}
+
+/** What every Termpolis shell writes at each prompt it prints, its folder (shellIntegration.ts: OSC
+ *  9;9 from PowerShell and cmd, OSC 7 from bash and zsh); an agent's own output has none. */
+const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
+
+/** Whether the shell is back at its prompt: nothing after the last prompt it printed draws an input
+ *  box. Claude Code and agy leave their last frame, box and all, above the prompt when they exit,
+ *  and a task typed there went to the shell. */
+function atShellPrompt(raw: string, size: { cols: number; rows: number } | null): boolean {
+  let last = -1
+  for (const m of raw.matchAll(PROMPT_REPORT)) last = m.index ?? last
+  if (last < 0) return false
+  const after = raw.slice(last)
+  const lines = (size ? screenOf(after, size) : screenOf(after)).lines()
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+  return inputBoxRow(lines) < 0
 }
 
 /** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.
@@ -764,7 +783,7 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
   const screen = size ? screenOf(raw, size) : screenOf(raw)
   const lines = screen.lines()
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-  return { lines, title: screen.title, status: detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title: screen.title }) }
+  return { lines, title: screen.title, status: detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title: screen.title }), shell: atShellPrompt(raw, size) }
 }
 
 /** A failed submit's answer, with the screen's last rows: the conductor reads them to decide. */
@@ -951,7 +970,7 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   // An agent's input is its box; a shell's (submit into a plain shell) its last line.
   const agent = inputBoxRow(ready.lines) >= 0
   const waitedMs = clock.now() - start
-  if (!agent && agentTerminals.has(terminalId)) {
+  if ((!agent || ready.shell) && agentTerminals.has(terminalId)) {
     return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited or never started. Check it with read_output, and start the agent again with run_command before sending the text.", ready)
   }
   const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
