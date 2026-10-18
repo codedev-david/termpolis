@@ -4,7 +4,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { StartSwarmModal } from './StartSwarmModal'
 import { stopAllBridges } from '../../lib/swarmBridgeManager'
-import { stopConductor, getConductorState } from '../../lib/conductorManager'
+import { stopConductor, getConductorState, watchConductorTrace } from '../../lib/conductorManager'
 import { ConductorTrace } from '../ConductorTrace/ConductorTrace'
 import { ConductorOutput } from '../ConductorOutput/ConductorOutput'
 import { HandoffAnimation } from '../HandoffAnimation/HandoffAnimation'
@@ -62,6 +62,15 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
       // Swarm API may not be ready yet — ignore
     }
   }, [])
+
+  // Trace shows the conductor's transcript, which is followed once Trace or Debug is open
+  // (watchConductorTrace), tried again every few seconds until the transcript is there.
+  useEffect(() => {
+    if (!conductorTerminalId || (activeTab !== 'trace' && activeTab !== 'debug')) return
+    watchConductorTrace()
+    const timer = setInterval(watchConductorTrace, 5000)
+    return () => clearInterval(timer)
+  }, [activeTab, conductorTerminalId])
 
   // Poll every 3 seconds via centralized polling service
   useEffect(() => {

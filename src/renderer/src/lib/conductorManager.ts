@@ -29,6 +29,8 @@ interface LaunchBaseline {
 }
 
 let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
+/** The conductor terminal whose transcript Trace follows (watchConductorTrace). */
+let traceWatchedFor: string | null = null
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
 let launch: LaunchBaseline = { outputOffset: 0, taskIds: new Set(), messageIds: new Set() }
@@ -56,6 +58,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   // Mark starting synchronously so the UI can update immediately; SHA capture
   // below happens async and is merged in once resolved.
   conductorState = { terminalId: null, status: 'starting', error: null, cwd, preSwarmSha: null }
+  traceWatchedFor = null
 
   // Capture pre-swarm HEAD so SwarmReviewPanel can show the full delta of
   // everything the swarm touched. Fine to be null — review UI just hides.
@@ -565,6 +568,21 @@ async function endOnConductorExit(
 }
 
 // Cleanup
+/** Follow the conductor's Claude Code transcript, which is what fills the Trace tab. Up to 1.53 a
+ *  pane did it as it mounted, once Debug had unhidden the conductor's terminal. Debug now reads the
+ *  output without a pane, so the dashboard calls this while Trace or Debug is open. Once per
+ *  conductor terminal, tried again until a transcript is found; killing the terminal detaches it.
+ *  Like the pane's, the watcher follows the newest transcript in the swarm's folder from then on. */
+export function watchConductorTrace(): void {
+  const { terminalId, cwd } = conductorState
+  if (!terminalId || !cwd || traceWatchedFor === terminalId) return
+  traceWatchedFor = terminalId
+  Promise.resolve()
+    .then(() => window.agentActivity?.attachWatcher(terminalId, cwd, 'claude'))
+    .then((res) => { if (!res?.data?.attached) traceWatchedFor = null })
+    .catch(() => { traceWatchedFor = null })
+}
+
 export function stopConductor(): void {
   if (monitoringInterval) {
     clearInterval(monitoringInterval)
@@ -586,4 +604,5 @@ export function stopConductor(): void {
   }
 
   conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
+  traceWatchedFor = null
 }

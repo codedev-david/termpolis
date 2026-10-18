@@ -596,7 +596,7 @@ Messages from a Codex or Gemini worker by name, such as **Codex**, are what Term
 
 ![Swarm trace tab](../e2e/screenshots/docs/21-swarm-trace-tab.png)
 
-A timeline of what the conductor is doing: every tool call it makes, the tasks it assigns and sees completed, what it writes as it works, and any errors.
+A timeline of what the conductor is doing: every tool call it makes, the tasks it assigns and sees completed, what it writes as it works, and any errors. It fills once you have opened Trace or [Debug](#debug) during the swarm: Termpolis then follows the conductor's Claude Code transcript, the newest one in the swarm's folder, from that moment on.
 
 ### Review tab
 

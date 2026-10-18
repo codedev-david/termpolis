@@ -78,6 +78,7 @@ vi.mock('../../src/renderer/src/lib/swarmBridgeManager', () => ({
 
 vi.mock('../../src/renderer/src/lib/conductorManager', () => ({
   stopConductor: vi.fn(),
+  watchConductorTrace: vi.fn(),
   getConductorState: vi.fn(() => ({ status: mockConductorStatus, terminalId: mockConductorTerminalId })),
 }))
 

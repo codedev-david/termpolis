@@ -45,6 +45,7 @@ import {
   stopConductor,
   sendTask,
   getPreSwarmSha,
+  watchConductorTrace,
 } from '../../src/renderer/src/lib/conductorManager'
 import { startBridgeForAgent, stopAllBridges } from '../../src/renderer/src/lib/swarmBridgeManager'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -98,6 +99,67 @@ describe('conductorManager', () => {
     await startPromise
     await sendTask(task, '/tmp/project')
   }
+
+  // Trace shows the conductor's transcript, which a pane used to follow once Debug unhid the
+  // conductor's terminal. Debug shows no pane any more, so the dashboard asks for it.
+  describe('watchConductorTrace', () => {
+    let attachWatcher: Mock
+    beforeEach(() => {
+      attachWatcher = vi.fn().mockResolvedValue({ success: true, data: { attached: true } })
+      ;(window as any).agentActivity = { attachWatcher }
+    })
+    afterEach(() => {
+      delete (window as any).agentActivity
+    })
+
+    it("follows the conductor's Claude Code transcript in the swarm's folder, once", async () => {
+      await launchConductor()
+      watchConductorTrace()
+      watchConductorTrace()
+      await vi.advanceTimersByTimeAsync(0)
+      watchConductorTrace()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attachWatcher).toHaveBeenCalledTimes(1)
+      expect(attachWatcher).toHaveBeenCalledWith(getConductorState().terminalId, '/tmp/project', 'claude')
+    })
+
+    it('tries again while there is no transcript yet, or the call fails', async () => {
+      attachWatcher
+        .mockResolvedValueOnce({ success: true, data: { attached: false } })
+        .mockResolvedValueOnce({ success: false, error: 'no' })
+        .mockRejectedValueOnce(new Error('ipc gone'))
+      await launchConductor()
+      for (let i = 0; i < 5; i++) {
+        watchConductorTrace()
+        await vi.advanceTimersByTimeAsync(0)
+      }
+      expect(attachWatcher).toHaveBeenCalledTimes(4)
+    })
+
+    it('asks for nothing without a conductor, nor where there is no watcher to ask', async () => {
+      watchConductorTrace()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attachWatcher).not.toHaveBeenCalled()
+
+      delete (window as any).agentActivity
+      await launchConductor()
+      expect(() => watchConductorTrace()).not.toThrow()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    it("follows the next conductor's transcript as well", async () => {
+      await launchConductor()
+      watchConductorTrace()
+      await vi.advanceTimersByTimeAsync(0)
+      const first = getConductorState().terminalId
+      stopConductor()
+      await launchConductor()
+      watchConductorTrace()
+      await vi.advanceTimersByTimeAsync(0)
+      // uuid is mocked here, so both conductors have the same terminal id: only a new swarm resets it.
+      expect(attachWatcher.mock.calls.map((c) => c[0])).toEqual([first, getConductorState().terminalId])
+    })
+  })
 
   it('checkClaudeInstalled returns true when claude is detected', async () => {
     const result = await checkClaudeInstalled()
