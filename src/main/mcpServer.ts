@@ -1063,7 +1063,7 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
     // A box that held something before the text was typed: a hint, which the first key replaced,
     // or other text, still in front of this. Not refused before typing, which can't tell the two.
     if (agent && !emptyInputBox(ready.lines) && otherTextInFront(inputBoxRows(last.lines) ?? [], body, inputBoxRows(ready.lines) ?? [])) {
-      return failed(waitedMs, "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
+      return failed(waitedMs, "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Clear the input with Ctrl+U, which deletes a line of it in each agent: write twenty without submit, and again until read_output shows it empty (never Ctrl+C, which quits the agent on a second press). Then send the text again.", last)
     }
   }
   if (body) await clock.sleep(settleMs(body))

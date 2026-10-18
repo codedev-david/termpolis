@@ -825,7 +825,7 @@ describe('submitToTerminal and a box that already holds other text', () => {
   it('types a prompt that ends like the one in the box, sends neither, and says so', async () => {
     const t = holding(A)
     const res = await submitToTerminal(t.handlers, 't1', B, t.clock)
-    expect(res).toMatchObject({ submitted: false, error: "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output." })
+    expect(res).toMatchObject({ submitted: false, error: "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Clear the input with Ctrl+U, which deletes a line of it in each agent: write twenty without submit, and again until read_output shows it empty (never Ctrl+C, which quits the agent on a second press). Then send the text again." })
     expect(res.screen).toContain('Write the unit tests for src/auth.ts.')
     expect(t.writes).toEqual([B])
     expect(t.sent).toEqual([])

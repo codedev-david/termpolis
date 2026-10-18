@@ -97,8 +97,12 @@ STEP 5 — Send task prompts:
   If it returns submitted=false, read the error and the screen it returns, or read_output(terminalId='[id]').
   If the agent has not taken the prompt, call it again with the same text:
   it types nothing that is already in the agent's input, and presses Enter again.
-  If it says the agent's input already held other text, nothing was sent: clear the input with the keys a person
-  would press (without submit), then send the text again.
+  If it says the agent's input already held other text, nothing was sent: clear the input, then send the text again.
+  The key that clears it is Ctrl+U for each agent: Claude Code, Codex and Gemini CLI (agy). Each Ctrl+U deletes
+  a line of the input and sends nothing. Write twenty at once, without submit, copied verbatim:
+    write_to_terminal(terminalId='[id]', text='\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015\\u0015')
+  then read_output, and write them again until the input is empty. Never clear it with Ctrl+C or Esc: a second
+  Ctrl+C quits the agent (Gemini CLI's first one leaves the text), and Esc clears neither Codex nor Gemini CLI.
   If it says the terminal is at its shell's prompt, the agent is not running: start it again (STEP 4),
   then send the text again. Right after STEP 4, submit=true waits for the agent to show its input.
   Include the taskId in the prompt so the agent knows which task to update when done.
