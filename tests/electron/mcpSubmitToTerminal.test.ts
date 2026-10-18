@@ -677,6 +677,31 @@ describe('submitToTerminal with a task the box shows only part of, or that start
     expect(t.writes).toEqual([s.text])
   })
 
+  // Codex counts the code points it kept, and the ones it may drop are only symbols: a letter in any
+  // script is kept. Allowed to drop letters too, a paste of 1,150 read as this one of 1,200, a hundred
+  // of them CJK, and only Enter was pressed: Codex sent the other paste.
+  it("types a paste over Codex's placeholder for one shorter by letters it never drops, and presses no Enter behind it", async () => {
+    const text = `${'w'.repeat(1100)}${'中'.repeat(100)}`
+    expect([...text]).toHaveLength(1200)
+    const composer = (pastes: string) => frame(['>_ OpenAI Codex', '', `› ${pastes}`, '', '  gpt-5.6-sol medium · ~\\p'])
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? working(80) : composer(typed.length ? '[Pasted Content 1150 chars][Pasted Content 1200 chars]' : '[Pasted Content 1150 chars]')), 'Codex (Docs)', { cols: 80, rows: 24 })
+    expect(await submitToTerminal(t.handlers, 't1', text, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([text])
+  })
+
+  // agy keeps its box short: at 80x12 a task of short lines shows only its last six, 54 letters and
+  // digits. Looked for by more of its end than that, the task never showed, and was never sent.
+  it('presses Enter on a task of short lines whose last six are all agy shows of it at 80x12', async () => {
+    const ready = typed.screens['agy-80x12-tall16-ready']
+    const shown = typed.screens['agy-80x12-tall16-shown']
+    const box = screenOf(shown.raw, shown).lines().join('\n')
+    expect(box).toContain('↑ 10 more lines')
+    expect(box).not.toContain('10. no tools')
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? working(80) : w.length ? shown.raw : ready.raw), 'Gemini (Docs)', shown)
+    expect(await submitToTerminal(t.handlers, 't1', shown.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([shown.text, '\r'])
+  })
+
   it("presses only Enter for Codex's numbered placeholder of the paste, alone in its composer", async () => {
     const s = input.screens['codex-80x24-paste-stuck']
     const one = `${s.raw}${E}[22;1H${E}[2K› [Pasted Content 1246 chars] #2`
@@ -828,6 +853,16 @@ describe('submitToTerminal and a box that already holds other text', () => {
     expect(res).toMatchObject({ submitted: false, error: "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Clear the input with Ctrl+U, which deletes a line of it in each agent: write twenty without submit, and again until read_output shows it empty (never Ctrl+C, which quits the agent on a second press). Then send the text again." })
     expect(res.screen).toContain('Write the unit tests for src/auth.ts.')
     expect(t.writes).toEqual([B])
+    expect(t.sent).toEqual([])
+  })
+
+  // The letters and digits are what is compared: read by its letters alone, task-202 was task-101
+  // still in the box, only Enter was pressed, and the agent got task-101.
+  it('types a task that differs from the one in the box only in its digits, and sends neither', async () => {
+    const t = holding('Fix the lint errors in src/api.ts. Task ID: task-101')
+    const res = await submitToTerminal(t.handlers, 't1', 'Fix the lint errors in src/api.ts. Task ID: task-202', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual(['Fix the lint errors in src/api.ts. Task ID: task-202'])
     expect(t.sent).toEqual([])
   })
 

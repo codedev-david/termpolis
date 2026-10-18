@@ -229,6 +229,8 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     ["agy's quota", 'Gemini', ['> Write the docs', '', '✕ You have exhausted your quota on this model.', ...AGY_IDLE], 'usage limit reached'],
     ["Claude Code's session limit, under the prompt it stopped", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
     ["Claude Code's weekly limit, under a prompt of two rows", 'Claude', ['> Build the page, with a form, validation and a test for each of', '  them.', '  ⎿  You\'ve hit your weekly limit · resets Oct 20, 9am (UTC)', ...CLAUDE_IDLE], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+    // A narrow screen wraps the reply's end onto a row of its own, indented under the reply's text.
+    ["Claude Code's session limit, its reply wrapped onto a second row", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm)'],
   ])('%s: blocked, and the conductor told once to check it', async (name, agent, rows, summary) => {
     const result = onScreen(rows, agent)
     expect(result).toEqual({ status: 'blocked', summary })
