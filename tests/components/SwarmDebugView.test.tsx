@@ -11,14 +11,13 @@ import { render, screen, fireEvent } from '@testing-library/react'
 vi.mock('../../src/renderer/src/lib/conductorManager', () => ({
   stopConductor: vi.fn(),
   getConductorState: vi.fn(),
-  watchConductorTrace: vi.fn(),
 }))
 vi.mock('../../src/renderer/src/lib/swarmBridgeManager', () => ({ stopAllBridges: vi.fn() }))
 vi.mock('../../src/renderer/src/components/SwarmDashboard/StartSwarmModal', () => ({ StartSwarmModal: () => null }))
 vi.mock('../../src/renderer/src/components/SwarmReview/SwarmReviewPanel', () => ({ SwarmReviewPanel: () => null }))
 
 import { SwarmDashboard } from '../../src/renderer/src/components/SwarmDashboard/SwarmDashboard'
-import { getConductorState, watchConductorTrace } from '../../src/renderer/src/lib/conductorManager'
+import { getConductorState } from '../../src/renderer/src/lib/conductorManager'
 import { useTerminalStore, buildPaneTree } from '../../src/renderer/src/store/terminalStore'
 import type { TerminalSession } from '../../src/renderer/src/types'
 
@@ -84,32 +83,5 @@ describe.each(['tabs', 'split'] as const)('Debug in %s view', (viewMode) => {
     // And the dashboard stays open: the output is in it, not behind it.
     expect(onClose).not.toHaveBeenCalled()
     expect(screen.getByText('Swarm Dashboard')).toBeInTheDocument()
-  })
-})
-
-// Trace shows the conductor's transcript. Up to 1.53 a pane followed it once Debug unhid the
-// conductor's terminal; Debug now shows no pane, so the dashboard asks for the transcript itself
-// while Trace or Debug is open, and only then.
-describe("following the conductor's transcript for Trace", () => {
-  function renderWithConductor() {
-    vi.mocked(getConductorState).mockReturnValue({ terminalId: 'cond-1', status: 'running', error: null, cwd: '/proj', preSwarmSha: null })
-    useTerminalStore.setState({
-      terminals: [terminal('cond-1', { name: 'Swarm Conductor', agentCommand: 'claude', hidden: true, isConductor: true, isSwarm: true })],
-      viewMode: 'tabs',
-      paneTree: null,
-      activeTerminalId: null,
-      swarmActive: true,
-    })
-    render(<SwarmDashboard onClose={vi.fn()} />)
-  }
-
-  it.each(['Trace', 'Debug'])('asks for it when %s is opened, and not before', async (tab) => {
-    vi.mocked(watchConductorTrace).mockClear()
-    renderWithConductor()
-    await screen.findByText('Debug')
-    expect(watchConductorTrace).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByText(tab))
-    expect(watchConductorTrace).toHaveBeenCalled()
   })
 })

@@ -55,7 +55,6 @@ vi.mock('../../src/renderer/src/lib/conductorManager', () => ({
   waitForAuth: vi.fn(),
   sendTask: vi.fn(),
   stopConductor: vi.fn(),
-  watchConductorTrace: vi.fn(),
   getConductorState: vi.fn(() => ({ ...H.conductorState })),
 }))
 

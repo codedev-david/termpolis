@@ -48,6 +48,7 @@ import {
   watchConductorTrace,
 } from '../../src/renderer/src/lib/conductorManager'
 import { startBridgeForAgent, stopAllBridges } from '../../src/renderer/src/lib/swarmBridgeManager'
+import { v4 as uuidV4 } from 'uuid'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 type Mock = ReturnType<typeof vi.fn>
@@ -101,7 +102,9 @@ describe('conductorManager', () => {
   }
 
   // Trace shows the conductor's transcript, which a pane used to follow once Debug unhid the
-  // conductor's terminal. Debug shows no pane any more, so the dashboard asks for it.
+  // conductor's terminal. Debug shows no pane any more, so the monitor and the dashboard ask for it,
+  // once this launch's conductor has acted: the folder's newest transcript is then its own, and not
+  // the last swarm's or another session's, which it was while the new conductor had written nothing.
   describe('watchConductorTrace', () => {
     let attachWatcher: Mock
     beforeEach(() => {
@@ -112,15 +115,37 @@ describe('conductorManager', () => {
       delete (window as any).agentActivity
     })
 
-    it("follows the conductor's Claude Code transcript in the swarm's folder, once", async () => {
+    it('asks for nothing before the conductor has acted, however often it is called', async () => {
+      fakeBus()
       await launchConductor()
+      for (let i = 0; i < 3; i++) {
+        watchConductorTrace()
+        await vi.advanceTimersByTimeAsync(15000)
+      }
+      expect(attachWatcher).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['a message from the conductor', (bus: ReturnType<typeof fakeBus>) => { bus.post('conductor', 'Plan: two tasks') }],
+      ['a task', (bus: ReturnType<typeof fakeBus>) => { bus.tasks.push({ id: 't1', status: 'pending' }) }],
+    ])("follows the conductor's Claude Code transcript in the swarm's folder once it posted %s, once", async (_what, act) => {
+      const bus = fakeBus()
+      await launchConductor()
+      act(bus)
+      await vi.advanceTimersByTimeAsync(15000)
       watchConductorTrace()
-      watchConductorTrace()
-      await vi.advanceTimersByTimeAsync(0)
-      watchConductorTrace()
-      await vi.advanceTimersByTimeAsync(0)
+      await vi.advanceTimersByTimeAsync(15000)
       expect(attachWatcher).toHaveBeenCalledTimes(1)
       expect(attachWatcher).toHaveBeenCalledWith(getConductorState().terminalId, '/tmp/project', 'claude')
+    })
+
+    it('is not started by a worker or by Termpolis posting', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post('Codex', '[Codex] Status: Working')
+      bus.post('system', 'Codex (UI, terminal w7) is blocked: usage limit reached.')
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(attachWatcher).not.toHaveBeenCalled()
     })
 
     it('tries again while there is no transcript yet, or the call fails', async () => {
@@ -128,11 +153,10 @@ describe('conductorManager', () => {
         .mockResolvedValueOnce({ success: true, data: { attached: false } })
         .mockResolvedValueOnce({ success: false, error: 'no' })
         .mockRejectedValueOnce(new Error('ipc gone'))
+      const bus = fakeBus()
       await launchConductor()
-      for (let i = 0; i < 5; i++) {
-        watchConductorTrace()
-        await vi.advanceTimersByTimeAsync(0)
-      }
+      bus.post('conductor', 'Plan')
+      await vi.advanceTimersByTimeAsync(5 * 15000)
       expect(attachWatcher).toHaveBeenCalledTimes(4)
     })
 
@@ -142,22 +166,61 @@ describe('conductorManager', () => {
       expect(attachWatcher).not.toHaveBeenCalled()
 
       delete (window as any).agentActivity
+      const bus = fakeBus()
       await launchConductor()
+      bus.post('conductor', 'Plan')
+      await vi.advanceTimersByTimeAsync(15000)
       expect(() => watchConductorTrace()).not.toThrow()
-      await vi.advanceTimersByTimeAsync(0)
     })
 
-    it("follows the next conductor's transcript as well", async () => {
+    it("waits for the next conductor to act before following the next swarm's transcript", async () => {
+      const bus = fakeBus()
       await launchConductor()
-      watchConductorTrace()
-      await vi.advanceTimersByTimeAsync(0)
-      const first = getConductorState().terminalId
+      bus.post('conductor', 'Plan')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(attachWatcher).toHaveBeenCalledTimes(1)
+
       stopConductor()
       await launchConductor()
       watchConductorTrace()
-      await vi.advanceTimersByTimeAsync(0)
-      // uuid is mocked here, so both conductors have the same terminal id: only a new swarm resets it.
-      expect(attachWatcher.mock.calls.map((c) => c[0])).toEqual([first, getConductorState().terminalId])
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(attachWatcher).toHaveBeenCalledTimes(1)
+
+      bus.post('conductor', 'Plan for the second swarm')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(attachWatcher).toHaveBeenCalledTimes(2)
+    })
+
+    it('waits for the next conductor to act when a swarm is started without stopping the last one', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post('conductor', 'Plan')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(attachWatcher).toHaveBeenCalledTimes(1)
+
+      await launchConductor()
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(attachWatcher).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps the next conductor followed when the last one's attach answers late that it found nothing", async () => {
+      let answerFirst: (v: unknown) => void = () => {}
+      attachWatcher.mockImplementationOnce(() => new Promise((resolve) => { answerFirst = resolve }))
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post('conductor', 'Plan')
+      await vi.advanceTimersByTimeAsync(15000)
+      stopConductor()
+
+      vi.mocked(uuidV4).mockReturnValueOnce('conductor-uuid-2' as never)
+      await launchConductor()
+      bus.post('conductor', 'Plan for the second swarm')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(attachWatcher).toHaveBeenLastCalledWith('conductor-uuid-2', '/tmp/project', 'claude')
+
+      answerFirst({ success: true, data: { attached: false } })
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(attachWatcher).toHaveBeenCalledTimes(2)
     })
   })
 

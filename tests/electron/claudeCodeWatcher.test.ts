@@ -42,6 +42,12 @@ describe('mangleCwd', () => {
   it('handles mixed separators', () => {
     expect(mangleCwd('C:/foo\\bar')).toBe('C--foo-bar')
   })
+  // As Claude Code names the folder: every character but a letter or digit is a dash.
+  it('turns dots, spaces and underscores into dashes too', () => {
+    expect(mangleCwd('C:\\Users\\john.smith\\my_app')).toBe('C--Users-john-smith-my-app')
+    expect(mangleCwd('/home/u/My App/site.com')).toBe('-home-u-My-App-site-com')
+    expect(mangleCwd('C:\\Users\\DavidEngelhart\\.claude')).toBe('C--Users-DavidEngelhart--claude')
+  })
 })
 
 describe('resolvePathWithinRoot', () => {

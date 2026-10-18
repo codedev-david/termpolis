@@ -39,14 +39,16 @@ export interface ClaudeCodeWatcherHandle {
  *
  * "C:\foo\bar" → "C--foo-bar"
  * "/home/u/r"  → "-home-u-r"
+ * "C:\Users\john.smith\my_app" → "C--Users-john-smith-my-app"
  *
  * No filesystem escape is possible here — we only transform the string.
  */
 export function mangleCwd(cwd: string): string {
   if (!cwd) return ''
-  // Replace all separators (both / and \) AND the Windows drive colon with "-"
-  // "C:\\foo\\bar" → "C--foo-bar"   "/home/u/r" → "-home-u-r"
-  return cwd.replace(/[\\/:]/g, '-')
+  // Claude Code turns every character but an ASCII letter or digit into "-", not only the
+  // separators and the drive colon: in a folder with a dot, a space or an underscore in its path
+  // there was no transcript to find, so no activity was read from Claude Code there.
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-')
 }
 
 /**
