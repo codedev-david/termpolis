@@ -48,7 +48,6 @@ import {
   stopConductor,
   sendTask,
   waitForAuth,
-  revealConductor,
   getConductorState,
 } from '../../src/renderer/src/lib/conductorManager'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -762,9 +761,11 @@ describe('conductorManager — uncovered branches', () => {
         const psWrite = tp().writeConfigFile.mock.calls.find(([p]) =>
           typeof p === 'string' && p.endsWith('.termpolis-conductor-run.ps1'))
         const body = psWrite![1] as string
-        expect(body).toContain('node e2e/mocks/mock-claude.cjs -p $task')
+        // Same stdin delivery as production (GitHub #36), just without the probe.
+        expect(body).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+' \| node e2e\/mocks\/mock-claude\.cjs -p /m)
         expect(body).not.toContain('Resolve-WorkingClaude')
-        expect(body).toContain('exit $LASTEXITCODE')
+        // And the same exit report, which the monitor reads to notice the mock is gone.
+        expect(body).toContain('Write-Output "[termpolis-conductor-exited] $code"\nexit $code\n')
       } finally {
         Object.defineProperty(window.navigator, 'platform', { value: original, configurable: true })
       }
@@ -872,17 +873,20 @@ describe('conductorManager — uncovered branches', () => {
     expect(getConductorState().status).toBe('error')
     expect(useTerminalStore.getState().swarmActive).toBe(false)
     expect(sw().sendMessage).toHaveBeenCalledWith(
-      'conductor', 'all', 'info',
+      'system', 'all', 'info',
       expect.stringContaining('Task refused'),
     )
   })
 
+  // Tasks and messages are mocked after sendTask: what is on the bus at launch belongs to an
+  // earlier swarm, and the monitor rightly ignores it.
+
   it('an unreadable conductor buffer does not stop task-based completion', async () => {
     await start()
     tp().readTerminalBuffer.mockResolvedValue({ success: false, error: 'buffer gone' })
-    sw().getTasks.mockResolvedValue({ success: true, data: [{ id: 't1', status: 'completed' }] })
 
     await sendTask('Build', '/tmp/project')
+    sw().getTasks.mockResolvedValue({ success: true, data: [{ id: 't1', status: 'completed' }] })
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(getConductorState().status).toBe('done')
@@ -894,6 +898,7 @@ describe('conductorManager — uncovered branches', () => {
 
   it('pluralises the mixed success/failure completion message', async () => {
     await start()
+    await sendTask('Build', '/tmp/project')
     sw().getTasks.mockResolvedValue({
       success: true,
       data: [
@@ -902,8 +907,6 @@ describe('conductorManager — uncovered branches', () => {
         { id: 't3', status: 'failed' },
       ],
     })
-
-    await sendTask('Build', '/tmp/project')
     await vi.advanceTimersByTimeAsync(15000)
 
     expect(useTerminalStore.getState().swarmNotification).toEqual({
@@ -912,16 +915,18 @@ describe('conductorManager — uncovered branches', () => {
     })
   })
 
-  it('an empty result message still yields a readable completion notification', async () => {
+  it('an empty result message is no word that the swarm is done; STEP 8\'s message is, and it is the notification', async () => {
     await start()
-    sw().getTasks.mockResolvedValue({ success: true, data: [] })
-    sw().getMessages.mockResolvedValue({ success: true, data: [{ type: 'result', content: '' }] })
-
     await sendTask('Build', '/tmp/project')
+    sw().getTasks.mockResolvedValue({ success: true, data: [] })
+    sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r1', from: 'conductor', type: 'result', content: '' }] })
     await vi.advanceTimersByTimeAsync(15000)
+    expect(getConductorState().status).toBe('running')
 
+    sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r2', from: 'conductor', type: 'result', content: 'SWARM COMPLETE:' }] })
+    await vi.advanceTimersByTimeAsync(15000)
     expect(useTerminalStore.getState().swarmNotification).toEqual({
-      message: 'Swarm finished',
+      message: 'SWARM COMPLETE:',
       type: 'success',
     })
     expect(getConductorState().status).toBe('done')
@@ -933,7 +938,7 @@ describe('conductorManager — uncovered branches', () => {
     sw().getTasks.mockResolvedValue({ success: true, data: [] })
     sw().getMessages.mockResolvedValue({
       success: true,
-      data: [{ type: 'info', content: 'Conductor analyzing task: Build...' }], // 1 msg => not "has messages"
+      data: [{ id: 'a1', from: 'conductor', type: 'info', content: 'Conductor analyzing task: Build...' }], // on the bus at launch: not news
     })
 
     await sendTask('Build', '/tmp/project')
@@ -949,15 +954,56 @@ describe('conductorManager — uncovered branches', () => {
     expect(stalls()).toBe(1)
   })
 
-  // ---- revealConductor ----
+  it('a launch survives a bus that cannot be read: nothing is set aside, and it still starts', async () => {
+    await start()
+    sw().getTasks.mockRejectedValueOnce(new Error('bus down'))
+    sw().getMessages.mockRejectedValueOnce(new Error('bus down'))
 
-  it('revealConductor is a no-op when no conductor exists', () => {
-    stopConductor()
-    useTerminalStore.setState({ activeTerminalId: 'user-term', terminals: [] })
+    await sendTask('Build', '/tmp/project')
 
-    revealConductor()
+    expect(getConductorState().status).toBe('running')
+    expect(tp().writeToTerminal).toHaveBeenCalledWith('cm-uuid-1', expect.stringContaining('.termpolis-conductor-run.'))
+    sw().getTasks.mockResolvedValue({ success: true, data: [{ id: 't1', status: 'completed' }] })
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(getConductorState().status).toBe('done')
+  })
 
-    // It must not steal focus or mutate the store when there is nothing to show.
-    expect(useTerminalStore.getState().activeTerminalId).toBe('user-term')
+  it('the exit report survives a bus that rejects the message', async () => {
+    await start()
+    await sendTask('Build', '/tmp/project')
+    tp().readTerminalBuffer.mockResolvedValue(buf('boom\r\n[termpolis-conductor-exited] 2\r\n'))
+    sw().sendMessage.mockRejectedValue(new Error('bus down'))
+
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 2)' })
+    expect(useTerminalStore.getState().swarmActive).toBe(false)
+  })
+
+  it('the hand-over note after a zero exit survives a bus that rejects it', async () => {
+    await start()
+    await sendTask('Build', '/tmp/project')
+    tp().readTerminalBuffer.mockResolvedValue(buf('[termpolis-conductor-exited] 0\r\n'))
+    sw().getTasks.mockResolvedValue({ success: true, data: [{ id: 't1', status: 'pending' }] })
+    sw().sendMessage.mockRejectedValue(new Error('bus down'))
+
+    await vi.advanceTimersByTimeAsync(15000)
+
+    expect(getConductorState().status).toBe('running')
+  })
+
+  it('a tick whose task and message reads fail sees an empty bus: it neither ends the swarm nor stays quiet past a minute', async () => {
+    await start()
+    const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+    await sendTask('Build', '/tmp/project')
+    sw().getTasks.mockResolvedValue({ success: false, error: 'bus down' })
+    sw().getMessages.mockResolvedValue({ success: false, error: 'bus down' })
+
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(getConductorState().status).toBe('running')
+
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(notifSpy.mock.calls.some(([a]) => a?.message?.includes('not created any tasks'))).toBe(true)
+    expect(getConductorState().status).toBe('running')
   })
 })

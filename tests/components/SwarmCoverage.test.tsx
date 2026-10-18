@@ -55,7 +55,6 @@ vi.mock('../../src/renderer/src/lib/conductorManager', () => ({
   waitForAuth: vi.fn(),
   sendTask: vi.fn(),
   stopConductor: vi.fn(),
-  revealConductor: vi.fn(),
   getConductorState: vi.fn(() => ({ ...H.conductorState })),
 }))
 
@@ -122,7 +121,6 @@ import {
   waitForAuth,
   sendTask,
   stopConductor,
-  revealConductor,
   getConductorState,
 } from '../../src/renderer/src/lib/conductorManager'
 import { stopAllBridges } from '../../src/renderer/src/lib/swarmBridgeManager'
@@ -213,7 +211,6 @@ beforeEach(() => {
   vi.mocked(waitForAuth).mockResolvedValue(true)
   vi.mocked(sendTask).mockResolvedValue(undefined)
   vi.mocked(stopConductor).mockReturnValue(undefined)
-  vi.mocked(revealConductor).mockReturnValue(undefined)
   vi.mocked(getConductorState).mockImplementation(() => ({ ...H.conductorState }) as any)
 })
 
@@ -495,7 +492,7 @@ describe('StartSwarmModal — launch polling', () => {
       success: true,
       data: [
         makeMessage({ from: 'conductor', content: 'planning' }),
-        makeMessage({ from: 'mcp-client', content: 'tool call' }),
+        makeMessage({ from: 'conductor', content: 'Plan: two tasks' }),
         makeMessage({ from: 'system', content: 'ignored' }),
       ],
     })
@@ -512,6 +509,8 @@ describe('StartSwarmModal — launch polling', () => {
         makeMessage({ from: 'conductor', content: 'ack' }),
         makeMessage({ from: 'system', content: 'ignored' }),
         makeMessage({ from: 'agent-1', content: 'ignored' }),
+        // A message through MCP that gave no sender: a worker's, not the conductor's.
+        makeMessage({ from: 'mcp-client', content: 'ignored' }),
       ],
     })
     const onLaunched = await launch()
@@ -1007,12 +1006,20 @@ describe('SwarmDashboard — clear swarm', () => {
     expect(H.setSwarmAgents).toHaveBeenCalledWith([])
   })
 
-  it('reveals the conductor terminal from the debug button', () => {
+  it("shows the conductor's output from the debug button, without leaving the dashboard", async () => {
     H.swarmActive = true
-    render(<SwarmDashboard onClose={vi.fn()} />)
+    H.conductorState = { terminalId: 'c1', status: 'running', error: null }
+    ;(window.termpolis as any).readTerminalBuffer = vi.fn().mockResolvedValue({
+      success: true,
+      data: { output: 'Planning the swarm\r\n' },
+    })
+    const onClose = vi.fn()
+    render(<SwarmDashboard onClose={onClose} />)
 
     fireEvent.click(screen.getByText('Debug'))
 
-    expect(revealConductor).toHaveBeenCalledTimes(1)
+    expect(await screen.findByTestId('conductor-output-text')).toHaveTextContent('Planning the swarm')
+    expect(window.termpolis.readTerminalBuffer).toHaveBeenCalledWith('c1')
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

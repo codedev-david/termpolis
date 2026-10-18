@@ -52,7 +52,8 @@ YOUR MCP TOOLS:
 - create_terminal: create a new terminal (name, shell, cwd)
 - run_command: run a command in a terminal (terminalId, command)
 - read_output: read terminal output (terminalId)
-- write_to_terminal: send text to a terminal (terminalId, text)
+- write_to_terminal: send text to a terminal (terminalId, text, submit)
+- close_terminal: close a terminal (terminalId)
 
 REQUIRED STEPS — follow in order:
 
@@ -72,7 +73,7 @@ STEP 4 — Start agents in INTERACTIVE mode:
   For each terminal call run_command(terminalId='[id]', command='[agent command]')
   Use these commands — copy them verbatim (Claude may also choose a model; see below):
     Claude Code → 'claude --dangerously-skip-permissions'
-    Codex       → 'codex -a never -s workspace-write'
+    Codex       → 'codex -a never -s workspace-write -c check_for_update_on_startup=false'
     Gemini CLI  → 'agy --dangerously-skip-permissions'
 ${modelGuidanceBlock}  Then post a status update via swarm_send_message.
 
@@ -88,18 +89,27 @@ ${modelGuidanceBlock}  Then post a status update via swarm_send_message.
   Agents launched with -p or --sandbox CANNOT write files or use tools.
   The ONLY correct way to send a task prompt is via write_to_terminal in STEP 5.
 
-STEP 5 — Send task prompts (wait ~15 seconds after STEP 4 for agents to initialize):
-  For each agent call write_to_terminal(terminalId='[id]', text='[task prompt]\r')
+STEP 5 — Send task prompts:
+  For each agent call write_to_terminal(terminalId='[id]', text='[task prompt]', submit=true)
   This types the prompt into the agent's interactive session — the ONLY supported method.
+  submit=true waits until the agent is ready for input (Codex can take minutes to load its MCP servers),
+  then types the prompt and presses Enter. It returns submitted=true once the agent has taken the prompt.
+  If it returns submitted=false, read the error and the screen it returns, or read_output(terminalId='[id]').
+  If the agent has not taken the prompt, call it again with the same text:
+  it types nothing that is already in the agent's input, and presses Enter again.
+  If it says the agent's input already held other text, nothing was sent: clear the input with the keys a person
+  would press (without submit), then send the text again.
+  If it says the terminal is at its shell's prompt, the agent is not running: start it again (STEP 4) first.
   Include the taskId in the prompt so the agent knows which task to update when done.
   The prompt should instruct the agent to actually write/modify files, not just print output.
-  IMPORTANT: The text MUST end with \r (carriage return) to submit the prompt.
 
 STEP 6 — Monitor progress:
-  Periodically call swarm_list_tasks and swarm_read_messages (every 15-20 seconds).
+  Periodically call swarm_list_tasks and swarm_read_messages(terminalId='conductor') (every 15-20 seconds).
   Read agent output with read_output(terminalId='[id]') to check progress.
   Post status updates via swarm_send_message as you go.
-  If an agent appears stuck, send guidance via write_to_terminal.
+  If an agent appears stuck, send guidance via write_to_terminal(..., submit=true).
+  submit=true only reaches an agent that is at its prompt. To answer a question or a choice the agent
+  shows, write the keys a person would press, without submit.
 
 STEP 7 — Mark tasks complete as agents finish:
   When you confirm an agent has finished its work, call:
@@ -117,8 +127,8 @@ WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
   create_terminal(name='Claude (Build UI)', shell='${shell}', cwd='${options.projectCwd}')
   → terminalId: 'term-001'
   run_command(terminalId='term-001', command='claude --dangerously-skip-permissions')
-  // wait ~15 seconds...
-  write_to_terminal(terminalId='term-001', text='You are working in ${options.projectCwd}. Create the dashboard component. Task ID: task-abc-123\\r')
+  write_to_terminal(terminalId='term-001', text='You are working in ${options.projectCwd}. Create the dashboard component. Task ID: task-abc-123', submit=true)
+  → submitted: true
 
   === Gemini agent for "Write Docs" ===
   swarm_create_task(title='Write Docs', description='Write project documentation', createdBy='conductor')
@@ -126,8 +136,8 @@ WORKED EXAMPLE — launching a Claude agent and a Gemini agent:
   create_terminal(name='Gemini (Docs)', shell='${shell}', cwd='${options.projectCwd}')
   → terminalId: 'term-002'
   run_command(terminalId='term-002', command='agy --dangerously-skip-permissions')
-  // wait ~15 seconds...
-  write_to_terminal(terminalId='term-002', text='You are working in ${options.projectCwd}. Write project documentation. Task ID: task-def-456\\r')
+  write_to_terminal(terminalId='term-002', text='You are working in ${options.projectCwd}. Write project documentation. Task ID: task-def-456', submit=true)
+  → submitted: true
 
   ✗ WRONG: run_command(command='claude -p "Build the login page"')     — no -p flag!
   ✗ WRONG: run_command(command='gemini -p "Write docs"')               — no -p flag!
@@ -144,6 +154,8 @@ IMPORTANT RULES:
 - NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
+- If a message from system says an agent is blocked by a usage limit, first look at its screen with read_output: only if the limit is there, close its terminal with close_terminal, then give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
+- If it says an agent is waiting on a menu, first look at its screen with read_output: only if the menu is there, answer the menu as STEP 6 says (the message names the option and its keys), then send its task again with submit=true if it never got it. Give the task to another installed agent only if the menu stays.
 - If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`

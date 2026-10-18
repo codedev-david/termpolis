@@ -13,7 +13,8 @@
  *      `claude -p <prompt>` (again routed to the smart mock conductor)
  *   7. The smart mock conductor drives REAL MCP HTTP calls:
  *        swarm_send_message → swarm_create_task × 2 → create_terminal × 2 →
- *        run_command × 2 → write_to_terminal × 2 → swarm_update_task × 2 →
+ *        run_command × 2 → write_to_terminal × 2 (one with submit, into a
+ *        worker at its input box) → swarm_update_task × 2 →
  *        swarm_send_message('SWARM COMPLETE')
  *   8. The test verifies the renderer's store, the swarm bus, the monitoring
  *      loop, and the MCP HTTP surface all converge on the completed state.
@@ -130,6 +131,8 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       TERMPOLIS_TEST_PROJECT_CWD: PROJECT_ROOT,
+      // The mock conductor sends one worker its task with write_to_terminal's submit (test 9b).
+      MOCK_CLAUDE_SUBMIT: '1',
       ...e2eShimEnv('swarm-end-to-end'),
     },
   })
@@ -212,8 +215,11 @@ test.describe.serial('Swarm End-to-End', () => {
   })
 
   test('5. Fill in Goal and click Launch Swarm', async () => {
+    // Double quotes and option-like words on purpose (GitHub #36): on the command line through
+    // Windows PowerShell 5.1 they split the prompt, and the mock, like claude, exits on the
+    // `--watch` piece. On stdin they reach the conductor untouched.
     const goalText =
-      'Build a small contact-form feature — capture name/email/message, validate inputs, and show a confirmation message.'
+      'Build a small contact-form feature — capture "name", "email" and "message", validate inputs (as "npm test --watch -NoProfile" would), and show a confirmation message.'
 
     const goal = wizard().locator('textarea[placeholder*="contact form"]').first()
     await goal.click()
@@ -256,7 +262,7 @@ test.describe.serial('Swarm End-to-End', () => {
     expect(content).toContain('Swarm Conductor')
     expect(content).toContain('swarm_create_task')
     expect(content).toContain('create_terminal')
-    expect(content).toContain('contact-form')
+    expect(content).toContain('capture "name", "email" and "message"')
   })
 
   test('8. Smart mock conductor creates 2 tasks via MCP (swarm_create_task)', async () => {
@@ -350,6 +356,38 @@ test.describe.serial('Swarm End-to-End', () => {
     await ss('09-agent-terminals')
   })
 
+  test('9b. write_to_terminal with submit types a task into a worker at its input box, which takes it', async () => {
+    // GitHub #36 item 4. The worker started with a model is the mock's Claude Code at its input box;
+    // the mock conductor sends it its task with submit=true, as the real conductor's STEP 5 does,
+    // and posts the answer. Explicit polls, as test 10 explains.
+    const prefix = 'Sent the task to Claude (Implement feature): '
+    let answer: any = null
+    for (let i = 0; i < 90 && !answer; i++) {
+      const content = await page.evaluate(async (p) => {
+        const res = await (window as any).swarmAPI.getMessages()
+        const m = res?.success && Array.isArray(res.data) ? res.data.find((x: any) => typeof x.content === 'string' && x.content.startsWith(p)) : null
+        return m ? m.content : null
+      }, prefix)
+      if (content) answer = JSON.parse(content.slice(prefix.length))
+      else await page.waitForTimeout(1000)
+    }
+    expect(answer, 'the mock conductor never reported its submit').not.toBeNull()
+    expect(answer.submitted, JSON.stringify(answer)).toBe(true)
+
+    // And the worker took it: it prints what it was sent once it has worked on it.
+    let screen = ''
+    for (let i = 0; i < 20 && !screen.includes('● On it: You are in'); i++) {
+      screen = await page.evaluate(async () => {
+        const worker = (window as any).__termpolis_test_state?.().terminals.find((t: any) => t.isSwarm && /Implement feature/.test(t.name))
+        if (!worker) return ''
+        const res = await (window as any).termpolis.readTerminalBuffer(worker.id)
+        return res?.success && res.data ? res.data.output : ''
+      })
+      if (!screen.includes('● On it: You are in')) await page.waitForTimeout(500)
+    }
+    expect(screen).toContain('● On it: You are in')
+  })
+
   test('10. All tasks reach completed status (conductor → swarm_update_task)', async () => {
     // Poll with the same explicit evaluate loop test 8 uses. The previous version passed an
     // ASYNC predicate to page.waitForFunction, which resolved on the first poll against the
@@ -394,9 +432,10 @@ test.describe.serial('Swarm End-to-End', () => {
     ).then((h) => h.jsonValue())
 
     expect(msg).toBeTruthy()
-    // MCP server always sets from='mcp-client' regardless of what the caller
-    // claims — the identity is the MCP channel, not the client-supplied name.
-    expect(['conductor', 'mcp-client']).toContain(msg.from)
+    // Filed under the name the caller gave: only a result from the conductor ends a swarm, not a
+    // worker's own in STEP 8's words (GitHub #36). The mock conductor gives 'conductor', as the
+    // conductor's prompt says to.
+    expect(msg.from).toBe('conductor')
     expect(msg.type).toBe('result')
   })
 

@@ -365,6 +365,43 @@ describe('MCP HTTP server', () => {
 
   // --- JSON-RPC: tools/call ---
 
+  // GitHub #36: a client that went away before its answer (a conductor that died, a tool call that
+  // timed out) left write_to_terminal's submit waiting on the agent, and it typed the task in later.
+  it('stops a submit whose client closed the connection: nothing is typed into the agent later', async () => {
+    // Real time, on both sides of the socket: a rate-limit test above leaves fake timers on.
+    vi.useRealTimers()
+    const E = '\x1b'
+    const RULE = '─'.repeat(80)
+    const busy = `${E}]0;◐ Claude Code\x07${E}[H${E}[2J${E}[1;1H✢ Doing…${E}[2;1H${RULE}${E}[3;1H❯ ${E}[4;1H${RULE}${E}[5;1H  esc to interrupt`
+    const idle = `${E}]0;✳ Claude Code\x07${E}[H${E}[2J${E}[1;1HClaude Code${E}[2;1H${RULE}${E}[3;1H❯ ${E}[4;1H${RULE}`
+    const { readOutput, writeToTerminal } = handlers
+    const started = Date.now()
+    // At its prompt two seconds in: a submit still waiting then types, twice ready a second apart.
+    const reads = vi.fn(() => (Date.now() - started < 2000 ? busy : idle))
+    handlers.readOutput = reads
+    handlers.writeToTerminal = vi.fn()
+    try {
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port,
+        path: '/mcp',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      })
+      req.on('error', () => {})
+      req.end(JSON.stringify({ jsonrpc: '2.0', id: 77, method: 'tools/call', params: { name: 'write_to_terminal', arguments: { terminalId: 't1', text: 'Write the docs', submit: true } } }))
+      await new Promise((r) => setTimeout(r, 300))
+      req.destroy()
+      await new Promise((r) => setTimeout(r, 4000))
+      expect(handlers.writeToTerminal).not.toHaveBeenCalled()
+      // It stopped looking at its next poll, a second in.
+      expect(reads.mock.calls.length).toBeLessThanOrEqual(2)
+    } finally {
+      handlers.readOutput = readOutput
+      handlers.writeToTerminal = writeToTerminal
+    }
+  }, 10_000)
+
   it('tools/call list_terminals calls handler and returns result', async () => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',
@@ -778,6 +815,69 @@ describe('MCP HTTP server', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(handlers.swarmSendMessage).toHaveBeenCalledWith('mcp-client', 'agent-1', 'task', 'do work')
+  })
+
+  // GitHub #36: every message was filed as mcp-client, so a worker's own result that started
+  // "SWARM COMPLETE" ended the swarm as the conductor's STEP 8 does. The sender is the caller's name
+  // now, but never Termpolis's own system, whose notes the conductor acts on.
+  it.each([
+    ['conductor', 'conductor'],
+    ['  Claude (Docs) ', 'Claude (Docs)'],
+    ['system', 'mcp-client'],
+    [' System ', 'mcp-client'],
+    ['', 'mcp-client'],
+    [42, 'mcp-client'],
+    ['x'.repeat(100), 'x'.repeat(64)],
+    // R2-5: an invisible character, or a fullwidth or ligatured letter, made a name that the
+    // Messages tab shows as "system" and passed as another.
+    ['system​', 'mcp-client'],
+    ['​system', 'mcp-client'],
+    ['sys­tem', 'mcp-client'],
+    ['system⁠', 'mcp-client'],
+    ['ｓｙｓｔｅｍ', 'mcp-client'],
+    ['\u0000system\u001f', 'mcp-client'],
+    // R3-5: characters Unicode marks default-ignorable outside the format class, which the Messages
+    // tab draws as nothing: variation selectors, the combining grapheme joiner, a Mongolian free
+    // variation selector, the Hangul fillers (NFKC turns the halfwidth one into U+1160).
+    ['system️', 'mcp-client'],
+    ['system︀', 'mcp-client'],
+    ['system͏', 'mcp-client'],
+    ['sys͏tem', 'mcp-client'],
+    ['ㅤsystem', 'mcp-client'],
+    ['systemᅠ', 'mcp-client'],
+    ['system\u{E0100}', 'mcp-client'],
+    ['system᠋', 'mcp-client'],
+    ['systemﾠ', 'mcp-client'],
+    ['conductor️', 'conductor'],
+    // Names a person reads as they are written keep every character they show.
+    ['José', 'José'],
+    ['MUÑOZ', 'MUÑOZ'],
+    ['O’Brien', 'O’Brien'],
+    ['Codex — Tests', 'Codex — Tests'],
+    ['测试代理', '测试代理'],
+    ['🤖 Reviewer', '🤖 Reviewer'],
+    // The conductor, however it writes its own name: its plan and its STEP 8 are told by it.
+    ['Conductor', 'conductor'],
+    [' CONDUCTOR ', 'conductor'],
+    ['conductor​', 'conductor'],
+    ['Claude​ (Docs)', 'Claude (Docs)'],
+  ])('tools/call swarm_send_message files a message from %j under %j', async (from, sender) => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_send_message', arguments: { from, to: 'all', type: 'result', content: 'SWARM COMPLETE: done' } },
+      id: 314,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmSendMessage).toHaveBeenLastCalledWith(sender, 'all', 'result', 'SWARM COMPLETE: done')
+  })
+
+  it("advertises swarm_send_message's from: an agent passes nothing the schema does not mention", async () => {
+    const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/list', id: 33 })
+    const tools = JSON.parse(res.body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, { type: string }>; required: string[] } }>
+    const send = tools.find((t) => t.name === 'swarm_send_message')!
+    expect(send.inputSchema.properties.from.type).toBe('string')
+    expect(send.inputSchema.required).not.toContain('from')
   })
 
   it('tools/call swarm_read_messages calls handler', async () => {

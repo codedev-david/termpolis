@@ -139,9 +139,10 @@ export function StartSwarmModal({ onClose, onLaunched, projectCwd, initialGoal =
           ])
           const taskCount = taskRes.success && taskRes.data ? taskRes.data.length : 0
           // The sendTask call itself posts 2 system/conductor messages, so we
-          // only count conductor messages as real progress.
+          // only count conductor messages as real progress. MCP files a message
+          // under the name its caller gives, and the conductor gives 'conductor'.
           const conductorMsgs = msgRes.success && msgRes.data
-            ? msgRes.data.filter((m: any) => m.from === 'conductor' || m.from === 'mcp-client')
+            ? msgRes.data.filter((m) => m.from === 'conductor')
             : []
           const agentTerminals = useTerminalStore.getState().terminals.filter(t => t.isSwarm && !t.isConductor && !t.hidden)
 

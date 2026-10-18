@@ -91,10 +91,28 @@ function handleLocally(request) {
   )
 }
 
+// Calls still waiting on the app, by their JSON-RPC id, and the ones their client gave up on. A
+// client that times out on a call sends notifications/cancelled, as MCP has it, and keeps its
+// session, so this adapter lives on. The call's request to the app is closed, which is what stops
+// the call there (a write_to_terminal submit typed the task in later, and twice after a retry), and
+// it gets no answer, as MCP asks (GitHub #36).
+const inFlight = new Map()
+const cancelled = new Set()
+
+function cancelCall(id) {
+  const req = inFlight.get(id)
+  if (!req) return
+  inFlight.delete(id)
+  cancelled.add(id)
+  req.destroy()
+}
+
 function sendToServer(body) {
-  return new Promise((resolve, reject) => {
+  const id = body.id
+  let req
+  const answer = new Promise((resolve, reject) => {
     const data = JSON.stringify(body)
-    const req = http.request({
+    req = http.request({
       hostname: '127.0.0.1',
       port: MCP_PORT,
       path: '/mcp',
@@ -114,11 +132,19 @@ function sendToServer(body) {
           reject(new Error(`Invalid JSON response: ${body}`))
         }
       })
+      // A request closed after its answer began fails here, not on the request.
+      res.on('error', reject)
     })
     req.on('error', reject)
     req.write(data)
     req.end()
   })
+  if (id === undefined || id === null) return answer
+  inFlight.set(id, req)
+  // Answered, or failed: no longer a call to give up on.
+  const settled = () => { if (inFlight.get(id) === req) inFlight.delete(id) }
+  answer.then(settled, settled)
+  return answer
 }
 
 // F31: default a curated write's project scope to THIS adapter's cwd (= the terminal's
@@ -222,6 +248,7 @@ async function handleLine(line) {
   applyDefaultProjectScope(request, process.cwd())
   // MCP notifications are fire-and-forget — don't forward to server
   if (!request.id && (request.method?.startsWith('notifications/') || request.method === 'initialized')) {
+    if (request.method === 'notifications/cancelled') cancelCall(request.params?.requestId)
     return
   }
   // Ahead of degraded mode: whether the app is up does not change this answer.
@@ -239,6 +266,8 @@ async function handleLine(line) {
     const response = filterDelegatedToolList(request, await sendToServer(request), process.env)
     process.stdout.write(JSON.stringify(response) + '\n')
   } catch (err) {
+    // Closed because its client gave up on it: it wants no answer, and the app is fine.
+    if (cancelled.delete(request.id)) return
     // Connection refused etc. — flip into degraded mode so subsequent
     // requests don't all eat the same network timeout, and return a
     // friendly error for this one.

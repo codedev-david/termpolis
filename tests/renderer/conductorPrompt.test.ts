@@ -176,6 +176,71 @@ describe('buildConductorPrompt', () => {
     expect(step4Block).toMatch(/conserve tokens/i)
   })
 
+  // ---- write_to_terminal's submit, and a blocked worker (GitHub #36) ----
+
+  const block = (prompt: string, from: string, to: string) => prompt.slice(prompt.indexOf(from), prompt.indexOf(to))
+
+  it('has a prompt that did not go through sent again as it was: submit types nothing already in the input', () => {
+    // Sending it as a new text appended it to the copy still in the input: the agent got it twice.
+    const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
+    expect(step5).toContain("text='[task prompt]', submit=true")
+    expect(step5).toMatch(/submitted=false[\s\S]*again\s+with the same text/)
+    expect(step5).toMatch(/types nothing that is already in the agent's input/)
+  })
+
+  it("says what to do when submit refused to send a text behind other text, or into a shell its agent left", () => {
+    const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
+    expect(step5).toMatch(/already held other text, nothing was sent: clear the input[\s\S]*then send the text again/)
+    expect(step5).toMatch(/at its shell's prompt, the agent is not running: start it again \(STEP 4\)/)
+  })
+
+  it('reads the bus as the conductor, which is where a blocked worker is reported', () => {
+    expect(block(buildDefault(), 'STEP 6', 'STEP 7')).toContain("swarm_read_messages(terminalId='conductor')")
+  })
+
+  it('says submit reaches only an agent at its prompt, and to answer a question without it', () => {
+    const step6 = block(buildDefault(), 'STEP 6', 'STEP 7')
+    expect(step6).toMatch(/submit=true only reaches an agent that is at its prompt/)
+    expect(step6).toMatch(/answer a question or a choice[\s\S]*without submit/)
+  })
+
+  it('closes a worker a usage limit stopped before its task goes to another agent: a limit can lift by itself', () => {
+    expect(buildDefault()).toContain('close its terminal with close_terminal, then give its task to another installed agent')
+    expect(buildDefault()).toContain('- close_terminal: close a terminal (terminalId)')
+  })
+
+  it('answers a menu instead: a key press or two clear it, and the worker keeps what it did', () => {
+    const rule = buildDefault().split('\n').find((l) => l.includes('waiting on a menu'))!
+    expect(rule).toMatch(/answer the menu as STEP 6 says/)
+    expect(rule).toMatch(/another installed agent only if the menu stays/)
+    expect(rule).not.toMatch(/close_terminal/)
+  })
+
+  // A report can be wrong, and closing or reassigning on one alone ended a healthy worker's task
+  // (GitHub #36): the conductor looks at the worker's screen first, for a limit and for a menu.
+  it("has the conductor confirm a blocked worker with read_output before it closes, answers or reassigns it", () => {
+    const rules = buildDefault().split('\n').filter((l) => l.includes('blocked by a usage limit') || l.includes('waiting on a menu'))
+    expect(rules).toHaveLength(2)
+    for (const rule of rules) {
+      const look = rule.indexOf('read_output')
+      expect(look).toBeGreaterThan(0)
+      expect(rule.search(/close_terminal|answer the menu/)).toBeGreaterThan(look)
+    }
+  })
+
+  // Both examples send a task the way STEP 5 says; with "\r" at the end, an example that drifted
+  // back to the old raw write would teach the conductor the lost-prompt bug again.
+  it('sends the task in both worked examples with submit=true, and never with a CR of its own', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain("Task ID: task-abc-123', submit=true)")
+    expect(prompt).toContain("Task ID: task-def-456', submit=true)")
+    expect(prompt).not.toMatch(/write_to_terminal\([^)]*\\r'\)/)
+  })
+
+  it("starts Codex with its update check off: its update offer is a menu at every start", () => {
+    expect(block(buildDefault(), 'STEP 4', 'STEP 5')).toContain("Codex       → 'codex -a never -s workspace-write -c check_for_update_on_startup=false'")
+  })
+
   // ---- shellType branch coverage (line 12) ----
 
   it('honors explicit shellType="powershell"', () => {

@@ -52,7 +52,9 @@ import type { ShellInfo } from './types'
 import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
+import { noteWorkerStatus } from './lib/swarmStopReports'
 import { detectAgentStatus } from '../../shared/agentStatusDetector'
+import { screenOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
@@ -666,7 +668,6 @@ export default function App() {
           if (!bufferRes.success || !bufferRes.data) continue
 
           const output = bufferRes.data.output || ''
-          const recent = output.slice(-3000)
 
           // Pattern-based auto-dismiss for onboarding screens, and for folder trust
           // where the user allows it. Approvals are never answered (promptAutoDismiss.ts).
@@ -689,7 +690,13 @@ export default function App() {
             }
           }
 
-          const result = detectAgentStatus(recent, agent.agentName, agent.status)
+          // Read off the screen the output draws, not the raw output: on Windows a TUI's redraws
+          // leave "esc to interrupt" and its other furniture in the raw tail after they are gone
+          // (GitHub #36). The screen also shows a usage limit or a menu, which the conductor is
+          // told about once per stop.
+          const screen = screenOfReplay(bufferRes.data)
+          const result = detectAgentStatus(screen.lines().join('\n'), agent.agentName, agent.status, { screen: true, title: screen.title })
+          void noteWorkerStatus(agent, result)
 
           // Only update if status or summary actually changed
           if (result.status !== agent.status || (result.summary && result.summary !== agent.summary)) {

@@ -4,8 +4,9 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { subscribe, unsubscribe } from '../../lib/pollingService'
 import { StartSwarmModal } from './StartSwarmModal'
 import { stopAllBridges } from '../../lib/swarmBridgeManager'
-import { stopConductor, getConductorState, revealConductor } from '../../lib/conductorManager'
+import { stopConductor, getConductorState } from '../../lib/conductorManager'
 import { ConductorTrace } from '../ConductorTrace/ConductorTrace'
+import { ConductorOutput } from '../ConductorOutput/ConductorOutput'
 import { HandoffAnimation } from '../HandoffAnimation/HandoffAnimation'
 import { SwarmReviewPanel } from '../SwarmReview/SwarmReviewPanel'
 
@@ -14,7 +15,8 @@ interface SwarmDashboardProps {
   initialCwd?: string | null
 }
 
-type TabId = 'tasks' | 'messages' | 'trace' | 'review'
+// 'debug' has no tab of its own: the Debug button opens it.
+type TabId = 'tasks' | 'messages' | 'trace' | 'review' | 'debug'
 
 export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('tasks')
@@ -339,11 +341,15 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
             </button>
           ))}
           <div className="flex-1"></div>
-          {swarmActive && (
+          {/* Offered while a conductor terminal exists, so also after it exited or refused,
+              which is when its output is wanted most. */}
+          {conductorTerminalId && (
             <button
-              onClick={() => revealConductor()}
-              className="flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[#D97706] hover:bg-[#37373d]"
-              title="Reveal conductor terminal for debugging"
+              onClick={() => setActiveTab('debug')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[#D97706] hover:bg-[#37373d] ${
+                activeTab === 'debug' ? 'bg-[#37373d]' : ''
+              }`}
+              title="Show the conductor's output (read-only)"
             >
               <i className="fa-solid fa-bug"></i> Debug
             </button>
@@ -363,6 +369,9 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
           {activeTab === 'messages' && renderMessages()}
           {activeTab === 'trace' && (
             <ConductorTrace conductorTerminalId={conductorTerminalId} />
+          )}
+          {activeTab === 'debug' && (
+            <ConductorOutput conductorTerminalId={conductorTerminalId} />
           )}
           {activeTab === 'review' && reviewAvailable && swarmSummary?.preSwarmSha && swarmSummary?.projectCwd && (
             <SwarmReviewPanel

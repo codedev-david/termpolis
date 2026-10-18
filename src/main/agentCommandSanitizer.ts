@@ -3,10 +3,11 @@
 // Codex: `--full-auto` was removed from the CLI (0.153 rejects it outright), and a swarm
 // worker can't stop for approvals — Termpolis no longer answers them. `-a never` returns a
 // failed command to the model instead of asking; `-s workspace-write` keeps its sandbox:
-// writes stay in the project, and no network.
+// writes stay in the project, and no network. With its update check on, a Codex started while a
+// newer one is out opens on an update offer, a menu that holds it until someone answers (GitHub #36).
 export const AGENT_COMMAND_ALLOWLIST: Record<string, string> = {
   'claude': 'claude --dangerously-skip-permissions',
-  'codex': 'codex -a never -s workspace-write',
+  'codex': 'codex -a never -s workspace-write -c check_for_update_on_startup=false',
   'agy': 'agy --dangerously-skip-permissions', // Gemini via the Antigravity CLI (autonomous swarm worker → auto-approve, like Claude)
   'gemini': 'gemini', // legacy fallback
 }

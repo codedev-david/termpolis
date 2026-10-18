@@ -11,6 +11,9 @@
  *             System32 wasn't on the inherited PATH (cmd.exe unresolvable)
  *   v1.11.5 — pure PowerShell one-liner (current). Runs inline in the already-
  *             running pwsh/PS 5.1 conductor terminal. Zero PATH dependencies.
+ *   v1.53.1 — the prompt goes on stdin, not argv (GitHub #36). PS 5.1 ended the
+ *             argument at every `"` in it, the rest arrived as options, and
+ *             claude exited before it did anything.
  *
  * These tests run the renderer inside a real Electron window with the test
  * agent shim wired up, spy on window.termpolis.writeToTerminal, invoke the
@@ -22,6 +25,7 @@ import path from 'path'
 import fs from 'fs'
 import os from 'os'
 import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp, ensureE2eBuild } from './helpers/launch'
+import { findConductorExit, type ConductorExit } from '../src/renderer/src/lib/conductorLaunch'
 
 let app: ElectronApplication
 let page: Page
@@ -32,19 +36,23 @@ const TASK_FILE = path.join(os.homedir(), '.termpolis-conductor-task.md')
 const RUN_PS1 = path.join(os.homedir(), '.termpolis-conductor-run.ps1')
 const RUN_SH = path.join(os.homedir(), '.termpolis-conductor-run.sh')
 const RUN_CMD = path.join(os.homedir(), '.termpolis-conductor-run.cmd')
+// Quotes, option-like words and non-ASCII: each one broke or garbled the argv delivery.
+const GOAL = 'Build a tiny feature to validate the launch command: run "npm test --watch" -NoProfile, then reply "all good" — ✓ →'
 
 function userDataDir(): string {
   // `--user-data-dir=X` makes X the app's userData path on win32, darwin AND linux —
   // the old per-platform switch pointed the non-Windows branches at the real profile.
   return e2eUserDataDir('swarm-launch-command')
 }
+// Where the mock conductor writes the argv and prompt it was handed (MOCK_CLAUDE_RECORD).
+const RECEIVED = path.join(userDataDir(), 'mock-claude-received.json')
 
 test.beforeAll(async () => {
   if (fs.existsSync(SCREENSHOTS)) fs.rmSync(SCREENSHOTS, { recursive: true })
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
 
   // Clear any prior run artifacts so our assertions can't false-pass on stale files
-  for (const f of [TASK_FILE, RUN_PS1, RUN_SH, RUN_CMD]) {
+  for (const f of [TASK_FILE, RUN_PS1, RUN_SH, RUN_CMD, RECEIVED]) {
     try { if (fs.existsSync(f)) fs.unlinkSync(f) } catch {}
   }
 
@@ -74,6 +82,7 @@ test.beforeAll(async () => {
       TERMPOLIS_TEST_AGENTS: '1',
       TERMPOLIS_TEST_TIMING: '1',
       TERMPOLIS_TEST_PROJECT_CWD: PROJECT_ROOT,
+      MOCK_CLAUDE_RECORD: RECEIVED,
       ...e2eShimEnv('swarm-launch-command'),
     },
   })
@@ -123,7 +132,7 @@ test.describe.serial('Swarm launch command shape', () => {
 
     const goal = wizard.locator('textarea[placeholder*="contact form"]').first()
     await goal.click()
-    await goal.fill('Build a tiny feature to validate the launch command.')
+    await goal.fill(GOAL)
 
     const launch = wizard.locator('button:has-text("Launch Swarm")').first()
     await expect(launch).toBeEnabled()
@@ -139,15 +148,32 @@ test.describe.serial('Swarm launch command shape', () => {
       // Poll in case of fs-flush delay
       for (let i = 0; i < 40 && !fs.existsSync(RUN_PS1); i++) await page.waitForTimeout(250)
       expect(fs.existsSync(RUN_PS1)).toBe(true)
-      const psBody = fs.readFileSync(RUN_PS1, 'utf-8')
+      const written = fs.readFileSync(RUN_PS1, 'utf-8')
+      // A BOM first, so Windows PowerShell 5.1 reads the paths in it as UTF-8, not as ANSI.
+      expect(written.charCodeAt(0)).toBe(0xfeff)
+      const psBody = written.slice(1)
       expect(psBody).toContain('claude')
       expect(psBody).toContain('--dangerously-skip-permissions')
+      // The task is piped in, as UTF-8 without a BOM, and never put on the command line.
+      expect(psBody).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+\.termpolis-conductor-task\.md' \| \S.* -p (--mcp-config '[^']+' )?--dangerously-skip-permissions$/m)
+      expect(psBody).toContain('$OutputEncoding = $enc')
+      expect(psBody).toContain('[Console]::InputEncoding = $enc')
+      expect(psBody).not.toContain('$task')
+      // It marks where its output starts, and reports claude's exit on a line of its own: 1 when
+      // claude never started, after two blank lines.
+      expect(psBody.startsWith("Write-Output '[termpolis-conductor-started]'\n")).toBe(true)
+      expect(psBody).toContain('\n$global:LASTEXITCODE = $null\nGet-Content -Raw ')
+      expect(psBody).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
     } else {
       for (let i = 0; i < 40 && !fs.existsSync(RUN_SH); i++) await page.waitForTimeout(250)
       expect(fs.existsSync(RUN_SH)).toBe(true)
       const shBody = fs.readFileSync(RUN_SH, 'utf-8')
       expect(shBody).toContain('claude')
       expect(shBody).toContain('--dangerously-skip-permissions')
+      expect(shBody).toMatch(/ -p (--mcp-config '[^']+' )?--dangerously-skip-permissions < "\$TASK_FILE"$/m)
+      expect(shBody).not.toContain('$(cat')
+      expect(shBody).toContain("\necho '[termpolis-conductor-started]'\n")
+      expect(shBody).toMatch(/< "\$TASK_FILE"\ncode=\$\?\necho\necho "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
     }
   })
 
@@ -216,5 +242,55 @@ test.describe.serial('Swarm launch command shape', () => {
     const cmd: string = await page.evaluate(() => (window as any).__termpolis_last_launch_cmd ?? '')
     expect(cmd).toBeTruthy()
     expect(cmd.startsWith('bash ')).toBe(true)
+  })
+
+  test('8. The conductor got the task on stdin, byte for byte, and only flags on its command line', async () => {
+    // The mock conductor records what it was handed (MOCK_CLAUDE_RECORD) as soon as it has read
+    // its stdin. Before v1.53.1 a Windows run handed it the prompt in pieces, and it exited.
+    let received: { argv: string[]; prompt: string } | null = null
+    for (let i = 0; i < 80 && !received; i++) {
+      try { received = JSON.parse(fs.readFileSync(RECEIVED, 'utf-8')) } catch { await page.waitForTimeout(250) }
+    }
+    expect(received, `the mock conductor never recorded its input at ${RECEIVED}`).toBeTruthy()
+
+    const task = fs.readFileSync(TASK_FILE, 'utf-8')
+    expect(task).toContain(GOAL)
+    // PowerShell appends one CRLF to what it pipes; bash's `<` hands the file over as it is.
+    expect(received!.prompt).toBe(process.platform === 'win32' ? task + '\r\n' : task)
+    expect(received!.argv).toEqual(['-p', '--mcp-config', expect.stringMatching(/claude-mcp-config\.json$/), '--dangerously-skip-permissions'])
+  })
+
+  test('9. The conductor terminal shows the exit report, and the swarm ends on its tasks', async () => {
+    // GitHub #36: when claude exited, the conductor terminal's own shell lived on, so nothing told
+    // the monitor. The run script reports the exit on a line of its own. This reads it back out of
+    // the REAL terminal (ConPTY on Windows) the way the monitor does. The mock exits 0 once its
+    // tasks are done, so the completed tasks, not the exit, must end the swarm.
+    let exit: ConductorExit | null = null
+    let output = ''
+    for (let i = 0; i < 120 && !exit; i++) {
+      output = await page.evaluate(async () => {
+        const conductor = (window as any).__termpolis_test_state?.().terminals.find((t: any) => t.isConductor)
+        if (!conductor) return ''
+        const res = await (window as any).termpolis.readTerminalBuffer(conductor.id)
+        return res?.success && res.data ? res.data.output : ''
+      })
+      exit = findConductorExit(output)
+      if (!exit) await page.waitForTimeout(500)
+    }
+    fs.writeFileSync(path.join(SCREENSHOTS, 'conductor-output.txt'), output)
+    expect(exit, 'no [termpolis-conductor-exited] line in the conductor terminal (see conductor-output.txt)').toBeTruthy()
+    expect(exit!.code).toBe(0)
+    expect(exit!.lastLines.join('\n')).not.toContain('-ExecutionPolicy') // the echoed launch line is left out
+
+    let state: any = null
+    for (let i = 0; i < 60; i++) {
+      state = await page.evaluate(() => (window as any).__termpolis_test_state?.() ?? null)
+      if (state && !state.swarmActive && state.swarmCompletionSummary) break
+      await page.waitForTimeout(500)
+    }
+    expect(state?.swarmActive).toBe(false)
+    expect(state?.swarmCompletionSummary, 'the swarm should end on its completed tasks').toBeTruthy()
+    expect(state.swarmCompletionSummary.tasks.length).toBeGreaterThanOrEqual(2)
+    expect(state.swarmNotification?.message ?? '').not.toMatch(/Conductor exited/)
   })
 })

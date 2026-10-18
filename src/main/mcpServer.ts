@@ -5,6 +5,8 @@ import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary } from './agentCommandSanitizer'
+import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
+import { screenOf } from '../shared/terminalScreen'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -254,12 +256,13 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'write_to_terminal',
-    description: 'Write raw text to a terminal (without pressing Enter)',
+    description: 'Write raw text to a terminal (presses Enter only with submit)',
     inputSchema: {
       type: 'object',
       properties: {
         terminalId: { type: 'string', description: 'Terminal ID' },
         text: { type: 'string', description: 'Text to write' },
+        submit: { type: 'boolean', description: 'Wait until the agent is ready, type the text, then press Enter' },
       },
       required: ['terminalId', 'text'],
     },
@@ -270,6 +273,7 @@ const TOOLS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        from: { type: 'string', description: 'Your name as the sender; the conductor is "conductor"' },
         to: { type: 'string', description: 'Target terminal ID, agent name, or "all" for broadcast' },
         type: { type: 'string', enum: ['task', 'result', 'question', 'info', 'review'], description: 'Message type' },
         content: { type: 'string', description: 'Message content' },
@@ -440,7 +444,7 @@ const TOOLS: McpTool[] = [
   },
   {
     name: 'memory_feedback',
-    description: 'Tell the shared brain whether a recalled memory was right. `helpful: true` lifts it; `helpful: false` demotes a WRONG or misleading one, and three of those suppress it from recall — use the negative path, it is how bad memories die. Termpolis also scores this automatically from how your work turns out, so this is for what an outcome cannot see. Pass your `agentId` to record cross-agent teaching.',
+    description: 'Tell the shared brain whether a recalled memory was right. `helpful: true` lifts it; `helpful: false` demotes a WRONG or misleading one, and three of those suppress it from recall — use the negative path, it is how bad memories die. Termpolis also scores this automatically from how your work turns out, so this is for what an outcome cannot see.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -634,6 +638,9 @@ export interface McpToolHandlers {
   runAndWait: (opts: { command: string; cwd?: string; shell?: string; timeoutMs?: number }) => Promise<{ exitCode: number; output: string; timedOut?: boolean }>
   testCoverage: (opts: { file: string; cwd?: string; startLine?: number; endLine?: number }) => { file: string; hasCoverage: boolean; hint?: string; covered?: number; total?: number; percent?: number | null; uncovered?: number[]; stale?: boolean; source?: string }
   readOutput: (terminalId: string, lines: number) => string
+  /** The terminal's PTY size, which its output can't tell (terminalScreen.ts screenSizeOf); null
+   *  for one that is gone. write_to_terminal's submit reads the agent's screen at it. */
+  terminalSize?: (terminalId: string) => { cols: number; rows: number } | null
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
@@ -680,12 +687,368 @@ export interface McpToolHandlers {
   recallBench: (opts: { project?: string; limit?: number; save?: boolean }) => Promise<unknown>
 }
 
+// write_to_terminal with `submit` (GitHub #36 item 4). A conductor that typed a task into a worker
+// right after starting it lost the task in three ways: Codex was still loading its MCP servers (one
+// to three minutes on a slow PC) and an Enter then only queues the prompt; an agent showing "tab to
+// queue message" does the same; and text with its \r in one write reads as a paste, so the Enter
+// becomes a newline. So: wait until the agent's screen shows it ready, type the text, wait until
+// the agent shows it, let it settle, press Enter on its own (SUBMIT_SETTLE_MS in remoteBridge/
+// dispatcher.ts, which split it for the phone), and check the agent took it, pressing Enter once
+// more if it did not.
+//
+// What was typed and what was taken are read off the two things each agent shows at any size: its
+// input box empty, its glyph alone or with its placeholder, which is one row however small the
+// screen; and its busy line. Typed is the box no longer empty, with the end of the text in it, the
+// part of a long one its box shows, or the agent's placeholder for a long paste; taken is the agent
+// at work, or back at its empty box with something new above it. Not the rows of a box that holds
+// the text: one taller than the screen never shows whole, its first row scrolls away, and a first
+// line such as "1. ..." looks like a menu's option. Read that way, a long task or a numbered one was
+// typed and never sent, and sent again it was typed twice. The text is compared by its letters and
+// digits, which every agent keeps as it is typed.
+
+/** How long `submit` waits for the agent to be ready. */
+export const SUBMIT_READY_TIMEOUT_MS = 180_000
+const SUBMIT_POLL_MS = 1000
+/** A terminal that printed nothing in this long is not one to type into. Generous: a cold Windows
+ *  PowerShell 5.1 on a slow PC can take many seconds to print its first prompt. */
+const SUBMIT_NO_OUTPUT_MS = 30_000
+/** How long the agent gets to show the text it was typed. A Claude Code just started draws its
+ *  input box before it handles keys: on a real run the text showed 0.25 to 2.25 s after it was
+ *  typed, and an Enter pressed before that became a new line in it. */
+const SUBMIT_ECHO_MS = 10_000
+const SUBMIT_ECHO_POLL_MS = 250
+/** How long the agent gets to take the prompt after each Enter. */
+const SUBMIT_CONFIRM_MS = 3000
+const SUBMIT_CONFIRM_POLL_MS = 500
+/** How much of the text's end submit looks for on the screen: enough to be this text's, little
+ *  enough to be in what a box shows of a long one. */
+const SUBMIT_END_CHARS = 24
+/** How many of the screen's last rows a failed submit returns, for the conductor to read. */
+const SUBMIT_SCREEN_ROWS = 15
+
+export interface SubmitClock {
+  now(): number
+  sleep(ms: number): Promise<void>
+}
+const realClock: SubmitClock = { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) }
+
+export interface SubmitResult {
+  submitted: boolean
+  /** How long the agent took to be ready for the text. */
+  waitedMs: number
+  error?: string
+  /** With an error once the agent's screen was read: its last rows, as it showed them. */
+  screen?: string
+}
+
+/** The pause between the text and its Enter: the remote dispatcher's 150 ms, up to 2 s for a long
+ *  prompt, which an agent reads in more than one go. */
+function settleMs(text: string): number {
+  return Math.min(2000, Math.max(150, text.length))
+}
+
+/** One look at a terminal: its rows and title, and what the agent in it is doing. */
+interface Seen {
+  lines: string[]
+  title: string
+  status: AgentStatusResult
+  /** The shell printed its prompt after the agent's last input box: the agent exited (atShellPrompt). */
+  shell: boolean
+}
+
+/** What every Termpolis shell writes at each prompt it prints, its folder (shellIntegration.ts: OSC
+ *  9;9 from PowerShell and cmd, OSC 7 from bash and zsh); an agent's own output has none. */
+const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
+
+/** Whether the shell is back at its prompt: nothing after the last prompt it printed draws an input
+ *  box. Claude Code and agy leave their last frame, box and all, above the prompt when they exit,
+ *  and a task typed there went to the shell. */
+function atShellPrompt(raw: string, size: { cols: number; rows: number } | null): boolean {
+  let last = -1
+  for (const m of raw.matchAll(PROMPT_REPORT)) last = m.index ?? last
+  if (last < 0) return false
+  const after = raw.slice(last)
+  const lines = (size ? screenOf(after, size) : screenOf(after)).lines()
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+  return inputBoxRow(lines) < 0
+}
+
+/** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.
+ *  Read at the PTY's size: at the one the output reaches, an idle Claude Code at 160x40 read as
+ *  starting, and a Codex still loading at 120x30 as ready. */
+function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: string, previous: AgentStatusResult['status']): Seen | null {
+  const raw = handlers.readOutput(terminalId, 1000)
+  if (!raw) return null
+  const size = handlers.terminalSize?.(terminalId) ?? null
+  const screen = size ? screenOf(raw, size) : screenOf(raw)
+  const lines = screen.lines()
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+  return { lines, title: screen.title, status: detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title: screen.title }), shell: atShellPrompt(raw, size) }
+}
+
+/** A failed submit's answer, with the screen's last rows: the conductor reads them to decide. */
+function failed(waitedMs: number, error: string, seen: Seen): SubmitResult {
+  return { submitted: false, waitedMs, error, screen: seen.lines.slice(-SUBMIT_SCREEN_ROWS).join('\n') }
+}
+
+/** A long paste, as the agents show it in their input box instead of the text: Claude Code's and
+ *  agy's "[Pasted text #1 +20 lines]" (or "#1"), Codex's "[Pasted Content 4120 chars]", with " #2"
+ *  behind another of the same length (codex.exe). */
+const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+|Content \d+ chars)/
+const PASTE_PLACEHOLDERS = /\[Pasted (?:text #\d+(?: \+\d+ lines?)?\]|Content \d+ chars\](?: #\d+)?)/g
+
+/** A text as submit compares it with a screen: its letters and digits. The spaces a box drops or
+ *  adds where it wraps a row are left out, and so are the punctuation and symbols Codex and agy drop
+ *  as they are typed on Windows ("—", "✓", "→", "…", curly quotes, "€"; agy emoji too): read with
+ *  them, a task that ended in one never showed (R3-1). */
+const bare = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '')
+/** Rows run together, without an older Claude Code's │ frame, which a wrapped text would break. */
+const joined = (rows: readonly string[]): string => rows.map((row) => row.replace(/^\s*│|│\s*$/g, '')).join('')
+/** The end of a text, as submit looks for it on a screen: its last letters and digits. Never its
+ *  start, which a long text scrolls out of sight. */
+const endOf = (text: string): string => bare(text).slice(-SUBMIT_END_CHARS)
+/** What an agent's input box shows, run together: its glyph, and agy's "↑ 8 more lines" over a
+ *  text taller than its box, left out. */
+const boxText = (input: readonly string[]): string => joined(input).replace(/^\s*[❯>›]?\s*(?:↑\s*\d+\s+more\s+lines?\b)?/, '')
+
+/** Whether Codex's placeholder for a paste, "[Pasted Content 1110 chars]", can be this text's.
+ *  Codex counts the code points it kept: the text's, less at most those it may have dropped, any
+ *  above ASCII that is no letter or digit. */
+function codexPasteOf(input: readonly string[], text: string): boolean {
+  const m = /^\[Pasted Content (\d+) chars\](?: #\d+)?$/.exec(boxText(input).trim())
+  if (!m) return false
+  const points = [...text]
+  const droppable = points.filter((c) => c > '\u007f' && !/[\p{L}\p{N}]/u.test(c)).length
+  return Number(m[1]) <= points.length && Number(m[1]) >= points.length - droppable
+}
+
+/** The rows the input takes: the agent's box (agentStatusDetector.ts inputBoxRows), or a shell's
+ *  last row, the line a command is typed on. */
+function inputOf(seen: Seen, agent: boolean): string[] | null {
+  if (agent) return inputBoxRows(seen.lines)
+  return seen.lines.length > 0 ? seen.lines.slice(-1) : null
+}
+
+/** What the screen shows above the input: the agent's transcript, or the shell's. */
+function aboveInput(seen: Seen, agent: boolean): string {
+  return seen.lines.slice(0, Math.max(0, agent ? inputBoxRow(seen.lines) : seen.lines.length - 1)).join('\n')
+}
+
+/** Whether the input holds `text`, typed before and not sent. An agent's box holds it when all it
+ *  shows is the end of this text, at least its last SUBMIT_END_CHARS letters and digits (the whole of
+ *  a shorter one), or when it is Codex's placeholder for a paste of it: a prompt that only ends the
+ *  same is another prompt, and an Enter alone sent that one instead (R3-3). Not a placeholder of
+ *  Claude Code's or agy's, which could be any text: pasted again over it, Claude Code shows the text
+ *  whole. A shell's line holds it when it ends with the text's end. */
+function holdsText(input: string[] | null, text: string, agent: boolean): boolean {
+  const all = bare(text)
+  if (input === null || all === '') return false
+  if (!agent) return bare(joined(input)).endsWith(endOf(text))
+  const shown = bare(boxText(input))
+  return (shown.length >= Math.min(all.length, SUBMIT_END_CHARS) && all.endsWith(shown)) || codexPasteOf(input, text)
+}
+
+/** Whether the input still holds what was typed into it, after an Enter: the text's end, or the
+ *  placeholder the agent showed for it. */
+function stillHolds(input: string[] | null, text: string, agent: boolean): boolean {
+  return holdsText(input, text, agent) || (input !== null && bare(text) !== '' && PASTE_PLACEHOLDER.test(input.join('\n')))
+}
+
+/** Whether the agent shows the text it was typed: its box is no longer empty, and holds the text's
+ *  end or a placeholder for a long paste. Only its box: the same words can be in its transcript, a
+ *  prompt sent before. A shell has no box: its screen, where a long command wraps. */
+function showsTyped(seen: Seen, text: string, agent: boolean): boolean {
+  if (agent && emptyInputBox(seen.lines)) return false
+  const input = agent ? inputBoxRows(seen.lines) ?? [] : seen.lines
+  return bare(joined(input)).includes(endOf(text)) || PASTE_PLACEHOLDER.test(input.join('\n'))
+}
+
+/** Whether the box shows something in front of the text just typed into it that the text doesn't
+ *  account for: what an earlier call or a person left there, which an Enter would send with it as
+ *  one prompt (R3-3). In front of the agent's placeholder for it, when it collapsed a long paste;
+ *  else in front of the text's end, past what of the text's own start the box shows. A box that
+ *  shows only the end of a text taller than itself shows nothing in front of it. */
+function otherTextInFront(input: readonly string[], text: string): boolean {
+  const box = boxText(input)
+  const pastes = [...box.matchAll(PASTE_PLACEHOLDERS)]
+  const paste = pastes[pastes.length - 1]
+  if (paste?.index !== undefined && bare(box.slice(paste.index + paste[0].length)) === '') return bare(box.slice(0, paste.index)) !== ''
+  const shown = bare(box)
+  const all = bare(text)
+  const end = endOf(text)
+  const at = shown.lastIndexOf(end)
+  return at >= 0 && !all.slice(0, all.length - end.length).endsWith(shown.slice(0, at))
+}
+
+/** Whether the agent took the prompt after an Enter: it shows it is at work, or it is back at its
+ *  empty input box with something new above it, which a reply fast enough to come and go between two
+ *  looks leaves. A shell took a command that left its line, something new above it. */
+function tookIt(ready: Seen, seen: Seen, text: string, agent: boolean): boolean {
+  if (isBusyOnScreen(seen.lines, seen.title)) return true
+  const input = inputOf(seen, agent)
+  const back = agent ? emptyInputBox(seen.lines) : input !== null && !stillHolds(input, text, agent)
+  return back && aboveInput(seen, agent) !== aboveInput(ready, agent)
+}
+
+/** The terminal's name, for the agent-specific rules in the status detector. Workers the conductor
+ *  creates aren't in the saved session, so this is often '' and the screen rules carry it. */
+function terminalName(handlers: McpToolHandlers, terminalId: string): string {
+  try {
+    return handlers.listTerminals().find((t) => t.id === terminalId)?.name ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** The terminals whose last run_command started an agent. Submit types into one only at the agent's
+ *  input: at its shell's prompt the agent exited or never started, and a task typed there ran as a
+ *  command while the conductor was told it was sent (R3-4). The terminal's name can't tell: workers
+ *  the conductor creates aren't in listTerminals. */
+const agentTerminals = new Set<string>()
+
+/** Each terminal's submits, the last one queued: one waits for the one before it (below). */
+const submitQueues = new Map<string, Promise<void>>()
+
+/** write_to_terminal's submit. One at a time per terminal: two at once, a conductor's parallel
+ *  calls, waited for the same ready screen and both typed, and the agent got the two texts run
+ *  together as one prompt. `abandoned` is the call's client going away (startMcpServer): nothing
+ *  is typed or pressed after that, which a conductor that died or a client that timed out and
+ *  retried would get later, or twice. */
+export function submitToTerminal(
+  handlers: McpToolHandlers,
+  terminalId: string,
+  text: string,
+  clock: SubmitClock = realClock,
+  abandoned?: AbortSignal,
+): Promise<SubmitResult> {
+  const before = submitQueues.get(terminalId) ?? Promise.resolve()
+  const result = before.then(() => submitNow(handlers, terminalId, text, clock, abandoned))
+  const done = result.then(() => undefined, () => undefined)
+  submitQueues.set(terminalId, done)
+  void done.then(() => {
+    if (submitQueues.get(terminalId) === done) submitQueues.delete(terminalId)
+  })
+  return result
+}
+
+async function submitNow(handlers: McpToolHandlers, terminalId: string, text: string, clock: SubmitClock, abandoned?: AbortSignal): Promise<SubmitResult> {
+  const body = text.replace(/[\r\n]+$/, '')
+  const name = terminalName(handlers, terminalId)
+  const start = clock.now()
+  let sawOutput = false
+  let readyReads = 0
+  let status: AgentStatusResult = { status: 'starting', summary: '' }
+  let latest: Seen | null = null
+  // Ready on two reads in a row, a second apart: a screen mid-change can look ready for one frame.
+  while (readyReads < 2) {
+    const waitedMs = clock.now() - start
+    if (abandoned?.aborted) return { submitted: false, waitedMs, error: 'The call was abandoned before the agent was ready, so nothing was typed.' }
+    const seen = readScreen(handlers, terminalId, name, status.status)
+    if (seen) {
+      sawOutput = true
+      status = seen.status
+      latest = seen
+      // A blocked agent doesn't get ready by being waited for.
+      if (status.status === 'blocked') return failed(waitedMs, `The agent is blocked: ${status.summary}.`, seen)
+    } else if (sawOutput) {
+      return { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
+    } else if (waitedMs >= SUBMIT_NO_OUTPUT_MS) {
+      return { submitted: false, waitedMs, error: `Terminal ${terminalId} shows no output: it was closed, or it is not an ID create_terminal returned.` }
+    }
+    readyReads = seen && status.status === 'idle' ? readyReads + 1 : 0
+    if (readyReads < 2) {
+      // Some output by now: a terminal that showed none was given up on at 30 s.
+      if (waitedMs >= SUBMIT_READY_TIMEOUT_MS) {
+        const now = status.summary ? `${status.status}: ${status.summary}` : status.status
+        return failed(waitedMs, `The agent was not ready for input after ${Math.round(waitedMs / 1000)} s (${now}). Check it with read_output.`, latest!)
+      }
+      await clock.sleep(SUBMIT_POLL_MS)
+    }
+  }
+  const ready = latest!
+  let last: Seen = ready
+  // An agent's input is its box; a shell's (submit into a plain shell) its last line.
+  const agent = inputBoxRow(ready.lines) >= 0
+  const waitedMs = clock.now() - start
+  if ((!agent || ready.shell) && agentTerminals.has(terminalId)) {
+    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited or never started. Check it with read_output, and start the agent again with run_command before sending the text.", ready)
+  }
+  const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
+  const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }
+
+  // Typed only when the input doesn't hold it already, from a call before whose Enter didn't take:
+  // typed again, it went in after that copy, and the agent got the prompt twice.
+  if (body && !holdsText(inputOf(ready, agent), body, agent)) {
+    handlers.writeToTerminal(terminalId, body)
+    // Enter only once the agent shows what was typed, the same on two looks in a row: agy draws a
+    // long paste in pieces, and one can end where the text does. Not pressed at all when it never
+    // shows, and reported: counting an empty input as the prompt taken told the conductor a task was
+    // sent that sat unsent.
+    let shown = false
+    let before: string | null = null
+    for (let t = 0; t < SUBMIT_ECHO_MS && !shown; t += SUBMIT_ECHO_POLL_MS) {
+      await clock.sleep(SUBMIT_ECHO_POLL_MS)
+      const seen = readScreen(handlers, terminalId, name, 'idle')
+      if (!seen) return closed
+      last = seen
+      const input = showsTyped(seen, body, agent) ? (inputOf(seen, agent) ?? []).join('\n') : null
+      shown = input !== null && input === before
+      before = input
+    }
+    if (!shown) {
+      return failed(waitedMs, 'The agent never showed the text in its input, so Enter was not pressed. Check it with read_output, then send the same text again.', last)
+    }
+    // A box that held something before the text was typed: a hint, which the first key replaced,
+    // or other text, still in front of this. Not refused before typing, which can't tell the two.
+    if (agent && !emptyInputBox(ready.lines) && otherTextInFront(inputBoxRows(last.lines) ?? [], body)) {
+      return failed(waitedMs, "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
+    }
+  }
+  if (body) await clock.sleep(settleMs(body))
+  for (let enter = 0; enter < 2; enter++) {
+    if (abandoned?.aborted) return unpressed
+    handlers.writeToTerminal(terminalId, '\r')
+    for (let t = 0; t < SUBMIT_CONFIRM_MS; t += SUBMIT_CONFIRM_POLL_MS) {
+      await clock.sleep(SUBMIT_CONFIRM_POLL_MS)
+      const seen = readScreen(handlers, terminalId, name, 'idle')
+      if (!seen) return closed
+      last = seen
+      if (tookIt(ready, seen, body, agent)) return { submitted: true, waitedMs }
+    }
+    // Still in its input, the agent at its prompt: the Enter went in as a new line, or before the
+    // agent read keys. Once more. Anything else, a dialog the prompt opened among them, gets no
+    // Enter, which would pick from it.
+    if (last.status.status === 'blocked') return failed(waitedMs, `Enter was pressed, and the agent is blocked: ${last.status.summary}.`, last)
+    if (last.status.status !== 'idle' || !stillHolds(inputOf(last, agent), body, agent)) {
+      return failed(waitedMs, 'Enter was pressed, and the agent neither started working nor went back to its prompt with the text taken. Check it with read_output before sending the text again: it may have taken it.', last)
+    }
+  }
+  return failed(waitedMs, 'The text is still in the agent\'s input after Enter was pressed twice. Check it with read_output.', last)
+}
+
+/** The sender a swarm message is filed under: the name its caller gives, so the conductor's word is
+ *  told from a worker's (a worker's own result in STEP 8's words, "SWARM COMPLETE ...", ended the
+ *  swarm with a task still open: GitHub #36), or mcp-client for none. Never Termpolis's own system,
+ *  whose notes the conductor acts on, closing a worker: not by a name the Messages tab shows the
+ *  same, with an invisible character in it (a control or format character, or any other Unicode
+ *  marks default-ignorable: a variation selector, a Hangul filler) or a fullwidth letter (NFKC folds
+ *  those). The conductor is "conductor" however it writes it, which is the name its plan and its
+ *  STEP 8 are told by. */
+function messageSender(from: unknown): string {
+  const name = typeof from === 'string' ? from.normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{DI}]/gu, '').trim().slice(0, 64) : ''
+  const key = name.toLowerCase()
+  if (key === 'conductor') return 'conductor'
+  return name === '' || key === 'system' ? 'mcp-client' : name
+}
+
 export async function executeTool(
   name: string,
   args: any,
   handlers: McpToolHandlers,
   /** The paired phone the request was made for, from the validated device tag. */
   device: string | null = null,
+  /** Aborted when the request's client goes away before the answer (startMcpServer). */
+  abandoned?: AbortSignal,
 ) {
   switch (name) {
     case 'list_terminals':
@@ -705,6 +1068,9 @@ export async function executeTool(
       return { terminalId: tid, name: args.name }
     }
     case 'run_command':
+      // Whether the terminal hosts an agent now, for submit: its latest command says.
+      if (isAgentBinary(String(args.command ?? '').trim().split(/\s+/)[0])) agentTerminals.add(args.terminalId)
+      else agentTerminals.delete(args.terminalId)
       handlers.runCommand(args.terminalId, args.command)
       return { success: true, terminalId: args.terminalId, command: args.command }
     case 'read_output':
@@ -730,9 +1096,13 @@ export async function executeTool(
         endLine: args.endLine,
       })
     case 'close_terminal':
+      agentTerminals.delete(args.terminalId)
       handlers.closeTerminal(args.terminalId)
       return { success: true }
     case 'write_to_terminal':
+      // Raw unless asked: scripts rely on every byte arriving as sent, at once (remoteBridge/
+      // dispatcher.ts writeThenSubmit says why the Enter split isn't the default).
+      if (args.submit === true) return submitToTerminal(handlers, args.terminalId, String(args.text ?? ''), realClock, abandoned)
       handlers.writeToTerminal(args.terminalId, args.text)
       return { success: true }
     case 'get_file_tree':
@@ -740,7 +1110,7 @@ export async function executeTool(
     case 'get_git_status':
       return await handlers.getGitStatus(args.cwd)
     case 'swarm_send_message':
-      return handlers.swarmSendMessage('mcp-client', args.to, args.type, args.content)
+      return handlers.swarmSendMessage(messageSender(args.from), args.to, args.type, args.content)
     case 'swarm_read_messages':
       return handlers.swarmReadMessages(args.terminalId)
     case 'swarm_create_task':
@@ -923,7 +1293,7 @@ export async function executeToolForWorkflow(name: string, args: unknown, handle
   }
 }
 
-async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: string | null) {
+async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: string | null, abandoned?: AbortSignal) {
   const { method, params, id } = request
 
   if (method === 'initialize') {
@@ -960,7 +1330,7 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: st
   if (method === 'tools/call') {
     const { name, arguments: args } = params
     try {
-      const result = await executeTool(name, args || {}, handlers, device)
+      const result = await executeTool(name, args || {}, handlers, device, abandoned)
       return {
         jsonrpc: '2.0',
         result: { content: [{ type: 'text', text: compressToolResult(name, result) }] },
@@ -1099,6 +1469,13 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
         return
       }
 
+      // A client that went away before its answer (a conductor that died, a tool call that timed
+      // out) closed the connection: a call still waiting, write_to_terminal's submit, stops there.
+      const abandoned = new AbortController()
+      res.on('close', () => {
+        if (!res.writableFinished) abandoned.abort()
+      })
+
       const MAX_BODY = 1024 * 1024 // 1MB limit
       let body = ''
       let overflow = false
@@ -1129,7 +1506,7 @@ export function startMcpServer(handlers: McpToolHandlers): http.Server {
             return
           }
 
-          const response = await handleJsonRpc(request, handlers, device)
+          const response = await handleJsonRpc(request, handlers, device, abandoned.signal)
           logMcpRequest(request.method || 'unknown', toolName, response.error ? 'error' : 'ok', undefined, device)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify(response))
