@@ -836,6 +836,26 @@ describe('MCP HTTP server', () => {
     ['system⁠', 'mcp-client'],
     ['ｓｙｓｔｅｍ', 'mcp-client'],
     ['\u0000system\u001f', 'mcp-client'],
+    // R3-5: characters Unicode marks default-ignorable outside the format class, which the Messages
+    // tab draws as nothing: variation selectors, the combining grapheme joiner, a Mongolian free
+    // variation selector, the Hangul fillers (NFKC turns the halfwidth one into U+1160).
+    ['system️', 'mcp-client'],
+    ['system︀', 'mcp-client'],
+    ['system͏', 'mcp-client'],
+    ['sys͏tem', 'mcp-client'],
+    ['ㅤsystem', 'mcp-client'],
+    ['systemᅠ', 'mcp-client'],
+    ['system\u{E0100}', 'mcp-client'],
+    ['system᠋', 'mcp-client'],
+    ['systemﾠ', 'mcp-client'],
+    ['conductor️', 'conductor'],
+    // Names a person reads as they are written keep every character they show.
+    ['José', 'José'],
+    ['MUÑOZ', 'MUÑOZ'],
+    ['O’Brien', 'O’Brien'],
+    ['Codex — Tests', 'Codex — Tests'],
+    ['测试代理', '测试代理'],
+    ['🤖 Reviewer', '🤖 Reviewer'],
     // The conductor, however it writes its own name: its plan and its STEP 8 are told by it.
     ['Conductor', 'conductor'],
     [' CONDUCTOR ', 'conductor'],

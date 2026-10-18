@@ -698,11 +698,13 @@ export interface McpToolHandlers {
 //
 // What was typed and what was taken are read off the two things each agent shows at any size: its
 // input box empty, its glyph alone or with its placeholder, which is one row however small the
-// screen; and its busy line. The end of the text, the part of a long one its box shows, only
-// confirms them. Not the rows of a box that holds the text: one taller than the screen never shows
-// whole, its first row scrolls away, and a first line such as "1. ..." looks like a menu's option.
-// Read that way, a long task or a numbered one was typed and never sent, and sent again it was
-// typed twice.
+// screen; and its busy line. Typed is the box no longer empty, with the end of the text in it, the
+// part of a long one its box shows, or the agent's placeholder for a long paste; taken is the agent
+// at work, or back at its empty box with something new above it. Not the rows of a box that holds
+// the text: one taller than the screen never shows whole, its first row scrolls away, and a first
+// line such as "1. ..." looks like a menu's option. Read that way, a long task or a numbered one was
+// typed and never sent, and sent again it was typed twice. The text is compared by its letters and
+// digits, which every agent keeps as it is typed.
 
 /** How long `submit` waits for the agent to be ready. */
 export const SUBMIT_READY_TIMEOUT_MS = 180_000
@@ -771,16 +773,35 @@ function failed(waitedMs: number, error: string, seen: Seen): SubmitResult {
 }
 
 /** A long paste, as the agents show it in their input box instead of the text: Claude Code's and
- *  agy's "[Pasted text #1 +20 lines]" (or "#1"), Codex's "[Pasted Content 4120 chars]". */
+ *  agy's "[Pasted text #1 +20 lines]" (or "#1"), Codex's "[Pasted Content 4120 chars]", with " #2"
+ *  behind another of the same length (codex.exe). */
 const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+|Content \d+ chars)/
+const PASTE_PLACEHOLDERS = /\[Pasted (?:text #\d+(?: \+\d+ lines?)?\]|Content \d+ chars\](?: #\d+)?)/g
 
-const bare = (s: string): string => s.replace(/\s+/g, '')
+/** A text as submit compares it with a screen: its letters and digits. The spaces a box drops or
+ *  adds where it wraps a row are left out, and so are the punctuation and symbols Codex and agy drop
+ *  as they are typed on Windows ("—", "✓", "→", "…", curly quotes, "€"; agy emoji too): read with
+ *  them, a task that ended in one never showed (R3-1). */
+const bare = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '')
 /** Rows run together, without an older Claude Code's │ frame, which a wrapped text would break. */
 const joined = (rows: readonly string[]): string => rows.map((row) => row.replace(/^\s*│|│\s*$/g, '')).join('')
-/** The end of a text, as submit looks for it on a screen: its last characters, spaces left out,
- *  which a box drops or adds where it wraps a row. Never its start, which a long text scrolls out of
- *  sight. */
+/** The end of a text, as submit looks for it on a screen: its last letters and digits. Never its
+ *  start, which a long text scrolls out of sight. */
 const endOf = (text: string): string => bare(text).slice(-SUBMIT_END_CHARS)
+/** What an agent's input box shows, run together: its glyph, and agy's "↑ 8 more lines" over a
+ *  text taller than its box, left out. */
+const boxText = (input: readonly string[]): string => joined(input).replace(/^\s*[❯>›]?\s*(?:↑\s*\d+\s+more\s+lines?\b)?/, '')
+
+/** Whether Codex's placeholder for a paste, "[Pasted Content 1110 chars]", can be this text's.
+ *  Codex counts the code points it kept: the text's, less at most those it may have dropped, any
+ *  above ASCII that is no letter or digit. */
+function codexPasteOf(input: readonly string[], text: string): boolean {
+  const m = /^\[Pasted Content (\d+) chars\](?: #\d+)?$/.exec(boxText(input).trim())
+  if (!m) return false
+  const points = [...text]
+  const droppable = points.filter((c) => c > '\u007f' && !/[\p{L}\p{N}]/u.test(c)).length
+  return Number(m[1]) <= points.length && Number(m[1]) >= points.length - droppable
+}
 
 /** The rows the input takes: the agent's box (agentStatusDetector.ts inputBoxRows), or a shell's
  *  last row, the line a command is typed on. */
@@ -794,19 +815,24 @@ function aboveInput(seen: Seen, agent: boolean): string {
   return seen.lines.slice(0, Math.max(0, agent ? inputBoxRow(seen.lines) : seen.lines.length - 1)).join('\n')
 }
 
-/** Whether the input holds `text`, typed before and not sent: it ends with the text's end, or it is
- *  Codex's placeholder for a paste of the text's length. Not a placeholder of Claude Code's or agy's,
- *  which could be any text: pasted again over it, Claude Code shows the text whole. */
-function holdsText(input: string[] | null, text: string): boolean {
-  if (input === null || bare(text) === '') return false
-  if (bare(joined(input)).endsWith(endOf(text))) return true
-  return joined(input).replace(/^\s*[❯>›]\s*/, '').trim() === `[Pasted Content ${[...text].length} chars]`
+/** Whether the input holds `text`, typed before and not sent. An agent's box holds it when all it
+ *  shows is the end of this text, at least its last SUBMIT_END_CHARS letters and digits (the whole of
+ *  a shorter one), or when it is Codex's placeholder for a paste of it: a prompt that only ends the
+ *  same is another prompt, and an Enter alone sent that one instead (R3-3). Not a placeholder of
+ *  Claude Code's or agy's, which could be any text: pasted again over it, Claude Code shows the text
+ *  whole. A shell's line holds it when it ends with the text's end. */
+function holdsText(input: string[] | null, text: string, agent: boolean): boolean {
+  const all = bare(text)
+  if (input === null || all === '') return false
+  if (!agent) return bare(joined(input)).endsWith(endOf(text))
+  const shown = bare(boxText(input))
+  return (shown.length >= Math.min(all.length, SUBMIT_END_CHARS) && all.endsWith(shown)) || codexPasteOf(input, text)
 }
 
 /** Whether the input still holds what was typed into it, after an Enter: the text's end, or the
  *  placeholder the agent showed for it. */
-function stillHolds(input: string[] | null, text: string): boolean {
-  return holdsText(input, text) || (input !== null && bare(text) !== '' && PASTE_PLACEHOLDER.test(input.join('\n')))
+function stillHolds(input: string[] | null, text: string, agent: boolean): boolean {
+  return holdsText(input, text, agent) || (input !== null && bare(text) !== '' && PASTE_PLACEHOLDER.test(input.join('\n')))
 }
 
 /** Whether the agent shows the text it was typed: its box is no longer empty, and holds the text's
@@ -818,13 +844,31 @@ function showsTyped(seen: Seen, text: string, agent: boolean): boolean {
   return bare(joined(input)).includes(endOf(text)) || PASTE_PLACEHOLDER.test(input.join('\n'))
 }
 
+/** Whether the box shows something in front of the text just typed into it that the text doesn't
+ *  account for: what an earlier call or a person left there, which an Enter would send with it as
+ *  one prompt (R3-3). In front of the agent's placeholder for it, when it collapsed a long paste;
+ *  else in front of the text's end, past what of the text's own start the box shows. A box that
+ *  shows only the end of a text taller than itself shows nothing in front of it. */
+function otherTextInFront(input: readonly string[], text: string): boolean {
+  const box = boxText(input)
+  const pastes = [...box.matchAll(PASTE_PLACEHOLDERS)]
+  const paste = pastes[pastes.length - 1]
+  if (paste?.index !== undefined && bare(box.slice(paste.index + paste[0].length)) === '') return bare(box.slice(0, paste.index)) !== ''
+  const shown = bare(box)
+  const all = bare(text)
+  const end = endOf(text)
+  const at = shown.lastIndexOf(end)
+  return at >= 0 && !all.slice(0, all.length - end.length).endsWith(shown.slice(0, at))
+}
+
 /** Whether the agent took the prompt after an Enter: it shows it is at work, or it is back at its
- *  input with the text gone from it and something new above it, which a reply fast enough to come
- *  and go between two looks leaves. */
+ *  empty input box with something new above it, which a reply fast enough to come and go between two
+ *  looks leaves. A shell took a command that left its line, something new above it. */
 function tookIt(ready: Seen, seen: Seen, text: string, agent: boolean): boolean {
   if (isBusyOnScreen(seen.lines, seen.title)) return true
   const input = inputOf(seen, agent)
-  return input !== null && !stillHolds(input, text) && aboveInput(seen, agent) !== aboveInput(ready, agent)
+  const back = agent ? emptyInputBox(seen.lines) : input !== null && !stillHolds(input, text, agent)
+  return back && aboveInput(seen, agent) !== aboveInput(ready, agent)
 }
 
 /** The terminal's name, for the agent-specific rules in the status detector. Workers the conductor
@@ -836,6 +880,12 @@ function terminalName(handlers: McpToolHandlers, terminalId: string): string {
     return ''
   }
 }
+
+/** The terminals whose last run_command started an agent. Submit types into one only at the agent's
+ *  input: at its shell's prompt the agent exited or never started, and a task typed there ran as a
+ *  command while the conductor was told it was sent (R3-4). The terminal's name can't tell: workers
+ *  the conductor creates aren't in listTerminals. */
+const agentTerminals = new Set<string>()
 
 /** Each terminal's submits, the last one queued: one waits for the one before it (below). */
 const submitQueues = new Map<string, Promise<void>>()
@@ -901,26 +951,38 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   // An agent's input is its box; a shell's (submit into a plain shell) its last line.
   const agent = inputBoxRow(ready.lines) >= 0
   const waitedMs = clock.now() - start
+  if (!agent && agentTerminals.has(terminalId)) {
+    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited or never started. Check it with read_output, and start the agent again with run_command before sending the text.", ready)
+  }
   const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
   const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }
 
   // Typed only when the input doesn't hold it already, from a call before whose Enter didn't take:
   // typed again, it went in after that copy, and the agent got the prompt twice.
-  if (body && !holdsText(inputOf(ready, agent), body)) {
+  if (body && !holdsText(inputOf(ready, agent), body, agent)) {
     handlers.writeToTerminal(terminalId, body)
-    // Enter only once the agent shows what was typed. Not pressed at all when it never does, and
-    // reported: counting an empty input as the prompt taken told the conductor a task was sent that
-    // sat unsent.
+    // Enter only once the agent shows what was typed, the same on two looks in a row: agy draws a
+    // long paste in pieces, and one can end where the text does. Not pressed at all when it never
+    // shows, and reported: counting an empty input as the prompt taken told the conductor a task was
+    // sent that sat unsent.
     let shown = false
+    let before: string | null = null
     for (let t = 0; t < SUBMIT_ECHO_MS && !shown; t += SUBMIT_ECHO_POLL_MS) {
       await clock.sleep(SUBMIT_ECHO_POLL_MS)
       const seen = readScreen(handlers, terminalId, name, 'idle')
       if (!seen) return closed
       last = seen
-      shown = showsTyped(seen, body, agent)
+      const input = showsTyped(seen, body, agent) ? (inputOf(seen, agent) ?? []).join('\n') : null
+      shown = input !== null && input === before
+      before = input
     }
     if (!shown) {
       return failed(waitedMs, 'The agent never showed the text in its input, so Enter was not pressed. Check it with read_output, then send the same text again.', last)
+    }
+    // A box that held something before the text was typed: a hint, which the first key replaced,
+    // or other text, still in front of this. Not refused before typing, which can't tell the two.
+    if (agent && !emptyInputBox(ready.lines) && otherTextInFront(inputBoxRows(last.lines) ?? [], body)) {
+      return failed(waitedMs, "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
     }
   }
   if (body) await clock.sleep(settleMs(body))
@@ -938,7 +1000,7 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
     // agent read keys. Once more. Anything else, a dialog the prompt opened among them, gets no
     // Enter, which would pick from it.
     if (last.status.status === 'blocked') return failed(waitedMs, `Enter was pressed, and the agent is blocked: ${last.status.summary}.`, last)
-    if (last.status.status !== 'idle' || !stillHolds(inputOf(last, agent), body)) {
+    if (last.status.status !== 'idle' || !stillHolds(inputOf(last, agent), body, agent)) {
       return failed(waitedMs, 'Enter was pressed, and the agent neither started working nor went back to its prompt with the text taken. Check it with read_output before sending the text again: it may have taken it.', last)
     }
   }
@@ -949,10 +1011,12 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
  *  told from a worker's (a worker's own result in STEP 8's words, "SWARM COMPLETE ...", ended the
  *  swarm with a task still open: GitHub #36), or mcp-client for none. Never Termpolis's own system,
  *  whose notes the conductor acts on, closing a worker: not by a name the Messages tab shows the
- *  same, with an invisible character in it or a fullwidth letter (NFKC folds those). The conductor
- *  is "conductor" however it writes it, which is the name its plan and its STEP 8 are told by. */
+ *  same, with an invisible character in it (a control or format character, or any other Unicode
+ *  marks default-ignorable: a variation selector, a Hangul filler) or a fullwidth letter (NFKC folds
+ *  those). The conductor is "conductor" however it writes it, which is the name its plan and its
+ *  STEP 8 are told by. */
 function messageSender(from: unknown): string {
-  const name = typeof from === 'string' ? from.normalize('NFKC').replace(/[\p{Cc}\p{Cf}]/gu, '').trim().slice(0, 64) : ''
+  const name = typeof from === 'string' ? from.normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{DI}]/gu, '').trim().slice(0, 64) : ''
   const key = name.toLowerCase()
   if (key === 'conductor') return 'conductor'
   return name === '' || key === 'system' ? 'mcp-client' : name
@@ -985,6 +1049,9 @@ export async function executeTool(
       return { terminalId: tid, name: args.name }
     }
     case 'run_command':
+      // Whether the terminal hosts an agent now, for submit: its latest command says.
+      if (isAgentBinary(String(args.command ?? '').trim().split(/\s+/)[0])) agentTerminals.add(args.terminalId)
+      else agentTerminals.delete(args.terminalId)
       handlers.runCommand(args.terminalId, args.command)
       return { success: true, terminalId: args.terminalId, command: args.command }
     case 'read_output':
@@ -1010,6 +1077,7 @@ export async function executeTool(
         endLine: args.endLine,
       })
     case 'close_terminal':
+      agentTerminals.delete(args.terminalId)
       handlers.closeTerminal(args.terminalId)
       return { success: true }
     case 'write_to_terminal':

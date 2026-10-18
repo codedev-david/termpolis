@@ -85,6 +85,11 @@ describe('conductorManager', () => {
     return { messages, tasks, post }
   }
 
+  /** A swarm worker's terminal in the store, as App.tsx adds one the conductor created. */
+  function addWorker(id: string) {
+    useTerminalStore.setState((s) => ({ terminals: [...s.terminals, { id, name: 'Claude (Docs)', isSwarm: true, hidden: true } as (typeof s.terminals)[number]] }))
+  }
+
   /** Start the conductor and hand it a task, as the wizard does. */
   async function launchConductor(task = 'Build') {
     const startPromise = startConductor('/tmp/project')
@@ -364,10 +369,41 @@ describe('conductorManager', () => {
     ])('is not ended by %s', async (_name, from, type, content) => {
       const bus = fakeBus()
       await launchConductor()
+      addWorker('w-docs')
       bus.post(from, content, type)
       await vi.advanceTimersByTimeAsync(15000)
       expect(getConductorState().status).toBe('running')
       expect(useTerminalStore.getState().swarmActive).toBe(true)
+    })
+
+    // R3-3: a conductor that leaves out `from` is filed as mcp-client, which was taken for a worker:
+    // its STEP 8 ended nothing, and a run that built the page itself and exited cleanly ended as an
+    // error. With no task and no worker in the store, nothing but the conductor can have sent it.
+    it("ends on STEP 8's message without a name while there is no task and no worker", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post('mcp-client', 'SWARM COMPLETE: built the page directly.', 'result')
+      ;(window.termpolis.readTerminalBuffer as Mock).mockResolvedValue({ success: true, data: { output: '[termpolis-conductor-exited] 0\r\n', length: 31, nextOffset: 99 } })
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+      expect(useTerminalStore.getState().swarmCompletionSummary?.message).toBe('SWARM COMPLETE: built the page directly.')
+    })
+
+    it("is not ended by STEP 8's words under another name while there is no worker: only one without a name can be the conductor's", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post('Claude (Docs)', 'SWARM COMPLETE: my part is done', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+    })
+
+    it("is not ended by STEP 8's words without a name once a task exists: its worker can have sent them", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.tasks.push({ id: 't1', status: 'in_progress' })
+      bus.post('mcp-client', 'SWARM COMPLETE: my part is done', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
     })
 
     it('is not ended by an open task, however its worker\'s screen reads, until the task is closed', async () => {
@@ -465,9 +501,11 @@ describe('conductorManager', () => {
 
     it("counts only the conductor's own word: not a worker's screen, nor Termpolis's notes", async () => {
       // A worker the previous swarm left running still has its bridge, which posts what its
-      // screen shows under its own name; that said nothing about this conductor.
+      // screen shows under its own name; that said nothing about this conductor. Its terminal is
+      // in the store until Clear, so its message without a name is no word of the conductor's.
       const bus = fakeBus()
       await launchConductor('Build an app')
+      addWorker('w7')
       bus.post('Codex', '[Codex] Status: Working')
       bus.post('system', 'Codex (UI, terminal w7) is blocked: usage limit reached.')
       bus.post('mcp-client', 'A Claude worker the last swarm left running says its part is done')
@@ -475,6 +513,19 @@ describe('conductorManager', () => {
 
       await vi.advanceTimersByTimeAsync(75000)
       expect(stallCalls(notifSpy)).toHaveLength(1)
+    })
+
+    // R3-3: filed as mcp-client, a conductor's plan without its name didn't count, and the warning
+    // fired at a conductor that had posted it 20 seconds in.
+    it('stays quiet once the conductor said something without its name, while there is no worker', async () => {
+      const bus = fakeBus()
+      await launchConductor('Build an app')
+      await vi.advanceTimersByTimeAsync(20000)
+      bus.post('mcp-client', 'Plan: two tasks')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(70000)
+      expect(stallCalls(notifSpy)).toHaveLength(0)
     })
   })
 

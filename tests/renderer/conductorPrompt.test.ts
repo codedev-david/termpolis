@@ -188,6 +188,12 @@ describe('buildConductorPrompt', () => {
     expect(step5).toMatch(/types nothing that is already in the agent's input/)
   })
 
+  it("says what to do when submit refused to send a text behind other text, or into a shell its agent left", () => {
+    const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
+    expect(step5).toMatch(/already held other text, nothing was sent: clear the input[\s\S]*then send the text again/)
+    expect(step5).toMatch(/at its shell's prompt, the agent is not running: start it again \(STEP 4\)/)
+  })
+
   it('reads the bus as the conductor, which is where a blocked worker is reported', () => {
     expect(block(buildDefault(), 'STEP 6', 'STEP 7')).toContain("swarm_read_messages(terminalId='conductor')")
   })

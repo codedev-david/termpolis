@@ -59,11 +59,12 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
    *  first, as a profile that sets UTF-8 does: that is when .NET writes a BOM into the pipe.
    *  `constrained` runs the script in ConstrainedLanguage instead, as AppLocker or WDAC would: the
    *  outer session switches to it and dot-sources the script, since a new powershell.exe would
-   *  start in FullLanguage again. `vanish` removes that bin file once its --version answered. */
-  function launch(name: string, opts: { bin?: Record<string, string>; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
+   *  start in FullLanguage again. `vanish` removes that bin file once its --version answered.
+   *  `binName` names the folder on PATH the stand-ins are in. */
+  function launch(name: string, opts: { bin?: Record<string, string>; binName?: string; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
     const root = join(dir, name)
     const home = join(root, 'home')
-    const bin = join(root, 'bin')
+    const bin = join(root, opts.binName ?? 'bin')
     mkdirSync(join(home, 'AppData', 'Local'), { recursive: true })
     mkdirSync(join(home, 'AppData', 'Roaming'), { recursive: true })
     mkdirSync(bin, { recursive: true })
@@ -152,6 +153,13 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     const r = launch('cmd', { bin: { 'claude.cmd': cmdShim() } })
     expectDelivered(r)
   }, 60_000)
+
+  // R3-4: Test-Path reads a path as a wildcard pattern, so a claude in a folder named with square
+  // brackets was skipped, and the run ended with "No working claude binary found".
+  it('finds claude in a folder on PATH whose name has square brackets', () => {
+    expectDelivered(launch('brackets-ps1', { bin: { 'claude.ps1': npmShim() }, binName: 'tools [x64]' }))
+    expectDelivered(launch('brackets-cmd', { bin: { 'claude.cmd': cmdShim() }, binName: 'tools [x64]' }))
+  }, 120_000)
 
   it('delivers the task intact to a native program in test mode, with no binary probe', () => {
     const r = launch('test', { testCommand: `& ${psQuote(process.execPath)} ${psQuote(recorder)}`, utf8Console: true })

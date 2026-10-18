@@ -131,6 +131,19 @@ const BUSY_ON_SCREEN: readonly RegExp[] = [
   /\bmodel:\s+loading\b/,
   /\bQueued follow-up inputs\b|\bMessages to be submitted after next tool call\b/,
 ]
+/** The same, where each agent draws them with its input box on the screen: in its footer under the
+ *  box, on a status line led by its spinner or bullet that ends in its key ("• Working (31s • esc to
+ *  interrupt)", Gemini CLI's "⠼ Reading files... (esc to cancel, 12s)"), Codex's notices of queued
+ *  input on rows of their own, and its header while the model loads. The transcript between them
+ *  can hold the same words, in an answer about the agent's footer or a file a worker shows, and an
+ *  idle worker read as at work: submit waited 3 minutes for it (R3-2). */
+const BUSY_FOOTER = /\besc to (?:interrupt|cancel)\b/
+const BUSY_ROWS: readonly RegExp[] = [
+  /^\s*(?:[⠀-⣿]|[✢✳✶✻✽*·•◦])\s.*\([^()]*\besc to (?:interrupt|cancel)\b[^()]*\)\s*$/,
+  /^•\s+Queued follow-up inputs\s*$/,
+  /^•\s+Messages to be submitted after next tool call\b/,
+  /^│\s*model:\s+loading\b/,
+]
 /** A window title led by a spinner: Claude Code's ◐◓◑◒ and Codex's braille frames, redrawn while
  *  they work, so the title is current even after their footer has left the buffer. */
 const BUSY_TITLE = /^[⠀-⣿◐-◓]/
@@ -160,6 +173,10 @@ const PLACEHOLDER = /^(?:Try "[^"]*"|Ask Codex to do anything|Ask a follow-up qu
 /** How many rows Claude Code's footer takes under its box, at most: what tallBoxRow allows under
  *  the closing rule. Its own three rows, and one to spare. */
 const FOOTER_ROWS = 4
+/** Claude Code's mode row, the last of its footer but for the effort row a narrow screen wraps under
+ *  it: a footer that ends in it is Claude Code's however tall, a status line of the user's own over
+ *  it (R3-6: with four rows of one, a box taller than the screen read as none). */
+const MODE_ROW = /^\s*(?:⏵⏵|⏸|\? for shortcuts)/
 
 function detectOnScreen(screen: string, agentName: string, previousStatus: AgentStatus, title: string): AgentStatusResult {
   const rows = screen.split('\n')
@@ -175,22 +192,34 @@ function detectOnScreen(screen: string, agentName: string, previousStatus: Agent
   // expired session or a restart: those words are a worker's answer or a file it showed.
   const restart = box < 0 ? restartSummary(text, agentName) : null
   if (restart !== null) return { status: 'blocked', summary: restart }
-  if (isBusy(text, title)) return { status: 'working', summary: busySummary(bottom) }
-  if (box >= 0) return { status: 'idle', summary: 'Waiting at prompt' }
+  if (isBusy(rows, box, from, title)) return { status: 'working', summary: busySummary(bottom) }
+  if (box >= 0) {
+    // At rest: a CLI that ended its turn on its plan's limit shows it last, right above the box.
+    const limit = turnEndLimit(rows, box)
+    return limit !== null ? { status: 'blocked', summary: limit } : { status: 'idle', summary: 'Waiting at prompt' }
+  }
   // Not one of the three agents' screens (a shell, a dialog): read it as text.
   return detectInText(text, agentName, previousStatus, false)
 }
 
 /** Whether a screen shows its agent at work: a spinner in its window title, or a busy line in its
- *  bottom rows. write_to_terminal's submit counts that as its prompt taken. */
+ *  own rows. write_to_terminal's submit counts that as its prompt taken. */
 export function isBusyOnScreen(lines: readonly string[], title: string): boolean {
   const rows = lines.slice()
   while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
-  return isBusy(rows.slice(bottomStart(rows)).join('\n'), title)
+  return isBusy(rows, inputBoxRow(rows), bottomStart(rows), title)
 }
 
-function isBusy(bottom: string, title: string): boolean {
-  return BUSY_TITLE.test(title) || BUSY_ON_SCREEN.some((p) => p.test(bottom))
+/** A busy line in the bottom rows, from `from` on: with the agent's input box at row `box`, only one
+ *  the agent draws itself (BUSY_FOOTER, BUSY_ROWS); with none, anywhere in them. */
+function isBusy(rows: readonly string[], box: number, from: number, title: string): boolean {
+  if (BUSY_TITLE.test(title)) return true
+  const bottom = rows.slice(from)
+  if (box < 0) {
+    const text = bottom.join('\n')
+    return BUSY_ON_SCREEN.some((p) => p.test(text))
+  }
+  return bottom.some((row) => BUSY_ROWS.some((p) => p.test(row))) || footerOf(rows, box).some((row) => BUSY_FOOTER.test(row))
 }
 
 /** Where the bottom rows start: SCREEN_BOTTOM_ROWS up, or higher, at the top of a box that ends in
@@ -247,23 +276,41 @@ export function isMenuCursor(rows: readonly string[], i: number): boolean {
 function tallBoxRow(rows: readonly string[]): number {
   let rule = rows.length - 1
   while (rule >= 0 && !RULE.test(rows[rule])) rule--
-  if (rule < 1 || rows.length - 1 - rule > FOOTER_ROWS) return -1
+  if (rule < 1 || !footerFits(rows, rule)) return -1
   const above = rows.slice(0, rule)
   if (!above.some((row) => row.trim() !== '') || !above.every((row) => row === '' || /^\s/.test(row))) return -1
   return rows.slice(rule + 1).some((row) => MENU_KEYS.test(row) || OPTION_ROW.test(row.trimStart())) ? -1 : 0
 }
 
+/** Whether the rows under the rule at row `rule` can be Claude Code's footer: FOOTER_ROWS at most, or
+ *  any number that ends in its mode row (MODE_ROW). */
+function footerFits(rows: readonly string[], rule: number): boolean {
+  return rows.length - 1 - rule <= FOOTER_ROWS || rows.slice(-2).some((row) => MODE_ROW.test(row))
+}
+
+/** The row of the rule that closes the input box at row `top` (Claude Code, agy), or -1 for one
+ *  with none (Codex's composer). */
+const closingRule = (rows: readonly string[], top: number): number => rows.findIndex((row, i) => i > top && (RULE.test(row) || BOX_BOTTOM.test(row)))
+/** Whether the screen's last row is Codex's footer under a box with no closing rule: Codex draws it
+ *  under a blank row. A last row right under the text is the text, wrapped. */
+const codexFooter = (rows: readonly string[], top: number): boolean => rows.length - 2 > top && rows[rows.length - 2].trim() === ''
+
 /** The rows an agent's input box takes: from its first row (the screen's top for one taller than
  *  the screen) to its closing rule (Claude Code, agy) or, for a box with none (Codex's composer), to
- *  the screen's end, less Codex's footer, which it draws on the last row under a blank one; null
- *  with no input box. A last row right under the text is the text, wrapped. */
+ *  the screen's end, less Codex's footer; null with no input box. */
 export function inputBoxRows(rows: readonly string[]): string[] | null {
   const top = inputBoxRow(rows)
   if (top < 0) return null
-  const close = rows.findIndex((row, i) => i > top && (RULE.test(row) || BOX_BOTTOM.test(row)))
+  const close = closingRule(rows, top)
   if (close > top) return rows.slice(top, close)
-  const footer = rows.length - 2 > top && rows[rows.length - 2].trim() === ''
-  return rows.slice(top, footer ? rows.length - 1 : rows.length)
+  return rows.slice(top, codexFooter(rows, top) ? rows.length - 1 : rows.length)
+}
+
+/** The rows under the input box at row `box`: its footer, under its closing rule, or Codex's. */
+function footerOf(rows: readonly string[], box: number): readonly string[] {
+  const close = closingRule(rows, box)
+  if (close > box) return rows.slice(close + 1)
+  return codexFooter(rows, box) ? rows.slice(-1) : []
 }
 
 /** Whether the agent's input box is empty, ready for a prompt: its glyph alone, or with the
@@ -304,27 +351,30 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
 // ---- What holds a worker: its plan's usage limit, or a menu (GitHub #36 item 5) ----
 //
 // Only what a CLI draws in its own rows counts, in each CLI's own layout: in place of its input box
-// (a menu, a limit's prompt, a dialog), under the box (Claude Code's footer), and Claude Code's
-// status line right above it. Never what is in its transcript, however much it looks like the CLI's
-// own message: a worker's answer, and a file, a diff or a log it shows, can hold the same words row
-// for row, and each such reading told the conductor to close a healthy worker. A limit a CLI prints
-// only in its transcript is left for the conductor to find with read_output: Codex 0.153.4's "You've
-// hit your usage limit." (an error in its history), Antigravity's "You have exhausted your quota on
-// this model.", and Claude Code's own message when its rate-limit menu doesn't open under it. Missed,
-// a limit leaves the worker waiting, as before 1.53.1; read wrongly, it closes a worker at work.
+// (a menu, a limit's prompt, a dialog), under the box (Claude Code's footer), Claude Code's status
+// line right above it, and the limit message a CLI ends its turn with, the last thing above its box,
+// in the cell only that CLI draws there (turnEndLimit). Never the same words elsewhere in the
+// transcript, however much they look like the CLI's own message: a worker's answer, and a file, a
+// diff or a log it shows, can hold them row for row, and each such reading told the conductor to
+// close a healthy worker. Missed, a limit leaves the worker waiting, as 1.53.0 did; read wrongly, it
+// closes a worker at work. Either way the report has the conductor look at the screen first.
 
 /** Claude Code 2.1.302's limit messages (claude.exe), at the start of a row, after an indent and its
  *  ⎿: "You've hit your " + session limit, weekly limit, Opus limit, Sonnet limit, Fable limit, usage
  *  limit, limit, monthly spend limit, team's shared budget...; "You've reached your Fable limit.",
  *  "Opus requires usage credits.", "You're out of usage credits" and "... extra usage", "Your org
  *  is out of usage". Not "You've hit your fast limit · resets in 4h 59m": fast mode turns itself
- *  off, and the session goes on. Antigravity 1.4's two, which its footer could show. */
-const LIMIT_MESSAGES: readonly RegExp[] = [
+ *  off, and the session goes on. */
+const CLAUDE_LIMIT_MESSAGES: readonly RegExp[] = [
   /^[ \t]*(?:⎿[ \t]+)?You['’]ve hit your (?!fast limit)[\w'’ ]{0,40}?(?:limit|budget)\b/,
   /^[ \t]*(?:⎿[ \t]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
   /^[ \t]*(?:⎿[ \t]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
   /^[ \t]*(?:⎿[ \t]+)?You['’]re out of (?:usage credits|extra usage)\b/,
   /^[ \t]*(?:⎿[ \t]+)?Your org is out of usage\b/,
+]
+/** Claude Code's, and Antigravity 1.4's two, which its footer could show. */
+const LIMIT_MESSAGES: readonly RegExp[] = [
+  ...CLAUDE_LIMIT_MESSAGES,
   /^[ \t]*You have exhausted your quota on this model\./,
   /^[ \t]*Your AI credits balance is too low to continue\./,
 ]
@@ -335,10 +385,11 @@ const WAITING_STATUS = /^[✢✳✶✻✽·*][ \t]+(?:Usage limit reached(?: aga
 const WAITING_FOOTER = /^[ \t]*(?:Usage limit reached(?: again)? · c|C)ontinuing automatically\b/
 /** When the limit lifts, as the CLI put it: Claude Code's "resets 3pm (America/New_York)",
  *  "continuing automatically at 3pm" and its menu's "continue automatically at 3pm", Gemini CLI's
- *  "Access resets at 5:00 PM.", which a narrow screen can wrap after "resets" or "at". agy names no
- *  time. */
+ *  "Access resets at 5:00 PM.", which a narrow screen can wrap after "resets" or "at", and Codex's
+ *  "or try again at 3:04 PM.", read with its rows run together. agy names no time. */
 const RESETS_AT = /\bresets\s+(?:at\s+)?([^·│\n]{1,48}?)\.?\s*(?:·|│|$)/m
 const CONTINUES_AT = /\bcontinu(?:e|ing) automatically at\s+([^·│\n]{1,48}?)\s*(?:·|│|$)/im
+const TRY_AGAIN_AT = /\b[Tt]ry again at (.{1,48}?)\.(?:\s|$)/
 
 const LIMIT_SUMMARY = 'usage limit reached'
 const MENU_SUMMARY = 'waiting on a menu'
@@ -374,7 +425,7 @@ export function menuAnswer(summary: string): string | null {
 
 /** "usage limit reached", with when it lifts if `text`, from the limit message on, says. */
 function limitSummary(text: string): string {
-  const reset = RESETS_AT.exec(text) ?? CONTINUES_AT.exec(text)
+  const reset = RESETS_AT.exec(text) ?? CONTINUES_AT.exec(text) ?? TRY_AGAIN_AT.exec(text.replace(/\s*\n\s*/g, ' '))
   return reset ? `${LIMIT_SUMMARY} (resets ${reset[1].trim()})` : LIMIT_SUMMARY
 }
 
@@ -391,10 +442,54 @@ function limitIn(rows: readonly string[], patterns: readonly RegExp[]): string |
 function stopAroundBox(rows: readonly string[], box: number): string | null {
   let close = rows.length - 1
   while (close > box && !RULE.test(rows[close]) && !BOX_BOTTOM.test(rows[close])) close--
-  const footer = close > box && rows.length - 1 - close <= FOOTER_ROWS ? rows.slice(close + 1) : []
+  const footer = close > box && footerFits(rows, close) ? rows.slice(close + 1) : []
   const fromFooter = limitIn(footer, [...LIMIT_MESSAGES, WAITING_FOOTER])
   if (fromFooter !== null || box < 2 || !RULE.test(rows[box - 1])) return fromFooter
   return limitIn(rows.slice(Math.max(0, box - 4), box - 1), [WAITING_STATUS])
+}
+
+// The limit message a CLI ends its turn with when its plan's limit stops it, printed as the last
+// thing above its input box, the box back under it (R3-1), each in the cell only that CLI draws:
+//  - Codex 0.153.4's error cell (codex.exe), at the start of a row, the rows it wraps onto too: "■
+//    You've hit your usage limit. Upgrade to Plus ... or try again at 3:04 PM.", and "■ You've hit
+//    your usage limit for gpt-5.6-sol. Switch to another model now, or try again at 4:15 PM.".
+//  - Antigravity 1.4's, at the start of a row: "✕ You have exhausted your quota on this model.".
+//  - Claude Code 2.1.302's reply to the prompt it stopped, when no rate-limit menu opens (Max 20x, an
+//    API key, a Team plan): "  ⎿  You've hit your session limit · resets 3pm" right under the
+//    prompt's echo, whose rows are indented under its ❯ (or >).
+// An answer or a tool's output indents what it quotes, or puts its own mark first; a prompt or an
+// answer after the message makes it history. Read only with the agent at rest: while it works, the
+// echo of the prompt it was just sent can end in anything.
+const CODEX_LIMIT_CELL = /^■ You['’]ve hit your usage limit\b/
+const AGY_LIMIT_CELL = /^✕ You have exhausted your quota on this model\./
+/** A row that starts a cell of its own in an agent's transcript: not the rest of a wrapped one. */
+const CELL_START = /^(?:[•■⚠✕›>❯●]|\s*⎿)/
+const CLAUDE_REPLY = /^[ \t]+⎿[ \t]+\S/
+
+function turnEndLimit(rows: readonly string[], box: number): string | null {
+  // The last thing above the box: up past its top rule and the blank rows under the transcript.
+  let end = box - 1
+  if (end >= 0 && RULE.test(rows[end])) end--
+  while (end >= 0 && rows[end].trim() === '') end--
+  if (end < 0) return null
+  let start = end
+  while (start > 0 && rows[start - 1].trim() !== '' && end - start < 4) start--
+  const cell = rows.slice(start, end + 1)
+  if ((CODEX_LIMIT_CELL.test(cell[0]) || AGY_LIMIT_CELL.test(cell[0])) && !cell.slice(1).some((row) => CELL_START.test(row))) {
+    return start === 0 || rows[start - 1].trim() === '' ? limitSummary(cell.join('\n')) : null
+  }
+  return claudeLimitReply(rows, end)
+}
+
+/** Claude Code's limit reply ending on row `end`: on that row, or on the one above when a narrow
+ *  screen wrapped it, right under the echo of the prompt it stopped. */
+function claudeLimitReply(rows: readonly string[], end: number): string | null {
+  const at = CLAUDE_REPLY.test(rows[end]) ? end : end > 0 && CLAUDE_REPLY.test(rows[end - 1]) && /^\s{4,}[^\s⎿]/.test(rows[end]) ? end - 1 : -1
+  if (at < 0 || !CLAUDE_LIMIT_MESSAGES.some((p) => p.test(rows[at]))) return null
+  // Up through the rows the prompt wraps onto, indented two under its glyph, and its blank lines.
+  let up = at - 1
+  while (up >= 0 && (rows[up].trim() === '' || /^ {2}[^\s⎿]/.test(rows[up]))) up--
+  return up >= 0 && /^[❯>] \S/.test(rows[up]) ? limitSummary(rows.slice(at, end + 1).join('\n')) : null
 }
 
 /** What a CLI draws in place of its input box that holds the worker: a menu, a limit's own prompt,

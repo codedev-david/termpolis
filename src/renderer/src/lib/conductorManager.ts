@@ -430,12 +430,18 @@ function startMonitoring(): void {
       // own notes. Nothing else ends a swarm (GitHub #36 item 3): a worker's screen or a message
       // that merely says "complete" used to, and so did any message typed `result`, which a Claude
       // worker reporting on its own task sends too. MCP files a message under the name its caller
-      // gives (mcp-client for none), and the conductor's prompt has it give 'conductor'.
+      // gives (mcp-client for none), and the conductor's prompt has it give 'conductor'. One with no
+      // name is the conductor's only while nothing else can have sent it: no task, and no worker in
+      // the store, this swarm's or one a swarm before left running. Taken for a worker's, a plan
+      // without its name didn't count against the stall warning, and a run that built the task
+      // itself and exited cleanly ended as an error.
       const msgsRes = await window.swarmAPI.getMessages()
       const posted = msgsRes.success && msgsRes.data
         ? msgsRes.data.filter((m) => !launch.messageIds.has(m.id) && m.from !== 'system')
         : []
-      const completionMsg = posted.find(isSwarmComplete)
+      const workers = store.terminals.some((t) => t.isSwarm && !t.isConductor)
+      const byConductor = (from: string): boolean => fromConductor(from) || (from === 'mcp-client' && tasks.length === 0 && !workers)
+      const completionMsg = posted.find((m) => isSwarmComplete(m, byConductor))
       if (completionMsg) {
         markSwarmDone(store, completionMsg.content)
         return
@@ -471,7 +477,7 @@ function startMonitoring(): void {
       // only the conductor's own messages.
       if (!stallWarned) {
         const elapsed = Date.now() - monitoringStartTime
-        const heard = posted.some((m) => fromConductor(m.from))
+        const heard = posted.some((m) => byConductor(m.from))
         if (elapsed > 60000 && tasks.length === 0 && !heard) {
           stallWarned = true
           store.setSwarmNotification({
@@ -493,9 +499,10 @@ function startMonitoring(): void {
 }
 
 /** STEP 8's message: swarm_send_message(from='conductor', type='result', content='SWARM COMPLETE:
- *  ...'). Not a worker's own result in those words, which ended the swarm with a task still open. */
-function isSwarmComplete(m: { from: string; type: string; content: string }): boolean {
-  return m.type === 'result' && fromConductor(m.from) && /^\s*SWARM COMPLETE\b/i.test(m.content)
+ *  ...'), from a sender `byConductor` takes for the conductor. Not a worker's own result in those
+ *  words, which ended the swarm with a task still open. */
+function isSwarmComplete(m: { from: string; type: string; content: string }, byConductor: (from: string) => boolean): boolean {
+  return m.type === 'result' && byConductor(m.from) && /^\s*SWARM COMPLETE\b/i.test(m.content)
 }
 
 /** Whether a message is the conductor's, however it wrote its name ("Conductor"): taken for a

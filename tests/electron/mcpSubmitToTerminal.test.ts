@@ -5,6 +5,7 @@ import fixtures from '../fixtures/agentScreens.json'
 import wide from '../fixtures/agentScreensWide.json'
 import long from '../fixtures/longPromptScreens.json'
 import input from '../fixtures/agentScreensInput.json'
+import typed from '../fixtures/agentScreensTyped.json'
 
 // write_to_terminal with `submit` (GitHub #36 item 4), against a fake terminal: a screen script that
 // changes as time passes and as the tool types, and a clock that only moves when the tool sleeps.
@@ -100,9 +101,9 @@ describe('submitToTerminal', () => {
     const res = await submitToTerminal(t.handlers, 't1', long, t.clock)
     expect(res.submitted).toBe(true)
     expect(t.writes).toEqual([long, '\r', '\r'])
-    // Shown at the first look, a quarter second in; then a long prompt gets a longer pause before
-    // its Enter, at most 2 s.
-    expect(t.times[1] - t.times[0]).toBe(250 + 2000)
+    // Shown at the first look and the same at the second, half a second in; then a long prompt gets
+    // a longer pause before its Enter, at most 2 s.
+    expect(t.times[1] - t.times[0]).toBe(500 + 2000)
   })
 
   it('takes a prompt the agent answered between two looks: back at its prompt, the text gone, its answer above', async () => {
@@ -190,14 +191,16 @@ describe('submitToTerminal', () => {
     expect(t.writes).toEqual(['\r'])
   })
 
-  it('types a prompt that only starts like the one stuck in the input: the conductor\'s prompts all do', async () => {
+  it('presses no Enter on a prompt typed behind another stuck in the input: the agent would take both as one', async () => {
     const stuck = 'You are working in C:\\work\\portal. Build the login page. Task ID: t-1'
     const text = 'You are working in C:\\work\\portal. Write the docs. Task ID: t-2'
     // The box wraps what it holds onto a second row, indented, as Claude Code's does.
     const box = (inBox: string) => frame(['Claude Code', '', RULE, `❯ ${inBox.slice(0, 78)}`, `  ${inBox.slice(78)}`, RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
     const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? busy() : box(stuck + typed.join(''))))
-    expect((await submitToTerminal(t.handlers, 't1', text, t.clock)).submitted).toBe(true)
-    expect(t.writes).toEqual([text, '\r'])
+    const res = await submitToTerminal(t.handlers, 't1', text, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text.*Enter was not pressed/) })
+    expect(res.screen).toContain('Build the login page')
+    expect(t.writes).toEqual([text])
   })
 
   it('types a long prompt again when the input shows a paste placeholder: that could be any text', async () => {
@@ -246,13 +249,26 @@ describe('submitToTerminal', () => {
     expect(t.writes).toEqual(['Write the docs', '\r'])
   })
 
-  it('reads a suggestion that holds the text further along as none of it', async () => {
+  it("takes a prompt Codex answered between two looks: its composer empty again, its placeholder in it, the answer above", async () => {
     const t = fakeTerminal((_ms, typed) => {
       const text = typed.filter((w) => w !== '\r').join('')
-      const rows = typed.includes('\r') ? [`› ${text}`, '', '• Done.', '', `› Explain why "${text}" failed`] : [`› ${text}`]
+      const rows = typed.includes('\r') ? [`› ${text}`, '', '• Done.', '', '› Ask a follow-up question'] : [`› ${text || 'Ask Codex to do anything'}`]
       return frame(['>_ OpenAI Codex', '', ...rows, '', '  gpt-5.6-sol medium · ~/p'])
     }, 'Codex (Docs)')
     expect(await submitToTerminal(t.handlers, 't1', 'Write the docs', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['Write the docs', '\r'])
+  })
+
+  it('counts a box holding something else after the Enter, the agent idle, as not taken: no second Enter, and the screen', async () => {
+    // Neither at work nor at its empty box: what the agent did with the prompt can't be told.
+    const t = fakeTerminal((_ms, typed) => {
+      const text = typed.filter((w) => w !== '\r').join('')
+      const rows = typed.includes('\r') ? [`› ${text}`, '', '• Done.', '', '› Explain why the docs failed'] : [`› ${text}`]
+      return frame(['>_ OpenAI Codex', '', ...rows, '', '  gpt-5.6-sol medium · ~/p'])
+    }, 'Codex (Docs)')
+    const res = await submitToTerminal(t.handlers, 't1', 'Write the docs', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/neither started working nor went back to its prompt/) })
+    expect(res.screen).toContain('› Explain why the docs failed')
     expect(t.writes).toEqual(['Write the docs', '\r'])
   })
 
@@ -263,15 +279,14 @@ describe('submitToTerminal', () => {
     expect(t.writes).toEqual(['\nWrite the docs'])
   })
 
-  it('reads the input by the end of the text: a suggestion that starts the same is none of it', async () => {
-    // Codex fills its empty composer with a suggestion once it took the prompt.
+  it('sends a task typed over a suggestion the box showed, which typing replaced', async () => {
+    // Claude Code can show a prompt it suggests in its box, gone at the first key: no other text.
     const t = fakeTerminal((_ms, typed) => {
-      const text = typed.filter((w) => w !== '\r').join('')
-      const rows = typed.includes('\r') ? [`› ${text}`, '', '• Done.', '', '› Write tests for @filename'] : [`› ${text}`]
-      return frame(['>_ OpenAI Codex', '', ...rows, '', '  gpt-5.6-sol medium · ~/p'])
-    }, 'Codex (Docs)')
-    expect(await submitToTerminal(t.handlers, 't1', 'Write the docs', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
-    expect(t.writes).toEqual(['Write the docs', '\r'])
+      if (typed.includes('\r')) return busy()
+      return idle(typed.length ? typed.join('') : 'run the tests again')
+    })
+    expect(await submitToTerminal(t.handlers, 't1', 'Write the docs. Task ID: t-1', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
   })
 
   it('presses Enter alone when given only a CR', async () => {
@@ -585,11 +600,11 @@ describe('submitToTerminal with a long prompt', () => {
     expect(t.writes).toEqual(['\r'])
   })
 
-  it('types one that only starts the text in the box: what follows its blank line is not the same', async () => {
+  it('types one that only starts the text in the box, and presses no Enter behind what was there', async () => {
     const stuck = frame(['Claude Code', '', RULE, '❯ Write the docs.', '', '  Then the tests.', RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
     const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? busy() : typed.length ? frame(['Claude Code', '', RULE, '❯ Write the docs.', '', '  Then the tests.Write the docs.', RULE], '✳ Claude Code') : stuck))
-    expect((await submitToTerminal(t.handlers, 't1', 'Write the docs.', t.clock)).submitted).toBe(true)
-    expect(t.writes).toEqual(['Write the docs.', '\r'])
+    expect(await submitToTerminal(t.handlers, 't1', 'Write the docs.', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual(['Write the docs.'])
   })
 
   // R2-3: still in the box from a call before, a prompt longer than the bottom rows was typed again.
@@ -638,12 +653,34 @@ describe('submitToTerminal with a task the box shows only part of, or that start
     expect(t.writes).toEqual(['\r'])
   })
 
-  it("types a task over Codex's placeholder for a paste of another length, which is another text", async () => {
+  it("types a task over Codex's placeholder for a paste of another length, which is another text, and presses no Enter behind it", async () => {
     const s = input.screens['codex-80x24-paste-stuck']
     const other = 'w'.repeat(2000)
-    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? working(s.cols) : s.raw), 'Codex (Docs)', s)
-    expect((await submitToTerminal(t.handlers, 't1', other, t.clock)).submitted).toBe(true)
-    expect(t.writes).toEqual([other, '\r'])
+    // Codex shows the second paste behind the first, and Enter would send both.
+    const both = `${s.raw}${E}[22;1H${E}[2K› [Pasted Content 1246 chars][Pasted Content 2000 chars]`
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? working(s.cols) : typed.length ? both : s.raw), 'Codex (Docs)', s)
+    expect(await submitToTerminal(t.handlers, 't1', other, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([other])
+  })
+
+  // A live run that typed the paste twice left Codex's composer at "[Pasted Content 1246 chars]
+  // [Pasted Content 1246 chars] #2" (codex.exe numbers a second paste of a length). Enter alone sent
+  // both, and typed a third time, so did Enter after it.
+  it("presses no Enter on a paste typed behind two copies of it in Codex's composer", async () => {
+    const s = input.screens['codex-80x24-paste-stuck']
+    const composer = (pastes: string) => frame(['>_ OpenAI Codex', '', '■ Conversation interrupted', '', `› ${pastes}`, '', '  gpt-5.6-sol medium · ~\\p'])
+    const two = '[Pasted Content 1246 chars][Pasted Content 1246 chars] #2'
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? working(120) : composer(typed.length ? `${two}[Pasted Content 1246 chars] #3` : two)), 'Codex (Docs)', { cols: 120, rows: 24 })
+    expect(await submitToTerminal(t.handlers, 't1', s.text, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([s.text])
+  })
+
+  it("presses only Enter for Codex's numbered placeholder of the paste, alone in its composer", async () => {
+    const s = input.screens['codex-80x24-paste-stuck']
+    const one = `${s.raw}${E}[22;1H${E}[2K› [Pasted Content 1246 chars] #2`
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? working(s.cols) : one), 'Codex (Docs)', s)
+    expect(await submitToTerminal(t.handlers, 't1', s.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['\r'])
   })
 
   it("types a long paste again over Claude Code's placeholder, which could be any text: Claude Code expands it", async () => {
@@ -699,6 +736,288 @@ describe('submitToTerminal with a task the box shows only part of, or that start
     const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? working(80) : stuck), 'Codex (Docs)')
     expect(await submitToTerminal(t.handlers, 't1', text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
     expect(t.writes).toEqual(['\r'])
+  })
+})
+
+// R3-1: under ConPTY, Codex 0.153.4 and agy 1.4.2 drop the punctuation and the symbols a text is
+// typed with (— ✓ → … ’ “ ” €; agy emoji too) and keep its letters and digits. Read by its last 24
+// characters, a task ending "DASH — nothing else." never showed: no Enter was pressed, and sent again
+// as STEP 5 says, it went in behind the first copy. The real screens of agentScreensTyped.json.
+describe('submitToTerminal and the characters an agent drops as they are typed', () => {
+  const NAMES = { codex: 'Codex (Docs)', agy: 'Gemini (Docs)' } as const
+
+  it.each(['codex', 'agy'] as const)('presses Enter once %s shows the task without its dash', async (agent) => {
+    const ready = typed.screens[`${agent}-80x24-dash-ready`]
+    const shown = typed.screens[`${agent}-80x24-dash-shown`]
+    expect(screenOf(shown.raw, shown).lines().join('\n')).toContain('Reply with the single word DASH  nothing else.')
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? shown.raw : ready.raw), NAMES[agent], shown)
+    expect(await submitToTerminal(t.handlers, 't1', shown.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([shown.text, '\r'])
+  })
+
+  it.each(['codex', 'agy'] as const)('presses only Enter when %s still holds it without its dash, from a call before', async (agent) => {
+    const shown = typed.screens[`${agent}-80x24-dash-shown`]
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : shown.raw), NAMES[agent], shown)
+    expect(await submitToTerminal(t.handlers, 't1', shown.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['\r'])
+  })
+
+  // A paste of 1,113 code points ending " — ✓ → 😀 done": Codex counts what it kept, 1,110.
+  const paste = typed.screens['codex-80x24-paste-dropped']
+  const shownAs = (count: number): string => `${paste.raw}${E}[22;1H${E}[2K› [Pasted Content ${count} chars]`
+
+  it.each([
+    ['the count Codex showed, without the three it dropped', 1110],
+    ['every character kept', 1113],
+    ['every character above ASCII dropped that is no letter or digit, the emoji too', 1109],
+  ])("presses only Enter for Codex's placeholder of the paste counted with %s", async (_name, count) => {
+    expect([...paste.text]).toHaveLength(1113)
+    expect(screenOf(paste.raw, paste).lines()[21]).toBe('› [Pasted Content 1110 chars]')
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : shownAs(count)), 'Codex (Docs)', paste)
+    expect(await submitToTerminal(t.handlers, 't1', paste.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['\r'])
+  })
+
+  it.each([
+    // Counted in UTF-16 units, the emoji is two: 1,114 is another text's count.
+    ['more characters than the text has', 1114],
+    ['fewer than it has letters, digits and ASCII', 1108],
+  ])("types the paste over Codex's placeholder for one of %s, and presses no Enter behind it", async (_name, count) => {
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? `${shownAs(count)}[Pasted Content 1110 chars]` : shownAs(count)), 'Codex (Docs)', paste)
+    expect((await submitToTerminal(t.handlers, 't1', paste.text, t.clock)).submitted).toBe(false)
+    expect(t.writes).toEqual([paste.text])
+  })
+})
+
+// R3-3: text already in the box, a prompt an earlier call typed and never sent, or one a person
+// typed. Read by the text's end alone, another prompt that ended the same got only an Enter, which
+// sent the old one, and any other text had this one typed behind it, the two going as one prompt;
+// either way the call said submitted. Only a box that shows nothing but this text's end gets Enter
+// alone, and no Enter is pressed once the text is typed behind something.
+describe('submitToTerminal and a box that already holds other text', () => {
+  const A = 'Write the unit tests for src/auth.ts. When you are done, update your task with swarm_update_task.'
+  const B = 'Fix the lint errors in src/api.ts. When you are done, update your task with swarm_update_task.'
+  /** Claude Code's box rows for `text`, wrapped at 76 columns, the rest indented under the ❯. */
+  const boxRows = (text: string): string[] => {
+    const rows: string[] = []
+    for (let i = 0; i < text.length; i += 76) rows.push(text.slice(i, i + 76))
+    return rows.length ? [`❯ ${rows[0]}`, ...rows.slice(1).map((r) => `  ${r}`)] : ['❯ ']
+  }
+  /** A Claude Code whose box starts out holding `held`, and which sends what it holds on Enter. */
+  function holding(held: string) {
+    let box = held
+    const sent: string[] = []
+    const t = fakeTerminal(() => (sent.length ? busy() : frame(['Claude Code', '', RULE, ...boxRows(box), RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')))
+    const write = t.handlers.writeToTerminal
+    ;(t.handlers as { writeToTerminal: McpToolHandlers['writeToTerminal'] }).writeToTerminal = (id, text) => {
+      write(id, text)
+      if (text !== '\r') box += text
+      else if (box) {
+        sent.push(box)
+        box = ''
+      }
+    }
+    return { ...t, sent }
+  }
+
+  it('types a prompt that ends like the one in the box, sends neither, and says so', async () => {
+    const t = holding(A)
+    const res = await submitToTerminal(t.handlers, 't1', B, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output." })
+    expect(res.screen).toContain('Write the unit tests for src/auth.ts.')
+    expect(t.writes).toEqual([B])
+    expect(t.sent).toEqual([])
+  })
+
+  it('types the text when the box holds only a little of its end: no copy of it', async () => {
+    const t = holding('Task ID: t-1')
+    expect((await submitToTerminal(t.handlers, 't1', 'Write the API docs. Task ID: t-1', t.clock)).submitted).toBe(false)
+    expect(t.writes).toEqual(['Write the API docs. Task ID: t-1'])
+    expect(t.sent).toEqual([])
+  })
+
+  it('waits for the box to settle before it reads what is in front: agy draws a long paste in pieces', async () => {
+    // A look mid-draw can end where the text ends, with the rows above it not drawn yet. Read
+    // then, the stuck copy in front of it went unseen.
+    const text = 'Write the API docs for every route. Task ID: t-1'
+    const stuck = 'Fix the lint errors in src/api.ts first.'
+    const agyBox = (rows: string[]) => frame(['Antigravity CLI', '', RULE, ...rows, RULE, '? for shortcuts'])
+    const t = fakeTerminal((ms, typed, times) => {
+      if (typed.includes('\r')) return busy()
+      if (!typed.length) return agyBox([`> ${stuck}`])
+      // At first only the new text's last row is drawn; the box's first row follows a look later.
+      return ms < times[0] + 500 ? agyBox(['> ', `  ${text}`]) : agyBox([`> ${stuck}`, `  ${text}`])
+    }, 'Gemini (Docs)')
+    expect(await submitToTerminal(t.handlers, 't1', text, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([text])
+  })
+
+  it('presses Enter on a long paste only once agy has drawn all of it, though a half-drawn box ends the same', async () => {
+    // agy draws a long paste over seconds (1,930 characters in 3.4 s on the live runs). This task's
+    // filler ends every sentence the way the task ends, so a box drawn through any sentence ended
+    // with the text's last 24 letters, and read then, the box's state was a guess.
+    const s = input.screens['agy-50x15-tall']
+    const sentences = s.text.split(/(?<=\.) /)
+    expect(sentences.filter((x) => x.endsWith('asks for nothing and needs no action.')).length).toBeGreaterThan(3)
+    // Its rows as agy wraps them, 76 columns, indented under the >.
+    const rows = (text: string): string[] => {
+      const out: string[] = []
+      for (let i = 0; i < text.length; i += 76) out.push(`${i === 0 ? '>' : ' '} ${text.slice(i, i + 76)}`)
+      return out.length ? out : ['>']
+    }
+    const draw = (n: number) => frame(['Antigravity CLI', '', RULE, ...rows(sentences.slice(0, n).join(' ')), RULE, '? for shortcuts'])
+    const t = fakeTerminal((ms, typed, times) => {
+      if (typed.includes('\r')) return busy()
+      if (!typed.length) return draw(0)
+      // A sentence more every 250 ms, its last row the end of one each time.
+      return draw(Math.min(sentences.length, 1 + Math.floor((ms - times[0]) / 250)))
+    }, 'Gemini (Docs)', { cols: 80, rows: 24 })
+    expect(await submitToTerminal(t.handlers, 't1', s.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    // All of it drawn at (sentences - 1) quarter seconds, the same again a look later, then the pause.
+    expect(t.times[1] - t.times[0]).toBeGreaterThanOrEqual((sentences.length - 1) * 250 + 250)
+  })
+
+  it('presses only Enter for its own text, the box showing nothing else', async () => {
+    const t = holding(B)
+    expect(await submitToTerminal(t.handlers, 't1', B, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['\r'])
+    expect(t.sent).toEqual([B])
+  })
+
+  it('reads text in front of the task in a box taller than the screen, where only its end is left in sight', async () => {
+    // At 80x17: an old prompt of ten lines, the task's seven typed behind its last. The box's top
+    // and the old prompt's first line went off the screen.
+    const old = Array.from({ length: 10 }, (_, i) => `Old line ${i + 1}.`)
+    const lines = ['Fix the lint errors.', ...Array.from({ length: 6 }, (_, i) => `${i + 2}. no tools`)]
+    const text = lines.join('\n')
+    const ready = frame(['Claude Code', '', RULE, `❯ ${old[0]}`, ...old.slice(1).map((r) => `  ${r}`), RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
+    const inBox = [...old.slice(1, 9), `${old[9]}${lines[0]}`, ...lines.slice(1)].map((r) => `  ${r}`)
+    const tall = frame([...inBox, RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? tall : ready), 'Claude (Build)', { cols: 80, rows: 17 })
+    expect(screenOf(tall, { cols: 80, rows: 17 }).lines()).toHaveLength(17)
+    const res = await submitToTerminal(t.handlers, 't1', text, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
+    expect(t.writes).toEqual([text])
+  })
+})
+
+// R3-4: an agent that exited, or never started, leaves its terminal at its shell's prompt, which read
+// as ready for the task: it was typed there and Enter pressed, PowerShell ran it as a command, and
+// the conductor was told it was sent.
+describe('write_to_terminal submit into a terminal whose agent is gone', () => {
+  const banner = ['Windows PowerShell', 'Copyright (C) Microsoft Corporation. All rights reserved.', '']
+  /** A PowerShell terminal: what is typed at its prompt runs when Enter is pressed. The agent that
+   *  `run_command` starts exits at once when `exits`, and draws its input box otherwise. */
+  function shellTerminal(exits: boolean) {
+    const lines = [...banner]
+    let line = ''
+    let agentUp = false
+    const ran: string[] = []
+    const writes: string[] = []
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn((_id: string, command: string) => {
+        lines.push(`PS C:\\p> ${command}`)
+        if (/^claude\b/.test(command) && exits) lines.push('Invalid API key · Please run /login')
+        else if (/^claude\b/.test(command)) agentUp = true
+        else lines.push('ok')
+      }),
+      readOutput: () => (agentUp ? (line.endsWith('\r') ? busy() : idle(line)) : frame([...lines, `PS C:\\p> ${line}`])),
+      writeToTerminal: (_id: string, text: string) => {
+        writes.push(text)
+        if (agentUp) line += text
+        else if (text === '\r') {
+          ran.push(line)
+          lines.push(`PS C:\\p> ${line}`, `${line.split(' ')[0]} : The term '${line.split(' ')[0]}' is not recognized as the name of a cmdlet`)
+          line = ''
+        } else line += text
+      },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    return { handlers, ran, writes }
+  }
+  async function submit(handlers: McpToolHandlers, terminalId: string, text: string) {
+    vi.useFakeTimers()
+    try {
+      const pending = executeTool('write_to_terminal', { terminalId, text, submit: true }, handlers)
+      await vi.advanceTimersByTimeAsync(20_000)
+      return (await pending) as { submitted: boolean; error?: string; screen?: string }
+    } finally {
+      vi.useRealTimers()
+    }
+  }
+
+  it('types nothing at the shell prompt of a terminal that run_command started an agent in', async () => {
+    const t = shellTerminal(true)
+    await executeTool('run_command', { terminalId: 'gone-1', command: 'claude --dangerously-skip-permissions' }, t.handlers)
+    const res = await submit(t.handlers, 'gone-1', 'You are working in C:\\p. Run npm test and fix what fails. Task ID: t-1')
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt, not at the agent's input, so nothing was typed/) })
+    expect(res.screen).toContain('Invalid API key')
+    expect(t.writes).toEqual([])
+    expect(t.ran).toEqual([])
+  })
+
+  it('types into the agent once run_command has it up', async () => {
+    const t = shellTerminal(false)
+    await executeTool('run_command', { terminalId: 'up-1', command: 'claude --dangerously-skip-permissions' }, t.handlers)
+    expect(await submit(t.handlers, 'up-1', 'Write the docs. Task ID: t-1')).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+  })
+
+  it('still types into a shell whose last command was no agent, and into one closed and gone', async () => {
+    const t = shellTerminal(true)
+    await executeTool('run_command', { terminalId: 'sh-1', command: 'claude --dangerously-skip-permissions' }, t.handlers)
+    await executeTool('run_command', { terminalId: 'sh-1', command: 'dir' }, t.handlers)
+    expect((await submit(t.handlers, 'sh-1', 'echo hi')).submitted).toBe(true)
+    expect(t.ran).toEqual(['echo hi'])
+
+    const u = shellTerminal(true)
+    await executeTool('run_command', { terminalId: 'sh-2', command: 'codex -a never -s workspace-write' }, u.handlers)
+    await executeTool('close_terminal', { terminalId: 'sh-2' }, u.handlers)
+    expect((await submit(u.handlers, 'sh-2', 'echo hi')).submitted).toBe(true)
+    expect(u.ran).toEqual(['echo hi'])
+  })
+})
+
+// R3-2, R3-6 and the conditions no test pinned (R3-7), on real screens and on the layouts they
+// stand for.
+describe('submitToTerminal and what the screen around the box says', () => {
+  it('types into an idle Claude Code whose last answer quotes its busy hint, and sends it', async () => {
+    // Read as at work, the call waited 3 minutes and typed nothing.
+    const s = typed.screens['claude-80x24-esc-quoted']
+    const shown = `${s.raw}${E}[18;1H${E}[2K> Reply with the single word TWO.`
+    expect(screenOf(shown, s).lines()[17]).toBe('> Reply with the single word TWO.')
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? shown : s.raw), 'Claude (Build)', s)
+    expect(await submitToTerminal(t.handlers, 't1', 'Reply with the single word TWO.', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+  })
+
+  it("presses Enter once a task taller than the screen shows in Claude Code's box under a status line of four rows", async () => {
+    const ready = typed.screens['claude-80x17-statusline4-ready']
+    const tall = typed.screens['claude-80x17-statusline4-tall']
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.length ? tall.raw : ready.raw), 'Claude (Build)', tall)
+    expect(await submitToTerminal(t.handlers, 't1', tall.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([tall.text, '\r'])
+  })
+
+  it("returns the screen's last 15 rows with a submit that failed", async () => {
+    const rows = [...Array.from({ length: 20 }, (_, i) => `● line ${i}`), RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on']
+    const t = fakeTerminal(() => frame(rows, '✳ Claude Code'))
+    const res = await submitToTerminal(t.handlers, 't1', 'Write the docs', t.clock)
+    expect(res.screen?.split('\n')).toEqual([...rows.slice(9, 21), '❯', ...rows.slice(22)])
+  })
+
+  it("reads a box with no rule under it whose task wraps onto three rows, the last of them the task's end", async () => {
+    // swarm-end-to-end's mock worker: read as Codex's footer, the last row was dropped, and the end
+    // of the task, on it, was never found.
+    const text = 'You are in D:\\a\\termpolis\\termpolis. Implement the feature, then write its unit tests, its docs and a changelog entry for it. Task ID: 3f2b8c1e-4d5a-4b7e-9c2f-1a2b3c4d5e6f'
+    const r60 = '─'.repeat(60)
+    const rows = [`❯ ${text.slice(0, 78)}`, text.slice(78, 158), text.slice(158)]
+    expect(text.slice(158).replace(/[^\p{L}\p{N}]/gu, '').length).toBeGreaterThanOrEqual(10)
+    const t = fakeTerminal((_ms, w) => {
+      if (w.includes('\r')) return frame(['Claude Code v1.0.0 (mock)', '', r60, ...rows, '✢ Working… (esc to interrupt)'])
+      return frame(['Claude Code v1.0.0 (mock)', '', r60, ...(w.length ? rows : ['❯ '])])
+    })
+    expect(await submitToTerminal(t.handlers, 't1', text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
   })
 })
 

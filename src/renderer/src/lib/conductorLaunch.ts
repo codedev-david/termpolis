@@ -49,7 +49,8 @@ const CONSTRAINED = 'PowerShell runs this script in ConstrainedLanguage mode (Ap
 // asking for every command type makes 5.1 search its installed modules for one (7 s with a cold
 // module cache, against under 3 s for these two types). With -CommandType, Get-Command lists every
 // match on PATH (the npm folder's extensionless `claude` too), so -First 1 keeps the one
-// PowerShell itself would run.
+// PowerShell itself would run. Each candidate is checked by its literal path: Test-Path reads a
+// path as a wildcard pattern, and a claude in a folder named with square brackets was skipped.
 const RESOLVE_WORKING_CLAUDE = [
   'function Resolve-WorkingClaude {',
   '  $candidates = @()',
@@ -59,7 +60,7 @@ const RESOLVE_WORKING_CLAUDE = [
   '  $candidates += "$env:LOCALAPPDATA\\Programs\\claude-code\\claude.exe"',
   '  foreach ($c in $candidates) {',
   '    if (-not $c) { continue }',
-  '    if (-not (Test-Path $c)) { continue }',
+  '    if (-not (Test-Path -LiteralPath $c)) { continue }',
   '    try {',
   '      $out = & $c --version 2>&1',
   '      if ($LASTEXITCODE -eq 0 -and "$out" -match "Claude Code") { return $c }',

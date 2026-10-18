@@ -4,6 +4,7 @@ import { screenOf } from '../../src/shared/terminalScreen'
 import fixtures from '../fixtures/agentScreens.json'
 import long from '../fixtures/longPromptScreens.json'
 import input from '../fixtures/agentScreensInput.json'
+import typed from '../fixtures/agentScreensTyped.json'
 
 // The status detector on a rendered screen (GitHub #36 item 4): what write_to_terminal's `submit`
 // waits on, and the swarm bridge reads. The fixtures are real ConPTY output of Claude Code 2.1.302,
@@ -118,6 +119,74 @@ describe('detectAgentStatus with a task in the box that starts "1. ", or is tall
     const box = inputBoxRows(lines)!
     expect(box[box.length - 1].trim()).toBe('16. no tools')
     expect(box).not.toContain(expect.stringMatching(/bypass permissions/))
+  })
+})
+
+// R3-2: the busy hints were read anywhere in the bottom rows, so an idle worker whose last answer,
+// or a file or a search it showed, held one read as at work: submit waited 3 minutes and typed
+// nothing, and the bridge never said the worker may be done. With an input box on the screen they
+// count only in the agent's own rows: its footer, its status line, Codex's notices and its header.
+describe('detectAgentStatus and a busy hint in the transcript', () => {
+  const rule = '─'.repeat(80)
+  const claude = (answer: string[]) => ['❯ What does the footer say while you work?', '', ...answer, '', '✻ Crunched for 2s · done 8:37 PM', '', rule, '❯ ', rule, '  ⏵⏵ bypass permissions on (shift+tab to cycle)']
+  const codex = (answer: string[]) => ['› Which hints does the detector read?', '', ...answer, '', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~\\repos\\termpolis']
+  const agy = (answer: string[]) => ['> What does your footer say while you work?', '', ...answer, '', rule, '>', rule, '? for shortcuts                                          Gemini 4 Argon · medium']
+  const read = (rows: string[], agent: string) => detectAgentStatus(rows.join('\n'), agent, 'working', { screen: true, title: '' })
+
+  it('reads the real Claude Code that answered "The footer says esc to interrupt." as idle', () => {
+    const s = typed.screens['claude-80x24-esc-quoted']
+    const screen = screenOf(s.raw, s)
+    expect(screen.lines().join('\n')).toContain('● The footer says esc to interrupt.')
+    expect(detectAgentStatus(screen.lines().join('\n'), '', 'working', { screen: true, title: screen.title })).toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+  })
+
+  it.each([
+    ['Claude Code saying what its footer shows', 'Claude', claude(['● While I work, the footer shows "esc to interrupt": press Esc to stop me.'])],
+    ['Claude Code showing a search hit', 'Claude', claude(['● Bash(rg -n "esc to cancel" src)', "  ⎿  src/ui/Modal.tsx:41:      hint: 'enter to confirm · esc to cancel',"])],
+    ['Codex naming the hints', 'Codex', codex(['• The detector reads "esc to interrupt", "esc to cancel" and "model: loading".'])],
+    ['Codex showing a search for its queue notice', 'Codex', codex(['• Ran rg -n "Queued follow-up inputs" src', '  └ src/shared/agentStatusDetector.ts:132:  /\\bQueued follow-up inputs\\b/'])],
+    ['Codex quoting its status line in an answer', 'Codex', codex(['• It shows a status line such as Working (31s • esc to interrupt), then the answer.'])],
+    ['agy answering about its footer', 'Gemini', agy(['  It shows a spinner and "esc to cancel" next to the time.'])],
+  ])('%s: idle', (_name, agent, rows) => {
+    expect(read(rows, agent)).toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+  })
+
+  it.each([
+    ["Claude Code's footer", 'Claude', ['❯ Build the page', '', '● On it.', '', '✢ Doing…', '', rule, '❯ ', rule, '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt'], 'Doing…'],
+    ["agy's footer", 'Gemini', [...agy(['  On it.']).slice(0, -1), 'esc to cancel                                            Gemini 4 Argon · medium'], 'Working...'],
+    ["Codex's status line over its composer", 'Codex', codex(['• On it.', '', '• Working (31s • esc to interrupt)']), 'Working'],
+    ["Gemini CLI's status line", 'Gemini', [...agy(['  On it.']).slice(0, 4), '⠼ Reading files... (esc to cancel, 12s)', ...agy([]).slice(3)], 'Reading files...'],
+    ["Codex's notice of a queued prompt", 'Codex', codex(['• Queued follow-up inputs', '  ↳ Write the docs']), 'Queued follow-up inputs'],
+    ["Codex's notice of input it sends after the tool call", 'Codex', codex(['• Messages to be submitted after next tool call (press esc to interrupt and send', '  immediately)']), 'Messages to be submitted after next tool call (press esc to interrupt and send'],
+    ["Codex's header while its model loads", 'Codex', ['╭──────────────────────────────╮', '│ >_ OpenAI Codex (v0.153.4)   │', '│ model:     loading           │', '╰──────────────────────────────╯', ...codex([]).slice(3)], 'Working...'],
+  ])('reads %s as at work', (_name, agent, rows, summary) => {
+    expect(read(rows, agent)).toEqual({ status: 'working', summary })
+  })
+})
+
+// R3-6: a user's status line of several rows sits in Claude Code's footer, over its mode row. With
+// four of them the footer was five rows, more than a footer was allowed, and a box taller than the
+// screen read as none: the task was typed, never sent, and typed again.
+describe('detectAgentStatus and a footer of several rows', () => {
+  const rule = '─'.repeat(80)
+  it('reads the real box taller than the screen under a status line of four rows as the box', () => {
+    const s = typed.screens['claude-80x17-statusline4-tall']
+    const lines = screenOf(s.raw, s).lines()
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+    expect(lines.length - 1 - lines.findIndex((row) => /^─{20,}$/.test(row))).toBe(5)
+    expect(inputBoxRow(lines)).toBe(0)
+    expect(detectAgentStatus(lines.join('\n'), '', 'working', { screen: true, title: '' }).status).toBe('idle')
+  })
+
+  it.each([
+    ['two rows', ['  1', '  2'], 0],
+    ['four rows', ['  1', '  2', '  3', '  4'], 0],
+    ['five rows', ['  1', '  2', '  3', '  4', '  5'], -1],
+    ['five rows over its mode row', ['  1', '  2', '  3', '  4', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'], 0],
+    ['six rows, its mode row next to last', ['  1', '  2', '  3', '  4', '  ⏸ plan mode on (shift+tab to cycle)', '                     ◐ medium · /effort'], 0],
+    ['six rows, its mode row higher up', ['  ? for shortcuts', '  1', '  2', '  3', '  4', '  5'], -1],
+  ])('finds a box taller than the screen over a footer of %s: %i', (_name, footer, box) => {
+    expect(inputBoxRow(['  a', '  b', rule, ...footer])).toBe(box)
   })
 })
 

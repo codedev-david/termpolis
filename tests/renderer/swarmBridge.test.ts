@@ -480,6 +480,35 @@ describe('WorkerFeed and a menu', () => {
   })
 })
 
+describe('WorkerFeed and a usage limit', () => {
+  // R3-1: a Codex or an agy at its limit was back at its prompt after a turn, which read as done: the
+  // limit was posted under "screen suggests it may be done", which points the other way.
+  const drawn = (rows: string[]): string => `${E}[H${E}[2J` + rows.map((r, i) => `${E}[${i + 1};1H${r}`).join('')
+  const CODEX_IDLE = ['', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~\\repos\\app']
+  const CODEX_BUSY = ['', '• Working (12s • esc to interrupt)', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~\\repos\\app']
+  const AGY_IDLE = ['', RULE, '> ', RULE, '  ? for shortcuts                                    Gemini 4 Argon · medium']
+  const AGY_BUSY = ['', '⡿ Generating... (esc to cancel, 4s)', RULE, '> ', RULE, '  esc to cancel                                       Gemini 4 Argon · medium']
+
+  it.each([
+    ['Codex', [
+      ['• Ready.', ...CODEX_IDLE],
+      ['• Ready.', '', '› Fix the login test', ...CODEX_BUSY],
+      ['• Ready.', '', '› Fix the login test', '', '• I will fix the test.', ...CODEX_BUSY],
+      ['• Ready.', '', '› Fix the login test', '', '• I will fix the test.', '', '■ You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', '(https://chatgpt.com/explore/plus), or try again at 3:04 PM.', ...CODEX_IDLE],
+    ], '■ You\'ve hit your usage limit.'],
+    ['Gemini', [
+      ['  Ready.', ...AGY_IDLE],
+      ['  Ready.', '', '> Write the docs', ...AGY_BUSY],
+      ['  Ready.', '', '> Write the docs', '', '✕ You have exhausted your quota on this model.', ...AGY_IDLE],
+    ], '✕ You have exhausted your quota on this model.'],
+  ])('posts %s\'s limit with no "may be done" hint', (agentName, frames, limit) => {
+    const feed = new WorkerFeed(agentName)
+    const posts = frames.map((f) => feed.update({ output: drawn(f), cols: 80, rows: 24 })).filter((p): p is string => p !== null)
+    expect(posts.join('\n')).toContain(limit)
+    expect(posts.join('\n')).not.toContain(DONE_HINT)
+  })
+})
+
 describe('statusText', () => {
   it.each([
     ['⡿  Generating...', 'Generating...'],
