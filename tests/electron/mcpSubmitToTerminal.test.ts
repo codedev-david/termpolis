@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { executeTool, submitToTerminal, SUBMIT_READY_TIMEOUT_MS, type McpToolHandlers, type SubmitClock } from '../../src/main/mcpServer'
 import fixtures from '../fixtures/agentScreens.json'
 import wide from '../fixtures/agentScreensWide.json'
+import long from '../fixtures/longPromptScreens.json'
 
 // write_to_terminal with `submit` (GitHub #36 item 4), against a fake terminal: a screen script that
 // changes as time passes and as the tool types, and a clock that only moves when the tool sleeps.
@@ -217,6 +218,23 @@ describe('submitToTerminal', () => {
     })
     expect((await submitToTerminal(t.handlers, 't1', 'Write the docs', t.clock)).submitted).toBe(true)
     expect(t.writes).toEqual(['Write the docs', '\r'])
+  })
+
+  it('reads a suggestion that holds the text further along as none of it', async () => {
+    const t = fakeTerminal((_ms, typed) => {
+      const text = typed.filter((w) => w !== '\r').join('')
+      const rows = typed.includes('\r') ? [`› ${text}`, '', '• Done.', '', `› Explain why "${text}" failed`] : [`› ${text}`]
+      return frame(['>_ OpenAI Codex', '', ...rows, '', '  gpt-5.6-sol medium · ~/p'])
+    }, 'Codex (Docs)')
+    expect(await submitToTerminal(t.handlers, 't1', 'Write the docs', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['Write the docs', '\r'])
+  })
+
+  it('presses no Enter on a text that starts with a new line, which the agent never showed', async () => {
+    const t = fakeTerminal(() => idle())
+    const res = await submitToTerminal(t.handlers, 't1', '\nWrite the docs', t.clock)
+    expect(res.error).toMatch(/never showed the text/)
+    expect(t.writes).toEqual(['\nWrite the docs'])
   })
 
   it('reads the input by the start of the text, not its first letters: a suggestion that starts the same is none of it', async () => {
@@ -469,6 +487,45 @@ describe('submitToTerminal at the PTY\'s own size', () => {
     const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? busy() : idle(typed.join(''))))
     ;(t.handlers as { terminalSize?: () => null }).terminalSize = () => null
     expect(await submitToTerminal(t.handlers, 't1', 'go', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+  })
+})
+
+// A prompt that made the box taller than the bottom rows read as never shown: submit typed the task
+// and pressed no Enter, and the screen then read as thinking, so sending it again waited 3 minutes
+// for nothing (GitHub #36). Real windows, read at the PTY's size, from the moment the text showed.
+describe('submitToTerminal with a long prompt', () => {
+  it.each([
+    ['codex-80x24-long-prompt-shown', 'Codex (Docs)', fixtures.codex.ready],
+    ['claude-80x24-long-prompt-shown', 'Claude (Build)', fixtures.claude.doneIdle],
+    ['claude-160x40-tall-prompt-shown', 'Claude (Build)', wide.screens['claude-160x40-idle-after-turn'].raw],
+  ] as const)('presses Enter once %s shows the text', async (name, agent, before) => {
+    const s = long.screens[name]
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? busy() : typed.length ? s.raw : before), agent, { cols: s.cols, rows: s.rows })
+    expect(await submitToTerminal(t.handlers, 't1', s.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([s.text, '\r'])
+  })
+
+  it('presses only Enter for a prompt with a blank line in it that is still in the input', async () => {
+    // Sent again, it went in after the copy still there, and Claude got the prompt twice in one.
+    const s = long.screens['claude-80x24-paragraphs-stuck']
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? busy() : s.raw), 'Claude (Build)', { cols: s.cols, rows: s.rows })
+    expect(await submitToTerminal(t.handlers, 't1', s.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['\r'])
+  })
+
+  it("presses only Enter for one still in Codex's composer, which has no rule under it", async () => {
+    const text = 'Write the docs.\n\nKeep them short. Task ID: t-1'
+    const stuck = frame(['>_ OpenAI Codex', '', '› Write the docs.', '', '  Keep them short. Task ID: t-1', '', '  gpt-5.6-sol medium · ~/p'])
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? busy() : stuck), 'Codex (Docs)')
+    expect(await submitToTerminal(t.handlers, 't1', text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual(['\r'])
+  })
+
+  it('types one that only starts the text in the box: what follows its blank line is not the same', async () => {
+    const stuck = frame(['Claude Code', '', RULE, '❯ Write the docs.', '', '  Then the tests.', RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
+    const t = fakeTerminal((_ms, typed) => (typed.includes('\r') ? busy() : typed.length ? frame(['Claude Code', '', RULE, '❯ Write the docs.', '', '  Then the tests.Write the docs.', RULE], '✳ Claude Code') : stuck))
+    expect((await submitToTerminal(t.handlers, 't1', 'Write the docs.', t.clock)).submitted).toBe(true)
+    expect(t.writes).toEqual(['Write the docs.', '\r'])
   })
 })
 

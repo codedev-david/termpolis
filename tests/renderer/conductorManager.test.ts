@@ -318,8 +318,8 @@ describe('conductorManager', () => {
     ;(window.swarmAPI.getMessages as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       success: true,
       data: [
-        { from: 'mcp-client', type: 'info', content: 'Starting work...' },
-        { from: 'mcp-client', type: 'result', content: 'SWARM COMPLETE: built the app' },
+        { from: 'conductor', type: 'info', content: 'Starting work...' },
+        { from: 'conductor', type: 'result', content: 'SWARM COMPLETE: built the app' },
       ],
     })
     await vi.advanceTimersByTimeAsync(15000)
@@ -332,20 +332,21 @@ describe('conductorManager', () => {
   // GitHub #36 item 3: the swarm ends when every task is completed or failed, or on the conductor's
   // STEP 8 message, and on nothing else.
   describe('what ends a swarm', () => {
-    it('ends on STEP 8\'s message, sent as the conductor or, through MCP, as mcp-client', async () => {
-      for (const from of ['conductor', 'mcp-client']) {
-        stopConductor()
-        const bus = fakeBus()
-        await launchConductor()
-        bus.post(from, '  swarm complete: two features built', 'result')
-        await vi.advanceTimersByTimeAsync(15000)
-        expect(getConductorState().status).toBe('done')
-      }
+    it('ends on STEP 8\'s message from the conductor', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post('conductor', '  swarm complete: two features built', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
     })
 
     it.each([
       ['a message that only says the work is complete', 'mcp-client', 'info', 'All tasks are completed — swarm finished'],
       ['a Claude worker reporting its own task done', 'mcp-client', 'result', 'Implemented the login page; tests pass'],
+      // MCP files a message under the name its caller gives, mcp-client when it gives none: a worker
+      // whose own result started with STEP 8's words ended the swarm with a task still open.
+      ['a worker\'s result through MCP in STEP 8\'s words', 'mcp-client', 'result', 'SWARM COMPLETE: my part (task t2, the docs) is done'],
+      ['a worker naming itself', 'Claude (Docs)', 'result', 'SWARM COMPLETE: my part is done'],
       ['a worker\'s screen quoting the words', 'Codex', 'info', '[Codex] SWARM COMPLETE: echoed from its instructions'],
       ['a bridge or a stranger sending STEP 8\'s words', 'Codex', 'result', 'SWARM COMPLETE: not from the conductor'],
       ['Termpolis\'s own note', 'system', 'result', 'SWARM COMPLETE: system'],
@@ -425,7 +426,7 @@ describe('conductorManager', () => {
     it('stays quiet once the conductor has said something', async () => {
       const bus = fakeBus()
       await launchConductor('Build an app')
-      bus.post('mcp-client', 'Plan: two tasks')
+      bus.post('conductor', 'Plan: two tasks')
       const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
       await vi.advanceTimersByTimeAsync(90000)
@@ -444,7 +445,7 @@ describe('conductorManager', () => {
 
     it('does not count a message an earlier swarm left on the bus', async () => {
       const bus = fakeBus()
-      bus.post('mcp-client', 'Plan from the previous swarm')
+      bus.post('conductor', 'Plan from the previous swarm')
       await launchConductor('Build an app')
       const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
@@ -459,6 +460,7 @@ describe('conductorManager', () => {
       await launchConductor('Build an app')
       bus.post('Codex', '[Codex] Status: Working')
       bus.post('system', 'Codex (UI, terminal w7) is blocked: usage limit reached.')
+      bus.post('mcp-client', 'A Claude worker the last swarm left running says its part is done')
       const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
       await vi.advanceTimersByTimeAsync(75000)
@@ -651,7 +653,7 @@ describe('conductorManager', () => {
       const bus = fakeBus()
       await launchConductor()
       bus.tasks.push({ id: 't1', status: 'completed' }, { id: 't2', status: 'completed' })
-      bus.post('mcp-client', 'SWARM COMPLETE: both tasks done', 'result')
+      bus.post('conductor', 'SWARM COMPLETE: both tasks done', 'result')
       exitsWith(answer)
 
       await vi.advanceTimersByTimeAsync(15000)
@@ -705,7 +707,8 @@ describe('conductorManager', () => {
       await vi.advanceTimersByTimeAsync(15000)
 
       expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor refused the task' })
-      expect(bus.messages[bus.messages.length - 1].content).toBe("Task refused: I can't help with this task.")
+      // Termpolis's note, posted as its other notes after launch are: the conductor's name is its own.
+      expect(bus.messages[bus.messages.length - 1]).toMatchObject({ from: 'system', content: "Task refused: I can't help with this task." })
     })
   })
 
@@ -719,7 +722,7 @@ describe('conductorManager', () => {
     it("is not ended by the previous swarm's finished tasks or SWARM COMPLETE", async () => {
       const bus = fakeBus()
       bus.tasks.push({ id: 'old-1', status: 'completed' })
-      bus.post('mcp-client', 'SWARM COMPLETE: the previous swarm', 'result')
+      bus.post('conductor', 'SWARM COMPLETE: the previous swarm', 'result')
       await launchConductor()
 
       await vi.advanceTimersByTimeAsync(15000)
@@ -992,27 +995,26 @@ describe('conductorManager', () => {
     expect(bypassCall).toBeUndefined()
   })
 
-  it('monitoring loop warns when conductor hits token limit', async () => {
-    const startPromise = startConductor('/tmp/project')
-    await vi.advanceTimersByTimeAsync(2000)
-    await vi.advanceTimersByTimeAsync(5000)
-    await startPromise
-
+  // claude -p prints only its final answer, as it exits, and a clean exit with tasks open keeps the
+  // swarm going: a guess at a token limit read from that answer raised its error banner again on
+  // every tick, however often it was dismissed. A real limit stops claude with an error, which its
+  // exit report shows (GitHub #36).
+  it.each([
+    'I kept each worker prompt short to stay within the token budget. Both agents are working.',
+    'I split the docs into two tasks so neither hits its context window.',
+    'Started Codex on the rate limiter (token limits per user) and Claude on the tests.',
+  ])('raises no token-limit banner over a final answer that mentions one: %s', async (answer) => {
+    const bus = fakeBus()
+    await launchConductor()
+    bus.tasks.push({ id: 't1', status: 'in_progress' }, { id: 't2', status: 'in_progress' })
+    const output = `[termpolis-conductor-started]\r\n${answer}\r\n\r\n\r\n[termpolis-conductor-exited] 0\r\n`
+    ;(window.termpolis.readTerminalBuffer as Mock).mockResolvedValue({ success: true, data: { output, length: output.length, nextOffset: 4321 } })
     const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
-    ;(window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>).mockResolvedValue({
-      success: true,
-      data: { output: 'context window exceeded — please start a new session', length: 50 },
-    })
+    await vi.advanceTimersByTimeAsync(60000)
 
-    await sendTask('Build', '/tmp/project')
-    await vi.advanceTimersByTimeAsync(15000)
-
-    const tokenCall = notifSpy.mock.calls.find(([arg]) =>
-      arg?.message?.includes('token limit'),
-    )
-    expect(tokenCall).toBeDefined()
-    expect(tokenCall?.[0].type).toBe('error')
+    expect(getConductorState().status).toBe('running')
+    expect(notifSpy).not.toHaveBeenCalled()
   })
 
   // ---- markSwarmDone side-effects ----

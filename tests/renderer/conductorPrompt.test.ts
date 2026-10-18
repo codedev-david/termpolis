@@ -198,9 +198,29 @@ describe('buildConductorPrompt', () => {
     expect(step6).toMatch(/answer a question or a choice[\s\S]*without submit/)
   })
 
-  it('closes a blocked worker before its task goes to another agent: a limit can lift by itself', () => {
-    expect(buildDefault()).toContain('says an agent is blocked (usage limit reached, or waiting on a menu), close its terminal with close_terminal, then give its task to another installed agent')
+  it('closes a worker a usage limit stopped before its task goes to another agent: a limit can lift by itself', () => {
+    expect(buildDefault()).toContain('says an agent is blocked by a usage limit, close its terminal with close_terminal, then give its task to another installed agent')
     expect(buildDefault()).toContain('- close_terminal: close a terminal (terminalId)')
+  })
+
+  it('answers a menu instead: one key press clears it, and the worker keeps what it did', () => {
+    const rule = buildDefault().split('\n').find((l) => l.includes('waiting on a menu'))!
+    expect(rule).toMatch(/answer the menu as STEP 6 says/)
+    expect(rule).toMatch(/another installed agent only if the menu stays/)
+    expect(rule).not.toMatch(/close_terminal/)
+  })
+
+  // Both examples send a task the way STEP 5 says; with "\r" at the end, an example that drifted
+  // back to the old raw write would teach the conductor the lost-prompt bug again.
+  it('sends the task in both worked examples with submit=true, and never with a CR of its own', () => {
+    const prompt = buildDefault()
+    expect(prompt).toContain("Task ID: task-abc-123', submit=true)")
+    expect(prompt).toContain("Task ID: task-def-456', submit=true)")
+    expect(prompt).not.toMatch(/write_to_terminal\([^)]*\\r'\)/)
+  })
+
+  it("starts Codex with its update check off: its update offer is a menu at every start", () => {
+    expect(block(buildDefault(), 'STEP 4', 'STEP 5')).toContain("Codex       → 'codex -a never -s workspace-write -c check_for_update_on_startup=false'")
   })
 
   // ---- shellType branch coverage (line 12) ----

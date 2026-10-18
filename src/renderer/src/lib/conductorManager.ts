@@ -308,7 +308,7 @@ function startMonitoring(): void {
       // answer, as it exits: they would decide how every finished run is labelled. They decide
       // only a run nothing else does (GitHub #36). A conductor that created a task had its tools
       // and took the task on, so its tasks end the swarm; one that exited with an error gets its
-      // exit report, below.
+      // exit report, below, which is also what a run stopped by its context or token limit gets.
       const undecided = tasks.length === 0 && (exit === null || exit.code === 0)
       if (undecided) {
         // Detect conductor refusal — Claude may refuse unethical/dangerous/illegal tasks. Whole
@@ -323,9 +323,10 @@ function startMonitoring(): void {
             message: `Conductor refused the task: "${snippet}" — Click Debug to see full response.`,
             type: 'error',
           })
-          // Post the refusal to the swarm message bus so it's visible in the dashboard
+          // Post the refusal to the swarm message bus so it's visible in the dashboard. As system,
+          // as Termpolis's other notes after launch are: conductor is the conductor's own name.
           try {
-            await window.swarmAPI.sendMessage('conductor', 'all', 'info', `Task refused: ${snippet}`)
+            await window.swarmAPI.sendMessage('system', 'all', 'info', `Task refused: ${snippet}`)
           } catch {}
           store.setSwarmActive(false)
           if (monitoringInterval) { clearInterval(monitoringInterval); monitoringInterval = null }
@@ -410,14 +411,6 @@ function startMonitoring(): void {
         }
       }
 
-      // Token limit errors
-      if (/context.*(limit|window|exceeded)|token.*(limit|budget)/i.test(recent)) {
-        store.setSwarmNotification({
-          message: 'Conductor reached token limit. Agents continue but without coordination.',
-          type: 'error',
-        })
-      }
-
       // Check task-based completion (conductor used swarm_create_task)
       if (tasks.length > 0) {
         const allCompleted = tasks.every((t) => t.status === 'completed' || t.status === 'failed')
@@ -436,7 +429,8 @@ function startMonitoring(): void {
       // skipped swarm_create_task. Only what the swarm posted since launch counts: not Termpolis's
       // own notes. Nothing else ends a swarm (GitHub #36 item 3): a worker's screen or a message
       // that merely says "complete" used to, and so did any message typed `result`, which a Claude
-      // worker reporting on its own task sends too. MCP posts every message as 'mcp-client'.
+      // worker reporting on its own task sends too. MCP files a message under the name its caller
+      // gives (mcp-client for none), and the conductor's prompt has it give 'conductor'.
       const msgsRes = await window.swarmAPI.getMessages()
       const posted = msgsRes.success && msgsRes.data
         ? msgsRes.data.filter((m) => !launch.messageIds.has(m.id) && m.from !== 'system')
@@ -473,11 +467,11 @@ function startMonitoring(): void {
 
       // Stall detection — no task and no word from the conductor a minute after launch. The
       // launcher's own two messages don't count (they were always there, so this never fired), and
-      // nor does what Termpolis or a worker's bridge posts: only the conductor's own messages,
-      // which MCP posts as mcp-client.
+      // nor does what Termpolis, a worker's bridge or a worker the last swarm left running posts:
+      // only the conductor's own messages.
       if (!stallWarned) {
         const elapsed = Date.now() - monitoringStartTime
-        const heard = posted.some((m) => m.from === 'conductor' || m.from === 'mcp-client')
+        const heard = posted.some((m) => m.from === 'conductor')
         if (elapsed > 60000 && tasks.length === 0 && !heard) {
           stallWarned = true
           store.setSwarmNotification({
@@ -498,10 +492,10 @@ function startMonitoring(): void {
   }, testDelay(15000))
 }
 
-/** STEP 8's message: swarm_send_message(type='result', content='SWARM COMPLETE: ...') from the
- *  conductor, which MCP posts as 'mcp-client'. */
+/** STEP 8's message: swarm_send_message(from='conductor', type='result', content='SWARM COMPLETE:
+ *  ...'). Not a worker's own result in those words, which ended the swarm with a task still open. */
 function isSwarmComplete(m: { from: string; type: string; content: string }): boolean {
-  return m.type === 'result' && (m.from === 'conductor' || m.from === 'mcp-client') && /^\s*SWARM COMPLETE\b/i.test(m.content)
+  return m.type === 'result' && m.from === 'conductor' && /^\s*SWARM COMPLETE\b/i.test(m.content)
 }
 
 function markSwarmDone(

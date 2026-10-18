@@ -61,6 +61,34 @@ describe('noteWorkerStatus', () => {
     expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3]).toContain('is blocked: waiting on a menu: Codex asks')
   })
 
+  // A menu takes a key press, and the worker carries on with what it did so far. Closed, it lost
+  // that, and a Codex started in its place opened on the same update offer.
+  it('tells the conductor to answer a menu, not to close the worker', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, MENU)
+    expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBe(
+      `Codex (Tests, terminal ${w.terminalId}) is blocked: waiting on a menu: Codex asks whether to switch to a model that uses fewer credits. ` +
+        'Answer it as STEP 6 says, without submit: "Keep current model" is the second option (Down, then Enter: \\u001b[B\\r). ' +
+        'Then send its task again with submit=true if it never got it. Give its task to another installed agent only if the menu stays.',
+    )
+  })
+
+  it("names the answer to Codex's update offer: skip it until the next version", async () => {
+    const w = worker()
+    await noteWorkerStatus(w, { status: 'blocked', summary: 'waiting on a menu: Codex offers to update itself' })
+    const sent = (window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3] as string
+    expect(sent).toContain('"Skip until next version" is the third option (Down, Down, then Enter: \\u001b[B\\u001b[B\\r)')
+    expect(sent).not.toMatch(/Close its terminal/)
+  })
+
+  it('tells it to answer a menu it has no answer for, as the agent shows it', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, { status: 'blocked', summary: 'waiting on a menu: something new' })
+    expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3]).toContain(
+      'is blocked: waiting on a menu: something new. Answer it as STEP 6 says, without submit: read it with read_output first.',
+    )
+  })
+
   it('names the task assigned to the worker, when one is', async () => {
     const w = worker()
     ;(window.swarmAPI.getTasks as ReturnType<typeof vi.fn>).mockResolvedValue({

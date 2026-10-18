@@ -358,6 +358,44 @@ describe('readWorkerScreen', () => {
     const view = readWorkerScreen(screenOf('first\r\nsecond\r\n'), 'Codex', 'working')
     expect(view.transcript).toEqual(['first', 'second'])
   })
+
+  // A menu's highlighted option looks like a prompt the worker echoes, and the options under it like
+  // the rows it wraps onto: the menu was filed as prompts sent, and left out of what the conductor
+  // read, which needs the options to answer it (GitHub #36).
+  it("reads a menu's options as transcript, not as prompts it was sent: Codex's update offer, agy's trust prompt", () => {
+    const codex = readWorkerScreen(screenOf(fixtures.codex.updateMenu), 'Codex', 'starting')
+    expect(codex.prompts).toEqual([])
+    expect(codex.transcript).toEqual(expect.arrayContaining(['› 1. Update now (runs `npm install -g @openai/codex`)', '  2. Skip', '  3. Skip until next version', '  Press enter to continue']))
+    const agy = readWorkerScreen(screenOf(fixtures.agy.trust), 'Gemini', 'starting')
+    expect(agy.prompts).toEqual([])
+    expect(agy.transcript).toEqual(expect.arrayContaining(['> Yes, I trust this folder', '  No, exit', '  ↑/↓ Navigate · enter Confirm']))
+  })
+
+  it('still reads a prompt it was sent, with a blank row and its answer under it, as one', () => {
+    const view = readWorkerScreen(screenOf('> Write the docs\r\n  for the API\r\n\r\n  Done: docs/api.md\r\n'), 'Gemini', 'idle')
+    expect(view.prompts).toEqual(['> Write the docs', '  for the API'])
+    expect(view.transcript).toEqual(['  Done: docs/api.md'])
+  })
+
+  it('reads a prompt whose answer mentions a menu\'s words as the prompt it is', () => {
+    const view = readWorkerScreen(screenOf('> Explain the update offer\r\n\r\n  Codex says: Press enter to continue\r\n'), 'Gemini', 'idle')
+    expect(view.prompts).toEqual(['> Explain the update offer'])
+    expect(view.transcript).toEqual(['  Codex says: Press enter to continue'])
+  })
+})
+
+describe('WorkerFeed and a menu', () => {
+  it('posts a menu whole once it shows, so the conductor can answer it', () => {
+    const raw = fixtures.codex.updateMenu
+    const at = raw.indexOf('Update available')
+    const feed = new WorkerFeed('Codex')
+    expect(feed.update({ output: raw.slice(0, at), cols: 80, rows: 24 })).toBeNull()
+    const message = feed.update({ output: raw.slice(at) })
+    expect(message).toContain('› 1. Update now')
+    expect(message).toContain('  2. Skip')
+    expect(message).toContain('  3. Skip until next version')
+    expect(message).toContain('  Press enter to continue')
+  })
 })
 
 describe('statusText', () => {

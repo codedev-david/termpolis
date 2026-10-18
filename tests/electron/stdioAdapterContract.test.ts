@@ -17,9 +17,10 @@
  * end-to-end verification. End-to-end is covered by the full-pipeline
  * swarm E2E and mcp-registration.spec.ts.
  *
- * The one exception is the nested-delegation block at the bottom, which
- * drives the real adapter against a stand-in app: what it guards is a
- * request that must never leave the adapter, and only traffic shows that.
+ * The exceptions are the nested-delegation and cancelled-call blocks at the
+ * bottom, which drive the real adapter against a stand-in app: what they
+ * guard is a request that must never leave the adapter, or one it must
+ * close, and only traffic shows that.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
@@ -461,5 +462,111 @@ describe('stdio-adapter.cjs — the delegated-job toolset (linked machines)', ()
     const { delegatedJobRefusal } = load()
     expect(delegatedJobRefusal(call('run_command', 1), { ...inJob, TERMPOLIS_READ_ONLY_RUN: '1' })?.result?.content[0].text)
       .toMatch(/^run_command is not available to a job another linked machine started/)
+  })
+})
+
+
+// -----------------------------------------------------------------------
+// A call its client gives up on (GitHub #36). A client that times out on a
+// call sends notifications/cancelled, as MCP has it, and keeps its session,
+// so the adapter lives on. It kept its request to the app open, and a
+// write_to_terminal submit still waiting on its agent typed the task in
+// later; a retry got it typed twice.
+// -----------------------------------------------------------------------
+
+describe('stdio-adapter.cjs — a call its client gives up on', () => {
+  /** A stand-in app that holds write_to_terminal open, as a submit waiting on its agent does, and
+   *  answers anything else; and the real adapter, connected to it. */
+  async function holdingApp() {
+    let received!: () => void
+    const heldOpen = new Promise<void>((r) => { received = r })
+    const state = { closedEarly: false }
+    const server = createServer((req, res) => {
+      let body = ''
+      req.on('data', (chunk) => { body += chunk })
+      req.on('end', () => {
+        res.setHeader('Content-Type', 'application/json')
+        if (req.method === 'GET') {
+          res.end('{"status":"ok"}')
+          return
+        }
+        const rpc = JSON.parse(body)
+        if (rpc.params?.name === 'write_to_terminal') {
+          res.on('close', () => { state.closedEarly = !res.writableFinished })
+          received()
+          return
+        }
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'answered by the app' }] } }))
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const root = mkdtempSync(join(tmpdir(), 'termpolis-adapter-cancel-'))
+    const dir = dataDirUnder(root)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'mcp-token'), 'stand-in-token')
+    writeFileSync(join(dir, 'mcp-port'), String((server.address() as AddressInfo).port))
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, APPDATA: root, XDG_CONFIG_HOME: root }
+    delete env.TERMPOLIS_LINKED_JOB
+    delete env.TERMPOLIS_READ_ONLY_RUN
+    const child = spawn(process.execPath, [ADAPTER], { env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const exited = new Promise<void>((r) => child.on('exit', () => r()))
+    let stdout = ''
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+    child.stderr.on('data', () => {}) // read so the pipe never fills
+    const replies = (): Rpc[] => stdout.split('\n').slice(0, -1).filter((l) => l.trim()).map((l) => JSON.parse(l) as Rpc)
+    return {
+      state,
+      heldOpen,
+      replies,
+      send: (msg: object) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n'),
+      until: async (done: () => boolean, what: string) => {
+        for (const started = Date.now(); !done(); await new Promise((r) => setTimeout(r, 20))) {
+          if (Date.now() - started > 10_000) throw new Error(`${what} never happened. stdout: ${stdout}`)
+        }
+      },
+      close: async () => {
+        child.stdin.end() // readline 'close' exits the adapter
+        const killer = setTimeout(() => child.kill(), 5_000)
+        await exited
+        clearTimeout(killer)
+        server.closeAllConnections()
+        await new Promise<void>((r) => server.close(() => r()))
+        rmSync(root, { recursive: true, force: true })
+      },
+    }
+  }
+
+  it('closes the call in the app, answers nothing for it, and goes on with the next one', async () => {
+    const app = await holdingApp()
+    try {
+      app.send({ id: 7, method: 'tools/call', params: { name: 'write_to_terminal', arguments: { terminalId: 't1', text: 'Write the docs', submit: true } } })
+      await app.heldOpen
+      app.send({ method: 'notifications/cancelled', params: { requestId: 7, reason: 'Request timed out' } })
+      await app.until(() => app.state.closedEarly, 'the app seeing its call closed')
+
+      app.send({ id: 8, method: 'tools/call', params: { name: 'memory_search', arguments: { query: 'docs' } } })
+      await app.until(() => app.replies().some((r) => r.id === 8), 'the next call\'s answer')
+      expect(app.replies().find((r) => r.id === 8)?.result?.content[0].text).toBe('answered by the app')
+      // Nothing for the call given up on, not even an error: the client asked for no answer.
+      expect(app.replies().map((r) => r.id)).toEqual([8])
+    } finally {
+      await app.close()
+    }
+  })
+
+  it('takes a cancel for a call it no longer has, or never had, as nothing to do', async () => {
+    const app = await holdingApp()
+    try {
+      app.send({ id: 1, method: 'tools/call', params: { name: 'memory_search', arguments: {} } })
+      await app.until(() => app.replies().some((r) => r.id === 1), 'the first answer')
+      app.send({ method: 'notifications/cancelled', params: { requestId: 1 } })
+      app.send({ method: 'notifications/cancelled', params: { requestId: 99 } })
+      app.send({ method: 'notifications/cancelled' })
+      app.send({ id: 2, method: 'tools/call', params: { name: 'memory_search', arguments: {} } })
+      await app.until(() => app.replies().some((r) => r.id === 2), 'the second answer')
+      expect(app.replies().map((r) => r.id)).toEqual([1, 2])
+    } finally {
+      await app.close()
+    }
   })
 })

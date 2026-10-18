@@ -273,6 +273,7 @@ const TOOLS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
+        from: { type: 'string', description: 'Your name as the sender; the conductor is "conductor"' },
         to: { type: 'string', description: 'Target terminal ID, agent name, or "all" for broadcast' },
         type: { type: 'string', enum: ['task', 'result', 'question', 'info', 'review'], description: 'Message type' },
         content: { type: 'string', description: 'Message content' },
@@ -747,17 +748,20 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
 const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+|Content \d+ chars)/
 
 const flat = (s: string): string => s.replace(/\s+/g, ' ').trim()
+const bare = (s: string): string => s.replace(/\s+/g, '')
 const INPUT_GLYPH = /^(?:│\s)?[❯>›]/
+/** The rule that closes Claude Code's and agy's input box. */
+const BOX_RULE = /^[─━]{20,}$/
 
 /** Whether `text` sits where it was typed: at the start of the agent's input box (not in the footer
  *  under it, which a short text could match), or on a shell's last line. By the start of its first
- *  line: the box shows a text a line to a row, and a long one wrapped. */
+ *  line: the box shows a text a line to a row, and a long one wrapped. Over the whole screen: a
+ *  long prompt makes the box taller than the bottom rows. */
 function stillTyped(lines: string[], text: string): boolean {
-  const bottom = lines.slice(-12)
-  const row = inputBoxRow(bottom)
+  const row = inputBoxRow(lines)
   const start = flat(text.trimStart().split('\n')[0]).slice(0, 24)
-  if (row < 0) return flat(bottom[bottom.length - 1] ?? '').includes(start)
-  const typed = flat(bottom[row].replace(INPUT_GLYPH, ''))
+  if (row < 0) return flat(lines[lines.length - 1] ?? '').includes(start)
+  const typed = flat(lines[row].replace(INPUT_GLYPH, ''))
   return PASTE_PLACEHOLDER.test(typed) || typed.startsWith(start)
 }
 
@@ -766,15 +770,16 @@ function stillTyped(lines: string[], text: string): boolean {
  *  prompts all do ("You are working in ..."), nor a paste placeholder, which could be any text:
  *  typed again, the right prompt arrives twice; taken for this one, a wrong one would be sent. */
 function alreadyTyped(lines: string[], text: string): boolean {
-  const bottom = lines.slice(-12)
-  const row = inputBoxRow(bottom)
-  if (row < 0) return false
-  const rows = [bottom[row].replace(INPUT_GLYPH, '')]
-  // The rows a long or multi-line text wraps onto are indented under the glyph, down to the box's
-  // rule or the blank row under it. Compared without spaces: a row can end mid-word or at a space.
-  for (let i = row + 1; i < bottom.length && /^\s+\S/.test(bottom[i]); i++) rows.push(bottom[i])
-  const bare = (s: string): string => s.replace(/\s+/g, '')
-  return bare(text) !== '' && bare(rows.join('')) === bare(text)
+  const row = inputBoxRow(lines)
+  const want = bare(text)
+  if (row < 0 || want === '') return false
+  // The rows the text takes, a blank line in it included: down to the box's closing rule (Claude
+  // Code, agy), or for Codex's composer, which has none, to the end of the screen with or without
+  // its last row, the footer. Compared without spaces: a row can end mid-word or at a space.
+  const rule = lines.findIndex((r, i) => i > row && BOX_RULE.test(r))
+  const ends = rule > row ? [rule] : [lines.length - 1, lines.length]
+  const first = lines[row].replace(INPUT_GLYPH, '')
+  return ends.some((end) => bare([first, ...lines.slice(row + 1, end)].join('')) === want)
 }
 
 /** The terminal's name, for the agent-specific rules in the status detector. Workers the conductor
@@ -883,6 +888,15 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   return { submitted: false, waitedMs, error: 'The text is still in the agent\'s input after Enter was pressed twice. Check it with read_output.' }
 }
 
+/** The sender a swarm message is filed under: the name its caller gives, so the conductor's word is
+ *  told from a worker's (a worker's own result in STEP 8's words, "SWARM COMPLETE ...", ended the
+ *  swarm with a task still open: GitHub #36), or mcp-client for none. Never Termpolis's own system,
+ *  whose notes the conductor acts on, closing a worker. */
+function messageSender(from: unknown): string {
+  const name = typeof from === 'string' ? from.trim().slice(0, 64) : ''
+  return name === '' || name.toLowerCase() === 'system' ? 'mcp-client' : name
+}
+
 export async function executeTool(
   name: string,
   args: any,
@@ -948,7 +962,7 @@ export async function executeTool(
     case 'get_git_status':
       return await handlers.getGitStatus(args.cwd)
     case 'swarm_send_message':
-      return handlers.swarmSendMessage('mcp-client', args.to, args.type, args.content)
+      return handlers.swarmSendMessage(messageSender(args.from), args.to, args.type, args.content)
     case 'swarm_read_messages':
       return handlers.swarmReadMessages(args.terminalId)
     case 'swarm_create_task':

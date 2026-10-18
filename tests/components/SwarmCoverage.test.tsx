@@ -492,7 +492,7 @@ describe('StartSwarmModal — launch polling', () => {
       success: true,
       data: [
         makeMessage({ from: 'conductor', content: 'planning' }),
-        makeMessage({ from: 'mcp-client', content: 'tool call' }),
+        makeMessage({ from: 'conductor', content: 'Plan: two tasks' }),
         makeMessage({ from: 'system', content: 'ignored' }),
       ],
     })
@@ -509,6 +509,8 @@ describe('StartSwarmModal — launch polling', () => {
         makeMessage({ from: 'conductor', content: 'ack' }),
         makeMessage({ from: 'system', content: 'ignored' }),
         makeMessage({ from: 'agent-1', content: 'ignored' }),
+        // A message through MCP that gave no sender: a worker's, not the conductor's.
+        makeMessage({ from: 'mcp-client', content: 'ignored' }),
       ],
     })
     const onLaunched = await launch()

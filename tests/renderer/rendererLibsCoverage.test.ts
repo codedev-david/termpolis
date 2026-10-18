@@ -873,7 +873,7 @@ describe('conductorManager — uncovered branches', () => {
     expect(getConductorState().status).toBe('error')
     expect(useTerminalStore.getState().swarmActive).toBe(false)
     expect(sw().sendMessage).toHaveBeenCalledWith(
-      'conductor', 'all', 'info',
+      'system', 'all', 'info',
       expect.stringContaining('Task refused'),
     )
   })
@@ -919,11 +919,11 @@ describe('conductorManager — uncovered branches', () => {
     await start()
     await sendTask('Build', '/tmp/project')
     sw().getTasks.mockResolvedValue({ success: true, data: [] })
-    sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r1', from: 'mcp-client', type: 'result', content: '' }] })
+    sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r1', from: 'conductor', type: 'result', content: '' }] })
     await vi.advanceTimersByTimeAsync(15000)
     expect(getConductorState().status).toBe('running')
 
-    sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r2', from: 'mcp-client', type: 'result', content: 'SWARM COMPLETE:' }] })
+    sw().getMessages.mockResolvedValue({ success: true, data: [{ id: 'r2', from: 'conductor', type: 'result', content: 'SWARM COMPLETE:' }] })
     await vi.advanceTimersByTimeAsync(15000)
     expect(useTerminalStore.getState().swarmNotification).toEqual({
       message: 'SWARM COMPLETE:',

@@ -817,6 +817,36 @@ describe('MCP HTTP server', () => {
     expect(handlers.swarmSendMessage).toHaveBeenCalledWith('mcp-client', 'agent-1', 'task', 'do work')
   })
 
+  // GitHub #36: every message was filed as mcp-client, so a worker's own result that started
+  // "SWARM COMPLETE" ended the swarm as the conductor's STEP 8 does. The sender is the caller's name
+  // now, but never Termpolis's own system, whose notes the conductor acts on.
+  it.each([
+    ['conductor', 'conductor'],
+    ['  Claude (Docs) ', 'Claude (Docs)'],
+    ['system', 'mcp-client'],
+    [' System ', 'mcp-client'],
+    ['', 'mcp-client'],
+    [42, 'mcp-client'],
+    ['x'.repeat(100), 'x'.repeat(64)],
+  ])('tools/call swarm_send_message files a message from %j under %j', async (from, sender) => {
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'swarm_send_message', arguments: { from, to: 'all', type: 'result', content: 'SWARM COMPLETE: done' } },
+      id: 314,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(handlers.swarmSendMessage).toHaveBeenLastCalledWith(sender, 'all', 'result', 'SWARM COMPLETE: done')
+  })
+
+  it("advertises swarm_send_message's from: an agent passes nothing the schema does not mention", async () => {
+    const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/list', id: 33 })
+    const tools = JSON.parse(res.body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, { type: string }>; required: string[] } }>
+    const send = tools.find((t) => t.name === 'swarm_send_message')!
+    expect(send.inputSchema.properties.from.type).toBe('string')
+    expect(send.inputSchema.required).not.toContain('from')
+  })
+
   it('tools/call swarm_read_messages calls handler', async () => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',

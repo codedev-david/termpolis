@@ -43,7 +43,14 @@ describe('usage limits, in the CLIs\' own words', () => {
     ['Codex, its owner nudge', 'Codex', 'Request a limit increase from your owner to continue using codex. Request increase?', 'usage limit reached'],
     ['agy, its quota', 'Gemini', 'You have exhausted your quota on this model.', 'usage limit reached'],
     ['agy, its AI credits', 'Gemini', 'Your AI credits balance is too low to continue.', 'usage limit reached'],
-    ['Gemini CLI', 'Gemini', 'Usage limit reached for gemini-3-pro.\nAccess resets at 5:00 PM.\n/stats model for usage details', 'usage limit reached (resets 5:00 PM)'],
+    // Gemini CLI names no Pro model: its message says "all Pro models" for any of them.
+    ['Gemini CLI, a Pro model', 'Gemini', 'Usage limit reached for all Pro models.\nAccess resets at 5:00 PM.\n/stats model for usage details', 'usage limit reached (resets 5:00 PM)'],
+    ['Gemini CLI, another model', 'Gemini', 'Usage limit reached for gemini-2.5-flash.\n/stats model for usage details', 'usage limit reached'],
+    ['Claude Code, out of a model it has credits for', 'Claude', 'You\'ve reached your Fable limit. Switch to another model to continue.', 'usage limit reached'],
+    ['Claude Code, a model that needs usage credits', 'Claude', 'Opus 5.5 requires usage credits. /model to switch models.', 'usage limit reached'],
+    ['Claude Code, its spend limit, what to do on the row under it', 'Claude', 'You\'ve hit your monthly spend limit.\n/usage-credits to adjust your monthly spend limit.', 'usage limit reached'],
+    ['Codex, a plan with nothing to upgrade to', 'Codex', 'You\'ve hit your usage limit. Try again at 3:04 PM.', 'usage limit reached (resets 3:04 PM)'],
+    ['Codex, a business plan', 'Codex', 'You\'ve hit your usage limit. To get more access now, send a request to your admin or try again later.', 'usage limit reached'],
   ])('%s', (_name, agent, message, summary) => {
     const result = detectAgentStatus(filler + message + '\n', agent, 'working')
     expect(result).toEqual({ status: 'blocked', summary })
@@ -87,8 +94,33 @@ describe('usage limits, in the CLIs\' own words', () => {
       '│ /model to switch models.                     │',
       '╰──────────────────────────────────────────────╯',
     ], 'usage limit reached (resets 5:00 PM)'],
+    // Claude Code 2.1.302 (claude.exe, VWo): a model the account has run out of, under the answer it stopped.
+    ['Claude Code\'s Fable limit', 'Claude', ['● I will start on the dashboard now.', '', '  ⎿  You\'ve reached your Fable limit. Switch to another model to continue.', ...CLAUDE_IDLE], 'usage limit reached'],
+    ['Claude Code\'s model that needs usage credits', 'Claude', ['● I will start on the dashboard now.', '', '  ⎿  Opus requires usage credits. Switch to another model to continue.', ...CLAUDE_IDLE], 'usage limit reached'],
   ])('reads %s on its screen', (_name, agent, rows, summary) => {
     expect(onScreen(rows, agent)).toEqual({ status: 'blocked', summary })
+  })
+
+  // Gemini CLI 0.59.0's ProQuotaDialog as its bundle lays it out (interactiveCli-*.js): a round
+  // frame with a padding of one, the message, a margin of one each side of the options. A Google
+  // login gets a line and an option more: 15 rows, the limit line 14 rows up from its footer.
+  function quotaDialog(model: string, googleLogin: boolean): string[] {
+    const message = [`Usage limit reached for ${model}.`, 'Access resets at 5:00 PM.', '/stats model for usage details', '/model to switch models.', ...(googleLogin ? ['/auth to switch to API key.'] : [])]
+    const options = ['● 1. Switch to gemini-2.5-flash', ...(googleLogin ? ['  2. Upgrade for higher limits'] : []), `  ${googleLogin ? 3 : 2}. Stop`]
+    const inner = ['', ...message, '', '', ...options, '', '']
+    return ['╭' + '─'.repeat(78) + '╮', ...inner.map((r) => '│ ' + r.padEnd(76) + ' │'), '╰' + '─'.repeat(78) + '╯']
+  }
+  it.each([
+    ['an API key, a Flash model', 'gemini-2.5-flash', false, 13],
+    ['an API key, a Pro model', 'all Pro models', false, 13],
+    ['a Google login, a Flash model', 'gemini-2.5-flash', true, 15],
+    ['a Google login, a Pro model', 'all Pro models', true, 15],
+  ])("reads Gemini CLI's quota dialog for %s, however tall it is", (_name, model, googleLogin, height) => {
+    const dialog = quotaDialog(model, googleLogin)
+    expect(dialog).toHaveLength(height)
+    const rows = [...dialog, '~\\repos\\app   no sandbox (see /docs)   gemini-2.5-pro (98% context left)']
+    const screen = [...Array<string>(24 - rows.length).fill('some earlier output'), ...rows]
+    expect(onScreen(screen, 'Gemini')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 5:00 PM)' })
   })
 
   it("reads Gemini CLI's dialog when it spans a wide screen", () => {
@@ -175,13 +207,27 @@ describe('what is no usage limit', () => {
     ['a markdown list in a file Codex shows', 'Codex', ['• Ran cat docs/errors.md', '  └ * You\'ve hit your usage limit. Upgrade to continue.', '    * Your workspace is out of credits.'], CODEX_IDLE],
     ['a list in an answer', 'Claude', ['● The messages it can show:', '', '  * You\'ve hit your usage limit. Wait for the reset.', '  · You have exhausted your quota on this model.'], CLAUDE_IDLE],
     ['a table in an answer', 'Claude', ['● The messages, by CLI:', '  │ You\'ve hit your usage limit. │ Codex │', '  │ You have exhausted your quota on this model. │ agy │'], CLAUDE_IDLE],
+    // A row of an answer or a file that starts with a limit's own words, which the three agents
+    // indent. Each closed a healthy worker: the conductor is told to close a blocked one.
+    ['the copy a Claude worker wrote, quoted on a row of its own', 'Claude', ['● I changed the quota banner. It now reads:', '', '  You\'ve hit your monthly limit.', '', '  and links to the billing page. Tests pass.'], CLAUDE_IDLE],
+    ['the copy a Codex worker wrote, quoted on a row of its own', 'Codex', ['• Updated the quota banner. It now reads:', '', '  You\'ve hit your monthly limit.', '', '  Tests pass.'], CODEX_IDLE],
+    ['a Codex answer whose wrapped row starts with the words', 'Codex', ['• I added the banner for users on the free plan. When they run out it says', '  You\'ve hit your weekly limit. Upgrade to Plus, and the CTA opens billing.'], CODEX_IDLE],
+    ['a doc Codex printed', 'Codex', ['• Ran sed -n 1,20p docs/LIMITS.md', '  └ ## When the quota runs out', '    You\'re out of usage credits. The app shows this when the org balance is 0.', '', '• Documented the behaviour.'], CODEX_IDLE],
+    ['a file of copy Codex printed', 'Codex', ['• Ran cat src/copy/limits.txt', '  └ You\'ve hit your usage limit.', '    Upgrade to keep going.', '', '• The banner copy is in place and the test passes.'], CODEX_IDLE],
+    ["a Claude answer quoting Codex's message whole", 'Claude', ['● The Codex worker stopped with this message:', '', '  You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', '  (https://chatgpt.com/explore/plus), or try again at 3:04 PM.', '', '  I added a retry for it in src/quota.ts.'], CLAUDE_IDLE],
+    ['a Claude answer listing the banner it wrote', 'Claude', ['● Done. The quota banner now shows, on its own line:', '', '  You\'ve hit your weekly limit · resets Monday 9:00', '', '  and the tests cover it.'], CLAUDE_IDLE],
+    ["an agy answer quoting agy's message", 'Gemini', ['> Explain the quota error in the logs', '', '  The log shows the CLI stopped with:', '', '  You have exhausted your quota on this model.', '', '  It resets daily.'], AGY_IDLE],
+    // Under Claude Code's own ⎿, a tool's output: what it showed is history once the answer follows.
+    ['a file of copy Claude printed, its answer under it', 'Claude', ['● Bash(cat src/copy/limits.txt)', '  ⎿  You\'ve hit your usage limit.', '     Upgrade to keep going.', '', '● The banner copy is in place and the test passes.'], CLAUDE_IDLE],
+    ["a log Claude printed, Codex's words exactly, its answer under it", 'Claude', ['● Bash(type logs\\codex-worker.log)', '  ⎿  You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', '     (https://chatgpt.com/explore/plus), or try again at 3:04 PM.', '', '● The worker log shows a quota stop at 3:04 PM.'], CLAUDE_IDLE],
   ])('%s', (_name, agent, transcript, bottom) => {
     expect(onScreen([...transcript, ...bottom], agent).status).not.toBe('blocked')
   })
 
   it('the conductor\'s own prompt, rule on limits and all', () => {
     const prompt = buildConductorPrompt({ taskDescription: 'Ship it', installedAgents: { claude: true, codex: true, gemini: true }, projectCwd: '/p' })
-    expect(prompt).toContain('usage limit reached, or waiting on a menu')
+    expect(prompt).toContain('blocked by a usage limit')
+    expect(prompt).toContain('waiting on a menu')
     for (let at = 0; at < prompt.length; at += 1000) {
       expect(isLimitOrMenu(detectAgentStatus(prompt.slice(at, at + 1500), 'Claude', 'working'))).toBe(false)
     }
@@ -196,5 +242,30 @@ describe('what is no usage limit', () => {
   it('a limit far up the screen, above the bottom rows, is history', () => {
     const rows = ['You\'ve hit your session limit · resets 3pm (America/New_York)', ...Array.from({ length: 14 }, (_, i) => `later line ${i}`), RULE, '❯ ', RULE]
     expect(onScreen(rows, 'Claude').status).toBe('idle')
+  })
+})
+
+// A CLI's limit message is the last thing it shows: its turn stops there. In the transcript, one
+// with an answer, a tool call or a prompt after it is history, and one the agent works on past is
+// a tool's output (GitHub #36).
+describe('a limit is what the agent shows last', () => {
+  it("reads a log with Codex's words that Claude works on past as work, not as a limit", () => {
+    const rows = ['● Bash(type logs\\codex-worker.log)', '  ⎿  You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', '', '✢ Thinking…', RULE, '❯ ', RULE, '  esc to interrupt']
+    expect(onScreen(rows, 'Claude', '◐ Claude Code').status).toBe('working')
+  })
+
+  it('reads a limit the worker went on from as history: it switched model and carried on', () => {
+    const rows = ['› Fix the login test', '', '■ You\'ve hit your usage limit for gpt-5.6-sol. Switch to another model now, or', 'try again at 4:15 PM.', '', '› Go on with gpt-5.6-luna', '', '• Fixed the test; it passes now.', ...CODEX_IDLE]
+    expect(onScreen(rows).status).toBe('idle')
+  })
+
+  it('reads the same limit again under a prompt sent after it', () => {
+    const rows = ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', '', '❯ Try again', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  it("reads a limit under Claude Code's input box, where every row is the CLI's own, indent and all", () => {
+    const rows = ['● OK', ...CLAUDE_IDLE, '          You\'ve hit your weekly limit · resets 4pm (America/New_York)']
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 4pm (America/New_York))' })
   })
 })

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { sanitizeAgentCommand, isAgentBinary, AGENT_COMMAND_ALLOWLIST, AGENT_MODEL_ALIASES } from '../../src/main/agentCommandSanitizer'
 
+/** Codex as a swarm starts it: no approvals, its sandbox, and no update offer at its start. */
+const CODEX = 'codex -a never -s workspace-write -c check_for_update_on_startup=false'
+
 describe('sanitizeAgentCommand', () => {
   // ---- Correct commands pass through ----
 
@@ -13,17 +16,24 @@ describe('sanitizeAgentCommand', () => {
   })
 
   it('passes through correct codex command', () => {
-    expect(sanitizeAgentCommand('codex -a never -s workspace-write')).toBe('codex -a never -s workspace-write')
+    expect(sanitizeAgentCommand(CODEX)).toBe(CODEX)
+  })
+
+  // GitHub #36: with a newer Codex out, every Codex worker opened on its update offer, a menu that
+  // held it until someone answered.
+  it('starts codex with its update check off, even when the conductor leaves the flag out', () => {
+    expect(sanitizeAgentCommand('codex -a never -s workspace-write')).toBe(CODEX)
+    expect(AGENT_COMMAND_ALLOWLIST.codex).toBe(CODEX)
   })
 
   // Codex 0.153 rejects --full-auto outright, so a conductor that still sends it gets the working command.
   it('replaces the removed codex --full-auto flag', () => {
-    expect(sanitizeAgentCommand('codex --full-auto')).toBe('codex -a never -s workspace-write')
+    expect(sanitizeAgentCommand('codex --full-auto')).toBe(CODEX)
   })
 
   it('never lets codex out of its sandbox or past approvals by another route', () => {
-    expect(sanitizeAgentCommand('codex --dangerously-bypass-approvals-and-sandbox')).toBe('codex -a never -s workspace-write')
-    expect(sanitizeAgentCommand('codex -a never -s danger-full-access')).toBe('codex -a never -s workspace-write')
+    expect(sanitizeAgentCommand('codex --dangerously-bypass-approvals-and-sandbox')).toBe(CODEX)
+    expect(sanitizeAgentCommand('codex -a never -s danger-full-access')).toBe(CODEX)
   })
 
   // ---- Strips -p flag from all agents ----
@@ -37,11 +47,11 @@ describe('sanitizeAgentCommand', () => {
   })
 
   it('strips -p flag from codex', () => {
-    expect(sanitizeAgentCommand('codex -p "Fix tests"')).toBe('codex -a never -s workspace-write')
+    expect(sanitizeAgentCommand('codex -p "Fix tests"')).toBe(CODEX)
   })
 
   it('fixes bare codex to include its approval and sandbox flags', () => {
-    expect(sanitizeAgentCommand('codex')).toBe('codex -a never -s workspace-write')
+    expect(sanitizeAgentCommand('codex')).toBe(CODEX)
   })
 
   // ---- Strips --sandbox from gemini ----
@@ -153,7 +163,7 @@ describe('sanitizeAgentCommand', () => {
 
   it('does NOT honor --model on agents without model control (they keep their default)', () => {
     expect(sanitizeAgentCommand('gemini --model gemini-2.5-pro')).toBe('gemini')
-    expect(sanitizeAgentCommand('codex -a never -s workspace-write --model o4')).toBe('codex -a never -s workspace-write')
+    expect(sanitizeAgentCommand('codex -a never -s workspace-write --model o4')).toBe(CODEX)
   })
 
   it('still strips -p even when a valid model is also present', () => {

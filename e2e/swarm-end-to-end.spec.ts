@@ -432,9 +432,10 @@ test.describe.serial('Swarm End-to-End', () => {
     ).then((h) => h.jsonValue())
 
     expect(msg).toBeTruthy()
-    // MCP server always sets from='mcp-client' regardless of what the caller
-    // claims — the identity is the MCP channel, not the client-supplied name.
-    expect(['conductor', 'mcp-client']).toContain(msg.from)
+    // Filed under the name the caller gave: only a result from the conductor ends a swarm, not a
+    // worker's own in STEP 8's words (GitHub #36). The mock conductor gives 'conductor', as the
+    // conductor's prompt says to.
+    expect(msg.from).toBe('conductor')
     expect(msg.type).toBe('result')
   })
 

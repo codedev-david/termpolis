@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { detectAgentStatus, inputBoxRow, type AgentStatus } from '../../src/shared/agentStatusDetector'
 import { screenOf } from '../../src/shared/terminalScreen'
 import fixtures from '../fixtures/agentScreens.json'
+import long from '../fixtures/longPromptScreens.json'
 
 // The status detector on a rendered screen (GitHub #36 item 4): what write_to_terminal's `submit`
 // waits on, and the swarm bridge reads. The fixtures are real ConPTY output of Claude Code 2.1.302,
@@ -64,6 +65,17 @@ describe('detectAgentStatus on a real screen', () => {
   })
 })
 
+// A long prompt typed into the box made it taller than the bottom rows, where the box was looked
+// for: an idle agent with a task in its input read as thinking, and submit pressed no Enter on the
+// task it had typed (GitHub #36). Real screens, read at the PTY's size.
+describe('detectAgentStatus with a long prompt in the box', () => {
+  it.each(Object.entries(long.screens))('%s: at its prompt, idle', (_name, s) => {
+    const screen = screenOf(s.raw, { cols: s.cols, rows: s.rows })
+    expect(detectAgentStatus(screen.lines().join('\n'), s.agent, 'working', { screen: true, title: screen.title }))
+      .toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+  })
+})
+
 describe('detectAgentStatus on a screen: the rules', () => {
   const rule = '─'.repeat(80)
   const detect = (rows: string[], title = '', previous: AgentStatus = 'working') =>
@@ -86,10 +98,30 @@ describe('detectAgentStatus on a screen: the rules', () => {
     expect(inputBoxRow(rows)).toBe(5)
   })
 
-  it('finds an older Claude Code\'s boxed prompt, and Codex\'s › near the bottom', () => {
+  it('finds an older Claude Code\'s boxed prompt, and Codex\'s › with only its own rows under it', () => {
     expect(inputBoxRow(['╭──────╮', '│ > ', '╰──────╯'])).toBe(1)
     expect(inputBoxRow(['transcript', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~'])).toBe(1)
     expect(inputBoxRow(['› far up', 'a', 'b', 'c', 'd', 'e', 'f'])).toBe(-1)
+  })
+
+  it("finds Codex's composer however many rows its text takes, and never a prompt in its history", () => {
+    const typed = ['› Write the docs for every route, with an example request and the errors each', ...Array<string>(6).fill('  one returns, and a note on its rate limit.')]
+    expect(inputBoxRow(['• Done.', '', ...typed, '', '  gpt-5.6-sol medium · ~'])).toBe(2)
+    // In its history a prompt has its answer under it, at the start of a row.
+    expect(inputBoxRow(['› Fix the test', '', '• Fixed it.', 'PS C:\\p> '])).toBe(-1)
+  })
+
+  it('reads a box whose top went off the screen by the rows of it that are left', () => {
+    const rows = ['│ model: gpt-5.6-sol medium', '╰' + '─'.repeat(40) + '╯', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~']
+    expect(detectAgentStatus(rows.join('\n'), 'Codex', 'working', { screen: true })).toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+  })
+
+  it('reads a dialog at the bottom whole, but never on into another box above it', () => {
+    const side = '─'.repeat(40)
+    // A box in history, with a busy line long gone; under it the end of one whose top isn't drawn.
+    const history = ['╭' + side + '╮', '│ • Working (3s • esc to interrupt)', '╰' + side + '╯', ...Array<string>(6).fill('old line')]
+    const rows = [...history, ...Array<string>(8).fill('│ the rest of a box'), '╰' + side + '╯', rule, '❯ ', rule]
+    expect(detect(rows).status).toBe('idle')
   })
 
   it('is no input box when the cursor sits on a numbered menu option', () => {

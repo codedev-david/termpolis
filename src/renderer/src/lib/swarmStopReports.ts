@@ -5,14 +5,15 @@
  * limit, agy's quota) or waits on a menu (Codex's "switch model?") does nothing more until
  * someone acts. The swarm status poller (App.tsx) reads each worker's screen and hands every
  * status here; the first time a worker is stopped, and again only after it got going and stopped
- * again, the conductor is told on the swarm bus, which the dashboard's Messages tab shows too. The
- * conductor's prompt says to close the worker and give its task to another installed agent.
+ * again, the conductor is told on the swarm bus, which the dashboard's Messages tab shows too. For a
+ * limit, it is told to close the worker and give its task to another installed agent; for a menu, to
+ * answer it, which one key press does, and the worker keeps what it did so far.
  *
  * The report is addressed to the conductor. swarm_read_messages marks a broadcast read for every
  * reader at once, so a Claude worker that read the bus first would have taken it.
  */
 
-import { isLimitOrMenu, type AgentStatusResult } from '../../../shared/agentStatusDetector'
+import { menuAnswer, stopKind, type AgentStatusResult } from '../../../shared/agentStatusDetector'
 
 export interface SwarmWorker {
   terminalId: string
@@ -29,7 +30,8 @@ function stopKey(summary: string): string {
 }
 
 export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
-  if (!isLimitOrMenu(result)) {
+  const kind = stopKind(result)
+  if (kind === null) {
     stopped.delete(worker.terminalId)
     return
   }
@@ -46,15 +48,19 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
       : undefined
     if (open) task = ` Its task is "${open.title}" (taskId ${open.id}).`
   } catch {}
-  // Closed first: a Claude Code waiting out its limit carries on by itself once it lifts, on a
-  // task that is someone else's by then.
+  // A limit: closed first, since a Claude Code waiting out its limit carries on by itself once it
+  // lifts, on a task that is someone else's by then. A menu: answered. Closed, the worker lost what
+  // it had done, and a Codex started in its place opened on the same update offer.
+  const todo = kind === 'limit'
+    ? 'Close its terminal, then give its task to another installed agent.'
+    : `Answer it as STEP 6 says, without submit: ${menuAnswer(result.summary) ?? 'read it with read_output first'}. ` +
+      'Then send its task again with submit=true if it never got it. Give its task to another installed agent only if the menu stays.'
   try {
     await window.swarmAPI.sendMessage(
       'system',
       'conductor',
       'info',
-      `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ` +
-        'Close its terminal, then give its task to another installed agent.',
+      `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ${todo}`,
     )
   } catch {}
 }

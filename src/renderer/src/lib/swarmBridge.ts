@@ -12,7 +12,7 @@
  */
 
 import { TerminalScreen, cursorExtentOf, resizeReportOf, screenSizeOf, type ScreenSize } from '../../../shared/terminalScreen'
-import { detectAgentStatus, inputBoxRow, type AgentStatus } from '../../../shared/agentStatusDetector'
+import { detectAgentStatus, inputBoxRow, OPTION_ROW, type AgentStatus } from '../../../shared/agentStatusDetector'
 
 /** What the bridge says when a worker is back at its prompt after working on a prompt (item 3). */
 export const DONE_HINT = 'screen suggests it may be done; check with read_output'
@@ -37,6 +37,9 @@ const SHELL_PROMPT_HEAD = /^PS [A-Za-z]:\\[^>]*$/
 /** The rest of a prompt the worker echoes, on the rows it wraps onto: indented under the glyph.
  *  Not Claude Code's "⎿  Interrupted", which it puts right under the prompt it stopped. */
 const PROMPT_WRAP = /^\s+[^\s⎿]/
+/** The row under a menu that says how to answer it: agy's "↑/↓ Navigate · enter Confirm", Codex's
+ *  "Press enter to continue". A row of its own: an answer that mentions one is no menu. */
+const MENU_FOOTER = /^\s*(?:↑\/↓ Navigate\b|Press enter to (?:continue|confirm)\s*$)/
 /** Codex's startup tips ("Tip: Type / to open the command popup..."). */
 const TIP = /^\s*Tip: /
 /** A status line: led by a spinner frame (agy's braille, Claude Code's ✢✳✶✻✽ and · *), or Codex's
@@ -103,8 +106,9 @@ function sortRows(rows: readonly string[], cols: number, leadIn: readonly string
     const atShell: boolean = shellWraps || SHELL_PROMPT.test(row) || (row.length >= cols && SHELL_PROMPT_HEAD.test(row))
     shellWraps = atShell && row.length >= cols
     // An echoed prompt goes on over indented rows up to the blank row under it: the agents put one
-    // between a prompt and what they answer.
-    inPrompt = !atShell && (PROMPT_ECHO.test(row) || (inPrompt && PROMPT_WRAP.test(row)))
+    // between a prompt and what they answer. A menu's cursor looks like one, and its other options
+    // like the rows it wraps onto: they are what the conductor reads to answer the menu.
+    inPrompt = !atShell && (PROMPT_ECHO.test(row) ? !isMenuCursor(all, i) : inPrompt && PROMPT_WRAP.test(row))
     if (i < leadIn.length) continue
     if (atShell) sorted.shell.push(row)
     else if (inPrompt) sorted.prompts.push(row)
@@ -113,6 +117,18 @@ function sortRows(rows: readonly string[], cols: number, leadIn: readonly string
     else sorted.output.push(row)
   }
   return sorted
+}
+
+/** Whether the prompt-like row at `i` is a menu's cursor: on a numbered option ("› 1. Update now"),
+ *  or on one whose options under it lead to the menu's footer (agy's "> Yes, I trust this folder"). */
+function isMenuCursor(rows: readonly string[], i: number): boolean {
+  if (OPTION_ROW.test(rows[i])) return true
+  for (let j = i + 1, blanks = 0; j < rows.length && blanks < 2; j++) {
+    if (MENU_FOOTER.test(rows[j])) return true
+    if (rows[j].trim() === '') blanks++
+    else if (!PROMPT_WRAP.test(rows[j])) return false
+  }
+  return false
 }
 
 /** One read of a worker's screen. `scrolledOff` are the rows that went off its top since the

@@ -73,7 +73,7 @@ STEP 4 — Start agents in INTERACTIVE mode:
   For each terminal call run_command(terminalId='[id]', command='[agent command]')
   Use these commands — copy them verbatim (Claude may also choose a model; see below):
     Claude Code → 'claude --dangerously-skip-permissions'
-    Codex       → 'codex -a never -s workspace-write'
+    Codex       → 'codex -a never -s workspace-write -c check_for_update_on_startup=false'
     Gemini CLI  → 'agy --dangerously-skip-permissions'
 ${modelGuidanceBlock}  Then post a status update via swarm_send_message.
 
@@ -150,7 +150,8 @@ IMPORTANT RULES:
 - NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
-- If a message from system says an agent is blocked (usage limit reached, or waiting on a menu), close its terminal with close_terminal, then give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
+- If a message from system says an agent is blocked by a usage limit, close its terminal with close_terminal, then give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
+- If it says an agent is waiting on a menu, answer the menu as STEP 6 says (the message names the option and its keys), then send its task again with submit=true if it never got it. Give the task to another installed agent only if the menu stays.
 - If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`
