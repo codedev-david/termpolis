@@ -11,7 +11,7 @@
  *             System32 wasn't on the inherited PATH (cmd.exe unresolvable)
  *   v1.11.5 — pure PowerShell one-liner (current). Runs inline in the already-
  *             running pwsh/PS 5.1 conductor terminal. Zero PATH dependencies.
- *   v1.54.0 — the prompt goes on stdin, not argv (GitHub #36). PS 5.1 ended the
+ *   v1.53.1 — the prompt goes on stdin, not argv (GitHub #36). PS 5.1 ended the
  *             argument at every `"` in it, the rest arrived as options, and
  *             claude exited before it did anything.
  *
@@ -246,7 +246,7 @@ test.describe.serial('Swarm launch command shape', () => {
 
   test('8. The conductor got the task on stdin, byte for byte, and only flags on its command line', async () => {
     // The mock conductor records what it was handed (MOCK_CLAUDE_RECORD) as soon as it has read
-    // its stdin. Before v1.54.0 a Windows run handed it the prompt in pieces, and it exited.
+    // its stdin. Before v1.53.1 a Windows run handed it the prompt in pieces, and it exited.
     let received: { argv: string[]; prompt: string } | null = null
     for (let i = 0; i < 80 && !received; i++) {
       try { received = JSON.parse(fs.readFileSync(RECEIVED, 'utf-8')) } catch { await page.waitForTimeout(250) }

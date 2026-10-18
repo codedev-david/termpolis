@@ -94,8 +94,9 @@ STEP 5 — Send task prompts:
   This types the prompt into the agent's interactive session — the ONLY supported method.
   submit=true waits until the agent is ready for input (Codex can take minutes to load its MCP servers),
   then types the prompt and presses Enter. It returns submitted=true once the agent has taken the prompt.
-  If it returns submitted=false, read the error and read_output(terminalId='[id]'), then call it again
-  with the same text: it types nothing that is already in the agent's input, and presses Enter again.
+  If it returns submitted=false, read the error and the screen it returns, or read_output(terminalId='[id]').
+  If the agent has not taken the prompt, call it again with the same text:
+  it types nothing that is already in the agent's input, and presses Enter again.
   Include the taskId in the prompt so the agent knows which task to update when done.
   The prompt should instruct the agent to actually write/modify files, not just print output.
 
@@ -150,8 +151,8 @@ IMPORTANT RULES:
 - NEVER pass prompts as command-line arguments to ANY agent (not Claude, not Gemini, not Codex).
 - ALL task prompts go through write_to_terminal — this is the ONLY way to send prompts to agents.
 - The run_command tool is ONLY for starting an agent binary. The ONLY valid commands are listed in STEP 4.
-- If a message from system says an agent is blocked by a usage limit, close its terminal with close_terminal, then give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
-- If it says an agent is waiting on a menu, answer the menu as STEP 6 says (the message names the option and its keys), then send its task again with submit=true if it never got it. Give the task to another installed agent only if the menu stays.
+- If a message from system says an agent is blocked by a usage limit, first look at its screen with read_output: only if the limit is there, close its terminal with close_terminal, then give its task to another installed agent: start one (STEPS 3-4) and send it the same task with the same taskId (STEP 5).
+- If it says an agent is waiting on a menu, first look at its screen with read_output: only if the menu is there, answer the menu as STEP 6 says (the message names the option and its keys), then send its task again with submit=true if it never got it. Give the task to another installed agent only if the menu stays.
 - If you are tempted to add -p, --sandbox, pipe input, or construct a clever one-liner — STOP. Use write_to_terminal instead. Agents MUST run interactively to have full tool access.
 
 Begin now.`

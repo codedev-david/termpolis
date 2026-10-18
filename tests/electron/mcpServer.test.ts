@@ -828,6 +828,19 @@ describe('MCP HTTP server', () => {
     ['', 'mcp-client'],
     [42, 'mcp-client'],
     ['x'.repeat(100), 'x'.repeat(64)],
+    // R2-5: an invisible character, or a fullwidth or ligatured letter, made a name that the
+    // Messages tab shows as "system" and passed as another.
+    ['system​', 'mcp-client'],
+    ['​system', 'mcp-client'],
+    ['sys­tem', 'mcp-client'],
+    ['system⁠', 'mcp-client'],
+    ['ｓｙｓｔｅｍ', 'mcp-client'],
+    ['\u0000system\u001f', 'mcp-client'],
+    // The conductor, however it writes its own name: its plan and its STEP 8 are told by it.
+    ['Conductor', 'conductor'],
+    [' CONDUCTOR ', 'conductor'],
+    ['conductor​', 'conductor'],
+    ['Claude​ (Docs)', 'Claude (Docs)'],
   ])('tools/call swarm_send_message files a message from %j under %j', async (from, sender) => {
     const res = await jsonRpcRequest(port, token, {
       jsonrpc: '2.0',

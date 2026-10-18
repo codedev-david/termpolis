@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { detectAgentStatus, inputBoxRow, type AgentStatus } from '../../src/shared/agentStatusDetector'
+import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatus } from '../../src/shared/agentStatusDetector'
 import { screenOf } from '../../src/shared/terminalScreen'
 import fixtures from '../fixtures/agentScreens.json'
 import long from '../fixtures/longPromptScreens.json'
+import input from '../fixtures/agentScreensInput.json'
 
 // The status detector on a rendered screen (GitHub #36 item 4): what write_to_terminal's `submit`
 // waits on, and the swarm bridge reads. The fixtures are real ConPTY output of Claude Code 2.1.302,
@@ -76,6 +77,50 @@ describe('detectAgentStatus with a long prompt in the box', () => {
   })
 })
 
+// A task whose first line is "1. ..." read as a menu's cursor on all three agents, and a task taller
+// than the box read as no box at all: an idle worker with its task in its input read as thinking,
+// so a second submit waited 3 minutes for nothing (GitHub #36, R2-1 and R2-2). The real screens of
+// tests/fixtures/agentScreensInput.json, read at the PTY's size.
+describe('detectAgentStatus with a task in the box that starts "1. ", or is taller than the box', () => {
+  const rows = (s: { raw: string; cols: number; rows: number }): string[] => {
+    const lines = screenOf(s.raw, { cols: s.cols, rows: s.rows }).lines()
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+    return lines
+  }
+
+  it.each(Object.entries(input.screens))('%s: at its prompt, idle, its input not empty', (_name, s) => {
+    const screen = screenOf(s.raw, { cols: s.cols, rows: s.rows })
+    expect(detectAgentStatus(screen.lines().join('\n'), '', 'working', { screen: true, title: screen.title }))
+      .toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+    expect(inputBoxRow(rows(s))).toBeGreaterThanOrEqual(0)
+    expect(emptyInputBox(rows(s))).toBe(false)
+  })
+
+  it('reads the numbered rows as the box: the first of them is where it starts', () => {
+    for (const name of ['claude-80x24-numbered', 'agy-80x24-numbered', 'codex-80x24-numbered'] as const) {
+      const box = inputBoxRows(rows(input.screens[name]))
+      expect(box?.[0]).toMatch(/^[>›]\s1\. Reply with the single word ONE\.$/)
+      expect(box?.join('\n')).toContain('2. Run no tools.')
+    }
+  })
+
+  it("reads Codex's composer without its footer, which it draws under a blank row, and a row right under the text as the text", () => {
+    expect(inputBoxRows(['› Write the docs', '', '  gpt-5.6-sol medium · ~'])).toEqual(['› Write the docs', ''])
+    expect(inputBoxRows(['› Write the docs', '  and the tests', '', '  gpt-5.6-sol medium · ~'])).toEqual(['› Write the docs', '  and the tests', ''])
+    expect(inputBoxRows(['─'.repeat(60), '❯ You are in D:\\a\\project. Implement the', 'feature. Task ID: t-1'])).toEqual(['❯ You are in D:\\a\\project. Implement the', 'feature. Task ID: t-1'])
+    expect(inputBoxRows(['› Write the docs'])).toEqual(['› Write the docs'])
+    expect(inputBoxRows(['no box'])).toBeNull()
+  })
+
+  it("reads Claude Code's box taller than the screen from the screen's top down to its closing rule", () => {
+    const lines = rows(input.screens['claude-80x17-tall'])
+    expect(inputBoxRow(lines)).toBe(0)
+    const box = inputBoxRows(lines)!
+    expect(box[box.length - 1].trim()).toBe('16. no tools')
+    expect(box).not.toContain(expect.stringMatching(/bypass permissions/))
+  })
+})
+
 describe('detectAgentStatus on a screen: the rules', () => {
   const rule = '─'.repeat(80)
   const detect = (rows: string[], title = '', previous: AgentStatus = 'working') =>
@@ -124,10 +169,58 @@ describe('detectAgentStatus on a screen: the rules', () => {
     expect(detect(rows).status).toBe('idle')
   })
 
-  it('is no input box when the cursor sits on a numbered menu option', () => {
-    expect(inputBoxRow([rule, '❯ 1. Yes, I trust this folder', '  2. No, exit'])).toBe(-1)
-    expect(inputBoxRow(['  Update available!', '› 1. Update now', '  2. Skip'])).toBe(-1)
-    expect(detect(['Pick one', '› 1. Update now', '  2. Skip']).status).not.toBe('idle')
+  it("is no input box when the cursor sits on a numbered menu option, the menu's keys under it", () => {
+    expect(inputBoxRow([rule, '❯ 1. Yes, I trust this folder', '  2. No, exit', '', '  Enter to confirm · Esc to cancel'])).toBe(-1)
+    expect(inputBoxRow(['  Update available!', '› 1. Update now', '  2. Skip', '', '  Press enter to continue'])).toBe(-1)
+    expect(inputBoxRow(['  Approaching rate limits', '› 1. Switch to gpt-5.6-luna', '  2. Keep current model', '', '  Press enter to confirm or esc to go back'])).toBe(-1)
+    expect(detect(['Pick one', '› 1. Update now', '  2. Skip', '  Press enter to continue']).status).not.toBe('idle')
+  })
+
+  it('reads a numbered row with no menu keys under it as the box: a task typed into it', () => {
+    expect(inputBoxRow([rule, '❯ 1. Write the docs.', '  2. Run the tests.', rule])).toBe(1)
+    expect(inputBoxRow(['• Done.', '', '› 1. Write the docs.', '  2. Run the tests.', '', '  gpt-5.6-sol medium · ~'])).toBe(2)
+    // The keys must start a row: a task that mentions them is still a task.
+    expect(inputBoxRow(['› 1. Run the installer. It says Press enter to continue.', '', '  gpt-5.6-sol medium · ~'])).toBe(0)
+  })
+
+  it("is no tall box for a dialog under a rule, or a transcript's rows above one", () => {
+    // Claude Code's own dialogs draw a rule over their options and keys.
+    expect(inputBoxRow(['  ⎿  long tool output', '     more of it', rule, '  Do you want to proceed?', '  ❯ 1. Yes', '  Esc to cancel'])).toBe(-1)
+    expect(inputBoxRow(['  indented', rule, '  ❯ 1. Yes', '  Enter to confirm · Esc to cancel'])).toBe(-1)
+    // An answer at the start of a row is the transcript, and a rule with nothing above it no box.
+    expect(inputBoxRow(['● The answer', '  goes on here', rule, '  ⏵⏵ bypass permissions on'])).toBe(-1)
+    expect(inputBoxRow([rule, '  ⏵⏵ bypass permissions on'])).toBe(-1)
+    expect(inputBoxRow(['  a', '  b', rule, '  1', '  2', '  3', '  4', '  5'])).toBe(-1)
+  })
+
+  it('reads an empty box by its glyph and the placeholder each CLI shows in it', () => {
+    const empty = (rows: string[]) => emptyInputBox(rows)
+    expect(empty([rule, '❯ ', rule])).toBe(true)
+    expect(empty([rule, '❯ Try "how does src/main/index.ts work?"', rule, '  ⏵⏵ bypass permissions on'])).toBe(true)
+    expect(empty(['› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~'])).toBe(true)
+    expect(empty(['› Ask a follow-up question', '', '  gpt-5.6-sol medium · ~'])).toBe(true)
+    expect(empty([rule, '>', rule, '? for shortcuts'])).toBe(true)
+    expect(empty([rule, '❯ Try harder', rule])).toBe(false)
+    expect(empty([rule, '❯ Write the docs', rule])).toBe(false)
+    expect(empty([rule, '❯ Write the docs', '  and the tests', rule])).toBe(false)
+    expect(empty(['no box here'])).toBe(false)
+  })
+
+  it('reads the empty boxes of the real sessions as empty, and one with a prompt typed as not', () => {
+    const lines = (raw: string) => screenOf(raw).lines().filter((_r, i, all) => all.slice(i).some((x) => x.trim() !== ''))
+    for (const raw of [fixtures.claude.startupIdle, fixtures.claude.doneIdle, fixtures.codex.ready, fixtures.agy.idle, fixtures.agy.doneIdle]) {
+      expect(emptyInputBox(lines(raw))).toBe(true)
+    }
+    expect(emptyInputBox(lines(fixtures.agy.typed))).toBe(false)
+  })
+
+  it('reads an agent at work by its busy line or the spinner in its title, and one at its prompt as not', () => {
+    const lines = (raw: string) => screenOf(raw).lines()
+    expect(isBusyOnScreen(lines(fixtures.claude.busy), '')).toBe(true)
+    expect(isBusyOnScreen(lines(fixtures.agy.busy), '')).toBe(true)
+    expect(isBusyOnScreen(lines(fixtures.codex.queued), '')).toBe(true)
+    expect(isBusyOnScreen(lines(fixtures.claude.doneIdle), '✳ Claude Code')).toBe(false)
+    expect(isBusyOnScreen(lines(fixtures.claude.doneIdle), '◐ Claude Code')).toBe(true)
   })
 
   it('reads a screen with no agent on it as text: a shell prompt is idle', () => {

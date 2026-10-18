@@ -340,6 +340,16 @@ describe('conductorManager', () => {
       expect(getConductorState().status).toBe('done')
     })
 
+    // R2-5: a conductor that wrote its own name another way was taken for a worker, and a run
+    // that finished cleanly with no task ended as an error.
+    it.each([['Conductor'], [' CONDUCTOR ']])("ends on STEP 8's message from %j: the conductor's name, however it is written", async (from) => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post(from, 'SWARM COMPLETE: built the page directly.', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+    })
+
     it.each([
       ['a message that only says the work is complete', 'mcp-client', 'info', 'All tasks are completed — swarm finished'],
       ['a Claude worker reporting its own task done', 'mcp-client', 'result', 'Implemented the login page; tests pass'],
@@ -423,10 +433,10 @@ describe('conductorManager', () => {
       expect(getConductorState().status).toBe('running')
     })
 
-    it('stays quiet once the conductor has said something', async () => {
+    it.each([['conductor'], ['Conductor'], [' conductor ']])('stays quiet once the conductor has said something, as %j', async (from) => {
       const bus = fakeBus()
       await launchConductor('Build an app')
-      bus.post('conductor', 'Plan: two tasks')
+      bus.post(from, 'Plan: two tasks')
       const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
 
       await vi.advanceTimersByTimeAsync(90000)

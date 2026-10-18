@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { WorkerFeed, readWorkerScreen, statusText, formatIncomingMessage, DONE_HINT } from '../../src/renderer/src/lib/swarmBridge'
 import { screenOf } from '../../src/shared/terminalScreen'
 import fixtures from '../fixtures/agentScreens.json'
+import input from '../fixtures/agentScreensInput.json'
 
 // GitHub #36 item 7: "Dashboard messages are raw screen snapshots, full of spinner frames"
 // ("⣽ Reading fil⣾ Reading file..."), labelled by keyword guessing. The feed posts what a worker's
@@ -22,6 +23,18 @@ function replay(agentName: string, moments: string[]): Array<string | null> {
     return out
   })
 }
+
+/** Codex 0.153.4's offer of a cheaper model near a limit, its strings from codex.exe. */
+const SWITCH_POPUP = [
+  '  Approaching rate limits',
+  '  Switch to gpt-5.6-luna for lower credit usage?',
+  '',
+  '› 1. Switch to gpt-5.6-luna   Uses fewer credits for upcoming turns.',
+  '  2. Keep current model',
+  '  3. Keep current model (never show again)',
+  '',
+  '  Press enter to confirm or esc to go back',
+]
 
 /** An agent screen drawn at fixed rows, as ConPTY sends a repaint: its transcript, then its box. */
 function screen(transcript: string[], opts: { status?: string; title?: string; footer?: string } = {}): string {
@@ -382,6 +395,66 @@ describe('readWorkerScreen', () => {
     expect(view.prompts).toEqual(['> Explain the update offer'])
     expect(view.transcript).toEqual(['  Codex says: Press enter to continue'])
   })
+
+  // A prompt that starts "1. " was read as a menu's cursor: the conductor's own task came back to it
+  // as if the worker had printed it (GitHub #36, R2-1). A menu has its keys under its options.
+  it("reads a numbered prompt it was sent as a prompt: no menu's keys are under it", () => {
+    const rows = ['› 1. Reply with the single word ONE.', '  2. Run no tools.', '', '• ONE', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~']
+    const view = readWorkerScreen(screenOf(rows.join('\r\n') + '\r\n'), 'Codex', 'idle')
+    expect(view.prompts).toEqual(['› 1. Reply with the single word ONE.', '  2. Run no tools.'])
+    expect(view.transcript).toEqual(['• ONE'])
+  })
+
+  it("reads a numbered prompt with an answer under it as a prompt, though a row further down starts like a menu's keys", () => {
+    // A menu's options run down to its keys, indented: an answer at the start of a row ends it.
+    const rows = ['› 1. Run the installer.', '', '• Ran it. It printed:', '  Press enter to continue', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~']
+    const view = readWorkerScreen(screenOf(rows.join('\r\n') + '\r\n'), 'Codex', 'idle')
+    expect(view.prompts).toEqual(['› 1. Run the installer.'])
+    expect(view.transcript).toEqual(['• Ran it. It printed:', '  Press enter to continue'])
+  })
+
+  it("leaves a numbered task still in Codex's composer out: the worker was never sent it", () => {
+    const s = input.screens['codex-80x24-numbered']
+    const view = readWorkerScreen(screenOf(s.raw, s), 'Codex', 'idle')
+    const all = [...view.transcript, ...view.prompts].join('\n')
+    expect(all).not.toContain('Reply with the single word ONE')
+    expect(all).not.toContain('gpt-5.6-sol medium')
+  })
+
+  // R2-4: Codex's popups end in "Press enter to confirm or esc to go back", which the row the menu
+  // was found by missed: its options were filed as a prompt's rows and left out of the message.
+  it("reads Codex's offer of a cheaper model as a menu: its options are transcript, for the conductor to answer", () => {
+    const view = readWorkerScreen(screenOf(SWITCH_POPUP.join('\r\n') + '\r\n'), 'Codex', 'idle')
+    expect(view.prompts).toEqual([])
+    expect(view.transcript).toEqual(expect.arrayContaining([
+      '› 1. Switch to gpt-5.6-luna   Uses fewer credits for upcoming turns.',
+      '  2. Keep current model',
+      '  Press enter to confirm or esc to go back',
+    ]))
+  })
+})
+
+describe("WorkerFeed and an agent's banner", () => {
+  // R2-4: at 60 columns agy draws its banner again under its logo after its first answer, on rows
+  // of their own with no logo on them, and they were posted to the swarm, the account's email too.
+  it("leaves out agy's banner when it draws it again under its logo, account and all", () => {
+    const { cols, rows, moments } = input.agyBanner
+    const feed = new WorkerFeed('Gemini')
+    expect(feed.update({ output: moments[0], cols, rows })).toBeNull()
+    expect(feed.update({ output: moments[1] })).toBe('[Gemini]   OK')
+  })
+
+  it("leaves out a banner's rows down to the blank row under it, and posts what follows", () => {
+    const view = readWorkerScreen(screenOf(['  Antigravity CLI 1.4.2', '  someone@example.com (Google AI Pro)', '  Gemini 4 Argon (Medium)', '', '  The tests pass.'].join('\r\n') + '\r\n'), 'Gemini', 'idle')
+    expect(view.transcript).toEqual(['  The tests pass.'])
+    const claude = readWorkerScreen(screenOf(['Claude Code v2.1.302', 'Opus 5.5 · Claude Max', '~\\repos\\app', '', '● Done.'].join('\r\n') + '\r\n'), 'Claude', 'idle')
+    expect(claude.transcript).toEqual(['● Done.'])
+  })
+
+  it('posts an answer that starts with a version: a banner has its version alone on its row', () => {
+    const view = readWorkerScreen(screenOf(['  Claude Code v2.1.302 is installed, and', '  Antigravity CLI 1.4.2 too.', '', '  Done.'].join('\r\n') + '\r\n'), 'Gemini', 'idle')
+    expect(view.transcript).toEqual(['  Claude Code v2.1.302 is installed, and', '  Antigravity CLI 1.4.2 too.', '  Done.'])
+  })
 })
 
 describe('WorkerFeed and a menu', () => {
@@ -395,6 +468,15 @@ describe('WorkerFeed and a menu', () => {
     expect(message).toContain('  2. Skip')
     expect(message).toContain('  3. Skip until next version')
     expect(message).toContain('  Press enter to continue')
+  })
+
+  it("posts Codex's offer of a cheaper model whole, its options and its keys", () => {
+    const feed = new WorkerFeed('Codex')
+    expect(feed.update({ output: '• Edited src/app.ts (+4 -1)\r\n', cols: 80, rows: 24 })).toBeNull()
+    const message = feed.update({ output: '\r\n' + SWITCH_POPUP.join('\r\n') + '\r\n' })
+    expect(message).toContain('› 1. Switch to gpt-5.6-luna')
+    expect(message).toContain('  2. Keep current model')
+    expect(message).toContain('  Press enter to confirm or esc to go back')
   })
 })
 

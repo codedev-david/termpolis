@@ -471,7 +471,7 @@ function startMonitoring(): void {
       // only the conductor's own messages.
       if (!stallWarned) {
         const elapsed = Date.now() - monitoringStartTime
-        const heard = posted.some((m) => m.from === 'conductor')
+        const heard = posted.some((m) => fromConductor(m.from))
         if (elapsed > 60000 && tasks.length === 0 && !heard) {
           stallWarned = true
           store.setSwarmNotification({
@@ -495,7 +495,14 @@ function startMonitoring(): void {
 /** STEP 8's message: swarm_send_message(from='conductor', type='result', content='SWARM COMPLETE:
  *  ...'). Not a worker's own result in those words, which ended the swarm with a task still open. */
 function isSwarmComplete(m: { from: string; type: string; content: string }): boolean {
-  return m.type === 'result' && m.from === 'conductor' && /^\s*SWARM COMPLETE\b/i.test(m.content)
+  return m.type === 'result' && fromConductor(m.from) && /^\s*SWARM COMPLETE\b/i.test(m.content)
+}
+
+/** Whether a message is the conductor's, however it wrote its name ("Conductor"): taken for a
+ *  worker's, its plan didn't count against the stall warning, and a run that finished with no task
+ *  ended as an error. */
+function fromConductor(from: string): boolean {
+  return from.trim().toLowerCase() === 'conductor'
 }
 
 function markSwarmDone(

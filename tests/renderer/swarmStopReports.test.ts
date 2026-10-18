@@ -32,7 +32,7 @@ describe('noteWorkerStatus', () => {
       'conductor',
       'info',
       `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). ` +
-        'Close its terminal, then give its task to another installed agent.',
+        'Check its screen with read_output first: if the limit is there, close its terminal, then give its task to another installed agent.',
     )
   })
 
@@ -68,9 +68,23 @@ describe('noteWorkerStatus', () => {
     await noteWorkerStatus(w, MENU)
     expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBe(
       `Codex (Tests, terminal ${w.terminalId}) is blocked: waiting on a menu: Codex asks whether to switch to a model that uses fewer credits. ` +
-        'Answer it as STEP 6 says, without submit: "Keep current model" is the second option (Down, then Enter: \\u001b[B\\r). ' +
+        'Check its screen with read_output first: if the menu is there, answer it as STEP 6 says, without submit: "Keep current model" is the second option (Down, then Enter: \\u001b[B\\r). ' +
         'Then send its task again with submit=true if it never got it. Give its task to another installed agent only if the menu stays.',
     )
+  })
+
+  // A false report is worse than a missed one: told to act on a stop alone, the conductor closed a
+  // healthy worker (GitHub #36). Both reports have it look first.
+  it('tells the conductor to confirm the stop with read_output before it closes, answers or reassigns anything', async () => {
+    const w1 = worker()
+    const w2 = worker()
+    await noteWorkerStatus(w1, LIMIT)
+    await noteWorkerStatus(w2, MENU)
+    for (const [, , , content] of (window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls as string[][]) {
+      const look = content.indexOf('Check its screen with read_output first')
+      expect(look).toBeGreaterThan(0)
+      expect(content.search(/close its terminal|answer it as STEP 6|another installed agent/i)).toBeGreaterThan(look)
+    }
   })
 
   it("names the answer to Codex's update offer: skip it until the next version", async () => {
@@ -85,7 +99,7 @@ describe('noteWorkerStatus', () => {
     const w = worker()
     await noteWorkerStatus(w, { status: 'blocked', summary: 'waiting on a menu: something new' })
     expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3]).toContain(
-      'is blocked: waiting on a menu: something new. Answer it as STEP 6 says, without submit: read it with read_output first.',
+      'is blocked: waiting on a menu: something new. Check its screen with read_output first: if the menu is there, answer it as STEP 6 says, without submit, with the keys its screen shows for the option to pick.',
     )
   })
 
@@ -102,7 +116,7 @@ describe('noteWorkerStatus', () => {
     await noteWorkerStatus(w, LIMIT)
     expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][3]).toBe(
       `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). Its task is "Write the tests" (taskId t7). ` +
-        'Close its terminal, then give its task to another installed agent.',
+        'Check its screen with read_output first: if the limit is there, close its terminal, then give its task to another installed agent.',
     )
   })
 

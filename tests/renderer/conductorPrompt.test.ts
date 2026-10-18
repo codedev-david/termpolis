@@ -199,15 +199,27 @@ describe('buildConductorPrompt', () => {
   })
 
   it('closes a worker a usage limit stopped before its task goes to another agent: a limit can lift by itself', () => {
-    expect(buildDefault()).toContain('says an agent is blocked by a usage limit, close its terminal with close_terminal, then give its task to another installed agent')
+    expect(buildDefault()).toContain('close its terminal with close_terminal, then give its task to another installed agent')
     expect(buildDefault()).toContain('- close_terminal: close a terminal (terminalId)')
   })
 
-  it('answers a menu instead: one key press clears it, and the worker keeps what it did', () => {
+  it('answers a menu instead: a key press or two clear it, and the worker keeps what it did', () => {
     const rule = buildDefault().split('\n').find((l) => l.includes('waiting on a menu'))!
     expect(rule).toMatch(/answer the menu as STEP 6 says/)
     expect(rule).toMatch(/another installed agent only if the menu stays/)
     expect(rule).not.toMatch(/close_terminal/)
+  })
+
+  // A report can be wrong, and closing or reassigning on one alone ended a healthy worker's task
+  // (GitHub #36): the conductor looks at the worker's screen first, for a limit and for a menu.
+  it("has the conductor confirm a blocked worker with read_output before it closes, answers or reassigns it", () => {
+    const rules = buildDefault().split('\n').filter((l) => l.includes('blocked by a usage limit') || l.includes('waiting on a menu'))
+    expect(rules).toHaveLength(2)
+    for (const rule of rules) {
+      const look = rule.indexOf('read_output')
+      expect(look).toBeGreaterThan(0)
+      expect(rule.search(/close_terminal|answer the menu/)).toBeGreaterThan(look)
+    }
   })
 
   // Both examples send a task the way STEP 5 says; with "\r" at the end, an example that drifted

@@ -7,7 +7,9 @@
  * status here; the first time a worker is stopped, and again only after it got going and stopped
  * again, the conductor is told on the swarm bus, which the dashboard's Messages tab shows too. For a
  * limit, it is told to close the worker and give its task to another installed agent; for a menu, to
- * answer it, which one key press does, and the worker keeps what it did so far.
+ * answer it, which a key press or two does, and the worker keeps what it did so far. Either way it
+ * is told to look at the worker's screen with read_output first: a report read off a screen can be
+ * wrong, and closing a worker on a wrong one ends its task halfway.
  *
  * The report is addressed to the conductor. swarm_read_messages marks a broadcast read for every
  * reader at once, so a Claude worker that read the bus first would have taken it.
@@ -51,9 +53,10 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
   // A limit: closed first, since a Claude Code waiting out its limit carries on by itself once it
   // lifts, on a task that is someone else's by then. A menu: answered. Closed, the worker lost what
   // it had done, and a Codex started in its place opened on the same update offer.
+  const answer = menuAnswer(result.summary)
   const todo = kind === 'limit'
-    ? 'Close its terminal, then give its task to another installed agent.'
-    : `Answer it as STEP 6 says, without submit: ${menuAnswer(result.summary) ?? 'read it with read_output first'}. ` +
+    ? 'Check its screen with read_output first: if the limit is there, close its terminal, then give its task to another installed agent.'
+    : `Check its screen with read_output first: if the menu is there, answer it as STEP 6 says, without submit${answer ? `: ${answer}` : ', with the keys its screen shows for the option to pick'}. ` +
       'Then send its task again with submit=true if it never got it. Give its task to another installed agent only if the menu stays.'
   try {
     await window.swarmAPI.sendMessage(

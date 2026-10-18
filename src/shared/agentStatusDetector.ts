@@ -58,14 +58,17 @@ export function detectAgentStatus(
   return detectInText(clean.slice(-1500), agentName, previousStatus)
 }
 
-/** `stops`: false when a screen was read for what holds the agent already (detectOnScreen). */
+/** `stops`: false when a screen was read for what holds the agent already (detectOnScreen). A raw
+ *  tail is read for a CLI that exited or needs relaunching only, never for a usage limit or a menu:
+ *  its rows can't be told apart, and a worker's answers and the files it shows hold the same words
+ *  as a CLI's own message (GitHub #36). */
 function detectInText(tail: string, agentName: string, previousStatus: AgentStatus, stops = true): AgentStatusResult {
   // --- Priority 1: Blocked — agent is dead/stalled, needs restart ---
   // Must outrank waiting_for_input: a "please re-authenticate" or
   // "gemini auth"-hint message contains auth keywords but the agent
   // process isn't actually alive to receive terminal input — the user
   // has to relaunch the CLI. Also precedes isIdle for the same reason.
-  const stopped = stops ? stopSummary(tail, agentName) : null
+  const stopped = stops ? restartSummary(tail, agentName) : null
   if (stopped !== null) return { status: 'blocked', summary: stopped }
 
   // --- Priority 2: Waiting for user input (needs attention) ---
@@ -130,19 +133,33 @@ const BUSY_ON_SCREEN: readonly RegExp[] = [
 ]
 /** A window title led by a spinner: Claude Code's ◐◓◑◒ and Codex's braille frames, redrawn while
  *  they work, so the title is current even after their footer has left the buffer. */
-const BUSY_TITLE = /^[\u2800-\u28ff\u25d0-\u25d3]/
+const BUSY_TITLE = /^[⠀-⣿◐-◓]/
 const RULE = /^[─━]{20,}$/
-/** A menu's cursor on a numbered option ("› 1. Update now", "❯ 1. Yes"): no input box. */
-export const OPTION_ROW = /^(?:│\s)?[❯>›]\s?\d+\.\s/
+/** A cursor on a numbered option ("❯ 1. Yes"): under a rule near the bottom, a dialog's, so no box
+ *  taller than the screen (tallBoxRow). A row like it can be a task typed into a box, starting
+ *  "1. ": a menu is told by its keys (isMenuCursor). */
+const OPTION_ROW = /^(?:│\s)?[❯>›]\s?\d+\.\s/
+/** The row under a menu that says how to answer it, as each CLI draws it: Codex 0.153.4's "Press
+ *  enter to continue" and "Press enter to confirm or esc to go back", agy's "↑/↓ Navigate · enter
+ *  Confirm", Claude Code 2.1.302's "Enter to confirm · Esc to cancel" (all from their binaries). At
+ *  the start of a row, and in their case: agy's busy footer says "esc to cancel". */
+const MENU_KEYS = /^\s*(?:Press enter to (?:continue|confirm)\b|Enter to confirm\b|↑\/↓ Navigate\b)/
 /** A status line led by a spinner frame or a bullet: Claude Code's "✢ Doing…", agy's "⡿ Generating...",
  *  Codex's "• Working (31s • esc to interrupt)". */
-const STATUS_ROW = /^\s*(?:[\u2800-\u28ff]|[✢✳✶✻✽*·•◦])\s+(\S.*)$/
+const STATUS_ROW = /^\s*(?:[⠀-⣿]|[✢✳✶✻✽*·•◦])\s+(\S.*)$/
 /** A box's corners, as Gemini CLI's dialogs and Codex's header draw them. */
 const BOX_TOP = /^\s*╭/
 const BOX_BOTTOM = /^\s*╰/
-/** A row that starts something new in an agent's transcript: an answer or a tool call (Claude Code's
- *  ●, Codex's •, Gemini CLI's ✦), or a prompt it was sent. */
-const ITEM_ROW = /^(?:[●⏺•✦]|[❯›>](?:\s|$))/
+/** The glyph an input box's first row starts with: Claude Code's ❯ (an older one's │ >), agy's >,
+ *  Codex's ›. */
+const INPUT_GLYPH = /^(?:│\s)?[❯>›]/
+/** What an empty input box shows until something is typed: Claude Code 2.1.302's 'Try "…"' (one of
+ *  a few examples, some naming a file of the project), Codex 0.153.4's "Ask Codex to do anything"
+ *  and "Ask a follow-up question" (from their binaries). agy shows its > alone. */
+const PLACEHOLDER = /^(?:Try "[^"]*"|Ask Codex to do anything|Ask a follow-up question)$/
+/** How many rows Claude Code's footer takes under its box, at most: what tallBoxRow allows under
+ *  the closing rule. Its own three rows, and one to spare. */
+const FOOTER_ROWS = 4
 
 function detectOnScreen(screen: string, agentName: string, previousStatus: AgentStatus, title: string): AgentStatusResult {
   const rows = screen.split('\n')
@@ -152,17 +169,28 @@ function detectOnScreen(screen: string, agentName: string, previousStatus: Agent
   const from = bottomStart(rows)
   const bottom = rows.slice(from)
   const text = bottom.join('\n')
-  const busy = BUSY_TITLE.test(title) || BUSY_ON_SCREEN.some((p) => p.test(text))
-  const stopped = stopOnScreen(rows, from, box, busy, text)
+  const stopped = box >= 0 ? stopAroundBox(rows, box) : stopInPlaceOfBox(rows)
   if (stopped !== null) return { status: 'blocked', summary: stopped }
   // An input box says the CLI is up and taking input, whatever its history above says about an
   // expired session or a restart: those words are a worker's answer or a file it showed.
   const restart = box < 0 ? restartSummary(text, agentName) : null
   if (restart !== null) return { status: 'blocked', summary: restart }
-  if (busy) return { status: 'working', summary: busySummary(bottom) }
+  if (isBusy(text, title)) return { status: 'working', summary: busySummary(bottom) }
   if (box >= 0) return { status: 'idle', summary: 'Waiting at prompt' }
   // Not one of the three agents' screens (a shell, a dialog): read it as text.
   return detectInText(text, agentName, previousStatus, false)
+}
+
+/** Whether a screen shows its agent at work: a spinner in its window title, or a busy line in its
+ *  bottom rows. write_to_terminal's submit counts that as its prompt taken. */
+export function isBusyOnScreen(lines: readonly string[], title: string): boolean {
+  const rows = lines.slice()
+  while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
+  return isBusy(rows.slice(bottomStart(rows)).join('\n'), title)
+}
+
+function isBusy(bottom: string, title: string): boolean {
+  return BUSY_TITLE.test(title) || BUSY_ON_SCREEN.some((p) => p.test(bottom))
 }
 
 /** Where the bottom rows start: SCREEN_BOTTOM_ROWS up, or higher, at the top of a box that ends in
@@ -177,45 +205,75 @@ function bottomStart(rows: readonly string[]): number {
   return start
 }
 
-/** What holds the agent, read off its screen: a usage limit or a menu, or null. In its transcript,
- *  the rows down to its input box, a limit is the agent's only as what it shows last (shownLast), and
- *  while it works only its status line says it waits on one; under the box's closing rule every row
- *  is the CLI's own. `text` is the bottom rows, from `from` on. */
-function stopOnScreen(rows: readonly string[], from: number, box: number, busy: boolean, text: string): string | null {
-  const transcript = rows.slice(from, box < 0 ? rows.length : Math.max(box, from))
-  const closing = box < 0 ? -1 : rows.findIndex((row, i) => i > box && (RULE.test(row) || BOX_BOTTOM.test(row)))
-  const footer = closing < 0 ? [] : rows.slice(Math.max(closing + 1, from))
-  return limitSummary(footer.join('\n'), ANY_ROW_LIMITS)
-    ?? limitSummary(transcript.join('\n'), busy ? TRANSCRIPT_WAITS : TRANSCRIPT_LIMITS, (row) => shownLast(transcript, row))
-    ?? menuSummary(text)
-}
-
-/** Whether nothing new starts in the transcript after its row `row`: a CLI's limit message ends its
- *  turn. One with an answer, a tool call or a prompt after it is history (the agent went on), or is
- *  in a file or a log the agent showed. */
-function shownLast(transcript: readonly string[], row: number): boolean {
-  return !transcript.slice(row + 1).some((r) => ITEM_ROW.test(r))
-}
-
 /** The row of an agent's input box, or -1. Claude Code's ❯ and agy's > sit right under the box's
  *  top rule (an older Claude Code drew a ╭ box with │ > in it); Codex's › is the lowest such row,
  *  with nothing under it but the rows its text wraps onto and its footer. Their history repeats
- *  each prompt the same way, which is why it is the lowest one. */
+ *  each prompt the same way, which is why it is the lowest one. A box taller than the screen starts
+ *  at the screen's top (tallBoxRow). */
 export function inputBoxRow(rows: readonly string[]): number {
   for (let i = rows.length - 1; i > 0; i--) {
     const row = rows[i]
     // Claude Code puts a no-break space after its ❯, so any space will do.
     const boxed = (/^[❯>](?:\s|$)/.test(row) && RULE.test(rows[i - 1])) || (/^│\s[❯>](?:\s|$)/.test(row) && /^╭/.test(rows[i - 1]))
-    if (boxed) return OPTION_ROW.test(row) ? -1 : i
+    if (boxed) return isMenuCursor(rows, i) ? -1 : i
   }
   // Codex's composer: under it only what its text wraps onto, blank rows and its footer, all
   // indented. In its history a prompt has its answer under it, at the start of a row.
   for (let i = rows.length - 1; i >= 0; i--) {
     if (!/^›(?:\s|$)/.test(rows[i])) continue
-    if (OPTION_ROW.test(rows[i])) return -1
+    if (isMenuCursor(rows, i)) return -1
     return rows.slice(i + 1).every((row) => row === '' || /^\s/.test(row)) ? i : -1
   }
-  return -1
+  return tallBoxRow(rows)
+}
+
+/** Whether a row that starts like a prompt (› 1. …, > Yes, I trust this folder) is a menu's cursor:
+ *  its options under it, indented, run down to the menu's keys (MENU_KEYS), which every CLI draws
+ *  under a menu. A task typed into the box can start "1. " too, and was read as a menu: it was never
+ *  sent, and the agent read as thinking (GitHub #36). */
+export function isMenuCursor(rows: readonly string[], i: number): boolean {
+  for (let j = i + 1, blanks = 0; j < rows.length && blanks < 2; j++) {
+    if (MENU_KEYS.test(rows[j])) return true
+    if (rows[j].trim() === '') blanks++
+    else if (!/^\s+[^\s⎿]/.test(rows[j])) return false
+  }
+  return false
+}
+
+/** 0 for Claude Code's box when what is typed into it is taller than the screen, else -1. Its top
+ *  rule and ❯ went off the top, and what is left is the text's rows, indented under the ❯, the
+ *  closing rule, and the footer under that (agy's box stops growing and Codex's composer scrolls,
+ *  so both keep their glyph on screen). Not a dialog: no option and no menu keys under the rule. */
+function tallBoxRow(rows: readonly string[]): number {
+  let rule = rows.length - 1
+  while (rule >= 0 && !RULE.test(rows[rule])) rule--
+  if (rule < 1 || rows.length - 1 - rule > FOOTER_ROWS) return -1
+  const above = rows.slice(0, rule)
+  if (!above.some((row) => row.trim() !== '') || !above.every((row) => row === '' || /^\s/.test(row))) return -1
+  return rows.slice(rule + 1).some((row) => MENU_KEYS.test(row) || OPTION_ROW.test(row.trimStart())) ? -1 : 0
+}
+
+/** The rows an agent's input box takes: from its first row (the screen's top for one taller than
+ *  the screen) to its closing rule (Claude Code, agy) or, for a box with none (Codex's composer), to
+ *  the screen's end, less Codex's footer, which it draws on the last row under a blank one; null
+ *  with no input box. A last row right under the text is the text, wrapped. */
+export function inputBoxRows(rows: readonly string[]): string[] | null {
+  const top = inputBoxRow(rows)
+  if (top < 0) return null
+  const close = rows.findIndex((row, i) => i > top && (RULE.test(row) || BOX_BOTTOM.test(row)))
+  if (close > top) return rows.slice(top, close)
+  const footer = rows.length - 2 > top && rows[rows.length - 2].trim() === ''
+  return rows.slice(top, footer ? rows.length - 1 : rows.length)
+}
+
+/** Whether the agent's input box is empty, ready for a prompt: its glyph alone, or with the
+ *  placeholder the CLI shows until something is typed, on one row at any size. What
+ *  write_to_terminal's submit sees go once the text it typed shows. */
+export function emptyInputBox(rows: readonly string[]): boolean {
+  const box = inputBoxRows(rows)
+  if (box === null || box.slice(1).some((row) => row.trim() !== '')) return false
+  const shown = box[0].replace(INPUT_GLYPH, '').trim()
+  return shown === '' || PLACEHOLDER.test(shown)
 }
 
 function busySummary(rows: readonly string[]): string {
@@ -243,111 +301,58 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
   return false
 }
 
-// A plan's usage limit, in each CLI's own words (GitHub #36 item 5). Full phrases only, copied from
-// the CLI that prints them, each with the words the CLI goes on with: a loose keyword is how "done"
-// on a worker's screen came to end a swarm (item 3). And only where the CLI puts it: at the start of
-// a row, or after the CLI's own mark (Claude Code's ⎿ and its status line's spinner frame, Codex's ■,
-// agy's and Gemini CLI's ✕, the frame of Gemini CLI's dialog). The three agents indent the rows of
-// an answer and of a file or a log they show, and a worker's sentence that starts like a limit goes
-// on with words of its own ("you've hit your rate limit at 5,000 requests"); the phrase quoted in
-// code or prose has other words first, or a list's or a table's mark. Sources:
-//  - Claude Code 2.1.302 (its claude.exe): "You've hit your " + session limit, weekly limit, Opus
-//    limit, Sonnet limit, Fable limit, usage limit, limit, monthly spend limit, team's shared
-//    budget..., then " · resets 3pm (America/New_York)" or nothing, or a sentence of what to do:
-//    ". Switch to another model to continue.", ". Run /usage-credits ...", ". /model to switch
-//    models."; its monthly spend limit alone, with what to do on the row under it; "You've reached
-//    your Fable limit." and "Opus requires usage credits." with those sentences; its status line
-//    "Usage limit reached · continuing automatically..."; "You're out of usage credits" and "You're
-//    out of extra usage", as "You've hit your"; "Your org is out of usage · add funds to continue".
-//    Not "You've hit your fast limit · resets in 4h 59m": fast mode turns itself off, and the
-//    session goes on.
-//  - Codex 0.153.4 (codex.exe): "You've hit your usage limit." then "Upgrade to Plus to continue
-//    using Codex (https://chatgpt.com/explore/plus), or try again at 3:04 PM.", "Upgrade to Pro
-//    ...", "Visit https://chatgpt.com/codex/settings/usage ...", "To get more access now, send a
-//    request to your admin ..." or "Try again at 3:04 PM."; "You've hit your usage limit for
-//    <model>. Switch to another model now, ..."; "You've reached your usage limit. Increase your
-//    limits to continue using codex."; for a workspace "Your workspace is out of credits. Ask your
-//    workspace owner ...", "You hit your spend cap set in your workspace.", "You've reached your
-//    workspace credit limit", "Request a limit increase from your owner to continue using codex."
-//  - Antigravity CLI 1.4.0 (agy.exe): "You have exhausted your quota on this model.", "Your AI
-//    credits balance is too low to continue."
-//  - Gemini CLI 0.59.0 (bundle/interactiveCli-*.js): "Usage limit reached for <model>.", which is
-//    "all Pro models" for any Pro model, then "Access resets at <time>." when it knows, then always
-//    "/stats model for usage details", in its quota dialog and in its history alike.
-/** Where a limit message starts in an agent's transcript: at the start of a row, or after the CLI's
- *  own mark, however far that is indented. An indent alone is an answer, a file or a log. */
-const TRANSCRIPT_ROW = String.raw`^(?:[ \t]*[⎿■✕✗⚠][ \t]+)?`
-/** Under an agent's input box, where every row is the CLI's own, and in a raw tail, whose rows'
- *  starts can't be told apart: after an indent too. */
-const ANY_ROW = String.raw`^[ \t]*(?:[⎿■✕✗⚠][ \t]+)?`
-/** Claude Code's status line: its spinner's frame first, which can be a · or a *. */
-const TRANSCRIPT_STATUS_ROW = String.raw`^(?:[✢✳✶✻✽·*][ \t]+)?`
-const ANY_STATUS_ROW = String.raw`^[ \t]*(?:[✢✳✶✻✽·*][ \t]+)?`
-/** Gemini CLI's quota dialog, inside its frame, or the same lines in its history. */
-const DIALOG_ROW_START = String.raw`^[ \t]*(?:[✕│][ \t]+)?`
-/** What the CLIs go on with after a limit's sentence: Claude Code's and Codex's next sentence. */
-const GOES_ON = String.raw`Switch to another model|Run /usage-credits|/model to switch models|Upgrade to (?:Plus|Pro)\b|Visit https?://|To get more access now|Try again (?:at|later)\b`
+// ---- What holds a worker: its plan's usage limit, or a menu (GitHub #36 item 5) ----
+//
+// Only what a CLI draws in its own rows counts, in each CLI's own layout: in place of its input box
+// (a menu, a limit's prompt, a dialog), under the box (Claude Code's footer), and Claude Code's
+// status line right above it. Never what is in its transcript, however much it looks like the CLI's
+// own message: a worker's answer, and a file, a diff or a log it shows, can hold the same words row
+// for row, and each such reading told the conductor to close a healthy worker. A limit a CLI prints
+// only in its transcript is left for the conductor to find with read_output: Codex 0.153.4's "You've
+// hit your usage limit." (an error in its history), Antigravity's "You have exhausted your quota on
+// this model.", and Claude Code's own message when its rate-limit menu doesn't open under it. Missed,
+// a limit leaves the worker waiting, as before 1.53.1; read wrongly, it closes a worker at work.
 
-/** The messages a CLI stops with, each where it starts a row (`row`). */
-function limitMessages(row: string): RegExp[] {
-  // Claude Code's " · resets ...", the message alone on its row, or a sentence of what to do.
-  const after = String.raw`(?:\s+·\s|[ \t]*$|\.\s+(?:${GOES_ON}))`
-  return [
-    new RegExp(`${row}You['’]ve hit your (?!fast limit)[\\w'’ ]{0,40}?(?:limit|budget)(?: for [\\w.-]+?)?${after}`, 'gm'),
-    new RegExp(`${row}You['’]ve hit your (?:channel['’]s )?monthly spend limit\\.[ \\t]*$`, 'gm'),
-    new RegExp(`${row}You['’]ve reached your (?!workspace)[\\w ]{1,20}? limit\\.\\s+(?:${GOES_ON}|Increase your limits)`, 'gm'),
-    new RegExp(`${row}(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\\n]{1,40}?)? requires usage credits\\.\\s+(?:${GOES_ON})`, 'gm'),
-    new RegExp(`${row}You['’]re out of (?:usage credits|extra usage)${after}`, 'gm'),
-    new RegExp(`${row}Your org is out of usage\\s+·\\s`, 'gm'),
-    new RegExp(`${row}Your workspace is out of credits\\.\\s+(?:Ask your workspace owner|Add credits)`, 'gm'),
-    new RegExp(`${row}You hit your spend cap set (?:in|by the owner of) your workspace\\.`, 'gm'),
-    new RegExp(`${row}You['’]ve reached your workspace credit limit\\b`, 'gm'),
-    new RegExp(`${row}Request a limit increase from your owner to continue using codex\\.`, 'gm'),
-    new RegExp(`${row}You have exhausted your quota on this model\\.`, 'gm'),
-    new RegExp(`${row}Your AI credits balance is too low to continue\\.`, 'gm'),
-  ]
-}
-
-/** A CLI waiting on a limit, which it shows while it works: Claude Code's status line, and Gemini
- *  CLI's dialog, its "/stats model for usage details" two rows on at most, however wide its rows. */
-function limitWaits(statusRow: string): RegExp[] {
-  return [
-    new RegExp(`${statusRow}Usage limit reached(?: again)? · `, 'gm'),
-    new RegExp(`${DIALOG_ROW_START}Usage limit reached for (?:all Pro models|\\S+)\\.[^\\n]*\\n(?:[^\\n]*\\n){0,2}?[^\\n]*/stats model for usage details`, 'gm'),
-  ]
-}
-
-const TRANSCRIPT_WAITS = limitWaits(TRANSCRIPT_STATUS_ROW)
-const TRANSCRIPT_LIMITS = [...limitMessages(TRANSCRIPT_ROW), ...TRANSCRIPT_WAITS]
-const ANY_ROW_LIMITS = [...limitMessages(ANY_ROW), ...limitWaits(ANY_STATUS_ROW)]
-/** When the limit lifts, as the CLI put it: Claude Code's "resets 3pm (America/New_York)", Gemini
- *  CLI's "Access resets at 5:00 PM.", on the limit's own row or its dialog's next one; Codex's "or
- *  try again at 3:04 PM." or "Try again at 3:04 PM.", which a narrow screen wraps. agy names no time. */
-const RESETS_AT = /\bresets (?:at )?([^·│\n]{1,48}?)\.?\s*(?:·|│|$)/m
-const TRY_AGAIN_AT = /\b[Tt]ry again at (.{1,48}?)\.(?:\s|$)/
-
-// Menus that hold a worker until someone answers. Termpolis never picks an option: the conductor
-// is told which one to (swarmStopReports.ts), and with which keys, the cursor on the first option.
-//  - Codex 0.153.4's rate-limit prompt (codex.exe): "Approaching rate limits", "Switch to <model>
-//    for lower credit usage?", "› 1. Switch to <model>", "2. Keep current model".
-//  - Codex's update offer, as it drew it at startup in a real session (GitHub #36): "✨ Update
-//    available! 0.153.4 -> 0.163.0", "› 1. Update now (runs `npm install -g @openai/codex`)",
-//    "2. Skip", "3. Skip until next version". A swarm starts Codex with its update check off.
-const MENUS: ReadonlyArray<{ pattern: RegExp; summary: string; answer: string }> = [
-  {
-    pattern: /Approaching rate limits[\s\S]*Keep current model/,
-    summary: 'Codex asks whether to switch to a model that uses fewer credits',
-    answer: '"Keep current model" is the second option (Down, then Enter: \\u001b[B\\r)',
-  },
-  {
-    pattern: /Update available! \S+ -> \S+[\s\S]*Skip until next version/,
-    summary: 'Codex offers to update itself',
-    answer: '"Skip until next version" is the third option (Down, Down, then Enter: \\u001b[B\\u001b[B\\r)',
-  },
+/** Claude Code 2.1.302's limit messages (claude.exe), at the start of a row, after an indent and its
+ *  ⎿: "You've hit your " + session limit, weekly limit, Opus limit, Sonnet limit, Fable limit, usage
+ *  limit, limit, monthly spend limit, team's shared budget...; "You've reached your Fable limit.",
+ *  "Opus requires usage credits.", "You're out of usage credits" and "... extra usage", "Your org
+ *  is out of usage". Not "You've hit your fast limit · resets in 4h 59m": fast mode turns itself
+ *  off, and the session goes on. Antigravity 1.4's two, which its footer could show. */
+const LIMIT_MESSAGES: readonly RegExp[] = [
+  /^[ \t]*(?:⎿[ \t]+)?You['’]ve hit your (?!fast limit)[\w'’ ]{0,40}?(?:limit|budget)\b/,
+  /^[ \t]*(?:⎿[ \t]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
+  /^[ \t]*(?:⎿[ \t]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
+  /^[ \t]*(?:⎿[ \t]+)?You['’]re out of (?:usage credits|extra usage)\b/,
+  /^[ \t]*(?:⎿[ \t]+)?Your org is out of usage\b/,
+  /^[ \t]*You have exhausted your quota on this model\./,
+  /^[ \t]*Your AI credits balance is too low to continue\./,
 ]
+/** Claude Code waiting out a limit (claude.exe): "Usage limit reached · continuing automatically at
+ *  3pm · esc to cancel", "Usage limit reached again · ...", "Continuing automatically at 3pm · esc to
+ *  cancel". On its status line, after its spinner's frame; in its footer, indented. */
+const WAITING_STATUS = /^[✢✳✶✻✽·*][ \t]+(?:Usage limit reached(?: again)? · c|C)ontinuing automatically\b/
+const WAITING_FOOTER = /^[ \t]*(?:Usage limit reached(?: again)? · c|C)ontinuing automatically\b/
+/** When the limit lifts, as the CLI put it: Claude Code's "resets 3pm (America/New_York)",
+ *  "continuing automatically at 3pm" and its menu's "continue automatically at 3pm", Gemini CLI's
+ *  "Access resets at 5:00 PM.", which a narrow screen can wrap after "resets" or "at". agy names no
+ *  time. */
+const RESETS_AT = /\bresets\s+(?:at\s+)?([^·│\n]{1,48}?)\.?\s*(?:·|│|$)/m
+const CONTINUES_AT = /\bcontinu(?:e|ing) automatically at\s+([^·│\n]{1,48}?)\s*(?:·|│|$)/im
 
 const LIMIT_SUMMARY = 'usage limit reached'
 const MENU_SUMMARY = 'waiting on a menu'
+
+const SWITCH_MENU = 'Codex asks whether to switch to a model that uses fewer credits'
+const UPDATE_MENU = 'Codex offers to update itself'
+/** The menus that hold a worker until someone answers, and which option to pick with which keys,
+ *  the cursor on the first option. Termpolis never answers one: the conductor is told to
+ *  (swarmStopReports.ts). */
+const MENUS: ReadonlyArray<{ summary: string; answer: string }> = [
+  { summary: SWITCH_MENU, answer: '"Keep current model" is the second option (Down, then Enter: \\u001b[B\\r)' },
+  { summary: UPDATE_MENU, answer: '"Skip until next version" is the third option (Down, Down, then Enter: \\u001b[B\\u001b[B\\r)' },
+]
+const menuStop = (summary: string): string => `${MENU_SUMMARY}: ${summary}`
 
 /** What stopped a worker: its plan's usage limit, or a menu it waits on; null for anything else.
  *  These are what the swarm tells the conductor about (GitHub #36 item 5). */
@@ -367,30 +372,124 @@ export function menuAnswer(summary: string): string | null {
   return MENUS.find((m) => summary === `${MENU_SUMMARY}: ${m.summary}`)?.answer ?? null
 }
 
-/** The latest limit message in `text` that `shown` takes for the agent's, and when it lifts. */
-function limitSummary(text: string, patterns: readonly RegExp[], shown: (row: number) => boolean = () => true): string | null {
-  let at = -1
-  for (const p of patterns) {
-    for (const m of text.matchAll(p)) {
-      if (shown(text.slice(0, m.index).split('\n').length - 1)) at = Math.max(at, m.index!)
-    }
-  }
-  if (at < 0) return null
-  // The latest limit message, and the reset time that follows it.
-  const after = text.slice(at)
-  const reset = RESETS_AT.exec(after) ?? TRY_AGAIN_AT.exec(after.replace(/\s*\n\s*/g, ' '))
+/** "usage limit reached", with when it lifts if `text`, from the limit message on, says. */
+function limitSummary(text: string): string {
+  const reset = RESETS_AT.exec(text) ?? CONTINUES_AT.exec(text)
   return reset ? `${LIMIT_SUMMARY} (resets ${reset[1].trim()})` : LIMIT_SUMMARY
 }
 
-function menuSummary(tail: string): string | null {
-  const menu = MENUS.find((m) => m.pattern.test(tail))
-  return menu ? `${MENU_SUMMARY}: ${menu.summary}` : null
+/** The first of `rows` that starts one of `patterns`, read with the rows under it; null for none. */
+function limitIn(rows: readonly string[], patterns: readonly RegExp[]): string | null {
+  const at = rows.findIndex((row) => patterns.some((p) => p.test(row)))
+  return at < 0 ? null : limitSummary(rows.slice(at).join('\n'))
 }
 
-/** What holds the agent, read off a raw tail: a usage limit, a menu, or a CLI that exited or needs
- *  relaunching (restartSummary); null for none. */
-function stopSummary(tail: string, agentName: string): string | null {
-  return limitSummary(tail, ANY_ROW_LIMITS) ?? menuSummary(tail) ?? restartSummary(tail, agentName)
+/** A limit in the CLI's own rows around its input box: under its closing rule (Claude Code's
+ *  footer), and its status line, which starts with its spinner's frame a few rows above the box's
+ *  top rule (a blank row between, and one more where a narrow screen wraps it), where Claude Code
+ *  says it waits out a limit. Not the rows of the transcript above. */
+function stopAroundBox(rows: readonly string[], box: number): string | null {
+  let close = rows.length - 1
+  while (close > box && !RULE.test(rows[close]) && !BOX_BOTTOM.test(rows[close])) close--
+  const footer = close > box && rows.length - 1 - close <= FOOTER_ROWS ? rows.slice(close + 1) : []
+  const fromFooter = limitIn(footer, [...LIMIT_MESSAGES, WAITING_FOOTER])
+  if (fromFooter !== null || box < 2 || !RULE.test(rows[box - 1])) return fromFooter
+  return limitIn(rows.slice(Math.max(0, box - 4), box - 1), [WAITING_STATUS])
+}
+
+/** What a CLI draws in place of its input box that holds the worker: a menu, a limit's own prompt,
+ *  a dialog. Each found by its layout at the bottom of the screen, its title on a row of its own and
+ *  the keys that answer it under its options. */
+function stopInPlaceOfBox(rows: readonly string[]): string | null {
+  return claudeLimitMenu(rows) ?? codexPopup(rows) ?? geminiQuotaDialog(rows)
+}
+
+/** The row of a menu's keys (MENU_KEYS) on the screen's last rows, or -1. */
+function keysRow(rows: readonly string[]): number {
+  for (let i = rows.length - 1; i >= Math.max(0, rows.length - 3); i--) if (MENU_KEYS.test(rows[i])) return i
+  return -1
+}
+
+/** How far above its keys a popup's title can be: its subtitle, options and blank rows between. */
+const POPUP_ROWS = 12
+
+/** The row of the title of the popup whose keys are on row `keys`: the nearest row above them that
+ *  `title` matches, at most POPUP_ROWS up; -1 for none. */
+function titleRow(rows: readonly string[], keys: number, title: RegExp): number {
+  for (let i = keys - 1; i >= Math.max(0, keys - POPUP_ROWS); i--) if (title.test(rows[i])) return i
+  return -1
+}
+
+// Claude Code 2.1.302's /rate-limit-options menu (claude.exe), in place of its input box: a rule,
+// "What do you want to do?", its options, "Enter to confirm · Esc to cancel". It is about the limit
+// alone: Claude Code opens it by itself when a limit with a reset time stops a session below Max
+// 20x (Pro, Max 5x), submitting the command under the limit's message, which then heads the menu,
+// the command's echo between them (R2-1). So the menu is the limit, read as a menu, an Esc would
+// close it and leave the worker limited, with its task sent again to it. When it lifts: in the limit
+// message right above the echo, or in the option "Wait here, then continue automatically at 3pm".
+// Its options are the account's, among these.
+const CLAUDE_LIMIT_TITLE = /^\s*What do you want to do\?/
+const CLAUDE_LIMIT_OPTION = /^\s*(?:❯\s+)?\d+\.\s+(?:Stop and wait for limit to reset|Wait here, then continue automatically|Don['’]t continue automatically|Upgrade your plan|Add funds to continue with|Switch to (?:usage credits|extra usage)|Ask your admin for more usage)/
+const CLAUDE_LIMIT_ECHO = /^[❯>] \/rate-limit-options\s*$/
+
+function claudeLimitMenu(rows: readonly string[]): string | null {
+  const keys = keysRow(rows)
+  const title = keys < 0 ? -1 : titleRow(rows, keys, CLAUDE_LIMIT_TITLE)
+  if (title < 1 || !RULE.test(rows[title - 1]) || !rows.slice(title + 1, keys).some((row) => CLAUDE_LIMIT_OPTION.test(row))) return null
+  // Above its rule, past blank rows: the command's echo, then the limit message that opened it, on
+  // a row or two (a narrow screen wraps it).
+  let at = title - 2
+  while (at >= 0 && rows[at].trim() === '') at--
+  if (at >= 0 && CLAUDE_LIMIT_ECHO.test(rows[at])) at--
+  while (at >= 0 && rows[at].trim() === '') at--
+  let start = at
+  while (start > 0 && at - start < 1 && /^\s{3,}[^\s⎿]/.test(rows[start])) start--
+  const message = start < 0 ? null : limitIn([rows.slice(start, at + 1).join('\n')], LIMIT_MESSAGES)
+  return message !== null && message !== LIMIT_SUMMARY ? message : limitSummary(rows.slice(title, keys).join('\n'))
+}
+
+// Codex 0.153.4's popups in place of its composer (codex.exe): a title on a row of its own, a few
+// rows under it, its options with the › cursor on one, and under them its keys. Two are menus: its
+// offer of a cheaper model near a limit ("rate-limit-switch-prompt") and its offer to update itself,
+// which a real session drew at startup (GitHub #36); a swarm starts Codex with its update check off.
+// Two are a workspace's limits ("workspace-usage-nudge").
+const CODEX_POPUPS: ReadonlyArray<{ title: RegExp; shows: RegExp; stop: string }> = [
+  { title: /^\s*Approaching rate limits\s*$/, shows: /^(?:›|\s)\s?\d+\. Keep current model\b/, stop: menuStop(SWITCH_MENU) },
+  { title: /^\s*(?:✨\s*)?Update available! \S+ -> \S+\s*$/, shows: /^(?:›|\s)\s?\d+\. Skip until next version\s*$/, stop: menuStop(UPDATE_MENU) },
+  { title: /^\s*You['’]ve reached your workspace credit limit\s*$/, shows: /^\s*Your workspace is out of credits\./, stop: LIMIT_SUMMARY },
+  { title: /^\s*Usage limit reached\s*$/, shows: /^\s*Request a limit increase from your owner\b/, stop: LIMIT_SUMMARY },
+]
+const CODEX_CURSOR = /^›\s?\d+\.\s/
+
+function codexPopup(rows: readonly string[]): string | null {
+  const keys = keysRow(rows)
+  if (keys < 0) return null
+  for (const popup of CODEX_POPUPS) {
+    const title = titleRow(rows, keys, popup.title)
+    if (title < 0) continue
+    // Only its own rows between its title and its keys: indented, but for its cursor.
+    const own = rows.slice(title + 1, keys)
+    if (!own.every((row) => row === '' || /^\s/.test(row) || CODEX_CURSOR.test(row))) continue
+    if (own.some((row) => CODEX_CURSOR.test(row)) && own.some((row) => popup.shows.test(row))) return popup.stop
+  }
+  return null
+}
+
+// Gemini CLI 0.59.0's quota dialog (bundle/interactiveCli-*.js, ProQuotaDialog), in place of its
+// input: a round frame at the bottom of the screen, "Usage limit reached for <model>." ("all Pro
+// models" for any Pro model), "Access resets at <time>." when it knows, then "/stats model for
+// usage details" two rows on at most, however wide or tall the frame is drawn.
+const GEMINI_QUOTA = /^│[ \t]+Usage limit reached for (?:all Pro models|\S+)\.[^\n]*\n(?:[^\n]*\n){0,2}?│[ \t]+\/stats model for usage details/m
+
+function geminiQuotaDialog(rows: readonly string[]): string | null {
+  let end = rows.length - 1
+  while (end >= Math.max(0, rows.length - 3) && !BOX_BOTTOM.test(rows[end])) end--
+  let top = end - 1
+  while (top >= 0 && !BOX_TOP.test(rows[top])) top--
+  if (end < 0 || top < 0 || !BOX_BOTTOM.test(rows[end])) return null
+  const dialog = rows.slice(top + 1, end).map((row) => row.trimStart()).join('\n')
+  const m = GEMINI_QUOTA.exec(dialog)
+  return m ? limitSummary(dialog.slice(m.index)) : null
 }
 
 /** A CLI that exited or needs relaunching, in its words, or null. Only a screen without the agent's
