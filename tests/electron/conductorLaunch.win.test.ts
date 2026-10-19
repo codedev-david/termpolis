@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { conductorRunScript, conductorLaunchCommand } from '../../src/renderer/src/lib/conductorLaunch'
 import { psQuote } from '../../src/shared/shellQuote'
 import { powershellPath } from '../../src/main/secondOpinion'
@@ -63,8 +63,10 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
    *  `constrained` runs the script in ConstrainedLanguage instead, as AppLocker or WDAC would: the
    *  outer session switches to it and dot-sources the script, since a new powershell.exe would
    *  start in FullLanguage again. `vanish` removes that bin file once its --version answered.
-   *  `binName` names the folder on PATH the stand-ins are in. */
-  function launch(name: string, opts: { bin?: Record<string, string>; binName?: string; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
+   *  `binName` names the folder on PATH the stand-ins are in. `nodeOnPath` puts node's folder on
+   *  PATH too, for a test command that starts `node` by name, as e2e's does. `vanishTask` removes the
+   *  task file instead, once the probe's --version answered. */
+  function launch(name: string, opts: { bin?: Record<string, string>; binName?: string; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string; vanishTask?: boolean; nodeOnPath?: boolean }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
     const root = join(dir, name)
     const home = join(root, 'home')
     const bin = join(root, opts.binName ?? 'bin')
@@ -90,7 +92,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     const env: NodeJS.ProcessEnv = { ...process.env }
     for (const k of Object.keys(env)) if (k.toUpperCase() === 'PATH') delete env[k]
     const sys = process.env.SystemRoot || 'C:\\Windows'
-    env.PATH = [bin, join(sys, 'System32'), sys, join(sys, 'System32', 'WindowsPowerShell', 'v1.0')].join(';')
+    env.PATH = [bin, ...(opts.nodeOnPath ? [dirname(process.execPath)] : []), join(sys, 'System32'), sys, join(sys, 'System32', 'WindowsPowerShell', 'v1.0')].join(';')
     env.USERPROFILE = home
     env.APPDATA = join(home, 'AppData', 'Roaming')
     env.LOCALAPPDATA = join(home, 'AppData', 'Local')
@@ -98,6 +100,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     env.TP_EXIT = String(opts.exitCode ?? 0)
     env.TP_SAY = opts.say ?? ''
     if (opts.vanish) env.TP_VANISH = join(bin, opts.vanish)
+    if (opts.vanishTask) env.TP_VANISH = taskFile
     const r = spawnSync(powershellPath(), ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', outer], {
       cwd: root,
       env,
@@ -129,10 +132,12 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
   ].join('\r\n')
   const cmdShim = (): string => `@"${process.execPath}" "${recorder}" %*\r\n`
 
-  function expectDelivered(r: ReturnType<typeof launch>, exitCode = 0): void {
+  /** `stdin`: what claude must get, byte for byte. A pipe appends a CRLF to the task; a task file
+   *  handed over as it is (ConstrainedLanguage's Start-Process) has none. */
+  function expectDelivered(r: ReturnType<typeof launch>, exitCode = 0, stdin = task + '\r\n'): void {
     expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--session-id', SESSION, '--dangerously-skip-permissions'])
-    // Byte for byte: no BOM in front, nothing garbled, only the CRLF PowerShell appends.
-    expect(r.stdin?.equals(Buffer.from(task + '\r\n', 'utf8')), r.stderr).toBe(true)
+    // Byte for byte: no BOM in front, nothing garbled.
+    expect(r.stdin?.equals(Buffer.from(stdin, 'utf8')), r.stderr).toBe(true)
     // The script's first line marks where its output starts; claude's exit is reported on a
     // line of its own, and passed on as the script's exit code.
     const lines = r.stdout.split(/\r?\n/)
@@ -197,17 +202,66 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     expect(r.status).toBe(1)
   }, 60_000)
 
-  it('gets every character through in ConstrainedLanguage, behind a BOM, and says why', () => {
-    // On the console's own code page and on 65001: .NET writes one BOM for $OutputEncoding, and
-    // one more for [Console]::InputEncoding when that is UTF-8 too.
+  // WL-4. ConstrainedLanguage (AppLocker or WDAC) refuses what makes UTF-8 without a BOM, and its
+  // stock UTF-8 put a BOM in front of the task on claude's stdin, two with the console on 65001.
+  // Start-Process now hands claude the task file itself: byte for byte as written, with neither a
+  // BOM nor the CRLF a pipe appends, on the console's own code page and on 65001.
+  function expectConstrained(r: ReturnType<typeof launch>, exitCode = 0): void {
+    expectDelivered(r, exitCode, task)
+    expect(r.stderr).toBe('') // nothing it was refused
+    expect(r.stdout).not.toContain('ConstrainedLanguage') // nothing to say
+  }
+
+  it("hands claude the task file itself in ConstrainedLanguage, through npm's shims and a lone claude.cmd", () => {
     for (const utf8Console of [false, true]) {
-      const r = launch(utf8Console ? 'clm-utf8' : 'clm', { testCommand: `& ${psQuote(process.execPath)} ${psQuote(recorder)}`, constrained: true, utf8Console })
+      const tag = utf8Console ? '-utf8' : ''
+      // npm's PowerShell shim is what PATH gives first, and Start-Process can't start a .ps1:
+      // the claude.cmd npm writes beside it is started.
+      expectConstrained(launch(`clm-ps1${tag}`, { bin: { 'claude.ps1': npmShim(), 'claude.cmd': cmdShim() }, constrained: true, utf8Console }))
+      expectConstrained(launch(`clm-cmd${tag}`, { bin: { 'claude.cmd': cmdShim() }, constrained: true, utf8Console }))
+    }
+  }, 240_000)
+
+  it("hands the e2e stand-in the task file itself in ConstrainedLanguage, as it does claude", () => {
+    for (const utf8Console of [false, true]) {
+      expectConstrained(launch(utf8Console ? 'clm-test-utf8' : 'clm-test', { testCommand: `node ${recorder}`, nodeOnPath: true, constrained: true, utf8Console }))
+    }
+  }, 120_000)
+
+  it("reports claude's own exit code in ConstrainedLanguage, through each kind of launcher", () => {
+    expectConstrained(launch('clm-exit-ps1', { bin: { 'claude.ps1': npmShim(), 'claude.cmd': cmdShim() }, constrained: true, exitCode: 3 }), 3)
+    expectConstrained(launch('clm-exit-cmd', { bin: { 'claude.cmd': cmdShim() }, constrained: true, exitCode: 4 }), 4)
+    expectConstrained(launch('clm-exit-test', { testCommand: `node ${recorder}`, nodeOnPath: true, constrained: true, exitCode: 5 }), 5)
+  }, 180_000)
+
+  it('finds and starts claude in ConstrainedLanguage in a folder whose name has square brackets', () => {
+    expectConstrained(launch('clm-brackets-ps1', { bin: { 'claude.ps1': npmShim(), 'claude.cmd': cmdShim() }, binName: 'tools [x64]', constrained: true }))
+    expectConstrained(launch('clm-brackets-cmd', { bin: { 'claude.cmd': cmdShim() }, binName: 'tools [x64]', constrained: true }))
+  }, 120_000)
+
+  it('reports exit code 1 in ConstrainedLanguage when the claude it found never starts', () => {
+    // A batch file deleted while it runs ends in an error, which the probe takes for a broken claude:
+    // the task file goes instead, which Start-Process then can't hand over.
+    const r = launch('clm-vanished', { bin: { 'claude.cmd': cmdShim() }, vanishTask: true, constrained: true })
+    expect(r.stdout).not.toContain('No working claude binary found') // the probe found it...
+    expect(r.argv).toBeNull() // ...and it never ran with the task
+    expect(r.stdout.split(/\r?\n/)).toContain('[termpolis-conductor-exited] 1')
+    expect(r.status).toBe(1)
+  }, 60_000)
+
+  it('still pipes to a claude.ps1 with no claude.cmd beside it in ConstrainedLanguage, behind a BOM, and says so', () => {
+    // Start-Process can't start a .ps1, and a PowerShell started to run it would feed the shim its
+    // stdin re-encoded. Piped to, every character gets through behind a BOM: one for
+    // $OutputEncoding, and one more for [Console]::InputEncoding when that is UTF-8 too.
+    for (const utf8Console of [false, true]) {
+      const r = launch(utf8Console ? 'clm-lone-ps1-utf8' : 'clm-lone-ps1', { bin: { 'claude.ps1': npmShim() }, constrained: true, utf8Console })
       expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--session-id', SESSION, '--dangerously-skip-permissions'])
       let stdin = r.stdin ?? Buffer.alloc(0)
+      expect(stdin.subarray(0, 3).toString('hex')).toBe('efbbbf')
       while (stdin.subarray(0, 3).toString('hex') === 'efbbbf') stdin = stdin.subarray(3)
       expect(stdin.equals(Buffer.from(task + '\r\n', 'utf8')), r.stderr).toBe(true)
       expect(r.stdout).toContain('ConstrainedLanguage')
-      expect(r.stderr).toBe('') // nothing it was refused
+      expect(r.stderr).toBe('')
       expect(r.stdout.split(/\r?\n/)).toContain('[termpolis-conductor-exited] 0')
       expect(r.status).toBe(0)
     }

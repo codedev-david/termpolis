@@ -1637,7 +1637,7 @@ describe('conductorManager', () => {
       )
       const psBody = (psCall?.[1] as string) ?? ''
       expect(psBody).toMatch(
-        /^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']*\\\.termpolis-conductor-task\.md' \| & \$claudeExe -p --mcp-config '[^']+' --session-id 'conductor-uuid-1' --dangerously-skip-permissions$/m,
+        /^ {2}Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']*\\\.termpolis-conductor-task\.md' \| & \$claudeExe -p --mcp-config '[^']+' --session-id 'conductor-uuid-1' --dangerously-skip-permissions$/m,
       )
       expect(psBody).not.toContain('$task')
     })
@@ -1662,7 +1662,7 @@ describe('conductorManager', () => {
       )
       const psBody = (psCall?.[1] as string) ?? ''
       expect(psBody).toMatch(
-        / --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\nif \(\$null -eq \$code\) \{ \$code = 1 \}\nWrite-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/,
+        /\n {6}\$global:LASTEXITCODE = \$run\.ExitCode\n {4}\}\n {2}\}\n\}\n\$code = \$LASTEXITCODE\nif \(\$null -eq \$code\) \{ \$code = 1 \}\nWrite-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/,
       )
       // Its first line, after the BOM that has 5.1 read the script as UTF-8, marks where the
       // script's own output starts, after the echoed launch line.

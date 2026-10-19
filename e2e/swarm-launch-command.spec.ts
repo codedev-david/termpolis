@@ -156,15 +156,17 @@ test.describe.serial('Swarm launch command shape', () => {
       expect(psBody).toContain('--dangerously-skip-permissions')
       // The task is piped in, as UTF-8 without a BOM, and never put on the command line.
       // Under a session id of its own, whose transcript Trace follows.
-      expect(psBody).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+\.termpolis-conductor-task\.md' \| \S.* -p (--mcp-config '[^']+' )?--session-id '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}' --dangerously-skip-permissions$/m)
+      expect(psBody).toMatch(/^ {2}Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+\.termpolis-conductor-task\.md' \| \S.* -p (--mcp-config '[^']+' )?--session-id '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}' --dangerously-skip-permissions$/m)
       expect(psBody).toContain('$OutputEncoding = $enc')
       expect(psBody).toContain('[Console]::InputEncoding = $enc')
       expect(psBody).not.toContain('$task')
       // It marks where its output starts, and reports claude's exit on a line of its own: 1 when
       // claude never started, after two blank lines.
       expect(psBody.startsWith("Write-Output '[termpolis-conductor-started]'\n")).toBe(true)
-      expect(psBody).toContain('\n$global:LASTEXITCODE = $null\nGet-Content -Raw ')
-      expect(psBody).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
+      expect(psBody).toContain("\n$global:LASTEXITCODE = $null\nif ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {\n")
+      // In Constrained Language Mode, Start-Process hands claude the task file itself, with no BOM.
+      expect(psBody).toContain(' -NoNewWindow -PassThru -RedirectStandardInput ')
+      expect(psBody).toMatch(/\n\}\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
     } else {
       for (let i = 0; i < 40 && !fs.existsSync(RUN_SH); i++) await page.waitForTimeout(250)
       expect(fs.existsSync(RUN_SH)).toBe(true)
