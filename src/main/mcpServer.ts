@@ -1229,8 +1229,10 @@ const LOOKALIKE = new RegExp(`[${Object.values(LOOKALIKES).join('')}]`, 'gu')
  *  whose notes the conductor acts on, closing a worker: not by a name the Messages tab shows the
  *  same, with an invisible character in it (a control or format character, or any other Unicode
  *  marks default-ignorable: a variation selector, a Hangul filler), a fullwidth letter (NFKC folds
- *  those) or a letter drawn like a Latin one (LOOKALIKES). The conductor is "conductor" however it
- *  writes it, which is the name its plan and its STEP 8 are told by. */
+ *  those), or a Cyrillic, Greek or Armenian letter or a small capital drawn like a Latin letter
+ *  (LOOKALIKES; the lookalikes Unicode lists in other scripts, and digits, are not folded). The
+ *  conductor is "conductor" however it writes it, which is the name its plan and its STEP 8 are
+ *  told by. */
 function messageSender(from: unknown): string {
   const name = typeof from === 'string' ? from.normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{DI}]/gu, '').trim().slice(0, 64) : ''
   const key = name.replace(LOOKALIKE, (c) => LOOKALIKE_OF.get(c)!).toLowerCase()
