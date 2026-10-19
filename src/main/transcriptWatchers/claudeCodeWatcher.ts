@@ -346,7 +346,7 @@ function recordedConfigDir(file: string, sessionId: string): string | null {
   }
   // Windows PowerShell 5.1 writes it as UTF-8 with a BOM, and its lines end in CRLF.
   const [id, configDir = ''] = text.replace(/^\uFEFF/, '').split(/\r?\n/)
-  return id.trim().toLowerCase() === sessionId.toLowerCase() ? configDir.trim() : null
+  return id.toLowerCase() === sessionId.toLowerCase() ? configDir : null
 }
 
 /** A working folder as PowerShell hands it to a program it starts: with a Windows short name

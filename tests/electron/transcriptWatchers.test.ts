@@ -313,6 +313,19 @@ describe('watcher manager — a Claude Code session named by its id', () => {
     expect(attachWatcher('c1', path.join(tmpDir, 'no-claude-session'), 'claude', undefined)).toBeNull()
     expect(getActiveWatcherCount()).toBe(0)
   })
+
+  it("follows no other session for an empty id, though the folder's newest transcript is there", () => {
+    // Where a pane's call, which names no session, would find the folder's newest transcript.
+    const dir = path.join(os.homedir(), '.claude', 'projects', mangleCwd(fs.realpathSync(tmpDir)))
+    fs.mkdirSync(dir, { recursive: true })
+    try {
+      fs.writeFileSync(path.join(dir, `${OTHER}.jsonl`), '{}\n')
+      expect(attachWatcher('c1', tmpDir, 'claude', '')).toBeNull()
+      expect(getActiveWatcherCount()).toBe(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('processCodexLine additional branches', () => {

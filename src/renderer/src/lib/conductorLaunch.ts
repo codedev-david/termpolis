@@ -117,14 +117,15 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
     // The same flags as one command line, for a program Start-Process starts: double quotes around
     // the one path, which can hold no `"` and doesn't end in a backslash.
     const commandLine = `-p${mcpConfigPath ? ` --mcp-config "${mcpConfigPath}"` : ''} --session-id ${sessionId} --dangerously-skip-permissions`
-    // Its exit code is read through a handle taken while it runs: a process object that has none
-    // can't get one once it has exited, and its ExitCode is empty. Wait-Process waits for it alone,
-    // not for what it leaves running, as -Wait would.
+    // Its exit code is read through a handle taken at once: a process object that has none can't
+    // get one once the process has exited, and its ExitCode is empty (a program that exits at once
+    // lost it, live). It waits for that process alone, not for what it leaves running, as -Wait
+    // would; Wait-Process reports one that is already gone as an error.
     const start = (program: string, args: string): string[] => [
       `$run = Start-Process -FilePath ${program} -ArgumentList ${psQuote(args)} -NoNewWindow -PassThru -RedirectStandardInput ${psQuote(taskFile)}`,
       'if ($run) {',
       '  $null = $run.Handle',
-      '  Wait-Process -InputObject $run',
+      '  while (-not $run.HasExited) { Start-Sleep -Milliseconds 200 }',
       '  $global:LASTEXITCODE = $run.ExitCode',
       '}',
     ]

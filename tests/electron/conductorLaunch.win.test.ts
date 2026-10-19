@@ -240,6 +240,18 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     expectConstrained(launch('clm-exit-test', { testCommand: `node ${recorder}`, nodeOnPath: true, constrained: true, exitCode: 5 }), 5)
   }, 180_000)
 
+  it('reports the own code of a claude that fails at once in ConstrainedLanguage, with nothing on stderr', () => {
+    // It answers the probe's --version, then exits before anything could wait for it: a process that
+    // is gone by then left no exit code without the handle taken at once, and Wait-Process said so.
+    const failsAtOnce = '@echo off\r\nif "%~1"=="--version" (echo 2.1.300 ^(Claude Code^)& exit /b 0)\r\nexit /b 9\r\n'
+    for (let i = 0; i < 3; i++) {
+      const r = launch(`clm-fails-${i}`, { bin: { 'claude.cmd': failsAtOnce }, constrained: true })
+      expect(r.stdout.split(/\r?\n/), r.stderr).toContain('[termpolis-conductor-exited] 9')
+      expect(r.stderr).toBe('')
+      expect(r.status).toBe(9)
+    }
+  }, 120_000)
+
   it('finds and starts claude in ConstrainedLanguage in a folder whose name has square brackets', () => {
     expectConstrained(launch('clm-brackets-ps1', { bin: { 'claude.ps1': npmShim(), 'claude.cmd': cmdShim() }, binName: 'tools [x64]', constrained: true }))
     expectConstrained(launch('clm-brackets-cmd', { bin: { 'claude.cmd': cmdShim() }, binName: 'tools [x64]', constrained: true }))
@@ -251,6 +263,9 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     const r = launch('clm-vanished', { bin: { 'claude.cmd': cmdShim() }, vanishTask: true, constrained: true })
     expect(r.stdout).not.toContain('No working claude binary found') // the probe found it...
     expect(r.argv).toBeNull() // ...and it never ran with the task
+    // Start-Process says why, and nothing waits on a process it never started.
+    expect(r.stderr).toContain('Start-Process')
+    expect(r.stderr).not.toContain('HasExited')
     expect(r.stdout.split(/\r?\n/)).toContain('[termpolis-conductor-exited] 1')
     expect(r.status).toBe(1)
   }, 60_000)

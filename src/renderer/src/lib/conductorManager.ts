@@ -34,7 +34,8 @@ interface LaunchBaseline {
 }
 
 let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null, sessionId: null }
-/** The conductor session whose transcript Trace follows (watchConductorTrace). */
+/** The conductor session whose transcript Trace follows (watchConductorTrace). Every launch starts
+ *  with startConductor, which forgets it. */
 let traceWatchedFor: string | null = null
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
@@ -657,5 +658,4 @@ export function stopConductor(): void {
   }
 
   conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null, sessionId: null }
-  traceWatchedFor = null
 }

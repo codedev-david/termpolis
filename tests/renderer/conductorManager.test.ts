@@ -205,6 +205,16 @@ describe('conductorManager', () => {
       expect(attachWatcher.mock.calls.map((c) => c[3])).toEqual([first, second, third])
     })
 
+    it("follows a next conductor whose session id is the last one's, as if it were new", async () => {
+      fakeBus()
+      await launchConductor()
+      stopConductor()
+      ids = 0 // the next terminal and session get the same ids again
+      await launchConductor()
+      expect(attachWatcher).toHaveBeenCalledTimes(2)
+      expect(attachWatcher).toHaveBeenLastCalledWith(UUID(1), '/tmp/project', 'claude', UUID(2))
+    })
+
     it.each([
       ['answers late that it follows nothing', (first: { resolve: (v: unknown) => void }) => first.resolve({ success: true, data: { attached: false } })],
       ['fails late', (first: { reject: (e: unknown) => void }) => first.reject(new Error('ipc gone'))],

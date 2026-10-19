@@ -64,7 +64,7 @@ describe('conductorRunScript on Windows', () => {
   // its stock UTF-8 put a BOM in front (WL-4). Start-Process hands claude the task file itself.
   const START = (program: string, args: string): string =>
     `$run = Start-Process -FilePath ${program} -ArgumentList '${args}' -NoNewWindow -PassThru -RedirectStandardInput 'C:\\Users\\O''Brien $x\\.termpolis-conductor-task.md'\n` +
-    'if ($run) {\n  $null = $run.Handle\n  Wait-Process -InputObject $run\n  $global:LASTEXITCODE = $run.ExitCode\n}'
+    'if ($run) {\n  $null = $run.Handle\n  while (-not $run.HasExited) { Start-Sleep -Milliseconds 200 }\n  $global:LASTEXITCODE = $run.ExitCode\n}'
   const ARGS = `-p --mcp-config "C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json" --session-id ${SESSION} --dangerously-skip-permissions`
   const indented = (text: string, by: number): string => text.split('\n').map((line) => ' '.repeat(by) + line).join('\n')
 
