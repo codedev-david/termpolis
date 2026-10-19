@@ -1679,6 +1679,174 @@ describe('write_to_terminal submit and the output since run_command started the 
     // Gone from the agents, the terminal is a shell again: a command typed at its prompt runs.
     expect((await submitToTerminal(t.handlers, 'own-1', 'echo hi', t.clock)).error).not.toMatch(/shell's prompt/)
   })
+
+  // The review of fix/swarm154 (W0-2, S0-4): a prompt the shell printed after the mark, with nothing
+  // after it that draws a box up to a repaint, read as the agent gone. The prompt the command was typed
+  // at can come after the mark too, with the command after it: typed while the shell still printed the
+  // prompt before, or into a cold shell whose output main has let go of in part. A fullscreen agent
+  // paints every frame from the top left, so a live one was refused at its shell's prompt.
+  it('types into an agent whose shell printed the prompt the command was typed at after the mark', async () => {
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${PROMPT}cd C:\\p\r\n`)
+    await run(t, 'ahead-1')
+    t.print(`${PROMPT}${CLAUDE}\r\n`)
+    t.agentAt(0)
+    expect(await submitToTerminal(t.handlers, 'ahead-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+  })
+
+  it('types into a fullscreen agent a person started again by hand once the one run_command started exited', async () => {
+    // No run_command, so no mark and no command to look for: the agent is on the alternate screen it
+    // switched to after the prompt it was typed at, which only a program still running keeps.
+    const t = terminal({ cols: 80, rows: 24 }, true)
+    t.print(PROMPT)
+    await run(t, 'byhand-1')
+    t.print(`${E}[?1049h${box()}${E}[?1049l${E}[2;1HResume this session with: claude --resume 1234\r\n${PROMPT}claude\r\n${E}[?1049h${E}[2J`)
+    t.agentAt(0)
+    expect(await submitToTerminal(t.handlers, 'byhand-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+  })
+
+  it('types nothing once a fullscreen agent started by hand has left its screen, before its shell prints the prompt', async () => {
+    // Back on the main screen, the frame of the agent before it still there: the agent is gone, and
+    // what is typed now goes to the shell.
+    const t = terminal({ cols: 80, rows: 24 }, true)
+    t.print(PROMPT)
+    await run(t, 'byhand-2')
+    t.print(`${box()}${E}[7;1HResume this session with: claude --resume 1234${E}[8;1H${PROMPT}claude\r\n${E}[?1049h${E}[2J${box()}${E}[?1049l${E}[10;1HResume this session with: claude --resume 5678\r\n`)
+    expect(await submitToTerminal(t.handlers, 'byhand-2', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('types into an agent whose command, typed as given, puts its flags in another order than main would', async () => {
+    // A terminal the conductor didn't create gets the command as given (index.ts runCommand).
+    const command = 'claude --model haiku --dangerously-skip-permissions'
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${PROMPT}cd C:\\p\r\n`)
+    await run(t, 'asgiven-1', command)
+    t.print(`${PROMPT}${command}\r\n`)
+    t.agentAt(0)
+    expect(await submitToTerminal(t.handlers, 'asgiven-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+  })
+
+  it('still types nothing at the prompt a fullscreen agent exited to, though a resize painted the main screen again', async () => {
+    const t = terminal({ cols: 80, rows: 24 }, true)
+    t.print(PROMPT)
+    await run(t, 'fullexit-1')
+    t.print(`${E}[?1049h${box()}${E}[?1049l${E}[2;1HResume this session with: claude --resume 1234\r\n${PROMPT}`)
+    const rows = [`PS C:\\p> ${CLAUDE}`, 'Resume this session with: claude --resume 1234', 'PS C:\\p> ']
+    t.print(`${E}[?25l${E}[H${rows.map((r) => `${r}${E}[K`).join('\r\n')}${E}[?25h`)
+    expect(await submitToTerminal(t.handlers, 'fullexit-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('types into an agent of a terminal the conductor created, whose command main typed in full, when the prompt came after the mark', async () => {
+    // run_command's "claude", rewritten by main (sanitizeAgentCommand): what the shell shows is that.
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${PROMPT}cd C:\\p\r\n`)
+    await run(t, 'rewritten-1', 'claude')
+    t.print(`${PROMPT}${CLAUDE}\r\n`)
+    t.agentAt(0)
+    expect(await submitToTerminal(t.handlers, 'rewritten-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+  })
+
+  it.each([
+    ['a clear of the screen', `${E}[2J`],
+    ['the alternate screen', `${E}[?1049h`],
+  ])('types into an agent that wipes the screen with %s before it paints, when the prompt came after the mark', async (_how, wipe) => {
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${PROMPT}cd C:\\p\r\n`)
+    await run(t, `wipe-${wipe.length}`)
+    t.print(`${PROMPT}${CLAUDE}\r\n${wipe}${E}[5;1H`)
+    t.agentAt(0)
+    expect(await submitToTerminal(t.handlers, `wipe-${wipe.length}`, 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+  })
+
+  it('types into a fullscreen agent whose shell printed that prompt after the mark, though it clears the screen before it paints', async () => {
+    // As live, Claude Code in its fullscreen view: the alternate screen and a clear come before its
+    // first ESC[H, and drawn with them, the command shown after the prompt was wiped.
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${PROMPT}Start-Sleep -Milliseconds 2500\r\n`)
+    await run(t, 'ahead-3')
+    t.print(`${PROMPT}${E}[?25l${E}[93mclaude ${E}[90m--dangerously-skip-permissions\r\n${E}[?25h${E}]0;claude\x07${E}[?1049h${E}[2J${E}[?1000h`)
+    t.agentAt(0)
+    expect(await submitToTerminal(t.handlers, 'ahead-3', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+  })
+
+  it("types into an agent whose cold shell printed its first prompt after the command, once main let go of what came before", async () => {
+    const before = `${slowProfile}${PROMPT}${CLAUDE}\r\n`
+    // At the first looks the window has let go of the first 20 characters: no telling the prompt
+    // was the shell's first.
+    const t = terminal({ cols: 80, rows: 24 }, false, before.length + box().length - 20)
+    await run(t, 'cold-slid-1')
+    t.print(before)
+    t.agentAt(0)
+    expect(await submitToTerminal(t.handlers, 'cold-slid-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+  })
+
+  it('still types nothing at the prompt an agent exited to after it showed its command at the prompt before', async () => {
+    // The prompt it exited to has nothing after it: the agent is gone, whatever came before.
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${PROMPT}cd C:\\p\r\n`)
+    await run(t, 'ahead-2')
+    t.print(`${PROMPT}${CLAUDE}\r\n${box()}${E}[7;1HResume this session with: claude --resume 1234${E}[8;1H${PROMPT}`)
+    expect(await submitToTerminal(t.handlers, 'ahead-2', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it("still types nothing at the prompt of a folder named for the agent, which a command of the agent's name alone can't be told from", async () => {
+    // run_command's "claude" alone: its letters are the folder's in the prompt the agent exited to.
+    const prompt = `${E}]9;9;C:\\work\\claude\x07PS C:\\work\\claude> `
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${prompt}cd C:\\work\\claude\r\n`)
+    await run(t, 'named-1', 'claude')
+    t.print(`${prompt}claude\r\n${box()}${E}[7;1HResume this session with: claude --resume 1234${E}[8;1H${prompt}`)
+    expect(await submitToTerminal(t.handlers, 'named-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+  })
+
+  it('types nothing at the prompt a Codex exited to, though it drew its box after a prompt reported since run_command', async () => {
+    // Codex draws its composer with no repaint from the top left before it: read after the first
+    // prompt since the mark, the box it drew there hid the prompt it exited to.
+    const CODEX = 'codex -a never -s workspace-write -c check_for_update_on_startup=false'
+    const t = terminal({ cols: 80, rows: 24 }, false)
+    t.print(`${PROMPT}cd C:\\p\r\n`)
+    await run(t, 'codex-two-1', CODEX)
+    t.print(`${PROMPT}${CODEX}\r\n>_ OpenAI Codex\r\n\r\n› Ask Codex to do anything\r\n\r\n  gpt-5.6-sol medium · ~\\p\r\n`)
+    t.print(`Token usage: total=1200\r\n${PROMPT}`)
+    expect(await submitToTerminal(t.handlers, 'codex-two-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('types into an agent started again after the one before printed more than main keeps', async () => {
+    const t = terminal({ cols: 80, rows: 24 }, true, 32_768)
+    t.print(PROMPT)
+    await run(t, 'slid-2')
+    t.print(Array.from({ length: 450 }, (_, i) => `● Step ${i}: read docs/file-${i}.md and wrote a line about it, nothing more.\r\n`).join(''))
+    t.print(exited())
+    await run(t, 'slid-2')
+    t.agentAt(2500)
+    expect(await submitToTerminal(t.handlers, 'slid-2', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
+
+  // W0-3: a resize while the agent started again loads. ConPTY paints the screen again: the frame the
+  // agent before it left, box and all, and under it the prompt with the command typed at it. Read as
+  // the new agent's input, the task was typed while it was still loading.
+  it("waits for an agent run_command starts again, though a resize painted the old one's frame over the command", async () => {
+    const t = terminal({ cols: 80, rows: 24 })
+    t.print(PROMPT)
+    await run(t, 'repaint-1')
+    t.print(exited())
+    await run(t, 'repaint-1')
+    const rows = ['Claude Code', '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on', 'Resume this session with: claude --resume 1234', `PS C:\\p> ${CLAUDE}`]
+    t.print(`${E}[?25l${E}[H${rows.map((r) => `${r}${E}[K`).join('\r\n')}${E}[?25h`)
+    t.agentAt(2500)
+    const res = await submitToTerminal(t.handlers, 'repaint-1', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: true })
+    expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
 })
 
 // R3-2, R3-6 and the conditions no test pinned (R3-7), on real screens and on the layouts they
