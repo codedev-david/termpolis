@@ -612,5 +612,7 @@ describe('isAgentIntegrationConnected', () => {
 
   it('answers false, never throws, when the ledger can\'t be read', () => {
     expect(isAgentIntegrationConnected({ ...sb.paths, userData: 'relative/ud' })).toBe(false)
+    // A userData that isn't a string throws inside the ledger read, as getAgentIntegrationStatus sees.
+    expect(isAgentIntegrationConnected({ ...sb.paths, userData: undefined as unknown as string })).toBe(false)
   })
 })
