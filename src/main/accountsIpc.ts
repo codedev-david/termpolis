@@ -125,6 +125,24 @@ export function resolveAccountTarget(paths: Pick<AgentIntegrationPaths, 'home' |
   return { account, target: { agent: account.agent, dir, ...(claudeJson ? { claudeJson } : {}), accountId: account.id }, connected: isAccountConnected(account) }
 }
 
+/** As resolveAccountTarget, for a launch of `agent`: another agent's account never resolves, so
+ *  nothing meant for this launch is written into a profile of another agent's. */
+export function resolveLaunchTarget(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, accountId: unknown, agent: ProfileAgent, fsx: AccountFs = accountFs): AccountTarget {
+  const r = resolveAccountTarget(paths, accountId, fsx)
+  return r.account && r.account.agent !== agent ? { account: r.account, connected: false } : r
+}
+
+/** The CODEX_HOME to take home-folder trust out of for an account: none named for the default
+ *  home (no account, or the default profile's), and an error, never the default home instead,
+ *  for an account that isn't Codex's or whose folder is gone. Not gated on Connect: taking trust
+ *  out is what the user asked for, on that account. */
+export function codexHomeFor(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, accountId: unknown, fsx: AccountFs = accountFs): { home?: string } | { error: string } {
+  const { account, target } = resolveAccountTarget(paths, accountId, fsx)
+  if (!account || (account.agent === 'codex' && account.profile === null)) return {}
+  if (account.agent !== 'codex') return { error: `${account.label} is not a Codex account` }
+  return target ? { home: target.dir } : { error: `${account.label}'s profile folder doesn't exist` }
+}
+
 /** Is the terminal on an account the user connected? A terminal Termpolis never put on an account
  *  runs on the default profile (D13). */
 export function isTerminalAccountConnected(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, terminalId: unknown): boolean {

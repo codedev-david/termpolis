@@ -759,7 +759,7 @@ describe('memory:prepare-codex-context', () => {
     // way Codex reads it), never from a cached or hard-coded ~/.codex.
     expect(M.resolveAgentIntegrationPaths).toHaveBeenCalledWith(homedir(), tmpdir(), process.env)
     expect(M.prepareCodexLaunch).toHaveBeenCalledTimes(1)
-    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:balanced' })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:balanced', accountConnected: true }, undefined)
     // Passed through untouched: the renderer builds the launch command from developerInstructions.
     expect(r).toEqual({ success: true, data: verdict })
   })
@@ -768,7 +768,7 @@ describe('memory:prepare-codex-context', () => {
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, enabled: true, steering: true, mode: 'aggressive' })
     await invoke('memory:prepare-codex-context', { cwd: '/repo' })
     expect(M.steeringDirective).toHaveBeenCalledWith('aggressive')
-    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:aggressive' })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:aggressive', accountConnected: true }, undefined)
   })
 
   it('leaves steering off when headroom is disabled, even with steering ticked', async () => {
@@ -776,7 +776,7 @@ describe('memory:prepare-codex-context', () => {
     // headroom off would still steer Codex.
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, enabled: false, steering: true })
     await invoke('memory:prepare-codex-context', { cwd: '/repo' })
-    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null, accountConnected: true }, undefined)
     // null, not an empty directive: the manager treats null as "add no steering paragraph".
     expect(M.steeringDirective).not.toHaveBeenCalled()
   })
@@ -784,7 +784,7 @@ describe('memory:prepare-codex-context', () => {
   it('leaves steering off when steering alone is unticked', async () => {
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, enabled: true, steering: false })
     await invoke('memory:prepare-codex-context', { cwd: '/repo' })
-    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null, accountConnected: true }, undefined)
     expect(M.steeringDirective).not.toHaveBeenCalled()
   })
 
@@ -798,7 +798,7 @@ describe('memory:prepare-codex-context', () => {
     expect(M.adaptSteeringMode).toHaveBeenCalledWith('balanced', 5000, 40)
     // The ADAPTED mode is the one that reaches the directive, not the configured one.
     expect(M.steeringDirective).toHaveBeenCalledWith('aggressive')
-    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:aggressive' })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: 'STEER:aggressive', accountConnected: true }, undefined)
   })
 
   it('does not consult the adapter when adaptiveSteering is off', async () => {
@@ -814,7 +814,7 @@ describe('memory:prepare-codex-context', () => {
     await invoke('memory:prepare-codex-context', { cwd: '/repo/holdout-project' })
     expect(M.armForSession).toHaveBeenCalledWith('/repo/holdout-project')
     // The holdout only means anything if it actually unsteers the run it selected.
-    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo/holdout-project', { steering: null })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo/holdout-project', { steering: null, accountConnected: true }, undefined)
     expect(M.steeringDirective).not.toHaveBeenCalled()
   })
 
@@ -834,7 +834,7 @@ describe('memory:prepare-codex-context', () => {
     M.getHeadroomSettings.mockImplementation(() => { throw new Error('settings.json is corrupt') })
     const r = await invoke('memory:prepare-codex-context', { cwd: '/repo' })
     expect(r).toEqual({ success: true, data: { developerInstructions: 'DEV', approvals: 2 } })
-    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null })
+    expect(M.prepareCodexLaunch).toHaveBeenCalledWith(M.agentPaths, '/repo', { steering: null, accountConnected: true }, undefined)
     expect(M.steeringDirective).not.toHaveBeenCalled()
   })
 
@@ -858,7 +858,8 @@ describe('claude:trust-workspace', () => {
     expect(M.isFolderTrustAllowed.mock.calls[0]).toHaveLength(2)
     expect(M.safeGitAsync).toHaveBeenCalledWith(['rev-parse', '--show-toplevel'], { cwd: '/repo/packages/app', timeout: 2000 })
     // Untrimmed, the key would be "/repo\n" — never equal to the key Claude itself writes.
-    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/repo/packages/app', '/repo')
+    // No account named: the default profile's .claude.json (no target).
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/repo/packages/app', '/repo', undefined)
     expect(r).toEqual({ success: true, data: { changed: true, keys: ['/repo'] } })
   })
 
@@ -870,9 +871,10 @@ describe('claude:trust-workspace', () => {
     M.safeGitAsync.mockClear()
     const r = await invoke('claude:trust-workspace', { cwd: '/home/me' })
     expect(M.safeGitAsync).not.toHaveBeenCalled()
-    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/home/me')
-    // No git root argument at all — not even null — on the refused path.
-    expect(M.trustFolderForAgents.mock.calls[0]).toHaveLength(2)
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/home/me', undefined, undefined)
+    // No git root at all — not even null — on the refused path. (The fourth argument is the
+    // launch's account profile: none here.)
+    expect(M.trustFolderForAgents.mock.calls[0][2]).toBeUndefined()
     expect(r).toEqual({ success: true, data: { changed: false, keys: [], skipped: 'no-consent' } })
   })
 
@@ -881,14 +883,14 @@ describe('claude:trust-workspace', () => {
     // "not a repo" into "trust failed", and the dialog Termpolis exists to suppress comes back.
     M.safeGitAsync.mockRejectedValueOnce(new Error('not a git repository'))
     const r = await invoke('claude:trust-workspace', { cwd: '/plain/dir' })
-    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/plain/dir', null)
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/plain/dir', null, undefined)
     expect(r.success).toBe(true)
   })
 
   it('passes a null root, not an empty-string key, when rev-parse returns only whitespace', async () => {
     M.safeGitAsync.mockResolvedValueOnce('   \n' as never)
     await invoke('claude:trust-workspace', { cwd: '/repo' })
-    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/repo', null)
+    expect(M.trustFolderForAgents).toHaveBeenCalledWith(M.agentPaths, '/repo', null, undefined)
   })
 
   it('surfaces a manager failure as err()', async () => {

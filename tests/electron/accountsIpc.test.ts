@@ -3,9 +3,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { existsSync, lstatSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
-  _resetTerminalAccountsForTest, accountSettingsEnv, connectedProfileTargets, forgetTerminalAccount,
-  isTerminalAccountConnected, noteTerminalAccount, registerAccountsIpc, resolveAccountTarget, terminalAccountId,
-  terminalsOnAccount,
+  _resetTerminalAccountsForTest, accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount,
+  isTerminalAccountConnected, noteTerminalAccount, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget,
+  terminalAccountId, terminalsOnAccount,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
@@ -823,6 +823,40 @@ describe('the lookups index.ts uses', () => {
     expect(removed.changes.map((r: { what: string }) => r.what)).toEqual(['MCP server'])
     // The main Codex profile was listed when x was added, and stays.
     expect((await list()).accounts.map((a) => [a.agent, a.label, a.isDefault])).toEqual([['codex', 'main', true]])
+  })
+
+  it('resolves a launch only to an account of the agent launched, so nothing is written into another agent\'s profile', async () => {
+    const ids = await accountsFixture()
+    mkdirSync(sb.paths.codexHome, { recursive: true })
+    const cx = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'cx', folder: 'new', connect: true, copy: false })).account.id
+    // The agent's own account resolves as resolveAccountTarget does.
+    expect(resolveLaunchTarget(sb.paths, ids.on, 'claude')).toEqual(resolveAccountTarget(sb.paths, ids.on))
+    expect(resolveLaunchTarget(sb.paths, ids.off, 'claude')).toMatchObject({ connected: false })
+    expect(resolveLaunchTarget(sb.paths, cx, 'codex').target).toEqual({ agent: 'codex', dir: join(sb.home, '.codex-cx'), accountId: cx })
+    expect(resolveLaunchTarget(sb.paths, undefined, 'codex')).toEqual({ connected: true })
+    // Another agent's account never does: a Claude profile is no CODEX_HOME, nor agy a Claude one.
+    for (const [id, agent] of [[ids.on, 'codex'], [cx, 'claude'], [ids.agy, 'claude']] as const) {
+      const r = resolveLaunchTarget(sb.paths, id, agent)
+      expect(r.connected).toBe(false)
+      expect(r.target).toBeUndefined()
+    }
+  })
+
+  it('names the CODEX_HOME to take home-folder trust out of, and never falls back to the default for a missing one', async () => {
+    const ids = await accountsFixture()
+    mkdirSync(sb.paths.codexHome, { recursive: true })
+    const cx = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'cx', folder: 'new', copy: false })).account
+    const codexMain = (await list()).accounts.find((a) => a.agent === 'codex' && a.isDefault) as AccountRowView
+    expect(codexHomeFor(sb.paths, undefined)).toEqual({})
+    expect(codexHomeFor(sb.paths, 'acc_ffffffffffff')).toEqual({})
+    expect(codexHomeFor(sb.paths, codexMain.id)).toEqual({})
+    // Not connected is fine here: taking trust out is what the user asked for, on that account.
+    expect(codexHomeFor(sb.paths, cx.id)).toEqual({ home: join(sb.home, '.codex-cx') })
+    expect(codexHomeFor(sb.paths, ids.on)).toEqual({ error: 'on is not a Codex account' })
+    const doc = readJson(join(sb.paths.userData, 'agent-accounts.json'))
+    doc.accounts.push({ id: 'acc_00000000000c', agent: 'codex', label: 'lost', profile: join(sb.home, '.codex-lost'), connect: true, links: [] })
+    writeJson(join(sb.paths.userData, 'agent-accounts.json'), doc)
+    expect(codexHomeFor(sb.paths, 'acc_00000000000c')).toEqual({ error: 'lost\'s profile folder doesn\'t exist' })
   })
 
   it('reads a Claude account\'s own settings.json env for the proxy decision', async () => {

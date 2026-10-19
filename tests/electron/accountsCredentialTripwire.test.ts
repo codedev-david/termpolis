@@ -109,6 +109,15 @@ describe('the accounts source (D11)', () => {
     }
     expect(importers).toEqual([])
   })
+
+  it('imports no electron in main or shared, so the uninstall-time disconnect can bundle the registry', () => {
+    // resources/disconnect-agents.cjs runs in Electron's Node mode, where the electron API is not
+    // there; agent integration reads the registry through these modules.
+    const importers = files
+      .filter((f) => !/[\\/]renderer[\\/]/.test(f))
+      .filter((f) => /from\s+['"]electron['"]|require\(\s*['"]electron['"]\s*\)/.test(realFs.readFileSync(f, 'utf-8')))
+    expect(importers).toEqual([])
+  })
 })
 
 // ── 2. The live tripwire ─────────────────────────────────────────────────────────────

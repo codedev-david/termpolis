@@ -605,9 +605,14 @@ import {
   removeCodexHomeTrust,
   conductorMcpConfig,
   codexHasTermpolisServer,
+  isAgentIntegrationConnected,
   type AgentIntegrationPaths,
   type AgentIntegrationRuntime,
 } from './agentIntegrationManager'
+import {
+  accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount, isTerminalAccountConnected,
+  registerAccountsIpc, resolveLaunchTarget,
+} from './accountsIpc'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import {
   repairWindowsShortcuts,
@@ -792,7 +797,7 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
   return ok()
 })
 
-ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom }) => {
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
@@ -820,7 +825,8 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
           remoteNoteTerminalOutput(id)
-        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined)
+          // A launch on an account steps aside for that profile's own routing, not the default one's.
+        }, allExtraPaths, claudeHeadroom ? (getProxyEnv(process.env, accountSettingsEnv(agentIntegrationPaths(), accountId)) ?? undefined) : undefined)
         resolve()
       } catch (e) {
         reject(e)
@@ -871,6 +877,7 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
     // agent or phone terminal closed by hand counted against MAX_MCP_TERMINALS until a restart.
     mcpCreatedTerminals.delete(id)
     remoteTerminals.remove(id)
+    forgetTerminalAccount(id)
     try { detachWatchers(id) } catch {}
     if (recentlyAuditedTerminals.has(id)) {
       recentlyAuditedTerminals.delete(id)
@@ -2580,7 +2587,7 @@ ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cw
 // the memory tools' approvals Codex is missing, never changing one the user set, and returns no
 // instruction when the user's config.toml sets developer_instructions itself or they haven't
 // connected the agents. See agentIntegrationManager.ts.
-ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string }) => {
+ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string; accountId?: string }) => {
   try {
     if (!opts?.cwd) return err('cwd required')
     let steering = false
@@ -2597,9 +2604,14 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
       // the experiment whichever agent it launches, and the arms stay comparable.
       if (steering && armForSession(opts.cwd) === 'holdout') steering = false
     } catch { /* steering optional */ }
-    return ok(prepareCodexLaunch(agentIntegrationPaths(), opts.cwd, {
+    // A launch on an account is prepared in that account's CODEX_HOME, and not at all in one the
+    // user didn't connect (R9).
+    const paths = agentIntegrationPaths()
+    const account = resolveLaunchTarget(paths, opts.accountId, 'codex')
+    return ok(prepareCodexLaunch(paths, opts.cwd, {
       steering: steering ? steeringDirective(steeringMode) : null,
-    }))
+      accountConnected: account.connected,
+    }, account.target?.dir))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -2777,8 +2789,11 @@ const linkedJobMcp = createLinkedJobMcp({
 
 function agentIntegrationRuntime(): AgentIntegrationRuntime {
   const hook = agentHookPath()
+  const paths = agentIntegrationPaths()
   return {
-    paths: agentIntegrationPaths(),
+    paths,
+    // Every connected account's profile (Settings ▸ Accounts) gets what the default one gets.
+    profiles: connectedProfileTargets(paths),
     adapterPath: agentAdapterPath(),
     // Forward slashes for the embedded hook command: node accepts them on every OS.
     hookScriptPath: existsSync(hook) ? hook.replace(/\\/g, '/') : null,
@@ -2809,20 +2824,23 @@ function writeConductorMcpConfig(): void {
 // is what used to kill launches — since Claude Code 2.1.x it opens focused on "No, exit".
 // Only once the user connected the agents, and never for the home folder or a filesystem
 // root: there Claude asks, as it would anywhere else. See agentIntegrationManager.ts.
-ipcMain.handle('claude:trust-workspace', async (_, req: { cwd?: unknown }) => {
+ipcMain.handle('claude:trust-workspace', async (_, req: { cwd?: unknown; accountId?: unknown }) => {
   try {
     // Checked in here, not destructured in the parameter list: a null payload threw there, before
     // this try, and rejected the call instead of answering it.
     const cwd = req?.cwd
     if (typeof cwd !== 'string' || !cwd) return err('cwd required')
     const paths = agentIntegrationPaths()
-    if (!isFolderTrustAllowed(paths, cwd)) return ok(trustFolderForAgents(paths, cwd))
+    // Trusted in the profile the launch runs on, and never in one the user didn't connect (R9).
+    const account = resolveLaunchTarget(paths, req?.accountId, 'claude')
+    if (!account.connected) return ok({ changed: false, keys: [], skipped: 'account-not-connected' })
+    if (!isFolderTrustAllowed(paths, cwd)) return ok(trustFolderForAgents(paths, cwd, undefined, account.target))
     // Claude keys a git repo by its ROOT, so seed that too when there is one — it is
     // the exact key Claude itself would write, and it covers launches from a subdir.
     const root = await safeGitAsync(['rev-parse', '--show-toplevel'], { cwd, timeout: 2000 })
       .then((s) => s.trim())
       .catch(() => '')
-    return ok(trustFolderForAgents(paths, cwd, root || null))
+    return ok(trustFolderForAgents(paths, cwd, root || null, account.target))
   } catch (e: any) { return err(e.message) }
 })
 
@@ -2850,6 +2868,9 @@ ipcMain.handle(AGENT_INTEGRATION_IPC.set, async (_, req: AgentIntegrationSetRequ
 ipcMain.handle(AGENT_INTEGRATION_IPC.folderTrustAllowed, async (_, req: { terminalId?: unknown; fallbackCwd?: unknown }) => {
   try {
     const paths = agentIntegrationPaths()
+    // Never in a terminal Termpolis put on an account the user didn't connect (R9): Claude would
+    // write that trust itself, where no ledger records it and Disconnect never takes it back.
+    if (!isTerminalAccountConnected(paths, req?.terminalId)) return ok(false)
     const live = typeof req?.terminalId === 'string' ? await getTerminalCwdAsync(req.terminalId) : null
     const cwd = live || req?.fallbackCwd
     if (typeof cwd !== 'string' || !cwd || !isFolderTrustAllowed(paths, cwd)) return ok(false)
@@ -2859,8 +2880,34 @@ ipcMain.handle(AGENT_INTEGRATION_IPC.folderTrustAllowed, async (_, req: { termin
   } catch (e: any) { return err(e.message) }
 })
 
-ipcMain.handle(AGENT_INTEGRATION_IPC.removeCodexHomeTrust, async () => {
-  try { return ok(removeCodexHomeTrust(agentIntegrationPaths())) } catch (e: any) { return err(e.message) }
+ipcMain.handle(AGENT_INTEGRATION_IPC.removeCodexHomeTrust, async (_, req?: { accountId?: unknown }) => {
+  try {
+    const paths = agentIntegrationPaths()
+    // An account's own CODEX_HOME; never the default one in place of a missing one.
+    const home = codexHomeFor(paths, req?.accountId)
+    if ('error' in home) return ok({ changed: false, error: home.error })
+    return ok(removeCodexHomeTrust(paths, home.home))
+  } catch (e: any) { return err(e.message) }
+})
+
+// Settings ▸ Accounts: more than one sign-in per agent. Everything runs in accountsIpc.ts.
+registerAccountsIpc(ipcMain, {
+  paths: agentIntegrationPaths,
+  runtime: agentIntegrationRuntime,
+  integrationConnected: () => isAgentIntegrationConnected(agentIntegrationPaths()),
+  pickFolder: async (title) => {
+    // An e2e run can't drive the OS dialog; the folder it names must be in its scratch home.
+    if (process.env.TERMPOLIS_TEST_AGENT_HOME && process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER) return process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER
+    // Every profile folder is a dot-folder, which the macOS and GTK dialogs hide by default.
+    const r = await dialog.showOpenDialog(mainWindow!, { title, defaultPath: homedir(), properties: ['openDirectory', 'showHiddenFiles'] })
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
+  },
+  send: (channel, payload) => { mainWindow?.webContents.send(channel, payload) },
+  checkCwd: () => {
+    const dir = join(app.getPath('userData'), 'account-checks')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  },
 })
 
 ipcMain.handle('workspace:revoke-trust', async (_, req: { cwd?: unknown }) => {

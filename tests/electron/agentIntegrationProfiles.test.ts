@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import {
   bootAgentIntegration, connectAccountProfile, disconnectAccountProfile, disconnectAgentIntegration,
-  isFolderTrustAllowed, prepareCodexLaunch, profileConnection, removeCodexHomeTrust, setAgentIntegration,
+  isAgentIntegrationConnected, isFolderTrustAllowed, prepareCodexLaunch, profileConnection, removeCodexHomeTrust, setAgentIntegration,
   stripCopiedEntries, trustFolderForAgents,
 } from '../../src/main/agentIntegrationManager'
 import type { ProfileTarget } from '../../src/main/agentIntegrationManager'
@@ -595,5 +595,22 @@ describe('more edges', () => {
     const x = codexTarget('.codex-dir')
     mkdirSync(join(x.dir, 'config.toml'), { recursive: true })
     expect(profileConnection(x)).toEqual({ server: false, hook: false, allow: false })
+  })
+})
+
+describe('isAgentIntegrationConnected', () => {
+  it('reads the consent every per-account write rests on, from the ledger alone', () => {
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(false)
+    granted()
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(true)
+    writeLedger(sb, { consent: 'declined' })
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(false)
+    // A legacy install that hasn't answered the review stays connected, as at launch.
+    writeLedger(sb, { consent: null, legacy: true })
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(true)
+  })
+
+  it('answers false, never throws, when the ledger can\'t be read', () => {
+    expect(isAgentIntegrationConnected({ ...sb.paths, userData: 'relative/ud' })).toBe(false)
   })
 })

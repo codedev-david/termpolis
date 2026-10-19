@@ -1051,6 +1051,16 @@ function failed(rt: AgentIntegrationRuntime, e: unknown, changes: AgentIntegrati
   return { status: getAgentIntegrationStatus(paths as AgentIntegrationPaths), changes: [...changes.filter(isChange), row] }
 }
 
+/** Agent Integration's consent, as launch reads it: what every per-account write rests on. Reads
+ *  the ledger only, never the agents' configs, so Settings ▸ Accounts can ask on every call. */
+export function isAgentIntegrationConnected(paths: AgentIntegrationPaths): boolean {
+  try {
+    return isConnected(loadLedger(paths))
+  } catch {
+    return false
+  }
+}
+
 /** Read-only snapshot for the renderer. Creates the ledger on first call (detecting legacy). */
 export function getAgentIntegrationStatus(paths: AgentIntegrationPaths): AgentIntegrationStatus {
   try {

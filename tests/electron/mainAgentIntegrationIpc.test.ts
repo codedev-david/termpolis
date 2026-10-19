@@ -28,6 +28,11 @@
 //   * `--disconnect-agents` runs before Sentry starts, prints one row per change (with the error when
 //     there is one) and exits 0 even when the disconnect throws: an uninstaller must never be
 //     blocked, or failed, by a config it could not clean.
+//   * Settings ▸ Accounts (v1.54.0, accountsIpc.ts, mocked whole here too): its IPC is registered
+//     once with main's own paths, runtime, consent and folder dialog; the runtime carries every
+//     connected account's profile; and the launch-time writes and answers -- folder trust, the
+//     poller's trust verdict, the Codex prepare, the home-trust removal -- go to the launch's own
+//     account, and refuse one the user didn't connect (R9).
 //
 // Why this file pins `@vitest-environment node` (line 1): Vitest 4 dropped `environmentMatchGlobs`,
 // so vitest.config.ts's ['tests/electron/**', 'node'] is silently ignored and every file in
@@ -66,6 +71,7 @@ const H = vi.hoisted(() => {
   const runner = { command: '/scratch/bin/node', env: { SENTINEL: 'runner' } }
   const conductorCfg = { mcpServers: { termpolis: { type: 'stdio', command: '/scratch/bin/node', args: ['adapter.cjs'] } } }
   // What the boot reports: one clean change and one that failed, so both halves of the line show.
+  const profiles = [{ agent: 'claude', dir: '/scratch/home/.claude-b', claudeJson: '/scratch/home/.claude-b/.claude.json', accountId: 'acc_bbbbbbbbbbbb' }]
   const bootChanges = [
     { agent: 'claude', file: '/scratch/home/.claude/settings.json', action: 'add', what: 'SessionStart memory hook' },
     { agent: 'codex', file: '/scratch/home/.codex/config.toml', action: 'skipped', what: 'MCP server `termpolis`', error: 'EACCES: permission denied' },
@@ -87,6 +93,18 @@ const H = vi.hoisted(() => {
     prepareCodexLaunch: vi.fn(() => ({ developerInstructions: null })),
     removeCodexHomeTrust: vi.fn((_paths: unknown): { changed: boolean; error?: string } => ({ changed: true })),
     conductorMcpConfig: vi.fn((_rt: unknown) => conductorCfg),
+    isAgentIntegrationConnected: vi.fn((_paths: unknown) => true),
+    // Settings ▸ Accounts, whole: the sentinel profiles prove the runtime hands them on untouched.
+    profiles,
+    registerAccountsIpc: vi.fn((_ipc: unknown, _deps: unknown) => undefined),
+    connectedProfileTargets: vi.fn((_paths: unknown) => profiles),
+    resolveLaunchTarget: vi.fn((_paths: unknown, _id: unknown, _agent: string): { connected: boolean; target?: unknown } => ({ connected: true })),
+    isTerminalAccountConnected: vi.fn((_paths: unknown, _id: unknown) => true),
+    codexHomeFor: vi.fn((_paths: unknown, _id: unknown): { home?: string } | { error: string } => ({})),
+    accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
+    forgetTerminalAccount: vi.fn((_id: string) => undefined),
+    getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
+    mkdirSync: vi.fn(),
   }
 })
 
@@ -371,7 +389,7 @@ vi.mock('fs', () => {
     writeFileSync: mockWriteFileSync, existsSync: H.existsSync,
     readFileSync: vi.fn(() => '{}'), readdirSync: vi.fn(() => []),
     statSync: vi.fn(() => ({ isDirectory: () => false, mtimeMs: 0, size: 0 })),
-    mkdirSync: vi.fn(), appendFileSync: vi.fn(),
+    mkdirSync: H.mkdirSync, appendFileSync: vi.fn(),
     renameSync: vi.fn(), unlinkSync: vi.fn(), watch: vi.fn(),
   }
   return { ...impl, default: impl }
@@ -392,6 +410,22 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   prepareCodexLaunch: H.prepareCodexLaunch,
   removeCodexHomeTrust: H.removeCodexHomeTrust,
   conductorMcpConfig: H.conductorMcpConfig,
+  isAgentIntegrationConnected: H.isAgentIntegrationConnected,
+}))
+// Settings ▸ Accounts, whole, for the same reason as the manager.
+vi.mock('../../src/main/accountsIpc', () => ({
+  registerAccountsIpc: H.registerAccountsIpc,
+  connectedProfileTargets: H.connectedProfileTargets,
+  resolveLaunchTarget: H.resolveLaunchTarget,
+  isTerminalAccountConnected: H.isTerminalAccountConnected,
+  codexHomeFor: H.codexHomeFor,
+  accountSettingsEnv: H.accountSettingsEnv,
+  forgetTerminalAccount: H.forgetTerminalAccount,
+}))
+// The proxy's launch env, so a test can see which profile's routing it was asked about.
+vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/main/headroomProxy/proxySupervisor')>()),
+  getProxyEnv: H.getProxyEnv,
 }))
 // The git-root probe, so a test can say what `git rev-parse --show-toplevel` answered.
 vi.mock('../../src/main/gitCommand', async (importOriginal) => ({
@@ -420,7 +454,7 @@ const CONDUCTOR_JSON = JSON.stringify(H.conductorCfg, null, 2)
 
 /** The runtime index.ts assembles for the manager in a dev build with no hook script on disk
  *  (existsSync is stubbed false here; mainIndexBranchesB covers the hook-present path on real fs). */
-const RUNTIME = { paths: H.agentPaths, adapterPath: DEV_ADAPTER, hookScriptPath: null, node: H.runner }
+const RUNTIME = { paths: H.agentPaths, profiles: H.profiles, adapterPath: DEV_ADAPTER, hookScriptPath: null, node: H.runner }
 
 /** writeFileSync calls that wrote the conductor's --mcp-config, each with its global call order. */
 function conductorWrites(): Array<{ args: unknown[]; order: number }> {
@@ -453,6 +487,7 @@ const boot = {
   agentLines: [] as string[],
   disconnects: -1,
   exits: -1,
+  accountsRegistrations: [] as unknown[][],
 }
 
 beforeAll(async () => {
@@ -474,6 +509,7 @@ beforeAll(async () => {
     .filter((l): l is string => typeof l === 'string' && l.startsWith('[agents]'))
   boot.disconnects = H.disconnectAgentIntegration.mock.calls.length
   boot.exits = H.appExit.mock.calls.length
+  boot.accountsRegistrations = H.registerAccountsIpc.mock.calls.map((c) => [...c])
 }, 60_000)
 
 afterAll(() => {
@@ -492,6 +528,8 @@ beforeEach(() => {
     H.appExit, H.existsSync, H.safeGitAsync, H.resolveAgentIntegrationPaths, H.disconnectAgentIntegration,
     H.getAgentIntegrationStatus, H.setAgentIntegration, H.isFolderTrustAllowed, H.removeCodexHomeTrust,
     H.conductorMcpConfig, mockWriteFileSync, mockGetTerminalCwdAsync,
+    H.isAgentIntegrationConnected, H.connectedProfileTargets, H.resolveLaunchTarget, H.isTerminalAccountConnected,
+    H.codexHomeFor, H.accountSettingsEnv, H.getProxyEnv, mockShowOpenDialog, mockDetectAvailableShells,
   ] as Array<{ mockReset: () => void }>) m.mockReset()
 })
 
@@ -691,13 +729,153 @@ describe('agents:remove-codex-home-trust', () => {
     H.removeCodexHomeTrust.mockReturnValueOnce({ changed: false })
     expect(await invoke(IPC.removeCodexHomeTrust)).toEqual({ success: true, data: { changed: false } })
     expect(H.resolveAgentIntegrationPaths).toHaveBeenCalledWith(homedir(), H.userData, process.env)
-    expect(H.removeCodexHomeTrust).toHaveBeenCalledWith(H.agentPaths)
+    // No account named: the default CODEX_HOME.
+    expect(H.codexHomeFor).toHaveBeenCalledWith(H.agentPaths, undefined)
+    expect(H.removeCodexHomeTrust).toHaveBeenCalledWith(H.agentPaths, undefined)
   })
 
   it('returns a failure as err()', async () => {
     H.resolveAgentIntegrationPaths.mockImplementationOnce(() => { throw new Error('no home folder') })
     expect(await invoke(IPC.removeCodexHomeTrust)).toEqual({ success: false, error: 'no home folder' })
     expect(H.removeCodexHomeTrust).not.toHaveBeenCalled()
+  })
+})
+
+// ===========================================================================
+// Settings ▸ Accounts (v1.54.0): the IPC's registration, and the account a launch-time write or
+// answer goes to.
+// ===========================================================================
+describe('Settings ▸ Accounts wiring', () => {
+  const deps = (): any => boot.accountsRegistrations[0][1]
+
+  it('registers the accounts IPC once, on ipcMain, with main\'s own paths, runtime and consent', () => {
+    expect(boot.accountsRegistrations).toHaveLength(1)
+    expect(typeof (boot.accountsRegistrations[0][0] as { handle: unknown }).handle).toBe('function')
+    expect(deps().paths()).toBe(H.agentPaths)
+    expect(H.resolveAgentIntegrationPaths).toHaveBeenCalledWith(homedir(), H.userData, process.env)
+    expect(deps().runtime()).toEqual(RUNTIME)
+    H.isAgentIntegrationConnected.mockReturnValueOnce(false)
+    expect(deps().integrationConnected()).toBe(false)
+    expect(H.isAgentIntegrationConnected).toHaveBeenCalledWith(H.agentPaths)
+    expect(deps().integrationConnected()).toBe(true)
+  })
+
+  it('gives agent integration every connected account\'s profile, read afresh for each runtime', () => {
+    expect(boot.runtimes.map((r) => (r as { profiles: unknown }).profiles)).toEqual([H.profiles])
+    H.connectedProfileTargets.mockClear()
+    deps().runtime()
+    expect(H.connectedProfileTargets).toHaveBeenCalledWith(H.agentPaths)
+  })
+
+  it('opens main\'s own folder dialog on hidden folders, and answers null when it is cancelled', async () => {
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/scratch/home/.claude-x'] })
+    expect(await deps().pickFolder('Choose the Claude Code profile folder')).toBe('/scratch/home/.claude-x')
+    expect(mockShowOpenDialog).toHaveBeenCalledWith(mockMainWindow, {
+      title: 'Choose the Claude Code profile folder', defaultPath: homedir(), properties: ['openDirectory', 'showHiddenFiles'],
+    })
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: ['/scratch/home/.claude-x'] })
+    expect(await deps().pickFolder('t')).toBeNull()
+    mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [] })
+    expect(await deps().pickFolder('t')).toBeNull()
+  })
+
+  it('takes the folder an e2e run names only in a test run, with no dialog', async () => {
+    const saved = { home: process.env.TERMPOLIS_TEST_AGENT_HOME, folder: process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER }
+    try {
+      process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER = '/scratch/home/.claude-e2e'
+      delete process.env.TERMPOLIS_TEST_AGENT_HOME
+      mockShowOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+      expect(await deps().pickFolder('t')).toBeNull()
+      expect(mockShowOpenDialog).toHaveBeenCalledTimes(1)
+      process.env.TERMPOLIS_TEST_AGENT_HOME = '/scratch/home'
+      expect(await deps().pickFolder('t')).toBe('/scratch/home/.claude-e2e')
+      expect(mockShowOpenDialog).toHaveBeenCalledTimes(1)
+    } finally {
+      if (saved.home === undefined) delete process.env.TERMPOLIS_TEST_AGENT_HOME
+      else process.env.TERMPOLIS_TEST_AGENT_HOME = saved.home
+      if (saved.folder === undefined) delete process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER
+      else process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER = saved.folder
+    }
+  })
+
+  it('sends a sign-in\'s progress to the window, and runs the status checks in a folder of its own', () => {
+    deps().send('accounts:sign-in-progress', { accountId: 'acc_bbbbbbbbbbbb', done: false, email: null })
+    expect(mockWebContents.send).toHaveBeenCalledWith('accounts:sign-in-progress', { accountId: 'acc_bbbbbbbbbbbb', done: false, email: null })
+    const dir = join(H.userData, 'account-checks')
+    expect(deps().checkCwd()).toBe(dir)
+    expect(H.mkdirSync).toHaveBeenCalledWith(dir, { recursive: true })
+  })
+
+  it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {
+    const target = H.profiles[0]
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })
+    expect(await invoke('claude:trust-workspace', { cwd: '/repo', accountId: 'acc_off' }))
+      .toEqual({ success: true, data: { changed: false, keys: [], skipped: 'account-not-connected' } })
+    expect(H.resolveLaunchTarget).toHaveBeenCalledWith(H.agentPaths, 'acc_off', 'claude')
+    expect(H.isFolderTrustAllowed).not.toHaveBeenCalled()
+    expect(H.trustFolderForAgents).not.toHaveBeenCalled()
+    expect(rootProbes()).toEqual([])
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: true, target })
+    H.safeGitAsync.mockResolvedValueOnce('/repo\n')
+    await invoke('claude:trust-workspace', { cwd: '/repo/app', accountId: 'acc_bbbbbbbbbbbb' })
+    expect(H.trustFolderForAgents).toHaveBeenLastCalledWith(H.agentPaths, '/repo/app', '/repo', target)
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: true, target })
+    H.isFolderTrustAllowed.mockReturnValueOnce(false)
+    await invoke('claude:trust-workspace', { cwd: '/home/me', accountId: 'acc_bbbbbbbbbbbb' })
+    expect(H.trustFolderForAgents).toHaveBeenLastCalledWith(H.agentPaths, '/home/me', undefined, target)
+  })
+
+  it('never lets the poller answer a trust prompt in a terminal on an unconnected account (R9)', async () => {
+    H.isTerminalAccountConnected.mockReturnValueOnce(false)
+    expect(await invoke(IPC.folderTrustAllowed, { terminalId: 't-off', fallbackCwd: '/repo' })).toEqual({ success: true, data: false })
+    expect(H.isTerminalAccountConnected).toHaveBeenCalledWith(H.agentPaths, 't-off')
+    // Refused before the shell is probed or the manager asked.
+    expect(mockGetTerminalCwdAsync).not.toHaveBeenCalled()
+    expect(H.isFolderTrustAllowed).not.toHaveBeenCalled()
+  })
+
+  it('prepares a Codex launch in the account\'s own CODEX_HOME, and adds nothing for one not connected (R9)', async () => {
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: true, target: { agent: 'codex', dir: '/scratch/home/.codex-b', accountId: 'acc_c' } })
+    await invoke('memory:prepare-codex-context', { cwd: '/repo', accountId: 'acc_c' })
+    expect(H.resolveLaunchTarget).toHaveBeenCalledWith(H.agentPaths, 'acc_c', 'codex')
+    expect(H.prepareCodexLaunch).toHaveBeenLastCalledWith(H.agentPaths, '/repo', expect.objectContaining({ accountConnected: true }), '/scratch/home/.codex-b')
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })
+    await invoke('memory:prepare-codex-context', { cwd: '/repo', accountId: 'acc_off' })
+    expect(H.prepareCodexLaunch).toHaveBeenLastCalledWith(H.agentPaths, '/repo', expect.objectContaining({ accountConnected: false }), undefined)
+  })
+
+  it('takes home-folder trust out of an account\'s CODEX_HOME, and never the default one instead of a missing one', async () => {
+    H.codexHomeFor.mockReturnValueOnce({ home: '/scratch/home/.codex-b' })
+    await invoke(IPC.removeCodexHomeTrust, { accountId: 'acc_c' })
+    expect(H.codexHomeFor).toHaveBeenCalledWith(H.agentPaths, 'acc_c')
+    expect(H.removeCodexHomeTrust).toHaveBeenCalledWith(H.agentPaths, '/scratch/home/.codex-b')
+    H.removeCodexHomeTrust.mockClear()
+    H.codexHomeFor.mockReturnValueOnce({ error: 'lost\'s profile folder doesn\'t exist' })
+    expect(await invoke(IPC.removeCodexHomeTrust, { accountId: 'acc_lost' }))
+      .toEqual({ success: true, data: { changed: false, error: 'lost\'s profile folder doesn\'t exist' } })
+    expect(H.removeCodexHomeTrust).not.toHaveBeenCalled()
+  })
+
+  it('judges a Claude launch\'s proxy by its own account\'s profile, and forgets a terminal\'s account when it closes', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    const accountEnv = { ANTHROPIC_BASE_URL: 'http://gateway.example' }
+    H.accountSettingsEnv.mockReturnValueOnce(accountEnv)
+    expect((await invoke('terminal:create', { id: 't-acc', shellType: 'powershell', cwd: '/repo', claudeHeadroom: true, accountId: 'acc_bbbbbbbbbbbb' })).success).toBe(true)
+    expect(H.accountSettingsEnv).toHaveBeenCalledWith(H.agentPaths, 'acc_bbbbbbbbbbbb')
+    expect(H.getProxyEnv).toHaveBeenCalledWith(process.env, accountEnv)
+    // The proxy stepped aside (null), so the launch gets no proxy env.
+    expect(mockSpawnTerminal.mock.calls[0][5]).toBeUndefined()
+    const proxied = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }
+    H.getProxyEnv.mockReturnValueOnce(proxied)
+    await invoke('terminal:create', { id: 't-acc2', shellType: 'powershell', cwd: '/repo', claudeHeadroom: true })
+    expect(H.accountSettingsEnv).toHaveBeenLastCalledWith(H.agentPaths, undefined)
+    expect(mockSpawnTerminal.mock.calls[1][5]).toBe(proxied)
+    // Not a Claude launch: no profile is read for it.
+    H.accountSettingsEnv.mockClear()
+    await invoke('terminal:create', { id: 't-plain', shellType: 'powershell', cwd: '/repo' })
+    expect(H.accountSettingsEnv).not.toHaveBeenCalled()
+    await invoke('terminal:kill', { id: 't-acc' })
+    expect(H.forgetTerminalAccount).toHaveBeenCalledWith('t-acc')
   })
 })
 
