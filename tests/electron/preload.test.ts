@@ -620,6 +620,13 @@ describe('preload: agentActivity API', () => {
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentWatcher:attach', { terminalId: 't1', cwd: '/cwd', agentType: 'claude' })
   })
 
+  it("attachWatcher hands on a session id, the swarm conductor's", async () => {
+    await exposed.agentActivity.attachWatcher('c1', '/cwd', 'claude', '1b4e28ba-2fa1-41d2-883f-0016d3cca427')
+    expect(mockIpcRenderer.invoke).toHaveBeenLastCalledWith('agentWatcher:attach', {
+      terminalId: 'c1', cwd: '/cwd', agentType: 'claude', sessionId: '1b4e28ba-2fa1-41d2-883f-0016d3cca427',
+    })
+  })
+
   it('detachWatcher invokes agentWatcher:detach', async () => {
     await exposed.agentActivity.detachWatcher('t1')
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentWatcher:detach', { terminalId: 't1' })

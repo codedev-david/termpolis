@@ -155,7 +155,8 @@ test.describe.serial('Swarm launch command shape', () => {
       expect(psBody).toContain('claude')
       expect(psBody).toContain('--dangerously-skip-permissions')
       // The task is piped in, as UTF-8 without a BOM, and never put on the command line.
-      expect(psBody).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+\.termpolis-conductor-task\.md' \| \S.* -p (--mcp-config '[^']+' )?--dangerously-skip-permissions$/m)
+      // Under a session id of its own, whose transcript Trace follows.
+      expect(psBody).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+\.termpolis-conductor-task\.md' \| \S.* -p (--mcp-config '[^']+' )?--session-id '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}' --dangerously-skip-permissions$/m)
       expect(psBody).toContain('$OutputEncoding = $enc')
       expect(psBody).toContain('[Console]::InputEncoding = $enc')
       expect(psBody).not.toContain('$task')
@@ -170,7 +171,7 @@ test.describe.serial('Swarm launch command shape', () => {
       const shBody = fs.readFileSync(RUN_SH, 'utf-8')
       expect(shBody).toContain('claude')
       expect(shBody).toContain('--dangerously-skip-permissions')
-      expect(shBody).toMatch(/ -p (--mcp-config '[^']+' )?--dangerously-skip-permissions < "\$TASK_FILE"$/m)
+      expect(shBody).toMatch(/ -p (--mcp-config '[^']+' )?--session-id '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}' --dangerously-skip-permissions < "\$TASK_FILE"$/m)
       expect(shBody).not.toContain('$(cat')
       expect(shBody).toContain("\necho '[termpolis-conductor-started]'\n")
       expect(shBody).toMatch(/< "\$TASK_FILE"\ncode=\$\?\necho\necho "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
@@ -257,7 +258,10 @@ test.describe.serial('Swarm launch command shape', () => {
     expect(task).toContain(GOAL)
     // PowerShell appends one CRLF to what it pipes; bash's `<` hands the file over as it is.
     expect(received!.prompt).toBe(process.platform === 'win32' ? task + '\r\n' : task)
-    expect(received!.argv).toEqual(['-p', '--mcp-config', expect.stringMatching(/claude-mcp-config\.json$/), '--dangerously-skip-permissions'])
+    expect(received!.argv).toEqual([
+      '-p', '--mcp-config', expect.stringMatching(/claude-mcp-config\.json$/),
+      '--session-id', expect.stringMatching(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/), '--dangerously-skip-permissions',
+    ])
   })
 
   test('9. The conductor terminal shows the exit report, and the swarm ends on its tasks', async () => {

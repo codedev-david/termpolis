@@ -3319,9 +3319,9 @@ ipcMain.handle('contextPins:clear', async (_, { cwd }: { cwd: string }) => {
 
 // ---- Transcript Watcher IPC ----
 // Renderer calls these when an agent is detected / terminal closes
-ipcMain.handle('agentWatcher:attach', async (_, { terminalId, cwd, agentType }: { terminalId: string; cwd: string; agentType: DetectedAgent }) => {
+ipcMain.handle('agentWatcher:attach', async (_, { terminalId, cwd, agentType, sessionId }: { terminalId: string; cwd: string; agentType: DetectedAgent; sessionId?: string }) => {
   try {
-    const handle = attachWatcher(terminalId, cwd, agentType)
+    const handle = attachWatcher(terminalId, cwd, agentType, sessionId)
     return ok({ attached: handle !== null })
   } catch (e: any) { return err(e.message) }
 })

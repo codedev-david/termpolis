@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { publish } from '../agentEventBus'
-import { tailFile, resolvePathWithinRoot, type TailHandle } from './baseWatcher'
+import { tailFile, resolvePathWithinRoot, POLL_INTERVAL_MS, type TailHandle } from './baseWatcher'
 
 /**
  * Claude Code transcript watcher.
@@ -313,4 +313,110 @@ export function attachClaudeCodeWatcher(terminalId: string, cwd: string): Claude
     sessionFile,
     stop: () => tail.stop(),
   }
+}
+
+/** What `claude --session-id` takes, and so all a session's transcript is named: `<id>.jsonl`. */
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** While a session's transcript is not where it is looked for, every this many looks (one as the
+ *  watcher starts, then one a poll) it is looked for in every project folder too (sessionFileIn),
+ *  up to this many looks: 5 minutes. */
+const SCAN_EVERY_POLLS = 4
+const SCAN_POLLS = 200
+
+export interface ClaudeSessionWatcherHandle extends ClaudeCodeWatcherHandle {
+  sessionId: string
+}
+
+/** The folder Claude Code keeps its sessions in, under its config home: CLAUDE_CONFIG_DIR when its
+ *  environment sets one (read from the folder it runs in, as its own code does), else ~/.claude. */
+export function claudeProjectsDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const configDir = env.CLAUDE_CONFIG_DIR
+  return path.join(configDir ? path.resolve(cwd, configDir) : path.join(os.homedir(), '.claude'), 'projects')
+}
+
+/** A working folder as PowerShell hands it to a program it starts: with a Windows short name
+ *  spelled out (DAVIDE~1 was DavidEngelhart, live), and every link resolved, as Claude Code then
+ *  does. Taken as given when it can't be read. */
+function spelledOut(cwd: string): string {
+  try {
+    return fs.realpathSync.native(cwd)
+  } catch {
+    return cwd
+  }
+}
+
+/** The transcript called `name` in any of Claude Code's project folders, or null. Off the main
+ *  thread: there can be thousands of them. */
+async function sessionFileIn(projectsDir: string, name: string): Promise<string | null> {
+  let folders: string[]
+  try {
+    folders = await fs.promises.readdir(projectsDir)
+  } catch {
+    return null
+  }
+  const found = await Promise.all(folders.map(async (folder) => {
+    const file = path.join(projectsDir, folder, name)
+    try {
+      await fs.promises.access(file)
+      return file
+    } catch {
+      return null
+    }
+  }))
+  return found.find((file) => file !== null) ?? null
+}
+
+/**
+ * Follow one Claude Code session's transcript, from its first byte: the file a `claude -p
+ * --session-id <id>` writes, `<id>.jsonl`, which the swarm conductor is started with. Unlike
+ * attachClaudeCodeWatcher's newest transcript in the folder, it can never be another session's,
+ * the last swarm's conductor or a Claude Code worker in the same folder (GitHub #36), and nothing
+ * before the session's own first line is in it, so no history is replayed.
+ *
+ * The file appears once claude has started (about 5 seconds, live). Until then it is looked for
+ * in the folder Claude Code names for the working folder, read as it reads it and as PowerShell
+ * hands it on; and, every few polls for a while, in every project folder: the id names one
+ * session only, so a file of that name is this one wherever Claude Code put it.
+ */
+export function attachClaudeSessionWatcher(
+  terminalId: string,
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ClaudeSessionWatcherHandle | null {
+  if (!SESSION_ID.test(sessionId)) return null
+  const projectsDir = claudeProjectsDir(cwd, env)
+  const name = `${sessionId}.jsonl`
+  const expected = [...new Set([claudeCwd(cwd), spelledOut(cwd)].map((form) => path.join(projectsDir, mangleCwd(form), name)))]
+  let tail: TailHandle | null = null
+  let stopped = false
+  let polls = 0
+  const handle: ClaudeSessionWatcherHandle = {
+    terminalId,
+    sessionId,
+    sessionFile: expected[0],
+    stop: () => {
+      stopped = true
+      clearInterval(locator)
+      tail?.stop()
+    },
+  }
+  const follow = (file: string): void => {
+    if (stopped || tail) return
+    clearInterval(locator)
+    handle.sessionFile = file
+    tail = tailFile(file, (line) => processClaudeLine(line, terminalId))
+  }
+  const locate = (): void => {
+    const file = expected.find((f) => fs.existsSync(f))
+    if (file) return follow(file)
+    polls += 1
+    if (polls % SCAN_EVERY_POLLS !== 0 || polls > SCAN_POLLS) return
+    void sessionFileIn(projectsDir, name).then((found) => {
+      if (found) follow(found)
+    })
+  }
+  const locator = setInterval(locate, POLL_INTERVAL_MS)
+  locate()
+  return handle
 }

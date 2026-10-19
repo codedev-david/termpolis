@@ -13,13 +13,16 @@ import {
 // the prompt arrived as extra arguments, `--watch`-like words as options, and claude exited.
 // The prompt now goes on stdin. These pin the shape; conductorLaunch.win.test.ts runs it.
 
+const SESSION = '1b4e28ba-2fa1-41d2-883f-0016d3cca427'
 const WIN = {
   taskFile: "C:\\Users\\O'Brien $x\\.termpolis-conductor-task.md",
   mcpConfigPath: "C:\\Users\\O'Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json",
+  sessionId: SESSION,
 }
 const UNIX = {
   taskFile: "/home/o'brien/.termpolis-conductor-task.md",
   mcpConfigPath: "/home/o'brien/.config/termpolis/claude-mcp-config.json",
+  sessionId: SESSION,
 }
 
 describe('conductorRunScript on Windows', () => {
@@ -28,7 +31,7 @@ describe('conductorRunScript on Windows', () => {
   it('pipes the task file into claude on stdin and puts only flags on its command line', () => {
     expect(script).toContain(
       "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\Users\\O''Brien $x\\.termpolis-conductor-task.md' | " +
-        "& $claudeExe -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --dangerously-skip-permissions",
+        "& $claudeExe -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions",
     )
     expect(script).not.toContain('$task')
   })
@@ -92,7 +95,7 @@ describe('conductorRunScript on Windows', () => {
   it('leaves --mcp-config out when there is no config path, rather than pass it empty', () => {
     const bare = conductorRunScript(true, { ...WIN, mcpConfigPath: '' })
     expect(bare).not.toContain('--mcp-config')
-    expect(bare).toContain('| & $claudeExe -p --dangerously-skip-permissions')
+    expect(bare).toContain("| & $claudeExe -p --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions")
   })
 
   it('in test mode runs the stand-in with the same delivery and skips the binary probe', () => {
@@ -101,7 +104,7 @@ describe('conductorRunScript on Windows', () => {
     expect(test).toContain('[Console]::InputEncoding = $enc')
     expect(test).toContain(
       "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\Users\\O''Brien $x\\.termpolis-conductor-task.md' | " +
-        "node e2e/mocks/mock-claude.cjs -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --dangerously-skip-permissions",
+        "node e2e/mocks/mock-claude.cjs -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions",
     )
   })
 })
@@ -113,7 +116,7 @@ describe('conductorRunScript on Linux and macOS', () => {
     expect(script.startsWith('#!/bin/bash\n')).toBe(true)
     expect(script).toContain("TASK_FILE='/home/o'\\''brien/.termpolis-conductor-task.md'")
     expect(script).toContain(
-      `"$CLAUDE_EXE" -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --dangerously-skip-permissions < "$TASK_FILE"`,
+      `"$CLAUDE_EXE" -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions < "$TASK_FILE"`,
     )
     expect(script).not.toContain('$(cat')
   })
@@ -121,15 +124,29 @@ describe('conductorRunScript on Linux and macOS', () => {
   it('leaves --mcp-config out when there is no config path', () => {
     const bare = conductorRunScript(false, { ...UNIX, mcpConfigPath: '' })
     expect(bare).not.toContain('--mcp-config')
-    expect(bare).toContain('"$CLAUDE_EXE" -p --dangerously-skip-permissions < "$TASK_FILE"')
+    expect(bare).toContain(`"$CLAUDE_EXE" -p --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions < "$TASK_FILE"`)
   })
 
   it('in test mode runs the stand-in with the same delivery and skips the binary probe', () => {
     const test = conductorRunScript(false, { ...UNIX, testCommand: 'node e2e/mocks/mock-claude.cjs' })
     expect(test).not.toContain('resolve_claude')
     expect(test).toContain(
-      "node e2e/mocks/mock-claude.cjs -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --dangerously-skip-permissions < \"$TASK_FILE\"",
+      "node e2e/mocks/mock-claude.cjs -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions < \"$TASK_FILE\"",
     )
+  })
+})
+
+// Trace follows the conductor's own session's transcript, `<id>.jsonl`, which claude names after
+// the id it is started with: not the newest transcript in the folder, which could be another's.
+describe('the run scripts start claude under the session id they are given', () => {
+  it('hand it to claude with --session-id, as a single-quoted literal, in every launch mode', () => {
+    for (const [isWindows, paths] of [[true, WIN], [false, UNIX]] as const) {
+      for (const testCommand of [undefined, 'node e2e/mocks/mock-claude.cjs']) {
+        const script = conductorRunScript(isWindows, { ...paths, sessionId: 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d', testCommand })
+        expect(script).toContain(" --session-id 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d' --dangerously-skip-permissions")
+        expect(script.match(/--session-id/g)).toHaveLength(1)
+      }
+    }
   })
 })
 

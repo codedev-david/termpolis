@@ -14,6 +14,9 @@ interface ConductorState {
   error: string | null
   cwd: string | null
   preSwarmSha: string | null
+  /** The id this launch's `claude -p` was started with (`--session-id`), whose transcript Trace
+   *  follows. Null until sendTask launches it. */
+  sessionId: string | null
 }
 
 /** What was already there when the conductor was launched, and so says nothing about this run.
@@ -29,11 +32,9 @@ interface LaunchBaseline {
   messageIds: Set<string>
 }
 
-let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
-/** The conductor terminal whose transcript Trace follows (watchConductorTrace), and whether this
- *  launch's conductor has acted yet, which its transcript must have before it is looked for. */
+let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null, sessionId: null }
+/** The conductor session whose transcript Trace follows (watchConductorTrace). */
 let traceWatchedFor: string | null = null
-let traceReady = false
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
 let launch: LaunchBaseline = { outputOffset: 0, taskIds: new Set(), messageIds: new Set() }
@@ -68,9 +69,8 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
 
   // Mark starting synchronously so the UI can update immediately; SHA capture
   // below happens async and is merged in once resolved.
-  conductorState = { terminalId: null, status: 'starting', error: null, cwd, preSwarmSha: null }
+  conductorState = { terminalId: null, status: 'starting', error: null, cwd, preSwarmSha: null, sessionId: null }
   traceWatchedFor = null
-  traceReady = false
 
   // Capture pre-swarm HEAD so SwarmReviewPanel can show the full delta of
   // everything the swarm touched. Fine to be null — review UI just hides.
@@ -90,7 +90,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, true) // conductor always runs `claude`
 
   if (!res.success) {
-    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null, preSwarmSha: null }
+    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null, preSwarmSha: null, sessionId: null }
     storeInit.setSwarmActive(false)
     return { success: false, error: conductorState.error! }
   }
@@ -228,9 +228,13 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const testCommand = claudeCmd !== 'claude' ? claudeCmd : undefined
   const native = (p: string): string => (isWindows ? p.replace(/\//g, '\\') : p)
   const scriptFile = homeSlash + (isWindows ? '/.termpolis-conductor-run.ps1' : '/.termpolis-conductor-run.sh')
+  // A new session for each launch: claude refuses an id it has used, and the id names the
+  // transcript Trace follows.
+  const sessionId = uuid()
+  conductorState.sessionId = sessionId
   await window.termpolis.writeConfigFile(
     scriptFile,
-    conductorRunScript(isWindows, { taskFile: native(tempFile), mcpConfigPath: native(mcpConfigPath), testCommand }),
+    conductorRunScript(isWindows, { taskFile: native(tempFile), mcpConfigPath: native(mcpConfigPath), sessionId, testCommand }),
   )
   const runCmd = conductorLaunchCommand(isWindows, native(scriptFile))
   // The last swarm's workers, which only Clear closes, are none of this one's: their bridges
@@ -245,6 +249,8 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   // Diagnostic hook — E2E tests read this to verify the launch command shape
   // without having to monkey-patch the frozen contextBridge-exposed termpolis API.
   try { (window as any).__termpolis_last_launch_cmd = runCmd } catch {}
+  // Trace from the conductor's first step: main follows its session's transcript once claude writes it.
+  watchConductorTrace()
 
   // Post initial message to swarm bus
   const posted = [
@@ -460,8 +466,7 @@ function startMonitoring(): void {
         : []
       const byConductor = (m: { from: string; timestamp: number }): boolean =>
         fromConductor(m.from) || (m.from === 'mcp-client' && tasks.every((t) => t.createdAt > m.timestamp) && !workerThere(m.timestamp))
-      // The conductor has acted: its transcript exists, and was just written. Follow it for Trace.
-      if (!traceReady && (tasks.length > 0 || posted.some((m) => byConductor(m)))) traceReady = true
+      // Asked for again only if asking at launch failed.
       watchConductorTrace()
 
       const completionMsg = posted.find((m) => isSwarmComplete(m, byConductor))
@@ -607,18 +612,19 @@ async function endOnConductorExit(
 // Cleanup
 /** Follow the conductor's Claude Code transcript, which is what fills the Trace tab. Up to 1.53 a
  *  pane did it as it mounted, once Debug had unhidden the conductor's terminal. Debug now reads the
- *  output without a pane, so the monitor calls this on every tick. Once per conductor terminal,
- *  tried again until a transcript is found; killing the terminal detaches it. Like the pane's, the watcher follows the newest transcript in the swarm's
- *  folder, from then on: so only once this launch's conductor has acted (posted or created a task),
- *  when that is its own. Before, it was the last swarm's, or another session in the folder. */
+ *  output without a pane, so sendTask asks for it at launch, and the monitor again on each tick
+ *  until main says it follows it; killing the terminal detaches it. Main follows this launch's own
+ *  session, the one `--session-id` named (conductorLaunch.ts), from its first line. It used to
+ *  follow the newest transcript in the swarm's folder, from when this launch's conductor had acted:
+ *  that missed its first steps, and could be the last swarm's conductor or a Claude Code worker. */
 export function watchConductorTrace(): void {
-  const { terminalId, cwd } = conductorState
-  if (!terminalId || !cwd || !traceReady || traceWatchedFor === terminalId) return
-  traceWatchedFor = terminalId
+  const { terminalId, cwd, sessionId } = conductorState
+  if (!terminalId || !cwd || !sessionId || traceWatchedFor === sessionId) return
+  traceWatchedFor = sessionId
   Promise.resolve()
-    .then(() => window.agentActivity?.attachWatcher(terminalId, cwd, 'claude'))
-    .then((res) => { if (!res?.data?.attached && traceWatchedFor === terminalId) traceWatchedFor = null })
-    .catch(() => { if (traceWatchedFor === terminalId) traceWatchedFor = null })
+    .then(() => window.agentActivity?.attachWatcher(terminalId, cwd, 'claude', sessionId))
+    .then((res) => { if (!res?.data?.attached && traceWatchedFor === sessionId) traceWatchedFor = null })
+    .catch(() => { if (traceWatchedFor === sessionId) traceWatchedFor = null })
 }
 
 export function stopConductor(): void {
@@ -643,7 +649,6 @@ export function stopConductor(): void {
     store.removeTerminal(t.id)
   }
 
-  conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
+  conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null, sessionId: null }
   traceWatchedFor = null
-  traceReady = false
 }

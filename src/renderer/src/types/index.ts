@@ -922,7 +922,9 @@ export interface ContextPinsAPI {
 export interface AgentActivityAPI {
   query: (filter?: AgentActivityFilter) => Promise<IpcResponse<AgentActivityEvent[]>>
   stats: () => Promise<IpcResponse<{ ringSize: number; dropped: number }>>
-  attachWatcher: (terminalId: string, cwd: string, agentType: string) => Promise<IpcResponse<{ attached: boolean }>>
+  /** `sessionId`: follow that Claude Code session's transcript (`claude --session-id`), from its
+   *  first line, rather than the newest in `cwd` from now on. */
+  attachWatcher: (terminalId: string, cwd: string, agentType: string, sessionId?: string) => Promise<IpcResponse<{ attached: boolean }>>
   detachWatcher: (terminalId: string) => Promise<IpcResponse>
   onEvent: (cb: (event: AgentActivityEvent) => void) => () => void
 }

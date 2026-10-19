@@ -13,6 +13,9 @@ import { powershellPath } from '../../src/main/secondOpinion'
 // real powershell.exe, through the production launch line, against claude stand-ins that record
 // what they received. PATH and the profile folders point into a temp sandbox, so the script's
 // binary probe can never find a real claude on a developer's machine.
+// The session claude is started under, whose transcript the dashboard's Trace follows.
+const SESSION = '1b4e28ba-2fa1-41d2-883f-0016d3cca427'
+
 describe.runIf(process.platform === 'win32')('conductor run script on real Windows PowerShell', () => {
   let dir = ''
   let recorderDir = ''
@@ -74,7 +77,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     const script = join(home, '.termpolis-conductor-run.ps1')
     writeFileSync(taskFile, task, 'utf8') // BOM-less, as configFileManager writes it
     writeFileSync(cfg, '{"mcpServers":{}}')
-    writeFileSync(script, conductorRunScript(true, { taskFile, mcpConfigPath: cfg, testCommand: opts.testCommand }))
+    writeFileSync(script, conductorRunScript(true, { taskFile, mcpConfigPath: cfg, sessionId: SESSION, testCommand: opts.testCommand }))
     const outer = join(root, 'outer.ps1')
     const pre = opts.utf8Console ? '[Console]::InputEncoding = [Text.Encoding]::UTF8\r\n' : ''
     const run = opts.constrained
@@ -127,7 +130,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
   const cmdShim = (): string => `@"${process.execPath}" "${recorder}" %*\r\n`
 
   function expectDelivered(r: ReturnType<typeof launch>, exitCode = 0): void {
-    expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--dangerously-skip-permissions'])
+    expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--session-id', SESSION, '--dangerously-skip-permissions'])
     // Byte for byte: no BOM in front, nothing garbled, only the CRLF PowerShell appends.
     expect(r.stdin?.equals(Buffer.from(task + '\r\n', 'utf8')), r.stderr).toBe(true)
     // The script's first line marks where its output starts; claude's exit is reported on a
@@ -199,7 +202,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     // one more for [Console]::InputEncoding when that is UTF-8 too.
     for (const utf8Console of [false, true]) {
       const r = launch(utf8Console ? 'clm-utf8' : 'clm', { testCommand: `& ${psQuote(process.execPath)} ${psQuote(recorder)}`, constrained: true, utf8Console })
-      expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--dangerously-skip-permissions'])
+      expect(r.argv, r.stderr).toEqual(['-p', '--mcp-config', r.cfg, '--session-id', SESSION, '--dangerously-skip-permissions'])
       let stdin = r.stdin ?? Buffer.alloc(0)
       while (stdin.subarray(0, 3).toString('hex') === 'efbbbf') stdin = stdin.subarray(3)
       expect(stdin.equals(Buffer.from(task + '\r\n', 'utf8')), r.stderr).toBe(true)
