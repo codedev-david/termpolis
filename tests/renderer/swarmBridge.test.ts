@@ -263,23 +263,51 @@ describe('WorkerFeed', () => {
 
   it('knows when output draws past its screen: the terminal was resized larger', () => {
     const feed = new WorkerFeed('Codex')
-    expect(feed.resized(`${E}[40;1Hx`)).toBe(false) // no screen yet: nothing to outgrow
+    expect(feed.resized({ output: `${E}[40;1Hx` })).toBe(false) // no screen yet: nothing to outgrow
     feed.update({ output: screen([]) })
-    expect(feed.resized(`${E}[24;80Hx`)).toBe(false)
-    expect(feed.resized(`${E}[40;1Hx`)).toBe(true)
-    expect(feed.resized(`${E}[1;81Hx`)).toBe(true)
+    expect(feed.resized({ output: `${E}[24;80Hx` })).toBe(false)
+    expect(feed.resized({ output: `${E}[40;1Hx` })).toBe(true)
+    expect(feed.resized({ output: `${E}[1;81Hx` })).toBe(true)
   })
 
   it("knows from ConPTY's report that the terminal was resized, larger or smaller", () => {
     const feed = new WorkerFeed('Codex')
     feed.update({ output: screen([]), cols: 80, rows: 24 })
-    expect(feed.resized(`${E}[8;40;160tx`)).toBe(true)
-    expect(feed.resized(`${E}[8;20;60tx`)).toBe(true)
-    expect(feed.resized(`${E}[8;20;60t${E}[8;24;80tx`)).toBe(false) // and back, in one read
+    expect(feed.resized({ output: `${E}[8;40;160tx` })).toBe(true)
+    expect(feed.resized({ output: `${E}[8;20;60tx` })).toBe(true)
+    expect(feed.resized({ output: `${E}[8;20;60t${E}[8;24;80tx` })).toBe(false) // and back, in one read
     // Starting over without main's size, at the size reported: at 80 columns "near" would wrap.
     const box = `${E}[5;1H${'─'.repeat(100)}${E}[6;1H❯ ${E}[7;1H${'─'.repeat(100)}`
     expect(feed.update({ output: `${E}[8;30;100t${E}[2J${box}` })).toBeNull()
     expect(feed.update({ output: `${E}[2;1Hcol 1${E}[2;90Hnear` })).toBe(`[Codex] col 1${' '.repeat(84)}near`)
+  })
+
+  // W2: on Linux and macOS nothing in a worker's output says its terminal was made smaller: no
+  // ConPTY report, and nothing drawn is past the smaller edge. Main's size, on every read, does.
+  it('knows from the size main gives with a read that the terminal was resized, smaller too', () => {
+    const feed = new WorkerFeed('Codex')
+    expect(feed.resized({ output: 'x', cols: 60, rows: 20 })).toBe(false) // no screen yet
+    feed.update({ output: screen([]), cols: 80, rows: 24 })
+    expect(feed.resized({ output: 'x', cols: 80, rows: 24 })).toBe(false)
+    expect(feed.resized({ output: 'x', cols: 60, rows: 20 })).toBe(true)
+    expect(feed.resized({ output: 'x', cols: 60, rows: 24 })).toBe(true) // narrower only
+    expect(feed.resized({ output: 'x', cols: 80, rows: 20 })).toBe(true) // shorter only
+    expect(feed.resized({ output: 'x', cols: 120, rows: 40 })).toBe(true)
+    // The same size as the screen's still lets ConPTY's report or a cell past the edge say it was
+    // resized, and back, between two reads.
+    expect(feed.resized({ output: `${E}[8;20;60tx`, cols: 80, rows: 24 })).toBe(true)
+    expect(feed.resized({ output: `${E}[40;1Hx`, cols: 80, rows: 24 })).toBe(true)
+  })
+
+  it('starts over at the smaller size a read gives, and reads on at it', () => {
+    const feed = new WorkerFeed('Codex')
+    feed.update({ output: screen([]), cols: 80, rows: 24 })
+    // Read again from its start after the resize: set aside like a first read, at 50 columns.
+    const at50 = `${E}[H${E}[2J${E}[5;1H${'─'.repeat(50)}${E}[6;1H❯ ${E}[7;1H${'─'.repeat(50)}`
+    expect(feed.update({ output: at50, cols: 50, rows: 20 })).toBeNull()
+    expect(feed.resized({ output: '', cols: 50, rows: 20 })).toBe(false)
+    // At 80 columns this would be one row: at 50, " edge" wraps onto a row of its own.
+    expect(feed.update({ output: `${E}[2;1Hleft${E}[2;46Hright edge`, cols: 50, rows: 20 })).toBe(`[Codex] left${' '.repeat(41)}right\n edge`)
   })
 
   it('reads a worker narrower or shorter than 80x24 on, read after read, and posts what it shows', () => {
@@ -288,10 +316,10 @@ describe('WorkerFeed', () => {
     const narrow = (rows: string[]): string => `${E}[H${E}[2J` + [...rows, '─'.repeat(60), '❯ ', '─'.repeat(60)].map((r, i) => `${E}[${i + 1};1H${r}`).join('')
     const feed = new WorkerFeed('Codex')
     expect(feed.update({ output: narrow([]), cols: 60, rows: 20 })).toBeNull()
-    expect(feed.resized(narrow(['x']))).toBe(false)
+    expect(feed.resized({ output: narrow(['x']) })).toBe(false)
     expect(feed.update({ output: narrow(['• Edited src/app.ts (+3 -1)']) })).toBe('[Codex] • Edited src/app.ts (+3 -1)')
-    expect(feed.resized(`${E}[20;60Hx`)).toBe(false)
-    expect(feed.resized(`${E}[21;1Hx`)).toBe(true)
+    expect(feed.resized({ output: `${E}[20;60Hx` })).toBe(false)
+    expect(feed.resized({ output: `${E}[21;1Hx` })).toBe(true)
   })
 
   it('starts over at the size a replay read gives, and reads what follows at it', () => {

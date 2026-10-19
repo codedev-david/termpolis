@@ -193,6 +193,27 @@ describe('startBridgeForAgent', () => {
     expect(read).toHaveBeenCalledTimes(6)
   })
 
+  // W2: on Linux and macOS a terminal made smaller says nothing of it in its output, no report and
+  // no cell past the smaller edge. Main's size, on every read, does.
+  it('reads a terminal again from the start when the size main gives with a read is smaller', async () => {
+    const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>
+    read
+      .mockResolvedValueOnce({ success: true, data: { output: 'hi', length: 2, nextOffset: 2, missed: 0, cols: 80, rows: 24 } })
+      .mockResolvedValueOnce({ success: true, data: { output: 'small', length: 5, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+      .mockResolvedValueOnce({ success: true, data: { output: 'hismall', length: 7, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(read).toHaveBeenNthCalledWith(2, 't1', 2)
+    expect(read).toHaveBeenNthCalledWith(3, 't1')
+    // Read on from there at 60x20, which every read then says: no whole read again.
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(read).toHaveBeenNthCalledWith(4, 't1', 7)
+    expect(read).toHaveBeenNthCalledWith(6, 't1', 7)
+    expect(read).toHaveBeenCalledTimes(6)
+  })
+
   it('keeps going when that second read fails', async () => {
     const E = '\x1b'
     const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>

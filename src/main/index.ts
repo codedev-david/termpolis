@@ -3121,16 +3121,18 @@ ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => 
 // bracketed paste an agent turns on once at startup — how much of the window finishes a
 // sequence the eviction cut in half, and the geometry the bytes were drawn for (parsed at any
 // other width they wrap differently, and on Windows 10 xterm never reflows them back). Only a
-// read from the window's start is a replay: a poller reading on from its own offset gets
-// exactly what it always got, and empty parts are left out for the same reason.
+// read from the window's start is a replay; empty parts are left out. The geometry comes with a
+// poller's read too: the swarm bridge reads on from its own offset, and on Linux and macOS
+// nothing in the output says a worker's terminal was made smaller (only ConPTY reports a resize).
 function replayContext(terminalId: string, fromOffset: number): { preamble?: string; skip?: number; cols?: number; rows?: number } {
-  const replay = replayPreamble(terminalOutputBuffers, terminalId, fromOffset)
-  if (!replay) return {}
   const size = getTerminalSize(terminalId)
+  const geometry = size ? { cols: size.cols, rows: size.rows } : {}
+  const replay = replayPreamble(terminalOutputBuffers, terminalId, fromOffset)
+  if (!replay) return geometry
   return {
     ...(replay.preamble ? { preamble: replay.preamble } : {}),
     ...(replay.skip > 0 ? { skip: replay.skip } : {}),
-    ...(size ? { cols: size.cols, rows: size.rows } : {}),
+    ...geometry,
   }
 }
 

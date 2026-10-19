@@ -392,7 +392,8 @@ export interface TermpolisAPI {
       /** Only on a replay: chars at the start of `output` that finish a sequence the eviction
        *  cut in half (the preamble already holds its effect). Replay `output.slice(skip)`. */
       skip?: number
-      /** Only on a replay: the geometry the pty is drawing for, i.e. what `output` was drawn for. */
+      /** The geometry the pty is drawing for, when it has one: on a replay, what `output` was
+       *  drawn for. A poller reading on from its own offset gets it too, to see a resize by. */
       cols?: number
       rows?: number
     }>
