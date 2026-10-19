@@ -1045,6 +1045,58 @@ describe('preload: commit shield git-hook bridge', () => {
 // register a listener, forward each event to the callback, and return a cleanup
 // that unsubscribes.
 // ---------------------------------------------------------------------------
+describe('preload: accounts (Settings ▸ Accounts)', () => {
+  it('is its own namespace, like Linked machines', () => {
+    expect(exposed.accounts).toBeDefined()
+  })
+
+  it('sends each call to the channel main registers, with the payload accountsIpc reads', async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const a = exposed.accounts
+    const cases: Array<[() => unknown, string, unknown]> = [
+      [() => a.list(), ACCOUNTS_IPC.list, undefined],
+      [() => a.pickFolder('codex'), ACCOUNTS_IPC.pickFolder, { agent: 'codex' }],
+      [() => a.add({ agent: 'claude', label: 'work', folder: 'new' }), ACCOUNTS_IPC.add, { agent: 'claude', label: 'work', folder: 'new' }],
+      [() => a.update('acc_1', { label: 'w', color: null }), ACCOUNTS_IPC.update, { id: 'acc_1', label: 'w', color: null }],
+      [() => a.move('acc_1', -1), ACCOUNTS_IPC.move, { id: 'acc_1', by: -1 }],
+      [() => a.remove('acc_1'), ACCOUNTS_IPC.remove, { id: 'acc_1' }],
+      [() => a.setConnect('acc_1', true), ACCOUNTS_IPC.setConnect, { id: 'acc_1', connect: true }],
+      [() => a.stripCopied('acc_1'), ACCOUNTS_IPC.stripCopied, { id: 'acc_1' }],
+      [() => a.setPreferred('claude', null), ACCOUNTS_IPC.setPreferred, { agent: 'claude', id: null }],
+      [() => a.setChooser(false), ACCOUNTS_IPC.setChooser, { on: false }],
+      [() => a.hideAdvice('hookAdvice'), ACCOUNTS_IPC.hideAdvice, { which: 'hookAdvice' }],
+      [() => a.importPreview(), ACCOUNTS_IPC.importPreview, undefined],
+      [() => a.import(['work'], { work: true }), ACCOUNTS_IPC.import, { keys: ['work'], connect: { work: true } }],
+      [() => a.check('acc_1'), ACCOUNTS_IPC.check, { id: 'acc_1' }],
+      [() => a.signInLine({ accountId: 'acc_1', shellType: 'gitbash', method: 'device' }), ACCOUNTS_IPC.signInLine, { accountId: 'acc_1', shellType: 'gitbash', method: 'device' }],
+      [() => a.watchSignIn('acc_1'), ACCOUNTS_IPC.watchSignIn, { accountId: 'acc_1' }],
+      [() => a.stopSignIn('acc_1'), ACCOUNTS_IPC.stopSignIn, { accountId: 'acc_1' }],
+      [() => a.noteLimit('acc_1', { text: 'You\'ve hit your session limit', resetsAt: 5 }), ACCOUNTS_IPC.noteLimit, { id: 'acc_1', text: 'You\'ve hit your session limit', resetsAt: 5 }],
+      [() => a.clearLimit('acc_1'), ACCOUNTS_IPC.clearLimit, { id: 'acc_1' }],
+    ]
+    for (const [call, channel, payload] of cases) {
+      mockIpcRenderer.invoke.mockClear()
+      await call()
+      expect(mockIpcRenderer.invoke.mock.calls, channel).toEqual([payload === undefined ? [channel] : [channel, payload]])
+    }
+    // Every invoke channel main registers has its bridge method; signInProgress is main → renderer.
+    const invoked = new Set(cases.map((c) => c[1]))
+    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.signInProgress])
+  })
+
+  it('passes a sign-in\'s progress to the subscriber, and unsubscribes', async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const cb = vi.fn()
+    const off = exposed.accounts.onSignInProgress(cb)
+    const [channel, handler] = mockIpcRenderer.on.mock.calls[0]
+    expect(channel).toBe(ACCOUNTS_IPC.signInProgress)
+    handler({}, { accountId: 'acc_1', email: 'b@example.test', done: false })
+    expect(cb).toHaveBeenCalledWith({ accountId: 'acc_1', email: 'b@example.test', done: false })
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.signInProgress, handler)
+  })
+})
+
 describe('preload — workflow orchestrator bridge', () => {
   it('listWorkflows invokes workflow:list with the cwd', async () => {
     await exposed.termpolis.listWorkflows('/proj')

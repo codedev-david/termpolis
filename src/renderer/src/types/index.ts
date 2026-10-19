@@ -2,6 +2,11 @@ import type { AppLogEntry, AppLogLevel } from '../../../shared/appLog'
 import type {
   AgentIntegrationSetRequest, AgentIntegrationSetResult, AgentIntegrationStatus, CodexLaunchContext,
 } from '../../../shared/agentIntegration'
+import type {
+  AccountAgent, AccountChangesResult, AccountPatch, AccountRowView, AccountsView, AddAccountRequest,
+  AddAccountResult, ImportPreview, ImportResult, NoteLimitRequest, PickFolderResult, ProfileAgent,
+  SignInLineRequest, SignInLineResult, SignInProgress,
+} from '../../../shared/agentAccounts'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -1270,6 +1275,38 @@ export interface LinkedAPI {
   onShow(cb: () => void): () => void
 }
 
+/** `window.accounts`: Settings ▸ Accounts, more than one sign-in per agent. Main owns the
+ *  registry; the renderer never passes a path (a folder is picked with main's own dialog) and is
+ *  shown labels, emails, folders and states, never a config file. */
+export interface AccountsAPI {
+  list(): Promise<IpcResponse<AccountsView>>
+  /** Main's own folder dialog, on hidden folders; main remembers the folder for the next add. */
+  pickFolder(agent: ProfileAgent): Promise<IpcResponse<PickFolderResult>>
+  add(req: AddAccountRequest): Promise<IpcResponse<AddAccountResult>>
+  update(id: string, patch: AccountPatch): Promise<IpcResponse<AccountRowView | undefined>>
+  move(id: string, by: -1 | 1): Promise<IpcResponse<AccountsView>>
+  /** Forget the account and take Termpolis's entries out of its profile; the folder stays. */
+  remove(id: string): Promise<IpcResponse<AccountChangesResult>>
+  setConnect(id: string, connect: boolean): Promise<IpcResponse<AccountChangesResult>>
+  /** Take out the Termpolis entries a copied settings.json carries. */
+  stripCopied(id: string): Promise<IpcResponse<AccountChangesResult>>
+  setPreferred(agent: AccountAgent, id: string | null): Promise<IpcResponse<AccountsView>>
+  setChooser(on: boolean): Promise<IpcResponse<AccountsView>>
+  hideAdvice(which: 'hookAdvice' | 'authEnvAdvice' | 'limitBanner'): Promise<IpcResponse<AccountsView>>
+  importPreview(): Promise<IpcResponse<ImportPreview>>
+  /** `keys`: the accounts.sh keys to import, null for all; `connect`: per key, Connect ticked. */
+  import(keys: string[] | null, connect: Record<string, boolean>): Promise<IpcResponse<ImportResult>>
+  /** "Signed in now": the agent's own status command, on demand. */
+  check(id: string): Promise<IpcResponse<AccountRowView | undefined>>
+  signInLine(req: SignInLineRequest): Promise<IpcResponse<SignInLineResult>>
+  watchSignIn(accountId: string): Promise<IpcResponse<{ watching: boolean }>>
+  stopSignIn(accountId: string): Promise<IpcResponse<{ stopped: boolean }>>
+  noteLimit(id: string, limit: NoteLimitRequest): Promise<IpcResponse<AccountRowView | undefined>>
+  /** "Mark available": forget the account's recorded limit. */
+  clearLimit(id: string): Promise<IpcResponse<AccountRowView | undefined>>
+  onSignInProgress(cb: (p: SignInProgress) => void): () => void
+}
+
 /** Which of the three diffs a Changes-rail row refers to. */
 export type GitChangeMode = 'staged' | 'unstaged' | 'untracked'
 
@@ -1344,5 +1381,7 @@ declare global {
     /** Optional: only a preload that ships Linked machines defines it, so every
      *  reader has to cope with it being absent. */
     linked?: LinkedAPI
+    /** Optional for the same reason: Settings ▸ Accounts (v1.54.0). */
+    accounts?: AccountsAPI
   }
 }

@@ -281,6 +281,67 @@ export interface SignInLineResult {
   name: string
 }
 
+/** What accounts:pick-folder answers: the folder the user picked in main's own dialog, for
+ *  display only (main remembers the real path), and what Add would make of it. */
+export interface PickFolderResult {
+  /** Tildified; null when the dialog was cancelled. */
+  folder: string | null
+  /** Why that folder can't be a profile. */
+  error?: string
+  /** It is the agent's default profile folder. */
+  isDefault?: boolean
+  /** Subfolders that are already links into the default profile. */
+  shares?: string[]
+  exists?: boolean
+}
+
+/** What can be changed on an account in place. */
+export interface AccountPatch {
+  label?: string
+  /** '' clears it. */
+  email?: string
+  autoOffer?: boolean
+  /** null clears it. */
+  color?: string | null
+}
+
+/** main → renderer while a sign-in terminal runs: the profile's "last signed in as" email when
+ *  it changed, and `done` once the watch ended. */
+export interface SignInProgress {
+  accountId: string
+  email: string | null
+  done: boolean
+}
+
+/** A write into an agent's config, as agent integration reports it. */
+export interface AccountChange {
+  agent: string
+  file: string
+  action: string
+  what: string
+  error?: string
+}
+
+export interface AccountChangesResult {
+  changes: AccountChange[]
+  account?: AccountRowView
+}
+
+export interface ImportResult {
+  added: number
+  changes: AccountChange[]
+  view: AccountsView
+}
+
+/** A usage limit as the chooser read it from the CLI's own words. */
+export interface NoteLimitRequest {
+  text: string
+  resetsAt?: number | null
+  scope?: AccountLimit['scope']
+  window?: AccountLimit['window']
+  email?: string
+}
+
 /** A sign-in terminal's name: "Sign in · Claude Code · codedev". */
 export function signInTerminalName(agent: AccountAgent, label: string): string {
   return `Sign in · ${ACCOUNT_AGENT_LABEL[agent]} · ${label}`

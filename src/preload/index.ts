@@ -9,6 +9,7 @@ import type {
   RemoteStatusView,
   LinkedAPI,
   LinkedEvent,
+  AccountsAPI,
   LinkedStatusView,
   McpServerSpecView,
   McpGatewayPolicyView,
@@ -613,6 +614,37 @@ const linked: LinkedAPI = {
   },
 }
 contextBridge.exposeInMainWorld('linked', linked)
+
+// Settings ▸ Accounts (v1.54.0): more than one sign-in per agent. Its own namespace, like
+// Linked's, and annotated for the same reason. Channel names match src/shared/agentAccounts.ts's
+// ACCOUNTS_IPC (preload.test.ts checks each one); the preload imports types only.
+const accounts: AccountsAPI = {
+  list: () => ipcRenderer.invoke('accounts:list'),
+  pickFolder: (agent) => ipcRenderer.invoke('accounts:pick-folder', { agent }),
+  add: (req) => ipcRenderer.invoke('accounts:add', req),
+  update: (id, patch) => ipcRenderer.invoke('accounts:update', { id, ...patch }),
+  move: (id, by) => ipcRenderer.invoke('accounts:move', { id, by }),
+  remove: (id) => ipcRenderer.invoke('accounts:remove', { id }),
+  setConnect: (id, connect) => ipcRenderer.invoke('accounts:set-connect', { id, connect }),
+  stripCopied: (id) => ipcRenderer.invoke('accounts:strip-copied', { id }),
+  setPreferred: (agent, id) => ipcRenderer.invoke('accounts:set-preferred', { agent, id }),
+  setChooser: (on) => ipcRenderer.invoke('accounts:set-chooser', { on }),
+  hideAdvice: (which) => ipcRenderer.invoke('accounts:hide-advice', { which }),
+  importPreview: () => ipcRenderer.invoke('accounts:import-preview'),
+  import: (keys, connect) => ipcRenderer.invoke('accounts:import', { keys, connect }),
+  check: (id) => ipcRenderer.invoke('accounts:check', { id }),
+  signInLine: (req) => ipcRenderer.invoke('accounts:sign-in-line', req),
+  watchSignIn: (accountId) => ipcRenderer.invoke('accounts:watch-sign-in', { accountId }),
+  stopSignIn: (accountId) => ipcRenderer.invoke('accounts:stop-sign-in', { accountId }),
+  noteLimit: (id, limit) => ipcRenderer.invoke('accounts:note-limit', { id, ...limit }),
+  clearLimit: (id) => ipcRenderer.invoke('accounts:clear-limit', { id }),
+  onSignInProgress: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
+    ipcRenderer.on('accounts:sign-in-progress', handler)
+    return () => ipcRenderer.removeListener('accounts:sign-in-progress', handler)
+  },
+}
+contextBridge.exposeInMainWorld('accounts', accounts)
 
 // MCP server events — terminals created/closed by AI agents
 contextBridge.exposeInMainWorld('mcpEvents', {
