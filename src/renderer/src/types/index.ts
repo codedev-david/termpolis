@@ -4,7 +4,7 @@ import type {
 } from '../../../shared/agentIntegration'
 import type {
   AccountAgent, AccountChangesResult, AccountPatch, AccountRowView, AccountsView, AddAccountRequest,
-  AddAccountResult, ImportPreview, ImportResult, NoteLimitRequest, PickFolderResult, ProfileAgent,
+  AddAccountResult, ImportPreview, ImportResult, NoteLimitRequest, PickFolderResult, ProfileAgent, RecopyView,
   SignInLineRequest, SignInLineResult, SignInProgress,
 } from '../../../shared/agentAccounts'
 import type { ModelCatalog } from '../lib/modelCatalog'
@@ -1290,6 +1290,8 @@ export interface AccountsAPI {
   setConnect(id: string, connect: boolean): Promise<IpcResponse<AccountChangesResult>>
   /** Take out the Termpolis entries a copied settings.json carries. */
   stripCopied(id: string): Promise<IpcResponse<AccountChangesResult>>
+  /** Fresh stripped copies of the main profile's settings over the profile's own. */
+  recopy(id: string): Promise<IpcResponse<RecopyView>>
   setPreferred(agent: AccountAgent, id: string | null): Promise<IpcResponse<AccountsView>>
   setChooser(on: boolean): Promise<IpcResponse<AccountsView>>
   hideAdvice(which: 'hookAdvice' | 'authEnvAdvice' | 'limitBanner'): Promise<IpcResponse<AccountsView>>

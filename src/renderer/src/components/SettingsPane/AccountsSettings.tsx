@@ -58,7 +58,7 @@ function errorText(e: unknown): string {
 }
 
 /** What a row is doing right now: one action at a time per tab. */
-type RowAction = { id: string; kind: 'edit' | 'remove' }
+type RowAction = { id: string; kind: 'edit' | 'remove' | 'recopy' }
 
 interface SignInState {
   row: AccountRowView
@@ -92,6 +92,8 @@ export function AccountsSettings() {
   const [signIn, setSignIn] = useState<SignInState | null>(null)
   const [shells, setShells] = useState<ShellType[]>([])
   const [copiedCheck, setCopiedCheck] = useState(false)
+  // Settings a re-copy left out, by name: shown with the changes it made.
+  const [leftOut, setLeftOut] = useState<string[]>([])
   const defaultShell = useTerminalStore((s) => s.defaultShell)
 
   const load = useCallback(async () => {
@@ -133,6 +135,7 @@ export function AccountsSettings() {
     setBusy(true)
     setError(null)
     setChanges(null)
+    setLeftOut([])
     try {
       const done = await action()
       if (done) setChanges(done)
@@ -263,6 +266,7 @@ export function AccountsSettings() {
             : <button className={BUTTON} disabled={busy || !view.integrationConnected} title={view.integrationConnected ? CONNECT_DATA_LINE : 'Turn on Agent Integration first'} onClick={() => { void act(async () => must(await api.setConnect(r.id, true)).changes) }} data-testid={`account-connect-${r.id}`}>Connect</button>
         )}
         {r.limit && <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.clearLimit(r.id)) }) }} data-testid={`account-mark-available-${r.id}`}>Mark available</button>}
+        {r.recopyAvailable && <button className={BUTTON} disabled={busy} onClick={() => setRowAction({ id: r.id, kind: 'recopy' })} data-testid={`account-recopy-${r.id}`}>Re-copy from main profile</button>}
         <label className="flex items-center gap-1 text-[11px] text-[#d4d4d4]">
           <input type="checkbox" checked={r.autoOffer} disabled={busy} onChange={(e) => { const on = e.target.checked; void act(async () => { must(await api.update(r.id, { autoOffer: on })) }) }} data-testid={`account-auto-offer-${r.id}`} />
           Offer automatically
@@ -281,6 +285,24 @@ export function AccountsSettings() {
           <input className={INPUT} aria-label="Name" value={edit.label} maxLength={40} onChange={(e) => setEdit({ ...edit, label: e.target.value })} data-testid={`account-edit-label-${r.id}`} />
           <input className={INPUT} aria-label="Email" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} data-testid={`account-edit-email-${r.id}`} />
           <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.update(r.id, { label: edit.label, email: edit.email })); setRowAction(null) }) }} data-testid={`account-edit-save-${r.id}`}>Save</button>
+        </div>
+      )
+    }
+    if (rowAction.kind === 'recopy') {
+      return (
+        <div className="flex flex-wrap items-center gap-2 pt-1 text-xs" data-testid={`account-recopy-confirm-${r.id}`}>
+          <span className="text-[#d4d4d4]">
+            Your main profile&apos;s settings changed since {r.label} was copied from it. Re-copying replaces {r.label}&apos;s copy with a fresh one, leaving out anything that can hold a key or a token{r.connect ? ', and connects it again' : ''}.
+          </span>
+          <button
+            className={BUTTON}
+            disabled={busy}
+            onClick={() => { void act(async () => { const d = must(await api.recopy(r.id)); setRowAction(null); setLeftOut(d.leftOut); return d.changes }) }}
+            data-testid={`account-recopy-yes-${r.id}`}
+          >
+            Re-copy
+          </button>
+          <button className={BUTTON} onClick={() => setRowAction(null)}>Keep it</button>
         </div>
       )
     }
@@ -508,6 +530,7 @@ export function AccountsSettings() {
 
       {signIn && signInPanel(signIn)}
       {changes !== null && <Changes changes={changes} />}
+      {leftOut.length > 0 && <span className="text-xs text-[#e5c07b]" data-testid="accounts-left-out">Left out of the copy (they can hold a key or a token): {leftOut.join(', ')}</span>}
       {error !== null && <p className="text-xs text-[#e06c75]" role="alert" data-testid="accounts-error">{error}</p>}
 
       {ACCOUNT_AGENTS.map(card)}

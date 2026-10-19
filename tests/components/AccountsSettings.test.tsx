@@ -12,7 +12,7 @@ function row(over: Partial<AccountRowView> = {}): AccountRowView {
     id: 'acc_00000000000b', agent: 'claude', label: 'codedev', email: 'b@example.test', profile: `${HOME}\\.claude-codedev`,
     folder: `${HOME}\\.claude-codedev`, isDefault: false, autoOffer: true, order: 1, connect: true, origin: 'adopted',
     folderExists: true, shares: ['projects'], lastEmail: 'b@example.test', connection: { server: true, hook: true, allow: true },
-    bypassReady: true, terminals: 0, ...over,
+    bypassReady: true, terminals: 0, recopyAvailable: false, ...over,
   }
 }
 
@@ -40,6 +40,7 @@ function bridge(initial: AccountsView = view(), over: Record<string, unknown> = 
     remove: vi.fn(async () => ok({ changes: [{ agent: 'claude', file: `${HOME}\\.claude-codedev\\.claude.json`, action: 'remove', what: 'MCP server' }] })),
     setConnect: vi.fn(async () => ok({ changes: [], account: B })),
     stripCopied: vi.fn(async () => ok({ changes: [{ agent: 'claude', file: 's.json', action: 'remove', what: 'Memory hook', error: 'EBUSY' }] })),
+    recopy: vi.fn(async () => ok({ copied: ['settings.json'], leftOut: ['env', 'apiKeyHelper'], changes: [{ agent: 'claude', file: 's.json', action: 'add', what: 'Tool permissions' }], account: B })),
     setPreferred: vi.fn(async () => ok(initial)),
     setChooser: vi.fn(async () => ok(initial)),
     hideAdvice: vi.fn(async () => ok(initial)),
@@ -264,6 +265,27 @@ describe('AccountsSettings: a row', () => {
     for (const what of ['sign-in', 'check', 'connect', 'disconnect']) expect(screen.queryByTestId(`account-${what}-${g.id}`)).toBeNull()
     fireEvent.click(screen.getByTestId(`account-remove-${g.id}`))
     expect(screen.getByTestId(`account-remove-confirm-${g.id}`)).toHaveTextContent('agy\'s own sign-in stays as it is')
+  })
+
+  it('re-copies a profile whose main settings changed, after saying what it replaces', async () => {
+    const copied = row({ recopyAvailable: true })
+    const unconnected = row({ id: 'acc_00000000000c', label: 'side', connect: false, recopyAvailable: true })
+    const { accounts } = bridge(view({ accounts: [MAIN, copied, unconnected] }))
+    await renderLoaded()
+    expect(screen.queryByTestId(`account-recopy-${MAIN.id}`)).toBeNull()
+    fireEvent.click(screen.getByTestId(`account-recopy-${unconnected.id}`))
+    expect(screen.getByTestId(`account-recopy-confirm-${unconnected.id}`)).not.toHaveTextContent('connects it again')
+    fireEvent.click(screen.getByRole('button', { name: 'Keep it' }))
+    expect(screen.queryByTestId(`account-recopy-confirm-${unconnected.id}`)).toBeNull()
+    fireEvent.click(screen.getByTestId(`account-recopy-${B.id}`))
+    expect(screen.getByTestId(`account-recopy-confirm-${B.id}`)).toHaveTextContent('leaving out anything that can hold a key or a token, and connects it again')
+    fireEvent.click(screen.getByTestId(`account-recopy-yes-${B.id}`))
+    await waitFor(() => expect(accounts.recopy).toHaveBeenCalledWith(B.id))
+    expect(await screen.findByTestId('accounts-left-out')).toHaveTextContent('env, apiKeyHelper')
+    expect(screen.getByTestId('accounts-changes')).toHaveTextContent('add Tool permissions')
+    // The next action clears what the last one said.
+    fireEvent.click(screen.getByTestId(`account-check-${B.id}`))
+    await waitFor(() => expect(screen.queryByTestId('accounts-left-out')).toBeNull())
   })
 
   it('marks a limited account available', async () => {

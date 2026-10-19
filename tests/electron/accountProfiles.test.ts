@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { SETTINGS_COPY_KEYS, createProfile, strippedClaudeSettings, strippedCodexConfig } from '../../src/main/accountProfiles'
+import { SETTINGS_COPY_KEYS, createProfile, recopyProfile, strippedClaudeSettings, strippedCodexConfig } from '../../src/main/accountProfiles'
 import type { CreateProfileOptions } from '../../src/main/accountProfiles'
 import { accountFs } from '../../src/main/accountFs'
 import type { AccountFs } from '../../src/main/accountFs'
@@ -390,5 +390,58 @@ describe('createProfile rolls back, removing only what it made (R19)', () => {
     setupMainClaude()
     const fsx: AccountFs = { ...accountFs, rename: () => { throw 'plain string' } }
     expect(createProfile(options(), fsx)).toEqual({ ok: false, error: 'plain string' })
+  })
+})
+
+describe('recopyProfile: "Re-copy from main profile"', () => {
+  it('writes fresh stripped copies over the profile\'s own, and says what it left out', () => {
+    setupMainClaude()
+    const r = createProfile(options({ share: [] }))
+    if (!r.ok) throw new Error(r.error)
+    writeFileSync(join(r.dir, 'settings.json'), '{"model":"haiku"}\n')
+    writeFileSync(join(home, '.claude', 'CLAUDE.md'), '# my new rules\n')
+    const again = recopyProfile('claude', home, r.dir)
+    expect(again).toEqual({ ok: true, copied: ['settings.json', 'CLAUDE.md'], leftOut: ['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport', 'env', 'mcpServers', 'otelHeadersHelper'] })
+    expect(JSON.parse(readFileSync(join(r.dir, 'settings.json'), 'utf8')).model).toBe('opus')
+    expect(readFileSync(join(r.dir, 'settings.json'), 'utf8')).not.toContain(SECRET)
+    expect(readFileSync(join(r.dir, 'CLAUDE.md'), 'utf8')).toBe('# my new rules\n')
+    expect(existsSync(join(r.dir, '.credentials.json'))).toBe(false)
+  })
+
+  it('writes nothing when a main file can\'t be copied, and skips one the main profile lacks', () => {
+    setupMainClaude()
+    const r = createProfile(options({ share: [] }))
+    if (!r.ok) throw new Error(r.error)
+    writeFileSync(join(home, '.claude', 'settings.json'), '{ broken')
+    writeFileSync(join(home, '.claude', 'CLAUDE.md'), '# changed\n')
+    expect(recopyProfile('claude', home, r.dir)).toEqual({ ok: false, error: 'the main profile\'s settings.json is not valid JSON' })
+    expect(readFileSync(join(r.dir, 'CLAUDE.md'), 'utf8')).toBe('# my rules\n')
+    rmSync(join(home, '.claude', 'settings.json'))
+    expect(recopyProfile('claude', home, r.dir)).toEqual({ ok: true, copied: ['CLAUDE.md'], leftOut: [] })
+  })
+
+  it('re-copies a Codex home\'s config.toml, stripped', () => {
+    mkdirSync(join(home, '.codex', 'sessions'), { recursive: true })
+    writeFileSync(join(home, '.codex', 'config.toml'), `model = "gpt-5"\n[mcp_servers.x]\ncommand = "y"\nenv = { T = "${SECRET}" }\n`)
+    const r = createProfile(options({ agent: 'codex', slug: 'cx', share: [] }))
+    if (!r.ok) throw new Error(r.error)
+    writeFileSync(join(home, '.codex', 'config.toml'), 'model = "o3"\n')
+    expect(recopyProfile('codex', home, r.dir)).toMatchObject({ ok: true, copied: ['config.toml'] })
+    expect(readFileSync(join(r.dir, 'config.toml'), 'utf8')).toContain('o3')
+  })
+
+  it('refuses a folder that is missing, outside the test home, or the main profile itself', () => {
+    setupMainClaude()
+    expect(recopyProfile('claude', home, join(home, '.claude-none'))).toEqual({ ok: false, error: 'the profile folder doesn\'t exist' })
+    expect(recopyProfile('claude', home, join(root, 'elsewhere'))).toEqual({ ok: false, error: 'the profile folder doesn\'t exist' })
+    expect(recopyProfile('claude', home, join(home, '.claude'))).toEqual({ ok: false, error: 'that is the main profile' })
+  })
+
+  it('reports a write it couldn\'t make', () => {
+    setupMainClaude()
+    const r = createProfile(options({ share: [] }))
+    if (!r.ok) throw new Error(r.error)
+    const fsx: AccountFs = { ...accountFs, writePrivate: () => { throw new Error('EACCES') } }
+    expect(recopyProfile('claude', home, r.dir, fsx)).toEqual({ ok: false, error: 'EACCES' })
   })
 })

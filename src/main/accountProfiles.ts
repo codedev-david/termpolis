@@ -18,7 +18,7 @@ import { ACCOUNT_AGENT_LABEL, DEFAULT_PROFILE_FOLDER, SHAREABLE_FOLDERS } from '
 import type { AccountLink, ProfileAgent } from '../shared/agentAccounts'
 import { accountFs } from './accountFs'
 import type { AccountFs } from './accountFs'
-import { defaultProfileDir, isReachable, launchString } from './agentAccounts'
+import { comparisonKey, defaultProfileDir, isReachable, launchString } from './agentAccounts'
 import { formatJsonLike } from './agentConfigIO'
 import { stripTermpolisEntries } from './agentMcpRegistry'
 import { stripCodexSecrets } from './codexConfigEdit'
@@ -66,6 +66,33 @@ export function strippedCodexConfig(text: string): CopyResult | { error: string 
   return 'error' in r ? { error: `the main profile's config.toml can't be copied: ${r.error}` } : r
 }
 
+/** The main profile's files a new profile starts from, each with how it is stripped. */
+export function copySources(agent: ProfileAgent): Array<{ name: string; strip: ((text: string) => CopyResult | { error: string }) | null }> {
+  return agent === 'claude'
+    ? [{ name: 'settings.json', strip: strippedClaudeSettings }, { name: 'CLAUDE.md', strip: null }]
+    : [{ name: 'config.toml', strip: strippedCodexConfig }]
+}
+
+/** The stripped copies of the main profile's files, by name: every one is made before any is
+ *  written, so a file that can't be copied leaves nothing half done. Throws why it couldn't. */
+function stripCopies(agent: ProfileAgent, main: string, fsx: AccountFs): { files: Array<{ name: string; text: string }>; leftOut: string[] } {
+  const files: Array<{ name: string; text: string }> = []
+  const leftOut: string[] = []
+  for (const src of copySources(agent)) {
+    const text = fsx.readText(join(main, src.name))
+    if (text === null) continue
+    let out = text
+    if (src.strip) {
+      const r = src.strip(text)
+      if ('error' in r) throw new Error(r.error)
+      out = r.text
+      leftOut.push(...r.leftOut)
+    }
+    files.push({ name: src.name, text: out })
+  }
+  return { files, leftOut }
+}
+
 export interface CreateProfileOptions {
   agent: ProfileAgent
   home: string
@@ -75,9 +102,9 @@ export interface CreateProfileOptions {
   share: readonly string[]
   /** Start from a stripped copy of the main profile's settings. */
   copy: boolean
-  /** Write the registry entry, after the rename: returns why it couldn't, or null. A failure
-   *  undoes the folder like any other step. */
-  commit: (dir: string, links: AccountLink[]) => string | null
+  /** Write the registry entry, after the rename, given what was copied: returns why it couldn't,
+   *  or null. A failure undoes the folder like any other step. */
+  commit: (dir: string, links: AccountLink[], copied: string[]) => string | null
 }
 
 export type CreateProfileResult =
@@ -128,27 +155,17 @@ export function createProfile(opts: CreateProfileOptions, fsx: AccountFs = accou
       links.push({ name, target })
     }
     if (opts.copy) {
-      const sources = agent === 'claude'
-        ? [{ name: 'settings.json', strip: strippedClaudeSettings }, { name: 'CLAUDE.md', strip: null }]
-        : [{ name: 'config.toml', strip: strippedCodexConfig }]
-      for (const src of sources) {
-        const text = fsx.readText(join(main, src.name))
-        if (text === null) continue
-        let out = text
-        if (src.strip) {
-          const r = src.strip(text)
-          if ('error' in r) throw new Error(r.error)
-          out = r.text
-          leftOut.push(...r.leftOut)
-        }
-        fsx.writePrivate(join(staging, src.name), out)
-        files.push(src.name)
-        copied.push(src.name)
+      const made = stripCopies(agent, main, fsx)
+      leftOut.push(...made.leftOut)
+      for (const f of made.files) {
+        fsx.writePrivate(join(staging, f.name), f.text)
+        files.push(f.name)
+        copied.push(f.name)
       }
     }
     fsx.rename(staging, dir)
     base = dir
-    const commitError = opts.commit(dir, links.map((l) => ({ ...l })))
+    const commitError = opts.commit(dir, links.map((l) => ({ ...l })), [...copied])
     if (commitError) throw new Error(commitError)
     return { ok: true, dir, links, copied, leftOut, notes }
   } catch (e) {
@@ -156,6 +173,24 @@ export function createProfile(opts: CreateProfileOptions, fsx: AccountFs = accou
     if (!made) return { ok: false, error }
     const left = rollback(base, links, files, fsx)
     return left ? { ok: false, error, leftAt: left } : { ok: false, error }
+  }
+}
+
+export type RecopyResult = { ok: true; copied: string[]; leftOut: string[] } | { ok: false; error: string }
+
+/** "Re-copy from main profile": fresh stripped copies of the main profile's files over the
+ *  profile's own, through the same allowlist as at creation (R11). Termpolis's entries are not in
+ *  them, so a connected profile is connected again afterwards. Never throws. */
+export function recopyProfile(agent: ProfileAgent, home: string, dir: string, fsx: AccountFs = accountFs): RecopyResult {
+  try {
+    if (!isReachable(dir) || !fsx.exists(dir)) return { ok: false, error: 'the profile folder doesn\'t exist' }
+    const main = defaultProfileDir(agent, home)
+    if (comparisonKey(dir, fsx) === comparisonKey(main, fsx)) return { ok: false, error: 'that is the main profile' }
+    const made = stripCopies(agent, main, fsx)
+    for (const f of made.files) fsx.writePrivate(join(dir, f.name), f.text)
+    return { ok: true, copied: made.files.map((f) => f.name), leftOut: made.leftOut }
+  } catch (e) {
+    return { ok: false, error: errorText(e) }
   }
 }
 

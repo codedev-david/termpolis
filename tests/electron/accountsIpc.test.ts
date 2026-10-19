@@ -256,6 +256,64 @@ describe('accounts:add, Claude Code with a new folder', () => {
   })
 })
 
+describe('accounts:recopy ("Re-copy from main profile")', () => {
+  it('offers it once the main settings changed since the copy, then re-copies, reconnects, and stops offering', async () => {
+    mainClaude()
+    grant()
+    clock = Date.now()
+    const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', connect: true })
+    const rowOf = async (): Promise<AccountRowView> => (await list()).accounts.find((a) => a.id === r.account.id) as AccountRowView
+    expect((await rowOf()).recopyAvailable).toBe(false)
+    const later = new Date(clock + 5000)
+    utimesSync(join(sb.paths.claudeDir, 'settings.json'), later, later)
+    expect((await rowOf()).recopyAvailable).toBe(true)
+    const profile = join(sb.home, '.claude-b')
+    writeJson(join(profile, 'settings.json'), { model: 'haiku' })
+    clock += 10_000
+    const done = await ok(ACCOUNTS_IPC.recopy, { id: r.account.id })
+    expect(done.copied).toEqual(['settings.json'])
+    expect(done.leftOut).toEqual(['env'])
+    // The fresh copy has Termpolis's entries stripped; connecting put them back.
+    expect(done.changes.map((c: { what: string }) => c.what)).toContain('Tool permissions')
+    const settings = readJson(join(profile, 'settings.json'))
+    expect(settings.model).toBe('opus')
+    expect(JSON.stringify(settings)).not.toContain(SECRET)
+    expect(settings.permissions.allow).toEqual(expect.arrayContaining([...CLAUDE_ALLOW_RULES]))
+    expect(done.account.recopyAvailable).toBe(false)
+  })
+
+  it('re-copies an unconnected profile without connecting it', async () => {
+    mainClaude()
+    clock = Date.now()
+    const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new' })
+    clock += 10_000
+    const done = await ok(ACCOUNTS_IPC.recopy, { id: r.account.id })
+    expect(done.changes).toEqual([])
+    expect(readJson(join(sb.home, '.claude-b', 'settings.json')).permissions).toBeUndefined()
+  })
+
+  it('refuses an account that never started from a copy, an agy label, a missing folder and a broken main file', async () => {
+    mainClaude()
+    clock = Date.now()
+    const plain = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'plain', folder: 'new', copy: false })
+    expect(plain.account.recopyAvailable).toBe(false)
+    expect(await fails(ACCOUNTS_IPC.recopy, { id: plain.account.id })).toBe('plain was never started from a copy of your main profile')
+    const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g' })
+    expect(await fails(ACCOUNTS_IPC.recopy, { id: g.account.id })).toBe('g was never started from a copy of your main profile')
+    const b = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new' })
+    writeText(join(sb.paths.claudeDir, 'settings.json'), '{ broken')
+    expect(await fails(ACCOUNTS_IPC.recopy, { id: b.account.id })).toBe('the main profile\'s settings.json is not valid JSON')
+    // A broken main file is never "newer": nothing to offer from a file that can't be copied? It
+    // is still offered, so the user sees the reason when pressing it.
+    const doc = readJson(join(sb.paths.userData, 'agent-accounts.json'))
+    const entry = doc.accounts.find((a: { id: string }) => a.id === b.account.id)
+    entry.profile = join(sb.home, '.claude-lost')
+    writeJson(join(sb.paths.userData, 'agent-accounts.json'), doc)
+    expect(await fails(ACCOUNTS_IPC.recopy, { id: b.account.id })).toBe('b\'s profile folder doesn\'t exist')
+    expect((await list()).accounts.find((a) => a.id === b.account.id)?.recopyAvailable).toBe(false)
+  })
+})
+
 describe('accounts:add, an existing folder', () => {
   it('adopts the folder picked in main\'s own dialog, and never takes a path from the renderer', async () => {
     mainClaude()
@@ -740,6 +798,20 @@ describe('signing in (R29)', () => {
     // Asked once: the watch is over.
     tick()
     expect(checks).toHaveLength(1)
+  })
+
+  it('keeps the email the profile names when the agent answers signed out after the command', async () => {
+    mainClaude()
+    register({ promptSince: () => true })
+    const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', copy: false })
+    writeJson(join(sb.home, '.claude-b', '.claude.json'), { oauthAccount: { emailAddress: 'b@example.test' } })
+    checkAnswer = { identity: { email: null, signedIn: false, checkedAt: 3, source: 'auth-status' } }
+    await ok(ACCOUNTS_IPC.watchSignIn, { accountId: r.account.id, terminalId: 't-sign', mark: 1 })
+    for (const fn of [...timers.values()]) fn()
+    await new Promise((res) => setTimeout(res, 0))
+    expect(sent[sent.length - 1].payload).toEqual({
+      accountId: r.account.id, done: true, email: 'b@example.test', identity: { email: null, signedIn: false, checkedAt: 3, source: 'auth-status' },
+    })
   })
 
   it('watches a Codex sign-in by its terminal alone, and reports a check that couldn\'t run', async () => {

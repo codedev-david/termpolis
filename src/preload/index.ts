@@ -627,6 +627,7 @@ const accounts: AccountsAPI = {
   remove: (id) => ipcRenderer.invoke('accounts:remove', { id }),
   setConnect: (id, connect) => ipcRenderer.invoke('accounts:set-connect', { id, connect }),
   stripCopied: (id) => ipcRenderer.invoke('accounts:strip-copied', { id }),
+  recopy: (id) => ipcRenderer.invoke('accounts:recopy', { id }),
   setPreferred: (agent, id) => ipcRenderer.invoke('accounts:set-preferred', { agent, id }),
   setChooser: (on) => ipcRenderer.invoke('accounts:set-chooser', { on }),
   hideAdvice: (which) => ipcRenderer.invoke('accounts:hide-advice', { which }),

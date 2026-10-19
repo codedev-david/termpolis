@@ -1062,6 +1062,7 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.remove('acc_1'), ACCOUNTS_IPC.remove, { id: 'acc_1' }],
       [() => a.setConnect('acc_1', true), ACCOUNTS_IPC.setConnect, { id: 'acc_1', connect: true }],
       [() => a.stripCopied('acc_1'), ACCOUNTS_IPC.stripCopied, { id: 'acc_1' }],
+      [() => a.recopy('acc_1'), ACCOUNTS_IPC.recopy, { id: 'acc_1' }],
       [() => a.setPreferred('claude', null), ACCOUNTS_IPC.setPreferred, { agent: 'claude', id: null }],
       [() => a.setChooser(false), ACCOUNTS_IPC.setChooser, { on: false }],
       [() => a.hideAdvice('hookAdvice'), ACCOUNTS_IPC.hideAdvice, { which: 'hookAdvice' }],

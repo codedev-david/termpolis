@@ -10,7 +10,7 @@ function row(over: Partial<AccountRowView> = {}): AccountRowView {
   return {
     id: 'acc_000000000001', agent: 'claude', label: 'codedev', profile: `${HOME}\\.claude-codedev`, folder: `${HOME}\\.claude-codedev`,
     isDefault: false, autoOffer: true, order: 1, connect: true, origin: 'created', folderExists: true, shares: [],
-    lastEmail: null, connection: { server: true, hook: true, allow: true }, bypassReady: true, terminals: 0,
+    lastEmail: null, connection: { server: true, hook: true, allow: true }, bypassReady: true, terminals: 0, recopyAvailable: false,
     ...over,
   }
 }

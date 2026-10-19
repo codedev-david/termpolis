@@ -63,6 +63,12 @@ describe('the registry file', () => {
     expect(emptyAccountsFile()).toEqual({ version: 1, accounts: [], preferred: {}, chooser: true, cooldownSec: {}, limits: {}, identity: {} })
   })
 
+  it('keeps when a profile was started from a copy only when it is a time', () => {
+    const acc = (copiedAt: unknown) => parseAccountsDoc({ version: 1, accounts: [{ id: 'acc_000000000001', agent: 'claude', label: 'b', profile: join(sep, 'p', '.claude-b'), copiedAt }] }).file.accounts[0]
+    expect(acc(1_760_000_000_000).copiedAt).toBe(1_760_000_000_000)
+    for (const bad of [0, -1, Number.NaN, '5', null]) expect('copiedAt' in acc(bad)).toBe(false)
+  })
+
   it('keeps unknown top-level fields, unknown fields of an account and accounts it cannot read', () => {
     const raw = {
       version: 1,

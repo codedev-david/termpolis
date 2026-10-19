@@ -12,19 +12,19 @@ import {
 } from '../shared/agentAccounts'
 import type {
   AccountAgent, AccountIdentity, AccountRowView, AccountsAdvice, AccountsView, AddAccountResult, AgentAccount,
-  ImportPreview, ProfileAgent, SignInMethod, SignInProgress,
+  ImportPreview, ProfileAgent, RecopyView, SignInMethod, SignInProgress,
 } from '../shared/agentAccounts'
 import type { AgentIntegrationChange } from '../shared/agentIntegration'
 import { accountFs, readClaudeJsonFields } from './accountFs'
 import type { AccountFs } from './accountFs'
 import { claudeSignedInNow, codexSignedInNow } from './accountIdentity'
 import type { CheckDeps, IdentityCheck } from './accountIdentity'
-import { createProfile } from './accountProfiles'
+import { copySources, createProfile, recopyProfile } from './accountProfiles'
 import {
   AccountsRefusal, accountProfileTargets, accountsShDrift, accountsShLines, activeLimit, checkProfileFolder,
-  claudeJsonOf, cleanLimit, cooldownFor, discoverShares, findAccount, isAccountConnected, isReachable, lastSignedInAs,
-  limitedMarker, liveProfileDir, loadAccounts, newAccountId, previewAccountsSh, profileDirOf, readAccountsSh,
-  updateAccounts,
+  claudeJsonOf, cleanLimit, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected, isReachable,
+  lastSignedInAs, limitedMarker, liveProfileDir, loadAccounts, newAccountId, previewAccountsSh, profileDirOf,
+  readAccountsSh, updateAccounts,
 } from './agentAccounts'
 import type { AccountsDoc, ProfileTarget } from './agentAccounts'
 import type { AgentIntegrationPaths, AgentIntegrationRuntime } from './agentIntegrationManager'
@@ -230,6 +230,14 @@ function adviceFor(doc: AccountsDoc, home: string, env: Readonly<Record<string, 
   return advice
 }
 
+/** A copied profile whose main profile's files changed since the copy. */
+function recopyOffered(a: AgentAccount, live: string | null, home: string, fsx: AccountFs): boolean {
+  if (!live || a.copiedAt === undefined || !isProfileAgent(a.agent)) return false
+  const main = defaultProfileDir(a.agent, home)
+  const copiedAt = a.copiedAt
+  return copySources(a.agent).some((src) => (fsx.stat(join(main, src.name))?.mtimeMs ?? 0) > copiedAt)
+}
+
 function rowView(doc: AccountsDoc, a: AgentAccount, home: string, now: number, unlisted: number, fsx: AccountFs): AccountRowView {
   const folder = profileDirOf(a, home)
   const live = liveProfileDir(a, home, fsx)
@@ -250,6 +258,7 @@ function rowView(doc: AccountsDoc, a: AgentAccount, home: string, now: number, u
     connection: live && isProfileAgent(a.agent) ? profileConnection({ agent: a.agent, dir: live, claudeJson: claudeJsonOf(a, home) ?? undefined }) : null,
     bypassReady: a.agent === 'claude' && !!live && readSettings(live, fsx)?.skipDangerousModePermissionPrompt === true,
     terminals: terminalsOnAccount(a.id),
+    recopyAvailable: recopyOffered(a, live, home, fsx),
   }
   if (a.email) row.email = a.email
   if (a.color) row.color = a.color
@@ -430,7 +439,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       })
       return { account: rowOf(loadDoc(), value) as AccountRowView, leftOut: [], copied: [], changes: [] }
     }
-    const make = (folder: string, origin: AgentAccount['origin'], links: AgentAccount['links']) => (doc: AccountsDoc): { id: string; listed: string | null } => {
+    const make = (folder: string, origin: AgentAccount['origin'], links: AgentAccount['links'], copied: readonly string[] = []) => (doc: AccountsDoc): { id: string; listed: string | null } => {
       uniqueLabel(doc, agent, label)
       const checked = checkProfileFolder(agent, folder, { home: p.home, accounts: doc.file.accounts }, fsx)
       if ('error' in checked) throw new AccountsRefusal(checked.error)
@@ -438,6 +447,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       const account: AgentAccount = {
         id: newAccountId(), agent, label, profile: checked.profile, autoOffer, order: nextOrder(doc, agent),
         connect: checked.profile === null ? true : wantsConnect, origin, links, ...(email ? { email } : {}),
+        ...(copied.length ? { copiedAt: now() } : {}),
       }
       doc.file.accounts.push(account)
       return { id: account.id, listed }
@@ -466,8 +476,8 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       const made: { id: string; listed: string | null } = { id: '', listed: null }
       const created = createProfile({
         agent, home: p.home, slug, share, copy: input.copy !== false,
-        commit: (dir, links) => {
-          const r = updateAccounts(userData(), make(dir, 'created', links), fsx)
+        commit: (dir, links, copiedFiles) => {
+          const r = updateAccounts(userData(), make(dir, 'created', links, copiedFiles), fsx)
           if (!r.ok) return r.error
           Object.assign(made, r.value)
           return null
@@ -557,6 +567,20 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const t = targetOf(a)
     const changes = !t ? [] : connect ? connectRows({ ...a, connect }) : disconnectAccountProfile(deps.paths(), t)
     return { changes, account: rowOf(loadDoc(), a.id) }
+  })
+
+  handle(ACCOUNTS_IPC.recopy, (input): RecopyView => {
+    const a = accountOf(loadDoc(), input.id)
+    if (!isProfileAgent(a.agent) || a.copiedAt === undefined) throw new Error(`${a.label} was never started from a copy of your main profile`)
+    const home = deps.paths().home
+    const dir = liveProfileDir(a, home, fsx)
+    if (!dir) throw new Error(`${a.label}'s profile folder doesn't exist`)
+    const r = recopyProfile(a.agent, home, dir, fsx)
+    if (!r.ok) throw new Error(r.error)
+    const { doc } = update((d) => { accountOf(d, a.id).copiedAt = now() })
+    // The fresh copy has Termpolis's entries taken out: a connected profile gets them back.
+    const changes = a.connect ? connectRows(a) : []
+    return { copied: r.copied, leftOut: r.leftOut, changes, account: rowOf(doc, a.id) }
   })
 
   handle(ACCOUNTS_IPC.stripCopied, (input) => {

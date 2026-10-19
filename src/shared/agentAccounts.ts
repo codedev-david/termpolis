@@ -89,6 +89,8 @@ export interface AgentAccount {
   importedAs?: string
   /** Links Termpolis made in a folder it created. */
   links: AccountLink[]
+  /** When its settings were last copied from the main profile (epoch ms), if they were. */
+  copiedAt?: number
 }
 
 export interface AccountLimit {
@@ -149,6 +151,8 @@ export const ACCOUNTS_IPC = {
   noteLimit: 'accounts:note-limit',
   /** "Mark available": forget an account's recorded limit. */
   clearLimit: 'accounts:clear-limit',
+  /** "Re-copy from main profile": fresh stripped copies over the profile's own. */
+  recopy: 'accounts:recopy',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────
@@ -189,6 +193,8 @@ export interface AccountRowView {
   bypassReady: boolean
   /** Termpolis terminals Termpolis knows are running on this account. */
   terminals: number
+  /** It started from a copy of the main profile's settings, which changed since: offer a re-copy. */
+  recopyAvailable: boolean
 }
 
 export interface AccountsAdvice {
@@ -237,7 +243,7 @@ export interface AddAccountResult {
   leftOut: string[]
   copied: string[]
   /** What connecting wrote. */
-  changes: Array<{ file: string; action: string; what: string; error?: string }>
+  changes: AccountChange[]
   /** The lines that make ~/.claude/accounts.sh know the new account, when that file exists. */
   accountsShLines?: string[]
   /** What else happened: a subfolder left unshared, the main profile listed too. */
@@ -327,6 +333,15 @@ export interface AccountChange {
 }
 
 export interface AccountChangesResult {
+  changes: AccountChange[]
+  account?: AccountRowView
+}
+
+export interface RecopyView {
+  copied: string[]
+  /** Settings left out of the copy, by name. */
+  leftOut: string[]
+  /** What connecting the profile again wrote. */
   changes: AccountChange[]
   account?: AccountRowView
 }

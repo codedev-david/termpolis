@@ -94,6 +94,8 @@ function parseAccount(v: unknown, index: number): AgentAccount | null {
   else delete account.color
   if (typeof v.importedAs === 'string' && SH_KEY.test(v.importedAs)) account.importedAs = v.importedAs
   else delete account.importedAs
+  if (typeof v.copiedAt === 'number' && Number.isFinite(v.copiedAt) && v.copiedAt > 0) account.copiedAt = v.copiedAt
+  else delete account.copiedAt
   return account
 }
 
