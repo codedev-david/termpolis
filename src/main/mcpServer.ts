@@ -958,12 +958,13 @@ function stillHolds(input: string[] | null, text: string, agent: boolean): boole
   return holdsText(input, text, agent) || (input !== null && bare(text) !== '' && PASTE_PLACEHOLDER.test(input.join('\n')))
 }
 
-/** Whether the agent shows the text it was typed: its box is no longer empty, and holds the text's
- *  end or a placeholder for a long paste. Only its box: the same words can be in its transcript, a
- *  prompt sent before. A shell has no box: its screen, where a long command wraps. */
+/** Whether the agent shows the text it was typed: it shows its box, no longer empty, holding the
+ *  text's end or a placeholder for a long paste. Only its box: the same words can be in its
+ *  transcript, a prompt sent before; and a text of no letters or digits has no end to look for. A
+ *  shell has no box: its screen, where a long command wraps. */
 function showsTyped(seen: Seen, text: string, agent: boolean): boolean {
-  if (agent && emptyInputBox(seen.lines)) return false
-  const input = agent ? inputBoxRows(seen.lines) ?? [] : seen.lines
+  if (agent && (inputBoxRow(seen.lines) < 0 || emptyInputBox(seen.lines))) return false
+  const input = agent ? inputBoxRows(seen.lines)! : seen.lines
   return bare(joined(input)).includes(endOf(text)) || PASTE_PLACEHOLDER.test(input.join('\n'))
 }
 
@@ -1171,7 +1172,7 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
     // A box clearing left as it was: a hint, which the first key replaced, or other text, still in
     // front of this or behind it.
     if (agent && !emptyInputBox(ready.lines)) {
-      const box = inputBoxRows(last.lines) ?? []
+      const box = inputBoxRows(last.lines)!
       if (otherTextInFront(box, body) || otherTextBehind(box, body)) {
         return failed(waitedMs, "The agent's input already held other text, which clearing it didn't remove, and the text went in with it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
       }

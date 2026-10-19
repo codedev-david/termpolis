@@ -852,6 +852,26 @@ describe('submitToTerminal and the characters an agent drops as they are typed',
     expect(await submitToTerminal(t.handlers, 't1', paste.text, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
     expect(t.writes).toEqual([CLEAR, paste.text, '\r'])
   })
+
+  it('presses no Enter on a text of no letters or digits when the agent then shows no input', async () => {
+    // Such a text has no end to look for, so any box read as showing it; and a screen with no box,
+    // a panel the agent opened at the key, read so too, and Enter was pressed into that.
+    const t = fakeTerminal((_ms, w) => (w.length ? frame(['Claude Code', '', '  ! for bash mode    / for commands    @ for file paths', '  esc to go back']) : idle()))
+    const res = await submitToTerminal(t.handlers, 't1', '—', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The agent never showed the text in its input, so Enter was not pressed/) })
+    expect(t.writes).toEqual(['—'])
+  })
+
+  it("waits for the text, not the hint an empty box shows, though the hint ends the way the text does", async () => {
+    // Claude Code's 'Try "fix lint errors"' holds this text's end; read as the text typed, Enter went
+    // in before the agent, still starting, had shown it.
+    const t = fakeTerminal((ms, w, times) => {
+      if (w.includes('\r')) return busy()
+      return idle(w.length && ms >= times[0] + 1000 ? 'fix lint errors' : 'Try "fix lint errors"')
+    })
+    expect(await submitToTerminal(t.handlers, 't1', 'fix lint errors', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.times[1] - t.times[0]).toBeGreaterThanOrEqual(1000)
+  })
 })
 
 // R3-3: text already in the box, a prompt an earlier call typed and never sent, or one a person
