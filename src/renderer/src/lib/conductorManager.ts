@@ -6,6 +6,7 @@ import { conductorRunScript, conductorLaunchCommand, findConductorExit, type Con
 import { getTerminalDefaults } from './terminalDefaults'
 import { recordSwarmError } from './sentry'
 import { stopAllBridges } from './swarmBridgeManager'
+import type { TerminalSession } from '../types'
 
 interface ConductorState {
   terminalId: string | null
@@ -36,9 +37,17 @@ let traceReady = false
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
 let launch: LaunchBaseline = { outputOffset: 0, taskIds: new Set(), messageIds: new Set() }
+/** When each swarm worker's terminal was in the store, from the launch on (noteWorkers): who can
+ *  have sent a message without a name (byConductor). `left` is Infinity while it is there; one the
+ *  store held at the launch, which a swarm before left running, has been there since before it. */
+let workerSpans: Array<{ id: string; entered: number; left: number }> = []
+let stopNotingWorkers: () => void = () => {}
 
 /** How much of the conductor's last output an exit report quotes, at most. */
 const EXIT_REPORT_MAX_CHARS = 2000
+/** How long after a worker's terminal left the store a message without a name can still be that
+ *  worker's: what it sent as its terminal was closed reaches the bus a moment later. */
+const WORKER_CLOSE_MARGIN_MS = 2000
 
 export function getConductorState(): ConductorState {
   return { ...conductorState }
@@ -228,6 +237,8 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   // would post to the new conductor under their agents' names, and their stops be reported to it.
   stopAllBridges()
   useTerminalStore.getState().setSwarmAgents([])
+  // Before the baseline, so that whatever is posted after it was posted while its workers were noted.
+  noteWorkers()
   // Read before the line is typed, so nothing the new conductor does can land in the baseline.
   launch = await readLaunchBaseline(id)
   window.termpolis.writeToTerminal(id, runCmd + '\r')
@@ -279,10 +290,6 @@ function startMonitoring(): void {
   monitoringStartTime = Date.now()
   let stallWarned = false
   let exitNoted = false
-  // Whether each message posted without a name was the conductor's, decided on the tick that first
-  // sees it (see byConductor below). Judged again on every tick, a worker's result counted once its
-  // terminal left the store, and a conductor's plan stopped counting once a worker started.
-  const nameless = new Map<string, boolean>()
 
   monitoringInterval = setInterval(async () => {
     if (conductorState.status !== 'running') {
@@ -441,19 +448,18 @@ function startMonitoring(): void {
       // that merely says "complete" used to, and so did any message typed `result`, which a Claude
       // worker reporting on its own task sends too. MCP files a message under the name its caller
       // gives (mcp-client for none), and the conductor's prompt has it give 'conductor'. One with no
-      // name is the conductor's only if nothing else could have sent it when it first showed: no
-      // task, and no worker in the store, this swarm's or one a swarm before left running. Taken for a worker's, a plan
-      // without its name didn't count against the stall warning, and a run that built the task
-      // itself and exited cleanly ended as an error.
+      // name is the conductor's only if nothing else could have sent it when it was posted: no task
+      // yet, and no worker's terminal in the store, this swarm's or one a swarm before left running
+      // (workerThere). Taken for a worker's, a plan without its name didn't count against the stall
+      // warning, and a run that built the task itself and exited cleanly ended as an error. Judged by
+      // the store as a tick found it, a worker's result counted once its terminal had closed before
+      // the monitor looked, and a plan posted just before the first worker started didn't count.
       const msgsRes = await window.swarmAPI.getMessages()
       const posted = msgsRes.success && msgsRes.data
         ? msgsRes.data.filter((m) => !launch.messageIds.has(m.id) && m.from !== 'system')
         : []
-      const workers = store.terminals.some((t) => t.isSwarm && !t.isConductor)
-      for (const m of posted) {
-        if (m.from === 'mcp-client' && !nameless.has(m.id)) nameless.set(m.id, tasks.length === 0 && !workers)
-      }
-      const byConductor = (m: { id: string; from: string }): boolean => fromConductor(m.from) || nameless.get(m.id) === true
+      const byConductor = (m: { from: string; timestamp: number }): boolean =>
+        fromConductor(m.from) || (m.from === 'mcp-client' && tasks.every((t) => t.createdAt > m.timestamp) && !workerThere(m.timestamp))
       // The conductor has acted: its transcript exists, and was just written. Follow it for Trace.
       if (!traceReady && (tasks.length > 0 || posted.some((m) => byConductor(m)))) traceReady = true
       watchConductorTrace()
@@ -519,10 +525,34 @@ function startMonitoring(): void {
  *  ...'), from a sender `byConductor` takes for the conductor. Not a worker's own result in those
  *  words, which ended the swarm with a task still open. */
 function isSwarmComplete(
-  m: { id: string; from: string; type: string; content: string },
-  byConductor: (m: { id: string; from: string }) => boolean,
+  m: { from: string; type: string; content: string; timestamp: number },
+  byConductor: (m: { from: string; timestamp: number }) => boolean,
 ): boolean {
   return m.type === 'result' && byConductor(m) && /^\s*SWARM COMPLETE\b/i.test(m.content)
+}
+
+/** Notes when each swarm worker's terminal enters the store and leaves it (workerSpans), from now
+ *  on until the next launch or stopConductor. App.tsx adds one the moment main says the conductor
+ *  created it, and removes it as it closes; the monitor, looking every 15 seconds, could miss one
+ *  that opened and closed between two looks. */
+function noteWorkers(): void {
+  stopNotingWorkers()
+  const workers = (terminals: TerminalSession[]): string[] => terminals.filter((t) => t.isSwarm && !t.isConductor).map((t) => t.id)
+  workerSpans = workers(useTerminalStore.getState().terminals).map((id) => ({ id, entered: -Infinity, left: Infinity }))
+  stopNotingWorkers = useTerminalStore.subscribe((s, prev) => {
+    if (s.terminals === prev.terminals) return
+    const now = Date.now()
+    const there = new Set(workers(s.terminals))
+    // A span still open ends when its terminal is gone; a terminal with none open starts one.
+    for (const span of workerSpans) if (span.left === Infinity && !there.delete(span.id)) span.left = now
+    for (const id of there) workerSpans.push({ id, entered: now, left: Infinity })
+  })
+}
+
+/** Whether a worker's terminal was in the store at `time`, or had left it at most
+ *  WORKER_CLOSE_MARGIN_MS before, so that the worker can have sent what was posted then. */
+function workerThere(time: number): boolean {
+  return workerSpans.some((s) => s.entered <= time && time <= s.left + WORKER_CLOSE_MARGIN_MS)
 }
 
 /** Whether a message is the conductor's, however it wrote its name ("Conductor"): taken for a
@@ -596,6 +626,8 @@ export function stopConductor(): void {
     clearInterval(monitoringInterval)
     monitoringInterval = null
   }
+  stopNotingWorkers()
+  stopNotingWorkers = () => {}
 
   if (conductorState.terminalId) {
     try { window.termpolis.killTerminal(conductorState.terminalId) } catch {}

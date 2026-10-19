@@ -622,7 +622,7 @@ The conductor is a **dedicated Claude Code instance** that runs headless in a hi
 
 The conductor is **not keyword matching** — it reasons with the same capability as any frontier model, because it *is* one. Follow what it's doing in the dashboard's [Trace tab](#trace-tab).
 
-A task is completed or failed only by the conductor (`swarm_update_task`) or by you (**Done** or **Fail** in the Tasks tab), never by what a worker's screen says. The swarm ends when every task is completed or failed, or when the conductor posts its final summary, a `result` message from **conductor** that starts with `SWARM COMPLETE`, or from **mcp-client** (a sender that gave no name) if no task existed and no worker was running when Termpolis first saw it. A worker's own message in those words ends nothing, unless it gave no name and Termpolis first saw it after the worker's terminal had closed.
+A task is completed or failed only by the conductor (`swarm_update_task`) or by you (**Done** or **Fail** in the Tasks tab), never by what a worker's screen says. The swarm ends when every task is completed or failed, or when the conductor posts its final summary, a `result` message from **conductor** that starts with `SWARM COMPLETE`, or from **mcp-client** (a sender that gave no name) if, when it was posted, no task existed yet and no worker's terminal was open, this swarm's or one a swarm before left running (one that closed at most 2 seconds before still counts as open). A worker's own message in those words ends nothing, not even once its terminal has closed. So the conductor's final summary without its name, posted while a worker's terminal was open, ends nothing either: the swarm then ends when its tasks do, or with the conductor's exit report.
 
 ### Starting a swarm
 
@@ -648,7 +648,7 @@ The run script prints `[termpolis-conductor-exited]` and `claude`'s exit code on
 
 What the conductor says as it finishes doesn't change that. Termpolis reads its output for a refusal of the task or for a run without its swarm tools only when it created no task and didn't exit with an error: a swarm whose tasks are done ends as done, even when the conductor's last words are "I can't verify the deployed site".
 
-If, a minute after launch, the conductor has created no task and posted no message, a banner says so. Only the conductor's own messages count, not Termpolis's launch messages or what a worker's screen showed; one from **mcp-client** counts if no task existed and no worker was running when Termpolis first saw it, since nothing else can have sent it, and it still counts once a worker starts. Press [Debug](#debug) to see what it printed.
+If, a minute after launch, the conductor has created no task and posted no message, a banner says so. Only the conductor's own messages count, not Termpolis's launch messages or what a worker's screen showed; one from **mcp-client** counts if, when it was posted, no task existed and no worker's terminal was open (counted as for the final summary above), since nothing else can have sent it, and it still counts once a worker starts. One posted while a worker's terminal was open never counts, even once that terminal has closed. Press [Debug](#debug) to see what it printed.
 
 Starting a swarm sets aside the workers a previous one left running: they leave the dashboard's agent list, and Termpolis no longer passes on what their screens show or reports their stops, which would reach the new conductor as if they were its own. Their terminals keep running until you press **Clear**.
 
