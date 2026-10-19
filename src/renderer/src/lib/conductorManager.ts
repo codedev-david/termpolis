@@ -230,8 +230,8 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const testCommand = claudeCmd !== 'claude' ? claudeCmd : undefined
   const native = (p: string): string => (isWindows ? p.replace(/\//g, '\\') : p)
   const scriptFile = homeSlash + (isWindows ? '/.termpolis-conductor-run.ps1' : '/.termpolis-conductor-run.sh')
-  // A new session for each launch: claude refuses an id it has used, and the id names the
-  // transcript Trace follows.
+  // A new session for each launch: the id names the transcript Trace follows, which must be this
+  // launch's alone.
   const sessionId = uuid()
   conductorState.sessionId = sessionId
   await window.termpolis.writeConfigFile(
