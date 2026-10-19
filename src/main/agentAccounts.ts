@@ -615,3 +615,42 @@ export function isAccountConnected(account: AgentAccount | undefined): boolean {
 export function cooldownFor(doc: AccountsDoc, agent: AccountAgent): number {
   return doc.file.cooldownSec[agent] ?? DEFAULT_COOLDOWN_SEC
 }
+
+// ── Usage limits ───────────────────────────────────────────────────────────────────────
+
+const WEEK_MS = 7 * 86400 * 1000
+
+/** When a recorded limit ends: its reset time; with none known, `seenAt` plus the cooldown. A
+ *  weekly or monthly limit whose reset couldn't be read never falls back to the cooldown (in 5 h
+ *  it would be offered again while out for days): it lasts until marked available, or 7 days. */
+export function limitEndsAt(limit: AccountLimit, cooldownSec: number): number {
+  if (limit.resetsAt !== null) return limit.resetsAt
+  if (limit.window === 'weekly' || limit.window === 'monthly') return limit.seenAt + WEEK_MS
+  return limit.seenAt + cooldownSec * 1000
+}
+
+/** The account's recorded usage limit, while it lasts. */
+export function activeLimit(doc: AccountsDoc, account: AgentAccount, now: number): AccountLimit | undefined {
+  const limit = doc.file.limits[account.id]
+  return limit && limitEndsAt(limit, cooldownFor(doc, account.agent)) > now ? limit : undefined
+}
+
+const LIMIT_SCOPES: ReadonlyArray<AccountLimit['scope']> = ['account', 'model']
+const LIMIT_WINDOWS: ReadonlyArray<NonNullable<AccountLimit['window']>> = ['session', 'weekly', 'monthly', 'other']
+
+/** A limit as the chooser reports it, checked field by field; null when it isn't one. */
+export function cleanLimit(v: unknown, now: number): AccountLimit | null {
+  if (!isRecord(v) || typeof v.text !== 'string' || !v.text.trim()) return null
+  const resetsAt = typeof v.resetsAt === 'number' && Number.isFinite(v.resetsAt) && v.resetsAt > 0 ? v.resetsAt : null
+  const limit: AccountLimit = {
+    seenAt: now,
+    resetsAt,
+    // The CLI's own words, one line, as the dialog shows them.
+    text: v.text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, 300),
+    scope: LIMIT_SCOPES.find((s) => s === v.scope) ?? 'account',
+  }
+  const window = LIMIT_WINDOWS.find((w) => w === v.window)
+  if (window) limit.window = window
+  if (isPlainEmail(v.email)) limit.email = v.email
+  return limit
+}

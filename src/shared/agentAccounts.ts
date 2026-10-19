@@ -143,8 +143,12 @@ export const ACCOUNTS_IPC = {
   signInLine: 'accounts:sign-in-line',
   watchSignIn: 'accounts:watch-sign-in',
   stopSignIn: 'accounts:stop-sign-in',
-  /** main → renderer: a sign-in's progress, { accountId, email }. */
+  /** main → renderer: a sign-in's progress, { accountId, email, done }. */
   signInProgress: 'accounts:sign-in-progress',
+  /** A usage limit an account hit, as the chooser read it. */
+  noteLimit: 'accounts:note-limit',
+  /** "Mark available": forget an account's recorded limit. */
+  clearLimit: 'accounts:clear-limit',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────
@@ -236,6 +240,8 @@ export interface AddAccountResult {
   changes: Array<{ file: string; action: string; what: string; error?: string }>
   /** The lines that make ~/.claude/accounts.sh know the new account, when that file exists. */
   accountsShLines?: string[]
+  /** What else happened: a subfolder left unshared, the main profile listed too. */
+  notes?: string[]
 }
 
 export interface ImportPreviewRow {
@@ -271,6 +277,13 @@ export interface SignInLineResult {
   /** Shown before typing: Termpolis terminals running on this profile, plus the reminder about
    *  sessions outside Termpolis. */
   warning: string
+  /** The sign-in terminal's name. */
+  name: string
+}
+
+/** A sign-in terminal's name: "Sign in · Claude Code · codedev". */
+export function signInTerminalName(agent: AccountAgent, label: string): string {
+  return `Sign in · ${ACCOUNT_AGENT_LABEL[agent]} · ${label}`
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────────────
@@ -282,7 +295,6 @@ export function isPlainEmail(s: unknown): s is string {
   return typeof s === 'string' && s.length <= 254 && PLAIN_EMAIL.test(s)
 }
 
-// eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/
 
 export function hasControlChars(s: string): boolean {

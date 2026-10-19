@@ -1246,7 +1246,9 @@ export function trustFolderForAgents(paths: AgentIntegrationPaths, cwd: string, 
 export function prepareCodexLaunch(
   paths: AgentIntegrationPaths,
   cwd: string,
-  opts: { steering?: string | null } = {},
+  /** `accountConnected: false`: the launch is on an account the user didn't connect, so nothing
+   *  is written or added for it (the AGENTS.md cleanup in the folder still runs). */
+  opts: { steering?: string | null; accountConnected?: boolean } = {},
   /** An account's CODEX_HOME; the default one when left out. */
   home?: string,
 ): CodexLaunchContext {
@@ -1260,6 +1262,7 @@ export function prepareCodexLaunch(
   const base = cleaned ? { agentsMdCleaned: cleaned } : {}
   try {
     if (!isConnected(loadLedger(paths))) return { developerInstructions: null, skipped: 'no-consent', approvals: 0, ...base }
+    if (opts.accountConnected === false) return { developerInstructions: null, skipped: 'account-not-connected', approvals: 0, ...base }
     // No home folder: Codex's config.toml can't be found, so Codex counts as not connected.
     if (!agentPaths(paths)) return { developerInstructions: null, skipped: 'disabled', approvals: 0, ...base }
     const codexHome = home && isAbsolute(home) && isReachable(home) ? home : paths.codexHome

@@ -15,6 +15,7 @@ import type { ProfileTarget } from '../../src/main/agentIntegrationManager'
 import { CLAUDE_ALLOW_RULES } from '../../src/main/agentMcpRegistry'
 import { claudeProjectKey } from '../../src/main/claudeTrust'
 import { codexServerState } from '../../src/main/codexConfigEdit'
+import { AGENTS_BEGIN, AGENTS_END } from '../../src/main/codexParity'
 import { runDisconnectAgentsCli } from '../../src/main/disconnectAgentsCli'
 import { CODEX_AUTO_APPROVED_TOOLS } from '../../src/shared/agentIntegration'
 import {
@@ -494,6 +495,19 @@ describe('the Codex launch and home trust, per account', () => {
     expect(prepareCodexLaunch(sb.paths, '', {}).skipped).toBe('disabled')
     // A home outside the test home falls back to the default one, never read.
     expect(prepareCodexLaunch(sb.paths, '', {}, join(sb.root, 'out')).skipped).toBe('disabled')
+  })
+
+  it('adds nothing for an account the user didn\'t connect, and still cleans the old AGENTS.md note (R9)', () => {
+    granted()
+    const x = codexTarget('.codex-u')
+    makeProfile(x)
+    writeText(join(x.dir, 'config.toml'), codexServerToml('node', [sb.adapter]))
+    const cwd = join(sb.root, 'proj')
+    mkdirSync(cwd)
+    writeText(join(cwd, 'AGENTS.md'), `${AGENTS_BEGIN}\nold note\n${AGENTS_END}\n`)
+    const r = prepareCodexLaunch(sb.paths, cwd, { accountConnected: false }, x.dir)
+    expect(r).toEqual({ developerInstructions: null, skipped: 'account-not-connected', approvals: 0, agentsMdCleaned: 'file-deleted' })
+    expect(readText(join(x.dir, 'config.toml'))).toBe(codexServerToml('node', [sb.adapter]))
   })
 
   it('removes home-folder trust from the account\'s CODEX_HOME', () => {
