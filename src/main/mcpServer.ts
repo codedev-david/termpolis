@@ -729,9 +729,9 @@ const SUBMIT_CONFIRM_POLL_MS = 500
 const SUBMIT_END_CHARS = 24
 /** How many of the screen's last rows a failed submit returns, for the conductor to read. */
 const SUBMIT_SCREEN_ROWS = 15
-/** What clears a box that holds something else: Ctrl+U deletes a line of it in Claude Code, Codex
- *  and agy (back to the line's start, or the line break before it) and sends nothing. Twenty to a
- *  write: eighty read to Claude Code as a paste, and cleared nothing. */
+/** What clears a box that holds something else: Ctrl+U deletes it back from the cursor in Claude
+ *  Code, Codex and agy (to the line's start, or the line break before it) and sends nothing. Twenty
+ *  to a write: eighty read to Claude Code as a paste, and cleared nothing. */
 const CLEAR_KEYS = '\u0015'.repeat(20)
 /** How many writes of them one call sends, enough for a box of a hundred lines or so. */
 const SUBMIT_CLEAR_WRITES = 10
@@ -981,6 +981,22 @@ function otherTextInFront(input: readonly string[], text: string): boolean {
   return at >= 0 && !all.slice(0, all.length - end.length).endsWith(shown.slice(0, at))
 }
 
+/** Whether the box shows something behind the text just typed into it, which an Enter would send
+ *  with it as one prompt: what was behind the cursor in a box that no clearing emptied, since Ctrl+U
+ *  deletes only back from the cursor, and the text went in in front of it (W1-1: a person moved the
+ *  cursor back into what the box held). Behind the text's end; or, where the agent collapsed a long
+ *  paste, behind its placeholder for it. */
+function otherTextBehind(input: readonly string[], text: string): boolean {
+  const box = boxText(input)
+  const shown = bare(box)
+  const end = endOf(text)
+  const at = shown.lastIndexOf(end)
+  if (at >= 0) return at + end.length < shown.length
+  const pastes = [...box.matchAll(PASTE_PLACEHOLDERS)]
+  const paste = pastes[pastes.length - 1]
+  return paste?.index !== undefined && bare(box.slice(paste.index + paste[0].length)) !== ''
+}
+
 /** Whether a look shows the agent at its input, ready for the text: no shell's prompt, a box. */
 const atInput = (seen: Seen): boolean => seen.status.status === 'idle' && !seen.shell && inputBoxRow(seen.lines) >= 0
 
@@ -990,9 +1006,10 @@ const atInput = (seen: Seen): boolean => seen.status.status === 'idle' && !seen.
  *  clear it itself, with keys no conductor model can send through write_to_terminal. CLEAR_KEYS to a
  *  write, each looked at until the box has changed, the same on two looks, for up to SUBMIT_CLEAR_MS:
  *  done when it is empty. What two writes in a row left as it was is nothing Ctrl+U deletes, a hint
- *  that typing replaces, and is typed over (otherTextInFront has the last word on it). The screen it
- *  leaves, or the answer the call ends with, nothing typed: the agent left its input meanwhile, or
- *  its box held more than the writes cleared. */
+ *  that typing replaces or what is behind the cursor, and is typed over (otherTextInFront and
+ *  otherTextBehind have the last word on it). The screen it leaves, or the answer the call ends
+ *  with, nothing typed: the agent left its input meanwhile, or its box held more than the writes
+ *  cleared. */
 async function clearInput(handlers: McpToolHandlers, terminalId: string, name: string, clock: SubmitClock, held: Seen, waitedMs: number, abandoned?: AbortSignal): Promise<Seen | SubmitResult> {
   const boxOf = (seen: Seen): string => inputBoxRows(seen.lines)!.join('\n')
   let before = boxOf(held)
@@ -1112,8 +1129,13 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
   const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }
 
-  // An agent's box that holds something this text doesn't account for is cleared before it is typed.
-  if (agent && body && !emptyInputBox(ready.lines) && !holdsText(inputOf(ready, agent), body, agent)) {
+  // Typed only when the input doesn't hold it already, from a call before whose Enter didn't take:
+  // typed again, it went in after that copy, and the agent got the prompt twice.
+  const typing = body !== '' && !holdsText(inputOf(ready, agent), body, agent)
+  // An agent's box that holds something else is cleared before the text is typed. What the clear
+  // leaves is some of that, never this text from a call before: read as that, what a person's
+  // cursor kept behind it, the end every task of the conductor's has, was sent without the task.
+  if (agent && typing && !emptyInputBox(ready.lines)) {
     const cleared = await clearInput(handlers, terminalId, name, clock, ready, waitedMs, abandoned)
     if ('submitted' in cleared) return cleared
     if (abandoned?.aborted) return { submitted: false, waitedMs, error: 'The call was abandoned before the text was typed.' }
@@ -1121,9 +1143,7 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   }
   let last: Seen = ready
 
-  // Typed only when the input doesn't hold it already, from a call before whose Enter didn't take:
-  // typed again, it went in after that copy, and the agent got the prompt twice.
-  if (body && !holdsText(inputOf(ready, agent), body, agent)) {
+  if (typing) {
     handlers.writeToTerminal(terminalId, body)
     // Enter only once the agent shows what was typed, the same on two looks in a row: agy draws a
     // long paste in pieces, and one can end where the text does. Not pressed at all when it never
@@ -1144,9 +1164,12 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
       return failed(waitedMs, 'The agent never showed the text in its input, so Enter was not pressed. Check it with read_output, then send the same text again.', last)
     }
     // A box clearing left as it was: a hint, which the first key replaced, or other text, still in
-    // front of this.
-    if (agent && !emptyInputBox(ready.lines) && otherTextInFront(inputBoxRows(last.lines) ?? [], body)) {
-      return failed(waitedMs, "The agent's input already held other text, which clearing it didn't remove, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
+    // front of this or behind it.
+    if (agent && !emptyInputBox(ready.lines)) {
+      const box = inputBoxRows(last.lines) ?? []
+      if (otherTextInFront(box, body) || otherTextBehind(box, body)) {
+        return failed(waitedMs, "The agent's input already held other text, which clearing it didn't remove, and the text went in with it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
+      }
     }
   }
   if (body) await clock.sleep(settleMs(body))

@@ -9,6 +9,7 @@ import input from '../fixtures/agentScreensInput.json'
 import typed from '../fixtures/agentScreensTyped.json'
 import held from '../fixtures/agentScreensHeld.json'
 import cleared from '../fixtures/agentScreensCleared.json'
+import cursorScreens from '../fixtures/agentScreensCursor.json'
 
 // write_to_terminal with `submit` (GitHub #36 item 4), against a fake terminal: a screen script that
 // changes as time passes and as the tool types, and a clock that only moves when the tool sleeps.
@@ -900,7 +901,7 @@ describe('submitToTerminal and a box that already holds other text', () => {
   it('types a prompt behind one that ends like it, in a box Ctrl+U does not clear, sends neither, and says so', async () => {
     const t = holding(A, false)
     const res = await submitToTerminal(t.handlers, 't1', B, t.clock)
-    expect(res).toMatchObject({ submitted: false, error: "The agent's input already held other text, which clearing it didn't remove, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output." })
+    expect(res).toMatchObject({ submitted: false, error: "The agent's input already held other text, which clearing it didn't remove, and the text went in with it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output." })
     expect(res.screen).toContain('Write the unit tests for src/auth.ts.')
     expect(t.writes).toEqual([CLEAR, CLEAR, B])
     expect(t.sent).toEqual([])
@@ -1068,15 +1069,17 @@ describe('submitToTerminal and a box that already holds other text', () => {
 describe('submitToTerminal and a box it clears before it types', () => {
   const ALPHA = 'Reply with the single word ALPHA. Do not run any tools for this, please.'
   const tall = (word: string, lines = 20) => [`Reply with the single word ${word} and nothing else.`, ...Array.from({ length: lines - 1 }, (_, i) => `${i + 2}. no tools`)].join('\n')
-  /** An agent at 80x17 whose box starts out holding `held`, kept the way the agents keep it: Ctrl+U
-   *  deletes back to the start of the line (a paste's placeholder with it), or the line break before
-   *  a line's start; Enter sends what the box holds, the agent works for 2 s, then is back at its
-   *  box with its answer above. `glyph` and `draw` are the agent's: Claude Code's ❯, or agy's >, whose
+  /** An agent at 80x17 whose box starts out holding `held`, kept the way the agents keep it: a key
+   *  goes in at the cursor, `back` characters from the end to start with; Ctrl+U deletes back from
+   *  the cursor to the start of the line (a paste's placeholder with it), or the line break before a
+   *  line's start; Enter sends what the box holds, the agent works for 2 s, then is back at its box
+   *  with its answer above. `glyph` and `draw` are the agent's: Claude Code's ❯, or agy's >, whose
    *  box shows the last eight rows under "↑ N more lines". `hint` is what the box shows empty. With
    *  `swallows`, an Enter empties the box and the agent does nothing with what it held. */
-  function agentHolding(held: string, opts: { agent?: 'claude' | 'agy'; hint?: string; keysPerWrite?: number; swallows?: boolean } = {}) {
+  function agentHolding(held: string, opts: { agent?: 'claude' | 'agy'; hint?: string; keysPerWrite?: number; swallows?: boolean; back?: number } = {}) {
     const agent = opts.agent ?? 'claude'
     let box = held
+    let cursor = held.length - (opts.back ?? 0)
     const sent: string[] = []
     let sentAt = -Infinity
     const rows = (): string[] => {
@@ -1102,15 +1105,22 @@ describe('submitToTerminal and a box it clears before it types', () => {
           sentAt = t.clock.now()
         }
         box = ''
+        cursor = 0
         return
       }
       let keys = 0
       for (const ch of text) {
-        if (ch !== '\u0015') box += ch
-        else if (keys++ < (opts.keysPerWrite ?? Infinity)) box = box.endsWith('\n') ? box.slice(0, -1) : box.slice(0, box.lastIndexOf('\n') + 1)
+        if (ch !== '\u0015') {
+          box = box.slice(0, cursor) + ch + box.slice(cursor)
+          cursor++
+        } else if (keys++ < (opts.keysPerWrite ?? Infinity)) {
+          const start = cursor === 0 ? 0 : box[cursor - 1] === '\n' ? cursor - 1 : box.lastIndexOf('\n', cursor - 1) + 1
+          box = box.slice(0, start) + box.slice(cursor)
+          cursor = start
+        }
       }
     }
-    return { ...t, sent }
+    return { ...t, sent, box: () => box }
   }
 
   it('clears a prompt left in the box, twenty Ctrl+U to a write, and sends a task taller than the box alone', async () => {
@@ -1282,6 +1292,81 @@ describe('submitToTerminal and a box it clears before it types', () => {
     const c = fakeTerminal((_ms, w) => (w.length ? '' : idle(ALPHA)))
     expect(await submitToTerminal(c.handlers, 't1', 'Write the docs. Task ID: t-1', c.clock)).toMatchObject({ submitted: false, error: 'Terminal t1 was closed.' })
     expect(c.writes).toEqual([CLEAR])
+  })
+
+  // N1, W1-1: a person moved the cursor back into what the box held. Ctrl+U deletes only back from
+  // the cursor, so what was behind it stays, the next two writes change nothing, and the task is
+  // typed in front of it. Only what was in front of the task was looked for: Enter was pressed, and
+  // the agent got the two as one prompt.
+  const HELD_BEHIND = /^The agent's input already held other text, which clearing it didn't remove, and the text went in with it, so Enter was not pressed/
+  const CURSOR = cursorScreens.screens as Record<string, { agent: string; cols: number; rows: number; text: string; raw: string }>
+  it.each([
+    ['claude', 'cursor'],
+    ['claude', 'cursortall'],
+    ['agy', 'cursor'],
+    ['agy', 'cursortall'],
+    ['codex', 'cursor'],
+    ['codex', 'cursortall'],
+  ])('presses no Enter on a task typed in front of what %s kept behind the cursor, on the real screens (%s)', async (agent, step) => {
+    const at = (moment: string) => CURSOR[`${agent}-80x24-${step}-${moment}`]
+    const task = at('typed').text
+    // The box after a write is what the first left: the next two change nothing.
+    const t = fakeTerminal((_ms, w) => {
+      if (w.includes('\r')) return busy()
+      if (w.includes(task)) return at('typed').raw
+      return w.length ? at('cleared').raw : at('held').raw
+    }, { claude: 'Claude (Build)', agy: 'Gemini (Docs)', codex: 'Codex (Docs)' }[agent], { cols: 80, rows: 24 })
+    expect(screenOf(at('cleared').raw, { cols: 80, rows: 24 }).lines().join('\n')).toContain('. Do not run any tools for this, please.')
+    const res = await submitToTerminal(t.handlers, 't1', task, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(HELD_BEHIND) })
+    expect(res.screen).toContain('Do not run any tools for')
+    expect(t.writes).toEqual([CLEAR, CLEAR, CLEAR, task])
+  })
+
+  it('presses no Enter on a task typed in front of what was behind the cursor, wherever in the held line it was', async () => {
+    for (const back of [10, ALPHA.length]) {
+      const t = agentHolding(ALPHA, { back })
+      const task = 'Reply with the single word CURSOR.'
+      expect(await submitToTerminal(t.handlers, 't1', task, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(HELD_BEHIND) })
+      expect(t.sent).toEqual([])
+      expect(t.box()).toBe(`${task}${ALPHA.slice(-back)}`)
+    }
+  })
+
+  it('presses no Enter on a task typed in front of what was behind the cursor, though that ends the way the task does', async () => {
+    // A conductor ends every task the same way, so what Ctrl+U left can end with this task's end.
+    const ending = ' When you are done, update your task with swarm_update_task.'
+    const t = agentHolding(`Write the unit tests for src/auth.ts.${ending}`, { back: ending.length })
+    const task = `Fix the lint errors in src/api.ts.${ending}`
+    expect(await submitToTerminal(t.handlers, 't1', task, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(HELD_BEHIND) })
+    expect(t.sent).toEqual([])
+    expect(t.box()).toBe(`${task}${ending}`)
+  })
+
+  it("presses no Enter on a task the agent shows as its placeholder for a paste, with what was behind the cursor after it", async () => {
+    // A paste Claude Code collapses: the text's end never shows, only what Ctrl+U left, behind it.
+    const left = '. Do not run any tools for this, please.'
+    const task = tall('TALL', 30)
+    const t = fakeTerminal((_ms, w) => {
+      if (w.includes('\r')) return busy()
+      if (w.includes(task)) return idle(`[Pasted text #1 +29 lines]${left}`)
+      return idle(w.length ? left : ALPHA)
+    }, 'Claude (Build)', { cols: 80, rows: 24 })
+    expect(await submitToTerminal(t.handlers, 't1', task, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(HELD_BEHIND) })
+    expect(t.writes).toEqual([CLEAR, CLEAR, CLEAR, task])
+  })
+
+  it('still sends a task alone that clearing let go in front of nothing: a hint the text replaced, or the text the box held', async () => {
+    // What is behind the text's end is looked at only in a box clearing left something in: here the
+    // hint, gone at the first key, and a paste Claude Code collapsed, with nothing after it.
+    const task = tall('TALL', 30)
+    const t = fakeTerminal((_ms, w) => {
+      if (w.includes('\r')) return busy()
+      if (w.includes(task)) return idle('[Pasted text #1 +29 lines]')
+      return idle('run the tests again')
+    }, 'Claude (Build)', { cols: 80, rows: 24 })
+    expect(await submitToTerminal(t.handlers, 't1', task, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([CLEAR, CLEAR, task, '\r'])
   })
 })
 
