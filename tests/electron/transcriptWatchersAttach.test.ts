@@ -108,6 +108,16 @@ describe('claudeCodeWatcher attach (success path)', () => {
     fs.unlinkSync(link)
   })
 
+  // Node's realpathSync('') is the folder the process runs in, whose transcripts are none of a
+  // terminal's that has no folder.
+  it("findLatestSessionFile finds nothing for no folder, though the process's own folder has a transcript", async () => {
+    const { mangleCwd, findLatestSessionFile } = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
+    const dir = path.join(tmpHome, '.claude', 'projects', mangleCwd(fs.realpathSync(process.cwd())))
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'session.jsonl'), '{}\n')
+    expect(findLatestSessionFile('')).toBeNull()
+  })
+
   it('mangleCwd returns empty string for empty input', async () => {
     const { mangleCwd } = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
     expect(mangleCwd('')).toBe('')

@@ -140,6 +140,13 @@ describe('attachClaudeSessionWatcher', () => {
   })
 
   // A look is the one at attach and then one each poll; every 4th looks through every folder.
+  it('looks under the folder named for a working folder that is not there, as it was given', () => {
+    const gone = path.join(tmpDir, 'not-there')
+    transcript(mangleCwd(gone), SID, 'Read')
+    attach(SID, gone)
+    expect(tools()).toEqual(['Read'])
+  })
+
   it('finds it in any project folder, looking through all of them every 4th look', async () => {
     const elsewhere = transcript('named-some-other-way', SID, 'TodoWrite')
     const handle = attach()

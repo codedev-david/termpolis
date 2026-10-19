@@ -71,8 +71,10 @@ function folderHash(text: string): number {
 /** A working folder as Claude Code reads it when it names its transcripts' folder: every link on
  *  the way resolved. Live, claude started in a junction kept its transcript under the junction's
  *  target, so nothing was found under the folder as given. It keeps the rest as it was given, a
- *  Windows short name too. A folder that can't be read is taken as given. */
+ *  Windows short name too. A folder that can't be read is taken as given, and so is none at all,
+ *  which Node's realpathSync reads as the folder the process runs in. */
 export function claudeCwd(cwd: string): string {
+  if (!cwd) return cwd
   try {
     return fs.realpathSync(cwd)
   } catch {

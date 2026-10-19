@@ -51,6 +51,20 @@ describe('preload: termpolis API', () => {
     })
   })
 
+  it('falls back to what it knows of the platform when the sync channel answers nothing', async () => {
+    // A second load of the preload, whose sendSync answers nothing (a stubbed bridge), and then
+    // the first one's API back, for the tests after this one.
+    const first = { ...exposed }
+    try {
+      mockIpcRenderer.sendSync.mockReturnValueOnce(undefined as never)
+      vi.resetModules()
+      await import('../../src/preload/index')
+      expect(exposed.termpolis.platformInfo).toEqual({ platform: process.platform, windowsPty: null, homedir: '' })
+    } finally {
+      Object.assign(exposed, first)
+    }
+  })
+
   it('createTerminal invokes terminal:create', async () => {
     await exposed.termpolis.createTerminal('id1', 'bash', '/tmp', [])
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('terminal:create', {
