@@ -1467,6 +1467,15 @@ describe('submitToTerminal and a box it clears before it types', () => {
     expect(t.box()).toBe('run the tests.\nThen write the docs.')
   })
 
+  it('presses Enter on a task typed into an empty box, whatever the agent draws beside it there', async () => {
+    // Nothing was in the box to go with the task: what shows behind it, a completion an agent offers
+    // after the cursor, is the agent's own. Only a box clearing left something in is looked at.
+    const task = 'Write the docs. Task ID: t-1'
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : idle(w.length ? `${task} and the tests` : '')))
+    expect(await submitToTerminal(t.handlers, 't1', task, t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([task, '\r'])
+  })
+
   it('still sends a task alone that clearing let go in front of nothing: a hint the text replaced, or the text the box held', async () => {
     // What is behind the text's end is looked at only in a box clearing left something in: here the
     // hint, gone at the first key, and a paste Claude Code collapsed, with nothing after it.
@@ -1874,6 +1883,30 @@ describe('write_to_terminal submit and the output since run_command started the 
     await executeTool('close_terminal', { terminalId: 'own-1' }, t.handlers)
     // Gone from the agents, the terminal is a shell again: a command typed at its prompt runs.
     expect((await submitToTerminal(t.handlers, 'own-1', 'echo hi', t.clock)).error).not.toMatch(/shell's prompt/)
+  })
+
+  it('marks the agent run_command starts though its command comes with spaces around it', async () => {
+    // A conductor's command, as a model writes it: read from its first word, an agent's no longer.
+    const t = terminal({ cols: 80, rows: 24 }, true)
+    t.print(PROMPT)
+    await run(t, 'padded-1', `  ${CLAUDE} `)
+    t.print(exited())
+    expect(await submitToTerminal(t.handlers, 'padded-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it("forgets the agent run_command started once it runs another command there, or none", async () => {
+    // What runs at the prompt now is no agent: a text typed there is the shell's command.
+    for (const command of [undefined, 'npm test']) {
+      const id = `other-${command ?? 'none'}`
+      const t = terminal({ cols: 80, rows: 24 }, false)
+      t.print(PROMPT)
+      await run(t, id)
+      t.print(exited())
+      expect((await submitToTerminal(t.handlers, id, 'echo hi', t.clock)).error).toMatch(/shell's prompt/)
+      await executeTool('run_command', { terminalId: id, ...(command ? { command } : {}) }, t.handlers)
+      expect((await submitToTerminal(t.handlers, id, 'echo hi', t.clock)).error).not.toMatch(/shell's prompt/)
+    }
   })
 
   // The review of fix/swarm154 (W0-2, S0-4): a prompt the shell printed after the mark, with nothing
