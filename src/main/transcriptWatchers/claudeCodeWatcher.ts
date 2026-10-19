@@ -34,6 +34,9 @@ export interface ClaudeCodeWatcherHandle {
   stop(): void
 }
 
+/** How long a folder name Claude Code makes from a working folder gets before it is cut short. */
+const MANGLED_MAX = 200
+
 /**
  * Convert a working-directory path to Claude Code's mangled form.
  *
@@ -47,8 +50,33 @@ export function mangleCwd(cwd: string): string {
   if (!cwd) return ''
   // Claude Code turns every character but an ASCII letter or digit into "-", not only the
   // separators and the drive colon: in a folder with a dot, a space or an underscore in its path
-  // there was no transcript to find, so no activity was read from Claude Code there.
-  return cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  // there was no transcript to find, so no activity was read from Claude Code there. That takes in
+  // the "~" of a Windows short name (DAVIDE~1) and every letter outside ASCII, one dash for each
+  // UTF-16 unit: a live claude 2.1.303 named "x~José😀" as "x-Jos---". Past 200 characters it
+  // keeps the first 200 and adds a hash of the folder, as its own code does: no transcript of a
+  // folder that deep was found.
+  const mangled = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  if (mangled.length <= MANGLED_MAX) return mangled
+  return `${mangled.slice(0, MANGLED_MAX)}-${Math.abs(folderHash(cwd)).toString(36)}`
+}
+
+/** The 32-bit string hash Claude Code adds to a folder name it cut short. */
+function folderHash(text: string): number {
+  let hash = 0
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0
+  return hash
+}
+
+/** A working folder as Claude Code reads it when it names its transcripts' folder: every link on
+ *  the way resolved. Live, claude started in a junction kept its transcript under the junction's
+ *  target, so nothing was found under the folder as given. It keeps the rest as it was given, a
+ *  Windows short name too. A folder that can't be read is taken as given. */
+export function claudeCwd(cwd: string): string {
+  try {
+    return fs.realpathSync(cwd)
+  } catch {
+    return cwd
+  }
 }
 
 /**
@@ -65,7 +93,7 @@ export function findLatestSessionFile(cwd: string): string | null {
  * (liveTranscript); the watcher above only ever wants the newest.
  */
 export function listSessionFiles(cwd: string): string[] {
-  const mangled = mangleCwd(cwd)
+  const mangled = mangleCwd(claudeCwd(cwd))
   if (!mangled) return []
 
   const dir = path.join(CLAUDE_PROJECTS_DIR, mangled)

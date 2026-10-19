@@ -92,6 +92,22 @@ describe('claudeCodeWatcher attach (success path)', () => {
     handle?.stop()
   })
 
+  // Live, claude 2.1.303 started in a junction kept its transcript under the junction's target
+  // (bc-impl-launch-trace/live/out-live-forms-junction.txt), so a pane there showed no activity.
+  it("findLatestSessionFile looks for a folder reached through a link under the link's target, where Claude Code keeps it", async () => {
+    const { mangleCwd, findLatestSessionFile } = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
+    const real = path.join(tmpHome, 'project')
+    const link = path.join(tmpHome, 'project-link')
+    fs.mkdirSync(real)
+    fs.symlinkSync(real, link, 'junction')
+    const dir = path.join(tmpHome, '.claude', 'projects', mangleCwd(fs.realpathSync(real)))
+    fs.mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, 'session.jsonl')
+    fs.writeFileSync(file, '{}\n')
+    expect(findLatestSessionFile(link)).toBe(file)
+    fs.unlinkSync(link)
+  })
+
   it('mangleCwd returns empty string for empty input', async () => {
     const { mangleCwd } = await import('../../src/main/transcriptWatchers/claudeCodeWatcher')
     expect(mangleCwd('')).toBe('')

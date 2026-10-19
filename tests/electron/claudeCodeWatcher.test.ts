@@ -48,6 +48,23 @@ describe('mangleCwd', () => {
     expect(mangleCwd('/home/u/My App/site.com')).toBe('-home-u-My-App-site-com')
     expect(mangleCwd('C:\\Users\\DavidEngelhart\\.claude')).toBe('C--Users-DavidEngelhart--claude')
   })
+  // The folders a live claude 2.1.303 made (bc-impl-launch-trace/live): started in an 8.3 short
+  // path, and in its long form, both with a "~", an accented letter and an emoji in the name.
+  it("turns a short name's ~ and every letter outside ASCII into dashes, one for each UTF-16 unit", () => {
+    expect(mangleCwd('C:\\Users\\DAVIDE~1\\AppData\\Local\\Temp\\x~José😀-tpmangle149780'))
+      .toBe('C--Users-DAVIDE-1-AppData-Local-Temp-x-Jos----tpmangle149780')
+    expect(mangleCwd('C:\\Users\\DavidEngelhart\\AppData\\Local\\Temp\\x~José😀-tpmangle06eb38'))
+      .toBe('C--Users-DavidEngelhart-AppData-Local-Temp-x-Jos----tpmangle06eb38')
+  })
+  it('cuts a name longer than 200 characters and adds a hash of the folder, as live claude did', () => {
+    const deep = 'C:\\Users\\DavidEngelhart\\AppData\\Local\\Temp\\tpformsd676f5-' + 'abcdefghij'.repeat(19)
+    expect(mangleCwd(deep)).toBe('C--Users-DavidEngelhart-AppData-Local-Temp-tpformsd676f5-' + 'abcdefghij'.repeat(14) + 'abc-naz55k')
+  })
+  it('cuts only a name longer than 200, and makes a negative hash positive', () => {
+    expect(mangleCwd('a'.repeat(200))).toBe('a'.repeat(200))
+    expect(mangleCwd('a'.repeat(201))).toBe('a'.repeat(200) + '-rkvsv5')
+    expect(mangleCwd('z'.repeat(202))).toBe('z'.repeat(200) + '-c3bzk0')
+  })
 })
 
 describe('resolvePathWithinRoot', () => {
