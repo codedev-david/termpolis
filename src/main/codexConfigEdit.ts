@@ -586,3 +586,55 @@ export function stripCodexProjectTrust(text: string, shouldRemove: (folder: stri
   }, () => null)
   return 'error' in r ? r : { text: r.text, removed }
 }
+
+/** A model provider's keys that carry a credential. */
+const PROVIDER_SECRET_KEYS: readonly string[] = ['http_headers', 'env_http_headers', 'experimental_bearer_token']
+
+/** Why a statement or table must be left out of a copy, by the name it is listed under; null to keep it. */
+function secretName(path: string[], text: string): string | null {
+  if (path[0] === 'mcp_servers') return 'mcp_servers'
+  if (path[0] === 'model_providers') {
+    if (path.length >= 3) return PROVIDER_SECRET_KEYS.includes(path[2]) ? `model_providers.${path[1]}.${path[2]}` : null
+    // A provider (or every provider) as an inline table: it can't be edited in place, so it goes
+    // whole when it holds one of those keys.
+    return PROVIDER_SECRET_KEYS.some((k) => text.includes(k)) ? (path[1] ? `model_providers.${path[1]}` : 'model_providers') : null
+  }
+  if (path[0] === 'shell_environment_policy') {
+    if (path.length >= 2) return path[1] === 'set' ? 'shell_environment_policy.set' : null
+    return /\bset\b/.test(text) ? 'shell_environment_policy' : null
+  }
+  return null
+}
+
+/**
+ * The default profile's config.toml for a new Codex profile, without what can carry a credential:
+ * every `[mcp_servers.*]` table (servers keep `env`, `http_headers` and bearer tokens; connecting
+ * adds Termpolis's own back), a model provider's `http_headers`, `env_http_headers` and
+ * `experimental_bearer_token`, and `shell_environment_policy.set` (variables handed to every
+ * command Codex runs). `leftOut` names what went, never its value.
+ */
+export function stripCodexSecrets(text: string): { text: string; leftOut: string[] } | { error: string } {
+  const leftOut = new Set<string>()
+  const r = editLoop(text, (doc) => {
+    for (const t of doc.tables) {
+      // A header alone: `[model_providers.x]` stays (its keys are judged one by one), while
+      // `[mcp_servers.x]` or `[model_providers.x.http_headers]` goes whole.
+      const tableSecret = t.header >= 0 ? secretName(t.path, '') : null
+      if (tableSecret) {
+        removeTable(doc, t)
+        leftOut.add(tableSecret)
+        return true
+      }
+      for (const k of t.keys) {
+        const name = secretName([...t.path, ...k.key], statementText(doc, k))
+        if (name) {
+          removeStatement(doc, k)
+          leftOut.add(name)
+          return true
+        }
+      }
+    }
+    return false
+  }, () => null)
+  return 'error' in r ? r : { text: r.text, leftOut: [...leftOut].sort() }
+}
