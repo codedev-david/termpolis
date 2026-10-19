@@ -683,6 +683,20 @@ describe('conductorManager', () => {
       expect(useTerminalStore.getState().swarmCompletionSummary).toBeNull()
     })
 
+    // A launch that couldn't read the bus sets none of it aside (readLaunchBaseline), so the last
+    // swarm's messages are judged too: a worker of its that is still open was there all along, and
+    // what that swarm's conductor or worker posted without a name before the launch ends nothing.
+    it("is not ended by the last swarm's STEP 8 words without a name when the launch couldn't read the bus, its worker still open", async () => {
+      const bus = fakeBus()
+      addWorker('old-1')
+      bus.post('mcp-client', 'SWARM COMPLETE: the last swarm is done', 'result')
+      await vi.advanceTimersByTimeAsync(1000)
+      ;(window.swarmAPI.getMessages as Mock).mockRejectedValueOnce(new Error('ipc gone'))
+      await launchConductor()
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+    })
+
     it("is not ended by STEP 8's words without a name once a task exists: its worker can have sent them", async () => {
       const bus = fakeBus()
       await launchConductor()
