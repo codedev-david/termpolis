@@ -8,6 +8,7 @@ import {
   mangleCwd,
   type ClaudeSessionWatcherHandle,
 } from '../../src/main/transcriptWatchers/claudeCodeWatcher'
+import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../src/shared/conductorFiles'
 import { initEventBus, query, _resetForTests as resetBus } from '../../src/main/agentEventBus'
 
 // GitHub #36 (r5 Trace review): the swarm conductor's Trace followed the newest transcript in the
@@ -24,6 +25,7 @@ let tmpDir: string
 let cwd: string
 let env: NodeJS.ProcessEnv
 let projects: string
+let home: string
 const handles: ClaudeSessionWatcherHandle[] = []
 
 beforeEach(() => {
@@ -36,6 +38,9 @@ beforeEach(() => {
   fs.mkdirSync(cwd)
   env = { CLAUDE_CONFIG_DIR: path.join(tmpDir, 'config') }
   projects = path.join(tmpDir, 'config', 'projects')
+  // The home folder the conductor's run script records claude's config home in.
+  home = path.join(tmpDir, 'home')
+  fs.mkdirSync(home)
 })
 
 afterEach(() => {
@@ -46,7 +51,7 @@ afterEach(() => {
 })
 
 function attach(id = SID, at = cwd): ClaudeSessionWatcherHandle {
-  const handle = attachClaudeSessionWatcher('conductor-1', at, id, env)
+  const handle = attachClaudeSessionWatcher('conductor-1', at, id, env, home)
   expect(handle).not.toBeNull()
   handles.push(handle!)
   return handle!
@@ -189,7 +194,7 @@ describe('attachClaudeSessionWatcher', () => {
 
   it('takes a session id in either case, and nothing that is no session id', () => {
     for (const id of ['../../etc/passwd', 'not-a-uuid', '', `${SID}.jsonl`, `${SID}x`, `x${SID}`]) {
-      expect(attachClaudeSessionWatcher('conductor-1', cwd, id, env)).toBeNull()
+      expect(attachClaudeSessionWatcher('conductor-1', cwd, id, env, home)).toBeNull()
     }
     transcript(own(), SID.toUpperCase(), 'Read')
     attach(SID.toUpperCase())
@@ -234,9 +239,96 @@ describe('attachClaudeSessionWatcher', () => {
   })
 })
 
+// The conductor's claude keeps its session under the config home it gets from the shell it runs in,
+// which the shell's profile or a command typed before the run can set: the run script records it.
+describe('attachClaudeSessionWatcher: the config home the run script recorded', () => {
+  /** What the run script writes: Windows PowerShell 5.1 as UTF-8 with a BOM and CRLF, bash plainly. */
+  function record(id: string, configDir: string, windows = true): void {
+    const text = windows ? '\uFEFF' + id + '\r\n' + configDir + '\r\n' : id + '\n' + configDir + '\n'
+    fs.writeFileSync(path.join(home, CONDUCTOR_CLAUDE_HOME_FILE), text)
+  }
+  /** A transcript of this session under a config home's projects folder. */
+  function under(configHome: string, tool: string): void {
+    const dir = path.join(configHome, 'projects', own())
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, SID + '.jsonl'), toolLine(tool))
+  }
+
+  it("follows the session under the recorded config home, not the environment's", () => {
+    under(path.join(tmpDir, 'config'), 'FromEnv')
+    under(path.join(tmpDir, 'profile'), 'FromRecord')
+    for (const windows of [true, false]) {
+      resetBus()
+      record(SID, path.join(tmpDir, 'profile'), windows)
+      const handle = attach()
+      expect(tools()).toEqual(['FromRecord'])
+      expect(handle.sessionFile).toBe(path.join(tmpDir, 'profile', 'projects', own(), SID + '.jsonl'))
+      handle.stop()
+    }
+  })
+
+  it('reads a record that names the session in another case, as an id is the same in any case', () => {
+    under(path.join(tmpDir, 'profile'), 'FromRecord')
+    record(SID.toUpperCase(), path.join(tmpDir, 'profile'))
+    attach()
+    expect(tools()).toEqual(['FromRecord'])
+  })
+
+  it('takes a record with no config home for ~/.claude, whatever the environment says', () => {
+    under(path.join(home, '.claude'), 'Default')
+    under(path.join(tmpDir, 'config'), 'FromEnv')
+    record(SID, '')
+    attach()
+    expect(tools()).toEqual(['Default'])
+    // Nor does a record of the id alone, with no line after it.
+    resetBus()
+    for (const h of handles.splice(0)) h.stop()
+    fs.writeFileSync(path.join(home, CONDUCTOR_CLAUDE_HOME_FILE), SID)
+    attach()
+    expect(tools()).toEqual(['Default'])
+  })
+
+  it('reads a relative config home from the folder claude runs in', () => {
+    under(path.join(cwd, 'profiles', 'work'), 'Relative')
+    record(SID, 'profiles/work')
+    attach()
+    expect(tools()).toEqual(['Relative'])
+  })
+
+  it("leaves another session's record, the last launch's, to the environment", () => {
+    under(path.join(tmpDir, 'config'), 'FromEnv')
+    under(path.join(tmpDir, 'profile'), 'FromRecord')
+    record(OTHER, path.join(tmpDir, 'profile'))
+    attach()
+    expect(tools()).toEqual(['FromEnv'])
+  })
+
+  it('uses a record written after it started looking, and looks through that config home from then on', async () => {
+    const handle = attach()
+    poll()
+    record(SID, path.join(tmpDir, 'profile'))
+    const dir = path.join(tmpDir, 'profile', 'projects', 'named-some-other-way')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, SID + '.jsonl'), toolLine('Scanned'))
+    poll(2) // the 4th look goes through every folder of the recorded config home
+    await vi.waitFor(() => expect(tools()).toEqual(['Scanned']))
+    expect(handle.sessionFile).toBe(path.join(dir, SID + '.jsonl'))
+  })
+
+  it("keeps the session's record once read, though the file is written again for the next launch", () => {
+    record(SID, path.join(tmpDir, 'profile'))
+    attach()
+    record(OTHER, path.join(tmpDir, 'other-profile'))
+    under(path.join(tmpDir, 'profile'), 'FromRecord')
+    poll()
+    expect(tools()).toEqual(['FromRecord'])
+  })
+})
+
 describe('claudeProjectsDir', () => {
   it("is ~/.claude/projects without CLAUDE_CONFIG_DIR, or with it empty, as Claude Code's own code reads it", () => {
     expect(claudeProjectsDir(cwd, {})).toBe(path.join(os.homedir(), '.claude', 'projects'))
+    expect(claudeProjectsDir(cwd, {}, home)).toBe(path.join(home, '.claude', 'projects'))
     expect(claudeProjectsDir(cwd, { CLAUDE_CONFIG_DIR: '' })).toBe(path.join(os.homedir(), '.claude', 'projects'))
   })
 

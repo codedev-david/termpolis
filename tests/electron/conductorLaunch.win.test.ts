@@ -65,8 +65,9 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
    *  start in FullLanguage again. `vanish` removes that bin file once its --version answered.
    *  `binName` names the folder on PATH the stand-ins are in. `nodeOnPath` puts node's folder on
    *  PATH too, for a test command that starts `node` by name, as e2e's does. `vanishTask` removes the
-   *  task file instead, once the probe's --version answered. */
-  function launch(name: string, opts: { bin?: Record<string, string>; binName?: string; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string; vanishTask?: boolean; nodeOnPath?: boolean }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string } {
+   *  task file instead, once the probe's --version answered. `configDir` is the CLAUDE_CONFIG_DIR the
+   *  script's shell has, none without it. */
+  function launch(name: string, opts: { bin?: Record<string, string>; binName?: string; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string; vanishTask?: boolean; nodeOnPath?: boolean; configDir?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string; recorded: Buffer | null } {
     const root = join(dir, name)
     const home = join(root, 'home')
     const bin = join(root, opts.binName ?? 'bin')
@@ -75,11 +76,12 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     mkdirSync(bin, { recursive: true })
     for (const [file, content] of Object.entries(opts.bin ?? {})) writeFileSync(join(bin, file), content)
     const taskFile = join(home, '.termpolis-conductor-task.md')
+    const claudeHomeFile = join(home, '.termpolis-conductor-claude-home')
     const cfg = join(home, 'AppData', 'Roaming', 'claude-mcp-config.json')
     const script = join(home, '.termpolis-conductor-run.ps1')
     writeFileSync(taskFile, task, 'utf8') // BOM-less, as configFileManager writes it
     writeFileSync(cfg, '{"mcpServers":{}}')
-    writeFileSync(script, conductorRunScript(true, { taskFile, mcpConfigPath: cfg, sessionId: SESSION, testCommand: opts.testCommand }))
+    writeFileSync(script, conductorRunScript(true, { taskFile, mcpConfigPath: cfg, sessionId: SESSION, claudeHomeFile, testCommand: opts.testCommand }))
     const outer = join(root, 'outer.ps1')
     const pre = opts.utf8Console ? '[Console]::InputEncoding = [Text.Encoding]::UTF8\r\n' : ''
     const run = opts.constrained
@@ -96,6 +98,9 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     env.USERPROFILE = home
     env.APPDATA = join(home, 'AppData', 'Roaming')
     env.LOCALAPPDATA = join(home, 'AppData', 'Local')
+    // Claude Code's config home, as the shell claude runs in has it: none unless the test gives one.
+    for (const k of Object.keys(env)) if (k.toUpperCase() === 'CLAUDE_CONFIG_DIR') delete env[k]
+    if (opts.configDir !== undefined) env.CLAUDE_CONFIG_DIR = opts.configDir
     env.TP_RECORD = record
     env.TP_EXIT = String(opts.exitCode ?? 0)
     env.TP_SAY = opts.say ?? ''
@@ -116,6 +121,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
       argv: existsSync(record) ? (JSON.parse(readFileSync(record, 'utf8')) as string[]) : null,
       stdin: existsSync(record + '.stdin') ? readFileSync(record + '.stdin') : null,
       cfg,
+      recorded: existsSync(claudeHomeFile) ? readFileSync(claudeHomeFile) : null,
     }
   }
 
@@ -266,4 +272,18 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
       expect(r.status).toBe(0)
     }
   }, 120_000)
+
+  // Trace follows the conductor's session under the config home its claude gets from the shell,
+  // which main reads from what the script recorded before it started claude.
+  it('records the session and the CLAUDE_CONFIG_DIR claude gets, in either language mode, the path in UTF-8', () => {
+    const configDir = join(dir, 'profiles', 'José ’s work')
+    for (const constrained of [false, true]) {
+      const tag = constrained ? 'clm-' : ''
+      const none = launch(`${tag}record-none`, { bin: { 'claude.cmd': cmdShim() }, constrained })
+      expect(none.recorded?.toString('utf8'), none.stderr).toBe(`\uFEFF${SESSION}\r\n\r\n`)
+      const set = launch(`${tag}record-set`, { bin: { 'claude.cmd': cmdShim() }, constrained, configDir })
+      expect(set.recorded?.toString('utf8'), set.stderr).toBe(`\uFEFF${SESSION}\r\n${configDir}\r\n`)
+      expectDelivered(set, 0, constrained ? task : task + '\r\n')
+    }
+  }, 240_000)
 })

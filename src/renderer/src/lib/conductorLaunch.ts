@@ -34,6 +34,8 @@ export interface ConductorRunPaths {
   /** The UUID claude starts its session with (`--session-id`). Its transcript is `<id>.jsonl`, which
    *  is how the dashboard's Trace follows this conductor's and no other session's. */
   sessionId: string
+  /** Where the script records that id and claude's config home (CONDUCTOR_CLAUDE_HOME_FILE). */
+  claudeHomeFile: string
   /** E2E only: the command resolveAgentCommand put in claude's place. It skips the binary probe,
    *  whose `--version` check a mock can't pass, and gets its prompt exactly as claude does. A
    *  program and its arguments, none with a space in it (`node e2e/mocks/mock-claude.cjs`): in
@@ -107,7 +109,7 @@ const RESOLVE_CLAUDE = [
 /** The run script: `.termpolis-conductor-run.ps1` on Windows, `.termpolis-conductor-run.sh`
  *  elsewhere. Every path in it is a single-quoted literal, so a `$` or a backtick in a user name
  *  expands to nothing. */
-export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath, sessionId, testCommand }: ConductorRunPaths): string {
+export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath, sessionId, claudeHomeFile, testCommand }: ConductorRunPaths): string {
   const quote = isWindows ? psQuote : shQuote
   const flags = `-p${mcpConfigPath ? ` --mcp-config ${quote(mcpConfigPath)}` : ''} --session-id ${quote(sessionId)} --dangerously-skip-permissions`
   if (isWindows) {
@@ -151,9 +153,12 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
     // A BOM first, which writeConfigFile writes as UTF-8's: 5.1 reads a .ps1 without one in the
     // ANSI code page, and the paths here are under the user's home folder. "José" came out as
     // "JosÃ©", and Ñ, ł or ’ as bytes that read as quotes and ended the literal early.
-    return '﻿' + [
+    return '\uFEFF' + [
       `Write-Output '${CONDUCTOR_START_LINE}'`,
       ...(testCommand ? [] : RESOLVE_WORKING_CLAUDE),
+      // Where claude keeps this session's transcript, for Trace: under the config home it gets from
+      // this shell, which its profile or a command typed before the run can have set.
+      `Set-Content -LiteralPath ${psQuote(claudeHomeFile)} -Value ${psQuote(sessionId)}, "$env:CLAUDE_CONFIG_DIR" -Encoding UTF8 -ErrorAction SilentlyContinue`,
       // The probe's `--version` left 0 here, and a pipe that fails before claude starts (a binary
       // gone since, a parameter that won't bind) sets nothing: the report would say "exited 0".
       // Global, or a script variable would hide the one the native command sets.
@@ -187,6 +192,7 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
     `echo '${CONDUCTOR_START_LINE}'`,
     `TASK_FILE=${shQuote(taskFile)}`,
     ...(testCommand ? [] : RESOLVE_CLAUDE),
+    `printf '%s\\n%s\\n' ${shQuote(sessionId)} "\${CLAUDE_CONFIG_DIR-}" 2>/dev/null > ${shQuote(claudeHomeFile)}`,
     `${testCommand ?? '"$CLAUDE_EXE"'} ${flags} < "$TASK_FILE"`,
     'code=$?',
     'echo',

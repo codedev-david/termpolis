@@ -18,11 +18,13 @@ const WIN = {
   taskFile: "C:\\Users\\O'Brien $x\\.termpolis-conductor-task.md",
   mcpConfigPath: "C:\\Users\\O'Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json",
   sessionId: SESSION,
+  claudeHomeFile: "C:\\Users\\O'Brien $x\\.termpolis-conductor-claude-home",
 }
 const UNIX = {
   taskFile: "/home/o'brien/.termpolis-conductor-task.md",
   mcpConfigPath: "/home/o'brien/.config/termpolis/claude-mcp-config.json",
   sessionId: SESSION,
+  claudeHomeFile: "/home/o'brien/.termpolis-conductor-claude-home",
 }
 
 describe('conductorRunScript on Windows', () => {
@@ -197,6 +199,30 @@ describe('the run scripts start claude under the session id they are given', () 
   })
 })
 
+// Claude Code keeps that session's transcript under the config home claude gets from the shell it
+// runs in, which a profile or a command typed before the run can set: main can't tell it, so the
+// script records it, with the session id, before claude starts.
+describe('the run scripts record the session and the config home claude gets', () => {
+  it('on Windows, with Set-Content, which Constrained Language Mode allows, as single-quoted literals', () => {
+    for (const testCommand of [undefined, 'node e2e/mocks/mock-claude.cjs']) {
+      const script = conductorRunScript(true, { ...WIN, testCommand })
+      const line = `Set-Content -LiteralPath 'C:\\Users\\O''Brien $x\\.termpolis-conductor-claude-home' -Value '${SESSION}', "$env:CLAUDE_CONFIG_DIR" -Encoding UTF8 -ErrorAction SilentlyContinue`
+      expect(script).toContain(`\n${line}\n$global:LASTEXITCODE = $null\n`)
+      // Before claude is started, whichever way: the first start is the FullLanguage pipe.
+      expect(script.indexOf(line)).toBeLessThan(script.indexOf('Get-Content -Raw'))
+    }
+  })
+
+  it('on Linux and macOS, with printf, saying nothing when the home folder is not writable', () => {
+    for (const testCommand of [undefined, 'node e2e/mocks/mock-claude.cjs']) {
+      const script = conductorRunScript(false, { ...UNIX, testCommand })
+      const line = `printf '%s\\n%s\\n' '${SESSION}' "\${CLAUDE_CONFIG_DIR-}" 2>/dev/null > '/home/o'\\''brien/.termpolis-conductor-claude-home'`
+      expect(script).toContain(`\n${line}\n`)
+      expect(script.indexOf(line)).toBeLessThan(script.indexOf(' < "$TASK_FILE"'))
+    }
+  })
+})
+
 // GitHub #36, item 2: when claude exited, the conductor terminal's own shell lived on, so
 // nothing told the monitor and the swarm looked "running" forever.
 describe('the run scripts report when claude exits', () => {
@@ -221,7 +247,7 @@ describe('the run scripts report when claude exits', () => {
   it('print a start line before anything else, so a report can leave out the echoed launch line', () => {
     // After the BOM, which is no line.
     expect(conductorRunScript(true, WIN).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\nfunction Resolve-WorkingClaude {`)).toBe(true)
-    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\n$global:LASTEXITCODE = $null\n`)).toBe(true)
+    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\nSet-Content -LiteralPath `)).toBe(true)
     expect(conductorRunScript(false, UNIX).startsWith(`#!/bin/bash\necho '${CONDUCTOR_START_LINE}'\nTASK_FILE=`)).toBe(true)
   })
 

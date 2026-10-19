@@ -26,6 +26,7 @@ import fs from 'fs'
 import os from 'os'
 import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp, ensureE2eBuild } from './helpers/launch'
 import { findConductorExit, type ConductorExit } from '../src/renderer/src/lib/conductorLaunch'
+import { CONDUCTOR_CLAUDE_HOME_FILE } from '../src/shared/conductorFiles'
 
 let app: ElectronApplication
 let page: Page
@@ -36,6 +37,7 @@ const TASK_FILE = path.join(os.homedir(), '.termpolis-conductor-task.md')
 const RUN_PS1 = path.join(os.homedir(), '.termpolis-conductor-run.ps1')
 const RUN_SH = path.join(os.homedir(), '.termpolis-conductor-run.sh')
 const RUN_CMD = path.join(os.homedir(), '.termpolis-conductor-run.cmd')
+const CLAUDE_HOME_FILE = path.join(os.homedir(), CONDUCTOR_CLAUDE_HOME_FILE)
 // Quotes, option-like words and non-ASCII: each one broke or garbled the argv delivery.
 const GOAL = 'Build a tiny feature to validate the launch command: run "npm test --watch" -NoProfile, then reply "all good" — ✓ →'
 
@@ -52,7 +54,7 @@ test.beforeAll(async () => {
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
 
   // Clear any prior run artifacts so our assertions can't false-pass on stale files
-  for (const f of [TASK_FILE, RUN_PS1, RUN_SH, RUN_CMD, RECEIVED]) {
+  for (const f of [TASK_FILE, RUN_PS1, RUN_SH, RUN_CMD, RECEIVED, CLAUDE_HOME_FILE]) {
     try { if (fs.existsSync(f)) fs.unlinkSync(f) } catch {}
   }
 
@@ -264,6 +266,10 @@ test.describe.serial('Swarm launch command shape', () => {
       '-p', '--mcp-config', expect.stringMatching(/claude-mcp-config\.json$/),
       '--session-id', expect.stringMatching(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/), '--dangerously-skip-permissions',
     ])
+    // Before it started claude, the script recorded that session, and the config home claude got
+    // from its shell, for Trace to find the session's transcript under.
+    const recorded = fs.readFileSync(CLAUDE_HOME_FILE, 'utf-8').replace(/^\uFEFF/, '').split(/\r?\n/)
+    expect(recorded[0]).toBe(received!.argv[4])
   })
 
   test('9. The conductor terminal shows the exit report, and the swarm ends on its tasks', async () => {

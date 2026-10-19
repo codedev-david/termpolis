@@ -4,6 +4,7 @@ import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
 import { conductorRunScript, conductorLaunchCommand, findConductorExit, type ConductorExit } from './conductorLaunch'
 import { getTerminalDefaults } from './terminalDefaults'
+import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../../shared/conductorFiles'
 import { recordSwarmError } from './sentry'
 import { stopAllBridges } from './swarmBridgeManager'
 import type { TerminalSession } from '../types'
@@ -234,7 +235,13 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   conductorState.sessionId = sessionId
   await window.termpolis.writeConfigFile(
     scriptFile,
-    conductorRunScript(isWindows, { taskFile: native(tempFile), mcpConfigPath: native(mcpConfigPath), sessionId, testCommand }),
+    conductorRunScript(isWindows, {
+      taskFile: native(tempFile),
+      mcpConfigPath: native(mcpConfigPath),
+      sessionId,
+      claudeHomeFile: native(`${homeSlash}/${CONDUCTOR_CLAUDE_HOME_FILE}`),
+      testCommand,
+    }),
   )
   const runCmd = conductorLaunchCommand(isWindows, native(scriptFile))
   // The last swarm's workers, which only Clear closes, are none of this one's: their bridges

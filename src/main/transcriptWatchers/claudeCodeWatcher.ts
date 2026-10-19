@@ -3,6 +3,7 @@ import * as path from 'path'
 import * as os from 'os'
 import { publish } from '../agentEventBus'
 import { tailFile, resolvePathWithinRoot, POLL_INTERVAL_MS, type TailHandle } from './baseWatcher'
+import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../shared/conductorFiles'
 
 /**
  * Claude Code transcript watcher.
@@ -329,9 +330,23 @@ export interface ClaudeSessionWatcherHandle extends ClaudeCodeWatcherHandle {
 
 /** The folder Claude Code keeps its sessions in, under its config home: CLAUDE_CONFIG_DIR when its
  *  environment sets one (read from the folder it runs in, as its own code does), else ~/.claude. */
-export function claudeProjectsDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+export function claudeProjectsDir(cwd: string, env: NodeJS.ProcessEnv = process.env, homeDir: string = os.homedir()): string {
   const configDir = env.CLAUDE_CONFIG_DIR
-  return path.join(configDir ? path.resolve(cwd, configDir) : path.join(os.homedir(), '.claude'), 'projects')
+  return path.join(configDir ? path.resolve(cwd, configDir) : path.join(homeDir, '.claude'), 'projects')
+}
+
+/** The CLAUDE_CONFIG_DIR the conductor's run script recorded for this session ('' for none), or
+ *  null while the file holds another session's, or none (CONDUCTOR_CLAUDE_HOME_FILE). */
+function recordedConfigDir(file: string, sessionId: string): string | null {
+  let text: string
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+  // Windows PowerShell 5.1 writes it as UTF-8 with a BOM, and its lines end in CRLF.
+  const [id, configDir = ''] = text.replace(/^\uFEFF/, '').split(/\r?\n/)
+  return id.trim().toLowerCase() === sessionId.toLowerCase() ? configDir.trim() : null
 }
 
 /** A working folder as PowerShell hands it to a program it starts: with a Windows short name
@@ -373,28 +388,38 @@ async function sessionFileIn(projectsDir: string, name: string): Promise<string 
  * the last swarm's conductor or a Claude Code worker in the same folder (GitHub #36), and nothing
  * before the session's own first line is in it, so no history is replayed.
  *
- * The file appears once claude has started (about 5 seconds, live). Until then it is looked for
- * in the folder Claude Code names for the working folder, read as it reads it and as PowerShell
- * hands it on; and, every few polls for a while, in every project folder: the id names one
- * session only, so a file of that name is this one wherever Claude Code put it.
+ * It is under claude's config home: the one the conductor's run script recorded for this session
+ * in `<home>/CONDUCTOR_CLAUDE_HOME_FILE`, which the shell claude runs in decides, and until the
+ * script has, the one Termpolis's environment, which its terminals are started with, gives. The
+ * file appears once claude has started (about 5 seconds, live). Until then it is looked for in
+ * the folder Claude Code names for the working folder, read as it reads it and as PowerShell hands
+ * it on; and, every few polls for a while, in every project folder: the id names one session only,
+ * so a file of that name is this one wherever Claude Code put it.
  */
 export function attachClaudeSessionWatcher(
   terminalId: string,
   cwd: string,
   sessionId: string,
   env: NodeJS.ProcessEnv = process.env,
+  homeDir: string = os.homedir(),
 ): ClaudeSessionWatcherHandle | null {
   if (!SESSION_ID.test(sessionId)) return null
-  const projectsDir = claudeProjectsDir(cwd, env)
   const name = `${sessionId}.jsonl`
-  const expected = [...new Set([claudeCwd(cwd), spelledOut(cwd)].map((form) => path.join(projectsDir, mangleCwd(form), name)))]
+  const folders = [...new Set([claudeCwd(cwd), spelledOut(cwd)].map(mangleCwd))]
+  const record = path.join(homeDir, CONDUCTOR_CLAUDE_HOME_FILE)
+  let recorded: string | null = null
+  const projectsDir = (): string => {
+    if (recorded === null) recorded = recordedConfigDir(record, sessionId)
+    return claudeProjectsDir(cwd, recorded === null ? env : { CLAUDE_CONFIG_DIR: recorded }, homeDir)
+  }
+  const expected = (): string[] => folders.map((folder) => path.join(projectsDir(), folder, name))
   let tail: TailHandle | null = null
   let stopped = false
   let polls = 0
   const handle: ClaudeSessionWatcherHandle = {
     terminalId,
     sessionId,
-    sessionFile: expected[0],
+    sessionFile: expected()[0],
     stop: () => {
       stopped = true
       clearInterval(locator)
@@ -408,11 +433,11 @@ export function attachClaudeSessionWatcher(
     tail = tailFile(file, (line) => processClaudeLine(line, terminalId))
   }
   const locate = (): void => {
-    const file = expected.find((f) => fs.existsSync(f))
+    const file = expected().find((f) => fs.existsSync(f))
     if (file) return follow(file)
     polls += 1
     if (polls % SCAN_EVERY_POLLS !== 0 || polls > SCAN_POLLS) return
-    void sessionFileIn(projectsDir, name).then((found) => {
+    void sessionFileIn(projectsDir(), name).then((found) => {
       if (found) follow(found)
     })
   }
