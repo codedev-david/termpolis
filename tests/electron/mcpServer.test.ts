@@ -849,6 +849,28 @@ describe('MCP HTTP server', () => {
     ['system᠋', 'mcp-client'],
     ['systemﾠ', 'mcp-client'],
     ['conductor️', 'conductor'],
+    // R4-5: letters drawn like the Latin ones spelled a name the Messages tab shows as "system" or
+    // "conductor", which was filed as itself: one passed as Termpolis's own note, the other was not
+    // taken for the conductor. Every Cyrillic, Greek and Armenian letter and Latin small capital that
+    // Unicode's confusables draw like one of theirs is in a row.
+    ['\u0455\u0443\u0455\u0442\u0435\u043c', 'mcp-client'], // Cyrillic
+    ['\u0405\u0423\u0405\u0422\u0415\u041c', 'mcp-client'], // Cyrillic capitals
+    ['\u054f\u03a5\u054f\u03a4\u0395\u039c', 'mcp-client'], // Armenian Տ, Greek capitals
+    ['\ua731\u028f\ua731\u1d1b\u1d07\u1d0d', 'mcp-client'], // Latin small capitals
+    ['s\u03b3s\u03c4em', 'mcp-client'], // Greek γ and τ
+    ['s\u04afs\ua68d\u04bdm', 'mcp-client'], // Cyrillic ү, ꚍ and ҽ
+    ['S\u04aeSTE\u03fa', 'mcp-client'], // Cyrillic Ү, Greek Ϻ
+    ['\u0455ystem', 'mcp-client'], // one Cyrillic letter
+    ['\u0455\u0443\u0455t\u0435m\u200b', 'mcp-client'], // Cyrillic, and an invisible character
+    ['\u0441\u043en\u0501u\u0441\u0442\u043e\u0433', 'conductor'], // Cyrillic
+    ['\u0421\u041eNDU\u0421\u0422\u041eR', 'conductor'], // Cyrillic capitals
+    ['\u0421\u039f\u039dD\u054dC\u0422\u0555R', 'conductor'], // Cyrillic, Greek and Armenian capitals
+    ['\u1d04\u1d0f\u0274\u1d05\u1d1c\u1d04\u1d1b\u1d0f\u0280', 'conductor'], // Latin small capitals
+    ['c\u03bf\u0578d\u03c5ct\u03c3\u1d26', 'conductor'], // Greek and Armenian
+    ['\u1c83\u0585\u057cd\u057dct\u1c82r', 'conductor'], // Cyrillic and Armenian
+    ['S\u03d2STEM', 'mcp-client'], // Greek's upsilon symbol ϒ, which NFKC turns into Υ
+    // NFKC turns a lunate sigma, drawn like c, into ς, which is drawn like no letter of the two.
+    ['\u03f2onductor', '\u03c2onductor'],
     // Names a person reads as they are written keep every character they show.
     ['José', 'José'],
     ['MUÑOZ', 'MUÑOZ'],
@@ -856,6 +878,11 @@ describe('MCP HTTP server', () => {
     ['Codex — Tests', 'Codex — Tests'],
     ['测试代理', '测试代理'],
     ['🤖 Reviewer', '🤖 Reviewer'],
+    // Names in the scripts of those letters are filed as written: their letters are read as Latin
+    // ones only to tell whether the name is one of those two.
+    ['\u0421\u0435\u0440\u0433\u0435\u0439', '\u0421\u0435\u0440\u0433\u0435\u0439'], // Сергей: Cyrillic, its С and е drawn like C and e
+    ['\u03a3\u03c4\u03ad\u03c6\u03b1\u03bd\u03bf\u03c2', '\u03a3\u03c4\u03ad\u03c6\u03b1\u03bd\u03bf\u03c2'], // Στέφανος: Greek, its τ and ο drawn like t and o
+    ['\u054d\u0578\u0576\u0561', '\u054d\u0578\u0576\u0561'], // Սոնա: Armenian, its Ս and ո drawn like U and n
     // The conductor, however it writes its own name: its plan and its STEP 8 are told by it.
     ['Conductor', 'conductor'],
     [' CONDUCTOR ', 'conductor'],

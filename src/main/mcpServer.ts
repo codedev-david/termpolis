@@ -1200,17 +1200,40 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   return failed(waitedMs, 'The text is still in the agent\'s input after Enter was pressed twice. Check it with read_output.', last)
 }
 
+/** The letters drawn like those of "system" and "conductor" (R4-5), by the Latin letter each reads
+ *  as: every Cyrillic, Greek and Armenian letter, and every Latin small capital, that Unicode's
+ *  confusables list as one of them in either case, or as its small capital (т and τ are drawn as ᴛ).
+ *  A name spelled with them looks like one of the two in the Messages tab. Read after NFKC, which
+ *  turns symbols drawn like them into them (Greek's upsilon symbol ϒ into Υ), and Greek's lunate
+ *  sigmas, drawn like c and C, into ς and Σ, drawn like neither; and before the name is lowercased,
+ *  which turns some of them into letters drawn like none of these (Greek Μ into μ). */
+const LOOKALIKES: Readonly<Record<string, string>> = {
+  s: '\u0405\u0455\u054f\ua731', // Ѕ ѕ Տ ꜱ
+  y: '\u028f\u03a5\u03b3\u0423\u0443\u04ae\u04af', // ʏ Υ γ У у Ү ү
+  t: '\u03a4\u03c4\u0422\u0442\u1d1b\ua68d', // Τ τ Т т ᴛ ꚍ
+  e: '\u0395\u0415\u0435\u04bd\u1d07', // Ε Е е ҽ ᴇ
+  m: '\u039c\u03fa\u041c\u043c\u1d0d', // Μ Ϻ М м ᴍ
+  c: '\u0421\u0441\u1c83\u1d04', // С с ᲃ ᴄ
+  o: '\u039f\u03bf\u03c3\u041e\u043e\u0555\u0585\u1c82\u1d0f', // Ο ο σ О о Օ օ ᲂ ᴏ
+  n: '\u0274\u039d\u0578\u057c', // ɴ Ν ո ռ
+  d: '\u0501\u1d05', // ԁ ᴅ
+  u: '\u03c5\u054d\u057d\u1d1c', // υ Ս ս ᴜ
+  r: '\u0280\u0433\u1d26', // ʀ г ᴦ
+}
+const LOOKALIKE_OF = new Map(Object.entries(LOOKALIKES).flatMap(([latin, drawn]) => [...drawn].map((c) => [c, latin] as [string, string])))
+const LOOKALIKE = new RegExp(`[${Object.values(LOOKALIKES).join('')}]`, 'gu')
+
 /** The sender a swarm message is filed under: the name its caller gives, so the conductor's word is
  *  told from a worker's (a worker's own result in STEP 8's words, "SWARM COMPLETE ...", ended the
  *  swarm with a task still open: GitHub #36), or mcp-client for none. Never Termpolis's own system,
  *  whose notes the conductor acts on, closing a worker: not by a name the Messages tab shows the
  *  same, with an invisible character in it (a control or format character, or any other Unicode
- *  marks default-ignorable: a variation selector, a Hangul filler) or a fullwidth letter (NFKC folds
- *  those). The conductor is "conductor" however it writes it, which is the name its plan and its
- *  STEP 8 are told by. */
+ *  marks default-ignorable: a variation selector, a Hangul filler), a fullwidth letter (NFKC folds
+ *  those) or a letter drawn like a Latin one (LOOKALIKES). The conductor is "conductor" however it
+ *  writes it, which is the name its plan and its STEP 8 are told by. */
 function messageSender(from: unknown): string {
   const name = typeof from === 'string' ? from.normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{DI}]/gu, '').trim().slice(0, 64) : ''
-  const key = name.toLowerCase()
+  const key = name.replace(LOOKALIKE, (c) => LOOKALIKE_OF.get(c)!).toLowerCase()
   if (key === 'conductor') return 'conductor'
   return name === '' || key === 'system' ? 'mcp-client' : name
 }
