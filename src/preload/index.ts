@@ -16,8 +16,8 @@ import type {
 } from '../renderer/src/types'
 
 const api: TermpolisAPI = {
-  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom) =>
-    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom }),
+  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom, accountId) =>
+    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom, ...(accountId ? { accountId } : {}) }),
 
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),
@@ -215,8 +215,8 @@ const api: TermpolisAPI = {
   workspaceListTrusted: () =>
     ipcRenderer.invoke('workspace:list-trusted'),
   // Seed Claude Code's own trust config for a folder, so its trust dialog never opens.
-  claudeTrustWorkspace: (cwd) =>
-    ipcRenderer.invoke('claude:trust-workspace', { cwd }),
+  claudeTrustWorkspace: (cwd, accountId) =>
+    ipcRenderer.invoke('claude:trust-workspace', { cwd, ...(accountId ? { accountId } : {}) }),
 
   // Shared swarm memory (RAG)
   memoryWrite: (input) => ipcRenderer.invoke('memory:write', input),
@@ -241,13 +241,15 @@ const api: TermpolisAPI = {
   brainImport: () => ipcRenderer.invoke('brain:import'),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
   memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
-  memoryPrepareCodexContext: (cwd: string) => ipcRenderer.invoke('memory:prepare-codex-context', { cwd }),
+  memoryPrepareCodexContext: (cwd: string, accountId?: string) =>
+    ipcRenderer.invoke('memory:prepare-codex-context', { cwd, ...(accountId ? { accountId } : {}) }),
   // Agent integration: consent-gated writes into Claude Code / Codex / Gemini configs.
   agentIntegrationStatus: () => ipcRenderer.invoke('agents:integration-status'),
   agentIntegrationSet: (req) => ipcRenderer.invoke('agents:integration-set', req),
   agentFolderTrustAllowed: (terminalId: string, fallbackCwd: string) =>
     ipcRenderer.invoke('agents:folder-trust-allowed', { terminalId, fallbackCwd }),
-  agentRemoveCodexHomeTrust: () => ipcRenderer.invoke('agents:remove-codex-home-trust'),
+  agentRemoveCodexHomeTrust: (accountId?: string) =>
+    (accountId ? ipcRenderer.invoke('agents:remove-codex-home-trust', { accountId }) : ipcRenderer.invoke('agents:remove-codex-home-trust')),
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
   tokenSavingsSetSettings: (p: { enabled?: boolean; wireProxy?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean; floorControl?: boolean; prefixDecay?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),

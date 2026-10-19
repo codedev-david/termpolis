@@ -323,7 +323,8 @@ export interface BillBreakdownView {
 }
 
 export interface TermpolisAPI {
-  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean) => Promise<IpcResponse>
+  /** `accountId`: the account a launch runs on (Settings ▸ Accounts), for the proxy's step-aside. */
+  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
   /** Both stores in one call — global workflows first, then this project's. */
   listWorkflows: (cwd: string) => Promise<IpcResponse<WorkflowListItem[]>>
@@ -464,7 +465,8 @@ export interface TermpolisAPI {
   workspaceRevokeTrust: (cwd: string) => Promise<IpcResponse>
   workspaceListTrusted: () => Promise<IpcResponse<string[]>>
   /** Pre-approve a folder in Claude Code's ~/.claude.json so its trust dialog never opens. */
-  claudeTrustWorkspace: (cwd: string) => Promise<IpcResponse<{ changed: boolean; keys: string[]; skipped?: string }>>
+  /** `accountId`: trust the folder in that account's profile; refused for one not connected. */
+  claudeTrustWorkspace: (cwd: string, accountId?: string) => Promise<IpcResponse<{ changed: boolean; keys: string[]; skipped?: string }>>
 
   // Shared swarm memory (RAG)
   memoryWrite: (input: MemoryWriteInput) => Promise<IpcResponse<MemoryEntry>>
@@ -496,7 +498,7 @@ export interface TermpolisAPI {
   memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   /** Codex parity: the memory instruction Codex gets at launch via `-c developer_instructions=…`
    *  (never written into the repo), plus pre-approval of any memory tools not yet decided. */
-  memoryPrepareCodexContext: (cwd: string) => Promise<IpcResponse<CodexLaunchContext>>
+  memoryPrepareCodexContext: (cwd: string, accountId?: string) => Promise<IpcResponse<CodexLaunchContext>>
   /** Agent integration: what Termpolis writes into agent configs, and the consent gating it. */
   agentIntegrationStatus: () => Promise<IpcResponse<AgentIntegrationStatus>>
   agentIntegrationSet: (req: AgentIntegrationSetRequest) => Promise<IpcResponse<AgentIntegrationSetResult>>
@@ -506,7 +508,8 @@ export interface TermpolisAPI {
    * home, or a root.
    */
   agentFolderTrustAllowed: (terminalId: string, fallbackCwd: string) => Promise<IpcResponse<boolean>>
-  agentRemoveCodexHomeTrust: () => Promise<IpcResponse<{ changed: boolean; error?: string }>>
+  /** `accountId`: an account's own CODEX_HOME instead of the default one. */
+  agentRemoveCodexHomeTrust: (accountId?: string) => Promise<IpcResponse<{ changed: boolean; error?: string }>>
   /** Token Headroom: compression settings + measured savings receipt. */
   tokenSavingsGetSettings: () => Promise<IpcResponse<HeadroomSettingsView>>
   tokenSavingsSetSettings: (p: Partial<HeadroomSettingsView>) => Promise<IpcResponse<HeadroomSettingsView>>

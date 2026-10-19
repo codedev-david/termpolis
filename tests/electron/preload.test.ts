@@ -1085,6 +1085,27 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
     expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.signInProgress])
   })
 
+  it('hands main the launch\'s account for its writes only when there is one, so today\'s payloads stay as they were', async () => {
+    const t = exposed.termpolis
+    const cases: Array<[() => unknown, unknown[], unknown[]]> = [
+      [() => t.createTerminal('id1', 'bash', '/tmp', [], true), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true }], []],
+      [() => t.createTerminal('id1', 'bash', '/tmp', [], true, 'acc_1'), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true, accountId: 'acc_1' }], []],
+      [() => t.claudeTrustWorkspace('/repo'), ['claude:trust-workspace', { cwd: '/repo' }], []],
+      [() => t.claudeTrustWorkspace('/repo', 'acc_1'), ['claude:trust-workspace', { cwd: '/repo', accountId: 'acc_1' }], []],
+      [() => t.memoryPrepareCodexContext('/repo'), ['memory:prepare-codex-context', { cwd: '/repo' }], []],
+      [() => t.memoryPrepareCodexContext('/repo', 'acc_1'), ['memory:prepare-codex-context', { cwd: '/repo', accountId: 'acc_1' }], []],
+      [() => t.agentRemoveCodexHomeTrust(), ['agents:remove-codex-home-trust'], []],
+      [() => t.agentRemoveCodexHomeTrust('acc_1'), ['agents:remove-codex-home-trust', { accountId: 'acc_1' }], []],
+    ]
+    for (const [call, expected] of cases) {
+      mockIpcRenderer.invoke.mockClear()
+      await call()
+      expect(mockIpcRenderer.invoke.mock.calls).toEqual([expected])
+      // Exactly these keys: no accountId key at all when none was given.
+      if (expected.length > 1) expect(Object.keys(mockIpcRenderer.invoke.mock.calls[0][1] as object)).toEqual(Object.keys(expected[1] as object))
+    }
+  })
+
   it('passes a sign-in\'s progress to the subscriber, and unsubscribes', async () => {
     const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
     const cb = vi.fn()
