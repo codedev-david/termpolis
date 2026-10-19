@@ -899,12 +899,19 @@ describe('submitToTerminal and a box that already holds other text', () => {
   })
 
   it('types a prompt behind one that ends like it, in a box Ctrl+U does not clear, sends neither, and says so', async () => {
-    const t = holding(A, false)
+    // One row of it, as a hint is, for all the clear can tell: typed over, and in sight in front.
+    const one = 'Fix the docs. When you are done, update your task with swarm_update_task.'
+    const t = holding(one, false)
     const res = await submitToTerminal(t.handlers, 't1', B, t.clock)
     expect(res).toMatchObject({ submitted: false, error: "The agent's input already held other text, which clearing it didn't remove, and the text went in with it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output." })
-    expect(res.screen).toContain('Write the unit tests for src/auth.ts.')
+    expect(res.screen).toContain('Fix the docs.')
     expect(t.writes).toEqual([CLEAR, CLEAR, B])
     expect(t.sent).toEqual([])
+    // Two rows of it, which no hint takes: nothing typed (N3).
+    const u = holding(A, false)
+    expect(await submitToTerminal(u.handlers, 't1', B, u.clock)).toMatchObject({ submitted: false, error: "The agent's input held other text, which clearing it didn't remove, so nothing was typed. Check it with read_output." })
+    expect(u.writes).toEqual([CLEAR, CLEAR])
+    expect(u.sent).toEqual([])
   })
 
   // The letters and digits are what is compared: read by its letters alone, task-202 was task-101
@@ -971,20 +978,17 @@ describe('submitToTerminal and a box that already holds other text', () => {
     expect(t.sent).toEqual([B])
   })
 
-  it('reads text in front of the task in a box taller than the screen, where only its end is left in sight', async () => {
-    // At 80x17: an old prompt of ten lines that Ctrl+U doesn't clear, the task's seven typed behind its
-    // last. The box's top and the old prompt's first line went off the screen.
+  it('types nothing behind an old prompt of many lines that Ctrl+U does not clear, which the task would push out of sight', async () => {
+    // At 80x17: an old prompt of ten lines. Typed behind its last, the task's seven took the box past
+    // the screen's top, the old prompt's first line with it; with more lines, the whole old prompt.
     const old = Array.from({ length: 10 }, (_, i) => `Old line ${i + 1}.`)
-    const lines = ['Fix the lint errors.', ...Array.from({ length: 6 }, (_, i) => `${i + 2}. no tools`)]
-    const text = lines.join('\n')
+    const text = ['Fix the lint errors.', ...Array.from({ length: 6 }, (_, i) => `${i + 2}. no tools`)].join('\n')
     const ready = frame(['Claude Code', '', RULE, `❯ ${old[0]}`, ...old.slice(1).map((r) => `  ${r}`), RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
-    const inBox = [...old.slice(1, 9), `${old[9]}${lines[0]}`, ...lines.slice(1)].map((r) => `  ${r}`)
-    const tall = frame([...inBox, RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code')
-    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : w.some((x) => x !== CLEAR) ? tall : ready), 'Claude (Build)', { cols: 80, rows: 17 })
-    expect(screenOf(tall, { cols: 80, rows: 17 }).lines()).toHaveLength(17)
+    const t = fakeTerminal((_ms, w) => (w.includes('\r') ? busy() : ready), 'Claude (Build)', { cols: 80, rows: 17 })
     const res = await submitToTerminal(t.handlers, 't1', text, t.clock)
-    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/already held other text/) })
-    expect(t.writes).toEqual([CLEAR, CLEAR, text])
+    expect(res).toMatchObject({ submitted: false, error: "The agent's input held other text, which clearing it didn't remove, so nothing was typed. Check it with read_output." })
+    expect(res.screen).toContain('Old line 10.')
+    expect(t.writes).toEqual([CLEAR, CLEAR])
   })
 
   // R4-2: a task taller than what the box shows, typed behind a prompt left there. agy shows "↑ N more
@@ -1354,6 +1358,42 @@ describe('submitToTerminal and a box it clears before it types', () => {
     }, 'Claude (Build)', { cols: 80, rows: 24 })
     expect(await submitToTerminal(t.handlers, 't1', task, t.clock)).toMatchObject({ submitted: false, error: expect.stringMatching(HELD_BEHIND) })
     expect(t.writes).toEqual([CLEAR, CLEAR, CLEAR, task])
+  })
+
+  // N3: "two writes left it as it was" was read off the rows in sight. A text taller than the screen
+  // whose rows look alike (log lines, a list) looks the same after a write deleted ten lines of it,
+  // and was typed behind as a hint: with a task taller than the box, what was left is out of sight
+  // in front of it, and the two went as one prompt. A hint is one row.
+  const CLEARED_NOTHING = /^The agent's input held other text, which clearing it didn't remove, so nothing was typed\. Check it with read_output\.$/
+  it('types nothing into a box of rows that look the same after each write: a text taller than the screen they shortened', async () => {
+    const t = agentHolding(Array.from({ length: 60 }, () => 'no tools').join('\n'))
+    const res = await submitToTerminal(t.handlers, 't1', tall('TALL'), t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(CLEARED_NOTHING) })
+    expect(res.screen).toContain('no tools')
+    expect(t.writes).toEqual([CLEAR, CLEAR])
+    expect(t.sent).toEqual([])
+  })
+
+  it("types over one row Ctrl+U doesn't delete in Codex's composer, though the composer has a blank row under it", async () => {
+    const codex = (inBox: string) => frame(['>_ OpenAI Codex (v0.153.4)', '', `› ${inBox}`, '', '  gpt-5.6-sol medium · ~\\p'])
+    const t = fakeTerminal((_ms, w) => {
+      if (w.includes('\r')) return busy()
+      const typed = w.filter((x) => x !== CLEAR).join('')
+      return codex(typed || 'Summarize the recent commits')
+    }, 'Codex (Docs)', { cols: 80, rows: 24 })
+    expect(await submitToTerminal(t.handlers, 't1', 'Write the docs. Task ID: t-1', t.clock)).toEqual({ submitted: true, waitedMs: 1000 })
+    expect(t.writes).toEqual([CLEAR, CLEAR, 'Write the docs. Task ID: t-1', '\r'])
+  })
+
+  it('types nothing into a box whose lines behind the cursor no write deletes, a person having moved it up into them', async () => {
+    // Ctrl+U deletes the cursor's line back to its start, the line breaks and lines before: the lines
+    // after it stay, on more than one row.
+    const held = 'Fix the lint errors first.\nThen run the tests.\nThen write the docs.'
+    const t = agentHolding(held, { back: 'run the tests.\nThen write the docs.'.length })
+    const res = await submitToTerminal(t.handlers, 't1', 'Write the API docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(CLEARED_NOTHING) })
+    expect(t.writes).toEqual([CLEAR, CLEAR, CLEAR])
+    expect(t.box()).toBe('run the tests.\nThen write the docs.')
   })
 
   it('still sends a task alone that clearing let go in front of nothing: a hint the text replaced, or the text the box held', async () => {

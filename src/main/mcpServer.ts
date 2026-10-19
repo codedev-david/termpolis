@@ -911,6 +911,9 @@ const endOf = (text: string): string => bare(text).slice(-SUBMIT_END_CHARS)
 /** What an agent's input box shows, run together: its glyph, and agy's "↑ 8 more lines" over a
  *  text taller than its box, left out. */
 const boxText = (input: readonly string[]): string => joined(input).replace(/^\s*[❯>›]?\s*(?:↑\s*\d+\s+more\s+lines?\b)?/, '')
+/** How many of an input box's rows show something: not the blank row Codex's composer has under its
+ *  text. */
+const textRows = (input: readonly string[]): number => input.filter((row) => row.trim() !== '').length
 
 /** Whether Codex's placeholder for a paste, "[Pasted Content 1110 chars]", can be this text's.
  *  Codex counts the code points it kept: the text's, less at most those it may have dropped, any
@@ -1005,11 +1008,11 @@ const atInput = (seen: Seen): boolean => seen.status.status === 'idle' && !seen.
  *  behind a text taller than the box, read then as the text alone (R4-2). The conductor was told to
  *  clear it itself, with keys no conductor model can send through write_to_terminal. CLEAR_KEYS to a
  *  write, each looked at until the box has changed, the same on two looks, for up to SUBMIT_CLEAR_MS:
- *  done when it is empty. What two writes in a row left as it was is nothing Ctrl+U deletes, a hint
- *  that typing replaces or what is behind the cursor, and is typed over (otherTextInFront and
- *  otherTextBehind have the last word on it). The screen it leaves, or the answer the call ends
- *  with, nothing typed: the agent left its input meanwhile, or its box held more than the writes
- *  cleared. */
+ *  done when it is empty. What two writes in a row left as it was, on one row, is nothing Ctrl+U
+ *  deletes, a hint that typing replaces or what is behind the cursor, and is typed over
+ *  (otherTextInFront and otherTextBehind have the last word on it). The screen it leaves, or the
+ *  answer the call ends with, nothing typed: the agent left its input meanwhile, or its box held
+ *  more than the writes cleared, or more rows than a hint that they left as they were. */
 async function clearInput(handlers: McpToolHandlers, terminalId: string, name: string, clock: SubmitClock, held: Seen, waitedMs: number, abandoned?: AbortSignal): Promise<Seen | SubmitResult> {
   const boxOf = (seen: Seen): string => inputBoxRows(seen.lines)!.join('\n')
   let before = boxOf(held)
@@ -1034,7 +1037,9 @@ async function clearInput(handlers: McpToolHandlers, terminalId: string, name: s
     if (look === null) return failed(waitedMs, "The agent's input held other text, and the agent stopped showing its input while it was cleared, so nothing was typed. Check it with read_output.", seen)
     if (stable && emptyInputBox(seen.lines)) return seen
     unchanged = stable && look === before ? unchanged + 1 : 0
-    if (unchanged === 2) return seen
+    // A hint is one row. Rows that look the same after a write can be a text taller than the screen
+    // that it did shorten, out of sight then in front of a text typed behind it (N3).
+    if (unchanged === 2) return textRows(inputBoxRows(seen.lines)!) === 1 ? seen : failed(waitedMs, "The agent's input held other text, which clearing it didn't remove, so nothing was typed. Check it with read_output.", seen)
     before = look
   }
   return failed(waitedMs, "The agent's input held more than one call clears, so nothing was typed. Send the text again: each call clears more of it.", seen)
