@@ -229,8 +229,9 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     ["agy's quota", 'Gemini', ['> Write the docs', '', '✕ You have exhausted your quota on this model.', ...AGY_IDLE], 'usage limit reached'],
     ["Claude Code's session limit, under the prompt it stopped", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
     ["Claude Code's weekly limit, under a prompt of two rows", 'Claude', ['> Build the page, with a form, validation and a test for each of', '  them.', '  ⎿  You\'ve hit your weekly limit · resets Oct 20, 9am (UTC)', ...CLAUDE_IDLE], 'usage limit reached (resets Oct 20, 9am (UTC))'],
-    // A narrow screen wraps the reply's end onto a row of its own, indented under the reply's text.
-    ["Claude Code's session limit, its reply wrapped onto a second row", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm)'],
+    // A narrow screen wraps the reply's end onto a row of its own, indented under the reply's text:
+    // read with it, its reset whole (R4-2: cut at the row's end, it read "resets 3pm").
+    ["Claude Code's session limit, its reply wrapped onto a second row", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
   ])('%s: blocked, and the conductor told once to check it', async (name, agent, rows, summary) => {
     const result = onScreen(rows, agent)
     expect(result).toEqual({ status: 'blocked', summary })
@@ -244,6 +245,51 @@ describe('the limit message a CLI ends its turn with, right above its input box'
   it('reads one a narrow screen wrapped over three rows', () => {
     const rows = ['› Fix the login test', '', '■ You\'ve hit your usage limit. Upgrade to Plus', 'to continue using Codex (https://chatgpt.com/explore', '/plus), or try again at 3:04 PM.', ...CODEX_IDLE]
     expect(onScreen(rows)).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3:04 PM)' })
+  })
+
+  // R4-2: a narrow screen, a worker's pane in a split, wraps the message as each CLI wraps it, and
+  // each cell was read only as far as its first row (agy's, below 46 columns), its first two
+  // (Claude Code's reply, below about 36) or five (Codex's, below 30): no report went out, and the
+  // worker read as idle. The reply's reset was cut where the screen wrapped it. Drawn at the width.
+  describe('wrapped by a narrow screen', () => {
+    const rule = (cols: number) => '─'.repeat(cols)
+    const at = (cols: number, rows: string[], agent: string) => {
+      const screen = screenOf(drawn(rows), { cols, rows: 24 })
+      return detectAgentStatus(screen.lines().join('\n'), agent, 'working', { screen: true, title: '' })
+    }
+    const claudeIdle = (cols: number) => ['', rule(cols), '❯ ', rule(cols), '  ⏵⏵ bypass permissions on'.slice(0, cols)]
+    const agyIdle = (cols: number) => ['', rule(cols), '> ', rule(cols), '? for shortcuts']
+    const codexIdle = ['', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium']
+
+    it.each([
+      // Its continuation at column 0, as Codex wraps its cells (codex-60x20-interrupted-idle).
+      ['agy at 40 columns', 40, ['✕ You have exhausted your quota on this', 'model.']],
+      // Or under its text: no real capture shows which.
+      ['agy at 40 columns, wrapped under its text', 40, ['✕ You have exhausted your quota on this', '  model.']],
+      ['agy at 22 columns', 22, ['✕ You have exhausted', 'your quota on this', 'model.']],
+    ])('%s', (_name, cols, cell) => {
+      expect(at(cols, ['> Write the docs', '', ...cell, ...agyIdle(cols)], 'Gemini')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
+    })
+
+    it.each([
+      ['on 2 rows, at 50 columns', 50, ['  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
+      ['on 2 rows, its reset cut, at 46 columns', 46, ['  ⎿  You\'ve hit your weekly limit · resets Oct', '     20, 9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+      ['on 3 rows, at 30 columns', 30, ['  ⎿  You\'ve hit your session', '     limit · resets 3pm', '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
+      ['on 4 rows, its ⎿ row cut before "limit", at 20 columns', 20, ['  ⎿  You\'ve hit your', '     weekly limit ·', '     resets Oct 20,', '     9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+    ])("Claude Code's reply %s", (_name, cols, reply, summary) => {
+      expect(at(cols, ['❯ Build the page', ...reply, ...claudeIdle(cols)], 'Claude')).toEqual({ status: 'blocked', summary })
+    })
+
+    it("Codex's cell on 6 rows, at 29 columns", () => {
+      const cell = ['■ You\'ve hit your usage', 'limit. Upgrade to Plus to', 'continue using Codex', '(https://chatgpt.com/explore/', 'plus), or try again at 3:04', 'PM.']
+      expect(at(29, ['› Fix the login test', '', ...cell, ...codexIdle], 'Codex')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3:04 PM)' })
+    })
+
+    // R4-3: Codex's "try again at" read across the row it wraps at, as its cell's other words are.
+    it("Codex's reset split after \"try again\"", () => {
+      const cell = ['■ You\'ve hit your usage limit. Upgrade to Plus to continue', 'using Codex (https://chatgpt.com/explore/plus), or try again', 'at 3:04 PM.']
+      expect(at(60, ['› Fix the login test', '', ...cell, ...codexIdle], 'Codex')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3:04 PM)' })
+    })
   })
 })
 
@@ -261,6 +307,15 @@ describe('what is no usage limit or menu', () => {
     ["Codex's, still at work on the prompt it was sent", 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', ...CODEX_BUSY]],
     ["Codex's, a cell of another kind right under it", 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', '⚠ Falling back from WebSockets to HTTPS transport.', ...CODEX_IDLE]],
     ["Codex's words in the middle of a long cell, no blank row above them", 'Codex', ['• The log ends with:', '■ You\'ve hit your usage limit. Try again at 4:15 PM.', '  and then', '  the session', '  closed', '  itself.', ...CODEX_IDLE]],
+    // R4-3: a ⎿ row of its own between the prompt and the reply, a hook's, leaves the reply no longer
+    // right under the prompt: it can be a hook's own words, so it is read as nothing.
+    ["Claude Code's reply under a hook's row under the prompt", 'Claude', ['❯ Build the page', '  ⎿  UserPromptSubmit hook succeeded', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE]],
+    // The rows a reply wrapped onto, its ⎿ row and the prompt gone off the screen's top.
+    ["Claude Code's reply's wrapped end, its ⎿ row scrolled off the top", 'Claude', ['     limit · resets 3pm', '     (America/New_York)', ...CLAUDE_IDLE]],
+    // Only rows indented under the reply's text are the reply's: one under it indented less is not.
+    ["Claude Code's reply with a row under it indented less than its text", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '  (America/New_York)', ...CLAUDE_IDLE]],
+    // A wrapped reply is read from its ⎿ row: one that starts some other way is no limit.
+    ["Claude Code's reply wrapped onto rows that name a limit, its ⎿ row not starting with it", 'Claude', ['❯ Build the page', '  ⎿  The banner now reads:', '     You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
   ])('%s', (_name, agent, rows) => {
     expect(isLimitOrMenu(onScreen(rows, agent))).toBe(false)
   })

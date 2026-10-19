@@ -472,24 +472,34 @@ function turnEndLimit(rows: readonly string[], box: number): string | null {
   if (end >= 0 && RULE.test(rows[end])) end--
   while (end >= 0 && rows[end].trim() === '') end--
   if (end < 0) return null
+  // Up to the blank row above it, or the screen's top: the cell, however many rows a narrow screen
+  // wrapped it onto, and its message read with those rows run together.
   let start = end
-  while (start > 0 && rows[start - 1].trim() !== '' && end - start < 4) start--
+  while (start > 0 && rows[start - 1].trim() !== '') start--
   const cell = rows.slice(start, end + 1)
-  if ((CODEX_LIMIT_CELL.test(cell[0]) || AGY_LIMIT_CELL.test(cell[0])) && !cell.slice(1).some((row) => CELL_START.test(row))) {
-    return start === 0 || rows[start - 1].trim() === '' ? limitSummary(cell.join('\n')) : null
+  const message = runTogether(cell)
+  if ((CODEX_LIMIT_CELL.test(message) || AGY_LIMIT_CELL.test(message)) && !cell.slice(1).some((row) => CELL_START.test(row))) {
+    return limitSummary(cell.join('\n'))
   }
   return claudeLimitReply(rows, end)
 }
 
-/** Claude Code's limit reply ending on row `end`: on that row, or on the one above when a narrow
- *  screen wrapped it, right under the echo of the prompt it stopped. */
+/** Claude Code's limit reply ending on row `end`: its ⎿ row and every row a narrow screen wrapped it
+ *  onto, indented under its text, right under the echo of the prompt it stopped. */
 function claudeLimitReply(rows: readonly string[], end: number): string | null {
-  const at = CLAUDE_REPLY.test(rows[end]) ? end : end > 0 && CLAUDE_REPLY.test(rows[end - 1]) && /^\s{4,}[^\s⎿]/.test(rows[end]) ? end - 1 : -1
-  if (at < 0 || !CLAUDE_LIMIT_MESSAGES.some((p) => p.test(rows[at]))) return null
+  let at = end
+  while (at > 0 && /^\s{4,}[^\s⎿]/.test(rows[at])) at--
+  const reply = runTogether(rows.slice(at, end + 1))
+  if (!CLAUDE_REPLY.test(rows[at]) || !CLAUDE_LIMIT_MESSAGES.some((p) => p.test(reply))) return null
   // Up through the rows the prompt wraps onto, indented two under its glyph, and its blank lines.
   let up = at - 1
   while (up >= 0 && (rows[up].trim() === '' || /^ {2}[^\s⎿]/.test(rows[up]))) up--
-  return up >= 0 && /^[❯>] \S/.test(rows[up]) ? limitSummary(rows.slice(at, end + 1).join('\n')) : null
+  return up >= 0 && /^[❯>] \S/.test(rows[up]) ? limitSummary(reply) : null
+}
+
+/** Rows as one line, each run of spaces one space: a message a narrow screen wrapped, read whole. */
+function runTogether(rows: readonly string[]): string {
+  return rows.join(' ').replace(/\s+/g, ' ')
 }
 
 /** What a CLI draws in place of its input box that holds the worker: a menu, a limit's own prompt,
