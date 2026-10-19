@@ -286,6 +286,8 @@ vi.mock('../../src/main/mcpServer', () => ({
   getMcpAuthToken: vi.fn(() => 'fake-token'), getMcpPort: vi.fn(() => 9315),
   initAuditLog: vi.fn(),
   awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
+  // The shell's prompt report, as mcpServer.ts defines it: OSC 9;9 (PowerShell, cmd) or OSC 7 (bash).
+  PROMPT_REPORT: /\x1b\](?:9;9;|7;)/g,
 }))
 vi.mock('../../src/main/swarmManager', () => ({
   sendMessage: vi.fn(), readMessages: vi.fn(() => []), getAllMessages: vi.fn(() => []),
@@ -804,6 +806,21 @@ describe('Settings ▸ Accounts wiring', () => {
     const dir = join(H.userData, 'account-checks')
     expect(deps().checkCwd()).toBe(dir)
     expect(H.mkdirSync).toHaveBeenCalledWith(dir, { recursive: true })
+  })
+
+  it('tells a sign-in\'s command finished by a prompt report in the terminal\'s output after the mark', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-sign', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[0][3] as (d: string) => void
+    onData('PS C:\\> claude auth login --claudeai\r\nOpening the browser...\r\n')
+    const mark = 'PS C:\\> claude auth login --claudeai\r\n'.length
+    expect(deps().promptSince('t-sign', mark)).toBe(false)
+    // PowerShell's prompt reports its folder (OSC 9;9) when the command is done.
+    onData('Login successful.\r\n\x1b]9;9;C:\\Users\\me\x07PS C:\\Users\\me> ')
+    expect(deps().promptSince('t-sign', mark)).toBe(true)
+    // Nothing after the report: no prompt since there.
+    expect(deps().promptSince('t-sign', 10_000)).toBe(false)
+    expect(deps().promptSince('t-unknown', 0)).toBe(false)
   })
 
   it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {

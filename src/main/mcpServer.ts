@@ -764,7 +764,7 @@ interface Seen {
 /** What every Termpolis shell writes at each prompt it prints, its folder (shellIntegration.ts: OSC
  *  9;9 from PowerShell and cmd, OSC 7 from bash; zsh and fish get none); an agent's own output has
  *  none (its OSC 7501 query is another code). */
-const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
+export const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
 /** Where ConPTY paints the whole screen again when the PTY is resized: from its top left, with or
  *  without its report of the new size before (terminalScreen.ts resizeReportOf; on the live runs only
  *  a PTY's first resize had one). It paints an exited agent's last frame, box and all, again. */

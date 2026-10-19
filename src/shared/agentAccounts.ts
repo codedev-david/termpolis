@@ -311,6 +311,10 @@ export interface SignInProgress {
   accountId: string
   email: string | null
   done: boolean
+  /** Once the sign-in command finished: what the agent's own status command said. */
+  identity?: AccountIdentity
+  /** Why that status command couldn't be asked. */
+  checkError?: string
 }
 
 /** A write into an agent's config, as agent integration reports it. */

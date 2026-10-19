@@ -713,6 +713,78 @@ describe('signing in (R29)', () => {
     expect(await ok(ACCOUNTS_IPC.watchSignIn, { accountId: c.account.id })).toEqual({ watching: false })
   })
 
+  it('notices the sign-in command finished at the shell\'s next prompt, then asks the agent once', async () => {
+    mainClaude()
+    let prompted = false
+    const promptCalls: Array<[string, number]> = []
+    register({ promptSince: (terminalId, mark) => { promptCalls.push([terminalId, mark]); return prompted } })
+    const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', copy: false })
+    const file = join(sb.home, '.claude-b', '.claude.json')
+    expect(await ok(ACCOUNTS_IPC.watchSignIn, { accountId: r.account.id, terminalId: 't-sign', mark: 120 })).toEqual({ watching: true })
+    const tick = (): void => { for (const fn of [...timers.values()]) fn() }
+    tick()
+    expect(promptCalls).toEqual([['t-sign', 120]])
+    expect(checks).toEqual([])
+    // The CLI wrote its sign-in and exited: the shell printed its prompt again.
+    writeJson(file, { oauthAccount: { emailAddress: 'b@example.test' } })
+    prompted = true
+    tick()
+    expect(timers.size).toBe(0)
+    await new Promise((res) => setTimeout(res, 0))
+    expect(checks).toEqual([{ agent: 'claude', profile: join(sb.home, '.claude-b') }])
+    expect(sent[sent.length - 1]).toEqual({
+      channel: ACCOUNTS_IPC.signInProgress,
+      payload: { accountId: r.account.id, done: true, email: 'b@example.test', identity: checkAnswer.identity },
+    })
+    expect((await list()).accounts.find((a) => a.id === r.account.id)?.identity).toEqual(checkAnswer.identity)
+    // Asked once: the watch is over.
+    tick()
+    expect(checks).toHaveLength(1)
+  })
+
+  it('watches a Codex sign-in by its terminal alone, and reports a check that couldn\'t run', async () => {
+    mkdirSync(sb.paths.codexHome, { recursive: true })
+    register({ promptSince: () => true })
+    const c = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'x', folder: 'new', copy: false })
+    checkAnswer = { error: 'Codex isn\'t installed' }
+    expect(await ok(ACCOUNTS_IPC.watchSignIn, { accountId: c.account.id, terminalId: 't-cx', mark: -5 })).toEqual({ watching: true })
+    for (const fn of [...timers.values()]) fn()
+    await new Promise((res) => setTimeout(res, 0))
+    expect(checks).toEqual([{ agent: 'codex', profile: join(sb.home, '.codex-x') }])
+    expect(sent[sent.length - 1]).toEqual({
+      channel: ACCOUNTS_IPC.signInProgress,
+      payload: { accountId: c.account.id, done: true, email: null, checkError: 'Codex isn\'t installed' },
+    })
+    // A Codex identity names its own email.
+    checkAnswer = { identity: { email: 'x@example.test', signedIn: true, checkedAt: 2, source: 'account-read' } }
+    await ok(ACCOUNTS_IPC.watchSignIn, { accountId: c.account.id, terminalId: 't-cx', mark: 'x' })
+    for (const fn of [...timers.values()]) fn()
+    await new Promise((res) => setTimeout(res, 0))
+    expect(sent[sent.length - 1].payload).toMatchObject({ done: true, email: 'x@example.test', identity: { email: 'x@example.test' } })
+  })
+
+  it('never asks while a Termpolis terminal runs on the profile, even after a sign-in (R21)', async () => {
+    mainClaude()
+    register({ promptSince: () => true })
+    const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', copy: false })
+    noteTerminalAccount('t-agent', r.account.id)
+    await ok(ACCOUNTS_IPC.watchSignIn, { accountId: r.account.id, terminalId: 't-sign', mark: 0 })
+    for (const fn of [...timers.values()]) fn()
+    await new Promise((res) => setTimeout(res, 0))
+    expect(checks).toEqual([])
+    expect(sent[sent.length - 1].payload).toMatchObject({ done: true, checkError: expect.stringContaining('A Termpolis terminal is running on b') })
+  })
+
+  it('has nothing to watch for an agy label, or for Codex with no terminal to read', async () => {
+    register({ promptSince: () => true })
+    const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g' })
+    expect(await ok(ACCOUNTS_IPC.watchSignIn, { accountId: g.account.id, terminalId: 't' })).toEqual({ watching: false })
+    mkdirSync(sb.paths.codexHome, { recursive: true })
+    const c = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'x', folder: 'new', copy: false })
+    expect(await ok(ACCOUNTS_IPC.watchSignIn, { accountId: c.account.id, terminalId: '' })).toEqual({ watching: false })
+    expect(timers.size).toBe(0)
+  })
+
   it('reads a .claude.json that turns unreadable as no email', async () => {
     mainClaude()
     const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', copy: false })

@@ -12,7 +12,7 @@ import {
 } from '../shared/agentAccounts'
 import type {
   AccountAgent, AccountIdentity, AccountRowView, AccountsAdvice, AccountsView, AddAccountResult, AgentAccount,
-  ImportPreview, ProfileAgent, SignInMethod,
+  ImportPreview, ProfileAgent, SignInMethod, SignInProgress,
 } from '../shared/agentAccounts'
 import type { AgentIntegrationChange } from '../shared/agentIntegration'
 import { accountFs, readClaudeJsonFields } from './accountFs'
@@ -53,6 +53,9 @@ export interface AccountsIpcDeps {
   env?: Readonly<Record<string, string | undefined>>
   now?: () => number
   fsx?: AccountFs
+  /** Has the shell printed a prompt in this terminal's output since `offset` (its prompt report:
+   *  OSC 9;9 from PowerShell and cmd, OSC 7 from bash)? Tells a sign-in's command finished. */
+  promptSince?: (terminalId: string, offset: number) => boolean
   /** For tests: the status commands. */
   signedInNow?: (agent: ProfileAgent, profile: string | null, deps: CheckDeps) => Promise<IdentityCheck>
   setInterval?: (fn: () => void, ms: number) => unknown
@@ -621,8 +624,9 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     return { added: added.length, changes, view: view(loadDoc()) }
   })
 
-  handle(ACCOUNTS_IPC.check, async (input) => {
-    const a = accountOf(loadDoc(), input.id)
+  /** "Signed in now" for an account, from its agent's own status command, kept in the registry.
+   *  Throws why it couldn't ask. */
+  const checkNow = async (a: AgentAccount): Promise<{ identity: AccountIdentity; doc: AccountsDoc }> => {
     if (!isProfileAgent(a.agent)) throw new Error('Termpolis can\'t ask the Antigravity CLI who is signed in: it shows the email on its own screen')
     if (!liveProfileDir(a, deps.paths().home, fsx)) throw new Error(`${a.label}'s profile folder doesn't exist`)
     if (CHECK_SKIPS_LIVE_PROFILES && terminalsOnAccount(a.id) > 0) {
@@ -631,8 +635,12 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const r = await signedInNow(a.agent, a.profile, { cwd: deps.checkCwd(), env })
     if ('error' in r) throw new Error(r.error)
     const identity: AccountIdentity = r.identity
-    const { doc } = update((d) => { d.file.identity[a.id] = identity })
-    return rowOf(doc, a.id)
+    return { identity, doc: update((d) => { d.file.identity[a.id] = identity }).doc }
+  }
+
+  handle(ACCOUNTS_IPC.check, async (input) => {
+    const a = accountOf(loadDoc(), input.id)
+    return rowOf((await checkNow(a)).doc, a.id)
   })
 
   handle(ACCOUNTS_IPC.signInLine, (input) => {
@@ -657,24 +665,53 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
 
   handle(ACCOUNTS_IPC.watchSignIn, (input) => {
     const a = accountOf(loadDoc(), input.accountId)
+    if (!isProfileAgent(a.agent)) return { watching: false }
     const home = deps.paths().home
-    const file = claudeJsonOf(a, home)
-    // Codex keeps nothing Termpolis may read until the sign-in is done: the user presses Check.
-    if (!file || !isReachable(file)) return { watching: false }
+    const claudeJson = claudeJsonOf(a, home)
+    const file = claudeJson && isReachable(claudeJson) ? claudeJson : null
+    // The sign-in terminal and its output's end before the line was typed: the shell's next
+    // prompt after it means the CLI's own sign-in command has finished, signed in or not.
+    const terminalId = typeof input.terminalId === 'string' && input.terminalId ? input.terminalId : null
+    const mark = typeof input.mark === 'number' && Number.isFinite(input.mark) && input.mark > 0 ? input.mark : 0
+    const prompted = terminalId && deps.promptSince ? (): boolean => (deps.promptSince as NonNullable<AccountsIpcDeps['promptSince']>)(terminalId, mark) : null
+    // Codex keeps nothing Termpolis may read until its sign-in is done: only its shell's prompt
+    // says when that is.
+    if (!file && !prompted) return { watching: false }
     const existing = watches.get(a.id)
     if (existing) stopTimer(existing.timer)
-    const mtimeOf = (): number | null => fsx.stat(file)?.mtimeMs ?? null
+    const mtimeOf = (): number | null => (file ? fsx.stat(file)?.mtimeMs ?? null : null)
     const readEmail = (): string | null => {
+      if (!file) return null
       const r = readClaudeJsonFields(file, ['oauthAccount.emailAddress'])
       const e = r.kind === 'ok' ? r.values['oauthAccount.emailAddress'] : undefined
       return isPlainEmail(e) ? e : null
     }
     const w = { timer: null as unknown, until: now() + SIGN_IN_WATCH_MS, mtime: mtimeOf(), email: readEmail() }
+    const end = (): void => {
+      stopTimer(w.timer)
+      watches.delete(a.id)
+    }
+    /** Once the command finished: "signed in now", asked once, and the watch's last word. */
+    const finish = async (): Promise<void> => {
+      const done: SignInProgress = { accountId: a.id, done: true, email: readEmail() }
+      try {
+        const { identity } = await checkNow(a)
+        done.identity = identity
+        if (identity.email) done.email = identity.email
+      } catch (e) {
+        done.checkError = message(e)
+      }
+      deps.send(ACCOUNTS_IPC.signInProgress, done)
+    }
     w.timer = startTimer(() => {
       if (now() > w.until) {
-        stopTimer(w.timer)
-        watches.delete(a.id)
+        end()
         deps.send(ACCOUNTS_IPC.signInProgress, { accountId: a.id, done: true, email: w.email })
+        return
+      }
+      if (prompted && prompted()) {
+        end()
+        void finish()
         return
       }
       // A stat is not a read: the file is read, for its named field only, when it changed.

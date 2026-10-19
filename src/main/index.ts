@@ -175,7 +175,7 @@ import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, PROMPT_REPORT, type McpToolHandlers } from './mcpServer'
 import { randomUUID } from 'node:crypto'
 import { detectAgentStatus } from '../shared/agentStatusDetector'
 import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
@@ -2903,6 +2903,8 @@ registerAccountsIpc(ipcMain, {
     return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
   },
   send: (channel, payload) => { mainWindow?.webContents.send(channel, payload) },
+  // A sign-in's command has finished once its shell prints a prompt again (its report).
+  promptSince: (terminalId, offset) => readOutputFrom(terminalOutputBuffers, terminalId, offset).output.search(PROMPT_REPORT) >= 0,
   checkCwd: () => {
     const dir = join(app.getPath('userData'), 'account-checks')
     mkdirSync(dir, { recursive: true })
