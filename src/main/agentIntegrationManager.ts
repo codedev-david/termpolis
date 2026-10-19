@@ -5,7 +5,14 @@
 //
 // Ledger: `<userData>/agent-integration.json`
 //   { version: 1, consent: 'granted' | 'declined' | null, primerHook: boolean, legacy: boolean,
-//     migrations: string[], trustedByTermpolis: string[] }
+//     migrations: string[], trustedByTermpolis: string[],
+//     profiles?: [{ agent, dir, claudeJson?, migrated? }], trustedByFile?: { [claudeJson]: string[] } }
+//
+// Accounts (Settings ▸ Accounts) add more profiles: each connected account's Claude Code config
+// dir or CODEX_HOME gets the same entries as the default one (`profiles` on the runtime). The
+// ledger records a profile BEFORE the first write into it, so Disconnect and uninstall always
+// find it again, even once its account is removed or the registry is gone; and folder trust is
+// recorded per `.claude.json`, so a disconnect takes back from each file only what it set there.
 //
 // Versions from before consent existed wrote at fixed paths under the home folder, whatever
 // CLAUDE_CONFIG_DIR or CODEX_HOME said, so detection and every cleanup look in both places.
@@ -36,6 +43,8 @@ import {
 import { claudeProjectKey, revertClaudeTrust, trustClaudeWorkspace, untrustUnsafeClaudeRoots } from './claudeTrust'
 import { buildCodexInstruction, cleanAgentsMd } from './codexParity'
 import { sudoAskpassPath } from './sudoAskpass'
+import { accountProfileTargets, isReachable, loadAccounts } from './agentAccounts'
+import type { ProfileTarget } from './agentAccounts'
 
 export interface AgentIntegrationPaths {
   /** The user's home folder as a full path, or '' when none is known. With '' no agent config
@@ -65,7 +74,12 @@ export interface AgentIntegrationRuntime {
   /** The shell to write the SessionStart hook for. Left out, claudeHookShell() works it out
    *  the way Claude Code does. */
   hookShell?: HookShell
+  /** Registered accounts' profiles to connect as well (connected accounts whose folder exists).
+   *  The default profile is the trio above, so a target that is one of those is skipped. */
+  profiles?: ProfileTarget[]
 }
+
+export type { ProfileTarget }
 
 /** The shell Claude Code runs a hook's command in: 'sh', its default (`/bin/sh`, or Git Bash on
  *  Windows), or 'powershell', which it uses instead on Windows when it finds no Git Bash. */
@@ -153,6 +167,25 @@ interface Ledger {
   migrations: string[]
   /** Claude Code folder-trust keys Termpolis switched on, so a disconnect can switch them off. */
   trustedByTermpolis: string[]
+  /** Every account profile Termpolis has written into (recorded before the first write). */
+  profiles?: LedgerProfile[]
+  /** Folder-trust keys Termpolis switched on in an account profile's `.claude.json`, by file. */
+  trustedByFile?: Record<string, string[]>
+}
+
+interface LedgerProfile {
+  agent: 'claude' | 'codex'
+  dir: string
+  claudeJson?: string
+  /** The one-time cleanups for a folder an older Termpolis may have written into have run. */
+  migrated?: boolean
+}
+
+function isLedgerProfile(v: unknown): v is LedgerProfile {
+  if (!v || typeof v !== 'object') return false
+  const p = v as Record<string, unknown>
+  return (p.agent === 'claude' || p.agent === 'codex') && typeof p.dir === 'string' && isAbsolute(p.dir)
+    && (p.claudeJson === undefined || (typeof p.claudeJson === 'string' && isAbsolute(p.claudeJson)))
 }
 
 /** The ledger's full path, or null when userData is not a full path (the ledger would land in
@@ -181,7 +214,7 @@ function readLedger(paths: AgentIntegrationPaths): Ledger | null {
   const r = readJsonObject(file)
   if (r.kind !== 'ok' || r.value.version !== 1) return null
   const v = r.value
-  return {
+  const ledger: Ledger = {
     version: 1,
     consent: v.consent === 'granted' || v.consent === 'declined' ? v.consent : null,
     primerHook: v.primerHook !== false,
@@ -189,6 +222,21 @@ function readLedger(paths: AgentIntegrationPaths): Ledger | null {
     migrations: stringList(v.migrations),
     trustedByTermpolis: stringList(v.trustedByTermpolis),
   }
+  const profiles = Array.isArray(v.profiles) ? v.profiles.filter(isLedgerProfile) : []
+  if (profiles.length) {
+    ledger.profiles = profiles.map((p) => ({
+      agent: p.agent, dir: p.dir, ...(p.claudeJson ? { claudeJson: p.claudeJson } : {}), ...(p.migrated === true ? { migrated: true } : {}),
+    }))
+  }
+  const byFile: Record<string, string[]> = {}
+  if (v.trustedByFile && typeof v.trustedByFile === 'object' && !Array.isArray(v.trustedByFile)) {
+    for (const [file, keys] of Object.entries(v.trustedByFile)) {
+      const list = stringList(keys)
+      if (isAbsolute(file) && list.length) byFile[file] = list
+    }
+  }
+  if (Object.keys(byFile).length) ledger.trustedByFile = byFile
+  return ledger
 }
 
 /** Save the ledger. Returns why it could not be saved, or null. Never throws: a caller whose
@@ -669,19 +717,15 @@ function applyHook(root: Json, rt: AgentIntegrationRuntime, script: string): Ent
   return edit === 'unchanged' && hook.shell !== was ? 'update' : edit
 }
 
-/** Connect every agent that is installed (its config folder exists). Idempotent: a second
- *  run writes nothing. With no home folder, touches nothing and says so. */
-function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean, consent: AgentIntegrationConsent): AgentIntegrationChange[] {
-  const { paths } = rt
-  if (!agentPaths(paths)) return [noHomeRow()]
-  const entry = termpolisServerEntry(rt.node, rt.adapterPath)
-  const rows: AgentIntegrationChange[] = []
-  if (existsSync(paths.claudeDir)) {
-    rows.push(...editConfig('claude', paths.claudeJson, [
+/** Claude Code's entries in one profile: the MCP server in its `.claude.json`, the tool
+ *  permissions and the memory hook in its settings.json. */
+function applyClaude(rt: AgentIntegrationRuntime, dir: string, claudeJson: string, primerHook: boolean, entry: ServerEntry): AgentIntegrationChange[] {
+  const hookScript = rt.hookScriptPath
+  return [
+    ...editConfig('claude', claudeJson, [
       { what: 'MCP server', run: (root) => upsertClaudeUserServer(root, entry) },
-    ], true))
-    const hookScript = rt.hookScriptPath
-    rows.push(...editConfig('claude', join(paths.claudeDir, 'settings.json'), [
+    ], true),
+    ...editConfig('claude', join(dir, 'settings.json'), [
       { what: 'Tool permissions', run: applyAllowRules },
       {
         what: 'SessionStart memory hook',
@@ -692,8 +736,19 @@ function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean, consent: Age
       },
       // Older versions put the server here, where Claude Code never looks for one.
       { what: 'Unused MCP server entry', run: removeServerEntry },
-    ], true))
-  }
+    ], true),
+  ]
+}
+
+/** Connect every agent that is installed (its config folder exists), then every connected
+ *  account's profile. Idempotent: a second run writes nothing. With no home folder, touches
+ *  nothing and says so. */
+function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean, consent: AgentIntegrationConsent, ledger: Ledger): AgentIntegrationChange[] {
+  const { paths } = rt
+  if (!agentPaths(paths)) return [noHomeRow()]
+  const entry = termpolisServerEntry(rt.node, rt.adapterPath)
+  const rows: AgentIntegrationChange[] = []
+  if (existsSync(paths.claudeDir)) rows.push(...applyClaude(rt, paths.claudeDir, paths.claudeJson, primerHook, entry))
   if (existsSync(paths.codexHome)) rows.push(...applyCodex(entry, join(paths.codexHome, 'config.toml')))
   if (existsSync(paths.geminiDir)) {
     rows.push(...editConfig('gemini', join(paths.geminiDir, 'settings.json'), [
@@ -703,7 +758,167 @@ function applyAll(rt: AgentIntegrationRuntime, primerHook: boolean, consent: Age
   // Only with consent on record: an install that predates the review keeps what older versions
   // wrote until its owner answers, and older versions never wrote these.
   if (consent === 'granted') rows.push(...applyAntigravity(paths.geminiDir, entry))
+  for (const t of extraProfiles(rt)) rows.push(...applyTarget(rt, t, primerHook, entry, ledger))
   return rows
+}
+
+// ── Account profiles ────────────────────────────────────────────────────────────────────
+
+/** A folder as the filesystem compares it: links resolved, case folded on Windows. */
+function folderKey(p: string): string {
+  let real = resolve(p)
+  try { real = realpathSync.native(p) } catch { /* missing: compare the path */ }
+  return process.platform === 'win32' ? real.toLowerCase() : real
+}
+
+function sameFile(a: string, b: string): boolean {
+  return folderKey(a) === folderKey(b)
+}
+
+/** Is `t` one of the folders the default steps already cover? */
+function isDefaultProfile(paths: AgentIntegrationPaths, t: ProfileTarget): boolean {
+  return (t.agent === 'claude' ? claudeDirs(paths) : codexHomes(paths)).some((d) => sameFile(d, t.dir))
+}
+
+/** The runtime's account profiles that aren't a default one, each once, with full paths. */
+function extraProfiles(rt: AgentIntegrationRuntime): ProfileTarget[] {
+  const out: ProfileTarget[] = []
+  for (const t of rt.profiles ?? []) {
+    if (!isAbsolute(t.dir) || (t.agent === 'claude' && !(t.claudeJson && isAbsolute(t.claudeJson)))) continue
+    if (isDefaultProfile(rt.paths, t) || out.some((o) => o.agent === t.agent && sameFile(o.dir, t.dir))) continue
+    out.push(t)
+  }
+  return out
+}
+
+/** Record `t` in the ledger before anything is written into it. False when the record couldn't
+ *  be saved: the caller then writes nothing, so no entry can land where Disconnect won't look. */
+function recordProfile(paths: AgentIntegrationPaths, ledger: Ledger, t: ProfileTarget): boolean {
+  const known = ledger.profiles ?? []
+  if (known.some((p) => p.agent === t.agent && sameFile(p.dir, t.dir))) return true
+  ledger.profiles = [...known, { agent: t.agent, dir: t.dir, ...(t.claudeJson ? { claudeJson: t.claudeJson } : {}) }]
+  if (writeLedger(paths, ledger) === null) return true
+  if (known.length) ledger.profiles = known
+  else delete ledger.profiles
+  return false
+}
+
+const NOT_RECORDED = 'Termpolis could not record this profile in its ledger first, so it wrote nothing there'
+
+/** Termpolis's entries in one account profile. Its first connect also runs, once, the cleanups
+ *  the default profile got as migrations: an older Termpolis started under CLAUDE_CONFIG_DIR may
+ *  have written its wildcard permission there, or pre-trusted the home folder. */
+function applyTarget(rt: AgentIntegrationRuntime, t: ProfileTarget, primerHook: boolean, entry: ServerEntry, ledger: Ledger): AgentIntegrationChange[] {
+  if (!recordProfile(rt.paths, ledger, t)) return [change(t.agent, t.dir, 'skipped', 'Account profile', NOT_RECORDED)]
+  if (t.agent === 'codex') return applyCodex(entry, join(t.dir, 'config.toml'))
+  const claudeJson = t.claudeJson as string
+  const rows: AgentIntegrationChange[] = []
+  const rec = (ledger.profiles as LedgerProfile[]).find((p) => p.agent === 'claude' && sameFile(p.dir, t.dir)) as LedgerProfile
+  if (!rec.migrated) {
+    const once = [
+      ...editConfig('claude', join(t.dir, 'settings.json'), [
+        { what: 'Permission for every Termpolis tool to run without asking', run: removeLegacyAllowRules },
+      ], false),
+      untrustRoots(claudeJson, rt.paths.home),
+    ]
+    rows.push(...once)
+    if (!once.some((r) => r.action === 'skipped')) {
+      rec.migrated = true
+      writeLedger(rt.paths, ledger)
+    }
+  }
+  rows.push(...applyClaude(rt, t.dir, claudeJson, primerHook, entry))
+  return rows
+}
+
+/** Connect one account's profile now (Settings ▸ Accounts ▸ Connect, or a new account). Needs
+ *  Agent Integration on: that consent is what every write rests on. Never throws. */
+export function connectAccountProfile(rt: AgentIntegrationRuntime, t: ProfileTarget): AgentIntegrationChange[] {
+  try {
+    const ledger = loadLedger(rt.paths)
+    if (!isConnected(ledger)) return [change(t.agent, t.dir, 'skipped', 'Account profile', 'Agent Integration is off: turn it on first')]
+    if (!agentPaths(rt.paths)) return [noHomeRow()]
+    if (!isAbsolute(t.dir) || !isReachable(t.dir) || !existsSync(t.dir)) {
+      return [change(t.agent, t.dir, 'skipped', 'Account profile', 'the profile folder doesn\'t exist')]
+    }
+    if (isDefaultProfile(rt.paths, t)) return []
+    if (t.agent === 'claude' && !(t.claudeJson && isAbsolute(t.claudeJson))) return []
+    const entry = termpolisServerEntry(rt.node, rt.adapterPath)
+    return applyTarget(rt, t, ledger.primerHook, entry, ledger).filter(isChange)
+  } catch (e) {
+    return [change(t.agent, t.dir, 'skipped', 'Account profile', errorTextSafe(e))]
+  }
+}
+
+/** Take Termpolis's entries out of one account profile, and the folder trust it set there. The
+ *  default profile is Agent Integration's to disconnect, so it is left alone. Never throws. */
+export function disconnectAccountProfile(paths: AgentIntegrationPaths, t: ProfileTarget): AgentIntegrationChange[] {
+  try {
+    if (!agentPaths(paths)) return [noHomeRow()]
+    if (!isAbsolute(t.dir) || !isReachable(t.dir) || isDefaultProfile(paths, t)) return []
+    const saved = readLedger(paths)
+    const wrote = !!saved?.profiles?.some((p) => p.agent === t.agent && sameFile(p.dir, t.dir))
+    const { rows, reverted } = stripProfile(paths.home, t, saved?.trustedByFile ?? {}, wrote)
+    if (saved?.trustedByFile && reverted.length) {
+      for (const f of reverted) delete saved.trustedByFile[f]
+      if (!Object.keys(saved.trustedByFile).length) delete saved.trustedByFile
+      writeLedger(paths, saved)
+    }
+    return rows.filter(isChange)
+  } catch (e) {
+    return [change(t.agent, t.dir, 'skipped', 'Account profile', errorTextSafe(e))]
+  }
+}
+
+/** Remove the Termpolis entries a COPIED settings.json carries into a profile the user left
+ *  unconnected ("hook present (copied), not connected"). Only that file is touched. */
+export function stripCopiedEntries(t: ProfileTarget): AgentIntegrationChange[] {
+  if (t.agent !== 'claude' || !isAbsolute(t.dir) || !isReachable(t.dir)) return []
+  return editConfig('claude', join(t.dir, 'settings.json'), [
+    { what: 'Tool permissions', run: removeAllowRules },
+    { what: 'SessionStart memory hook', run: removePrimerHooks },
+    { what: 'Unused MCP server entry', run: removeServerEntry },
+  ], false).filter(isChange)
+}
+
+/** Every entry Termpolis may have written into an account profile, by signature. Returns the
+ *  `.claude.json` files whose recorded trust was taken back. Untrusting the home folder runs only
+ *  where Termpolis itself wrote (`wroteHere`). */
+function stripProfile(home: string, t: ProfileTarget, trustedByFile: Record<string, string[]>, wroteHere: boolean): { rows: AgentIntegrationChange[]; reverted: string[] } {
+  const rows: AgentIntegrationChange[] = []
+  const reverted: string[] = []
+  if (t.agent === 'codex') {
+    rows.push(...stripCodex(join(t.dir, 'config.toml')))
+    return { rows, reverted }
+  }
+  rows.push(...stripCopiedEntries(t))
+  const claudeJson = t.claudeJson
+  if (!claudeJson || !isAbsolute(claudeJson)) return { rows, reverted }
+  rows.push(...editConfig('claude', claudeJson, [{ what: 'MCP server', run: removeServerEntry }], false))
+  const key = Object.keys(trustedByFile).find((f) => sameFile(f, claudeJson))
+  if (key) {
+    const r = revertTrust(claudeJson, trustedByFile[key])
+    rows.push(r)
+    if (r.action !== 'skipped') reverted.push(key)
+  }
+  if (wroteHere) rows.push(untrustRoots(claudeJson, home))
+  return { rows, reverted }
+}
+
+/** The account profiles a full disconnect covers: every one the registry names (connected or not:
+ *  an earlier connect may have written there) and every one the ledger ever recorded, each once,
+ *  the default profile left to the default steps. */
+function profilesToDisconnect(paths: AgentIntegrationPaths, saved: Ledger | null): ProfileTarget[] {
+  const out: ProfileTarget[] = []
+  const add = (t: ProfileTarget): void => {
+    if (!isAbsolute(t.dir) || !isReachable(t.dir) || isDefaultProfile(paths, t)) return
+    if (out.some((o) => o.agent === t.agent && sameFile(o.dir, t.dir))) return
+    out.push(t)
+  }
+  const reg = loadAccounts(paths.userData)
+  if (reg.ok) for (const t of accountProfileTargets(paths, reg.doc, { connectedOnly: false })) add(t)
+  for (const p of saved?.profiles ?? []) add({ agent: p.agent, dir: p.dir, ...(p.claudeJson ? { claudeJson: p.claudeJson } : {}) })
+  return out
 }
 
 /** The Antigravity CLI's own files. `agy`, which the Gemini profile runs, reads its MCP servers
@@ -776,6 +991,22 @@ function statusOf(paths: AgentIntegrationPaths, ledger: Ledger): AgentIntegratio
   }, Array.isArray(codexTrusted) && codexTrusted.some((f) => isUnsafeTrustRoot(f, paths.home)))
 }
 
+/** Which of Termpolis's entries one account profile holds, for Settings ▸ Accounts. */
+export function profileConnection(t: ProfileTarget): { server: boolean; hook: boolean; allow: boolean } {
+  if (t.agent === 'codex') {
+    const read = readText(join(t.dir, 'config.toml'))
+    const text = 'text' in read ? read.text : null
+    return { server: text !== null && codexOwner(text) === 'ours', hook: false, allow: false }
+  }
+  const claudeJson = t.claudeJson ? readJson(t.claudeJson) : null
+  const settings = readJson(join(t.dir, 'settings.json'))
+  return {
+    server: !!claudeJson && hasServerEntry(claudeJson),
+    hook: !!settings && hasPrimerHook(settings),
+    allow: !!settings && hasTermpolisAllowRule(settings),
+  }
+}
+
 /** App start: run each one-time migration not yet in the ledger, then re-apply the
  *  integration when connected (granted, or legacy with no answer yet). Never throws. */
 export function bootAgentIntegration(rt: AgentIntegrationRuntime): AgentIntegrationSetResult {
@@ -799,7 +1030,7 @@ export function bootAgentIntegration(rt: AgentIntegrationRuntime): AgentIntegrat
       // A migration that could not finish runs again next start.
       if (!rows.some((r) => r.action === 'skipped')) ledger.migrations.push(m.id)
     }
-    if (isConnected(ledger)) changes.push(...applyAll(rt, ledger.primerHook, ledger.consent))
+    if (isConnected(ledger)) changes.push(...applyAll(rt, ledger.primerHook, ledger.consent, ledger))
     if (JSON.stringify(ledger) !== before) writeLedger(rt.paths, ledger)
     return { status: statusOf(rt.paths, ledger), changes: changes.filter(isChange) }
   } catch (e) {
@@ -853,7 +1084,7 @@ export function setAgentIntegration(
     // with no consent saved for it. Nothing is written until the answer can be kept.
     const saveError = writeLedger(rt.paths, ledger)
     if (saveError !== null) return { status: getAgentIntegrationStatus(rt.paths), changes: [], saveError }
-    const changes = applyAll(rt, ledger.primerHook, ledger.consent).filter(isChange)
+    const changes = applyAll(rt, ledger.primerHook, ledger.consent, ledger).filter(isChange)
     return { status: statusOf(rt.paths, ledger), changes }
   } catch (e) {
     return failed(rt, e, [])
@@ -888,6 +1119,7 @@ function disconnect(paths: AgentIntegrationPaths, recordDecline: boolean): { row
   }
   const saved = attempt('claude', ledgerFileFor(paths), () => readLedger(paths), null)
   const trusted = saved?.trustedByTermpolis ?? []
+  const trustedByFile: Record<string, string[]> = { ...(saved?.trustedByFile ?? {}) }
   // Keep the keys when a revert failed, so the next disconnect can try again.
   let trustKept = true
   const at = agentPaths(paths)
@@ -928,16 +1160,29 @@ function disconnect(paths: AgentIntegrationPaths, recordDecline: boolean): { row
       run('claude', file, () => [untrustRoots(file, at.home)])
     }
     trustKept = claudeJsons.length === 0 || rows.slice(trustFrom).some((r) => r.action === 'skipped')
+
+    // Every account's profile too, so Settings, `--disconnect-agents`, the Windows uninstaller
+    // and the .deb prerm all leave none of Termpolis's entries in any of them.
+    for (const t of attempt('claude', ledgerFileFor(paths), () => profilesToDisconnect(paths, saved), [])) {
+      const wrote = !!saved?.profiles?.some((p) => p.agent === t.agent && sameFile(p.dir, t.dir))
+      const r = attempt(t.agent, t.dir, () => stripProfile(at.home, t, trustedByFile, wrote), { rows: [], reverted: [] })
+      rows.push(...r.rows)
+      for (const f of r.reverted) delete trustedByFile[f]
+    }
   }
 
-  const saveError = writeLedger(paths, {
+  const ledger: Ledger = {
     version: 1,
     consent: recordDecline ? 'declined' : null,
     primerHook: saved?.primerHook ?? true,
     legacy: false,
     migrations: saved?.migrations ?? [],
     trustedByTermpolis: trustKept ? trusted : [],
-  })
+  }
+  // Kept: the profiles, so a later disconnect still finds them, and any trust whose revert failed.
+  if (saved?.profiles) ledger.profiles = saved.profiles
+  if (Object.keys(trustedByFile).length) ledger.trustedByFile = trustedByFile
+  const saveError = writeLedger(paths, ledger)
   return { rows: rows.filter(isChange), saveError }
 }
 
@@ -965,15 +1210,25 @@ export function isFolderTrustAllowed(paths: AgentIntegrationPaths, cwd: string, 
 }
 
 /** Pre-accept Claude Code's folder-trust prompt for `cwd` (and its git root), when connected.
- *  Never the home folder or a filesystem root. Records what it set in the ledger. */
-export function trustFolderForAgents(paths: AgentIntegrationPaths, cwd: string, gitRoot?: string | null): TrustFolderResult {
+ *  Never the home folder or a filesystem root. Records what it set in the ledger. `target` is an
+ *  account's profile (its `.claude.json` is written instead of the default one); the caller has
+ *  already refused an account the user didn't connect. */
+export function trustFolderForAgents(paths: AgentIntegrationPaths, cwd: string, gitRoot?: string | null, target?: ProfileTarget): TrustFolderResult {
   try {
     const ledger = loadLedger(paths)
     if (!isConnected(ledger)) return { changed: false, keys: [], skipped: 'no-consent' }
     // With no home folder to find .claude.json in, or to refuse trust for, change nothing.
     if (!agentPaths(paths)) return { changed: false, keys: [], skipped: 'no-home' }
-    const r = trustClaudeWorkspace(cwd, { configPath: paths.claudeJson, home: paths.home, alsoTrust: gitRoot ? [gitRoot] : [] })
-    if (r.newlySet.length) {
+    const own = target && target.agent === 'claude' && target.claudeJson && !isDefaultProfile(paths, target) ? target : null
+    if (own && (!isReachable(own.dir) || !recordProfile(paths, ledger, own))) return { changed: false, keys: [], skipped: 'not-recorded' }
+    const configPath = own ? (own.claudeJson as string) : paths.claudeJson
+    const r = trustClaudeWorkspace(cwd, { configPath, home: paths.home, alsoTrust: gitRoot ? [gitRoot] : [] })
+    if (r.newlySet.length && own) {
+      const byFile = ledger.trustedByFile ?? {}
+      byFile[configPath] = Array.from(new Set([...(byFile[configPath] ?? []), ...r.newlySet]))
+      ledger.trustedByFile = byFile
+      writeLedger(paths, ledger)
+    } else if (r.newlySet.length) {
       ledger.trustedByTermpolis = Array.from(new Set([...ledger.trustedByTermpolis, ...r.newlySet]))
       writeLedger(paths, ledger)
     }
@@ -992,6 +1247,8 @@ export function prepareCodexLaunch(
   paths: AgentIntegrationPaths,
   cwd: string,
   opts: { steering?: string | null } = {},
+  /** An account's CODEX_HOME; the default one when left out. */
+  home?: string,
 ): CodexLaunchContext {
   let cleaned: CodexLaunchContext['agentsMdCleaned']
   try {
@@ -1005,7 +1262,8 @@ export function prepareCodexLaunch(
     if (!isConnected(loadLedger(paths))) return { developerInstructions: null, skipped: 'no-consent', approvals: 0, ...base }
     // No home folder: Codex's config.toml can't be found, so Codex counts as not connected.
     if (!agentPaths(paths)) return { developerInstructions: null, skipped: 'disabled', approvals: 0, ...base }
-    const file = join(paths.codexHome, 'config.toml')
+    const codexHome = home && isAbsolute(home) && isReachable(home) ? home : paths.codexHome
+    const file = join(codexHome, 'config.toml')
     const text = readTextFile(file)
     if (text === null || codexOwner(text) !== 'ours') return { developerInstructions: null, skipped: 'disabled', approvals: 0, ...base }
     let approvals = 0
@@ -1027,11 +1285,13 @@ export function prepareCodexLaunch(
   }
 }
 
-/** Remove Codex's trust entry for the home folder (and any folder above it or a drive root). */
-export function removeCodexHomeTrust(paths: AgentIntegrationPaths): { changed: boolean; error?: string } {
+/** Remove Codex's trust entry for the home folder (and any folder above it or a drive root), in
+ *  the default CODEX_HOME or an account's `home`. */
+export function removeCodexHomeTrust(paths: AgentIntegrationPaths, home?: string): { changed: boolean; error?: string } {
   try {
     if (!agentPaths(paths)) return { changed: false, error: NO_HOME }
-    const file = join(paths.codexHome, 'config.toml')
+    const codexHome = home && isAbsolute(home) && isReachable(home) ? home : paths.codexHome
+    const file = join(codexHome, 'config.toml')
     const text = readTextFile(file)
     if (text === null) return { changed: false }
     const r = stripCodexProjectTrust(text, (folder) => isUnsafeTrustRoot(folder, paths.home))
