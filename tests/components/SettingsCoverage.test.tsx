@@ -1044,6 +1044,21 @@ describe('SettingsPane — tab switching', () => {
     expect(screen.queryByText('Default Shell')).toBeNull()
   })
 
+  it('opens Accounts from the tab after Agent Integration, even with no accounts bridge', async () => {
+    // As with Linked machines: a preload without the bridge gets a sentence, not a crash.
+    delete (window as any).accounts
+    render(<SettingsPane />)
+    const tab = screen.getByTestId('settings-tab-accounts')
+    expect(tab).toHaveTextContent('Accounts')
+    const order = Array.from(screen.getByTestId('settings-tabs').querySelectorAll('button')).map((b) =>
+      b.getAttribute('data-testid'),
+    )
+    expect(order.indexOf('settings-tab-accounts')).toBe(order.indexOf('settings-tab-agentIntegration') + 1)
+    fireEvent.click(tab)
+    expect(await screen.findByTestId('accounts-unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Default Shell')).toBeNull()
+  })
+
   it('opens Remote from its tab without crashing when window.remote is absent', async () => {
     const saved = (window as any).remote
     delete (window as any).remote

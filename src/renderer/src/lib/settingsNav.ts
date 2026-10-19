@@ -13,7 +13,7 @@
 // lazy-loaded SettingsPane bundle into the caller (e.g. TerminalPane).
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 
-export type SettingsTab = 'general' | 'memory' | 'security' | 'voice' | 'keybindings' | 'agents' | 'shell' | 'tokenSavings' | 'remote' | 'linked' | 'agentIntegration' | 'mcp' | 'processes'
+export type SettingsTab = 'general' | 'memory' | 'security' | 'voice' | 'keybindings' | 'agents' | 'shell' | 'tokenSavings' | 'remote' | 'linked' | 'agentIntegration' | 'accounts' | 'mcp' | 'processes'
 
 /** Tells a mounted SettingsPane that a tab was requested. */
 export const SETTINGS_TAB_REQUESTED = 'termpolis:settingsTabRequested'

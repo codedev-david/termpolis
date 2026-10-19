@@ -15,6 +15,7 @@ import { RemoteSettings } from './RemoteSettings'
 import { LinkedMachinesSettings } from './LinkedMachinesSettings'
 import { McpServersSettings } from './McpServersSettings'
 import { AgentIntegrationSettings } from './AgentIntegrationSettings'
+import { AccountsSettings } from './AccountsSettings'
 import { ProcessesSettings } from './ProcessesSettings'
 import { PrivacySettings } from './PrivacySettings'
 import { useSettingsTab } from '../../lib/settingsNav'
@@ -250,6 +251,7 @@ export function SettingsPane() {
           { id: 'remote', label: 'Remote' },
           { id: 'linked', label: 'Linked machines' },
           { id: 'agentIntegration', label: 'Agent Integration' },
+          { id: 'accounts', label: 'Accounts' },
           { id: 'mcp', label: 'MCP Servers' },
           { id: 'processes', label: 'Processes' },
         ].map(t => (
@@ -608,6 +610,7 @@ export function SettingsPane() {
       {activeTab === 'linked' && <LinkedMachinesSettings />}
 
       {activeTab === 'agentIntegration' && <AgentIntegrationSettings />}
+      {activeTab === 'accounts' && <AccountsSettings />}
       {activeTab === 'mcp' && <McpServersSettings />}
       {activeTab === 'processes' && <ProcessesSettings />}
 

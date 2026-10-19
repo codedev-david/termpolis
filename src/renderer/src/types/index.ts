@@ -1299,7 +1299,9 @@ export interface AccountsAPI {
   /** "Signed in now": the agent's own status command, on demand. */
   check(id: string): Promise<IpcResponse<AccountRowView | undefined>>
   signInLine(req: SignInLineRequest): Promise<IpcResponse<SignInLineResult>>
-  watchSignIn(accountId: string): Promise<IpcResponse<{ watching: boolean }>>
+  /** Watch a sign-in: the profile's email as it lands, and with the sign-in terminal and its
+   *  output's end before the line was typed, the shell's next prompt (the command finished). */
+  watchSignIn(accountId: string, terminalId?: string, mark?: number): Promise<IpcResponse<{ watching: boolean }>>
   stopSignIn(accountId: string): Promise<IpcResponse<{ stopped: boolean }>>
   noteLimit(id: string, limit: NoteLimitRequest): Promise<IpcResponse<AccountRowView | undefined>>
   /** "Mark available": forget the account's recorded limit. */
