@@ -213,9 +213,12 @@ describe('conductorManager', () => {
       expect(attachWatcher).toHaveBeenCalledTimes(1)
     })
 
-    it("keeps the next conductor followed when the last one's attach answers late that it found nothing", async () => {
-      let answerFirst: (v: unknown) => void = () => {}
-      attachWatcher.mockImplementationOnce(() => new Promise((resolve) => { answerFirst = resolve }))
+    it.each([
+      ['answers late that it found nothing', (first: { resolve: (v: unknown) => void }) => first.resolve({ success: true, data: { attached: false } })],
+      ['fails late', (first: { reject: (e: unknown) => void }) => first.reject(new Error('ipc gone'))],
+    ])("keeps the next conductor followed when the last one's attach %s", async (_name, settleFirst) => {
+      let first: { resolve: (v: unknown) => void; reject: (e: unknown) => void } = { resolve: () => {}, reject: () => {} }
+      attachWatcher.mockImplementationOnce(() => new Promise((resolve, reject) => { first = { resolve, reject } }))
       const bus = fakeBus()
       await launchConductor()
       bus.post('conductor', 'Plan')
@@ -228,7 +231,7 @@ describe('conductorManager', () => {
       await vi.advanceTimersByTimeAsync(15000)
       expect(attachWatcher).toHaveBeenLastCalledWith('conductor-uuid-2', '/tmp/project', 'claude')
 
-      answerFirst({ success: true, data: { attached: false } })
+      settleFirst(first)
       await vi.advanceTimersByTimeAsync(30000)
       expect(attachWatcher).toHaveBeenCalledTimes(2)
     })
