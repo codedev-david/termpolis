@@ -6,7 +6,8 @@ import lookalikes from '../fixtures/senderLookalikes.json'
 // its name reads, a character Unicode's confusables list as drawn like one of their letters read as
 // that letter, whatever its script. Lookalikes in other scripts than Cyrillic, Greek and Armenian
 // (Lisu's ꓢꓬꓢꓔꓰꓟ, Cherokee's ꮪꮍꮪꭲꭼꮇ) were filed as themselves, and read like Termpolis's own
-// sender in the Messages tab. Every code point is read here, against the list in the fixture.
+// sender in the Messages tab, and so were the symbols it lists (⊤ like T, ∪ like U: M-1). Every code
+// point is read here, against the list in the fixture.
 
 const drawnAs = new Map<string, string>()
 for (const [letter, rows] of Object.entries(lookalikes.lookalikes)) {
@@ -14,9 +15,9 @@ for (const [letter, rows] of Object.entries(lookalikes.lookalikes)) {
 }
 
 describe('senderKey', () => {
-  it("reads as its letter every character Unicode's confusables 18.0.0 list as drawn like a letter of system or conductor", () => {
+  it("reads as its letter every character Unicode's confusables 18.0.0 list as drawn like a letter of system or conductor, symbols among them", () => {
     expect(lookalikes.version).toBe('18.0.0')
-    expect(drawnAs.size).toBe(255)
+    expect(drawnAs.size).toBe(267)
     expect([...drawnAs].filter(([c, letter]) => senderKey(c) !== letter)).toEqual([])
   })
 

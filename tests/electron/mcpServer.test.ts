@@ -886,6 +886,12 @@ describe('MCP HTTP server', () => {
     ['c\u05e1nduct\u2d54r', 'conductor'], // Hebrew ס, Tifinagh ⵔ
     ['SYSTE\u{10311}', 'mcp-client'], // Old Italic 𐌑, past the BMP
     ['condu\u{10415}t\u{118e0}r', 'conductor'], // Deseret 𐐕, Warang Citi's zero
+    // M-1: symbols the list gives as drawn like their letters, on its lines for characters that are
+    // not letters, were filed as written, a name spelled with them drawn like system or conductor.
+    ['sys\u22a4em', 'mcp-client'], // ⊤, a symbol of logic, drawn like T
+    ['SYS\u22a4EM', 'mcp-client'],
+    ['cond\u222actor', 'conductor'], // ∪, the sign of a union, drawn like U
+    ['\u{1d134}onductor', 'conductor'], // the musical symbol 𝄴, drawn like C, past the BMP
     // Digits Unicode draws like one of the letters: 0 like O, other zeros like o.
     ['c0nduct0r', 'conductor'],
     ['C0NDUCT0R', 'conductor'],

@@ -1,5 +1,5 @@
 {
- "_about": "Every character Unicode's confusables.txt 18.0.0 (2026-08-06) lists as drawn like a letter of \"system\" or \"conductor\", by the letter it reads as (mcpServer.ts LOOKALIKES): each whose prototype is that of the letter, of its capital or of its small capital (m's is rn, ᴍ's is ʍ), whatever its script, and the prototypes ʍ ᴛ ᴇ ɴ ᴅ ʀ themselves; but the ASCII letters and the characters NFKC changes, since a sender's name is read after NFKC. With them the four small Cherokee letters it leaves out whose capitals it lists (ꭹ ꮍ ꮥ ꮷ): Cherokee draws a small letter as its capital, smaller, like a Latin small capital, and the list gives every other small letter the letter of its capital. And ꭃ, whose prototype is co, two letters of conductor. cp is the code point, via the prototype it is listed with, name its Unicode name.",
+ "_about": "Every character Unicode's confusables.txt 18.0.0 (2026-08-06) lists as drawn like a letter of \"system\" or \"conductor\", by the letter it reads as (mcpServer.ts LOOKALIKES): each whose prototype is that of the letter, of its capital or of its small capital (m's is rn, ᴍ's is ʍ), whatever its script, symbols among them (the list's #* lines, such as ⊤ for T and ∪ for U), and the prototypes ʍ ᴛ ᴇ ɴ ᴅ ʀ themselves; but the ASCII letters and the characters NFKC changes, since a sender's name is read after NFKC. With them the four small Cherokee letters it leaves out whose capitals it lists (ꭹ ꮍ ꮥ ꮷ): Cherokee draws a small letter as its capital, smaller, like a Latin small capital, and the list gives every other small letter the letter of its capital. And ꭃ, whose prototype is co, two letters of conductor. cp is the code point, via the prototype it is listed with, name its Unicode name.",
  "version": "18.0.0",
  "lookalikes": {
   "s": [
@@ -288,6 +288,16 @@
     "(prototype itself)"
    ],
    [
+    "22A4",
+    "T",
+    "DOWN TACK"
+   ],
+   [
+    "27D9",
+    "T",
+    "LARGE DOWN TACK"
+   ],
+   [
     "2CA6",
     "T",
     "COPTIC CAPITAL LETTER TAU"
@@ -351,6 +361,16 @@
     "16F0A",
     "T",
     "MIAO LETTER TA"
+   ],
+   [
+    "1D373",
+    "T",
+    "IDEOGRAPHIC TALLY MARK TWO"
+   ],
+   [
+    "1F768",
+    "T",
+    "ALCHEMICAL SYMBOL FOR CRUCIBLE-4"
    ]
   ],
   "e": [
@@ -388,6 +408,11 @@
     "212E",
     "e",
     "ESTIMATED SYMBOL"
+   ],
+   [
+    "22FF",
+    "E",
+    "Z NOTATION BAG MEMBERSHIP"
    ],
    [
     "2D39",
@@ -617,6 +642,21 @@
     "118E9",
     "C",
     "WARANG CITI DIGIT NINE"
+   ],
+   [
+    "118F2",
+    "C",
+    "WARANG CITI NUMBER NINETY"
+   ],
+   [
+    "1D134",
+    "c",
+    "MUSICAL SYMBOL COMMON TIME"
+   ],
+   [
+    "1F74C",
+    "C",
+    "ALCHEMICAL SYMBOL FOR CALX"
    ]
   ],
   "o": [
@@ -1118,6 +1158,11 @@
     "ABB7",
     "(its capital, U+13E7)",
     "CHEROKEE SMALL LETTER TSU"
+   ],
+   [
+    "1018B",
+    "d",
+    "GREEK ONE QUARTER SIGN"
    ]
   ],
   "u": [
@@ -1155,6 +1200,16 @@
     "1D1C",
     "u",
     "LATIN LETTER SMALL CAPITAL U"
+   ],
+   [
+    "222A",
+    "U",
+    "UNION"
+   ],
+   [
+    "22C3",
+    "U",
+    "N-ARY UNION"
    ],
    [
     "A4F4",
@@ -1292,6 +1347,11 @@
     "16F35",
     "R",
     "MIAO LETTER ZHA"
+   ],
+   [
+    "1D216",
+    "R",
+    "GREEK VOCAL NOTATION SYMBOL-23"
    ]
   ],
   "co": [
