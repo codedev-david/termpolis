@@ -1773,7 +1773,7 @@ describe('write_to_terminal submit and the output since run_command started the 
     const t = terminal()
     t.print(PROMPT)
     await run(t, 'limit-1')
-    t.print(frame(['Claude Code', '❯ Build the page', "  ⎿  You've hit your session limit · resets 3pm", '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code'))
+    t.print(frame(['Claude Code', '❯ Build the page', "  ⎿ \u00a0You've hit your session limit · resets 3pm (America/New_York)", '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on'], '✳ Claude Code'))
     t.print(`${E}[9;1HResume this session with: claude --resume 1234${E}[10;1H${PROMPT}`)
     await run(t, 'limit-1')
     t.agentAt(2500)

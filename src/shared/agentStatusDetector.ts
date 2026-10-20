@@ -366,11 +366,11 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
  *  is out of usage". Not "You've hit your fast limit · resets in 4h 59m": fast mode turns itself
  *  off, and the session goes on. */
 const CLAUDE_LIMIT_MESSAGES: readonly RegExp[] = [
-  /^[ \t]*(?:⎿[ \t]+)?You['’]ve hit your (?!fast limit)[\w'’ ]{0,40}?(?:limit|budget)\b/,
-  /^[ \t]*(?:⎿[ \t]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
-  /^[ \t]*(?:⎿[ \t]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
-  /^[ \t]*(?:⎿[ \t]+)?You['’]re out of (?:usage credits|extra usage)\b/,
-  /^[ \t]*(?:⎿[ \t]+)?Your org is out of usage\b/,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]ve hit your (?!fast limit)[\w'’ ]{0,40}?(?:limit|budget)\b/,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]re out of (?:usage credits|extra usage)\b/,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?Your org is out of usage\b/,
 ]
 /** Claude Code's, and Antigravity 1.4's two, which its footer could show. */
 const LIMIT_MESSAGES: readonly RegExp[] = [
@@ -456,7 +456,9 @@ function stopAroundBox(rows: readonly string[], box: number): string | null {
 //  - Antigravity 1.4's, at the start of a row: "✕ You have exhausted your quota on this model.".
 //  - Claude Code 2.1.302's reply to the prompt it stopped, when no rate-limit menu opens (Max 20x, an
 //    API key, a Team plan): "  ⎿  You've hit your session limit · resets 3pm" right under the
-//    prompt's echo, whose rows are indented under its ❯ (or >).
+//    prompt's echo, whose rows are indented under its ❯ (or >). Its ⎿ and the gap after it are
+//    MessageResponse's, a space and a no-break space; other rows of its have two spaces (BEH-1: no
+//    real reply was read).
 // An answer or a tool's output indents what it quotes, or puts its own mark first; a prompt or an
 // answer after the message makes it history. Read only with the agent at rest: while it works, the
 // echo of the prompt it was just sent can end in anything.
@@ -464,7 +466,7 @@ const CODEX_LIMIT_CELL = /^■ You['’]ve hit your usage limit\b/
 const AGY_LIMIT_CELL = /^✕ You have exhausted your quota on this model\./
 /** A row that starts a cell of its own in an agent's transcript: not the rest of a wrapped one. */
 const CELL_START = /^(?:[•■⚠✕›>❯●]|\s*⎿)/
-const CLAUDE_REPLY = /^[ \t]+⎿[ \t]+\S/
+const CLAUDE_REPLY = /^[ \t]+⎿[ \t\u00a0]+\S/
 
 function turnEndLimit(rows: readonly string[], box: number): string | null {
   // The last thing above the box: up past its top rule and the blank rows under the transcript.

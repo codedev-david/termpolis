@@ -6,6 +6,7 @@ import { noteWorkerStatus } from '../../src/renderer/src/lib/swarmStopReports'
 import fixtures from '../fixtures/agentScreens.json'
 import wide from '../fixtures/agentScreensWide.json'
 import input from '../fixtures/agentScreensInput.json'
+import cleared from '../fixtures/agentScreensCleared.json'
 
 // GitHub #36 item 5: a worker its plan's usage limit stopped, or one waiting on a menu, reads as
 // blocked, with a summary, and the conductor is told. Only what a CLI draws in its own rows counts:
@@ -16,6 +17,10 @@ import input from '../fixtures/agentScreensInput.json'
 
 const E = '\x1b'
 const RULE = '─'.repeat(80)
+/** What Claude Code draws in front of a reply, a tool's output and its limit message included
+ *  (claude.exe's MessageResponse): an indent, its ⎿, a space and a no-break space. Every reply here
+ *  had two plain spaces, and none of the real ones was read (BEH-1). */
+const REPLY = '  ⎿ \u00a0'
 
 /** A screen as the agent draws it at 80x24: rows at their positions, ConPTY style. */
 function drawn(rows: string[]): string {
@@ -76,15 +81,16 @@ describe("Claude Code's rate-limit menu, which it opens by itself at a limit", (
     ['a model\'s limit', 'You\'ve hit your Opus limit · resets at 5pm (UTC)', 'usage limit reached (resets 5pm (UTC))'],
     ['a team budget, with what to do', 'You\'ve hit your team\'s shared budget. /model to switch models.', 'usage limit reached'],
     ['being out of usage credits', 'You\'re out of usage credits. /model to switch models.', 'usage limit reached'],
+    ['being out of usage credits until they reset', 'You\'re out of usage credits · resets 3pm (America/New_York)', 'usage limit reached (resets 3pm (America/New_York))'],
   ])('reads %s heading the menu as the limit, and when it lifts', (_name, message, summary) => {
-    const rows = ['❯ Build the login page. Task ID: t1', `  ⎿  ${message}`, '', ...MENU]
+    const rows = ['❯ Build the login page. Task ID: t1', `${REPLY}${message}`, '', ...MENU]
     const result = onScreen(rows, 'Claude', '✳ Claude Code')
     expect(result).toEqual({ status: 'blocked', summary })
     expect(isLimitOrMenu(result)).toBe(true)
   })
 
   it('reads a limit message the screen wrapped onto a second row', () => {
-    const rows = ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)', '', ...MENU]
+    const rows = ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '     (America/New_York)', '', ...MENU]
     expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm)' })
   })
 
@@ -102,7 +108,7 @@ describe("Claude Code's rate-limit menu, which it opens by itself at a limit", (
   })
 
   it('takes no reset time from an answer above the menu that quotes a limit: only the row right above its echo heads it', () => {
-    const rows = ['● The docs say "You\'ve hit your session limit · resets 3pm" when it runs out.', '', '❯ Build the page', '  ⎿  Done', '', ...MENU]
+    const rows = ['● The docs say "You\'ve hit your session limit · resets 3pm" when it runs out.', '', '❯ Build the page', `${REPLY}Done`, '', ...MENU]
     expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
   })
 
@@ -112,8 +118,8 @@ describe("Claude Code's rate-limit menu, which it opens by itself at a limit", (
 
   it('is no limit menu without its own options, or without its keys under it', () => {
     const other = ['❯ /config', '', RULE, '  What do you want to do?', '', '  ❯ 1. Open settings', '    2. Leave', '', '  Enter to confirm · Esc to cancel']
-    expect(isLimitOrMenu(onScreen(['  ⎿  You\'ve hit your session limit · resets 3pm', '', ...other], 'Claude'))).toBe(false)
-    expect(isLimitOrMenu(onScreen(['  ⎿  You\'ve hit your session limit · resets 3pm', '', ...MENU.slice(0, -1)], 'Claude'))).toBe(false)
+    expect(isLimitOrMenu(onScreen([`${REPLY}You've hit your session limit · resets 3pm`, '', ...other], 'Claude'))).toBe(false)
+    expect(isLimitOrMenu(onScreen([`${REPLY}You've hit your session limit · resets 3pm`, '', ...MENU.slice(0, -1)], 'Claude'))).toBe(false)
   })
 })
 
@@ -227,11 +233,13 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     ["Codex's 5-hour limit", 'Codex', ['› Fix the login test', '', '• I will fix the test.', '', '■ You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', '(https://chatgpt.com/explore/plus), or try again at 3:04 PM.', ...CODEX_IDLE], 'usage limit reached (resets 3:04 PM)'],
     ["Codex's limit for one model", 'Codex', ['› Fix the login test', '', '■ You\'ve hit your usage limit for gpt-5.6-sol. Switch to another model now, or', 'try again at 4:15 PM.', ...CODEX_IDLE], 'usage limit reached (resets 4:15 PM)'],
     ["agy's quota", 'Gemini', ['> Write the docs', '', '✕ You have exhausted your quota on this model.', ...AGY_IDLE], 'usage limit reached'],
-    ["Claude Code's session limit, under the prompt it stopped", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
-    ["Claude Code's weekly limit, under a prompt of two rows", 'Claude', ['> Build the page, with a form, validation and a test for each of', '  them.', '  ⎿  You\'ve hit your weekly limit · resets Oct 20, 9am (UTC)', ...CLAUDE_IDLE], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+    ["Claude Code's session limit, under the prompt it stopped", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
+    ["Claude Code's weekly limit, under a prompt of two rows", 'Claude', ['> Build the page, with a form, validation and a test for each of', '  them.', `${REPLY}You've hit your weekly limit · resets Oct 20, 9am (UTC)`, ...CLAUDE_IDLE], 'usage limit reached (resets Oct 20, 9am (UTC))'],
     // A narrow screen wraps the reply's end onto a row of its own, indented under the reply's text:
     // read with it, its reset whole (R4-2: cut at the row's end, it read "resets 3pm").
-    ["Claude Code's session limit, its reply wrapped onto a second row", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
+    ["Claude Code's session limit, its reply wrapped onto a second row", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '     (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
+    // Two plain spaces after its ⎿, as other rows of Claude Code's are drawn.
+    ["Claude Code's session limit, two plain spaces after its ⎿", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
   ])('%s: blocked, and the conductor told once to check it', async (name, agent, rows, summary) => {
     const result = onScreen(rows, agent)
     expect(result).toEqual({ status: 'blocked', summary })
@@ -240,6 +248,15 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     for (let i = 0; i < 3; i++) await noteWorkerStatus({ terminalId: `limit ${name}`, agentName: agent, role: 'Build' }, result)
     expect(sendMessage).toHaveBeenCalledTimes(1)
     expect(sendMessage.mock.calls[0][3]).toContain(`is blocked: ${summary}. Check its screen with read_output first`)
+  })
+
+  // claude.exe 2.1.302 to 2.1.304 draw a reply's ⎿ in MessageResponse, the limit reply's too, a
+  // no-break space after it, and the screen keeps it: the real capture of Claude Code 2.1.303, drawn
+  // as far as the ⎿ row it showed under its spinner.
+  it("draws a reply's ⎿ as the real capture does: a space and a no-break space after it", () => {
+    const real = cleared.screens['claude-80x24-pasteother-held']
+    const tip = real.raw.indexOf('\r\n', real.raw.indexOf('Tip: '))
+    expect(rowsOf(real.raw.slice(0, tip), real).filter((row) => row.includes('⎿'))).toEqual([`${REPLY}Tip: You can control how big a workflow is just by prompting. Ask for a`])
   })
 
   it('reads one a narrow screen wrapped over three rows', () => {
@@ -272,10 +289,10 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     })
 
     it.each([
-      ['on 2 rows, at 50 columns', 50, ['  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
-      ['on 2 rows, its reset cut, at 46 columns', 46, ['  ⎿  You\'ve hit your weekly limit · resets Oct', '     20, 9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
-      ['on 3 rows, at 30 columns', 30, ['  ⎿  You\'ve hit your session', '     limit · resets 3pm', '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
-      ['on 4 rows, its ⎿ row cut before "limit", at 20 columns', 20, ['  ⎿  You\'ve hit your', '     weekly limit ·', '     resets Oct 20,', '     9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+      ['on 2 rows, at 50 columns', 50, [`${REPLY}You've hit your session limit · resets 3pm`, '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
+      ['on 2 rows, its reset cut, at 46 columns', 46, [`${REPLY}You've hit your weekly limit · resets Oct`, '     20, 9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+      ['on 3 rows, at 30 columns', 30, [`${REPLY}You've hit your session`, '     limit · resets 3pm', '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
+      ['on 4 rows, its ⎿ row cut before "limit", at 20 columns', 20, [`${REPLY}You've hit your`, '     weekly limit ·', '     resets Oct 20,', '     9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
     ])("Claude Code's reply %s", (_name, cols, reply, summary) => {
       expect(at(cols, ['❯ Build the page', ...reply, ...claudeIdle(cols)], 'Claude')).toEqual({ status: 'blocked', summary })
     })
@@ -298,9 +315,9 @@ describe('what is no usage limit or menu', () => {
   // tool's output, a prompt sent after it, or an agent still at work on its prompt.
   it.each([
     ["Gemini CLI's message, in its history", 'Gemini', ['✕ Usage limit reached for gemini-2.5-pro.', '  Access resets at 5:00 PM.', '  /stats model for usage details', ...AGY_IDLE]],
-    ["Claude Code's, in a tool's output under the prompt", 'Claude', ['❯ Build the page', '● Bash(cat docs/limits.md)', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE]],
-    ["Claude Code's, under a prompt it then answered", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '', '❯ Go on', '', '● Built the page.', ...CLAUDE_IDLE]],
-    ["Claude Code's, under an answer", 'Claude', ['● The banner says:', '  ⎿  You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
+    ["Claude Code's, in a tool's output under the prompt", 'Claude', ['❯ Build the page', '● Bash(cat docs/limits.md)', `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE]],
+    ["Claude Code's, under a prompt it then answered", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '', '❯ Go on', '', '● Built the page.', ...CLAUDE_IDLE]],
+    ["Claude Code's, under an answer", 'Claude', ['● The banner says:', `${REPLY}You've hit your session limit · resets 3pm`, ...CLAUDE_IDLE]],
     ["Claude Code's words on a row of a prompt it was sent, no ⎿ in front", 'Claude', ['❯ The worker printed this, read it:', '  You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
     ["Codex's, indented in an answer", 'Codex', ['• The CLI printed:', '', '  ■ You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', ...CODEX_IDLE]],
     ["agy's, quoted in an answer", 'Gemini', ['> Why did it stop?', '', '  It printed ✕ You have exhausted your quota on this model.', ...AGY_IDLE]],
@@ -309,26 +326,26 @@ describe('what is no usage limit or menu', () => {
     ["Codex's words in the middle of a long cell, no blank row above them", 'Codex', ['• The log ends with:', '■ You\'ve hit your usage limit. Try again at 4:15 PM.', '  and then', '  the session', '  closed', '  itself.', ...CODEX_IDLE]],
     // R4-3: a ⎿ row of its own between the prompt and the reply, a hook's, leaves the reply no longer
     // right under the prompt: it can be a hook's own words, so it is read as nothing.
-    ["Claude Code's reply under a hook's row under the prompt", 'Claude', ['❯ Build the page', '  ⎿  UserPromptSubmit hook succeeded', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE]],
+    ["Claude Code's reply under a hook's row under the prompt", 'Claude', ['❯ Build the page', '  ⎿  UserPromptSubmit hook succeeded', `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE]],
     // The rows a reply wrapped onto, its ⎿ row and the prompt gone off the screen's top.
     ["Claude Code's reply's wrapped end, its ⎿ row scrolled off the top", 'Claude', ['     limit · resets 3pm', '     (America/New_York)', ...CLAUDE_IDLE]],
     // Only rows indented under the reply's text are the reply's: one under it indented less is not.
-    ["Claude Code's reply with a row under it indented less than its text", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '  (America/New_York)', ...CLAUDE_IDLE]],
+    ["Claude Code's reply with a row under it indented less than its text", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '  (America/New_York)', ...CLAUDE_IDLE]],
     // A wrapped reply is read from its ⎿ row: one that starts some other way is no limit.
-    ["Claude Code's reply wrapped onto rows that name a limit, its ⎿ row not starting with it", 'Claude', ['❯ Build the page', '  ⎿  The banner now reads:', '     You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
+    ["Claude Code's reply wrapped onto rows that name a limit, its ⎿ row not starting with it", 'Claude', ['❯ Build the page', `${REPLY}The banner now reads:`, '     You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
   ])('%s', (_name, agent, rows) => {
     expect(isLimitOrMenu(onScreen(rows, agent))).toBe(false)
   })
 
   it('reads no limit in a prompt Claude Code is still at work on, whose last row is its limit reply', () => {
-    const rows = ['❯ Take over from the worker that stopped with:', '  ⎿  You\'ve hit your session limit · resets 3pm', '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt']
+    const rows = ['❯ Take over from the worker that stopped with:', `${REPLY}You've hit your session limit · resets 3pm`, '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt']
     expect(onScreen(rows, 'Claude', '◐ Claude Code').status).toBe('working')
   })
 
   // Each read as a menu on any agent, anywhere in the bottom rows (R2-2): the worker was reported
   // blocked, submit refused to type into it, and the conductor was told to give its task away.
   it.each([
-    ['Claude showing rg output with the pattern line', 'Claude', ['● Bash(rg -n "Approaching rate limits" src)', '  ⎿  src/shared/agentStatusDetector.ts:338:    pattern: /Approaching rate limits[\\s\\S]*Keep current model/,', ...CLAUDE_IDLE]],
+    ['Claude showing rg output with the pattern line', 'Claude', ['● Bash(rg -n "Approaching rate limits" src)', `${REPLY}src/shared/agentStatusDetector.ts:338:    pattern: /Approaching rate limits[\\s\\S]*Keep current model/,`, ...CLAUDE_IDLE]],
     ['Claude summarizing the docs', 'Claude', ['● The docs name Codex\'s menus ("Approaching rate limits … Keep current model") and', '  its update offer ("Update available! 0.1 -> 0.2 … Skip until next version").', ...CLAUDE_IDLE]],
     ["agy answering a question about Codex's prompt", 'Gemini', ['> What does Codex show near its limit?', '', '  It shows "Approaching rate limits" and offers', '  2. Keep current model', ...AGY_IDLE]],
     ['Codex with a task naming both in its composer', 'Codex', ['• Ready.', '', '› Handle Codex\'s "Approaching rate limits" prompt: pick "Keep current model", and on', '  "Update available! 0.153.4 -> 0.163.0" pick "Skip until next version".', '', '  gpt-5.6-sol medium · ~\\repos\\app']],
@@ -346,9 +363,9 @@ describe('what is no usage limit or menu', () => {
     ['markdown docs', 'Codex', ['• Updated docs/billing.md:', '  ## Limits', '  - Free plan: You\'ve hit your free plan limit after 100 requests.'], CODEX_IDLE],
     ['a log tail', 'Codex', ['• Ran tail -n 3 logs/api.log', '  └ 2026-10-16T12:00:01Z WARN Usage limit reached for org-42.', '    2026-10-16T12:00:02Z INFO retry scheduled'], CODEX_IDLE],
     ['grep output', 'Codex', ['• Ran rg -n "hit your" src', '  └ src/quota.ts:12:   message: You\'ve hit your weekly limit · resets Monday'], CODEX_IDLE],
-    ['a Claude worker reading a message bridged from Codex', 'Claude', ['● termpolis - swarm_read_messages (MCP)(terminalId: "t-9")', '  ⎿  [{"from":"Codex","content":"[Codex] You\'ve hit your usage limit. Upgrade', '     to Plus to continue using Codex"}]'], CLAUDE_IDLE],
-    ['a file of copy Claude printed, the last thing it shows', 'Claude', ['● Bash(cat src/copy/quota.txt)', '  ⎿  You\'ve hit your monthly limit.', '     Upgrade to keep going.'], CLAUDE_IDLE],
-    ['the monthly spend copy with words after it', 'Claude', ['● Bash(cat src/copy/spend.txt)', '  ⎿  You\'ve hit your monthly spend limit. Contact billing@example.com.'], CLAUDE_IDLE],
+    ['a Claude worker reading a message bridged from Codex', 'Claude', ['● termpolis - swarm_read_messages (MCP)(terminalId: "t-9")', `${REPLY}[{"from":"Codex","content":"[Codex] You've hit your usage limit. Upgrade`, '     to Plus to continue using Codex"}]'], CLAUDE_IDLE],
+    ['a file of copy Claude printed, the last thing it shows', 'Claude', ['● Bash(cat src/copy/quota.txt)', `${REPLY}You've hit your monthly limit.`, '     Upgrade to keep going.'], CLAUDE_IDLE],
+    ['the monthly spend copy with words after it', 'Claude', ['● Bash(cat src/copy/spend.txt)', `${REPLY}You've hit your monthly spend limit. Contact billing@example.com.`], CLAUDE_IDLE],
     ['the copy a Claude worker wrote, quoted on a row of its own', 'Claude', ['● I changed the quota banner. It now reads:', '', '  You\'ve hit your monthly limit.'], CLAUDE_IDLE],
     ["an agy answer quoting agy's message", 'Gemini', ['> Explain the quota error in the logs', '', '  The log shows the CLI stopped with:', '', '  You have exhausted your quota on this model.'], AGY_IDLE],
     ['an answer about an expired session', 'Claude', ['● The login fails because the session has expired before the refresh token', '  is used. I moved the refresh ahead of the request.'], CLAUDE_IDLE],
@@ -394,7 +411,7 @@ describe('what is no usage limit or menu', () => {
   // made them so went unseen (R2-3): a limit's words in a tool's output, a limit the worker went on
   // past with a prompt or an answer.
   it.each([
-    ['a doc Claude printed, its answer under it', 'Claude', ['● Bash(cat docs/limits.md)', '  ⎿  You\'ve hit your usage limit. Contact sales to raise it.', '', ...CLAUDE_IDLE]],
+    ['a doc Claude printed, its answer under it', 'Claude', ['● Bash(cat docs/limits.md)', `${REPLY}You've hit your usage limit. Contact sales to raise it.`, '', ...CLAUDE_IDLE]],
     ['a limit Codex was sent a prompt past', 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', '', '› Fix the login test', '', ...CODEX_IDLE]],
     ['a limit Codex answered past', 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', '', '• Retried after the reset; the login test passes now.', '', ...CODEX_IDLE]],
   ])('%s', (_name, agent, rows) => {
