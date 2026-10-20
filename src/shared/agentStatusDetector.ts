@@ -484,8 +484,9 @@ const CLAUDE_REPLY = /^[ \t]+⎿[ \t\u00a0]+\S/
 /** MessageResponse's ⎿ exactly as claude.exe 2.1.302 to 2.1.304 draw it in front of a reply or a
  *  tool's output: two in (two no-break spaces in for one summary of a tool's output), a space and a
  *  no-break space after it. An answer's text is indented two as well, and one that quotes a screen
- *  is taken to type the same rows with plain spaces: one that keeps the no-break space, and quotes
- *  no row a turn's mark leads, reads as the reply itself (MW2-1). */
+ *  is taken to type the same rows with plain spaces: one that keeps the no-break space can read as
+ *  the reply itself mid-turn or under a tall prompt, where the reply is read only as drawn so
+ *  (MW2-1). */
 const CLAUDE_RESPONSE = /^\s{2}⎿ \u00a0/
 /** Claude Code's line at the end of every turn, under what the turn ended on (claude.exe's
  *  turn_duration line, showTurnDuration being on by default): its ✻ at the left edge, then one of its

@@ -341,16 +341,18 @@ describe('the limit message a CLI ends its turn with, right above its input box'
   })
 
   // MW2-1: what the screen can't tell from that reply. An answer that ends its turn on a quote of a
-  // worker's screen, Claude Code's no-break space after each ⎿ kept, as read_output returns it, and
-  // no row of the quote led by a turn's mark, is drawn the same: the answer's own ● is taken for the
-  // tool's call, or for the turn's text above the folded row. It reads as the limit, and the report
-  // has the conductor look at the screen first. A quote typed with plain spaces, or with a turn's
-  // mark in it, reads as none ('what is no usage limit or menu').
+  // worker's screen, Claude Code's no-break space after each ⎿ kept, as read_output returns it, is
+  // drawn the same: mid-turn when no row of the quote is led by a turn's mark, the answer's own ●
+  // taken for the tool's call, or for the turn's text above the folded row; and when the answer is
+  // taller than the screen, its ● gone off the top, as a tall prompt's ❯ is. It reads as the limit,
+  // and the report has the conductor look at the screen first. A quote typed with plain spaces, or,
+  // mid-turn, with a turn's mark in it, reads as none ('what is no usage limit or menu').
   it.each([
-    ["a tool's output", ['● Worker 2 shows this at the bottom:', `${REPLY}hello`]],
-    ['the folded row', ['● Worker 2 shows this at the bottom:', '', '  Read 1 file (ctrl+o to expand)']],
-  ])("reads as the limit an answer that quotes the reply under %s, its no-break spaces kept and no turn's mark quoted", (_name, quote) => {
-    const rows = ['❯ What does worker 2 show at the bottom?', '', ...quote, LIMIT_REPLY, '', '✻ Baked for 2s', ...CLAUDE_IDLE]
+    ["a tool's output", ['❯ What does worker 2 show at the bottom?', '', '● Worker 2 shows this at the bottom:', `${REPLY}hello`]],
+    ['the folded row', ['❯ What does worker 2 show at the bottom?', '', '● Worker 2 shows this at the bottom:', '', '  Read 1 file (ctrl+o to expand)']],
+    ['the text of an answer taller than the screen', ['  the worker stopped there, with:']],
+  ])('reads as the limit an answer that ends on the reply quoted under %s, its no-break spaces kept', (_name, above) => {
+    const rows = [...above, LIMIT_REPLY, '', '✻ Baked for 2s', ...CLAUDE_IDLE]
     expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
   })
 
@@ -561,8 +563,8 @@ describe('what is no usage limit or menu', () => {
     ["a limit reply a tool printed from a log, under the tool's own output", 'Claude', ['❯ Read the log', '● Bash(cat logs/worker.txt)', `${REPLY}worker 2 stopped:`, `   ${LIMIT_REPLY}`, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     // An answer that quotes a worker's screen is taken to type plain spaces after its ⎿, where Claude
     // Code draws a no-break space: a reply it quotes is not its own, mid-turn or under a tall prompt.
-    // One that keeps the no-break space and quotes no turn's mark reads as the limit (MW2-1, pinned
-    // with the mid-turn replies).
+    // One that keeps the no-break space reads as the limit, unless, mid-turn, a row of the quote is
+    // led by a turn's mark (MW2-1, pinned with the mid-turn replies).
     ['an answer quoting a screen where a limit stopped a worker mid-turn', 'Claude', ['● Worker 2 shows:', '  ● Bash(echo hello)', '  ⎿  hello', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     ['an answer quoting a reply, its first rows gone off the top', 'Claude', ['  the worker stopped there, with:', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     // Quoted row for row, no-break spaces and all: the quoted call's ● is in the answer's text,
