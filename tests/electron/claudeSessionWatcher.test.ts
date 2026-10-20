@@ -158,6 +158,19 @@ describe('attachClaudeSessionWatcher', () => {
     expect(handle.sessionFile).toBe(elsewhere)
   })
 
+  // One folder of many holds it, listed anywhere: the look takes that one, not the first listed.
+  it('finds it in a project folder listed after others that hold no such file', async () => {
+    fs.mkdirSync(path.join(projects, 'aaa-listed-first'), { recursive: true })
+    const elsewhere = transcript('zzz-listed-last', SID, 'TodoWrite')
+    // Node lists a folder by name on Linux and macOS, and NTFS keeps one in that order: the folder
+    // that holds the session is not the first listed.
+    expect(fs.readdirSync(projects)).toEqual(['aaa-listed-first', 'zzz-listed-last'])
+    const handle = attach()
+    poll(3)
+    await vi.waitFor(() => expect(tools()).toEqual(['TodoWrite']))
+    expect(handle.sessionFile).toBe(elsewhere)
+  })
+
   it('looks through every folder up to the 200th look', async () => {
     attach()
     poll(198)
