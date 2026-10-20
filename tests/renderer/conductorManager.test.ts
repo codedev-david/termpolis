@@ -98,12 +98,22 @@ describe('conductorManager', () => {
     useTerminalStore.setState((s) => ({ terminals: s.terminals.filter((t) => t.id !== id) }))
   }
 
-  /** Start the conductor and hand it a task, as the wizard does. */
-  async function launchConductor(task = 'Build') {
+  /** A terminal of the user's own in the store, as App.tsx adds one the user opened: shown, and no swarm's. */
+  function addUserTerminal(id: string) {
+    useTerminalStore.setState((s) => ({ terminals: [...s.terminals, { id, name: 'PowerShell', hidden: false } as (typeof s.terminals)[number]] }))
+  }
+
+  /** Start the conductor, up to where the wizard hands it the task. */
+  async function readyConductor() {
     const startPromise = startConductor('/tmp/project')
     await vi.advanceTimersByTimeAsync(2000)
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
+  }
+
+  /** Start the conductor and hand it a task, as the wizard does. */
+  async function launchConductor(task = 'Build') {
+    await readyConductor()
     await sendTask(task, '/tmp/project')
   }
 
@@ -524,6 +534,19 @@ describe('conductorManager', () => {
       expect(useTerminalStore.getState().swarmCompletionSummary?.message).toBe('SWARM COMPLETE: built the page directly.')
     })
 
+    // Only a swarm's own terminals are its workers, not those the user has open, as nearly every
+    // session does: taken for workers, they would leave no message without a name the conductor's.
+    it("ends on STEP 8's message without a name while only the user's own terminals are open", async () => {
+      const bus = fakeBus()
+      addUserTerminal('user-1')
+      await launchConductor()
+      addUserTerminal('user-2')
+      await vi.advanceTimersByTimeAsync(3000)
+      bus.post('mcp-client', 'SWARM COMPLETE: built the page directly.', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+    })
+
     it("is not ended by STEP 8's words under another name while there is no worker: only one without a name can be the conductor's", async () => {
       const bus = fakeBus()
       await launchConductor()
@@ -690,6 +713,30 @@ describe('conductorManager', () => {
       await vi.advanceTimersByTimeAsync(1000)
       ;(window.swarmAPI.getMessages as Mock).mockRejectedValueOnce(new Error('ipc gone'))
       await launchConductor()
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+    })
+
+    // The workers are noted before the launch reads the bus, so what is posted while that read is
+    // under way, which it doesn't set aside, was posted while they were noted: a worker the last swarm
+    // left open can have sent it, though it closed before the read was answered.
+    it("is not ended by the last swarm's STEP 8 words without a name, posted as its worker closed while the launch read the bus", async () => {
+      const bus = fakeBus()
+      addWorker('old-1')
+      await readyConductor()
+      // The launch's read of the bus, answered when the test says, with the bus as it was when asked.
+      let answer: () => void = () => {}
+      ;(window.swarmAPI.getMessages as Mock).mockImplementationOnce(() => {
+        const asked = bus.messages.map((m) => ({ ...m }))
+        return new Promise((resolve) => { answer = () => resolve({ success: true, data: asked }) })
+      })
+      const sending = sendTask('Build', '/tmp/project')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(window.swarmAPI.getMessages).toHaveBeenCalledTimes(1) // the launch is reading the bus
+      bus.post('mcp-client', 'SWARM COMPLETE: the last swarm is done', 'result')
+      removeWorker('old-1')
+      answer()
+      await sending
       await vi.advanceTimersByTimeAsync(15000)
       expect(getConductorState().status).toBe('running')
     })
