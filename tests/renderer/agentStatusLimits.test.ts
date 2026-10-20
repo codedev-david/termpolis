@@ -464,6 +464,7 @@ describe('the limit message a CLI ends its turn with, right above its input box'
         ['its offer of usage credits', [FABLE, 'Usage credits are at least 20% off · 3 days left · /usage-credits'], 'Oct 21, 3pm (Europe/London)'],
         ['its other offer', [FABLE, 'Buy usage credits and get at least 20% extra · 3 days left · /usage-credits'], 'Oct 21, 3pm (Europe/London)'],
         ["a note of the server's, which names a reset of its own", [SESSION, 'Your session limit resets every five hours.'], '3pm (Europe/London)'],
+        ["a note of the server's with brackets in it", [SESSION, 'Limits (5-hour window) apply to all models.'], '3pm (Europe/London)'],
       ]
       it.each([80, 50, 46, 30, 20].flatMap((cols) => ROWS_UNDER.map(([name, pieces, reset]) => [name, cols, pieces, reset] as const)))(
         "reads the reset in Claude Code's message, not %s under it, at %i columns",

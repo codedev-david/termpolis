@@ -109,8 +109,23 @@ describe('noteWorkerStatus', () => {
     await noteWorkerStatus(w1, IDLE)
     await noteWorkerStatus(w1, LIMIT)
     // w1 showed no stop on two reads in a row of its own, so its stop after them is another one;
-    // w2's one read between counts for w2 only.
+    // w2's one read between counts for w2 only, so w2 read stopped again is the same stop.
+    await noteWorkerStatus(w2, LIMIT)
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(3)
+  })
+
+  // Each stopped worker's one read with no stop, while its resized screen is drawn again, is no
+  // end of its stop, whichever other stopped worker is read between (MW1-3, MR2-3).
+  it('keeps a stopped worker stopped after one read of its own with no stop, another stopped worker read between', async () => {
+    const w1 = worker()
+    const w2 = worker()
+    await noteWorkerStatus(w1, LIMIT)
+    await noteWorkerStatus(w2, LIMIT)
+    await noteWorkerStatus(w1, IDLE)
+    await noteWorkerStatus(w2, IDLE)
+    await noteWorkerStatus(w2, LIMIT)
+    await noteWorkerStatus(w1, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
   })
 
   // A new stop counts its reads with no stop from 0: the one read after the stop before it is not
