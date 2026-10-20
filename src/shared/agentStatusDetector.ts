@@ -468,8 +468,11 @@ function stopAroundBox(rows: readonly string[], box: number): string | null {
 //    prompt's echo, whose rows are indented under its ❯ (or >). Its ⎿ and the gap after it are
 //    MessageResponse's, a space and a no-break space; other rows of its have two spaces (BEH-1: no
 //    real reply was read). Or, a limit that stops it mid-turn, right under the output of the tool
-//    it ran last (M-2). Under the reply, as at the end of every turn, it draws a line with how long
-//    the turn took (TURN_END).
+//    it ran last (M-2), or under the row it folds the turn's reads and searches into (M1-1). Not
+//    after a tool it draws no row for (TodoWrite, ToolSearch): the reply is then right under the
+//    turn's text, as a tool's output is right under its call, told apart only by reading what the
+//    agent wrote. Under the reply, as at the end of every turn, it draws a line with how long the
+//    turn took (TURN_END).
 // An answer or a tool's output indents what it quotes, or puts its own mark first; a prompt or an
 // answer after the message makes it history. Read only with the agent at rest: while it works, the
 // echo of the prompt it was just sent can end in anything.
@@ -491,6 +494,10 @@ const CLAUDE_RESPONSE = /^\s{2}⎿ \u00a0/
  *  ✻, "✻ Conversation compacted (ctrl+o for history)" and a scheduled task's prompt among them, are
  *  not stepped over (M-0). */
 const TURN_END = /^✻ \S+ for \d/
+/** The end of the row Claude Code folds a turn's reads and searches into, under the turn's text, two
+ *  in: "Read 1 file (ctrl+o to expand)", "Searched for 1 pattern, read 1 file (ctrl+o to expand)"
+ *  (claude.exe 2.1.304). The key is the one that shows the transcript, ctrl+o unless rebound. */
+const FOLDED_READS = /\([^()]+ to expand\)$/
 
 function turnEndLimit(rows: readonly string[], box: number): string | null {
   // The last thing above the box: up past its top rule and the blank rows under the transcript, and
@@ -526,7 +533,8 @@ function aboveTurnEnd(rows: readonly string[], end: number): number {
 /** Claude Code's limit reply ending on row `end`: its ⎿ row and every row a narrow screen wrapped it
  *  onto, indented under its text. Right under the echo of the prompt it stopped; or, drawn as
  *  MessageResponse draws it (CLAUDE_RESPONSE), under an echo whose first rows went off the top of
- *  the screen, or under the output of the tool it ran last when the limit stopped it mid-turn (M-2). */
+ *  the screen, or when the limit stopped it mid-turn, under the output of the tool it ran last (M-2)
+ *  or the row it folded the turn's reads into (M1-1). */
 function claudeLimitReply(rows: readonly string[], end: number): string | null {
   let at = end
   while (at > 0 && /^\s{4,}[^\s⎿]/.test(rows[at])) at--
@@ -539,7 +547,17 @@ function claudeLimitReply(rows: readonly string[], end: number): string | null {
   if (!CLAUDE_RESPONSE.test(rows[at])) return null
   // A prompt taller than the screen: rows of it, and nothing else, up to the top.
   if (up < 0) return rows.slice(0, at).some((row) => row.trim() !== '') ? claudeLimitSummary(reply) : null
-  return underToolOutput(rows, up) ? claudeLimitSummary(reply) : null
+  return underToolOutput(rows, up) || underFoldedReads(rows, up, at) ? claudeLimitSummary(reply) : null
+}
+
+/** Whether the rows between row `up` and the reply on row `at` end on the row Claude Code folds the
+ *  turn's reads and searches into (FOLDED_READS), the turn's text on row `up`, led by ● at the left
+ *  edge (⏺ on macOS). They are that text's rows, indented two, the folded row and blank rows; none
+ *  starts with a mark of the turn's: one that does is a screen an answer quotes, row for row, under
+ *  the answer's own ●. */
+function underFoldedReads(rows: readonly string[], up: number, at: number): boolean {
+  const between = rows.slice(up + 1, at)
+  return /^[●⏺] /.test(rows[up]) && !between.some((row) => /^ {2}[●⏺]/.test(row)) && FOLDED_READS.test(runTogether(between))
 }
 
 /** Whether row `up` ends a tool's output in Claude Code's transcript: the rows it draws a ⎿ in, two

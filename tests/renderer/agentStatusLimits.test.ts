@@ -268,9 +268,28 @@ describe('the limit message a CLI ends its turn with, right above its input box'
   // M-2: nor one under the output of the tool a limit stopped it after, mid-turn, nor one under a
   // prompt taller than the screen. Real Claude Code 2.1.304, at each size it was drawn at.
   describe('on real Claude Code 2.1.304 screens', () => {
-    const screens = Object.entries(limits.captures).flatMap(([name, c]) => c.screens.map((s) => [name, s.cols, c.raw.slice(0, s.at), s] as const))
+    // M1-1: a limit right after a tool Claude Code draws no row for, an update of its to-do list or a
+    // search for a tool, puts the reply right under the turn's text, as a tool's output is right under
+    // the row of its call: told apart only by reading that row as a call or as text, which an answer's
+    // text can look like. Not told; the worker draws the reply again under the next task it is sent.
+    const UNDER_TEXT = ['after-todo', 'after-tool-search']
+    const all = Object.entries(limits.captures).flatMap(([name, c]) => c.screens.map((s) => [name, s.cols, c.raw.slice(0, s.at), s] as const))
+    const screens = all.filter(([name]) => !UNDER_TEXT.includes(name))
     it.each(screens)('%s, at %i columns', (_name, _cols, raw, size) => {
       expect(onRealScreen(raw, size, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 8:10pm (America/New_York))' })
+    })
+
+    it.each(all.filter(([name]) => UNDER_TEXT.includes(name)))("%s, at %i columns: not told, the reply right under the turn's text", (_name, _cols, raw, size) => {
+      expect(onRealScreen(raw, size, 'Claude')).toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+    })
+
+    // M1-1: the row Claude Code folds a turn's reads and searches into, between the turn's text and
+    // the reply, two in, with no ⎿ under it: no output of a tool's to read the reply under.
+    it("draws the row it folds a turn's reads into between the turn's text and the reply", () => {
+      const c = limits.captures['after-read']
+      const rows = rowsOf(c.raw.slice(0, c.screens[0].at), c.screens[0])
+      const reply = rows.indexOf(`${REPLY}You've hit your session limit · resets 8:10pm (America/New_York)`)
+      expect(rows.slice(reply - 3, reply)).toEqual(['● I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)'])
     })
 
     it("draws the line at the turn's end under the reply, the hint for the account between them", () => {
@@ -307,6 +326,15 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     // summary of a tool's output with no-break spaces.
     ['a tool a hook ran before', ['● Bash(npm test)', '  ⎿  Ran 1 PreToolUse hook (12ms)', `${REPLY}PASS tests/login.test.ts`]],
     ['a summary of what a tool found', ['● Search(pattern: "login")', '\u00a0\u00a0⎿ \u00a0Found 3 files']],
+    // M1-1: Claude Code folds a turn's reads and searches into one row under the turn's text, two in,
+    // that ends on the key that shows them (the transcript's, ctrl+o unless it was bound to another),
+    // and draws no ⎿ output under it: about a third of the real limit hits mid-turn came after one.
+    ["the row it folds the turn's reads into, under the turn's text", ['❯ Build the page', '', '● I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)']],
+    ["the row it folds reads and searches into, it and the turn's text wrapped onto a second row", ['● I will look at the notes', '  first.', '', '  Searched for 1 pattern, read', '  1 file (ctrl+o to expand)']],
+    ["the folded row under a turn's text of two paragraphs", ['● I will look at the notes first.', '', '  Then I will run the tests.', '', '  Read 2 files (ctrl+o to expand)']],
+    ["the folded row on macOS, the turn's text led by ⏺", ['⏺ I will look at the notes first.', '', '  Searched for 2 patterns (ctrl+o to expand)']],
+    ["the folded row with the transcript's key bound to a chord", ['● I will look at the notes first.', '', '  Read 1 file (ctrl+k ctrl+o to expand)']],
+    ['the folded row under the text of a turn that ran a tool before it', ['● Bash(npm test)', `${REPLY}PASS tests/login.test.ts`, '', '● Now the notes.', '', '  Read 1 file (ctrl+o to expand)']],
   ])("reads Claude Code's reply mid-turn, under %s", (_name, above) => {
     const rows = [...above, LIMIT_REPLY, '', '✻ Baked for 2s · done 1:19 AM', ...CLAUDE_IDLE]
     expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
@@ -525,10 +553,20 @@ describe('what is no usage limit or menu', () => {
     // indented under the answer's own ●, where no row a long call wraps onto starts with one.
     ['an answer quoting a mid-turn screen row for row', 'Claude', ['● Worker 2 shows:', '  ● Bash(echo hello)', `${REPLY}hello`, LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     ['an answer quoting a mid-turn screen of macOS row for row', 'Claude', ['⏺ Worker 2 shows:', '  ⏺ Bash(echo hello)', `${REPLY}hello`, LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // M1-1: the same for a screen with the row Claude Code folds reads into: row for row, the quoted
+    // text's ● is indented under the answer's own; with plain spaces, the reply is not one it drew.
+    ['an answer quoting a screen with a folded row, row for row', 'Claude', ['● Worker 2 shows:', '', '  ● I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer quoting a screen of macOS with a folded row, row for row', 'Claude', ['⏺ Worker 2 shows:', '', '  ⏺ I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer quoting a folded row and the reply under it, with plain spaces', 'Claude', ['● Worker 2 shows:', '', '  Read 1 file (ctrl+o to expand)', "  ⎿  You've hit your session limit · resets 3pm (America/New_York)", '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // Only the end of the rows above the reply is the folded row's: an answer's text can name it.
+    ["Claude Code's reply right under the turn's text, the text ending on the folded row's words", 'Claude', ['● All of it is in the log (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer whose text names the folded row before it goes on', 'Claude', ['● Worker 2 shows:', '  Read 1 file (ctrl+o to expand) and then it', '  stopped with this:', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     // Nothing above the ⎿ blocks to say they are a tool's, or the reply's: its ⎿ row at the screen's
     // top, or the blocks reaching it.
     ["Claude Code's reply at the screen's top", 'Claude', [LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     ["Claude Code's reply under a tool's output whose call is gone off the top", 'Claude', [`${REPLY}hello`, '     world', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // M1-1: nor under a folded row that is not under the turn's text: a tool's output, its call gone.
+    ["Claude Code's reply under a folded row under a tool's output whose call is gone off the top", 'Claude', [`${REPLY}hello`, '     world', '', '  Read 1 file (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
   ])('%s', (_name, agent, rows) => {
     expect(isLimitOrMenu(onScreen(rows, agent))).toBe(false)
   })
