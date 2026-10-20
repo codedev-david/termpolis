@@ -45,6 +45,7 @@ import {
   stopConductor,
   sendTask,
   getPreSwarmSha,
+  waitForAuth,
   watchConductorTrace,
 } from '../../src/renderer/src/lib/conductorManager'
 import { startBridgeForAgent, stopAllBridges } from '../../src/renderer/src/lib/swarmBridgeManager'
@@ -75,7 +76,7 @@ describe('conductorManager', () => {
   /** An in-memory swarm bus behind the swarmAPI mocks, so a test sees what sendTask itself posts. */
   function fakeBus() {
     const messages: Array<{ id: string; from: string; to: string; type: string; content: string; timestamp: number; read: boolean }> = []
-    const tasks: Array<{ id: string; status: string }> = []
+    const tasks: Array<{ id: string; status: string; createdAt?: number }> = []
     const post = (from: string, content: string, type = 'info') => {
       const m = { id: `m${messages.length + 1}`, from, to: 'all', type, content, timestamp: Date.now(), read: false }
       messages.push(m)
@@ -92,133 +93,152 @@ describe('conductorManager', () => {
     useTerminalStore.setState((s) => ({ terminals: [...s.terminals, { id, name: 'Claude (Docs)', isSwarm: true, hidden: true } as (typeof s.terminals)[number]] }))
   }
 
-  /** Start the conductor and hand it a task, as the wizard does. */
-  async function launchConductor(task = 'Build') {
+  /** The worker's terminal gone from the store: the conductor's close_terminal, or the user closing it. */
+  function removeWorker(id: string) {
+    useTerminalStore.setState((s) => ({ terminals: s.terminals.filter((t) => t.id !== id) }))
+  }
+
+  /** A terminal of the user's own in the store, as App.tsx adds one the user opened: shown, and no swarm's. */
+  function addUserTerminal(id: string) {
+    useTerminalStore.setState((s) => ({ terminals: [...s.terminals, { id, name: 'PowerShell', hidden: false } as (typeof s.terminals)[number]] }))
+  }
+
+  /** Start the conductor, up to where the wizard hands it the task. */
+  async function readyConductor() {
     const startPromise = startConductor('/tmp/project')
     await vi.advanceTimersByTimeAsync(2000)
     await vi.advanceTimersByTimeAsync(5000)
     await startPromise
+  }
+
+  /** Start the conductor and hand it a task, as the wizard does. */
+  async function launchConductor(task = 'Build') {
+    await readyConductor()
     await sendTask(task, '/tmp/project')
   }
 
   // Trace shows the conductor's transcript, which a pane used to follow once Debug unhid the
-  // conductor's terminal. Debug shows no pane any more, so the monitor and the dashboard ask for it,
-  // once this launch's conductor has acted: the folder's newest transcript is then its own, and not
-  // the last swarm's or another session's, which it was while the new conductor had written nothing.
+  // conductor's terminal. Debug shows no pane any more, so the conductor manager asks main for it.
+  // It used to ask, once the conductor had acted, for the newest transcript in the swarm's folder:
+  // that missed the conductor's first steps, and could be the last swarm's conductor or a Claude
+  // Code worker (the r5 Trace review). The conductor's claude now starts its session under an id of
+  // the launch's own (`--session-id`), and Trace follows that session from the launch on.
   describe('watchConductorTrace', () => {
     let attachWatcher: Mock
+    let ids = 0
+    const UUID = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
     beforeEach(() => {
       attachWatcher = vi.fn().mockResolvedValue({ success: true, data: { attached: true } })
       ;(window as any).agentActivity = { attachWatcher }
+      // A new id for each terminal and each session, as uuid gives them.
+      ids = 0
+      vi.mocked(uuidV4).mockImplementation((() => UUID(++ids)) as never)
     })
     afterEach(() => {
       delete (window as any).agentActivity
+      vi.mocked(uuidV4).mockImplementation((() => 'conductor-uuid-1') as never)
     })
 
-    it('asks for nothing before the conductor has acted, however often it is called', async () => {
+    /** The session id the run script hands claude, as written to the script file. */
+    function launchedSession(): string | undefined {
+      const script = (window.termpolis.writeConfigFile as Mock).mock.calls
+        .map(([file, content]) => (String(file).includes('.termpolis-conductor-run.') ? String(content) : ''))
+        .filter(Boolean)
+        .pop()
+      return script?.match(/--session-id '([^']+)'/)?.[1]
+    }
+
+    it("follows the session the run script starts claude with, from the launch, before the conductor has done anything", async () => {
       fakeBus()
       await launchConductor()
+      const session = launchedSession()
+      expect(session).toBe(UUID(2)) // the terminal took the first id
+      expect(getConductorState().sessionId).toBe(session)
+      expect(attachWatcher).toHaveBeenCalledTimes(1)
+      expect(attachWatcher).toHaveBeenCalledWith(UUID(1), '/tmp/project', 'claude', session)
+    })
+
+    it('asks once, however often it is called and however many ticks go by', async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      bus.post('conductor', 'Plan: two tasks')
+      bus.tasks.push({ id: 't1', status: 'pending', createdAt: Date.now() })
       for (let i = 0; i < 3; i++) {
         watchConductorTrace()
         await vi.advanceTimersByTimeAsync(15000)
       }
-      expect(attachWatcher).not.toHaveBeenCalled()
-    })
-
-    it.each([
-      ['a message from the conductor', (bus: ReturnType<typeof fakeBus>) => { bus.post('conductor', 'Plan: two tasks') }],
-      ['a task', (bus: ReturnType<typeof fakeBus>) => { bus.tasks.push({ id: 't1', status: 'pending' }) }],
-    ])("follows the conductor's Claude Code transcript in the swarm's folder once it posted %s, once", async (_what, act) => {
-      const bus = fakeBus()
-      await launchConductor()
-      act(bus)
-      await vi.advanceTimersByTimeAsync(15000)
-      watchConductorTrace()
-      await vi.advanceTimersByTimeAsync(15000)
       expect(attachWatcher).toHaveBeenCalledTimes(1)
-      expect(attachWatcher).toHaveBeenCalledWith(getConductorState().terminalId, '/tmp/project', 'claude')
     })
 
-    it('is not started by a worker or by Termpolis posting', async () => {
-      const bus = fakeBus()
-      await launchConductor()
-      bus.post('Codex', '[Codex] Status: Working')
-      bus.post('system', 'Codex (UI, terminal w7) is blocked: usage limit reached.')
-      await vi.advanceTimersByTimeAsync(30000)
-      expect(attachWatcher).not.toHaveBeenCalled()
-    })
-
-    it('tries again while there is no transcript yet, or the call fails', async () => {
+    it('asks again on the next tick while main does not follow it, or the call fails', async () => {
       attachWatcher
         .mockResolvedValueOnce({ success: true, data: { attached: false } })
         .mockResolvedValueOnce({ success: false, error: 'no' })
         .mockRejectedValueOnce(new Error('ipc gone'))
-      const bus = fakeBus()
+      fakeBus()
       await launchConductor()
-      bus.post('conductor', 'Plan')
       await vi.advanceTimersByTimeAsync(5 * 15000)
       expect(attachWatcher).toHaveBeenCalledTimes(4)
+      expect(new Set(attachWatcher.mock.calls.map((c) => c[3]))).toEqual(new Set([launchedSession()]))
     })
 
-    it('asks for nothing without a conductor, nor where there is no watcher to ask', async () => {
+    it('asks for nothing without a conductor, nor before its launch, nor where there is no watcher to ask', async () => {
+      watchConductorTrace()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attachWatcher).not.toHaveBeenCalled()
+
+      // Started, not yet handed its task: there is no session yet.
+      const startPromise = startConductor('/tmp/project')
+      await vi.advanceTimersByTimeAsync(7000)
+      await startPromise
       watchConductorTrace()
       await vi.advanceTimersByTimeAsync(0)
       expect(attachWatcher).not.toHaveBeenCalled()
 
       delete (window as any).agentActivity
-      const bus = fakeBus()
-      await launchConductor()
-      bus.post('conductor', 'Plan')
+      fakeBus()
+      await sendTask('Build', '/tmp/project')
       await vi.advanceTimersByTimeAsync(15000)
       expect(() => watchConductorTrace()).not.toThrow()
     })
 
-    it("waits for the next conductor to act before following the next swarm's transcript", async () => {
-      const bus = fakeBus()
+    it('follows the next swarm under a session of its own, whether the last one was stopped or not', async () => {
+      fakeBus()
       await launchConductor()
-      bus.post('conductor', 'Plan')
-      await vi.advanceTimersByTimeAsync(15000)
-      expect(attachWatcher).toHaveBeenCalledTimes(1)
-
+      const first = launchedSession()
       stopConductor()
       await launchConductor()
-      watchConductorTrace()
-      await vi.advanceTimersByTimeAsync(15000)
-      expect(attachWatcher).toHaveBeenCalledTimes(1)
+      const second = launchedSession()
+      await launchConductor() // a swarm started again without stopping this one
+      const third = launchedSession()
+      expect(new Set([first, second, third]).size).toBe(3)
+      expect(attachWatcher.mock.calls.map((c) => c[3])).toEqual([first, second, third])
+    })
 
-      bus.post('conductor', 'Plan for the second swarm')
-      await vi.advanceTimersByTimeAsync(15000)
+    it("follows a next conductor whose session id is the last one's, as if it were new", async () => {
+      fakeBus()
+      await launchConductor()
+      stopConductor()
+      ids = 0 // the next terminal and session get the same ids again
+      await launchConductor()
       expect(attachWatcher).toHaveBeenCalledTimes(2)
+      expect(attachWatcher).toHaveBeenLastCalledWith(UUID(1), '/tmp/project', 'claude', UUID(2))
     })
 
-    it('waits for the next conductor to act when a swarm is started without stopping the last one', async () => {
-      const bus = fakeBus()
+    it.each([
+      ['answers late that it follows nothing', (first: { resolve: (v: unknown) => void }) => first.resolve({ success: true, data: { attached: false } })],
+      ['fails late', (first: { reject: (e: unknown) => void }) => first.reject(new Error('ipc gone'))],
+    ])("keeps the next conductor followed when the last one's attach %s", async (_name, settleFirst) => {
+      let first: { resolve: (v: unknown) => void; reject: (e: unknown) => void } = { resolve: () => {}, reject: () => {} }
+      attachWatcher.mockImplementationOnce(() => new Promise((resolve, reject) => { first = { resolve, reject } }))
+      fakeBus()
       await launchConductor()
-      bus.post('conductor', 'Plan')
-      await vi.advanceTimersByTimeAsync(15000)
-      expect(attachWatcher).toHaveBeenCalledTimes(1)
-
-      await launchConductor()
-      await vi.advanceTimersByTimeAsync(15000)
-      expect(attachWatcher).toHaveBeenCalledTimes(1)
-    })
-
-    it("keeps the next conductor followed when the last one's attach answers late that it found nothing", async () => {
-      let answerFirst: (v: unknown) => void = () => {}
-      attachWatcher.mockImplementationOnce(() => new Promise((resolve) => { answerFirst = resolve }))
-      const bus = fakeBus()
-      await launchConductor()
-      bus.post('conductor', 'Plan')
-      await vi.advanceTimersByTimeAsync(15000)
       stopConductor()
-
-      vi.mocked(uuidV4).mockReturnValueOnce('conductor-uuid-2' as never)
       await launchConductor()
-      bus.post('conductor', 'Plan for the second swarm')
-      await vi.advanceTimersByTimeAsync(15000)
-      expect(attachWatcher).toHaveBeenLastCalledWith('conductor-uuid-2', '/tmp/project', 'claude')
+      const next = launchedSession()
+      expect(attachWatcher).toHaveBeenLastCalledWith(UUID(3), '/tmp/project', 'claude', next)
 
-      answerFirst({ success: true, data: { attached: false } })
+      settleFirst(first)
       await vi.advanceTimersByTimeAsync(30000)
       expect(attachWatcher).toHaveBeenCalledTimes(2)
     })
@@ -514,6 +534,19 @@ describe('conductorManager', () => {
       expect(useTerminalStore.getState().swarmCompletionSummary?.message).toBe('SWARM COMPLETE: built the page directly.')
     })
 
+    // Only a swarm's own terminals are its workers, not those the user has open, as nearly every
+    // session does: taken for workers, they would leave no message without a name the conductor's.
+    it("ends on STEP 8's message without a name while only the user's own terminals are open", async () => {
+      const bus = fakeBus()
+      addUserTerminal('user-1')
+      await launchConductor()
+      addUserTerminal('user-2')
+      await vi.advanceTimersByTimeAsync(3000)
+      bus.post('mcp-client', 'SWARM COMPLETE: built the page directly.', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+    })
+
     it("is not ended by STEP 8's words under another name while there is no worker: only one without a name can be the conductor's", async () => {
       const bus = fakeBus()
       await launchConductor()
@@ -532,10 +565,180 @@ describe('conductorManager', () => {
       await vi.advanceTimersByTimeAsync(15000)
       expect(getConductorState().status).toBe('running')
 
-      useTerminalStore.setState((s) => ({ terminals: s.terminals.filter((t) => t.id !== 'w1') }))
+      removeWorker('w1')
       await vi.advanceTimersByTimeAsync(15000)
       expect(getConductorState().status).toBe('running')
       expect(useTerminalStore.getState().swarmActive).toBe(true)
+    })
+
+    // Judged on the tick that first saw it, a message without a name was the conductor's if no worker
+    // was in the store by then: a worker's result in STEP 8's words, its terminal closed before the
+    // monitor looked again, ended the swarm and showed the worker's text as its summary (r5's C-1).
+    it.each([
+      ['closed before the monitor looks again', 15000],
+      ['opened and closed between two looks', 1000],
+    ])("is not ended by a worker's STEP 8 words without a name, its terminal %s", async (_name, open) => {
+      const bus = fakeBus()
+      await launchConductor()
+      addWorker('w1')
+      await vi.advanceTimersByTimeAsync(open)
+      bus.post('mcp-client', 'SWARM COMPLETE: my part (the docs) is done', 'result')
+      removeWorker('w1')
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(getConductorState().status).toBe('running')
+      expect(useTerminalStore.getState().swarmCompletionSummary).toBeNull()
+    })
+
+    // What a worker sent as its terminal was closed reaches the bus a moment later: for 2 seconds after
+    // the last worker's terminal left the store, a message without a name can still be that worker's.
+    it.each([
+      [1500, 'goes on', 'running'],
+      [2000, 'goes on', 'running'],
+      [2001, 'ends', 'done'],
+    ])("with STEP 8's words without a name posted %i ms after the last worker's terminal closed, the swarm %s", async (after, _what, status) => {
+      const bus = fakeBus()
+      await launchConductor()
+      addWorker('w1')
+      await vi.advanceTimersByTimeAsync(15000)
+      removeWorker('w1')
+      await vi.advanceTimersByTimeAsync(after)
+      bus.post('mcp-client', 'SWARM COMPLETE: built and checked the page.', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe(status)
+    })
+
+    it("ends on STEP 8's message without a name posted once every worker's terminal had closed, though one started after it", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      addWorker('w1')
+      await vi.advanceTimersByTimeAsync(15000)
+      removeWorker('w1')
+      await vi.advanceTimersByTimeAsync(3000)
+      bus.post('mcp-client', 'SWARM COMPLETE: built and checked the page.', 'result')
+      await vi.advanceTimersByTimeAsync(1000)
+      addWorker('w2')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('done')
+      expect(useTerminalStore.getState().swarmCompletionSummary?.message).toBe('SWARM COMPLETE: built and checked the page.')
+    })
+
+    // The terminals are told apart by their ids: one that left the store and came back was there again.
+    it("is not ended by STEP 8's words without a name posted while a worker's terminal was back in the store", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      addWorker('w1')
+      await vi.advanceTimersByTimeAsync(15000)
+      removeWorker('w1')
+      await vi.advanceTimersByTimeAsync(15000)
+      addWorker('w1')
+      await vi.advanceTimersByTimeAsync(5000)
+      bus.post('mcp-client', 'SWARM COMPLETE: my part (the docs) is done', 'result')
+      removeWorker('w1')
+      await vi.advanceTimersByTimeAsync(30000)
+      expect(getConductorState().status).toBe('running')
+    })
+
+    // Termpolis notes the workers' terminals by listening to the store from the launch on. Stopping
+    // the conductor (Clear, or the next swarm's start) stops that, and so does sending a task to a
+    // conductor made ready again: no listener is left behind per swarm.
+    it('stops listening to the store for workers once the conductor stops, or is sent a task again', async () => {
+      const subscribe = useTerminalStore.subscribe
+      const stops: Mock[] = []
+      const spy = vi.spyOn(useTerminalStore, 'subscribe').mockImplementation((listener) => {
+        const stop = vi.fn(subscribe(listener))
+        stops.push(stop)
+        return stop
+      })
+      try {
+        fakeBus()
+        await launchConductor()
+        expect(stops).toHaveLength(1)
+
+        const auth = waitForAuth()
+        await vi.advanceTimersByTimeAsync(7000)
+        expect(await auth).toBe(true)
+        await sendTask('Build more', '/tmp/project')
+        expect(stops).toHaveLength(2)
+        expect(stops[0]).toHaveBeenCalledTimes(1)
+
+        stopConductor()
+        expect(stops[1]).toHaveBeenCalledTimes(1)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    // The tasks too are judged as they stood when the message was posted.
+    it.each([
+      ['a task created after it', 'ends', 'done', 1],
+      ['a task created the same moment', 'goes on', 'running', 0],
+      ['a task created before it', 'goes on', 'running', -1],
+    ])("with STEP 8's words without a name posted while no worker was open, and %s, the swarm %s", async (_name, _what, status, later) => {
+      const bus = fakeBus()
+      await launchConductor()
+      await vi.advanceTimersByTimeAsync(3000)
+      const posted = bus.post('mcp-client', 'SWARM COMPLETE: built the page directly.', 'result')
+      bus.tasks.push({ id: 't1', status: 'pending', createdAt: posted.timestamp + later })
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe(status)
+    })
+
+    // r5's C-2: the conductor's own STEP 8 without its name, posted while a worker's terminal was open,
+    // can't be told from that worker's, so it ends nothing, not even once the worker has closed. With
+    // no task, the conductor's clean exit then ends the swarm with its exit report.
+    it("is not ended by STEP 8's words without a name posted while a worker was open; the conductor's exit with no task ends it", async () => {
+      const bus = fakeBus()
+      await launchConductor()
+      addWorker('w1')
+      await vi.advanceTimersByTimeAsync(15000)
+      bus.post('mcp-client', 'SWARM COMPLETE: all three parts built', 'result')
+      await vi.advanceTimersByTimeAsync(15000)
+      removeWorker('w1')
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+
+      ;(window.termpolis.readTerminalBuffer as Mock).mockResolvedValue({ success: true, data: { output: '[termpolis-conductor-exited] 0\r\n', length: 31, nextOffset: 99 } })
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 0)' })
+      expect(useTerminalStore.getState().swarmCompletionSummary).toBeNull()
+    })
+
+    // A launch that couldn't read the bus sets none of it aside (readLaunchBaseline), so the last
+    // swarm's messages are judged too: a worker of its that is still open was there all along, and
+    // what that swarm's conductor or worker posted without a name before the launch ends nothing.
+    it("is not ended by the last swarm's STEP 8 words without a name when the launch couldn't read the bus, its worker still open", async () => {
+      const bus = fakeBus()
+      addWorker('old-1')
+      bus.post('mcp-client', 'SWARM COMPLETE: the last swarm is done', 'result')
+      await vi.advanceTimersByTimeAsync(1000)
+      ;(window.swarmAPI.getMessages as Mock).mockRejectedValueOnce(new Error('ipc gone'))
+      await launchConductor()
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
+    })
+
+    // The workers are noted before the launch reads the bus, so what is posted while that read is
+    // under way, which it doesn't set aside, was posted while they were noted: a worker the last swarm
+    // left open can have sent it, though it closed before the read was answered.
+    it("is not ended by the last swarm's STEP 8 words without a name, posted as its worker closed while the launch read the bus", async () => {
+      const bus = fakeBus()
+      addWorker('old-1')
+      await readyConductor()
+      // The launch's read of the bus, answered when the test says, with the bus as it was when asked.
+      let answer: () => void = () => {}
+      ;(window.swarmAPI.getMessages as Mock).mockImplementationOnce(() => {
+        const asked = bus.messages.map((m) => ({ ...m }))
+        return new Promise((resolve) => { answer = () => resolve({ success: true, data: asked }) })
+      })
+      const sending = sendTask('Build', '/tmp/project')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(window.swarmAPI.getMessages).toHaveBeenCalledTimes(1) // the launch is reading the bus
+      bus.post('mcp-client', 'SWARM COMPLETE: the last swarm is done', 'result')
+      removeWorker('old-1')
+      answer()
+      await sending
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(getConductorState().status).toBe('running')
     })
 
     it("is not ended by STEP 8's words without a name once a task exists: its worker can have sent them", async () => {
@@ -682,6 +885,55 @@ describe('conductorManager', () => {
 
       await vi.advanceTimersByTimeAsync(45000)
       expect(stallCalls(notifSpy)).toHaveLength(0)
+    })
+
+    // Judged on the tick that first saw it, a plan posted a moment before the first worker started,
+    // both before the monitor looked, didn't count, and the warning fired at a conductor that had
+    // posted its plan and started a worker.
+    it('stays quiet after a plan without a name posted just before the first worker, both before the monitor looks', async () => {
+      const bus = fakeBus()
+      await launchConductor('Build an app')
+      await vi.advanceTimersByTimeAsync(3000)
+      bus.post('mcp-client', 'Plan: two tasks')
+      await vi.advanceTimersByTimeAsync(2000)
+      addWorker('w1')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(90000)
+      expect(stallCalls(notifSpy)).toHaveLength(0)
+    })
+
+    // r5's C-3: a worker a swarm before left running can send a message without a name too, so one
+    // posted while its terminal was open is no word of the conductor's, even once that terminal closes.
+    it("counts no plan without a name posted while the last swarm's worker was open, once that worker has closed", async () => {
+      const bus = fakeBus()
+      addWorker('old-1')
+      await launchConductor('Build an app')
+      bus.post('mcp-client', 'Plan: two tasks')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(20000)
+      removeWorker('old-1')
+      await vi.advanceTimersByTimeAsync(60000)
+      expect(stallCalls(notifSpy)).toHaveLength(1)
+    })
+
+    // The workers are noted from before the launch's baseline is read: what the bus gets after it, a
+    // worker the last swarm left running can have sent, though it closed while the launch went on.
+    it("counts no plan without a name that such a worker posted as the launch went on, closing then", async () => {
+      const bus = fakeBus()
+      addWorker('old-1')
+      const post = (window.swarmAPI.sendMessage as Mock).getMockImplementation()!
+      ;(window.swarmAPI.sendMessage as Mock).mockImplementationOnce(async (...args: unknown[]) => {
+        bus.post('mcp-client', 'Plan: my part is done')
+        removeWorker('old-1')
+        return post(...args)
+      })
+      await launchConductor('Build an app')
+      const notifSpy = vi.spyOn(useTerminalStore.getState(), 'setSwarmNotification')
+
+      await vi.advanceTimersByTimeAsync(75000)
+      expect(stallCalls(notifSpy)).toHaveLength(1)
     })
   })
 
@@ -1442,7 +1694,7 @@ describe('conductorManager', () => {
       )
       const psBody = (psCall?.[1] as string) ?? ''
       expect(psBody).toMatch(
-        /^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']*\\\.termpolis-conductor-task\.md' \| & \$claudeExe -p --mcp-config '[^']+' --dangerously-skip-permissions$/m,
+        /^ {2}Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']*\\\.termpolis-conductor-task\.md' \| & \$claudeExe -p --mcp-config '[^']+' --session-id 'conductor-uuid-1' --dangerously-skip-permissions$/m,
       )
       expect(psBody).not.toContain('$task')
     })
@@ -1467,7 +1719,7 @@ describe('conductorManager', () => {
       )
       const psBody = (psCall?.[1] as string) ?? ''
       expect(psBody).toMatch(
-        / --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\nif \(\$null -eq \$code\) \{ \$code = 1 \}\nWrite-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/,
+        /\n {6}\$global:LASTEXITCODE = \$run\.ExitCode\n {4}\}\n {2}\}\n\}\n\$code = \$LASTEXITCODE\nif \(\$null -eq \$code\) \{ \$code = 1 \}\nWrite-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/,
       )
       // Its first line, after the BOM that has 5.1 read the script as UTF-8, marks where the
       // script's own output starts, after the echoed launch line.
@@ -1619,7 +1871,7 @@ describe('conductorManager', () => {
       )
       const shBody = (shCall?.[1] as string) ?? ''
       expect(shBody).toContain("TASK_FILE='/tmp/.termpolis-conductor-task.md'")
-      expect(shBody).toMatch(/^"\$CLAUDE_EXE" -p --mcp-config '[^']+' --dangerously-skip-permissions < "\$TASK_FILE"$/m)
+      expect(shBody).toMatch(/^"\$CLAUDE_EXE" -p --mcp-config '[^']+' --session-id 'conductor-uuid-1' --dangerously-skip-permissions < "\$TASK_FILE"$/m)
       expect(shBody).not.toContain('$(cat')
     })
   })

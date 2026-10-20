@@ -4,8 +4,10 @@ import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
 import { conductorRunScript, conductorLaunchCommand, findConductorExit, type ConductorExit } from './conductorLaunch'
 import { getTerminalDefaults } from './terminalDefaults'
+import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../../shared/conductorFiles'
 import { recordSwarmError } from './sentry'
 import { stopAllBridges } from './swarmBridgeManager'
+import type { TerminalSession } from '../types'
 
 interface ConductorState {
   terminalId: string | null
@@ -13,6 +15,9 @@ interface ConductorState {
   error: string | null
   cwd: string | null
   preSwarmSha: string | null
+  /** The id this launch's `claude -p` was started with (`--session-id`), whose transcript Trace
+   *  follows. Null until sendTask launches it. */
+  sessionId: string | null
 }
 
 /** What was already there when the conductor was launched, and so says nothing about this run.
@@ -28,17 +33,24 @@ interface LaunchBaseline {
   messageIds: Set<string>
 }
 
-let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
-/** The conductor terminal whose transcript Trace follows (watchConductorTrace), and whether this
- *  launch's conductor has acted yet, which its transcript must have before it is looked for. */
+let conductorState: ConductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null, sessionId: null }
+/** The conductor session whose transcript Trace follows (watchConductorTrace). Every launch starts
+ *  with startConductor, which forgets it. */
 let traceWatchedFor: string | null = null
-let traceReady = false
 let monitoringInterval: ReturnType<typeof setInterval> | null = null
 let monitoringStartTime: number = 0
 let launch: LaunchBaseline = { outputOffset: 0, taskIds: new Set(), messageIds: new Set() }
+/** When each swarm worker's terminal was in the store, from the launch on (noteWorkers): who can
+ *  have sent a message without a name (byConductor). `left` is Infinity while it is there; one the
+ *  store held at the launch, which a swarm before left running, has been there since before it. */
+let workerSpans: Array<{ id: string; entered: number; left: number }> = []
+let stopNotingWorkers: () => void = () => {}
 
 /** How much of the conductor's last output an exit report quotes, at most. */
 const EXIT_REPORT_MAX_CHARS = 2000
+/** How long after a worker's terminal left the store a message without a name can still be that
+ *  worker's: what it sent as its terminal was closed reaches the bus a moment later. */
+const WORKER_CLOSE_MARGIN_MS = 2000
 
 export function getConductorState(): ConductorState {
   return { ...conductorState }
@@ -59,9 +71,8 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
 
   // Mark starting synchronously so the UI can update immediately; SHA capture
   // below happens async and is merged in once resolved.
-  conductorState = { terminalId: null, status: 'starting', error: null, cwd, preSwarmSha: null }
+  conductorState = { terminalId: null, status: 'starting', error: null, cwd, preSwarmSha: null, sessionId: null }
   traceWatchedFor = null
-  traceReady = false
 
   // Capture pre-swarm HEAD so SwarmReviewPanel can show the full delta of
   // everything the swarm touched. Fine to be null — review UI just hides.
@@ -81,7 +92,7 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, true) // conductor always runs `claude`
 
   if (!res.success) {
-    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null, preSwarmSha: null }
+    conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null, preSwarmSha: null, sessionId: null }
     storeInit.setSwarmActive(false)
     return { success: false, error: conductorState.error! }
   }
@@ -219,21 +230,35 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const testCommand = claudeCmd !== 'claude' ? claudeCmd : undefined
   const native = (p: string): string => (isWindows ? p.replace(/\//g, '\\') : p)
   const scriptFile = homeSlash + (isWindows ? '/.termpolis-conductor-run.ps1' : '/.termpolis-conductor-run.sh')
+  // A new session for each launch: the id names the transcript Trace follows, which must be this
+  // launch's alone.
+  const sessionId = uuid()
+  conductorState.sessionId = sessionId
   await window.termpolis.writeConfigFile(
     scriptFile,
-    conductorRunScript(isWindows, { taskFile: native(tempFile), mcpConfigPath: native(mcpConfigPath), testCommand }),
+    conductorRunScript(isWindows, {
+      taskFile: native(tempFile),
+      mcpConfigPath: native(mcpConfigPath),
+      sessionId,
+      claudeHomeFile: native(`${homeSlash}/${CONDUCTOR_CLAUDE_HOME_FILE}`),
+      testCommand,
+    }),
   )
   const runCmd = conductorLaunchCommand(isWindows, native(scriptFile))
   // The last swarm's workers, which only Clear closes, are none of this one's: their bridges
   // would post to the new conductor under their agents' names, and their stops be reported to it.
   stopAllBridges()
   useTerminalStore.getState().setSwarmAgents([])
+  // Before the baseline, so that whatever is posted after it was posted while its workers were noted.
+  noteWorkers()
   // Read before the line is typed, so nothing the new conductor does can land in the baseline.
   launch = await readLaunchBaseline(id)
   window.termpolis.writeToTerminal(id, runCmd + '\r')
   // Diagnostic hook — E2E tests read this to verify the launch command shape
   // without having to monkey-patch the frozen contextBridge-exposed termpolis API.
   try { (window as any).__termpolis_last_launch_cmd = runCmd } catch {}
+  // Trace from the conductor's first step: main follows its session's transcript once claude writes it.
+  watchConductorTrace()
 
   // Post initial message to swarm bus
   const posted = [
@@ -279,10 +304,6 @@ function startMonitoring(): void {
   monitoringStartTime = Date.now()
   let stallWarned = false
   let exitNoted = false
-  // Whether each message posted without a name was the conductor's, decided on the tick that first
-  // sees it (see byConductor below). Judged again on every tick, a worker's result counted once its
-  // terminal left the store, and a conductor's plan stopped counting once a worker started.
-  const nameless = new Map<string, boolean>()
 
   monitoringInterval = setInterval(async () => {
     if (conductorState.status !== 'running') {
@@ -441,21 +462,19 @@ function startMonitoring(): void {
       // that merely says "complete" used to, and so did any message typed `result`, which a Claude
       // worker reporting on its own task sends too. MCP files a message under the name its caller
       // gives (mcp-client for none), and the conductor's prompt has it give 'conductor'. One with no
-      // name is the conductor's only if nothing else could have sent it when it first showed: no
-      // task, and no worker in the store, this swarm's or one a swarm before left running. Taken for a worker's, a plan
-      // without its name didn't count against the stall warning, and a run that built the task
-      // itself and exited cleanly ended as an error.
+      // name is the conductor's only if nothing else could have sent it when it was posted: no task
+      // yet, and no worker's terminal in the store, this swarm's or one a swarm before left running
+      // (workerThere). Taken for a worker's, a plan without its name didn't count against the stall
+      // warning, and a run that built the task itself and exited cleanly ended as an error. Judged by
+      // the store as a tick found it, a worker's result counted once its terminal had closed before
+      // the monitor looked, and a plan posted just before the first worker started didn't count.
       const msgsRes = await window.swarmAPI.getMessages()
       const posted = msgsRes.success && msgsRes.data
         ? msgsRes.data.filter((m) => !launch.messageIds.has(m.id) && m.from !== 'system')
         : []
-      const workers = store.terminals.some((t) => t.isSwarm && !t.isConductor)
-      for (const m of posted) {
-        if (m.from === 'mcp-client' && !nameless.has(m.id)) nameless.set(m.id, tasks.length === 0 && !workers)
-      }
-      const byConductor = (m: { id: string; from: string }): boolean => fromConductor(m.from) || nameless.get(m.id) === true
-      // The conductor has acted: its transcript exists, and was just written. Follow it for Trace.
-      if (!traceReady && (tasks.length > 0 || posted.some((m) => byConductor(m)))) traceReady = true
+      const byConductor = (m: { from: string; timestamp: number }): boolean =>
+        fromConductor(m.from) || (m.from === 'mcp-client' && tasks.every((t) => t.createdAt > m.timestamp) && !workerThere(m.timestamp))
+      // Asked for again only if asking at launch failed.
       watchConductorTrace()
 
       const completionMsg = posted.find((m) => isSwarmComplete(m, byConductor))
@@ -519,10 +538,34 @@ function startMonitoring(): void {
  *  ...'), from a sender `byConductor` takes for the conductor. Not a worker's own result in those
  *  words, which ended the swarm with a task still open. */
 function isSwarmComplete(
-  m: { id: string; from: string; type: string; content: string },
-  byConductor: (m: { id: string; from: string }) => boolean,
+  m: { from: string; type: string; content: string; timestamp: number },
+  byConductor: (m: { from: string; timestamp: number }) => boolean,
 ): boolean {
   return m.type === 'result' && byConductor(m) && /^\s*SWARM COMPLETE\b/i.test(m.content)
+}
+
+/** Notes when each swarm worker's terminal enters the store and leaves it (workerSpans), from now
+ *  on until the next launch or stopConductor. App.tsx adds one the moment main says the conductor
+ *  created it, and removes it as it closes; the monitor, looking every 15 seconds, could miss one
+ *  that opened and closed between two looks. */
+function noteWorkers(): void {
+  stopNotingWorkers()
+  const workers = (terminals: TerminalSession[]): string[] => terminals.filter((t) => t.isSwarm && !t.isConductor).map((t) => t.id)
+  workerSpans = workers(useTerminalStore.getState().terminals).map((id) => ({ id, entered: -Infinity, left: Infinity }))
+  stopNotingWorkers = useTerminalStore.subscribe((s, prev) => {
+    if (s.terminals === prev.terminals) return
+    const now = Date.now()
+    const there = new Set(workers(s.terminals))
+    // A span still open ends when its terminal is gone; a terminal with none open starts one.
+    for (const span of workerSpans) if (span.left === Infinity && !there.delete(span.id)) span.left = now
+    for (const id of there) workerSpans.push({ id, entered: now, left: Infinity })
+  })
+}
+
+/** Whether a worker's terminal was in the store at `time`, or had left it at most
+ *  WORKER_CLOSE_MARGIN_MS before, so that the worker can have sent what was posted then. */
+function workerThere(time: number): boolean {
+  return workerSpans.some((s) => s.entered <= time && time <= s.left + WORKER_CLOSE_MARGIN_MS)
 }
 
 /** Whether a message is the conductor's, however it wrote its name ("Conductor"): taken for a
@@ -577,18 +620,19 @@ async function endOnConductorExit(
 // Cleanup
 /** Follow the conductor's Claude Code transcript, which is what fills the Trace tab. Up to 1.53 a
  *  pane did it as it mounted, once Debug had unhidden the conductor's terminal. Debug now reads the
- *  output without a pane, so the monitor calls this on every tick. Once per conductor terminal,
- *  tried again until a transcript is found; killing the terminal detaches it. Like the pane's, the watcher follows the newest transcript in the swarm's
- *  folder, from then on: so only once this launch's conductor has acted (posted or created a task),
- *  when that is its own. Before, it was the last swarm's, or another session in the folder. */
+ *  output without a pane, so sendTask asks for it at launch, and the monitor again on each tick
+ *  until main says it follows it; killing the terminal detaches it. Main follows this launch's own
+ *  session, the one `--session-id` named (conductorLaunch.ts), from its first line. It used to
+ *  follow the newest transcript in the swarm's folder, from when this launch's conductor had acted:
+ *  that missed its first steps, and could be the last swarm's conductor or a Claude Code worker. */
 export function watchConductorTrace(): void {
-  const { terminalId, cwd } = conductorState
-  if (!terminalId || !cwd || !traceReady || traceWatchedFor === terminalId) return
-  traceWatchedFor = terminalId
+  const { terminalId, cwd, sessionId } = conductorState
+  if (!terminalId || !cwd || !sessionId || traceWatchedFor === sessionId) return
+  traceWatchedFor = sessionId
   Promise.resolve()
-    .then(() => window.agentActivity?.attachWatcher(terminalId, cwd, 'claude'))
-    .then((res) => { if (!res?.data?.attached && traceWatchedFor === terminalId) traceWatchedFor = null })
-    .catch(() => { if (traceWatchedFor === terminalId) traceWatchedFor = null })
+    .then(() => window.agentActivity?.attachWatcher(terminalId, cwd, 'claude', sessionId))
+    .then((res) => { if (!res?.data?.attached && traceWatchedFor === sessionId) traceWatchedFor = null })
+    .catch(() => { if (traceWatchedFor === sessionId) traceWatchedFor = null })
 }
 
 export function stopConductor(): void {
@@ -596,6 +640,8 @@ export function stopConductor(): void {
     clearInterval(monitoringInterval)
     monitoringInterval = null
   }
+  stopNotingWorkers()
+  stopNotingWorkers = () => {}
 
   if (conductorState.terminalId) {
     try { window.termpolis.killTerminal(conductorState.terminalId) } catch {}
@@ -611,7 +657,5 @@ export function stopConductor(): void {
     store.removeTerminal(t.id)
   }
 
-  conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null }
-  traceWatchedFor = null
-  traceReady = false
+  conductorState = { terminalId: null, status: 'idle', error: null, cwd: null, preSwarmSha: null, sessionId: null }
 }

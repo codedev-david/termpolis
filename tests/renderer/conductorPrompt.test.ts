@@ -190,9 +190,21 @@ describe('buildConductorPrompt', () => {
 
   it("says what to do when submit refused to send a text behind other text, or into a shell its agent left", () => {
     const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
-    expect(step5).toMatch(/already held other text, nothing was sent: clear the input[\s\S]*then send the text again/)
-    // Right after a restart the agent can still be starting: read first, and start it again only from a bare prompt.
-    expect(step5).toMatch(/at its shell's prompt, read_output first: if the shell's prompt is the last thing\s+on the screen, the agent is not running, so start it again \(STEP 4\); if the agent is still starting,\s+send the text again once its input shows/)
+    expect(step5).toMatch(/held other text\s+that clearing didn't remove, nothing was sent: give the task to a new agent \(STEP 3 to 5\), not that one again\./)
+    // Submit refuses only once the agent is gone: right after a restart it waits for the agent's input.
+    expect(step5).toMatch(/at its shell's prompt, the agent is not running: start it again \(STEP 4\),\s+then send the text again\. Right after STEP 4, submit=true waits for the agent to show its input\./)
+    expect(step5).not.toMatch(/still starting/)
+  })
+
+  // The review of fix/swarm154 (W0-1, S0-2): STEP 5 told the conductor to clear a worker's input with
+  // twenty Ctrl+U written without submit. Run as the conductor, no Claude model delivered one: Haiku
+  // wrote the escape out as 120 characters, Sonnet line feeds or nothing, Opus nothing (while saying
+  // it had sent them), so the input never emptied and the task was never sent. Submit clears it now.
+  it("leaves clearing an agent's input to submit: no keys for the conductor to write", () => {
+    const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
+    expect(step5).toMatch(/submit=true clears anything else in the agent's input before it types\./)
+    expect(step5).not.toMatch(/Ctrl\+U|u0015|write them again|keys a person/)
+    expect(buildDefault()).not.toMatch(/\u0015/)
   })
 
   it('reads the bus as the conductor, which is where a blocked worker is reported', () => {

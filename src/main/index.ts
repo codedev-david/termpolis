@@ -3121,16 +3121,18 @@ ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => 
 // bracketed paste an agent turns on once at startup — how much of the window finishes a
 // sequence the eviction cut in half, and the geometry the bytes were drawn for (parsed at any
 // other width they wrap differently, and on Windows 10 xterm never reflows them back). Only a
-// read from the window's start is a replay: a poller reading on from its own offset gets
-// exactly what it always got, and empty parts are left out for the same reason.
+// read from the window's start is a replay; empty parts are left out. The geometry comes with a
+// poller's read too: the swarm bridge reads on from its own offset, and on Linux and macOS
+// nothing in the output says a worker's terminal was made smaller (only ConPTY reports a resize).
 function replayContext(terminalId: string, fromOffset: number): { preamble?: string; skip?: number; cols?: number; rows?: number } {
-  const replay = replayPreamble(terminalOutputBuffers, terminalId, fromOffset)
-  if (!replay) return {}
   const size = getTerminalSize(terminalId)
+  const geometry = size ? { cols: size.cols, rows: size.rows } : {}
+  const replay = replayPreamble(terminalOutputBuffers, terminalId, fromOffset)
+  if (!replay) return geometry
   return {
     ...(replay.preamble ? { preamble: replay.preamble } : {}),
     ...(replay.skip > 0 ? { skip: replay.skip } : {}),
-    ...(size ? { cols: size.cols, rows: size.rows } : {}),
+    ...geometry,
   }
 }
 
@@ -3319,9 +3321,9 @@ ipcMain.handle('contextPins:clear', async (_, { cwd }: { cwd: string }) => {
 
 // ---- Transcript Watcher IPC ----
 // Renderer calls these when an agent is detected / terminal closes
-ipcMain.handle('agentWatcher:attach', async (_, { terminalId, cwd, agentType }: { terminalId: string; cwd: string; agentType: DetectedAgent }) => {
+ipcMain.handle('agentWatcher:attach', async (_, { terminalId, cwd, agentType, sessionId }: { terminalId: string; cwd: string; agentType: DetectedAgent; sessionId?: string }) => {
   try {
-    const handle = attachWatcher(terminalId, cwd, agentType)
+    const handle = attachWatcher(terminalId, cwd, agentType, sessionId)
     return ok({ attached: handle !== null })
   } catch (e: any) { return err(e.message) }
 })
@@ -3569,6 +3571,7 @@ async function semanticPoolOptions(
         return readOutputTail(terminalOutputBuffers, terminalId, lines)
       },
       terminalSize: (terminalId) => getTerminalSize(terminalId),
+      outputOffset: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
       runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
         if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }
         // stepId only keys the runner's in-flight map, so per-call uniqueness is all it needs.

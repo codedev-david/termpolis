@@ -149,8 +149,9 @@ function drawsPast(output: string, size: ScreenSize): boolean {
   return reach.cols > size.cols || reach.rows > size.rows
 }
 
-/** One read of a terminal's output (window.termpolis.readTerminalBuffer). The size, preamble and
- *  skip come only with a read from the start of what main still holds, a replay. */
+/** One read of a terminal's output (window.termpolis.readTerminalBuffer). The size is the one the
+ *  pty draws for when it was read. The preamble and skip come only with a read from the start of
+ *  what main still holds, a replay. */
 export interface TerminalRead {
   output: string
   missed?: number
@@ -158,6 +159,10 @@ export interface TerminalRead {
   rows?: number
   preamble?: string
   skip?: number
+}
+
+function sizeOf(read: TerminalRead): ScreenSize | null {
+  return read.cols && read.rows ? { cols: read.cols, rows: read.rows } : null
 }
 
 /**
@@ -180,29 +185,31 @@ export class WorkerFeed {
 
   constructor(private readonly agentName: string) {}
 
-  /** Whether this output shows the terminal was resized since the screen was set up: ConPTY's
-   *  report of a new size (`ESC[8;rows;cols t`), or a cell addressed past the screen's edge.
-   *  Claude Code and agy draw their bottom rows with relative moves, so a resize they drew after,
-   *  and any to a smaller size, shows only in the report. Only a replay read, which says how
-   *  large, can rebuild the screen. */
-  resized(output: string): boolean {
+  /** Whether this read shows the terminal was resized since the screen was set up: the size main
+   *  says the pty draws for, which comes with every read; ConPTY's report of a new size
+   *  (`ESC[8;rows;cols t`); or a cell addressed past the screen's edge. Claude Code and agy draw
+   *  their bottom rows with relative moves, so a resize they drew after, and any to a smaller
+   *  size, shows in no cell. On Linux and macOS there is no report either: only main's size shows
+   *  a terminal made smaller. Only a replay read, which holds all of what is shown, can rebuild the
+   *  screen. */
+  resized(read: TerminalRead): boolean {
     if (this.size === null) return false
-    const reported = resizeReportOf(output)
+    const size = sizeOf(read)
+    if (size && (size.cols !== this.size.cols || size.rows !== this.size.rows)) return true
+    const reported = resizeReportOf(read.output)
     if (reported) return reported.cols !== this.size.cols || reported.rows !== this.size.rows
-    return drawsPast(output, this.size)
+    return drawsPast(read.output, this.size)
   }
 
   /** What the terminal printed since the last read, turned into a message, or null. */
   update(read: TerminalRead): string | null {
     const { output } = read
-    const size = read.cols && read.rows ? { cols: read.cols, rows: read.rows } : null
-    const resized = size !== null && this.size !== null && (size.cols !== this.size.cols || size.rows !== this.size.rows)
-    const fresh = this.screen === null || (read.missed ?? 0) > 0 || resized || this.resized(output)
+    const fresh = this.screen === null || (read.missed ?? 0) > 0 || this.resized(read)
     if (fresh) {
       // Main's size when the read came with one; else the one ConPTY reported, the one it was,
       // or a guess from the output.
       const kept = this.size !== null && !drawsPast(output, this.size) ? this.size : null
-      this.size = size ?? resizeReportOf(output) ?? kept ?? screenSizeOf(output)
+      this.size = sizeOf(read) ?? resizeReportOf(output) ?? kept ?? screenSizeOf(output)
       this.screen = new TerminalScreen(this.size)
     }
     const screen = this.screen!

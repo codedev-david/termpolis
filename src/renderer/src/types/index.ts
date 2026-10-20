@@ -392,7 +392,8 @@ export interface TermpolisAPI {
       /** Only on a replay: chars at the start of `output` that finish a sequence the eviction
        *  cut in half (the preamble already holds its effect). Replay `output.slice(skip)`. */
       skip?: number
-      /** Only on a replay: the geometry the pty is drawing for, i.e. what `output` was drawn for. */
+      /** The geometry the pty is drawing for, when it has one: on a replay, what `output` was
+       *  drawn for. A poller reading on from its own offset gets it too, to see a resize by. */
       cols?: number
       rows?: number
     }>
@@ -922,7 +923,9 @@ export interface ContextPinsAPI {
 export interface AgentActivityAPI {
   query: (filter?: AgentActivityFilter) => Promise<IpcResponse<AgentActivityEvent[]>>
   stats: () => Promise<IpcResponse<{ ringSize: number; dropped: number }>>
-  attachWatcher: (terminalId: string, cwd: string, agentType: string) => Promise<IpcResponse<{ attached: boolean }>>
+  /** `sessionId`: follow that Claude Code session's transcript (`claude --session-id`), from its
+   *  first line, rather than the newest in `cwd` from now on. */
+  attachWatcher: (terminalId: string, cwd: string, agentType: string, sessionId?: string) => Promise<IpcResponse<{ attached: boolean }>>
   detachWatcher: (terminalId: string) => Promise<IpcResponse>
   onEvent: (cb: (event: AgentActivityEvent) => void) => () => void
 }

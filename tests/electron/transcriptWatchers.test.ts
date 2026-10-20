@@ -24,6 +24,7 @@ import {
   getActiveWatcherCount,
   _resetForTests as resetWatchers,
 } from '../../src/main/transcriptWatchers/index'
+import { mangleCwd } from '../../src/main/transcriptWatchers/claudeCodeWatcher'
 
 import {
   initEventBus,
@@ -263,6 +264,67 @@ describe('watcher manager', () => {
   it('handles gemini when no sessions exist', () => {
     const handle = attachWatcher('t1', tmpDir, 'gemini')
     if (handle) handle.stop()
+  })
+})
+
+// The swarm conductor's Trace (GitHub #36): its `claude -p --session-id <id>` transcript, from its
+// first line, and never twice.
+describe('watcher manager — a Claude Code session named by its id', () => {
+  const SID = '1b4e28ba-2fa1-41d2-883f-0016d3cca427'
+  const OTHER = '9c0f1e2d-3b4a-4c5d-8e6f-7a8b9c0d1e2f'
+  let savedConfigDir: string | undefined
+  beforeEach(() => {
+    // Where the conductor's terminal, started with Termpolis's own environment, has Claude Code keep
+    // its sessions.
+    savedConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = path.join(tmpDir, 'config')
+  })
+  afterEach(() => {
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
+  })
+
+  it("follows that session's transcript, written yet or not, and once however often it is asked for", () => {
+    const first = attachWatcher('c1', tmpDir, 'claude', SID)
+    expect(first).not.toBeNull()
+    expect(attachWatcher('c1', tmpDir, 'claude', SID)).toBe(first)
+    expect(getActiveWatcherCount()).toBe(1)
+  })
+
+  it("reads the session's transcript under the config home of Termpolis's environment, for its terminal", () => {
+    const dir = path.join(tmpDir, 'config', 'projects', mangleCwd(fs.realpathSync(tmpDir)))
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `${SID}.jsonl`), JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'swarm_create_task', input: {} }] } }) + '\n')
+    attachWatcher('c1', tmpDir, 'claude', SID)
+    expect(query({ terminalId: 'c1', kind: 'tool_call' }).map((e) => e.summary)).toEqual(['swarm_create_task'])
+  })
+
+  it('gives another session its own watcher, and another terminal its own, and detaching a terminal stops its own', () => {
+    attachWatcher('c1', tmpDir, 'claude', SID)
+    attachWatcher('c1', tmpDir, 'claude', OTHER)
+    attachWatcher('c2', tmpDir, 'claude', SID)
+    expect(getActiveWatcherCount()).toBe(3)
+    detachWatchers('c1')
+    expect(getActiveWatcherCount()).toBe(1)
+  })
+
+  it('gives no watcher for an id that is no session id, and leaves a call without one to the newest transcript', () => {
+    expect(attachWatcher('c1', tmpDir, 'claude', '../../x')).toBeNull()
+    expect(attachWatcher('c1', path.join(tmpDir, 'no-claude-session'), 'claude', undefined)).toBeNull()
+    expect(getActiveWatcherCount()).toBe(0)
+  })
+
+  it("follows no other session for an empty id, though the folder's newest transcript is there", () => {
+    // Where a pane's call, which names no session, would find the folder's newest transcript.
+    const dir = path.join(os.homedir(), '.claude', 'projects', mangleCwd(fs.realpathSync(tmpDir)))
+    fs.mkdirSync(dir, { recursive: true })
+    try {
+      fs.writeFileSync(path.join(dir, `${OTHER}.jsonl`), '{}\n')
+      expect(attachWatcher('c1', tmpDir, 'claude', '')).toBeNull()
+      expect(getActiveWatcherCount()).toBe(0)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

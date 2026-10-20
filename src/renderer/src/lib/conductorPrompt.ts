@@ -97,11 +97,10 @@ STEP 5 — Send task prompts:
   If it returns submitted=false, read the error and the screen it returns, or read_output(terminalId='[id]').
   If the agent has not taken the prompt, call it again with the same text:
   it types nothing that is already in the agent's input, and presses Enter again.
-  If it says the agent's input already held other text, nothing was sent: clear the input with the keys a person
-  would press (without submit), then send the text again.
-  If it says the terminal is at its shell's prompt, read_output first: if the shell's prompt is the last thing
-  on the screen, the agent is not running, so start it again (STEP 4); if the agent is still starting,
-  send the text again once its input shows.
+  submit=true clears anything else in the agent's input before it types. If it says the input held other text
+  that clearing didn't remove, nothing was sent: give the task to a new agent (STEP 3 to 5), not that one again.
+  If it says the terminal is at its shell's prompt, the agent is not running: start it again (STEP 4),
+  then send the text again. Right after STEP 4, submit=true waits for the agent to show its input.
   Include the taskId in the prompt so the agent knows which task to update when done.
   The prompt should instruct the agent to actually write/modify files, not just print output.
 

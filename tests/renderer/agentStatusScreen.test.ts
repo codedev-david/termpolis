@@ -133,6 +133,18 @@ describe('detectAgentStatus and a busy hint in the transcript', () => {
   const agy = (answer: string[]) => ['> What does your footer say while you work?', '', ...answer, '', rule, '>', rule, '? for shortcuts                                          Gemini 4 Argon · medium']
   const read = (rows: string[], agent: string) => detectAgentStatus(rows.join('\n'), agent, 'working', { screen: true, title: '' })
 
+  // Only the two keys the agents' busy lines name are busy hints. Claude Code's own shortcuts panel,
+  // open under its box at rest, says "double tap esc to clear input": read as at work, a submit waited
+  // three minutes for an agent ready all along.
+  it('reads the real Claude Code with its shortcuts panel open under its box as idle', () => {
+    const s = typed.screens['claude-80x24-shortcuts']
+    const screen = screenOf(s.raw, s)
+    const lines = screen.lines()
+    expect(lines.join('\n')).toContain('double tap esc to clear input')
+    expect(detectAgentStatus(lines.join('\n'), '', 'working', { screen: true, title: screen.title })).toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+    expect(isBusyOnScreen(lines, screen.title)).toBe(false)
+  })
+
   it('reads the real Claude Code that answered "The footer says esc to interrupt." as idle', () => {
     const s = typed.screens['claude-80x24-esc-quoted']
     const screen = screenOf(s.raw, s)
@@ -185,6 +197,9 @@ describe('detectAgentStatus and a footer of several rows', () => {
     ['five rows over its mode row', ['  1', '  2', '  3', '  4', '  ⏵⏵ bypass permissions on (shift+tab to cycle)'], 0],
     ['six rows, its mode row next to last', ['  1', '  2', '  3', '  4', '  ⏸ plan mode on (shift+tab to cycle)', '                     ◐ medium · /effort'], 0],
     ['six rows, its mode row higher up', ['  ? for shortcuts', '  1', '  2', '  3', '  4', '  5'], -1],
+    // Its mode row starts a row: the same words further along one are a status line's of the user's own.
+    ['six rows, the last saying its mode row\'s words further along', ['  1', '  2', '  3', '  4', '  5', '  sonnet · ctx 12% · type ? for shortcuts'], -1],
+    ['six rows, the last with its mode row\'s glyph further along', ['  1', '  2', '  3', '  4', '  5', '  mode ⏵⏵ bypass'], -1],
   ])('finds a box taller than the screen over a footer of %s: %i', (_name, footer, box) => {
     expect(inputBoxRow(['  a', '  b', rule, ...footer])).toBe(box)
   })

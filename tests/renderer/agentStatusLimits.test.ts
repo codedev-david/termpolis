@@ -6,6 +6,8 @@ import { noteWorkerStatus } from '../../src/renderer/src/lib/swarmStopReports'
 import fixtures from '../fixtures/agentScreens.json'
 import wide from '../fixtures/agentScreensWide.json'
 import input from '../fixtures/agentScreensInput.json'
+import cleared from '../fixtures/agentScreensCleared.json'
+import limits from '../fixtures/agentScreensLimit.json'
 
 // GitHub #36 item 5: a worker its plan's usage limit stopped, or one waiting on a menu, reads as
 // blocked, with a summary, and the conductor is told. Only what a CLI draws in its own rows counts:
@@ -16,6 +18,12 @@ import input from '../fixtures/agentScreensInput.json'
 
 const E = '\x1b'
 const RULE = '─'.repeat(80)
+/** What Claude Code draws in front of a reply, a tool's output and its limit message included
+ *  (claude.exe's MessageResponse): an indent, its ⎿, a space and a no-break space. Every reply here
+ *  had two plain spaces, and none of the real ones was read (BEH-1). */
+const REPLY = '  ⎿ \u00a0'
+/** Claude Code's reply when a session limit stops it, as it draws it. */
+const LIMIT_REPLY = `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`
 
 /** A screen as the agent draws it at 80x24: rows at their positions, ConPTY style. */
 function drawn(rows: string[]): string {
@@ -76,15 +84,16 @@ describe("Claude Code's rate-limit menu, which it opens by itself at a limit", (
     ['a model\'s limit', 'You\'ve hit your Opus limit · resets at 5pm (UTC)', 'usage limit reached (resets 5pm (UTC))'],
     ['a team budget, with what to do', 'You\'ve hit your team\'s shared budget. /model to switch models.', 'usage limit reached'],
     ['being out of usage credits', 'You\'re out of usage credits. /model to switch models.', 'usage limit reached'],
+    ['being out of usage credits until they reset', 'You\'re out of usage credits · resets 3pm (America/New_York)', 'usage limit reached (resets 3pm (America/New_York))'],
   ])('reads %s heading the menu as the limit, and when it lifts', (_name, message, summary) => {
-    const rows = ['❯ Build the login page. Task ID: t1', `  ⎿  ${message}`, '', ...MENU]
+    const rows = ['❯ Build the login page. Task ID: t1', `${REPLY}${message}`, '', ...MENU]
     const result = onScreen(rows, 'Claude', '✳ Claude Code')
     expect(result).toEqual({ status: 'blocked', summary })
     expect(isLimitOrMenu(result)).toBe(true)
   })
 
   it('reads a limit message the screen wrapped onto a second row', () => {
-    const rows = ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '     (America/New_York)', '', ...MENU]
+    const rows = ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '     (America/New_York)', '', ...MENU]
     expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm)' })
   })
 
@@ -102,7 +111,7 @@ describe("Claude Code's rate-limit menu, which it opens by itself at a limit", (
   })
 
   it('takes no reset time from an answer above the menu that quotes a limit: only the row right above its echo heads it', () => {
-    const rows = ['● The docs say "You\'ve hit your session limit · resets 3pm" when it runs out.', '', '❯ Build the page', '  ⎿  Done', '', ...MENU]
+    const rows = ['● The docs say "You\'ve hit your session limit · resets 3pm" when it runs out.', '', '❯ Build the page', `${REPLY}Done`, '', ...MENU]
     expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
   })
 
@@ -112,8 +121,8 @@ describe("Claude Code's rate-limit menu, which it opens by itself at a limit", (
 
   it('is no limit menu without its own options, or without its keys under it', () => {
     const other = ['❯ /config', '', RULE, '  What do you want to do?', '', '  ❯ 1. Open settings', '    2. Leave', '', '  Enter to confirm · Esc to cancel']
-    expect(isLimitOrMenu(onScreen(['  ⎿  You\'ve hit your session limit · resets 3pm', '', ...other], 'Claude'))).toBe(false)
-    expect(isLimitOrMenu(onScreen(['  ⎿  You\'ve hit your session limit · resets 3pm', '', ...MENU.slice(0, -1)], 'Claude'))).toBe(false)
+    expect(isLimitOrMenu(onScreen([`${REPLY}You've hit your session limit · resets 3pm`, '', ...other], 'Claude'))).toBe(false)
+    expect(isLimitOrMenu(onScreen([`${REPLY}You've hit your session limit · resets 3pm`, '', ...MENU.slice(0, -1)], 'Claude'))).toBe(false)
   })
 })
 
@@ -227,8 +236,13 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     ["Codex's 5-hour limit", 'Codex', ['› Fix the login test', '', '• I will fix the test.', '', '■ You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', '(https://chatgpt.com/explore/plus), or try again at 3:04 PM.', ...CODEX_IDLE], 'usage limit reached (resets 3:04 PM)'],
     ["Codex's limit for one model", 'Codex', ['› Fix the login test', '', '■ You\'ve hit your usage limit for gpt-5.6-sol. Switch to another model now, or', 'try again at 4:15 PM.', ...CODEX_IDLE], 'usage limit reached (resets 4:15 PM)'],
     ["agy's quota", 'Gemini', ['> Write the docs', '', '✕ You have exhausted your quota on this model.', ...AGY_IDLE], 'usage limit reached'],
-    ["Claude Code's session limit, under the prompt it stopped", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
-    ["Claude Code's weekly limit, under a prompt of two rows", 'Claude', ['> Build the page, with a form, validation and a test for each of', '  them.', '  ⎿  You\'ve hit your weekly limit · resets Oct 20, 9am (UTC)', ...CLAUDE_IDLE], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+    ["Claude Code's session limit, under the prompt it stopped", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
+    ["Claude Code's weekly limit, under a prompt of two rows", 'Claude', ['> Build the page, with a form, validation and a test for each of', '  them.', `${REPLY}You've hit your weekly limit · resets Oct 20, 9am (UTC)`, ...CLAUDE_IDLE], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+    // A narrow screen wraps the reply's end onto a row of its own, indented under the reply's text:
+    // read with it, its reset whole (R4-2: cut at the row's end, it read "resets 3pm").
+    ["Claude Code's session limit, its reply wrapped onto a second row", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '     (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
+    // Two plain spaces after its ⎿, as other rows of Claude Code's are drawn.
+    ["Claude Code's session limit, two plain spaces after its ⎿", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE], 'usage limit reached (resets 3pm (America/New_York))'],
   ])('%s: blocked, and the conductor told once to check it', async (name, agent, rows, summary) => {
     const result = onScreen(rows, agent)
     expect(result).toEqual({ status: 'blocked', summary })
@@ -239,9 +253,270 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     expect(sendMessage.mock.calls[0][3]).toContain(`is blocked: ${summary}. Check its screen with read_output first`)
   })
 
+  // claude.exe 2.1.302 to 2.1.304 draw a reply's ⎿ in MessageResponse, the limit reply's too, a
+  // no-break space after it, and the screen keeps it: the real capture of Claude Code 2.1.303, drawn
+  // as far as the ⎿ row it showed under its spinner.
+  it("draws a reply's ⎿ as the real capture does: a space and a no-break space after it", () => {
+    const real = cleared.screens['claude-80x24-pasteother-held']
+    const tip = real.raw.indexOf('\r\n', real.raw.indexOf('Tip: '))
+    expect(rowsOf(real.raw.slice(0, tip), real).filter((row) => row.includes('⎿'))).toEqual([`${REPLY}Tip: You can control how big a workflow is just by prompting. Ask for a`])
+  })
+
+  // M-0: at the end of every turn Claude Code draws a line under what it ended on, how long the
+  // turn took ("✻ Crunched for 0s · done 1:21 AM", claude.exe's turn_duration line, on by default),
+  // and the reply was read only as the last thing above the box: no real one was, at any width.
+  // M-2: nor one under the output of the tool a limit stopped it after, mid-turn, nor one under a
+  // prompt taller than the screen. Real Claude Code 2.1.304, at each size it was drawn at.
+  describe('on real Claude Code 2.1.304 screens', () => {
+    // M1-1: a limit right after a tool Claude Code draws no row for, an update of its to-do list or a
+    // search for a tool, puts the reply right under the turn's text, as a tool's output is right under
+    // the row of its call: told apart only by reading that row as a call or as text, which an answer's
+    // text can look like. Not told; the worker draws the reply again under the next task it is sent.
+    const UNDER_TEXT = ['after-todo', 'after-tool-search']
+    const all = Object.entries(limits.captures).flatMap(([name, c]) => c.screens.map((s) => [name, s.cols, c.raw.slice(0, s.at), s] as const))
+    const screens = all.filter(([name]) => !UNDER_TEXT.includes(name))
+    it.each(screens)('%s, at %i columns', (_name, _cols, raw, size) => {
+      expect(onRealScreen(raw, size, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 8:10pm (America/New_York))' })
+    })
+
+    it.each(all.filter(([name]) => UNDER_TEXT.includes(name)))("%s, at %i columns: not told, the reply right under the turn's text", (_name, _cols, raw, size) => {
+      expect(onRealScreen(raw, size, 'Claude')).toEqual({ status: 'idle', summary: 'Waiting at prompt' })
+    })
+
+    // M1-1: the row Claude Code folds a turn's reads and searches into, between the turn's text and
+    // the reply, two in, with no ⎿ under it: no output of a tool's to read the reply under.
+    it("draws the row it folds a turn's reads into between the turn's text and the reply", () => {
+      const c = limits.captures['after-read']
+      const rows = rowsOf(c.raw.slice(0, c.screens[0].at), c.screens[0])
+      const reply = rows.indexOf(`${REPLY}You've hit your session limit · resets 8:10pm (America/New_York)`)
+      expect(rows.slice(reply - 3, reply)).toEqual(['● I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)'])
+    })
+
+    it("draws the line at the turn's end under the reply, the hint for the account between them", () => {
+      const c = limits.captures['reply-done']
+      const rows = rowsOf(c.raw.slice(0, c.screens[0].at), c.screens[0])
+      const reply = rows.indexOf(`${REPLY}You've hit your session limit · resets 8:10pm (America/New_York)`)
+      expect(rows.slice(reply + 1, reply + 4)).toEqual(['     /upgrade or /usage-credits to finish what you’re working on.', '', '✻ Crunched for 0s · done 1:21 AM'])
+    })
+  })
+
+  // Claude Code's line at a turn's end, in each form claude.exe draws it: with the time the turn was
+  // done, without, waiting on what it started in the background, with tasks still running.
+  it.each([
+    ['with the time it was done', '✻ Baked for 2s · done 1:19 AM'],
+    ['without it', '✻ Worked for 1m 12s'],
+    ['waiting on background agents', '✻ Waiting for 2 background agents to finish'],
+    ['with tasks still running', '✻ Cogitated for 45s · done 3:02 PM · 2 still running'],
+  ])("reads Claude Code's reply under its line at the turn's end, %s", (_name, done) => {
+    const rows = ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`, '     /upgrade to increase your usage limit.', '', done, ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  // M-2: a limit that stops Claude Code mid-turn, after a tool it ran, as 3 of the 6 limit hits of a
+  // real session did: the reply under that tool's output, the ⎿ blocks under its call's row, which
+  // ● leads (⏺ on macOS).
+  it.each([
+    ['the output of the tool it ran', ['❯ Build the page', '', '● I will run the tests first.', '', '● Bash(npm test)', `${REPLY}PASS tests/login.test.ts`, '     PASS tests/form.test.ts']],
+    ['a tool whose call wrapped onto a second row', ['● Bash(npm test -- --reporter=verbose tests/login.test.ts tests/form.test.ts', '  tests/validation.test.ts)', `${REPLY}PASS tests/login.test.ts`]],
+    ['the second of two tools it ran', ['● Read(src/login.ts)', `${REPLY}Read 120 lines`, '● Read(src/form.ts)', `${REPLY}Read 80 lines`]],
+    ['output Claude Code cut short', ['● Bash(ls src)', `${REPLY}app.ts`, '     login.ts', '     … +20 lines (ctrl+o to expand)']],
+    ['output with a blank line in it', ['● Bash(cat notes.txt)', `${REPLY}one`, '', '     two']],
+    ['a tool on macOS, whose call ⏺ leads', ['⏺ Bash(npm test)', `${REPLY}PASS tests/login.test.ts`]],
+    // claude.exe draws its hook rows with two plain spaces after the ⎿, and indents the ⎿ of one
+    // summary of a tool's output with no-break spaces.
+    ['a tool a hook ran before', ['● Bash(npm test)', '  ⎿  Ran 1 PreToolUse hook (12ms)', `${REPLY}PASS tests/login.test.ts`]],
+    ['a summary of what a tool found', ['● Search(pattern: "login")', '\u00a0\u00a0⎿ \u00a0Found 3 files']],
+    // M1-1: Claude Code folds a turn's reads and searches into one row under the turn's text, two in,
+    // that ends on the key that shows them (the transcript's, ctrl+o unless it was bound to another),
+    // and draws no ⎿ output under it: about a quarter of the real limit hits mid-turn came after one.
+    ["the row it folds the turn's reads into, under the turn's text", ['❯ Build the page', '', '● I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)']],
+    ["the row it folds reads and searches into, it and the turn's text wrapped onto a second row", ['● I will look at the notes', '  first.', '', '  Searched for 1 pattern, read', '  1 file (ctrl+o to expand)']],
+    ["the folded row under a turn's text of two paragraphs", ['● I will look at the notes first.', '', '  Then I will run the tests.', '', '  Read 2 files (ctrl+o to expand)']],
+    ["the folded row on macOS, the turn's text led by ⏺", ['⏺ I will look at the notes first.', '', '  Searched for 2 patterns (ctrl+o to expand)']],
+    ["the folded row with the transcript's key bound to a chord", ['● I will look at the notes first.', '', '  Read 1 file (ctrl+k ctrl+o to expand)']],
+    ['the folded row under the text of a turn that ran a tool before it', ['● Bash(npm test)', `${REPLY}PASS tests/login.test.ts`, '', '● Now the notes.', '', '  Read 1 file (ctrl+o to expand)']],
+  ])("reads Claude Code's reply mid-turn, under %s", (_name, above) => {
+    const rows = [...above, LIMIT_REPLY, '', '✻ Baked for 2s · done 1:19 AM', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  // MW2-1: what the screen can't tell from that reply. An answer that ends its turn on a quote of a
+  // worker's screen, Claude Code's no-break space after each ⎿ kept, as read_output returns it, is
+  // drawn the same: mid-turn when no row of the quote is led by a turn's mark, the answer's own ●
+  // taken for the tool's call, or for the turn's text above the folded row; and when the answer is
+  // taller than the screen, its ● gone off the top, as a tall prompt's ❯ is. It reads as the limit,
+  // and the report has the conductor look at the screen first. A quote typed with plain spaces, or,
+  // mid-turn, with a turn's mark in it, reads as none ('what is no usage limit or menu').
+  it.each([
+    ["a tool's output", ['❯ What does worker 2 show at the bottom?', '', '● Worker 2 shows this at the bottom:', `${REPLY}hello`]],
+    ['the folded row', ['❯ What does worker 2 show at the bottom?', '', '● Worker 2 shows this at the bottom:', '', '  Read 1 file (ctrl+o to expand)']],
+    ['the text of an answer taller than the screen', ['  the worker stopped there, with:']],
+  ])('reads as the limit an answer that ends on the reply quoted under %s, its no-break spaces kept', (_name, above) => {
+    const rows = [...above, LIMIT_REPLY, '', '✻ Baked for 2s', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  // M-2: a task taller than the screen, which a conductor's are on a worker's 24 rows: its first
+  // rows, the ❯ among them, gone off the top, the rest indented under it.
+  it("reads Claude Code's reply under a prompt taller than the screen, its first rows gone off the top", () => {
+    const rows = ['  the files involved and what done looks like.', '', '  Done means: the login test passes. Task ID: task-4.', LIMIT_REPLY, '', '✻ Churned for 0s · done 1:21 AM', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
   it('reads one a narrow screen wrapped over three rows', () => {
     const rows = ['› Fix the login test', '', '■ You\'ve hit your usage limit. Upgrade to Plus', 'to continue using Codex (https://chatgpt.com/explore', '/plus), or try again at 3:04 PM.', ...CODEX_IDLE]
     expect(onScreen(rows)).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3:04 PM)' })
+  })
+
+  // R4-2: a narrow screen, a worker's pane in a split, wraps the message as each CLI wraps it, and
+  // each cell was read only as far as its first row (agy's, below 46 columns), its first two
+  // (Claude Code's reply, below about 36) or five (Codex's, below 30): no report went out, and the
+  // worker read as idle. The reply's reset was cut where the screen wrapped it. Drawn at the width.
+  describe('wrapped by a narrow screen', () => {
+    const rule = (cols: number) => '─'.repeat(cols)
+    const at = (cols: number, rows: string[], agent: string) => {
+      const screen = screenOf(drawn(rows), { cols, rows: 24 })
+      return detectAgentStatus(screen.lines().join('\n'), agent, 'working', { screen: true, title: '' })
+    }
+    const claudeIdle = (cols: number) => ['', rule(cols), '❯ ', rule(cols), '  ⏵⏵ bypass permissions on'.slice(0, cols)]
+    const agyIdle = (cols: number) => ['', rule(cols), '> ', rule(cols), '? for shortcuts']
+    const codexIdle = ['', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium']
+
+    it.each([
+      // Its continuation at column 0, as Codex wraps its cells (codex-60x20-interrupted-idle).
+      ['agy at 40 columns', 40, ['✕ You have exhausted your quota on this', 'model.']],
+      // Or under its text: no real capture shows which.
+      ['agy at 40 columns, wrapped under its text', 40, ['✕ You have exhausted your quota on this', '  model.']],
+      ['agy at 22 columns', 22, ['✕ You have exhausted', 'your quota on this', 'model.']],
+    ])('%s', (_name, cols, cell) => {
+      expect(at(cols, ['> Write the docs', '', ...cell, ...agyIdle(cols)], 'Gemini')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
+    })
+
+    const CLAUDE_NARROW: Array<[string, number, string[], string]> = [
+      ['on 2 rows, at 50 columns', 50, [`${REPLY}You've hit your session limit · resets 3pm`, '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
+      ['on 2 rows, its reset cut, at 46 columns', 46, [`${REPLY}You've hit your weekly limit · resets Oct`, '     20, 9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+      ['on 3 rows, at 30 columns', 30, [`${REPLY}You've hit your session`, '     limit · resets 3pm', '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
+      ['on 4 rows, its ⎿ row cut before "limit", at 20 columns', 20, [`${REPLY}You've hit your`, '     weekly limit ·', '     resets Oct 20,', '     9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
+    ]
+    it.each(CLAUDE_NARROW)("Claude Code's reply %s", (_name, cols, reply, summary) => {
+      expect(at(cols, ['❯ Build the page', ...reply, ...claudeIdle(cols)], 'Claude')).toEqual({ status: 'blocked', summary })
+    })
+
+    it("Codex's cell on 6 rows, at 29 columns", () => {
+      const cell = ['■ You\'ve hit your usage', 'limit. Upgrade to Plus to', 'continue using Codex', '(https://chatgpt.com/explore/', 'plus), or try again at 3:04', 'PM.']
+      expect(at(29, ['› Fix the login test', '', ...cell, ...codexIdle], 'Codex')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3:04 PM)' })
+    })
+
+    // R4-3: Codex's "try again at" read across the row it wraps at, as its cell's other words are.
+    it("Codex's reset split after \"try again\"", () => {
+      const cell = ['■ You\'ve hit your usage limit. Upgrade to Plus to continue', 'using Codex (https://chatgpt.com/explore/plus), or try again', 'at 3:04 PM.']
+      expect(at(60, ['› Fix the login test', '', ...cell, ...codexIdle], 'Codex')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3:04 PM)' })
+    })
+
+    // BEH-2: under the limit message, in the reply's own column, claude.exe's su() draws dim rows of
+    // its own: a note of the server's on the limit, "Press ⏎ to continue after reset", a checkpoint,
+    // the hint for the account (its lP table, one on every claude.ai login with no menu: Max 20x, a
+    // Team plan) and, since 2.1.304, an offer of usage credits. Read with the message, they cost it
+    // its reset ("usage limit reached"), or ran into it ("resets 3pm /upgrade to increase your usage
+    // limit"). Each is drawn here at 80 columns and at the narrow widths above.
+    describe('with the rows Claude Code draws under the message', () => {
+      /** `text` wrapped to `width` as Ink wraps it (wrap-ansi): at its spaces, a word longer than the
+       *  width broken. */
+      const wrapTo = (width: number, text: string): string[] => {
+        const rows: string[] = []
+        let row: string | null = null
+        for (let word of text.split(' ')) {
+          if (row !== null && row.length + 1 + word.length <= width) {
+            row += ` ${word}`
+            continue
+          }
+          if (row !== null) rows.push(row)
+          for (; word.length > width; word = word.slice(width)) rows.push(word.slice(0, width))
+          row = word
+        }
+        return [...rows, row ?? '']
+      }
+      /** Claude Code's reply as it lays it out at `cols` columns: 5 cells for its ⎿, then each of
+       *  `pieces` from a row of its own, wrapped to the rest of the row. */
+      const replyAt = (cols: number, pieces: string[]): string[] =>
+        pieces.flatMap((piece) => wrapTo(cols - 5, piece)).map((row, i) => `${i === 0 ? REPLY : '     '}${row}`)
+
+      it('lays a reply out as the narrow screens above draw it', () => {
+        for (const [, cols, rows] of CLAUDE_NARROW) expect(replyAt(cols, [rows.map((row) => row.slice(5)).join(' ')])).toEqual(rows)
+      })
+
+      // A time zone short enough to keep whole at 20 columns. claude.exe puts one after every reset
+      // time it prints there (zT(time, true)).
+      const SESSION = "You've hit your session limit · resets 3pm (Europe/London)"
+      const FABLE = "You've hit your Fable limit · resets Oct 21, 3pm (Europe/London)"
+      const SPEND = "You've hit your monthly spend limit · your session limit resets 3pm (Europe/London)"
+      const ROWS_UNDER: Array<[string, string[], string]> = [
+        ['its options opening', [SESSION, 'Opening your options…'], '3pm (Europe/London)'],
+        ['the spend limit hint', [SPEND, '/usage-credits to adjust your monthly spend limit.'], '3pm (Europe/London)'],
+        ['the usage credits hint', [SESSION, '/usage-credits to finish what you’re working on.'], '3pm (Europe/London)'],
+        ['the API login hint', [SESSION, '/login to switch to an API usage-billed account.'], '3pm (Europe/London)'],
+        ["the hint that the admin can turn on extra usage", [SESSION, 'Your admin can enable extra usage at https://claude.ai/admin-settings/usage.'], '3pm (Europe/London)'],
+        ['the hint to ask the admin', [SESSION, '/usage-credits to request more usage from your admin.'], '3pm (Europe/London)'],
+        ['the upgrade hint', [SESSION, '/upgrade to increase your usage limit.'], '3pm (Europe/London)'],
+        ['the upgrade or usage credits hint', [SESSION, '/upgrade or /usage-credits to finish what you’re working on.'], '3pm (Europe/London)'],
+        ['its key to go on after the reset', [SESSION, 'Press ⏎ to continue after reset'], '3pm (Europe/London)'],
+        ['a checkpoint under that key', [SESSION, 'Press ⏎ to continue after reset', '✔ checkpointed — see ~/.claude/checkpoints/4f1c', "  or /rewind to undo this turn's file edits"], '3pm (Europe/London)'],
+        ['its offer of usage credits', [FABLE, 'Usage credits are at least 20% off · 3 days left · /usage-credits'], 'Oct 21, 3pm (Europe/London)'],
+        ['its other offer', [FABLE, 'Buy usage credits and get at least 20% extra · 3 days left · /usage-credits'], 'Oct 21, 3pm (Europe/London)'],
+        ["a note of the server's, which names a reset of its own", [SESSION, 'Your session limit resets every five hours.'], '3pm (Europe/London)'],
+        ["a note of the server's with brackets in it", [SESSION, 'Limits (5-hour window) apply to all models.'], '3pm (Europe/London)'],
+      ]
+      it.each([80, 50, 46, 30, 20].flatMap((cols) => ROWS_UNDER.map(([name, pieces, reset]) => [name, cols, pieces, reset] as const)))(
+        "reads the reset in Claude Code's message, not %s under it, at %i columns",
+        (_name, cols, pieces, reset) => {
+          expect(at(cols, ['❯ Build the page', ...replyAt(cols, [...pieces]), ...claudeIdle(cols)], 'Claude')).toEqual({ status: 'blocked', summary: `usage limit reached (resets ${reset})` })
+        },
+      )
+
+      // Resets as long as claude.exe prints them (M-3: one cut at 16 characters passed every test): a
+      // date past the year's end with its year, and the system's own name for its time zone, which on
+      // the US west coast is America/Los_Angeles and runs to 32 characters. A name longer than the row
+      // is broken where the row ends, and read whole: a time zone has no space in it.
+      const LONG_RESETS = ['Oct 24, 4:30pm (America/Los_Angeles)', 'Jan 2, 2027, 11:30pm (America/Argentina/Buenos_Aires)', '11:30pm (America/Argentina/ComodRivadavia)']
+      it.each([80, 46, 30, 20].flatMap((cols) => LONG_RESETS.map((reset) => [reset, cols] as const)))('reads the whole reset "%s" at %i columns', (reset, cols) => {
+        const rows = ['❯ Build the page', ...replyAt(cols, [`You've hit your weekly limit · resets ${reset}`, '/upgrade to increase your usage limit.']), ...claudeIdle(cols)]
+        expect(at(cols, rows, 'Claude')).toEqual({ status: 'blocked', summary: `usage limit reached (resets ${reset})` })
+      })
+
+      /** Claude Code's line at a turn's end as it lays it out at `cols` columns: its ✻ in a cell two
+       *  wide, the text wrapped to the rest of the row. */
+      const doneAt = (cols: number, text: string): string[] => wrapTo(cols - 2, text).map((row, i) => `${i === 0 ? '✻ ' : '  '}${row}`)
+
+      it("lays the line at the turn's end out as the real narrow screens draw it", () => {
+        const c = limits.captures['reply-done-narrow']
+        for (const size of c.screens) {
+          const rows = rowsOf(c.raw.slice(0, size.at), size)
+          const done = rows.findIndex((row) => row.startsWith('✻ '))
+          expect(rows.slice(done, done + 2)).toEqual(doneAt(size.cols, 'Crunched for 0s · done 1:20 AM'))
+        }
+      })
+
+      // M-0: the line at the turn's end under the reply and the hint, on the rows a narrow screen
+      // wraps it onto.
+      it.each([80, 50, 30, 20].flatMap((cols) => ['Baked for 2s · done 1:19 AM', 'Waiting for 2 background agents to finish'].map((done) => [done, cols] as const)))(
+        "reads the reply under Claude Code's line \"%s\" at %i columns",
+        (done, cols) => {
+          const rows = ['❯ Build the page', ...replyAt(cols, [SESSION, '/upgrade or /usage-credits to finish what you’re working on.']), '', ...doneAt(cols, done), ...claudeIdle(cols)]
+          expect(at(cols, rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (Europe/London))' })
+        },
+      )
+
+      // A reset that isn't in that form is no reset Claude Code printed: it is read as no time, not
+      // as the time and the hint under it.
+      it('reads no time from a reset without its time zone, the rows under it never taken for one', () => {
+        const rows = ['❯ Build the page', ...replyAt(80, ["You've hit your session limit · resets 3pm", '/upgrade to increase your usage limit.']), ...CLAUDE_IDLE]
+        expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
+        // A message with no reset, as the org's spend limit has none, and a row under it whose words
+        // only end in "resets".
+        const spent = ['❯ Build the page', ...replyAt(80, ["You've hit your org's monthly spend limit · ask your admin to raise it at https://claude.ai/admin-settings/usage", 'Usage presets for your team (beta) are in /config.']), ...CLAUDE_IDLE]
+        expect(onScreen(spent, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
+      })
+    })
   })
 })
 
@@ -250,28 +525,80 @@ describe('what is no usage limit or menu', () => {
   // tool's output, a prompt sent after it, or an agent still at work on its prompt.
   it.each([
     ["Gemini CLI's message, in its history", 'Gemini', ['✕ Usage limit reached for gemini-2.5-pro.', '  Access resets at 5:00 PM.', '  /stats model for usage details', ...AGY_IDLE]],
-    ["Claude Code's, in a tool's output under the prompt", 'Claude', ['❯ Build the page', '● Bash(cat docs/limits.md)', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', ...CLAUDE_IDLE]],
-    ["Claude Code's, under a prompt it then answered", 'Claude', ['❯ Build the page', '  ⎿  You\'ve hit your session limit · resets 3pm', '', '❯ Go on', '', '● Built the page.', ...CLAUDE_IDLE]],
-    ["Claude Code's, under an answer", 'Claude', ['● The banner says:', '  ⎿  You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
+    ["Claude Code's, in a tool's output under the prompt", 'Claude', ['❯ Build the page', '● Bash(cat docs/limits.md)', `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE]],
+    ["Claude Code's, under a prompt it then answered", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '', '❯ Go on', '', '● Built the page.', ...CLAUDE_IDLE]],
+    ["Claude Code's, under an answer", 'Claude', ['● The banner says:', `${REPLY}You've hit your session limit · resets 3pm`, ...CLAUDE_IDLE]],
     ["Claude Code's words on a row of a prompt it was sent, no ⎿ in front", 'Claude', ['❯ The worker printed this, read it:', '  You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
     ["Codex's, indented in an answer", 'Codex', ['• The CLI printed:', '', '  ■ You\'ve hit your usage limit. Upgrade to Plus to continue using Codex', ...CODEX_IDLE]],
     ["agy's, quoted in an answer", 'Gemini', ['> Why did it stop?', '', '  It printed ✕ You have exhausted your quota on this model.', ...AGY_IDLE]],
     ["Codex's, still at work on the prompt it was sent", 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', ...CODEX_BUSY]],
     ["Codex's, a cell of another kind right under it", 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', '⚠ Falling back from WebSockets to HTTPS transport.', ...CODEX_IDLE]],
     ["Codex's words in the middle of a long cell, no blank row above them", 'Codex', ['• The log ends with:', '■ You\'ve hit your usage limit. Try again at 4:15 PM.', '  and then', '  the session', '  closed', '  itself.', ...CODEX_IDLE]],
+    // R4-3: a ⎿ row of its own between the prompt and the reply, a hook's, leaves the reply no longer
+    // right under the prompt: it can be a hook's own words, so it is read as nothing.
+    ["Claude Code's reply under a hook's row under the prompt", 'Claude', ['❯ Build the page', '  ⎿  UserPromptSubmit hook succeeded', `${REPLY}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE]],
+    // The rows a reply wrapped onto, its ⎿ row and the prompt gone off the screen's top.
+    ["Claude Code's reply's wrapped end, its ⎿ row scrolled off the top", 'Claude', ['     limit · resets 3pm', '     (America/New_York)', ...CLAUDE_IDLE]],
+    // Only rows indented under the reply's text are the reply's: one under it indented less is not.
+    ["Claude Code's reply with a row under it indented less than its text", 'Claude', ['❯ Build the page', `${REPLY}You've hit your session limit · resets 3pm`, '  (America/New_York)', ...CLAUDE_IDLE]],
+    // A wrapped reply is read from its ⎿ row: one that starts some other way is no limit.
+    ["Claude Code's reply wrapped onto rows that name a limit, its ⎿ row not starting with it", 'Claude', ['❯ Build the page', `${REPLY}The banner now reads:`, '     You\'ve hit your session limit · resets 3pm', ...CLAUDE_IDLE]],
+    // M-0 and M-2: the line at the turn's end is stepped over, and nothing else. What was history
+    // above it still is, and a reply is read under a tool's output only as Claude Code draws one.
+    ["Claude Code's, in a tool's output under the prompt, the line at the turn's end under it", 'Claude', ['❯ Build the page', '● Bash(cat docs/limits.md)', LIMIT_REPLY, '', '✻ Baked for 3s · done 1:19 AM', ...CLAUDE_IDLE]],
+    // The same output under the row of a hook that ran before the tool, the turn ended with no answer.
+    ["Claude Code's, in a tool's output under its hook's row", 'Claude', ['❯ Build the page', '● Bash(cat docs/limits.md)', '  ⎿  Ran 1 PreToolUse hook (12ms)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ["Claude Code's reply under a hook's row under the prompt, the line at the turn's end under it", 'Claude', ['❯ Build the page', `${REPLY}UserPromptSubmit hook succeeded`, LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ["Claude Code's, under a prompt it then answered, the line at the turn's end under the answer", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '❯ Go on', '', '● Built the page.', '', '✻ Baked for 1m 2s · done 1:19 AM', ...CLAUDE_IDLE]],
+    // A row of Claude Code's own led by ✻ that is no line at a turn's end: what is above it is history.
+    ["Claude Code's reply above its note that it compacted the conversation", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '✻ Conversation compacted (ctrl+o for history)', ...CLAUDE_IDLE]],
+    ["Claude Code's reply above a scheduled task's prompt", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '✻ Look for flaky tests', ...CLAUDE_IDLE]],
+    ["Claude Code's reply above a scheduled task's prompt that names a number", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '✻ Check the build for 3 failing tests', ...CLAUDE_IDLE]],
+    // An answer after the reply that holds the words of that line, on its own row or on a row it wraps
+    // onto, with no such line under it (showTurnDuration off): only a row the line's ✻ leads, at the
+    // left edge, is stepped over, and the answer makes the reply history (MW1-2).
+    ["Claude Code's reply under an answer that names the line at a turn's end", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '● Built the page. Claude Code drew ✻ Baked for 2s under it.', ...CLAUDE_IDLE]],
+    ["Claude Code's reply under an answer that names the line at a turn's end on a row it wraps onto", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '● Built the page. Its last line read', '  then ✻ Worked for 3m 2s · done 1:19 AM', ...CLAUDE_IDLE]],
+    // A line of a file a tool printed, drawn as Claude Code draws its reply but further in: a worker's
+    // screen saved to a file keeps the no-break space.
+    ["a limit reply a tool printed from a log, under the tool's own output", 'Claude', ['❯ Read the log', '● Bash(cat logs/worker.txt)', `${REPLY}worker 2 stopped:`, `   ${LIMIT_REPLY}`, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // An answer that quotes a worker's screen is taken to type plain spaces after its ⎿, where Claude
+    // Code draws a no-break space: a reply it quotes is not its own, mid-turn or under a tall prompt.
+    // One that keeps the no-break space reads as the limit, unless, mid-turn, a row of the quote is
+    // led by a turn's mark (MW2-1, pinned with the mid-turn replies).
+    ['an answer quoting a screen where a limit stopped a worker mid-turn', 'Claude', ['● Worker 2 shows:', '  ● Bash(echo hello)', '  ⎿  hello', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer quoting a reply, its first rows gone off the top', 'Claude', ['  the worker stopped there, with:', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // Quoted row for row, no-break spaces and all: the quoted call's ● is in the answer's text,
+    // indented under the answer's own ●, where no row a long call wraps onto starts with one.
+    ['an answer quoting a mid-turn screen row for row', 'Claude', ['● Worker 2 shows:', '  ● Bash(echo hello)', `${REPLY}hello`, LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer quoting a mid-turn screen of macOS row for row', 'Claude', ['⏺ Worker 2 shows:', '  ⏺ Bash(echo hello)', `${REPLY}hello`, LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // M1-1: the same for a screen with the row Claude Code folds reads into: row for row, the quoted
+    // text's ● is indented under the answer's own; with plain spaces, the reply is not one it drew.
+    ['an answer quoting a screen with a folded row, row for row', 'Claude', ['● Worker 2 shows:', '', '  ● I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer quoting a screen of macOS with a folded row, row for row', 'Claude', ['⏺ Worker 2 shows:', '', '  ⏺ I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer quoting a folded row and the reply under it, with plain spaces', 'Claude', ['● Worker 2 shows:', '', '  Read 1 file (ctrl+o to expand)', "  ⎿  You've hit your session limit · resets 3pm (America/New_York)", '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // Only the end of the rows above the reply is the folded row's: an answer's text can name it.
+    ["Claude Code's reply right under the turn's text, the text ending on the folded row's words", 'Claude', ['● All of it is in the log (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer whose text names the folded row before it goes on', 'Claude', ['● Worker 2 shows:', '  Read 1 file (ctrl+o to expand) and then it', '  stopped with this:', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // Nothing above the ⎿ blocks to say they are a tool's, or the reply's: its ⎿ row at the screen's
+    // top, or the blocks reaching it.
+    ["Claude Code's reply at the screen's top", 'Claude', [LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ["Claude Code's reply under a tool's output whose call is gone off the top", 'Claude', [`${REPLY}hello`, '     world', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // M1-1: nor under a folded row that is not under the turn's text: a tool's output, its call gone.
+    ["Claude Code's reply under a folded row under a tool's output whose call is gone off the top", 'Claude', [`${REPLY}hello`, '     world', '', '  Read 1 file (ctrl+o to expand)', LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
   ])('%s', (_name, agent, rows) => {
     expect(isLimitOrMenu(onScreen(rows, agent))).toBe(false)
   })
 
   it('reads no limit in a prompt Claude Code is still at work on, whose last row is its limit reply', () => {
-    const rows = ['❯ Take over from the worker that stopped with:', '  ⎿  You\'ve hit your session limit · resets 3pm', '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt']
+    const rows = ['❯ Take over from the worker that stopped with:', `${REPLY}You've hit your session limit · resets 3pm`, '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt']
     expect(onScreen(rows, 'Claude', '◐ Claude Code').status).toBe('working')
   })
 
   // Each read as a menu on any agent, anywhere in the bottom rows (R2-2): the worker was reported
   // blocked, submit refused to type into it, and the conductor was told to give its task away.
   it.each([
-    ['Claude showing rg output with the pattern line', 'Claude', ['● Bash(rg -n "Approaching rate limits" src)', '  ⎿  src/shared/agentStatusDetector.ts:338:    pattern: /Approaching rate limits[\\s\\S]*Keep current model/,', ...CLAUDE_IDLE]],
+    ['Claude showing rg output with the pattern line', 'Claude', ['● Bash(rg -n "Approaching rate limits" src)', `${REPLY}src/shared/agentStatusDetector.ts:338:    pattern: /Approaching rate limits[\\s\\S]*Keep current model/,`, ...CLAUDE_IDLE]],
     ['Claude summarizing the docs', 'Claude', ['● The docs name Codex\'s menus ("Approaching rate limits … Keep current model") and', '  its update offer ("Update available! 0.1 -> 0.2 … Skip until next version").', ...CLAUDE_IDLE]],
     ["agy answering a question about Codex's prompt", 'Gemini', ['> What does Codex show near its limit?', '', '  It shows "Approaching rate limits" and offers', '  2. Keep current model', ...AGY_IDLE]],
     ['Codex with a task naming both in its composer', 'Codex', ['• Ready.', '', '› Handle Codex\'s "Approaching rate limits" prompt: pick "Keep current model", and on', '  "Update available! 0.153.4 -> 0.163.0" pick "Skip until next version".', '', '  gpt-5.6-sol medium · ~\\repos\\app']],
@@ -289,9 +616,9 @@ describe('what is no usage limit or menu', () => {
     ['markdown docs', 'Codex', ['• Updated docs/billing.md:', '  ## Limits', '  - Free plan: You\'ve hit your free plan limit after 100 requests.'], CODEX_IDLE],
     ['a log tail', 'Codex', ['• Ran tail -n 3 logs/api.log', '  └ 2026-10-16T12:00:01Z WARN Usage limit reached for org-42.', '    2026-10-16T12:00:02Z INFO retry scheduled'], CODEX_IDLE],
     ['grep output', 'Codex', ['• Ran rg -n "hit your" src', '  └ src/quota.ts:12:   message: You\'ve hit your weekly limit · resets Monday'], CODEX_IDLE],
-    ['a Claude worker reading a message bridged from Codex', 'Claude', ['● termpolis - swarm_read_messages (MCP)(terminalId: "t-9")', '  ⎿  [{"from":"Codex","content":"[Codex] You\'ve hit your usage limit. Upgrade', '     to Plus to continue using Codex"}]'], CLAUDE_IDLE],
-    ['a file of copy Claude printed, the last thing it shows', 'Claude', ['● Bash(cat src/copy/quota.txt)', '  ⎿  You\'ve hit your monthly limit.', '     Upgrade to keep going.'], CLAUDE_IDLE],
-    ['the monthly spend copy with words after it', 'Claude', ['● Bash(cat src/copy/spend.txt)', '  ⎿  You\'ve hit your monthly spend limit. Contact billing@example.com.'], CLAUDE_IDLE],
+    ['a Claude worker reading a message bridged from Codex', 'Claude', ['● termpolis - swarm_read_messages (MCP)(terminalId: "t-9")', `${REPLY}[{"from":"Codex","content":"[Codex] You've hit your usage limit. Upgrade`, '     to Plus to continue using Codex"}]'], CLAUDE_IDLE],
+    ['a file of copy Claude printed, the last thing it shows', 'Claude', ['● Bash(cat src/copy/quota.txt)', `${REPLY}You've hit your monthly limit.`, '     Upgrade to keep going.'], CLAUDE_IDLE],
+    ['the monthly spend copy with words after it', 'Claude', ['● Bash(cat src/copy/spend.txt)', `${REPLY}You've hit your monthly spend limit. Contact billing@example.com.`], CLAUDE_IDLE],
     ['the copy a Claude worker wrote, quoted on a row of its own', 'Claude', ['● I changed the quota banner. It now reads:', '', '  You\'ve hit your monthly limit.'], CLAUDE_IDLE],
     ["an agy answer quoting agy's message", 'Gemini', ['> Explain the quota error in the logs', '', '  The log shows the CLI stopped with:', '', '  You have exhausted your quota on this model.'], AGY_IDLE],
     ['an answer about an expired session', 'Claude', ['● The login fails because the session has expired before the refresh token', '  is used. I moved the refresh ahead of the request.'], CLAUDE_IDLE],
@@ -337,7 +664,7 @@ describe('what is no usage limit or menu', () => {
   // made them so went unseen (R2-3): a limit's words in a tool's output, a limit the worker went on
   // past with a prompt or an answer.
   it.each([
-    ['a doc Claude printed, its answer under it', 'Claude', ['● Bash(cat docs/limits.md)', '  ⎿  You\'ve hit your usage limit. Contact sales to raise it.', '', ...CLAUDE_IDLE]],
+    ['a doc Claude printed, its answer under it', 'Claude', ['● Bash(cat docs/limits.md)', `${REPLY}You've hit your usage limit. Contact sales to raise it.`, '', ...CLAUDE_IDLE]],
     ['a limit Codex was sent a prompt past', 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', '', '› Fix the login test', '', ...CODEX_IDLE]],
     ['a limit Codex answered past', 'Codex', ['■ You\'ve hit your usage limit. Try again at 4:15 PM.', '', '• Retried after the reset; the login test passes now.', '', ...CODEX_IDLE]],
   ])('%s', (_name, agent, rows) => {

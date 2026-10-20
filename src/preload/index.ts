@@ -406,8 +406,8 @@ contextBridge.exposeInMainWorld('contextPins', {
 contextBridge.exposeInMainWorld('agentActivity', {
   query: (filter?: unknown) => ipcRenderer.invoke('agentActivity:query', { filter }),
   stats: () => ipcRenderer.invoke('agentActivity:stats'),
-  attachWatcher: (terminalId: string, cwd: string, agentType: string) =>
-    ipcRenderer.invoke('agentWatcher:attach', { terminalId, cwd, agentType }),
+  attachWatcher: (terminalId: string, cwd: string, agentType: string, sessionId?: string) =>
+    ipcRenderer.invoke('agentWatcher:attach', { terminalId, cwd, agentType, sessionId }),
   detachWatcher: (terminalId: string) =>
     ipcRenderer.invoke('agentWatcher:detach', { terminalId }),
   onEvent: (cb: (event: unknown) => void) => {

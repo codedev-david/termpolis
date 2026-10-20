@@ -4,9 +4,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
 import { compressToolResult } from './headroom/compressToolResult'
-import { isAgentBinary } from './agentCommandSanitizer'
+import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
-import { screenOf } from '../shared/terminalScreen'
+import { screenOf, type ScreenSize } from '../shared/terminalScreen'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -641,6 +641,10 @@ export interface McpToolHandlers {
   /** The terminal's PTY size, which its output can't tell (terminalScreen.ts screenSizeOf); null
    *  for one that is gone. write_to_terminal's submit reads the agent's screen at it. */
   terminalSize?: (terminalId: string) => { cols: number; rows: number } | null
+  /** Where the terminal's output ends now, counting what the window let go (terminalOutputBuffer.ts
+   *  readOutputFrom's nextOffset). Submit marks it at a run_command that starts an agent, and reads
+   *  what the agent did from the output after it. */
+  outputOffset?: (terminalId: string) => number
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
@@ -725,6 +729,15 @@ const SUBMIT_CONFIRM_POLL_MS = 500
 const SUBMIT_END_CHARS = 24
 /** How many of the screen's last rows a failed submit returns, for the conductor to read. */
 const SUBMIT_SCREEN_ROWS = 15
+/** What clears a box that holds something else: Ctrl+U deletes it back from the cursor in Claude
+ *  Code, Codex and agy (to the line's start, or the line break before it) and sends nothing. Twenty
+ *  to a write: eighty read to Claude Code as a paste, and cleared nothing. */
+const CLEAR_KEYS = '\u0015'.repeat(20)
+/** How many writes of them one call sends, enough for a box of a hundred lines or so. */
+const SUBMIT_CLEAR_WRITES = 10
+/** How long a write of them gets to show in the box: Claude Code took two seconds to redraw a box
+ *  that held a paste. */
+const SUBMIT_CLEAR_MS = 3000
 
 export interface SubmitClock {
   now(): number
@@ -752,7 +765,8 @@ interface Seen {
   lines: string[]
   title: string
   status: AgentStatusResult
-  /** The shell printed its prompt after the agent's last input box: the agent exited (atShellPrompt). */
+  /** Its shell printed a prompt since run_command started the agent, and nothing drew an input box
+   *  after it: the agent exited, or never started (sinceStarted). */
   shell: boolean
 }
 
@@ -760,18 +774,102 @@ interface Seen {
  *  9;9 from PowerShell and cmd, OSC 7 from bash; zsh and fish get none); an agent's own output has
  *  none (its OSC 7501 query is another code). */
 const PROMPT_REPORT = /\x1b\](?:9;9;|7;)/g
+/** Where ConPTY paints the whole screen again when the PTY is resized: from its top left, with or
+ *  without its report of the new size before (terminalScreen.ts resizeReportOf; on the live runs only
+ *  a PTY's first resize had one). It paints an exited agent's last frame, box and all, again. */
+const REPAINT = /\x1b\[H/
+/** Where the screen is wiped: that repaint, a clear, a switch to the alternate screen (a fullscreen
+ *  agent starting does all three). What the shell showed after a prompt is read up to the first. */
+const WIPE = /\x1b\[(?:H|[23]J|\?(?:1049|1047|47)h)/
+/** A switch to the alternate screen or back. A resize paints the screen the terminal is on again,
+ *  and switches to none. */
+const ALT_SCREEN = /\x1b\[\?(?:1049|1047|47)([hl])/g
+/** An agent run_command started that has drawn no input of its own yet, whatever the screen shows. */
+const STARTING: AgentStatusResult = { status: 'starting', summary: 'no input shown since run_command started it' }
+/** A row that starts with a rule, among the rows inputBoxRows reads as an input box's: the rule that
+ *  closes the box, and on the same row the row under it. A resize that widens the screen joins the
+ *  two in ConPTY's repaint when the agent let that row wrap on from the rule (Claude Code 2.1.304's
+ *  command menu, under a box holding /exit), and inputBoxRows, which ends a box only at a rule alone
+ *  on its row, reads the box on to the screen's foot. The other rows of a box are its text, under
+ *  its glyph and indented. */
+const JOINED_RULE = /^[─━]{20,}/
 
-/** Whether the shell is back at its prompt: nothing after the last prompt it printed draws an input
- *  box. Claude Code and agy leave their last frame, box and all, above the prompt when they exit,
- *  and a task typed there went to the shell. */
-function atShellPrompt(raw: string, size: { cols: number; rows: number } | null): boolean {
-  let last = -1
-  for (const m of raw.matchAll(PROMPT_REPORT)) last = m.index ?? last
-  if (last < 0) return false
-  const after = raw.slice(last)
-  const lines = (size ? screenOf(after, size) : screenOf(after)).lines()
+/** `text` drawn on a blank screen of the terminal's size (of the size the output reaches, where main
+ *  has none), less the blank rows at its foot. */
+function drawn(text: string, size: ScreenSize | null): { lines: string[]; title: string } {
+  const screen = size ? screenOf(text, size) : screenOf(text)
+  const lines = screen.lines()
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-  return inputBoxRow(lines) < 0
+  return { lines, title: screen.title }
+}
+
+/** Where the prompts a shell printed start in `text`: at their first report. A prompt of the
+ *  user's own can write one of its own (oh-my-posh does, and Windows Terminal's docs show how), on
+ *  the same line: a report starts a prompt only with a line break since the one before. */
+function promptsIn(text: string): number[] {
+  const starts: number[] = []
+  let last = -1
+  for (const m of text.matchAll(PROMPT_REPORT)) {
+    const at = m.index!
+    if (last < 0 || text.slice(last, at).includes('\n')) starts.push(at)
+    last = at
+  }
+  return starts
+}
+
+/** An agent run_command started: where in the output it was typed (McpToolHandlers.outputOffset; 0,
+ *  all of it, where main can't say), and the command as main may have typed it (agentCommands). */
+interface AgentStart {
+  at: number
+  commands: string[]
+}
+
+/** The terminals whose last run_command started an agent. Submit types into one only at the
+ *  agent's input, and reads what the agent did from the output after the command was typed: at its
+ *  shell's prompt the agent exited or never started, and a task typed there ran as a command while
+ *  the conductor was told it was sent (R3-4); and the last frame an exited agent leaves, box and all,
+ *  is no input of the one run_command started again. The terminal's name can't tell: workers the
+ *  conductor creates aren't in listTerminals. */
+const agentStarts = new Map<string, AgentStart>()
+
+/** The command run_command typed, as the shell shows it at its prompt: the command as given, or as
+ *  main rewrites it for a terminal the conductor created (index.ts runCommand). Only one with more in
+ *  it than the agent's name: a prompt can show that name, a folder's (PS C:\work\claude>). */
+function agentCommands(command: string): string[] {
+  return [...new Set([command, sanitizeAgentCommand(command)])].filter((c) => c.trim().split(/\s+/).length > 1)
+}
+
+/** Whether `rows` show one of the commands, by its letters and digits. */
+const showsCommand = (rows: readonly string[], commands: readonly string[]): boolean => commands.some((c) => bare(rows.join('')).includes(bare(c)))
+
+/** What the output since an agent was started says, `from` on in `raw` (the shell's very first
+ *  output when `whole`): whether its shell is back at its prompt (shell), and whether the agent drew
+ *  its input box (started). The prompts that count are the ones printed after the command was typed:
+ *  a shell that had printed none before, still starting when create_terminal and run_command came a
+ *  moment apart (a cold Windows PowerShell takes seconds), prints its first after the command, then
+ *  runs it. At its prompt is nothing after the last one drawing an input box, up to a repaint, or the
+ *  command typed at it: a shell still printing the prompt before when the command was typed shows the
+ *  command after it, then runs it. Nor a switch to the alternate screen since, which only a program
+ *  still running stays on: an agent in its fullscreen view, started again by hand. A box with the
+ *  command on a row under it is the screen of before the agent started, the shell's line under the
+ *  last frame an agent left, painted again by a resize. Under the box is from the rule that closes
+ *  it, though the repaint joined the row under it onto that rule (JOINED_RULE). */
+function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean } {
+  const since = drawn(raw.slice(from), size).lines
+  const box = inputBoxRow(since)
+  const rows = box < 0 ? [] : inputBoxRows(since)!
+  const joined = rows.findIndex((row) => JOINED_RULE.test(row))
+  const started = box >= 0 && !showsCommand(since.slice(box + (joined < 0 ? rows.length : joined)), commands)
+  const prompts = promptsIn(raw.slice(from)).slice(whole && raw.slice(0, from).search(PROMPT_REPORT) < 0 ? 1 : 0)
+  if (prompts.length === 0) return { shell: false, started }
+  const after = raw.slice(from + prompts[prompts.length - 1])
+  const upTo = (end: RegExp): string[] => {
+    const at = after.search(end)
+    return drawn(at < 0 ? after : after.slice(0, at), size).lines
+  }
+  const switches = [...after.matchAll(ALT_SCREEN)]
+  const onAlt = switches.length > 0 && switches[switches.length - 1][1] === 'h'
+  return { shell: !onAlt && inputBoxRow(upTo(REPAINT)) < 0 && !showsCommand(upTo(WIPE), commands), started }
 }
 
 /** What a terminal shows, and what the agent in it is doing; null for a terminal with no output.
@@ -781,10 +879,22 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
   const raw = handlers.readOutput(terminalId, 1000)
   if (!raw) return null
   const size = handlers.terminalSize?.(terminalId) ?? null
-  const screen = size ? screenOf(raw, size) : screenOf(raw)
-  const lines = screen.lines()
-  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-  return { lines, title: screen.title, status: detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title: screen.title }), shell: atShellPrompt(raw, size) }
+  const { lines, title } = drawn(raw, size)
+  const status = detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title })
+  const start = agentStarts.get(terminalId)
+  if (start === undefined) return { lines, title, status, shell: false }
+  // `raw` ends where the output does.
+  const end = handlers.outputOffset?.(terminalId)
+  const from = end === undefined ? 0 : Math.max(0, raw.length - (end - start.at))
+  const since = sinceStarted(raw, from, end === undefined || end === raw.length, size, start.commands)
+  // An input box on the screen is the agent's only if drawn since it was started. With none, the
+  // screen is a shell's, which is the answer only from a shell that reports no prompts: one that
+  // does reports one once the agent is gone (shell).
+  if (since.shell || (inputBoxRow(lines) >= 0 ? since.started : raw.search(PROMPT_REPORT) < 0)) return { lines, title, status, shell: since.shell }
+  // Till then the agent is starting, whatever the screen drawn before shows (an exited agent's box,
+  // its limit), but for a stop it drew since: a menu Codex opens with.
+  const stop = detectAgentStatus(drawn(raw.slice(from), size).lines.join('\n'), agentName, previous, { screen: true, title })
+  return { lines, title, status: stop.status === 'blocked' ? stop : STARTING, shell: false }
 }
 
 /** A failed submit's answer, with the screen's last rows: the conductor reads them to decide. */
@@ -811,6 +921,9 @@ const endOf = (text: string): string => bare(text).slice(-SUBMIT_END_CHARS)
 /** What an agent's input box shows, run together: its glyph, and agy's "↑ 8 more lines" over a
  *  text taller than its box, left out. */
 const boxText = (input: readonly string[]): string => joined(input).replace(/^\s*[❯>›]?\s*(?:↑\s*\d+\s+more\s+lines?\b)?/, '')
+/** How many of an input box's rows show something: not the blank row Codex's composer has under its
+ *  text. */
+const textRows = (input: readonly string[]): number => input.filter((row) => row.trim() !== '').length
 
 /** Whether Codex's placeholder for a paste, "[Pasted Content 1110 chars]", can be this text's.
  *  Codex counts the code points it kept: the text's, less at most those it may have dropped, any
@@ -855,20 +968,21 @@ function stillHolds(input: string[] | null, text: string, agent: boolean): boole
   return holdsText(input, text, agent) || (input !== null && bare(text) !== '' && PASTE_PLACEHOLDER.test(input.join('\n')))
 }
 
-/** Whether the agent shows the text it was typed: its box is no longer empty, and holds the text's
- *  end or a placeholder for a long paste. Only its box: the same words can be in its transcript, a
- *  prompt sent before. A shell has no box: its screen, where a long command wraps. */
+/** Whether the agent shows the text it was typed: it shows its box, no longer empty, holding the
+ *  text's end or a placeholder for a long paste. Only its box: the same words can be in its
+ *  transcript, a prompt sent before; and a text of no letters or digits has no end to look for. A
+ *  shell has no box: its screen, where a long command wraps. */
 function showsTyped(seen: Seen, text: string, agent: boolean): boolean {
-  if (agent && emptyInputBox(seen.lines)) return false
-  const input = agent ? inputBoxRows(seen.lines) ?? [] : seen.lines
+  if (agent && (inputBoxRow(seen.lines) < 0 || emptyInputBox(seen.lines))) return false
+  const input = agent ? inputBoxRows(seen.lines)! : seen.lines
   return bare(joined(input)).includes(endOf(text)) || PASTE_PLACEHOLDER.test(input.join('\n'))
 }
 
 /** Whether the box shows something in front of the text just typed into it that the text doesn't
- *  account for: what an earlier call or a person left there, which an Enter would send with it as
- *  one prompt (R3-3). In front of the agent's placeholder for it, when it collapsed a long paste;
- *  else in front of the text's end, past what of the text's own start the box shows. A box that
- *  shows only the end of a text taller than itself shows nothing in front of it. */
+ *  account for, which an Enter would send with it as one prompt (R3-3): what was in a box that no
+ *  clearing emptied (clearInput). In front of the agent's placeholder for it, when it collapsed a
+ *  long paste; else in front of the text's end, past what of the text's own start the box shows. A
+ *  box that shows only the end of a text taller than itself shows nothing in front of it. */
 function otherTextInFront(input: readonly string[], text: string): boolean {
   const box = boxText(input)
   const pastes = [...box.matchAll(PASTE_PLACEHOLDERS)]
@@ -879,6 +993,67 @@ function otherTextInFront(input: readonly string[], text: string): boolean {
   const end = endOf(text)
   const at = shown.lastIndexOf(end)
   return at >= 0 && !all.slice(0, all.length - end.length).endsWith(shown.slice(0, at))
+}
+
+/** Whether the box shows something behind the text just typed into it, which an Enter would send
+ *  with it as one prompt: what was behind the cursor in a box that no clearing emptied, since Ctrl+U
+ *  deletes only back from the cursor, and the text went in in front of it (W1-1: a person moved the
+ *  cursor back into what the box held). Behind the text's end; or, where the agent collapsed a long
+ *  paste, behind its placeholder for it. */
+function otherTextBehind(input: readonly string[], text: string): boolean {
+  const box = boxText(input)
+  const shown = bare(box)
+  const end = endOf(text)
+  const at = shown.lastIndexOf(end)
+  if (at >= 0) return at + end.length < shown.length
+  const pastes = [...box.matchAll(PASTE_PLACEHOLDERS)]
+  const paste = pastes[pastes.length - 1]
+  return paste?.index !== undefined && bare(box.slice(paste.index + paste[0].length)) !== ''
+}
+
+/** Whether a look shows the agent at its input, ready for the text: no shell's prompt, a box. */
+const atInput = (seen: Seen): boolean => seen.status.status === 'idle' && !seen.shell && inputBoxRow(seen.lines) >= 0
+
+/** Clears what the agent's box holds before the text is typed: what an earlier call or a person left
+ *  there, which an Enter would send with the text as one prompt (R3-3), and which went out of sight
+ *  behind a text taller than the box, read then as the text alone (R4-2). The conductor was told to
+ *  clear it itself, with keys no conductor model can send through write_to_terminal. CLEAR_KEYS to a
+ *  write, each looked at until the box has changed, the same on two looks, for up to SUBMIT_CLEAR_MS:
+ *  done when it is empty. What two writes in a row left as it was, on one row, is nothing Ctrl+U
+ *  deletes, a hint that typing replaces or what is behind the cursor, and is typed over
+ *  (otherTextInFront and otherTextBehind have the last word on it). The screen it leaves, or the
+ *  answer the call ends with, nothing typed: the agent left its input meanwhile, or its box held
+ *  more than the writes cleared, or more rows than a hint that they left as they were. */
+async function clearInput(handlers: McpToolHandlers, terminalId: string, name: string, clock: SubmitClock, held: Seen, waitedMs: number, abandoned?: AbortSignal): Promise<Seen | SubmitResult> {
+  const boxOf = (seen: Seen): string => inputBoxRows(seen.lines)!.join('\n')
+  let before = boxOf(held)
+  let unchanged = 0
+  let seen = held
+  for (let write = 0; write < SUBMIT_CLEAR_WRITES; write++) {
+    if (abandoned?.aborted) return { submitted: false, waitedMs, error: 'The call was abandoned before the text was typed.' }
+    handlers.writeToTerminal(terminalId, CLEAR_KEYS)
+    let look: string | null = null
+    let stable = false
+    for (let t = 0; t < SUBMIT_CLEAR_MS; t += SUBMIT_ECHO_POLL_MS) {
+      await clock.sleep(SUBMIT_ECHO_POLL_MS)
+      const next = readScreen(handlers, terminalId, name, 'idle')
+      if (!next) return { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
+      seen = next
+      if (seen.status.status === 'blocked') return failed(waitedMs, `The agent is blocked: ${seen.status.summary}.`, seen)
+      const box = atInput(seen) ? boxOf(seen) : null
+      stable = box !== null && box === look
+      look = box
+      if (stable && (box !== before || emptyInputBox(seen.lines))) break
+    }
+    if (look === null) return failed(waitedMs, "The agent's input held other text, and the agent stopped showing its input while it was cleared, so nothing was typed. Check it with read_output.", seen)
+    if (stable && emptyInputBox(seen.lines)) return seen
+    unchanged = stable && look === before ? unchanged + 1 : 0
+    // A hint is one row. Rows that look the same after a write can be a text taller than the screen
+    // that it did shorten, out of sight then in front of a text typed behind it (N3).
+    if (unchanged === 2) return textRows(inputBoxRows(seen.lines)!) === 1 ? seen : failed(waitedMs, "The agent's input held other text, which clearing it didn't remove, so nothing was typed. Check it with read_output.", seen)
+    before = look
+  }
+  return failed(waitedMs, "The agent's input held more than one call clears, so nothing was typed. Send the text again: each call clears more of it.", seen)
 }
 
 /** Whether the agent took the prompt after an Enter: it shows it is at work, or it is back at its
@@ -900,12 +1075,6 @@ function terminalName(handlers: McpToolHandlers, terminalId: string): string {
     return ''
   }
 }
-
-/** The terminals whose last run_command started an agent. Submit types into one only at the agent's
- *  input: at its shell's prompt the agent exited or never started, and a task typed there ran as a
- *  command while the conductor was told it was sent (R3-4). The terminal's name can't tell: workers
- *  the conductor creates aren't in listTerminals. */
-const agentTerminals = new Set<string>()
 
 /** Each terminal's submits, the last one queued: one waits for the one before it (below). */
 const submitQueues = new Map<string, Promise<void>>()
@@ -966,20 +1135,31 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
       await clock.sleep(SUBMIT_POLL_MS)
     }
   }
-  const ready = latest!
-  let last: Seen = ready
+  let ready = latest!
   // An agent's input is its box; a shell's (submit into a plain shell) its last line.
   const agent = inputBoxRow(ready.lines) >= 0
   const waitedMs = clock.now() - start
-  if ((!agent || ready.shell) && agentTerminals.has(terminalId)) {
-    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited, never started, or is still starting. Check it with read_output: if the shell's prompt is the last thing there, start the agent again with run_command; if the agent is starting, send the text again once it shows its input.", ready)
+  if ((!agent || ready.shell) && agentStarts.has(terminalId)) {
+    return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited or never started. Check it with read_output, then start the agent again with run_command and send the text again.", ready)
   }
   const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
   const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }
 
   // Typed only when the input doesn't hold it already, from a call before whose Enter didn't take:
   // typed again, it went in after that copy, and the agent got the prompt twice.
-  if (body && !holdsText(inputOf(ready, agent), body, agent)) {
+  const typing = body !== '' && !holdsText(inputOf(ready, agent), body, agent)
+  // An agent's box that holds something else is cleared before the text is typed. What the clear
+  // leaves is some of that, never this text from a call before: read as that, what a person's
+  // cursor kept behind it, the end every task of the conductor's has, was sent without the task.
+  if (agent && typing && !emptyInputBox(ready.lines)) {
+    const cleared = await clearInput(handlers, terminalId, name, clock, ready, waitedMs, abandoned)
+    if ('submitted' in cleared) return cleared
+    if (abandoned?.aborted) return { submitted: false, waitedMs, error: 'The call was abandoned before the text was typed.' }
+    ready = cleared
+  }
+  let last: Seen = ready
+
+  if (typing) {
     handlers.writeToTerminal(terminalId, body)
     // Enter only once the agent shows what was typed, the same on two looks in a row: agy draws a
     // long paste in pieces, and one can end where the text does. Not pressed at all when it never
@@ -999,10 +1179,13 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
     if (!shown) {
       return failed(waitedMs, 'The agent never showed the text in its input, so Enter was not pressed. Check it with read_output, then send the same text again.', last)
     }
-    // A box that held something before the text was typed: a hint, which the first key replaced,
-    // or other text, still in front of this. Not refused before typing, which can't tell the two.
-    if (agent && !emptyInputBox(ready.lines) && otherTextInFront(inputBoxRows(last.lines) ?? [], body)) {
-      return failed(waitedMs, "The agent's input already held other text, and the text went in behind it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
+    // A box clearing left as it was: a hint, which the first key replaced, or other text, still in
+    // front of this or behind it.
+    if (agent && !emptyInputBox(ready.lines)) {
+      const box = inputBoxRows(last.lines)!
+      if (otherTextInFront(box, body) || otherTextBehind(box, body)) {
+        return failed(waitedMs, "The agent's input already held other text, which clearing it didn't remove, and the text went in with it, so Enter was not pressed: the agent would have taken the two as one prompt. Check it with read_output.", last)
+      }
     }
   }
   if (body) await clock.sleep(settleMs(body))
@@ -1027,17 +1210,67 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   return failed(waitedMs, 'The text is still in the agent\'s input after Enter was pressed twice. Check it with read_output.', last)
 }
 
+/** The characters drawn like the letters of "system" and "conductor" (R4-5, BEH-4), by the Latin
+ *  letter each reads as: every one, whatever its script, that Unicode's confusables.txt (18.0.0)
+ *  lists as drawn like one of them in either case or like its small capital (т and τ like ᴛ, м like
+ *  ᴍ), digits and symbols among them (0 like O, the Devanagari zero like o, ⊤ like T, ∪ like U); the
+ *  four small Cherokee letters it leaves out whose capitals it lists (ꭹ ꮍ ꮥ ꮷ: Cherokee draws a
+ *  small letter as its capital, smaller, and the list gives every other one the letter of its
+ *  capital); and ꭃ, which it lists as drawn like co. tests/fixtures/senderLookalikes.json holds the
+ *  same list, with each one's name. A name spelled with them looks like one of the two in the
+ *  Messages tab. Read after NFKC, which turns symbols drawn like them into them (Greek's upsilon
+ *  symbol ϒ into Υ), and Greek's lunate sigmas, drawn like c and C, into ς and Σ, drawn like
+ *  neither, so nothing NFKC changes is listed; and before the name is lowercased, which turns some
+ *  of them into letters drawn like none of these (Greek Μ into μ). A letter that lowercases into one
+ *  of them is not read as it, unless it is listed itself: Σ is drawn like none of these, though σ is
+ *  drawn like o. */
+const LOOKALIKES: Readonly<Record<string, string>> = {
+  s: '\u01bd\u0405\u0455\u054f\u0d1f\u10bd\u10fd\u13d5\u13da\u1cbd\ua4e2\ua576\ua731\uaba5\uabaa\u{10296}' + // ƽ Ѕ ѕ Տ ട Ⴝ ჽ Ꮥ Ꮪ Ჽ ꓢ ꕶ ꜱ ꮥ ꮪ 𐊖
+    '\u{10420}\u{10448}\u{118c1}\u{16ad6}\u{16f3a}', // 𐐠 𐑈 𑣁 𖫖 𖼺
+  y: '\u0263\u028f\u03a5\u03b3\u0423\u0443\u04ae\u04af\u07cc\u10e7\u13a9\u13bd\u1d8c\u1eff\u2ca8\u2ca9' + // ɣ ʏ Υ γ У у Ү ү U+07CC ყ Ꭹ Ꮍ ᶌ ỿ Ⲩ ⲩ
+    '\u311a\u4e2b\ua4ec\uab5a\uab79\uab8d\u{102b2}\u{10c20}\u{118a4}\u{118c4}\u{118dc}\u{16f43}', // ㄚ 丫 ꓬ ꭚ ꭹ ꮍ 𐊲 U+10C20 𑢤 𑣄 𑣜 𖽃
+  t: '\u03a4\u03c4\u0422\u0442\u07e0\u13a2\u1d1b\u22a4\u27d9\u2ca6\u2ca7\u3112\u4e05\ua4d4\ua50b\ua68d' + // Τ τ Т т U+07E0 Ꭲ ᴛ ⊤ ⟙ Ⲧ ⲧ ㄒ 丅 ꓔ ꔋ ꚍ
+    '\uab72\u{10297}\u{102b1}\u{10315}\u{118bc}\u{16f0a}\u{1d373}\u{1f768}', // ꭲ 𐊗 𐊱 𐌕 𑢼 𖼊 𝍳 🝨
+  e: '\u0395\u0415\u0435\u04bd\u13ac\u1d07\u212e\u22ff\u2d39\ua4f0\ua5cb\uab32\uab7c\u{10286}\u{118a6}\u{118ae}' + // Ε Е е ҽ Ꭼ ᴇ ℮ ⋿ ⴹ ꓰ ꗋ ꬲ ꭼ 𐊆 𑢦 𑢮
+    '\u{1df81}', // 𝾁
+  m: '\u028d\u039c\u03fa\u041c\u043c\u0560\u13b7\u15f0\u16d6\u1d0d\u2c98\u2c99\ua4df\uab87\u{102b0}\u{10311}' + // ʍ Μ Ϻ М м ՠ Ꮇ ᗰ ᛖ ᴍ Ⲙ ⲙ ꓟ ꮇ 𐊰 𐌑
+    '\u{10c21}\u{11700}\u{118e3}', // U+10C21 𑜀 𑣣
+  c: '\u0421\u0441\u1004\u105a\u13df\u1c83\u1d04\u2ca4\u2ca5\ua4da\uabaf\u{102a2}\u{10302}\u{10415}\u{1043d}\u{1051b}' + // С с င ၚ Ꮯ ᲃ ᴄ Ⲥ ⲥ ꓚ ꮯ 𐊢 𐌂 𐐕 𐐽 𐔛
+    '\u{118e9}\u{118f2}\u{1d134}\u{1f74c}', // 𑣩 𑣲 𝄴 🝌
+  o: '\u0030\u039f\u03bf\u03c3\u03ed\u041e\u043e\u0555\u0585\u05e1\u0647\u0665\u06be\u06c1\u06d5\u06f5' + // 0 Ο ο σ ϭ О о Օ օ U+05E1 U+0647 U+0665 U+06BE U+06C1 U+06D5 U+06F5
+    '\u07c0\u07cb\u0840\u0966\u09e6\u0a66\u0ae6\u0b20\u0b66\u0be6\u0c02\u0c66\u0c82\u0ce6\u0d02\u0d20' + // U+07C0 U+07CB U+0840 ० ০ ੦ ૦ ଠ ୦ ௦ U+0C02 ౦ U+0C82 ೦ U+0D02 ഠ
+    '\u0d66\u0d82\u0e50\u0ed0\u101d\u1040\u10ff\u110b\u11bc\u12d0\u17e0\u1a45\u1a80\u1a90\u1bea\u1c82' + // ൦ U+0D82 ๐ ໐ ဝ ၀ ჿ ᄋ ᆼ ዐ ០ ᩅ ᪀ ᪐ U+1BEA ᲂ
+    '\u1cbf\u1d0f\u1d11\u2c9e\u2c9f\u2d54\u3007\ua4f3\uab3d\u{10292}\u{102ab}\u{1030f}\u{10404}\u{1042c}\u{104c2}\u{104ea}' + // Ჿ ᴏ ᴑ Ⲟ ⲟ ⵔ 〇 ꓳ ꬽ 𐊒 𐊫 𐌏 𐐄 𐐬 𐓂 𐓪
+    '\u{10516}\u{1092c}\u{10c17}\u{10d07}\u{11124}\u{11302}\u{114d0}\u{118b5}\u{118c8}\u{118d7}\u{118e0}\u{11de0}\u{16ae9}\u{1e140}\u{1e2f0}', // 𐔖 U+1092C U+10C17 U+10D07 𑄤 U+11302 𑓐 𑢵 𑣈 𑣗 𑣠 𑷠 𖫩 𞅀 𞋰
+  n: '\u0274\u039d\u0578\u057c\u2c9a\u2c9b\ua4e0\u{10513}\u{11abe}', // ɴ Ν ո ռ Ⲛ ⲛ ꓠ 𐔓 𑪾
+  d: '\u0501\u13a0\u13e7\u146f\u15de\u15ea\u1d05\ua4d2\ua4d3\uab70\uabb7\u{1018b}', // ԁ Ꭰ Ꮷ ᑯ ᗞ ᗪ ᴅ ꓒ ꓓ ꭰ ꮷ 𐆋
+  u: '\u028b\u03c5\u054d\u057d\u1200\u144c\u1d1c\u222a\u22c3\ua4f4\ua79f\uab4e\uab52\u{104ce}\u{104f6}\u{118b8}' + // ʋ υ Ս ս ሀ ᑌ ᴜ ∪ ⋃ ꓴ ꞟ ꭎ ꭒ 𐓎 𐓶 𑢸
+    '\u{118d8}\u{16f42}', // 𑣘 𖽂
+  r: '\u01a6\u024c\u0280\u0433\u13a1\u13d2\u1587\u1d26\u2c85\ua4e3\uab47\uab48\uab71\uab81\uaba2\u{104b4}' + // Ʀ Ɍ ʀ г Ꭱ Ꮢ ᖇ ᴦ ⲅ ꓣ ꭇ ꭈ ꭱ ꮁ ꮢ 𐒴
+    '\u{16a19}\u{16f35}\u{1d216}', // 𖨙 𖼵 𝈖
+  co: '\uab43', // ꭃ
+}
+const LOOKALIKE_OF = new Map(Object.entries(LOOKALIKES).flatMap(([latin, drawn]) => [...drawn].map((c) => [c, latin] as [string, string])))
+
+/** A sender's name as it is read to tell it from system and conductor (messageSender): each
+ *  character drawn like a letter of theirs as that letter (LOOKALIKES), lowercased, and rn as m,
+ *  which confusables.txt lists as drawn like it. */
+export function senderKey(name: string): string {
+  return Array.from(name, (c) => LOOKALIKE_OF.get(c) ?? c).join('').toLowerCase().replace(/rn/g, 'm')
+}
+
 /** The sender a swarm message is filed under: the name its caller gives, so the conductor's word is
  *  told from a worker's (a worker's own result in STEP 8's words, "SWARM COMPLETE ...", ended the
  *  swarm with a task still open: GitHub #36), or mcp-client for none. Never Termpolis's own system,
  *  whose notes the conductor acts on, closing a worker: not by a name the Messages tab shows the
  *  same, with an invisible character in it (a control or format character, or any other Unicode
- *  marks default-ignorable: a variation selector, a Hangul filler) or a fullwidth letter (NFKC folds
- *  those). The conductor is "conductor" however it writes it, which is the name its plan and its
- *  STEP 8 are told by. */
+ *  marks default-ignorable: a variation selector, a Hangul filler), a fullwidth letter (NFKC folds
+ *  those), or characters of any script drawn like its letters (senderKey). The conductor is
+ *  "conductor" however it writes it, which is the name its plan and its STEP 8 are told by. Read
+ *  that way only to tell those two, a name loses nothing: any other is filed as written. */
 function messageSender(from: unknown): string {
   const name = typeof from === 'string' ? from.normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{DI}]/gu, '').trim().slice(0, 64) : ''
-  const key = name.toLowerCase()
+  const key = senderKey(name)
   if (key === 'conductor') return 'conductor'
   return name === '' || key === 'system' ? 'mcp-client' : name
 }
@@ -1068,12 +1301,15 @@ export async function executeTool(
         : await handlers.createTerminal(args.name, shell, cwd)
       return { terminalId: tid, name: args.name }
     }
-    case 'run_command':
-      // Whether the terminal hosts an agent now, for submit: its latest command says.
-      if (isAgentBinary(String(args.command ?? '').trim().split(/\s+/)[0])) agentTerminals.add(args.terminalId)
-      else agentTerminals.delete(args.terminalId)
+    case 'run_command': {
+      // Whether the terminal hosts an agent now, for submit: its latest command says, and where in
+      // the output it was typed, marked before it is.
+      const command = String(args.command ?? '').trim()
+      if (isAgentBinary(command.split(/\s+/)[0])) agentStarts.set(args.terminalId, { at: handlers.outputOffset?.(args.terminalId) ?? 0, commands: agentCommands(command) })
+      else agentStarts.delete(args.terminalId)
       handlers.runCommand(args.terminalId, args.command)
       return { success: true, terminalId: args.terminalId, command: args.command }
+    }
     case 'read_output':
       return { output: handlers.readOutput(args.terminalId, args.lines || 50) }
     case 'run_and_wait':
@@ -1097,7 +1333,7 @@ export async function executeTool(
         endLine: args.endLine,
       })
     case 'close_terminal':
-      agentTerminals.delete(args.terminalId)
+      agentStarts.delete(args.terminalId)
       handlers.closeTerminal(args.terminalId)
       return { success: true }
     case 'write_to_terminal':

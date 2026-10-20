@@ -31,8 +31,15 @@ export interface ConductorRunPaths {
   taskFile: string
   /** Claude's --mcp-config file. Empty leaves the flag out: `--mcp-config ''` is an error. */
   mcpConfigPath: string
+  /** The UUID claude starts its session with (`--session-id`). Its transcript is `<id>.jsonl`, which
+   *  is how the dashboard's Trace follows this conductor's and no other session's. */
+  sessionId: string
+  /** Where the script records that id and claude's config home (CONDUCTOR_CLAUDE_HOME_FILE). */
+  claudeHomeFile: string
   /** E2E only: the command resolveAgentCommand put in claude's place. It skips the binary probe,
-   *  whose `--version` check a mock can't pass, and gets its prompt exactly as claude does. */
+   *  whose `--version` check a mock can't pass, and gets its prompt exactly as claude does. A
+   *  program and its arguments, none with a space in it (`node e2e/mocks/mock-claude.cjs`): in
+   *  Constrained Language Mode its first word is the program Start-Process starts. */
   testCommand?: string
 }
 
@@ -102,36 +109,73 @@ const RESOLVE_CLAUDE = [
 /** The run script: `.termpolis-conductor-run.ps1` on Windows, `.termpolis-conductor-run.sh`
  *  elsewhere. Every path in it is a single-quoted literal, so a `$` or a backtick in a user name
  *  expands to nothing. */
-export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath, testCommand }: ConductorRunPaths): string {
+export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath, sessionId, claudeHomeFile, testCommand }: ConductorRunPaths): string {
   const quote = isWindows ? psQuote : shQuote
-  const flags = `-p${mcpConfigPath ? ` --mcp-config ${quote(mcpConfigPath)}` : ''} --dangerously-skip-permissions`
+  const flags = `-p${mcpConfigPath ? ` --mcp-config ${quote(mcpConfigPath)}` : ''} --session-id ${quote(sessionId)} --dangerously-skip-permissions`
   if (isWindows) {
+    const pipe = (command: string): string => `Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(taskFile)} | ${command} ${flags}`
+    // The same flags as one command line, for a program Start-Process starts: double quotes around
+    // the one path, which can hold no `"` and doesn't end in a backslash.
+    const commandLine = `-p${mcpConfigPath ? ` --mcp-config "${mcpConfigPath}"` : ''} --session-id ${sessionId} --dangerously-skip-permissions`
+    // Its exit code is read through a handle taken at once: a process object that has none can't
+    // get one once the process has exited, and its ExitCode is empty (a program that exits at once
+    // lost it, live). It waits for that process alone, not for what it leaves running, as -Wait
+    // would; Wait-Process reports one that is already gone as an error.
+    const start = (program: string, args: string): string[] => [
+      `$run = Start-Process -FilePath ${program} -ArgumentList ${psQuote(args)} -NoNewWindow -PassThru -RedirectStandardInput ${psQuote(taskFile)}`,
+      'if ($run) {',
+      '  $null = $run.Handle',
+      '  while (-not $run.HasExited) { Start-Sleep -Milliseconds 200 }',
+      '  $global:LASTEXITCODE = $run.ExitCode',
+      '}',
+    ]
+    const indent = (lines: string[]): string[] => lines.map((line) => `  ${line}`)
+    const [testProgram, ...testArgs] = (testCommand ?? '').split(' ')
+    // ConstrainedLanguage (AppLocker or WDAC runs an untrusted script in it) refuses New-Object and
+    // setting [Console]::InputEncoding, so no UTF-8 without a BOM can be made for the pipe, and its
+    // stock UTF-8 put one in front of the task (WL-4). Start-Process hands the program the task
+    // file itself as its stdin instead. It can't start npm's PowerShell shim, but it can start the
+    // claude.cmd npm writes beside it. A .ps1 with no .cmd beside it is still piped to, behind a
+    // BOM, which the output says.
+    const constrained = testCommand
+      ? start(psQuote(testProgram), [...testArgs, commandLine].join(' '))
+      : [
+          '$launcher = $claudeExe',
+          "$cmdShim = $launcher -replace '\\.ps1$', '.cmd'",
+          "if ($launcher -like '*.ps1' -and (Test-Path -LiteralPath $cmdShim)) { $launcher = $cmdShim }",
+          "if ($launcher -like '*.ps1') {",
+          '  $OutputEncoding = [System.Text.Encoding]::UTF8',
+          `  Write-Output ${psQuote(CONSTRAINED)}`,
+          `  ${pipe('& $launcher')}`,
+          '} else {',
+          ...indent(start('$launcher', commandLine)),
+          '}',
+        ]
     // A BOM first, which writeConfigFile writes as UTF-8's: 5.1 reads a .ps1 without one in the
     // ANSI code page, and the paths here are under the user's home folder. "José" came out as
     // "JosÃ©", and Ñ, ł or ’ as bytes that read as quotes and ended the literal early.
     return '\uFEFF' + [
       `Write-Output '${CONDUCTOR_START_LINE}'`,
       ...(testCommand ? [] : RESOLVE_WORKING_CLAUDE),
-      // UTF-8 without a BOM both ways. 5.1 pipes text to a native program in $OutputEncoding,
-      // which is ASCII by default (every non-ASCII character became `?`), and when the console is
-      // on code page 65001 .NET writes [Console]::InputEncoding's BOM into the pipe ahead of it.
-      // Get-Content needs -Encoding as well: 5.1 reads a BOM-less file as ANSI (`—` became `â€”`).
-      // ConstrainedLanguage (AppLocker or WDAC, for an untrusted script) refuses New-Object and
-      // setting [Console]::InputEncoding; its stock UTF-8 gets every character through, behind
-      // a BOM, which the output says.
-      "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {",
-      '  $enc = New-Object System.Text.UTF8Encoding $false',
-      '  $OutputEncoding = $enc',
-      '  [Console]::InputEncoding = $enc',
-      '} else {',
-      '  $OutputEncoding = [System.Text.Encoding]::UTF8',
-      `  Write-Output ${psQuote(CONSTRAINED)}`,
-      '}',
+      // Where claude keeps this session's transcript, for Trace: under the config home it gets from
+      // this shell, which its profile or a command typed before the run can have set.
+      `Set-Content -LiteralPath ${psQuote(claudeHomeFile)} -Value ${psQuote(sessionId)}, "$env:CLAUDE_CONFIG_DIR" -Encoding UTF8 -ErrorAction SilentlyContinue`,
       // The probe's `--version` left 0 here, and a pipe that fails before claude starts (a binary
       // gone since, a parameter that won't bind) sets nothing: the report would say "exited 0".
       // Global, or a script variable would hide the one the native command sets.
       '$global:LASTEXITCODE = $null',
-      `Get-Content -Raw -Encoding UTF8 -LiteralPath ${psQuote(taskFile)} | ${testCommand ?? '& $claudeExe'} ${flags}`,
+      // UTF-8 without a BOM both ways. 5.1 pipes text to a native program in $OutputEncoding,
+      // which is ASCII by default (every non-ASCII character became `?`), and when the console is
+      // on code page 65001 .NET writes [Console]::InputEncoding's BOM into the pipe ahead of it.
+      // Get-Content needs -Encoding as well: 5.1 reads a BOM-less file as ANSI (`—` became `â€”`).
+      "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {",
+      '  $enc = New-Object System.Text.UTF8Encoding $false',
+      '  $OutputEncoding = $enc',
+      '  [Console]::InputEncoding = $enc',
+      `  ${pipe(testCommand ?? '& $claudeExe')}`,
+      '} else {',
+      ...indent(constrained),
+      '}',
       '$code = $LASTEXITCODE',
       // A command that never started sets no exit code, and the report needs one.
       'if ($null -eq $code) { $code = 1 }',
@@ -149,6 +193,7 @@ export function conductorRunScript(isWindows: boolean, { taskFile, mcpConfigPath
     `echo '${CONDUCTOR_START_LINE}'`,
     `TASK_FILE=${shQuote(taskFile)}`,
     ...(testCommand ? [] : RESOLVE_CLAUDE),
+    `printf '%s\\n%s\\n' ${shQuote(sessionId)} "\${CLAUDE_CONFIG_DIR-}" 2>/dev/null > ${shQuote(claudeHomeFile)}`,
     `${testCommand ?? '"$CLAUDE_EXE"'} ${flags} < "$TASK_FILE"`,
     'code=$?',
     'echo',

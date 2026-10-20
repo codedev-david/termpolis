@@ -968,8 +968,18 @@ describe('agentWatcher IPC', () => {
   it('attach reports TRUE only when a watcher was actually created', async () => {
     M.attachWatcher.mockReturnValueOnce({ close: () => {} })
     const r = await invoke('agentWatcher:attach', { terminalId: 't1', cwd: '/repo', agentType: 'claude' })
-    expect(M.attachWatcher).toHaveBeenCalledWith('t1', '/repo', 'claude')
+    // A pane's call names no session: the newest transcript in the folder.
+    expect(M.attachWatcher).toHaveBeenCalledWith('t1', '/repo', 'claude', undefined)
     expect(r).toEqual({ success: true, data: { attached: true } })
+  })
+
+  it("attach hands on the session the swarm conductor was started with, whose transcript Trace follows", async () => {
+    M.attachWatcher.mockReturnValueOnce({ close: () => {} })
+    const sessionId = '1b4e28ba-2fa1-41d2-883f-0016d3cca427'
+    expect(await invoke('agentWatcher:attach', { terminalId: 'c1', cwd: '/repo', agentType: 'claude', sessionId })).toEqual({
+      success: true, data: { attached: true },
+    })
+    expect(M.attachWatcher).toHaveBeenCalledWith('c1', '/repo', 'claude', sessionId)
   })
 
   it('attach reports FALSE when no transcript exists to watch', async () => {
