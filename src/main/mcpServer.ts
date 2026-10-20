@@ -786,6 +786,13 @@ const WIPE = /\x1b\[(?:H|[23]J|\?(?:1049|1047|47)h)/
 const ALT_SCREEN = /\x1b\[\?(?:1049|1047|47)([hl])/g
 /** An agent run_command started that has drawn no input of its own yet, whatever the screen shows. */
 const STARTING: AgentStatusResult = { status: 'starting', summary: 'no input shown since run_command started it' }
+/** A row that starts with a rule, among the rows inputBoxRows reads as an input box's: the rule that
+ *  closes the box, and on the same row the row under it. A resize that widens the screen joins the
+ *  two in ConPTY's repaint when the agent let that row wrap on from the rule (Claude Code 2.1.304's
+ *  command menu, under a box holding /exit), and inputBoxRows, which ends a box only at a rule alone
+ *  on its row, reads the box on to the screen's foot. The other rows of a box are its text, under
+ *  its glyph and indented. */
+const JOINED_RULE = /^[─━]{20,}/
 
 /** `text` drawn on a blank screen of the terminal's size (of the size the output reaches, where main
  *  has none), less the blank rows at its foot. */
@@ -845,11 +852,14 @@ const showsCommand = (rows: readonly string[], commands: readonly string[]): boo
  *  command after it, then runs it. Nor a switch to the alternate screen since, which only a program
  *  still running stays on: an agent in its fullscreen view, started again by hand. A box with the
  *  command on a row under it is the screen of before the agent started, the shell's line under the
- *  last frame an agent left, painted again by a resize. */
+ *  last frame an agent left, painted again by a resize. Under the box is from the rule that closes
+ *  it, though the repaint joined the row under it onto that rule (JOINED_RULE). */
 function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean } {
   const since = drawn(raw.slice(from), size).lines
   const box = inputBoxRow(since)
-  const started = box >= 0 && !showsCommand(since.slice(box + inputBoxRows(since)!.length), commands)
+  const rows = box < 0 ? [] : inputBoxRows(since)!
+  const joined = rows.findIndex((row) => JOINED_RULE.test(row))
+  const started = box >= 0 && !showsCommand(since.slice(box + (joined < 0 ? rows.length : joined)), commands)
   const prompts = promptsIn(raw.slice(from)).slice(whole && raw.slice(0, from).search(PROMPT_REPORT) < 0 ? 1 : 0)
   if (prompts.length === 0) return { shell: false, started }
   const after = raw.slice(from + prompts[prompts.length - 1])

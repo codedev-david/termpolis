@@ -10,6 +10,7 @@ import typed from '../fixtures/agentScreensTyped.json'
 import held from '../fixtures/agentScreensHeld.json'
 import cleared from '../fixtures/agentScreensCleared.json'
 import cursorScreens from '../fixtures/agentScreensCursor.json'
+import restart from '../fixtures/agentScreensRestart.json'
 
 // write_to_terminal with `submit` (GitHub #36 item 4), against a fake terminal: a screen script that
 // changes as time passes and as the tool types, and a clock that only moves when the tool sleeps.
@@ -2134,6 +2135,81 @@ describe('write_to_terminal submit and the output since run_command started the 
     const res = await submitToTerminal(t.handlers, 'repaint-1', 'Write the docs. Task ID: t-1', t.clock)
     expect(res).toMatchObject({ submitted: true })
     expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
+
+  // W3r: a resize that widens the screen joins, in ConPTY's repaint, a row the agent let wrap on from
+  // the rule under its box onto that rule: Claude Code 2.1.304's command menu, under a box holding
+  // /exit. Read as a box with no closing rule, running down over the command under it, the old box
+  // was the new agent's input: Ctrl+U went into the agent while it still loaded, and an agent that
+  // drew its own box after two writes of them had the task refused, as held text clearing didn't
+  // remove, though it was healthy.
+  const MENU = ['  ❯ /exit', '            Exit the CLI', 'Resume this session with: claude --resume 1234', `PS C:\\p> ${CLAUDE}`]
+  it.each([
+    ['─', 80, MENU],
+    ['━', 80, MENU],
+    // As narrow as a box is read: its rules are 20 at least.
+    ['─', 20, MENU],
+    // What the repaint joins onto the rule is under the box, whatever it is: here the shell's line.
+    ['─', 40, [`PS C:\\p> ${CLAUDE}`]],
+  ])("waits for an agent run_command starts again, though a resize joined the old box's closing rule, %s x%i, to the row under it: %j", async (line, width, under) => {
+    const rule = line.repeat(width)
+    const t = terminal({ cols: 100, rows: 30 })
+    t.print(PROMPT)
+    await run(t, 'joined-1')
+    t.print(exited())
+    await run(t, 'joined-1')
+    const rows = ['Claude Code', '', rule, '❯ /exit', `${rule}${under[0]}`, ...under.slice(1)]
+    t.print(`${E}[?25l${E}[H${rows.map((r) => `${r}${E}[K`).join('\r\n')}${E}[?25h`)
+    expect(screenOf(`${E}[H${rows.join('\r\n')}`, { cols: 100, rows: 30 }).lines()[4]).toBe(`${rule}${under[0]}`)
+    t.agentAt(2500)
+    expect(await submitToTerminal(t.handlers, 'joined-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+    expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
+
+  // Above a rule a repaint joined is the box's own text, not what is under it: a box holding the
+  // command, typed into the agent as it started, is the new agent's input still, and is cleared.
+  it('types into the box of an agent run_command started again that holds the command, though a resize joined its closing rule to the row under it', async () => {
+    const t = terminal({ cols: 100, rows: 30 })
+    t.print(PROMPT)
+    await run(t, 'joined-2')
+    t.print(exited())
+    await run(t, 'joined-2')
+    t.agentAt(0, frame(['Claude Code', '', RULE, `❯ ${CLAUDE}`, `${RULE}  ⏵⏵ bypass permissions on`], '✳ Claude Code'))
+    expect(await submitToTerminal(t.handlers, 'joined-2', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual([CLEAR, 'Write the docs. Task ID: t-1', '\r'])
+  })
+
+  // An older Claude Code's box closes with ╰, and the command under that is under the box.
+  it("waits for an agent run_command starts again, though a resize painted an older Claude Code's box over the command", async () => {
+    const t = terminal({ cols: 80, rows: 24 })
+    t.print(PROMPT)
+    await run(t, 'boxed-1')
+    t.print(exited())
+    await run(t, 'boxed-1')
+    const rows = ['Claude Code', `╭${'─'.repeat(78)}╮`, `│ > /exit${' '.repeat(69)}│`, `╰${'─'.repeat(78)}╯`, 'Resume this session with: claude --resume 1234', `PS C:\\p> ${CLAUDE}`]
+    t.print(`${E}[?25l${E}[H${rows.map((r) => `${r}${E}[K`).join('\r\n')}${E}[?25h`)
+    expect(inputBoxRow(screenOf(`${E}[H${rows.join('\r\n')}`).lines())).toBe(2)
+    t.agentAt(2500)
+    expect(await submitToTerminal(t.handlers, 'boxed-1', 'Write the docs. Task ID: t-1', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+    expect(t.times[0]).toBeGreaterThanOrEqual(2500)
+  })
+
+  it.each([2500, 8000])("waits for a Claude Code run_command starts again, on its real screens after a resize joined the old box's closing rule to the row under it, drawing its own %i ms later", async (drawsAt) => {
+    const s = restart.screens['claude-restart-resize']
+    const t = terminal({ cols: s.cols, rows: s.rows }, false)
+    t.print(s.raw.slice(0, s.mark))
+    await run(t, 'joined-real-1', s.command)
+    t.print(s.raw.slice(s.mark, s.repainted))
+    // The old box, its closing rule and the menu's row on one row, and the command under it.
+    const since = screenOf(s.raw.slice(s.mark, s.repainted), s).lines()
+    expect(since.slice(1, 3)).toEqual(['>\u00a0/exit', `${RULE}  > /exit`])
+    expect(since.slice(18).join('')).toContain(s.command.slice(0, 60))
+    t.agentAt(drawsAt, s.raw.slice(s.repainted))
+    expect(await submitToTerminal(t.handlers, 'joined-real-1', 'Reply with the single word THREE.', t.clock)).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Reply with the single word THREE.', '\r'])
+    expect(t.times[0]).toBeGreaterThanOrEqual(drawsAt)
   })
 })
 
