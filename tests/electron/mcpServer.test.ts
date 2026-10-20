@@ -851,8 +851,8 @@ describe('MCP HTTP server', () => {
     ['conductor️', 'conductor'],
     // R4-5: letters drawn like the Latin ones spelled a name the Messages tab shows as "system" or
     // "conductor", which was filed as itself: one passed as Termpolis's own note, the other was not
-    // taken for the conductor. Every Cyrillic, Greek and Armenian letter and Latin small capital that
-    // Unicode's confusables draw like one of theirs is in a row.
+    // taken for the conductor. Some of every script Unicode's confusables draw like one of theirs are in
+    // a row; mcpSenderName.test.ts reads every one.
     ['\u0455\u0443\u0455\u0442\u0435\u043c', 'mcp-client'], // Cyrillic
     ['\u0405\u0423\u0405\u0422\u0415\u041c', 'mcp-client'], // Cyrillic capitals
     ['\u054f\u03a5\u054f\u03a4\u0395\u039c', 'mcp-client'], // Armenian Տ, Greek capitals
@@ -869,6 +869,32 @@ describe('MCP HTTP server', () => {
     ['c\u03bf\u0578d\u03c5ct\u03c3\u1d26', 'conductor'], // Greek and Armenian
     ['\u1c83\u0585\u057cd\u057dct\u1c82r', 'conductor'], // Cyrillic and Armenian
     ['S\u03d2STEM', 'mcp-client'], // Greek's upsilon symbol ϒ, which NFKC turns into Υ
+    // BEH-4: lookalikes in the other scripts were filed as themselves, and the conductor and the
+    // Messages tab read them as Termpolis's own sender.
+    ['\ua4e2\ua4ec\ua4e2\ua4d4\ua4f0\ua4df', 'mcp-client'], // Lisu
+    ['\u13da\u13a9\u13da\u13a2\u13ac\u13b7', 'mcp-client'], // Cherokee
+    ['\uabaa\uab8d\uabaa\uab72\uab7c\uab87', 'mcp-client'], // Cherokee small letters, drawn as small capitals
+    ['s\uab8dstem', 'mcp-client'], // Cherokee ꮍ, which the confusables leave out, drawn as its capital Ꮍ is
+    ['\u2ca5\u2c9f\u2c9bdu\u2ca5\u2ca7\u2c9f\u2c85', 'conductor'], // Coptic
+    ['s\u0263stem', 'mcp-client'], // Latin ɣ, drawn like Greek γ
+    ['CONDUCTO\u01a6', 'conductor'], // Latin Ʀ, drawn like R, whose lowercase ʀ is a small capital
+    ['\u10fdy\ua576tem', 'mcp-client'], // Georgian ჽ, Vai ꕶ
+    ['s\u4e2bs\u3112em', 'mcp-client'], // CJK 丫 and Bopomofo ㄒ
+    ['SYSTE\u16d6', 'mcp-client'], // Runic ᛖ
+    ['CON\u15eaUCTOR', 'conductor'], // Canadian syllabics ᗪ
+    ['\u1004ond\u1200ctor', 'conductor'], // Myanmar င, Ethiopic ሀ
+    ['c\u05e1nduct\u2d54r', 'conductor'], // Hebrew ס, Tifinagh ⵔ
+    ['SYSTE\u{10311}', 'mcp-client'], // Old Italic 𐌑, past the BMP
+    ['condu\u{10415}t\u{118e0}r', 'conductor'], // Deseret 𐐕, Warang Citi's zero
+    // Digits Unicode draws like one of the letters: 0 like O, other zeros like o.
+    ['c0nduct0r', 'conductor'],
+    ['C0NDUCT0R', 'conductor'],
+    ['c\u0966nductor', 'conductor'], // the Devanagari zero
+    // Two letters drawn as one character: rn like m, ꭃ like co.
+    ['systern', 'mcp-client'],
+    ['SYSTERN', 'mcp-client'],
+    ['\u0455\u0443\u0455te\u0433\u0578', 'mcp-client'], // Cyrillic, г and Armenian ո drawn like r and n
+    ['\uab43nductor', 'conductor'],
     // NFKC turns a lunate sigma, drawn like c, into ς, which is drawn like no letter of the two.
     ['\u03f2onductor', '\u03c2onductor'],
     // Names a person reads as they are written keep every character they show.
@@ -883,6 +909,22 @@ describe('MCP HTTP server', () => {
     ['\u0421\u0435\u0440\u0433\u0435\u0439', '\u0421\u0435\u0440\u0433\u0435\u0439'], // Сергей: Cyrillic, its С and е drawn like C and e
     ['\u03a3\u03c4\u03ad\u03c6\u03b1\u03bd\u03bf\u03c2', '\u03a3\u03c4\u03ad\u03c6\u03b1\u03bd\u03bf\u03c2'], // Στέφανος: Greek, its τ and ο drawn like t and o
     ['\u054d\u0578\u0576\u0561', '\u054d\u0578\u0576\u0561'], // Սոնա: Armenian, its Ս and ո drawn like U and n
+    // A name that is not one of the two, its letters read so or not.
+    ['systems', 'systems'],
+    ['conductors', 'conductors'],
+    ['sys tem', 'sys tem'],
+    ['con-ductor', 'con-ductor'],
+    ['worker-0', 'worker-0'],
+    ['c0nductors', 'c0nductors'],
+    ['\u0455ystem2', '\u0455ystem2'],
+    ['syst3m', 'syst3m'], // 3 is drawn like no letter of these
+    ['5ystem', '5ystem'],
+    ['systen', 'systen'],
+    // Letters only their lowercase or uppercase is drawn like: Σ, Γ and ε are drawn like no letter of these.
+    ['C\u03a3NDUCT\u03a3R', 'C\u03a3NDUCT\u03a3R'],
+    ['s\u0393stem', 's\u0393stem'],
+    ['syst\u03b5m', 'syst\u03b5m'],
+    ['co\u043fductor', 'co\u043fductor'], // Cyrillic п, drawn like no n
     // The conductor, however it writes its own name: its plan and its STEP 8 are told by it.
     ['Conductor', 'conductor'],
     [' CONDUCTOR ', 'conductor'],

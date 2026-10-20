@@ -1210,28 +1210,51 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   return failed(waitedMs, 'The text is still in the agent\'s input after Enter was pressed twice. Check it with read_output.', last)
 }
 
-/** The letters drawn like those of "system" and "conductor" (R4-5), by the Latin letter each reads
- *  as: every Cyrillic, Greek and Armenian letter, and every Latin small capital, that Unicode's
- *  confusables list as one of them in either case, or as its small capital (т and τ are drawn as ᴛ).
- *  A name spelled with them looks like one of the two in the Messages tab. Read after NFKC, which
+/** The characters drawn like the letters of "system" and "conductor" (R4-5, BEH-4), by the Latin
+ *  letter each reads as: every one, whatever its script, that Unicode's confusables.txt (18.0.0)
+ *  lists as drawn like one of them in either case or like its small capital (т and τ like ᴛ, м like
+ *  ᴍ), digits among them (0 like O, the Devanagari zero like o); the four small Cherokee letters it
+ *  leaves out whose capitals it lists (ꭹ ꮍ ꮥ ꮷ: Cherokee draws a small letter as its capital,
+ *  smaller, and the list gives every other one the letter of its capital); and ꭃ, which it lists as
+ *  drawn like co. tests/fixtures/senderLookalikes.json holds the same list, with each one's name. A
+ *  name spelled with them looks like one of the two in the Messages tab. Read after NFKC, which
  *  turns symbols drawn like them into them (Greek's upsilon symbol ϒ into Υ), and Greek's lunate
- *  sigmas, drawn like c and C, into ς and Σ, drawn like neither; and before the name is lowercased,
- *  which turns some of them into letters drawn like none of these (Greek Μ into μ). */
+ *  sigmas, drawn like c and C, into ς and Σ, drawn like neither, so nothing NFKC changes is listed;
+ *  and before the name is lowercased, which turns some of them into letters drawn like none of these
+ *  (Greek Μ into μ). A letter that lowercases into one of them is not read as it, unless it is
+ *  listed itself: Σ is drawn like none of these, though σ is drawn like o. */
 const LOOKALIKES: Readonly<Record<string, string>> = {
-  s: '\u0405\u0455\u054f\ua731', // Ѕ ѕ Տ ꜱ
-  y: '\u028f\u03a5\u03b3\u0423\u0443\u04ae\u04af', // ʏ Υ γ У у Ү ү
-  t: '\u03a4\u03c4\u0422\u0442\u1d1b\ua68d', // Τ τ Т т ᴛ ꚍ
-  e: '\u0395\u0415\u0435\u04bd\u1d07', // Ε Е е ҽ ᴇ
-  m: '\u039c\u03fa\u041c\u043c\u1d0d', // Μ Ϻ М м ᴍ
-  c: '\u0421\u0441\u1c83\u1d04', // С с ᲃ ᴄ
-  o: '\u039f\u03bf\u03c3\u041e\u043e\u0555\u0585\u1c82\u1d0f', // Ο ο σ О о Օ օ ᲂ ᴏ
-  n: '\u0274\u039d\u0578\u057c', // ɴ Ν ո ռ
-  d: '\u0501\u1d05', // ԁ ᴅ
-  u: '\u03c5\u054d\u057d\u1d1c', // υ Ս ս ᴜ
-  r: '\u0280\u0433\u1d26', // ʀ г ᴦ
+  s: '\u01bd\u0405\u0455\u054f\u0d1f\u10bd\u10fd\u13d5\u13da\u1cbd\ua4e2\ua576\ua731\uaba5\uabaa\u{10296}' + // ƽ Ѕ ѕ Տ ട Ⴝ ჽ Ꮥ Ꮪ Ჽ ꓢ ꕶ ꜱ ꮥ ꮪ 𐊖
+    '\u{10420}\u{10448}\u{118c1}\u{16ad6}\u{16f3a}', // 𐐠 𐑈 𑣁 𖫖 𖼺
+  y: '\u0263\u028f\u03a5\u03b3\u0423\u0443\u04ae\u04af\u07cc\u10e7\u13a9\u13bd\u1d8c\u1eff\u2ca8\u2ca9' + // ɣ ʏ Υ γ У у Ү ү U+07CC ყ Ꭹ Ꮍ ᶌ ỿ Ⲩ ⲩ
+    '\u311a\u4e2b\ua4ec\uab5a\uab79\uab8d\u{102b2}\u{10c20}\u{118a4}\u{118c4}\u{118dc}\u{16f43}', // ㄚ 丫 ꓬ ꭚ ꭹ ꮍ 𐊲 U+10C20 𑢤 𑣄 𑣜 𖽃
+  t: '\u03a4\u03c4\u0422\u0442\u07e0\u13a2\u1d1b\u2ca6\u2ca7\u3112\u4e05\ua4d4\ua50b\ua68d\uab72\u{10297}' + // Τ τ Т т U+07E0 Ꭲ ᴛ Ⲧ ⲧ ㄒ 丅 ꓔ ꔋ ꚍ ꭲ 𐊗
+    '\u{102b1}\u{10315}\u{118bc}\u{16f0a}', // 𐊱 𐌕 𑢼 𖼊
+  e: '\u0395\u0415\u0435\u04bd\u13ac\u1d07\u212e\u2d39\ua4f0\ua5cb\uab32\uab7c\u{10286}\u{118a6}\u{118ae}\u{1df81}', // Ε Е е ҽ Ꭼ ᴇ ℮ ⴹ ꓰ ꗋ ꬲ ꭼ 𐊆 𑢦 𑢮 𝾁
+  m: '\u028d\u039c\u03fa\u041c\u043c\u0560\u13b7\u15f0\u16d6\u1d0d\u2c98\u2c99\ua4df\uab87\u{102b0}\u{10311}' + // ʍ Μ Ϻ М м ՠ Ꮇ ᗰ ᛖ ᴍ Ⲙ ⲙ ꓟ ꮇ 𐊰 𐌑
+    '\u{10c21}\u{11700}\u{118e3}', // U+10C21 𑜀 𑣣
+  c: '\u0421\u0441\u1004\u105a\u13df\u1c83\u1d04\u2ca4\u2ca5\ua4da\uabaf\u{102a2}\u{10302}\u{10415}\u{1043d}\u{1051b}' + // С с င ၚ Ꮯ ᲃ ᴄ Ⲥ ⲥ ꓚ ꮯ 𐊢 𐌂 𐐕 𐐽 𐔛
+    '\u{118e9}', // 𑣩
+  o: '\u0030\u039f\u03bf\u03c3\u03ed\u041e\u043e\u0555\u0585\u05e1\u0647\u0665\u06be\u06c1\u06d5\u06f5' + // 0 Ο ο σ ϭ О о Օ օ U+05E1 U+0647 U+0665 U+06BE U+06C1 U+06D5 U+06F5
+    '\u07c0\u07cb\u0840\u0966\u09e6\u0a66\u0ae6\u0b20\u0b66\u0be6\u0c02\u0c66\u0c82\u0ce6\u0d02\u0d20' + // U+07C0 U+07CB U+0840 ० ০ ੦ ૦ ଠ ୦ ௦ U+0C02 ౦ U+0C82 ೦ U+0D02 ഠ
+    '\u0d66\u0d82\u0e50\u0ed0\u101d\u1040\u10ff\u110b\u11bc\u12d0\u17e0\u1a45\u1a80\u1a90\u1bea\u1c82' + // ൦ U+0D82 ๐ ໐ ဝ ၀ ჿ ᄋ ᆼ ዐ ០ ᩅ ᪀ ᪐ U+1BEA ᲂ
+    '\u1cbf\u1d0f\u1d11\u2c9e\u2c9f\u2d54\u3007\ua4f3\uab3d\u{10292}\u{102ab}\u{1030f}\u{10404}\u{1042c}\u{104c2}\u{104ea}' + // Ჿ ᴏ ᴑ Ⲟ ⲟ ⵔ 〇 ꓳ ꬽ 𐊒 𐊫 𐌏 𐐄 𐐬 𐓂 𐓪
+    '\u{10516}\u{1092c}\u{10c17}\u{10d07}\u{11124}\u{11302}\u{114d0}\u{118b5}\u{118c8}\u{118d7}\u{118e0}\u{11de0}\u{16ae9}\u{1e140}\u{1e2f0}', // 𐔖 U+1092C U+10C17 U+10D07 𑄤 U+11302 𑓐 𑢵 𑣈 𑣗 𑣠 𑷠 𖫩 𞅀 𞋰
+  n: '\u0274\u039d\u0578\u057c\u2c9a\u2c9b\ua4e0\u{10513}\u{11abe}', // ɴ Ν ո ռ Ⲛ ⲛ ꓠ 𐔓 𑪾
+  d: '\u0501\u13a0\u13e7\u146f\u15de\u15ea\u1d05\ua4d2\ua4d3\uab70\uabb7', // ԁ Ꭰ Ꮷ ᑯ ᗞ ᗪ ᴅ ꓒ ꓓ ꭰ ꮷ
+  u: '\u028b\u03c5\u054d\u057d\u1200\u144c\u1d1c\ua4f4\ua79f\uab4e\uab52\u{104ce}\u{104f6}\u{118b8}\u{118d8}\u{16f42}', // ʋ υ Ս ս ሀ ᑌ ᴜ ꓴ ꞟ ꭎ ꭒ 𐓎 𐓶 𑢸 𑣘 𖽂
+  r: '\u01a6\u024c\u0280\u0433\u13a1\u13d2\u1587\u1d26\u2c85\ua4e3\uab47\uab48\uab71\uab81\uaba2\u{104b4}' + // Ʀ Ɍ ʀ г Ꭱ Ꮢ ᖇ ᴦ ⲅ ꓣ ꭇ ꭈ ꭱ ꮁ ꮢ 𐒴
+    '\u{16a19}\u{16f35}', // 𖨙 𖼵
+  co: '\uab43', // ꭃ
 }
 const LOOKALIKE_OF = new Map(Object.entries(LOOKALIKES).flatMap(([latin, drawn]) => [...drawn].map((c) => [c, latin] as [string, string])))
-const LOOKALIKE = new RegExp(`[${Object.values(LOOKALIKES).join('')}]`, 'gu')
+
+/** A sender's name as it is read to tell it from system and conductor (messageSender): each
+ *  character drawn like a letter of theirs as that letter (LOOKALIKES), lowercased, and rn as m,
+ *  which confusables.txt lists as drawn like it. */
+export function senderKey(name: string): string {
+  return Array.from(name, (c) => LOOKALIKE_OF.get(c) ?? c).join('').toLowerCase().replace(/rn/g, 'm')
+}
 
 /** The sender a swarm message is filed under: the name its caller gives, so the conductor's word is
  *  told from a worker's (a worker's own result in STEP 8's words, "SWARM COMPLETE ...", ended the
@@ -1239,13 +1262,12 @@ const LOOKALIKE = new RegExp(`[${Object.values(LOOKALIKES).join('')}]`, 'gu')
  *  whose notes the conductor acts on, closing a worker: not by a name the Messages tab shows the
  *  same, with an invisible character in it (a control or format character, or any other Unicode
  *  marks default-ignorable: a variation selector, a Hangul filler), a fullwidth letter (NFKC folds
- *  those), or a Cyrillic, Greek or Armenian letter or a small capital drawn like a Latin letter
- *  (LOOKALIKES; the lookalikes Unicode lists in other scripts, and digits, are not folded). The
- *  conductor is "conductor" however it writes it, which is the name its plan and its STEP 8 are
- *  told by. */
+ *  those), or characters of any script drawn like its letters (senderKey). The conductor is
+ *  "conductor" however it writes it, which is the name its plan and its STEP 8 are told by. Read
+ *  that way only to tell those two, a name loses nothing: any other is filed as written. */
 function messageSender(from: unknown): string {
   const name = typeof from === 'string' ? from.normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{DI}]/gu, '').trim().slice(0, 64) : ''
-  const key = name.replace(LOOKALIKE, (c) => LOOKALIKE_OF.get(c)!).toLowerCase()
+  const key = senderKey(name)
   if (key === 'conductor') return 'conductor'
   return name === '' || key === 'system' ? 'mcp-client' : name
 }

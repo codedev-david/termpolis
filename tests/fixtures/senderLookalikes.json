@@ -1,0 +1,1305 @@
+{
+ "_about": "Every character Unicode's confusables.txt 18.0.0 (2026-08-06) lists as drawn like a letter of \"system\" or \"conductor\", by the letter it reads as (mcpServer.ts LOOKALIKES): each whose prototype is that of the letter, of its capital or of its small capital (m's is rn, ᴍ's is ʍ), whatever its script, and the prototypes ʍ ᴛ ᴇ ɴ ᴅ ʀ themselves; but the ASCII letters and the characters NFKC changes, since a sender's name is read after NFKC. With them the four small Cherokee letters it leaves out whose capitals it lists (ꭹ ꮍ ꮥ ꮷ): Cherokee draws a small letter as its capital, smaller, like a Latin small capital, and the list gives every other small letter the letter of its capital. And ꭃ, whose prototype is co, two letters of conductor. cp is the code point, via the prototype it is listed with, name its Unicode name.",
+ "version": "18.0.0",
+ "lookalikes": {
+  "s": [
+   [
+    "01BD",
+    "s",
+    "LATIN SMALL LETTER TONE FIVE"
+   ],
+   [
+    "0405",
+    "S",
+    "CYRILLIC CAPITAL LETTER DZE"
+   ],
+   [
+    "0455",
+    "s",
+    "CYRILLIC SMALL LETTER DZE"
+   ],
+   [
+    "054F",
+    "S",
+    "ARMENIAN CAPITAL LETTER TIWN"
+   ],
+   [
+    "0D1F",
+    "s",
+    "MALAYALAM LETTER TTA"
+   ],
+   [
+    "10BD",
+    "S",
+    "GEORGIAN CAPITAL LETTER CHAR"
+   ],
+   [
+    "10FD",
+    "S",
+    "GEORGIAN LETTER AEN"
+   ],
+   [
+    "13D5",
+    "S",
+    "CHEROKEE LETTER DE"
+   ],
+   [
+    "13DA",
+    "S",
+    "CHEROKEE LETTER DU"
+   ],
+   [
+    "1CBD",
+    "S",
+    "GEORGIAN MTAVRULI CAPITAL LETTER AEN"
+   ],
+   [
+    "A4E2",
+    "S",
+    "LISU LETTER SA"
+   ],
+   [
+    "A576",
+    "S",
+    "VAI SYLLABLE POO"
+   ],
+   [
+    "A731",
+    "s",
+    "LATIN LETTER SMALL CAPITAL S"
+   ],
+   [
+    "ABA5",
+    "(its capital, U+13D5)",
+    "CHEROKEE SMALL LETTER DE"
+   ],
+   [
+    "ABAA",
+    "s",
+    "CHEROKEE SMALL LETTER DU"
+   ],
+   [
+    "10296",
+    "S",
+    "LYCIAN LETTER S"
+   ],
+   [
+    "10420",
+    "S",
+    "DESERET CAPITAL LETTER ZHEE"
+   ],
+   [
+    "10448",
+    "s",
+    "DESERET SMALL LETTER ZHEE"
+   ],
+   [
+    "118C1",
+    "s",
+    "WARANG CITI SMALL LETTER A"
+   ],
+   [
+    "16AD6",
+    "S",
+    "BASSA VAH LETTER GAH"
+   ],
+   [
+    "16F3A",
+    "S",
+    "MIAO LETTER SA"
+   ]
+  ],
+  "y": [
+   [
+    "0263",
+    "y",
+    "LATIN SMALL LETTER GAMMA"
+   ],
+   [
+    "028F",
+    "y",
+    "LATIN LETTER SMALL CAPITAL Y"
+   ],
+   [
+    "03A5",
+    "Y",
+    "GREEK CAPITAL LETTER UPSILON"
+   ],
+   [
+    "03B3",
+    "y",
+    "GREEK SMALL LETTER GAMMA"
+   ],
+   [
+    "0423",
+    "Y",
+    "CYRILLIC CAPITAL LETTER U"
+   ],
+   [
+    "0443",
+    "y",
+    "CYRILLIC SMALL LETTER U"
+   ],
+   [
+    "04AE",
+    "Y",
+    "CYRILLIC CAPITAL LETTER STRAIGHT U"
+   ],
+   [
+    "04AF",
+    "y",
+    "CYRILLIC SMALL LETTER STRAIGHT U"
+   ],
+   [
+    "07CC",
+    "Y",
+    "NKO LETTER I"
+   ],
+   [
+    "10E7",
+    "y",
+    "GEORGIAN LETTER QAR"
+   ],
+   [
+    "13A9",
+    "Y",
+    "CHEROKEE LETTER GI"
+   ],
+   [
+    "13BD",
+    "Y",
+    "CHEROKEE LETTER MU"
+   ],
+   [
+    "1D8C",
+    "y",
+    "LATIN SMALL LETTER V WITH PALATAL HOOK"
+   ],
+   [
+    "1EFF",
+    "y",
+    "LATIN SMALL LETTER Y WITH LOOP"
+   ],
+   [
+    "2CA8",
+    "Y",
+    "COPTIC CAPITAL LETTER UA"
+   ],
+   [
+    "2CA9",
+    "y",
+    "COPTIC SMALL LETTER UA"
+   ],
+   [
+    "311A",
+    "Y",
+    "BOPOMOFO LETTER A"
+   ],
+   [
+    "4E2B",
+    "Y",
+    "CJK UNIFIED IDEOGRAPH-4E2B"
+   ],
+   [
+    "A4EC",
+    "Y",
+    "LISU LETTER YA"
+   ],
+   [
+    "AB5A",
+    "y",
+    "LATIN SMALL LETTER Y WITH SHORT RIGHT LEG"
+   ],
+   [
+    "AB79",
+    "(its capital, U+13A9)",
+    "CHEROKEE SMALL LETTER GI"
+   ],
+   [
+    "AB8D",
+    "(its capital, U+13BD)",
+    "CHEROKEE SMALL LETTER MU"
+   ],
+   [
+    "102B2",
+    "Y",
+    "CARIAN LETTER U"
+   ],
+   [
+    "10C20",
+    "Y",
+    "OLD TURKIC LETTER ORKHON AEL"
+   ],
+   [
+    "118A4",
+    "Y",
+    "WARANG CITI CAPITAL LETTER YA"
+   ],
+   [
+    "118C4",
+    "y",
+    "WARANG CITI SMALL LETTER YA"
+   ],
+   [
+    "118DC",
+    "y",
+    "WARANG CITI SMALL LETTER HAR"
+   ],
+   [
+    "16F43",
+    "Y",
+    "MIAO LETTER AH"
+   ]
+  ],
+  "t": [
+   [
+    "03A4",
+    "T",
+    "GREEK CAPITAL LETTER TAU"
+   ],
+   [
+    "03C4",
+    "ᴛ",
+    "GREEK SMALL LETTER TAU"
+   ],
+   [
+    "0422",
+    "T",
+    "CYRILLIC CAPITAL LETTER TE"
+   ],
+   [
+    "0442",
+    "ᴛ",
+    "CYRILLIC SMALL LETTER TE"
+   ],
+   [
+    "07E0",
+    "T",
+    "NKO LETTER NA WOLOSO"
+   ],
+   [
+    "13A2",
+    "T",
+    "CHEROKEE LETTER I"
+   ],
+   [
+    "1D1B",
+    "(prototype)",
+    "(prototype itself)"
+   ],
+   [
+    "2CA6",
+    "T",
+    "COPTIC CAPITAL LETTER TAU"
+   ],
+   [
+    "2CA7",
+    "ᴛ",
+    "COPTIC SMALL LETTER TAU"
+   ],
+   [
+    "3112",
+    "T",
+    "BOPOMOFO LETTER X"
+   ],
+   [
+    "4E05",
+    "T",
+    "CJK UNIFIED IDEOGRAPH-4E05"
+   ],
+   [
+    "A4D4",
+    "T",
+    "LISU LETTER TA"
+   ],
+   [
+    "A50B",
+    "T",
+    "VAI SYLLABLE GBEE"
+   ],
+   [
+    "A68D",
+    "ᴛ",
+    "CYRILLIC SMALL LETTER TWE"
+   ],
+   [
+    "AB72",
+    "ᴛ",
+    "CHEROKEE SMALL LETTER I"
+   ],
+   [
+    "10297",
+    "T",
+    "LYCIAN LETTER T"
+   ],
+   [
+    "102B1",
+    "T",
+    "CARIAN LETTER C-18"
+   ],
+   [
+    "10315",
+    "T",
+    "OLD ITALIC LETTER TE"
+   ],
+   [
+    "118BC",
+    "T",
+    "WARANG CITI CAPITAL LETTER HAR"
+   ],
+   [
+    "16F0A",
+    "T",
+    "MIAO LETTER TA"
+   ]
+  ],
+  "e": [
+   [
+    "0395",
+    "E",
+    "GREEK CAPITAL LETTER EPSILON"
+   ],
+   [
+    "0415",
+    "E",
+    "CYRILLIC CAPITAL LETTER IE"
+   ],
+   [
+    "0435",
+    "e",
+    "CYRILLIC SMALL LETTER IE"
+   ],
+   [
+    "04BD",
+    "e",
+    "CYRILLIC SMALL LETTER ABKHASIAN CHE"
+   ],
+   [
+    "13AC",
+    "E",
+    "CHEROKEE LETTER GV"
+   ],
+   [
+    "1D07",
+    "(prototype)",
+    "(prototype itself)"
+   ],
+   [
+    "212E",
+    "e",
+    "ESTIMATED SYMBOL"
+   ],
+   [
+    "2D39",
+    "E",
+    "TIFINAGH LETTER YADD"
+   ],
+   [
+    "A4F0",
+    "E",
+    "LISU LETTER E"
+   ],
+   [
+    "A5CB",
+    "E",
+    "VAI SYLLABLE TO"
+   ],
+   [
+    "AB32",
+    "e",
+    "LATIN SMALL LETTER BLACKLETTER E"
+   ],
+   [
+    "AB7C",
+    "ᴇ",
+    "CHEROKEE SMALL LETTER GV"
+   ],
+   [
+    "10286",
+    "E",
+    "LYCIAN LETTER I"
+   ],
+   [
+    "118A6",
+    "E",
+    "WARANG CITI CAPITAL LETTER II"
+   ],
+   [
+    "118AE",
+    "E",
+    "WARANG CITI CAPITAL LETTER YUJ"
+   ],
+   [
+    "1DF81",
+    "E",
+    "LATIN CAPITAL LETTER E WITH BENT TOPBAR"
+   ]
+  ],
+  "m": [
+   [
+    "028D",
+    "(prototype)",
+    "(prototype itself)"
+   ],
+   [
+    "039C",
+    "M",
+    "GREEK CAPITAL LETTER MU"
+   ],
+   [
+    "03FA",
+    "M",
+    "GREEK CAPITAL LETTER SAN"
+   ],
+   [
+    "041C",
+    "M",
+    "CYRILLIC CAPITAL LETTER EM"
+   ],
+   [
+    "043C",
+    "ʍ",
+    "CYRILLIC SMALL LETTER EM"
+   ],
+   [
+    "0560",
+    "rn",
+    "ARMENIAN SMALL LETTER TURNED AYB"
+   ],
+   [
+    "13B7",
+    "M",
+    "CHEROKEE LETTER LU"
+   ],
+   [
+    "15F0",
+    "M",
+    "CANADIAN SYLLABICS CARRIER GO"
+   ],
+   [
+    "16D6",
+    "M",
+    "RUNIC LETTER EHWAZ EH E"
+   ],
+   [
+    "1D0D",
+    "ʍ",
+    "LATIN LETTER SMALL CAPITAL M"
+   ],
+   [
+    "2C98",
+    "M",
+    "COPTIC CAPITAL LETTER MI"
+   ],
+   [
+    "2C99",
+    "ʍ",
+    "COPTIC SMALL LETTER MI"
+   ],
+   [
+    "A4DF",
+    "M",
+    "LISU LETTER MA"
+   ],
+   [
+    "AB87",
+    "ʍ",
+    "CHEROKEE SMALL LETTER LU"
+   ],
+   [
+    "102B0",
+    "M",
+    "CARIAN LETTER S"
+   ],
+   [
+    "10311",
+    "M",
+    "OLD ITALIC LETTER SHE"
+   ],
+   [
+    "10C21",
+    "M",
+    "OLD TURKIC LETTER ORKHON ELT"
+   ],
+   [
+    "11700",
+    "rn",
+    "AHOM LETTER KA"
+   ],
+   [
+    "118E3",
+    "rn",
+    "WARANG CITI DIGIT THREE"
+   ]
+  ],
+  "c": [
+   [
+    "0421",
+    "C",
+    "CYRILLIC CAPITAL LETTER ES"
+   ],
+   [
+    "0441",
+    "c",
+    "CYRILLIC SMALL LETTER ES"
+   ],
+   [
+    "1004",
+    "c",
+    "MYANMAR LETTER NGA"
+   ],
+   [
+    "105A",
+    "c",
+    "MYANMAR LETTER MON NGA"
+   ],
+   [
+    "13DF",
+    "C",
+    "CHEROKEE LETTER TLI"
+   ],
+   [
+    "1C83",
+    "c",
+    "CYRILLIC SMALL LETTER WIDE ES"
+   ],
+   [
+    "1D04",
+    "c",
+    "LATIN LETTER SMALL CAPITAL C"
+   ],
+   [
+    "2CA4",
+    "C",
+    "COPTIC CAPITAL LETTER SIMA"
+   ],
+   [
+    "2CA5",
+    "c",
+    "COPTIC SMALL LETTER SIMA"
+   ],
+   [
+    "A4DA",
+    "C",
+    "LISU LETTER CA"
+   ],
+   [
+    "ABAF",
+    "c",
+    "CHEROKEE SMALL LETTER TLI"
+   ],
+   [
+    "102A2",
+    "C",
+    "CARIAN LETTER D"
+   ],
+   [
+    "10302",
+    "C",
+    "OLD ITALIC LETTER KE"
+   ],
+   [
+    "10415",
+    "C",
+    "DESERET CAPITAL LETTER CHEE"
+   ],
+   [
+    "1043D",
+    "c",
+    "DESERET SMALL LETTER CHEE"
+   ],
+   [
+    "1051B",
+    "C",
+    "ELBASAN LETTER SE"
+   ],
+   [
+    "118E9",
+    "C",
+    "WARANG CITI DIGIT NINE"
+   ]
+  ],
+  "o": [
+   [
+    "0030",
+    "O",
+    "DIGIT ZERO"
+   ],
+   [
+    "039F",
+    "O",
+    "GREEK CAPITAL LETTER OMICRON"
+   ],
+   [
+    "03BF",
+    "o",
+    "GREEK SMALL LETTER OMICRON"
+   ],
+   [
+    "03C3",
+    "o",
+    "GREEK SMALL LETTER SIGMA"
+   ],
+   [
+    "03ED",
+    "o",
+    "COPTIC SMALL LETTER SHIMA"
+   ],
+   [
+    "041E",
+    "O",
+    "CYRILLIC CAPITAL LETTER O"
+   ],
+   [
+    "043E",
+    "o",
+    "CYRILLIC SMALL LETTER O"
+   ],
+   [
+    "0555",
+    "O",
+    "ARMENIAN CAPITAL LETTER OH"
+   ],
+   [
+    "0585",
+    "o",
+    "ARMENIAN SMALL LETTER OH"
+   ],
+   [
+    "05E1",
+    "o",
+    "HEBREW LETTER SAMEKH"
+   ],
+   [
+    "0647",
+    "o",
+    "ARABIC LETTER HEH"
+   ],
+   [
+    "0665",
+    "o",
+    "ARABIC-INDIC DIGIT FIVE"
+   ],
+   [
+    "06BE",
+    "o",
+    "ARABIC LETTER HEH DOACHASHMEE"
+   ],
+   [
+    "06C1",
+    "o",
+    "ARABIC LETTER HEH GOAL"
+   ],
+   [
+    "06D5",
+    "o",
+    "ARABIC LETTER AE"
+   ],
+   [
+    "06F5",
+    "o",
+    "EXTENDED ARABIC-INDIC DIGIT FIVE"
+   ],
+   [
+    "07C0",
+    "O",
+    "NKO DIGIT ZERO"
+   ],
+   [
+    "07CB",
+    "o",
+    "NKO LETTER EE"
+   ],
+   [
+    "0840",
+    "o",
+    "MANDAIC LETTER HALQA"
+   ],
+   [
+    "0966",
+    "o",
+    "DEVANAGARI DIGIT ZERO"
+   ],
+   [
+    "09E6",
+    "o",
+    "BENGALI DIGIT ZERO"
+   ],
+   [
+    "0A66",
+    "o",
+    "GURMUKHI DIGIT ZERO"
+   ],
+   [
+    "0AE6",
+    "o",
+    "GUJARATI DIGIT ZERO"
+   ],
+   [
+    "0B20",
+    "O",
+    "ORIYA LETTER TTHA"
+   ],
+   [
+    "0B66",
+    "o",
+    "ORIYA DIGIT ZERO"
+   ],
+   [
+    "0BE6",
+    "o",
+    "TAMIL DIGIT ZERO"
+   ],
+   [
+    "0C02",
+    "o",
+    "TELUGU SIGN ANUSVARA"
+   ],
+   [
+    "0C66",
+    "o",
+    "TELUGU DIGIT ZERO"
+   ],
+   [
+    "0C82",
+    "o",
+    "KANNADA SIGN ANUSVARA"
+   ],
+   [
+    "0CE6",
+    "O",
+    "KANNADA DIGIT ZERO"
+   ],
+   [
+    "0D02",
+    "o",
+    "MALAYALAM SIGN ANUSVARA"
+   ],
+   [
+    "0D20",
+    "o",
+    "MALAYALAM LETTER TTHA"
+   ],
+   [
+    "0D66",
+    "o",
+    "MALAYALAM DIGIT ZERO"
+   ],
+   [
+    "0D82",
+    "o",
+    "SINHALA SIGN ANUSVARAYA"
+   ],
+   [
+    "0E50",
+    "o",
+    "THAI DIGIT ZERO"
+   ],
+   [
+    "0ED0",
+    "o",
+    "LAO DIGIT ZERO"
+   ],
+   [
+    "101D",
+    "o",
+    "MYANMAR LETTER WA"
+   ],
+   [
+    "1040",
+    "o",
+    "MYANMAR DIGIT ZERO"
+   ],
+   [
+    "10FF",
+    "o",
+    "GEORGIAN LETTER LABIAL SIGN"
+   ],
+   [
+    "110B",
+    "o",
+    "HANGUL CHOSEONG IEUNG"
+   ],
+   [
+    "11BC",
+    "o",
+    "HANGUL JONGSEONG IEUNG"
+   ],
+   [
+    "12D0",
+    "O",
+    "ETHIOPIC SYLLABLE PHARYNGEAL A"
+   ],
+   [
+    "17E0",
+    "o",
+    "KHMER DIGIT ZERO"
+   ],
+   [
+    "1A45",
+    "o",
+    "TAI THAM LETTER WA"
+   ],
+   [
+    "1A80",
+    "o",
+    "TAI THAM HORA DIGIT ZERO"
+   ],
+   [
+    "1A90",
+    "o",
+    "TAI THAM THAM DIGIT ZERO"
+   ],
+   [
+    "1BEA",
+    "o",
+    "BATAK VOWEL SIGN I"
+   ],
+   [
+    "1C82",
+    "o",
+    "CYRILLIC SMALL LETTER NARROW O"
+   ],
+   [
+    "1CBF",
+    "O",
+    "GEORGIAN MTAVRULI CAPITAL LETTER LABIAL SIGN"
+   ],
+   [
+    "1D0F",
+    "o",
+    "LATIN LETTER SMALL CAPITAL O"
+   ],
+   [
+    "1D11",
+    "o",
+    "LATIN SMALL LETTER SIDEWAYS O"
+   ],
+   [
+    "2C9E",
+    "O",
+    "COPTIC CAPITAL LETTER O"
+   ],
+   [
+    "2C9F",
+    "o",
+    "COPTIC SMALL LETTER O"
+   ],
+   [
+    "2D54",
+    "O",
+    "TIFINAGH LETTER YAR"
+   ],
+   [
+    "3007",
+    "O",
+    "IDEOGRAPHIC NUMBER ZERO"
+   ],
+   [
+    "A4F3",
+    "O",
+    "LISU LETTER O"
+   ],
+   [
+    "AB3D",
+    "o",
+    "LATIN SMALL LETTER BLACKLETTER O"
+   ],
+   [
+    "10292",
+    "O",
+    "LYCIAN LETTER U"
+   ],
+   [
+    "102AB",
+    "O",
+    "CARIAN LETTER O"
+   ],
+   [
+    "1030F",
+    "O",
+    "OLD ITALIC LETTER O"
+   ],
+   [
+    "10404",
+    "O",
+    "DESERET CAPITAL LETTER LONG O"
+   ],
+   [
+    "1042C",
+    "o",
+    "DESERET SMALL LETTER LONG O"
+   ],
+   [
+    "104C2",
+    "O",
+    "OSAGE CAPITAL LETTER O"
+   ],
+   [
+    "104EA",
+    "o",
+    "OSAGE SMALL LETTER O"
+   ],
+   [
+    "10516",
+    "O",
+    "ELBASAN LETTER O"
+   ],
+   [
+    "1092C",
+    "o",
+    "LYDIAN LETTER O"
+   ],
+   [
+    "10C17",
+    "O",
+    "OLD TURKIC LETTER YENISEI AY"
+   ],
+   [
+    "10D07",
+    "o",
+    "HANIFI ROHINGYA LETTER HA"
+   ],
+   [
+    "11124",
+    "o",
+    "CHAKMA LETTER WAA"
+   ],
+   [
+    "11302",
+    "o",
+    "GRANTHA SIGN ANUSVARA"
+   ],
+   [
+    "114D0",
+    "o",
+    "TIRHUTA DIGIT ZERO"
+   ],
+   [
+    "118B5",
+    "O",
+    "WARANG CITI CAPITAL LETTER AT"
+   ],
+   [
+    "118C8",
+    "o",
+    "WARANG CITI SMALL LETTER E"
+   ],
+   [
+    "118D7",
+    "o",
+    "WARANG CITI SMALL LETTER BU"
+   ],
+   [
+    "118E0",
+    "O",
+    "WARANG CITI DIGIT ZERO"
+   ],
+   [
+    "11DE0",
+    "O",
+    "TOLONG SIKI DIGIT ZERO"
+   ],
+   [
+    "16AE9",
+    "O",
+    "BASSA VAH LETTER OO"
+   ],
+   [
+    "1E140",
+    "O",
+    "NYIAKENG PUACHUE HMONG DIGIT ZERO"
+   ],
+   [
+    "1E2F0",
+    "O",
+    "WANCHO DIGIT ZERO"
+   ]
+  ],
+  "n": [
+   [
+    "0274",
+    "(prototype)",
+    "(prototype itself)"
+   ],
+   [
+    "039D",
+    "N",
+    "GREEK CAPITAL LETTER NU"
+   ],
+   [
+    "0578",
+    "n",
+    "ARMENIAN SMALL LETTER VO"
+   ],
+   [
+    "057C",
+    "n",
+    "ARMENIAN SMALL LETTER RA"
+   ],
+   [
+    "2C9A",
+    "N",
+    "COPTIC CAPITAL LETTER NI"
+   ],
+   [
+    "2C9B",
+    "ɴ",
+    "COPTIC SMALL LETTER NI"
+   ],
+   [
+    "A4E0",
+    "N",
+    "LISU LETTER NA"
+   ],
+   [
+    "10513",
+    "N",
+    "ELBASAN LETTER NE"
+   ],
+   [
+    "11ABE",
+    "N",
+    "CANADIAN SYLLABICS SPO"
+   ]
+  ],
+  "d": [
+   [
+    "0501",
+    "d",
+    "CYRILLIC SMALL LETTER KOMI DE"
+   ],
+   [
+    "13A0",
+    "D",
+    "CHEROKEE LETTER A"
+   ],
+   [
+    "13E7",
+    "d",
+    "CHEROKEE LETTER TSU"
+   ],
+   [
+    "146F",
+    "d",
+    "CANADIAN SYLLABICS KO"
+   ],
+   [
+    "15DE",
+    "D",
+    "CANADIAN SYLLABICS CARRIER THE"
+   ],
+   [
+    "15EA",
+    "D",
+    "CANADIAN SYLLABICS CARRIER PE"
+   ],
+   [
+    "1D05",
+    "(prototype)",
+    "(prototype itself)"
+   ],
+   [
+    "A4D2",
+    "d",
+    "LISU LETTER PHA"
+   ],
+   [
+    "A4D3",
+    "D",
+    "LISU LETTER DA"
+   ],
+   [
+    "AB70",
+    "ᴅ",
+    "CHEROKEE SMALL LETTER A"
+   ],
+   [
+    "ABB7",
+    "(its capital, U+13E7)",
+    "CHEROKEE SMALL LETTER TSU"
+   ]
+  ],
+  "u": [
+   [
+    "028B",
+    "u",
+    "LATIN SMALL LETTER V WITH HOOK"
+   ],
+   [
+    "03C5",
+    "u",
+    "GREEK SMALL LETTER UPSILON"
+   ],
+   [
+    "054D",
+    "U",
+    "ARMENIAN CAPITAL LETTER SEH"
+   ],
+   [
+    "057D",
+    "u",
+    "ARMENIAN SMALL LETTER SEH"
+   ],
+   [
+    "1200",
+    "U",
+    "ETHIOPIC SYLLABLE HA"
+   ],
+   [
+    "144C",
+    "U",
+    "CANADIAN SYLLABICS TE"
+   ],
+   [
+    "1D1C",
+    "u",
+    "LATIN LETTER SMALL CAPITAL U"
+   ],
+   [
+    "A4F4",
+    "U",
+    "LISU LETTER U"
+   ],
+   [
+    "A79F",
+    "u",
+    "LATIN SMALL LETTER VOLAPUK UE"
+   ],
+   [
+    "AB4E",
+    "u",
+    "LATIN SMALL LETTER U WITH SHORT RIGHT LEG"
+   ],
+   [
+    "AB52",
+    "u",
+    "LATIN SMALL LETTER U WITH LEFT HOOK"
+   ],
+   [
+    "104CE",
+    "U",
+    "OSAGE CAPITAL LETTER U"
+   ],
+   [
+    "104F6",
+    "u",
+    "OSAGE SMALL LETTER U"
+   ],
+   [
+    "118B8",
+    "U",
+    "WARANG CITI CAPITAL LETTER PU"
+   ],
+   [
+    "118D8",
+    "u",
+    "WARANG CITI SMALL LETTER PU"
+   ],
+   [
+    "16F42",
+    "U",
+    "MIAO LETTER WA"
+   ]
+  ],
+  "r": [
+   [
+    "01A6",
+    "R",
+    "LATIN LETTER YR"
+   ],
+   [
+    "024C",
+    "R",
+    "LATIN CAPITAL LETTER R WITH STROKE"
+   ],
+   [
+    "0280",
+    "(prototype)",
+    "(prototype itself)"
+   ],
+   [
+    "0433",
+    "r",
+    "CYRILLIC SMALL LETTER GHE"
+   ],
+   [
+    "13A1",
+    "R",
+    "CHEROKEE LETTER E"
+   ],
+   [
+    "13D2",
+    "R",
+    "CHEROKEE LETTER SV"
+   ],
+   [
+    "1587",
+    "R",
+    "CANADIAN SYLLABICS TLHI"
+   ],
+   [
+    "1D26",
+    "r",
+    "GREEK LETTER SMALL CAPITAL GAMMA"
+   ],
+   [
+    "2C85",
+    "r",
+    "COPTIC SMALL LETTER GAMMA"
+   ],
+   [
+    "A4E3",
+    "R",
+    "LISU LETTER ZHA"
+   ],
+   [
+    "AB47",
+    "r",
+    "LATIN SMALL LETTER R WITHOUT HANDLE"
+   ],
+   [
+    "AB48",
+    "r",
+    "LATIN SMALL LETTER DOUBLE R"
+   ],
+   [
+    "AB71",
+    "ʀ",
+    "CHEROKEE SMALL LETTER E"
+   ],
+   [
+    "AB81",
+    "r",
+    "CHEROKEE SMALL LETTER HU"
+   ],
+   [
+    "ABA2",
+    "ʀ",
+    "CHEROKEE SMALL LETTER SV"
+   ],
+   [
+    "104B4",
+    "R",
+    "OSAGE CAPITAL LETTER BRA"
+   ],
+   [
+    "16A19",
+    "r",
+    "BAMUM LETTER PHASE-F NU"
+   ],
+   [
+    "16F35",
+    "R",
+    "MIAO LETTER ZHA"
+   ]
+  ],
+  "co": [
+   [
+    "AB43",
+    "co",
+    "LATIN SMALL LETTER TURNED O OPEN-O"
+   ]
+  ]
+ }
+}
