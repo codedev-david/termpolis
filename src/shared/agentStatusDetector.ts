@@ -544,9 +544,11 @@ function claudeLimitReply(rows: readonly string[], end: number): string | null {
 
 /** Whether row `up` ends a tool's output in Claude Code's transcript: the rows it draws a ⎿ in, two
  *  in, the rows indented under them and blank rows, up to the row of the tool's call, led by ● at the
- *  left edge (⏺ on macOS), past the rows a long call wraps onto. One of those rows is the tool's
- *  output, as MessageResponse draws it (CLAUDE_RESPONSE); the others can be its hook rows ("  ⎿  Ran
- *  1 PreToolUse hook (12ms)", with plain spaces), and what comes right under them is the output. */
+ *  left edge (⏺ on macOS), past the rows a long call wraps onto, none of which starts with a call's
+ *  mark: one that does is a call an answer quotes, row for row, under the answer's own ●. One of the
+ *  rows under the call is the tool's output, as MessageResponse draws it (CLAUDE_RESPONSE); the
+ *  others can be its hook rows ("  ⎿  Ran 1 PreToolUse hook (12ms)", with plain spaces), and what
+ *  comes right under them is the output. */
 function underToolOutput(rows: readonly string[], up: number): boolean {
   let head = up
   let output = false
@@ -554,7 +556,7 @@ function underToolOutput(rows: readonly string[], up: number): boolean {
     if (CLAUDE_RESPONSE.test(rows[head])) output = true
   }
   if (!output) return false
-  while (head >= 0 && /^ {2}[^\s⎿]/.test(rows[head])) head--
+  while (head >= 0 && /^ {2}[^\s⎿●⏺]/.test(rows[head])) head--
   return head >= 0 && /^[●⏺] /.test(rows[head])
 }
 

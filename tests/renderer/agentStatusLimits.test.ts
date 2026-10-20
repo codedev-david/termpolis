@@ -516,6 +516,10 @@ describe('what is no usage limit or menu', () => {
     // Code draws a no-break space: a reply it quotes is not its own, mid-turn or under a tall prompt.
     ['an answer quoting a screen where a limit stopped a worker mid-turn', 'Claude', ['● Worker 2 shows:', '  ● Bash(echo hello)', '  ⎿  hello', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     ['an answer quoting a reply, its first rows gone off the top', 'Claude', ['  the worker stopped there, with:', '  ⎿  You\'ve hit your session limit · resets 3pm (America/New_York)', '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    // Quoted row for row, no-break spaces and all: the quoted call's ● is in the answer's text,
+    // indented under the answer's own ●, where no row a long call wraps onto starts with one.
+    ['an answer quoting a mid-turn screen row for row', 'Claude', ['● Worker 2 shows:', '  ● Bash(echo hello)', `${REPLY}hello`, LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
+    ['an answer quoting a mid-turn screen of macOS row for row', 'Claude', ['⏺ Worker 2 shows:', '  ⏺ Bash(echo hello)', `${REPLY}hello`, LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
     // Nothing above the ⎿ blocks to say they are a tool's, or the reply's: its ⎿ row at the screen's
     // top, or the blocks reaching it.
     ["Claude Code's reply at the screen's top", 'Claude', [LIMIT_REPLY, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
