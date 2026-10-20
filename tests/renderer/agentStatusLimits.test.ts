@@ -509,6 +509,11 @@ describe('what is no usage limit or menu', () => {
     ["Claude Code's reply above its note that it compacted the conversation", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '✻ Conversation compacted (ctrl+o for history)', ...CLAUDE_IDLE]],
     ["Claude Code's reply above a scheduled task's prompt", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '✻ Look for flaky tests', ...CLAUDE_IDLE]],
     ["Claude Code's reply above a scheduled task's prompt that names a number", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '✻ Check the build for 3 failing tests', ...CLAUDE_IDLE]],
+    // An answer after the reply that holds the words of that line, on its own row or on a row it wraps
+    // onto, with no such line under it (showTurnDuration off): only a row the line's ✻ leads, at the
+    // left edge, is stepped over, and the answer makes the reply history (MW1-2).
+    ["Claude Code's reply under an answer that names the line at a turn's end", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '● Built the page. Claude Code drew ✻ Baked for 2s under it.', ...CLAUDE_IDLE]],
+    ["Claude Code's reply under an answer that names the line at a turn's end on a row it wraps onto", 'Claude', ['❯ Build the page', LIMIT_REPLY, '', '● Built the page. Its last line read', '  then ✻ Worked for 3m 2s · done 1:19 AM', ...CLAUDE_IDLE]],
     // A line of a file a tool printed, drawn as Claude Code draws its reply but further in: a worker's
     // screen saved to a file keeps the no-break space.
     ["a limit reply a tool printed from a log, under the tool's own output", 'Claude', ['❯ Read the log', '● Bash(cat logs/worker.txt)', `${REPLY}worker 2 stopped:`, `   ${LIMIT_REPLY}`, '', '✻ Baked for 3s', ...CLAUDE_IDLE]],
