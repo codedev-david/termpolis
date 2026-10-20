@@ -467,7 +467,9 @@ function stopAroundBox(rows: readonly string[], box: number): string | null {
 //    API key, a Team plan): "  ⎿  You've hit your session limit · resets 3pm" right under the
 //    prompt's echo, whose rows are indented under its ❯ (or >). Its ⎿ and the gap after it are
 //    MessageResponse's, a space and a no-break space; other rows of its have two spaces (BEH-1: no
-//    real reply was read).
+//    real reply was read). Or, a limit that stops it mid-turn, right under the output of the tool
+//    it ran last (M-2). Under the reply, as at the end of every turn, it draws a line with how long
+//    the turn took (TURN_END).
 // An answer or a tool's output indents what it quotes, or puts its own mark first; a prompt or an
 // answer after the message makes it history. Read only with the agent at rest: while it works, the
 // echo of the prompt it was just sent can end in anything.
@@ -476,12 +478,27 @@ const AGY_LIMIT_CELL = /^✕ You have exhausted your quota on this model\./
 /** A row that starts a cell of its own in an agent's transcript: not the rest of a wrapped one. */
 const CELL_START = /^(?:[•■⚠✕›>❯●]|\s*⎿)/
 const CLAUDE_REPLY = /^[ \t]+⎿[ \t\u00a0]+\S/
+/** MessageResponse's ⎿ exactly as claude.exe 2.1.302 to 2.1.304 draw it in front of a reply or a
+ *  tool's output: two in (two no-break spaces in for one summary of a tool's output), a space and a
+ *  no-break space after it. An answer's text is indented two as well, and one that quotes a screen
+ *  has the same rows, but typed with plain spaces. */
+const CLAUDE_RESPONSE = /^\s{2}⎿ \u00a0/
+/** Claude Code's line at the end of every turn, under what the turn ended on (claude.exe's
+ *  turn_duration line, showTurnDuration being on by default): its ✻ at the left edge, then one of its
+ *  verbs (Baked, Brewed, Churned, Cogitated, Cooked, Crunched, Sautéed, Worked) and how long the turn
+ *  took, "✻ Crunched for 0s · done 1:21 AM", or what it waits on, "✻ Waiting for 2 background agents
+ *  to finish". Read with the rows a narrow screen wraps it onto, indented two. Its other rows led by
+ *  ✻, "✻ Conversation compacted (ctrl+o for history)" and a scheduled task's prompt among them, are
+ *  not stepped over (M-0). */
+const TURN_END = /^✻ \S+ for \d/
 
 function turnEndLimit(rows: readonly string[], box: number): string | null {
-  // The last thing above the box: up past its top rule and the blank rows under the transcript.
+  // The last thing above the box: up past its top rule and the blank rows under the transcript, and
+  // past Claude Code's line at the turn's end.
   let end = box - 1
   if (end >= 0 && RULE.test(rows[end])) end--
   while (end >= 0 && rows[end].trim() === '') end--
+  end = aboveTurnEnd(rows, end)
   if (end < 0) return null
   // Up to the blank row above it, or the screen's top: the cell, however many rows a narrow screen
   // wrapped it onto, and its message read with those rows run together.
@@ -495,8 +512,21 @@ function turnEndLimit(rows: readonly string[], box: number): string | null {
   return claudeLimitReply(rows, end)
 }
 
+/** The last row above Claude Code's line at a turn's end (TURN_END) that ends on row `end`, past the
+ *  blank rows between them; `end` itself where no such line ends there. */
+function aboveTurnEnd(rows: readonly string[], end: number): number {
+  let start = end
+  while (start > 0 && /^ {2}[^\s⎿]/.test(rows[start])) start--
+  if (!TURN_END.test(runTogether(rows.slice(start, end + 1)))) return end
+  let above = start - 1
+  while (above >= 0 && rows[above].trim() === '') above--
+  return above
+}
+
 /** Claude Code's limit reply ending on row `end`: its ⎿ row and every row a narrow screen wrapped it
- *  onto, indented under its text, right under the echo of the prompt it stopped. */
+ *  onto, indented under its text. Right under the echo of the prompt it stopped; or, drawn as
+ *  MessageResponse draws it (CLAUDE_RESPONSE), under an echo whose first rows went off the top of
+ *  the screen, or under the output of the tool it ran last when the limit stopped it mid-turn (M-2). */
 function claudeLimitReply(rows: readonly string[], end: number): string | null {
   let at = end
   while (at > 0 && /^\s{4,}[^\s⎿]/.test(rows[at])) at--
@@ -505,7 +535,27 @@ function claudeLimitReply(rows: readonly string[], end: number): string | null {
   // Up through the rows the prompt wraps onto, indented two under its glyph, and its blank lines.
   let up = at - 1
   while (up >= 0 && (rows[up].trim() === '' || /^ {2}[^\s⎿]/.test(rows[up]))) up--
-  return up >= 0 && /^[❯>] \S/.test(rows[up]) ? claudeLimitSummary(reply) : null
+  if (up >= 0 && /^[❯>] \S/.test(rows[up])) return claudeLimitSummary(reply)
+  if (!CLAUDE_RESPONSE.test(rows[at])) return null
+  // A prompt taller than the screen: rows of it, and nothing else, up to the top.
+  if (up < 0) return rows.slice(0, at).some((row) => row.trim() !== '') ? claudeLimitSummary(reply) : null
+  return underToolOutput(rows, up) ? claudeLimitSummary(reply) : null
+}
+
+/** Whether row `up` ends a tool's output in Claude Code's transcript: the rows it draws a ⎿ in, two
+ *  in, the rows indented under them and blank rows, up to the row of the tool's call, led by ● at the
+ *  left edge (⏺ on macOS), past the rows a long call wraps onto. One of those rows is the tool's
+ *  output, as MessageResponse draws it (CLAUDE_RESPONSE); the others can be its hook rows ("  ⎿  Ran
+ *  1 PreToolUse hook (12ms)", with plain spaces), and what comes right under them is the output. */
+function underToolOutput(rows: readonly string[], up: number): boolean {
+  let head = up
+  let output = false
+  for (; head >= 0 && (rows[head].trim() === '' || /^\s{2}⎿/.test(rows[head]) || /^\s{4,}\S/.test(rows[head])); head--) {
+    if (CLAUDE_RESPONSE.test(rows[head])) output = true
+  }
+  if (!output) return false
+  while (head >= 0 && /^ {2}[^\s⎿]/.test(rows[head])) head--
+  return head >= 0 && /^[●⏺] /.test(rows[head])
 }
 
 /** "usage limit reached", with when it lifts if Claude Code's limit reply says it as it does
