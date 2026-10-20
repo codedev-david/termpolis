@@ -328,7 +328,7 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     ['a summary of what a tool found', ['● Search(pattern: "login")', '\u00a0\u00a0⎿ \u00a0Found 3 files']],
     // M1-1: Claude Code folds a turn's reads and searches into one row under the turn's text, two in,
     // that ends on the key that shows them (the transcript's, ctrl+o unless it was bound to another),
-    // and draws no ⎿ output under it: about a third of the real limit hits mid-turn came after one.
+    // and draws no ⎿ output under it: about a quarter of the real limit hits mid-turn came after one.
     ["the row it folds the turn's reads into, under the turn's text", ['❯ Build the page', '', '● I will look at the notes first.', '', '  Read 1 file (ctrl+o to expand)']],
     ["the row it folds reads and searches into, it and the turn's text wrapped onto a second row", ['● I will look at the notes', '  first.', '', '  Searched for 1 pattern, read', '  1 file (ctrl+o to expand)']],
     ["the folded row under a turn's text of two paragraphs", ['● I will look at the notes first.', '', '  Then I will run the tests.', '', '  Read 2 files (ctrl+o to expand)']],
