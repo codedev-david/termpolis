@@ -1852,6 +1852,34 @@ describe('write_to_terminal submit and the output since run_command started the 
     expect(t.writes).toEqual([])
   })
 
+  // RC-1: a new Codex in a folder it hasn't seen asks whether to trust it before it draws its input
+  // (the rows real Codex 0.153.4 drew, its folder's path cut short). Submit types nothing, as for any
+  // agent that shows no input, and says it asks something, which the conductor answers with keys.
+  it('says an agent run_command started asks something on its screen when it shows a question, not its input', async () => {
+    const t = terminal()
+    t.print(PROMPT)
+    await run(t, 'trust-1', 'codex')
+    t.print([
+      '> You are in C:\\p',
+      '',
+      '  Do you trust the contents of this directory? Working with untrusted contents',
+      '  comes with higher risk of prompt injection. Trusting the directory allows',
+      '  project-local config, hooks, and exec policies to load.',
+      '',
+      '› 1. Yes, continue',
+      '  2. No, quit',
+      '',
+      '  Press enter to continue',
+    ].join('\r\n'))
+    const res = await submitToTerminal(t.handlers, 'trust-1', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({
+      submitted: false,
+      error: 'The agent was not ready for input after 180 s (starting: no input shown since run_command started it, and it asks something on its screen). Check it with read_output.',
+    })
+    expect(res.screen).toContain('Do you trust the contents of this directory?')
+    expect(t.writes).toEqual([])
+  })
+
   // S7, S13: drawn alone on a blank screen of the size its output reaches, an agent's screen at
   // another size shows no box (idle Claude Code at 160x40 read as nothing), so the agent started
   // never showed its input, or its shell's late first prompt read as one it exited to.

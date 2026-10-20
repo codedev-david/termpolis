@@ -786,6 +786,9 @@ const WIPE = /\x1b\[(?:H|[23]J|\?(?:1049|1047|47)h)/
 const ALT_SCREEN = /\x1b\[\?(?:1049|1047|47)([hl])/g
 /** An agent run_command started that has drawn no input of its own yet, whatever the screen shows. */
 const STARTING: AgentStatusResult = { status: 'starting', summary: 'no input shown since run_command started it' }
+/** The same, with a question drawn since in place of its input, such as whether to trust the folder
+ *  (a new Codex or agy there asks): no input either, only said (RC-1). */
+const STARTING_ASKING: AgentStatusResult = { status: 'starting', summary: `${STARTING.summary}, and it asks something on its screen` }
 /** A row that starts with a rule, among the rows inputBoxRows reads as an input box's: the rule that
  *  closes the box, and on the same row the row under it. A resize that widens the screen joins the
  *  two in ConPTY's repaint when the agent let that row wrap on from the rule (Claude Code 2.1.304's
@@ -894,7 +897,7 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
   // Till then the agent is starting, whatever the screen drawn before shows (an exited agent's box,
   // its limit), but for a stop it drew since: a menu Codex opens with.
   const stop = detectAgentStatus(drawn(raw.slice(from), size).lines.join('\n'), agentName, previous, { screen: true, title })
-  return { lines, title, status: stop.status === 'blocked' ? stop : STARTING, shell: false }
+  return { lines, title, status: stop.status === 'blocked' ? stop : stop.status === 'waiting_for_input' ? STARTING_ASKING : STARTING, shell: false }
 }
 
 /** A failed submit's answer, with the screen's last rows: the conductor reads them to decide. */
