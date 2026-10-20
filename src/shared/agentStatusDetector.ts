@@ -395,8 +395,10 @@ const TRY_AGAIN_AT = /\b[Tt]ry again at (.{1,48}?)\.(?:\s|$)/
  *  time in the message (zT(time, true)), so the reset ends at its bracket, whatever its su() draws
  *  under the message, in the same column: a note of the server's, "Press ⏎ to continue after reset",
  *  a checkpoint, the hint for the account ("/upgrade to increase your usage limit."), an offer of
- *  usage credits. Their words are the account's and the release's, and some are the server's. */
-const CLAUDE_RESETS_AT = /\bresets ([^()]{1,40}\([^()]{1,40}\))/
+ *  usage credits. Their words are the account's and the release's, and some are the server's. The
+ *  time, then the zone in its brackets: the system's name for it, which runs to 32 characters
+ *  (America/Argentina/ComodRivadavia) and has no space in it. */
+const CLAUDE_RESETS_AT = /\bresets ([^()]{1,40})\(([^()]{1,40})\)/
 
 const LIMIT_SUMMARY = 'usage limit reached'
 const MENU_SUMMARY = 'waiting on a menu'
@@ -507,10 +509,11 @@ function claudeLimitReply(rows: readonly string[], end: number): string | null {
 }
 
 /** "usage limit reached", with when it lifts if Claude Code's limit reply says it as it does
- *  (CLAUDE_RESETS_AT): a reset in any other form, or none, is no time. */
+ *  (CLAUDE_RESETS_AT): a reset in any other form, or none, is no time. A zone too long for the row
+ *  is broken where the row ends, and read without the break. */
 function claudeLimitSummary(reply: string): string {
   const reset = CLAUDE_RESETS_AT.exec(reply)
-  return reset ? `${LIMIT_SUMMARY} (resets ${reset[1]})` : LIMIT_SUMMARY
+  return reset ? `${LIMIT_SUMMARY} (resets ${reset[1]}(${reset[2].replace(/\s/g, '')}))` : LIMIT_SUMMARY
 }
 
 /** Rows as one line, each run of spaces one space: a message a narrow screen wrapped, read whole. */

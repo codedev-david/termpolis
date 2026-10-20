@@ -368,6 +368,16 @@ describe('the limit message a CLI ends its turn with, right above its input box'
         },
       )
 
+      // Resets as long as claude.exe prints them (M-3: one cut at 16 characters passed every test): a
+      // date past the year's end with its year, and the system's own name for its time zone, which on
+      // the US west coast is America/Los_Angeles and runs to 32 characters. A name longer than the row
+      // is broken where the row ends, and read whole: a time zone has no space in it.
+      const LONG_RESETS = ['Oct 24, 4:30pm (America/Los_Angeles)', 'Jan 2, 2027, 11:30pm (America/Argentina/Buenos_Aires)', '11:30pm (America/Argentina/ComodRivadavia)']
+      it.each([80, 46, 30, 20].flatMap((cols) => LONG_RESETS.map((reset) => [reset, cols] as const)))('reads the whole reset "%s" at %i columns', (reset, cols) => {
+        const rows = ['❯ Build the page', ...replyAt(cols, [`You've hit your weekly limit · resets ${reset}`, '/upgrade to increase your usage limit.']), ...claudeIdle(cols)]
+        expect(at(cols, rows, 'Claude')).toEqual({ status: 'blocked', summary: `usage limit reached (resets ${reset})` })
+      })
+
       // A reset that isn't in that form is no reset Claude Code printed: it is read as no time, not
       // as the time and the hint under it.
       it('reads no time from a reset without its time zone, the rows under it never taken for one', () => {
