@@ -97,6 +97,34 @@ describe('noteWorkerStatus', () => {
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
   })
 
+  // Several Claude workers on one account hit the limit together, and the poller reads them in
+  // turn: each stopped worker's reads with no stop are its own (MR2-3).
+  it("keeps each stopped worker's count apart while several are stopped, read in turn", async () => {
+    const w1 = worker()
+    const w2 = worker()
+    await noteWorkerStatus(w1, LIMIT)
+    await noteWorkerStatus(w2, LIMIT)
+    await noteWorkerStatus(w1, IDLE)
+    await noteWorkerStatus(w2, IDLE)
+    await noteWorkerStatus(w1, IDLE)
+    await noteWorkerStatus(w1, LIMIT)
+    // w1 showed no stop on two reads in a row of its own, so its stop after them is another one;
+    // w2's one read between counts for w2 only.
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(3)
+  })
+
+  // A new stop counts its reads with no stop from 0: the one read after the stop before it is not
+  // one of them (MR2-3, MW2-2).
+  it('counts the reads with no stop from a new stop on: one read before it does not count toward forgetting it', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, LIMIT)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, MENU)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, MENU)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
+  })
+
   it('tells it when what stops the worker changes: a menu, then the limit', async () => {
     const w = worker()
     await noteWorkerStatus(w, MENU)
