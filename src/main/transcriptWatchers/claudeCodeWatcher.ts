@@ -52,7 +52,7 @@ export function mangleCwd(cwd: string): string {
   // Claude Code turns every character but an ASCII letter or digit into "-", not only the
   // separators and the drive colon: in a folder with a dot, a space or an underscore in its path
   // there was no transcript to find, so no activity was read from Claude Code there. That takes in
-  // the "~" of a Windows short name (DAVIDE~1) and every letter outside ASCII, one dash for each
+  // the "~" of a Windows short name (TERMPO~1) and every letter outside ASCII, one dash for each
   // UTF-16 unit: a live claude 2.1.303 named "x~José😀" as "x-Jos---". Past 200 characters it
   // keeps the first 200 and adds a hash of the folder, as its own code does: no transcript of a
   // folder that deep was found.
@@ -352,8 +352,8 @@ function recordedConfigDir(file: string, sessionId: string): string | null {
 }
 
 /** A working folder as PowerShell hands it to a program it starts: with a Windows short name
- *  spelled out (DAVIDE~1 was DavidEngelhart, live), and every link resolved, as Claude Code then
- *  does. Taken as given when it can't be read. */
+ *  spelled out (TERMPO~1 as TermpolisUser1, as seen live), and every link resolved, as Claude
+ *  Code then does. Taken as given when it can't be read. */
 function spelledOut(cwd: string): string {
   try {
     return fs.realpathSync.native(cwd)

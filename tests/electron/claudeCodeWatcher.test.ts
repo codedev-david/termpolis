@@ -46,19 +46,23 @@ describe('mangleCwd', () => {
   it('turns dots, spaces and underscores into dashes too', () => {
     expect(mangleCwd('C:\\Users\\john.smith\\my_app')).toBe('C--Users-john-smith-my-app')
     expect(mangleCwd('/home/u/My App/site.com')).toBe('-home-u-My-App-site-com')
-    expect(mangleCwd('C:\\Users\\DavidEngelhart\\.claude')).toBe('C--Users-DavidEngelhart--claude')
+    expect(mangleCwd('C:\\Users\\TermpolisUser1\\.claude')).toBe('C--Users-TermpolisUser1--claude')
   })
-  // The folders a live claude 2.1.303 made (bc-impl-launch-trace/live): started in an 8.3 short
-  // path, and in its long form, both with a "~", an accented letter and an emoji in the name.
+  // The folders a live claude 2.1.303 made (bc-impl-launch-trace/live), the user's own folder put
+  // here as a name of the same length: started in an 8.3 short path, and in its long form, both
+  // with a "~", an accented letter and an emoji in the name.
   it("turns a short name's ~ and every letter outside ASCII into dashes, one for each UTF-16 unit", () => {
-    expect(mangleCwd('C:\\Users\\DAVIDE~1\\AppData\\Local\\Temp\\x~José😀-tpmangle149780'))
-      .toBe('C--Users-DAVIDE-1-AppData-Local-Temp-x-Jos----tpmangle149780')
-    expect(mangleCwd('C:\\Users\\DavidEngelhart\\AppData\\Local\\Temp\\x~José😀-tpmangle06eb38'))
-      .toBe('C--Users-DavidEngelhart-AppData-Local-Temp-x-Jos----tpmangle06eb38')
+    expect(mangleCwd('C:\\Users\\TERMPO~1\\AppData\\Local\\Temp\\x~José😀-tpmangle149780'))
+      .toBe('C--Users-TERMPO-1-AppData-Local-Temp-x-Jos----tpmangle149780')
+    expect(mangleCwd('C:\\Users\\TermpolisUser1\\AppData\\Local\\Temp\\x~José😀-tpmangle06eb38'))
+      .toBe('C--Users-TermpolisUser1-AppData-Local-Temp-x-Jos----tpmangle06eb38')
   })
+  // Live, claude 2.1.303 cut this 247-character folder's name at 200 and added "-naz55k", the
+  // user's own folder in the path. With a name of the same length put in its place the hash is
+  // "-v65kp5", worked out apart from mangleCwd by a port of it that gives live claude's "-naz55k".
   it('cuts a name longer than 200 characters and adds a hash of the folder, as live claude did', () => {
-    const deep = 'C:\\Users\\DavidEngelhart\\AppData\\Local\\Temp\\tpformsd676f5-' + 'abcdefghij'.repeat(19)
-    expect(mangleCwd(deep)).toBe('C--Users-DavidEngelhart-AppData-Local-Temp-tpformsd676f5-' + 'abcdefghij'.repeat(14) + 'abc-naz55k')
+    const deep = 'C:\\Users\\TermpolisUser1\\AppData\\Local\\Temp\\tpformsd676f5-' + 'abcdefghij'.repeat(19)
+    expect(mangleCwd(deep)).toBe('C--Users-TermpolisUser1-AppData-Local-Temp-tpformsd676f5-' + 'abcdefghij'.repeat(14) + 'abc-v65kp5')
   })
   it('cuts only a name longer than 200, and makes a negative hash positive', () => {
     expect(mangleCwd('a'.repeat(200))).toBe('a'.repeat(200))

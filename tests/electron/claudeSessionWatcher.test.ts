@@ -130,7 +130,7 @@ describe('attachClaudeSessionWatcher', () => {
   })
 
   // PowerShell spells out a short name before it starts claude, which keeps what it was handed:
-  // a conductor started in C:\Users\DAVIDE~1\... kept its transcript under ...DavidEngelhart...
+  // a conductor started in C:\Users\TERMPO~1\... kept its transcript under ...TermpolisUser1...
   const short = os.tmpdir().includes('~') && fs.realpathSync.native(os.tmpdir()) !== os.tmpdir()
   it.runIf(process.platform === 'win32' && short)('looks under the folder named for a Windows short name spelled out, as PowerShell hands it on', () => {
     expect(cwd).toContain('~')
