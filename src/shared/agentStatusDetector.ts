@@ -390,6 +390,13 @@ const WAITING_FOOTER = /^[ \t]*(?:Usage limit reached(?: again)? · c|C)ontinuin
 const RESETS_AT = /\bresets\s+(?:at\s+)?([^·│\n]{1,48}?)\.?\s*(?:·|│|$)/m
 const CONTINUES_AT = /\bcontinu(?:e|ing) automatically at\s+([^·│\n]{1,48}?)\s*(?:·|│|$)/im
 const TRY_AGAIN_AT = /\b[Tt]ry again at (.{1,48}?)\.(?:\s|$)/
+/** When the limit lifts, as Claude Code's limit reply words it: "resets 3pm (America/New_York)",
+ *  "resets Oct 20, 9am (UTC)". claude.exe 2.1.302 to 2.1.304 put the time zone after every reset
+ *  time in the message (zT(time, true)), so the reset ends at its bracket, whatever its su() draws
+ *  under the message, in the same column: a note of the server's, "Press ⏎ to continue after reset",
+ *  a checkpoint, the hint for the account ("/upgrade to increase your usage limit."), an offer of
+ *  usage credits. Their words are the account's and the release's, and some are the server's. */
+const CLAUDE_RESETS_AT = /\bresets ([^()]{1,40}\([^()]{1,40}\))/
 
 const LIMIT_SUMMARY = 'usage limit reached'
 const MENU_SUMMARY = 'waiting on a menu'
@@ -496,7 +503,14 @@ function claudeLimitReply(rows: readonly string[], end: number): string | null {
   // Up through the rows the prompt wraps onto, indented two under its glyph, and its blank lines.
   let up = at - 1
   while (up >= 0 && (rows[up].trim() === '' || /^ {2}[^\s⎿]/.test(rows[up]))) up--
-  return up >= 0 && /^[❯>] \S/.test(rows[up]) ? limitSummary(reply) : null
+  return up >= 0 && /^[❯>] \S/.test(rows[up]) ? claudeLimitSummary(reply) : null
+}
+
+/** "usage limit reached", with when it lifts if Claude Code's limit reply says it as it does
+ *  (CLAUDE_RESETS_AT): a reset in any other form, or none, is no time. */
+function claudeLimitSummary(reply: string): string {
+  const reset = CLAUDE_RESETS_AT.exec(reply)
+  return reset ? `${LIMIT_SUMMARY} (resets ${reset[1]})` : LIMIT_SUMMARY
 }
 
 /** Rows as one line, each run of spaces one space: a message a narrow screen wrapped, read whole. */

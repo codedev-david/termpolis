@@ -288,12 +288,13 @@ describe('the limit message a CLI ends its turn with, right above its input box'
       expect(at(cols, ['> Write the docs', '', ...cell, ...agyIdle(cols)], 'Gemini')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
     })
 
-    it.each([
+    const CLAUDE_NARROW: Array<[string, number, string[], string]> = [
       ['on 2 rows, at 50 columns', 50, [`${REPLY}You've hit your session limit · resets 3pm`, '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
       ['on 2 rows, its reset cut, at 46 columns', 46, [`${REPLY}You've hit your weekly limit · resets Oct`, '     20, 9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
       ['on 3 rows, at 30 columns', 30, [`${REPLY}You've hit your session`, '     limit · resets 3pm', '     (America/New_York)'], 'usage limit reached (resets 3pm (America/New_York))'],
       ['on 4 rows, its ⎿ row cut before "limit", at 20 columns', 20, [`${REPLY}You've hit your`, '     weekly limit ·', '     resets Oct 20,', '     9am (UTC)'], 'usage limit reached (resets Oct 20, 9am (UTC))'],
-    ])("Claude Code's reply %s", (_name, cols, reply, summary) => {
+    ]
+    it.each(CLAUDE_NARROW)("Claude Code's reply %s", (_name, cols, reply, summary) => {
       expect(at(cols, ['❯ Build the page', ...reply, ...claudeIdle(cols)], 'Claude')).toEqual({ status: 'blocked', summary })
     })
 
@@ -306,6 +307,77 @@ describe('the limit message a CLI ends its turn with, right above its input box'
     it("Codex's reset split after \"try again\"", () => {
       const cell = ['■ You\'ve hit your usage limit. Upgrade to Plus to continue', 'using Codex (https://chatgpt.com/explore/plus), or try again', 'at 3:04 PM.']
       expect(at(60, ['› Fix the login test', '', ...cell, ...codexIdle], 'Codex')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3:04 PM)' })
+    })
+
+    // BEH-2: under the limit message, in the reply's own column, claude.exe's su() draws dim rows of
+    // its own: a note of the server's on the limit, "Press ⏎ to continue after reset", a checkpoint,
+    // the hint for the account (its lP table, one on every claude.ai login with no menu: Max 20x, a
+    // Team plan) and, since 2.1.304, an offer of usage credits. Read with the message, they cost it
+    // its reset ("usage limit reached"), or ran into it ("resets 3pm /upgrade to increase your usage
+    // limit"). Each is drawn here at 80 columns and at the narrow widths above.
+    describe('with the rows Claude Code draws under the message', () => {
+      /** `text` wrapped to `width` as Ink wraps it (wrap-ansi): at its spaces, a word longer than the
+       *  width broken. */
+      const wrapTo = (width: number, text: string): string[] => {
+        const rows: string[] = []
+        let row: string | null = null
+        for (let word of text.split(' ')) {
+          if (row !== null && row.length + 1 + word.length <= width) {
+            row += ` ${word}`
+            continue
+          }
+          if (row !== null) rows.push(row)
+          for (; word.length > width; word = word.slice(width)) rows.push(word.slice(0, width))
+          row = word
+        }
+        return [...rows, row ?? '']
+      }
+      /** Claude Code's reply as it lays it out at `cols` columns: 5 cells for its ⎿, then each of
+       *  `pieces` from a row of its own, wrapped to the rest of the row. */
+      const replyAt = (cols: number, pieces: string[]): string[] =>
+        pieces.flatMap((piece) => wrapTo(cols - 5, piece)).map((row, i) => `${i === 0 ? REPLY : '     '}${row}`)
+
+      it('lays a reply out as the narrow screens above draw it', () => {
+        for (const [, cols, rows] of CLAUDE_NARROW) expect(replyAt(cols, [rows.map((row) => row.slice(5)).join(' ')])).toEqual(rows)
+      })
+
+      // A time zone short enough to keep whole at 20 columns. claude.exe puts one after every reset
+      // time it prints there (zT(time, true)).
+      const SESSION = "You've hit your session limit · resets 3pm (Europe/London)"
+      const FABLE = "You've hit your Fable limit · resets Oct 21, 3pm (Europe/London)"
+      const SPEND = "You've hit your monthly spend limit · your session limit resets 3pm (Europe/London)"
+      const ROWS_UNDER: Array<[string, string[], string]> = [
+        ['its options opening', [SESSION, 'Opening your options…'], '3pm (Europe/London)'],
+        ['the spend limit hint', [SPEND, '/usage-credits to adjust your monthly spend limit.'], '3pm (Europe/London)'],
+        ['the usage credits hint', [SESSION, '/usage-credits to finish what you’re working on.'], '3pm (Europe/London)'],
+        ['the API login hint', [SESSION, '/login to switch to an API usage-billed account.'], '3pm (Europe/London)'],
+        ["the hint that the admin can turn on extra usage", [SESSION, 'Your admin can enable extra usage at https://claude.ai/admin-settings/usage.'], '3pm (Europe/London)'],
+        ['the hint to ask the admin', [SESSION, '/usage-credits to request more usage from your admin.'], '3pm (Europe/London)'],
+        ['the upgrade hint', [SESSION, '/upgrade to increase your usage limit.'], '3pm (Europe/London)'],
+        ['the upgrade or usage credits hint', [SESSION, '/upgrade or /usage-credits to finish what you’re working on.'], '3pm (Europe/London)'],
+        ['its key to go on after the reset', [SESSION, 'Press ⏎ to continue after reset'], '3pm (Europe/London)'],
+        ['a checkpoint under that key', [SESSION, 'Press ⏎ to continue after reset', '✔ checkpointed — see ~/.claude/checkpoints/4f1c', "  or /rewind to undo this turn's file edits"], '3pm (Europe/London)'],
+        ['its offer of usage credits', [FABLE, 'Usage credits are at least 20% off · 3 days left · /usage-credits'], 'Oct 21, 3pm (Europe/London)'],
+        ['its other offer', [FABLE, 'Buy usage credits and get at least 20% extra · 3 days left · /usage-credits'], 'Oct 21, 3pm (Europe/London)'],
+        ["a note of the server's, which names a reset of its own", [SESSION, 'Your session limit resets every five hours.'], '3pm (Europe/London)'],
+      ]
+      it.each([80, 50, 46, 30, 20].flatMap((cols) => ROWS_UNDER.map(([name, pieces, reset]) => [name, cols, pieces, reset] as const)))(
+        "reads the reset in Claude Code's message, not %s under it, at %i columns",
+        (_name, cols, pieces, reset) => {
+          expect(at(cols, ['❯ Build the page', ...replyAt(cols, [...pieces]), ...claudeIdle(cols)], 'Claude')).toEqual({ status: 'blocked', summary: `usage limit reached (resets ${reset})` })
+        },
+      )
+
+      // A reset that isn't in that form is no reset Claude Code printed: it is read as no time, not
+      // as the time and the hint under it.
+      it('reads no time from a reset without its time zone, the rows under it never taken for one', () => {
+        const rows = ['❯ Build the page', ...replyAt(80, ["You've hit your session limit · resets 3pm", '/upgrade to increase your usage limit.']), ...CLAUDE_IDLE]
+        expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
+        // A message with no reset, as the org's spend limit has none, and a row under it whose words
+        // only end in "resets".
+        const spent = ['❯ Build the page', ...replyAt(80, ["You've hit your org's monthly spend limit · ask your admin to raise it at https://claude.ai/admin-settings/usage", 'Usage presets for your team (beta) are in /config.']), ...CLAUDE_IDLE]
+        expect(onScreen(spent, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached' })
+      })
     })
   })
 })
