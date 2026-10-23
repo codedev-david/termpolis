@@ -94,9 +94,34 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), 'error').toBeLessThan(20)
   })
 
+  const BS = '\\'
+  const lines = (n: number): string => Array.from({ length: n }, r64).join('\n')
+  /** Inputs aimed at what the round-1 fixes added: the rest of a key block whose lines stopped
+   *  keeping one width, JSON-escaped base64, written-out breaks walked back over, legacy headers,
+   *  newline constants and short last lines above END lines (fix-r1 x-cost-c4: x3.3-x4.4 for 4
+   *  times the text, 465,000 characters in 85 ms at most and an error's end in 13). */
+  const ROUND1: Record<string, (n: number) => string> = {
+    'a block that stops early, then key lines and an END line, repeated': (n) => fill(`-----BEGIN PRIVATE KEY-----\n${lines(3)}\n${r64().slice(0, 30)}\n${lines(2)}\n-----END PRIVATE KEY-----\n`, n),
+    'one block that stops early, then key lines with an END line every two': (n) => `-----BEGIN PRIVATE KEY-----\n${lines(3)}\n${r64().slice(0, 30)}\n${fill(`${lines(2)}\n-----END PRIVATE KEY-----\n`, n)}`,
+    'blocks that stop early, then base64 to the next block': (n) => fill(`-----BEGIN PRIVATE KEY-----\n${lines(2)}\n  ${lines(40)}\n`, n),
+    'BEGIN lines with escaped slashes, no closing quote': (n) => fill(`-----BEGIN PRIVATE KEY-----${BS}n${r64().split('/').join(`${BS}/`)}${BS}n`, n),
+    'written-out breaks between short runs': (n) => fill(`ab${BS}u000acd<br>ef%0Agh&#xA;ij${BS}x0akl\`n`, n),
+    'DEK-Info lines above END lines': (n) => fill(`DEK-Info: AES-128-CBC,${'A1'.repeat(16)}\n\n${lines(2)}\n-----END RSA PRIVATE KEY-----\n`, n),
+    'END lines under a newline constant each': (n) => fill(`"${r64()}" + System.lineSeparator()\n-----END PRIVATE KEY-----\n`, n),
+    'short lines above END lines': (n) => fill(`${r64()}\nAbCd\n-----END PRIVATE KEY-----\n`, n),
+  }
+
+  it.each(Object.keys(ROUND1))('screens the end of 465,000 characters of %s in 150 ms, as both computers do, and its error in 20 ms', (shape) => {
+    const text = ROUND1[shape](N)
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS))).toBeLessThan(150)
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)), 'cut by an older doing computer').toBeLessThan(150)
+    expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), 'error').toBeLessThan(20)
+  })
+
   /** Inputs built to make a detector or a rule do the most work per character. */
   const HOSTILE: Record<string, (n: number) => string> = {
     ...ONE_LINE,
+    ...ROUND1,
     'BEGIN + one random line, repeated': (n) => fill(Array.from({ length: 64 }, () => `-----BEGIN RSA PRIVATE KEY-----\n${r64()}\n`).join(''), n),
     'BEGIN lines only': (n) => fill('-----BEGIN PRIVATE KEY-----\n', n),
     'END lines only, one line': (n) => fill('-----END PRIVATE KEY-----', n),

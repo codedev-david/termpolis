@@ -991,6 +991,218 @@ describe('T5: the recall bugs the probes found stay fixed', () => {
   })
 })
 
+describe("what the round-0 leaks review found crossing: a short last line, a cut in the headers, uneven lines", () => {
+  const BS = '\\'
+  const ESC = String.fromCharCode(27)
+  const BT = '`'
+  /** An older doing computer's cut of `text` at `at`: the asking side screens what arrived. */
+  const arrived = (text: string, at: number): ReturnType<typeof screenKeys> => screenKeys(`…${text.slice(at)}`, { cutStart: true })
+
+  it('F-A: a key whose last line is 1 to 7 characters, cut through by an older computer, goes from its END line', () => {
+    // every P-521 PKCS#8 key's last line is 4 characters: no run of 8 was on it, and the walk up
+    // from the END line stopped there
+    const p521 = (generateKeyPairSync('ec', { namedCurve: 'P-521' }).privateKey.export({ type: 'pkcs8', format: 'pem' }) as string).trim().split('\n')
+    expect(p521[p521.length - 2].length).toBeLessThan(8)
+    const secret = secretLinesOf(p521)
+    for (const joining of ['lf', 'json_n', 'java_concat', 'cat_n', 'rg_win', 'docker_t', 'diff_plus']) {
+      const body = JOIN[joining](p521)
+      const text = `Here is the key:\n${body}\nDone.\n`
+      // (a cut that leaves fewer than 16 of the key's characters leaves no key: 0.8 is the last that
+      // leaves more in every joining)
+      for (const f of [0.3, 0.6, 0.8]) {
+        const at = text.indexOf(body) + Math.floor(body.length * f)
+        expect(leakedWindows(arrived(text, at).text, secret), `${joining} ${f}`).toBe(0)
+        // ...and its short last line too
+        expect(shownWhole(arrived(text, at).text, p521[p521.length - 2]), `${joining} ${f}`).toBe(false)
+      }
+    }
+  })
+
+  it('F-B: a key an older computer cut in its BEGIN line or the header lines under it goes, END line and all', () => {
+    for (const format of ['pkcs8_rsa', 'openssh', 'pgp_rsa_hdr', 'pgp_rsa_nohdr', 'rsa_legacy_enc', 'enc_pkcs8', 'ssh2_real'] as const) {
+      const lines = K.F[format]
+      const secret = secretLinesOf(lines)
+      for (const joining of ['lf', 'crlf', 'json_n', 'cat_n']) {
+        const body = JOIN[joining](lines)
+        const text = `Here is the deploy key:\n${body}\nThe deploy finished.\n`
+        const from = text.indexOf(body)
+        const firstBody = text.indexOf(secret[0].slice(0, 16), from)
+        for (let at = from + 1; at < firstBody; at += 2) {
+          const r = arrived(text, at)
+          expect(leakedWindows(r.text, secret), `${format} ${joining} cut at ${at - from}`).toBe(0)
+        }
+      }
+    }
+  })
+
+  it('FR-4: an older computer cut through a key joined by escapes, newline constants or a per-line suffix: taken from its END line', () => {
+    const joinings: Record<string, (ls: string[]) => string> = {
+      json_rn: (ls) => `{"key": "${ls.join(`${BS}r${BS}n`)}${BS}r${BS}n"}`,
+      u000a: JOIN.u000a,
+      x0a: (ls) => `printf '${ls.join(`${BS}x0a`)}'`,
+      html_br: (ls) => `<pre>${ls.join('<br>')}</pre>`,
+      ps_backtick: (ls) => '$key = ' + ls.map((l) => `"${l}${BT}n"`).join(' +\n    '),
+      vb_crlf: JOIN.vb_crlf,
+      php_dot: JOIN.php_dot,
+      cat_A: (ls) => ls.map((l) => `${l}$`).join('\n'),
+      java_lineSep: (ls) => 'String KEY = ' + ls.map((l) => `"${l}"`).join(' + System.lineSeparator()\n    + ') + ';',
+    }
+    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'openssh'] as const) {
+      const lines = K.F[format]
+      const secret = secretLinesOf(lines)
+      for (const [name, join] of Object.entries(joinings)) {
+        const body = join(lines)
+        const text = `Here it is:\n${body}\nDone.\n`
+        for (const f of [0.5, 0.85]) {
+          const at = text.indexOf(body) + Math.floor(body.length * f)
+          expect(leakedWindows(arrived(text, at).text, secret), `${format} ${name} ${f}`).toBe(0)
+        }
+      }
+    }
+    // a cut inside a written-out break or a newline constant leaves its rest above the key lines
+    const lines = K.F.pkcs8_rsa
+    const secret = secretLinesOf(lines)
+    for (const [name, join, mark] of [
+      ['html_br', joinings.html_br, '<br>'],
+      ['java_lineSep', joinings.java_lineSep, 'System.lineSeparator()'],
+    ] as const) {
+      const text = `Here it is:\n${join(lines)}\nDone.\n`
+      const inMark = text.indexOf(mark, Math.floor(text.length / 2)) + 2
+      expect(leakedWindows(arrived(text, inMark).text, secret), name).toBe(0)
+    }
+  })
+
+  it('F-C and F-D: a key in JSON that escapes / or +, and in a coloured git diff, is removed whole', () => {
+    const joinings: Record<string, (ls: string[]) => string> = {
+      // PHP's json_encode writes / as \/; .NET's System.Text.Json writes + as the escape of U+002B
+      php_json: (ls) => '{"key":"' + ls.join(BS + 'n').split('/').join(BS + '/') + BS + 'n"}',
+      stj_plus: (ls) => JSON.stringify({ key: ls.join('\n') }).split('+').join(BS + 'u002B'),
+      // git's colour output: ESC[32m+ before each added line, ESC[m after it
+      ansi_diff: (ls) => ls.map((l) => `${ESC}[32m+${l}${ESC}[m`).join('\n'),
+    }
+    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'enc_pkcs8', 'sec1_ec', 'openssh'] as const) {
+      const lines = K.F[format]
+      const secret = secretLinesOf(lines)
+      for (const [name, join] of Object.entries(joinings)) {
+        for (const end of [true, false]) {
+          const r = screenKeys(`Config:\n${join(end ? lines : lines.slice(0, -1))}\nDone.\n`)
+          expect(leakedWindows(r.text, secret), `${format} ${name} END ${end}`).toBe(0)
+        }
+      }
+    }
+    // an OpenVPN static key in a coloured diff
+    const ovpn = screenKeys(K.F.openvpn.map((l) => `${ESC}[32m+${l}${ESC}[m`).join('\n'))
+    expect(ovpn.removed).toEqual({ openvpn_static_key: 1 })
+  })
+
+  it('F-E: a base64 key file an older computer cut through goes, its first line too', () => {
+    const pem = K.F.sec1_ec.join('\n') + '\n'
+    const b64 = Buffer.from(pem).toString('base64')
+    // the base64 that holds the key's body, not its BEGIN and END lines'
+    const from = Math.ceil(((K.F.sec1_ec[0].length + 1) * 4) / 3)
+    const to = Math.floor(((pem.length - K.F.sec1_ec[K.F.sec1_ec.length - 1].length - 1) * 4) / 3)
+    const windows = Array.from({ length: Math.floor((to - from - 16) / 4) }, (_, i) => b64.slice(from + 4 * i, from + 4 * i + 16))
+    const forms: Record<string, string> = {
+      'tls.key on one line': `apiVersion: v1\ndata:\n  tls.key: ${b64}\nkind: Secret\n`,
+      'tls.key wrapped by Helm': `tls:\n  key: |\n${wrap(b64, 76).map((l) => `    ${l}`).join('\n')}\n`,
+      'tls.key behind cat -n': wrap(b64, 76).map((l, i) => `${String(i + 1).padStart(6)}\t${l}`).join('\n') + '\n',
+    }
+    for (const [name, text] of Object.entries(forms)) {
+      for (const f of [0.3, 0.6, 0.9]) {
+        const at = text.indexOf(b64.slice(0, 40)) + Math.floor((text.lastIndexOf(b64.slice(-20)) - text.indexOf(b64.slice(0, 40))) * f)
+        const r = arrived(text, at)
+        const left = r.text.replace(/\n\s+(?:\d+\t)?/g, '')
+        expect(windows.filter((w) => left.includes(w)), `${name} ${f}`).toEqual([])
+      }
+    }
+  })
+
+  it('F-ROTATION: a key rotated in a git diff, the new one an Ed25519 key or with its first line shared, goes too', () => {
+    const other = makeKeys()
+    /** A unified diff of a key file from `a` to `b`, the lines they share as context. */
+    const diff = (a: string[], b: string[]): string => {
+      let i = 0
+      while (i < a.length && i < b.length && a[i] === b[i]) i++
+      let j = 0
+      while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++
+      return [
+        'diff --git a/deploy/id b/deploy/id',
+        '--- a/deploy/id',
+        '+++ b/deploy/id',
+        `@@ -1,${a.length} +1,${b.length} @@`,
+        ...a.slice(0, i).map((l) => ` ${l}`),
+        ...a.slice(i, a.length - j).map((l) => `-${l}`),
+        ...b.slice(i, b.length - j).map((l) => `+${l}`),
+        ...a.slice(a.length - j).map((l) => ` ${l}`),
+      ].join('\n')
+    }
+    for (const [name, a, b] of [
+      ['OpenSSH Ed25519 to Ed25519 (first line shared)', K.F.openssh, other.F.openssh],
+      ['PKCS#8 Ed25519 to Ed25519', K.F.pkcs8_ed25519, other.F.pkcs8_ed25519],
+      ['PKCS#8 RSA to Ed25519', K.F.pkcs8_rsa, other.F.pkcs8_ed25519],
+    ] as const) {
+      const r = screenKeys(diff(a, b))
+      expect(leakedWindows(r.text, secretLinesOf(a)), `${name}: the old key`).toBe(0)
+      expect(leakedWindows(r.text, secretLinesOf(b)), `${name}: the new key`).toBe(0)
+    }
+    // a real key swapped for a test's made-up one: the made-up lines under it are left as they are
+    const fake = ['-----BEGIN PRIVATE KEY-----', ...Array.from({ length: 6 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`), '-----END PRIVATE KEY-----']
+    const swapped = diff(K.F.pkcs8_rsa, fake)
+    const sw = screenKeys(swapped)
+    expect(leakedWindows(sw.text, secretLinesOf(K.F.pkcs8_rsa))).toBe(0)
+    for (const l of fake.slice(1, -1)) expect(sw.text.includes(`+${l}`)).toBe(true)
+  })
+
+  it("F-A's short line counts only in its key lines' frame: a word line over an END line holds no key's tail", () => {
+    // (the short line stepped over must be in the frame of the line above it)
+    const r64 = (): string => randomBytes(48).toString('base64')
+    const text = `  ${r64()}\n  ${r64()}\nok: 7\n-----END PRIVATE KEY-----\n`
+    expect(screenKeys(text).removed).toEqual({})
+  })
+
+  it('F-IRREGULAR: a key with one line indented, split, joined or re-wrapped goes whole with its END line, and is reported past where it is taken without one', () => {
+    const lines = K.F.pkcs8_rsa
+    const secret = secretLinesOf(lines)
+    const body = lines.slice(1, -1)
+    const layouts: Record<string, string[]> = {
+      'one line indented': body.map((l, i) => (i === 8 ? `  ${l}` : l)),
+      'one line split': [...body.slice(0, 8), body[8].slice(0, 30), body[8].slice(30), ...body.slice(9)],
+      'two lines joined': [...body.slice(0, 8), body[8] + body[9], ...body.slice(10)],
+      'alternating 64 and 48': wrap(body.join(''), 64).flatMap((l, i) => (i % 2 ? [l.slice(0, 48), l.slice(48)] : [l])).filter(Boolean),
+      // (re-wrapped at 50 and 64 by turns: its first line narrower than its second)
+      'first line narrower, alternating': (() => {
+        const all = body.join('')
+        const out: string[] = []
+        for (let i = 0, w = 50; i < all.length; i += w, w = w === 50 ? 64 : 50) out.push(all.slice(i, i + w))
+        return out
+      })(),
+    }
+    for (const [name, b] of Object.entries(layouts)) {
+      const withEnd = screenKeys(`Key:\n${[lines[0], ...b, lines[lines.length - 1]].join('\n')}\nDone.\n`)
+      expect(leakedWindows(withEnd.text, secret), `${name}, END line`).toBe(0)
+      const noEnd = screenKeys(`Key:\n${[lines[0], ...b].join('\n')}\n`)
+      // (taken from its BEGIN line up to the uneven line, and what goes on past it named in a note)
+      expect(noEnd.removed, `${name}, no END line`).toEqual({ private_key: 1 })
+      if (leakedWindows(noEnd.text, secret) > 0) expect(noEnd.flagged, `${name}, no END line`).toEqual({ private_key: 1 })
+    }
+  })
+
+  it('F4: a run of key lines with no END line at the start of a text an older computer cut is reported wherever the cut fell', () => {
+    // (an OpenSSH Ed25519 key's few lines are structured, not random: not reported, as a dump's would not be)
+    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'pgp_rsa_nohdr'] as const) {
+      const lines = K.F[format].slice(0, -1)
+      const text = `${lines.join('\n')}\nThe export stopped here.\n`
+      const first = text.indexOf('\n') + 1
+      const last = text.lastIndexOf(lines[lines.length - 1]) - 200
+      for (let at = first + 1; at < last; at += 37) {
+        const r = arrived(text, at)
+        expect(r.removed, `${format} cut at ${at}`).toEqual({})
+        expect(r.flagged.private_key, `${format} cut at ${at}`).toBe(1)
+      }
+    }
+  })
+})
+
 describe('the structure checks, on decoded bytes', () => {
   const int = (v: number[]): Buffer => der(0x02, Buffer.from(v))
   const seq = (...parts: Buffer[]): Buffer => der(0x30, Buffer.concat(parts))
@@ -1212,8 +1424,10 @@ describe('detectorStart: each detector looks back for its own opener', () => {
     expect(detectorStart(jwk, jwk.length - 10, 16)).toBe(kty - 4096)
     const xml = `${prose(100)}\n<RSAKeyValue>${' '.repeat(10000)}<D>x</D>`
     expect(detectorStart(xml, xml.length - 5, 16)).toBe(xml.indexOf('RSAKeyValue'))
-    // (an .ovpn: its CA certificate, then the static key the cut falls in)
-    const ovpn = `${prose(10)}\n<ca>\n${wrap(randomBytes(1500).toString('base64')).join('\n')}\n</ca>\n#\n# 2048 bit OpenVPN static key\n#\n-----BEGIN OpenVPN Static key V1-----\n${wrap(randomBytes(256).toString('hex'), 32).join('\n')}\n-----END OpenVPN Static key V1-----\n`
+    // (an .ovpn: its CA certificate, then the static key the cut falls in; the certificate's random
+    // base64 held `kty` one run in 40, and the JWK opener moved the start to 0)
+    const ca = randomBytes(1500).toString('base64').replace(/kty/g, 'kTy')
+    const ovpn = `${prose(10)}\n<ca>\n${wrap(ca).join('\n')}\n</ca>\n#\n# 2048 bit OpenVPN static key\n#\n-----BEGIN OpenVPN Static key V1-----\n${wrap(randomBytes(256).toString('hex'), 32).join('\n')}\n-----END OpenVPN Static key V1-----\n`
     expect(detectorStart(ovpn, ovpn.indexOf('-----BEGIN OpenVPN') + 200, 16)).toBe(ovpn.indexOf('OpenVPN Static key') - 16)
     // with the cut past its END line, the END line's name is what is found: the key is over
     const after = `${ovpn}<tls-auth>\n<cert>\n${wrap(randomBytes(1500).toString('base64')).join('\n')}\n</cert>\n`

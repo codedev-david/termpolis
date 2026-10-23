@@ -752,7 +752,7 @@ export function screenText(input: string, keep?: number, lookback?: number, cutS
     SCREEN_RULES,
   )
   const keysFrom = lookback !== undefined ? detectorStart(input, from, Math.max(0, lookback)) : 0
-  const keys = keySpans(input, keysFrom)
+  const keys = keySpans(input, keysFrom, cutStart === true)
   // One at a time: spread into push(), a few hundred thousand finds overflow the call stack.
   for (const span of keys.spans) found.push(span)
   // Where the tail starts, unless a removal runs through it, a key's tail can sit right under it

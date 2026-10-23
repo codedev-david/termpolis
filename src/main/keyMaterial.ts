@@ -34,9 +34,12 @@ export interface KeySpan {
 }
 
 /** A key block from its BEGIN line (keyBlocks), and where its scan stopped: its END line's end, or
- *  its last key line. headless leaves an END line inside one alone. */
+ *  its last key line. headless leaves an END line inside one alone. `rest`: with no END line, the
+ *  start of the line where its lines stopped keeping one width and frame (a line indented, split
+ *  or joined), which headless reports if key lines go on from there. */
 export interface KeyBlock extends KeySpan {
   scanEnd: number
+  rest?: number
 }
 
 type Run = [number, number]
@@ -320,14 +323,14 @@ export function pgpPacket(b: Buffer): { tag: number; v: number; algo: number } |
   return { tag, v, algo }
 }
 
-/** Decode the first runs of a payload, trying the 0-3 characters a frame may glue onto each line
- *  (a diff's +, a //): which structure, at which offset. The glue is dropped from every line that
+/** Decode the first runs of a payload, trying the 0-4 characters a frame may glue onto each line
+ *  (a diff's +, a //, a coloured diff's `32m+`): which structure, at which offset. The glue is dropped from every line that
  *  starts with it, not only the first: a diff's + is a base64 character, so each line's run starts
  *  with it, and with the first line's dropped alone the bytes after it were misaligned (an
  *  encrypted PKCS#8 key, whose PBES2 parameters run past its first line, failed to decode in 17 of
  *  40 `git diff` listings). */
 export function decodeHead(text: string, runs: Run[]): (Structure & { offset: number }) | null {
-  for (let k = 0; k <= 3; k++) {
+  for (let k = 0; k <= 4; k++) {
     const glue = text.slice(runs[0][0], runs[0][0] + k)
     let head = ''
     for (const [s, e] of runs) {
@@ -406,6 +409,16 @@ const LINE_END_RUN = /[A-Za-z0-9+/=]+[\s"'`,;+&_)\]}|\\]*$/
  *  They count as joiners: blanked to spaces of the same length, so offsets hold. */
 const NL_CONST = /vbCrLf|vbNewLine|vbLf|Environment\.NewLine|System\.lineSeparator\(\)|os\.linesep|PHP_EOL/g
 const blankNl = (s: string): string => s.replace(NL_CONST, (x) => ' '.repeat(x.length))
+/** The written-out line breaks nextBreak reads, as answers write them. */
+const ESC_FORMS = ['<br>', '<br/>', '<br />', '\\n', '\\r', '\\u000a', '\\u000A', '\\x0a', '\\x0A', '%0A', '%0a', '&#xA;', '&#xa;', '&#x0A;', '&#10;', '`n', '`r']
+/** Whether `s` is what a cut left of a written-out line break (`br>` of `<br>`). */
+const escTail = (s: string): boolean => s !== '' && ESC_FORMS.some((f) => f.length > s.length && f.endsWith(s))
+const NL_NAMES = ['vbCrLf', 'vbNewLine', 'vbLf', 'Environment.NewLine', 'System.lineSeparator()', 'os.linesep', 'PHP_EOL']
+/** Whether `s` is what a cut left of a newline constant, and the joiners after it (`tor() +`). */
+const nlTail = (s: string): boolean => {
+  const t = s.replace(/[\s"'`,;+&_]+$/, '')
+  return t !== '' && NL_NAMES.some((n) => n.endsWith(t))
+}
 /** What joins the lines of a key written on one line: a space, a literal's `","` or `' '`. */
 const ONE_LINE_SEP = /^[ \t"'`,;+]{1,8}$/
 const SAME_LINE_TAIL = /^([A-Za-z0-9+/]{1,15}={0,2})(?![A-Za-z0-9+/=])/
@@ -480,6 +493,7 @@ function scanBlock(
   let lineStart = me
   let width = 0
   let closed = false
+  let stopped = -1
   while (lineStart < end) {
     const br = nextBr(lineStart, end)
     const lineEnd = br ? br[0] : end
@@ -523,11 +537,12 @@ function scanBlock(
         const w = r[1] - r[0]
         const prev = runs.length ? runs[runs.length - 1][1] : -1
         const fr = frameAt(text, Math.max(lineStart, prev), r[0])
-        if (runs.length > 0 && (closed || w > width || (runs.length >= 2 && fr !== frames[1]))) {
+        // (a first line narrower than the second was re-wrapped: the second sets the width)
+        if (runs.length > 0 && (closed || (w > width && runs.length > 1) || (runs.length >= 2 && fr !== frames[1]))) {
           ended = true
           break
         }
-        if (runs.length === 0) width = w
+        if (runs.length === 0 || w > width) width = w
         else if (w < width) closed = true
         runs.push(r)
         frames.push(fr)
@@ -535,7 +550,10 @@ function scanBlock(
       // (the first run picked is always taken: an empty body takes any width and frame)
       lastPayloadEnd = runs[runs.length - 1][1]
       gap = 0
-      if (ended) break
+      if (ended) {
+        stopped = lineStart
+        break
+      }
     } else {
       gap += lineEnd - lineStart + (br ? br[1] - br[0] : 0)
       if (runs.length === 0 && lineEnd - me > MAX_LEAD) break
@@ -583,10 +601,19 @@ function scanBlock(
   }
   const endOfKey = endAt !== -1 && runs.length ? endEnd : tailEnd
   const scanEnd = endAt !== -1 ? endEnd : Math.max(lastPayloadEnd, me)
-  const span = (cls: KeySpan['cls'], why: string): KeyBlock => ({ rule, cls, why, from: b, to: cls === 'flag' ? me : endOfKey, scanEnd })
+  const span = (cls: KeySpan['cls'], why: string): KeyBlock => ({
+    rule,
+    cls,
+    why,
+    from: b,
+    to: cls === 'flag' ? me : endOfKey,
+    scanEnd,
+    ...(endAt === -1 && stopped !== -1 ? { rest: stopped } : {}),
+  })
 
   if (rule === 'openvpn_static_key') {
-    const hex = runs.map(([s, e]) => text.slice(s, e).replace(/^[^0-9a-fA-F]{1,3}(?=[0-9a-fA-F]{32}$)/, '')).filter((r) => /^[0-9a-f]+$/i.test(r)).join('')
+    // (a frame glued on: a diff's +, a coloured diff's `32m+`)
+    const hex = runs.map(([s, e]) => text.slice(s, e).replace(/^(?:\d{1,3}m)?[^0-9a-fA-F]{0,3}(?=[0-9a-fA-F]{32}$)/, '')).filter((r) => /^[0-9a-f]+$/i.test(r)).join('')
     return hex.length >= 256 && looksRandom(hex) ? span('remove', 'openvpn-hex') : span('flag', 'openvpn-header')
   }
   if (runs.length === 0) return span('flag', 'header-only')
@@ -643,12 +670,16 @@ export function keyBlocks(text: string, start = 0): KeyBlock[] {
 // line, at the top of what is screened or right under a key block taken.
 // ---------------------------------------------------------------------------------------------
 const END_RE = /-----END ((?:[A-Z0-9]+ ){0,3})PRIVATE KEY(?: BLOCK)?-----|---- END SSH2 ENCRYPTED PRIVATE KEY ----/g
-// One partial line: its frame, its base64, then what ends a key line (an escaped break, a closing
-// quote, a concatenation, one real line break).
-const PARTIAL_RE = /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)((?:\\[nr]|[ \t"'`,;+)\]}|&])*(?:\r\n|\r|\n)?)$/
+// One partial line: its frame, its base64, then what ends a key line (an escaped break as nextBreak
+// reads them, a closing quote, a concatenation, PHP's `" .`, VB's `& _`, cat -A's `$`, one real
+// line break). Newline constants are blanked before it is matched.
+const PARTIAL_RE = /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)((?:\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]|[ \t"'`,;+.&_$)\]}|])*(?:\r\n|\r|\n)?)$/
 
-/** Payload lines read forward from `s`: one width (the last may be shorter), one frame. */
-function leadingRun(text: string, s: number, limit: number): Run[] {
+/** Payload lines read forward from `s`: one width (the last may be shorter), one frame.
+ *  `partialHead`: the first line is not one of the key's full lines (what another computer's cut
+ *  left of one at the start of a text, or the uneven line a key block stopped at): the second
+ *  sets the width. */
+function leadingRun(text: string, s: number, limit: number, partialHead = false): Run[] {
   const runs: Run[] = []
   let width = 0
   let frame = ''
@@ -665,6 +696,10 @@ function leadingRun(text: string, s: number, limit: number): Run[] {
       if (runs.length === 0) {
         width = w
         frame = f
+      } else if (partialHead && runs.length === 1 && w > width) {
+        // the first line was the cut's partial one: the key's lines are as wide as the second
+        width = w
+        frame = f
       } else if (w > width || (runs.length > 1 && f !== frame)) {
         break
       }
@@ -674,7 +709,9 @@ function leadingRun(text: string, s: number, limit: number): Run[] {
       gap = 0
     } else {
       gap += lineEnd - lineStart
-      if (gap > 64 || runs.length === 0) break
+      // (the first line of a text another computer cut: its ellipsis alone, or with the few
+      // characters the cut left of a key line)
+      if (gap > 64 || (runs.length === 0 && !(partialHead && lineStart === s && /^…?[A-Za-z0-9+/=]{0,7}\s*$/.test(text.slice(lineStart, lineEnd))))) break
     }
     if (!br) break
     lineStart = br[1]
@@ -682,27 +719,57 @@ function leadingRun(text: string, s: number, limit: number): Run[] {
   return runs
 }
 
-/** Start of the logical line holding position i - 1: back to a real line break or a `\n` escape
- *  before it, never past floor. */
+/** Where a line break that ends at `s` starts, or -1: a real one, or one written out as nextBreak
+ *  reads them (the escapes of ESC_RE: `\n`, `\\n`, `\r`, the Unicode or hex escape of a line
+ *  feed, %0A, &#xA;, <br>, PowerShell's `n). Looks back 7 characters at most (and over a run of
+ *  backslashes), never past floor. */
+function breakEndingAt(text: string, s: number, floor: number): number {
+  if (s <= floor) return -1
+  const c = text.charCodeAt(s - 1)
+  if (c === 10) return s - 2 >= floor && text.charCodeAt(s - 2) === 13 ? s - 2 : s - 1
+  if (c === 13) return s - 1
+  // (an escape ends in n or r, a, A, d or D, a ; or a >)
+  if (c !== 110 && c !== 114 && c !== 97 && c !== 65 && c !== 100 && c !== 68 && c !== 59 && c !== 62) return -1
+  for (let b = s - 2; b >= Math.max(floor, s - 7); b--) {
+    const d = text.charCodeAt(b)
+    if (d !== 92 && d !== 37 && d !== 38 && d !== 60 && d !== 96) continue
+    let a = b
+    while (d === 92 && a - 1 >= floor && text.charCodeAt(a - 1) === 92) a--
+    ESC_RE.lastIndex = a
+    const m = ESC_RE.exec(text)
+    if (m && a + m[0].length === s) return a
+  }
+  return -1
+}
+
+/** Start of the logical line holding position i - 1: back to a line break before it, real or
+ *  written out (breakEndingAt), never past floor. */
 function logicalLineStart(text: string, i: number, floor: number): number {
   let s = i
-  while (s > floor) {
-    const c = text.charCodeAt(s - 1)
-    if (c === 10 || c === 13) break
-    if (c === 110 /* n */ && text.charCodeAt(s - 2) === 92 /* \ */) break
-    s--
-  }
+  while (s > floor && breakEndingAt(text, s, floor) === -1) s--
   return s
 }
 
 /** From the start `s` of a logical line, back over the break before it to the end of the line
- *  above. */
+ *  above: every real line break (a blank line is no line), then one written out, a written-out
+ *  \r\n as one. */
 function stepBack(text: string, s: number, floor: number): number {
   let e = s
   while (e > floor && (text.charCodeAt(e - 1) === 10 || text.charCodeAt(e - 1) === 13)) e--
-  if (e > floor && text.charCodeAt(e - 1) === 110 && text.charCodeAt(e - 2) === 92) e -= 2
-  return e
+  const b = breakEndingAt(text, e, floor)
+  if (b === -1) return e
+  const r = breakEndingAt(text, b, floor)
+  return r !== -1 && /^\\+r$/.test(text.slice(r, b)) ? r : b
 }
+
+/** What may follow a key line's base64 on its line, newline constants blanked: joiners, a code
+ *  literal's `" & vbCrLf & _` or `" + System.lineSeparator()`, and cat -A's `$`. */
+const KEY_LINE_TAIL = /^[\s"'`,;+&_)\]}|\\$]*$/
+/** A key's last line of 1-7 characters, which holds no run of 8 (every P-521 PKCS#8 key's). */
+const SHORT_ABOVE = /[A-Za-z0-9+/]{1,7}={0,2}[\s"'`,;+&_)\]}|\\$]*$/
+/** What an escaped break leaves of a code literal's line between two key lines: joiners, and PHP's
+ *  `" .` (a dot right after the closing quote; a line of dots is no literal's). */
+const FRAGMENT_LINE = /^[\s"'`,;+&_)\]}|\\]*(?:["'`]\s*\.[\s"'`,;+&_)\]}|\\]*)?$/
 
 /** The key lines that end right above a private-key END line at `at`, found by walking back one
  *  logical line at a time while lines keep the width and frame of the key's full lines. Reaches
@@ -711,29 +778,41 @@ function tailAbove(text: string, at: number, floor: number): Run[] {
   const runs: Run[] = []
   let width = 0
   let frame = ''
+  let tail = ''
   let skipped = false
+  let shortFrame: string | null = null
   let e = at
   for (let n = 0; e > floor && n < 65536; n++) {
     const s = logicalLineStart(text, e, floor)
-    const lr = runsIn(text, s, e, 8)
-    const last = lr[lr.length - 1]
+    // (a newline constant is no run: `System.lineSeparator()` after a Java literal's key line)
+    const lr = runsIn(blankNl(text.slice(s, e)), 0, e - s, 8)
+    const last: Run | undefined = lr.length ? [s + lr[lr.length - 1][0], s + lr[lr.length - 1][1]] : undefined
     // The END line's own prefix is its frame (a listing's path:N:, a quote, an indent), not a key
     // line, unless a key run is glued to the END marker: step over it.
     if (n === 0 && !(last && last[1] - last[0] >= 16 && JOINERS.test(text.slice(last[1], e)))) {
       e = stepBack(text, s, floor)
       continue
     }
-    if (!last || !JOINERS.test(text.slice(last[1], e))) {
+    const after = last ? blankNl(text.slice(last[1], e)) : ''
+    if (!last || !KEY_LINE_TAIL.test(after)) {
       // A joiner-only line, or an OpenPGP armor checksum (=XXXX), between the last key line and
       // the END line. And a joiner-only fragment between two key lines, which is what an escaped
       // break leaves of a code literal's line (`"...\n" +` reads as the key line `"...` and the
-      // fragment `" +`): at most one in a row, of 16 characters at most.
+      // fragment `" +`, PHP's `" .`): at most one in a row, of 16 characters at most.
       const seg = text.slice(s, e)
-      const joinerOnly = JOINERS.test(seg)
+      const joinerOnly = FRAGMENT_LINE.test(blankNl(seg))
       // (the checksum line keeps its listing frame: `deploy.asc:41:=AbCd`, `    41\t=AbCd`)
       const checksum = runs.length === 0 && /=[A-Za-z0-9+/]{4}[\s"'`,;+)\]}|\\]*$/.test(seg) && !/[A-Za-z0-9+/]{16}/.test(seg.slice(0, seg.lastIndexOf('=')))
       if ((runs.length === 0 && (joinerOnly || checksum)) || (runs.length > 0 && joinerOnly && seg.length <= 16 && !skipped)) {
         if (runs.length > 0) skipped = true
+        e = stepBack(text, s, floor)
+        continue
+      }
+      // The key's last line, when it is 1-7 characters (an OpenSSH or PGP file whose base64 runs
+      // that far past a full line): once, before any key line, under one in its frame.
+      const short = runs.length === 0 && shortFrame === null ? SHORT_ABOVE.exec(blankNl(seg)) : null
+      if (short) {
+        shortFrame = seg.slice(0, short.index)
         e = stepBack(text, s, floor)
         continue
       }
@@ -743,17 +822,28 @@ function tailAbove(text: string, at: number, floor: number): Run[] {
     const w = last[1] - last[0]
     const f = frameAt(text, s, last[0])
     if (runs.length === 0) {
+      // (the short last line stepped over is in this line's frame; where the cut took this line's
+      // start, its frame ends with what is left of it)
+      if (shortFrame !== null) {
+        const sf = frameOf(shortFrame.slice(-512)).slice(-64)
+        // (':' and '-' alike, as at the top of a cut text: frameOf's `:N:`/`-N-` rule depends on
+        // where the cut fell in a timestamp)
+        const loose = (x: string): string => x.replace(/-/g, ':')
+        if (sf !== f && !(s <= floor + 1 && loose(sf).endsWith(loose(f.replace(/^…/, '')))) && !JOINER_FRAME.test(shortFrame)) return []
+      }
       runs.push(last) // the last key line, which may be short
     } else if (runs.length === 1) {
       // A key's full lines are as wide as its last one or wider, and at least a payload run wide:
       // the last word on each line of a report (`... as expected`) is no key line, and a report
-      // printed above an END line named in prose was taken for a key's tail.
+      // printed above an END line named in prose was taken for a key's tail. What follows their
+      // base64 is the same on each (a literal's `" +`, cat -A's `$`).
       if (w < runs[0][1] - runs[0][0] || w < MIN_RUN) break
       width = w
       frame = f
+      tail = after
       runs.push(last)
     } else {
-      if (w !== width || f !== frame) break
+      if (w !== width || f !== frame || after !== tail) break
       runs.push(last)
     }
     e = stepBack(text, s, floor)
@@ -795,12 +885,12 @@ function headAnchor(text: string, runs: Run[], floor: number, atTop: boolean, bl
   // frame, then base64).
   const above = text.slice(floor, ls)
   if (above.length > 1024) return null
-  const m = PARTIAL_RE.exec(above)
+  const m = PARTIAL_RE.exec(blankNl(above))
   if (!m) return null
   // (':' and '-' alike: frameOf's `:N:`/`-N-` rule depends on where the cut fell in a timestamp)
   const loose = (x: string): string => x.replace(/-/g, ':')
   const fr = frameOf(m[1])
-  if (fr !== '' && !loose(frame).endsWith(loose(fr)) && !JOINER_FRAME.test(m[1])) return null
+  if (fr !== '' && !loose(frame).endsWith(loose(fr)) && !JOINER_FRAME.test(m[1]) && !escTail(m[1]) && !nlTail(above.replace(/^…/, '').trimEnd())) return null
   return m[2] ? floor + (above.startsWith('…') ? 1 : 0) + m[1].length : runs[0][0]
 }
 
@@ -862,26 +952,150 @@ function headInReach(text: string, at: number, floor: number, runs: Run[]): bool
 
 const tailRule = (end: string): string => (end.includes('PGP') ? 'gpg_block' : end.includes('SSH2') ? 'ssh2_private_key' : 'private_key')
 
-/** Whether the key lines `runs` a cut left are a made-up body, not a key's: a line as wide as a
- *  key's (48 or more) of fewer than 16 different characters ('AbAb...' and a number, 'AAAA...'),
- *  or with eight letters or digits in order, in either case (lnk3's 'AbCdEfGh...'); or fewer than
- *  a third of them different in all (10 at most needed). A real key's lines hold 25 or more
- *  different characters, its structured ones too (an OpenSSH header, a photo ID's zero bytes), and
- *  2,000,000 random lines of 48 held 16 or more every time; eight in order come about once in 10^9
- *  random lines. */
+/** Whether every logical line in [a, b) is blank or a key line's: a base64 run of 16 or more, and
+ *  besides its runs a frame of 64 characters at most with no words in it. */
+function keyShapedLines(text: string, a: number, b: number): boolean {
+  let any = false
+  for (let i = a; i < b; ) {
+    const br = nextBreak(text, i, b)
+    const line = text.slice(i, br ? br[0] : b)
+    if (line.trim()) {
+      if (!/[A-Za-z0-9+/=]{16,}/.test(line) || /[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/.test(line)) return false
+      if (line.replace(/[A-Za-z0-9+/=]{16,}/g, '').length > 64) return false
+      any = true
+    }
+    if (!br) break
+    i = br[1]
+  }
+  return any
+}
+
+/** Where the removal of the key lines `runs` starts when they are under a key block taken of
+ *  their END line `end`'s kind, or null: right under it (a frame or a short gap between, no words),
+ *  at their first line when they hold 40 characters or more (a rotated key's in a diff); or past
+ *  lines laid out unevenly between (one indented, split, joined or re-wrapped: every line a frame
+ *  and base64), at the block's end. Blocks are sorted and disjoint. */
+function blockLead(text: string, runs: Run[], floor: number, blocks: readonly KeyBlock[], end: string): number | null {
+  // (`floor` is the last END line's end: a block before it had that END line to end its key at)
+  let lo = 0
+  let hi = blocks.length - 1
+  let bi = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (blocks[mid].to <= runs[0][0]) {
+      bi = mid
+      lo = mid + 1
+    } else hi = mid - 1
+  }
+  const bk = bi >= 0 ? blocks[bi] : null
+  if (!bk || bk.cls === 'flag' || !sameKind(bk, end)) return null
+  const ls = logicalLineStart(text, runs[0][0], floor)
+  const between = text.slice(bk.to, ls)
+  if (runs[0][0] - bk.to <= 512 && (between.match(/\r\n|\r|\n|\\n/g) ?? []).length <= 1 && !/[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/.test(between)) {
+    return runs.reduce((n, [a, b]) => n + b - a, 0) >= 40 ? runs[0][0] : null
+  }
+  return bk.to >= floor && ls - bk.to <= REACH_BEGIN && keyShapedLines(text, bk.to, ls) ? bk.to : null
+}
+
+/** The key block taken, of the END line `end`'s kind, that the key lines `runs` start inside and
+ *  that ends before the END line at `at`, or null. Blocks are sorted and disjoint. */
+function blockHolding(runs: Run[], blocks: readonly KeyBlock[], end: string, at: number): KeyBlock | null {
+  let lo = 0
+  let hi = blocks.length - 1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const b = blocks[mid]
+    if (b.to <= runs[0][0]) lo = mid + 1
+    else if (b.from > runs[0][0]) hi = mid - 1
+    else return b.cls !== 'flag' && b.to <= at && sameKind(b, end) ? b : null
+  }
+  return null
+}
+
+/** Whether the key block `bk` is of the END line `end`'s kind (its rule is the one a tail ending
+ *  there gets; DSA's is its own). */
+const sameKind = (bk: KeyBlock | null, end: string): boolean => bk !== null && (bk.rule === tailRule(end) || (bk.rule === 'ssh_dsa_pubkey' && end.includes(' DSA ')))
+
+/** Whether the first of the key lines `runs` starts, with the glue decodeHead tries, with a
+ *  private key's first bytes: the OpenSSH or SSH2 magic, or a DER SEQUENCE over a version 0 or 1
+ *  (PKCS#8, PKCS#1, SEC1) or an AlgorithmIdentifier (encrypted PKCS#8). Random key bytes start so
+ *  about once in 10^7. */
+function keyHead(text: string, runs: Run[]): boolean {
+  const r = text.slice(runs[0][0], runs[0][1])
+  for (let k = 0; k <= 4; k++) {
+    const b = Buffer.from(r.slice(k, k + 24), 'base64')
+    if (b.length < 8) break
+    if (startsWith(b, OPENSSH.slice(0, 14)) || startsWith(b, SSH2_MAGIC)) return true
+    if (b[0] !== 0x30) continue
+    const n = b[1] & 0x80 ? 2 + (b[1] & 0x7f) : 2
+    if (n <= 5 && ((b[n] === 0x02 && b[n + 1] === 0x01 && b[n + 2] <= 1) || (b[n] === 0x30 && !(b[n + 1] & 0x80) && b[n + 2] === 0x06))) return true
+  }
+  return false
+}
+
+/** Whether the key lines `runs` decode, from their first, to a private key of the END line `end`'s
+ *  kind (OpenPGP under PGP, the OpenSSH blob under OPENSSH, SSH2's magic under SSH2, DER under any
+ *  other), as a key block's would: OpenSSH and OpenPGP by their structure, the rest random too. A
+ *  key from its first line, wherever its BEGIN line went (a cut through it or its headers, a
+ *  rotated key's lines in a diff). */
+function decodedHead(text: string, runs: Run[], end: string): boolean {
+  const st = decodeHead(text, runs)
+  if (!st) return false
+  const kind = end.startsWith('---- END SSH2') ? 'ssh2' : end.includes(' PGP ') ? 'pgp' : end.includes(' OPENSSH ') ? 'openssh' : null
+  if (kind ? st.type !== kind : !DER_TYPES.includes(st.type)) return false
+  const all = runs.map(([a, b]) => text.slice(a, b)).join('')
+  // as a key block with its END line (scanBlock): OpenSSH and OpenPGP by their structure over 128
+  // characters, SSH2 random over 128, and DER random, whole (90% of the length it declares, a
+  // one-line Ed25519 key) or two lines and 80 characters of a key's bytes (not a documentation
+  // example's first line)
+  if (st.type === 'openssh' || st.type === 'pgp') return all.length >= LONG_PAYLOAD
+  if (!looksRandom(all)) return false
+  if (st.type === 'ssh2') return all.length >= LONG_PAYLOAD
+  return (Math.floor(((all.length - st.offset) * 3) / 4) >= st.declared * 0.9 && all.length >= 64) || (runs.length >= 2 && all.length >= 80)
+}
+
+/** Whether a legacy encrypted PEM key's DEK-Info line is in the 4 lines above the key lines
+ *  `runs`, or, at the start of a text another computer cut (`cutText`), what its cut left of one
+ *  (its cipher and IV, or the IV's end) over the blank line under it. */
+function legacyAbove(text: string, runs: Run[], floor: number, cutText: boolean): boolean {
+  const ls = logicalLineStart(text, runs[0][0], floor)
+  let a = ls
+  for (let n = 0; n < 4 && a > floor; n++) a = logicalLineStart(text, stepBack(text, a, floor), floor)
+  const above = text.slice(a, ls)
+  if (DEK_RE.test(above)) return true
+  if (!cutText || a !== floor) return false
+  const lines = above.replace(/^…/, '').split(/\r\n|\r|\n|\\+[nr]/)
+  // (a blank line keeps a listing's number: `     4\t`; a cut at the DEK-Info line's end left none of it)
+  return lines.length >= 2 && /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?\s*$/.test(lines[0]) && lines.slice(1).every((l) => /^[\s\d:|>#*-]*$/.test(l))
+}
+
+/** Whether the key lines `runs` a cut left are a made-up body, not a key's: every line as wide as a
+ *  key's (48 or more) has fewer than 16 different characters ('AbAb...' and a number, 'AAAA...')
+ *  or eight letters or digits in order, in either case (lnk3's 'AbCdEfGh...'); with no line that
+ *  wide, so does what is left, or a third or fewer of its characters are different (10 at most
+ *  needed). A real key's lines hold 25 or more different characters, its structured ones too (an
+ *  OpenSSH header, a photo ID's zero bytes), and 2,000,000 random lines of 48 held 16 or more every
+ *  time; eight in order come about once in 10^9 random lines. (Every line, not one: an OpenSSH
+ *  key's comment line can repeat itself, and its other lines are random.) Lines of hex only are
+ *  digests, never a PEM key's. */
 function madeUp(text: string, runs: Run[]): boolean {
-  for (const [a, b] of runs) {
-    const line = text.slice(a, b)
-    if (b - a >= 48 && new Set(line).size < 16) return true
+  const ordered = (line: string): boolean => {
     const lower = line.toLowerCase()
     for (let i = 1, n = 1; i < lower.length; i++) {
       const c = lower.charCodeAt(i)
       n = c === lower.charCodeAt(i - 1) + 1 && ((c > 97 && c <= 122) || (c > 48 && c <= 57)) ? n + 1 : 1
       if (n >= 8) return true
     }
+    return false
   }
-  const all = runs.map(([a, b]) => text.slice(a, b)).join('')
-  return new Set(all.toLowerCase()).size < Math.min(10, Math.ceil(all.length / 3))
+  const lines = runs.map(([a, b]) => text.slice(a, b))
+  // (a PEM key's lines are base64: lines all of hex, digests, are no key's however random they are)
+  const hexy = lines.filter((l) => l.length >= 32)
+  if (hexy.length && hexy.every((l) => /^[0-9a-fA-F]+$/.test(l))) return true
+  const long = lines.filter((l) => l.length >= 48)
+  if (long.length) return long.every((l) => new Set(l).size < 16 || ordered(l))
+  const all = lines.join('')
+  return ordered(all) || new Set(all.toLowerCase()).size < Math.min(10, Math.ceil(all.length / 3))
 }
 
 /** Key tails with no BEGIN line in view, from `start` on. `blocks` are keyBlocks' from the same
@@ -912,22 +1126,44 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
       const floor = Math.max(prev, at - MAX_BLOCK)
       const runs = tailAbove(text, at, floor)
       const framed = endFramed(text, at, floor, runs)
-      if (isKeyRun(text, runs)) {
-        const rule = tailRule(m[0])
+      const rule = tailRule(m[0])
+      const cutText = opts.cutAt === 0 && floor === start
+      const holder = framed && runs.length > 0 ? blockHolding(runs, blocks, m[0], at) : null
+      const lead = framed && runs.length > 0 && !holder ? blockLead(text, runs, floor, blocks, m[0]) : null
+      if (holder) {
+        // They go on from inside a key block taken, whose lines stopped keeping one width and frame
+        // (one re-wrapped, split or indented), down to an END line of its kind: the rest of it.
+        out.push({ rule, cls: 'remove', why: 'tail-of-block', from: holder.to, to: at + m[0].length })
+      } else if (framed && runs.length > 0 && decodedHead(text, runs, m[0])) {
+        // Its first lines decode to a private key of the END line's kind: a key from them on,
+        // wherever its BEGIN line went (a cut through it or the headers under it, a key rotated
+        // in a diff).
+        out.push({ rule, cls: 'remove', why: 'tail-decoded', from: runs[0][0], to: at + m[0].length })
+      } else if (isKeyRun(text, runs)) {
         // An END line named in prose or code ends no key: what looks like one above it is reported
         // as anywhere else. So is a run whose head the doing side's own window start fell under
         // while it is still in the answer: only a key longer than the BEGIN line's reach is cut off.
         const ownFloor = framed && floor === start && start > 0 && opts.cutAt !== 0 && headInReach(text, at, start, runs)
         const atTop = (floor === start && !(opts.screenedStart === true && floor === 0)) || floor === at - MAX_BLOCK
-        const head = framed && !ownFloor ? headAnchor(text, runs, floor, atTop, blocks) : null
+        // (a legacy encrypted PEM key's body decodes to nothing: its DEK-Info line above is its head)
+        const legacy = framed && /-----END (?:RSA|DSA|EC) PRIVATE KEY-----/.test(m[0]) && legacyAbove(text, runs, floor, cutText)
+        const head = framed && !ownFloor && !madeUp(text, runs) ? (legacy ? runs[0][0] : headAnchor(text, runs, floor, atTop, blocks) ?? lead) : null
         if (head !== null) out.push({ rule, cls: 'remove', why: 'tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
         else out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed', from: at, to: at + m[0].length })
+      } else if (lead !== null && !madeUp(text, runs)) {
+        // Under a key block taken, with an END line of its kind under them: a key rotated in a diff,
+        // the old one's removed above it, whose lines need not look random (an Ed25519 key's
+        // OpenSSH bytes, a PKCS#8 one's single line); or the rest of the block's own key, past
+        // lines laid out unevenly, which go with it.
+        out.push({ rule, cls: 'remove', why: 'tail-under-block', from: lead, to: at + m[0].length })
       } else if (framed && opts.cutAt === 0 && floor === start && runs.length >= 1 && runs.reduce((n, [a, b]) => n + b - a, 0) >= 16) {
         // At the start of a text another computer cut, the few characters of key a cut left right
         // above a private END line are a key's tail whatever their length (a cut at 95% of a key
         // leaves a partial line and the short last one, under the 80 characters a key run needs).
-        // A made-up body's lines (a test's fixture, which a key never is) are reported instead.
-        const fake = madeUp(text, runs)
+        // A made-up body's lines (a test's fixture, which a key never is) are reported instead, and
+        // so are a key's first bytes, which are no key's tail: what starts there is a key from its
+        // first line, too short to be one (a truncated example), as decodedHead judged.
+        const fake = madeUp(text, runs) || keyHead(text, runs)
         const head = fake ? null : headAnchor(text, runs, floor, true, blocks)
         if (head !== null) out.push({ rule: tailRule(m[0]), cls: 'remove', why: 'cut-tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
         else if (fake) out.push({ rule: tailRule(m[0]), cls: 'flag', why: 'cut-tail-made-up', from: at, to: at + m[0].length })
@@ -935,12 +1171,30 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
     }
     prev = at + m[0].length
   }
+  // Key lines that go on below a block whose lines stopped keeping one width and frame, with no
+  // END line: reported, so a note says what was left (with an END line, they are removed above).
+  // (each read up to the next block; the removals, in the order their END lines came, looked up
+  // in step: linear however many blocks there are)
+  const removes = out.filter((o) => o.cls === 'remove')
+  let ri = 0
+  for (let k = 0; k < blocks.length; k++) {
+    const b = blocks[k]
+    if (b.cls === 'flag' || b.rest === undefined || b.rest < start) continue
+    const rest = b.rest
+    const limit = Math.min(text.length, rest + MAX_BLOCK, k + 1 < blocks.length ? blocks[k + 1].from : text.length)
+    const runs = leadingRun(text, rest, limit, true)
+    while (ri < removes.length && removes[ri].to <= rest) ri++
+    const covered = ri < removes.length && removes[ri].from <= rest
+    // (one line will do: the block above it is a key's, verified; a made-up body's is no key's)
+    const enough = runs.length > 0 && runs.reduce((n, [x, y]) => n + y - x, 0) >= MIN_RUN && !madeUp(text, runs)
+    if (enough && !covered) out.push({ rule: b.rule, cls: 'flag', why: 'block-rest', from: rest, to: runs[runs.length - 1][1] })
+  }
   // The start of a text someone else cut (an older doing computer): a leading run of random key
   // lines with no END line below it is FLAGGED, not removed: a base64 dump (an image, an archive)
   // cut the same way looks the same, and with its END line a key tail is removed above.
   if (opts.cutAt !== undefined) {
     const s = opts.cutAt
-    const runs = leadingRun(text, s, Math.min(text.length, s + 1024 * 1024))
+    const runs = leadingRun(text, s, Math.min(text.length, s + 1024 * 1024), s === 0)
     const covered = out.some((o) => o.from <= s + 128 && o.to > s)
     if (!covered && isKeyRun(text, runs)) out.push({ rule: 'private_key', cls: 'flag', why: 'cut-start-run', from: s, to: runs[runs.length - 1][1] })
   }
@@ -966,19 +1220,21 @@ function b64Signatures(s: string): string[] {
 }
 const B64_SIGS = [...b64Signatures('PRIVATE KEY'), ...b64Signatures('PuTTY-User-Key-File-'), ...b64Signatures('OpenVPN Static key')]
 
-/** Base64 runs, wrapped or not, that encode a key file: judged on the decoded file. */
-export function encodedKeys(text: string, start = 0): KeySpan[] {
+/** Base64 runs, wrapped or not, that encode a key file: judged on the decoded file. `cutText`:
+ *  `text` is an end another computer cut, whose first line can be what its cut left of one. */
+export function encodedKeys(text: string, start = 0, cutText = false): KeySpan[] {
   const out: KeySpan[] = []
   let i = start
   while (i < text.length) {
     while (i < text.length && !isB64(text.charCodeAt(i))) i++
     const a = i
     while (i < text.length && isB64(text.charCodeAt(i))) i++
-    if (i - a < 40) continue
+    // (at the start of a text another computer cut, a shorter run can be what its cut left of a line)
+    if (i - a < 40 && !(cutText && a <= start + 1 && i - a >= 4)) continue
     // Join the wrapped lines after it (base64 and openssl wrap at 64 or 76), whatever frames them
     // (indentation, a listing's number, a quote): one width, and from the second line one frame.
     const runs: Run[] = [[a, i]]
-    const width = i - a
+    let width = i - a
     let frame: string | null = null
     let j = i
     for (let n = 0; n < 65536; n++) {
@@ -991,6 +1247,8 @@ export function encodedKeys(text: string, start = 0): KeySpan[] {
       if (!last || !JOINERS.test(text.slice(last[1], lineEnd))) break
       const w = last[1] - last[0]
       const f = frameAt(text, br[1], last[0])
+      // (a first line narrower than the second was cut: the second sets the width)
+      if (runs.length === 1 && w > width) width = w
       if (w > width || (frame !== null && f !== frame)) break
       if (frame === null) frame = f
       runs.push(last)
@@ -1003,7 +1261,10 @@ export function encodedKeys(text: string, start = 0): KeySpan[] {
     for (let k = 0; k <= 3; k++) {
       const decoded = Buffer.from(joined.slice(k), 'base64').toString('latin1')
       if (!/PRIVATE KEY|PuTTY-User-Key-File-|OpenVPN Static key/.test(decoded)) continue
-      const inner: KeySpan[] = [...keyBlocks(decoded), ...puttyKeys(decoded)]
+      // (a run whose start a cut took decodes to a key's tail and its END line: headless judges it
+      // as at the start of a text another computer cut)
+      const blocks = keyBlocks(decoded)
+      const inner: KeySpan[] = [...blocks, ...puttyKeys(decoded), ...headless(decoded, blocks, { cutAt: 0 })]
       const cls = inner.some((s) => s.cls === 'remove') ? 'remove' : 'flag'
       out.push({ rule: 'private_key_b64', cls, why: `decoded:${inner.map((s) => s.why).join('+')}`, from: runs[0][0], to: runs[runs.length - 1][1] })
       break
@@ -1337,15 +1598,74 @@ export function percentEncoded(text: string, start = 0): KeySpan[] {
   return out
 }
 
+// ---------------------------------------------------------------------------------------------
+// A key block in a JSON string whose writer escapes base64's own characters (F-C): PHP's
+// json_encode writes `/` as `\/`, .NET's System.Text.Json `+` as the escape of U+002B. The escape
+// splits each line's base64, so the block is read as the text with those escapes decoded.
+// ---------------------------------------------------------------------------------------------
+const B64_ESC_RE = /\\\/|\\u00(?:2[bBfF]|3[dD])/
+
+/** Each private-key BEGIN line from `start` on whose first 4 KB hold an escaped base64 character:
+ *  the JSON string from there decoded of those escapes only (an escaped line break is kept as
+ *  written: it ends a key line), to its closing quote or 256 KB, its key blocks found, and their
+ *  spans mapped back. */
+export function jsonEscaped(text: string, start = 0): KeySpan[] {
+  const out: KeySpan[] = []
+  if (!B64_ESC_RE.test(text.slice(start))) return out
+  const re = new RegExp(BEGIN_RE.source, 'g')
+  re.lastIndex = start
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const s = m.index
+    const e = Math.min(text.length, s + 262144)
+    if (!B64_ESC_RE.test(text.slice(s, Math.min(e, s + 4096)))) continue
+    let dec = ''
+    const map: number[] = []
+    let i = s
+    while (i < e) {
+      const c = text.charCodeAt(i)
+      if (c === 34 /* " */) break // the JSON string ends
+      if (c === 92 /* \ */) {
+        const n = text[i + 1]
+        if (n === '/') {
+          map.push(i)
+          dec += '/'
+          i += 2
+          continue
+        }
+        if (n === 'u' && /^00(?:2[bBfF]|3[dD])$/.test(text.slice(i + 2, i + 6))) {
+          map.push(i)
+          dec += String.fromCharCode(parseInt(text.slice(i + 2, i + 6), 16))
+          i += 6
+          continue
+        }
+        // any other escape as written: \n ends a key line, \" or \\ is the string's
+        map.push(i, i + 1)
+        dec += text.slice(i, i + 2)
+        i += 2
+        continue
+      }
+      map.push(i)
+      dec += text[i]
+      i++
+    }
+    map.push(i)
+    for (const blk of keyBlocks(dec)) out.push({ rule: blk.rule, cls: blk.cls, why: `json:${blk.why}`, from: map[blk.from], to: map[blk.to] })
+    re.lastIndex = Math.max(re.lastIndex, i)
+  }
+  return out
+}
+
 /** Every detector but the headless tails, from `start` on, in the order a screen ranks spans that
- *  start together: key blocks, PuTTY, JWK, RSAKeyValue, base64 and URL-encoded key files. The key
- *  blocks come back on their own too: headless needs them once the screen knows where its cut is. */
-export function keySpans(text: string, start = 0): { blocks: KeyBlock[]; spans: KeySpan[] } {
+ *  start together: key blocks, PuTTY, JWK, RSAKeyValue, base64, URL-encoded and JSON-escaped key
+ *  files. The key blocks come back on their own too: headless needs them once the screen knows
+ *  where its cut is. */
+export function keySpans(text: string, start = 0, cutText = false): { blocks: KeyBlock[]; spans: KeySpan[] } {
   const blocks = keyBlocks(text, start)
   const spans: KeySpan[] = []
   // Appended one by one: `push(...found)` passes every span as an argument, and throws (call stack
   // exceeded) once a detector finds a few hundred thousand (8 MB of JWKs).
-  for (const found of [blocks, puttyKeys(text, start), jwkKeys(text, start), rsaKeyValues(text, start), encodedKeys(text, start), percentEncoded(text, start)]) {
+  for (const found of [blocks, puttyKeys(text, start), jwkKeys(text, start), rsaKeyValues(text, start), encodedKeys(text, start, cutText), percentEncoded(text, start), jsonEscaped(text, start)]) {
     for (const s of found) spans.push(s)
   }
   return { blocks, spans }
