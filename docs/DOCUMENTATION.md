@@ -15,6 +15,7 @@ This document covers installation, the AI Security Center, the share-to-Slack/Te
 5. [Terminals](#5-terminals)
 6. [Tab & Split Views](#6-tab--split-views)
 7. [Settings](#7-settings)
+   - [Accounts](#accounts)
 8. [Themes](#8-themes)
 9. [Keybindings](#9-keybindings)
 10. [Agent Capability Ratings](#10-agent-capability-ratings)
@@ -243,6 +244,7 @@ Open with the gear icon at the top of the sidebar, or choose **Open Settings** i
 - **Shell Config** — edit your shell profiles in a built-in editor: the PowerShell 7 and 5 profiles on Windows, plus `.bashrc`, `.bash_profile` and `.zshrc`.
 - **Token Savings** — Token Headroom, including the switch for the Claude Code compression proxy (see [below](#token-savings--the-claude-code-compression-proxy)).
 - **Remote** — let the Termpolis Remote phone app connect, set the relay address, and pair a phone (see [§29](#29-termpolis-remote-phone-app)).
+- **Accounts** — more than one sign-in per agent: each account's card, Add account, and how switching works (see [Accounts](#accounts)).
 - **Agent Integration** — whether Claude Code, Codex and Gemini CLI are connected to Termpolis, every change Termpolis made to their settings, and **Disconnect** (see [Connecting your coding agents](#connecting-your-coding-agents)).
 - **MCP Servers** — the MCP servers your agents reach through Termpolis, what each agent on this machine has configured for itself, and the gateway policy for a tool call that no rule covers.
 - **Processes** — find and end what is quietly slowing the machine down (see below).
@@ -297,6 +299,43 @@ Talk instead of type. Transcription uses **Groq's cloud Whisper API** — your r
 **"No speech detected."** If the microphone captured silence or no clear speech, Termpolis shows a brief **"No speech detected"** notice and does nothing — it will **never inject a guessed phrase** when it didn't actually hear you. (This is what eliminates the old "I'm sorry, what is that?" phantom transcripts: on no-speech audio a speech model invents filler, so Termpolis gates that out at the source — and silence is never sent to Groq, since the speech/noise gate runs locally first.) Just hold the key, speak, and release again. To improve capture, speak after the badge appears and reduce background noise; the model itself is robust to volume.
 
 **Privacy & reliability.** Only the few seconds you actually dictate are sent, and only to Groq — never your files, terminal output, or other context. By default Groq **does not train on or retain** API audio; for the hardened setup, enable **Zero Data Retention** in your Groq console (the Connect dialog links you straight there). The transcript Groq returns is re-scanned by the secret scanner before it's injected, the same as anything else you send to an agent. If transcription fails, the red error bar tells you what went wrong — usually a missing/invalid key (**Settings → Voice**) or no internet connection.
+
+## Accounts
+
+More than one sign-in for an agent: a personal and a work Claude Code account, two ChatGPT plans for Codex, two Google accounts for Gemini CLI. Each Claude Code or Codex account is a profile folder of its own (`~/.claude-<name>`, `~/.codex-<name>`) that signs in there by itself; Termpolis never reads, copies or keeps a sign-in. A Gemini CLI (agy) account is a name and the Google email it signs in with, because agy keeps one Google sign-in for your whole computer user. With no account added, nothing of this shows anywhere: no chip, no menu, no card.
+
+### Settings ▸ Accounts
+
+One section per agent, a card per account: its colour, its name (click it to rename it in place; Enter keeps it, Esc doesn't), the email and plan its agent reports, its status (signed in, signed out, sign-in expired, out of usage until …, or signed in to another email than its own), whether new terminals start on it (**Make it the default for new terminals**), and the terminals on it now (click one to go to it). On the card: **Sign in** / **Sign in again**, **Check** (asks the agent who is signed in), **Connect** / **Disconnect** Termpolis's tools and memory for that profile, **Mark available** after a usage limit, **Re-copy from main profile**, **Offer automatically**, the order (↑ ↓, the order the usage-limit card offers them in), and **Remove…**. Its folder, what it shares with your main profile and the email it should sign in with are under **Advanced**.
+
+**+ Add account** opens a short wizard: 1, a name and a colour (and the email, whether it is offered automatically, and whether to connect it, with what that writes; its folder and what it shares are under Advanced: a new `~/.claude-<name>` by default); 2, sign in, right there (or **Skip for now**); 3, done, with the email it signed in as. If `~/.claude/accounts.sh` lists accounts, a banner offers to **Import** them; Termpolis reads that file and never changes it.
+
+### The account menu
+
+In an agent terminal whose agent has two accounts or more, the header shows an **account chip**. Click it, press `Ctrl+Shift+N`, run **Switch account…** from the command palette, or right-click the terminal: a menu lists that agent's accounts, the current one checked, each with its email and status. Arrow keys, Home/End and typing a name's first letters move in it; Enter picks; Esc gives the keyboard back to the terminal. Below them: **New terminal on ▸** (the same agent in the same folder, on another account, in a fresh session), **Add account…** and **Manage accounts…**.
+
+### Switching in place
+
+Pick an account and the terminal switches there, keeping its conversation: Termpolis ends the agent the agent's own way, starts it on the account, and resumes the conversation. An overlay on the pane shows the two accounts and the three steps (*Ending this session*, *Starting Claude Code on codedev*, *Resuming your conversation*); keys you type meanwhile are held, and it says so. When it is done, a toast says so ("Claude Code is on codedev now. Conversation resumed.") with **Switch back** for 10 seconds. If the account can't see the conversation, Termpolis says so: for Claude Code the card offers **Start a new session on <account>**; Codex and Gemini CLI start one by themselves, and the toast says where the old conversation still is (Past AI Sessions).
+
+- **An agent at work** is never interrupted: its row says **Switch when it finishes**, the chip shows the waiting switch with a way to cancel it, and it runs when the turn ends.
+- **A signed-out account** says **Sign in to <account> and switch**: the sign-in sheet opens, and the switch goes on by itself once you are signed in.
+- **An account not offered automatically** (a work account) asks once more, onto it and off it. Carrying a conversation off it offers a new terminal there instead.
+- **When a switch can't finish**, the overlay becomes a card that says what happened and what the terminal shows now, in a sentence each, with what you can do next: **Try again**, **It has exited, switch now**, **Start a new session on <account>**, **New terminal on <account>**, **Sign in to <account>**, and **Show steps**. Termpolis never types anything it can't see the agent is ready for.
+
+### Signing in
+
+The sign-in sheet ("Sign in to codedev · Claude Code") asks how first: for Claude Code, **Claude subscription**, **Anthropic Console** or **SSO**; for Codex, **ChatGPT account** or **Sign in with a code** (a one-time code shown large, with Copy, and the address to enter it at). Termpolis then runs the agent's own sign-in in a hidden session of its own, never a terminal, and the agent opens your browser. The sheet shows the address it printed, with **Copy** and **Open again**, and a field when the agent asks for a code from the page ("If the page shows a code, paste it here"). When it is done it says **Signed in as <email>**, as the agent's own status command reports it, and warns if that is another account's email, the work account's, or not the account's own. Signing in again in a profile also signs out the other sessions on it, outside Termpolis too: the sheet says so first. An error is said in plain words, with **Show details** (the agent's own words, masked); after 10 minutes with no sign-in it stops, with **Try again**. Cancel, or closing the sheet, ends the session. See [PRIVACY.md](../PRIVACY.md#signing-in-to-an-account) for what Termpolis runs, keeps and never keeps.
+
+### Gemini CLI: one sign-in for every agy terminal
+
+Because agy has one Google sign-in for your computer user, picking another agy account moves every agy terminal: a confirmation says so ("Switching to <email> moves all 3 Gemini terminals; each one resumes its conversation") and names any that is working (Termpolis waits for its turn to end). Then, in the sheet: each agy terminal is ended the switch's way, agy is signed out and in again in Termpolis's own hidden agy (its sign-in choices as buttons, the browser step, the code field), and each terminal resumes its conversation by its id. Stop it before the sign-out and every terminal it ended goes back to its conversation on the sign-in it had. If `GEMINI_API_KEY` or agy's ADC sign-in is set, the sheet says so before anything is typed.
+
+### When an agent runs out of usage
+
+A card at the top of the stopped terminal's pane says what ran out, in the agent's own words ("Claude Code is out of usage on personal until 4:00 pm."), with **Continue on <account>** (the switch above, in one click), **Other account ▾** (the rest, a sign-in first where one is needed, a new terminal, **Add an account**, or another installed agent in a new terminal) and **Not now**. The card never takes the keyboard. Only accounts offered automatically are offered; a work terminal's first choice is a fresh session on another account; a limit on one model offers that model's way out first ("Switch this terminal to Sonnet"). Several terminals stopped on one account each show the card, with how many more ran out. A terminal out of view gets a banner that takes you to it, and Termpolis tells the OS when its window isn't in front. An agent with one account gets a one-line banner instead. Turn the card off with **Offer another account by itself when an agent runs out of usage**.
+
+For a swarm, the offer to restart its stopped workers on another account ("3 of the swarm's workers ran out of usage on personal" [Restart all on codedev]) shows in the same card style, inside the swarm dashboard and on each worker's pane.
 
 ---
 
@@ -1537,6 +1576,7 @@ Everything listed in Settings → Keybindings can be rebound there, except the t
 | Context panel                           | `Ctrl+Shift+E`                 | `⌘⇧E`               |
 | Pinned context panel                    | `Ctrl+Shift+B`                 | `⌘⇧B`               |
 | Changes panel                           | `Ctrl+Shift+J`                 | `⌘⇧J`               |
+| Account menu (with an account added)    | `Ctrl+Shift+N`                 | `⌘⇧N`               |
 | Conversation search                     | `Ctrl+Shift+I`                 | `⌘⇧I`               |
 | Activity feed                           | `Ctrl+Shift+A`                 | `⌘⇧A`               |
 | Redundancy panel                        | `Ctrl+Shift+D`                 | `⌘⇧D`               |

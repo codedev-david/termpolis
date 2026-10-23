@@ -72,6 +72,14 @@ upload it.
   80 characters, with anything that might be a credential taken out), the
   credential rules matched, how it ended and why a request
   was refused. Never the prompt or the answer.
+- If you add **accounts** (Settings → Accounts): the accounts you registered
+  (`userData/agent-accounts.json`): each one's name, colour, the email you gave
+  it, its profile folder, its place in the order and whether it is offered
+  automatically; the account new terminals start on; what each agent last said
+  when Termpolis asked who is signed in (signed in or not, and the email and plan
+  it reported); and a usage limit an agent showed, in its own words, until it
+  resets. Never a sign-in, a token or a key: those stay in each agent's own
+  profile, where the agent keeps them. See [Signing in to an account](#signing-in-to-an-account).
 
 The `userData` directory lives at:
 
@@ -154,6 +162,38 @@ can ask for it back; none of it is sent to Termpolis.
   route you configured, nothing is compressed, and Settings → Token Savings
   shows which variable it found.
 - Codex, Gemini CLI and your shells never go through it.
+
+## Signing in to an account
+
+When you sign an account in from Termpolis (its card in Settings → Accounts,
+the account menu, a switch or the usage-limit card), Termpolis runs **that
+agent's own sign-in command** (`claude auth login`, `codex login`, or agy's own
+`/logout` and `/login` when you switch Gemini CLI to another Google account) in
+a hidden session of its own, with the account's profile folder, and shows what
+the agent asks in a sheet: its sign-in choices as buttons, the address it
+printed, a field for a code.
+
+- The session is not a terminal: it is never in your terminal list, a
+  workspace, the phone app or a swarm, and no agent, tool or MCP call can read
+  it or type into it. Termpolis types into it only what you choose in the
+  sheet: the option you click, a code you paste, and, for a Gemini CLI switch
+  you confirmed, agy's own `/logout` and `/login`.
+- **The browser is opened by the agent**, as when you sign in at a prompt.
+  Termpolis opens an address itself only when you click Open again, and only
+  the agent's own sign-in page (an `https` address on Anthropic's, OpenAI's or
+  Google's sign-in host).
+- **A code you paste goes to the agent and is not kept.** The field is cleared
+  as you submit it; the code is never held by the page, written to a file, put
+  in a log or sent anywhere else, and where it shows on the agent's own screen
+  Termpolis masks it.
+- **Nothing the session shows is logged.** The app log records only which
+  account a sign-in was for and how it ended (signed in, cancelled, an error).
+  If the agent fails, its own words are shown to you in the sheet, masked for
+  anything that looks like a credential, and kept nowhere.
+- When the agent says it is done, Termpolis asks it who is signed in
+  (`claude auth status`, `codex login status`) and keeps the email and plan it
+  reports, as above. Then the session ends, and its processes with it. Closing
+  the sheet, the window, or Termpolis ends it too.
 
 ## What We Never Collect
 
