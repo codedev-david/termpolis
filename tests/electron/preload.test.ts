@@ -1110,6 +1110,9 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.modelRelease('t1', 'k1'), ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key: 'k1' }],
       [() => a.launchLine({ terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }), ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }],
       [() => a.limitLook('t1'), ACCOUNTS_IPC.limitLook, { terminalId: 't1' }],
+      [() => a.signInStart({ accountId: 'acc_1', method: 'console' }), ACCOUNTS_IPC.signInStart, { accountId: 'acc_1', method: 'console' }],
+      // The session's id wins over any the input carried.
+      [() => a.signInInput('s1', { kind: 'code', value: 'c', sessionId: 'other' } as never), ACCOUNTS_IPC.signInInput, { kind: 'code', value: 'c', sessionId: 's1' }],
     ]
     for (const [call, channel, payload] of cases) {
       mockIpcRenderer.invoke.mockClear()
@@ -1119,7 +1122,20 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
     // Every invoke channel main registers has its bridge method; signInProgress and terminalAccount
     // are main → renderer.
     const invoked = new Set(cases.map((c) => c[1]))
-    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.signInProgress, ACCOUNTS_IPC.terminalAccount, ACCOUNTS_IPC.switchProgress])
+    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.signInProgress, ACCOUNTS_IPC.terminalAccount, ACCOUNTS_IPC.switchProgress, ACCOUNTS_IPC.signInState])
+  })
+
+  it('passes a sign-in session\'s state to the subscriber, and unsubscribes', async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const cb = vi.fn()
+    const off = exposed.accounts.onSignInState(cb)
+    const [channel, handler] = mockIpcRenderer.on.mock.calls[0]
+    expect(channel).toBe(ACCOUNTS_IPC.signInState)
+    const state = { sessionId: 's1', accountId: 'acc_1', agent: 'claude', phase: { kind: 'starting' } }
+    handler({}, state)
+    expect(cb).toHaveBeenCalledWith(state)
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.signInState, handler)
   })
 
   it('hands main the launch\'s account for its writes only when there is one, so today\'s payloads stay as they were', async () => {

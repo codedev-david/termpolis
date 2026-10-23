@@ -610,7 +610,7 @@ import {
   type AgentIntegrationRuntime,
 } from './agentIntegrationManager'
 import {
-  accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount, isTerminalAccountConnected,
+  accountSettingsEnv, codexHomeFor, connectedProfileTargets, endAccountSignIns, forgetTerminalAccount, isTerminalAccountConnected,
   noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
@@ -2911,6 +2911,8 @@ registerAccountsIpc(ipcMain, {
     return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
   },
   send: (channel, payload) => { mainWindow?.webContents.send(channel, payload) },
+  // The sign-in sheet's Open again: a provider's sign-in page, checked in main (signInSession.ts).
+  openExternal: (url) => { void shell.openExternal(url) },
   // A sign-in's command has finished once its shell prints a prompt again (its report).
   promptSince: (terminalId, offset) => readOutputFrom(terminalOutputBuffers, terminalId, offset).output.search(PROMPT_REPORT) >= 0,
   outputEnd: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
@@ -4907,6 +4909,8 @@ async function semanticPoolOptions(
     // before the watchdog: a timer can't interrupt it anyway, and it shouldn't use up the
     // watchdog's 5s.
     try { secondOpinionRuns.stopAll() } catch { /* shutting down anyway */ }
+    // A sign-in the sheet left running (the hidden session's CLI and its tree) ends with the app.
+    try { endAccountSignIns() } catch { /* shutting down anyway */ }
     shutdownStep('agent runs')
     if (process.env.NODE_ENV === 'test') {
       // What Node still holds open. After `quit` no JS runs, this watchdog included, and Node's

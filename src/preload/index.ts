@@ -653,6 +653,13 @@ const accounts: AccountsAPI = {
   modelHold: (req) => ipcRenderer.invoke('accounts:model-hold', req),
   modelRelease: (terminalId, key) => ipcRenderer.invoke('accounts:model-release', { terminalId, key }),
   limitLook: (terminalId) => ipcRenderer.invoke('accounts:limit-look', { terminalId }),
+  signInStart: (req) => ipcRenderer.invoke('accounts:sign-in-start', req),
+  signInInput: (sessionId, input) => ipcRenderer.invoke('accounts:sign-in-input', { ...input, sessionId }),
+  onSignInState: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, s: Parameters<typeof cb>[0]) => cb(s)
+    ipcRenderer.on('accounts:sign-in-state', handler)
+    return () => ipcRenderer.removeListener('accounts:sign-in-state', handler)
+  },
   onSwitchProgress: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
     ipcRenderer.on('accounts:switch-progress', handler)

@@ -175,6 +175,13 @@ export const ACCOUNTS_IPC = {
   modelRelease: 'accounts:model-release',
   /** The usage-limit chooser's look at a terminal whose screen changed ({ terminalId } → LimitLook). */
   limitLook: 'accounts:limit-look',
+  /** Starts a hidden sign-in session: the CLI's own login in main's own PTY (SignInStartRequest →
+   *  { sessionId }). */
+  signInStart: 'accounts:sign-in-start',
+  /** The user's input to it: a pick, a code, Open again, cancel (SignInInput). */
+  signInInput: 'accounts:sign-in-input',
+  /** main → renderer: a sign-in session's state (SignInState). */
+  signInState: 'accounts:sign-in-state',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────
@@ -547,6 +554,14 @@ export function signInCommand(agent: ProfileAgent, family: ShellFamily, method?:
     command += ` --email ${quoted}`
   }
   return command
+}
+
+/** The CLI's own sign-in, as the hidden sign-in session runs it: arguments, never a shell line, so
+ *  nothing in them is read by a shell. The same methods and the same email rule as signInCommand. */
+export function signInArgs(agent: ProfileAgent, method?: SignInMethod, email?: string): string[] {
+  if (agent === 'codex') return method === 'device' ? ['login', '--device-auth'] : ['login']
+  const flag = method === 'console' ? '--console' : method === 'sso' ? '--sso' : '--claudeai'
+  return isPlainEmail(email) ? ['auth', 'login', flag, '--email', email] : ['auth', 'login', flag]
 }
 
 /** `p` with the home folder written as `~`, for display. */

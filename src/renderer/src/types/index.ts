@@ -9,6 +9,7 @@ import type {
   TerminalAccountEvent,
 } from '../../../shared/agentAccounts'
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, ModelHoldRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
+import type { SignInInput, SignInStartRequest, SignInState } from '../../../shared/signInScreens'
 import type { LimitLook } from '../../../shared/accountLimits'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
@@ -1356,6 +1357,12 @@ export interface AccountsAPI {
   /** The usage-limit chooser's look at an agent terminal whose screen changed (§8.1): judged in
    *  main, beside its buffer, with main's record of the agent started there (R5). */
   limitLook(terminalId: string): Promise<IpcResponse<LimitLook>>
+  /** Starts the CLI's own sign-in in main's hidden session: never a terminal. Its steps follow
+   *  onSignInState. */
+  signInStart(req: SignInStartRequest): Promise<IpcResponse<{ sessionId: string }>>
+  /** The user's own input to a sign-in: a pick, a code, Open again, the fallback's keys, cancel. */
+  signInInput(sessionId: string, input: SignInInput): Promise<IpcResponse<{ ok: true } | { ok: false; why: string }>>
+  onSignInState(cb: (s: SignInState) => void): () => void
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

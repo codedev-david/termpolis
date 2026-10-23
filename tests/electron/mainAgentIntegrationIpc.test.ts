@@ -441,6 +441,7 @@ vi.mock('../../src/main/accountsIpc', () => ({
   noteWorkerCommand: H.noteWorkerCommand,
   noteWorkerInput: H.noteWorkerInput,
   withLimitChooser: H.withLimitChooser,
+  endAccountSignIns: vi.fn(),
 }))
 // The switch's lock, so a test can hold a terminal as a switch would.
 vi.mock('../../src/main/accountSwitch', () => ({ relaunchLockReason: H.relaunchLockReason }))
@@ -818,6 +819,11 @@ describe('Settings ▸ Accounts wiring', () => {
       if (saved.folder === undefined) delete process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER
       else process.env.TERMPOLIS_TEST_ACCOUNT_FOLDER = saved.folder
     }
+  })
+
+  it('opens a provider\'s sign-in page through the shell, only as main\'s accounts code asks', () => {
+    deps().openExternal('https://claude.com/cai/oauth/authorize?x=1')
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://claude.com/cai/oauth/authorize?x=1')
   })
 
   it('sends a sign-in\'s progress to the window, and runs the status checks in a folder of its own', () => {

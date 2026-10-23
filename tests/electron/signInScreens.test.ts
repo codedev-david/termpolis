@@ -4,10 +4,9 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { describe, expect, it } from 'vitest'
-import { isSignInPage, readSignInScreen } from '../../src/shared/signInScreens'
+import { isSignInPage, readSignInScreen, signInText } from '../../src/shared/signInScreens'
 import type { SignInScreen } from '../../src/shared/signInScreens'
 import { screenOf } from '../../src/shared/terminalScreen'
-import { plain } from '../../src/main/accountSwitch'
 import type { AccountAgent } from '../../src/shared/agentAccounts'
 
 const F = JSON.parse(readFileSync(join(__dirname, '..', 'fixtures', 'signInScreens.json'), 'utf8')) as Record<string, Record<string, string>>
@@ -15,7 +14,7 @@ const F = JSON.parse(readFileSync(join(__dirname, '..', 'fixtures', 'signInScree
 /** The screen the output draws, as the session reads it. */
 function read(agent: AccountAgent, raw: string, cols = 120): SignInScreen {
   const screen = screenOf(raw, { cols, rows: 40 })
-  return readSignInScreen(agent, { lines: screen.lines(), text: plain(raw), title: screen.title })
+  return readSignInScreen(agent, { lines: screen.lines(), text: signInText(raw), title: screen.title })
 }
 
 describe('Claude Code: `claude auth login`, real captures', () => {
@@ -78,6 +77,14 @@ describe('Codex: `codex login`, from its program file', () => {
 
   it('reads the device code and the address to enter it at', () => {
     expect(read('codex', F.codex.device)).toEqual({ kind: 'device-code', code: 'ABCD-EFGH', url: 'https://auth.openai.com/codex/device' })
+  })
+
+  it('reads the device code off the rows drawn, however ConPTY moves between them', () => {
+    // ConPTY repaints with cursor moves where the CLI wrote blank lines: with the escapes out, the
+    // text runs the rows together. The screen draws them where they go.
+    const rows = F.codex.device.split('\r\n')
+    const conpty = rows.map((row, i) => `\x1b[${i + 1};1H${row}`).join('')
+    expect(read('codex', conpty)).toEqual({ kind: 'device-code', code: 'ABCD-EFGH', url: 'https://auth.openai.com/codex/device' })
   })
 
   it('waits while the code is still coming', () => {
@@ -177,7 +184,7 @@ describe('agy: its sign-in screens', () => {
 
   it("reads agy's box with no title to go on", () => {
     const screen = screenOf(F.agy.ready, { cols: 80, rows: 40 })
-    expect(readSignInScreen('agy', { lines: screen.lines(), text: plain(F.agy.ready) })).toEqual({ kind: 'agy-ready' })
+    expect(readSignInScreen('agy', { lines: screen.lines(), text: signInText(F.agy.ready) })).toEqual({ kind: 'agy-ready' })
   })
 
   it('ends a question at a row that is no option', () => {

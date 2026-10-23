@@ -639,6 +639,29 @@ describe('will-quit stops every run before it returns', () => {
     agent.emit('close', null)
     expect(await settledNow(review.result)).toEqual({ success: false, error: QUITTING })
   })
+
+  it('ends a sign-in the sheet left running, its process tree with it', async () => {
+    const { startSignInSession, signInSessionCount } = await import('../../src/main/signInSession')
+    const kill = vi.fn()
+    let killTree = vi.fn()
+    startSignInSession({
+      accountId: 'acc_1', agent: 'claude', key: 'claude:quit', file: 'claude', args: [], env: {}, cwd: '/', mode: 'sign-in', label: 'b',
+    }, {
+      spawn: () => ({ pid: 4242, write: () => undefined, kill, onData: () => undefined, onExit: () => undefined }),
+      killTree: (killTree = vi.fn()),
+      send: () => undefined,
+      openExternal: () => undefined,
+      now: () => Date.now(),
+      sleep: () => Promise.resolve(),
+      setInterval: () => 0,
+      clearInterval: () => undefined,
+    })
+    expect(signInSessionCount()).toBe(1)
+    quit()
+    expect(signInSessionCount()).toBe(0)
+    expect(killTree).toHaveBeenCalledWith(4242)
+    expect(kill).toHaveBeenCalled()
+  })
 })
 
 // ===========================================================================

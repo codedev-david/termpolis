@@ -16,7 +16,7 @@
 //                Confirm" under them): "Select login method:", "Select available license:", "Select
 //                Google Cloud sign-in method:", "Or, paste the authorization code here and press Enter:".
 import { inputBoxRow, isBusyOnScreen } from './agentStatusDetector'
-import type { AccountAgent } from './agentAccounts'
+import type { AccountAgent, SignInMethod } from './agentAccounts'
 
 export type SignInScreen =
   /** Nothing of the sign-in yet. */
@@ -51,6 +51,24 @@ export interface SignInRead {
   text: string
   /** The terminal's title, for the busy check of agy's box. */
   title?: string
+}
+
+/** What a CLI printed, as words: SignInRead's `text`. ConPTY repaints with cursor moves where the
+ *  CLI wrote blank lines and indents, so a move to another row reads as a line break and one along
+ *  the row as a space; every other escape sequence is taken out. An address the screen wraps comes
+ *  through whole: it is one run of text, which the terminal wraps by itself. */
+export function signInText(raw: string): string {
+  return raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?]*[HfABEFd]/g, '\n')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;]*[CG]/g, ' ')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b./g, '')
 }
 
 /** The provider's own sign-in pages, from the CLIs' program files (Claude Code's CONSOLE_AUTHORIZE_URL
@@ -143,8 +161,9 @@ function codexScreen(r: SignInRead): SignInScreen {
   if (error) return { kind: 'error', message: error }
   if (/Successfully logged in/.test(t)) return { kind: 'done' }
   if (/Follow these steps to sign in with ChatGPT using device code authorization/.test(t)) {
-    // The code is on its own row under "Enter this one-time code".
-    const rows = t.split('\n')
+    // The code is on its own row under "Enter this one-time code", as the screen draws it: ConPTY
+    // moves the cursor where Codex wrote blank lines, so its text runs the rows together.
+    const rows = r.lines
     const at = rows.findIndex((row) => /Enter this one-time code/.test(row))
     const code = at < 0 ? undefined : rows.slice(at + 1).map((row) => row.trim()).find((row) => row !== '')
     if (code && DEVICE_CODE.test(code)) return { kind: 'device-code', code, url: addressAfter(t, /Open this link in your browser/) }
@@ -252,3 +271,61 @@ export function readSignInScreen(agent: AccountAgent, r: SignInRead): SignInScre
   if (agent === 'codex') return codexScreen(r)
   return agyScreen(r)
 }
+
+// ── The sign-in sheet and main: what they say to each other ──────────────────────────────
+
+export interface SignInStartRequest {
+  accountId: string
+  method?: SignInMethod
+  /** agy's switch: sign the computer user's one agy sign-in out of its account and into this one. */
+  mode?: 'sign-in' | 'agy-switch'
+}
+
+/** Where a sign-in is, as the sheet shows it. Each step's words are the sheet's; these are the
+ *  facts: the address the CLI printed (and whether Termpolis may open it), its code, agy's question. */
+export type SignInPhase =
+  | { kind: 'starting' }
+  | { kind: 'browser'; url: string | null; canOpen: boolean; codeField: boolean }
+  | { kind: 'code-wanted'; url: string | null; canOpen: boolean }
+  | { kind: 'device-code'; code: string; url: string | null; canOpen: boolean }
+  | { kind: 'choose'; question: string; detail: string[]; options: string[]; selected: number }
+  | { kind: 'text-wanted'; label: string }
+  /** agy's switch: Termpolis is signing agy out (its own /logout, in the hidden session). */
+  | { kind: 'signing-out' }
+  | { kind: 'working' }
+  /** The CLI said it is done: its status command is being asked. */
+  | { kind: 'confirming' }
+  | { kind: 'success'; email: string | null; plan?: string }
+  /** `details`: the CLI's own words, masked, for "Show details". `timeout`: 10 minutes passed. */
+  | { kind: 'error'; message: string; details: string[]; timeout?: boolean }
+  /** Termpolis couldn't read the screen for SIGN_IN_UNKNOWN_MS: the screen itself, masked. */
+  | { kind: 'unknown'; screen: string[]; typing: boolean }
+  | { kind: 'cancelled' }
+
+/** main → renderer: a sign-in session's state. */
+export interface SignInState {
+  sessionId: string
+  accountId: string
+  agent: AccountAgent
+  phase: SignInPhase
+}
+
+/** What the sheet sends a session: the user's own choices only. */
+export type SignInInput =
+  /** The option the user clicked: its index, and its words as the sheet showed them. */
+  | { kind: 'pick'; index: number; label: string }
+  /** The code the page showed, pasted by the user. */
+  | { kind: 'code'; value: string }
+  /** A value agy asks for (a Google Cloud project). */
+  | { kind: 'text'; value: string }
+  /** Open the sign-in page again, in the browser. */
+  | { kind: 'open' }
+  /** The fallback's "Let me type here", and the keys typed there. */
+  | { kind: 'live'; on: boolean }
+  | { kind: 'keys'; data: string }
+  | { kind: 'cancel' }
+
+/** How long a screen Termpolis can't read stays before the sheet shows it as it is. */
+export const SIGN_IN_UNKNOWN_MS = 15_000
+/** A sign-in is given this long, then stopped. */
+export const SIGN_IN_TIMEOUT_MS = 10 * 60_000

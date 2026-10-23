@@ -9,7 +9,11 @@ import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { MODEL_HELD, changesAccountByHand, isSessionId } from '../shared/accountSwitch'
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
-import { runAgyStep } from './agySwitch'
+import { AGY_ENV_AUTH, runAgyStep } from './agySwitch'
+import { endSignIns, endSignInsOf, signInInput, startSignInSession } from './signInSession'
+import type { SessionDeps } from './signInSession'
+import { killProcessTree } from './processTree'
+import type { SignInInput, SignInState } from '../shared/signInScreens'
 import { carryTranscript, findTranscript } from './accountCarry'
 import { holdForModel, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
@@ -20,7 +24,7 @@ import type { LiveStart } from './limitLook'
 import type { LimitLook } from '../shared/accountLimits'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, PROFILE_AGENTS, PROFILE_VARIABLE, SHAREABLE_FOLDERS, accountEnv, accountLine,
-  cleanLabel, familyOf, isPlainEmail, isProfileAgent, signInCommand, signInTerminalName, slugOf, tildifyPath,
+  cleanLabel, familyOf, isPlainEmail, isProfileAgent, signInArgs, signInCommand, signInTerminalName, slugOf, tildifyPath,
 } from '../shared/agentAccounts'
 import type {
   AccountAgent, AccountIdentity, AccountRowView, AccountsAdvice, AccountsView, AddAccountResult, AgentAccount,
@@ -29,7 +33,7 @@ import type {
 import type { AgentIntegrationChange } from '../shared/agentIntegration'
 import { accountFs, readClaudeJsonFields } from './accountFs'
 import type { AccountFs } from './accountFs'
-import { claudeSignedInNow, codexSignedInNow } from './accountIdentity'
+import { claudeSignedInNow, codexSignedInNow, findOnPath, resolveCli, shimInvocation } from './accountIdentity'
 import type { CheckDeps, IdentityCheck } from './accountIdentity'
 import { copySources, createProfile, recopyProfile } from './accountProfiles'
 import {
@@ -77,6 +81,14 @@ export interface AccountsIpcDeps {
   signedInNow?: (agent: ProfileAgent, profile: string | null, deps: CheckDeps) => Promise<IdentityCheck>
   setInterval?: (fn: () => void, ms: number) => unknown
   clearInterval?: (handle: unknown) => void
+  /** Opens a provider's sign-in page in the user's browser (shell.openExternal): the sign-in
+   *  sheet's Open again, on the user's click only. */
+  openExternal?: (url: string) => void
+  /** For tests: the sign-in session's PTY (node-pty's spawn), and the CLI it runs. */
+  signInSpawn?: SessionDeps['spawn']
+  signInCli?: (agent: AccountAgent, args: string[], env: Record<string, string>) => SignInCli
+  /** For tests: the sign-in session's clock and its sleep. */
+  sleep?: (ms: number) => Promise<void>
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -619,6 +631,56 @@ export function accountsView(
   }
 }
 
+// ── The hidden sign-in session (the in-app account UI, §3) ─────────────────────────────
+
+/** The CLI a sign-in session runs: its resolved path and its arguments, or why it can't. */
+export type SignInCli = { file: string; args: string[] | string } | { error: string }
+
+/** Termpolis's own variables, and every profile variable: none of them reach a sign-in's CLI but the
+ *  account's own, set again below. */
+const SIGN_IN_DROP = /^(?:TERMPOLIS_.*|ELECTRON_.*|CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_SSE_PORT|CLAUDE_CONFIG_DIR|CODEX_HOME|GEMINI_CLI_HOME)$/i
+
+/** The env a sign-in's CLI starts with: the one Termpolis's terminals get (its proxy and browser
+ *  settings among it), less Termpolis's own variables and every profile variable, plus the
+ *  account's: deleted for the default profile, never set empty (R24). A test run's scratch home
+ *  stands in for the real one, so a CLI a test starts never reaches the developer's sign-ins. */
+export function signInEnv(agent: AccountAgent, profile: string | null, base: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [k, v] of Object.entries(base)) if (typeof v === 'string' && !SIGN_IN_DROP.test(k)) env[k] = v
+  const testHome = base.TERMPOLIS_TEST_AGENT_HOME?.trim()
+  if (testHome) {
+    env.HOME = testHome
+    env.USERPROFILE = testHome
+  }
+  env.TERM = 'xterm-256color'
+  if (isProfileAgent(agent) && profile) env[PROFILE_VARIABLE[agent]] = profile
+  return env
+}
+
+/** The CLI for a sign-in, as the status checks find it (R20): by its resolved path, an npm shim on
+ *  Windows through `cmd.exe /d /s /c` with plain arguments only (an email the shim's line can't take
+ *  is left off: it only fills in the page). agy by its path. */
+export function signInCli(agent: AccountAgent, args: string[], env: Record<string, string>, platform: NodeJS.Platform = process.platform): SignInCli {
+  const missing = { error: `${ACCOUNT_AGENT_LABEL[agent]} isn't installed where Termpolis can find it (not on PATH)` }
+  if (!isProfileAgent(agent)) {
+    const file = findOnPath('agy', env, platform)
+    return file ? { file, args } : missing
+  }
+  const cli = resolveCli(agent, { env, platform })
+  if (!cli) return missing
+  // A shim is Windows's only (resolveCli).
+  if (cli.kind === 'exe') return { file: cli.file, args }
+  const at = args.indexOf('--email')
+  const plain = at < 0 ? args : args.slice(0, at)
+  const inv = shimInvocation(cli.file, args, env) ?? shimInvocation(cli.file, plain, env)
+  return inv ? { file: inv.file, args: inv.args.join(' ') } : { error: 'the CLI is installed in a folder Termpolis can\'t run it from safely' }
+}
+
+/** For quit: every sign-in session ends, with its process tree. */
+export function endAccountSignIns(): void {
+  endSignIns()
+}
+
 // ── Registration ───────────────────────────────────────────────────────────────────────
 
 /** A sign-in is watched for at most this long. */
@@ -1004,10 +1066,11 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
 
   /** "Signed in now" for an account, from its agent's own status command, kept in the registry.
    *  Throws why it couldn't ask. */
-  const checkNow = async (a: AgentAccount): Promise<{ identity: AccountIdentity; doc: AccountsDoc }> => {
+  const checkNow = async (a: AgentAccount, fresh = false): Promise<{ identity: AccountIdentity; doc: AccountsDoc }> => {
     if (!isProfileAgent(a.agent)) throw new Error('Termpolis can\'t ask the Antigravity CLI who is signed in: it shows the email on its own screen')
     if (!liveProfileDir(a, deps.paths().home, fsx)) throw new Error(`${a.label}'s profile folder doesn't exist`)
-    if (CHECK_SKIPS_LIVE_PROFILES && terminalsOnAccount(a.id) > 0) {
+    // Right after a sign-in its tokens are seconds old: no check can need to refresh them then.
+    if (!fresh && CHECK_SKIPS_LIVE_PROFILES && terminalsOnAccount(a.id) > 0) {
       throw new Error(`A Termpolis terminal is running on ${a.label}, so Termpolis doesn't ask ${ACCOUNT_AGENT_LABEL[a.agent]} now: a check could refresh the sign-in that terminal uses. Close it, or read "last signed in as".`)
     }
     const r = await signedInNow(a.agent, a.profile, { cwd: deps.checkCwd(), env })
@@ -1019,6 +1082,84 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   handle(ACCOUNTS_IPC.check, async (input) => {
     const a = accountOf(loadDoc(), input.id)
     return rowOf((await checkNow(a)).doc, a.id)
+  })
+
+  /** One Google sign-in for the computer user: every agy terminal Termpolis knows moves with it (and
+   *  `also`), and new ones launch on it. */
+  const moveAgy = (target: AgentAccount, also: string[]): void => {
+    const doc = loadDoc()
+    const agyIds = new Set(doc.file.accounts.filter((a) => a.agent === 'agy').map((a) => a.id))
+    const moved = new Set(also)
+    for (const [tid, aid] of terminalAccounts) if (aid !== null && agyIds.has(aid)) moved.add(tid)
+    for (const tid of moved) {
+      noteTerminalAccount(tid, target.id)
+      deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId: tid, accountId: target.id, byHand: false })
+    }
+    update((d) => { d.file.preferred.agy = target.id })
+    console.log(`[accounts] agy moved to ${target.label}: ${moved.size} terminal${moved.size === 1 ? '' : 's'}`)
+  }
+
+  // The hidden sign-in session (§3): never a Termpolis terminal, so nothing else can see or type
+  // into it. The renderer names the account and the method; main builds everything else.
+  const sessionDeps: SessionDeps = {
+    spawn: deps.signInSpawn ?? ((file, args, opts) => (require('node-pty') as { spawn: SessionDeps['spawn'] }).spawn(file, args, opts)),
+    killTree: (pid) => { killProcessTree(pid) },
+    send: (state: SignInState) => deps.send(ACCOUNTS_IPC.signInState, state),
+    openExternal: (url) => deps.openExternal?.(url),
+    now,
+    sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+    setInterval: startTimer,
+    clearInterval: stopTimer,
+  }
+  /** The windows whose going away ends their sessions, each watched once. */
+  const watchedOwners = new WeakSet<object>()
+  ipc.handle(ACCOUNTS_IPC.signInStart, async (e, raw) => {
+    try {
+      const input = isRecord(raw) ? raw : {}
+      const a = accountOf(loadDoc(), input.accountId)
+      const mode = input.mode === 'agy-switch' ? 'agy-switch' : 'sign-in'
+      if ((mode === 'agy-switch') !== (a.agent === 'agy')) throw new Error(a.agent === 'agy' ? 'the Antigravity CLI signs in through its switch' : `${a.label} isn't an Antigravity CLI account`)
+      if (mode === 'agy-switch') {
+        // agy signs in from the environment there: /logout signs nothing out (agy-signin.md).
+        const byEnv = AGY_ENV_AUTH.find((name) => !!env[name])
+        if (byEnv) throw new Error(`agy signs in with ${byEnv} from the environment here, so signing out changes nothing: change ${byEnv} instead`)
+      } else if (!liveProfileDir(a, deps.paths().home, fsx)) {
+        throw new Error(`${a.label}'s profile folder doesn't exist`)
+      }
+      const args = isProfileAgent(a.agent)
+        ? signInArgs(a.agent, SIGN_IN_METHODS[a.agent].find((m) => m === input.method) ?? SIGN_IN_METHODS[a.agent][0], a.email)
+        : []
+      const cliEnv = signInEnv(a.agent, a.profile, env)
+      const cli = (deps.signInCli ?? signInCli)(a.agent, args, cliEnv)
+      if ('error' in cli) throw new Error(cli.error)
+      const owner = (e as { sender?: { once?: (event: string, fn: () => void) => void } } | null)?.sender
+      const started = startSignInSession({
+        accountId: a.id, agent: a.agent, key: a.agent === 'agy' ? 'agy' : `${a.agent}:${a.profile ?? ''}`,
+        file: cli.file, args: cli.args, env: cliEnv, cwd: deps.checkCwd(), mode, label: a.label, owner,
+        confirm: async () => {
+          try {
+            const { identity } = await checkNow(a, true)
+            if (!identity.signedIn) return { signedOut: true }
+            return { email: identity.email, ...(identity.plan ? { plan: identity.plan } : {}) }
+          } catch (e3) {
+            return { error: message(e3) }
+          }
+        },
+        onAgySignedIn: () => moveAgy(a, []),
+      }, sessionDeps)
+      if (owner && typeof owner === 'object' && !watchedOwners.has(owner)) {
+        watchedOwners.add(owner)
+        owner.once?.('destroyed', () => endSignInsOf(owner))
+      }
+      console.log(`[accounts] sign-in for ${a.label} started (${mode})`)
+      return ok(started)
+    } catch (e2) {
+      return err(message(e2))
+    }
+  })
+  handle(ACCOUNTS_IPC.signInInput, async (input) => {
+    const sessionId = typeof input.sessionId === 'string' ? input.sessionId : ''
+    return signInInput(sessionId, input as unknown as SignInInput)
   })
 
   handle(ACCOUNTS_IPC.signInLine, (input) => {
@@ -1257,20 +1398,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       env,
       record: (r) => noteAgentStart(terminalId, r.start, now()),
     })
-    if (outcome.kind === 'switched') {
-      // One Google sign-in for the computer user: every agy terminal Termpolis knows moved with it,
-      // and new ones launch on it.
-      const doc = loadDoc()
-      const agyIds = new Set(doc.file.accounts.filter((a) => a.agent === 'agy').map((a) => a.id))
-      const moved = new Set([terminalId])
-      for (const [tid, aid] of terminalAccounts) if (aid !== null && agyIds.has(aid)) moved.add(tid)
-      for (const tid of moved) {
-        noteTerminalAccount(tid, target.id)
-        deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId: tid, accountId: target.id, byHand: false })
-      }
-      update((d) => { d.file.preferred.agy = target.id })
-      console.log(`[accounts] agy moved to ${target.label}: ${moved.size} terminal${moved.size === 1 ? '' : 's'}`)
-    }
+    if (outcome.kind === 'switched') moveAgy(target, [terminalId])
     return outcome
   })
 

@@ -124,7 +124,7 @@ export function checkEnv(agent: ProfileAgent, profile: string | null, base: Read
 
 /** `cmd.exe /d /s /c "<shim> <args>"`, for a shim Node won't spawn without a shell. Only fixed,
  *  plain arguments; a shim path cmd would read specially is refused. */
-function shimInvocation(shim: string, args: readonly string[], env: Record<string, string>): { file: string; args: string[] } | null {
+export function shimInvocation(shim: string, args: readonly string[], env: Record<string, string>): { file: string; args: string[] } | null {
   if (/["%!^&|<>]/.test(shim) || args.some((a) => !/^[A-Za-z0-9/_.-]+$/.test(a))) return null
   return { file: env.COMSPEC || env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `""${shim}" ${args.join(' ')}"`] }
 }
