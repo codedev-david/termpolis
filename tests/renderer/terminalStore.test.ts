@@ -1017,6 +1017,10 @@ describe('the usage-limit chooser and its banners (§8.4)', () => {
     expect(st().agySwitchSheet).toEqual({ targetId: 'g2' })
     st().closeAgySwitchSheet()
     expect(st().agySwitchSheet).toBeNull()
+    st().openAddAccount('codex')
+    expect(st().addAccountSheet).toEqual({ agent: 'codex' })
+    st().closeAddAccount()
+    expect(st().addAccountSheet).toBeNull()
   })
 
   it('shows a banner, replaces it by its id, and dismisses it', () => {

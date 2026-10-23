@@ -3,7 +3,8 @@
 // account of the terminal's agent, in registry order; picking one starts the switch at once, in
 // place (§2.2): no dialog, but the work account's second confirmation (D14), a busy agent's "when
 // it finishes", and a signed-out account's sign-in first. Its footer: New terminal on ▸, Add
-// account… and Manage accounts…. It shows what main last said and refreshes behind, never waiting
+// account… (the wizard, for this agent) and Manage accounts… (Settings ▸ Accounts). It shows what
+// main last said and refreshes behind, never waiting
 // on a CLI. Keyboard: arrows, Home/End, type-ahead, Enter; Esc back to the terminal.
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -169,6 +170,9 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
         // Its item stays the one at hand: the submenu's Esc comes back to it.
         setActive(list.indexOf(it))
         return setSub(0)
+      case 'add':
+        close(false)
+        return store().openAddAccount(agent)
       default:
         return openSettings()
     }

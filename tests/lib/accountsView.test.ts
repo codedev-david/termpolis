@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 import {
-  accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, hasAccounts,
+  ACCOUNT_COLORS, AGENT_COLOR, accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, freeColor, hasAccounts,
 } from '../../src/renderer/src/lib/accountsView'
+import type { AccountsView } from '../../src/shared/agentAccounts'
 
 const HOME = 'C:\\Users\\me'
 
@@ -76,6 +77,20 @@ describe('accountBadge: the row\'s state, worst first', () => {
       .toEqual({ text: 'g@example.test', tone: 'muted' })
     expect(accountBadge(row({ agent: 'agy', profile: null, folder: null, folderExists: false }), now))
       .toEqual({ text: 'no email given', tone: 'muted' })
+  })
+})
+
+describe('freeColor: the Add wizard\'s first colour', () => {
+  const v = (accounts: AccountRowView[]) => ({ accounts }) as unknown as AccountsView
+  it('is the agent\'s own until one of its accounts has it, then the next free one, any case', () => {
+    expect(freeColor(null, 'claude')).toBe(AGENT_COLOR.claude)
+    expect(freeColor(v([row({ agent: 'codex' })]), 'claude')).toBe(AGENT_COLOR.claude)
+    // An account with no colour of its own wears the agent's.
+    expect(freeColor(v([row({ color: undefined })]), 'claude')).toBe(ACCOUNT_COLORS[1])
+    expect(freeColor(v([row({ color: '#d97706' }), row({ color: '#10B981' })]), 'claude')).toBe(ACCOUNT_COLORS[2])
+  })
+  it('falls back to the agent\'s own once every colour is taken', () => {
+    expect(freeColor(v(ACCOUNT_COLORS.map((c) => row({ agent: 'agy', color: c }))), 'agy')).toBe(AGENT_COLOR.agy)
   })
 })
 

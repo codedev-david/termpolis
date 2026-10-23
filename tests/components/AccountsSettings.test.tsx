@@ -73,7 +73,7 @@ async function renderLoaded() {
 }
 
 beforeEach(() => {
-  useTerminalStore.setState({ defaultShell: 'powershell', terminals: [], activeTerminalId: null, accountsView: null, signInSheet: null })
+  useTerminalStore.setState({ defaultShell: 'powershell', terminals: [], activeTerminalId: null, accountsView: null, signInSheet: null, addAccountSheet: null, accountsByHand: {}, showSettings: true })
 })
 
 afterEach(() => {
@@ -124,24 +124,29 @@ describe('AccountsSettings: reading the accounts', () => {
     expect(screen.getByTestId('accounts-empty-claude')).toHaveTextContent('uses your main profile')
     expect(screen.getByTestId('accounts-empty-agy')).toHaveTextContent('No accounts yet.')
     expect(screen.getByTestId('accounts-agy-text')).toHaveTextContent('one Google sign-in for your whole computer user')
-    expect(screen.queryByTestId('accounts-preferred-claude')).toBeNull()
-    expect(screen.queryByTestId('accounts-import')).toBeNull()
+    expect(document.querySelector('[data-testid^="account-default-"]')).toBeNull()
+    expect(screen.queryByTestId('accounts-import-banner')).toBeNull()
+    for (const agent of ['claude', 'codex', 'agy']) expect(screen.getByTestId(`accounts-add-${agent}`)).toBeInTheDocument()
   })
 })
 
-describe('AccountsSettings: a row', () => {
-  it('shows the label, email, state, folder, shares and terminals', async () => {
-    bridge(view({ accounts: [MAIN, row({ terminals: 2 }), row({ id: 'acc_00000000000c', label: 'one', terminals: 1, color: '#112233' })] }))
+describe('AccountsSettings: a card', () => {
+  it('shows the colour, name, email, status, and the folder and shares under Advanced', async () => {
+    const C = row({ id: 'acc_00000000000c', label: 'one', color: '#112233' })
+    bridge(view({ accounts: [MAIN, B, C] }))
     await renderLoaded()
     const r = screen.getByTestId(`account-row-${B.id}`)
-    expect(r).toHaveTextContent('codedev')
-    expect(r).toHaveTextContent('b@example.test')
+    expect(screen.getByTestId(`account-label-${B.id}`)).toHaveTextContent('codedev')
+    expect(screen.getByTestId(`account-email-line-${B.id}`).textContent).toBe('b@example.test')
     expect(screen.getByTestId(`account-badge-${B.id}`)).toHaveTextContent('last signed in as b@example.test')
-    expect(r).toHaveTextContent('~\\.claude-codedev')
-    expect(r).toHaveTextContent('Shares projects with your main profile')
-    expect(r).toHaveTextContent('2 terminals on it')
-    expect(screen.getByTestId('account-row-acc_00000000000c')).toHaveTextContent('1 terminal on it')
-    expect(screen.getByTestId(`account-row-${MAIN.id}`)).toHaveTextContent('~\\.claude (main profile)')
+    expect(screen.getByTestId(`account-advanced-${B.id}`)).toHaveTextContent('~\\.claude-codedev')
+    expect(screen.getByTestId(`account-advanced-${B.id}`)).toHaveTextContent('Shares projects with your main profile')
+    expect(screen.getByTestId(`account-advanced-${MAIN.id}`)).toHaveTextContent('~\\.claude (main profile)')
+    // Its avatar takes its colour and initial; one with none takes the agent's.
+    expect(screen.getByTestId('account-row-acc_00000000000c').querySelector('[aria-hidden="true"]')).toHaveStyle({ backgroundColor: '#112233' })
+    expect(r.querySelector('[aria-hidden="true"]')).toHaveTextContent('C')
+    expect(r.querySelector('[aria-hidden="true"]')).toHaveStyle({ backgroundColor: '#D97706' })
+    expect(screen.getByTestId(`account-row-${MAIN.id}`).querySelector('[aria-hidden="true"]')).toHaveTextContent('P')
     // The main profile is connected through Agent Integration: no Connect of its own.
     expect(screen.queryByTestId(`account-connect-${MAIN.id}`)).toBeNull()
     expect(screen.queryByTestId(`account-disconnect-${MAIN.id}`)).toBeNull()
@@ -222,27 +227,88 @@ describe('AccountsSettings: a row', () => {
     await waitFor(() => expect(accounts.update).toHaveBeenCalledWith(B.id, { autoOffer: false }))
   })
 
-  it('renames an account and changes its email', async () => {
+  it('renames an account in place: Enter keeps the new name, Esc or leaving the field doesn\'t', async () => {
     const { accounts } = bridge()
     await renderLoaded()
+    fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+    const field = screen.getByTestId(`account-edit-label-${B.id}`) as HTMLInputElement
+    expect(document.activeElement).toBe(field)
+    fireEvent.change(field, { target: { value: ' codedev2 ' } })
+    fireEvent.keyDown(field, { key: 'Enter' })
+    await waitFor(() => expect(accounts.update).toHaveBeenCalledWith(B.id, { label: 'codedev2' }))
+    await waitFor(() => expect(screen.queryByTestId(`account-edit-label-${B.id}`)).toBeNull())
+    // Esc, a blur, an unchanged name or an empty one: nothing is saved.
+    accounts.update.mockClear()
+    fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+    fireEvent.change(screen.getByTestId(`account-edit-label-${B.id}`), { target: { value: 'other' } })
+    fireEvent.keyDown(screen.getByTestId(`account-edit-label-${B.id}`), { key: 'Escape' })
+    expect(screen.queryByTestId(`account-edit-label-${B.id}`)).toBeNull()
+    fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+    fireEvent.blur(screen.getByTestId(`account-edit-label-${B.id}`))
+    expect(screen.queryByTestId(`account-edit-label-${B.id}`)).toBeNull()
+    for (const value of ['codedev', '   ']) {
+      fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+      fireEvent.change(screen.getByTestId(`account-edit-label-${B.id}`), { target: { value } })
+      fireEvent.keyDown(screen.getByTestId(`account-edit-label-${B.id}`), { key: 'Enter' })
+      expect(screen.queryByTestId(`account-edit-label-${B.id}`)).toBeNull()
+    }
+    // Other keys are the field's own.
+    fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+    fireEvent.keyDown(screen.getByTestId(`account-edit-label-${B.id}`), { key: 'a' })
+    expect(screen.getByTestId(`account-edit-label-${B.id}`)).toBeInTheDocument()
+    expect(accounts.update).not.toHaveBeenCalled()
+  })
+
+  it('changes the email an account should sign in with, under Advanced', async () => {
+    const { accounts } = bridge()
+    await renderLoaded()
+    expect(screen.getByTestId(`account-advanced-${B.id}`)).toHaveTextContent('The email it should sign in with: b@example.test')
     fireEvent.click(screen.getByTestId(`account-edit-${B.id}`))
-    fireEvent.change(screen.getByTestId(`account-edit-label-${B.id}`), { target: { value: 'codedev2' } })
+    expect((screen.getByTestId(`account-edit-email-${B.id}`) as HTMLInputElement).value).toBe('b@example.test')
     fireEvent.change(screen.getByTestId(`account-edit-email-${B.id}`), { target: { value: '' } })
     fireEvent.click(screen.getByTestId(`account-edit-save-${B.id}`))
-    await waitFor(() => expect(accounts.update).toHaveBeenCalledWith(B.id, { label: 'codedev2', email: '' }))
+    await waitFor(() => expect(accounts.update).toHaveBeenCalledWith(B.id, { email: '' }))
     await waitFor(() => expect(screen.queryByTestId(`account-edit-form-${B.id}`)).toBeNull())
-    // The Rename button opens and closes the form.
     fireEvent.click(screen.getByTestId(`account-edit-${MAIN.id}`))
     expect(screen.getByTestId(`account-edit-form-${MAIN.id}`)).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId(`account-edit-${MAIN.id}`))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByTestId(`account-edit-form-${MAIN.id}`)).toBeNull()
-    // An account with no email starts with an empty one.
+    // An agy account's is its Google email; one with none starts empty.
     const g = row({ id: 'acc_000000000009', agent: 'agy', label: 'g', email: undefined, profile: null, folder: null, folderExists: false })
     ;(window as any).accounts.list.mockResolvedValue({ success: true, data: view({ accounts: [g] }) })
     fireEvent.click(screen.getByTestId(`account-auto-offer-${B.id}`))
     await screen.findByTestId(`account-row-${g.id}`)
+    expect(screen.getByTestId(`account-advanced-${g.id}`)).toHaveTextContent('Its Google email: none given')
     fireEvent.click(screen.getByTestId(`account-edit-${g.id}`))
     expect((screen.getByTestId(`account-edit-email-${g.id}`) as HTMLInputElement).value).toBe('')
+  })
+
+  it('shows the email and plan the CLI reports, and the terminals on it now, which it focuses', async () => {
+    const signed = row({ identity: { email: 'b2@example.test', signedIn: true, plan: 'Max', checkedAt: 1, source: 'auth-status' } })
+    bridge(view({ accounts: [MAIN, signed] }))
+    const t = (id: string, over: Record<string, unknown> = {}) => ({ id, name: `T ${id}`, color: '', shellType: 'powershell' as const, cwd: '/r', fontSize: 13, theme: 'dark', fontFamily: 'mono', agentCommand: 'claude', agentAccountId: B.id, ...over })
+    useTerminalStore.setState({ terminals: [t('t1'), t('t2', { hidden: true }), t('t3'), t('t4', { agentAccountId: MAIN.id }), t('c', { isConductor: true })], accountsByHand: { t3: true } })
+    await renderLoaded()
+    expect(screen.getByTestId(`account-email-line-${B.id}`).textContent).toBe('b2@example.test · Max')
+    // Changed by hand, hidden or the conductor's: not listed as on it.
+    expect(screen.getByTestId(`account-terminals-${B.id}`)).toHaveTextContent('On it now:T t1')
+    expect(screen.getByTestId(`account-terminals-${MAIN.id}`)).toHaveTextContent('On it now:T t4')
+    fireEvent.click(screen.getByTestId('account-terminal-t1'))
+    expect(useTerminalStore.getState().activeTerminalId).toBe('t1')
+    expect(useTerminalStore.getState().showSettings).toBe(false)
+  })
+
+  it('shows no plan for an account its CLI says is signed out, and no email line with none', async () => {
+    const out = row({ email: undefined, lastEmail: null, identity: { email: null, signedIn: false, plan: 'Max', checkedAt: 1, source: 'auth-status' } })
+    bridge(view({ accounts: [MAIN, out] }))
+    await renderLoaded()
+    expect(screen.queryByTestId(`account-email-line-${B.id}`)).toBeNull()
+  })
+
+  it('draws a name with no letter in it as ?', async () => {
+    bridge(view({ accounts: [MAIN, row({ label: ' ' })] }))
+    await renderLoaded()
+    expect(screen.getByTestId(`account-row-${B.id}`).querySelector('[aria-hidden="true"]')).toHaveTextContent('?')
   })
 
   it('removes an account after saying what stays, and keeps it on "Keep it"', async () => {
@@ -311,32 +377,52 @@ describe('AccountsSettings: a row', () => {
   })
 })
 
-describe('AccountsSettings: the card', () => {
-  it('sets the account new terminals launch on, and back to the main profile', async () => {
-    const { accounts } = bridge(view({ preferred: { claude: B.id } }))
+describe('AccountsSettings: a section', () => {
+  it('says which account new terminals start on, and makes another one the default', async () => {
+    const gone = row({ id: 'acc_00000000000d', label: 'gone', folderExists: false })
+    const { accounts } = bridge(view({ preferred: { claude: B.id }, accounts: [MAIN, B, gone] }))
     await renderLoaded()
-    const select = screen.getByTestId('accounts-preferred-claude') as HTMLSelectElement
-    expect(select.value).toBe(B.id)
-    // The main profile is the empty choice, not listed twice.
-    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual(['the main profile', 'codedev'])
-    fireEvent.change(select, { target: { value: '' } })
+    expect(screen.getByTestId(`account-default-${B.id}`)).toHaveTextContent('Default for new terminals')
+    expect(screen.queryByTestId(`account-make-default-${B.id}`)).toBeNull()
+    // One with no folder can't be.
+    expect((screen.getByTestId(`account-make-default-${gone.id}`) as HTMLButtonElement).disabled).toBe(true)
+    // The main profile is the default by having none.
+    fireEvent.click(screen.getByTestId(`account-make-default-${MAIN.id}`))
     await waitFor(() => expect(accounts.setPreferred).toHaveBeenCalledWith('claude', null))
-    fireEvent.change(select, { target: { value: B.id } })
+  })
+
+  it('takes the main profile as the default when none is set, and sets another', async () => {
+    const { accounts } = bridge()
+    await renderLoaded()
+    expect(screen.getByTestId(`account-default-${MAIN.id}`)).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId(`account-make-default-${B.id}`))
     await waitFor(() => expect(accounts.setPreferred).toHaveBeenCalledWith('claude', B.id))
   })
 
-  it('opens and closes the Add dialog, re-reading the accounts once one is added', async () => {
-    const { accounts } = bridge(view(), { add: vi.fn(async () => ({ success: true, data: { account: B, leftOut: [], copied: [], changes: [] } })) })
+  it('has no default for agy, whose one sign-in every agy terminal runs on', async () => {
+    const g = row({ id: 'acc_000000000009', agent: 'agy', label: 'g', email: 'g@example.test', profile: null, folder: null, folderExists: false, connection: null })
+    bridge(view({ accounts: [g] }))
+    await renderLoaded()
+    expect(screen.queryByTestId(`account-default-${g.id}`)).toBeNull()
+    expect(screen.queryByTestId(`account-make-default-${g.id}`)).toBeNull()
+  })
+
+  it('opens the Add account wizard for its agent', async () => {
+    bridge()
     await renderLoaded()
     fireEvent.click(screen.getByTestId('accounts-add-codex'))
-    expect(screen.getByTestId('add-account-dialog')).toHaveTextContent('Add a Codex account')
-    fireEvent.click(screen.getByTestId('add-account-cancel'))
-    expect(screen.queryByTestId('add-account-dialog')).toBeNull()
+    expect(useTerminalStore.getState().addAccountSheet).toEqual({ agent: 'codex' })
     fireEvent.click(screen.getByTestId('accounts-add-agy'))
-    fireEvent.change(screen.getByTestId('add-account-label'), { target: { value: 'g' } })
-    fireEvent.click(screen.getByTestId('add-account-submit'))
-    await screen.findByTestId('add-account-done')
-    expect(accounts.list).toHaveBeenCalledTimes(2)
+    expect(useTerminalStore.getState().addAccountSheet).toEqual({ agent: 'agy' })
+  })
+
+  it('shows an account the wizard added, from the store, without reading them again', async () => {
+    const { accounts } = bridge()
+    await renderLoaded()
+    const calls = accounts.list.mock.calls.length
+    act(() => useTerminalStore.getState().setAccountsView(view({ accounts: [MAIN, B, row({ id: 'acc_00000000000e', label: 'fresh' })] })))
+    expect(await screen.findByTestId('account-row-acc_00000000000e')).toHaveTextContent('fresh')
+    expect(accounts.list.mock.calls.length).toBe(calls)
   })
 
   it('turns the chooser off', async () => {
@@ -364,9 +450,12 @@ describe('AccountsSettings: importing ~/.claude/accounts.sh', () => {
       import: vi.fn(async () => ({ success: true, data: { added: 2, changes: [{ agent: 'claude', file: 'c.json', action: 'add', what: 'MCP server' }], view: view() } })),
     })
     await renderLoaded()
+    expect(screen.getByTestId('accounts-import-banner')).toHaveTextContent('~/.claude/accounts.sh lists your Claude Code accounts')
     fireEvent.click(screen.getByTestId('accounts-import'))
     const panel = await screen.findByTestId('accounts-import-panel')
     expect(panel).toHaveTextContent('never changes it')
+    // The banner gives way to the preview.
+    expect(screen.queryByTestId('accounts-import-banner')).toBeNull()
     expect((screen.getByTestId('accounts-import-pick-personal') as HTMLInputElement).disabled).toBe(true)
     expect(screen.getByTestId('accounts-import-row-personal')).toHaveTextContent('main profile')
     expect(screen.getByTestId('accounts-import-row-personal')).toHaveTextContent('already added')
@@ -492,8 +581,7 @@ describe('AccountsSettings: signing in', () => {
     await renderLoaded()
     const calls = accounts.list.mock.calls.length
     act(() => useTerminalStore.getState().setAccountsView(view({ accounts: [MAIN, row({ label: 'renamed' })] })))
-    // The row and the New terminals launch on list both name it.
-    expect((await screen.findAllByText('renamed')).length).toBeGreaterThan(0)
+    expect(await screen.findByTestId(`account-label-${B.id}`)).toHaveTextContent('renamed')
     expect(accounts.list.mock.calls.length).toBe(calls)
   })
 })

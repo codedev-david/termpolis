@@ -185,6 +185,9 @@ const wiring: {
   fsx?: AccountFs
 } = {}
 
+/** An account's colour, as the registry keeps it. */
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
+
 // ── Learning from every account (§10) ──────────────────────────────────────────────────
 
 /** Where each registered profile keeps its conversations, for learning and Past AI Sessions:
@@ -833,13 +836,14 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (email !== undefined && !isPlainEmail(email)) throw new Error('that email address isn\'t a plain address')
     const autoOffer = input.autoOffer !== false
     const wantsConnect = input.connect === true
+    const color = typeof input.color === 'string' && HEX_COLOR.test(input.color) ? input.color : undefined
     const p = deps.paths()
     if (!isProfileAgent(agent)) {
       const { value } = update((doc) => {
         uniqueLabel(doc, agent, label)
         const account: AgentAccount = {
           id: newAccountId(), agent, label, profile: null, autoOffer, order: nextOrder(doc, agent), connect: false,
-          origin: 'label', links: [], ...(email ? { email } : {}),
+          origin: 'label', links: [], ...(email ? { email } : {}), ...(color ? { color } : {}),
         }
         doc.file.accounts.push(account)
         return account.id
@@ -854,7 +858,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       const account: AgentAccount = {
         id: newAccountId(), agent, label, profile: checked.profile, autoOffer, order: nextOrder(doc, agent),
         connect: checked.profile === null ? true : wantsConnect, origin, links, ...(email ? { email } : {}),
-        ...(copied.length ? { copiedAt: now() } : {}),
+        ...(color ? { color } : {}), ...(copied.length ? { copiedAt: now() } : {}),
       }
       doc.file.accounts.push(account)
       return { id: account.id, listed }
@@ -927,7 +931,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       }
       if (typeof input.autoOffer === 'boolean') a.autoOffer = input.autoOffer
       if (input.color !== undefined) {
-        if (typeof input.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(input.color)) a.color = input.color
+        if (typeof input.color === 'string' && HEX_COLOR.test(input.color)) a.color = input.color
         else delete a.color
       }
     })

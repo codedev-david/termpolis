@@ -53,7 +53,7 @@ function openMenu(over: { terminals?: TerminalSession[]; accounts?: AccountRowVi
   const accounts = over.accounts === undefined ? [A, B, C, GONE, W] : over.accounts
   useTerminalStore.setState({
     terminals: over.terminals ?? [T], accountsView: accounts ? view(accounts) : null, accountsByHand: over.byHand ? { t1: true } : {},
-    queuedSwitches: {}, accountMenu: { terminalId: over.id ?? 't1' }, signInSheet: null, agySwitchSheet: null, showSettings: false,
+    queuedSwitches: {}, accountMenu: { terminalId: over.id ?? 't1' }, signInSheet: null, agySwitchSheet: null, showSettings: false, addAccountSheet: null,
   })
   return render(<AccountMenu />)
 }
@@ -370,16 +370,20 @@ describe('the footer', () => {
     expect(screen.queryByTestId('account-menu-submenu')).toBeNull()
   })
 
-  it('opens Settings ▸ Accounts for Add account… and Manage accounts…', async () => {
-    for (const id of ['account-menu-add', 'account-menu-manage']) {
-      const { unmount } = openMenu()
-      await settle()
-      fireEvent.click(screen.getByTestId(id))
-      expect(st().accountMenu).toBeNull()
-      expect(st().showSettings).toBe(true)
-      expect(consumePendingSettingsTab()).toBe('accounts')
-      unmount()
-    }
+  it('opens the Add account wizard for the terminal\'s agent, and Settings ▸ Accounts for Manage accounts…', async () => {
+    const { unmount } = openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-add'))
+    expect(st().accountMenu).toBeNull()
+    expect(st().addAccountSheet).toEqual({ agent: 'claude' })
+    expect(st().showSettings).toBe(false)
+    unmount()
+    openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-manage'))
+    expect(st().accountMenu).toBeNull()
+    expect(st().showSettings).toBe(true)
+    expect(consumePendingSettingsTab()).toBe('accounts')
   })
 
   it('shows a waiting switch with Cancel', async () => {

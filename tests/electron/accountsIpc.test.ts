@@ -369,6 +369,18 @@ describe('accounts:add, Codex and agy', () => {
     expect(lstatSync(join(sb.home, '.codex-work', 'sessions')).isSymbolicLink()).toBe(true)
   })
 
+  it('gives a new account the colour the Add wizard picked, and none for anything but #rrggbb', async () => {
+    mainClaude()
+    const c = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'tinted', folder: 'new', copy: false, color: '#7ee2a3' })
+    expect(c.account.color).toBe('#7ee2a3')
+    const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', color: '#C678DD' })
+    expect(g.account.color).toBe('#C678DD')
+    for (const [label, color] of [['plain', undefined], ['named', 'red'], ['short', '#abc'], ['script', 'url(javascript:x)'], ['num', 7]] as const) {
+      const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label, color })
+      expect(r.account.color).toBeUndefined()
+    }
+  })
+
   it('keeps an agy account as a label only: a name and a Google email, no folder, nothing to connect', async () => {
     const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'google', email: 'g@example.test', folder: 'new', connect: true })
     expect(r.account).toMatchObject({ agent: 'agy', label: 'google', email: 'g@example.test', profile: null, folder: null, isDefault: false, connect: false, origin: 'label', connection: null })

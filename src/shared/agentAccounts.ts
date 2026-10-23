@@ -262,6 +262,8 @@ export interface AddAccountRequest {
   copy?: boolean
   connect?: boolean
   autoOffer?: boolean
+  /** The colour the Add wizard picked: #rrggbb, or none. */
+  color?: string
 }
 
 export interface AddAccountResult {

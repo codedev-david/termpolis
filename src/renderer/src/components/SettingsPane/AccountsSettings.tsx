@@ -1,26 +1,30 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, isProfileAgent, tildifyPath } from '../../../../shared/agentAccounts'
 import type { AccountAgent, AccountChange, AccountRowView, AccountsView, ImportPreview } from '../../../../shared/agentAccounts'
 import { useTerminalStore } from '../../store/terminalStore'
 import { AGENT_COLOR, accountBadge, accountsOf, folderLine } from '../../lib/accountsView'
 import type { BadgeTone } from '../../lib/accountsView'
 import { signedInEmail } from '../../lib/accountChip'
-import { AddAccountDialog, CONNECT_DATA_LINE } from '../Accounts/AddAccountDialog'
+import { CONNECT_DATA_LINE } from '../Accounts/AddAccountSheet'
 import { ActiveTerminalAccount } from '../Accounts/ActiveTerminalAccount'
+import { SMALL_BUTTON as BUTTON } from '../Accounts/ui'
 
-// Settings ▸ Accounts (design §4): more than one sign-in per agent. Main owns the registry and
-// answers every action with what it did (src/main/accountsIpc.ts); this tab never builds a path,
-// reads a config or sees a sign-in. A Claude Code or Codex account is a profile folder; an agy
-// account is a label, because the Antigravity CLI keeps one Google sign-in per computer user.
+// Settings ▸ Accounts (design §4, the in-app account UI §2.5): the account manager. One section per
+// agent, a card per account: its colour, its name (renamed in place), the email and plan its CLI
+// reports, its status, whether new terminals start on it, the terminals on it now, and what can be
+// done with it; its folder and the rest under Advanced. Add account is a wizard in a sheet
+// (AddAccountSheet.tsx); a sign-in is the sign-in sheet. Main owns the registry and answers every
+// action with what it did (src/main/accountsIpc.ts); this tab never builds a path, reads a config or
+// sees a sign-in. A Claude Code or Codex account is a profile folder; an agy account is a label,
+// because the Antigravity CLI keeps one Google sign-in per computer user.
 
-const BUTTON = 'text-xs px-2 py-1 rounded bg-[#2d2d2d] text-[#d4d4d4] hover:bg-[#3a3a3a] disabled:opacity-50'
 const INPUT = 'bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1 text-xs text-[#d4d4d4]'
 
 const TONE: Record<BadgeTone, string> = {
-  good: 'text-[#7ee2a3]',
-  warn: 'text-[#e5c07b]',
-  bad: 'text-[#e06c75]',
-  muted: 'text-[#9ca3af]',
+  good: 'text-[#7ee2a3] border-[#7ee2a3]/40',
+  warn: 'text-[#e5c07b] border-[#e5c07b]/40',
+  bad: 'text-[#e06c75] border-[#e06c75]/40',
+  muted: 'text-[#9ca3af] border-[#3c3c3c]',
 }
 
 /** The check a StopFailure hook needs to stand down inside Termpolis (design §8.6). */
@@ -32,8 +36,8 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** What a row is doing right now: one action at a time per tab. */
-type RowAction = { id: string; kind: 'edit' | 'remove' | 'recopy' }
+/** What a card is doing right now: one action at a time per tab. */
+type RowAction = { id: string; kind: 'rename' | 'email' | 'remove' | 'recopy' }
 
 function Changes({ changes }: { changes: AccountChange[] }) {
   if (changes.length === 0) return <span className="text-xs text-[#9ca3af]" data-testid="accounts-changes">Nothing needed to change.</span>
@@ -44,6 +48,38 @@ function Changes({ changes }: { changes: AccountChange[] }) {
   )
 }
 
+/** The name, renamed in place: Enter keeps it, Esc (or leaving it) doesn't. */
+function RenameField({ r, busy, onSave, onCancel }: { r: AccountRowView; busy: boolean; onSave: (label: string) => void; onCancel: () => void }) {
+  const [label, setLabel] = useState(r.label)
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => { ref.current?.select() }, [])
+  return (
+    <input
+      ref={ref}
+      autoFocus
+      className={`${INPUT} text-sm w-40`}
+      aria-label={`Rename ${r.label}`}
+      value={label}
+      maxLength={40}
+      disabled={busy}
+      onChange={(e) => setLabel(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          if (label.trim() && label.trim() !== r.label) onSave(label.trim())
+          else onCancel()
+        } else if (e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          onCancel()
+        }
+      }}
+      onBlur={onCancel}
+      data-testid={`account-edit-label-${r.id}`}
+    />
+  )
+}
+
 export function AccountsSettings() {
   const api = window.accounts
   const [view, setView] = useState<AccountsView | null>(null)
@@ -51,15 +87,17 @@ export function AccountsSettings() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [changes, setChanges] = useState<AccountChange[] | null>(null)
-  const [adding, setAdding] = useState<AccountAgent | null>(null)
   const [rowAction, setRowAction] = useState<RowAction | null>(null)
-  const [edit, setEdit] = useState<{ label: string; email: string }>({ label: '', email: '' })
+  const [emailDraft, setEmailDraft] = useState('')
   const [importing, setImporting] = useState<{ preview: ImportPreview; keys: string[]; connect: Record<string, boolean> } | null>(null)
   const [copiedCheck, setCopiedCheck] = useState(false)
   // Settings a re-copy left out, by name: shown with the changes it made.
   const [leftOut, setLeftOut] = useState<string[]>([])
-  // A sign-in the sheet finished, or a switch: main's view as the store has it now.
+  // A sign-in the sheet finished, an account the wizard added, or a switch: main's view as the
+  // store has it now.
   const storeView = useTerminalStore((s) => s.accountsView)
+  const terminals = useTerminalStore((s) => s.terminals)
+  const byHand = useTerminalStore((s) => s.accountsByHand)
 
   const load = useCallback(async () => {
     if (!api) return
@@ -67,7 +105,7 @@ export function AccountsSettings() {
       const res = await api.list()
       if (res.success) {
         setView(res.data)
-        // The chips and the switch dialog read the same view.
+        // The chips and the account menu read the same view.
         useTerminalStore.getState().setAccountsView(res.data)
         setLoadError(null)
       } else {
@@ -153,14 +191,18 @@ export function AccountsSettings() {
     }
   }
 
-  const rowButtons = (r: AccountRowView, list: AccountRowView[], i: number) => {
+  /** A terminal on the account, shown: Settings closes over it. */
+  const focusTerminal = (id: string): void => {
+    const s = useTerminalStore.getState()
+    s.setShowSettings(false)
+    s.setActiveTerminal(id)
+  }
+
+  const actions = (r: AccountRowView, list: AccountRowView[], i: number) => {
     const profile = isProfileAgent(r.agent)
-    const editing = rowAction?.id === r.id && rowAction.kind === 'edit'
     const removing = rowAction?.id === r.id && rowAction.kind === 'remove'
     return (
       <div className="flex flex-wrap items-center gap-1.5">
-        <button className={BUTTON} disabled={busy || i === 0} aria-label={`Move ${r.label} up`} onClick={() => { void act(async () => { must(await api.move(r.id, -1)) }) }} data-testid={`account-up-${r.id}`}>↑</button>
-        <button className={BUTTON} disabled={busy || i === list.length - 1} aria-label={`Move ${r.label} down`} onClick={() => { void act(async () => { must(await api.move(r.id, 1)) }) }} data-testid={`account-down-${r.id}`}>↓</button>
         {profile && r.folderExists && (
           <>
             <button className={BUTTON} disabled={busy} onClick={() => useTerminalStore.getState().openSignInSheet(r.id)} data-testid={`account-sign-in-${r.id}`}>{signedInEmail(r) ? 'Sign in again' : 'Sign in'}</button>
@@ -169,7 +211,7 @@ export function AccountsSettings() {
         )}
         {profile && r.folderExists && !r.isDefault && (
           r.connect
-            ? <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => must(await api.setConnect(r.id, false)).changes) }} data-testid={`account-disconnect-${r.id}`}>Disconnect</button>
+            ? <button className={BUTTON} disabled={busy} title="Take Termpolis's tools and memory out of this profile" onClick={() => { void act(async () => must(await api.setConnect(r.id, false)).changes) }} data-testid={`account-disconnect-${r.id}`}>Disconnect</button>
             : <button className={BUTTON} disabled={busy || !view.integrationConnected} title={view.integrationConnected ? CONNECT_DATA_LINE : 'Turn on Agent Integration first'} onClick={() => { void act(async () => must(await api.setConnect(r.id, true)).changes) }} data-testid={`account-connect-${r.id}`}>Connect</button>
         )}
         {r.limit && <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.clearLimit(r.id)) }) }} data-testid={`account-mark-available-${r.id}`}>Mark available</button>}
@@ -178,23 +220,15 @@ export function AccountsSettings() {
           <input type="checkbox" checked={r.autoOffer} disabled={busy} onChange={(e) => { const on = e.target.checked; void act(async () => { must(await api.update(r.id, { autoOffer: on })) }) }} data-testid={`account-auto-offer-${r.id}`} />
           Offer automatically
         </label>
-        <button className={BUTTON} disabled={busy} onClick={() => { setRowAction(editing ? null : { id: r.id, kind: 'edit' }); setEdit({ label: r.label, email: r.email ?? '' }) }} data-testid={`account-edit-${r.id}`}>Rename</button>
+        <button className={BUTTON} disabled={busy || i === 0} aria-label={`Move ${r.label} up`} onClick={() => { void act(async () => { must(await api.move(r.id, -1)) }) }} data-testid={`account-up-${r.id}`}>↑</button>
+        <button className={BUTTON} disabled={busy || i === list.length - 1} aria-label={`Move ${r.label} down`} onClick={() => { void act(async () => { must(await api.move(r.id, 1)) }) }} data-testid={`account-down-${r.id}`}>↓</button>
         <button className={BUTTON} disabled={busy} onClick={() => setRowAction(removing ? null : { id: r.id, kind: 'remove' })} data-testid={`account-remove-${r.id}`}>Remove…</button>
       </div>
     )
   }
 
-  const rowPanel = (r: AccountRowView) => {
-    if (rowAction?.id !== r.id) return null
-    if (rowAction.kind === 'edit') {
-      return (
-        <div className="flex flex-wrap items-center gap-2 pt-1" data-testid={`account-edit-form-${r.id}`}>
-          <input className={INPUT} aria-label="Name" value={edit.label} maxLength={40} onChange={(e) => setEdit({ ...edit, label: e.target.value })} data-testid={`account-edit-label-${r.id}`} />
-          <input className={INPUT} aria-label="Email" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} data-testid={`account-edit-email-${r.id}`} />
-          <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.update(r.id, { label: edit.label, email: edit.email })); setRowAction(null) }) }} data-testid={`account-edit-save-${r.id}`}>Save</button>
-        </div>
-      )
-    }
+  const panel = (r: AccountRowView) => {
+    if (rowAction?.id !== r.id || rowAction.kind === 'rename' || rowAction.kind === 'email') return null
     if (rowAction.kind === 'recopy') {
       return (
         <div className="flex flex-wrap items-center gap-2 pt-1 text-xs" data-testid={`account-recopy-confirm-${r.id}`}>
@@ -226,31 +260,93 @@ export function AccountsSettings() {
     )
   }
 
-  const row = (r: AccountRowView, list: AccountRowView[], i: number) => {
-    const badge = accountBadge(r, now)
+  const advanced = (r: AccountRowView) => {
     const copiedEntries = r.agent === 'claude' && !r.isDefault && !r.connect && !!r.connection && (r.connection.hook || r.connection.allow)
+    const editingEmail = rowAction?.id === r.id && rowAction.kind === 'email'
     return (
-      <div key={r.id} className="flex flex-col gap-1 p-2 rounded border border-[#3c3c3c] bg-[#1e1e1e]" data-testid={`account-row-${r.id}`}>
-        <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: r.color ?? AGENT_COLOR[r.agent] }} />
-          <span className="text-sm font-medium text-[#e0e0e0]">{r.label}</span>
-          {r.email && <span className="text-xs text-[#9ca3af]">{r.email}</span>}
-          <span className={`text-xs ${TONE[badge.tone]}`} data-testid={`account-badge-${r.id}`}>{badge.text}</span>
-          {isProfileAgent(r.agent) && !r.isDefault && r.folderExists && !r.connect && <span className="text-xs text-[#9ca3af]" data-testid={`account-not-connected-${r.id}`}>not connected</span>}
-          {r.terminals > 0 && <span className="text-[11px] text-[#9ca3af]">{r.terminals} terminal{r.terminals === 1 ? '' : 's'} on it</span>}
+      <details className="text-xs" data-testid={`account-advanced-${r.id}`}>
+        <summary className="cursor-pointer text-[#9ca3af] select-none">Advanced</summary>
+        <div className="flex flex-col gap-1.5 pt-1.5">
+          {r.folder && <code className="text-[11px] text-[#9ca3af] break-all">{folderLine(r, view.home)}</code>}
+          {r.shares.length > 0 && <span className="text-[11px] text-[#9ca3af]">Shares {r.shares.join(', ')} with your main profile</span>}
+          {/* A swarm worker runs with --dangerously-skip-permissions: its warning, which Termpolis never answers, would hold it (R16). */}
+          {r.agent === 'claude' && r.folderExists && !r.bypassReady && <span className="text-[11px] text-[#9ca3af]" data-testid={`account-bypass-${r.id}`}>Can&apos;t take over swarm workers until you accept bypass mode in it once.</span>}
+          {copiedEntries && (
+            <div className="flex flex-wrap items-center gap-2 text-[11px]" data-testid={`account-copied-entries-${r.id}`}>
+              <span className="text-[#e5c07b]">Termpolis&apos;s memory hook or tool permissions are in this profile (copied), but it isn&apos;t connected.</span>
+              <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => must(await api.stripCopied(r.id)).changes) }} data-testid={`account-strip-${r.id}`}>Remove the copied entries</button>
+            </div>
+          )}
+          {editingEmail ? (
+            <div className="flex flex-wrap items-center gap-2" data-testid={`account-edit-form-${r.id}`}>
+              <input className={INPUT} aria-label={`The email ${r.label} signs in with`} value={emailDraft} onChange={(e) => setEmailDraft(e.target.value)} data-testid={`account-edit-email-${r.id}`} />
+              <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.update(r.id, { email: emailDraft })); setRowAction(null) }) }} data-testid={`account-edit-save-${r.id}`}>Save</button>
+              <button className={BUTTON} onClick={() => setRowAction(null)}>Cancel</button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#9ca3af]">
+              <span>{r.agent === 'agy' ? 'Its Google email' : 'The email it should sign in with'}: {r.email ?? 'none given'}</span>
+              <button className={BUTTON} disabled={busy} onClick={() => { setRowAction({ id: r.id, kind: 'email' }); setEmailDraft(r.email ?? '') }} data-testid={`account-edit-${r.id}`}>Change</button>
+            </div>
+          )}
         </div>
-        {r.folder && <code className="text-[11px] text-[#9ca3af] break-all">{folderLine(r, view.home)}</code>}
-        {r.shares.length > 0 && <span className="text-[11px] text-[#9ca3af]">Shares {r.shares.join(', ')} with your main profile</span>}
-        {/* A swarm worker runs with --dangerously-skip-permissions: its warning, which Termpolis never answers, would hold it (R16). */}
-        {r.agent === 'claude' && r.folderExists && !r.bypassReady && <span className="text-[11px] text-[#9ca3af]" data-testid={`account-bypass-${r.id}`}>Can&apos;t take over swarm workers until you accept bypass mode in it once.</span>}
-        {copiedEntries && (
-          <div className="flex flex-wrap items-center gap-2 text-[11px]" data-testid={`account-copied-entries-${r.id}`}>
-            <span className="text-[#e5c07b]">Termpolis&apos;s memory hook or tool permissions are in this profile (copied), but it isn&apos;t connected.</span>
-            <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => must(await api.stripCopied(r.id)).changes) }} data-testid={`account-strip-${r.id}`}>Remove the copied entries</button>
+      </details>
+    )
+  }
+
+  const card = (r: AccountRowView, list: AccountRowView[], i: number) => {
+    const badge = accountBadge(r, now)
+    const profile = isProfileAgent(r.agent)
+    const color = r.color ?? AGENT_COLOR[r.agent]
+    const renaming = rowAction?.id === r.id && rowAction.kind === 'rename'
+    // The CLI's own email (an agy account's badge is its email already), and its plan.
+    const email = profile ? signedInEmail(r) ?? r.email : undefined
+    const plan = r.identity?.signedIn ? r.identity.plan : undefined
+    // New terminals start on the preferred account, else on the main profile.
+    const preferred = view.preferred[r.agent] ?? list.find((x) => x.isDefault)?.id
+    const on = terminals.filter((t) => t.agentAccountId === r.id && !byHand[t.id] && !t.hidden && !t.isConductor)
+    return (
+      <div key={r.id} className="flex flex-col gap-2 p-3 rounded-lg border border-[#3c3c3c] bg-[#1e1e1e]" data-testid={`account-row-${r.id}`}>
+        <div className="flex items-start gap-3">
+          <span className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-sm font-semibold text-[#1e1e1e]" style={{ backgroundColor: color }} aria-hidden="true">
+            {(r.label.trim().charAt(0) || '?').toUpperCase()}
+          </span>
+          <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              {renaming
+                ? <RenameField r={r} busy={busy} onCancel={() => setRowAction(null)} onSave={(label) => { void act(async () => { must(await api.update(r.id, { label })); setRowAction(null) }) }} />
+                : (
+                  <button type="button" className="text-sm font-medium text-[#e0e0e0] hover:underline decoration-dotted" title={`Rename ${r.label}`} disabled={busy} onClick={() => setRowAction({ id: r.id, kind: 'rename' })} data-testid={`account-label-${r.id}`}>
+                    {r.label}
+                  </button>
+                )}
+              <span className={`text-[11px] px-1.5 py-0.5 rounded-full border ${TONE[badge.tone]}`} data-testid={`account-badge-${r.id}`}>{badge.text}</span>
+              {profile && r.folderExists && !r.connect && !r.isDefault && <span className="text-[11px] text-[#9ca3af]" data-testid={`account-not-connected-${r.id}`}>not connected</span>}
+              {!r.autoOffer && <span className="text-[11px] text-[#9ca3af]">not offered automatically</span>}
+            </div>
+            {(email || plan) && <span className="text-xs text-[#9ca3af]" data-testid={`account-email-line-${r.id}`}>{[email, plan].filter(Boolean).join(' · ')}</span>}
+            {profile && (preferred === r.id
+              ? <span className="text-[11px] text-[#22D3EE]" data-testid={`account-default-${r.id}`}>Default for new terminals</span>
+              : (
+                <span>
+                  <button type="button" className="text-[11px] text-[#9ca3af] underline decoration-dotted hover:text-[#d4d4d4] disabled:opacity-50" disabled={busy || !r.folderExists} onClick={() => { void act(async () => { must(await api.setPreferred(r.agent, r.isDefault ? null : r.id)) }) }} data-testid={`account-make-default-${r.id}`}>
+                    Make it the default for new terminals
+                  </button>
+                </span>
+              ))}
+            {on.length > 0 && (
+              <span className="flex flex-wrap items-center gap-1 text-[11px] text-[#9ca3af]" data-testid={`account-terminals-${r.id}`}>
+                On it now:
+                {on.map((t) => (
+                  <button key={t.id} type="button" className="text-[#d4d4d4] underline decoration-dotted hover:text-white" onClick={() => focusTerminal(t.id)} data-testid={`account-terminal-${t.id}`}>{t.name}</button>
+                ))}
+              </span>
+            )}
           </div>
-        )}
-        {rowButtons(r, list, i)}
-        {rowPanel(r)}
+        </div>
+        {actions(r, list, i)}
+        {panel(r)}
+        {advanced(r)}
       </div>
     )
   }
@@ -307,42 +403,26 @@ export function AccountsSettings() {
     )
   }
 
-  const card = (agent: AccountAgent) => {
+  const section = (agent: AccountAgent) => {
     const list = accountsOf(view.accounts, agent)
     const profile = isProfileAgent(agent)
     return (
-      <div key={agent} className="flex flex-col gap-2 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid={`accounts-card-${agent}`}>
-        <span className="text-sm font-medium text-[#e0e0e0]">{ACCOUNT_AGENT_LABEL[agent]}</span>
+      <div key={agent} className="flex flex-col gap-2 p-3 border border-[#3c3c3c] rounded-lg bg-[#252526]" data-testid={`accounts-card-${agent}`}>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-medium text-[#e0e0e0]">{ACCOUNT_AGENT_LABEL[agent]}</span>
+          <button className={BUTTON} disabled={busy} onClick={() => useTerminalStore.getState().openAddAccount(agent)} data-testid={`accounts-add-${agent}`}>+ Add account</button>
+        </div>
         {agent === 'agy' && <span className="text-xs text-[#9ca3af] leading-relaxed" data-testid="accounts-agy-text">{AGY_TEXT}</span>}
+        {agent === 'claude' && view.importAvailable && !importing && (
+          <div className="flex flex-wrap items-center gap-2 text-xs p-2 rounded border border-[#22D3EE]/40 bg-[#22D3EE]/5" data-testid="accounts-import-banner">
+            <span className="flex-1 text-[#d4d4d4]">~/.claude/accounts.sh lists your Claude Code accounts. Termpolis can add the ones it doesn&apos;t have yet.</span>
+            <button className={BUTTON} disabled={busy} onClick={() => { void openImport() }} data-testid="accounts-import">Import</button>
+          </div>
+        )}
+        {agent === 'claude' && importPanel()}
         {list.length === 0
           ? <span className="text-xs text-[#9ca3af]" data-testid={`accounts-empty-${agent}`}>{profile ? 'No accounts yet: Termpolis uses your main profile.' : 'No accounts yet.'}</span>
-          : list.map((r, i) => row(r, list, i))}
-        {profile && list.length > 0 && (
-          <label className="flex items-center gap-2 text-xs">
-            New terminals launch on
-            <select
-              className={INPUT}
-              value={view.preferred[agent] ?? ''}
-              disabled={busy}
-              onChange={(e) => { const id = e.target.value || null; void act(async () => { must(await api.setPreferred(agent, id)) }) }}
-              data-testid={`accounts-preferred-${agent}`}
-            >
-              <option value="">the main profile</option>
-              {list.filter((r) => !r.isDefault).map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-            </select>
-          </label>
-        )}
-        {adding === agent
-          ? <AddAccountDialog api={api} agent={agent} home={view.home} integrationConnected={view.integrationConnected} onClose={() => setAdding(null)} onAdded={() => { void load() }} />
-          : (
-            <div className="flex flex-wrap items-center gap-2">
-              <button className={BUTTON} disabled={busy} onClick={() => setAdding(agent)} data-testid={`accounts-add-${agent}`}>+ Add account</button>
-              {agent === 'claude' && view.importAvailable && (
-                <button className={BUTTON} disabled={busy} onClick={() => { void openImport() }} data-testid="accounts-import">Import from ~/.claude/accounts.sh</button>
-              )}
-            </div>
-          )}
-        {agent === 'claude' && importPanel()}
+          : list.map((r, i) => card(r, list, i))}
       </div>
     )
   }
@@ -368,7 +448,7 @@ export function AccountsSettings() {
 
       <label className="flex items-center gap-2 text-xs">
         <input type="checkbox" checked={view.chooser} disabled={busy} onChange={(e) => { const on = e.target.checked; void act(async () => { must(await api.setChooser(on)) }) }} data-testid="accounts-chooser" />
-        Open the account chooser by itself when an agent runs out of usage
+        Offer another account by itself when an agent runs out of usage
       </label>
 
       {view.drift.length > 0 && (
@@ -409,7 +489,7 @@ export function AccountsSettings() {
       {leftOut.length > 0 && <span className="text-xs text-[#e5c07b]" data-testid="accounts-left-out">Left out of the copy (they can hold a key or a token): {leftOut.join(', ')}</span>}
       {error !== null && <p className="text-xs text-[#e06c75]" role="alert" data-testid="accounts-error">{error}</p>}
 
-      {ACCOUNT_AGENTS.map(card)}
+      {ACCOUNT_AGENTS.map(section)}
     </div>
   )
 }

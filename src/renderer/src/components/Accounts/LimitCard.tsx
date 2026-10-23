@@ -21,7 +21,6 @@ import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgent
 import { newTerminalOn, startSwitch } from '../../lib/accountSwitchRun'
 import { modelHoldBridge, relaunchHeld } from '../../lib/modelRelaunch'
 import { launchAgents } from '../../lib/agentLaunch'
-import { requestSettingsTab } from '../../lib/settingsNav'
 import { SMALL_BUTTON, SMALL_PRIMARY, STOP_CARD } from './ui'
 
 export function LimitCard({ terminalId }: { terminalId: string }) {
@@ -101,8 +100,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
 
   const addAccount = (): void => {
     leave()
-    requestSettingsTab('accounts', store().showSettings)
-    store().setShowSettings(true)
+    store().openAddAccount(agent)
   }
 
   const otherAgent = async (other: AccountAgent): Promise<void> => {

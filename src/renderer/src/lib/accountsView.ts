@@ -2,10 +2,19 @@
 // little decisions the tab makes. Main sends the rows (src/main/accountsIpc.ts); nothing here
 // reads a file or builds a path or an env value.
 import { isProfileAgent, tildifyPath } from '../../../shared/agentAccounts'
-import type { AccountAgent, AccountRowView } from '../../../shared/agentAccounts'
+import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
 
 /** Each agent's colour, as its terminal tab and badge show it: an account with no colour of its own. */
 export const AGENT_COLOR: Readonly<Record<AccountAgent, string>> = { claude: '#D97706', codex: '#10B981', agy: '#4285F4' }
+
+/** The colours an account can take in the Add wizard, the agents' own first. */
+export const ACCOUNT_COLORS: readonly string[] = ['#D97706', '#10B981', '#4285F4', '#22D3EE', '#c678dd', '#e06c75', '#e5c07b', '#7ee2a3']
+
+/** The first colour none of the agent's accounts has yet (its own first), else its own. */
+export function freeColor(view: AccountsView | null, agent: AccountAgent): string {
+  const taken = new Set((view?.accounts ?? []).filter((r) => r.agent === agent).map((r) => (r.color ?? AGENT_COLOR[agent]).toLowerCase()))
+  return [AGENT_COLOR[agent], ...ACCOUNT_COLORS].find((c) => !taken.has(c.toLowerCase())) ?? AGENT_COLOR[agent]
+}
 
 export function accountsOf(rows: readonly AccountRowView[], agent: AccountAgent): AccountRowView[] {
   return rows.filter((r) => r.agent === agent)

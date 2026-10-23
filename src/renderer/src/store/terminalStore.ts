@@ -5,7 +5,7 @@ import { DEFAULT_KEYBINDINGS, isReservedAction, type KeybindingMap } from '../li
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTypes'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
-import type { AccountsView } from '../../../shared/agentAccounts'
+import type { AccountAgent, AccountsView } from '../../../shared/agentAccounts'
 import type { LimitBanner, LimitContext } from '../lib/limitWatch'
 import type { QueuedSwitch, SwitchRun } from '../lib/accountSwitchRun'
 import type { SwarmRestartGroup } from '../lib/swarmRestart'
@@ -170,6 +170,8 @@ interface TerminalStore {
   queuedSwitches: Record<string, QueuedSwitch>
   /** agy's switch-all sheet, open for the agy account every agy terminal moves to (§2.4). */
   agySwitchSheet: { targetId: string } | null
+  /** The Add account wizard (the in-app account UI, §2.5), for this agent. */
+  addAccountSheet: { agent: AccountAgent } | null
   /** The usage-limit banners on screen (§8.4), one per stop or per account's group of stops. */
   limitBanners: LimitBanner[]
   /** The swarm restart offers on screen (§9): one per agent and account that ran out, with the
@@ -239,6 +241,8 @@ interface TerminalStore {
   dropQueuedSwitch: (terminalId: string) => void
   openAgySwitchSheet: (targetId: string) => void
   closeAgySwitchSheet: () => void
+  openAddAccount: (agent: AccountAgent) => void
+  closeAddAccount: () => void
   /** The chooser, in limit mode, for its first terminal. */
   openLimitChooser: (ctx: LimitContext) => void
   /** A stop on the same account joins the chooser open for it (R22). */
@@ -294,6 +298,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   switchRuns: {},
   queuedSwitches: {},
   agySwitchSheet: null,
+  addAccountSheet: null,
   limitBanners: [],
   swarmRestarts: [],
   relaunching: {},
@@ -561,6 +566,8 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   }),
   openAgySwitchSheet: (targetId) => set({ agySwitchSheet: { targetId } }),
   closeAgySwitchSheet: () => set({ agySwitchSheet: null }),
+  openAddAccount: (agent) => set({ addAccountSheet: { agent } }),
+  closeAddAccount: () => set({ addAccountSheet: null }),
   openLimitChooser: (ctx) => set({ accountSwitch: { terminalId: ctx.terminals[0], limit: ctx } }),
   joinLimitChooser: (terminalId) => set(s => {
     const open = s.accountSwitch

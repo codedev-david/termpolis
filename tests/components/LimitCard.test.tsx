@@ -18,7 +18,6 @@ vi.mock('../../src/renderer/src/lib/accountSwitchRun', () => ({
 
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { newTerminalOn, startSwitch } from '../../src/renderer/src/lib/accountSwitchRun'
-import { consumePendingSettingsTab } from '../../src/renderer/src/lib/settingsNav'
 import { LimitCard } from '../../src/renderer/src/components/Accounts/LimitCard'
 
 const SID = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
@@ -70,7 +69,7 @@ beforeEach(() => {
   ;(window as never as Record<string, unknown>).termpolis = termpolis
   useTerminalStore.setState({
     terminals: [T('t1'), T('t2')], activeTerminalId: 't1', accountsView: view([A, B, C, W]), accountsByHand: {}, accountSwitch: null,
-    relaunching: {}, showSettings: false, signInSheet: null, agySwitchSheet: null,
+    relaunching: {}, showSettings: false, signInSheet: null, agySwitchSheet: null, addAccountSheet: null,
   })
 })
 afterEach(() => {
@@ -277,13 +276,13 @@ describe('its ways out', () => {
 })
 
 describe('the other ways', () => {
-  it('opens Settings ▸ Accounts to add an account', async () => {
+  it('opens the Add account wizard for the agent', async () => {
     card()
     openLimit()
     click('limit-card-more')
     click('limit-card-add')
-    expect(st().showSettings).toBe(true)
-    expect(consumePendingSettingsTab()).toBe('accounts')
+    expect(st().addAccountSheet).toEqual({ agent: 'claude' })
+    expect(st().showSettings).toBe(false)
     expect(st().accountSwitch).toBeNull()
     await act(async () => undefined)
   })

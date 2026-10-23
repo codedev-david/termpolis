@@ -65,6 +65,7 @@ import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
 import { agentOfName } from './lib/accountsView'
 import { launchTerminalArgs } from './lib/accountLaunch'
 import { SignInSheet } from './components/Accounts/SignInSheet'
+import { AddAccountSheet } from './components/Accounts/AddAccountSheet'
 import { AccountMenu } from './components/Accounts/AccountMenu'
 import { AgySwitchSheet } from './components/Accounts/AgySwitchSheet'
 import { installSwitchQueue } from './lib/accountSwitchRun'
@@ -1131,6 +1132,7 @@ export default function App() {
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
         {showAppLog && <AppLogModal onClose={() => setShowAppLog(false)} />}
         <SignInSheet />
+        <AddAccountSheet />
         <AccountMenu />
         <AgySwitchSheet />
         <SwarmRestartOffers dashboardOpen={showSwarmDashboard} />
