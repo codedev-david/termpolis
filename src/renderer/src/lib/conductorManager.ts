@@ -194,14 +194,17 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   const agentsRes = await window.termpolis.detectAgents()
   const installedAgents = agentsRes.success && agentsRes.data ? agentsRes.data : {}
 
-  // Build the conductor prompt
+  // Build the conductor prompt. A worker can be restarted on another account (§9) only where its
+  // agent has two accounts or more.
   const isWindows = navigator.platform.startsWith('Win')
+  const view = useTerminalStore.getState().accountsView
   const prompt = buildConductorPrompt({
     taskDescription,
     installedAgents,
     projectCwd: cwd,
     shellType: isWindows ? 'powershell' : 'bash',
     agentRatingOverrides: useTerminalStore.getState().agentRatingOverrides,
+    restartOffer: !!view && (['claude', 'codex'] as const).some((agent) => view.accounts.filter((r) => r.agent === agent).length > 1),
   })
 
   // Write prompt to a temp file

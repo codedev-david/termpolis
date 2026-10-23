@@ -331,6 +331,23 @@ describe('conductorManager', () => {
     expect(conductor).toMatchObject({ hidden: true, isConductor: true })
   })
 
+  // §9: the conductor is told to wait for a worker Termpolis restarts on another account, where that
+  // can happen: a Claude Code or Codex with two accounts or more. Elsewhere its prompt is v1.54.0's.
+  it.each([
+    ['no accounts', null, false],
+    ['one Claude Code account', [{ agent: 'claude' }], false],
+    ['two Antigravity accounts, which are never restarted', [{ agent: 'agy' }, { agent: 'agy' }], false],
+    ['two Claude Code accounts', [{ agent: 'claude' }, { agent: 'claude' }], true],
+    ['two Codex accounts', [{ agent: 'codex' }, { agent: 'claude' }, { agent: 'codex' }], true],
+  ])('tells the conductor about worker restarts with %s: %s', async (_name, accounts, said) => {
+    useTerminalStore.setState({ accountsView: accounts ? ({ accounts } as never) : null })
+    await launchConductor('Build a REST API')
+    const prompt = ((window.termpolis.writeConfigFile as Mock).mock.calls.find(([path]) => String(path).endsWith('.termpolis-conductor-task.md'))?.[1] ?? '') as string
+    expect(prompt).toContain('Build a REST API')
+    expect(prompt.includes('If system says Termpolis is restarting a worker on another account, wait for its next message about that worker.')).toBe(said)
+    useTerminalStore.setState({ accountsView: null })
+  })
+
   it('sendTask calls swarmAPI.sendMessage with conductor info', async () => {
     // Start and ready the conductor
     const promise = startConductor('/tmp/project')
