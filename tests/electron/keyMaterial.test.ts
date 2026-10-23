@@ -1317,8 +1317,14 @@ describe("the round-1 rules at their edges", () => {
     const example = `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ${randomBytes(12).toString('base64').slice(0, 14)}\n-----END PRIVATE KEY-----\n`
     // ...and the OpenSSH one a test writes with its line breaks escaped
     const ssh = `-----BEGIN OPENSSH PRIVATE KEY-----${BS}r${BS}nb3BlbnNzaC1rZXktdjEAAAAA${BS}r${BS}n-----END OPENSSH PRIVATE KEY-----${BS}r${BS}nafter`
-    for (const text of [example, ssh]) {
-      for (const at of [3, 10, 20]) {
+    for (const [text, head] of [
+      [example, 'MIIEvQIB'],
+      [ssh, 'b3BlbnNz'],
+    ] as const) {
+      // (in its BEGIN line, and where only the example's one line is left above its END line: a
+      // key's first bytes are no key's tail. A cut inside that line leaves no first bytes, and its
+      // rest is taken as a key's, as an older computer's cut of a key's own line is.)
+      for (const at of [3, 10, 20, text.indexOf(head)]) {
         const r = arrived(text, at)
         expect(r.text, `cut at ${at}`).toBe(`…${text.slice(at)}`)
         expect(r.removed, `cut at ${at}`).toEqual({})
@@ -1337,6 +1343,17 @@ describe("the round-1 rules at their edges", () => {
     const r = screenKeys(text)
     expect(r.removed).toEqual({ private_key: 1 })
     expect(r.text.includes(`  ${x}\n${l[l.length - 1]}`)).toBe(true)
+  })
+
+  it("a list of hex digests above a bare END line at the start of an older computer's cut stays: a PEM key's lines are base64", () => {
+    const hex = Array.from({ length: 12 }, () => randomBytes(32).toString('hex')).join('\n')
+    const text = `Checksums:\n${hex}\n-----END PRIVATE KEY-----\nDone.\n`
+    // at a line's start, inside a line, and with 40 characters of the last line left
+    for (const at of [11, 11 + 65 * 3 + 10, text.indexOf('-----END') - 41]) {
+      const r = arrived(text, at)
+      expect(r.text, `cut at ${at}`).toBe(`…${text.slice(at)}`)
+      expect(r.removed, `cut at ${at}`).toEqual({})
+    }
   })
 
   it("a PKCS#1 key's tail at the top of what is screened goes, with no DEK-Info line above it", () => {
