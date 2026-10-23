@@ -120,7 +120,7 @@ import {
   replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck, isShellInForeground } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -2926,6 +2926,7 @@ registerAccountsIpc(ipcMain, {
     write: (terminalId, data) => writeToTerminal(terminalId, data),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),
+    atShell: (terminalId) => isShellInForeground(terminalId),
   },
   checkCwd: () => {
     const dir = join(app.getPath('userData'), 'account-checks')

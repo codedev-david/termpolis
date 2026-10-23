@@ -1,7 +1,7 @@
 import * as pty from 'node-pty'
 import { homedir, tmpdir } from 'os'
 import { existsSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
 import { execShellCaptureOffThread } from './procClient'
@@ -30,6 +30,8 @@ interface PtyProcess {
    *  CURRENT size, so it is recorded on the way through instead. */
   cols: number
   rows: number
+  /** The program the terminal started: its shell. */
+  shell: string
 }
 
 /** A terminal's current geometry, or null when there is no such terminal.
@@ -244,7 +246,23 @@ export function spawnTerminal(
     try { coalescer.dispose() } catch {}
     try { onExit?.(e.exitCode) } finally { processes.delete(id) }
   })
-  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS })
+  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, shell: executable })
+}
+
+/** Whether the terminal's own shell is its PTY's foreground process (macOS and Linux): an agent
+ *  started in it has exited. node-pty reads the name through the PTY's own master fd, the same
+ *  kind of read as the live cwd below, never a process listing. null where that can't be told:
+ *  on Windows, where node-pty only ever names the program it started, or for no such terminal. */
+export function isShellInForeground(id: string): boolean | null {
+  const proc = processes.get(id)
+  if (process.platform === 'win32' || !proc) return null
+  // A login shell's name can carry a leading '-'.
+  const name = (s: string): string => basename(s).replace(/^-/, '')
+  try {
+    return name(proc.pty.process) === name(proc.shell)
+  } catch {
+    return null
+  }
 }
 
 export function killTerminal(id: string): void {

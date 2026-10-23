@@ -141,6 +141,13 @@ describe('R2: nothing goes to an agent that is gone', () => {
     expect(r.t.ran[1]).toContain(`--resume ${ID2}`)
   })
 
+  it('reads the shell in the PTY\'s foreground as gone on macOS and Linux, where no hint or report shows it', async () => {
+    const r = await run(claude({ start: 'gone-quiet', reports: false, foreground: true }), { sessionId: ID2, hasTranscript: (id) => id === ID2 })
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID2 })
+    expect(keys(r.t)).not.toContain('/exit')
+    expect(r.t.closed).toBe(false)
+  })
+
   it('starts a new session, with an id of its own, when the session Termpolis started has no transcript', async () => {
     const r = await run(claude({ start: 'gone-quiet' }), { sessionId: ID2, hasTranscript: () => false })
     expect(r.outcome).toEqual({ kind: 'fresh', why: 'no-session' })
@@ -230,6 +237,31 @@ describe('steps 3-4 (R3): the exit, shown', () => {
   it('counts an exit with no hint by its prompt report, and resumes the session Termpolis started', async () => {
     const r = await run(claude({ exit: 'no-hint' }), { sessionId: ID2, hasTranscript: () => true })
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID2 })
+  })
+
+  it('counts the shell back in the PTY\'s foreground as the exit on macOS and Linux, where nothing else shows it', async () => {
+    // A session with no turns prints no hint, and zsh, fish and an rc file's PROMPT_COMMAND leave
+    // no prompt report: before this read, all the switch could do was ask the user.
+    const r = await run(claude({ exit: 'no-hint', reports: false, foreground: true }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'no-session' })
+    expect(r.t.ran).toEqual(['', `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --session-id ${NEW_ID}`])
+    expect(r.t.sentPrompts).toEqual([])
+    // Without the read (Windows), the same screen confirms nothing, and nothing more is typed.
+    const blind = await run(claude({ exit: 'no-hint', reports: false }))
+    expect(blind.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(blind.t.ran).toEqual([])
+  })
+
+  it('waits for the hint that lands after the shell is back, and resumes the session it names', async () => {
+    const r = await run(claude({ reports: false, foreground: true, exitOutputLateMs: 600 }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(r.t.ran).toEqual(['', `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`])
+  })
+
+  it('never reads a shell in the foreground while the agent is still up as its exit', async () => {
+    const r = await run(claude({ exit: 'ignore', reports: false, foreground: true }))
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.t.writes).toEqual(['/exit', '\r'])
   })
 
   it('reads a hint quoted above a live box as no exit, before and after the exit command', async () => {

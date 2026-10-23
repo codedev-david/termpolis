@@ -106,6 +106,7 @@ const H = vi.hoisted(() => {
     noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
     relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
     getTerminalSize: vi.fn((_id: string): { cols: number; rows: number } | null => null),
+    isShellInForeground: vi.fn((_id: string): boolean | null => null),
     mcpHandlers: null as null | Record<string, (...a: any[]) => any>,
     getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
     mkdirSync: vi.fn(),
@@ -266,6 +267,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalPid: mockGetTerminalPid,
   computeWindowsPty: mockComputeWindowsPty,
   getTerminalSize: H.getTerminalSize,
+  isShellInForeground: H.isShellInForeground,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: mockLoadSession, loadRestoreSession: mockLoadRestoreSession, saveSession: mockSaveSession }))
@@ -905,6 +907,10 @@ describe('Settings ▸ Accounts wiring', () => {
     io.write('t-sw', '/exit')
     expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-sw', '/exit')
     expect(typeof io.now()).toBe('number')
+    // macOS and Linux: whether the shell is the PTY's foreground again (terminalManager.ts).
+    H.isShellInForeground.mockReturnValueOnce(true)
+    expect(io.atShell!('t-sw')).toBe(true)
+    expect(H.isShellInForeground).toHaveBeenLastCalledWith('t-sw')
     vi.useFakeTimers()
     const slept = io.sleep(250)
     vi.advanceTimersByTime(250)

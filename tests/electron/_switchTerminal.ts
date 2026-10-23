@@ -58,6 +58,11 @@ export interface TermScript {
   email?: string
   /** agy, started bare: draws neither its box nor its sign-in (it hangs). */
   agyHangs?: boolean
+  /** macOS and Linux: the PTY's foreground process can be read (isShellInForeground), and is the
+   *  shell once the agent exited. Otherwise the switch has no such read, as on Windows. */
+  foreground?: boolean
+  /** What the agent printed as it exited reaches the output this long after it is gone. */
+  exitOutputLateMs?: number
 }
 
 /** The conversation id a later exit of agy names: a new, empty one, never the first. */
@@ -89,6 +94,8 @@ export class FakeTerminal {
   signedOut = false
   /** How many times the agent exited. */
   exits = 0
+  /** Output on its way (exitOutputLateMs): it reaches `out` once the clock passes `at`. */
+  late: { at: number; text: string } | null = null
   /** The account agy's header shows. */
   email: string
   constructor(public s: TermScript) {
@@ -173,9 +180,10 @@ export class FakeTerminal {
   private exitAgent(): void {
     this.exits++
     this.mode = 'shell'
-    this.out += this.s.exit === 'no-hint' ? '\r\n' : this.hint()
-    if (this.s.nestedReport) this.out += this.prompt(this.s.nestedReport)
-    else this.out += this.prompt()
+    let said = this.s.exit === 'no-hint' ? '\r\n' : this.hint()
+    said += this.s.nestedReport ? this.prompt(this.s.nestedReport) : this.prompt()
+    if (this.s.exitOutputLateMs) this.late = { at: this.clock + this.s.exitOutputLateMs, text: said }
+    else this.out += said
   }
 
   private runLine(line: string): void {
@@ -294,8 +302,15 @@ export class FakeTerminal {
       end: () => this.out.length,
       size: () => ({ cols: 80, rows: 24 }),
       write: (_id, data) => this.type(data),
-      sleep: async (ms) => { this.clock += ms },
+      sleep: async (ms) => {
+        this.clock += ms
+        if (this.late && this.late.at <= this.clock) {
+          this.out += this.late.text
+          this.late = null
+        }
+      },
       now: () => this.clock,
+      ...(this.s.foreground ? { atShell: () => this.mode === 'shell' } : {}),
     }
   }
 }

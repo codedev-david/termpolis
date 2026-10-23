@@ -69,6 +69,9 @@ export interface SwitchIO {
   sleep(ms: number): Promise<void>
   now(): number
   progress?(p: SwitchProgress): void
+  /** macOS and Linux: whether the terminal's own shell is its PTY's foreground process again
+   *  (terminalManager.ts); null, or absent, where that can't be told (Windows). */
+  atShell?(terminalId: string): boolean | null
 }
 
 /** Where a terminal's agent was started, and the line that started it (accountsIpc.ts). */
@@ -204,13 +207,16 @@ const STATUS_ROWS = 8
 
 export type Liveness = { state: 'live' } | { state: 'gone'; hint: ExitHint | null } | { state: 'unknown' }
 
-/** Is the agent live on screen (R2)? Gone: its exit hint at the foot, or a prompt since it was
- *  started. Live: its box, a menu or a busy line on screen. Neither: unknown. */
+/** Is the agent live on screen (R2)? Gone: its exit hint at the foot, a prompt since it was
+ *  started, or (macOS and Linux) its shell in the PTY's foreground. Live: its box, a menu or a busy
+ *  line on screen. Neither: unknown. */
 export function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined): Liveness {
   const l = look(io, id)
   const hint = hintAtFoot(l, agent)
   if (hint) return { state: 'gone', hint }
   if (start && shellSince(io, id, l, start.at, start.commands)) return { state: 'gone', hint: null }
+  // The last frame an agent left, box and all, stays on screen above the shell's prompt.
+  if (io.atShell?.(id) === true) return { state: 'gone', hint: null }
   const status = detectAgentStatus(l.lines.join('\n'), ACCOUNT_AGENT_LABEL[agent], 'idle', { screen: true, title: l.title })
   if (l.box >= 0 || status.status === 'blocked' || status.status === 'waiting_for_input' || isBusyOnScreen(l.lines, l.title)) return { state: 'live' }
   return { state: 'unknown' }
@@ -274,6 +280,26 @@ export function exitShown(io: SwitchIO, id: string, agent: AccountAgent, mark: n
   const hint = hintAtFoot(l, agent)
   if (hint && HINT_HEAD[agent].test(plain(io.outputFrom(id, mark)))) return { hint }
   return shellSince(io, id, l, mark) ? { hint: null } : null
+}
+
+/** How long the shell must be the PTY's foreground, with no hint on screen, before that counts as
+ *  the exit by itself: an agent's last words reach the buffer a moment after it is gone. */
+export const HINT_GRACE_MS = 1000
+
+/** Waits up to EXIT_CONFIRM_MS for the exit to show (step 4): exitShown, or on macOS and Linux
+ *  the shell back in the PTY's foreground (R3), once that held HINT_GRACE_MS with no hint. */
+export function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mark: number): Promise<{ hint: ExitHint | null } | null> {
+  let foregroundAt: number | null = null
+  return waitFor(io, EXIT_CONFIRM_MS, () => {
+    const shown = exitShown(io, id, agent, mark)
+    if (shown) return shown
+    if (io.atShell?.(id) !== true) {
+      foregroundAt = null
+      return null
+    }
+    if (foregroundAt === null) foregroundAt = io.now()
+    return io.now() - foregroundAt >= HINT_GRACE_MS ? { hint: null } : null
+  })
 }
 
 /** Where a typed line shows: inside the agent's box (it is live), on the screen's last rows outside
@@ -436,7 +462,7 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
       if (typed === 'not-shown') return { kind: 'exit-unconfirmed' }
       // Step 4: the exit, shown.
       io.progress?.({ terminalId: id, step: 'confirming' })
-      const shown = await waitFor(io, EXIT_CONFIRM_MS, () => exitShown(io, id, agent, exitMark))
+      const shown = await exitConfirmed(io, id, agent, exitMark)
       if (!shown) return { kind: 'exit-unconfirmed' }
       hint = shown.hint
     }

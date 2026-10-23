@@ -21,7 +21,7 @@ import type { AgyStepOutcome, AgyStepRequest } from '../shared/accountSwitch'
 import { familyOf } from '../shared/agentAccounts'
 import type { ShellFamily } from '../shared/agentAccounts'
 import {
-  EXIT_CONFIRM_MS, LOCK_MS, OUTCOME_MS, atIdleBox, exitShown, indexOf, liveness, locks, look, plain, relaunchLockReason,
+  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, indexOf, liveness, locks, look, plain, relaunchLockReason,
   typeAtPrompt, typeIntoBox, waitFor, watchOutcome,
 } from './accountSwitch'
 import { sinceStarted } from './mcpServer'
@@ -96,7 +96,7 @@ async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undef
   const mark = io.end(id)
   const typed = await typeIntoBox(io, id, EXIT_COMMAND.agy, idle)
   if (typed !== 'entered') return { kind: 'do-it-yourself', say: 'Termpolis couldn\'t type /exit into agy: type /exit in agy yourself, then switch again.' }
-  const shown = await waitFor(io, EXIT_CONFIRM_MS, () => exitShown(io, id, 'agy', mark))
+  const shown = await exitConfirmed(io, id, 'agy', mark)
   if (!shown) return { kind: 'do-it-yourself', say: 'Termpolis couldn\'t confirm agy exited: type /exit in agy yourself, then switch again.' }
   return { id: shown.hint?.id ?? null }
 }

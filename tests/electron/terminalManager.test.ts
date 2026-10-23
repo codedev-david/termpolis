@@ -45,6 +45,7 @@ const {
   getTerminalCwd,
   getTerminalSize,
   computeWindowsPty,
+  isShellInForeground,
 } = await import('../../src/main/terminalManager')
 
 describe('terminalManager', () => {
@@ -315,6 +316,33 @@ describe('terminalManager', () => {
     spawnTerminal('t11', '/bin/bash', '/tmp', vi.fn())
     expect(getTerminalPid('t11')).toBe(12345)
     expect(getTerminalPid('missing')).toBeNull()
+  })
+
+  // The account switch's evidence that an agent exited on macOS and Linux (§7.2 step 4).
+  it('isShellInForeground: the shell back in the PTY\'s foreground on macOS and Linux, nothing on Windows', () => {
+    const originalPlatform = process.platform
+    const fake = mockPty as any
+    spawnTerminal('fg1', '/usr/bin/zsh', '/tmp', vi.fn())
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+      fake.process = 'claude'
+      expect(isShellInForeground('fg1')).toBe(false)
+      fake.process = '/usr/bin/zsh'
+      expect(isShellInForeground('fg1')).toBe(true)
+      // A login shell's name, as macOS reports it.
+      Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+      fake.process = '-zsh'
+      expect(isShellInForeground('fg1')).toBe(true)
+      expect(isShellInForeground('missing')).toBeNull()
+      Object.defineProperty(fake, 'process', { get: () => { throw new Error('the pty is gone') }, configurable: true })
+      expect(isShellInForeground('fg1')).toBeNull()
+      Object.defineProperty(fake, 'process', { value: 'zsh', writable: true, configurable: true })
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+      expect(isShellInForeground('fg1')).toBeNull()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+      delete fake.process
+    }
   })
 
   // 12. getTerminalCwd returns null on Windows
