@@ -265,8 +265,8 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
     .catch(() => { /* the offer goes on without the record */ })
   if (openOffer(s, agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps)
   const limited = { accountId: own.id, email: own.lastEmail }
+  // Asked only of the accounts that are a way out by what Termpolis knows already: none, no process.
   const candidates = restartTargets(view, agent, limited, now, {}, kind)
-  if (candidates.length === 0) return false
   const checks = await signedInNow(candidates, now, deps)
   const targets = restartTargets(view, agent, limited, now, checks, kind)
   if (targets.length === 0) return false
@@ -319,7 +319,6 @@ export async function offerConductorRun(words: string, accountId: string | null,
     .catch(() => { /* the offer goes on without the record */ })
   const limited = { accountId: own.id, email: own.lastEmail }
   const candidates = conductorTargets(view, limited, now, {}, kind)
-  if (candidates.length === 0) return false
   const targets = conductorTargets(view, limited, now, await signedInNow(candidates, now, deps), kind)
   if (targets.length === 0) return false
   const group: SwarmRestartGroup = {

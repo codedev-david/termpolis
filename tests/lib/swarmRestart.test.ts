@@ -325,6 +325,20 @@ describe('the clock (R16)', () => {
     expect(messages()).toHaveLength(1)
   })
 
+  it('lets go of each worker\'s timer at the user\'s first click, and when it declines', async () => {
+    const clearTimer = vi.fn((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>))
+    deps = makeDeps({ clearTimer })
+    ;(window as any).swarmAPI = deps.swarm
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await offerRestart(W2, LIMIT, () => WORDS, deps)
+    await restartOn('g1', 'acc_c', deps)
+    expect(clearTimer).toHaveBeenCalledTimes(2)
+    useTerminalStore.setState({ swarmRestarts: [] })
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await declineRestart(groups()[0].id, deps)
+    expect(clearTimer).toHaveBeenCalledTimes(3)
+  })
+
   it('does nothing for an offer that is gone', async () => {
     await offerRestart(W1, LIMIT, () => WORDS, deps)
     useTerminalStore.setState({ swarmRestarts: [] })
@@ -618,6 +632,15 @@ describe('noteWorkerSwitched', () => {
     await noteWorkerSwitched('w1', { kind: 'fresh', why: 'asked' }, deps)
     expect(groups().map((g) => g.id)).toEqual(['other'])
     expect(messages()[1]).toBe(freshMessage(W1))
+  })
+
+  it('lets go of the worker\'s timer', async () => {
+    const clearTimer = vi.fn((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>))
+    deps = makeDeps({ clearTimer })
+    ;(window as any).swarmAPI = deps.swarm
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await noteWorkerSwitched('w1', { kind: 'switched', resumed: true }, deps)
+    expect(clearTimer).toHaveBeenCalledTimes(1)
   })
 
   it('does nothing for a switch that didn\'t run, or for a terminal that is no worker', async () => {

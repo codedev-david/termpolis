@@ -223,6 +223,15 @@ describe('noteWorkerCommand: a worker\'s start, as run_command typed it', () => 
 })
 
 describe('envAccountOf and the view\'s envAccount', () => {
+  // R24: an empty CLAUDE_CONFIG_DIR is no profile. Read as a path, it is the folder the agent starts
+  // in, which a registered profile could be.
+  it('takes an empty value for no profile, even where the folder it would resolve to is one', () => {
+    const here = { id: 'acc_here', agent: 'claude', label: 'here', profile: process.cwd(), autoOffer: true, order: 1, connect: true, origin: 'adopted', links: [] }
+    const doc = { file: { accounts: [here] } } as unknown as AccountsDoc
+    expect(envAccountOf(doc, 'claude', { CLAUDE_CONFIG_DIR: process.cwd() })?.id).toBe('acc_here')
+    expect(envAccountOf(doc, 'claude', { CLAUDE_CONFIG_DIR: '' })).toBeNull()
+  })
+
   it('names the account each profile agent\'s terminals run on with no account line', async () => {
     const { main, b, bDir, codexMain } = await accounts(true)
     expect(envAccounts(doc(), {})).toEqual({ claude: main, codex: codexMain })
