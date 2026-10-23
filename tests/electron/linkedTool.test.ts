@@ -76,7 +76,7 @@ function setup(over: Partial<LinkedToolDeps> = {}, machines: LinkedMachineView[]
     localName: () => 'laptop',
     inspect: (text, name, agent) => (text.includes('IGNORE PREVIOUS') ? `[UNTRUSTED from ${name}/${agent}]\n${text}` : text),
     frame: (text, name, agent) => (text.includes('IGNORE PREVIOUS') ? `[UNTRUSTED from ${name}/${agent}]\n${text}` : `[answer from ${name}/${agent}]\n${text}`),
-    screen: (text) => ({ text, removed: {}, flagged: {} }),
+    screen: (text) => ({ text, removed: {}, flagged: {}, markers: [] }),
     mask: (text) => text,
     onActivity: (a) => h.activity.push(a),
     now: () => h.clock.t,
@@ -804,7 +804,7 @@ describe('against the real executor', () => {
       now: Date.now,
       randomId: () => randomBytes(6).toString('hex'),
       onActivity: () => undefined,
-      screen: (text) => ({ text, removed: {}, flagged: {} }),
+      screen: (text) => ({ text, removed: {}, flagged: {}, markers: [] }),
       mask: (text) => text,
     })
     const tool = createLinkedTool({
@@ -814,7 +814,7 @@ describe('against the real executor', () => {
       localName: () => 'laptop',
       inspect: (text) => text,
       frame: (text) => text,
-      screen: (text) => ({ text, removed: {}, flagged: {} }),
+      screen: (text) => ({ text, removed: {}, flagged: {}, markers: [] }),
       mask: (text) => text,
       onActivity: () => undefined,
       now: Date.now,
@@ -880,12 +880,19 @@ describe('against the real executor', () => {
 describe('credentials, asking', () => {
   const KEY = 'KEY-0123456789'
   function fakeScreen(text: string): SecretScreen {
-    const removed = text.split(KEY).length - 1
+    const [first, ...rest] = text.split(KEY)
     const flagged = text.split('maybe-pass').length - 1
+    let out = first
+    const markers: Array<[number, number]> = []
+    for (const part of rest) {
+      markers.push([out.length, out.length + '[REDACTED:fake_key]'.length])
+      out += `[REDACTED:fake_key]${part}`
+    }
     return {
-      text: text.split(KEY).join('[REDACTED:fake_key]'),
-      removed: removed ? { fake_key: removed } : {},
+      text: out,
+      removed: rest.length ? { fake_key: rest.length } : {},
       flagged: flagged ? { fake_pass: flagged } : {},
+      markers,
     }
   }
   const PROMPT_REMOVED = 'Termpolis removed 1 credential (fake_key) from the prompt sent to "linux".'
@@ -921,7 +928,7 @@ describe('credentials, asking', () => {
   })
 
   it('refuses a prompt that is too long once its credentials are replaced, and sends nothing', async () => {
-    const grow = (text: string) => ({ text: `${text}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} })
+    const grow = (text: string): SecretScreen => ({ text: `${text}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {}, markers: [[text.length, text.length + 16]] })
     const h = setup({ screen: grow })
     expect(await run(h, { prompt: 'x'.repeat(20_000) })).toEqual({
       error: 'Invalid prompt: longer than 20000 characters once the credentials in it were removed. Shorten it.',
@@ -967,7 +974,7 @@ describe('credentials, asking', () => {
     const seen: Array<[number, number | undefined, number | undefined]> = []
     const screen = (text: string, keep?: number, lookback?: number): SecretScreen => {
       seen.push([text.length, keep, lookback])
-      return { text: keep === undefined ? text : text.slice(-keep), removed: {}, flagged: {} }
+      return { text: keep === undefined ? text : text.slice(-keep), removed: {}, flagged: {}, markers: [] }
     }
     const h = setup({ screen })
     scripted(h, [view({ status: 'failed', output: `${'x'.repeat(1_000_000)}END`, error: `${'e'.repeat(1_000_000)}!`, durationMs: 5 })])
@@ -1033,6 +1040,24 @@ describe('credentials, asking', () => {
         expect(r.note).toBe(`Termpolis removed 1 credential (${rule}) from this answer.`)
       }
     }
+  })
+
+  it("cuts the other machine's markers as text where its own made an error's end too long, never into one", async () => {
+    // An error's end from the other machine, behind its ellipsis, that starts with one of its
+    // markers: text here. An AWS key further on, which that machine left in, is removed here, and
+    // its marker is 5 characters longer than the key: 6 characters too many with the ellipsis this
+    // side puts in front. They are the other side's ellipsis and 5 characters of its marker, so the
+    // end starts after that marker. Kept in front, it would have cost 5 characters of the line.
+    const AWS = `AKIA${'A'.repeat(16)}`
+    const end = `[REDACTED:gh_pat] in the deploy log\nexport KEY=${AWS}\n`
+    const error = `…${end}${'e'.repeat(MAX_ERROR_CHARS - 1 - end.length)}`
+    expect(error).toHaveLength(MAX_ERROR_CHARS)
+    const h = setup({ screen: screenText })
+    scripted(h, [view({ status: 'failed', error, durationMs: 5 })])
+    const r = await run(h)
+    const screened = error.replace(AWS, '[REDACTED:aws_access_key]')
+    expect(r.error).toBe(`[answer from linux/codex]\n…${screened.slice('…[REDACTED:gh_pat]'.length)}`)
+    expect(r.note).toBe('Termpolis removed 1 credential (aws_access_key) from this answer.')
   })
 
   it('reads what it screens before a tail as part of the answer, as a rule would read the whole of it', async () => {
@@ -1101,7 +1126,7 @@ describe('credentials, asking', () => {
   })
 
   it('forgets the oldest screened answers past a few, and screens one again if it comes back', async () => {
-    const screen = vi.fn((text: string) => ({ text, removed: {}, flagged: {} }))
+    const screen = vi.fn((text: string) => ({ text, removed: {}, flagged: {}, markers: [] }))
     const h = setup({ screen })
     const ids = Array.from({ length: 10 }, (_, i) => (0x0123456789a0 + i).toString(16).padStart(12, '0'))
     for (const id of ids) {

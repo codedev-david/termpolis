@@ -662,6 +662,10 @@ export interface SecretScreen {
   /** Heuristic rules, and a private-key header with no key under it, and how many matches were left
    *  in. One that overlaps a removed match isn't counted: the credential in it went with that. */
   flagged: Record<string, number>
+  /** Where in `text` each marker this screen put there starts and ends (`[start, end)`), in order.
+   *  Only those: text that only reads like a marker, one an earlier screen wrote included, is the
+   *  text's own. What cuts the text to its end keeps these whole (linkedJobs' keepEnd). */
+  markers: Array<[number, number]>
 }
 
 interface Span {
@@ -684,7 +688,8 @@ interface Span {
  *  made of its last `keep` characters, counting only the matches in them. Cut first, a credential
  *  the cut ran through would lose its start (a key block its BEGIN line, a token its prefix) and
  *  match no rule, and the rest of it would go out as it is. A match the cut runs through is taken
- *  whole, and the tail starts with its marker.
+ *  whole, and the tail starts with its marker. Where each marker is comes back too (`markers`):
+ *  a tail cut again (keepEnd) keeps those whole, and cuts what the text spelled like one as text.
  *
  *  `lookback`, with `keep`: how much of `input` before the tail is screened with it, however long
  *  `input` is; all of it without. A match is looked for from there as in the whole text, where a
@@ -693,7 +698,7 @@ interface Span {
 export function screenText(input: string, keep?: number, lookback?: number): SecretScreen {
   const removed: Record<string, number> = {}
   const flagged: Record<string, number> = {}
-  if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged }
+  if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged, markers: [] }
   const from = keep !== undefined && input.length > keep ? input.length - Math.max(0, keep) : 0
   const start = lookback !== undefined ? Math.max(0, from - Math.max(0, lookback)) : 0
   const taken: Span[] = []
@@ -717,11 +722,15 @@ export function screenText(input: string, keep?: number, lookback?: number): Sec
   }
   let text = ''
   let at = from
+  const markers: Array<[number, number]> = []
   for (const cut of cuts) {
     // Wholly before the tail: not in what is kept.
     if (cut.to <= from) continue
     removed[cut.rule] = (removed[cut.rule] ?? 0) + 1
-    text += `${input.slice(at, Math.max(at, cut.from))}[REDACTED:${cut.rule}]`
+    text += input.slice(at, Math.max(at, cut.from))
+    const marker = `[REDACTED:${cut.rule}]`
+    markers.push([text.length, text.length + marker.length])
+    text += marker
     at = cut.to
   }
   text += input.slice(at)
@@ -732,7 +741,7 @@ export function screenText(input: string, keep?: number, lookback?: number): Sec
     if (input.slice(look.from, look.to).includes('[REDACTED:')) continue
     flagged[look.rule] = (flagged[look.rule] ?? 0) + 1
   }
-  return { text, removed, flagged }
+  return { text, removed, flagged, markers }
 }
 
 /** `input` for showing, not sending: every match of every rule replaced by `[REDACTED:<rule>]`, the

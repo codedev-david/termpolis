@@ -34,11 +34,13 @@ import {
   MAX_PROMPT_CHARS,
   SCREEN_LOOKBACK_CHARS,
   activitySummary,
+  behindEllipsis,
   foundAny,
   keepEnd,
   mergeScreens,
   type LinkedActivity,
   type LinkedSecretFinding,
+  type MarkedText,
 } from './linkedJobs'
 
 export interface LinkedToolArgs {
@@ -221,10 +223,11 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
-/** `text`'s end, behind an ellipsis, when it is longer than `max`; screened text, so no marker in it
- *  is cut short (keepEnd). */
-function clipEnd(text: string, max: number): string {
-  return text.length > max ? `…${keepEnd(text, max - 1)}` : text
+/** `end`'s text, behind an ellipsis, when it is longer than `max`: screened here, so no marker this
+ *  computer's screen put in it is cut short, and the end never starts inside text shaped like one
+ *  (keepEnd). A marker the other computer's screen put there is text here. */
+function clipEnd(end: MarkedText, max: number): string {
+  return end.text.length > max ? `…${keepEnd(end.text, max - 1, end.markers).text}` : end.text
 }
 
 function jobViewOf(v: unknown, expectedId?: string): JobView | null {
@@ -284,7 +287,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
       ...(output ? { output: deps.frame(output.text, job.name, view.agent) } : {}),
       ...(long ? { truncated: true } : {}),
       // Cut again after, from the end: a marker can be longer than what it replaced.
-      ...(error ? { error: deps.frame(clipEnd(longError ? `…${error.text}` : error.text, MAX_ERROR_CHARS), job.name, view.agent) } : {}),
+      ...(error ? { error: deps.frame(clipEnd(longError ? behindEllipsis(error) : error, MAX_ERROR_CHARS), job.name, view.agent) } : {}),
       notes: secretNotes(found, 'this answer'),
     }
     if (finished) {

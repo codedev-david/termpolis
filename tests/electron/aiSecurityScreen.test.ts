@@ -103,7 +103,7 @@ describe('screenText', () => {
     // A body too short to be key material, with no END line, is a header too (and a value right
     // after the words "private key", which the contextual rule reports)...
     const short = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nThen run the tests.'
-    expect(screenText(short)).toEqual({ text: short, removed: {}, flagged: { private_key: 1, contextual_secret: 1 } })
+    expect(screenText(short)).toEqual({ text: short, removed: {}, flagged: { private_key: 1, contextual_secret: 1 }, markers: [] })
     // ...where an END line, however short the body, makes it a key.
     expect(screenText('-----BEGIN DSA PRIVATE KEY-----\nMIIB\n-----END DSA PRIVATE KEY-----').removed).toEqual({ ssh_dsa_pubkey: 1 })
   })
@@ -138,6 +138,9 @@ describe('screenText', () => {
     const twice = screenText(once.text)
     expect(twice.text).toBe(once.text)
     expect(twice.removed).toEqual({})
+    // The first screen's markers are text to the second: none of them is its own.
+    expect(once.markers).toHaveLength(2)
+    expect(twice.markers).toEqual([])
     // The look-alikes are still reported; the markers' assignments are not.
     expect(twice.flagged).toEqual(once.flagged)
     expect(twice.flagged).toEqual({ password_literal: 1, contextual_secret: 1 })
@@ -149,18 +152,23 @@ describe('screenText', () => {
     // the tail starts with its marker.
     const block = `${before}${PEM}\nDone.`
     const r = screenText(block, block.length - before.length - 40)
-    expect(r).toEqual({ text: '[REDACTED:private_key]\nDone.', removed: { private_key: 1 }, flagged: {} })
+    expect(r).toEqual({ text: '[REDACTED:private_key]\nDone.', removed: { private_key: 1 }, flagged: {}, markers: [[0, 22]] })
     // A token the cut runs through two characters in: the same.
     const token = `${before}use ${GH} now`
-    expect(screenText(token, token.length - before.length - 6)).toEqual({ text: '[REDACTED:gh_pat] now', removed: { gh_pat: 1 }, flagged: {} })
+    expect(screenText(token, token.length - before.length - 6)).toEqual({ text: '[REDACTED:gh_pat] now', removed: { gh_pat: 1 }, flagged: {}, markers: [[0, 17]] })
     // What is wholly before the cut is not counted: it is not in what is kept.
     const gone = `${GH}\nconst password = "hunter2hunter2"\n${before}${AWS}`
-    expect(screenText(gone, before.length + AWS.length)).toEqual({ text: `${before}[REDACTED:aws_access_key]`, removed: { aws_access_key: 1 }, flagged: {} })
+    expect(screenText(gone, before.length + AWS.length)).toEqual({
+      text: `${before}[REDACTED:aws_access_key]`,
+      removed: { aws_access_key: 1 },
+      flagged: {},
+      markers: [[before.length, before.length + 25]],
+    })
     // A possible credential the cut runs through is reported, and left as it is; one that ends
     // where the tail starts is not in it.
     const look = `${before}const password = "hunter2hunter2"`
-    expect(screenText(look, 10)).toEqual({ text: 'r2hunter2"', removed: {}, flagged: { password_literal: 1, contextual_secret: 1 } })
-    expect(screenText(`${look}\nDone.\n`, 7)).toEqual({ text: '\nDone.\n', removed: {}, flagged: {} })
+    expect(screenText(look, 10)).toEqual({ text: 'r2hunter2"', removed: {}, flagged: { password_literal: 1, contextual_secret: 1 }, markers: [] })
+    expect(screenText(`${look}\nDone.\n`, 7)).toEqual({ text: '\nDone.\n', removed: {}, flagged: {}, markers: [] })
     // A cut between two matches keeps the text between them as it is.
     expect(screenText(`${GH} middle ${AWS}`, ` middle ${AWS}`.length).text).toBe(' middle [REDACTED:aws_access_key]')
     // A tail as long as the text is the whole text.
@@ -171,7 +179,10 @@ describe('screenText', () => {
   it('makes for each rule a marker no cut to the end of an answer runs through', () => {
     for (const rule of RULES) {
       const marker = `[REDACTED:${rule.id}]`
-      expect(keepEnd(`x${marker}yz`, marker.length + 1), rule.id).toBe(`${marker}z`)
+      // One this computer's screen put there is kept whole in front of the end. One the other
+      // computer's put there is text here, and the end starts after it, never inside it.
+      expect(keepEnd(`x${marker}yz`, marker.length + 1, [[1, 1 + marker.length]]), rule.id).toEqual({ text: `${marker}z`, markers: [[0, marker.length]] })
+      expect(keepEnd(`x${marker}yz`, marker.length + 1, []).text, rule.id).toBe('yz')
     }
   })
 
@@ -183,12 +194,12 @@ describe('screenText', () => {
     // where no match starts, so the rule is run there.
     const run = `sk-${'a'.repeat(1_000)}Qsk-${'a'.repeat(100)}`
     expect(screenText(run, 100).removed).toEqual({ openai_key: 1 })
-    expect(screenText(run, 100, 100)).toEqual({ text: 'a'.repeat(100), removed: {}, flagged: {} })
+    expect(screenText(run, 100, 100)).toEqual({ text: 'a'.repeat(100), removed: {}, flagged: {}, markers: [] })
     expect(screenText(run, 100, 2_000)).toEqual(screenText(run, 100))
     // One that starts where the lookback does is found; a character further back, it is not.
     const reach = `${'.'.repeat(10)}${GH}`
-    expect(screenText(reach, 5, GH.length - 5)).toEqual({ text: '[REDACTED:gh_pat]', removed: { gh_pat: 1 }, flagged: {} })
-    expect(screenText(reach, 5, GH.length - 6)).toEqual({ text: GH.slice(-5), removed: {}, flagged: {} })
+    expect(screenText(reach, 5, GH.length - 5)).toEqual({ text: '[REDACTED:gh_pat]', removed: { gh_pat: 1 }, flagged: {}, markers: [[0, 17]] })
+    expect(screenText(reach, 5, GH.length - 6)).toEqual({ text: GH.slice(-5), removed: {}, flagged: {}, markers: [] })
     // Where the lookback starts, a rule still sees what comes before it. Here it starts on the `s`
     // of `Qsk-` in a base64url run, where no match starts in the whole text, a letter being before
     // it; screened as a text of its own, it would start with an OpenAI-shaped key that runs on
@@ -196,18 +207,37 @@ describe('screenText', () => {
     const blob = `{"data":"${'Ab0_'.repeat(50)}Qsk-${'b'.repeat(300)}"}\nDone.\n`
     const at = blob.indexOf('sk-')
     expect(screenText(blob.slice(at), 100).removed).toEqual({ openai_key: 1 })
-    expect(screenText(blob, 100, blob.length - 100 - at)).toEqual({ text: blob.slice(-100), removed: {}, flagged: {} })
+    expect(screenText(blob, 100, blob.length - 100 - at)).toEqual({ text: blob.slice(-100), removed: {}, flagged: {}, markers: [] })
     // A lookbehind the same: a name longer than password_literal takes, cut where the lookback starts.
     const named = `${'a'.repeat(80)}_password = "hunter2hunter2"\nDone.\n`
     expect(screenText(named.slice(70), 10).flagged).toEqual({ password_literal: 1 })
-    expect(screenText(named, 10, named.length - 10 - 70)).toEqual({ text: named.slice(-10), removed: {}, flagged: {} })
+    expect(screenText(named, 10, named.length - 10 - 70)).toEqual({ text: named.slice(-10), removed: {}, flagged: {}, markers: [] })
   })
 
   it('counts every occurrence, and returns empty text and nothing found for nothing', () => {
-    expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {} })
-    expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {} })
-    expect(screenText('plain prose with nothing in it')).toEqual({ text: 'plain prose with nothing in it', removed: {}, flagged: {} })
-    expect(screenText(undefined as unknown as string)).toEqual({ text: '', removed: {}, flagged: {} })
+    expect(screenText(`${GH} ${GH}`)).toEqual({ text: '[REDACTED:gh_pat] [REDACTED:gh_pat]', removed: { gh_pat: 2 }, flagged: {}, markers: [[0, 17], [18, 35]] })
+    expect(screenText('')).toEqual({ text: '', removed: {}, flagged: {}, markers: [] })
+    expect(screenText('plain prose with nothing in it')).toEqual({ text: 'plain prose with nothing in it', removed: {}, flagged: {}, markers: [] })
+    expect(screenText(undefined as unknown as string)).toEqual({ text: '', removed: {}, flagged: {}, markers: [] })
+  })
+
+  it('says where in its text each marker it put there is, and only those', () => {
+    // In order, one per removal, each the whole marker; with `keep`, where in the tail it returns.
+    const text = `a ${ANTHROPIC} b ${SLACK}\nc ${AWS} d ${GH}`
+    const r = screenText(text)
+    expect(r.markers.map(([s, e]) => r.text.slice(s, e))).toEqual([
+      '[REDACTED:openai_key]',
+      '[REDACTED:slack_token]',
+      '[REDACTED:aws_access_key]',
+      '[REDACTED:gh_pat]',
+    ])
+    for (let i = 1; i < r.markers.length; i++) expect(r.markers[i][0]).toBeGreaterThan(r.markers[i - 1][1])
+    const tail = screenText(`${'y'.repeat(5_000)} ${GH} ${'z'.repeat(150)}END`, 160)
+    expect(tail.text.startsWith('[REDACTED:gh_pat] zzz')).toBe(true)
+    expect(tail.markers).toEqual([[0, 17]])
+    // Text that is marker-shaped already, its own or an earlier screen's, is not one of its markers.
+    expect(screenText(r.text)).toEqual({ text: r.text, removed: {}, flagged: {}, markers: [] })
+    expect(screenText(`quoted: [REDACTED:gh_pat] then ${GH}`).markers).toEqual([[31, 48]])
   })
 
   it('stays fast on the most of a crafted answer it screens: thousands of tokens, near-miss lookaheads, open key blocks', () => {

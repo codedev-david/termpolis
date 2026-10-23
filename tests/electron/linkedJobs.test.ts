@@ -61,7 +61,7 @@ function setup(over: Partial<LinkedJobsDeps> = {}) {
     now: () => clock.t,
     randomId: () => (++seq).toString(16).padStart(12, '0'),
     onActivity: (a) => activity.push(a),
-    screen: (text) => ({ text, removed: {}, flagged: {} }),
+    screen: (text) => ({ text, removed: {}, flagged: {}, markers: [] }),
     mask: (text) => text,
     ...over,
   }
@@ -72,12 +72,19 @@ function setup(over: Partial<LinkedJobsDeps> = {}) {
  *  rule table (aiSecurityScreen.test.ts covers that). */
 const KEY = 'KEY-0123456789'
 function fakeScreen(text: string): SecretScreen {
-  const removed = text.split(KEY).length - 1
+  const [first, ...rest] = text.split(KEY)
   const flagged = text.split('maybe-pass').length - 1
+  let out = first
+  const markers: Array<[number, number]> = []
+  for (const part of rest) {
+    markers.push([out.length, out.length + '[REDACTED:fake_key]'.length])
+    out += `[REDACTED:fake_key]${part}`
+  }
   return {
-    text: text.split(KEY).join('[REDACTED:fake_key]'),
-    removed: removed ? { fake_key: removed } : {},
+    text: out,
+    removed: rest.length ? { fake_key: rest.length } : {},
     flagged: flagged ? { fake_pass: flagged } : {},
+    markers,
   }
 }
 
@@ -937,7 +944,7 @@ describe('credentials on the way in and out', () => {
   })
 
   it('refuses a prompt that is too long once the credentials in it were replaced', async () => {
-    const grow = (text: string) => ({ text: text.replace(/x/g, 'xx'), removed: { grow: 1 }, flagged: {} })
+    const grow = (text: string) => ({ text: text.replace(/x/g, 'xx'), removed: { grow: 1 }, flagged: {}, markers: [] })
     const h = setup({ screen: grow })
     await expect(start(h, FROM, META, { prompt: 'x'.repeat(MAX_PROMPT_CHARS) })).rejects.toThrow(
       `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`,
@@ -961,7 +968,8 @@ describe('credentials on the way in and out', () => {
     const h = setup({
       screen: (text, keep, lookback) => {
         seen.push([text.length, keep, lookback])
-        return { text: `${keep === undefined ? text : text.slice(-keep)}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {} }
+        const kept = keep === undefined ? text : text.slice(-keep)
+        return { text: `${kept}[REDACTED:grown]`, removed: { grown: 1 }, flagged: {}, markers: [[kept.length, kept.length + 16]] }
       },
     })
     const v = await start(h)
@@ -1144,6 +1152,45 @@ describe('an answer longer than it may be: screened, then cut', () => {
     }
   })
 
+  it('cuts the markers an answer quotes as its own text, and moves none of them to the front', async () => {
+    // A log of an earlier screened run, printed again: 400 lines that each quote a marker, dense
+    // with control characters, so the cut to fit one relay frame takes most of them. Then two real
+    // tokens, which the screen removes. Only those two markers are the screen's own.
+    const quoted = Array.from({ length: 400 }, (_, i) => `audit ${i}: KEY=[REDACTED:gh_pat] was screened\u0001\u0002\u0003`.padEnd(250, '\u0001'))
+    const output = `${quoted.join('\n')}\nThe deploy used ${TOKEN} and ghp_${'r'.repeat(36)}.\n${'Result: ok\n'.repeat(9_000)}`
+    expect(output.length).toBeLessThan(MAX_OUTPUT_CHARS)
+    const { done, findings } = await answer({ output })
+    expect(done.truncated).toBe(true)
+    expect(Buffer.byteLength(JSON.stringify(done.output))).toBeLessThanOrEqual(MAX_OUTPUT_JSON_BYTES)
+    // What is kept is the screened answer's end as it is: no quoted marker torn from its line and
+    // put in front, and it starts after a quoted marker the cut fell in, never inside one.
+    const screened = output.replace(TOKEN, '[REDACTED:gh_pat]').replace(`ghp_${'r'.repeat(36)}`, '[REDACTED:gh_pat]')
+    const kept = done.output as string
+    expect(screened.endsWith(kept)).toBe(true)
+    const start = screened.length - kept.length
+    expect([...screened.matchAll(/\[REDACTED:[a-z0-9_]{1,53}\]/g)].some((m) => start > m.index && start < m.index + m[0].length)).toBe(false)
+    // The cut fell in the quoted log: each line of it is 250 characters and its line break.
+    expect(start).toBeGreaterThan(0)
+    expect(start).toBeLessThan(400 * 251)
+    expect(kept).toContain('\nThe deploy used [REDACTED:gh_pat] and [REDACTED:gh_pat].\n')
+    expect(findings).toEqual(removedOut({ gh_pat: 2 }))
+  })
+
+  it('cuts a marker an error quotes as its own text, where a marker the screen put further on made the end too long', async () => {
+    // The last 3,999 characters start with a quoted marker. An AWS key further on is 5 characters
+    // shorter than its marker, so the screened end, behind its ellipsis, is 6 characters too long:
+    // the ellipsis and 5 of the quoted marker. The quoted marker goes whole, as the text it is;
+    // kept in front, the 5 characters after it would have gone instead, out of the middle of a line.
+    const AWS = `AKIA${'A'.repeat(16)}`
+    const end = `[REDACTED:gh_pat] was printed by an earlier run\nexport KEY=${AWS}\n`
+    const error = `${'warn\n'.repeat(2_000)}${end}${'e'.repeat(MAX_ERROR_CHARS - 1 - end.length)}`
+    const { done, findings } = await answer({ ok: false, output: '', error, code: 1 })
+    const screened = error.slice(-(MAX_ERROR_CHARS - 1)).replace(AWS, '[REDACTED:aws_access_key]')
+    expect(screened.startsWith('[REDACTED:gh_pat] was printed')).toBe(true)
+    expect(done.error).toBe(`…${screened.slice('[REDACTED:gh_pat]'.length)}`)
+    expect(findings).toEqual(removedOut({ aws_access_key: 1 }))
+  })
+
   it('reads what it screens before the tail as part of the answer, as a rule would read the whole of it', async () => {
     // A base64url run longer than the lookback, with `Qsk-` in it where the lookback starts. In the
     // whole answer a letter comes before that `s`, so no rule starts a match there; screened as a
@@ -1195,48 +1242,189 @@ describe('an answer longer than it may be: screened, then cut', () => {
 describe('keepEnd', () => {
   const GH = '[REDACTED:gh_pat]'
   const AWS = '[REDACTED:aws_access_key]'
+  const LONGEST = `[REDACTED:${'a'.repeat(53)}]`
+  /** No marker is this long, so this is no marker's shape: keepEnd is told where the screen's are. */
+  const TOO_LONG = `[REDACTED:${'b'.repeat(54)}]`
+
+  /** One of the screen's own markers, as `marked` takes it. */
+  const own = (marker: string) => ({ own: marker })
+
+  /** `parts` joined, and where in that each part given as `own(...)` is: a screened text and the
+   *  markers its screen reports. A part given as a plain string is the text's own, whatever it
+   *  looks like. */
+  function marked(...parts: Array<string | { own: string }>): { text: string; markers: Array<[number, number]> } {
+    let text = ''
+    const markers: Array<[number, number]> = []
+    for (const part of parts) {
+      if (typeof part === 'string') text += part
+      else {
+        markers.push([text.length, text.length + part.own.length])
+        text += part.own
+      }
+    }
+    return { text, markers }
+  }
+
+  /** keepEnd's answer, worked out a character at a time: the first `text.length - max` characters
+   *  outside the own markers go, and the own markers among them stay, in front. Where those
+   *  characters run out, the end starts where the cut falls, or after the own marker it falls in.
+   *  Either way it starts after any marker-shaped string the start would fall inside. */
+  function slowKeepEnd(text: string, max: number, markers: Array<[number, number]>): { text: string; markers: Array<[number, number]> } {
+    const cut = text.length - Math.max(0, max)
+    if (cut <= 0) return { text, markers }
+    const ownAt = new Map(markers.map(([s, e]) => [s, e]))
+    const shapes = [...text.matchAll(/\[REDACTED:[a-z0-9_]{1,53}\]/g)].map((m) => [m.index, m.index + m[0].length])
+    const pastShapes = (p: number): number => shapes.find(([s, e]) => s < p && p < e)?.[1] ?? p
+    // The own markers the characters cut run past, and where the cut ends.
+    const front: Array<[number, number]> = []
+    let dropped = 0
+    let p = 0
+    while (p < text.length && dropped < cut) {
+      const e = ownAt.get(p)
+      if (e !== undefined) {
+        front.push([p, e])
+        p = e
+      } else {
+        dropped++
+        p++
+      }
+    }
+    const kept = dropped === cut ? front : []
+    const start = pastShapes(dropped === cut ? p : (markers.find(([s, e]) => s < cut && cut < e)?.[1] ?? cut))
+    const head = kept.map(([s, e]) => text.slice(s, e)).join('')
+    const out: Array<[number, number]> = []
+    let at = 0
+    for (const [s, e] of kept) {
+      out.push([at, at + e - s])
+      at += e - s
+    }
+    for (const [s, e] of markers) if (s >= start) out.push([head.length + s - start, head.length + e - start])
+    return { text: head + text.slice(start), markers: out }
+  }
 
   it('keeps the last characters, all of a text that fits and none for nothing', () => {
-    expect(keepEnd('abcdef', 6)).toBe('abcdef')
-    expect(keepEnd('abcdef', 3)).toBe('def')
-    expect(keepEnd('abcdef', 0)).toBe('')
-    expect(keepEnd('abcdef', -1)).toBe('')
-    // A cut at a marker's start or end keeps it or leaves it out whole.
-    expect(keepEnd(`ab${GH}cd`, GH.length + 2)).toBe(`${GH}cd`)
-    expect(keepEnd(`ab${GH}cd`, 2)).toBe('cd')
+    expect(keepEnd('abcdef', 6, [])).toEqual({ text: 'abcdef', markers: [] })
+    expect(keepEnd('abcdef', 3, [])).toEqual({ text: 'def', markers: [] })
+    expect(keepEnd('abcdef', 0, [])).toEqual({ text: '', markers: [] })
+    expect(keepEnd('abcdef', -1, [])).toEqual({ text: '', markers: [] })
+    // A cut at an own marker's start or end keeps it or leaves it out whole.
+    const t = marked('ab', own(GH), 'cd')
+    expect(keepEnd(t.text, GH.length + 2, t.markers)).toEqual({ text: `${GH}cd`, markers: [[0, GH.length]] })
+    expect(keepEnd(t.text, 2, t.markers)).toEqual({ text: 'cd', markers: [] })
+    // A text that fits comes back as it is, its markers with it.
+    expect(keepEnd(t.text, t.text.length, t.markers)).toEqual(t)
   })
 
-  it('keeps a marker the cut runs through whole, and as many characters after it go instead', () => {
+  it("keeps an own marker the cut runs through whole, and as many characters after it go instead", () => {
     // Two characters into it, two characters after it go; one, one.
-    expect(keepEnd(`ab${GH}cdefgh`, GH.length + 4)).toBe(`${GH}efgh`)
-    expect(keepEnd(`ab${GH}cdefgh`, GH.length + 5)).toBe(`${GH}defgh`)
-    // A marker those characters run into is kept whole too, and the cut moves on past it.
-    expect(keepEnd(`a${GH}b${AWS}cdefghij`, GH.length + AWS.length + 4)).toBe(`${GH}${AWS}ghij`)
-    // So is one wholly in what is cut: the characters cut are all from outside markers.
-    expect(keepEnd(`${GH}x${AWS}${'y'.repeat(30)}`, 52)).toBe(`${GH}${AWS}${'y'.repeat(10)}`)
+    const t = marked('ab', own(GH), 'cdefgh')
+    expect(keepEnd(t.text, GH.length + 4, t.markers)).toEqual({ text: `${GH}efgh`, markers: [[0, GH.length]] })
+    expect(keepEnd(t.text, GH.length + 5, t.markers).text).toBe(`${GH}defgh`)
+    // An own marker those characters run into is kept whole too, and the cut moves on past it.
+    const two = marked('a', own(GH), 'b', own(AWS), 'cdefghij')
+    expect(keepEnd(two.text, GH.length + AWS.length + 4, two.markers)).toEqual({
+      text: `${GH}${AWS}ghij`,
+      markers: [[0, GH.length], [GH.length, GH.length + AWS.length]],
+    })
+    // So is one wholly in what is cut: the characters cut are all from outside own markers.
+    const gone = marked(own(GH), 'x', own(AWS), 'y'.repeat(30))
+    expect(keepEnd(gone.text, 52, gone.markers).text).toBe(`${GH}${AWS}${'y'.repeat(10)}`)
     // A marker is no longer than 64 characters, and one that long is kept whole like any other,
     // wherever in it the cut falls.
-    const longest = `[REDACTED:${'a'.repeat(53)}]`
-    expect(longest).toHaveLength(64)
-    const text = `ab${longest}${'c'.repeat(100)}`
-    expect(keepEnd(text, text.length - 3)).toBe(`${longest}${'c'.repeat(99)}`)
-    expect(keepEnd(text, text.length - 65)).toBe(`${longest}${'c'.repeat(37)}`)
-    // Text that only ends like a marker is cut as any text is, and so is one too long to be one.
-    expect(keepEnd('REDACTED:gh_pat]cd', 4)).toBe('t]cd')
-    const long = `[REDACTED:${'a'.repeat(54)}]`
-    expect(keepEnd(`${long}cd`, 4)).toBe('a]cd')
+    expect(LONGEST).toHaveLength(64)
+    const long = marked('ab', own(LONGEST), 'c'.repeat(100))
+    expect(keepEnd(long.text, long.text.length - 3, long.markers).text).toBe(`${LONGEST}${'c'.repeat(99)}`)
+    expect(keepEnd(long.text, long.text.length - 65, long.markers).text).toBe(`${LONGEST}${'c'.repeat(37)}`)
+    // An own marker the kept end holds is told where it now is.
+    const later = marked('ab', own(GH), 'cdef', own(AWS), 'gh')
+    const r = keepEnd(later.text, later.text.length - 3, later.markers)
+    expect(r).toEqual({ text: `${GH}def${AWS}gh`, markers: [[0, GH.length], [GH.length + 3, GH.length + 3 + AWS.length]] })
   })
 
-  it('is never longer than it may be: where the markers alone are longer, those at the start go whole', () => {
+  it("cuts marker-shaped text that is the answer's own as text, and never moves it to the front", () => {
+    // A log line quoting two markers an earlier screen put there, cut to 200: the end is the
+    // answer's last 200 characters, as they are. (keepEnd once kept every marker-shaped string and
+    // moved both to the front of the end, torn from their line.)
+    const answer = `log 1: KEY=[REDACTED:openai_key] TOKEN=${GH}\n${'j'.repeat(2_400)}\n${'x'.repeat(1_500)}\nFINAL ANSWER: the build passed.`
+    expect(keepEnd(answer, 200, [])).toEqual({ text: answer.slice(-200), markers: [] })
+    // An own marker among them goes to the front alone.
+    const mixed = marked(`log: ${GH} `, own(AWS), ` and ${GH}${'z'.repeat(40)}`)
+    expect(keepEnd(mixed.text, AWS.length + 30, mixed.markers)).toEqual({ text: `${AWS}${'z'.repeat(30)}`, markers: [[0, AWS.length]] })
+    // Text that only ends like a marker is cut as any text is.
+    expect(keepEnd('REDACTED:gh_pat]cd', 4, []).text).toBe('t]cd')
+  })
+
+  it("never starts inside a marker-shaped string, wherever in one the cut falls: the other machine's, or the answer's", () => {
+    // What the asking side cuts again holds the doing side's markers as text: a cut inside one
+    // starts the end after it, and the end is that much shorter.
+    const text = `${'p'.repeat(1_000)}${GH}${'r'.repeat(2_990)}`
+    for (let at = 995; at <= 1_000 + GH.length + 3; at++) {
+      const r = keepEnd(text, text.length - at, [])
+      const inside = at > 1_000 && at < 1_000 + GH.length
+      expect(r, String(at)).toEqual({ text: text.slice(inside ? 1_000 + GH.length : at), markers: [] })
+    }
+    // The longest marker-shaped string too, a cut one character into it or one before its end;
+    // what is longer than that is no marker's shape, and is cut as any text is.
+    const long = `ab${LONGEST}cd`
+    expect(keepEnd(long, long.length - 3, []).text).toBe('cd')
+    expect(keepEnd(long, 3, []).text).toBe('cd')
+    expect(keepEnd(`ab${TOO_LONG}cd`, 4, []).text).toBe('b]cd')
+    // And where the own markers alone are longer than the end may be.
+    const over = marked(own(GH), own(GH), '[REDACTED:quoted]x')
+    expect(keepEnd(over.text, 10, over.markers)).toEqual({ text: 'x', markers: [] })
+  })
+
+  it('is never longer than it may be: where the own markers alone are longer, those at the start go whole', () => {
     // 18 characters to cut, and two outside markers: the end starts where the cut falls, or after
     // the marker it falls in.
-    expect(keepEnd(`ab${GH}${GH}`, GH.length + 1)).toBe(GH)
-    expect(keepEnd(`${GH}x${GH}`, GH.length + 1)).toBe(`x${GH}`)
+    const two = marked('ab', own(GH), own(GH))
+    expect(keepEnd(two.text, GH.length + 1, two.markers)).toEqual({ text: GH, markers: [[0, GH.length]] })
+    const split = marked(own(GH), 'x', own(GH))
+    expect(keepEnd(split.text, GH.length + 1, split.markers)).toEqual({ text: `x${GH}`, markers: [[1, 1 + GH.length]] })
     // Exactly as long as the end may be, they all stay.
-    expect(keepEnd(`a${GH}b${AWS}c`, GH.length + AWS.length)).toBe(`${GH}${AWS}`)
+    const fits = marked('a', own(GH), 'b', own(AWS), 'c')
+    expect(keepEnd(fits.text, GH.length + AWS.length, fits.markers).text).toBe(`${GH}${AWS}`)
     // Found wherever in a marker the cut falls, the longest one too.
-    const longest = `[REDACTED:${'a'.repeat(53)}]`
-    expect(keepEnd(`${longest}${longest}`, 70)).toBe(longest)
+    const longest = marked(own(LONGEST), own(LONGEST))
+    expect(keepEnd(longest.text, 70, longest.markers)).toEqual({ text: LONGEST, markers: [[0, 64]] })
+    // By where the screen says it is: one longer than any marker shape is stepped over the same.
+    const odd = marked('ab', own(TOO_LONG), own(GH))
+    expect(keepEnd(odd.text, 20, odd.markers)).toEqual({ text: GH, markers: [[0, GH.length]] })
+    // Twenty tokens a space apart, screened, kept to 50: the last two markers and the spaces.
+    const screened = screenText(Array.from({ length: 20 }, () => `ghp_${'b'.repeat(36)}`).join(' '))
+    expect(screened.markers).toHaveLength(20)
+    expect(keepEnd(screened.text, 50, screened.markers)).toEqual({ text: ` ${GH} ${GH}`, markers: [[1, 18], [19, 36]] })
+  })
+
+  it('agrees with the character-by-character answer on random marker-dense text', () => {
+    // mulberry32, seeded, so a failure is the same on every run.
+    let seed = 0x5eed1e55
+    const random = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(random() * xs.length)]
+    const OWN = [GH, AWS, LONGEST, '[REDACTED:a]', TOO_LONG]
+    // The answer's own text: plain, marker-shaped, and near misses that are not.
+    const TEXT = ['', 'a', 'bb', 'ccc ', '[', ']', '[REDACTED:', 'REDACTED:x]', '[REDACTED:quoted]', GH, '[REDACTED:X]', TOO_LONG, LONGEST]
+    for (let n = 0; n < 2_000; n++) {
+      const parts: Array<string | { own: string }> = []
+      for (let k = Math.floor(random() * 10); k > 0; k--) {
+        parts.push(pick(TEXT).padEnd(Math.floor(random() * 30), 'w'))
+        if (random() < 0.5) parts.push(own(pick(OWN)))
+      }
+      parts.push(pick(TEXT))
+      const t = marked(...parts)
+      const max = Math.floor(random() * (t.text.length + 8)) - 2
+      const r = keepEnd(t.text, max, t.markers)
+      const label = JSON.stringify({ t, max })
+      expect(r, label).toEqual(slowKeepEnd(t.text, max, t.markers))
+      // Never longer than it may be, unless it fits whole; every marker it reports is whole.
+      if (t.text.length > max) expect(r.text.length, label).toBeLessThanOrEqual(Math.max(0, max))
+      for (const [s, e] of r.markers) expect(OWN, label).toContain(r.text.slice(s, e))
+    }
   })
 })
 
@@ -1252,7 +1440,7 @@ describe('a screen that fails', () => {
     const h = setup({
       screen: (text) => {
         if (++calls > 1) throw new Error('screen broke')
-        return { text, removed: {}, flagged: {} }
+        return { text, removed: {}, flagged: {}, markers: [] }
       },
     })
     const v = await start(h)

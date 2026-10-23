@@ -259,13 +259,19 @@ export function activitySummary(prompt: string, mask: (text: string) => string):
   return line.length > SUMMARY_CHARS ? `${line.slice(0, SUMMARY_CHARS - 1).trimEnd()}\u2026` : line
 }
 
-/** The longest marker keepEnd keeps whole: `[REDACTED:<rule>]` for a rule id of up to 53
- *  characters. Every one screenText puts in place of a credential is one: rule ids are lower-case
- *  words, 20 characters at most. */
+/** Screened text, and where in it the markers its screen put there are (SecretScreen.markers). */
+export type MarkedText = Pick<SecretScreen, 'text' | 'markers'>
+
+/** The longest marker-shaped text: `[REDACTED:<rule>]` for a rule id of up to 53 characters.
+ *  Every marker screenText puts in place of a credential is one (rule ids are lower-case words, 20
+ *  characters at most), and so is text that only reads like one: a log an earlier screen wrote,
+ *  printed again, or a marker the other computer's screen put there, which is text on this one.
+ *  keepEnd never starts an end inside one. */
 const MAX_MARKER_CHARS = 64
 const MARKER_RE = /\[REDACTED:[a-z0-9_]{1,53}\]/g
 
-/** Where the end of `text` from `cut` may start: `cut`, or the end of the marker it falls in. */
+/** Where the end of `text` from `cut` may start: `cut`, or the end of the marker-shaped text it
+ *  falls in. */
 function outsideMarker(text: string, cut: number): number {
   const re = new RegExp(MARKER_RE.source, 'g')
   re.lastIndex = Math.max(0, cut - MAX_MARKER_CHARS)
@@ -275,47 +281,71 @@ function outsideMarker(text: string, cut: number): number {
   return cut
 }
 
-/** Screened text cut to `max` characters from its start, with every marker in it kept whole: the
- *  characters cut are the first ones outside markers, as many as `max` asks for. A marker can be
- *  longer than what it replaced, so a screened end can be longer than its cap. Cut from the front
- *  as it is, `[REDACTED:gh_pat]` could arrive as `t]`, or be cut out by the markers further on
- *  that made the end too long, and nobody could tell a credential had been counted there. Never
- *  longer than `max`: where the markers alone are longer, the end starts where the cut falls, or
- *  after the marker it falls in. */
-export function keepEnd(text: string, max: number): string {
+/** Screened text cut to `max` characters from its start, with each marker its screen put there
+ *  (`markers`, SecretScreen.markers) kept whole: the characters cut are the first ones outside
+ *  those markers, as many as `max` asks for, and the markers among them stay, in order, in front
+ *  of what is kept. A marker can be longer than what it replaced, so a screened end can be longer
+ *  than its cap. Cut from the front as it is, `[REDACTED:gh_pat]` could arrive as `t]`, or be cut
+ *  out by the markers further on that made the end too long, and nobody could tell a credential
+ *  had been counted there. Everything else is cut as the text it is, whatever it looks like: an
+ *  answer that quotes a marker (a log an earlier screen wrote, printed again) keeps it in its line
+ *  or loses it with the rest of what is cut, and the end never starts inside one. Never longer
+ *  than `max`: where the markers alone are longer, the end starts where the cut falls, or after
+ *  the marker it falls in. What comes back says where the markers it kept now are. */
+export function keepEnd(text: string, max: number, markers: SecretScreen['markers']): MarkedText {
   const cut = text.length - Math.max(0, max)
-  if (cut <= 0) return text
-  const re = new RegExp(MARKER_RE.source, 'g')
+  if (cut <= 0) return { text, markers }
   let kept = ''
+  const front: SecretScreen['markers'] = []
   let left = cut
   let at = 0
-  for (let m = re.exec(text); m && m.index - at < left; m = re.exec(text)) {
-    left -= m.index - at
-    kept += m[0]
-    at = re.lastIndex
+  let i = 0
+  for (; i < markers.length && markers[i][0] - at < left; i++) {
+    const [start, end] = markers[i]
+    left -= start - at
+    front.push([kept.length, kept.length + end - start])
+    kept += text.slice(start, end)
+    at = end
   }
-  return text.length - at >= left ? kept + text.slice(at + left) : text.slice(outsideMarker(text, cut))
+  if (text.length - at < left) {
+    let from = cut
+    for (const [start, end] of markers) if (start < cut && end > cut) from = end
+    from = outsideMarker(text, from)
+    return { text: text.slice(from), markers: markers.filter(([start]) => start >= from).map(([start, end]) => [start - from, end - from]) }
+  }
+  // Every marker left starts at or after where the end does: that moved, if at all, past text
+  // shaped like a marker, and no marker overlaps another.
+  const from = outsideMarker(text, at + left)
+  const shift = kept.length - from
+  for (; i < markers.length; i++) front.push([markers[i][0] + shift, markers[i][1] + shift])
+  return { text: kept + text.slice(from), markers: front }
+}
+
+/** `end` behind an ellipsis for the text it was cut from, its markers where they then are. */
+export function behindEllipsis(end: MarkedText): MarkedText {
+  return { text: `\u2026${end.text}`, markers: end.markers.map(([start, stop]) => [start + 1, stop + 1]) }
 }
 
 const jsonBytes = (text: string): number => Buffer.byteLength(JSON.stringify(text), 'utf8')
 
 /** The tail of an answer that fits both caps. Each pass keeps the share of the
  *  tail that fits on average, a little under, and measures again: the tail may
- *  be denser than the whole. Every pass keeps at most 95%, so it ends. */
-function capOutput(output: string): { text: string; cut: boolean } {
-  let text = keepEnd(output, MAX_OUTPUT_CHARS)
-  let cut = output.length > MAX_OUTPUT_CHARS
-  let bytes = jsonBytes(text)
+ *  be denser than the whole. Every pass keeps at most 95%, so it ends. The
+ *  screen's markers go through each pass with it, so each keeps them whole. */
+function capOutput(output: MarkedText): { text: string; cut: boolean } {
+  let end = keepEnd(output.text, MAX_OUTPUT_CHARS, output.markers)
+  let cut = output.text.length > MAX_OUTPUT_CHARS
+  let bytes = jsonBytes(end.text)
   while (bytes > MAX_OUTPUT_JSON_BYTES) {
-    text = keepEnd(text, Math.floor((text.length * MAX_OUTPUT_JSON_BYTES * 0.95) / bytes))
+    end = keepEnd(end.text, Math.floor((end.text.length * MAX_OUTPUT_JSON_BYTES * 0.95) / bytes), end.markers)
     cut = true
-    bytes = jsonBytes(text)
+    bytes = jsonBytes(end.text)
   }
-  return { text, cut }
+  return { text: end.text, cut }
 }
 
-function capError(text: string): string {
-  return text.length > MAX_ERROR_CHARS ? `\u2026${keepEnd(text, MAX_ERROR_CHARS - 1)}` : text
+function capError(error: MarkedText): string {
+  return error.text.length > MAX_ERROR_CHARS ? `\u2026${keepEnd(error.text, MAX_ERROR_CHARS - 1, error.markers).text}` : error.text
 }
 
 function outcomeOf(r: ExecResult): Outcome {
@@ -358,7 +388,7 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     try {
       return deps.screen(text, keep, lookback)
     } catch {
-      return { text: WITHHELD, removed: {}, flagged: {} }
+      return { text: WITHHELD, removed: {}, flagged: {}, markers: [] }
     }
   }
 
@@ -428,12 +458,12 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     job.finishedAt = now
     job.durationMs = Math.max(0, now - job.startedAt)
     // Credentials go before the answer leaves. Its tail is screened with what came before it in
-    // view (screenTail), and capped again after, never into a marker (keepEnd): a marker can be
-    // longer than what it replaced.
+    // view (screenTail), and capped again after, never into one of the screen's markers (keepEnd):
+    // a marker can be longer than what it replaced.
     let output: SecretScreen | null = null
     if (outcome.output !== undefined) {
       output = screenTail(outcome.output, MAX_OUTPUT_CHARS)
-      const { text, cut } = capOutput(output.text)
+      const { text, cut } = capOutput(output)
       job.output = text
       if (outcome.output.length > MAX_OUTPUT_CHARS || cut) job.truncated = true
     }
@@ -442,7 +472,7 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       // The end of stderr, behind an ellipsis when there was more.
       const long = outcome.error.length > MAX_ERROR_CHARS
       error = screenTail(outcome.error, long ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS)
-      job.error = capError(long && error.text !== WITHHELD ? `\u2026${error.text}` : error.text)
+      job.error = capError(long && error.text !== WITHHELD ? behindEllipsis(error) : error)
     }
     const found = mergeScreens([output, error])
     job.answerRules = rulesOf(found)
