@@ -110,9 +110,10 @@ export interface LinkedJobsDeps {
   onActivity(a: LinkedActivity): void
   /** aiSecurity.screenText: credentials out of the prompt before it runs here, and out of the
    *  answer before it goes back. A computer on 1.50-1.52 sends its prompt unscreened. With `keep`,
-   *  only what the screen made of the last `keep` characters comes back, and with `lookback` no more
-   *  than that much before them is screened with them (screenTail). */
-  screen(text: string, keep?: number, lookback?: number): SecretScreen
+   *  only what the screen made of the last `keep` characters comes back, and with `lookback` the
+   *  rules look no further than that before them (screenTail). `cutStart`, for text another
+   *  computer cut, is never set here: what this computer screens is its own job's. */
+  screen(text: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen
   /** aiSecurity.maskForDisplay: every possible credential out of a job's summary, the ones
    *  screening leaves in for the agent too, before the activity view shows it, the job history
    *  keeps it and a notification shows it (activitySummary); and out of a folder a refusal
@@ -158,14 +159,13 @@ export const MAX_RESULT_WAIT_MS = 50_000
 /** An error is stderr, which can be a whole log; its end says what went wrong. */
 export const MAX_ERROR_CHARS = 4_000
 
-/** How much of an answer before the part that is kept is screened with it, so a credential the
- *  cut runs through is found whole. Most rules set no limit on how long a match is, so this
- *  reaches back past the longest one real text holds, a private-key block (aiSecurity's RULES): a
- *  rule takes its BEGIN line, at most 400 lines under it and its END line. That gives each of the
- *  400 lines 160 characters, over twice the 76 a key file writes at most (OpenPGP's limit; PEM
- *  and GnuPG write 64, OpenSSH 70), for indentation and line breaks, and 1,536 for the BEGIN and
- *  END lines. A token is a few hundred characters at most. */
-export const SCREEN_LOOKBACK_CHARS = 65_536
+/** How much of an answer before the part that is kept the rules look at with it, so a token the cut
+ *  runs through is found whole, its prefix and all: the longest match a rule screenText runs makes
+ *  in real text is a token of a few hundred characters (a PyPI token). A private key reaches further
+ *  back, and no rule finds it there: each key detector looks back for its own opener, a key block's
+ *  BEGIN line up to 256 KB back when the cut falls among key lines (keyMaterial's detectorStart),
+ *  and a longer key is taken from its END line. */
+export const SCREEN_LOOKBACK_CHARS = 4_096
 
 /** Longer than any real path; refused before it reaches the file system. */
 const MAX_CWD_CHARS = 4_096
@@ -409,11 +409,12 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
   }
 
   /** The last `keep` characters of `text`, screened before they are cut from the rest: with as much
-   *  before them in view as a credential the cut runs through can reach back (a key block's BEGIN
-   *  line, a token's prefix), so it is found whole. Cut first, what was left of it would match no
-   *  rule and go back as it is. No more than that is screened, however long `text` is: this runs
-   *  on the main thread. The screen is given all of `text` and told how far back to look, not a
-   *  slice of it: where a slice started, a rule would see the start of a word. */
+   *  before them in view as a credential the cut runs through can reach back (a token's prefix; a
+   *  key's own detectors look further, for its BEGIN line), so it is found whole. Cut first, what
+   *  was left of it would match nothing and go back as it is. No more than that is screened,
+   *  however long `text` is: this runs on the main thread. The screen is given all of `text` and
+   *  told how far back to look, not a slice of it: where a slice started, a rule would see the
+   *  start of a word. */
   function screenTail(text: string, keep: number): SecretScreen {
     return screenOrWithhold(text, keep, SCREEN_LOOKBACK_CHARS)
   }

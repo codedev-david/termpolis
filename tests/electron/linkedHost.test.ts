@@ -10,7 +10,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { setSafeStorage } from '../../src/main/secureKeyStore'
-import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
+import { maskForDisplay, screenText, type SecretScreen } from '../../src/main/aiSecurity'
 import { deriveVerificationPhrase, fromHex, generateIdentity, toHex } from '../../src/main/remoteBridge/sealedChannel'
 import { deriveSessionRoomId } from '../../src/main/remoteBridge/sessionCrypto'
 import { createPairingOffer } from '../../src/main/remoteBridge/pairing'
@@ -31,7 +31,7 @@ import type { KeyStorageView, LinkedBridgePort } from '../../src/main/remoteBrid
 import { REMOTE_KEYS_NOT_LOCKED, _resetRemoteHostForTests } from '../../src/main/remoteHost'
 import { localDesktopName } from '../../src/main/remoteBridge/desktopName'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
-import { MAX_OUTPUT_CHARS, type LinkedActivity } from '../../src/main/linkedJobs'
+import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, type LinkedActivity } from '../../src/main/linkedJobs'
 import { loadLinkedSettings, saveLinkedSettings } from '../../src/main/linkedSettings'
 import {
   DEFAULT_GRANTS,
@@ -262,6 +262,8 @@ interface BootOptions {
   notifyJob?: (notice: LinkedJobNotice) => void
   /** aiSecurity.maskForDisplay by default. */
   maskSecrets?: (text: string) => string
+  /** aiSecurity.screenText by default. */
+  screenSecrets?: (text: string, keep?: number, lookback?: number, cutStart?: boolean) => SecretScreen
 }
 
 function boot(opts: BootOptions = {}) {
@@ -292,7 +294,7 @@ function boot(opts: BootOptions = {}) {
     sendEvent: (e) => events.push(e),
     runHeadless,
     agentsInstalled,
-    screenSecrets: screenText,
+    screenSecrets: opts.screenSecrets ?? screenText,
     maskSecrets: opts.maskSecrets ?? maskForDisplay,
     ...(audit ? { audit } : {}),
     bridge: bridge.access,
@@ -2100,6 +2102,30 @@ describe('credentials between two computers', () => {
       expect(r.note).toBeUndefined()
     }
     expect(h.audit).not.toHaveBeenCalled()
+  })
+
+  it('tells the screen when the machine that ran a job cut what it sent: an output it says is truncated, an error behind its ellipsis', async () => {
+    const told: unknown[][] = []
+    const screenSecrets = (text: string, ...rest: [number?, number?, boolean?]): SecretScreen => {
+      told.push(rest)
+      return screenText(text, ...rest)
+    }
+    const L = joined()
+    const h = boot({ enabled: true, screenSecrets, state: { links: [L], meta: [meta(linkRef(L), { name: 'linux' })] } })
+    h.bridge.emit({ kind: 'linkStateChanged', id: L.id, attached: true })
+    h.bridge.answer = (call) => {
+      const view = { jobId: 'a1b2c3d4e5f6', agent: 'codex', startedAt: 1 }
+      if (call.request.kind === 'peerRun') return { kind: 'linkCallResult', callId: call.callId, ok: true, data: { ...view, status: 'running' } }
+      return { kind: 'linkCallResult', callId: call.callId, ok: true, data: { ...view, status: 'failed', output: 'the end of it', truncated: true, error: '…the end of stderr', durationMs: 5 } }
+    }
+    const r = (await linkedToolCall({ action: 'run', machine: 'linux', agent: 'codex', prompt: 'p', waitSec: 5 })) as Record<string, unknown>
+    expect(r).toMatchObject({ status: 'failed', truncated: true })
+    // The prompt as it is, then the output's end and the error's end, each an end that machine cut.
+    expect(told).toEqual([
+      [undefined, undefined, undefined],
+      [MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true],
+      [MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, true],
+    ])
   })
 
   it("audits what it took out of another machine's answer, and still answers when the log fails", async () => {

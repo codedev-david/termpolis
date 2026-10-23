@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { randomBytes } from 'crypto'
+import { generateKeyPairSync, randomBytes } from 'crypto'
 import * as path from 'path'
 import type { LinkTarget, PeerRequest } from '../../src/main/remoteBridge/protocol'
 import type { LinkedMachineView } from '../../src/main/linkedDirectory'
@@ -18,6 +18,7 @@ import {
   type LinkedToolArgs,
   type LinkedToolDeps,
 } from '../../src/main/linkedTool'
+import { JOIN, leakedWindows, makeKeys, pgpPhotoExport, secretLinesOf } from './fixtures/freshKeys'
 
 const LINUX_ID = '0011223344556677'
 const MAC_ID = 'a1b2c3d4e5f60718'
@@ -1052,10 +1053,10 @@ describe('credentials, asking', () => {
   })
 
   it('screens an answer and its error before it keeps their tails: a credential either cut runs through is found whole', async () => {
-    // What a version that caps nothing could send. The real rules, because what matters is how they
-    // meet the cut.
-    const body = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
-    const block = ['-----BEGIN RSA PRIVATE KEY-----', ...body, '-----END RSA PRIVATE KEY-----', ''].join('\n')
+    // What a version that caps nothing could send. The real screen, because what matters is how it
+    // meets the cut, and a fresh key: the screen knows one by what its bytes decode to.
+    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }) as string
+    const block = `${pem.trim()}\n`
     const secret = 'q'.repeat(36)
     const token = `export GITHUB_TOKEN=ghp_${secret}\n`
     // The output's tail is its last 200,000 characters: it starts 40 characters into the block,
@@ -1139,18 +1140,89 @@ describe('credentials, asking', () => {
     expect(findings).toEqual([])
   })
 
-  it('reaches back past the longest key block a rule takes, cut through its last line', async () => {
-    // 400 lines under the BEGIN line, the most a rule takes, 76 characters wide, the most a key
-    // file writes, indented: the cut runs through the last of them.
-    const lines = Array.from({ length: 400 }, (_, i) => `    ${'Ab'.repeat(34)}${String(i).padStart(8, '0')}`)
-    const longest = ['  -----BEGIN RSA PRIVATE KEY-----', ...lines, '  -----END RSA PRIVATE KEY-----', ''].join('\n')
-    const at = longest.indexOf('\n  -----END') - 20
-    const rest = '.'.repeat(200_000 - (longest.length - at))
+  it('takes a keyring export whose BEGIN line is 430,000 characters before the end it keeps, from its END line', async () => {
+    // From a version that caps nothing: a `gpg --export-secret-keys -a` of a key with a photo ID,
+    // over 9,000 lines. The end kept starts further past its BEGIN line than one is looked for
+    // (256 KB), so the key is taken from its END line.
+    const lines = pgpPhotoExport(450_000)
+    const longest = `${lines.join('\n')}\n`
+    const rest = '.'.repeat(200_000 - (longest.length - 430_000))
     const h = setup({ screen: screenText })
     scripted(h, [view({ status: 'done', output: `${'log line\n'.repeat(10_000)}${longest}${rest}`, durationMs: 5 })])
     const r = await run(h)
-    expect(r.output).toBe(`[answer from linux/codex]\n[REDACTED:private_key]\n${rest}`)
-    expect(r.note).toBe('Termpolis removed 1 credential (private_key) from this answer.')
+    expect(r.output).toBe(`[answer from linux/codex]\n[REDACTED:gpg_block]\n${rest}`)
+    expect(r.note).toBe('Termpolis removed 1 credential (gpg_block) from this answer.')
+  })
+
+  it('tells the screen when the other machine cut what it sent: an output it says is truncated, an error behind its ellipsis', async () => {
+    const seen: Array<[number, number | undefined, number | undefined, boolean | undefined]> = []
+    const screen = (text: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen => {
+      seen.push([text.length, keep, lookback, cutStart])
+      return { text, removed: {}, flagged: {}, markers: [] }
+    }
+    const cut = setup({ screen })
+    scripted(cut, [view({ status: 'failed', output: 'the end of it', truncated: true, error: '…the end of stderr', durationMs: 5 })])
+    await run(cut)
+    const whole = setup({ screen })
+    scripted(whole, [view({ status: 'failed', output: 'all of it', error: 'stderr…', durationMs: 5 })])
+    await run(whole)
+    expect(seen).toEqual([
+      [17, undefined, undefined, undefined],
+      [13, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true],
+      [18, MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, true],
+      [17, undefined, undefined, undefined],
+      [9, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, false],
+      [7, MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, false],
+    ])
+  })
+
+  it('removes a key an older version cut through before it screened, from the END line in the end that arrived', async () => {
+    // Versions 1.50 to 1.53.0 cut an answer to its end before screening it: what arrives is an
+    // output marked truncated, or an error behind an ellipsis, that starts inside a key. Its END
+    // line is in it, so what the cut left of the key goes with it, however little that is.
+    const keys = makeKeys()
+    let cases = 0
+    for (const format of ['pkcs8_rsa', 'openssh', 'pgp_rsa_hdr'] as const) {
+      const lines = keys.F[format]
+      const secret = secretLinesOf(lines)
+      for (const joining of ['lf', 'java_concat', 'cat_n', 'docker_t']) {
+        const body = JOIN[joining](lines)
+        const text = `Here is the deploy key as the build printed it:\n${body}\nThe deploy finished.\n`
+        for (const at of [0.3, 0.65, 0.95]) {
+          const end = text.slice(text.indexOf(body) + Math.floor(body.length * at))
+          // (a cut in the END line leaves none of the key: nothing to remove)
+          if (!secret.some((l) => end.includes(l.slice(-16)))) continue
+          cases++
+          const h = setup({ screen: screenText })
+          scripted(h, [view({ status: 'failed', output: end, truncated: true, error: `…${end}`, durationMs: 5 })])
+          const r = await run(h)
+          const label = `${format} ${joining} ${at}`
+          expect(leakedWindows(r.output as string, secret), label).toBe(0)
+          expect(leakedWindows(r.error as string, secret), label).toBe(0)
+          expect(r.note, label).toContain('Termpolis removed 2 credentials')
+        }
+      }
+    }
+    expect(cases).toBeGreaterThan(30)
+  })
+
+  it("keeps every line of lnk3's 218,726-character report as the other machine sent its end", async () => {
+    // F2: the machine that ran it screened it, found nothing and cut it to its end. Here that end
+    // is screened again as one the other machine cut: each line of the report ends in the same
+    // word, down to the END line its summary names, and none of them is a key's.
+    const F1A =
+      "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources\nBoth only hold certificates (`server.crt`, `ca.crt`), no keys."
+    const report = Array.from({ length: 2600 }, (_, i) => `test ${String(i).padStart(4, '0')} passed: parsePem accepts header ${i % 7} and rejects malformed input as expected`).join('\n')
+    const answer = `${F1A.split('\n').slice(0, 3).join('\n')}\n${report}\nSummary: nothing ends with \`-----END RSA PRIVATE KEY-----\`. All 2600 checks passed; the full report is above.`
+    expect(answer).toHaveLength(218_726)
+    const output = answer.slice(-MAX_OUTPUT_CHARS)
+    const error = `…${answer.slice(-(MAX_ERROR_CHARS - 1))}`
+    const h = setup({ screen: screenText })
+    scripted(h, [view({ status: 'failed', output, truncated: true, error, durationMs: 5 })])
+    const r = await run(h)
+    expect(r.output).toBe(`[answer from linux/codex]\n${output}`)
+    expect(r.error).toBe(`[answer from linux/codex]\n${error}`)
+    expect(r.note).toBeUndefined()
   })
 
   it('keeps an error of exactly 4,000 characters whole, and puts one character longer behind an ellipsis', async () => {

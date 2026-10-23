@@ -713,7 +713,10 @@ function tailAbove(text: string, at: number, floor: number): Run[] {
     if (runs.length === 0) {
       runs.push(last) // the last key line, which may be short
     } else if (runs.length === 1) {
-      if (w < runs[0][1] - runs[0][0]) break
+      // A key's full lines are as wide as its last one or wider, and at least a payload run wide:
+      // the last word on each line of a report (`... as expected`) is no key line, and a report
+      // printed above an END line named in prose was taken for a key's tail.
+      if (w < runs[0][1] - runs[0][0] || w < MIN_RUN) break
       width = w
       frame = f
       runs.push(last)

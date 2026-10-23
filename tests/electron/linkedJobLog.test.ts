@@ -276,4 +276,10 @@ describe('recordFrom', () => {
     const many = Array.from({ length: 40 }, (_, i) => `rule_${i}`)
     expect(recordFrom({ ts: 1, event: 'started', ref: '', machine: 'm', secretRules: many })?.secretRules).toHaveLength(32)
   })
+
+  it('keeps the rule ids only the Linked machines screen gives a key, with a digit in two of them', () => {
+    // No rule in the shared table is named so: the key detectors' own ids (keyMaterial).
+    const ids = ['ssh2_private_key', 'openvpn_static_key', 'private_key_b64', 'putty_private_key', 'jwk_private_key', 'xml_private_key']
+    expect(recordFrom({ ts: 1, event: 'started', ref: '', machine: 'm', secretRules: ids })?.secretRules).toEqual(ids)
+  })
 })

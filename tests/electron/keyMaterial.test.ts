@@ -204,6 +204,21 @@ describe('T1 K4: a key tail with its END line, its BEGIN line out of view', () =
     for (const n of [15, 12]) expect(screenKeys(`…${last.slice(-n)}\n-----END PRIVATE KEY-----\n`, { cutStart: true }).removed, String(n)).toEqual({})
   })
 
+  it("at the start of a text another computer cut, a report's last words above an END line named in prose are no key's tail", () => {
+    // lnk3's F2: each line of a report ends in the same 8-character word, one width and one frame
+    // from the top of the text down to the END line its summary names. Taken for a key's tail,
+    // the whole report went. A key's full lines are a payload run wide at least.
+    const report = Array.from({ length: 40 }, (_, i) => `test ${String(i).padStart(4, '0')} passed: parsePem accepts header ${i % 7} and rejects malformed input as expected`).join('\n')
+    const text = `${report.slice(25)}\nSummary: nothing ends with \`-----END RSA PRIVATE KEY-----\`. All checks passed.`
+    expect(headless(text, [], { cutAt: 0 })).toEqual([])
+    expect(screenKeys(text, { cutStart: true })).toMatchObject({ text, removed: {}, flagged: {} })
+    // Random lines 16 characters wide, a payload run, are a key's lines there; 15 wide, they are not.
+    const lines = (w: number): string => wrap(randomBytes(150).toString('base64').replace(/=+$/, ''), w).slice(0, 9).join('\n')
+    expect(screenKeys(`${lines(16)}\n-----END PRIVATE KEY-----\nok`, { cutStart: true }).text).toBe('[REDACTED:private_key]\nok')
+    const narrow = `${lines(15)}\n-----END PRIVATE KEY-----\nok`
+    expect(screenKeys(narrow, { cutStart: true }).text).toBe(narrow)
+  })
+
   it('at the start of a text another computer cut, a run of key lines with no END line below is flagged, not removed', () => {
     const p8 = K.F.pkcs8_rsa
     const text = p8.slice(5, 15).join('\n') + '\nThe deploy finished.'

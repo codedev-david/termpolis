@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, vi } from 'vitest'
 import * as path from 'path'
+import { generateKeyPairSync } from 'crypto'
 import type { ExecRequest, ExecResult } from '../../src/main/headlessExec'
 import type { LinkTarget, PeerJobView } from '../../src/main/remoteBridge/protocol'
 import type { LinkMeta } from '../../src/main/linkedStore'
@@ -20,6 +21,7 @@ import {
   type LinkedJobsDeps,
   type LinkedSecretFinding,
 } from '../../src/main/linkedJobs'
+import { leakedWindows, pgpPhotoExport, secretLinesOf } from './fixtures/freshKeys'
 
 const HOME = path.resolve('/home/tester')
 const REPO = path.join(HOME, 'repos', 'app')
@@ -1072,14 +1074,20 @@ describe('credentials on the way in and out', () => {
   })
 })
 
-// The real rules, because what matters here is how they meet the cut: a credential the cut runs
+// The real screen, because what matters here is how it meets the cut: a credential the cut runs
 // through must still be found whole, BEGIN line or prefix and all.
 describe('an answer longer than it may be: screened, then cut', () => {
-  /** A key's body lines, in both cases as base64 is, each its own. */
-  const BODY = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
-  const BLOCK = ['-----BEGIN RSA PRIVATE KEY-----', ...BODY, '-----END RSA PRIVATE KEY-----', ''].join('\n')
-  /** Anything of a key's body: 12 characters of a line, or a line's own number. */
-  const BODY_PIECE = /(?:Ab){6}|\d{8}/
+  /** A fresh key, made for the run and never printed: the screen knows a key by what its bytes
+   *  decode to, so a made-up body would only be reported. */
+  let BLOCK = ''
+  /** Its base64 lines: no 12 characters of one may cross (leakedWindows). */
+  let KEY_LINES: string[] = []
+  beforeAll(() => {
+    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }) as string
+    const lines = pem.trim().split('\n')
+    BLOCK = `${lines.join('\n')}\n`
+    KEY_LINES = secretLinesOf(lines)
+  })
   const SECRET = 'q'.repeat(36)
   const TOKEN = `ghp_${SECRET}`
   /** More log than the lookback reaches over, so what is screened is itself cut from the answer. */
@@ -1109,7 +1117,7 @@ describe('an answer longer than it may be: screened, then cut', () => {
     const { done, findings } = await answer({ output: across(BLOCK, 40, MAX_OUTPUT_CHARS) })
     expect(done.truncated).toBe(true)
     expect(done.output?.startsWith('[REDACTED:private_key]\n...')).toBe(true)
-    expect(done.output).not.toMatch(BODY_PIECE)
+    expect(leakedWindows(done.output as string, KEY_LINES)).toBe(0)
     expect(done.output).not.toContain('-----END')
     expect(findings).toEqual(removedOut({ private_key: 1 }))
   })
@@ -1124,7 +1132,7 @@ describe('an answer longer than it may be: screened, then cut', () => {
   it('does the same for stderr, cut to its last 4,000 characters', async () => {
     const block = await answer({ ok: false, output: '', error: across(BLOCK, 40, MAX_ERROR_CHARS - 1), code: 1 })
     expect(block.done.error?.startsWith('…[REDACTED:private_key]\n...')).toBe(true)
-    expect(block.done.error).not.toMatch(BODY_PIECE)
+    expect(leakedWindows(block.done.error as string, KEY_LINES)).toBe(0)
     expect(block.done.error?.length).toBeLessThanOrEqual(MAX_ERROR_CHARS)
     expect(block.findings).toEqual(removedOut({ private_key: 1 }))
     const token = await answer({ ok: false, output: '', error: across(`export GITHUB_TOKEN=${TOKEN}\n`, 'export GITHUB_TOKEN='.length + 2, MAX_ERROR_CHARS - 1), code: 1 })
@@ -1278,25 +1286,33 @@ describe('an answer longer than it may be: screened, then cut', () => {
     expect(findings).toEqual([])
   })
 
-  it('reaches back past the longest key block a rule takes, to the BEGIN line of one cut through its last line', async () => {
-    // A rule takes at most 400 lines under the BEGIN line, and a key file writes them 76 characters
-    // wide at most. Here they are indented and end in CRLF, as in a YAML file saved on Windows, and
-    // the cut runs through the last of them, 32,817 characters past the BEGIN line.
-    const lines = Array.from({ length: 400 }, (_, i) => `    ${'Ab'.repeat(34)}${String(i).padStart(8, '0')}`)
-    const longest = ['    -----BEGIN PGP PRIVATE KEY BLOCK-----', ...lines, '    -----END PGP PRIVATE KEY BLOCK-----', ''].join('\r\n')
-    const at = longest.indexOf('\r\n    -----END') - 20
-    expect(at - longest.indexOf('-----BEGIN')).toBe(32_817)
-    const { done, findings } = await answer({ output: across(longest, at, MAX_OUTPUT_CHARS) })
-    expect(done.output?.startsWith('[REDACTED:gpg_block]\r\n...')).toBe(true)
-    expect(done.output).not.toMatch(BODY_PIECE)
+  it("keeps every line of lnk3's 218,726-character report, which names a BEGIN and an END line", async () => {
+    // F2: one false match of a key-block rule before the cut once took the whole end that was kept.
+    const report = Array.from({ length: 2600 }, (_, i) => `test ${String(i).padStart(4, '0')} passed: parsePem accepts header ${i % 7} and rejects malformed input as expected`).join('\n')
+    const intro = "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources"
+    const log = `${intro}\n${report}\nSummary: nothing ends with \`-----END RSA PRIVATE KEY-----\`. All 2600 checks passed; the full report is above.`
+    expect(log).toHaveLength(218_726)
+    const { done, findings } = await answer({ output: log })
+    expect(done.output).toBe(log.slice(-MAX_OUTPUT_CHARS))
+    expect(done.truncated).toBe(true)
+    expect(findings).toEqual([])
+    const failed = await answer({ ok: false, output: '', error: log, code: 1 })
+    expect(failed.done.error).toBe(`…${log.slice(-(MAX_ERROR_CHARS - 1))}`)
+    expect(failed.findings).toEqual([])
+  })
+
+  it('takes a keyring export whose BEGIN line is 430,000 characters before the end it keeps, from its END line', async () => {
+    // A `gpg --export-secret-keys -a` of a key with a photo ID: over 9,000 lines, not the 400 a
+    // rule once took. The end kept starts 430,000 characters past its BEGIN line, further back
+    // than one is looked for (256 KB): the key is taken from its END line, and the end that goes
+    // back starts with its marker.
+    const lines = pgpPhotoExport(450_000)
+    expect(lines.length).toBeGreaterThan(9_000)
+    const longest = `${lines.join('\n')}\n`
+    const { done, findings } = await answer({ output: across(longest, 430_000, MAX_OUTPUT_CHARS) })
+    expect(done.truncated).toBe(true)
+    expect(done.output).toBe(`[REDACTED:gpg_block]\n${'.'.repeat(MAX_OUTPUT_CHARS - (longest.length - 430_000))}`)
     expect(findings).toEqual(removedOut({ gpg_block: 1 }))
-    // What a rule takes ends 400 lines under the BEGIN line, so no key block it takes is longer:
-    // a rule that took more would need a longer lookback.
-    const over = [...lines, `    ${'Ab'.repeat(34)}00000400`]
-    for (const [rule, kind] of [['private_key', 'RSA PRIVATE KEY'], ['gpg_block', 'PGP PRIVATE KEY BLOCK'], ['ssh_dsa_pubkey', 'DSA PRIVATE KEY']]) {
-      const block = [`-----BEGIN ${kind}-----`, ...over, `-----END ${kind}-----`].join('\n')
-      expect(screenText(block).text, rule).toBe(`[REDACTED:${rule}]\n${over[400]}\n-----END ${kind}-----`)
-    }
   })
 })
 

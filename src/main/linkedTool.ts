@@ -67,9 +67,10 @@ export interface LinkedToolDeps {
   /** peerAnswerBanner(inspectResult(text, 210_000), machine, agent): a job's output or error,
    *  always labelled. */
   frame(text: string, machine: string, agent: string): string
-  /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters, and with
-   *  `lookback`, screening no more than that much before them. */
-  screen(text: string, keep?: number, lookback?: number): SecretScreen
+  /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters, with
+   *  `lookback`, the rules looking no further than that before them, and with `cutStart`, for an
+   *  end the other machine cut. */
+  screen(text: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen
   /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary). */
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
@@ -283,9 +284,11 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
    *  before them in view as a credential the cut runs through can reach back (linkedJobs'
    *  screenTail, which the other machine runs on its side). A version that sent more than it may
    *  is not screened whole; the screen is told how far back to look rather than given a slice,
-   *  where a rule would see the start of a word. */
-  function screenTail(text: string, keep: number): SecretScreen {
-    return deps.screen(text, keep, SCREEN_LOOKBACK_CHARS)
+   *  where a rule would see the start of a word. `cut`: the other machine cut `text` from a longer
+   *  one, and a version before 1.53.1 cut before it screened, so it can start inside a key the cut
+   *  ran through (aiSecurity.screenText's cutStart). */
+  function screenTail(text: string, keep: number, cut: boolean): SecretScreen {
+    return deps.screen(text, keep, SCREEN_LOOKBACK_CHARS, cut)
   }
 
   /** A job's output and error as an agent may read them: screened and labelled, with notes for
@@ -295,10 +298,12 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     const known = finished ? checked.get(job.jobId) : undefined
     if (known) return known
     // The tails, as the other machine keeps them: the output's, and the error's behind an ellipsis.
+    // Each is an end that machine cut when it says so: the output when the view is truncated, the
+    // error when it starts with the ellipsis that machine's cut puts in front.
     const long = view.output !== undefined && view.output.length > MAX_OUTPUT_CHARS
-    const output = view.output === undefined ? null : screenTail(view.output, MAX_OUTPUT_CHARS)
+    const output = view.output === undefined ? null : screenTail(view.output, MAX_OUTPUT_CHARS, view.truncated === true)
     const longError = view.error !== undefined && view.error.length > MAX_ERROR_CHARS
-    const error = view.error === undefined ? null : screenTail(view.error, longError ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS)
+    const error = view.error === undefined ? null : screenTail(view.error, longError ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS, view.error.startsWith('…'))
     const found = mergeScreens([output, error])
     reportSecrets({ hop: 'answer-in', machine: job.name, agent: view.agent, removed: found.removed, flagged: found.flagged })
     const out: Checked = {

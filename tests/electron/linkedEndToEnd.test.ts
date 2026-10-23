@@ -15,6 +15,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { generateKeyPairSync } from 'crypto'
 import { createBridgeCore, type BridgeCore } from '../../src/main/remoteBridge/entry'
 import type { BridgeToHost, HostToBridge } from '../../src/main/remoteBridge/protocol'
 import {
@@ -32,6 +33,7 @@ import type { LinkedAuditEntry, LinkedEvent, LinkedJobRecord, LinkedStatusView }
 import type { LinkedGrants } from '../../src/main/linkedStore'
 import type { LinkedToolArgs } from '../../src/main/linkedTool'
 import { createMemoryRelay, relayOpener, type MemoryRelay } from './fixtures/memoryRelay'
+import { leakedWindows, secretLinesOf } from './fixtures/freshKeys'
 
 type LinkedStoreModule = typeof import('../../src/main/linkedStore')
 type Pending = Extract<LinkedEvent, { kind: 'pending' }>
@@ -661,18 +663,41 @@ describe('delegating a job', () => {
 
   it('takes a key out of an answer too long to send whole, though the cut to its tail runs through it', async () => {
     const { a, b } = await linkedPair()
-    const body = Array.from({ length: 25 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(8, '0')}`)
-    const block = ['-----BEGIN RSA PRIVATE KEY-----', ...body, '-----END RSA PRIVATE KEY-----', ''].join('\n')
+    // A fresh key: the screen knows one by what its bytes decode to.
+    const pem = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs1', format: 'pem' }) as string
+    const lines = pem.trim().split('\n')
+    const block = `${lines.join('\n')}\n`
     // The tail an answer keeps is its last 200,000 characters: it starts 40 characters into the block,
     // after more log than the build box screens before a tail.
     const rest = 'step ok\n'.repeat(25_000).slice(0, 200_000 - (block.length - 40))
     b.agent = async (req) => finished(req, `${'log line\n'.repeat(10_000)}${block}${rest}`)
     const answer = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Print the deploy log.', cwd: b.work })
     expect(answer).toMatchObject({ status: 'done', truncated: true, output: answered(BUILDBOX_ON_LAPTOP, 'codex', `[REDACTED:private_key]\n${rest}`) })
-    expect(answer.output).not.toMatch(/(?:Ab){6}|\d{8}/)
+    expect(leakedWindows(answer.output as string, secretLinesOf(lines))).toBe(0)
     // One finding, on the build box, which took it out; this side had nothing left to find.
     expect(b.audits).toEqual([{ agent: 'codex', event: 'linked_secret_removed', hitCount: 1, notes: `answer to "${LAPTOP_ON_BUILDBOX}": private_key x1` }])
     expect(a.audits).toEqual([])
+  })
+
+  it("hands back the end of lnk3's 218,726-character report with every line of it, screened on both computers", async () => {
+    // F2: a 2,600-line report whose every line ends in the same word, between a BEGIN line and an
+    // END line its summary names. The build box keeps its end; this side screens that again as an
+    // end the build box cut, its output and its error the same. Neither finds a key in it.
+    const { a, b } = await linkedPair()
+    const report = Array.from({ length: 2600 }, (_, i) => `test ${String(i).padStart(4, '0')} passed: parsePem accepts header ${i % 7} and rejects malformed input as expected`).join('\n')
+    const intro = "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources"
+    const log = `${intro}\n${report}\nSummary: nothing ends with \`-----END RSA PRIVATE KEY-----\`. All 2600 checks passed; the full report is above.`
+    expect(log).toHaveLength(218_726)
+    b.agent = async (req) => finished(req, log)
+    const done = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Run the parser tests.', cwd: b.work })
+    expect(done).toMatchObject({ status: 'done', truncated: true, output: answered(BUILDBOX_ON_LAPTOP, 'codex', log.slice(-200_000)) })
+    expect(done.note).toBeUndefined()
+    b.agent = async (req) => ({ ...finished(req, ''), ok: false, error: log, code: 1 })
+    const failed = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Run the parser tests.', cwd: b.work })
+    expect(failed).toMatchObject({ status: 'failed', error: answered(BUILDBOX_ON_LAPTOP, 'codex', `…${log.slice(-3_999)}`) })
+    expect(failed.note).toBeUndefined()
+    expect(a.audits).toEqual([])
+    expect(b.audits).toEqual([])
   })
 
   it('hands back code with test fixtures in it byte for byte, naming what looked like credentials', async () => {

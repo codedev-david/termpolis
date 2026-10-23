@@ -180,9 +180,10 @@ export interface LinkedHostBinding {
   /** aiSecurity.screenText, which every prompt and answer between two computers
    *  goes through, on both. Bound by the app rather than imported, as every
    *  other dependency here is. With `keep`, what it made of the last `keep`
-   *  characters only: an answer is screened before it is cut to its tail, and
-   *  with `lookback`, no more than that much of it before the tail. */
-  screenSecrets(text: string, keep?: number, lookback?: number): SecretScreen
+   *  characters only: an answer is screened before it is cut to its tail; with
+   *  `lookback`, the rules look no further than that before the tail; and with
+   *  `cutStart`, the text is an end the other computer cut. */
+  screenSecrets(text: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen
   /** aiSecurity.maskForDisplay: a job's summary with every possible credential taken out, the
    *  heuristic ones too, before the Activity list shows it, the job history keeps it or a
    *  notification shows it; and a refusal's reason, and the folder a refusal repeats, before
@@ -805,7 +806,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     now,
     randomId: () => randomBytes(6).toString('hex'),
     onActivity: noteActivity,
-    screen: (text, keep, lookback) => b.screenSecrets(text, keep, lookback),
+    screen: (text, keep, lookback, cutStart) => b.screenSecrets(text, keep, lookback, cutStart),
     mask: (text) => b.maskSecrets(text),
     onSecrets: auditSecrets,
   })
@@ -848,7 +849,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     localName: () => machineName,
     inspect: (text, machine, agent) => riskBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
     frame: (text, machine, agent) => peerAnswerBanner(inspectResult(text, INSPECT_MAX_CHARS), machine, agent),
-    screen: (text, keep, lookback) => b.screenSecrets(text, keep, lookback),
+    screen: (text, keep, lookback, cutStart) => b.screenSecrets(text, keep, lookback, cutStart),
     mask: (text) => b.maskSecrets(text),
     onSecrets: auditSecrets,
     onActivity: noteActivity,
