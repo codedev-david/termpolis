@@ -19,11 +19,11 @@
 import { randomUUID } from 'crypto'
 import { TerminalScreen } from '../shared/terminalScreen'
 import type { ScreenSize } from '../shared/terminalScreen'
-import { AGY_SIGNED_IN_WORDS, SIGN_IN_TIMEOUT_MS, SIGN_IN_UNKNOWN_MS, isSignInPage, readSignInScreen, signInText } from '../shared/signInScreens'
+import { SIGN_IN_TIMEOUT_MS, SIGN_IN_UNKNOWN_MS, isSignInPage, readSignInScreen, signInText } from '../shared/signInScreens'
 import type { SignInInput, SignInPhase, SignInScreen, SignInState } from '../shared/signInScreens'
 import { ACCOUNT_AGENT_LABEL } from '../shared/agentAccounts'
 import type { AccountAgent } from '../shared/agentAccounts'
-import { EXIT_COMMAND } from '../shared/accountSwitch'
+import { AGY_SIGNED_IN, EXIT_COMMAND } from '../shared/accountSwitch'
 import { redactSecrets } from '../shared/appLog'
 import { EXIT_CONFIRM_MS, atIdleBox, typeIntoBox, waitFor } from './accountSwitch'
 import type { SwitchIO } from './accountSwitch'
@@ -343,7 +343,7 @@ function agyTick(s: Session, deps: SessionDeps, screen: SignInScreen): void {
       return unknown(s, deps, true)
     }
   }
-  if (s.stage === 'signing-in' && AGY_SIGNED_IN_WORDS.test(signInText(ioOf(s, deps).outputFrom(s.id, s.signInFrom)))) s.stage = 'signed-in'
+  if (s.stage === 'signing-in' && AGY_SIGNED_IN.test(signInText(ioOf(s, deps).outputFrom(s.id, s.signInFrom)))) s.stage = 'signed-in'
   if (s.stage === 'signed-in' && screen.kind === 'agy-ready') return void agyDone(s, deps)
   if (screen.kind === 'error') return fail(s, deps, screen.message)
   if (screen.kind === 'unknown' || screen.kind === 'agy-ready') return unknown(s, deps)

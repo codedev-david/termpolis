@@ -59,15 +59,10 @@ export interface SignInRead {
  *  through whole: it is one run of text, which the terminal wraps by itself. */
 export function signInText(raw: string): string {
   return raw
-    // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-9;?]*[HfABEFd]/g, '\n')
-    // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-9;]*[CG]/g, ' ')
-    // eslint-disable-next-line no-control-regex
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    // eslint-disable-next-line no-control-regex
     .replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '')
-    // eslint-disable-next-line no-control-regex
     .replace(/\x1b./g, '')
 }
 
@@ -91,7 +86,6 @@ export const SIGN_IN_PAGES: Readonly<Record<AccountAgent, ReadonlyArray<{ host: 
 /** Whether `url` is one of `agent`'s own sign-in pages: https, no user or password, the exact host,
  *  and the page's path (or below it). Anything else is never opened. */
 export function isSignInPage(agent: AccountAgent, url: string): boolean {
-  // eslint-disable-next-line no-control-regex
   if (typeof url !== 'string' || url.length > 4096 || /[\s\u0000-\u001f\u007f]/.test(url)) return false
   let u: URL
   try {
@@ -261,9 +255,6 @@ function lastAddress(text: string): string | null {
   for (const m of text.matchAll(ADDRESS)) if (m[0].startsWith('https://')) found = m[0]
   return found
 }
-
-/** agy's own words that its sign-in finished (agy-signin.md): its input box comes back after them. */
-export const AGY_SIGNED_IN_WORDS = /Authentication successful!|Successfully authenticated\./
 
 /** What `agent`'s sign-in shows now. */
 export function readSignInScreen(agent: AccountAgent, r: SignInRead): SignInScreen {
