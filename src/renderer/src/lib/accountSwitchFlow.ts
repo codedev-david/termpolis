@@ -200,6 +200,25 @@ export async function openOnAccount(source: TerminalSession, target: AccountRowV
   return { ok: true, id }
 }
 
+/** "Use another agent" (§8.4): another agent in a new terminal in the same folder, on its preferred
+ *  account, with a fresh session. Termpolis types nothing of the conversation into it: its memory
+ *  primes the new agent at its start. */
+export async function openOtherAgent(source: TerminalSession, command: string, label: string, deps: NewTerminalDeps): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const id = deps.newId()
+  try {
+    const res = await deps.createTerminal(id, source.shellType, source.cwd, undefined, isClaudeCommand(command))
+    if (!res.success) return { ok: false, error: `Termpolis couldn't open the terminal: ${res.error}` }
+  } catch (e) {
+    return { ok: false, error: `Termpolis couldn't open the terminal: ${e instanceof Error ? e.message : String(e)}` }
+  }
+  deps.addTerminal({
+    id, name: `${source.name} · ${label}`, color: source.color, shellType: source.shellType, cwd: source.cwd,
+    fontSize: source.fontSize, theme: source.theme, fontFamily: source.fontFamily, agentCommand: command,
+  })
+  deps.launch([{ id, agentCommand: command, cwd: source.cwd, shellType: source.shellType }])
+  return { ok: true, id }
+}
+
 /** The agent has more than one account: a relaunch can land on a profile whose sign-in expired,
  *  so its login-method picker is the user's to answer (R10). */
 export function hasManyAccounts(view: AccountsView | null, agent: AccountAgent | null): boolean {

@@ -91,6 +91,16 @@ describe('relaunchCommandFor', () => {
     expect(relaunchCommandFor('gemini', 'gemini-3.8-flash-high', CAT)).toBe('agy --model gemini-3.8-flash-high --continue')
   })
 
+  it("resumes Claude Code's exact session when given one, never another's newest in the folder (R8)", () => {
+    const sid = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+    expect(relaunchCommandFor('claude', 'sonnet', CAT, sid)).toBe(`claude --model sonnet --resume ${sid}`)
+    // Not a session id: what the picker types without one.
+    expect(relaunchCommandFor('claude', 'sonnet', CAT, 'x; rm -rf /')).toBe('claude --model sonnet --continue')
+    // Only Claude Code takes one here.
+    expect(relaunchCommandFor('codex', 'gpt-5.6-sol', CAT, sid)).toBe('codex --model gpt-5.6-sol resume --last')
+    expect(relaunchCommandFor('gemini', 'gemini-3.8-flash-high', CAT, sid)).toBe('agy --model gemini-3.8-flash-high --continue')
+  })
+
   it('returns an empty command for anything not offered, so nothing reaches the PTY', () => {
     expect(relaunchCommandFor('codex', 'gpt-9-imaginary', CAT)).toBe('')
     expect(relaunchCommandFor('codex', 'gpt-5.6-sol', null)).toBe('')

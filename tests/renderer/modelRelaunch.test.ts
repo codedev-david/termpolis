@@ -136,6 +136,14 @@ describe('relaunchHeld: the picker under the terminal\'s relaunch lock (§7.5)',
     expect(calls.slice(-2)).toEqual(['release t1 k1', 'end'])
   })
 
+  it("resumes the exact session it is given: the usage-limit chooser's model row (R15)", async () => {
+    const sid = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+    const { r, calls, writes } = held({ provider: 'claude', modelId: 'sonnet', sessionId: sid })
+    expect(await relaunchHeld(r)).toBeNull()
+    expect(calls[1]).toBe(`hold t1 claude --model sonnet --resume ${sid}`)
+    expect(writes[writes.length - 1]).toEqual([`claude --model sonnet --resume ${sid}\r`, 'k1'])
+  })
+
   it('types nothing, and takes nothing, for a model the catalog doesn\'t offer', async () => {
     const { r, calls } = held({ modelId: 'gpt-9-imaginary' })
     expect(await relaunchHeld(r)).toBeNull()

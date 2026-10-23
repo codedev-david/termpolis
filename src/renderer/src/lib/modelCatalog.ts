@@ -15,6 +15,7 @@
 // only place their (fast-moving, versioned) ids exist.
 
 import { CLAUDE_MODEL_OPTIONS, type ModelOption } from './modelBroker'
+import { isSessionId } from '../../../shared/accountSwitch'
 
 export type ModelProvider = 'claude' | 'codex' | 'gemini'
 
@@ -105,10 +106,13 @@ export function isOfferedModel(provider: ModelProvider | null, id: string, catal
  *   codex  — `resume --last` is Codex's own "continue the most recent session".
  *   gemini — `--continue` is the Antigravity CLI's equivalent.
  */
-export function relaunchCommandFor(provider: ModelProvider | null, id: string, catalog: ModelCatalog | null | undefined): string {
+export function relaunchCommandFor(provider: ModelProvider | null, id: string, catalog: ModelCatalog | null | undefined, sessionId?: string): string {
   if (!provider || !isOfferedModel(provider, id, catalog)) return ''
   const bin = PROVIDER_BIN[provider]
   if (provider === 'codex') return `${bin} --model ${id} resume --last`
+  // Claude Code, given the exact session to resume (the usage-limit chooser's model row): that one,
+  // never the newest in the folder, which can be another terminal's (R8).
+  if (provider === 'claude' && sessionId !== undefined && isSessionId(sessionId)) return `${bin} --model ${id} --resume ${sessionId}`
   return `${bin} --model ${id} --continue`
 }
 

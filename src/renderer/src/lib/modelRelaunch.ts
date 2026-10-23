@@ -83,8 +83,9 @@ export async function relaunchAgentWithModel(
   modelId: string,
   catalog: ModelCatalog | null | undefined,
   io: RelaunchIO,
+  sessionId?: string,
 ): Promise<void> {
-  const command = relaunchCommandFor(provider, modelId, catalog)
+  const command = relaunchCommandFor(provider, modelId, catalog, sessionId)
   if (!command) return
   await exitAgent(provider, io)
   io.write(`${command}\r`)
@@ -114,6 +115,9 @@ export interface HeldRelaunch {
   begin: () => boolean
   end: () => void
   main: ModelHoldBridge | null
+  /** Claude Code: the exact session to resume (the usage-limit chooser's model row), not the
+   *  newest in the folder. */
+  sessionId?: string
   /** The terminal's writes (window.termpolis.writeToTerminal): each carries the key of main's
    *  hold, while there is one. */
   write: (id: string, data: string, key?: string) => void
@@ -126,7 +130,7 @@ export interface HeldRelaunch {
  * typed nothing, or null.
  */
 export async function relaunchHeld(r: HeldRelaunch): Promise<string | null> {
-  const command = relaunchCommandFor(r.provider, r.modelId, r.catalog)
+  const command = relaunchCommandFor(r.provider, r.modelId, r.catalog, r.sessionId)
   if (!command) return null
   if (!r.begin()) return MODEL_HELD
   let key: string | null = null
@@ -138,7 +142,7 @@ export async function relaunchHeld(r: HeldRelaunch): Promise<string | null> {
     }
     const held = key
     const write = held ? (data: string) => r.write(r.terminalId, data, held) : (data: string) => r.write(r.terminalId, data)
-    await relaunchAgentWithModel(r.provider, r.modelId, r.catalog, { write, sleep: r.sleep })
+    await relaunchAgentWithModel(r.provider, r.modelId, r.catalog, { write, sleep: r.sleep }, r.sessionId)
     return null
   } catch (e) {
     return e instanceof Error ? e.message : String(e)

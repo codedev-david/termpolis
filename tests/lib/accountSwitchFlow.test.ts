@@ -4,7 +4,7 @@
 // says, and "New terminal on <account>" (§7.4).
 import { describe, it, expect, vi } from 'vitest'
 import {
-  checkSignIn, hasManyAccounts, openOnAccount, outcomeView, runSwitch, switchQuestions, switchTargets, terminalAgent,
+  checkSignIn, hasManyAccounts, openOnAccount, openOtherAgent, outcomeView, runSwitch, switchQuestions, switchTargets, terminalAgent,
 } from '../../src/renderer/src/lib/accountSwitchFlow'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { SwitchOutcome } from '../../src/shared/accountSwitch'
@@ -230,5 +230,39 @@ describe('openOnAccount (§7.4)', () => {
     odd.createTerminal.mockRejectedValue('odd')
     expect(await openOnAccount(term, B, odd as never)).toEqual({ ok: false, error: 'Termpolis couldn\'t open the terminal: odd' })
     expect(failed.addTerminal).not.toHaveBeenCalled()
+  })
+})
+
+describe('openOtherAgent (§8.4 Use another agent)', () => {
+  const deps = () => ({
+    createTerminal: vi.fn(async () => ({ success: true as const })),
+    addTerminal: vi.fn(),
+    launch: vi.fn(),
+    newId: () => 't3',
+  })
+
+  it("opens the other agent beside the terminal, in its folder, on that agent's preferred account", async () => {
+    const d = deps()
+    expect(await openOtherAgent(term, 'codex', 'Codex', d as never)).toEqual({ ok: true, id: 't3' })
+    expect(d.createTerminal).toHaveBeenCalledWith('t3', 'gitbash', '/repo', undefined, false)
+    expect(d.addTerminal).toHaveBeenCalledWith(expect.objectContaining({ id: 't3', name: 'Claude Code — repo · Codex', agentCommand: 'codex', cwd: '/repo' }))
+    expect(d.addTerminal.mock.calls[0][0]).not.toHaveProperty('agentAccountId')
+    expect(d.launch).toHaveBeenCalledWith([{ id: 't3', agentCommand: 'codex', cwd: '/repo', shellType: 'gitbash' }])
+    await openOtherAgent({ ...term, agentCommand: 'codex' }, 'claude', 'Claude Code', d as never)
+    expect(d.createTerminal).toHaveBeenLastCalledWith('t3', 'gitbash', '/repo', undefined, true)
+  })
+
+  it('says why the terminal could not open, and opens nothing', async () => {
+    const failed = deps()
+    failed.createTerminal.mockResolvedValue({ success: false, error: 'No shell available' } as never)
+    expect(await openOtherAgent(term, 'agy', 'agy', failed as never)).toEqual({ ok: false, error: "Termpolis couldn't open the terminal: No shell available" })
+    const thrown = deps()
+    thrown.createTerminal.mockRejectedValue(new Error('gone'))
+    expect(await openOtherAgent(term, 'agy', 'agy', thrown as never)).toEqual({ ok: false, error: "Termpolis couldn't open the terminal: gone" })
+    const odd = deps()
+    odd.createTerminal.mockRejectedValue('odd')
+    expect(await openOtherAgent(term, 'agy', 'agy', odd as never)).toEqual({ ok: false, error: "Termpolis couldn't open the terminal: odd" })
+    expect(failed.addTerminal).not.toHaveBeenCalled()
+    expect(failed.launch).not.toHaveBeenCalled()
   })
 })
