@@ -79,6 +79,29 @@ function nextBreak(text: string, i: number, limit: number): Run | null {
   return null
 }
 
+/** nextBreak over one text, for searches that move forward: next(i, limit) is nextBreak(text, i,
+ *  limit), and a stretch searched once is not searched again. Key blocks whose BEGIN lines share a
+ *  line each look for that line's end: searched afresh, a text of BEGIN markers with no line break
+ *  was searched to its end once per marker. */
+function breakCursor(text: string): (i: number, limit: number) => Run | null {
+  let from = -1
+  // no break starts in [from, clear); `found`, when set, is the first one at or after `from`
+  let clear = -1
+  let found: Run | null = null
+  return (i, limit) => {
+    if (from === -1 || i < from || (found !== null && found[0] < i) || (found === null && i > clear)) {
+      from = i
+      clear = i
+      found = null
+    }
+    if (found === null && clear < limit) {
+      found = nextBreak(text, clear, limit)
+      clear = found ? found[0] : limit
+    }
+    return found !== null && found[0] < limit ? found : null
+  }
+}
+
 /** Base64 runs of at least `min` characters in [s, e). */
 function runsIn(text: string, s: number, e: number, min = MIN_RUN): Run[] {
   const runs: Run[] = []
@@ -436,7 +459,15 @@ function shortLastLine(text: string, at: number, frame: string, right: string, f
 }
 
 /** The key block whose BEGIN marker is [b, me): its payload lines, END line, and class. */
-function scanBlock(text: string, b: number, me: number, kind: string, marker: string, nextMark: (at: number) => number | null): KeyBlock {
+function scanBlock(
+  text: string,
+  b: number,
+  me: number,
+  kind: string,
+  marker: string,
+  nextMark: (at: number) => number | null,
+  nextBr: (i: number, limit: number) => Run | null,
+): KeyBlock {
   const rule = ruleFor(kind, marker)
   const end = Math.min(text.length, me + MAX_BLOCK)
   const runs: Run[] = []
@@ -450,7 +481,7 @@ function scanBlock(text: string, b: number, me: number, kind: string, marker: st
   let width = 0
   let closed = false
   while (lineStart < end) {
-    const br = nextBreak(text, lineStart, end)
+    const br = nextBr(lineStart, end)
     const lineEnd = br ? br[0] : end
     // A marker on this line: an END closes the block; another BEGIN ends it unclosed.
     const nm = nextMark(lineStart)
@@ -595,11 +626,12 @@ function scanBlock(text: string, b: number, me: number, kind: string, marker: st
 export function keyBlocks(text: string, start = 0): KeyBlock[] {
   const out: KeyBlock[] = []
   const nextMark = markerCursor(text)
+  const nextBr = breakCursor(text)
   const re = new RegExp(BEGIN_RE.source, 'g')
   re.lastIndex = start
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
-    const s = scanBlock(text, m.index, m.index + m[0].length, m[1] ?? '', m[0], nextMark)
+    const s = scanBlock(text, m.index, m.index + m[0].length, m[1] ?? '', m[0], nextMark, nextBr)
     out.push(s)
     if (s.to > re.lastIndex) re.lastIndex = s.to
   }
@@ -1068,7 +1100,13 @@ export function jwkKeys(text: string, start = 0): KeySpan[] {
 }
 
 const XML_PRIVATE = ['D', 'P', 'Q', 'DP', 'DQ', 'InverseQ']
-const XML_MEMBER_RE = /(?:<|&lt;|\\u003[cC])(?:\w{1,16}:)?(Modulus|D|P|Q|DP|DQ|InverseQ)(?:\s[^>&\\]{0,128})?(?:>|&gt;|\\u003[eE])\s*([A-Za-z0-9+/=\s]{16,}?)\s*(?:<|&lt;|\\u003[cC])/g
+// A member's open tag, then its value (from its first base64 character, whitespace inside it
+// allowed) up to the `<` that starts the next tag, which is left for the next member (an unclosed
+// one's next member starts there). Only one part may take a given space: the value starts at a
+// base64 character and runs as far as it can, and the whitespace before the closing tag is trimmed
+// off it after. (With a lazy value and a `\s*` after it, both could, and a member left open over
+// 4,000 spaces with no closing tag took 9 seconds: every way of sharing them was tried.)
+const XML_MEMBER_RE = /(?:<|&lt;|\\u003[cC])(?:\w{1,16}:)?(Modulus|D|P|Q|DP|DQ|InverseQ)(?:\s[^>&\\]{0,128})?(?:>|&gt;|\\u003[eE])\s*([A-Za-z0-9+/=][A-Za-z0-9+/=\s]*)(?=<|&lt;|\\u003[cC])/g
 
 export function rsaKeyValues(text: string, start = 0): KeySpan[] {
   const out: KeySpan[] = []
@@ -1087,9 +1125,12 @@ export function rsaKeyValues(text: string, start = 0): KeySpan[] {
     // Each member: where its value starts and ends, the value without whitespace, its byte length.
     const at = new Map<string, [number, number, string, number]>()
     while ((mm = mem.exec(win)) !== null) {
-      const v = mm[2].replace(/\s+/g, '')
-      const s = m.index + mm.index + mm[0].indexOf(mm[2])
-      at.set(mm[1], [s, s + mm[2].length, v, Buffer.from(v, 'base64').length])
+      // (the whitespace before the closing tag is the XML's, not the value's)
+      const value = mm[2].replace(/\s+$/, '')
+      if (value.length < 16) continue
+      const v = value.replace(/\s+/g, '')
+      const s = m.index + mm.index + mm[0].length - mm[2].length
+      at.set(mm[1], [s, s + value.length, v, Buffer.from(v, 'base64').length])
     }
     const members = XML_PRIVATE.flatMap((k) => {
       const x = at.get(k)

@@ -1321,3 +1321,55 @@ describe('the detectors find nothing in text that has no key', () => {
     expect(rsaKeyValues('<RSAKeyValue></RSAKeyValue>')).toEqual([])
   })
 })
+
+describe('the detectors cost in step with the text, whatever the other computer sends', () => {
+  /** The fastest of three runs, so a pause on a busy box doesn't count against a detector. */
+  function bestOf3(run: () => void): number {
+    let best = Infinity
+    for (let i = 0; i < 3; i++) {
+      const t = performance.now()
+      run()
+      best = Math.min(best, performance.now() - t)
+    }
+    return best
+  }
+
+  it('RSAKeyValue: a member left open, only whitespace after it and no closing tag, is read in step with its length', () => {
+    // The value and the whitespace before its closing tag could both take a space: with no closing
+    // tag, every way of sharing a run of spaces between them was tried (4,000 spaces took 9 s).
+    for (const ws of [' ', '\n', '\r\n\t']) {
+      const open = `<RSAKeyValue><D>${ws.repeat(3000)}`
+      expect(bestOf3(() => rsaKeyValues(open)), JSON.stringify(ws)).toBeLessThan(50)
+      expect(rsaKeyValues(open)).toEqual([])
+    }
+    // whitespace around a value, inside its tags, is the XML's: only the value goes
+    const d = Buffer.from(K.J.rsa.d as string, 'base64url').toString('base64')
+    const pretty = `<RSAKeyValue>\n  <D>\n    ${d}\n  </D>\n</RSAKeyValue>`
+    expect(screenKeys(pretty).text).toBe('<RSAKeyValue>\n  <D>\n    [REDACTED:xml_private_key]\n  </D>\n</RSAKeyValue>')
+    // a value wrapped over lines is one value, its inner line breaks included
+    const wrapped = `<RSAKeyValue><D>${wrap(d, 76).join('\n')}</D></RSAKeyValue>`
+    expect(screenKeys(wrapped).text).toBe('<RSAKeyValue><D>[REDACTED:xml_private_key]</D></RSAKeyValue>')
+    // a member left unclosed ends where the next member's tag starts, and that member is read too
+    const p = Buffer.from(K.J.rsa.p as string, 'base64url').toString('base64')
+    const q = Buffer.from(K.J.rsa.q as string, 'base64url').toString('base64')
+    expect(rsaKeyValues(`<RSAKeyValue><D>${d}<P>${p}</P><Q>${q}</Q></RSAKeyValue>`).map((s) => s.why)).toEqual(['RSAKeyValue D', 'RSAKeyValue P', 'RSAKeyValue Q'])
+  })
+
+  it('key blocks: BEGIN lines written one after another on one line are scanned in step with their number', () => {
+    // Each block looked for the end of its first line from its BEGIN marker on: with no line
+    // break, the rest of the text once per marker (80,000 characters of them took 0.9 s).
+    const run = randomBytes(30).toString('base64')
+    for (const unit of [
+      '-----BEGIN PRIVATE KEY----- ',
+      '-----BEGIN PGP PRIVATE KEY BLOCK----- ',
+      '---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ---- ',
+      '-----BEGIN OpenVPN Static key V1----- ',
+      `-----BEGIN PRIVATE KEY----- ${run} `,
+    ]) {
+      const line = unit.repeat(Math.ceil(80_000 / unit.length))
+      expect(bestOf3(() => keySpans(line)), unit).toBeLessThan(60)
+      // a line break every few markers was always fast: the result is the same as with none
+      expect(keyBlocks(line).length).toBe(Math.ceil(80_000 / unit.length))
+    }
+  })
+})

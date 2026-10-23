@@ -11,7 +11,7 @@ import { join } from 'path'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
-import { screenText } from '../../src/main/aiSecurity'
+import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
 import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS } from '../../src/main/linkedJobs'
 import { makeKeys, wrap, type KeySet } from './fixtures/freshKeys'
 
@@ -73,8 +73,30 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
   })
 
   const r64 = (): string => randomBytes(48).toString('base64')
+  /** Inputs that once cost more than their length (fix-r1 cost findings): BEGIN lines with no line
+   *  break between them, each of whose blocks searched the rest of the line for its end, and an
+   *  RSAKeyValue member left open over whitespace, whose regex tried every way of sharing it. */
+  const ONE_LINE: Record<string, (n: number) => string> = {
+    'BEGIN lines on one line': (n) => fill('-----BEGIN PRIVATE KEY----- ', n),
+    'PGP, SSH2 and OpenVPN BEGIN lines on one line': (n) =>
+      fill('-----BEGIN PGP PRIVATE KEY BLOCK----- ---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ---- -----BEGIN OpenVPN Static key V1----- ', n),
+    'BEGIN lines and base64 runs on one line': (n) => fill(`-----BEGIN PRIVATE KEY----- ${r64()} `, n),
+    'RSAKeyValue members left open over spaces': (n) => fill(`<RSAKeyValue><D>${' '.repeat(4_000)}`, n),
+    'RSAKeyValue members left open over line breaks': (n) => fill(`<RSAKeyValue><P>${'\n'.repeat(3_000)}`, n),
+  }
+
+  it.each(Object.keys(ONE_LINE))('screens the end of 465,000 characters of %s in 150 ms, as both computers do, and its error in 20 ms', (shape) => {
+    // Measured at 10-29 ms and 1-7 ms (fix-r1 x-cost1); before the fix, 5.9 s and 0.5 s, and an open
+    // member over 4,000 spaces 9 s a window.
+    const text = ONE_LINE[shape](N)
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS))).toBeLessThan(150)
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)), 'cut by an older doing computer').toBeLessThan(150)
+    expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), 'error').toBeLessThan(20)
+  })
+
   /** Inputs built to make a detector or a rule do the most work per character. */
   const HOSTILE: Record<string, (n: number) => string> = {
+    ...ONE_LINE,
     'BEGIN + one random line, repeated': (n) => fill(Array.from({ length: 64 }, () => `-----BEGIN RSA PRIVATE KEY-----\n${r64()}\n`).join(''), n),
     'BEGIN lines only': (n) => fill('-----BEGIN PRIVATE KEY-----\n', n),
     'END lines only, one line': (n) => fill('-----END PRIVATE KEY-----', n),
@@ -98,6 +120,14 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     'PGP mentions and hashes, repeated': (n) => fill(`-----BEGIN PGP PRIVATE KEY BLOCK----- not here; digests:\n${r64().slice(0, 44)}\n${r64().slice(0, 44)}\n`, n),
   }
   const MB = 1 << 20
+
+  it('masks BEGIN lines on one line in step with their number: 4 MB of them take under 8 times as long as 1 MB', () => {
+    // Each BEGIN line is masked to the end of its line, which was looked for once per BEGIN.
+    const one = fill('-----BEGIN PRIVATE KEY----- ', MB)
+    const four = fill('-----BEGIN PRIVATE KEY----- ', 4 * MB)
+    expect(maskForDisplay(`${one}\nnext line`)).toBe('[REDACTED:private_key]\nnext line')
+    expect(bestOf3(() => maskForDisplay(four))).toBeLessThan(8 * bestOf3(() => maskForDisplay(one)))
+  }, 120_000)
 
   it.each(Object.keys(HOSTILE))('grows in step with %s: 4 MB of it takes under 8 times as long as 1 MB', (shape) => {
     const one = HOSTILE[shape](MB)

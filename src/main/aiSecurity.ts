@@ -806,8 +806,10 @@ export function maskForDisplay(input: string): string {
   for (const span of keys.spans) spans.push(span)
   for (const span of headless(input, keys.blocks)) spans.push(span)
   const begin = new RegExp(PRIVATE_BEGIN_RE.source, 'g')
+  // (each line's end is looked for once: BEGIN lines that share a line share it)
+  let eol = -2
   for (let m = begin.exec(input); m !== null; m = begin.exec(input)) {
-    const eol = input.indexOf('\n', m.index)
+    if (eol !== -1 && eol < m.index) eol = input.indexOf('\n', m.index)
     spans.push({ rule: 'private_key', from: m.index, to: eol === -1 ? input.length : eol })
   }
   // Sorted by start; a stable sort names a cut after the first in table order that starts it.
