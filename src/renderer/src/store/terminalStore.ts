@@ -158,6 +158,10 @@ interface TerminalStore {
   accountsByHand: Record<string, true>
   /** The terminal the account switch dialog is open for. */
   accountSwitch: { terminalId: string } | null
+  /** Terminals whose agent Termpolis is relaunching, and for what: one at a time per terminal, the
+   *  model picker and the account switch alike. Their panes take no keys meanwhile, and the
+   *  prompt pollers answer nothing in them. */
+  relaunching: Record<string, 'account' | 'model'>
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -204,6 +208,9 @@ interface TerminalStore {
   setAccountByHand: (terminalId: string, byHand: boolean) => void
   openAccountSwitch: (terminalId: string) => void
   closeAccountSwitch: () => void
+  /** Takes the terminal's relaunch lock: false when a relaunch already holds it. */
+  beginRelaunch: (terminalId: string, kind: 'account' | 'model') => boolean
+  endRelaunch: (terminalId: string) => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set) => ({
@@ -237,6 +244,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   accountsView: null,
   accountsByHand: {},
   accountSwitch: null,
+  relaunching: {},
 
   addTerminal: (t) => set(s => {
     const visibleCount = s.terminals.filter(t => !t.hidden).length
@@ -481,4 +489,14 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   }),
   openAccountSwitch: (terminalId) => set({ accountSwitch: { terminalId } }),
   closeAccountSwitch: () => set({ accountSwitch: null }),
+  beginRelaunch: (terminalId, kind) => {
+    if (useTerminalStore.getState().relaunching[terminalId]) return false
+    set(s => ({ relaunching: { ...s.relaunching, [terminalId]: kind } }))
+    return true
+  },
+  endRelaunch: (terminalId) => set(s => {
+    const next = { ...s.relaunching }
+    delete next[terminalId]
+    return { relaunching: next }
+  }),
 }))

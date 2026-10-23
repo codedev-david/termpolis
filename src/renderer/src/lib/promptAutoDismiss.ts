@@ -42,6 +42,10 @@ export interface DismissContext {
   /** True only when Termpolis may answer a folder-trust prompt for this terminal's folder
    *  (main's `agents:folder-trust-allowed`). Missing or false leaves the prompt to the user. */
   allowFolderTrust?: boolean
+  /** False: the login-method picker is the user's too. Once an agent has more than one account,
+   *  a relaunch can land on a profile whose sign-in expired, where Enter starts a browser sign-in
+   *  for whichever account the browser has (R10). Missing is true, as before accounts. */
+  answerSignIn?: boolean
 }
 
 /** Terminal key sequences that move an Ink select cursor. */
@@ -251,7 +255,7 @@ export function detectDismissChar(rawTail: string, ctx: DismissContext): string 
   // 4. Onboarding login flow / auth method picker
   //    These all default to a sensible option — Enter accepts.
   if (/how\s+would\s+you\s+like\s+to\s+(?:login|sign\s+in|authenticate)|select.*(?:login|sign[\s-]?in|auth)\s+method|preferred\s+(?:login|auth)\s+method/i.test(tail)) {
-    return '\r'
+    return ctx.answerSignIn === false ? null : '\r'
   }
 
   // 5. Gemini-specific — onboarding auth menu
@@ -271,9 +275,10 @@ export async function dismissReply(
   tail: string,
   agentName: string,
   mayTrustFolder: () => Promise<boolean>,
+  answerSignIn = true,
 ): Promise<string | null> {
-  const reply = detectDismissChar(tail, { agentName })
-  const trusting = detectDismissChar(tail, { agentName, allowFolderTrust: true })
+  const reply = detectDismissChar(tail, { agentName, answerSignIn })
+  const trusting = detectDismissChar(tail, { agentName, allowFolderTrust: true, answerSignIn })
   if (trusting === reply) return reply
   const allowed = await Promise.resolve().then(mayTrustFolder).catch(() => false)
   return allowed === true ? trusting : reply
@@ -295,8 +300,9 @@ export async function replyToScreen(
   agentName: string,
   mayTrustFolder: () => Promise<boolean>,
   readScreen: () => Promise<string | null>,
+  answerSignIn = true,
 ): Promise<string | null> {
-  const reply = await dismissReply(tailSlice((output ?? '').slice(-3000)), agentName, mayTrustFolder)
+  const reply = await dismissReply(tailSlice((output ?? '').slice(-3000)), agentName, mayTrustFolder, answerSignIn)
   if (!reply) return null
   const now = await Promise.resolve().then(readScreen).catch(() => null)
   return typeof now === 'string' && screenKey(now) === screenKey(output) ? reply : null

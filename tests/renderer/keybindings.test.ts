@@ -508,6 +508,13 @@ describe('default keybindings do not collide', () => {
     for (const label of Object.values(KEYBINDING_LABELS)) expect(label.trim()).not.toBe('')
   })
 
+  it('binds the account switch to Ctrl+Shift+N, labelled', () => {
+    expect(DEFAULT_KEYBINDINGS.switchAccount).toBe('Ctrl+Shift+N')
+    expect(KEYBINDING_LABELS.switchAccount).toBe('Switch Account')
+    // A map saved before it existed gets it from the defaults.
+    expect(withReservedDefaults({ copy: 'Ctrl+Shift+C' } as never).switchAccount).toBe('Ctrl+Shift+N')
+  })
+
   it('binds the two actions v1.39.1 added', () => {
     expect(DEFAULT_KEYBINDINGS.viewLogs).toBe('Ctrl+Shift+O')
     expect(DEFAULT_KEYBINDINGS.clearTerminal).toBe('Ctrl+Shift+X')

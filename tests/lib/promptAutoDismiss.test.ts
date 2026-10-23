@@ -333,6 +333,31 @@ describe('promptAutoDismiss.detectDismissChar', () => {
       const tail = 'All set! Press Enter to begin.'
       expect(detectDismissChar(tail, { agentName: 'Claude Code' })).toBe('\r')
     })
+
+    // R10: once an agent has more than one account, a relaunch can land on a profile whose sign-in
+    // expired, and Enter on its login picker starts a browser sign-in for whichever account the
+    // browser holds. The picker is the user's then; every other onboarding screen still gets Enter.
+    it('leaves the login-method picker to the user when told to (an agent with accounts)', () => {
+      for (const tail of [
+        'Select login method:\n❯ 1. Claude account with subscription',
+        'How would you like to login?\n❯ 1. Anthropic Console',
+        'Select Google Cloud sign-in method:\n> Continue with Google Cloud',
+      ]) {
+        expect(detectDismissChar(tail, { agentName: 'Claude Code', answerSignIn: false })).toBeNull()
+        expect(detectDismissChar(tail, { agentName: 'Claude Code', answerSignIn: true })).toBe('\r')
+      }
+      expect(detectDismissChar('All set! Press Enter to begin.', { agentName: 'Claude Code', answerSignIn: false })).toBe('\r')
+    })
+  })
+})
+
+describe('promptAutoDismiss: the login picker for an agent with accounts (R10)', () => {
+  it('passes the choice through dismissReply and replyToScreen', async () => {
+    const picker = 'Select login method:\n❯ 1. Claude account with subscription'
+    expect(await dismissReply(picker, 'Claude Code', async () => false, false)).toBeNull()
+    expect(await dismissReply(picker, 'Claude Code', async () => false)).toBe('\r')
+    expect(await replyToScreen(picker, 'Claude Code', async () => false, async () => picker, false)).toBeNull()
+    expect(await replyToScreen(picker, 'Claude Code', async () => false, async () => picker)).toBe('\r')
   })
 })
 

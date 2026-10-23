@@ -934,3 +934,27 @@ describe('terminalStore', () => {
     })
   })
 })
+
+describe('the relaunch lock (one relaunch at a time per terminal)', () => {
+  it('is taken once, held for its kind, and let go', () => {
+    const st = useTerminalStore.getState()
+    expect(st.beginRelaunch('rl-1', 'model')).toBe(true)
+    expect(useTerminalStore.getState().relaunching['rl-1']).toBe('model')
+    expect(useTerminalStore.getState().beginRelaunch('rl-1', 'account')).toBe(false)
+    expect(useTerminalStore.getState().relaunching['rl-1']).toBe('model')
+    expect(useTerminalStore.getState().beginRelaunch('rl-2', 'account')).toBe(true)
+    useTerminalStore.getState().endRelaunch('rl-1')
+    expect(useTerminalStore.getState().relaunching).toEqual({ 'rl-2': 'account' })
+    useTerminalStore.getState().endRelaunch('rl-2')
+    expect(useTerminalStore.getState().relaunching).toEqual({})
+  })
+
+  it("keeps each terminal's change by hand, and the accounts view main sent", () => {
+    useTerminalStore.getState().setAccountByHand('h-1', true)
+    useTerminalStore.getState().setAccountByHand('h-2', true)
+    useTerminalStore.getState().setAccountByHand('h-1', false)
+    expect(useTerminalStore.getState().accountsByHand).toEqual({ 'h-2': true })
+    useTerminalStore.getState().setAccountsView(null)
+    expect(useTerminalStore.getState().accountsView).toBeNull()
+  })
+})

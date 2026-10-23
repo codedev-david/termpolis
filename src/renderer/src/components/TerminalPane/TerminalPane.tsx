@@ -27,6 +27,7 @@ import { hostHomedir } from '../../lib/platform'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { AccountChip } from '../Accounts/AccountChip'
+import { agentOfCommand } from '../../lib/accountsView'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
@@ -470,6 +471,15 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // instead of consuming it, so that case keeps Claude's old /model hot-swap and gets no
   // picker at all for the other providers, which have no equivalent in-session command.
   const authoritativeProvider = providerForAgent(agentFromCommand(agentCommand)?.name)
+  // An agent Termpolis launched, whose agent has accounts: the context menu offers a switch.
+  // Never the conductor's terminal (it runs `claude -p` behind its script).
+  const isConductor = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId)?.isConductor)
+  const switchableAgent = useTerminalStore((s) => {
+    const agent = isConductor ? null : agentOfCommand(agentCommand)
+    return !!agent && !!s.accountsView?.accounts.some((r) => r.agent === agent)
+  })
+  // A relaunch typing into this terminal: the pane says so and takes no keys.
+  const relaunching = useTerminalStore((s) => s.relaunching?.[terminalId])
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   // Seed a launched agent with recalled context (opt-out in Settings). The gate is what keeps
   // the pointer out of a line the user is still typing: output detection fires on the ECHO of
@@ -1210,6 +1220,21 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     }
 
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      // A relaunch (an account switch, a model change) is typing into this terminal: keys typed
+      // meanwhile would sit on the shell's line, and its Enter would run them (R7).
+      if (useTerminalStore.getState().relaunching?.[terminalId]) {
+        e.preventDefault()
+        return false
+      }
+
+      // The account switch dialog for this terminal (default Ctrl+Shift+N), so its shell gets no
+      // stray Ctrl+N.
+      if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.switchAccount)) {
+        e.preventDefault()
+        useTerminalStore.getState().openAccountSwitch(terminalId)
+        return false
+      }
+
       // Open the in-terminal find bar (default Ctrl+Shift+F). Keydown only — steal
       // the combo from the shell and let the find bar's own input take focus.
       if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.terminalSearch)) {
@@ -1858,6 +1883,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           which under `box-sizing: border-box` reports the parent's BORDER box —
           padding on this element would be counted as usable space, so the rows
           overflowed to the right and painted over the scrollbar. */}
+      {relaunching && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none" data-testid="relaunch-overlay">
+          <span className="text-xs text-[#e0e0e0] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5">
+            {relaunching === 'account' ? 'Switching account…' : 'Changing model…'}
+          </span>
+        </div>
+      )}
       <div
         ref={containerRef}
         className="flex-1 relative min-h-0 overflow-hidden"
@@ -2241,6 +2273,19 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
               <i className="fa-solid fa-code-compare text-[10px] mr-1.5"></i>
               View as Diff
             </button>
+            {switchableAgent && (
+              <button
+                className="w-full text-left px-3 py-1.5 text-xs text-[#d4d4d4] hover:bg-[#094771] cursor-pointer"
+                data-testid="context-switch-account"
+                onClick={() => {
+                  setContextMenu({ visible: false, x: 0, y: 0 })
+                  useTerminalStore.getState().openAccountSwitch(terminalId)
+                }}
+              >
+                <i className="fa-solid fa-user-group text-[10px] mr-1.5"></i>
+                Switch account…<span className="float-right text-[#999]">{useTerminalStore.getState().keybindings.switchAccount}</span>
+              </button>
+            )}
             {(onSplitRight || onSplitDown) && (
               <>
                 <div className="border-t border-[#454545] my-1"></div>

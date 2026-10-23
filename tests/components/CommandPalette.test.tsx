@@ -60,6 +60,14 @@ describe('CommandPalette', () => {
     expect(screen.queryByText('Split Right')).not.toBeInTheDocument()
   })
 
+  it('offers Switch account… for the active agent terminal', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'switch account' } })
+    fireEvent.click(screen.getByText('Switch account…'))
+    expect(onAction).toHaveBeenCalledWith('switch_account', undefined)
+  })
+
   it('calls onAction with correct action when command clicked', () => {
     const onAction = vi.fn()
     const onClose = vi.fn()

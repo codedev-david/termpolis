@@ -1067,3 +1067,104 @@ describe('TerminalPane — click forwarding and clear (v1.39.1)', () => {
     })
   })
 })
+
+// =====================================================
+// The account switch in the pane (§7.1, R7): Ctrl+Shift+N opens its dialog, the context menu
+// offers it on an agent terminal whose agent has accounts, and while a relaunch types into the
+// terminal the pane says so and takes no keys.
+// =====================================================
+describe('TerminalPane — the account switch', () => {
+  const openAccountSwitch = vi.fn()
+  const state = (over: Record<string, unknown> = {}) => ({
+    terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'claude' }],
+    addTerminal: mocks.mockAddTerminal,
+    removeTerminal: mocks.mockRemoveTerminal,
+    focusActiveTerminal: mocks.mockFocusActiveTerminal,
+    setShowSettings: mocks.mockSetShowSettings,
+    focusNonce: 0,
+    autocompleteEnabled: true,
+    allowAppMouseControl: false,
+    voiceSettings: { enabled: false },
+    keybindings: { ...DEFAULT_KEYBINDINGS },
+    customKeybindings: [],
+    openAccountSwitch,
+    accountsView: { accounts: [{ id: 'acc_a', agent: 'claude', label: 'personal' }], home: '/h' },
+    accountsByHand: {},
+    relaunching: {},
+    ...over,
+  })
+  const switchKey = (over: Partial<KeyboardEvent> = {}): KeyboardEvent =>
+    ({ type: 'keydown', key: 'N', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, preventDefault: vi.fn(), ...over }) as unknown as KeyboardEvent
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockKeyHandlerCb = null
+    mocks.mockTerminal.onData.mockImplementation(() => ({ dispose: vi.fn() }))
+    mocks.mockTerminal.attachCustomKeyEventHandler.mockImplementation((cb: (e: KeyboardEvent) => boolean) => {
+      mockKeyHandlerCb = cb
+      return { dispose: vi.fn() }
+    })
+    mocks.mockTerminal.onSelectionChange.mockImplementation(() => ({ dispose: vi.fn() }))
+    mocks.mockTerminal.getSelection.mockReturnValue('')
+    mocks.mockGetState.mockImplementation(() => state())
+    mockReadTerminalBuffer.mockResolvedValue({ success: true, data: { output: '' } })
+    mockDetectAgents.mockResolvedValue({ success: true, data: { claude: true, codex: true, agy: true } })
+  })
+
+  it('opens the switch dialog for this terminal on Ctrl+Shift+N, and sends the shell nothing', async () => {
+    await renderPane()
+    const e = switchKey()
+    let handled!: boolean
+    await act(async () => { handled = mockKeyHandlerCb!(e) })
+    expect(handled).toBe(false)
+    expect(e.preventDefault).toHaveBeenCalled()
+    expect(openAccountSwitch).toHaveBeenCalledWith('term-1')
+    // Its keyup, and Ctrl+N alone, are left alone.
+    openAccountSwitch.mockClear()
+    await act(async () => { mockKeyHandlerCb!(switchKey({ type: 'keyup' })) })
+    await act(async () => { mockKeyHandlerCb!(switchKey({ shiftKey: false, key: 'n' })) })
+    expect(openAccountSwitch).not.toHaveBeenCalled()
+  })
+
+  it('takes no key, and shows its overlay, while a relaunch types into the terminal (R7)', async () => {
+    mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'account' } }))
+    await renderPane()
+    expect(screen.getByTestId('relaunch-overlay')).toHaveTextContent('Switching account…')
+    const e = switchKey({ key: 'a', ctrlKey: false, shiftKey: false })
+    let handled!: boolean
+    await act(async () => { handled = mockKeyHandlerCb!(e) })
+    expect(handled).toBe(false)
+    expect(e.preventDefault).toHaveBeenCalled()
+  })
+
+  it('says a model change is under way while the model picker relaunches', async () => {
+    mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'model' } }))
+    await renderPane({ agentCommand: 'claude' } as never)
+    expect(screen.getByTestId('relaunch-overlay')).toHaveTextContent('Changing model…')
+  })
+
+  it('offers Switch account… in the context menu of an agent terminal whose agent has accounts', async () => {
+    const { container } = await renderPane()
+    fireEvent.contextMenu(paneOf(container), { clientX: 20, clientY: 20 })
+    const item = screen.getByTestId('context-switch-account')
+    expect(item).toHaveTextContent('Switch account…Ctrl+Shift+N')
+    fireEvent.click(item)
+    expect(openAccountSwitch).toHaveBeenCalledWith('term-1')
+    expect(screen.queryByTestId('context-switch-account')).toBeNull()
+  })
+
+  it('offers none for a plain shell, the conductor\'s terminal, an agent with no account, or before the accounts are read', async () => {
+    for (const over of [
+      { terminals: [{ id: 'term-1', isSwarm: false }] },
+      { terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'claude', isConductor: true }] },
+      { terminals: [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }] },
+      { accountsView: null },
+    ]) {
+      mocks.mockGetState.mockImplementation(() => state(over))
+      const { container, unmount } = await renderPane()
+      fireEvent.contextMenu(paneOf(container), { clientX: 20, clientY: 20 })
+      expect(screen.queryByTestId('context-switch-account')).toBeNull()
+      unmount()
+    }
+  })
+})

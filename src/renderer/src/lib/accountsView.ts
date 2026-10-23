@@ -62,6 +62,14 @@ export function agentOfCommand(command: string | undefined): AccountAgent | null
   return null
 }
 
+/** The account agent a swarm worker's name says it runs ("Claude", "Codex", "Gemini"), or null.
+ *  Termpolis runs agy for Gemini. */
+export function agentOfName(name: string): AccountAgent | null {
+  if (/claude/i.test(name)) return 'claude'
+  if (/codex/i.test(name)) return 'codex'
+  return /gemini|antigravity|\bagy\b/i.test(name) ? 'agy' : null
+}
+
 /** The shell a sign-in terminal opens in: the user's default when Termpolis can type an account
  *  line into it, else another installed one, PowerShell first; null when there is none. */
 export function signInShell(defaultShell: ShellType, available: readonly ShellType[]): ShellType | null {

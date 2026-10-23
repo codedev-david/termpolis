@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 import {
-  accountBadge, accountsOf, agentOfCommand, folderLine, hasAccounts, signInShell,
+  accountBadge, accountsOf, agentOfCommand, agentOfName, folderLine, hasAccounts, signInShell,
 } from '../../src/renderer/src/lib/accountsView'
 
 const HOME = 'C:\\Users\\me'
@@ -83,6 +83,19 @@ describe('folderLine', () => {
     expect(folderLine(row({ isDefault: true, profile: null, folder: `${HOME}\\.claude` }), HOME)).toBe('~\\.claude (main profile)')
     expect(folderLine(row({ folder: null }), HOME)).toBe('')
     expect(folderLine(row({ folder: 'D:\\profiles\\x' }), HOME)).toBe('D:\\profiles\\x')
+  })
+})
+
+describe("agentOfName: which account agent a swarm worker's name says it runs", () => {
+  it('reads Claude, Codex, and Gemini as agy, which Termpolis runs for it', () => {
+    expect(agentOfName('Claude')).toBe('claude')
+    expect(agentOfName('Claude Code')).toBe('claude')
+    expect(agentOfName('Codex')).toBe('codex')
+    expect(agentOfName('Gemini')).toBe('agy')
+    expect(agentOfName('Antigravity CLI')).toBe('agy')
+    expect(agentOfName('agy')).toBe('agy')
+    expect(agentOfName('Legacy')).toBeNull()
+    expect(agentOfName('Stagy')).toBeNull()
   })
 })
 

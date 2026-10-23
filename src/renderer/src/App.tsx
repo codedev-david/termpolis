@@ -61,6 +61,9 @@ import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
 import { requestSettingsTab } from './lib/settingsNav'
 import { watchAccounts } from './lib/accountsState'
+import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
+import { agentOfName } from './lib/accountsView'
+import { AccountSwitcherDialog } from './components/Accounts/AccountSwitcherDialog'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -377,6 +380,15 @@ export default function App() {
         return
       }
 
+      // The account switch dialog for the active terminal (§7.1). A focused pane handles the key
+      // itself, so its shell gets no stray Ctrl+N.
+      if (matchesKeybinding(e, kb.switchAccount)) {
+        e.preventDefault()
+        const { activeTerminalId: switchId } = useTerminalStore.getState()
+        if (switchId) useTerminalStore.getState().openAccountSwitch(switchId)
+        return
+      }
+
       // Wipe the active terminal the way `clear` does -- scrollback included. The
       // pane owns the reset (it holds the xterm instance), so this window-level
       // path only names the terminal; a focused pane handles the key itself.
@@ -663,6 +675,8 @@ export default function App() {
         // blocked agents so we can clear the status if the user restarts
         // the CLI and it starts producing fresh output again.
         if (agent.status === 'completed' || agent.status === 'errored') continue
+        // A relaunch is typing into it: nothing is answered, and nothing is read as a stop.
+        if (store.relaunching[agent.terminalId]) continue
 
         try {
           const bufferRes = await window.termpolis.readTerminalBuffer(agent.terminalId)
@@ -682,6 +696,7 @@ export default function App() {
             const dismissChar = await replyToScreen(
               output, agent.agentName,
               () => mayTrustFolder(agent.terminalId), () => readScreen(agent.terminalId),
+              !hasManyAccounts(store.accountsView, agentOfName(agent.agentName)),
             )
             if (dismissChar) {
               window.termpolis.writeToTerminal(agent.terminalId, dismissChar)
@@ -759,7 +774,7 @@ export default function App() {
       const store = useTerminalStore.getState()
       const swarmIds = new Set(store.swarmAgents.map((a) => a.terminalId))
       const agentTerminals = store.terminals.filter(
-        (t) => t.agentCommand && !swarmIds.has(t.id),
+        (t) => t.agentCommand && !swarmIds.has(t.id) && !store.relaunching[t.id],
       )
       if (agentTerminals.length === 0) return
 
@@ -775,6 +790,7 @@ export default function App() {
           lastDismissedPrompt.set(term.id, dismissKey)
           const dismissChar = await replyToScreen(
             output, term.name, () => mayTrustFolder(term.id), () => readScreen(term.id),
+            !hasManyAccounts(store.accountsView, terminalAgent(term)),
           )
           if (dismissChar) window.termpolis.writeToTerminal(term.id, dismissChar)
         } catch {
@@ -891,6 +907,9 @@ export default function App() {
         break
       case 'show_memory':
         setShowMemory(v => !v)
+        break
+      case 'switch_account':
+        if (state.activeTerminalId) useTerminalStore.getState().openAccountSwitch(state.activeTerminalId)
         break
       case 'launch_claude':
       case 'launch_codex':
@@ -1082,6 +1101,7 @@ export default function App() {
       <Suspense fallback={null}>
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
         {showAppLog && <AppLogModal onClose={() => setShowAppLog(false)} />}
+        <AccountSwitcherDialog />
         {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
         {showAddModal && (
           <AddTerminalModal
