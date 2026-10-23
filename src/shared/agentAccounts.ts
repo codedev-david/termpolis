@@ -239,6 +239,9 @@ export interface AccountsView {
   drift: string[]
   advice: AccountsAdvice
   home: string
+  /** The account each profile agent's terminals run on when Termpolis types no account line for
+   *  them, by Termpolis's own environment: a swarm's conductor and its workers. */
+  envAccount?: Partial<Record<ProfileAgent, string>>
   /** Set when the registry file exists but can't be read: nothing is written until it can. */
   error?: string
 }
@@ -414,6 +417,8 @@ export interface TerminalAccountEvent {
   /** A line typed by hand set or unset the profile variable (or ran switch-now): Termpolis no
    *  longer knows the account, and the chip shows "?". */
   byHand: boolean
+  /** A swarm worker's agent, as run_command started it: a worker has no launch line of its own. */
+  agent?: AccountAgent
 }
 
 /** A sign-in terminal's name: "Sign in · Claude Code · codedev". */

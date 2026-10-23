@@ -611,7 +611,7 @@ import {
 } from './agentIntegrationManager'
 import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount, isTerminalAccountConnected,
-  noteTypedInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser,
+  noteSwarmWorker, noteTypedInput, noteWorkerCommand, registerAccountsIpc, resolveLaunchTarget, withLimitChooser,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
@@ -3623,6 +3623,8 @@ async function semanticPoolOptions(
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
+        // An agent's terminal is a swarm worker, which a usage limit can restart on another account (§9).
+        if (!remote) noteSwarmWorker(id)
         const shellType = shellInfo?.type || shell
         if (remote) remoteTerminals.add({ id, name, shellType, cwd: resolvedCwd })
         // Notify renderer to add the terminal to the store. A phone's terminal goes in the
@@ -3638,6 +3640,8 @@ async function semanticPoolOptions(
         const safeCommand = mcpCreatedTerminals.has(terminalId)
           ? sanitizeAgentCommand(command)
           : command
+        // A worker's agent as typed here: what its restart on another account starts again (§9).
+        noteWorkerCommand(terminalId, safeCommand)
         writeToTerminal(terminalId, safeCommand + '\r')
       },
       readOutput: (terminalId, lines) => {
@@ -3685,6 +3689,7 @@ async function semanticPoolOptions(
       },
       closeTerminal: (terminalId) => {
         killTerminal(terminalId)
+        forgetTerminalAccount(terminalId)
         terminalOutputBuffers.delete(terminalId)
         remoteNoteTerminalClosed(terminalId)
         mcpCreatedTerminals.delete(terminalId)

@@ -19,8 +19,8 @@ import type { ConversationSource } from './conversationIngest'
 import type { LiveStart } from './limitLook'
 import type { LimitLook } from '../shared/accountLimits'
 import {
-  ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, SHAREABLE_FOLDERS, accountEnv, accountLine, cleanLabel, familyOf,
-  isPlainEmail, isProfileAgent, signInCommand, signInTerminalName, slugOf, tildifyPath,
+  ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, PROFILE_AGENTS, PROFILE_VARIABLE, SHAREABLE_FOLDERS, accountEnv, accountLine,
+  cleanLabel, familyOf, isPlainEmail, isProfileAgent, signInCommand, signInTerminalName, slugOf, tildifyPath,
 } from '../shared/agentAccounts'
 import type {
   AccountAgent, AccountIdentity, AccountRowView, AccountsAdvice, AccountsView, AddAccountResult, AgentAccount,
@@ -34,7 +34,7 @@ import type { CheckDeps, IdentityCheck } from './accountIdentity'
 import { copySources, createProfile, recopyProfile } from './accountProfiles'
 import {
   AccountsRefusal, accountProfileTargets, accountsShDrift, accountsShLines, activeLimit, checkProfileFolder,
-  claudeJsonOf, cleanLimit, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected, isReachable,
+  claudeJsonOf, cleanLimit, comparisonKey, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected, isReachable,
   lastSignedInAs, limitedMarker, liveProfileDir, loadAccounts, newAccountId, previewAccountsSh, profileDirOf,
   readAccountsSh, updateAccounts,
 } from './agentAccounts'
@@ -105,6 +105,7 @@ export function forgetTerminalAccount(terminalId: string): void {
   typedLines.delete(terminalId)
   byHand.delete(terminalId)
   agentStarts.delete(terminalId)
+  workers.delete(terminalId)
 }
 
 /** The Claude Code session Termpolis started each terminal's agent with (--session-id) or resumed
@@ -222,6 +223,81 @@ export function withLimitChooser(extra: Record<string, string> | undefined, watc
   return (wiring.env ?? process.env)[LIMIT_CHOOSER_VAR] !== undefined ? { ...(extra ?? {}), [LIMIT_CHOOSER_VAR]: '' } : extra
 }
 
+// ── Swarm workers (§9) ─────────────────────────────────────────────────────────────────
+
+/** The terminals the swarm's conductor created (not a phone's): its workers. A worker's agent is
+ *  started with run_command, which types no account line; a restart of it on another account holds
+ *  its terminal as a worker's (R7), and types the worker's own flags again. */
+const workers = new Set<string>()
+
+export function noteSwarmWorker(terminalId: string): void {
+  workers.add(terminalId)
+}
+
+/**
+ * The account a terminal opened without an account line runs `agent` on: the one Termpolis's own
+ * environment names with the profile variable (CLAUDE_CONFIG_DIR, CODEX_HOME), else, with it
+ * unset, the agent's default profile; null when no registered account is that profile, or the
+ * value is empty (no profile: Claude Code's config home would be the folder it starts in, R24). A
+ * shell's rc file can set the variable too, which Termpolis can't see.
+ */
+export function envAccountOf(doc: AccountsDoc, agent: ProfileAgent, env: Readonly<Record<string, string | undefined>>, fsx: AccountFs = accountFs): AgentAccount | null {
+  const own = doc.file.accounts.filter((a) => a.agent === agent)
+  const named = env[PROFILE_VARIABLE[agent]]
+  if (named === undefined) return own.find((a) => a.profile === null) ?? null
+  if (!named.trim()) return null
+  const key = comparisonKey(named, fsx)
+  return own.find((a) => a.profile !== null && comparisonKey(a.profile, fsx) === key) ?? null
+}
+
+/**
+ * A command run_command typed into a swarm worker, as main typed it (index.ts runCommand, which
+ * sanitizes it): an agent's start, recorded as a launch line of Termpolis's own is, for its exit
+ * and its restart's flags; and the worker's account, the one Termpolis's environment gives it
+ * (envAccountOf). A line that sets the profile variable itself leaves the account unknown (by
+ * hand). The renderer is told the worker's agent and account: a worker has no launch line, and
+ * no agentCommand. Any other terminal's command is not a worker's, and is left alone. Never throws.
+ */
+export function noteWorkerCommand(terminalId: string, command: string, now: number = Date.now()): void {
+  if (!workers.has(terminalId)) return
+  try {
+    const typed = command.trim()
+    const agent = ACCOUNT_AGENTS.find((a) => a === typed.split(/\s+/)[0])
+    // A profile variable set by a line stays set in that shell: the account is unknown from then on.
+    if (changesAccountByHand(typed) && !byHand.has(terminalId)) {
+      byHand.add(terminalId)
+      terminalAccounts.delete(terminalId)
+      wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: null, byHand: true })
+    }
+    if (!agent) {
+      agentStarts.delete(terminalId)
+      return
+    }
+    agentStarts.set(terminalId, startRecord({ at: wiring.outputEnd?.(terminalId) ?? 0, commands: [typed], agent }, now))
+    const handSet = byHand.has(terminalId)
+    let account: AgentAccount | null = null
+    if (!handSet && isProfileAgent(agent) && wiring.paths) {
+      const loaded = loadAccounts(wiring.paths().userData, wiring.fsx)
+      // The env is wired with the paths, at registration.
+      if (loaded.ok) account = envAccountOf(loaded.doc, agent, wiring.env!, wiring.fsx)
+    }
+    if (account) terminalAccounts.set(terminalId, account.id)
+    else terminalAccounts.delete(terminalId)
+    wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: account?.id ?? null, byHand: handSet, agent })
+  } catch { /* the worker runs as before; a restart then finds no record */ }
+}
+
+/** The account Termpolis's environment gives each profile agent's terminals with no account line
+ *  (envAccountOf): a swarm's conductor and workers run there. */
+export function envAccounts(doc: AccountsDoc, env: Readonly<Record<string, string | undefined>>, fsx: AccountFs = accountFs): Partial<Record<ProfileAgent, string>> {
+  const out: Partial<Record<ProfileAgent, string>> = {}
+  for (const agent of PROFILE_AGENTS) {
+    const a = envAccountOf(doc, agent, env, fsx)
+    if (a) out[agent] = a.id
+  }
+  return out
+}
+
 /** The longest typed line kept: a pasted file is no account line. */
 const TYPED_LINE_MAX = 4096
 const ESCAPE_SEQUENCE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|.)?/
@@ -308,6 +384,7 @@ export function _resetTerminalAccountsForTest(): void {
   typedLines.clear()
   byHand.clear()
   agentStarts.clear()
+  workers.clear()
 }
 
 // ── Lookups index.ts uses ──────────────────────────────────────────────────────────────
@@ -504,6 +581,7 @@ export function accountsView(
     drift: drift.lines,
     advice: adviceFor(doc, ctx.home, ctx.env, ctx.fsx),
     home: ctx.home,
+    envAccount: envAccounts(doc, ctx.env, ctx.fsx),
   }
 }
 
@@ -1107,6 +1185,8 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
         const r = carryTranscript(sourceProjects, targetProjects, id, now(), fsx)
         return r.kind === 'carried' ? { carried: true, ...(r.kept ? { kept: r.kept } : {}) } : { carried: false }
       },
+      // A swarm worker's restart says so to the conductor, while it holds the worker (§9, R7).
+      ...(workers.has(terminalId) ? { lockKind: 'worker' as const } : {}),
       newSessionId: () => randomUUID(),
       record: (r) => {
         noteTerminalAccount(terminalId, r.accountId)

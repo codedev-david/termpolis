@@ -48,6 +48,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, type MockIns
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_INTEGRATION_IPC as IPC } from '../../src/shared/agentIntegration'
+import { sanitizeAgentCommand } from '../../src/main/agentCommandSanitizer'
 
 // ---------------------------------------------------------------------------
 // Agent-integration spies. The manager is mocked whole, so every value it "returns" here is an
@@ -104,6 +105,8 @@ const H = vi.hoisted(() => {
     accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
     forgetTerminalAccount: vi.fn((_id: string) => undefined),
     noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
+    noteSwarmWorker: vi.fn((_id: string) => undefined),
+    noteWorkerCommand: vi.fn((_id: string, _command: string) => undefined),
     // The chooser's marker (R6): the extra env as it came, so every other test sees today's.
     withLimitChooser: vi.fn((extra: Record<string, string> | undefined, _watch: unknown) => extra),
     relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
@@ -433,6 +436,8 @@ vi.mock('../../src/main/accountsIpc', () => ({
   accountSettingsEnv: H.accountSettingsEnv,
   forgetTerminalAccount: H.forgetTerminalAccount,
   noteTypedInput: H.noteTypedInput,
+  noteSwarmWorker: H.noteSwarmWorker,
+  noteWorkerCommand: H.noteWorkerCommand,
   withLimitChooser: H.withLimitChooser,
 }))
 // The switch's lock, so a test can hold a terminal as a switch would.
@@ -1009,6 +1014,28 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(H.accountSettingsEnv).not.toHaveBeenCalled()
     await invoke('terminal:kill', { id: 't-acc' })
     expect(H.forgetTerminalAccount).toHaveBeenCalledWith('t-acc')
+  })
+
+  // §9: a worker's agent, restarted on another account at its usage limit, starts again with the
+  // command run_command typed, as main typed it; a phone's terminal is the user's own, no worker.
+  it('notes a swarm worker and the command run_command typed into it, sanitized, before it is typed; and forgets it once closed', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    const worker = await H.mcpHandlers!.createTerminal('Claude (Build UI)', 'powershell', '/repo')
+    expect(H.noteSwarmWorker).toHaveBeenCalledWith(worker)
+    H.noteSwarmWorker.mockClear()
+    await H.mcpHandlers!.createTerminal('Phone', 'powershell', '/repo', { device: 'phone-1', agentCommand: 'claude' })
+    expect(H.noteSwarmWorker).not.toHaveBeenCalled()
+    const order: string[] = []
+    H.noteWorkerCommand.mockImplementationOnce(() => { order.push('note') })
+    mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
+    // The sanitizer is mocked here as it is everywhere in this file: what it returns is what is noted.
+    vi.mocked(sanitizeAgentCommand).mockReturnValueOnce('claude --dangerously-skip-permissions')
+    H.mcpHandlers!.runCommand(worker, 'claude -p "build it"')
+    expect(sanitizeAgentCommand).toHaveBeenCalledWith('claude -p "build it"')
+    expect(H.noteWorkerCommand).toHaveBeenCalledWith(worker, 'claude --dangerously-skip-permissions')
+    expect(order).toEqual(['note', 'pty'])
+    H.mcpHandlers!.closeTerminal(worker)
+    expect(H.forgetTerminalAccount).toHaveBeenCalledWith(worker)
   })
 })
 
