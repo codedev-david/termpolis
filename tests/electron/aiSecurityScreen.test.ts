@@ -428,12 +428,12 @@ describe('the Linked screen finds a private key by what its bytes decode to', ()
   it("looks for a key block's BEGIN line 256 KB back where the cut falls among its lines, and for a token 4,096 back", () => {
     expect(SCREEN_LOOKBACK_CHARS).toBe(4_096)
     // A keyring export cut short, with no END line: the end kept starts in its last lines, its
-    // BEGIN line some 27,000 characters before it, behind armor headers. Found from there, it is
+    // BEGIN line some 29,000 characters before it, behind armor headers. Found from there, it is
     // removed whole; with no END line below, nothing else could take it.
     const lines = pgpPhotoExport(20_000).slice(0, -2)
     const text = `log\n${lines.join('\n')}\nThe export stopped here.\n`
     const r = screenText(text, 300, SCREEN_LOOKBACK_CHARS)
-    expect(text.length - 300 - text.indexOf('-----BEGIN')).toBeGreaterThan(20_000)
+    expect(text.length - 300 - text.indexOf('-----BEGIN')).toBeGreaterThan(28_000)
     expect(r).toEqual({ text: '[REDACTED:gpg_block]\nThe export stopped here.\n', removed: { gpg_block: 1 }, flagged: {}, markers: [[0, 20]] })
     // A token further back than the lookback is not looked for.
     const far = `ghp_${'q'.repeat(36)}${'.'.repeat(5_000)}`
