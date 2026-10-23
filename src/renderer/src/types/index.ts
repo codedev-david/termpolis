@@ -4,8 +4,9 @@ import type {
 } from '../../../shared/agentIntegration'
 import type {
   AccountAgent, AccountChangesResult, AccountPatch, AccountRowView, AccountsView, AddAccountRequest,
-  AddAccountResult, ImportPreview, ImportResult, NoteLimitRequest, PickFolderResult, ProfileAgent, RecopyView,
-  SignInLineRequest, SignInLineResult, SignInProgress,
+  AddAccountResult, ImportPreview, ImportResult, LaunchLineRequest, LaunchLineResult, NoteLimitRequest,
+  PickFolderResult, ProfileAgent, RecopyView, SignInLineRequest, SignInLineResult, SignInProgress,
+  TerminalAccountEvent,
 } from '../../../shared/agentAccounts'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
@@ -1315,6 +1316,11 @@ export interface AccountsAPI {
   /** "Mark available": forget the account's recorded limit. */
   clearLimit(id: string): Promise<IpcResponse<AccountRowView | undefined>>
   onSignInProgress(cb: (p: SignInProgress) => void): () => void
+  /** The line a launch types: main builds it (the renderer never builds a path or an env value)
+   *  and remembers it, so the terminal's account is main's own record. */
+  launchLine(req: LaunchLineRequest): Promise<IpcResponse<LaunchLineResult>>
+  /** A terminal's account as main now knows it: after a switch, or changed by hand. */
+  onTerminalAccount(cb: (e: TerminalAccountEvent) => void): () => void
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

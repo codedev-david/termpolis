@@ -153,6 +153,11 @@ export const ACCOUNTS_IPC = {
   clearLimit: 'accounts:clear-limit',
   /** "Re-copy from main profile": fresh stripped copies over the profile's own. */
   recopy: 'accounts:recopy',
+  /** The line a launch types: the agent's command on its account (§6.2). */
+  launchLine: 'accounts:launch-line',
+  /** main → renderer: the account Termpolis now knows a terminal runs on, or that it was changed
+   *  by hand (TerminalAccountEvent). */
+  terminalAccount: 'accounts:terminal-account',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────
@@ -359,6 +364,39 @@ export interface NoteLimitRequest {
   scope?: AccountLimit['scope']
   window?: AccountLimit['window']
   email?: string
+}
+
+/** What a launch asks main for: the line to type for `command` in that terminal's shell. */
+export interface LaunchLineRequest {
+  terminalId: string
+  agent: AccountAgent
+  shellType: string
+  /** The agent's command as Termpolis would type it bare: `claude --model opus`, `agy`. */
+  command: string
+  /** The account to launch on; none, or one no longer registered: the agent's preferred one. */
+  accountId?: string | null
+}
+
+export interface LaunchLineResult {
+  /** What to type, without its Enter. */
+  line: string
+  /** The account the line launches on; null for an agent with no accounts. */
+  accountId: string | null
+  /** The line names the account (the agent has more than one, or this one isn't its default). */
+  explicit: boolean
+  /** Claude Code: the session the line starts (--session-id) or resumes, so a switch resumes it
+   *  by its exact id (R8). */
+  sessionId?: string
+}
+
+/** main → renderer: a terminal's account, as main now knows it. */
+export interface TerminalAccountEvent {
+  terminalId: string
+  /** null: the agent's default profile. */
+  accountId: string | null
+  /** A line typed by hand set or unset the profile variable (or ran switch-now): Termpolis no
+   *  longer knows the account, and the chip shows "?". */
+  byHand: boolean
 }
 
 /** A sign-in terminal's name: "Sign in · Claude Code · codedev". */

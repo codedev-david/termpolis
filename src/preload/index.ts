@@ -646,6 +646,12 @@ const accounts: AccountsAPI = {
     ipcRenderer.on('accounts:sign-in-progress', handler)
     return () => ipcRenderer.removeListener('accounts:sign-in-progress', handler)
   },
+  launchLine: (req) => ipcRenderer.invoke('accounts:launch-line', req),
+  onTerminalAccount: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, e: Parameters<typeof cb>[0]) => cb(e)
+    ipcRenderer.on('accounts:terminal-account', handler)
+    return () => ipcRenderer.removeListener('accounts:terminal-account', handler)
+  },
 }
 contextBridge.exposeInMainWorld('accounts', accounts)
 

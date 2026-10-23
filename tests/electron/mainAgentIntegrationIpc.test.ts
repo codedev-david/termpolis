@@ -103,6 +103,7 @@ const H = vi.hoisted(() => {
     codexHomeFor: vi.fn((_paths: unknown, _id: unknown): { home?: string } | { error: string } => ({})),
     accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
     forgetTerminalAccount: vi.fn((_id: string) => undefined),
+    noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
     getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
     mkdirSync: vi.fn(),
   }
@@ -423,6 +424,7 @@ vi.mock('../../src/main/accountsIpc', () => ({
   codexHomeFor: H.codexHomeFor,
   accountSettingsEnv: H.accountSettingsEnv,
   forgetTerminalAccount: H.forgetTerminalAccount,
+  noteTypedInput: H.noteTypedInput,
 }))
 // The proxy's launch env, so a test can see which profile's routing it was asked about.
 vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) => ({
@@ -821,6 +823,31 @@ describe('Settings ▸ Accounts wiring', () => {
     // Nothing after the report: no prompt since there.
     expect(deps().promptSince('t-sign', 10_000)).toBe(false)
     expect(deps().promptSince('t-unknown', 0)).toBe(false)
+  })
+
+  it('tells where a terminal\'s output ends now, for where an agent a launch line starts begins', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-end', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[0][3] as (d: string) => void
+    expect(deps().outputEnd('t-end')).toBe(0)
+    onData('PS C:\\> ')
+    expect(deps().outputEnd('t-end')).toBe('PS C:\\> '.length)
+    expect(deps().outputEnd('t-none')).toBe(0)
+  })
+
+  it('shows every write from the renderer, as typed, to the account watch, after it reached the PTY', () => {
+    const write = (data: string) => { for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-typed', data }) }
+    const order: string[] = []
+    mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
+    H.noteTypedInput.mockImplementationOnce(() => { order.push('watch'); return null })
+    write('\x1b[200~unset CLAUDE_CONFIG_DIR\x1b[201~')
+    // The paste's markers come off, as for the launch audit.
+    expect(H.noteTypedInput).toHaveBeenCalledWith('t-typed', 'unset CLAUDE_CONFIG_DIR')
+    expect(order).toEqual(['pty', 'watch'])
+    // A watch that throws never breaks the terminal.
+    H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })
+    expect(() => write('x')).not.toThrow()
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-typed', 'x')
   })
 
   it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {

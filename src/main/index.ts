@@ -611,7 +611,7 @@ import {
 } from './agentIntegrationManager'
 import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount, isTerminalAccountConnected,
-  registerAccountsIpc, resolveLaunchTarget,
+  noteTypedInput, registerAccountsIpc, resolveLaunchTarget,
 } from './accountsIpc'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import {
@@ -843,8 +843,9 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
 // going to that AI provider's network. We log a terminal_open audit entry
 // (only if the audit toggle is on) so security-conscious teams can prove
 // "exactly when did developer X launch agent Y in repo Z." `agy` is the
-// Antigravity CLI, which every built-in Gemini launch types; it is recorded as gemini.
-const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(claude|codex|gemini|agy)(?:\s|$)/
+// Antigravity CLI, which every built-in Gemini launch types; it is recorded as gemini. A launch on
+// an account in cmd puts `call` in front of the agent (accountLine).
+const auditLaunchPattern = /(?:^|[\r\n;&|])\s*(?:call\s+)?(claude|codex|gemini|agy)(?:\s|$)/
 const launchedAgentName = (m: RegExpMatchArray | null): string | null => (m ? (m[1] === 'agy' ? 'gemini' : m[1]) : null)
 // Strict mode: refuse to forward a `gemini` invocation when the account
 // detector says we're on the free OAuth tier. We intercept before the bytes
@@ -1105,6 +1106,9 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
 
   // ALWAYS. Unmodified. Never withheld. This is the "don't touch" half of the contract.
   writeToTerminal(id, data)
+  // Which account the terminal's agents run on, as typed: Termpolis's own launch line, or a line
+  // typed by hand that changes it (accountsIpc.ts).
+  try { if (typeof data === 'string') noteTypedInput(id, typed) } catch {}
   try {
     if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
       const last = recentlyAuditedTerminals.get(id) || 0
@@ -2905,6 +2909,7 @@ registerAccountsIpc(ipcMain, {
   send: (channel, payload) => { mainWindow?.webContents.send(channel, payload) },
   // A sign-in's command has finished once its shell prints a prompt again (its report).
   promptSince: (terminalId, offset) => readOutputFrom(terminalOutputBuffers, terminalId, offset).output.search(PROMPT_REPORT) >= 0,
+  outputEnd: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
   checkCwd: () => {
     const dir = join(app.getPath('userData'), 'account-checks')
     mkdirSync(dir, { recursive: true })

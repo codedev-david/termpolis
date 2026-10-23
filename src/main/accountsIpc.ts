@@ -5,14 +5,16 @@
 // a profile is the view below: labels, emails, folders and states, never a config file.
 //
 // Logs hold account labels, never emails.
+import { randomUUID } from 'crypto'
 import { join } from 'path'
+import { changesAccountByHand, isSessionId } from '../shared/accountSwitch'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, SHAREABLE_FOLDERS, accountEnv, accountLine, cleanLabel, familyOf,
   isPlainEmail, isProfileAgent, signInCommand, signInTerminalName, slugOf, tildifyPath,
 } from '../shared/agentAccounts'
 import type {
   AccountAgent, AccountIdentity, AccountRowView, AccountsAdvice, AccountsView, AddAccountResult, AgentAccount,
-  ImportPreview, ProfileAgent, RecopyView, SignInMethod, SignInProgress,
+  ImportPreview, LaunchLineResult, ProfileAgent, RecopyView, SignInMethod, SignInProgress,
 } from '../shared/agentAccounts'
 import type { AgentIntegrationChange } from '../shared/agentIntegration'
 import { accountFs, readClaudeJsonFields } from './accountFs'
@@ -56,6 +58,9 @@ export interface AccountsIpcDeps {
   /** Has the shell printed a prompt in this terminal's output since `offset` (its prompt report:
    *  OSC 9;9 from PowerShell and cmd, OSC 7 from bash)? Tells a sign-in's command finished. */
   promptSince?: (terminalId: string, offset: number) => boolean
+  /** Where the terminal's output ends now (its buffer's next offset): where an agent a line
+   *  started begins. */
+  outputEnd?: (terminalId: string) => number
   /** For tests: the status commands. */
   signedInNow?: (agent: ProfileAgent, profile: string | null, deps: CheckDeps) => Promise<IdentityCheck>
   setInterval?: (fn: () => void, ms: number) => unknown
@@ -78,10 +83,100 @@ const terminalAccounts = new Map<string, string | null>()
 
 export function noteTerminalAccount(terminalId: string, accountId: string | null): void {
   terminalAccounts.set(terminalId, accountId)
+  byHand.delete(terminalId)
 }
 
 export function forgetTerminalAccount(terminalId: string): void {
   terminalAccounts.delete(terminalId)
+  ownLines.delete(terminalId)
+  typedLines.delete(terminalId)
+  byHand.delete(terminalId)
+  agentStarts.delete(terminalId)
+}
+
+/** How long a line main built stays Termpolis's own: the renderer types it within moments. */
+export const OWN_LINE_MS = 10_000
+
+/** The lines main built for each terminal (launch-line), each until it is typed or OWN_LINE_MS
+ *  pass: typed through terminal:write, one of them is Termpolis's own line, not a change by hand
+ *  (R1). */
+const ownLines = new Map<string, Array<{ line: string; until: number }>>()
+/** What was typed into each terminal since its last Enter, gathered from keystrokes. */
+const typedLines = new Map<string, string>()
+/** Terminals whose account a line typed by hand changed: Termpolis no longer knows it. */
+const byHand = new Set<string>()
+
+/** Where each terminal's agent was started in its output, and the line that started it: what the
+ *  switch reads its exit and its relaunch from (accountSwitch.ts), as submit does run_command's. */
+export interface AgentStart {
+  at: number
+  commands: string[]
+}
+const agentStarts = new Map<string, AgentStart>()
+
+export function terminalAgentStart(terminalId: string): AgentStart | undefined {
+  return agentStarts.get(terminalId)
+}
+
+export function noteAgentStart(terminalId: string, start: AgentStart): void {
+  agentStarts.set(terminalId, start)
+}
+
+/** A line typed by hand changed the terminal's account (it set or unset a profile variable). */
+export function isAccountChangedByHand(terminalId: string): boolean {
+  return byHand.has(terminalId)
+}
+
+/** What index.ts's terminal:write and the switch reach main's other parts through, once
+ *  registerAccountsIpc has run. */
+const wiring: { send?: (channel: string, payload: unknown) => void; outputEnd?: (terminalId: string) => number } = {}
+
+/** The longest typed line kept: a pasted file is no account line. */
+const TYPED_LINE_MAX = 4096
+const ESCAPE_SEQUENCE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|.)?/
+
+/** A whole line was typed into a terminal: Termpolis's own (one main built), or one that changes
+ *  the account by hand, which marks the terminal so (§6.1) and tells the renderer. */
+function noteLine(terminalId: string, line: string, now: number): 'own' | 'by-hand' | null {
+  const typed = line.trim()
+  if (!typed) return null
+  const mine = (ownLines.get(terminalId) ?? []).filter((l) => l.until > now)
+  const at = mine.findIndex((l) => l.line === typed)
+  if (at >= 0) {
+    mine.splice(at, 1)
+    ownLines.set(terminalId, mine)
+    const end = wiring.outputEnd?.(terminalId)
+    if (end !== undefined) agentStarts.set(terminalId, { at: end, commands: [typed] })
+    return 'own'
+  }
+  if (!changesAccountByHand(typed)) return null
+  byHand.add(terminalId)
+  wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: terminalAccounts.get(terminalId) ?? null, byHand: true })
+  return 'by-hand'
+}
+
+/**
+ * Every write to a terminal from the renderer (terminal:write), as typed: keystrokes are gathered
+ * into the line they make until its Enter, with Backspace, Ctrl+U and Ctrl+C taken into account
+ * and escape sequences (arrow keys) left out, and a write that holds whole lines (a paste,
+ * Termpolis's own launch) is read line by line. Returns what the last whole line was.
+ */
+export function noteTypedInput(terminalId: string, typed: string, now: number = Date.now()): 'own' | 'by-hand' | null {
+  let line = typedLines.get(terminalId) ?? ''
+  let result: 'own' | 'by-hand' | null = null
+  for (let i = 0; i < typed.length; i++) {
+    const c = typed[i]
+    if (c === '\r' || c === '\n') {
+      result = noteLine(terminalId, line, now)
+      line = ''
+    } else if (c === '\x7f' || c === '\b') line = line.slice(0, -1)
+    else if (c === '\x15' || c === '\x03') line = ''
+    else if (c === '\x1b') i += (ESCAPE_SEQUENCE.exec(typed.slice(i)) as RegExpExecArray)[0].length - 1
+    else if (c >= ' ' && line.length < TYPED_LINE_MAX) line += c
+  }
+  if (line) typedLines.set(terminalId, line)
+  else typedLines.delete(terminalId)
+  return result
 }
 
 /** The account Termpolis put this terminal on: undefined when it never did (a terminal from
@@ -99,6 +194,10 @@ export function terminalsOnAccount(accountId: string): number {
 
 export function _resetTerminalAccountsForTest(): void {
   terminalAccounts.clear()
+  ownLines.clear()
+  typedLines.clear()
+  byHand.clear()
+  agentStarts.clear()
 }
 
 // ── Lookups index.ts uses ──────────────────────────────────────────────────────────────
@@ -149,6 +248,8 @@ export function codexHomeFor(paths: Pick<AgentIntegrationPaths, 'home' | 'userDa
 /** Is the terminal on an account the user connected? A terminal Termpolis never put on an account
  *  runs on the default profile (D13). */
 export function isTerminalAccountConnected(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, terminalId: unknown): boolean {
+  // An account changed by hand is one Termpolis doesn't know: it answers nothing there.
+  if (typeof terminalId === 'string' && byHand.has(terminalId)) return false
   const id = typeof terminalId === 'string' ? terminalAccountId(terminalId) : undefined
   return resolveAccountTarget(paths, id ?? undefined).connected
 }
@@ -313,6 +414,29 @@ const SIGN_IN_METHODS: Readonly<Record<ProfileAgent, readonly SignInMethod[]>> =
  *  account/read never refresh (T2, T3), neither runs against a profile Termpolis has a terminal on. */
 const CHECK_SKIPS_LIVE_PROFILES = true
 
+/** The account a launch goes on, among the agent's (`accounts`, not empty): the one asked for
+ *  while it is still registered; else the agent's preferred one; else its default profile; else
+ *  its first. */
+export function launchAccountOf(doc: AccountsDoc, accounts: readonly AgentAccount[], requested: unknown): AgentAccount {
+  return accounts.find((a) => a.id === requested)
+    ?? accounts.find((a) => a.id === doc.file.preferred[accounts[0].agent])
+    ?? accounts.find((a) => a.profile === null)
+    ?? accounts[0]
+}
+
+/** Which session a Claude Code command starts: the one it resumes (`--resume <id>`) or names
+ *  (`--session-id <id>`); none it can tell (`--continue`, `--resume` with no id); or a new one,
+ *  which a launch gives an id of its own so a switch can resume it. */
+export function claudeSessionOf(command: string): { id: string | null; fresh: boolean } {
+  const tokens = command.split(/\s+/)
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t === '--resume' || t === '-r' || t === '--session-id') return { id: isSessionId(tokens[i + 1]) ? tokens[i + 1] : null, fresh: false }
+    if (t === '--continue' || t === '-c' || t === '--fork-session') return { id: null, fresh: false }
+  }
+  return { id: null, fresh: true }
+}
+
 export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps): void {
   const fsx = deps.fsx ?? accountFs
   const now = deps.now ?? Date.now
@@ -323,6 +447,8 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   /** The folder the user picked last, per agent, waiting for Add. */
   const picked = new Map<AccountAgent, string>()
   const watches = new Map<string, { timer: unknown; until: number; mtime: number | null; email: string | null }>()
+  wiring.send = deps.send
+  wiring.outputEnd = deps.outputEnd
 
   const view = (doc: AccountsDoc): AccountsView => {
     const p = deps.paths()
@@ -759,6 +885,46 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       watches.delete(id)
     }
     return { stopped: !!w }
+  })
+
+  handle(ACCOUNTS_IPC.launchLine, (input): LaunchLineResult => {
+    const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
+    const agent = ACCOUNT_AGENTS.find((a) => a === input.agent)
+    const command = typeof input.command === 'string' ? input.command.trim() : ''
+    if (!terminalId) throw new Error('which terminal?')
+    if (!agent) throw new Error('unknown agent')
+    if (!command) throw new Error('there is no command to run')
+    // With no account for the agent, or a registry that can't be read, the launch is today's: the
+    // bare command on the default profile, and nothing recorded (D13).
+    const loaded = loadAccounts(userData(), fsx)
+    const accounts = loaded.ok ? sortedAccounts(loaded.doc).filter((a) => a.agent === agent) : []
+    if (!loaded.ok || accounts.length === 0) return { line: command, accountId: null, explicit: false }
+    const account = launchAccountOf(loaded.doc, accounts, input.accountId)
+    // Named on the line once the agent has more than one account: a CLAUDE_CONFIG_DIR a shell's rc
+    // file exports can't then move the launch (§6.2). The default profile's line unsets it.
+    const explicit = accounts.length > 1 || (isProfileAgent(agent) && account.profile !== null)
+    let line = command
+    let sessionId: string | undefined
+    if (explicit) {
+      let typed = command
+      if (agent === 'claude') {
+        const session = claudeSessionOf(command)
+        sessionId = session.id ?? undefined
+        if (session.fresh) {
+          sessionId = randomUUID()
+          typed = `${command} --session-id ${sessionId}`
+        }
+      }
+      const family = familyOf(String(input.shellType ?? ''))
+      if (!family) throw new Error('Termpolis can\'t type an account line into that shell')
+      const built = accountLine(family, accountEnv(account, agent), typed)
+      if ('refused' in built) throw new Error(`Termpolis won't type that line: ${built.refused}`)
+      line = built.line
+    }
+    noteTerminalAccount(terminalId, account.id)
+    const t = now()
+    ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > t), { line, until: t + OWN_LINE_MS }])
+    return { line, accountId: account.id, explicit, ...(sessionId ? { sessionId } : {}) }
   })
 
   handle(ACCOUNTS_IPC.noteLimit, (input) => {

@@ -702,6 +702,27 @@ describe('terminal:write — always forwards, never withholds', () => {
     expect(auditEvents()).toContainEqual(expect.objectContaining({ agent, event: 'terminal_open' }))
   })
 
+  // A launch on an account names it first, in a form that runs nothing in another shell's family
+  // (accountLine, R1): cmd's puts `call` before the agent, PowerShell's a script block around it.
+  // Each is still a launch, and arms the prompt watch.
+  it.each([
+    ['cmd', 'set "CLAUDE_CONFIG_DIR=C:\\Users\\me\\.claude-b" && call claude --model opus\r', 'claude'],
+    ['cmd, default profile', 'set "CODEX_HOME=" && call codex\r', 'codex'],
+    ['PowerShell', "& { $env:CLAUDE_CONFIG_DIR = 'C:\\x'; claude }\r", 'claude'],
+    ['posix', "export CODEX_HOME='/h/.codex-b' && codex resume 01a1664b-6312-7121-97f6-88c7f6793c64\r", 'codex'],
+  ])('recognises an agent launch on an account (%s)', (_shell, data, agent) => {
+    const id = newId(`w-acct-${agent}`)
+    fire('terminal:write', { id, data })
+    expect(auditEvents()).toContainEqual(expect.objectContaining({ agent, event: 'terminal_open', terminalId: id }))
+    expect(mockWriteToTerminal).toHaveBeenCalledWith(id, data)
+  })
+
+  it('reads `call` only as the word in front of an agent, not inside a command', () => {
+    const id = newId('w-recall')
+    fire('terminal:write', { id, data: 'echo recall claude\r' })
+    expect(auditEvents()).toEqual([])
+  })
+
   it('recognises `agy`, the Antigravity CLI every built-in Gemini launch types, as gemini', () => {
     const id = newId('w-agy')
     fire('terminal:write', { id, data: 'agy\r' })
