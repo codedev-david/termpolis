@@ -101,6 +101,10 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
         try { res.end('headroom proxy request error: ' + (e as Error).message) } catch { /* ignore */ }
         return
       }
+      // A client that hangs up before the answer is done (Esc in Claude Code) ends the turn: stop the
+      // upstream request too, as a direct connection would. Otherwise the model goes on generating,
+      // and counting against the user's usage, an answer nobody reads.
+      res.on('close', () => { if (!res.writableFinished) { try { upReq.destroy() } catch { /* ignore */ } } })
       upReq.on('error', (e) => {
         // Once the answer has started, nothing may follow it: its body may be gzip-encoded, and text
         // written now would land inside the compressed stream. Break the connection instead.
