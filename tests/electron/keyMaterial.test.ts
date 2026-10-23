@@ -33,7 +33,7 @@ import { JOIN, T1_JOININGS, der, leakedWindows, makeKeys, pgpPhotoExport, pgpRsa
 function screenKeys(text: string, opts: { keep?: number; cutStart?: boolean } = {}): { text: string; removed: Record<string, number>; flagged: Record<string, number>; spans: KeySpan[] } {
   const from = opts.keep !== undefined && text.length > opts.keep ? text.length - opts.keep : 0
   const start = detectorStart(text, from, 4096)
-  const { blocks, spans } = keySpans(text, start)
+  const { blocks, spans } = keySpans(text, start, opts.cutStart === true)
   const straddled = spans.some((c) => c.cls === 'remove' && c.from < from && c.to > from)
   const cutAt = opts.cutStart ? 0 : from > 0 && !straddled ? from : undefined
   for (const s of headless(text, blocks, { start, ...(cutAt === undefined ? {} : { cutAt }) })) spans.push(s)
@@ -1184,6 +1184,47 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
       // (taken from its BEGIN line up to the uneven line, and what goes on past it named in a note)
       expect(noEnd.removed, `${name}, no END line`).toEqual({ private_key: 1 })
       if (leakedWindows(noEnd.text, secret) > 0) expect(noEnd.flagged, `${name}, no END line`).toEqual({ private_key: 1 })
+    }
+  })
+
+  it('F-IRREGULAR: a short EC key with a line indented or re-wrapped goes whole with its END line', () => {
+    // (its block stops at the uneven line, and the lines from there up to the END line start inside
+    // what the block took: the rest of the block's own key)
+    for (const format of ['sec1_ec', 'pkcs8_ec'] as const) {
+      const lines = K.F[format]
+      const body = lines.slice(1, -1)
+      const flat = body.join('')
+      const rewrap = (a: number, b: number): string[] => {
+        const out: string[] = []
+        for (let i = 0, w = a; i < flat.length; i += w, w = w === a ? b : a) out.push(flat.slice(i, i + w))
+        return out
+      }
+      for (const [name, b] of [
+        ['one line indented', body.map((l, i) => (i === body.length >> 1 ? `  ${l}` : l))],
+        ['re-wrapped at 76 and 64', rewrap(76, 64)],
+        ['re-wrapped at 64 and 50', rewrap(64, 50)],
+      ] as const) {
+        const r = screenKeys(`Key:\n${[lines[0], ...b, lines[lines.length - 1]].join('\n')}\nDone.\n`)
+        expect(leakedWindows(r.text, secretLinesOf(lines)), `${format} ${name}`).toBe(0)
+      }
+    }
+  })
+
+  it("F-E: where an older computer's cut left 20 to 39 characters of a wrapped base64 key file's line, they go too", () => {
+    const b64 = Buffer.from(K.F.pkcs8_rsa.join('\n') + '\n').toString('base64')
+    const wrapped = wrap(b64, 76)
+    for (const [name, text] of [
+      ['Helm', `tls:\n  key: |\n${wrapped.map((l) => `    ${l}`).join('\n')}\n`],
+      ['cat -n', wrapped.map((l, i) => `${String(i + 1).padStart(6)}\t${l}`).join('\n') + '\n'],
+    ] as const) {
+      // the cut falls n characters before the end of the value's 8th line
+      const lineEnd = text.indexOf(wrapped[8]) + 76
+      for (const n of [20, 25, 32, 39]) {
+        const r = arrived(text, lineEnd - n)
+        const partial = wrapped[8].slice(-n)
+        expect(r.text.includes(partial), `${name} ${n}`).toBe(false)
+        expect(r.removed, `${name} ${n}`).toEqual({ private_key_b64: 1 })
+      }
     }
   })
 
