@@ -183,6 +183,8 @@ function tlv(b: Uint8Array, o: number): Tlv | null {
 
 const startsWith = (b: Uint8Array, bytes: number[]): boolean => bytes.every((x, i) => b[i] === x)
 const OPENSSH = [...Buffer.from('openssh-key-v1', 'latin1'), 0]
+/** OpenSSH's magic and the three zero bytes of the length after it, as text (latin1). */
+const OPENSSH_RUN = 'openssh-key-v1\0\0\0\0'
 const SSH2_MAGIC = [0x3f, 0x6f, 0xf9, 0xeb]
 /** 1.2.840.113549.1.5: PBES1 and PBES2. */
 const PKCS5 = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05]
@@ -770,21 +772,23 @@ function stepBack(text: string, s: number, floor: number): number {
  *  literal's `" & vbCrLf & _` or `" + System.lineSeparator()`, and cat -A's `$`. */
 const KEY_LINE_TAIL = /^[\s"'`,;+&_)\]}|\\$]*$/
 /** A key's last line of 1-7 characters, which holds no run of 8 (every P-521 PKCS#8 key's). */
-const SHORT_ABOVE = /[A-Za-z0-9+/]{1,7}={0,2}[\s"'`,;+&_)\]}|\\$]*$/
+const SHORT_ABOVE = /([A-Za-z0-9+/]{1,7}={0,2})[\s"'`,;+&_)\]}|\\$]*$/
 /** What an escaped break leaves of a code literal's line between two key lines: joiners, and PHP's
  *  `" .` (a dot right after the closing quote; a line of dots is no literal's). */
 const FRAGMENT_LINE = /^[\s"'`,;+&_)\]}|\\]*(?:["'`]\s*\.[\s"'`,;+&_)\]}|\\]*)?$/
 
 /** The key lines that end right above a private-key END line at `at`, found by walking back one
  *  logical line at a time while lines keep the width and frame of the key's full lines. Reaches
- *  back as far as a key block runs (MAX_BLOCK), never past `floor`. */
-function tailAbove(text: string, at: number, floor: number): Run[] {
+ *  back as far as a key block runs (MAX_BLOCK), never past `floor`. `last.short`: set to the
+ *  length of the key's last line when it is 1-7 characters, which the walk steps over. */
+function tailAbove(text: string, at: number, floor: number, last?: { short: number }): Run[] {
   const runs: Run[] = []
   let width = 0
   let frame = ''
   let tail = ''
   let skipped = false
   let shortFrame: string | null = null
+  let shortLen = 0
   let e = at
   for (let n = 0; e > floor && n < 65536; n++) {
     const s = logicalLineStart(text, e, floor)
@@ -818,6 +822,7 @@ function tailAbove(text: string, at: number, floor: number): Run[] {
       const short = runs.length === 0 && shortFrame === null ? SHORT_ABOVE.exec(blankNl(seg)) : null
       if (short) {
         shortFrame = seg.slice(0, short.index)
+        shortLen = short[1].length
         e = stepBack(text, s, floor)
         continue
       }
@@ -853,6 +858,7 @@ function tailAbove(text: string, at: number, floor: number): Run[] {
     }
     e = stepBack(text, s, floor)
   }
+  if (last && runs.length) last.short = shortLen
   return runs.reverse()
 }
 
@@ -1027,6 +1033,15 @@ function keyHead(text: string, runs: Run[]): boolean {
   if (decodeHead(text, runs)) return true
   const r = text.slice(runs[0][0], runs[0][1])
   for (let k = 0; k <= 4; k++) if (startsWith(Buffer.from(r.slice(k, k + 24), 'base64'), OPENSSH.slice(0, 14))) return true
+  // A line alone that a cut started inside the magic of: its bytes from a 4-character boundary are
+  // a run of the magic and the zeros after it (6 bytes of them in 4 alignments: by chance about
+  // once in 10^13). A key's own lines go on below its first.
+  if (runs.length === 1) {
+    for (let k = 0; k < 4; k++) {
+      const b = Buffer.from(r.slice(k, k + 8), 'base64')
+      if (b.length === 6 && OPENSSH_RUN.includes(b.toString('latin1'))) return true
+    }
+  }
   return false
 }
 
@@ -1121,7 +1136,8 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
       // change). Taken anywhere, a screenshot dump or an array of hashes printed above an END line
       // was removed.
       const floor = Math.max(prev, at - MAX_BLOCK)
-      const runs = tailAbove(text, at, floor)
+      const last = { short: 0 }
+      const runs = tailAbove(text, at, floor, last)
       const framed = endFramed(text, at, floor, runs)
       const rule = tailRule(m[0])
       const cutText = opts.cutAt === 0 && floor === start
@@ -1154,17 +1170,30 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
         // OpenSSH bytes, a PKCS#8 one's single line); or the rest of the block's own key, past
         // lines laid out unevenly, which go with it.
         out.push({ rule, cls: 'remove', why: 'tail-under-block', from: lead, to: at + m[0].length })
-      } else if (framed && opts.cutAt === 0 && floor === start && runs.length >= 1 && runs.reduce((n, [a, b]) => n + b - a, 0) >= 16) {
+      } else if (framed && opts.cutAt === 0 && floor === start && runs.length >= 1) {
         // At the start of a text another computer cut, the few characters of key a cut left right
         // above a private END line are a key's tail whatever their length (a cut at 95% of a key
-        // leaves a partial line and the short last one, under the 80 characters a key run needs).
+        // leaves a partial line and the short last one, under the 80 characters a key run needs),
+        // from 16 on: its lines', with what the cut left of the line above them (narrower than a
+        // key's full lines, where the walk up stopped) and a last line of 1-7 (which it stepped over).
         // A made-up body's lines (a test's fixture, which a key never is) are reported instead, and
         // so are a key's first bytes, which are no key's tail: what starts there is a key from its
         // first line, too short to be one (a truncated example), as decodedHead judged.
         const fake = madeUp(text, runs) || keyHead(text, runs)
         const head = fake ? null : headAnchor(text, runs, floor, true, blocks)
-        if (head !== null) out.push({ rule: tailRule(m[0]), cls: 'remove', why: 'cut-tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
-        else if (fake) out.push({ rule: tailRule(m[0]), cls: 'flag', why: 'cut-tail-made-up', from: at, to: at + m[0].length })
+        const from = head ?? runs[0][0]
+        let top = from
+        while (top < runs[0][0] && isB64(text.charCodeAt(top))) top++
+        // (one or the other, and only where the partial line starts the text, the cut inside its
+        // base64: a key's lines there are a partial one and its last; one between them narrower
+        // than a key's full lines is no key's, and nor is a run behind a header's name, as a
+        // DEK-Info line's IV is)
+        const atTop = from === floor + (text.startsWith('…', floor) ? 1 : 0)
+        const extra = !atTop ? 0 : last.short > 0 ? (from === runs[0][0] ? last.short : 0) : top - from
+        if (runs.reduce((n, [a, b]) => n + b - a, 0) + extra >= 16) {
+          if (head !== null) out.push({ rule: tailRule(m[0]), cls: 'remove', why: 'cut-tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
+          else if (fake) out.push({ rule: tailRule(m[0]), cls: 'flag', why: 'cut-tail-made-up', from: at, to: at + m[0].length })
+        }
       }
     }
     prev = at + m[0].length

@@ -159,6 +159,11 @@ const REVIEW = {
   'tail: a made-up run anchored as a key tail': [KEY, 'const head = framed && !ownFloor && !madeUp(text, runs) ?', 'const head = framed && !ownFloor ?'],
   "tail: a legacy key's tail from its first line under a block": [KEY, '(legacy ? lead ?? runs[0][0] :', '(legacy ? runs[0][0] :'],
   "nl: a newline constant's name inside a key's base64 blanked": [KEY, '/(?<![A-Za-z0-9/=_])(?:vbCrLf|vbNewLine|vbLf|Environment\\.NewLine|System\\.lineSeparator\\(\\)|os\\.linesep|PHP_EOL)(?![A-Za-z0-9/=_])/g', '/vbCrLf|vbNewLine|vbLf|Environment\\.NewLine|System\\.lineSeparator\\(\\)|os\\.linesep|PHP_EOL/g'],
+  'cut: what the cut left of the line above not counted to 16': [KEY, 'last.short : 0) : top - from', 'last.short : 0) : 0'],
+  'cut: a last line of 1-7 not counted to 16': [KEY, 'last.short > 0 ? (from === runs[0][0] ? last.short : 0) :', 'last.short > 0 ? 0 :'],
+  'cut: a last line counted under a line between the partial one and it': [KEY, '(from === runs[0][0] ? last.short : 0)', 'last.short'],
+  'cut: a partial line counted where it does not start the text': [KEY, 'const extra = !atTop ? 0 :', 'const extra ='],
+  "cut: a truncated OpenSSH example's magic, cut inside, taken for a tail": [KEY, "OPENSSH_RUN.includes(b.toString('latin1'))", 'false'],
 }
 
 /** Mutants no test can kill, because they change nothing the screen returns. */

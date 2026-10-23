@@ -1420,6 +1420,70 @@ describe("the round-1 rules at their edges", () => {
       }
     }
   })
+
+  it("at an older computer's cut, the 16 characters of key above an END line count what the cut left of a line and a last line of 1-7", () => {
+    // (a cut at 95% of a key leaves a partial line and the short last one: a last line of 8-15
+    // characters under a partial one narrower than a key's full lines, or one of 1-7 under a
+    // partial one, which the walk up steps over)
+    for (const [last, left, taken] of [
+      [12, 4, true],
+      [12, 9, true],
+      [15, 1, true],
+      [8, 8, true],
+      [12, 3, false],
+      [5, 11, true],
+      [7, 9, true],
+      [5, 10, false],
+    ] as const) {
+      const lines = K.F.pkcs8_rsa.slice()
+      lines[lines.length - 2] = lines[lines.length - 2].slice(0, last)
+      const text = `Key:\n${lines.join('\n')}\nDone.\n`
+      const at = text.indexOf(`\n${lines[lines.length - 2]}\n-----END`) - left
+      const r = arrived(text, at)
+      const what = `last line ${last}, ${left} left of the line above`
+      // (compared as booleans: a failure prints no key characters)
+      if (taken) {
+        expect(r.text === '…[REDACTED:private_key]\nDone.\n', what).toBe(true)
+        expect(r.removed).toEqual({ private_key: 1 })
+      } else {
+        // fewer than 16 in all: no key's tail to tell from a fragment, as the K4 row has it
+        expect(r.text === `…${text.slice(at)}`, what).toBe(true)
+        expect(r.removed).toEqual({})
+      }
+      expect(r.flagged, what).toEqual({})
+    }
+    // A legacy key's headers over a made-up body (a test's), cut in its Proc-Type or DEK-Info line:
+    // the IV that ends the DEK-Info line is no key line, under a partial one or behind its name.
+    // (A cut at the IV's start leaves 16 characters of base64 above the END line, as a key's partial
+    // line and its last would: the K4 row's 16 at a cut, and only a text that starts there.)
+    for (const iv of ['0011AABB', '0011AABBCCDD']) {
+      for (const nl of ['\n', '\\n']) {
+        const fixture = ['-----BEGIN RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', `DEK-Info: AES-128-CBC,${iv}`, '', 'MIIE', '-----END RSA PRIVATE KEY-----'].join(nl)
+        const text = `const legacy = '${fixture}'\n`
+        const p = text.indexOf('Proc-Type')
+        for (let at = p; at < text.indexOf(iv); at++) {
+          const r = arrived(text, at)
+          expect(r.text, `IV ${iv.length}, ${JSON.stringify(nl)}, cut ${at - p} into the headers`).toBe(`…${text.slice(at)}`)
+        }
+      }
+    }
+  })
+
+  it("a truncated OpenSSH example an older computer's cut fell inside stays: what is left of its magic is a key's first bytes", () => {
+    // (the one line a test writes for OpenSSH's format, `openssh-key-v1` and the zeros after it:
+    // where the cut took its first characters, what is left no longer starts with the magic)
+    const magic = Buffer.from('openssh-key-v1\0\0\0\0', 'latin1').toString('base64')
+    for (const nl of ['\n', '\\r\\n']) {
+      const text = `const ssh = '-----BEGIN OPENSSH PRIVATE KEY-----${nl}${magic}${nl}-----END OPENSSH PRIVATE KEY-----${nl}after'\n`
+      const p = text.indexOf(magic)
+      for (let at = p; at < p + magic.length; at++) {
+        const r = arrived(text, at)
+        expect(r.text, `${JSON.stringify(nl)}, cut ${at - p} into the example`).toBe(`…${text.slice(at)}`)
+        // (16 characters or more of it left: reported, as a made-up body's are)
+        expect(r.flagged, `cut ${at - p}`).toEqual(p + magic.length - at >= 16 ? { private_key: 1 } : {})
+      }
+    }
+  })
 })
 
 describe('the structure checks, on decoded bytes', () => {

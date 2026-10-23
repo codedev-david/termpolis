@@ -1458,11 +1458,12 @@ audit log.
   still crossed between your two computers, sealed. Versions 1.50 to 1.53.0
   cut an answer to its end before screening it (1.50 to 1.52 don't screen it
   at all). A private key their cut ran through is still removed here if its
-  END line is in what arrived, and reported if it isn't, but for a key written
-  all on one line, echoed into a file line by line or URL-encoded whole, and
-  (with no END line) an Ed25519 key in OpenSSH's format, whose few lines are
-  too regular to tell from other base64. A token whose start the cut took
-  arrives without its prefix and is not recognised.
+  END line and 16 or more of its characters are in what arrived, and reported
+  if its END line isn't, but for a key written all on one line, echoed into a
+  file line by line or URL-encoded whole, and (with no END line) an Ed25519
+  key in OpenSSH's format, whose few lines are too regular to tell from other
+  base64. A token whose start the cut took arrives without its prefix and is
+  not recognised.
 - **Memory.** The agent doing the work starts with that computer's own memory
   primer (up to 6,000 characters), as a local run would, so its answer can
   quote that machine's memory. Nothing of the job becomes that computer's own
