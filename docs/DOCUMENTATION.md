@@ -1392,19 +1392,28 @@ audit log.
     structure: PKCS#8, encrypted PKCS#8, PKCS#1 RSA, DSA, SEC1 EC, OpenSSH,
     OpenPGP or SSH2. An OpenVPN static key (its 2,048 random bits in hex) is
     removed too, and so is a legacy encrypted PEM key with its Proc-Type and
-    DEK-Info lines. Its
-    lines count when they are framed in any of these ways: indented, as string
-    literals joined with `+`, as `\n` escapes in a JSON string, behind comment
-    or quote marks, in a diff, behind `cat -n`, in grep or rg output with paths
-    and line numbers (Windows paths too), or behind log timestamps and container
+    DEK-Info lines. A key's lines count when they are framed in any of these
+    ways: indented, as string literals joined with `+`, `.`, `&` or a newline
+    constant, as `\n` escapes in a JSON string (with `/` or `+` escaped too, as
+    PHP and .NET write them), behind comment or quote marks, in a diff (a
+    coloured one too), behind `cat -n`, in grep or rg output with paths and line
+    numbers (Windows paths too), or behind log timestamps and container
     prefixes. A key file stored base64 encoded (a Kubernetes Secret's `tls.key`)
     is removed the same way. So are a PuTTY `.ppk`'s private lines, a JWK's
     private members (`d`, `k`, ...), a .NET `RSAKeyValue`'s private members (of
     those two only the values, so the JSON or XML stays well formed) and a key
     file URL-encoded whole. A block runs from its BEGIN line to its END line, or
-    with no END line in view to its last key line. A key's tail is removed with
-    its END line even when its BEGIN line is out of view: where the text, or the
-    end of it that is kept, starts inside the key. A note tells your agent how
+    with no END line in view to its last key line. One whose lines are laid out
+    unevenly (one indented, split or joined, or re-wrapped) still runs to its END
+    line once the lines before the uneven one show it is a key, and with no END
+    line is removed up to the uneven line and the rest named in a note; when too
+    few lines come before it to show that, it is named in a note. A key's tail is
+    removed with its END line even when its BEGIN line is
+    out of view: where the end of the text that is kept starts inside the key,
+    where the text starts with two or more of its lines (its last line or two
+    alone can cross), and wherever lines that decode to a key's first bytes run
+    down to its END line (a key whose BEGIN line was lost, the new key in a diff
+    that rotates one). A note tells your agent how
     many this computer removed, and by which rules, from the prompt it sent and
     from an answer that arrived with one still in it; one the other computer
     removed shows only as its marker.
@@ -1418,16 +1427,20 @@ audit log.
     an END line with none between them (as a PEM parser or a test writes them,
     empty pairs included); a public key, certificate or CSR under a private-key
     BEGIN line; a test key whose body is made up; prose or code between a BEGIN
-    and an END line; a placeholder JWK; and base64 in a format Termpolis can't
-    check under a private-key BEGIN line. The note names the rules that matched.
+    and an END line; a placeholder JWK value (named in the note when it is
+    written in a key's own characters, such as `REPLACE_ME`); and base64 in a
+    format Termpolis can't check under a private-key BEGIN line. The note names
+    the rules that matched.
   Both tiers write a line to the AI Security audit log on the computer that
   screened: the rule ids and how often each matched, never the value. A
   credential you deliberately want on the other computer should live in a file
   there, not in the prompt.
-  Not recognised: a private key in a format Termpolis can't decode, or whose
-  lines were re-wrapped to differing widths (both reported, as above); an SSH2,
-  PuTTY or OpenVPN key file URL-encoded whole; a PKCS#12 (`.pfx`) file in
-  base64; age, Tailscale and WireGuard keys.
+  Not recognised: a private key in a format Termpolis can't decode (reported,
+  as above); an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
+  private lines run together with no separator; a PKCS#12 (`.pfx`) file in
+  base64; a JWK nested inside another JWK; a key block longer than 256 KB with
+  no END line, once the end that is kept starts more than 256 KB after its
+  BEGIN line; age, Tailscale and WireGuard keys.
   An answer and its error are screened before they are cut to their ends.
   Tokens are looked for 4,096 characters before the cut. A key the cut runs
   through is found from its BEGIN line, looked for up to 256 KB back when the
@@ -1444,8 +1457,10 @@ audit log.
   still crossed between your two computers, sealed. Versions 1.50 to 1.53.0
   cut an answer to its end before screening it (1.50 to 1.52 don't screen it
   at all). A private key their cut ran through is still removed here if its
-  END line is in what arrived, and reported if it isn't. A token whose start
-  the cut took arrives without its prefix and is not recognised.
+  END line is in what arrived, and reported if it isn't (but for an Ed25519
+  key in OpenSSH's format, whose few lines are too regular to tell from other
+  base64). A token whose start the cut took arrives without its prefix and is
+  not recognised.
 - **Memory.** The agent doing the work starts with that computer's own memory
   primer (up to 6,000 characters), as a local run would, so its answer can
   quote that machine's memory. Nothing of the job becomes that computer's own
