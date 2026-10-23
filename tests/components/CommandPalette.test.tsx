@@ -11,6 +11,11 @@ const mockPromptTemplates = [
   { id: 'custom1', name: 'My Custom', text: 'Custom prompt text', icon: 'fa-solid fa-star', isCustom: true },
 ]
 
+// What the palette does through getState(): the terminal it activates, and the one a prompt
+// template is typed into (null: none is active).
+const setActiveTerminal = vi.fn()
+let activeTerminalId: string | null = 't1'
+
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   useTerminalStore: Object.assign(
     (selector?: any) => {
@@ -24,8 +29,8 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
     {
       getState: vi.fn(() => ({
         terminals: mockTerminals,
-        activeTerminalId: 't1',
-        setActiveTerminal: vi.fn(),
+        activeTerminalId,
+        setActiveTerminal,
       })),
       setState: vi.fn(),
     },
@@ -201,6 +206,70 @@ describe('CommandPalette', () => {
     const input = screen.getByPlaceholderText('Type a command...')
     fireEvent.change(input, { target: { value: 'zzzzzzzzz-no-such-command' } })
     fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
+  it('switches to the terminal picked from the list, and closes', () => {
+    setActiveTerminal.mockClear()
+    const onAction = vi.fn()
+    const onClose = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={onClose} />)
+    fireEvent.click(screen.getByText('Dev Server'))
+    expect(setActiveTerminal).toHaveBeenCalledWith('t2')
+    expect(onClose).toHaveBeenCalled()
+    expect(onAction).not.toHaveBeenCalled()
+  })
+
+  it('types a prompt template nowhere when no terminal is active, and still closes', () => {
+    const writeToTerminal = vi.fn()
+    ;(window as any).termpolis.writeToTerminal = writeToTerminal
+    activeTerminalId = null
+    try {
+      const onAction = vi.fn()
+      const onClose = vi.fn()
+      render(<CommandPalette onAction={onAction} onClose={onClose} />)
+      fireEvent.click(screen.getByText('My Custom'))
+      expect(writeToTerminal).not.toHaveBeenCalled()
+      expect(onAction).not.toHaveBeenCalled()
+      expect(onClose).toHaveBeenCalled()
+    } finally {
+      activeTerminalId = 't1'
+    }
+  })
+
+  it('shows the first 60 characters of a longer template, and an ellipsis', () => {
+    const text = 'Review this change for correctness and say what it breaks, file by file, with each line.'
+    mockPromptTemplates.push({ id: 'long1', name: 'Long One', text, icon: 'fa-solid fa-star', isCustom: true })
+    try {
+      render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+      expect(screen.getByText(`${text.slice(0, 60)}...`)).toBeInTheDocument()
+      expect(screen.getByText('Custom prompt text')).toBeInTheDocument()
+    } finally {
+      mockPromptTemplates.pop()
+    }
+  })
+
+  it('gives the first nine terminals Alt+1 to Alt+9 and the tenth no shortcut', () => {
+    for (let i = 3; i <= 10; i++) mockTerminals.push({ id: `t${i}`, name: `Shell ${i}`, hidden: false })
+    try {
+      render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+      expect(screen.getByText('Alt+9')).toBeInTheDocument()
+      expect(screen.queryByText('Alt+10')).not.toBeInTheDocument()
+      const tenth = screen.getByText('Shell 10').closest('button') as HTMLButtonElement
+      expect(tenth.textContent).toBe('Shell 10')
+    } finally {
+      mockTerminals.splice(2)
+    }
+  })
+
+  it('leaves the selection and the commands alone on a key it doesn\'t use', () => {
+    const onAction = vi.fn()
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const input = screen.getByPlaceholderText('Type a command...')
+    const first = screen.getByText('New Terminal').closest('button') as HTMLButtonElement
+    const selected = first.className
+    fireEvent.keyDown(input, { key: 'Tab' })
+    expect(first.className).toBe(selected)
     expect(onAction).not.toHaveBeenCalled()
   })
 })

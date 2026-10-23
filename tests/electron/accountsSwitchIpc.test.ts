@@ -322,4 +322,14 @@ describe('accounts:model-hold and accounts:model-release (§7.5)', () => {
     expect(await ok(ACCOUNTS_IPC.modelRelease, { key })).toBe(true)
     expect((await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' })).key).not.toBe(key)
   })
+
+  it('keeps the launch\'s own line beside the picker\'s: either one, typed, is Termpolis\'s own', async () => {
+    const { b } = await twoClaude()
+    const launch = await ok<{ line: string }>(ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', command: 'claude', shellType: 'gitbash', accountId: b })
+    await ok(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model opus --continue' })
+    // The launch's line sets CLAUDE_CONFIG_DIR: were it forgotten, typing it would read as a change by hand.
+    expect(noteTypedInput('t1', `${launch.line}\r`, 43)).toBe('own')
+    expect(noteTypedInput('t1', 'claude --model opus --continue\r', 44)).toBe('own')
+    expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount)).toEqual([])
+  })
 })
