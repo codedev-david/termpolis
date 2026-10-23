@@ -76,6 +76,12 @@ export function carryWorkerStop(terminalId: string, summary: string, turned: () 
   stopped.set(terminalId, { key: stopKey(summary), clear: 0, carried: turned })
 }
 
+/** As carryWorkerStop, for a worker switched by hand: the stop it shows, if it shows one. */
+export function carryIfStopped(terminalId: string, turned: () => Promise<boolean>): void {
+  const last = stopped.get(terminalId)
+  if (last) last.carried = turned
+}
+
 /** v1.54.0's report of a stop to the conductor: for a limit, to close the worker and give its task
  *  to another installed agent; for a menu, to answer it. Sent also when the restart offer for a
  *  limit is declined, fails or has no answer in time (§9). */

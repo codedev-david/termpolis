@@ -62,6 +62,24 @@ export function agentOfCommand(command: string | undefined): AccountAgent | null
   return null
 }
 
+/** The agent a terminal runs, as Termpolis knows it: the one it launched there, or a swarm worker's,
+ *  as main recorded the command run_command started it with. Never the conductor's, which runs
+ *  `claude -p` behind its script and is never switched. */
+export function agentOfTerminal(t: { agentCommand?: string; isConductor?: boolean; isSwarm?: boolean; swarmAgent?: AccountAgent } | undefined): AccountAgent | null {
+  if (!t || t.isConductor) return null
+  return agentOfCommand(t.agentCommand) ?? (t.isSwarm ? t.swarmAgent ?? null : null)
+}
+
+/** Why an account can't take a swarm worker over, or null when it can: it must be connected, its
+ *  profile holding Termpolis's server entry with Agent Integration on, so the worker keeps
+ *  Termpolis's tools (§8.3 rule 8); and for Claude Code it must skip the bypass-permissions
+ *  warning, which a worker's --dangerously-skip-permissions opens otherwise and Termpolis never
+ *  answers (R16). */
+export function workerBlocker(row: AccountRowView, view: { integrationConnected: boolean }): 'not-connected' | 'bypass' | null {
+  if (!view.integrationConnected || !(row.isDefault || row.connect) || row.connection?.server !== true) return 'not-connected'
+  return row.agent === 'claude' && !row.bypassReady ? 'bypass' : null
+}
+
 /** The account agent a swarm worker's name says it runs ("Claude", "Codex", "Gemini"), or null.
  *  Termpolis runs agy for Gemini. */
 export function agentOfName(name: string): AccountAgent | null {

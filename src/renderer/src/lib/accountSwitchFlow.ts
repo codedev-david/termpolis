@@ -8,7 +8,7 @@ import type { SwitchOutcome, SwitchRequest } from '../../../shared/accountSwitch
 import { isShellSafeInstruction } from '../../../shared/agentIntegration'
 import type { AccountsAPI, TermpolisAPI, TerminalSession } from '../types'
 import { signedInEmail } from './accountChip'
-import { accountBadge, agentOfCommand } from './accountsView'
+import { accountBadge, agentOfTerminal, workerBlocker } from './accountsView'
 import type { AgentLaunchTarget } from './agentLaunch'
 import { launchTerminalArgs } from './accountLaunch'
 import { isClaudeCommand } from './testAgents'
@@ -21,21 +21,31 @@ export interface SwitchTarget {
   blocked: string | null
 }
 
-/** The agent a terminal runs, as Termpolis knows it: the one it launched there. Never the
- *  conductor's, which runs `claude -p` behind its script and is never switched. */
-export function terminalAgent(t: Pick<TerminalSession, 'agentCommand' | 'isConductor'> | undefined): AccountAgent | null {
-  return t && !t.isConductor ? agentOfCommand(t.agentCommand) : null
+/** The agent a terminal runs, as Termpolis knows it: the one it launched there, or a swarm
+ *  worker's (main's record of run_command). Never the conductor's, which runs `claude -p` behind
+ *  its script and is never switched. */
+export function terminalAgent(t: Pick<TerminalSession, 'agentCommand' | 'isConductor' | 'isSwarm' | 'swarmAgent'> | undefined): AccountAgent | null {
+  return agentOfTerminal(t)
 }
 
-/** The other accounts of the terminal's agent, in their order, each with its state. */
-export function switchTargets(view: AccountsView, agent: AccountAgent, currentId: string | undefined, now: number): SwitchTarget[] {
+const WORKER_BLOCKED: Readonly<Record<'not-connected' | 'bypass', string>> = {
+  'not-connected': 'not connected: a swarm worker needs Termpolis\'s tools',
+  bypass: 'can\'t take over swarm workers until you accept bypass mode in it once',
+}
+
+/** The other accounts of the terminal's agent, in their order, each with its state. For a swarm
+ *  worker (`worker`), an account that can't take one over is blocked, and says why (§9). */
+export function switchTargets(view: AccountsView, agent: AccountAgent, currentId: string | undefined, now: number, worker = false): SwitchTarget[] {
   return view.accounts
     .filter((r) => r.agent === agent && r.id !== currentId)
-    .map((r) => ({
-      account: r,
-      state: accountBadge(r, now).text,
-      blocked: isProfileAgent(agent) && !r.folderExists ? `${r.label}'s profile folder doesn't exist` : null,
-    }))
+    .map((r) => {
+      const why = worker ? workerBlocker(r, view) : null
+      return {
+        account: r,
+        state: accountBadge(r, now).text,
+        blocked: isProfileAgent(agent) && !r.folderExists ? `${r.label}'s profile folder doesn't exist` : why ? WORKER_BLOCKED[why] : null,
+      }
+    })
 }
 
 /** The questions a switch asks before it runs (§7.2 step 0): moving onto or off an account not

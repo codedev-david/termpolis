@@ -22,6 +22,7 @@ import {
 } from '../../lib/accountSwitchFlow'
 import type { SwitchProgress } from '../../../../shared/accountSwitch'
 import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgents, recentCheck } from '../../lib/limitChooser'
+import { liveRestartDeps, noteWorkerSwitched } from '../../lib/swarmRestart'
 import type { LimitContext } from '../../lib/limitWatch'
 import { modelHoldBridge, relaunchHeld } from '../../lib/modelRelaunch'
 import { AGENT_COLOR } from '../../lib/accountsView'
@@ -157,7 +158,7 @@ export function AccountSwitcherDialog() {
 
   if (!open) return null
   const frame = (body: React.ReactNode, closable = !running) => (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="account-switcher-overlay">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50" data-testid="account-switcher-overlay">
       <div role="dialog" aria-label="Switch account" data-testid="account-switcher" className="w-[520px] max-w-[92vw] max-h-[85vh] overflow-y-auto bg-[#1f1f1f] border border-[#3c3c3c] rounded-lg p-4 flex flex-col gap-3 text-xs text-[#d4d4d4]">
         {body}
         <div className="flex justify-end">
@@ -172,7 +173,10 @@ export function AccountSwitcherDialog() {
   }
   const name = ACCOUNT_AGENT_LABEL[agent]
   const current = terminal.agentAccountId ? view.accounts.find((r) => r.id === terminal.agentAccountId) : undefined
-  const targets = switchTargets(view, agent, byHand ? undefined : current?.id, Date.now())
+  // A swarm worker, switched from its chip in the dashboard: only an account that can take a worker
+  // over, never a new terminal, and the conductor is told how it went (§9).
+  const worker = !!terminal.isSwarm
+  const targets = switchTargets(view, agent, byHand ? undefined : current?.id, Date.now(), worker)
   const now = Date.now()
   const limited = limit ? limitedAccount(view, limit) : null
   const offered: LimitTarget[] = limit ? limitTargets(view.accounts, agent, { accountId: limit.accountId, email: limited!.email }, now, checks) : []
@@ -212,6 +216,7 @@ export function AccountSwitcherDialog() {
         primerEnabled: isAutoPrimerEnabled,
       }, limit ? 'usage limit' : 'by hand')
       const shown = outcomeView(outcome, agent, target)
+      if (worker) void noteWorkerSwitched(terminal.id, outcome, liveRestartDeps())
       void refreshAccounts()
       if (shown.done && shown.tone !== 'bad') {
         useTerminalStore.getState().setMemoryNotice(shown.text)
@@ -303,11 +308,11 @@ export function AccountSwitcherDialog() {
         {isProfileAgent(agent) && !t.account.isDefault && !t.account.connect && ' · not connected: loses Termpolis\'s tools'}
       </span>
       {/* From an account not offered automatically (work), a fresh session is the first choice. */}
-      {current && !current.autoOffer && (
+      {!worker && current && !current.autoOffer && (
         <button type="button" className={PRIMARY} disabled={!!t.blocked} onClick={() => { void newTerminal(t.account) }} data-testid="account-switcher-new">New terminal</button>
       )}
-      <button type="button" className={current && !current.autoOffer ? BUTTON : PRIMARY} disabled={!!t.blocked} onClick={() => { void start(t.account, false) }} data-testid="account-switcher-switch">Switch here</button>
-      {!(current && !current.autoOffer) && (
+      <button type="button" className={!worker && current && !current.autoOffer ? BUTTON : PRIMARY} disabled={!!t.blocked} onClick={() => { void start(t.account, false) }} data-testid="account-switcher-switch">Switch here</button>
+      {!worker && !(current && !current.autoOffer) && (
         <button type="button" className={BUTTON} disabled={!!t.blocked} onClick={() => { void newTerminal(t.account) }} data-testid="account-switcher-new">New terminal</button>
       )}
     </div>

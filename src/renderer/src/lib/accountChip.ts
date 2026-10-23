@@ -3,12 +3,14 @@
 // account rows main sends. Nothing here reads a file.
 import { ACCOUNT_AGENT_LABEL, isProfileAgent, tildifyPath } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
-import { AGENT_COLOR, agentOfCommand } from './accountsView'
+import { AGENT_COLOR, agentOfTerminal } from './accountsView'
 
 export interface ChipTerminal {
   agentCommand?: string
   agentAccountId?: string
   isConductor?: boolean
+  isSwarm?: boolean
+  swarmAgent?: AccountAgent
 }
 
 export interface AccountChipView {
@@ -45,7 +47,7 @@ export function signedInElsewhere(r: AccountRowView): string | null {
  * wrong with the one it is on (D13).
  */
 export function accountChipFor(t: ChipTerminal | undefined, view: AccountsView | null, byHand: boolean): AccountChipView | null {
-  const agent = t && !t.isConductor ? agentOfCommand(t.agentCommand) : null
+  const agent = agentOfTerminal(t)
   if (!agent || !view) return null
   const rows = view.accounts.filter((r) => r.agent === agent)
   if (rows.length === 0) return null

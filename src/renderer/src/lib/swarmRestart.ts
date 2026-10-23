@@ -30,10 +30,11 @@ import type { LimitKind, LimitTarget, TargetCheck } from '../../../shared/accoun
 import type { AgentStatusResult } from '../../../shared/agentStatusDetector'
 import type { SwitchOutcome } from '../../../shared/accountSwitch'
 import { checkSignIn, outcomeView, runSwitch } from './accountSwitchFlow'
+import { workerBlocker } from './accountsView'
 import type { SwitchDeps } from './accountSwitchFlow'
 import { recentCheck } from './limitChooser'
 import { osNotify, setSwarmStopOffer } from './limitWatch'
-import { carryWorkerStop, reportWorkerStop } from './swarmStopReports'
+import { carryIfStopped, carryWorkerStop, reportWorkerStop } from './swarmStopReports'
 import type { SwarmWorker } from './swarmStopReports'
 import type { AccountsAPI, SwarmAPI, TerminalSession } from '../types'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
@@ -83,6 +84,7 @@ export interface RestartStore {
   accountsView: AccountsView | null
   accountsByHand: Record<string, true>
   terminals: TerminalSession[]
+  swarmAgents: readonly SwarmWorker[]
   relaunching: Record<string, 'account' | 'model' | 'sign-in'>
   swarmRestarts: SwarmRestartGroup[]
   putSwarmRestart: (g: SwarmRestartGroup) => void
@@ -107,15 +109,7 @@ export interface RestartDeps extends SwitchDeps {
 
 // ── Which accounts a worker can be restarted on ──────────────────────────────────────────
 
-/** Why an account can't take a swarm worker over, or null when it can: it must be connected, its
- *  profile holding Termpolis's server entry with Agent Integration on, so the worker keeps
- *  Termpolis's tools (§8.3 rule 8); and for Claude Code it must skip the bypass-permissions
- *  warning, which a worker's --dangerously-skip-permissions opens otherwise and Termpolis never
- *  answers (R16). */
-export function workerBlocker(row: AccountRowView, view: Pick<AccountsView, 'integrationConnected'>): 'not-connected' | 'bypass' | null {
-  if (!view.integrationConnected || !(row.isDefault || row.connect) || row.connection?.server !== true) return 'not-connected'
-  return row.agent === 'claude' && !row.bypassReady ? 'bypass' : null
-}
+export { workerBlocker }
 
 /** The accounts a worker of `agent` that ran out on `limited` can be restarted on: a way out by the
  *  chooser's rules (limitTargets, with what each agent said of its sign-in in `checks`), that can
@@ -436,6 +430,26 @@ async function tookTurn(terminalId: string, deps: RestartDeps): Promise<boolean>
   } catch {
     return false
   }
+}
+
+/** A worker switched to another account by hand, from its chip in the swarm dashboard (T11): as
+ *  after the offer's restart, it leaves any offer it was in, its clock stops, its stop is carried
+ *  (R4), and the conductor is told it resumed or started without its conversation. */
+export async function noteWorkerSwitched(terminalId: string, outcome: SwitchOutcome, deps: RestartDeps): Promise<void> {
+  if (outcome.kind !== 'switched' && outcome.kind !== 'fresh') return
+  const s = deps.store()
+  const w = s.swarmAgents.find((a) => a.terminalId === terminalId)
+  if (!w) return
+  stopClock(terminalId, deps)
+  for (const g of s.swarmRestarts) {
+    if (g.phase.kind !== 'offered' || !g.workers.some((x) => x.terminalId === terminalId)) continue
+    const rest = g.workers.filter((x) => x.terminalId !== terminalId)
+    if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
+    else s.dropSwarmRestart(g.id)
+  }
+  carryIfStopped(terminalId, () => tookTurn(terminalId, deps))
+  const worker: SwarmWorker = { terminalId, agentName: w.agentName, role: w.role }
+  await tell(deps, outcome.kind === 'switched' ? restartedMessage(worker) : freshMessage(worker))
 }
 
 // ── Installing it ──────────────────────────────────────────────────────────────────────

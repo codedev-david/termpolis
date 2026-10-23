@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 import {
-  accountBadge, accountsOf, agentOfCommand, agentOfName, folderLine, hasAccounts, signInShell,
+  accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, hasAccounts, signInShell,
 } from '../../src/renderer/src/lib/accountsView'
 
 const HOME = 'C:\\Users\\me'
@@ -125,5 +125,18 @@ describe('signInShell: the shell a sign-in terminal opens in', () => {
     expect(signInShell('gitbash', ['bash'])).toBe('bash')
     expect(signInShell('powershell', ['cmd'])).toBe('cmd')
     expect(signInShell('powershell', [])).toBe(null)
+  })
+})
+
+// §9, T11: a swarm worker has no agentCommand; main names its agent from run_command's line.
+describe('agentOfTerminal: the agent a terminal runs, as Termpolis knows it', () => {
+  it('reads the command it launched, a swarm worker\'s recorded agent, and never the conductor\'s', () => {
+    expect(agentOfTerminal({ agentCommand: 'codex -m x' })).toBe('codex')
+    expect(agentOfTerminal({ isSwarm: true, swarmAgent: 'claude' })).toBe('claude')
+    expect(agentOfTerminal({ isSwarm: true })).toBeNull()
+    // A recorded agent counts only on a worker's terminal.
+    expect(agentOfTerminal({ swarmAgent: 'claude' })).toBeNull()
+    expect(agentOfTerminal({ agentCommand: 'claude', isConductor: true, isSwarm: true })).toBeNull()
+    expect(agentOfTerminal(undefined)).toBeNull()
   })
 })

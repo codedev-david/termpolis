@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { carryWorkerStop, noteWorkerStatus, reportWorkerStop } from '../../src/renderer/src/lib/swarmStopReports'
+import { carryIfStopped, carryWorkerStop, noteWorkerStatus, reportWorkerStop } from '../../src/renderer/src/lib/swarmStopReports'
 
 // GitHub #36 item 5: a worker a usage limit or a menu stopped is reported to the conductor once per
 // stop, not on every read of its screen.
@@ -322,6 +322,21 @@ describe('carryWorkerStop', () => {
     // Not carried any more: the same stop, read again, is no new one, and nothing is asked.
     await noteWorkerStatus(w, LIMIT, offer)
     expect(turnedYet).toHaveBeenCalledTimes(2)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+  })
+})
+
+// T11: a worker switched by hand carries the stop it shows, if it shows one.
+describe('carryIfStopped', () => {
+  it('carries a stop the worker shows, and none it doesn\'t', async () => {
+    const w = worker()
+    carryIfStopped(w.terminalId, async () => false)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+    carryIfStopped(w.terminalId, async () => false)
+    for (let i = 0; i < 3; i++) await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, LIMIT)
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
   })
 })

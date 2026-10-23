@@ -5,7 +5,7 @@
 // own.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
-  LOCK_RECHECK_MS, RESTART_WAIT_MS, _resetSwarmRestartForTest, declineRestart, freshMessage, installSwarmRestart, offerConductorRun, offerRestart,
+  LOCK_RECHECK_MS, RESTART_WAIT_MS, _resetSwarmRestartForTest, declineRestart, freshMessage, installSwarmRestart, noteWorkerSwitched, offerConductorRun, offerRestart,
   offerTitle, offeredMessage, restartOn, restartTargets, restartedMessage, workerBlocker,
 } from '../../src/renderer/src/lib/swarmRestart'
 import type { RestartDeps, SwarmRestartGroup } from '../../src/renderer/src/lib/swarmRestart'
@@ -588,5 +588,41 @@ describe('offerConductorRun', () => {
   it('skips an account out of usage on the very model the conductor ran out on', async () => {
     useTerminalStore.setState({ accountsView: view([MAIN, { ...CODEDEV, limit: { seenAt: NOW, resetsAt: NOW + 3_600_000, text: "You've hit your Opus limit", scope: 'model' } }]) })
     expect(await offerConductorRun("You've hit your Opus limit · resets 3pm", 'acc_m', deps)).toBe(false)
+  })
+})
+
+// T11: a worker switched by hand, from its chip in the swarm dashboard, takes the restart's path.
+describe('noteWorkerSwitched', () => {
+  beforeEach(() => {
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }, { terminalId: 'w2', agentName: 'Claude', role: 'Tests', status: 'blocked' }] })
+  })
+
+  it('takes the worker off its offer, stops its clock, carries its stop and tells the conductor it resumed', async () => {
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    await offerRestart(W2, LIMIT, () => WORDS, deps)
+    await noteWorkerStatus(W1, LIMIT, () => true)
+    await noteWorkerSwitched('w1', { kind: 'switched', resumed: true }, deps)
+    expect(groups()[0].workers.map((w) => w.terminalId)).toEqual(['w2'])
+    expect(messages()[2]).toBe(restartedMessage(W1))
+    // Carried: the same limit, redrawn, tells the conductor nothing.
+    await noteWorkerStatus(W1, LIMIT)
+    expect(messages()).toHaveLength(3)
+    // Its clock is stopped; the other worker's still runs.
+    await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS)
+    expect(messages().slice(3)).toEqual([reassignOf(W2)])
+  })
+
+  it('takes the offer down with its last worker, and tells the conductor to send the task again after a new session', async () => {
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    useTerminalStore.getState().putSwarmRestart({ id: 'other', agent: 'codex', accountId: 'acc_x', words: '', resetsAt: null, workers: [{ ...W2, summary: '' }], targets: [], phase: { kind: 'done', lines: [] } })
+    await noteWorkerSwitched('w1', { kind: 'fresh', why: 'asked' }, deps)
+    expect(groups().map((g) => g.id)).toEqual(['other'])
+    expect(messages()[1]).toBe(freshMessage(W1))
+  })
+
+  it('does nothing for a switch that didn\'t run, or for a terminal that is no worker', async () => {
+    await noteWorkerSwitched('w1', { kind: 'busy' }, deps)
+    await noteWorkerSwitched('nope', { kind: 'switched', resumed: true }, deps)
+    expect(messages()).toEqual([])
   })
 })
