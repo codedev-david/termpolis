@@ -197,6 +197,21 @@ describe('accounts:switch, the run', () => {
     log.mockRestore()
   })
 
+  it('marks the target\'s sign-in expired when the relaunch lands on its sign-in screen (§7.2 step 10)', async () => {
+    const { main, b } = await twoClaude()
+    noteTerminalAccount('t1', main)
+    term = new FakeTerminal(claude({ relaunch: ['sign-in'] }))
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    expect(await switchTo(b)).toEqual({ kind: 'sign-in' })
+    const doc = loadAccounts(sb.paths.userData)
+    expect(doc.ok && doc.doc.file.identity[b]).toEqual({ email: null, signedIn: false, checkedAt: 42, source: 'sign-in-screen' })
+    expect(doc.ok && doc.doc.file.identity[main]).toBeUndefined()
+    // Its row in the view says so.
+    const view = await ok<{ accounts: Array<{ id: string; identity?: { source: string } }> }>(ACCOUNTS_IPC.list)
+    expect(view.accounts.find((a) => a.id === b)!.identity!.source).toBe('sign-in-screen')
+    log.mockRestore()
+  })
+
   it('switches a terminal changed by hand even to the account main last put it on', async () => {
     const { main } = await twoClaude()
     noteTerminalAccount('t1', main)

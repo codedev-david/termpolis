@@ -1007,6 +1007,9 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
         deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: r.accountId, byHand: false })
       },
     })
+    // The relaunch landed on the target's sign-in screen: its stored sign-in no longer works, which
+    // its status command can't tell (it reads that one exists). Its badge says so until a check.
+    if (outcome.kind === 'sign-in') update((d) => { d.file.identity[target.id] = { email: null, signedIn: false, checkedAt: now(), source: 'sign-in-screen' } })
     // Labels only, never emails.
     console.log(`[accounts] switch of a ${ACCOUNT_AGENT_LABEL[agent]} terminal from ${source?.label ?? 'an account Termpolis didn\'t know'} to ${target.label}${req.reason ? ` (${req.reason})` : ''}: ${outcome.kind}`)
     return outcome

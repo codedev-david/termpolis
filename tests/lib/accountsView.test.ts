@@ -58,6 +58,8 @@ describe('accountBadge: the row\'s state, worst first', () => {
     expect(accountBadge(row({ identity: checked }), now)).toEqual({ text: 'signed in as b@example.test', tone: 'good' })
     expect(accountBadge(row({ identity: { ...checked, email: null } }), now)).toEqual({ text: 'signed in', tone: 'good' })
     expect(accountBadge(row({ identity: { ...checked, signedIn: false } }), now)).toEqual({ text: 'signed out', tone: 'muted' })
+    // A relaunch on it landed on its sign-in screen: its stored sign-in no longer works (§7.2 step 10).
+    expect(accountBadge(row({ identity: { ...checked, email: null, signedIn: false, source: 'sign-in-screen' } }), now)).toEqual({ text: 'sign-in expired', tone: 'bad' })
     // A check that couldn't tell falls back to the email the profile names.
     expect(accountBadge(row({ identity: { ...checked, signedIn: null }, lastEmail: 'b@example.test' }), now)).toEqual({ text: 'last signed in as b@example.test', tone: 'muted' })
     expect(accountBadge(row({ lastEmail: 'b@example.test' }), now)).toEqual({ text: 'last signed in as b@example.test', tone: 'muted' })

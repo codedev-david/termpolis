@@ -39,7 +39,7 @@ export function accountBadge(r: AccountRowView, now: number): { text: string; to
   const actual = checked ? (checked.signedIn ? checked.email : null) : r.lastEmail
   if (r.email && actual && !sameEmail(r.email, actual)) return { text: `signed in to ${actual} instead!`, tone: 'bad' }
   if (checked) {
-    if (!checked.signedIn) return { text: 'signed out', tone: 'muted' }
+    if (!checked.signedIn) return checked.source === 'sign-in-screen' ? { text: 'sign-in expired', tone: 'bad' } : { text: 'signed out', tone: 'muted' }
     return { text: checked.email ? `signed in as ${checked.email}` : 'signed in', tone: 'good' }
   }
   return r.lastEmail ? { text: `last signed in as ${r.lastEmail}`, tone: 'muted' } : { text: 'signed out', tone: 'muted' }

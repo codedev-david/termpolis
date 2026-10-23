@@ -107,7 +107,9 @@ export interface AccountIdentity {
   signedIn: boolean | null
   plan?: string
   checkedAt: number
-  source: 'claude.json' | 'auth-status' | 'login-status' | 'account-read'
+  /** Where it was read; 'sign-in-screen': a relaunch on the account landed on the CLI's sign-in
+   *  screen, so its stored sign-in no longer works (§7.2 step 10). */
+  source: 'claude.json' | 'auth-status' | 'login-status' | 'account-read' | 'sign-in-screen'
 }
 
 export interface AccountsFile {
