@@ -52,7 +52,7 @@ import type { ShellInfo } from './types'
 import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
-import { noteWorkerStatus } from './lib/swarmStopReports'
+import { noteKeyTyped, noteSwarmStop, osNotify, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
 import { detectAgentStatus } from '../../shared/agentStatusDetector'
 import { screenOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
@@ -64,6 +64,7 @@ import { watchAccounts } from './lib/accountsState'
 import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
 import { agentOfName } from './lib/accountsView'
 import { AccountSwitcherDialog } from './components/Accounts/AccountSwitcherDialog'
+import { LimitBanners } from './components/Accounts/LimitBanners'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -712,7 +713,7 @@ export default function App() {
           // told about once per stop.
           const screen = screenOfReplay(bufferRes.data)
           const result = detectAgentStatus(screen.lines().join('\n'), agent.agentName, agent.status, { screen: true, title: screen.title })
-          void noteWorkerStatus(agent, result)
+          void noteSwarmStop(agent, result)
 
           // Only update if status or summary actually changed
           if (result.status !== agent.status || (result.summary && result.summary !== agent.summary)) {
@@ -776,6 +777,7 @@ export default function App() {
       const agentTerminals = store.terminals.filter(
         (t) => t.agentCommand && !swarmIds.has(t.id) && !store.relaunching[t.id],
       )
+      pruneStops(new Set(store.terminals.map((t) => t.id)))
       if (agentTerminals.length === 0) return
 
       for (const term of agentTerminals) {
@@ -788,11 +790,26 @@ export default function App() {
           // Claimed before the consent lookup, so an overlapping tick can't answer twice;
           // replyToScreen reads the screen again first, so an answered dialog gets nothing.
           lastDismissedPrompt.set(term.id, dismissKey)
+          const agent = terminalAgent(term)
           const dismissChar = await replyToScreen(
             output, term.name, () => mayTrustFolder(term.id), () => readScreen(term.id),
-            !hasManyAccounts(store.accountsView, terminalAgent(term)),
+            !hasManyAccounts(store.accountsView, agent),
           )
-          if (dismissChar) window.termpolis.writeToTerminal(term.id, dismissChar)
+          if (dismissChar) {
+            window.termpolis.writeToTerminal(term.id, dismissChar)
+            continue
+          }
+          // The usage-limit chooser (§8.1): main judges the changed screen, beside its buffer, with
+          // what it knows of the agent there. Never the conductor's (terminalAgent).
+          if (agent && window.accounts?.limitLook) {
+            await watchTerminal(term.id, agent, store.accountsView, {
+              accounts: window.accounts,
+              now: Date.now,
+              onLimit: (note) => showLimit(note, {
+                store: useTerminalStore.getState, focused: () => document.hasFocus(), now: Date.now, newId: uuid, notify: osNotify,
+              }),
+            })
+          }
         } catch {
           // Terminal gone — skip
         }
@@ -805,6 +822,14 @@ export default function App() {
   // The accounts the chips, the switch dialog and the sidebar show, and main's word on each
   // terminal's account (a switch, or a change typed by hand).
   useEffect(() => watchAccounts(), [])
+
+  // When a key was last typed anywhere in the window, caught before any pane takes it: the
+  // usage-limit chooser never opens over someone typing (§8.4).
+  useEffect(() => {
+    const onKey = () => noteKeyTyped(Date.now())
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
 
   // A Linked machines job notification, clicked: main has brought the window forward, and this
   // opens the pane listing that job, where it can be stopped. Settings may be open already, on
@@ -1019,6 +1044,7 @@ export default function App() {
               </div>
             </div>
           )}
+          <LimitBanners />
           {memoryNotice && (
             <div className="px-4 py-2 flex items-center justify-between text-sm bg-[#D97706]/15 border-b border-[#D97706]/40 text-[#F0B86E]">
               <div className="flex items-center gap-2">

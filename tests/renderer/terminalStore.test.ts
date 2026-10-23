@@ -958,3 +958,44 @@ describe('the relaunch lock (one relaunch at a time per terminal)', () => {
     expect(useTerminalStore.getState().accountsView).toBeNull()
   })
 })
+
+describe('the usage-limit chooser and its banners (§8.4)', () => {
+  const ctx = (terminals: string[]) => ({
+    agent: 'claude' as const, accountId: 'acc_a', terminals, words: 'w', resetsAt: null, kind: { scope: 'account' as const, window: 'session' as const },
+  })
+  beforeEach(() => useTerminalStore.setState({ accountSwitch: null, limitBanners: [] }))
+
+  it('opens the switch dialog in limit mode, gathers the terminals the limit stopped, and moves on from each', () => {
+    const st = useTerminalStore.getState
+    st().openLimitChooser(ctx(['t1']))
+    expect(st().accountSwitch).toEqual({ terminalId: 't1', limit: ctx(['t1']) })
+    st().joinLimitChooser('t2')
+    st().joinLimitChooser('t2')
+    expect(st().accountSwitch).toEqual({ terminalId: 't1', limit: ctx(['t1', 't2']) })
+    st().leaveLimitChooser('t1')
+    expect(st().accountSwitch).toEqual({ terminalId: 't2', limit: ctx(['t2']) })
+    st().leaveLimitChooser('t2')
+    expect(st().accountSwitch).toBeNull()
+  })
+
+  it('joins and leaves nothing while the dialog is open for a manual switch, or closed', () => {
+    const st = useTerminalStore.getState
+    st().joinLimitChooser('t2')
+    st().leaveLimitChooser('t2')
+    expect(st().accountSwitch).toBeNull()
+    st().openAccountSwitch('t1')
+    st().joinLimitChooser('t2')
+    st().leaveLimitChooser('t1')
+    expect(st().accountSwitch).toEqual({ terminalId: 't1' })
+  })
+
+  it('shows a banner, replaces it by its id, and dismisses it', () => {
+    const st = useTerminalStore.getState
+    st().showLimitBanner({ id: 'b1', kind: 'choose', ctx: ctx(['t1']) })
+    st().showLimitBanner({ id: 'b2', kind: 'menu', ctx: ctx(['t3']) })
+    st().showLimitBanner({ id: 'b1', kind: 'choose', ctx: ctx(['t1', 't2']) })
+    expect(st().limitBanners.map((b) => [b.id, b.ctx.terminals])).toEqual([['b1', ['t1', 't2']], ['b2', ['t3']]])
+    st().dismissLimitBanner('b1')
+    expect(st().limitBanners.map((b) => b.id)).toEqual(['b2'])
+  })
+})

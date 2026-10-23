@@ -41,6 +41,7 @@ vi.mock('../../src/renderer/src/components/Accounts/AccountSwitcherDialog', () =
 
 import App from '../../src/renderer/src/App'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
+import { _resetLimitWatchForTest } from '../../src/renderer/src/lib/limitWatch'
 import type { AccountsView } from '../../src/shared/agentAccounts'
 
 /** Claude Code's login-method picker, as the poller reads a screen. */
@@ -83,7 +84,8 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   localStorage.clear()
   localStorage.setItem('termpolis.onboarding.seen.v1', '1')
-  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null })
+  _resetLimitWatchForTest()
+  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null, limitBanners: [] })
 })
 
 afterEach(() => {
@@ -92,7 +94,7 @@ afterEach(() => {
   vi.useRealTimers()
   delete (window as any).termpolis
   delete (window as any).mcpEvents
-  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null })
+  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null, limitBanners: [] })
 })
 
 describe('App: the account switch', () => {
@@ -120,5 +122,92 @@ describe('App: the account switch', () => {
     await settle()
     const answers = api.writeToTerminal.mock.calls.filter((c: unknown[]) => c[0] === 't1').map((c: unknown[]) => c[1])
     expect(answers).toEqual(expected === null ? [] : [expected])
+  })
+})
+
+// The usage-limit chooser in the 2 s loop (§8.1, R22): main's look at each agent terminal Termpolis
+// launched whose screen changed, never the conductor's; a new limit records itself and opens the
+// chooser, or a banner while a key is being typed. A swarm worker's stop still goes to the
+// conductor, as v1.54.0 sends it.
+describe('App: the usage-limit chooser', () => {
+  const LOOK = {
+    agent: 'claude', live: true, turned: true, startAt: 10, accountId: 'acc_0', byHand: false,
+    status: { status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' },
+    words: "You've hit your session limit · resets 3pm (America/New_York)",
+  }
+  function accounts(look: unknown = LOOK) {
+    const api = { limitLook: vi.fn(async () => ({ success: true, data: look })), noteLimit: vi.fn(async () => ({ success: true })) }
+    ;(window as any).accounts = new Proxy(api as Record<string, any>, {
+      get(target, prop) {
+        if (typeof prop !== 'string' || prop === 'then') return undefined
+        if (!(prop in target)) target[prop] = prop.startsWith('on') ? vi.fn(() => () => {}) : vi.fn(async () => ({ success: false, error: 'not part of this test' }))
+        return target[prop]
+      },
+    })
+    return api
+  }
+  afterEach(() => { delete (window as any).accounts })
+
+  it('opens the chooser for a limit in a terminal in view, recording it against the account first', async () => {
+    bridge('a screen')
+    const a = accounts()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    render(<App />)
+    await settle()
+    act(() => { useTerminalStore.setState({ terminals: [T], activeTerminalId: 't1', accountsView: view(2) }) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
+    await settle()
+    expect(a.limitLook).toHaveBeenCalledWith('t1')
+    expect(a.noteLimit).toHaveBeenCalledWith('acc_0', expect.objectContaining({ text: LOOK.words, scope: 'account', window: 'session' }))
+    expect(useTerminalStore.getState().accountSwitch).toMatchObject({ terminalId: 't1', limit: { agent: 'claude', accountId: 'acc_0', terminals: ['t1'] } })
+  })
+
+  it('banners it instead while a key is being typed: the chooser never takes keys meant for a terminal', async () => {
+    bridge('a screen')
+    accounts()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    render(<App />)
+    await settle()
+    act(() => { useTerminalStore.setState({ terminals: [T], activeTerminalId: 't1', accountsView: view(2) }) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    fireEvent.keyDown(window, { key: 'a' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(600) })
+    await settle()
+    expect(useTerminalStore.getState().accountSwitch).toBeNull()
+    expect(useTerminalStore.getState().limitBanners).toMatchObject([{ kind: 'choose', ctx: { terminals: ['t1'] } }])
+  })
+
+  it("never looks at the conductor's terminal", async () => {
+    bridge('a screen')
+    const a = accounts()
+    render(<App />)
+    await settle()
+    act(() => { useTerminalStore.setState({ terminals: [{ ...T, isConductor: true }], activeTerminalId: 't1', accountsView: view(2) }) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
+    await settle()
+    expect(a.limitLook).not.toHaveBeenCalled()
+  })
+
+  it("tells the conductor of a swarm worker's limit, opening no chooser for it", async () => {
+    // Claude Code's limit reply above its box, as the real captures draw it.
+    const rows = ['❯ Build the login page.', "  ⎿ \u00a0You've hit your session limit · resets 3pm (America/New_York)", '', '─'.repeat(80), '❯ ', '─'.repeat(80)]
+    bridge(`\x1b[H\x1b[2J${rows.map((r, i) => `\x1b[${i + 1};1H${r}`).join('')}`)
+    const a = accounts()
+    const sendMessage = vi.fn(async () => ({ success: true }))
+    ;(window as any).swarmAPI = { getTasks: vi.fn(async () => ({ success: true, data: [] })), sendMessage }
+    render(<App />)
+    await settle()
+    act(() => {
+      useTerminalStore.setState({
+        terminals: [{ ...T, id: 'w1', isSwarm: true, hidden: true, agentCommand: undefined }], accountsView: view(2),
+        swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'working' }],
+      })
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    await settle()
+    expect(sendMessage).toHaveBeenCalledWith('system', 'conductor', 'info', expect.stringMatching(/^Claude \(Build UI, terminal w1\) is blocked: usage limit reached/))
+    expect(a.limitLook).not.toHaveBeenCalled()
+    expect(useTerminalStore.getState().accountSwitch).toBeNull()
+    delete (window as any).swarmAPI
   })
 })

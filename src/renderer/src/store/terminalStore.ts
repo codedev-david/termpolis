@@ -6,6 +6,7 @@ import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTy
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
 import type { AccountsView } from '../../../shared/agentAccounts'
+import type { LimitBanner, LimitContext } from '../lib/limitWatch'
 
 // ---- Pane tree helpers ----
 
@@ -156,8 +157,11 @@ interface TerminalStore {
   /** Terminals whose account a line typed by hand changed (main's accounts:terminal-account):
    *  Termpolis no longer knows it, and their chip shows "?". */
   accountsByHand: Record<string, true>
-  /** The terminal the account switch dialog is open for. */
-  accountSwitch: { terminalId: string } | null
+  /** The terminal the account switch dialog is open for; with `limit`, the usage-limit chooser:
+   *  opened for a limit that stopped it, and the other terminals the same limit stopped. */
+  accountSwitch: { terminalId: string; limit?: LimitContext } | null
+  /** The usage-limit banners on screen (§8.4), one per stop or per account's group of stops. */
+  limitBanners: LimitBanner[]
   /** Terminals whose agent Termpolis is relaunching, and for what: one at a time per terminal, the
    *  model picker and the account switch alike. Their panes take no keys meanwhile, and the
    *  prompt pollers answer nothing in them. 'sign-in': agy's switch waits for the user to sign in
@@ -209,6 +213,16 @@ interface TerminalStore {
   setAccountByHand: (terminalId: string, byHand: boolean) => void
   openAccountSwitch: (terminalId: string) => void
   closeAccountSwitch: () => void
+  /** The chooser, in limit mode, for its first terminal. */
+  openLimitChooser: (ctx: LimitContext) => void
+  /** A stop on the same account joins the chooser open for it (R22). */
+  joinLimitChooser: (terminalId: string) => void
+  /** A terminal the chooser moved on from: off its list, and the dialog on the next one; closed
+   *  when none is left. */
+  leaveLimitChooser: (terminalId: string) => void
+  /** Shows a banner, or replaces the one with its id. */
+  showLimitBanner: (banner: LimitBanner) => void
+  dismissLimitBanner: (id: string) => void
   /** Takes the terminal's relaunch lock: false when a relaunch already holds it. */
   beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
   endRelaunch: (terminalId: string) => void
@@ -245,6 +259,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   accountsView: null,
   accountsByHand: {},
   accountSwitch: null,
+  limitBanners: [],
   relaunching: {},
 
   addTerminal: (t) => set(s => {
@@ -490,6 +505,23 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   }),
   openAccountSwitch: (terminalId) => set({ accountSwitch: { terminalId } }),
   closeAccountSwitch: () => set({ accountSwitch: null }),
+  openLimitChooser: (ctx) => set({ accountSwitch: { terminalId: ctx.terminals[0], limit: ctx } }),
+  joinLimitChooser: (terminalId) => set(s => {
+    const open = s.accountSwitch
+    if (!open?.limit || open.limit.terminals.includes(terminalId)) return {}
+    return { accountSwitch: { ...open, limit: { ...open.limit, terminals: [...open.limit.terminals, terminalId] } } }
+  }),
+  leaveLimitChooser: (terminalId) => set(s => {
+    const open = s.accountSwitch
+    if (!open?.limit) return {}
+    const terminals = open.limit.terminals.filter((id) => id !== terminalId)
+    return { accountSwitch: terminals.length === 0 ? null : { terminalId: terminals[0], limit: { ...open.limit, terminals } } }
+  }),
+  showLimitBanner: (banner) => set(s => {
+    const at = s.limitBanners.findIndex((b) => b.id === banner.id)
+    return { limitBanners: at < 0 ? [...s.limitBanners, banner] : s.limitBanners.map((b, i) => (i === at ? banner : b)) }
+  }),
+  dismissLimitBanner: (id) => set(s => ({ limitBanners: s.limitBanners.filter((b) => b.id !== id) })),
   beginRelaunch: (terminalId, kind) => {
     if (useTerminalStore.getState().relaunching[terminalId]) return false
     set(s => ({ relaunching: { ...s.relaunching, [terminalId]: kind } }))
