@@ -17,6 +17,7 @@
  */
 
 import { menuAnswer, stopKind, type AgentStatusResult } from '../../../shared/agentStatusDetector'
+import { stopKey } from '../../../shared/accountLimits'
 
 export interface SwarmWorker {
   terminalId: string
@@ -31,12 +32,7 @@ const stopped = new Map<string, { key: string; clear: number }>()
  *  end: while ConPTY repaints a resized screen, a stopped worker reads idle for a moment, or thinking
  *  while no input box is drawn yet, and the read after it shows the same stop (MW1-3). The poller
  *  reads every 5 seconds; on real Claude Code screens such a moment lasted under a second. */
-const READS_TO_CLEAR = 2
-
-/** A stop, without when it lifts: a reset time the CLI redraws as a countdown is the same stop. */
-function stopKey(summary: string): string {
-  return summary.replace(/ \(resets .*\)$/, '')
-}
+export const READS_TO_CLEAR = 2
 
 export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
   const kind = stopKind(result)

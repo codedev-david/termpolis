@@ -688,6 +688,50 @@ function geminiQuotaDialog(rows: readonly string[]): string | null {
   return m ? limitSummary(dialog.slice(m.index)) : null
 }
 
+// ---- A limit's own words (the usage-limit chooser, R15) ----
+
+/** How many of a screen's last rows hold a stop's words: a dialog of 15 rows, or the transcript's
+ *  last cell above an input box with Claude Code's footer under it. */
+const WORDS_ROWS = 30
+/** A CLI's own limit message at the start of a row: Claude Code's and agy's (LIMIT_MESSAGES), Codex's
+ *  and agy's cells, the titles of Codex's popups. */
+const WORDS_MESSAGES: readonly RegExp[] = [
+  ...LIMIT_MESSAGES, CODEX_LIMIT_CELL, AGY_LIMIT_CELL,
+  /^\s*You['’]ve reached your workspace credit limit\s*$/, /^\s*Usage limit reached\s*$/,
+]
+
+/** How many rows a cell's words are read from: a message a 20-column screen wrapped. */
+const WORDS_CELL_ROWS = 8
+
+/**
+ * The words a CLI stopped with when a screen shows its usage limit: the lowest cell of the screen's
+ * last WORDS_ROWS that starts with a limit message, read with the rows a narrow screen wrapped it
+ * onto (as the detector reads it), up to the zone of its reset ("You've hit your weekly limit ·
+ * resets Aug 1, 4pm (America/New_York)"). Claude Code waiting out a limit says only that, read when
+ * no message is on screen. For the chooser to show, and to tell a model's limit from the account's
+ * (accountLimits.ts limitKindOf): read only once detectAgentStatus said the screen shows a limit,
+ * which it reads from the CLI's own rows. null when none is there.
+ */
+export function limitWords(screen: string): string | null {
+  const rows = screen.split('\n')
+  const from = Math.max(0, rows.length - WORDS_ROWS)
+  for (const patterns of [WORDS_MESSAGES, [WAITING_STATUS, WAITING_FOOTER]]) {
+    for (let i = rows.length - 1; i >= from; i--) {
+      // The cell from this row: on to a blank row, a rule or the next cell.
+      let end = i
+      while (end + 1 < rows.length && end + 1 - i < WORDS_CELL_ROWS && rows[end + 1].trim() !== '' && !RULE.test(rows[end + 1]) && !CELL_START.test(rows[end + 1])) end++
+      const cell = runTogether(rows.slice(i, end + 1))
+      if (!patterns.some((p) => p.test(rows[i]) || p.test(cell))) continue
+      const words = cell.replace(/^[\s⎿■✕✢✳✶✻✽*·]+/, '').trim()
+        // A zone a narrow screen broke where its row ended, read without the break.
+        .replace(/\(([^()]*)\)/g, (_m, inner: string) => `(${inner.replace(/\s/g, '')})`)
+      const zoned = /^.*?\bresets [^()]{1,40}\([^()]{1,40}\)/.exec(words)
+      return (zoned ? zoned[0] : words).slice(0, 240)
+    }
+  }
+  return null
+}
+
 /** A CLI that exited or needs relaunching, in its words, or null. Only a screen without the agent's
  *  input box can show one: a box says the CLI is up. */
 function restartSummary(tail: string, agentName: string): string | null {
