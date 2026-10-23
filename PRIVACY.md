@@ -71,7 +71,8 @@ upload it.
   read-only or edit, the folder, the first line of the screened prompt (at most
   80 characters, with anything that might be a credential taken out), the
   credential rules matched, how it ended and why a request
-  was refused. Never the prompt or the answer.
+  was refused, with anything in it that might be a credential taken out. Never
+  the prompt or the answer.
 
 The `userData` directory lives at:
 

@@ -361,6 +361,32 @@ describe('run: checks before anything is sent', () => {
     expect(await run(h, { machine: 'broken' })).toEqual({ error: '"broken" cannot be reached from this computer.', machine: 'broken' })
     expect(h.calls).toHaveLength(0)
   })
+
+  it('refuses a cwd written as a URL, sends nothing, and does not repeat it', async () => {
+    // A folder is never a URL, and a clone URL can carry a token. Sent, the other machine would
+    // refuse it too, repeating it, and keep that refusal in its job history.
+    const token = `ghp_${'a'.repeat(36)}`
+    const h = setup({ screen: screenText })
+    for (const cwd of [
+      `https://x-access-token:${token}@github.com/acme/billing.git`,
+      `x-access-token:${token}@github.com:acme/billing.git`,
+      'ssh://git@github.com/acme/billing.git',
+      'git+ssh://git@github.com/acme/billing.git',
+      'HTTPS://github.com/acme/billing',
+      'file:///C:/repos/billing',
+      `  https://deploy:${token}@git.internal/acme  `,
+      // In quotes, which the other machine takes off a folder.
+      `"https://deploy:${token}@git.internal/acme"`,
+      "'deploy:hunter2hunter2@git.internal:acme/billing'",
+    ]) {
+      expect(await run(h, { cwd }), cwd).toEqual({
+        error: 'cwd is a URL, not a folder on "linux"; nothing was sent. A clone URL can carry a token.',
+        machine: 'linux',
+      })
+    }
+    expect(h.calls).toHaveLength(0)
+    expect(h.activity).toHaveLength(0)
+  })
 })
 
 describe('run', () => {
@@ -907,6 +933,40 @@ describe('credentials, asking', () => {
     expect(r).toMatchObject({ status: 'done', output: '[answer from linux/codex]\nDeployed.', note: `${PROMPT_REMOVED} ${PROMPT_FLAGGED}` })
     expect(h.activity[0].summary).toBe('Deploy with [REDACTED:fake_key] and maybe-pass')
     expect(findings).toEqual([{ hop: 'prompt-out', machine: 'linux', agent: 'codex', removed: { fake_key: 1 }, flagged: { fake_pass: 1 } }])
+  })
+
+  it('sends any other cwd as it was given: a folder name is not screened, whatever the rules match in it', async () => {
+    // Folders agents work in, each named after a branch, a package or a project (lnk3's F3). The
+    // screen's rules take each name for a credential; none is one.
+    const named = [
+      '~/repos/app/.worktrees/sk-1234-fix-login-redirect',
+      '~/src/sk-hynix-firmware-tools',
+      '~/repos/sk-python-sample-plugins',
+      'C:\\home\\tester\\sk-learn-pipeline-experiments',
+      '~/src/azure-sk-agents-orchestration-demo',
+      '~/work/sk-hynix-memory-controller-fw',
+      '/Users/alice/repos/semantic-kernel/sk-python-samples-and-notebooks',
+      'D:\\rnd_ExperimentalPrototypeProjects2026',
+    ]
+    for (const cwd of named) expect(screenText(cwd).removed, cwd).not.toEqual({})
+    // Nor is a folder spelled like no URL, an scp-style remote with no password among them: the
+    // other machine says that one is no folder.
+    const plain = [
+      'C:\\Users\\tester\\repo',
+      'C://Users/tester/repo',
+      'C:\\Users\\tester\\repos\\@acme\\api',
+      '~/src/@acme/api',
+      '~',
+      '/srv/app',
+      '/srv/mirror/https://example.com',
+      'git@github.com:acme/billing.git',
+    ]
+    for (const cwd of [...named, ...plain]) {
+      const h = setup({ screen: screenText })
+      scripted(h, [view({ status: 'done', output: 'ok', durationMs: 5 })])
+      expect(await run(h, { cwd }), cwd).toMatchObject({ status: 'done' })
+      expect(h.calls[0].request, cwd).toEqual({ kind: 'peerRun', agent: 'codex', prompt: 'Review the parser', cwd })
+    }
   })
 
   it('shows a job it sent with the possible credentials masked too, and with no summary when it cannot be masked', async () => {

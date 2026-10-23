@@ -142,6 +142,24 @@ const stillRunning = (name: string, jobId: string): string =>
 const checkLater = (jobId: string): string =>
   `The job may still be running there: call linked_machines with action "result" and jobId "${jobId}" to check on it.`
 const tooLongScreened = `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`
+const urlCwd = (name: string): string => `cwd is a URL, not a folder on "${name}"; nothing was sent. A clone URL can carry a token.`
+
+/** A URL's start: a scheme and `//` (`https://`, `ssh://`, `file://`), or a user and a password
+ *  before an `@` (`user:token@host:repo`, an scp-style remote). No folder starts as either: one
+ *  starts with `/`, `\` or `~`, or a drive letter and `\` or `/`. (The other machine would read a
+ *  `file://` URL as the folder it names; written as that folder, it runs.) */
+const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]{1,31}:\/\//i
+const URL_USERINFO_RE = /^[^\s/\\:@]{1,256}:[^\s/\\@]{1,512}@/
+
+/** Whether `cwd` is written as a URL, read as the other machine reads a folder: trimmed, and out of
+ *  the quotes a shell puts around one (cwdPath). A folder's name is not screened for credentials:
+ *  the rules match branch and project names. A clone URL can carry a token, which the other
+ *  machine would repeat in its refusal and keep in its job history. */
+function isUrl(cwd: string): boolean {
+  let p = cwd.trim()
+  if ((p.startsWith('"') && p.endsWith('"')) || (p.startsWith("'") && p.endsWith("'"))) p = p.slice(1, -1).trim()
+  return URL_SCHEME_RE.test(p) || URL_USERINFO_RE.test(p)
+}
 
 /** What an edit job could do over there, for the agent that started one to pass on: Claude and
  *  Gemini run with full access as that computer's user, Codex in its own sandbox (spec §4.6). */
@@ -480,6 +498,8 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
 
     const { cwd, write, model } = args
     if (!absent(cwd) && typeof cwd !== 'string') return { error: BAD_CWD }
+    // Not repeated: the URL may hold a token.
+    if (typeof cwd === 'string' && isUrl(cwd)) return { error: urlCwd(view.name), machine: view.name }
     if (!absent(write) && typeof write !== 'boolean') return { error: BAD_WRITE }
     if (!absent(model) && typeof model !== 'string') return { error: BAD_MODEL }
     const waitSec = waitOf(args.waitSec)

@@ -1229,7 +1229,10 @@ Agents get one MCP tool, `linked_machines`, with three actions:
   (up to 6,000 characters), so its answer can quote that machine's memory.
 - **`cwd`** is a folder on the other machine, absolute or starting with `~`.
   It defaults to the home folder and must exist there. UNC network paths
-  (`\\server\share`) are refused.
+  (`\\server\share`) are refused. A URL is refused before anything is sent (a
+  clone URL can carry a token). A folder's name is not screened for
+  credentials; where a refusal repeats one, anything in it that looks like a
+  credential is taken out first.
 - **`write: true`** works only if that machine lets this one edit.
 - **`model`** picks the agent's model there. By default the agent uses its own.
 
@@ -1447,7 +1450,8 @@ audit log.
   the data directory: a line when a job starts (the machine, agent, read-only or
   edit, folder, the first line of the screened prompt and the credential rules
   matched), a line when it ends (how, and how long it took), and a line for each
-  refusal with its reason. The prompt's first line is kept, and shown in the
+  refusal with its reason, with anything in it that might be a credential taken
+  out. The prompt's first line is kept, and shown in the
   job's notification, with anything that might be a credential taken out, even
   what the agent was given because it only looked like one. A computer's
   refusals within one minute after the

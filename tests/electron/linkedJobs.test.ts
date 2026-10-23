@@ -356,6 +356,67 @@ describe('peerRun working folder', () => {
     const err = await start(setup(), FROM, META, { cwd: deep }).catch((e: Error) => e)
     expect((err as Error).message).toBe(`Folder not found on linux: ${deep.slice(0, 199)}\u2026`)
   })
+
+  it('runs in a folder whose name a credential rule matches, and shows it as it is: a folder name is not screened', async () => {
+    // Folders named after a branch, a package or a project (lnk3's F3), here under home. The
+    // screen's rules take each name for a credential; none is one, and it is this computer's own.
+    const names = [
+      path.join('repos', 'app', '.worktrees', 'sk-1234-fix-login-redirect'),
+      'sk-hynix-firmware-tools',
+      'sk-python-sample-plugins',
+      'sk-learn-pipeline-experiments',
+      'azure-sk-agents-orchestration-demo',
+      'sk-hynix-memory-controller-fw',
+      'sk-python-samples-and-notebooks',
+      'rnd_ExperimentalPrototypeProjects2026',
+    ]
+    for (const name of names) {
+      const folder = path.join(HOME, name)
+      expect(screenText(folder).removed, name).not.toEqual({})
+      for (const cwd of [folder, `~/${name.split(path.sep).join('/')}`]) {
+        const h = setup({ screen: screenText, mask: maskForDisplay, isDirectory: (p) => p === folder })
+        expect((await start(h, FROM, META, { cwd })).status, cwd).toBe('running')
+        expect(h.runs[0].req.cwd).toBe(folder)
+        expect(h.activity[0].cwd).toBe(folder)
+      }
+    }
+  })
+
+  it('masks what it repeats of a folder, takes out its control characters, masks it again, and only then cuts it', async () => {
+    const token = `ghp_${'a'.repeat(36)}`
+    /** Whether any 8 characters of the token show. */
+    const shows = (text: string): boolean => Array.from({ length: token.length - 7 }, (_, i) => token.slice(i, i + 8)).some((w) => text.includes(w))
+    const refusal = async (cwd: string, over: Partial<LinkedJobsDeps> = {}): Promise<string> =>
+      ((await start(setup({ mask: maskForDisplay, ...over }), FROM, META, { cwd }).catch((e: Error) => e)) as Error).message
+    // A clone URL with a token, from a computer that sends one (1.54 and older), and a bare token.
+    for (const cwd of [`https://x-access-token:${token}@github.com/acme/billing.git`, token]) {
+      const message = await refusal(cwd)
+      expect(message.startsWith('cwd must be an absolute folder path on linux, or start with ~: ')).toBe(true)
+      expect(shows(message), cwd).toBe(false)
+    }
+    // One that doesn't exist, named by its token, and one with a network path's token.
+    expect(shows(await refusal(path.join(HOME, token)))).toBe(false)
+    expect(shows(await refusal(`//fileserver/${token}/repo`))).toBe(false)
+    // A token split by a control character, which taking the control characters out joins up
+    // again, where the cut to 200 characters runs through it: masked whole after that, before the
+    // cut. Cut first, what was left of it would match no rule and show (k7b).
+    for (let at = 170; at < 200; at++) {
+      for (const split of [2, 11, 20, 31]) {
+        const message = await refusal(`/srv/${'x'.repeat(at)}/${token.slice(0, split)}\u0001${token.slice(split)}/app`)
+        expect(message.length).toBeLessThanOrEqual('cwd must be an absolute folder path on linux, or start with ~: '.length + 200)
+        expect(shows(message), `${at}, ${split}`).toBe(false)
+      }
+    }
+    // A key of the one length its rule takes, a control character and then a letter after it: masked
+    // before the control character goes, which would leave it one letter too long to match.
+    const aws = `AKIA${'A'.repeat(16)}`
+    const joined = await refusal(`relative/${aws}\u0001B/app`)
+    expect(joined).not.toContain(aws.slice(4, 12))
+    expect(joined).toBe('cwd must be an absolute folder path on linux, or start with ~: relative/[REDACTED:aws_access_key]B/app')
+    // A folder that can't be masked is not repeated at all.
+    const broken = await refusal(`relative/${token}`, { mask: () => { throw new Error('mask broke') } })
+    expect(broken).toBe(`cwd must be an absolute folder path on linux, or start with ~: ${WITHHELD}`)
+  })
 })
 
 describe('running a job', () => {

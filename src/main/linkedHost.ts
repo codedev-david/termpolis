@@ -185,7 +185,8 @@ export interface LinkedHostBinding {
   screenSecrets(text: string, keep?: number, lookback?: number): SecretScreen
   /** aiSecurity.maskForDisplay: a job's summary with every possible credential taken out, the
    *  heuristic ones too, before the Activity list shows it, the job history keeps it or a
-   *  notification shows it. screenSecrets leaves those in what crosses, which has to stay usable
+   *  notification shows it; and a refusal's reason, and the folder a refusal repeats, before
+   *  either is kept or sent. screenSecrets leaves those in what crosses, which has to stay usable
    *  code; none of these does, and a notification can show on a lock screen. */
   maskSecrets(text: string): string
   /** aiSecurity.appendAudit, for what screening found: rule ids and counts. */
@@ -661,6 +662,21 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
     if (w.count > 0) writeLog({ ...w.last, ts: now(), count: w.count })
   }
 
+  /** A refusal's reason as the job history keeps it: with anything in it that might be a
+   *  credential taken out (maskSecrets, both tiers), and only then cut to 200 characters. Cut
+   *  first, a credential the cut ran through would match no rule, and what was left of it would be
+   *  kept. linkedJobs masks the folder a refusal repeats already; this is the whole reason,
+   *  whatever it says. Empty when it can't be masked. */
+  function reasonForLog(reason: string): string {
+    let masked: string
+    try {
+      masked = b.maskSecrets(reason)
+    } catch {
+      return ''
+    }
+    return masked.length > MAX_REASON_CHARS ? `${masked.slice(0, MAX_REASON_CHARS - 1)}\u2026` : masked
+  }
+
   /** A job another computer asked for and this one refused, written down so a grant that held
    *  shows as plainly as one that let a job through. Not notified: a computer could otherwise
    *  fill the screen with refusals. */
@@ -675,7 +691,7 @@ function createLinkedHost(b: LinkedHostBinding): LinkedHost {
       machine: (target && (metaFor(ref)?.name ?? views().find((v) => v.ref === ref)?.name ?? goneNames.get(ref))) || UNKNOWN_COMPUTER,
       ...(isExecAgent(req.agent) ? { agent: req.agent } : {}),
       ...(typeof req.write === 'boolean' ? { write: req.write } : {}),
-      reason: reason.length > MAX_REASON_CHARS ? `${reason.slice(0, MAX_REASON_CHARS - 1)}\u2026` : reason,
+      reason: reasonForLog(reason),
     }
     const w = refusals.get(ref)
     if (w) {

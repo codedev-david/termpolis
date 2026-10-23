@@ -115,7 +115,8 @@ export interface LinkedJobsDeps {
   screen(text: string, keep?: number, lookback?: number): SecretScreen
   /** aiSecurity.maskForDisplay: every possible credential out of a job's summary, the ones
    *  screening leaves in for the agent too, before the activity view shows it, the job history
-   *  keeps it and a notification shows it (activitySummary). */
+   *  keeps it and a notification shows it (activitySummary); and out of a folder a refusal
+   *  repeats (shownFolder). */
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
   onSecrets?(finding: LinkedSecretFinding): void
@@ -220,15 +221,30 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
 /** Absent, for an optional field: JSON writers emit `null` for "not set". */
 const absent = (v: unknown): v is null | undefined => v === undefined || v === null
 
-/** A path as a refusal may show it: no control characters, and not a page long. */
-function printable(text: string): string {
-  const clean = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
-  return clean.length > MAX_ECHO_CHARS ? `${clean.slice(0, MAX_ECHO_CHARS - 1)}\u2026` : clean
-}
+/** `text` without its control characters, which a refusal never shows. */
+const withoutControls = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
 
 /** What goes back in place of output or an error that couldn't be checked for
  *  credentials: nothing leaves this computer unscreened. */
 export const WITHHELD = '[Termpolis could not check this for credentials, so it was withheld.]'
+
+/** A folder as a refusal repeats it, to the computer that asked and in the job history here: with
+ *  anything in it that might be a credential taken out by `mask` (aiSecurity.maskForDisplay), then
+ *  its control characters, then masked again, and only then cut to 200 characters. A folder that
+ *  exists runs, and is shown as it is, whatever its name; one refused can be anything a computer
+ *  sent, a clone URL with a token in it from one on 1.54 or older among them. Taking the control
+ *  characters out can join a credential they split, which the second mask finds; cut before that,
+ *  a credential the cut ran through would match no rule, and what was left of it would show.
+ *  Withheld when it can't be masked. */
+function shownFolder(folder: string, mask: (text: string) => string): string {
+  let shown: string
+  try {
+    shown = mask(withoutControls(mask(folder)))
+  } catch {
+    return WITHHELD
+  }
+  return shown.length > MAX_ECHO_CHARS ? `${shown.slice(0, MAX_ECHO_CHARS - 1)}\u2026` : shown
+}
 
 /** The first line of `text` with text in it, flattened to plain spaces. */
 function firstLine(text: string): string {
@@ -508,10 +524,15 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
     }
   }
 
+  /** A folder as a refusal repeats it (shownFolder). */
+  const echo = (folder: string): string => shownFolder(folder, (text) => deps.mask(text))
+
   /** The folder a job runs in: home when none is given; `~`, `~/x` (and the
    *  other spellings a shell might print, via cwdPath) expanded; then it must be
    *  absolute and exist. Checked here rather than left to runHeadless so the
-   *  asking machine is told which machine refused, and why. */
+   *  asking machine is told which machine refused, and why. Its name is not
+   *  screened: one a rule matches is a folder like any other, and is this
+   *  computer's own. */
   async function folderFor(raw: unknown): Promise<string> {
     let cwd = deps.homedir()
     if (!absent(raw) && !(typeof raw === 'string' && !raw.trim())) {
@@ -519,17 +540,17 @@ export function createLinkedJobs(deps: LinkedJobsDeps): {
       if (raw.length > MAX_CWD_CHARS) throw new Error(`Invalid cwd: longer than ${MAX_CWD_CHARS} characters.`)
       const normal = normalizeShellPath(raw, { homedir: cwd })
       if (normal === null || !path.isAbsolute(normal)) {
-        throw new Error(`cwd must be an absolute folder path on ${here()}, or start with ~: ${printable(raw)}`)
+        throw new Error(`cwd must be an absolute folder path on ${here()}, or start with ~: ${echo(raw)}`)
       }
       // Refused before it is touched. On Windows, opening \\host\share hands
       // that host this user's NTLM hash, and an unreachable one can hold the
       // check for many seconds. A linked job runs in a folder on THIS machine.
       if (/^[\\/]{2}/.test(normal)) {
-        throw new Error(`cwd must be a folder on ${here()} itself, not a network path: ${printable(normal)}`)
+        throw new Error(`cwd must be a folder on ${here()} itself, not a network path: ${echo(normal)}`)
       }
       cwd = normal
     }
-    if (!(await isDir(cwd))) throw new Error(`Folder not found on ${here()}: ${printable(cwd)}`)
+    if (!(await isDir(cwd))) throw new Error(`Folder not found on ${here()}: ${echo(cwd)}`)
     return cwd
   }
 
