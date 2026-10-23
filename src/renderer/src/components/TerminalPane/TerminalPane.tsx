@@ -29,6 +29,7 @@ import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { AccountChip } from '../Accounts/AccountChip'
 import { SwitchOverlay } from '../Accounts/SwitchOverlay'
 import { LimitCard } from '../Accounts/LimitCard'
+import { SwarmRestartPaneCard } from '../Accounts/SwarmRestartOffers'
 import { agentOfCommand } from '../../lib/accountsView'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -1893,6 +1894,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           overflowed to the right and painted over the scrollbar. */}
       <SwitchOverlay terminalId={terminalId} />
       <LimitCard terminalId={terminalId} />
+      <SwarmRestartPaneCard terminalId={terminalId} />
       {relaunching === 'model' && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none" data-testid="relaunch-overlay">
           <span className="text-xs text-[#e0e0e0] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5">

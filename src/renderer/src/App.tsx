@@ -1133,7 +1133,7 @@ export default function App() {
         <SignInSheet />
         <AccountMenu />
         <AgySwitchSheet />
-        <SwarmRestartOffers />
+        <SwarmRestartOffers dashboardOpen={showSwarmDashboard} />
         {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
         {showAddModal && (
           <AddTerminalModal

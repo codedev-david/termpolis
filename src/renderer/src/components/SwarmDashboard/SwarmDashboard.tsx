@@ -10,6 +10,7 @@ import { ConductorOutput } from '../ConductorOutput/ConductorOutput'
 import { HandoffAnimation } from '../HandoffAnimation/HandoffAnimation'
 import { SwarmReviewPanel } from '../SwarmReview/SwarmReviewPanel'
 import { SwarmWorkerAccounts } from '../Accounts/SwarmWorkerAccounts'
+import { SwarmRestartList } from '../Accounts/SwarmRestartOffers'
 
 interface SwarmDashboardProps {
   onClose: () => void
@@ -317,6 +318,8 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
 
         {/* Each worker's account chip, where its agent has two accounts or more (§9) */}
         <SwarmWorkerAccounts />
+        {/* The restart offers for workers that ran out of usage (§9), while the dashboard is open */}
+        <SwarmRestartList />
 
         {/* Tabs */}
         <div className="flex items-center gap-1 px-5 py-2 border-b border-[#3c3c3c]">

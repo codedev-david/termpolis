@@ -5,7 +5,7 @@
 import React from 'react'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { SwarmRestartOffers } from '../../src/renderer/src/components/Accounts/SwarmRestartOffers'
+import { SwarmRestartList, SwarmRestartOffers, SwarmRestartPaneCard } from '../../src/renderer/src/components/Accounts/SwarmRestartOffers'
 import { _resetSwarmRestartForTest, liveRestartDeps } from '../../src/renderer/src/lib/swarmRestart'
 import type { RestartDeps, SwarmRestartGroup } from '../../src/renderer/src/lib/swarmRestart'
 import { _resetLimitWatchForTest, noteSwarmStop } from '../../src/renderer/src/lib/limitWatch'
@@ -73,6 +73,54 @@ afterEach(() => {
   delete (window as any).swarmAPI
   delete (window as any).accounts
   useTerminalStore.setState({ terminals: [], accountsView: null, swarmRestarts: [], relaunching: {} })
+})
+
+describe('where the offer shows (the in-app account UI, §2.6)', () => {
+  const put = (gs: SwarmRestartGroup[]) => act(() => { useTerminalStore.setState({ swarmRestarts: gs }) })
+
+  it('shows at the window\'s bottom right only while no other place shows it', () => {
+    const { rerender } = render(<SwarmRestartOffers deps={() => deps} />)
+    put([group(), group({ id: 'g2', workers: [W2] })])
+    expect(screen.getAllByTestId('swarm-restart-offer')).toHaveLength(2)
+    // The swarm dashboard is open: it shows them all itself.
+    rerender(<SwarmRestartOffers deps={() => deps} dashboardOpen />)
+    expect(screen.queryByTestId('swarm-restart-offers')).toBeNull()
+    // A worker's pane on screen shows its own: the stack shows the rest.
+    rerender(<SwarmRestartOffers deps={() => deps} />)
+    act(() => { useTerminalStore.setState({ terminals: [{ ...worker('w1'), hidden: false }, worker('w2')], viewMode: 'tabs', activeTerminalId: 'w1', showSettings: false }) })
+    expect(screen.getAllByTestId('swarm-restart-offer').map((o) => o.textContent)).toEqual([expect.stringContaining('Claude (Tests), a swarm worker, ran out of usage on personal.')])
+  })
+
+  it('lists every offer inside the swarm dashboard, and none without one', () => {
+    const { container } = render(<SwarmRestartList deps={() => deps} />)
+    expect(container.innerHTML).toBe('')
+    put([group(), group({ id: 'g2', workers: [W2] })])
+    expect(screen.getByTestId('swarm-restart-list').querySelectorAll('[data-testid="swarm-restart-offer"]')).toHaveLength(2)
+  })
+
+  it('shows a worker\'s own offer at the top of its pane, in the same card, and none on another pane', async () => {
+    render(<><SwarmRestartPaneCard terminalId="w1" deps={() => deps} /><SwarmRestartPaneCard terminalId="t9" deps={() => deps} /></>)
+    expect(screen.queryByTestId('swarm-restart-pane')).toBeNull()
+    put([group({ workers: [W1, W2] })])
+    const card = screen.getByTestId('swarm-restart-pane')
+    expect(card).toHaveTextContent("2 of the swarm's workers ran out of usage on personal.")
+    expect(screen.getAllByTestId('swarm-restart-pane')).toHaveLength(1)
+    fireEvent.click(screen.getByTestId('swarm-restart-decline'))
+    await flush()
+    expect(deps.swarm.sendMessage).toHaveBeenCalled()
+  })
+
+  it('shows none in a store that holds no offers', () => {
+    act(() => { useTerminalStore.setState({ swarmRestarts: undefined as never, accountsView: undefined as never }) })
+    const { container } = render(<><SwarmRestartPaneCard terminalId="w1" /><SwarmRestartList /></>)
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('names the account in a pane\'s card with no accounts read yet as "that account"', () => {
+    act(() => { useTerminalStore.setState({ swarmRestarts: [group()], accountsView: undefined as never }) })
+    render(<><SwarmRestartPaneCard terminalId="w1" deps={() => deps} /><SwarmRestartList deps={() => deps} /></>)
+    expect(screen.getAllByTestId('swarm-restart-on').map((b) => b.textContent)).toEqual(['Restart it on that account', 'Restart it on that account'])
+  })
 })
 
 describe('SwarmRestartOffers', () => {

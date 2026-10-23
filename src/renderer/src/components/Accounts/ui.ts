@@ -7,5 +7,7 @@ export const SHEET_CHOICE = 'w-full text-left px-3 py-2 rounded-lg border border
 export const SHEET_INPUT = 'bg-[#1e1e1e] border border-[#3c3c3c] rounded px-2 py-1.5 text-sm text-[#d4d4d4] w-full focus:outline-none focus:border-[#22D3EE]'
 export const SMALL_BUTTON = 'text-xs px-2 py-1 rounded bg-[#2d2d2d] text-[#d4d4d4] hover:bg-[#3a3a3a] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#22D3EE]'
 export const SMALL_PRIMARY = 'text-xs px-2 py-1 rounded bg-[#0e639c] text-white hover:bg-[#1177bb] disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#22D3EE]'
+/** The frame of a card about a stop: the limit chooser's on a pane, and the swarm's restart offer. */
+export const STOP_CARD = 'bg-[#252526] border border-[#e5c07b]/60 rounded-lg shadow-xl px-3 py-2 flex flex-col gap-1.5 text-xs text-[#d4d4d4]'
 /** A spinner that stays still where the user asked for less motion. */
 export const SPINNER = 'fa-solid fa-spinner motion-safe:animate-spin'

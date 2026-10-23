@@ -22,7 +22,7 @@ import { newTerminalOn, startSwitch } from '../../lib/accountSwitchRun'
 import { modelHoldBridge, relaunchHeld } from '../../lib/modelRelaunch'
 import { launchAgents } from '../../lib/agentLaunch'
 import { requestSettingsTab } from '../../lib/settingsNav'
-import { SMALL_BUTTON, SMALL_PRIMARY } from './ui'
+import { SMALL_BUTTON, SMALL_PRIMARY, STOP_CARD } from './ui'
 
 export function LimitCard({ terminalId }: { terminalId: string }) {
   // A store that holds no chooser (a pane's tests mock one) shows no card.
@@ -141,7 +141,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
 
   return (
     <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 w-[min(560px,92%)]" data-testid="limit-card">
-      <div role="status" className="bg-[#252526] border border-[#e5c07b]/60 rounded-lg shadow-xl px-3 py-2 flex flex-col gap-1.5 text-xs text-[#d4d4d4]">
+      <div role="status" className={STOP_CARD}>
         <div className="flex items-start gap-2">
           <i className="fa-solid fa-hourglass-half text-[#e5c07b] mt-0.5" aria-hidden="true"></i>
           <div className="flex-1 min-w-0">
