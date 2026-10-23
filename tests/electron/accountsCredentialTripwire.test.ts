@@ -57,7 +57,7 @@ function accountsModules(): string[] {
     for (const name of realFs.readdirSync(full)) if (keep(name)) out.push(join(full, name))
   }
   add('src/main', (n) => /^account.*\.ts$/i.test(n) || n === 'agentAccounts.ts')
-  add('src/shared', (n) => n === 'agentAccounts.ts')
+  add('src/shared', (n) => n === 'agentAccounts.ts' || n === 'accountSwitch.ts')
   add('src/renderer/src/lib', (n) => /^account.*\.ts$/i.test(n))
   add('src/renderer/src/components/Accounts', (n) => /\.tsx?$/.test(n))
   add('src/renderer/src/components/SettingsPane', (n) => /^Accounts.*\.tsx$/.test(n))
@@ -80,6 +80,7 @@ describe('the accounts source (D11)', () => {
     expect(names).toEqual(expect.arrayContaining([
       'src/main/accountFs.ts', 'src/main/accountIdentity.ts', 'src/main/accountProfiles.ts',
       'src/main/accountsIpc.ts', 'src/main/agentAccounts.ts', 'src/shared/agentAccounts.ts',
+      'src/main/accountCarry.ts', 'src/main/accountSwitch.ts', 'src/shared/accountSwitch.ts',
     ]))
   })
 

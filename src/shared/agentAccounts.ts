@@ -160,6 +160,10 @@ export const ACCOUNTS_IPC = {
   /** main → renderer: the account Termpolis now knows a terminal runs on, or that it was changed
    *  by hand (TerminalAccountEvent). */
   terminalAccount: 'accounts:terminal-account',
+  /** Move a terminal's running agent to another account, in place (SwitchRequest → SwitchOutcome). */
+  switchAccount: 'accounts:switch',
+  /** main → renderer: the step a switch is at (SwitchProgress). */
+  switchProgress: 'accounts:switch-progress',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────

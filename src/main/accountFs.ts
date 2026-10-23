@@ -8,7 +8,7 @@
 // through agentIntegrationManager's byte-safe edit path, but a Console sign-in's key can live in
 // it (`primaryApiKey`), so this seam reads it only for named fields and never hands it out whole.
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync,
+  chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync,
   renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'fs'
 import type { Dirent, Stats } from 'fs'
@@ -72,6 +72,9 @@ export interface AccountFs {
   removeEmptyDir(p: string): void
   rename(from: string, to: string): void
   writePrivate(p: string, text: string): void
+  /** A transcript carried to another profile (accountCarry.ts): a file, never a link, never
+   *  `.claude.json`, kept private. */
+  copyFile(from: string, to: string): void
 }
 
 /** The real filesystem, behind the tripwire. */
@@ -139,6 +142,14 @@ export const accountFs: AccountFs = {
     assertNotCredential(from)
     assertNotCredential(to)
     renameWithRetry(from, to, renameSync)
+  },
+  copyFile(from, to) {
+    assertReadable(from)
+    assertNotCredential(to)
+    if (fold(basename(resolve(to))) === CLAUDE_JSON) throw new Error('refused: .claude.json is never copied')
+    if (!lstatSync(from).isFile()) throw new Error(`${from} is not a file`)
+    copyFileSync(from, to)
+    chmodSync(to, 0o600)
   },
   writePrivate(p, text) {
     assertNotCredential(p)

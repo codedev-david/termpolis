@@ -113,7 +113,7 @@ async function list(): Promise<AccountsView> {
 
 describe('every channel answers in the IPC envelope', () => {
   it('registers every channel the renderer calls', () => {
-    const events: string[] = [ACCOUNTS_IPC.signInProgress, ACCOUNTS_IPC.terminalAccount]
+    const events: string[] = [ACCOUNTS_IPC.signInProgress, ACCOUNTS_IPC.terminalAccount, ACCOUNTS_IPC.switchProgress]
     const expected = Object.values(ACCOUNTS_IPC).filter((c) => !events.includes(c)).sort()
     expect([...handlers.keys()].sort()).toEqual(expected)
   })

@@ -613,6 +613,7 @@ import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount, isTerminalAccountConnected,
   noteTypedInput, registerAccountsIpc, resolveLaunchTarget,
 } from './accountsIpc'
+import { relaunchLockReason } from './accountSwitch'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
 import {
   repairWindowsShortcuts,
@@ -975,6 +976,8 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
 ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
+  // A switch is typing into it itself (accountSwitch.ts, R7): nothing else may meanwhile.
+  if (relaunchLockReason(id)) return
   // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
   // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
   const typed = typeof data === 'string' ? stripPasteMarkers(data) : data
@@ -2910,6 +2913,19 @@ registerAccountsIpc(ipcMain, {
   // A sign-in's command has finished once its shell prints a prompt again (its report).
   promptSince: (terminalId, offset) => readOutputFrom(terminalOutputBuffers, terminalId, offset).output.search(PROMPT_REPORT) >= 0,
   outputEnd: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
+  // A switch reads and types through these, beside the buffers (accountSwitch.ts).
+  switchIO: {
+    output: (terminalId) => {
+      const raw = readOutputTail(terminalOutputBuffers, terminalId, 1000)
+      return raw ? { raw, end: readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset } : null
+    },
+    outputFrom: (terminalId, from) => readOutputFrom(terminalOutputBuffers, terminalId, from).output,
+    end: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
+    size: (terminalId) => getTerminalSize(terminalId),
+    write: (terminalId, data) => writeToTerminal(terminalId, data),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now: () => Date.now(),
+  },
   checkCwd: () => {
     const dir = join(app.getPath('userData'), 'account-checks')
     mkdirSync(dir, { recursive: true })
@@ -3626,6 +3642,7 @@ async function semanticPoolOptions(
       },
       terminalSize: (terminalId) => getTerminalSize(terminalId),
       outputOffset: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
+      relaunchLock: (terminalId) => relaunchLockReason(terminalId),
       runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
         if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }
         // stepId only keys the runner's in-flight map, so per-call uniqueness is all it needs.

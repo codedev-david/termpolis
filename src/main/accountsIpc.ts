@@ -8,6 +8,10 @@
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { changesAccountByHand, isSessionId } from '../shared/accountSwitch'
+import type { SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
+import { carryTranscript, findTranscript } from './accountCarry'
+import { runAccountSwitch } from './accountSwitch'
+import type { SwitchIO } from './accountSwitch'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, SHAREABLE_FOLDERS, accountEnv, accountLine, cleanLabel, familyOf,
   isPlainEmail, isProfileAgent, signInCommand, signInTerminalName, slugOf, tildifyPath,
@@ -61,6 +65,8 @@ export interface AccountsIpcDeps {
   /** Where the terminal's output ends now (its buffer's next offset): where an agent a line
    *  started begins. */
   outputEnd?: (terminalId: string) => number
+  /** The terminals' buffers and PTYs, for a switch (accountSwitch.ts); none, no switch. */
+  switchIO?: Omit<SwitchIO, 'progress'>
   /** For tests: the status commands. */
   signedInNow?: (agent: ProfileAgent, profile: string | null, deps: CheckDeps) => Promise<IdentityCheck>
   setInterval?: (fn: () => void, ms: number) => unknown
@@ -951,6 +957,56 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const t = now()
     ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > t), { line, until: t + OWN_LINE_MS }])
     return { line, accountId: account.id, explicit, ...(sessionId ? { sessionId } : {}) }
+  })
+
+  handle(ACCOUNTS_IPC.switchAccount, async (input): Promise<SwitchOutcome> => {
+    const io = deps.switchIO
+    if (!io) throw new Error('switching accounts isn\'t available')
+    const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
+    if (!terminalId) throw new Error('which terminal?')
+    const req: SwitchRequest = { terminalId, targetId: String(input.targetId ?? ''), shellType: String(input.shellType ?? '') }
+    if (typeof input.instructions === 'string') req.instructions = input.instructions
+    for (const flag of ['assumeExited', 'stopBusy', 'fresh'] as const) if (input[flag] === true) req[flag] = true
+    if (typeof input.reason === 'string') req.reason = input.reason.slice(0, 80)
+    const doc = loadDoc()
+    const target = accountOf(doc, req.targetId)
+    if (!isProfileAgent(target.agent)) throw new Error('the Antigravity CLI switches through its own sign-in')
+    const home = deps.paths().home
+    const currentId = terminalAccountId(terminalId)
+    const source = currentId ? findAccount(doc, currentId) : undefined
+    if (source && source.agent !== target.agent) throw new Error(`this terminal runs ${ACCOUNT_AGENT_LABEL[source.agent]}, not ${ACCOUNT_AGENT_LABEL[target.agent]}`)
+    if (source && source.id === target.id && !isAccountChangedByHand(terminalId)) throw new Error(`this terminal already runs on ${target.label}`)
+    if (target.profile !== null && !liveProfileDir(target, home, fsx)) throw new Error(`${target.label}'s profile folder doesn't exist`)
+    const agent = target.agent
+    // Claude Code: where this conversation's transcript can be, and where the target looks for it.
+    const projectsOf = (a: AgentAccount): string => join(profileDirOf(a, home) as string, 'projects')
+    const targetProjects = projectsOf(target)
+    const sourceProjects = source && !isAccountChangedByHand(terminalId)
+      ? [projectsOf(source)]
+      : [...new Set([join(defaultProfileDir('claude', home), 'projects'), ...doc.file.accounts.filter((a) => a.agent === 'claude').map(projectsOf)])]
+    const outcome = await runAccountSwitch(req, {
+      io: { ...io, progress: (p) => deps.send(ACCOUNTS_IPC.switchProgress, p) },
+      target,
+      agent,
+      ...(source ? { source } : {}),
+      ...(terminalAgentStart(terminalId) ? { start: terminalAgentStart(terminalId) } : {}),
+      ...(terminalSessionId(terminalId) ? { sessionId: terminalSessionId(terminalId) } : {}),
+      hasTranscript: (id) => findTranscript([...sourceProjects, targetProjects], id, fsx) !== null,
+      carry: (id) => {
+        const r = carryTranscript(sourceProjects, targetProjects, id, now(), fsx)
+        return r.kind === 'carried' ? { carried: true, ...(r.kept ? { kept: r.kept } : {}) } : { carried: false }
+      },
+      newSessionId: () => randomUUID(),
+      record: (r) => {
+        noteTerminalAccount(terminalId, r.accountId)
+        noteAgentStart(terminalId, r.start)
+        if (agent === 'claude') noteTerminalSession(terminalId, r.sessionId)
+        deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: r.accountId, byHand: false })
+      },
+    })
+    // Labels only, never emails.
+    console.log(`[accounts] switch of a ${ACCOUNT_AGENT_LABEL[agent]} terminal from ${source?.label ?? 'an account Termpolis didn\'t know'} to ${target.label}${req.reason ? ` (${req.reason})` : ''}: ${outcome.kind}`)
+    return outcome
   })
 
   handle(ACCOUNTS_IPC.noteLimit, (input) => {

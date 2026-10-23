@@ -8,6 +8,7 @@ import type {
   PickFolderResult, ProfileAgent, RecopyView, SignInLineRequest, SignInLineResult, SignInProgress,
   TerminalAccountEvent,
 } from '../../../shared/agentAccounts'
+import type { SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -1331,6 +1332,11 @@ export interface AccountsAPI {
   launchLine(req: LaunchLineRequest): Promise<IpcResponse<LaunchLineResult>>
   /** A terminal's account as main now knows it: after a switch, or changed by hand. */
   onTerminalAccount(cb: (e: TerminalAccountEvent) => void): () => void
+  /** Move the terminal's running agent to another account, in place: main exits it, types the
+   *  account line, resumes the conversation, and says how it went. */
+  switchAccount(req: SwitchRequest): Promise<IpcResponse<SwitchOutcome>>
+  /** The step a switch is at. */
+  onSwitchProgress(cb: (p: SwitchProgress) => void): () => void
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

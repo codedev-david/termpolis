@@ -104,6 +104,9 @@ const H = vi.hoisted(() => {
     accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
     forgetTerminalAccount: vi.fn((_id: string) => undefined),
     noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
+    relaunchLockReason: vi.fn((_id: string): string | null => null),
+    getTerminalSize: vi.fn((_id: string): { cols: number; rows: number } | null => null),
+    mcpHandlers: null as null | Record<string, (...a: any[]) => any>,
     getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
     mkdirSync: vi.fn(),
   }
@@ -262,6 +265,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwdAsync: mockGetTerminalCwdAsync,
   getTerminalPid: mockGetTerminalPid,
   computeWindowsPty: mockComputeWindowsPty,
+  getTerminalSize: H.getTerminalSize,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: mockLoadSession, loadRestoreSession: mockLoadRestoreSession, saveSession: mockSaveSession }))
@@ -283,7 +287,7 @@ vi.mock('../../src/main/aiSecurity', async (importOriginal) => {
 })
 
 vi.mock('../../src/main/mcpServer', () => ({
-  startMcpServer: vi.fn(), stopMcpServer: vi.fn(),
+  startMcpServer: vi.fn((handlers: Record<string, (...a: any[]) => any>) => { H.mcpHandlers = handlers }), stopMcpServer: vi.fn(),
   getMcpAuthToken: vi.fn(() => 'fake-token'), getMcpPort: vi.fn(() => 9315),
   initAuditLog: vi.fn(),
   awaitMcpPortBound: vi.fn(() => Promise.resolve(9315)),
@@ -426,6 +430,8 @@ vi.mock('../../src/main/accountsIpc', () => ({
   forgetTerminalAccount: H.forgetTerminalAccount,
   noteTypedInput: H.noteTypedInput,
 }))
+// The switch's lock, so a test can hold a terminal as a switch would.
+vi.mock('../../src/main/accountSwitch', () => ({ relaunchLockReason: H.relaunchLockReason }))
 // The proxy's launch env, so a test can see which profile's routing it was asked about.
 vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/main/headroomProxy/proxySupervisor')>()),
@@ -848,6 +854,44 @@ describe('Settings ▸ Accounts wiring', () => {
     H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })
     expect(() => write('x')).not.toThrow()
     expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-typed', 'x')
+  })
+
+  it('drops the renderer\'s keys, and refuses MCP\'s, for a terminal a switch holds (R7)', () => {
+    const write = (data: string) => { for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-held', data }) }
+    H.relaunchLockReason.mockImplementation((id: string) => (id === 't-held' ? 'held' : null))
+    mockWriteToTerminal.mockClear()
+    H.noteTypedInput.mockClear()
+    write('typed while switching\r')
+    expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    expect(H.noteTypedInput).not.toHaveBeenCalled()
+    for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-free', data: 'x' })
+    expect(mockWriteToTerminal).toHaveBeenCalledWith('t-free', 'x')
+    // MCP asks main's lock for the terminal (mcpServer.ts refuses the call with its words).
+    expect(H.mcpHandlers!.relaunchLock('t-held')).toBe('held')
+    expect(H.mcpHandlers!.relaunchLock('t-free')).toBeNull()
+    H.relaunchLockReason.mockImplementation(() => null)
+  })
+
+  it('reads and types for a switch through the terminals\' buffers and PTYs', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-sw', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[0][3] as (d: string) => void
+    const io = deps().switchIO
+    expect(io.output('t-sw')).toBeNull()
+    onData('PS C:\\> ')
+    expect(io.output('t-sw')).toEqual({ raw: 'PS C:\\> ', end: 8 })
+    expect(io.outputFrom('t-sw', 3)).toBe('C:\\> ')
+    expect(io.end('t-sw')).toBe(8)
+    H.getTerminalSize.mockReturnValueOnce({ cols: 120, rows: 30 })
+    expect(io.size('t-sw')).toEqual({ cols: 120, rows: 30 })
+    io.write('t-sw', '/exit')
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-sw', '/exit')
+    expect(typeof io.now()).toBe('number')
+    vi.useFakeTimers()
+    const slept = io.sleep(250)
+    vi.advanceTimersByTime(250)
+    await expect(slept).resolves.toBeUndefined()
+    vi.useRealTimers()
   })
 
   it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {

@@ -1096,6 +1096,7 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.noteLimit('acc_1', { text: 'You\'ve hit your session limit', resetsAt: 5 }), ACCOUNTS_IPC.noteLimit, { id: 'acc_1', text: 'You\'ve hit your session limit', resetsAt: 5 }],
       [() => a.clearLimit('acc_1'), ACCOUNTS_IPC.clearLimit, { id: 'acc_1' }],
       [() => a.launchAccount('codex', 'acc_1'), ACCOUNTS_IPC.launchAccount, { agent: 'codex', accountId: 'acc_1' }],
+      [() => a.switchAccount({ terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }), ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }],
       [() => a.launchLine({ terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }), ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }],
     ]
     for (const [call, channel, payload] of cases) {
@@ -1106,7 +1107,7 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
     // Every invoke channel main registers has its bridge method; signInProgress and terminalAccount
     // are main → renderer.
     const invoked = new Set(cases.map((c) => c[1]))
-    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.signInProgress, ACCOUNTS_IPC.terminalAccount])
+    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.signInProgress, ACCOUNTS_IPC.terminalAccount, ACCOUNTS_IPC.switchProgress])
   })
 
   it('hands main the launch\'s account for its writes only when there is one, so today\'s payloads stay as they were', async () => {
@@ -1140,6 +1141,19 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
     expect(cb).toHaveBeenCalledWith({ accountId: 'acc_1', email: 'b@example.test', done: false })
     off()
     expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.signInProgress, handler)
+  })
+
+  it("passes a switch's progress to the subscriber, and unsubscribes", async () => {
+    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
+    const cb = vi.fn()
+    mockIpcRenderer.on.mockClear()
+    const off = exposed.accounts.onSwitchProgress(cb)
+    const [channel, handler] = mockIpcRenderer.on.mock.calls[0]
+    expect(channel).toBe(ACCOUNTS_IPC.switchProgress)
+    handler({}, { terminalId: 't1', step: 'typing' })
+    expect(cb).toHaveBeenCalledWith({ terminalId: 't1', step: 'typing' })
+    off()
+    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.switchProgress, handler)
   })
 
   it("passes a terminal's account to the subscriber, and unsubscribes", async () => {

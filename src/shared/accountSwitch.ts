@@ -129,10 +129,13 @@ export interface RelaunchSpec {
   id: string | null
   /** Claude Code in a worktree (ExitHint.worktree). */
   worktree?: string
-  /** The terminal's model: Claude Code's --model, Codex's -m. */
+  /** The terminal's model: Claude Code's and agy's --model, Codex's -m. */
   model?: string
   /** A Claude Code swarm worker's --dangerously-skip-permissions. */
   skipPermissions?: boolean
+  /** Codex's -a (approval policy) and -s (sandbox), as a swarm worker runs them. */
+  approval?: string
+  sandbox?: string
   /** Codex's -c developer_instructions, when the text is shell-safe (isShellSafeInstruction). */
   instructions?: string
   /** Claude Code, a new session: the id to start it with (--session-id), so it can be resumed. */
@@ -162,13 +165,46 @@ export function relaunchCommand(spec: RelaunchSpec): string {
   }
   if (spec.agent === 'codex') {
     if (spec.instructions !== undefined && !/^[A-Za-z0-9 .,:;()_/-]{1,1500}$/.test(spec.instructions)) throw new Error('not a shell-safe instruction')
+    if ([spec.approval, spec.sandbox].some((v) => v !== undefined && !CODEX_POLICY.test(v))) throw new Error('not a Codex policy')
     const parts = ['codex']
     if (spec.model) parts.push(`-m ${spec.model}`)
+    if (spec.approval) parts.push(`-a ${spec.approval}`)
+    if (spec.sandbox) parts.push(`-s ${spec.sandbox}`)
     if (spec.instructions) parts.push(`-c "developer_instructions='${spec.instructions}'"`)
     if (spec.id) parts.push(`resume ${spec.id}`)
     return parts.join(' ')
   }
-  return spec.id ? `agy --conversation=${spec.id}` : 'agy'
+  const parts = ['agy']
+  if (spec.model) parts.push(`--model ${spec.model}`)
+  if (spec.id) parts.push(`--conversation=${spec.id}`)
+  return parts.join(' ')
+}
+
+/** A Codex approval policy or sandbox, as `-a`/`-s` take it: never, on-request, workspace-write. */
+const CODEX_POLICY = /^[a-z-]{1,32}$/
+
+/** The flags a relaunch keeps from the line that started the agent: its model, a Claude Code swarm
+ *  worker's --dangerously-skip-permissions, a Codex worker's -a and -s. Each value only when it is
+ *  plainly one (isSafeModelName, CODEX_POLICY); never a flag a relaunch would get wrong, such as
+ *  --append-system-prompt-file, which the SessionStart hook replaces on a resume. */
+export function carriedFlags(agent: AccountAgent, line: string | undefined): Pick<RelaunchSpec, 'model' | 'skipPermissions' | 'approval' | 'sandbox'> {
+  const tokens = (line ?? '').split(/\s+/)
+  const after = (names: readonly string[], ok: (v: string) => boolean): string | undefined => {
+    const at = tokens.findIndex((t) => names.includes(t))
+    const v = at < 0 ? undefined : tokens[at + 1]
+    return v !== undefined && ok(v) ? v : undefined
+  }
+  const flags: Pick<RelaunchSpec, 'model' | 'skipPermissions' | 'approval' | 'sandbox'> = {}
+  const model = after(agent === 'codex' ? ['-m', '--model'] : ['--model'], isSafeModelName)
+  if (model) flags.model = model
+  if (agent === 'claude' && tokens.includes('--dangerously-skip-permissions')) flags.skipPermissions = true
+  if (agent === 'codex') {
+    const approval = after(['-a', '--ask-for-approval'], (v) => CODEX_POLICY.test(v))
+    const sandbox = after(['-s', '--sandbox'], (v) => CODEX_POLICY.test(v))
+    if (approval) flags.approval = approval
+    if (sandbox) flags.sandbox = sandbox
+  }
+  return flags
 }
 
 /** What each CLI says when the session it was told to resume isn't there (F6). Claude Code and
@@ -213,6 +249,64 @@ const BY_HAND: readonly RegExp[] = [
 
 export function changesAccountByHand(typed: string): boolean {
   return BY_HAND.some((p) => p.test(typed))
+}
+
+// ── The switch, as the renderer asks for it and main answers ──────────────────────────────
+
+/** What the renderer asks main to do: move the agent in `terminalId` to `targetId`, in place. Main
+ *  decides the rest from its own records: the terminal's account, the line it last typed there
+ *  (its flags, its model), the session it started. */
+export interface SwitchRequest {
+  terminalId: string
+  targetId: string
+  /** The terminal's shell type: which shell's syntax the account line is in. */
+  shellType: string
+  /** Codex: the instruction the target's prepare returned (memory:prepare-codex-context). */
+  instructions?: string
+  /** The user said the agent has exited, where Termpolis couldn't tell. */
+  assumeExited?: boolean
+  /** The user said to stop the agent's turn first. */
+  stopBusy?: boolean
+  /** Start a new session on the target instead of resuming this one. */
+  fresh?: boolean
+  /** For the app log: why ("usage limit", "by hand"). */
+  reason?: string
+}
+
+/** How a switch ended. Every kind but `switched` and `fresh` typed no account line, or typed one
+ *  that was never entered. */
+export type SwitchOutcome =
+  /** On the target, with this conversation (`resumed`) or the session id said. `kept` names the
+   *  older copy of a carried transcript that was kept beside it (R25). */
+  | { kind: 'switched'; resumed: boolean; sessionId?: string; carried?: boolean; kept?: string }
+  /** On the target with a new session: the agent printed no id, the target can't see this one
+   *  (Codex's path (c), agy's not-found warning), or the user asked for one. */
+  | { kind: 'fresh'; why: 'no-session' | 'not-found' | 'asked' }
+  /** The agent is at work: stop it first? Nothing was typed. */
+  | { kind: 'busy' }
+  /** Termpolis can't tell whether the agent still runs: has it exited? Nothing was typed. */
+  | { kind: 'unknown-exit' }
+  /** The exit command went in, but no exit showed within 8 s: nothing more was typed. */
+  | { kind: 'exit-unconfirmed' }
+  /** The line landed in the agent's own box (it never exited): it was cleared, and not entered. */
+  | { kind: 'agent-alive' }
+  /** The line never showed: nothing was entered. `line` is what to type by hand. */
+  | { kind: 'didnt-start'; line: string }
+  /** Claude Code couldn't find the conversation on the target. */
+  | { kind: 'resume-not-found' }
+  /** The target shows its sign-in screen, which Termpolis never answers. */
+  | { kind: 'sign-in' }
+  /** The target asks something only the user answers. */
+  | { kind: 'asks-user'; what: string }
+  /** Nothing showed within 30 s of the Enter. */
+  | { kind: 'no-outcome' }
+  /** Refused before anything was typed. */
+  | { kind: 'refused'; why: string }
+
+/** main → renderer while a switch runs: which step it is at, for the dialog. */
+export interface SwitchProgress {
+  terminalId: string
+  step: 'exiting' | 'confirming' | 'carrying' | 'typing' | 'waiting'
 }
 
 /** The prompt reports Termpolis's shells write (shellIntegration.ts): OSC 7 from bash, OSC 9;9 from

@@ -645,6 +645,9 @@ export interface McpToolHandlers {
    *  readOutputFrom's nextOffset). Submit marks it at a run_command that starts an agent, and reads
    *  what the agent did from the output after it. */
   outputOffset?: (terminalId: string) => number
+  /** Why nothing may be typed into the terminal now, or null: Termpolis is switching its agent's
+   *  account and types into it itself (accountSwitch.ts, R7). */
+  relaunchLock?: (terminalId: string) => string | null
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
@@ -799,7 +802,7 @@ const JOINED_RULE = /^[─━]{20,}/
 
 /** `text` drawn on a blank screen of the terminal's size (of the size the output reaches, where main
  *  has none), less the blank rows at its foot. */
-function drawn(text: string, size: ScreenSize | null): { lines: string[]; title: string } {
+export function drawn(text: string, size: ScreenSize | null): { lines: string[]; title: string } {
   const screen = size ? screenOf(text, size) : screenOf(text)
   const lines = screen.lines()
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
@@ -857,7 +860,7 @@ const showsCommand = (rows: readonly string[], commands: readonly string[]): boo
  *  command on a row under it is the screen of before the agent started, the shell's line under the
  *  last frame an agent left, painted again by a resize. Under the box is from the rule that closes
  *  it, though the repaint joined the row under it onto that rule (JOINED_RULE). */
-function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean } {
+export function sinceStarted(raw: string, from: number, whole: boolean, size: ScreenSize | null, commands: readonly string[]): { shell: boolean; started: boolean } {
   const since = drawn(raw.slice(from), size).lines
   const box = inputBoxRow(since)
   const rows = box < 0 ? [] : inputBoxRows(since)!
@@ -1308,6 +1311,8 @@ export async function executeTool(
       // Whether the terminal hosts an agent now, for submit: its latest command says, and where in
       // the output it was typed, marked before it is.
       const command = String(args.command ?? '').trim()
+      const locked = handlers.relaunchLock?.(args.terminalId)
+      if (locked) throw new Error(locked)
       if (isAgentBinary(command.split(/\s+/)[0])) agentStarts.set(args.terminalId, { at: handlers.outputOffset?.(args.terminalId) ?? 0, commands: agentCommands(command) })
       else agentStarts.delete(args.terminalId)
       handlers.runCommand(args.terminalId, args.command)
@@ -1339,12 +1344,15 @@ export async function executeTool(
       agentStarts.delete(args.terminalId)
       handlers.closeTerminal(args.terminalId)
       return { success: true }
-    case 'write_to_terminal':
+    case 'write_to_terminal': {
       // Raw unless asked: scripts rely on every byte arriving as sent, at once (remoteBridge/
       // dispatcher.ts writeThenSubmit says why the Enter split isn't the default).
+      const locked = handlers.relaunchLock?.(args.terminalId)
+      if (locked) throw new Error(locked)
       if (args.submit === true) return submitToTerminal(handlers, args.terminalId, String(args.text ?? ''), realClock, abandoned)
       handlers.writeToTerminal(args.terminalId, args.text)
       return { success: true }
+    }
     case 'get_file_tree':
       return handlers.getFileTree(args.path)
     case 'get_git_status':

@@ -1399,3 +1399,33 @@ describe('executeTool linked_machines', () => {
 })
 
 // (Additional edge case tests moved into the main MCP HTTP server describe block above)
+
+// --- executeTool: a terminal an account switch holds (accountSwitch.ts, R7) ---
+
+describe('executeTool on a terminal an account switch holds', () => {
+  const held = (reason: string | null) => {
+    const handlers = createMockHandlers() as unknown as Parameters<typeof executeTool>[2] & Record<string, any>
+    handlers.relaunchLock = vi.fn((id: string) => (id === 'held' ? reason : null))
+    return handlers
+  }
+
+  it('refuses write_to_terminal and run_command with the lock\'s words, typing nothing', async () => {
+    const handlers = held('Termpolis is switching this agent\'s account; wait for system\'s next message')
+    await expect(executeTool('write_to_terminal', { terminalId: 'held', text: 'hi' }, handlers)).rejects.toThrow('Termpolis is switching this agent\'s account')
+    await expect(executeTool('write_to_terminal', { terminalId: 'held', text: 'hi', submit: true }, handlers)).rejects.toThrow('wait for system\'s next message')
+    await expect(executeTool('run_command', { terminalId: 'held', command: 'claude' }, handlers)).rejects.toThrow('switching')
+    expect(handlers.writeToTerminal).not.toHaveBeenCalled()
+    expect(handlers.runCommand).not.toHaveBeenCalled()
+  })
+
+  it('lets every other terminal through, and a handler set with no lock at all', async () => {
+    const handlers = held('locked')
+    await executeTool('write_to_terminal', { terminalId: 'free', text: 'hi' }, handlers)
+    expect(handlers.writeToTerminal).toHaveBeenCalledWith('free', 'hi')
+    await executeTool('run_command', { terminalId: 'free', command: 'ls' }, handlers)
+    expect(handlers.runCommand).toHaveBeenCalledWith('free', 'ls')
+    const plain = createMockHandlers() as unknown as Parameters<typeof executeTool>[2]
+    await executeTool('write_to_terminal', { terminalId: 'held', text: 'x' }, plain)
+    expect((plain as any).writeToTerminal).toHaveBeenCalledWith('held', 'x')
+  })
+})

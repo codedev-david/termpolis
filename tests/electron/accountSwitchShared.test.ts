@@ -8,7 +8,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   AGY_SIGNED_IN, ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, HINT_FROM_FOOT_ROWS, LINE_CLEAR, RESUME_NOT_FOUND,
-  SIGN_IN_SCREEN, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, otherShellReported, relaunchCommand,
+  SIGN_IN_SCREEN, carriedFlags, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, otherShellReported,
+  relaunchCommand,
 } from '../../src/shared/accountSwitch'
 
 const ID = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
@@ -212,5 +213,36 @@ describe('otherShellReported (R1: a positive mismatch only)', () => {
     expect(otherShellReported('\x1b]9;9;C:\\w\x07', 'powershell')).toBe(false)
     expect(otherShellReported('plain text', 'posix')).toBe(false)
     expect(otherShellReported('plain text', 'cmd')).toBe(false)
+  })
+})
+
+describe('relaunchCommand: the flags a relaunch keeps', () => {
+  it('puts Codex\'s approval and sandbox after its model, and agy\'s model before its conversation', () => {
+    expect(relaunchCommand({ agent: 'codex', id: ID2, model: 'gpt-5.6-sol', approval: 'never', sandbox: 'workspace-write' }))
+      .toBe(`codex -m gpt-5.6-sol -a never -s workspace-write resume ${ID2}`)
+    expect(relaunchCommand({ agent: 'agy', id: ID, model: 'gemini-4-argon' })).toBe(`agy --model gemini-4-argon --conversation=${ID}`)
+    expect(() => relaunchCommand({ agent: 'codex', id: null, approval: 'never; rm' })).toThrow('not a Codex policy')
+    expect(() => relaunchCommand({ agent: 'codex', id: null, sandbox: 'A' })).toThrow('not a Codex policy')
+  })
+})
+
+describe('carriedFlags', () => {
+  it('keeps Claude Code\'s model and a worker\'s --dangerously-skip-permissions, never its primer file', () => {
+    expect(carriedFlags('claude', 'claude --model opus --append-system-prompt-file "C:/p.txt" --dangerously-skip-permissions'))
+      .toEqual({ model: 'opus', skipPermissions: true })
+    expect(carriedFlags('claude', `export CLAUDE_CONFIG_DIR='x' && claude --session-id ${ID}`)).toEqual({})
+  })
+
+  it('keeps Codex\'s model, approval and sandbox in their short and long forms', () => {
+    expect(carriedFlags('codex', 'codex -m gpt-5.6-sol -a never -s workspace-write')).toEqual({ model: 'gpt-5.6-sol', approval: 'never', sandbox: 'workspace-write' })
+    expect(carriedFlags('codex', 'codex --model x1 --ask-for-approval on-request --sandbox read-only')).toEqual({ model: 'x1', approval: 'on-request', sandbox: 'read-only' })
+    // Codex reads --model too; Claude Code has no -m.
+    expect(carriedFlags('claude', 'claude -m opus')).toEqual({})
+  })
+
+  it('keeps agy\'s model, and nothing it can\'t check', () => {
+    expect(carriedFlags('agy', 'agy --model gemini-4-argon --dangerously-skip-permissions')).toEqual({ model: 'gemini-4-argon' })
+    expect(carriedFlags('codex', 'codex -m "a b" -a NEVER -s')).toEqual({})
+    expect(carriedFlags('claude', undefined)).toEqual({})
   })
 })

@@ -648,6 +648,12 @@ const accounts: AccountsAPI = {
   },
   launchAccount: (agent, accountId) => ipcRenderer.invoke('accounts:launch-account', { agent, accountId }),
   launchLine: (req) => ipcRenderer.invoke('accounts:launch-line', req),
+  switchAccount: (req) => ipcRenderer.invoke('accounts:switch', req),
+  onSwitchProgress: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
+    ipcRenderer.on('accounts:switch-progress', handler)
+    return () => ipcRenderer.removeListener('accounts:switch-progress', handler)
+  },
   onTerminalAccount: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, e: Parameters<typeof cb>[0]) => cb(e)
     ipcRenderer.on('accounts:terminal-account', handler)
