@@ -311,7 +311,10 @@ vi.mock('../../src/main/memoryAnomalyLog', () => ({
   initAnomalyLog: mneme.initAnomalyLog, getAnomalies: mneme.getAnomalies, anomalyCount: mneme.anomalyCount,
 }))
 vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: mockStartIndexer, stopIndexer: mneme.stopIndexer }))
-vi.mock('../../src/main/conversationIngest', () => ({ runConversationIngest: mneme.runConversationIngest }))
+// The transcript roots: accountsIpc.ts wires the registry's in, aiSessions:digest checks a path.
+vi.mock('../../src/main/conversationIngest', () => ({
+  runConversationIngest: mneme.runConversationIngest, setExtraTranscriptRoots: vi.fn(), isInTranscriptRoot: vi.fn(() => false),
+}))
 vi.mock('../../src/main/codeIngest', () => ({ runCodeIngest: mneme.runCodeIngest, discoverRepoFiles: mneme.discoverRepoFiles }))
 vi.mock('../../src/main/codeWatch', () => ({
   ensureRepoWatch: mneme.ensureRepoWatch, stopRepoWatches: mneme.stopRepoWatches, fsBackedWatchDeps: mneme.fsBackedWatchDeps,

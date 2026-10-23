@@ -15,7 +15,7 @@
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { homedir } from 'os'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'path'
 import { isDelegatedSession, ownDialogue } from '../shared/headlessPrompt'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini'
@@ -518,16 +518,62 @@ export async function ingestConversations(deps: IngestDeps): Promise<IngestStats
 }
 
 function defaultRoot(source: ConversationSource): string {
+  // A test run's agent home wins (tests/setup.ts, e2e): any reader of agent folders honours it, so
+  // no test ever reads the developer's own transcripts.
+  const home = process.env.TERMPOLIS_TEST_AGENT_HOME?.trim() || homedir()
   switch (source) {
     case 'claude':
-      return join(homedir(), '.claude', 'projects')
+      return join(home, '.claude', 'projects')
     case 'codex':
-      return join(homedir(), '.codex', 'sessions')
+      return join(home, '.codex', 'sessions')
     case 'gemini':
-      return join(homedir(), '.gemini', 'tmp')
+      return join(home, '.gemini', 'tmp')
     default:
       return ''
   }
+}
+
+/** The transcript folders of the agents' other profiles, by source: each registered account's own
+ *  projects/ (Claude Code) or sessions/ (Codex). Set by accountsIpc.ts once the registry is wired;
+ *  none until then. */
+let extraRoots: (source: ConversationSource) => string[] = () => []
+
+export function setExtraTranscriptRoots(fn: ((source: ConversationSource) => string[]) | null): void {
+  extraRoots = fn ?? (() => [])
+}
+
+/** Every folder a source's transcripts live in: its default one, and each registered profile's own
+ *  (§10), learned from linked or not. */
+export function transcriptRoots(source: ConversationSource): string[] {
+  let extra: string[] = []
+  try { extra = extraRoots(source) } catch { /* the default folder still is one */ }
+  return [defaultRoot(source), ...extra].filter((r) => !!r)
+}
+
+/** Is `file` inside one of a source's transcript folders: what a renderer-supplied path must be
+ *  before main reads it (aiSessions:digest). Lexical, as before: `..` can't climb out of one. */
+export function isInTranscriptRoot(file: string, source: ConversationSource): boolean {
+  return transcriptRoots(source).some((root) => {
+    const rel = relative(root, file)
+    return !!rel && !rel.startsWith('..') && !isAbsolute(rel)
+  })
+}
+
+/** The folders to walk for `roots`, each once: by their real paths (on Windows in the case the disk
+ *  has), with a profile's projects/ that is a link to the default one (as Termpolis makes them) read
+ *  through the first only, and a folder inside another walked as part of it. The walk never follows
+ *  a link below a root, so nothing is read twice. A folder that doesn't exist is left out. */
+export async function walkRoots(roots: readonly string[]): Promise<string[]> {
+  const real: Array<{ root: string; key: string }> = []
+  for (const root of roots) {
+    try { real.push({ root, key: await fsp.realpath(root) }) } catch { /* not there */ }
+  }
+  const kept: Array<{ root: string; key: string }> = []
+  for (const r of [...real].sort((a, b) => a.key.length - b.key.length)) {
+    if (!kept.some((k) => r.key === k.key || r.key.startsWith(k.key.endsWith(sep) ? k.key : k.key + sep))) kept.push(r)
+  }
+  // In the order given: the default folder first.
+  return real.filter((r) => kept.includes(r)).map((r) => r.root)
 }
 
 function filePattern(source: ConversationSource): RegExp {
@@ -537,10 +583,11 @@ function filePattern(source: ConversationSource): RegExp {
 }
 
 // Recursively discover transcript files for a source (bounded depth, tolerant
-// of unreadable dirs). The on-disk roots differ per agent.
+// of unreadable dirs). The on-disk roots differ per agent. With no root given: every folder the
+// source's transcripts live in, each profile's (transcriptRoots), each read once (walkRoots).
 export async function discoverTranscriptFiles(source: ConversationSource, root?: string, freshSinceTs?: number): Promise<string[]> {
-  const base = root ?? defaultRoot(source)
-  if (!base) return []
+  const bases = root !== undefined ? (root ? [root] : []) : await walkRoots(transcriptRoots(source))
+  if (bases.length === 0) return []
   const pattern = filePattern(source)
   const out: string[] = []
   const walk = async (dir: string, depth: number): Promise<void> => {
@@ -566,7 +613,7 @@ export async function discoverTranscriptFiles(source: ConversationSource, root?:
       }
     }
   }
-  await walk(base, 0)
+  for (const base of bases) await walk(base, 0)
   return out
 }
 

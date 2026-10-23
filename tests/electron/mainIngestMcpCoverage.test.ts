@@ -350,6 +350,9 @@ describe('discoverTranscriptFiles / newestTranscriptFiles — default roots, dep
   let home: string
   const savedHome = process.env.HOME
   const savedProfile = process.env.USERPROFILE
+  // A test run's agent home wins over the OS one (tests/setup.ts sets one): out of the way here,
+  // where the OS home is the temp folder below, as in the app.
+  const savedAgentHome = process.env.TERMPOLIS_TEST_AGENT_HOME
 
   beforeEach(() => {
     // os.homedir() reads $HOME (POSIX) / %USERPROFILE% (Windows) on every call, so pointing
@@ -358,6 +361,7 @@ describe('discoverTranscriptFiles / newestTranscriptFiles — default roots, dep
     home = realFs.mkdtempSync(join(os.tmpdir(), 'tp-home-'))
     process.env.HOME = home
     process.env.USERPROFILE = home
+    delete process.env.TERMPOLIS_TEST_AGENT_HOME
   })
 
   afterEach(() => {
@@ -365,6 +369,8 @@ describe('discoverTranscriptFiles / newestTranscriptFiles — default roots, dep
     else process.env.HOME = savedHome
     if (savedProfile === undefined) delete process.env.USERPROFILE
     else process.env.USERPROFILE = savedProfile
+    if (savedAgentHome === undefined) delete process.env.TERMPOLIS_TEST_AGENT_HOME
+    else process.env.TERMPOLIS_TEST_AGENT_HOME = savedAgentHome
     try {
       realFs.rmSync(home, { recursive: true, force: true })
     } catch {

@@ -272,7 +272,7 @@ import {
   setVectorQuantization,
 } from './memoryClient'
 import { setSafeStorage } from './secureKeyStore'
-import { runConversationIngest } from './conversationIngest'
+import { isInTranscriptRoot, runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
@@ -1314,18 +1314,17 @@ ipcMain.handle('conversation:read-active', async (_evt, opts: { cwd?: string; ag
 // Context handoff: read a full Claude Code JSONL and return a prompt
 // the renderer can inject into any AI shell (Codex, Gemini, or
 // even a fresh Claude). Filepath is supplied by the renderer and must
-// match a file under ~/.claude/projects/ — we sanity-check that.
+// match a file under a Claude Code projects folder (~/.claude/projects/, or an account's) — we check that.
 ipcMain.handle('aiSessions:digest', async (_evt, filePath: string) => {
   try {
     if (typeof filePath !== 'string' || !filePath) {
       return err('filePath is required')
     }
-    const { homedir } = await import('os')
-    const { join, normalize } = await import('path')
-    const expectedRoot = normalize(join(homedir(), '.claude', 'projects'))
+    const { normalize } = await import('path')
     const requested = normalize(filePath)
-    if (!requested.startsWith(expectedRoot)) {
-      return err('filePath must be inside ~/.claude/projects')
+    // Inside a Claude Code projects folder: the default one, or a registered account's (§10).
+    if (!isInTranscriptRoot(requested, 'claude')) {
+      return err('filePath must be inside a Claude Code projects folder')
     }
     const { digestAISession, renderDigestAsPrompt } = await import('./aiSessions')
     const digest = await digestAISession(requested)

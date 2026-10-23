@@ -22,7 +22,7 @@
 
 import { promises as fsp } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
+import { transcriptRoots, walkRoots } from './conversationIngest'
 
 const HEAD_BYTES = 64 * 1024
 const SCAN_CONCURRENCY = 16
@@ -142,29 +142,35 @@ async function mapWithConcurrency<T, U>(items: T[], limit: number, fn: (t: T) =>
 }
 
 export async function listAISessions(opts?: { projectsRoot?: string }): Promise<AISessionSummary[]> {
-  const root = opts?.projectsRoot ?? join(homedir(), '.claude', 'projects')
-  let folders: string[]
-  try { folders = await fsp.readdir(root) } catch { return [] }
-
+  // Every account's: the default projects/ folder and each registered profile's own, each read
+  // once (a profile's projects/ is usually a link to the default one).
+  const roots = opts?.projectsRoot !== undefined ? [opts.projectsRoot] : await walkRoots(transcriptRoots('claude'))
   // Collect (filePath, projectFolder) pairs first, then process in parallel.
   const targets: { filePath: string; projectFolder: string }[] = []
-  await Promise.all(folders.map(async folder => {
-    const folderPath = join(root, folder)
-    try {
-      const s = await fsp.stat(folderPath)
-      if (!s.isDirectory()) return
-      const entries = await fsp.readdir(folderPath)
-      for (const entry of entries) {
-        if (!entry.endsWith('.jsonl')) continue
-        targets.push({ filePath: join(folderPath, entry), projectFolder: folder })
-      }
-    } catch { /* unreadable folder — skip */ }
-  }))
+  for (const root of roots) {
+    let folders: string[]
+    try { folders = await fsp.readdir(root) } catch { continue }
+    await Promise.all(folders.map(async folder => {
+      const folderPath = join(root, folder)
+      try {
+        const s = await fsp.stat(folderPath)
+        if (!s.isDirectory()) return
+        const entries = await fsp.readdir(folderPath)
+        for (const entry of entries) {
+          if (!entry.endsWith('.jsonl')) continue
+          targets.push({ filePath: join(folderPath, entry), projectFolder: folder })
+        }
+      } catch { /* unreadable folder — skip */ }
+    }))
+  }
 
   const summaries = await mapWithConcurrency(targets, SCAN_CONCURRENCY, t => summarizeFile(t.filePath, t.projectFolder))
   const out = summaries.filter((s): s is AISessionSummary => s !== null)
   out.sort((a, b) => b.lastModified - a.lastModified)
-  return out
+  // A conversation carried to another profile (a switch copies its transcript there) is one
+  // session: its newest copy.
+  const seen = new Set<string>()
+  return out.filter((s) => !seen.has(s.id) && !!seen.add(s.id))
 }
 
 // =====================================================

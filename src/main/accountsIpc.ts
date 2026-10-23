@@ -14,6 +14,8 @@ import { carryTranscript, findTranscript } from './accountCarry'
 import { holdForModel, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { SwitchIO } from './accountSwitch'
 import { agentOfLaunch, lookForLimit, noteEnteredLine } from './limitLook'
+import { setExtraTranscriptRoots } from './conversationIngest'
+import type { ConversationSource } from './conversationIngest'
 import type { LiveStart } from './limitLook'
 import type { LimitLook } from '../shared/accountLimits'
 import {
@@ -167,10 +169,30 @@ const wiring: {
   send?: (channel: string, payload: unknown) => void
   outputEnd?: (terminalId: string) => number
   io?: Omit<SwitchIO, 'progress'>
-  paths?: () => Pick<AgentIntegrationPaths, 'userData'>
+  paths?: () => Pick<AgentIntegrationPaths, 'userData' | 'home'>
   env?: Readonly<Record<string, string | undefined>>
   fsx?: AccountFs
 } = {}
+
+// ── Learning from every account (§10) ──────────────────────────────────────────────────
+
+/** Where each registered profile keeps its conversations, for learning and Past AI Sessions:
+ *  Claude Code's projects/, Codex's sessions/, in each account's own folder (the default profile's
+ *  is the default folder already). A profile Termpolis may not touch (a test run's, outside its
+ *  agent home) or whose folder is gone gives none. Read from the registry at each call. */
+export function profileTranscriptRoots(source: ConversationSource): string[] {
+  if (source === 'gemini' || !wiring.paths) return []
+  const { home, userData } = wiring.paths()
+  const loaded = loadAccounts(userData, wiring.fsx)
+  if (!loaded.ok) return []
+  const roots: string[] = []
+  for (const a of loaded.doc.file.accounts) {
+    if (a.agent !== source || a.profile === null) continue
+    const dir = liveProfileDir(a, home, wiring.fsx)
+    if (dir) roots.push(join(dir, source === 'claude' ? 'projects' : 'sessions'))
+  }
+  return roots
+}
 
 // ── The usage-limit chooser's marker (§8.6, R6) ────────────────────────────────────────
 
@@ -537,6 +559,8 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   wiring.paths = deps.paths
   wiring.env = env
   wiring.fsx = fsx
+  // Learning and Past AI Sessions read every registered profile's conversations from now on.
+  setExtraTranscriptRoots(profileTranscriptRoots)
 
   const view = (doc: AccountsDoc): AccountsView => {
     const p = deps.paths()
