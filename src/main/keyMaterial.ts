@@ -1142,7 +1142,8 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
         const atTop = (floor === start && !(opts.screenedStart === true && floor === 0)) || floor === at - MAX_BLOCK
         // (a legacy encrypted PEM key's body decodes to nothing: its DEK-Info line above is its head)
         const legacy = framed && /-----END (?:RSA|DSA|EC) PRIVATE KEY-----/.test(m[0]) && legacyAbove(text, runs, floor, cutText)
-        const head = framed && !ownFloor && !madeUp(text, runs) ? (legacy ? runs[0][0] : headAnchor(text, runs, floor, atTop, blocks) ?? lead) : null
+        // (and under a block taken, from its end: the lines between are the key's, laid out unevenly)
+        const head = framed && !ownFloor && !madeUp(text, runs) ? (legacy ? lead ?? runs[0][0] : headAnchor(text, runs, floor, atTop, blocks) ?? lead) : null
         if (head !== null) out.push({ rule, cls: 'remove', why: 'tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
         else out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed', from: at, to: at + m[0].length })
       } else if (lead !== null && !madeUp(text, runs)) {

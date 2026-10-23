@@ -1214,6 +1214,18 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
     }
   })
 
+  it('F-IRREGULAR: a legacy encrypted key with its second line split goes whole with its END line', () => {
+    // (its block stops at the split, and its tail, anchored by the DEK-Info line, runs on from the
+    // block's end: the split line's second half between them goes too)
+    const l = K.F.rsa_legacy_enc
+    const hdrEnd = l.findIndex((x, i) => i > 0 && /^[A-Za-z0-9+/]{40,}={0,2}$/.test(x))
+    const body = l.slice(hdrEnd, -1)
+    const split = [...l.slice(0, hdrEnd), body[0], body[1].slice(0, 40), body[1].slice(40), ...body.slice(2), l[l.length - 1]]
+    const r = screenKeys(`here:\n${split.join('\n')}\nok\n`)
+    expect(r.text.includes(body[1].slice(40))).toBe(false)
+    expect(leakedWindows(r.text, secretLinesOf(l))).toBe(0)
+  })
+
   it("F-E: where an older computer's cut left 20 to 39 characters of a wrapped base64 key file's line, they go too", () => {
     const b64 = Buffer.from(K.F.pkcs8_rsa.join('\n') + '\n').toString('base64')
     const wrapped = wrap(b64, 76)

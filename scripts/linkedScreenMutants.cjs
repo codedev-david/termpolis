@@ -157,6 +157,7 @@ const REVIEW = {
   "cut: a key's first bytes taken for a tail": [KEY, 'const fake = madeUp(text, runs) || keyHead(text, runs)', 'const fake = madeUp(text, runs)'],
   'cut: lines of hex digests taken for a key': [KEY, "  if (hexy.length && hexy.every((l) => /^[0-9a-fA-F]+$/.test(l))) return true\n", ''],
   'tail: a made-up run anchored as a key tail': [KEY, 'const head = framed && !ownFloor && !madeUp(text, runs) ?', 'const head = framed && !ownFloor ?'],
+  "tail: a legacy key's tail from its first line under a block": [KEY, '(legacy ? lead ?? runs[0][0] :', '(legacy ? runs[0][0] :'],
 }
 
 /** Mutants no test can kill, because they change nothing the screen returns. */
