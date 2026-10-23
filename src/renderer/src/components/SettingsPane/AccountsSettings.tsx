@@ -334,6 +334,8 @@ export function AccountsSettings() {
         </div>
         {r.folder && <code className="text-[11px] text-[#9ca3af] break-all">{folderLine(r, view.home)}</code>}
         {r.shares.length > 0 && <span className="text-[11px] text-[#9ca3af]">Shares {r.shares.join(', ')} with your main profile</span>}
+        {/* A swarm worker runs with --dangerously-skip-permissions: its warning, which Termpolis never answers, would hold it (R16). */}
+        {r.agent === 'claude' && r.folderExists && !r.bypassReady && <span className="text-[11px] text-[#9ca3af]" data-testid={`account-bypass-${r.id}`}>Can&apos;t take over swarm workers until you accept bypass mode in it once.</span>}
         {copiedEntries && (
           <div className="flex flex-wrap items-center gap-2 text-[11px]" data-testid={`account-copied-entries-${r.id}`}>
             <span className="text-[#e5c07b]">Termpolis&apos;s memory hook or tool permissions are in this profile (copied), but it isn&apos;t connected.</span>

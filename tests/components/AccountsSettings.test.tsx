@@ -154,6 +154,18 @@ describe('AccountsSettings: a row', () => {
     expect(screen.queryByTestId(`account-disconnect-${MAIN.id}`)).toBeNull()
   })
 
+  // R16: a swarm worker runs Claude Code with --dangerously-skip-permissions, whose warning a profile
+  // that never accepted it opens instead, and Termpolis never answers it.
+  it('says which Claude Code profiles can\'t take over swarm workers until bypass mode is accepted there once', async () => {
+    const codex = row({ id: 'acc_00000000000c', agent: 'codex', label: 'cx', bypassReady: false })
+    bridge(view({ accounts: [MAIN, row({ bypassReady: false }), codex, row({ id: 'acc_00000000000d', label: 'gone', folderExists: false, bypassReady: false })] }))
+    await renderLoaded()
+    expect(screen.getByTestId(`account-bypass-${B.id}`).textContent).toBe('Can\'t take over swarm workers until you accept bypass mode in it once.')
+    expect(screen.queryByTestId(`account-bypass-${MAIN.id}`)).toBeNull()
+    expect(screen.queryByTestId(`account-bypass-${codex.id}`)).toBeNull()
+    expect(screen.queryByTestId('account-bypass-acc_00000000000d')).toBeNull()
+  })
+
   it('moves an account up or down, never past either end', async () => {
     const { accounts } = bridge()
     await renderLoaded()
