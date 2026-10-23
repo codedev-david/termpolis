@@ -5,6 +5,7 @@ import { InstallHint } from '../InstallHint/InstallHint'
 import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { DEFAULT_AI_PROFILES, launchAgentProfile, resolveShellType } from '../../lib/aiProfiles'
 import { CLAUDE_MODEL_OPTIONS } from '../../lib/modelBroker'
+import { AGENT_COLOR, agentOfCommand } from '../../lib/accountsView'
 
 interface AddProfileModalProps {
   availableShells: ShellInfo[]
@@ -111,12 +112,14 @@ interface AIProfilesProps {
 }
 
 export function AIProfiles({ availableShells }: AIProfilesProps) {
-  const { aiProfiles, addAIProfile, removeAIProfile, addTerminal, setLaunchingAgent } = useTerminalStore()
+  const { aiProfiles, addAIProfile, removeAIProfile, addTerminal, setLaunchingAgent, accountsView } = useTerminalStore()
   const [showAddModal, setShowAddModal] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [installedAgents, setInstalledAgents] = useState<Record<string, boolean>>({})
   const [detectingAgents, setDetectingAgents] = useState(true)
   const [installHint, setInstallHint] = useState<{ id: string; name: string } | null>(null)
+  /** The profile whose Launch on ▸ menu (right-click) is open. */
+  const [launchOn, setLaunchOn] = useState<string | null>(null)
 
   useEffect(() => {
     window.termpolis.detectAgents().then(res => {
@@ -127,8 +130,14 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
 
   const allProfiles = [...DEFAULT_AI_PROFILES, ...aiProfiles]
 
-  const handleLaunch = (profile: AIProfile) =>
-    launchAgentProfile(profile, { availableShells, addTerminal, setLaunchingAgent })
+  const handleLaunch = (profile: AIProfile, accountId?: string) =>
+    launchAgentProfile(profile, { availableShells, addTerminal, setLaunchingAgent, ...(accountId ? { accountId } : {}) })
+
+  /** The accounts a profile's agent has: Launch on ▸ lists them once there are two. */
+  const accountsFor = (profile: AIProfile) => {
+    const agent = agentOfCommand(profile.command)
+    return agent && accountsView ? accountsView.accounts.filter((r) => r.agent === agent) : []
+  }
 
   const handleAddProfile = (profile: AIProfile) => {
     addAIProfile(profile)
@@ -157,13 +166,23 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
         <div className="px-2 pb-1 flex flex-col gap-0.5">
           {allProfiles.map(profile => {
             const isCustom = aiProfiles.some(p => p.id === profile.id)
+            const accounts = accountsFor(profile)
+            const notInstalled = !detectingAgents && installedAgents[profile.id] === false
             return (
-              <div key={profile.id} className="group flex flex-col">
+              <div
+                key={profile.id}
+                className="group flex flex-col"
+                onContextMenu={(e) => {
+                  // Launch on ▸ <account>, once the agent has more than one.
+                  if (accounts.length < 2) return
+                  e.preventDefault()
+                  setLaunchOn(launchOn === profile.id ? null : profile.id)
+                }}
+              >
                 <div className="flex items-center">
                   <button
                     className="flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-[#37373d] flex-1 text-left"
                     onClick={() => {
-                      const notInstalled = !detectingAgents && installedAgents[profile.id] === false
                       if (notInstalled) {
                         setInstallHint({ id: profile.id, name: profile.name })
                         return
@@ -207,6 +226,29 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                     </button>
                   )}
                 </div>
+                {launchOn === profile.id && accounts.length > 1 && (
+                  <div className="ml-6 mb-1 flex flex-col" data-testid="launch-on-menu">
+                    <span className="text-[10px] text-[#9ca3af] px-2">Launch on</span>
+                    {accounts.map((r) => (
+                      <button
+                        key={r.id}
+                        data-testid="launch-on-account"
+                        className="flex items-center gap-2 px-2 py-1 rounded text-xs text-[#d4d4d4] hover:bg-[#37373d] text-left"
+                        onClick={() => {
+                          setLaunchOn(null)
+                          if (notInstalled) {
+                            setInstallHint({ id: profile.id, name: profile.name })
+                            return
+                          }
+                          handleLaunch(profile, r.id)
+                        }}
+                      >
+                        <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: r.color ?? AGENT_COLOR[r.agent] }} />
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )
           })}

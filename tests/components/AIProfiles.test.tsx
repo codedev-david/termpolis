@@ -33,6 +33,7 @@ const mockAddAIProfile = vi.fn()
 const mockRemoveAIProfile = vi.fn()
 const mockSetMemoryNotice = vi.fn()
 let mockAiProfiles: any[] = []
+let mockAccountsView: any = null
 
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   useTerminalStore: Object.assign(
@@ -44,6 +45,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         addTerminal: mockAddTerminal,
         setLaunchingAgent: mockSetLaunchingAgent,
         setMemoryNotice: mockSetMemoryNotice,
+        accountsView: mockAccountsView,
       }
       return selector ? selector(state) : state
     },
@@ -66,6 +68,8 @@ let mockInstalledAgents: Record<string, boolean> = {}
 beforeEach(() => {
   vi.clearAllMocks()
   mockAiProfiles = []
+  mockAccountsView = null
+  delete (window as any).accounts
   mockInstalledAgents = { claude: true, codex: true, gemini: false }
   ;(window as any).termpolis = {
     detectAgents: vi.fn().mockImplementation(() =>
@@ -87,6 +91,58 @@ const defaultShells = [
 ]
 
 describe('AIProfiles', () => {
+  describe('Launch on ▸ an account (right-click)', () => {
+    const acc = (id: string, agent: string, label: string, color?: string) => ({ id, agent, label, ...(color ? { color } : {}) })
+    beforeEach(() => {
+      mockAccountsView = { accounts: [acc('acc_a', 'claude', 'personal'), acc('acc_b', 'claude', 'codedev', '#123456'), acc('acc_c', 'codex', 'solo'), acc('g1', 'agy', 'home'), acc('g2', 'agy', 'work')] }
+      ;(window as any).accounts = {
+        launchAccount: vi.fn(async (_agent: string, id: string | null) => ({ success: true, data: { accountId: id } })),
+        launchLine: vi.fn(async (req: any) => ({ success: true, data: { line: req.command, accountId: req.accountId, explicit: true } })),
+      }
+    })
+
+    it("lists the agent's accounts and launches on the one picked", async () => {
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
+      const row = screen.getByText('Claude Code').closest('.group') as HTMLElement
+      fireEvent.contextMenu(row)
+      const items = screen.getAllByTestId('launch-on-account')
+      expect(items.map((b) => b.textContent)).toEqual(['personal', 'codedev'])
+      fireEvent.click(items[1])
+      await waitFor(() => expect((window as any).accounts.launchAccount).toHaveBeenCalledWith('claude', 'acc_b'))
+      expect(screen.queryByTestId('launch-on-menu')).toBeNull()
+    })
+
+    it('opens no menu for an agent with one account, and a second right-click closes it', async () => {
+      render(<AIProfiles availableShells={defaultShells} />)
+      const codex = screen.getByText('OpenAI Codex').closest('.group') as HTMLElement
+      fireEvent.contextMenu(codex)
+      expect(screen.queryByTestId('launch-on-menu')).toBeNull()
+      const claude = screen.getByText('Claude Code').closest('.group') as HTMLElement
+      fireEvent.contextMenu(claude)
+      expect(screen.getByTestId('launch-on-menu')).toBeInTheDocument()
+      fireEvent.contextMenu(claude)
+      expect(screen.queryByTestId('launch-on-menu')).toBeNull()
+    })
+
+    it("shows how to install an agent that isn't installed instead of launching it", async () => {
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
+      await waitFor(() => expect(screen.getByTitle('Gemini / Antigravity CLI not installed — click for setup instructions')).toBeInTheDocument())
+      fireEvent.contextMenu(screen.getByText('Gemini / Antigravity CLI').closest('.group') as HTMLElement)
+      fireEvent.click(screen.getAllByTestId('launch-on-account')[0])
+      expect(screen.getByTestId('install-hint-id')).toHaveTextContent('gemini')
+      expect((window as any).accounts.launchAccount).not.toHaveBeenCalled()
+    })
+
+    it('opens no menu before the accounts are read', () => {
+      mockAccountsView = null
+      render(<AIProfiles availableShells={defaultShells} />)
+      fireEvent.contextMenu(screen.getByText('Claude Code').closest('.group') as HTMLElement)
+      expect(screen.queryByTestId('launch-on-menu')).toBeNull()
+    })
+  })
+
   describe('rendering', () => {
     it('renders all three default AI agent profiles', async () => {
       render(<AIProfiles availableShells={defaultShells} />)

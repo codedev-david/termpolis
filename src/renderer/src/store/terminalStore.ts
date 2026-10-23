@@ -5,6 +5,7 @@ import { DEFAULT_KEYBINDINGS, isReservedAction, type KeybindingMap } from '../li
 import { DEFAULT_VOICE_SETTINGS, type VoiceSettings } from '../lib/voice/voiceTypes'
 import type { ConversationIndex, ConversationTurn } from '../lib/conversationParser'
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
+import type { AccountsView } from '../../../shared/agentAccounts'
 
 // ---- Pane tree helpers ----
 
@@ -149,6 +150,14 @@ interface TerminalStore {
   memoryNotice: string | null
   swarmCompletionSummary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null
   agentRatingOverrides: AgentRatingOverrides
+  /** Settings ▸ Accounts as main last answered it (accounts:list): what the account chips, the
+   *  switch dialog and the sidebar's Launch on ▸ read. null until it is first read. */
+  accountsView: AccountsView | null
+  /** Terminals whose account a line typed by hand changed (main's accounts:terminal-account):
+   *  Termpolis no longer knows it, and their chip shows "?". */
+  accountsByHand: Record<string, true>
+  /** The terminal the account switch dialog is open for. */
+  accountSwitch: { terminalId: string } | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -191,6 +200,10 @@ interface TerminalStore {
   setMemoryNotice: (message: string | null) => void
   setSwarmCompletionSummary: (summary: { message: string; tasks: Array<{ id: string; title: string; status: string; result?: string }>; projectCwd?: string | null; preSwarmSha?: string | null } | null) => void
   setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
+  setAccountsView: (view: AccountsView | null) => void
+  setAccountByHand: (terminalId: string, byHand: boolean) => void
+  openAccountSwitch: (terminalId: string) => void
+  closeAccountSwitch: () => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set) => ({
@@ -221,6 +234,9 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   memoryNotice: null,
   swarmCompletionSummary: null,
   agentRatingOverrides: {},
+  accountsView: null,
+  accountsByHand: {},
+  accountSwitch: null,
 
   addTerminal: (t) => set(s => {
     const visibleCount = s.terminals.filter(t => !t.hidden).length
@@ -456,4 +472,13 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
 
   setSwarmCompletionSummary: (summary) => set({ swarmCompletionSummary: summary }),
   setAgentRatingOverrides: (overrides) => set({ agentRatingOverrides: overrides }),
+  setAccountsView: (view) => set({ accountsView: view }),
+  setAccountByHand: (terminalId, byHand) => set(s => {
+    const next = { ...s.accountsByHand }
+    if (byHand) next[terminalId] = true
+    else delete next[terminalId]
+    return { accountsByHand: next }
+  }),
+  openAccountSwitch: (terminalId) => set({ accountSwitch: { terminalId } }),
+  closeAccountSwitch: () => set({ accountSwitch: null }),
 }))

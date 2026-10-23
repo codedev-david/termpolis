@@ -5,6 +5,9 @@ import { familyOf, isProfileAgent, tildifyPath } from '../../../shared/agentAcco
 import type { AccountAgent, AccountRowView } from '../../../shared/agentAccounts'
 import type { ShellType } from '../types'
 
+/** Each agent's colour, as its terminal tab and badge show it: an account with no colour of its own. */
+export const AGENT_COLOR: Readonly<Record<AccountAgent, string>> = { claude: '#D97706', codex: '#10B981', agy: '#4285F4' }
+
 export function accountsOf(rows: readonly AccountRowView[], agent: AccountAgent): AccountRowView[] {
   return rows.filter((r) => r.agent === agent)
 }

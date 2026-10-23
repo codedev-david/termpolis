@@ -60,6 +60,7 @@ import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
 import * as efficiencyLib from './lib/efficiencyAnalyzer'
 import { requestSettingsTab } from './lib/settingsNav'
+import { watchAccounts } from './lib/accountsState'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -784,6 +785,10 @@ export default function App() {
 
     return () => clearInterval(interval)
   }, [])
+
+  // The accounts the chips, the switch dialog and the sidebar show, and main's word on each
+  // terminal's account (a switch, or a change typed by hand).
+  useEffect(() => watchAccounts(), [])
 
   // A Linked machines job notification, clicked: main has brought the window forward, and this
   // opens the pane listing that job, where it can be stopped. Settings may be open already, on

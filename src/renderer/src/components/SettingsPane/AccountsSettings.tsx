@@ -7,7 +7,7 @@ import type {
 } from '../../../../shared/agentAccounts'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { ShellType } from '../../types'
-import { accountBadge, accountsOf, folderLine, signInShell } from '../../lib/accountsView'
+import { AGENT_COLOR, accountBadge, accountsOf, folderLine, signInShell } from '../../lib/accountsView'
 import type { BadgeTone } from '../../lib/accountsView'
 import { startSignIn } from '../../lib/accountSignIn'
 import type { SignInIO } from '../../lib/accountSignIn'
@@ -15,6 +15,7 @@ import { PROMPT_ECHO_CEILING_MS, SHELL_QUIET_MS, SHELL_READY_CEILING_MS, waitFor
 import { testDelay } from '../../lib/testAgents'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
 import { AddAccountDialog, CONNECT_DATA_LINE } from '../Accounts/AddAccountDialog'
+import { ActiveTerminalAccount } from '../Accounts/ActiveTerminalAccount'
 
 // Settings ▸ Accounts (design §4): more than one sign-in per agent. Main owns the registry and
 // answers every action with what it did (src/main/accountsIpc.ts); this tab never builds a path,
@@ -30,9 +31,6 @@ const TONE: Record<BadgeTone, string> = {
   bad: 'text-[#e06c75]',
   muted: 'text-[#9ca3af]',
 }
-
-/** Each agent's colour, as its terminal tab and badge show it. */
-const AGENT_COLOR: Record<AccountAgent, string> = { claude: '#D97706', codex: '#10B981', agy: '#4285F4' }
 
 type MethodChoice = { id: SignInMethod; label: string; hint?: string }
 
@@ -102,6 +100,8 @@ export function AccountsSettings() {
       const res = await api.list()
       if (res.success) {
         setView(res.data)
+        // The chips and the switch dialog read the same view.
+        useTerminalStore.getState().setAccountsView(res.data)
         setLoadError(null)
       } else {
         setLoadError(res.error)
@@ -482,6 +482,7 @@ export function AccountsSettings() {
           More than one sign-in for an agent: each Claude Code or Codex account has a profile folder of its own, and signs in there by itself. Termpolis never reads, copies or keeps a sign-in.
         </p>
       </div>
+      <ActiveTerminalAccount view={view} />
 
       {!view.integrationConnected && (
         <p className="text-xs text-[#9ca3af]" data-testid="accounts-integration-off">

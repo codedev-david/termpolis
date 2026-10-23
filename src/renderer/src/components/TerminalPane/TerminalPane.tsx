@@ -26,6 +26,7 @@ import { decodeOsc7, normalizeShellPath, osc7PathPart, samePath } from '../../..
 import { hostHomedir } from '../../lib/platform'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
+import { AccountChip } from '../Accounts/AccountChip'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
@@ -1989,6 +1990,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           {/* Past AI Sessions / Model / Second Opinion only apply to AI terminals — an
               agent launched here, OR an AI CLI (claude/codex/…) the user started in a
               plain shell (picked up by output detection). `badgeAgent` captures both. */}
+          {/* Which account this terminal's agent runs on, once it has more than one. */}
+          <AccountChip terminalId={terminalId} />
           {/* Clear is offered on AI terminals because it is the only place it is hard to
               reach: a shell has `clear`, an agent owns the screen and redraws over it.
               The hotkey (default Ctrl+Shift+X) works in every terminal regardless. */}
