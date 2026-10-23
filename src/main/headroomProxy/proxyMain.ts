@@ -89,7 +89,11 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
                 } catch { /* best effort */ }
               }
             })
-            up.on('error', () => { try { res.end() } catch { /* ignore */ } })
+            // An answer the upstream breaks off must reach the client as a broken connection, the way
+            // it would without the proxy. Ending the response instead makes the cut-short body look
+            // finished, and that body is usually gzip-encoded, so Claude Code fails it as
+            // "Decompression error: ZlibError" rather than as a connection error it retries.
+            up.on('error', () => { try { res.destroy() } catch { /* ignore */ } })
           },
         )
       } catch (e) {
@@ -98,7 +102,10 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
         return
       }
       upReq.on('error', (e) => {
-        if (!res.headersSent) { try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ } }
+        // Once the answer has started, nothing may follow it: its body may be gzip-encoded, and text
+        // written now would land inside the compressed stream. Break the connection instead.
+        if (res.headersSent) { try { res.destroy() } catch { /* ignore */ } return }
+        try { res.writeHead(502, { 'content-type': 'text/plain' }) } catch { /* ignore */ }
         try { res.end('headroom proxy upstream error: ' + (e as Error).message) } catch { /* ignore */ }
       })
       upReq.end(body)
