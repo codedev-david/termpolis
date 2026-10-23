@@ -3,7 +3,7 @@
 // leaves the login-method picker to the user once the agent has more than one account. Same
 // harness as AppMcpTerminals.test.tsx: every child that isn't under test is a stub.
 import React from 'react'
-import { render, act, fireEvent } from '@testing-library/react'
+import { render, act, fireEvent, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('@sentry/react', () => ({
@@ -78,12 +78,17 @@ const T = { id: 't1', name: 'Claude Code — repo', color: '', shellType: 'gitba
 const settle = () => act(async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)) })
 
 beforeEach(() => {
+  // App saves the session a second after a change, on a timer it never clears: a fake one, which
+  // teardown drops, so it can't fire once window.termpolis is gone.
+  vi.useFakeTimers({ shouldAdvanceTime: true })
   localStorage.clear()
   localStorage.setItem('termpolis.onboarding.seen.v1', '1')
   useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null })
 })
 
 afterEach(() => {
+  // App goes first: the store reset below, under a mounted App, would schedule one more save.
+  cleanup()
   vi.useRealTimers()
   delete (window as any).termpolis
   delete (window as any).mcpEvents
@@ -107,7 +112,6 @@ describe('App: the account switch', () => {
     ['leaves the login picker to the user once the agent has two accounts (R10)', 2, {}, null],
     ['answers nothing in a terminal a relaunch types into (R7)', 1, { t1: 'account' as const }, null],
   ])('%s', async (_name, accounts, relaunching, expected) => {
-    vi.useFakeTimers({ shouldAdvanceTime: true })
     const api = bridge(PICKER)
     render(<App />)
     await settle()

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
 
 /**
  * Anti-drift guard for the main <-> preload IPC seam.
@@ -46,12 +47,30 @@ function channels(files: string[], re: RegExp): Map<string, string> {
 const sent = channels(walk(join(SRC, 'main')), /webContents\.send\(\s*'([^']+)'/g)
 const listened = channels(walk(join(SRC, 'preload')), /ipcRenderer\.on\(\s*'([^']+)'/g)
 
+// The accounts code sends its events under the channel names main and the renderer share
+// (deps.send(ACCOUNTS_IPC.terminalAccount, …) in accountsIpc.ts), through the `send` index.ts
+// gives registerAccountsIpc. Once that `send` is webContents.send, each counts as sent under the
+// name it stands for.
+const registration = /registerAccountsIpc\(ipcMain, \{([\s\S]*?)\n\}\)/.exec(readFileSync(join(SRC, 'main', 'index.ts'), 'utf8'))
+const accountsSendReachesRenderer = !!registration && /\n\s*send: \(channel, payload\) => \{ mainWindow\?\.webContents\.send\(channel, payload\) \},/.test(registration[1])
+if (accountsSendReachesRenderer) {
+  for (const [key, file] of channels(walk(join(SRC, 'main')), /\bsend(?:\?\.)?\(\s*ACCOUNTS_IPC\.(\w+)/g)) {
+    const channel = (ACCOUNTS_IPC as Record<string, string>)[key]
+    if (channel && !sent.has(channel)) sent.set(channel, file)
+  }
+}
+
 describe('IPC channel sync (main <-> preload)', () => {
   it('found channels on both sides (the extraction itself still works)', () => {
     // If a refactor changes how events are sent, both sets go empty and every assertion below
     // passes vacuously. Fail loudly instead of guarding nothing.
     expect(sent.size).toBeGreaterThan(5)
     expect(listened.size).toBeGreaterThan(5)
+  })
+
+  it('sends the accounts events to the renderer: index.ts gives registerAccountsIpc webContents.send', () => {
+    expect(accountsSendReachesRenderer).toBe(true)
+    expect(sent.get(ACCOUNTS_IPC.terminalAccount)).toBe('main/accountsIpc.ts')
   })
 
   it('every channel main sends has a listener in preload (no dead bridges)', () => {
