@@ -112,8 +112,8 @@ describe('provider tables', () => {
     expect(PROVIDER_INSTALL_KEY.gemini).toBe('agy')
   })
 
-  it('needs two Ctrl+D for Claude and one for the others', () => {
-    expect(EXIT_CONFIRMS).toEqual({ claude: 2, codex: 1, gemini: 1 })
+  it('needs two Ctrl+D for Claude, and none for Codex or agy, which exit with their own command', () => {
+    expect(EXIT_CONFIRMS).toEqual({ claude: 2, codex: 0, gemini: 0 })
   })
 })
 

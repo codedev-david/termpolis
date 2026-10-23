@@ -974,10 +974,11 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 // Test-only: record raw terminal writes so e2e can assert the compaction re-prime
 // paste actually reached a terminal. Only populated under NODE_ENV=test.
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
-ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
+ipcMain.on('terminal:write', (_, { id, data, key }: { id: string; data: string; key?: string }) => {
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
-  // A switch is typing into it itself (accountSwitch.ts, R7): nothing else may meanwhile.
-  if (relaunchLockReason(id)) return
+  // A switch is typing into it itself (accountSwitch.ts, R7): nothing else may meanwhile. The model
+  // picker's own writes carry the key of its hold (§7.5).
+  if (relaunchLockReason(id, Date.now(), typeof key === 'string' ? key : undefined)) return
   // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
   // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
   const typed = typeof data === 'string' ? stripPasteMarkers(data) : data

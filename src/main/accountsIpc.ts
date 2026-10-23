@@ -7,11 +7,11 @@
 // Logs hold account labels, never emails.
 import { randomUUID } from 'crypto'
 import { join } from 'path'
-import { changesAccountByHand, isSessionId } from '../shared/accountSwitch'
-import type { AgyStepOutcome, AgyStepRequest, SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
+import { MODEL_HELD, changesAccountByHand, isSessionId } from '../shared/accountSwitch'
+import type { AgyStepOutcome, AgyStepRequest, ModelHold, SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
 import { runAgyStep } from './agySwitch'
 import { carryTranscript, findTranscript } from './accountCarry'
-import { runAccountSwitch } from './accountSwitch'
+import { holdForModel, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { SwitchIO } from './accountSwitch'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, SHAREABLE_FOLDERS, accountEnv, accountLine, cleanLabel, familyOf,
@@ -1044,6 +1044,28 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       console.log(`[accounts] agy moved to ${target.label}: ${moved.size} terminal${moved.size === 1 ? '' : 's'}`)
     }
     return outcome
+  })
+
+  // The model picker's half of the relaunch lock (§7.5, R7): while it types, MCP clients and the
+  // phone are refused and every write but the picker's own is dropped. Its line counts as the
+  // agent's start once typed, so a later switch relaunches the model it picked.
+  handle(ACCOUNTS_IPC.modelHold, (input): ModelHold => {
+    const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
+    if (!terminalId) throw new Error('which terminal?')
+    const line = typeof input.line === 'string' ? input.line.trim() : ''
+    if (!line) throw new Error('there is no command to run')
+    // A model change keeps the account: its line is never one that changes it.
+    if (changesAccountByHand(line)) throw new Error('a model change doesn\'t change the account')
+    const t = now()
+    const key = holdForModel(terminalId, t)
+    if (!key) throw new Error(MODEL_HELD)
+    ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > t), { line, until: t + OWN_LINE_MS }])
+    return { key }
+  })
+
+  handle(ACCOUNTS_IPC.modelRelease, (input) => {
+    if (typeof input.terminalId === 'string' && typeof input.key === 'string') releaseModelHold(input.terminalId, input.key)
+    return true
   })
 
   handle(ACCOUNTS_IPC.noteLimit, (input) => {

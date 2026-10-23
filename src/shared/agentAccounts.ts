@@ -166,6 +166,11 @@ export const ACCOUNTS_IPC = {
   switchProgress: 'accounts:switch-progress',
   /** One step of agy's guided switch (AgyStepRequest → AgyStepOutcome). */
   agySwitch: 'accounts:agy-switch',
+  /** The model picker's half of a terminal's relaunch lock (ModelHoldRequest → ModelHold, or null
+   *  while anything holds the terminal). */
+  modelHold: 'accounts:model-hold',
+  /** Lets the model picker's hold go ({ terminalId, key }). */
+  modelRelease: 'accounts:model-release',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────

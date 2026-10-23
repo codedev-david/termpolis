@@ -12,7 +12,8 @@
 //       --continue or resume --last.
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  ECHO_MS, EXIT_CONFIRM_MS, LOCK_MS, _resetSwitchLocksForTest, relaunchLockReason, runAccountSwitch,
+  ECHO_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, _resetSwitchLocksForTest, holdForModel, relaunchLockReason, releaseModelHold,
+  runAccountSwitch,
 } from '../../src/main/accountSwitch'
 import type { SwitchContext } from '../../src/main/accountSwitch'
 import type { SwitchOutcome, SwitchRequest } from '../../src/shared/accountSwitch'
@@ -431,5 +432,47 @@ describe('R7: the lock', () => {
       io: { ...t.io(), output: () => { throw 'odd' } }, target: B, agent: 'claude', newSessionId: () => NEW_ID, record: () => undefined,
     })
     expect(odd).toEqual({ kind: 'refused', why: 'odd' })
+  })
+
+  it('gives the model picker its own hold (§7.5): its keyed writes pass, nothing else does, and it lapses', () => {
+    const key = holdForModel('tM', 1000) as string
+    expect(key).toMatch(/^[0-9a-f-]{36}$/)
+    expect(relaunchLockReason('tM', 1000)).toBe('Termpolis is changing this agent\'s model; wait for system\'s next message')
+    expect(relaunchLockReason('tM', 1000, 'k-other')).toBe('Termpolis is changing this agent\'s model; wait for system\'s next message')
+    expect(relaunchLockReason('tM', 1000, key)).toBeNull()
+    // One hold at a time: a second pick, or a switch, while it holds.
+    expect(holdForModel('tM', 1001)).toBeNull()
+    // Another's key lets nothing go; its own does.
+    releaseModelHold('tM', 'k-other')
+    expect(relaunchLockReason('tM', 1002)).not.toBeNull()
+    releaseModelHold('tM', key)
+    expect(relaunchLockReason('tM', 1002)).toBeNull()
+    // Nothing held: nothing to let go.
+    expect(() => releaseModelHold('tM', key)).not.toThrow()
+    // A renderer that stops halfway leaves it held no longer than MODEL_HOLD_MS.
+    const again = holdForModel('tM', 2000) as string
+    expect(relaunchLockReason('tM', 2000 + MODEL_HOLD_MS - 1)).not.toBeNull()
+    expect(relaunchLockReason('tM', 2000 + MODEL_HOLD_MS)).toBeNull()
+    expect(holdForModel('tM', 2000 + MODEL_HOLD_MS)).not.toBe(again)
+  })
+
+  it('refuses the picker a terminal a switch holds, and a switch one the picker holds; no key opens a switch\'s', async () => {
+    const t = new FakeTerminal(claude({ relaunch: ['nothing'] }))
+    let pickerKey: string | null = 'unset'
+    let keyed: string | null = 'unset'
+    const io = t.io()
+    const p = runAccountSwitch({ terminalId: 'tS', targetId: 'acc_b', shellType: 'bash' }, {
+      io: { ...io, write: (id, d) => { pickerKey = holdForModel('tS', t.clock); keyed = relaunchLockReason('tS', t.clock, 'any'); io.write(id, d) } },
+      target: B, agent: 'claude', start: { at: t.launchedAt, commands: ['claude'] }, newSessionId: () => NEW_ID, record: () => undefined,
+    })
+    await p
+    expect(pickerKey).toBeNull()
+    expect(keyed).toBe('Termpolis is switching this agent\'s account; wait for system\'s next message')
+    const key = holdForModel('tS', t.clock) as string
+    const refused = await runAccountSwitch({ terminalId: 'tS', targetId: 'acc_b', shellType: 'bash' }, {
+      io: t.io(), target: B, agent: 'claude', newSessionId: () => NEW_ID, record: () => undefined,
+    })
+    expect(refused).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
+    releaseModelHold('tS', key)
   })
 })

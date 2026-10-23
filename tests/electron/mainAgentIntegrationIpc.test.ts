@@ -104,7 +104,7 @@ const H = vi.hoisted(() => {
     accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
     forgetTerminalAccount: vi.fn((_id: string) => undefined),
     noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
-    relaunchLockReason: vi.fn((_id: string): string | null => null),
+    relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
     getTerminalSize: vi.fn((_id: string): { cols: number; rows: number } | null => null),
     mcpHandlers: null as null | Record<string, (...a: any[]) => any>,
     getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
@@ -869,6 +869,24 @@ describe('Settings ▸ Accounts wiring', () => {
     // MCP asks main's lock for the terminal (mcpServer.ts refuses the call with its words).
     expect(H.mcpHandlers!.relaunchLock('t-held')).toBe('held')
     expect(H.mcpHandlers!.relaunchLock('t-free')).toBeNull()
+    H.relaunchLockReason.mockImplementation(() => null)
+  })
+
+  it('lets the model picker\'s own writes through its hold, by the key they carry (§7.5)', () => {
+    const write = (payload: Record<string, unknown>) => { for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-model', ...payload }) }
+    H.relaunchLockReason.mockImplementation((_id: string, _now?: number, key?: string) => (key === 'k-picker' ? null : 'held'))
+    mockWriteToTerminal.mockClear()
+    write({ data: 'typed meanwhile\r' })
+    expect(H.relaunchLockReason).toHaveBeenLastCalledWith('t-model', expect.any(Number), undefined)
+    write({ data: '/quit', key: 'k-other' })
+    // A key that is no string is none.
+    write({ data: 'x', key: 7 })
+    expect(H.relaunchLockReason).toHaveBeenLastCalledWith('t-model', expect.any(Number), undefined)
+    expect(mockWriteToTerminal).not.toHaveBeenCalled()
+    write({ data: '/quit', key: 'k-picker' })
+    // The key goes to the lock, never to the PTY.
+    expect(H.relaunchLockReason).toHaveBeenLastCalledWith('t-model', expect.any(Number), 'k-picker')
+    expect(mockWriteToTerminal.mock.calls).toEqual([['t-model', '/quit']])
     H.relaunchLockReason.mockImplementation(() => null)
   })
 

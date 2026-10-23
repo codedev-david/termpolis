@@ -208,8 +208,11 @@ describe('what every step refuses', () => {
     expect(await step(t, {}).p, 'shell').toBeDefined()
     expect(await runAgyStep({ terminalId: 't1', targetId: 'g2', shellType: 'fish', step: 'sign-out' }, { io: t.io(), env: {}, record: () => undefined }))
       .toEqual({ kind: 'refused', why: 'Termpolis can\'t type into this terminal\'s shell' })
-    locks.set('t1', t.clock + 1000)
-    expect(await step(t, { step: 'login' }).p).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
+    // Held by a switch, or by the model picker.
+    for (const kind of ['account', 'model'] as const) {
+      locks.set('t1', { until: t.clock + 1000, kind, key: 'k' })
+      expect(await step(t, { step: 'login' }).p).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
+    }
     locks.clear()
     const broken = await runAgyStep({ terminalId: 't1', targetId: 'g2', shellType: 'bash', step: 'resume' }, {
       io: { ...t.io(), output: () => { throw new Error('buffer gone') } }, env: {}, record: () => undefined,

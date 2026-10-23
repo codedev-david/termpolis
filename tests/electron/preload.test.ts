@@ -88,6 +88,14 @@ describe('preload: termpolis API', () => {
     expect(mockIpcRenderer.send).toHaveBeenCalledWith('terminal:write', { id: 'id1', data: 'ls\r' })
   })
 
+  it('writeToTerminal sends the model picker\'s hold key with its writes, and no key field without one', () => {
+    exposed.termpolis.writeToTerminal('id1', '/quit', 'k-picker')
+    expect(mockIpcRenderer.send).toHaveBeenLastCalledWith('terminal:write', { id: 'id1', data: '/quit', key: 'k-picker' })
+    exposed.termpolis.writeToTerminal('id1', 'x', '')
+    expect(mockIpcRenderer.send).toHaveBeenLastCalledWith('terminal:write', { id: 'id1', data: 'x' })
+    expect(Object.keys(mockIpcRenderer.send.mock.calls[mockIpcRenderer.send.mock.calls.length - 1][1])).toEqual(['id', 'data'])
+  })
+
   it('resizeTerminal sends terminal:resize', () => {
     exposed.termpolis.resizeTerminal('id1', 120, 40)
     expect(mockIpcRenderer.send).toHaveBeenCalledWith('terminal:resize', { id: 'id1', cols: 120, rows: 40 })
@@ -1098,6 +1106,8 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.launchAccount('codex', 'acc_1'), ACCOUNTS_IPC.launchAccount, { agent: 'codex', accountId: 'acc_1' }],
       [() => a.switchAccount({ terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }), ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }],
       [() => a.agySwitch({ terminalId: 't1', targetId: 'g1', shellType: 'bash', step: 'check', mark: 3 }), ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: 'g1', shellType: 'bash', step: 'check', mark: 3 }],
+      [() => a.modelHold({ terminalId: 't1', line: 'codex --model gpt-5.5 resume --last' }), ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'codex --model gpt-5.5 resume --last' }],
+      [() => a.modelRelease('t1', 'k1'), ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key: 'k1' }],
       [() => a.launchLine({ terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }), ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }],
     ]
     for (const [call, channel, payload] of cases) {

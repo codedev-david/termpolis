@@ -349,6 +349,21 @@ export type AgyStepOutcome =
   | { kind: 'unknown-exit' }
   | { kind: 'refused'; why: string }
 
+/** The model picker asks main for its half of the terminal's relaunch lock (§7.5), with the line
+ *  it relaunches the agent with, which main counts as the agent's start once it is typed. */
+export interface ModelHoldRequest {
+  terminalId: string
+  line: string
+}
+
+/** The hold: the key the picker's writes carry while main holds the terminal for it. */
+export interface ModelHold {
+  key: string
+}
+
+/** Why the model picker typed nothing: something holds the terminal already. */
+export const MODEL_HELD = 'an account switch or another model change is running in this terminal'
+
 /** main → renderer while a switch runs: which step it is at, for the dialog. */
 export interface SwitchProgress {
   terminalId: string

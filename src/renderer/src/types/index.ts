@@ -8,7 +8,7 @@ import type {
   PickFolderResult, ProfileAgent, RecopyView, SignInLineRequest, SignInLineResult, SignInProgress,
   TerminalAccountEvent,
 } from '../../../shared/agentAccounts'
-import type { AgyStepOutcome, AgyStepRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
+import type { AgyStepOutcome, AgyStepRequest, ModelHold, ModelHoldRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -347,7 +347,9 @@ export interface TermpolisAPI {
   /** Tell main which project the sidebar is showing so its automatic triggers arm. */
   watchWorkflowProject: (cwd: string) => Promise<IpcResponse<void>>
   onWorkflowRunEvent: (cb: (event: WorkflowRunEvent) => void) => () => void
-  writeToTerminal: (id: string, data: string) => void
+  /** `key`: the model picker's hold on the terminal (§7.5), which lets its own writes through
+   *  while main holds the terminal for it. */
+  writeToTerminal: (id: string, data: string, key?: string) => void
   resizeTerminal: (id: string, cols: number, rows: number) => void
   /** `end` is where the chunk ends in the terminal's output stream — absent for output main
    *  never buffered (a Strict-Mode banner). Comparable with readTerminalBuffer's `nextOffset`. */
@@ -1340,6 +1342,11 @@ export interface AccountsAPI {
   /** One step of agy's guided switch: one Google sign-in for the computer user, so a sign-out,
    *  the user's own sign-in, and the conversation resumed by its id. */
   agySwitch(req: AgyStepRequest): Promise<IpcResponse<AgyStepOutcome>>
+  /** The model picker's half of the terminal's relaunch lock in main (§7.5): the key its writes
+   *  carry while it relaunches the agent. Refused while anything holds the terminal. */
+  modelHold(req: ModelHoldRequest): Promise<IpcResponse<ModelHold>>
+  /** Lets the model picker's hold go. */
+  modelRelease(terminalId: string, key: string): Promise<IpcResponse<boolean>>
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

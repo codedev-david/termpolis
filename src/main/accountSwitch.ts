@@ -19,6 +19,7 @@
 //
 // Anything it can't confirm ends the switch with nothing more typed, and its outcome says so; the
 // dialog asks the user, and runs it again with their answer (assumeExited, stopBusy, fresh).
+import { randomUUID } from 'crypto'
 import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind } from '../shared/agentStatusDetector'
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
@@ -32,6 +33,9 @@ import { PROMPT_REPORT, drawn, sinceStarted } from './mcpServer'
 
 /** A switch holds its terminal at most this long, whatever happens. */
 export const LOCK_MS = 60_000
+/** The model picker's hold, at most: its keys take about 2 s, and a renderer that stops halfway
+ *  through them leaves the terminal held no longer than this. */
+export const MODEL_HOLD_MS = 10_000
 /** How often the screen is looked at while waiting. */
 export const POLL_MS = 250
 /** How long an exit gets to show (§7.2 step 4). */
@@ -97,18 +101,46 @@ export interface SwitchContext {
 
 // ── The lock ───────────────────────────────────────────────────────────────────────────
 
-/** The terminals a switch holds, each until when (LOCK_MS at most). */
-export const locks = new Map<string, number>()
+/** The terminals held, by a switch (LOCK_MS at most) or the model picker (MODEL_HOLD_MS). */
+export const locks = new Map<string, Hold>()
 
-/** Why nothing may be typed into the terminal now, or null. */
-export function relaunchLockReason(terminalId: string, now: number = Date.now()): string | null {
-  const until = locks.get(terminalId)
-  if (until === undefined) return null
-  if (until <= now) {
+/** What holds a terminal, until when: an account switch, which main types itself, or the model
+ *  picker, whose own writes carry the key it was given (§7.5). */
+export interface Hold {
+  until: number
+  kind: 'account' | 'model'
+  key?: string
+}
+
+const HELD_FOR: Readonly<Record<Hold['kind'], string>> = {
+  account: 'Termpolis is switching this agent\'s account; wait for system\'s next message',
+  model: 'Termpolis is changing this agent\'s model; wait for system\'s next message',
+}
+
+/** Why nothing may be typed into the terminal now, or null. A write carrying the model picker's
+ *  key is the picker's own, and passes. */
+export function relaunchLockReason(terminalId: string, now: number = Date.now(), key?: string): string | null {
+  const hold = locks.get(terminalId)
+  if (hold === undefined) return null
+  if (hold.until <= now) {
     locks.delete(terminalId)
     return null
   }
-  return 'Termpolis is switching this agent\'s account; wait for system\'s next message'
+  return key && key === hold.key ? null : HELD_FOR[hold.kind]
+}
+
+/** The model picker's hold on a terminal while it relaunches the agent there (§7.5): the key its
+ *  writes carry, or null while anything holds the terminal. */
+export function holdForModel(terminalId: string, now: number = Date.now()): string | null {
+  if (relaunchLockReason(terminalId, now)) return null
+  const key = randomUUID()
+  locks.set(terminalId, { until: now + MODEL_HOLD_MS, kind: 'model', key })
+  return key
+}
+
+/** Lets the model picker's hold go: its own, and no other. */
+export function releaseModelHold(terminalId: string, key: string): void {
+  if (locks.get(terminalId)?.key === key) locks.delete(terminalId)
 }
 
 export function _resetSwitchLocksForTest(): void {
@@ -348,7 +380,7 @@ export async function runAccountSwitch(req: SwitchRequest, ctx: SwitchContext): 
   // The line must be one Termpolis can type here before anything is done to the agent.
   const probe = accountLine(family, env, agent)
   if ('refused' in probe) return { kind: 'refused', why: probe.refused }
-  locks.set(id, io.now() + LOCK_MS)
+  locks.set(id, { until: io.now() + LOCK_MS, kind: 'account' })
   try {
     return await switchLocked(req, ctx, family)
   } catch (e) {

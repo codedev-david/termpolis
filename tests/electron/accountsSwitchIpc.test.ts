@@ -284,3 +284,42 @@ describe('accounts:agy-switch', () => {
     log.mockRestore()
   })
 })
+
+describe('accounts:model-hold and accounts:model-release (§7.5)', () => {
+  it('needs a terminal and a line, and never holds for a line that changes the account', async () => {
+    expect(await fails(ACCOUNTS_IPC.modelHold, { line: 'claude --model opus --continue' })).toBe('which terminal?')
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: '  ' })).toBe('there is no command to run')
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 7 })).toBe('there is no command to run')
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'export CLAUDE_CONFIG_DIR=/x && claude --model opus --continue' }))
+      .toBe('a model change doesn\'t change the account')
+    // Nothing was held by any of them.
+    expect((await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model opus --continue' })).key).toBeTruthy()
+  })
+
+  it('holds the terminal once, counts its line as the agent\'s start once typed, and lets go only for its key', async () => {
+    register({ outputEnd: () => 99 })
+    const { main, b } = await twoClaude()
+    noteTerminalAccount('t1', main)
+    noteAgentStart('t1', { at: 3, commands: ['claude --model haiku'] })
+    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: ' claude --model opus --continue ' })
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' }))
+      .toBe('an account switch or another model change is running in this terminal')
+    // A switch waits for it too, typing nothing.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    expect(await switchTo(b)).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
+    expect(term.writes).toEqual([])
+    log.mockRestore()
+    // The picker's line, as typed: the agent's start is now there, and it reads as Termpolis's own.
+    expect(noteTypedInput('t1', 'claude --model opus --continue\r', 43)).toBe('own')
+    expect(terminalAgentStart('t1')).toEqual({ at: 99, commands: ['claude --model opus --continue'] })
+    expect(terminalAccountId('t1')).toBe(main)
+    expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key: 'not-its-key' })).toBe(true)
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' })).toBe('an account switch or another model change is running in this terminal')
+    expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key })).toBe(true)
+    // Again, or with half a request: nothing to let go, and no error.
+    expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key })).toBe(true)
+    expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1' })).toBe(true)
+    expect(await ok(ACCOUNTS_IPC.modelRelease, { key })).toBe(true)
+    expect((await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' })).key).not.toBe(key)
+  })
+})

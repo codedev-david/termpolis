@@ -113,18 +113,21 @@ export function relaunchCommandFor(provider: ModelProvider | null, id: string, c
 }
 
 /**
- * How many Ctrl+D presses it takes to exit each agent's REPL.
+ * How many Ctrl+D presses it takes to exit each agent's REPL, after the Ctrl+C that idles it.
  *
  * Claude Code needs TWO (the first shows an exit-confirmation hint, the second within
- * its documented 800ms window exits). Codex and the Antigravity CLI exit on the first.
- * Getting this too LOW is the safe direction: the relaunch command then lands in the
- * still-running agent's input box, where it is visible and clearable. Too HIGH and the
- * surplus Ctrl+D reaches the SHELL after the agent exits and closes the terminal.
+ * its documented 800ms window exits). Getting this too LOW is the safe direction: the
+ * relaunch command then lands in the still-running agent's input box, where it is
+ * visible and clearable. Too HIGH and the surplus Ctrl+D reaches the SHELL after the
+ * agent exits and closes the terminal. Codex and the Antigravity CLI get NONE, and no
+ * Ctrl+C either (§7.5): Codex 0.153.4 already exits on that Ctrl+C, so even one Ctrl+D
+ * after it reached the shell, and agy's Ctrl+C stops it outright. Both are exited with
+ * their own command instead (modelRelaunch.ts).
  */
 export const EXIT_CONFIRMS: Record<ModelProvider, number> = {
   claude: 2,
-  codex: 1,
-  gemini: 1,
+  codex: 0,
+  gemini: 0,
 }
 
 /**

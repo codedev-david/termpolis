@@ -31,8 +31,8 @@ const api: TermpolisAPI = {
   watchWorkflowProject: (cwd) => ipcRenderer.invoke('workflow:watch-project', { cwd }),
   onWorkflowRunEvent: (cb) => { const h = (_: unknown, e: import('../renderer/src/types').WorkflowRunEvent) => cb(e); ipcRenderer.on('workflow:run-event', h); return () => ipcRenderer.removeListener('workflow:run-event', h) },
 
-  writeToTerminal: (id, data) =>
-    ipcRenderer.send('terminal:write', { id, data }),
+  writeToTerminal: (id, data, key) =>
+    ipcRenderer.send('terminal:write', key ? { id, data, key } : { id, data }),
 
   resizeTerminal: (id, cols, rows) =>
     ipcRenderer.send('terminal:resize', { id, cols, rows }),
@@ -650,6 +650,8 @@ const accounts: AccountsAPI = {
   launchLine: (req) => ipcRenderer.invoke('accounts:launch-line', req),
   switchAccount: (req) => ipcRenderer.invoke('accounts:switch', req),
   agySwitch: (req) => ipcRenderer.invoke('accounts:agy-switch', req),
+  modelHold: (req) => ipcRenderer.invoke('accounts:model-hold', req),
+  modelRelease: (terminalId, key) => ipcRenderer.invoke('accounts:model-release', { terminalId, key }),
   onSwitchProgress: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
     ipcRenderer.on('accounts:switch-progress', handler)

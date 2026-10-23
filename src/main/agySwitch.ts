@@ -71,7 +71,7 @@ function agyUp(io: SwitchIO, id: string, mark: number): 'sign-in' | 'box' | null
 /** Holds the terminal for a typing step, and lets it go after, whatever happens. */
 async function locked(io: SwitchIO, id: string, run: () => Promise<AgyStepOutcome>): Promise<AgyStepOutcome> {
   if (relaunchLockReason(id, io.now())) return { kind: 'refused', why: 'a switch is already running in this terminal' }
-  locks.set(id, io.now() + LOCK_MS)
+  locks.set(id, { until: io.now() + LOCK_MS, kind: 'account' })
   try {
     return await run()
   } catch (e) {

@@ -36,7 +36,7 @@ import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, 
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { modelSwitchCommand } from '../../lib/modelBroker'
-import { relaunchAgentWithModel } from '../../lib/modelRelaunch'
+import { modelHoldBridge, relaunchHeld } from '../../lib/modelRelaunch'
 import { modelOptionsFor, providerForAgent, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
 import { buildSecondOpinionMenu, parseSecondOpinion } from '../../lib/secondOpinion'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
@@ -520,7 +520,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // PTY as the in-flight sequence — e.g. sequence B's Ctrl+D arriving after sequence A
   // already exited Claude back to an empty shell prompt, where Ctrl+D exits the shell
   // itself. The heuristic /model hot-swap branch is a single synchronous write with no
-  // overlap window, so it needs no guard.
+  // overlap window, so it needs no guard. This pane's own picks; the terminal's relaunch
+  // lock (relaunchHeld) keeps out everything else that types into it, an account switch too.
   const [relaunchInFlight, setRelaunchInFlight] = useState(false)
   const voiceToggleRef = useRef<() => void>(() => {})
   const voiceStartRef = useRef<() => void>(() => {})
@@ -2104,16 +2105,27 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                     // relaunchInFlight's declaration for why.
                     if (relaunchInFlight) return
                     setRelaunchInFlight(true)
-                    void relaunchAgentWithModel(provider, alias, modelCatalog, {
-                      write: (data) => window.termpolis.writeToTerminal(terminalId, data),
+                    void relaunchHeld({
+                      terminalId,
+                      provider,
+                      modelId: alias,
+                      catalog: modelCatalog,
+                      begin: () => useTerminalStore.getState().beginRelaunch(terminalId, 'model'),
+                      end: () => useTerminalStore.getState().endRelaunch(terminalId),
+                      main: modelHoldBridge(),
+                      write: window.termpolis.writeToTerminal,
                       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+                    }).then((why) => {
+                      if (!why) return
+                      setLiveModel('')
+                      useTerminalStore.getState().setMemoryNotice(`⚠️ Termpolis didn't change the model: ${why}.`)
                     }).finally(() => setRelaunchInFlight(false))
                   } else if (provider === 'claude') {
                     const cmd = modelSwitchCommand(alias)
                     if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
                   }
                 }}
-                disabled={relaunchInFlight}
+                disabled={relaunchInFlight || !!relaunching}
                 title={`Switch this ${label} agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens).`}
                 className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-hidden disabled:opacity-60"
               >
