@@ -144,11 +144,6 @@ export const ACCOUNTS_IPC = {
   import: 'accounts:import',
   check: 'accounts:check',
   pickFolder: 'accounts:pick-folder',
-  signInLine: 'accounts:sign-in-line',
-  watchSignIn: 'accounts:watch-sign-in',
-  stopSignIn: 'accounts:stop-sign-in',
-  /** main → renderer: a sign-in's progress, { accountId, email, done }. */
-  signInProgress: 'accounts:sign-in-progress',
   /** A usage limit an account hit, as the chooser read it. */
   noteLimit: 'accounts:note-limit',
   /** "Mark available": forget an account's recorded limit. */
@@ -302,22 +297,7 @@ export interface ImportPreview {
   cooldownSec?: number
 }
 
-export interface SignInLineRequest {
-  accountId: string
-  shellType: string
-  method?: SignInMethod
-}
-
 export type SignInMethod = 'claudeai' | 'console' | 'sso' | 'browser' | 'device'
-
-export interface SignInLineResult {
-  line: string
-  /** Shown before typing: Termpolis terminals running on this profile, plus the reminder about
-   *  sessions outside Termpolis. */
-  warning: string
-  /** The sign-in terminal's name. */
-  name: string
-}
 
 /** What accounts:pick-folder answers: the folder the user picked in main's own dialog, for
  *  display only (main remembers the real path), and what Add would make of it. */
@@ -341,18 +321,6 @@ export interface AccountPatch {
   autoOffer?: boolean
   /** null clears it. */
   color?: string | null
-}
-
-/** main → renderer while a sign-in terminal runs: the profile's "last signed in as" email when
- *  it changed, and `done` once the watch ended. */
-export interface SignInProgress {
-  accountId: string
-  email: string | null
-  done: boolean
-  /** Once the sign-in command finished: what the agent's own status command said. */
-  identity?: AccountIdentity
-  /** Why that status command couldn't be asked. */
-  checkError?: string
 }
 
 /** A write into an agent's config, as agent integration reports it. */
@@ -426,11 +394,6 @@ export interface TerminalAccountEvent {
   byHand: boolean
   /** A swarm worker's agent, as run_command started it: a worker has no launch line of its own. */
   agent?: AccountAgent
-}
-
-/** A sign-in terminal's name: "Sign in · Claude Code · codedev". */
-export function signInTerminalName(agent: AccountAgent, label: string): string {
-  return `Sign in · ${ACCOUNT_AGENT_LABEL[agent]} · ${label}`
 }
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────────────
@@ -540,24 +503,11 @@ export function accountLine(family: ShellFamily, env: AccountEnv, command: strin
   return { line: [...parts, `call ${command}`].join(' && ') }
 }
 
-/** The CLI's own sign-in command for an account, with its email when that is plainly an address.
- *  The method is the agent's: claude.ai (the default), the Anthropic Console or SSO for Claude
- *  Code; the browser (the default) or a device code for Codex. Never `claude setup-token` or
- *  `codex login --with-api-key`, which would put a long-lived credential in Termpolis's hands. */
-export function signInCommand(agent: ProfileAgent, family: ShellFamily, method?: SignInMethod, email?: string): string {
-  if (agent === 'codex') return method === 'device' ? 'codex login --device-auth' : 'codex login'
-  const flag = method === 'console' ? '--console' : method === 'sso' ? '--sso' : '--claudeai'
-  let command = `claude auth login ${flag}`
-  // cmd would expand a %, which an address may hold, so it is left off there rather than quoted.
-  if (isPlainEmail(email) && !(family === 'cmd' && email.includes('%'))) {
-    const quoted = family === 'posix' ? shQuote(email) : family === 'powershell' ? psQuote(email) : `"${email}"`
-    command += ` --email ${quoted}`
-  }
-  return command
-}
-
 /** The CLI's own sign-in, as the hidden sign-in session runs it: arguments, never a shell line, so
- *  nothing in them is read by a shell. The same methods and the same email rule as signInCommand. */
+ *  nothing in them is read by a shell. The method is the agent's: claude.ai (the default), the
+ *  Anthropic Console or SSO for Claude Code; the browser (the default) or a device code for Codex.
+ *  The email goes on only when it is plainly an address. Never `claude setup-token` or `codex login
+ *  --with-api-key`, which would put a long-lived credential in Termpolis's hands. */
 export function signInArgs(agent: ProfileAgent, method?: SignInMethod, email?: string): string[] {
   if (agent === 'codex') return method === 'device' ? ['login', '--device-auth'] : ['login']
   const flag = method === 'console' ? '--console' : method === 'sso' ? '--sso' : '--claudeai'

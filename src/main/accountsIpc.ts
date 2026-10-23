@@ -24,21 +24,21 @@ import type { LiveStart } from './limitLook'
 import type { LimitLook } from '../shared/accountLimits'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, PROFILE_AGENTS, PROFILE_VARIABLE, SHAREABLE_FOLDERS, accountEnv, accountLine,
-  cleanLabel, familyOf, isPlainEmail, isProfileAgent, signInArgs, signInCommand, signInTerminalName, slugOf, tildifyPath,
+  cleanLabel, familyOf, isPlainEmail, isProfileAgent, signInArgs, slugOf, tildifyPath,
 } from '../shared/agentAccounts'
 import type {
   AccountAgent, AccountIdentity, AccountRowView, AccountsAdvice, AccountsView, AddAccountResult, AgentAccount,
-  ImportPreview, LaunchLineResult, ProfileAgent, RecopyView, SignInMethod, SignInProgress,
+  ImportPreview, LaunchLineResult, ProfileAgent, RecopyView, SignInMethod,
 } from '../shared/agentAccounts'
 import type { AgentIntegrationChange } from '../shared/agentIntegration'
-import { accountFs, readClaudeJsonFields } from './accountFs'
+import { accountFs } from './accountFs'
 import type { AccountFs } from './accountFs'
 import { claudeSignedInNow, codexSignedInNow, findOnPath, resolveCli, shimInvocation } from './accountIdentity'
 import type { CheckDeps, IdentityCheck } from './accountIdentity'
 import { copySources, createProfile, recopyProfile } from './accountProfiles'
 import {
   AccountsRefusal, accountProfileTargets, accountsShDrift, accountsShLines, activeLimit, checkProfileFolder,
-  claudeJsonOf, cleanLimit, comparisonKey, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected, isReachable,
+  claudeJsonOf, cleanLimit, comparisonKey, cooldownFor, defaultProfileDir, discoverShares, findAccount, isAccountConnected,
   lastSignedInAs, limitedMarker, liveProfileDir, loadAccounts, newAccountId, previewAccountsSh, profileDirOf,
   readAccountsSh, updateAccounts,
 } from './agentAccounts'
@@ -69,9 +69,6 @@ export interface AccountsIpcDeps {
   env?: Readonly<Record<string, string | undefined>>
   now?: () => number
   fsx?: AccountFs
-  /** Has the shell printed a prompt in this terminal's output since `offset` (its prompt report:
-   *  OSC 9;9 from PowerShell and cmd, OSC 7 from bash)? Tells a sign-in's command finished. */
-  promptSince?: (terminalId: string, offset: number) => boolean
   /** Where the terminal's output ends now (its buffer's next offset): where an agent a line
    *  started begins. */
   outputEnd?: (terminalId: string) => number
@@ -683,11 +680,6 @@ export function endAccountSignIns(): void {
 
 // ── Registration ───────────────────────────────────────────────────────────────────────
 
-/** A sign-in is watched for at most this long. */
-export const SIGN_IN_WATCH_MS = 10 * 60 * 1000
-/** How often the profile's .claude.json is stat'ed (never read) while a sign-in runs. */
-export const SIGN_IN_POLL_MS = 3000
-
 const SIGN_IN_METHODS: Readonly<Record<ProfileAgent, readonly SignInMethod[]>> = {
   claude: ['claudeai', 'console', 'sso'],
   codex: ['browser', 'device'],
@@ -730,7 +722,6 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   const stopTimer = deps.clearInterval ?? ((h: unknown) => clearInterval(h as ReturnType<typeof setInterval>))
   /** The folder the user picked last, per agent, waiting for Add. */
   const picked = new Map<AccountAgent, string>()
-  const watches = new Map<string, { timer: unknown; until: number; mtime: number | null; email: string | null }>()
   wiring.send = deps.send
   wiring.outputEnd = deps.outputEnd
   wiring.io = deps.switchIO
@@ -1160,100 +1151,6 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   handle(ACCOUNTS_IPC.signInInput, async (input) => {
     const sessionId = typeof input.sessionId === 'string' ? input.sessionId : ''
     return signInInput(sessionId, input as unknown as SignInInput)
-  })
-
-  handle(ACCOUNTS_IPC.signInLine, (input) => {
-    const a = accountOf(loadDoc(), input.accountId)
-    if (!isProfileAgent(a.agent)) throw new Error('the Antigravity CLI signs in on its own screen')
-    const family = familyOf(String(input.shellType ?? ''))
-    if (!family) throw new Error('Termpolis can\'t type a sign-in line into that shell')
-    const methods = SIGN_IN_METHODS[a.agent]
-    const method = methods.find((m) => m === input.method) ?? methods[0]
-    const line = accountLine(family, accountEnv(a, a.agent), signInCommand(a.agent, family, method, a.email))
-    if ('refused' in line) throw new Error(`Termpolis won't type that line: ${line.refused}`)
-    // Termpolis knows only its own terminals (it never lists processes), so the warning always
-    // names the sessions it can't see.
-    const n = terminalsOnAccount(a.id)
-    const outside = `any ${ACCOUNT_AGENT_LABEL[a.agent]} window outside Termpolis that uses this profile, including scheduled jobs`
-    const why = 'a session still running there can overwrite a new sign-in when it refreshes.'
-    const warning = n > 0
-      ? `Close the ${n} Termpolis terminal${n === 1 ? '' : 's'} running on ${a.label} first, and ${outside}: ${why}`
-      : `Close ${outside} first: ${why}`
-    return { line: line.line, warning, name: signInTerminalName(a.agent, a.label) }
-  })
-
-  handle(ACCOUNTS_IPC.watchSignIn, (input) => {
-    const a = accountOf(loadDoc(), input.accountId)
-    if (!isProfileAgent(a.agent)) return { watching: false }
-    const home = deps.paths().home
-    const claudeJson = claudeJsonOf(a, home)
-    const file = claudeJson && isReachable(claudeJson) ? claudeJson : null
-    // The sign-in terminal and its output's end before the line was typed: the shell's next
-    // prompt after it means the CLI's own sign-in command has finished, signed in or not.
-    const terminalId = typeof input.terminalId === 'string' && input.terminalId ? input.terminalId : null
-    const mark = typeof input.mark === 'number' && Number.isFinite(input.mark) && input.mark > 0 ? input.mark : 0
-    const prompted = terminalId && deps.promptSince ? (): boolean => (deps.promptSince as NonNullable<AccountsIpcDeps['promptSince']>)(terminalId, mark) : null
-    // Codex keeps nothing Termpolis may read until its sign-in is done: only its shell's prompt
-    // says when that is.
-    if (!file && !prompted) return { watching: false }
-    const existing = watches.get(a.id)
-    if (existing) stopTimer(existing.timer)
-    const mtimeOf = (): number | null => (file ? fsx.stat(file)?.mtimeMs ?? null : null)
-    const readEmail = (): string | null => {
-      if (!file) return null
-      const r = readClaudeJsonFields(file, ['oauthAccount.emailAddress'])
-      const e = r.kind === 'ok' ? r.values['oauthAccount.emailAddress'] : undefined
-      return isPlainEmail(e) ? e : null
-    }
-    const w = { timer: null as unknown, until: now() + SIGN_IN_WATCH_MS, mtime: mtimeOf(), email: readEmail() }
-    const end = (): void => {
-      stopTimer(w.timer)
-      watches.delete(a.id)
-    }
-    /** Once the command finished: "signed in now", asked once, and the watch's last word. */
-    const finish = async (): Promise<void> => {
-      const done: SignInProgress = { accountId: a.id, done: true, email: readEmail() }
-      try {
-        const { identity } = await checkNow(a)
-        done.identity = identity
-        if (identity.email) done.email = identity.email
-      } catch (e) {
-        done.checkError = message(e)
-      }
-      deps.send(ACCOUNTS_IPC.signInProgress, done)
-    }
-    w.timer = startTimer(() => {
-      if (now() > w.until) {
-        end()
-        deps.send(ACCOUNTS_IPC.signInProgress, { accountId: a.id, done: true, email: w.email })
-        return
-      }
-      if (prompted && prompted()) {
-        end()
-        void finish()
-        return
-      }
-      // A stat is not a read: the file is read, for its named field only, when it changed.
-      const m = mtimeOf()
-      if (m === w.mtime) return
-      w.mtime = m
-      const email = readEmail()
-      if (email === w.email) return
-      w.email = email
-      deps.send(ACCOUNTS_IPC.signInProgress, { accountId: a.id, done: false, email })
-    }, SIGN_IN_POLL_MS)
-    watches.set(a.id, w)
-    return { watching: true }
-  })
-
-  handle(ACCOUNTS_IPC.stopSignIn, (input) => {
-    const id = typeof input.accountId === 'string' ? input.accountId : ''
-    const w = watches.get(id)
-    if (w) {
-      stopTimer(w.timer)
-      watches.delete(id)
-    }
-    return { stopped: !!w }
   })
 
   // The account a launch of `agent` goes on, before its line is built: its folder trust and its

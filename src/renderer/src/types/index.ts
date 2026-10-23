@@ -5,7 +5,7 @@ import type {
 import type {
   AccountAgent, AccountChangesResult, AccountPatch, AccountRowView, AccountsView, AddAccountRequest,
   AddAccountResult, ImportPreview, ImportResult, LaunchLineRequest, LaunchLineResult, NoteLimitRequest,
-  PickFolderResult, ProfileAgent, RecopyView, SignInLineRequest, SignInLineResult, SignInProgress,
+  PickFolderResult, ProfileAgent, RecopyView, 
   TerminalAccountEvent,
 } from '../../../shared/agentAccounts'
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, ModelHoldRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
@@ -1324,15 +1324,9 @@ export interface AccountsAPI {
   import(keys: string[] | null, connect: Record<string, boolean>): Promise<IpcResponse<ImportResult>>
   /** "Signed in now": the agent's own status command, on demand. */
   check(id: string): Promise<IpcResponse<AccountRowView | undefined>>
-  signInLine(req: SignInLineRequest): Promise<IpcResponse<SignInLineResult>>
-  /** Watch a sign-in: the profile's email as it lands, and with the sign-in terminal and its
-   *  output's end before the line was typed, the shell's next prompt (the command finished). */
-  watchSignIn(accountId: string, terminalId?: string, mark?: number): Promise<IpcResponse<{ watching: boolean }>>
-  stopSignIn(accountId: string): Promise<IpcResponse<{ stopped: boolean }>>
   noteLimit(id: string, limit: NoteLimitRequest): Promise<IpcResponse<AccountRowView | undefined>>
   /** "Mark available": forget the account's recorded limit. */
   clearLimit(id: string): Promise<IpcResponse<AccountRowView | undefined>>
-  onSignInProgress(cb: (p: SignInProgress) => void): () => void
   /** The account a launch of `agent` goes on: `accountId` while it is registered, else the
    *  agent's preferred one; null for an agent with no accounts. */
   launchAccount(agent: AccountAgent, accountId?: string | null): Promise<IpcResponse<{ accountId: string | null }>>

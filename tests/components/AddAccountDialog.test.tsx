@@ -2,6 +2,7 @@ import React from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { AddAccountResult, AccountRowView } from '../../src/shared/agentAccounts'
+import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { AddAccountDialog, CONNECT_DATA_LINE } from '../../src/renderer/src/components/Accounts/AddAccountDialog'
 
 const HOME = 'C:\\Users\\me'
@@ -219,7 +220,9 @@ describe('AddAccountDialog: Codex and agy', () => {
     fireEvent.click(screen.getByTestId('add-account-submit'))
     await waitFor(() => expect(api.add).toHaveBeenCalledWith({ agent: 'agy', label: 'g', email: 'g@example.test', autoOffer: true }))
     const done = await screen.findByTestId('add-account-done')
-    expect(done).not.toHaveTextContent('Sign in, in its row')
+    // agy's one sign-in is its switch's: no sign-in of its own here.
+    expect(done).not.toHaveTextContent('signs in by itself')
+    expect(screen.queryByTestId('add-account-sign-in')).toBeNull()
   })
 })
 
@@ -249,7 +252,7 @@ describe('AddAccountDialog: what was made', () => {
     expect(screen.getByTestId('add-account-copied')).toHaveTextContent('settings.json, CLAUDE.md')
     expect(screen.getByTestId('add-account-left-out')).toHaveTextContent('env, apiKeyHelper')
     expect(screen.getByTestId('add-account-changes')).toHaveTextContent('skipped Tool permissions: EACCES')
-    expect(done).toHaveTextContent('Sign in, in its row')
+    expect(done).toHaveTextContent('Each account signs in by itself, in your browser.')
     fireEvent.click(screen.getByTestId('add-account-copy-lines'))
     await waitFor(() => expect((window as any).termpolis.clipboardWriteText).toHaveBeenCalledWith('ACCOUNTS=(personal work)   # add work\n  [work]=""   # in ACCOUNT_EMAIL'))
     expect(await screen.findByText('Copied')).toBeInTheDocument()
@@ -277,5 +280,18 @@ describe('AddAccountDialog: what was made', () => {
     fireEvent.click(screen.getByTestId('add-account-cancel'))
     expect(onClose).toHaveBeenCalled()
     expect(api.add).not.toHaveBeenCalled()
+  })
+})
+
+describe('AddAccountDialog: signing the new account in', () => {
+  it('opens the sign-in sheet for it from its last step, and closes the dialog', async () => {
+    bridge({ add: vi.fn(async () => ({ success: true, data: result() })) })
+    useTerminalStore.setState({ signInSheet: null })
+    const { onClose } = renderDialog()
+    type('add-account-label', 'work')
+    fireEvent.click(screen.getByTestId('add-account-submit'))
+    fireEvent.click(await screen.findByTestId('add-account-sign-in'))
+    expect(onClose).toHaveBeenCalled()
+    expect(useTerminalStore.getState().signInSheet).toEqual({ accountId: result().account.id })
   })
 })

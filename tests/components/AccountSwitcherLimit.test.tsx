@@ -173,7 +173,8 @@ describe('AccountSwitcherDialog in limit mode', () => {
     expect(screen.getByTestId('account-switcher-unknown-sign-in')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Back'))
     fireEvent.click(screen.getByTestId('limit-sign-in'))
-    expect(req).toHaveBeenCalledWith('accounts', false)
+    expect(req).not.toHaveBeenCalled()
+    expect(useTerminalStore.getState().signInSheet).toEqual({ accountId: 'acc_b' })
     expect(useTerminalStore.getState().accountSwitch).toBeNull()
   })
 

@@ -1,9 +1,8 @@
 // Settings ▸ Accounts, the renderer's pure half: what a row says about its account, and the
 // little decisions the tab makes. Main sends the rows (src/main/accountsIpc.ts); nothing here
 // reads a file or builds a path or an env value.
-import { familyOf, isProfileAgent, tildifyPath } from '../../../shared/agentAccounts'
+import { isProfileAgent, tildifyPath } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView } from '../../../shared/agentAccounts'
-import type { ShellType } from '../types'
 
 /** Each agent's colour, as its terminal tab and badge show it: an account with no colour of its own. */
 export const AGENT_COLOR: Readonly<Record<AccountAgent, string>> = { claude: '#D97706', codex: '#10B981', agy: '#4285F4' }
@@ -89,12 +88,4 @@ export function agentOfName(name: string): AccountAgent | null {
   if (/claude/i.test(name)) return 'claude'
   if (/codex/i.test(name)) return 'codex'
   return /gemini|antigravity|\bagy\b/i.test(name) ? 'agy' : null
-}
-
-/** The shell a sign-in terminal opens in: the user's default when Termpolis can type an account
- *  line into it, else another installed one, PowerShell first; null when there is none. */
-export function signInShell(defaultShell: ShellType, available: readonly ShellType[]): ShellType | null {
-  if (available.includes(defaultShell) && familyOf(defaultShell)) return defaultShell
-  const order: ShellType[] = ['powershell', 'gitbash', 'bash', 'zsh', 'cmd']
-  return order.find((s) => available.includes(s)) ?? null
 }

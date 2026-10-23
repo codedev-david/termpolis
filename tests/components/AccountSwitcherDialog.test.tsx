@@ -156,14 +156,15 @@ describe('AccountSwitcherDialog', () => {
     expect(screen.getByTestId('account-switcher-error')).toHaveTextContent('Termpolis couldn\'t open the terminal: No shell available')
   })
 
-  it('sends a signed-out target to its sign-in in Settings ▸ Accounts', async () => {
+  it('sends a signed-out target to the sign-in sheet', async () => {
     accounts.check.mockResolvedValueOnce(signedIn(B, false))
     render(<AccountSwitcherDialog />)
     openFor()
     await act(async () => { fireEvent.click(screen.getAllByTestId('account-switcher-switch')[0]) })
     expect(screen.getByTestId('account-switcher-signed-out')).toHaveTextContent('codedev is signed out')
     fireEvent.click(screen.getByText('Sign in to codedev…'))
-    expect(useTerminalStore.getState().showSettings).toBe(true)
+    // The sign-in sheet, not Settings: the dialog makes way for it.
+    expect(useTerminalStore.getState().signInSheet).toEqual({ accountId: B.id })
     expect(screen.queryByTestId('account-switcher')).toBeNull()
     expect(accounts.switchAccount).not.toHaveBeenCalled()
   })

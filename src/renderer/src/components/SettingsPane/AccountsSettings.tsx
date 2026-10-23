@@ -1,19 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import { v4 as uuid } from 'uuid'
 import { ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, isProfileAgent, tildifyPath } from '../../../../shared/agentAccounts'
-import type {
-  AccountAgent, AccountChange, AccountRowView, AccountsView, ImportPreview, SignInLineResult, SignInMethod, SignInProgress,
-  ProfileAgent,
-} from '../../../../shared/agentAccounts'
+import type { AccountAgent, AccountChange, AccountRowView, AccountsView, ImportPreview } from '../../../../shared/agentAccounts'
 import { useTerminalStore } from '../../store/terminalStore'
-import type { ShellType } from '../../types'
-import { AGENT_COLOR, accountBadge, accountsOf, folderLine, signInShell } from '../../lib/accountsView'
+import { AGENT_COLOR, accountBadge, accountsOf, folderLine } from '../../lib/accountsView'
 import type { BadgeTone } from '../../lib/accountsView'
-import { startSignIn } from '../../lib/accountSignIn'
-import type { SignInIO } from '../../lib/accountSignIn'
-import { PROMPT_ECHO_CEILING_MS, SHELL_QUIET_MS, SHELL_READY_CEILING_MS, waitForShellReady } from '../../lib/launchSequence'
-import { testDelay } from '../../lib/testAgents'
-import { getTerminalDefaults } from '../../lib/terminalDefaults'
+import { signedInEmail } from '../../lib/accountChip'
 import { AddAccountDialog, CONNECT_DATA_LINE } from '../Accounts/AddAccountDialog'
 import { ActiveTerminalAccount } from '../Accounts/ActiveTerminalAccount'
 
@@ -32,20 +23,6 @@ const TONE: Record<BadgeTone, string> = {
   muted: 'text-[#9ca3af]',
 }
 
-type MethodChoice = { id: SignInMethod; label: string; hint?: string }
-
-const SIGN_IN_METHODS: Record<ProfileAgent, MethodChoice[]> = {
-  claude: [
-    { id: 'claudeai', label: 'Claude account (claude.ai)' },
-    { id: 'console', label: 'Anthropic Console' },
-    { id: 'sso', label: 'Single sign-on (SSO)' },
-  ],
-  codex: [
-    { id: 'browser', label: 'In the browser' },
-    { id: 'device', label: 'With a device code', hint: 'use this if the browser can\'t reach this computer' },
-  ],
-}
-
 /** The check a StopFailure hook needs to stand down inside Termpolis (design §8.6). */
 export const HOOK_CHECK = 'if [ "${TERMPOLIS_LIMIT_CHOOSER:-}" = "1" ]; then exit 0; fi'
 
@@ -57,15 +34,6 @@ function errorText(e: unknown): string {
 
 /** What a row is doing right now: one action at a time per tab. */
 type RowAction = { id: string; kind: 'edit' | 'remove' | 'recopy' }
-
-interface SignInState {
-  row: AccountRowView
-  methods: MethodChoice[]
-  method: SignInMethod
-  /** The line main built for the shell the terminal opens in: null until it is built. */
-  ready: { prep: SignInLineResult; shell: ShellType } | null
-  error: string | null
-}
 
 function Changes({ changes }: { changes: AccountChange[] }) {
   if (changes.length === 0) return <span className="text-xs text-[#9ca3af]" data-testid="accounts-changes">Nothing needed to change.</span>
@@ -87,12 +55,11 @@ export function AccountsSettings() {
   const [rowAction, setRowAction] = useState<RowAction | null>(null)
   const [edit, setEdit] = useState<{ label: string; email: string }>({ label: '', email: '' })
   const [importing, setImporting] = useState<{ preview: ImportPreview; keys: string[]; connect: Record<string, boolean> } | null>(null)
-  const [signIn, setSignIn] = useState<SignInState | null>(null)
-  const [shells, setShells] = useState<ShellType[]>([])
   const [copiedCheck, setCopiedCheck] = useState(false)
   // Settings a re-copy left out, by name: shown with the changes it made.
   const [leftOut, setLeftOut] = useState<string[]>([])
-  const defaultShell = useTerminalStore((s) => s.defaultShell)
+  // A sign-in the sheet finished, or a switch: main's view as the store has it now.
+  const storeView = useTerminalStore((s) => s.accountsView)
 
   const load = useCallback(async () => {
     if (!api) return
@@ -113,22 +80,7 @@ export function AccountsSettings() {
 
   useEffect(() => { void load() }, [load])
 
-  useEffect(() => {
-    let alive = true
-    window.termpolis.getAvailableShells().then((res) => {
-      if (alive && res.success) setShells(res.data.map((s) => s.type))
-    }).catch(() => undefined)
-    return () => { alive = false }
-  }, [])
-
-  // A sign-in's progress: a new email in the profile as it lands, then the agent's own answer.
-  useEffect(() => {
-    if (!api) return undefined
-    return api.onSignInProgress((p: SignInProgress) => {
-      if (p.done) void load()
-      else setView((v) => v && { ...v, accounts: v.accounts.map((r) => (r.id === p.accountId ? { ...r, lastEmail: p.email } : r)) })
-    })
-  }, [api, load])
+  useEffect(() => { if (storeView) setView(storeView) }, [storeView])
 
   /** One action at a time: every button is disabled until it settles, and the view is re-read. */
   const act = async (action: () => Promise<AccountChange[] | void>) => {
@@ -178,50 +130,6 @@ export function AccountsSettings() {
 
   const now = Date.now()
 
-  const openSignIn = async (row: AccountRowView, methods: MethodChoice[], method: SignInMethod) => {
-    const shell = signInShell(defaultShell, shells)
-    const state: SignInState = { row, methods, method, ready: null, error: null }
-    if (!shell) {
-      setSignIn({ ...state, error: 'There is no shell Termpolis can type a sign-in into.' })
-      return
-    }
-    try {
-      setSignIn({ ...state, ready: { prep: must(await api.signInLine({ accountId: row.id, shellType: shell, method })), shell } })
-    } catch (e) {
-      setSignIn({ ...state, error: errorText(e) })
-    }
-  }
-
-  const runSignIn = async (s: SignInState, ready: NonNullable<SignInState['ready']>) => {
-    const io: SignInIO = {
-      newId: () => uuid(),
-      createTerminal: (id, shellType, cwd) => window.termpolis.createTerminal(id, shellType, cwd),
-      addTerminal: (t) => useTerminalStore.getState().addTerminal(t),
-      waitShellReady: async (terminalId, phase) => {
-        await waitForShellReady({
-          terminalId,
-          subscribe: (cb) => window.termpolis.onTerminalData(cb),
-          quietMs: testDelay(SHELL_QUIET_MS),
-          ceilingMs: testDelay(phase === 'ready' ? SHELL_READY_CEILING_MS : PROMPT_ECHO_CEILING_MS),
-        })
-      },
-      write: (terminalId, data) => { window.termpolis.writeToTerminal(terminalId, data) },
-      outputEnd: async (terminalId) => {
-        try {
-          const r = await window.termpolis.readTerminalBuffer(terminalId)
-          return r.success ? r.data.nextOffset : null
-        } catch {
-          return null
-        }
-      },
-      watch: (accountId, terminalId, mark) => api.watchSignIn(accountId, terminalId, mark),
-      terminalDefaults: () => getTerminalDefaults(),
-    }
-    const r = await startSignIn({ accountId: s.row.id, line: ready.prep.line, name: ready.prep.name, shellType: ready.shell, home: view.home, color: AGENT_COLOR[s.row.agent] }, io)
-    if ('error' in r) setSignIn({ ...s, error: `Couldn't open the sign-in terminal: ${r.error}` })
-    else setSignIn(null)
-  }
-
   const openImport = () => act(async () => {
     const preview = must(await api.importPreview())
     const keys = preview.rows.filter((r) => !r.registered).map((r) => r.key)
@@ -247,16 +155,15 @@ export function AccountsSettings() {
 
   const rowButtons = (r: AccountRowView, list: AccountRowView[], i: number) => {
     const profile = isProfileAgent(r.agent)
-    const methods = isProfileAgent(r.agent) ? SIGN_IN_METHODS[r.agent] : null
     const editing = rowAction?.id === r.id && rowAction.kind === 'edit'
     const removing = rowAction?.id === r.id && rowAction.kind === 'remove'
     return (
       <div className="flex flex-wrap items-center gap-1.5">
         <button className={BUTTON} disabled={busy || i === 0} aria-label={`Move ${r.label} up`} onClick={() => { void act(async () => { must(await api.move(r.id, -1)) }) }} data-testid={`account-up-${r.id}`}>↑</button>
         <button className={BUTTON} disabled={busy || i === list.length - 1} aria-label={`Move ${r.label} down`} onClick={() => { void act(async () => { must(await api.move(r.id, 1)) }) }} data-testid={`account-down-${r.id}`}>↓</button>
-        {methods && r.folderExists && (
+        {profile && r.folderExists && (
           <>
-            <button className={BUTTON} disabled={busy} onClick={() => { void openSignIn(r, methods, methods[0].id) }} data-testid={`account-sign-in-${r.id}`}>Sign in</button>
+            <button className={BUTTON} disabled={busy} onClick={() => useTerminalStore.getState().openSignInSheet(r.id)} data-testid={`account-sign-in-${r.id}`}>{signedInEmail(r) ? 'Sign in again' : 'Sign in'}</button>
             <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.check(r.id)) }) }} data-testid={`account-check-${r.id}`}>Check</button>
           </>
         )}
@@ -344,39 +251,6 @@ export function AccountsSettings() {
         )}
         {rowButtons(r, list, i)}
         {rowPanel(r)}
-      </div>
-    )
-  }
-
-  const signInPanel = (s: SignInState) => {
-    const ready = s.ready
-    return (
-      <div className="flex flex-col gap-2 p-3 border border-[#3c3c3c] rounded bg-[#252526]" data-testid="account-sign-in-panel">
-        <span className="text-sm font-medium">Sign in to {s.row.label}</span>
-        <fieldset className="flex flex-col gap-1 text-xs">
-          {s.methods.map((m) => (
-            <label key={m.id} className="flex items-center gap-2">
-              <input type="radio" name="sign-in-method" checked={s.method === m.id} onChange={() => { void openSignIn(s.row, s.methods, m.id) }} data-testid={`account-sign-in-method-${m.id}`} />
-              {m.label}{m.hint ? <span className="text-[#9ca3af]">: {m.hint}</span> : null}
-            </label>
-          ))}
-        </fieldset>
-        {ready && (
-          <>
-            <span className="text-xs text-[#e5c07b]" data-testid="account-sign-in-warning">{ready.prep.warning}</span>
-            <span className="text-xs text-[#9ca3af]">
-              Termpolis opens a terminal and types this; the agent opens your browser and keeps its own sign-in. Termpolis answers none of its screens.
-            </span>
-            <code className="text-[11px] text-[#bbb] break-all" data-testid="account-sign-in-line">{ready.prep.line}</code>
-          </>
-        )}
-        {s.error && <span className="text-xs text-[#e06c75]" role="alert" data-testid="account-sign-in-error">{s.error}</span>}
-        <div className="flex items-center gap-2">
-          {ready
-            ? <button className={BUTTON} onClick={() => { void runSignIn(s, ready) }} data-testid="account-sign-in-go">Open the sign-in terminal</button>
-            : <button className={BUTTON} disabled data-testid="account-sign-in-go">Open the sign-in terminal</button>}
-          <button className={BUTTON} onClick={() => setSignIn(null)} data-testid="account-sign-in-cancel">Cancel</button>
-        </div>
       </div>
     )
   }
@@ -531,7 +405,6 @@ export function AccountsSettings() {
         </div>
       )}
 
-      {signIn && signInPanel(signIn)}
       {changes !== null && <Changes changes={changes} />}
       {leftOut.length > 0 && <span className="text-xs text-[#e5c07b]" data-testid="accounts-left-out">Left out of the copy (they can hold a key or a token): {leftOut.join(', ')}</span>}
       {error !== null && <p className="text-xs text-[#e06c75]" role="alert" data-testid="accounts-error">{error}</p>}

@@ -826,27 +826,12 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(mockOpenExternal).toHaveBeenCalledWith('https://claude.com/cai/oauth/authorize?x=1')
   })
 
-  it('sends a sign-in\'s progress to the window, and runs the status checks in a folder of its own', () => {
-    deps().send('accounts:sign-in-progress', { accountId: 'acc_bbbbbbbbbbbb', done: false, email: null })
-    expect(mockWebContents.send).toHaveBeenCalledWith('accounts:sign-in-progress', { accountId: 'acc_bbbbbbbbbbbb', done: false, email: null })
+  it('sends a sign-in\'s state to the window, and runs the status checks in a folder of its own', () => {
+    deps().send('accounts:sign-in-state', { sessionId: 's1', accountId: 'acc_bbbbbbbbbbbb', agent: 'claude', phase: { kind: 'starting' } })
+    expect(mockWebContents.send).toHaveBeenCalledWith('accounts:sign-in-state', { sessionId: 's1', accountId: 'acc_bbbbbbbbbbbb', agent: 'claude', phase: { kind: 'starting' } })
     const dir = join(H.userData, 'account-checks')
     expect(deps().checkCwd()).toBe(dir)
     expect(H.mkdirSync).toHaveBeenCalledWith(dir, { recursive: true })
-  })
-
-  it('tells a sign-in\'s command finished by a prompt report in the terminal\'s output after the mark', async () => {
-    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
-    await invoke('terminal:create', { id: 't-sign', shellType: 'powershell', cwd: '/scratch/home' })
-    const onData = mockSpawnTerminal.mock.calls[0][3] as (d: string) => void
-    onData('PS C:\\> claude auth login --claudeai\r\nOpening the browser...\r\n')
-    const mark = 'PS C:\\> claude auth login --claudeai\r\n'.length
-    expect(deps().promptSince('t-sign', mark)).toBe(false)
-    // PowerShell's prompt reports its folder (OSC 9;9) when the command is done.
-    onData('Login successful.\r\n\x1b]9;9;C:\\Users\\me\x07PS C:\\Users\\me> ')
-    expect(deps().promptSince('t-sign', mark)).toBe(true)
-    // Nothing after the report: no prompt since there.
-    expect(deps().promptSince('t-sign', 10_000)).toBe(false)
-    expect(deps().promptSince('t-unknown', 0)).toBe(false)
   })
 
   it('tells where a terminal\'s output ends now, for where an agent a launch line starts begins', async () => {

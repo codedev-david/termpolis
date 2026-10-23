@@ -223,6 +223,12 @@ function deps(): AccountsIpcDeps {
       timers.set(id, fn)
       return id
     },
+    // The hidden sign-in session's PTY: no process, only the words a CLI prints when it is done.
+    signInSpawn: () => {
+      let onData: (d: string) => void = () => undefined
+      setTimeout(() => onData('Login successful\r\nSuccessfully logged in\r\n'), 0)
+      return { pid: 0, write: () => undefined, kill: () => undefined, onData: (cb: (d: string) => void) => { onData = cb }, onExit: () => undefined }
+    },
     clearInterval: (h) => { timers.delete(h as number) },
   }
 }
@@ -389,14 +395,14 @@ describe('the live tripwire (D11)', () => {
     // never started.
     await answered(ACCOUNTS_IPC.check, { id: codedev.id })
     await answered(ACCOUNTS_IPC.check, { id: codex.account.id })
-    // A sign-in, watched while it runs.
-    await ok(ACCOUNTS_IPC.signInLine, { accountId: made.account.id, shellType: 'powershell' })
-    await ok(ACCOUNTS_IPC.watchSignIn, { accountId: made.account.id })
-    writeJson(join(made.account.profile as string, '.claude.json'), { oauthAccount: { emailAddress: 's@example.test' } })
-    realFs.utimesSync(join(made.account.profile as string, '.claude.json'), new Date(), new Date(Date.now() + 5000))
-    for (const fn of [...timers.values()]) fn()
-    await ok(ACCOUNTS_IPC.stopSignIn, { accountId: made.account.id })
-    await answered(ACCOUNTS_IPC.watchSignIn, { accountId: codex.account.id })
+    // A sign-in, in the hidden session: each CLI found on PATH, started behind a PTY that runs no
+    // process and says it signed in, then asked by its status command, never started either.
+    for (const a of [made.account, codex.account]) {
+      const { sessionId } = await ok<{ sessionId: string }>(ACCOUNTS_IPC.signInStart, { accountId: a.id })
+      for (const fn of [...timers.values()]) fn()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await answered(ACCOUNTS_IPC.signInInput, { sessionId, kind: 'cancel' })
+    }
 
     // Agent integration over every connected profile, then Disconnect and the uninstaller's.
     const rt = { ...sb.rt, hookShell: 'sh' as const, profiles: connectedProfileTargets(sb.paths) }

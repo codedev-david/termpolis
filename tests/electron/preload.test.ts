@@ -1098,9 +1098,6 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.importPreview(), ACCOUNTS_IPC.importPreview, undefined],
       [() => a.import(['work'], { work: true }), ACCOUNTS_IPC.import, { keys: ['work'], connect: { work: true } }],
       [() => a.check('acc_1'), ACCOUNTS_IPC.check, { id: 'acc_1' }],
-      [() => a.signInLine({ accountId: 'acc_1', shellType: 'gitbash', method: 'device' }), ACCOUNTS_IPC.signInLine, { accountId: 'acc_1', shellType: 'gitbash', method: 'device' }],
-      [() => a.watchSignIn('acc_1', 't-sign', 120), ACCOUNTS_IPC.watchSignIn, { accountId: 'acc_1', terminalId: 't-sign', mark: 120 }],
-      [() => a.stopSignIn('acc_1'), ACCOUNTS_IPC.stopSignIn, { accountId: 'acc_1' }],
       [() => a.noteLimit('acc_1', { text: 'You\'ve hit your session limit', resetsAt: 5 }), ACCOUNTS_IPC.noteLimit, { id: 'acc_1', text: 'You\'ve hit your session limit', resetsAt: 5 }],
       [() => a.clearLimit('acc_1'), ACCOUNTS_IPC.clearLimit, { id: 'acc_1' }],
       [() => a.launchAccount('codex', 'acc_1'), ACCOUNTS_IPC.launchAccount, { agent: 'codex', accountId: 'acc_1' }],
@@ -1122,7 +1119,7 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
     // Every invoke channel main registers has its bridge method; signInProgress and terminalAccount
     // are main → renderer.
     const invoked = new Set(cases.map((c) => c[1]))
-    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.signInProgress, ACCOUNTS_IPC.terminalAccount, ACCOUNTS_IPC.switchProgress, ACCOUNTS_IPC.signInState])
+    expect(Object.values(ACCOUNTS_IPC).filter((ch) => !invoked.has(ch))).toEqual([ACCOUNTS_IPC.terminalAccount, ACCOUNTS_IPC.switchProgress, ACCOUNTS_IPC.signInState])
   })
 
   it('passes a sign-in session\'s state to the subscriber, and unsubscribes', async () => {
@@ -1160,18 +1157,6 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       // Exactly these keys: no accountId key at all when none was given.
       if (expected.length > 1) expect(Object.keys(mockIpcRenderer.invoke.mock.calls[0][1] as object)).toEqual(Object.keys(expected[1] as object))
     }
-  })
-
-  it('passes a sign-in\'s progress to the subscriber, and unsubscribes', async () => {
-    const { ACCOUNTS_IPC } = await import('../../src/shared/agentAccounts')
-    const cb = vi.fn()
-    const off = exposed.accounts.onSignInProgress(cb)
-    const [channel, handler] = mockIpcRenderer.on.mock.calls[0]
-    expect(channel).toBe(ACCOUNTS_IPC.signInProgress)
-    handler({}, { accountId: 'acc_1', email: 'b@example.test', done: false })
-    expect(cb).toHaveBeenCalledWith({ accountId: 'acc_1', email: 'b@example.test', done: false })
-    off()
-    expect(mockIpcRenderer.removeListener).toHaveBeenCalledWith(ACCOUNTS_IPC.signInProgress, handler)
   })
 
   it("passes a switch's progress to the subscriber, and unsubscribes", async () => {

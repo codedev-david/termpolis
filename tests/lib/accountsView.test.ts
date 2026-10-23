@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 import {
-  accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, hasAccounts, signInShell,
+  accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, hasAccounts,
 } from '../../src/renderer/src/lib/accountsView'
 
 const HOME = 'C:\\Users\\me'
@@ -112,23 +112,6 @@ describe('agentOfCommand: which account agent a terminal runs', () => {
   })
 })
 
-describe('signInShell: the shell a sign-in terminal opens in', () => {
-  it('takes the user\'s default shell when Termpolis can type an account line into it', () => {
-    expect(signInShell('powershell', ['powershell', 'cmd'])).toBe('powershell')
-    expect(signInShell('gitbash', ['gitbash', 'powershell'])).toBe('gitbash')
-    expect(signInShell('zsh', ['zsh'])).toBe('zsh')
-  })
-
-  it('falls back to another installed shell, PowerShell first, and to none', () => {
-    // The default shell isn't installed any more (a saved setting from another machine).
-    expect(signInShell('zsh', ['cmd', 'powershell'])).toBe('powershell')
-    expect(signInShell('gitbash', ['bash'])).toBe('bash')
-    expect(signInShell('powershell', ['cmd'])).toBe('cmd')
-    expect(signInShell('powershell', [])).toBe(null)
-  })
-})
-
-// §9, T11: a swarm worker has no agentCommand; main names its agent from run_command's line.
 describe('agentOfTerminal: the agent a terminal runs, as Termpolis knows it', () => {
   it('reads the command it launched, a swarm worker\'s recorded agent, and never the conductor\'s', () => {
     expect(agentOfTerminal({ agentCommand: 'codex -m x' })).toBe('codex')

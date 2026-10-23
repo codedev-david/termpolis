@@ -1014,3 +1014,16 @@ describe('the usage-limit chooser and its banners (§8.4)', () => {
     expect(st().swarmRestarts.map((g) => g.id)).toEqual(['g2'])
   })
 })
+
+describe('the sign-in sheet', () => {
+  it('opens for an account, with what to do once it signed in, and closes', () => {
+    const st = useTerminalStore.getState
+    st().openSignInSheet('acc_b')
+    expect(st().signInSheet).toEqual({ accountId: 'acc_b' })
+    const then = vi.fn()
+    st().openSignInSheet('acc_c', then)
+    expect(st().signInSheet).toEqual({ accountId: 'acc_c', then })
+    st().closeSignInSheet()
+    expect(st().signInSheet).toBeNull()
+  })
+})

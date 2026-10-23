@@ -298,6 +298,12 @@ export function AccountSwitcherDialog() {
     close()
   }
 
+  /** The sign-in sheet, for an account that is signed out: the dialog makes way for it. */
+  const signIn = (target: AccountRowView): void => {
+    close()
+    useTerminalStore.getState().openSignInSheet(target.id)
+  }
+
   const row = (t: SwitchTarget) => (
     <div key={t.account.id} className="flex items-center gap-2 py-1 border-b border-[#2d2d2d]" data-testid="account-switcher-row">
       <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: t.account.color ?? AGENT_COLOR[agent] }} />
@@ -336,7 +342,7 @@ export function AccountSwitcherDialog() {
         {way && fromWork && <button type="button" className={PRIMARY} onClick={() => { void newTerminal(t.row) }} data-testid="limit-new">New terminal</button>}
         {way && <button type="button" className={fromWork ? BUTTON : PRIMARY} onClick={() => { void start(t.row, false, known?.kind === 'signed-in' ? known : undefined) }} data-testid="limit-switch">Switch here</button>}
         {way && !fromWork && <button type="button" className={BUTTON} onClick={() => { void newTerminal(t.row) }} data-testid="limit-new">New terminal</button>}
-        {t.state === 'signed-out' && <button type="button" className={BUTTON} onClick={openSettings} data-testid="limit-sign-in">Sign in…</button>}
+        {t.state === 'signed-out' && <button type="button" className={BUTTON} onClick={() => signIn(t.row)} data-testid="limit-sign-in">Sign in…</button>}
       </div>
     )
   }
@@ -397,7 +403,7 @@ export function AccountSwitcherDialog() {
         <div data-testid="account-switcher-signed-out" className="flex flex-col gap-2">
           <p>{phase.target.label} is signed out: {name} would start on its sign-in screen there. Sign in to it first.</p>
           <div className="flex gap-2">
-            <button type="button" className={PRIMARY} onClick={openSettings}>Sign in to {phase.target.label}…</button>
+            <button type="button" className={PRIMARY} onClick={() => signIn(phase.target)} data-testid="account-switcher-sign-in">Sign in to {phase.target.label}…</button>
             <button type="button" className={BUTTON} onClick={() => setPhase({ kind: 'pick' })}>Back</button>
           </div>
         </div>

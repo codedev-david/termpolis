@@ -171,6 +171,9 @@ interface TerminalStore {
    *  prompt pollers answer nothing in them. 'sign-in': agy's switch waits for the user to sign in
    *  there, so the pane takes keys, and the pollers still answer nothing. */
   relaunching: Record<string, 'account' | 'model' | 'sign-in'>
+  /** The sign-in sheet, open for an account (the in-app account UI, §2.3). `then` runs once it
+   *  signed in: a switch that needed the sign-in goes on. */
+  signInSheet: { accountId: string; then?: () => void } | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -233,6 +236,8 @@ interface TerminalStore {
   /** Takes the terminal's relaunch lock: false when a relaunch already holds it. */
   beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
   endRelaunch: (terminalId: string) => void
+  openSignInSheet: (accountId: string, then?: () => void) => void
+  closeSignInSheet: () => void
 }
 
 export const useTerminalStore = create<TerminalStore>((set) => ({
@@ -269,6 +274,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   limitBanners: [],
   swarmRestarts: [],
   relaunching: {},
+  signInSheet: null,
 
   addTerminal: (t) => set(s => {
     const visibleCount = s.terminals.filter(t => !t.hidden).length
@@ -540,6 +546,8 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     set(s => ({ relaunching: { ...s.relaunching, [terminalId]: kind } }))
     return true
   },
+  openSignInSheet: (accountId, then) => set({ signInSheet: then ? { accountId, then } : { accountId } }),
+  closeSignInSheet: () => set({ signInSheet: null }),
   endRelaunch: (terminalId) => set(s => {
     const next = { ...s.relaunching }
     delete next[terminalId]

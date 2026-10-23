@@ -636,16 +636,8 @@ const accounts: AccountsAPI = {
   importPreview: () => ipcRenderer.invoke('accounts:import-preview'),
   import: (keys, connect) => ipcRenderer.invoke('accounts:import', { keys, connect }),
   check: (id) => ipcRenderer.invoke('accounts:check', { id }),
-  signInLine: (req) => ipcRenderer.invoke('accounts:sign-in-line', req),
-  watchSignIn: (accountId, terminalId, mark) => ipcRenderer.invoke('accounts:watch-sign-in', { accountId, terminalId, mark }),
-  stopSignIn: (accountId) => ipcRenderer.invoke('accounts:stop-sign-in', { accountId }),
   noteLimit: (id, limit) => ipcRenderer.invoke('accounts:note-limit', { id, ...limit }),
   clearLimit: (id) => ipcRenderer.invoke('accounts:clear-limit', { id }),
-  onSignInProgress: (cb) => {
-    const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
-    ipcRenderer.on('accounts:sign-in-progress', handler)
-    return () => ipcRenderer.removeListener('accounts:sign-in-progress', handler)
-  },
   launchAccount: (agent, accountId) => ipcRenderer.invoke('accounts:launch-account', { agent, accountId }),
   launchLine: (req) => ipcRenderer.invoke('accounts:launch-line', req),
   switchAccount: (req) => ipcRenderer.invoke('accounts:switch', req),

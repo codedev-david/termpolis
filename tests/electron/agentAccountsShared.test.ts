@@ -6,7 +6,7 @@ import { tmpdir } from 'os'
 import { delimiter, dirname, join } from 'path'
 import {
   ACCOUNT_AGENTS, ACCOUNTS_IPC, PROFILE_AGENTS, PROFILE_VARIABLE, SHAREABLE_FOLDERS, accountEnv, accountLine,
-  cleanLabel, familyOf, hasControlChars, isPlainEmail, isProfileAgent, signInCommand, slugOf, tildifyPath,
+  cleanLabel, familyOf, hasControlChars, isPlainEmail, isProfileAgent, signInArgs, slugOf, tildifyPath,
 } from '../../src/shared/agentAccounts'
 import type { AccountEnv, ShellFamily } from '../../src/shared/agentAccounts'
 
@@ -185,33 +185,28 @@ describe('accountLine: the exact fail-closed forms (R1)', () => {
   })
 })
 
-describe('signInCommand', () => {
-  it("is the CLI's own sign-in, claude.ai by default, with the email when it is plainly an address", () => {
-    expect(signInCommand('claude', 'posix')).toBe('claude auth login --claudeai')
-    expect(signInCommand('claude', 'posix', 'claudeai', 'me@example.test')).toBe("claude auth login --claudeai --email 'me@example.test'")
-    expect(signInCommand('claude', 'powershell', 'console', 'me@example.test')).toBe("claude auth login --console --email 'me@example.test'")
-    expect(signInCommand('claude', 'cmd', 'sso', 'me@example.test')).toBe('claude auth login --sso --email "me@example.test"')
+describe('signInArgs', () => {
+  it("is the CLI's own sign-in as arguments, claude.ai by default, with the email when it is plainly an address", () => {
+    expect(signInArgs('claude')).toEqual(['auth', 'login', '--claudeai'])
+    expect(signInArgs('claude', 'claudeai', 'me@example.test')).toEqual(['auth', 'login', '--claudeai', '--email', 'me@example.test'])
+    expect(signInArgs('claude', 'console', 'me@example.test')).toEqual(['auth', 'login', '--console', '--email', 'me@example.test'])
+    expect(signInArgs('claude', 'sso')).toEqual(['auth', 'login', '--sso'])
+    // An email that isn't plainly an address is left off: no shell reads these, but the CLI does.
+    expect(signInArgs('claude', undefined, "x'; id; '@a.bc")).toEqual(['auth', 'login', '--claudeai'])
+    expect(signInArgs('claude', undefined, 'a%b@c.de')).toEqual(['auth', 'login', '--claudeai', '--email', 'a%b@c.de'])
   })
 
-  it('leaves the email off when it is not plainly one, and off for cmd when it holds a %', () => {
-    expect(signInCommand('claude', 'posix', undefined, "x'; id; '@a.bc")).toBe('claude auth login --claudeai')
-    expect(signInCommand('claude', 'cmd', undefined, 'a%b@c.de')).toBe('claude auth login --claudeai')
-    expect(signInCommand('claude', 'posix', undefined, 'a%b@c.de')).toBe("claude auth login --claudeai --email 'a%b@c.de'")
-  })
-
-  it('is codex login, or its device code, and never a key or token flow', () => {
-    expect(signInCommand('codex', 'posix')).toBe('codex login')
-    expect(signInCommand('codex', 'cmd', 'browser', 'x@y.zz')).toBe('codex login')
-    expect(signInCommand('codex', 'powershell', 'device')).toBe('codex login --device-auth')
+  it('is codex login, with --device-auth for a device code, and never a credential flag', () => {
+    expect(signInArgs('codex')).toEqual(['login'])
+    expect(signInArgs('codex', 'browser', 'x@y.zz')).toEqual(['login'])
+    expect(signInArgs('codex', 'device')).toEqual(['login', '--device-auth'])
     for (const m of ['claudeai', 'console', 'sso', 'browser', 'device'] as const) {
       for (const a of ['claude', 'codex'] as const) {
-        const c = signInCommand(a, 'posix', m, 'x@y.zz')
-        expect(c).not.toMatch(/setup-token|with-api-key|with-access-token/)
+        expect(signInArgs(a, m, 'x@y.zz').join(' ')).not.toMatch(/setup-token|with-api-key|with-access-token/)
       }
     }
   })
 })
-
 describe('tildifyPath', () => {
   it('writes the home folder as ~, case-insensitively on Windows', () => {
     expect(tildifyPath('C:\\Users\\Me\\.claude-x', 'C:\\Users\\me')).toBe('~\\.claude-x')

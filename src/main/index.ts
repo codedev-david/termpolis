@@ -175,7 +175,7 @@ import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
 import { appendCommand, searchHistory, flushHistorySync } from './historyStore'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
-import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, PROMPT_REPORT, type McpToolHandlers } from './mcpServer'
+import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
 import { randomUUID } from 'node:crypto'
 import { detectAgentStatus } from '../shared/agentStatusDetector'
 import { makeTerminalRunner, makeAgentRunner, makeToolInvoker, realTimer } from './workflow/adapters'
@@ -2913,8 +2913,6 @@ registerAccountsIpc(ipcMain, {
   send: (channel, payload) => { mainWindow?.webContents.send(channel, payload) },
   // The sign-in sheet's Open again: a provider's sign-in page, checked in main (signInSession.ts).
   openExternal: (url) => { void shell.openExternal(url) },
-  // A sign-in's command has finished once its shell prints a prompt again (its report).
-  promptSince: (terminalId, offset) => readOutputFrom(terminalOutputBuffers, terminalId, offset).output.search(PROMPT_REPORT) >= 0,
   outputEnd: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
   // A switch reads and types through these, beside the buffers (accountSwitch.ts).
   switchIO: {

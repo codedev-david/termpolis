@@ -1,7 +1,7 @@
 import React from 'react'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import type { AccountRowView, AccountsView, SignInProgress } from '../../src/shared/agentAccounts'
+import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import { AccountsSettings, HOOK_CHECK } from '../../src/renderer/src/components/SettingsPane/AccountsSettings'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
@@ -26,10 +26,7 @@ function view(over: Partial<AccountsView> = {}): AccountsView {
   }
 }
 
-type Progress = (p: SignInProgress) => void
-
 function bridge(initial: AccountsView = view(), over: Record<string, unknown> = {}) {
-  let progress: Progress = () => undefined
   const ok = <T,>(data: T) => ({ success: true, data })
   const accounts = {
     list: vi.fn(async () => ok(initial)),
@@ -47,12 +44,8 @@ function bridge(initial: AccountsView = view(), over: Record<string, unknown> = 
     importPreview: vi.fn(),
     import: vi.fn(),
     check: vi.fn(async () => ok(B)),
-    signInLine: vi.fn(async (req: { method?: string }) => ok({ line: `export CLAUDE_CONFIG_DIR='x' && claude auth login --${req.method}`, warning: 'Close any Claude Code window outside Termpolis first.', name: 'Sign in · Claude Code · codedev' })),
-    watchSignIn: vi.fn(async () => ok({ watching: true })),
-    stopSignIn: vi.fn(),
     noteLimit: vi.fn(),
     clearLimit: vi.fn(async () => ok(B)),
-    onSignInProgress: vi.fn((cb: Progress) => { progress = cb; return () => { progress = () => undefined } }),
     ...over,
   }
   ;(window as any).accounts = accounts
@@ -71,7 +64,7 @@ function bridge(initial: AccountsView = view(), over: Record<string, unknown> = 
     readTerminalBuffer: vi.fn(async () => ok({ output: '', length: 0, nextOffset: 77 })),
   }
   ;(window as any).termpolis = termpolis
-  return { accounts, termpolis, progress: (p: SignInProgress) => progress(p) }
+  return { accounts, termpolis }
 }
 
 async function renderLoaded() {
@@ -80,7 +73,7 @@ async function renderLoaded() {
 }
 
 beforeEach(() => {
-  useTerminalStore.setState({ defaultShell: 'powershell', terminals: [], activeTerminalId: null })
+  useTerminalStore.setState({ defaultShell: 'powershell', terminals: [], activeTerminalId: null, accountsView: null, signInSheet: null })
 })
 
 afterEach(() => {
@@ -476,122 +469,31 @@ describe('AccountsSettings: the notices', () => {
   })
 })
 
-describe('AccountsSettings: signing in (R29)', () => {
-  it('builds the line for the user\'s shell, shows the warning, then opens a terminal and types it', async () => {
-    const { accounts, termpolis } = bridge()
-    await renderLoaded()
-    await waitFor(() => expect(termpolis.getAvailableShells).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId(`account-sign-in-${B.id}`))
-    const panel = await screen.findByTestId('account-sign-in-panel')
-    await waitFor(() => expect(accounts.signInLine).toHaveBeenCalledWith({ accountId: B.id, shellType: 'powershell', method: 'claudeai' }))
-    expect(await within(panel).findByTestId('account-sign-in-warning')).toHaveTextContent('outside Termpolis')
-    // Another method rebuilds the line.
-    fireEvent.click(screen.getByTestId('account-sign-in-method-console'))
-    await waitFor(() => expect(screen.getByTestId('account-sign-in-line')).toHaveTextContent('--console'))
-    fireEvent.click(screen.getByTestId('account-sign-in-go'))
-    await waitFor(() => expect(accounts.watchSignIn).toHaveBeenCalled())
-    const id = termpolis.createTerminal.mock.calls[0][0]
-    expect(termpolis.createTerminal).toHaveBeenCalledWith(id, 'powershell', HOME)
-    expect(termpolis.writeToTerminal).toHaveBeenLastCalledWith(id, 'export CLAUDE_CONFIG_DIR=\'x\' && claude auth login --console\r')
-    expect(accounts.watchSignIn).toHaveBeenCalledWith(B.id, id, 77)
-    const t = useTerminalStore.getState().terminals.find((x) => x.id === id)
-    expect(t).toMatchObject({ name: 'Sign in · Claude Code · codedev', cwd: HOME, shellType: 'powershell', color: '#D97706' })
-    expect(t?.agentCommand).toBeUndefined()
-  })
-
-  it('offers Codex its device-code sign-in', async () => {
-    const cx = row({ id: 'acc_00000000000f', agent: 'codex', label: 'cx' })
-    const { accounts } = bridge(view({ accounts: [cx] }))
-    await renderLoaded()
-    await waitFor(() => expect((window as any).termpolis.getAvailableShells).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId(`account-sign-in-${cx.id}`))
-    await screen.findByTestId('account-sign-in-panel')
-    expect(screen.getByTestId('account-sign-in-panel')).toHaveTextContent('use this if the browser can\'t reach this computer')
-    fireEvent.click(screen.getByTestId('account-sign-in-method-device'))
-    await waitFor(() => expect(accounts.signInLine).toHaveBeenLastCalledWith({ accountId: cx.id, shellType: 'powershell', method: 'device' }))
-  })
-
-  it('says why a sign-in can\'t start: no shell, a line main won\'t build, a shell that won\'t open', async () => {
-    const { termpolis, accounts } = bridge()
-    termpolis.getAvailableShells.mockResolvedValueOnce({ success: true, data: [] })
-    useTerminalStore.setState({ defaultShell: 'zsh' })
-    await renderLoaded()
-    await waitFor(() => expect(termpolis.getAvailableShells).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId(`account-sign-in-${B.id}`))
-    expect(await screen.findByTestId('account-sign-in-error')).toHaveTextContent('no shell Termpolis can type a sign-in into')
-    expect((screen.getByTestId('account-sign-in-go') as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.click(screen.getByTestId('account-sign-in-cancel'))
-    expect(screen.queryByTestId('account-sign-in-panel')).toBeNull()
-    expect(accounts.signInLine).not.toHaveBeenCalled()
-  })
-
-  it('reports a refused line and a terminal that won\'t open', async () => {
-    const { termpolis, accounts } = bridge()
-    accounts.signInLine.mockResolvedValueOnce({ success: false, error: 'Termpolis won\'t type that line: cmd would expand a % or ! in the line' })
-    await renderLoaded()
-    await waitFor(() => expect(termpolis.getAvailableShells).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId(`account-sign-in-${B.id}`))
-    expect(await screen.findByTestId('account-sign-in-error')).toHaveTextContent('cmd would expand')
-    termpolis.createTerminal.mockResolvedValueOnce({ success: false, error: 'No shell available' })
-    fireEvent.click(screen.getByTestId('account-sign-in-method-sso'))
-    await screen.findByTestId('account-sign-in-warning')
-    fireEvent.click(screen.getByTestId('account-sign-in-go'))
-    expect(await screen.findByTestId('account-sign-in-error')).toHaveTextContent('Couldn\'t open the sign-in terminal: No shell available')
-    expect(termpolis.writeToTerminal).not.toHaveBeenCalled()
-  })
-
-  it('marks from the start when the terminal\'s output can\'t be read', async () => {
-    const { termpolis, accounts } = bridge()
-    termpolis.readTerminalBuffer.mockResolvedValueOnce({ success: false, error: 'no buffer' })
-    await renderLoaded()
-    await waitFor(() => expect(termpolis.getAvailableShells).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId(`account-sign-in-${B.id}`))
-    await screen.findByTestId('account-sign-in-warning')
-    fireEvent.click(screen.getByTestId('account-sign-in-go'))
-    await waitFor(() => expect(accounts.watchSignIn).toHaveBeenCalledWith(B.id, expect.any(String), 0))
-    termpolis.readTerminalBuffer.mockRejectedValueOnce(new Error('gone'))
-    fireEvent.click(screen.getByTestId(`account-sign-in-${B.id}`))
-    await screen.findByTestId('account-sign-in-warning')
-    fireEvent.click(screen.getByTestId('account-sign-in-go'))
-    await waitFor(() => expect(accounts.watchSignIn).toHaveBeenCalledTimes(2))
-    expect(accounts.watchSignIn.mock.calls[1][2]).toBe(0)
-  })
-
-  it('shows the profile\'s new email as it lands, and re-reads the accounts when the sign-in is done', async () => {
-    const { accounts, progress } = bridge()
-    await renderLoaded()
-    act(() => progress({ accountId: B.id, email: 'c@example.test', done: false }))
-    expect(screen.getByTestId(`account-badge-${B.id}`)).toHaveTextContent('signed in to c@example.test instead!')
-    expect(accounts.list).toHaveBeenCalledTimes(1)
-    await act(async () => progress({ accountId: B.id, email: 'b@example.test', done: true }))
-    expect(accounts.list).toHaveBeenCalledTimes(2)
-  })
-
-  it('ignores a shell list it can\'t read, or that main refused', async () => {
-    const { termpolis } = bridge()
-    termpolis.getAvailableShells.mockRejectedValueOnce(new Error('gone'))
+describe('AccountsSettings: signing in', () => {
+  it('opens the sign-in sheet for the account, never a terminal: Sign in, or Sign in again once it has one', async () => {
+    const { termpolis } = bridge(view({ accounts: [MAIN, row({ lastEmail: null })] }))
     await renderLoaded()
     fireEvent.click(screen.getByTestId(`account-sign-in-${B.id}`))
-    expect(await screen.findByTestId('account-sign-in-error')).toHaveTextContent('no shell')
+    expect(screen.getByTestId(`account-sign-in-${B.id}`).textContent).toBe('Sign in')
+    expect(useTerminalStore.getState().signInSheet).toEqual({ accountId: B.id })
+    expect(screen.getByTestId(`account-sign-in-${MAIN.id}`).textContent).toBe('Sign in again')
+    expect(termpolis.createTerminal).not.toHaveBeenCalled()
   })
 
-  it('keeps no shells from a list main answered with an error', async () => {
-    const { termpolis } = bridge()
-    termpolis.getAvailableShells.mockResolvedValueOnce({ success: false, error: 'detect failed' } as never)
+  it('offers no sign-in for an agy label, whose one sign-in its switch moves', async () => {
+    const g = row({ id: 'acc_00000000000g', agent: 'agy', label: 'google', profile: null, folder: null, isDefault: false, connection: null, shares: [], lastEmail: null })
+    bridge(view({ accounts: [MAIN, B, g] }))
     await renderLoaded()
-    await waitFor(() => expect(termpolis.getAvailableShells).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId(`account-sign-in-${B.id}`))
-    expect(await screen.findByTestId('account-sign-in-error')).toHaveTextContent('no shell')
+    expect(screen.queryByTestId(`account-sign-in-${g.id}`)).toBeNull()
   })
 
-  it('drops a shell list that arrives after the tab closed', async () => {
-    const { termpolis } = bridge()
-    let answer!: (v: unknown) => void
-    termpolis.getAvailableShells.mockImplementationOnce(() => new Promise((r) => { answer = r }) as never)
-    const { unmount } = render(<AccountsSettings />)
-    await screen.findByTestId('accounts-card-claude')
-    unmount()
-    await act(async () => { answer({ success: true, data: [{ type: 'powershell', name: 'PowerShell', executable: 'p' }] }) })
-    expect(termpolis.getAvailableShells).toHaveBeenCalledTimes(1)
+  it('shows the accounts as a sign-in left them, without reading them again', async () => {
+    const { accounts } = bridge()
+    await renderLoaded()
+    const calls = accounts.list.mock.calls.length
+    act(() => useTerminalStore.getState().setAccountsView(view({ accounts: [MAIN, row({ label: 'renamed' })] })))
+    // The row and the New terminals launch on list both name it.
+    expect((await screen.findAllByText('renamed')).length).toBeGreaterThan(0)
+    expect(accounts.list.mock.calls.length).toBe(calls)
   })
 })

@@ -5,6 +5,7 @@ import {
 import type { AccountAgent, AddAccountResult, PickFolderResult, ProfileAgent } from '../../../../shared/agentAccounts'
 import type { AccountsAPI } from '../../types'
 import { AGENT_INTEGRATION_WRITES, PRIMER_HOOK_DESCRIPTION } from '../../../../shared/agentIntegration'
+import { useTerminalStore } from '../../store/terminalStore'
 
 // Settings ▸ Accounts ▸ Add account (design §4.2). For Claude Code and Codex an account is a
 // profile folder: a new one Termpolis makes (`~/.claude-<slug>`, shared subfolders linked, a
@@ -118,7 +119,12 @@ export function AddAccountDialog({ api, agent, home, integrationConnected, onClo
             {result.changes.map((c, i) => <li key={i}>{c.action} {c.what}{c.error ? `: ${c.error}` : ''}</li>)}
           </ul>
         )}
-        {profileAgent && <span className="text-xs text-[#9ca3af]">Next: Sign in, in its row. Each account signs in by itself.</span>}
+        {profileAgent && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-[#9ca3af]">Each account signs in by itself, in your browser.</span>
+            <button className={PRIMARY} onClick={() => { onClose(); useTerminalStore.getState().openSignInSheet(result.account.id) }} data-testid="add-account-sign-in">Sign in to {result.account.label}</button>
+          </div>
+        )}
         {result.accountsShLines && (
           <div className="flex flex-col gap-1" data-testid="add-account-accounts-sh">
             <span className="text-xs text-[#d4d4d4]">
