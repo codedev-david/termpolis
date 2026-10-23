@@ -7,6 +7,7 @@ import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
 import { screenOf, type ScreenSize } from '../shared/terminalScreen'
+import { RELAUNCH_HELD } from '../shared/accountSwitch'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -1098,13 +1099,30 @@ export function submitToTerminal(
   abandoned?: AbortSignal,
 ): Promise<SubmitResult> {
   const before = submitQueues.get(terminalId) ?? Promise.resolve()
-  const result = before.then(() => submitNow(handlers, terminalId, text, clock, abandoned))
+  const result = before.then(() => submitNow(heldOff(handlers), terminalId, text, clock, abandoned))
   const done = result.then(() => undefined, () => undefined)
   submitQueues.set(terminalId, done)
   void done.then(() => {
     if (submitQueues.get(terminalId) === done) submitQueues.delete(terminalId)
   })
   return result
+}
+
+/** The handlers a submit types through: once a relaunch takes the terminal (an account switch, a
+ *  swarm worker's restart: R7), no key of the submit's reaches it, and the call ends with the lock's
+ *  words. A submit waits up to minutes for the agent, and the lock is taken in between: what it typed
+ *  then would sit on the shell's line for the switch's Enter to run, or reach the agent started there. */
+function heldOff(handlers: McpToolHandlers): McpToolHandlers {
+  const locked = handlers.relaunchLock
+  if (!locked) return handlers
+  return {
+    ...handlers,
+    writeToTerminal: (terminalId, text) => {
+      const why = locked(terminalId)
+      if (why) throw new Error(why)
+      handlers.writeToTerminal(terminalId, text)
+    },
+  }
 }
 
 async function submitNow(handlers: McpToolHandlers, terminalId: string, text: string, clock: SubmitClock, abandoned?: AbortSignal): Promise<SubmitResult> {
@@ -1493,11 +1511,13 @@ export async function executeTool(
 
 /** A thrown tool error as it may be repeated: our own argument and unknown-tool messages, LOCKED
  *  memory's refusal (fixed text that tells the agent to stop and send the user to the Memory panel),
+ *  a relaunch lock's (fixed text that tells the conductor to wait for system's next message, R7),
  *  and a generic line for anything else, which can carry internals (a path, a connection string). */
 function safeToolMessage(e: unknown): string {
   const message = (e as { message?: unknown } | null | undefined)?.message
   return typeof message === 'string' &&
-    (message.includes('Unknown tool') || message.includes('Invalid') || message.startsWith('Memory is locked ('))
+    (message.includes('Unknown tool') || message.includes('Invalid') || message.startsWith('Memory is locked (') ||
+      (Object.values(RELAUNCH_HELD) as string[]).includes(message))
     ? message
     : 'Tool execution failed'
 }

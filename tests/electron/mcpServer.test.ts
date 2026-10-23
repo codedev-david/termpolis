@@ -15,6 +15,7 @@ const {
   executeTool,
   executeToolForWorkflow,
 } = await import('../../src/main/mcpServer')
+const { RELAUNCH_HELD } = await import('../../src/shared/accountSwitch')
 
 const LINKED_OFF = { error: 'Linked machines is off. Turn it on under Settings ▸ Linked machines.' }
 
@@ -687,6 +688,34 @@ describe('MCP HTTP server', () => {
     const body = JSON.parse(res.body)
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toContain('Unknown tool')
+  })
+
+  // R7, §9: the conductor must learn to wait. Masked as "Tool execution failed", it retried, or
+  // closed a worker Termpolis was restarting on another account.
+  it.each(Object.values(RELAUNCH_HELD))('tools/call on a terminal a relaunch holds answers with the lock\'s own words: %s', async (words) => {
+    ;(handlers as any).relaunchLock = vi.fn((id: string) => (id === 'held' ? words : null))
+    try {
+      for (const [name, args] of [['write_to_terminal', { terminalId: 'held', text: 'go', submit: true }], ['run_command', { terminalId: 'held', command: 'claude' }]] as const) {
+        const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/call', params: { name, arguments: args }, id: 201 })
+        const body = JSON.parse(res.body)
+        expect(body.result.isError).toBe(true)
+        expect(body.result.content[0].text).toBe(`Error: ${words}`)
+      }
+      expect(handlers.writeToTerminal).not.toHaveBeenCalled()
+      expect(handlers.runCommand).not.toHaveBeenCalled()
+    } finally {
+      delete (handlers as any).relaunchLock
+    }
+  })
+
+  it('still masks any other thrown message, such as one that names a path', async () => {
+    ;(handlers as any).relaunchLock = vi.fn(() => 'Termpolis is switching C:\\secret\\path')
+    try {
+      const res = await jsonRpcRequest(port, token, { jsonrpc: '2.0', method: 'tools/call', params: { name: 'run_command', arguments: { terminalId: 't', command: 'ls' } }, id: 202 })
+      expect(JSON.parse(res.body).result.content[0].text).toBe('Error: Tool execution failed')
+    } finally {
+      delete (handlers as any).relaunchLock
+    }
   })
 
   // --- Payload size limit ---

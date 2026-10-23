@@ -63,6 +63,9 @@ export interface TermScript {
   foreground?: boolean
   /** What the agent printed as it exited reaches the output this long after it is gone. */
   exitOutputLateMs?: number
+  /** The line that started the agent, when not the one a launch types: a swarm worker's, as
+   *  run_command typed it. */
+  launch?: string
 }
 
 /** The conversation id a later exit of agy names: a new, empty one, never the first. */
@@ -117,7 +120,7 @@ export class FakeTerminal {
   launchedAt: number
 
   launchLine(): string {
-    return { claude: `claude --model opus --session-id ${ID}`, codex: 'codex -m gpt-5.6-sol', agy: 'agy' }[this.s.agent]
+    return this.s.launch ?? { claude: `claude --model opus --session-id ${ID}`, codex: 'codex -m gpt-5.6-sol', agy: 'agy' }[this.s.agent]
   }
 
   prompt(family: Family = this.s.family): string {

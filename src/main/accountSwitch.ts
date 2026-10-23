@@ -23,10 +23,10 @@ import { randomUUID } from 'crypto'
 import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind } from '../shared/agentStatusDetector'
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
-  ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, LINE_CLEAR, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carriedFlags, exitHintOf,
+  ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carriedFlags, exitHintOf,
   otherShellReported, relaunchCommand,
 } from '../shared/accountSwitch'
-import type { ExitHint, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
+import type { ExitHint, RelaunchHold, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
 import { ACCOUNT_AGENT_LABEL, accountEnv, accountLine, familyOf } from '../shared/agentAccounts'
 import type { AccountAgent, AgentAccount, ShellFamily } from '../shared/agentAccounts'
 import { PROMPT_REPORT, drawn, sinceStarted } from './mcpServer'
@@ -97,6 +97,8 @@ export interface SwitchContext {
   carry?: (id: string) => { carried: boolean; kept?: string }
   /** Variables the account line unsets besides the profile's (the proxy's, §5.2). */
   extraUnset?: string[]
+  /** What the lock says to the conductor meanwhile: a swarm worker's restart is said as one (§9). */
+  lockKind?: 'account' | 'worker'
   newSessionId: () => string
   /** What main records once the line ran: the terminal's account, start and session. */
   record: (r: { accountId: string; start: AgentStartRecord; sessionId: string | null }) => void
@@ -107,17 +109,12 @@ export interface SwitchContext {
 /** The terminals held, by a switch (LOCK_MS at most) or the model picker (MODEL_HOLD_MS). */
 export const locks = new Map<string, Hold>()
 
-/** What holds a terminal, until when: an account switch, which main types itself, or the model
- *  picker, whose own writes carry the key it was given (§7.5). */
+/** What holds a terminal, until when: an account switch (a swarm worker's restart among them), which
+ *  main types itself, or the model picker, whose own writes carry the key it was given (§7.5). */
 export interface Hold {
   until: number
-  kind: 'account' | 'model'
+  kind: RelaunchHold
   key?: string
-}
-
-const HELD_FOR: Readonly<Record<Hold['kind'], string>> = {
-  account: 'Termpolis is switching this agent\'s account; wait for system\'s next message',
-  model: 'Termpolis is changing this agent\'s model; wait for system\'s next message',
 }
 
 /** Why nothing may be typed into the terminal now, or null. A write carrying the model picker's
@@ -129,7 +126,7 @@ export function relaunchLockReason(terminalId: string, now: number = Date.now(),
     locks.delete(terminalId)
     return null
   }
-  return key && key === hold.key ? null : HELD_FOR[hold.kind]
+  return key && key === hold.key ? null : RELAUNCH_HELD[hold.kind]
 }
 
 /** The model picker's hold on a terminal while it relaunches the agent there (§7.5): the key its
@@ -406,7 +403,7 @@ export async function runAccountSwitch(req: SwitchRequest, ctx: SwitchContext): 
   // The line must be one Termpolis can type here before anything is done to the agent.
   const probe = accountLine(family, env, agent)
   if ('refused' in probe) return { kind: 'refused', why: probe.refused }
-  locks.set(id, { until: io.now() + LOCK_MS, kind: 'account' })
+  locks.set(id, { until: io.now() + LOCK_MS, kind: ctx.lockKind ?? 'account' })
   try {
     return await switchLocked(req, ctx, family)
   } catch (e) {

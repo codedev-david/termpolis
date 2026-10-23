@@ -422,6 +422,33 @@ describe('R25: the transcript carried, and what is said of it', () => {
   })
 })
 
+describe('a swarm worker restarted on another account (§9)', () => {
+  it('Claude Code: closes its rate-limit menu, exits, and resumes with the worker\'s own command, the lock saying it is a worker\'s', async () => {
+    let held: string | null = null
+    const t0 = new FakeTerminal(claude({ start: 'menu', launch: 'claude --dangerously-skip-permissions' }))
+    const io = t0.io()
+    const outcome = await runAccountSwitch({ terminalId: 'tW', targetId: B.id, shellType: 'gitbash', reason: 'usage limit' }, {
+      io: { ...io, write: (id, d) => { held ??= relaunchLockReason('tW', t0.clock); io.write(id, d) } },
+      target: B, agent: 'claude', lockKind: 'worker',
+      start: { at: t0.launchedAt, commands: [t0.launchLine()] }, newSessionId: () => NEW_ID, record: () => undefined,
+    })
+    expect(outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(held).toBe('Termpolis is restarting this worker; wait for system\'s next message')
+    expect(relaunchLockReason('tW', t0.clock)).toBeNull()
+    // Esc closed the menu; the line keeps the worker's flag, and never --continue.
+    expect(t0.writes[0]).toBe('\u001b')
+    expect(t0.ran).toEqual(['', `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --dangerously-skip-permissions --resume ${ID}`])
+    expect(t0.sentPrompts).toEqual([])
+  })
+
+  it('Codex: resumes with the worker\'s -a, -s and update check off, before resume', async () => {
+    const r = await run(codex({ launch: 'codex -a never -s workspace-write -c check_for_update_on_startup=false' }), { lockKind: 'worker' })
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(r.t.ran).toEqual(['', `& { $env:CODEX_HOME = 'C:\\Users\\me\\.codex-b'; codex -a never -s workspace-write -c check_for_update_on_startup=false resume ${ID} }`])
+    cleanRun(r)
+  })
+})
+
 describe('R7: the lock', () => {
   it('holds the terminal for the run, refuses a second switch, and lets go on every outcome', async () => {
     const t = new FakeTerminal(claude({ relaunch: ['nothing'] }))

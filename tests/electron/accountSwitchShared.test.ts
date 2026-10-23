@@ -7,7 +7,7 @@
 // change a terminal's account by hand.
 import { describe, it, expect } from 'vitest'
 import {
-  AGY_SIGNED_IN, ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, HINT_FROM_FOOT_ROWS, LINE_CLEAR, RESUME_NOT_FOUND,
+  AGY_SIGNED_IN, ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, HINT_FROM_FOOT_ROWS, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND,
   SIGN_IN_SCREEN, carriedFlags, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, otherShellReported,
   relaunchCommand,
 } from '../../src/shared/accountSwitch'
@@ -244,5 +244,29 @@ describe('carriedFlags', () => {
     expect(carriedFlags('agy', 'agy --model gemini-4-argon --dangerously-skip-permissions')).toEqual({ model: 'gemini-4-argon' })
     expect(carriedFlags('codex', 'codex -m "a b" -a NEVER -s')).toEqual({})
     expect(carriedFlags('claude', undefined)).toEqual({})
+  })
+
+  // A swarm worker restarted on another account (§9) keeps its update check off: a Codex started
+  // while a newer one is out opens on the update offer otherwise, a menu nobody answers there.
+  it('keeps a Codex worker\'s update check off, as run_command started it, and only that setting', () => {
+    const worker = 'codex -a never -s workspace-write -c check_for_update_on_startup=false'
+    expect(carriedFlags('codex', worker)).toEqual({ approval: 'never', sandbox: 'workspace-write', noUpdateCheck: true })
+    expect(relaunchCommand({ agent: 'codex', id: ID2, ...carriedFlags('codex', worker) }))
+      .toBe(`codex -a never -s workspace-write -c check_for_update_on_startup=false resume ${ID2}`)
+    expect(carriedFlags('codex', 'codex -c check_for_update_on_startup=true')).toEqual({})
+    expect(carriedFlags('codex', 'codex check_for_update_on_startup=false')).toEqual({})
+    expect(carriedFlags('claude', 'claude -c check_for_update_on_startup=false')).toEqual({})
+    expect(relaunchCommand({ agent: 'codex', id: null, noUpdateCheck: true, instructions: 'Use the memory tools.' }))
+      .toBe('codex -c check_for_update_on_startup=false -c "developer_instructions=\'Use the memory tools.\'"')
+  })
+})
+
+describe('RELAUNCH_HELD: what the conductor and the phone are told while a relaunch holds a terminal', () => {
+  it('says which relaunch, and to wait for system\'s next message', () => {
+    expect(RELAUNCH_HELD).toEqual({
+      account: 'Termpolis is switching this agent\'s account; wait for system\'s next message',
+      model: 'Termpolis is changing this agent\'s model; wait for system\'s next message',
+      worker: 'Termpolis is restarting this worker; wait for system\'s next message',
+    })
   })
 })

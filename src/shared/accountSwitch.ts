@@ -140,6 +140,10 @@ export interface RelaunchSpec {
   instructions?: string
   /** Claude Code, a new session: the id to start it with (--session-id), so it can be resumed. */
   sessionId?: string
+  /** Codex's `-c check_for_update_on_startup=false`, as a swarm worker runs it: a Codex started
+   *  while a newer one is out opens on its update offer otherwise, a menu that holds it until
+   *  someone answers (GitHub #36). */
+  noUpdateCheck?: boolean
 }
 
 /**
@@ -170,6 +174,7 @@ export function relaunchCommand(spec: RelaunchSpec): string {
     if (spec.model) parts.push(`-m ${spec.model}`)
     if (spec.approval) parts.push(`-a ${spec.approval}`)
     if (spec.sandbox) parts.push(`-s ${spec.sandbox}`)
+    if (spec.noUpdateCheck) parts.push(`-c ${NO_UPDATE_CHECK}`)
     if (spec.instructions) parts.push(`-c "developer_instructions='${spec.instructions}'"`)
     if (spec.id) parts.push(`resume ${spec.id}`)
     return parts.join(' ')
@@ -183,18 +188,24 @@ export function relaunchCommand(spec: RelaunchSpec): string {
 /** A Codex approval policy or sandbox, as `-a`/`-s` take it: never, on-request, workspace-write. */
 const CODEX_POLICY = /^[a-z-]{1,32}$/
 
+/** The one `-c` setting a relaunch carries, word for word (agentCommandSanitizer.ts gives it to every
+ *  Codex worker). */
+const NO_UPDATE_CHECK = 'check_for_update_on_startup=false'
+
+type CarriedFlags = Pick<RelaunchSpec, 'model' | 'skipPermissions' | 'approval' | 'sandbox' | 'noUpdateCheck'>
+
 /** The flags a relaunch keeps from the line that started the agent: its model, a Claude Code swarm
- *  worker's --dangerously-skip-permissions, a Codex worker's -a and -s. Each value only when it is
- *  plainly one (isSafeModelName, CODEX_POLICY); never a flag a relaunch would get wrong, such as
- *  --append-system-prompt-file, which the SessionStart hook replaces on a resume. */
-export function carriedFlags(agent: AccountAgent, line: string | undefined): Pick<RelaunchSpec, 'model' | 'skipPermissions' | 'approval' | 'sandbox'> {
+ *  worker's --dangerously-skip-permissions, a Codex worker's -a, -s and update check off. Each value
+ *  only when it is plainly one (isSafeModelName, CODEX_POLICY); never a flag a relaunch would get
+ *  wrong, such as --append-system-prompt-file, which the SessionStart hook replaces on a resume. */
+export function carriedFlags(agent: AccountAgent, line: string | undefined): CarriedFlags {
   const tokens = (line ?? '').split(/\s+/)
   const after = (names: readonly string[], ok: (v: string) => boolean): string | undefined => {
     const at = tokens.findIndex((t) => names.includes(t))
     const v = at < 0 ? undefined : tokens[at + 1]
     return v !== undefined && ok(v) ? v : undefined
   }
-  const flags: Pick<RelaunchSpec, 'model' | 'skipPermissions' | 'approval' | 'sandbox'> = {}
+  const flags: CarriedFlags = {}
   const model = after(agent === 'codex' ? ['-m', '--model'] : ['--model'], isSafeModelName)
   if (model) flags.model = model
   if (agent === 'claude' && tokens.includes('--dangerously-skip-permissions')) flags.skipPermissions = true
@@ -203,6 +214,7 @@ export function carriedFlags(agent: AccountAgent, line: string | undefined): Pic
     const sandbox = after(['-s', '--sandbox'], (v) => CODEX_POLICY.test(v))
     if (approval) flags.approval = approval
     if (sandbox) flags.sandbox = sandbox
+    if (tokens.some((t, i) => t === NO_UPDATE_CHECK && tokens[i - 1] === '-c')) flags.noUpdateCheck = true
   }
   return flags
 }
@@ -363,6 +375,18 @@ export interface ModelHold {
 
 /** Why the model picker typed nothing: something holds the terminal already. */
 export const MODEL_HELD = 'an account switch or another model change is running in this terminal'
+
+/** What a terminal Termpolis relaunches an agent in says to anyone else who types into it meanwhile
+ *  (R7): the conductor's write_to_terminal and run_command, and the phone's, are refused with these
+ *  words, which every MCP client is shown as they are (mcpServer.ts). A swarm worker's restart on
+ *  another account says so, and the conductor waits for system's next message about it (§9). */
+export const RELAUNCH_HELD = {
+  account: 'Termpolis is switching this agent\'s account; wait for system\'s next message',
+  model: 'Termpolis is changing this agent\'s model; wait for system\'s next message',
+  worker: 'Termpolis is restarting this worker; wait for system\'s next message',
+} as const
+
+export type RelaunchHold = keyof typeof RELAUNCH_HELD
 
 /** main → renderer while a switch runs: which step it is at, for the dialog. */
 export interface SwitchProgress {

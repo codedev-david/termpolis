@@ -2361,3 +2361,33 @@ describe('write_to_terminal', () => {
     }
   })
 })
+
+// R7: a relaunch can take a terminal while a submit to it waits for the agent (an account switch, a
+// swarm worker's restart on another account). From then on the submit types nothing: its text would
+// sit on the shell's line for the switch's Enter to run, or reach the agent started there.
+describe('submit while a relaunch takes the terminal', () => {
+  const HELD = "Termpolis is restarting this worker; wait for system's next message"
+
+  it('types nothing once the lock is taken while it waits for the agent, and answers with the lock\'s words', async () => {
+    let now = 0
+    const t = fakeTerminal((ms) => (ms < 5000 ? busy() : idle()))
+    const clock: SubmitClock = { now: () => now, sleep: async (ms) => { now += ms; await t.clock.sleep(ms) } }
+    ;(t.handlers as any).relaunchLock = vi.fn(() => (now >= 3000 ? HELD : null))
+    await expect(submitToTerminal(t.handlers, 't1', 'Continue your task.', clock)).rejects.toThrow(HELD)
+    expect(t.writes).toEqual([])
+  })
+
+  it('presses no Enter once the lock is taken after the text went in', async () => {
+    const t = fakeTerminal((_ms, typed) => idle(typed.join('')))
+    ;(t.handlers as any).relaunchLock = vi.fn(() => (t.writes.length > 0 ? HELD : null))
+    await expect(submitToTerminal(t.handlers, 't1', 'go', t.clock)).rejects.toThrow(HELD)
+    expect(t.writes).toEqual(['go'])
+  })
+
+  it('clears nothing once the lock is taken before a box that holds text is cleared', async () => {
+    const t = fakeTerminal(() => idle('left over'))
+    ;(t.handlers as any).relaunchLock = vi.fn(() => HELD)
+    await expect(submitToTerminal(t.handlers, 't1', 'go', t.clock)).rejects.toThrow(HELD)
+    expect(t.writes).toEqual([])
+  })
+})
