@@ -11,7 +11,7 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, envAccountOf, envAccounts, forgetTerminalAccount, isAccountChangedByHand, noteSwarmWorker,
-  noteTypedInput, noteWorkerCommand, registerAccountsIpc, terminalAccountId, terminalAgentStart,
+  noteWorkerCommand, noteWorkerInput, registerAccountsIpc, terminalAccountId, terminalAgentStart,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { _resetSwitchLocksForTest, relaunchLockReason } from '../../src/main/accountSwitch'
@@ -207,10 +207,24 @@ describe('noteWorkerCommand: a worker\'s start, as run_command typed it', () => 
     end = term.launchedAt
     noteWorkerCommand('w1', term.launchLine())
     expect(terminalAgentStart('w1')!.turned).toBeUndefined()
-    noteTypedInput('w1', 'Continue your task.')
+    noteWorkerInput('w1', 'Continue your task.')
     expect(terminalAgentStart('w1')!.turned).toBeUndefined()
-    noteTypedInput('w1', '\r')
+    noteWorkerInput('w1', '\r')
     expect(terminalAgentStart('w1')!.turned).toBe(true)
+  })
+
+  // A task can name a profile variable ("set CLAUDE_CONFIG_DIR=..."): that changes no account, and
+  // a user with no accounts sees no change from it (D13).
+  it('reads nothing else from it: no change by hand, and no other terminal\'s writes', async () => {
+    const { main } = await accounts()
+    noteSwarmWorker('w1')
+    end = term.launchedAt
+    noteWorkerCommand('w1', term.launchLine())
+    noteWorkerInput('w1', 'Set CLAUDE_CONFIG_DIR=/tmp/x in the docs\r\r')
+    expect(isAccountChangedByHand('w1')).toBe(false)
+    expect(terminalAccountId('w1')).toBe(main)
+    noteWorkerInput('mine', 'Continue your task.\r')
+    expect(terminalAgentStart('mine')).toBeUndefined()
   })
 
   it('never throws: the worker runs as before', async () => {

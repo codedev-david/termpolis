@@ -63,11 +63,14 @@ export function agentOfCommand(command: string | undefined): AccountAgent | null
 }
 
 /** The agent a terminal runs, as Termpolis knows it: the one it launched there, or a swarm worker's,
- *  as main recorded the command run_command started it with. Never the conductor's, which runs
- *  `claude -p` behind its script and is never switched. */
+ *  as main recorded the command run_command started it with: Claude Code's or Codex's, which a
+ *  switch restarts in place; agy's switch goes through its own sign-in, which a worker's hidden
+ *  terminal can't show. Never the conductor's, which runs `claude -p` behind its script and is never
+ *  switched. */
 export function agentOfTerminal(t: { agentCommand?: string; isConductor?: boolean; isSwarm?: boolean; swarmAgent?: AccountAgent } | undefined): AccountAgent | null {
   if (!t || t.isConductor) return null
-  return agentOfCommand(t.agentCommand) ?? (t.isSwarm ? t.swarmAgent ?? null : null)
+  const worker = t.isSwarm && t.swarmAgent && isProfileAgent(t.swarmAgent) ? t.swarmAgent : null
+  return agentOfCommand(t.agentCommand) ?? worker
 }
 
 /** Why an account can't take a swarm worker over, or null when it can: it must be connected, its

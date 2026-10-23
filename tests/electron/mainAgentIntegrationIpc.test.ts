@@ -107,6 +107,7 @@ const H = vi.hoisted(() => {
     noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
     noteSwarmWorker: vi.fn((_id: string) => undefined),
     noteWorkerCommand: vi.fn((_id: string, _command: string) => undefined),
+    noteWorkerInput: vi.fn((_id: string, _typed: string) => undefined),
     // The chooser's marker (R6): the extra env as it came, so every other test sees today's.
     withLimitChooser: vi.fn((extra: Record<string, string> | undefined, _watch: unknown) => extra),
     relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
@@ -438,6 +439,7 @@ vi.mock('../../src/main/accountsIpc', () => ({
   noteTypedInput: H.noteTypedInput,
   noteSwarmWorker: H.noteSwarmWorker,
   noteWorkerCommand: H.noteWorkerCommand,
+  noteWorkerInput: H.noteWorkerInput,
   withLimitChooser: H.withLimitChooser,
 }))
 // The switch's lock, so a test can hold a terminal as a switch would.
@@ -1038,17 +1040,16 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(H.forgetTerminalAccount).toHaveBeenCalledWith(worker)
   })
 
-  // R4 for workers: a prompt the conductor sends a worker is a turn, as a typed one is in any other
-  // terminal; and the phone's keys count as typed too. Watched after the PTY has it, and a watch
-  // that throws never stops a write.
-  it('watches what an MCP client writes into a terminal as typed input, after the PTY has it', async () => {
+  // R4 for workers: a prompt the conductor sends a worker is the worker's turn. Watched after the
+  // PTY has it, and a watch that throws never stops a write.
+  it('hands what an MCP client writes into a terminal to the worker-input watch, after the PTY has it', async () => {
     const order: string[] = []
     mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
-    H.noteTypedInput.mockImplementationOnce(() => { order.push('watch'); return null })
+    H.noteWorkerInput.mockImplementationOnce(() => { order.push('watch') })
     H.mcpHandlers!.writeToTerminal('w-typed', 'Continue your task.')
     expect(order).toEqual(['pty', 'watch'])
-    expect(H.noteTypedInput).toHaveBeenCalledWith('w-typed', 'Continue your task.')
-    H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })
+    expect(H.noteWorkerInput).toHaveBeenCalledWith('w-typed', 'Continue your task.')
+    H.noteWorkerInput.mockImplementationOnce(() => { throw new Error('boom') })
     expect(() => H.mcpHandlers!.writeToTerminal('w-typed', '\r')).not.toThrow()
     expect(mockWriteToTerminal).toHaveBeenLastCalledWith('w-typed', '\r')
   })

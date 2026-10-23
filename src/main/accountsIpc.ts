@@ -352,16 +352,27 @@ function noteLine(terminalId: string, line: string, now: number, lookNow: () => 
  * Termpolis's own launch) is read line by line. Returns what the last whole line was.
  */
 export function noteTypedInput(terminalId: string, typed: string, now: number = Date.now()): 'own' | 'by-hand' | null {
-  let line = typedLines.get(terminalId) ?? ''
   let result: 'own' | 'by-hand' | null = null
-  // One look for all the lines of this write, taken when a line first needs it: the screen can't
-  // change while it runs.
+  const lookNow = oneLook(terminalId)
+  gatherLines(terminalId, typed, (line) => { result = noteLine(terminalId, line, now, lookNow) })
+  return result
+}
+
+/** One look for all the lines of a write, taken when a line first needs it: the screen can't change
+ *  while it runs. */
+function oneLook(terminalId: string): () => Look {
   let seen: Look | null = null
-  const lookNow = (): Look => (seen ??= look(wiring.io as Omit<SwitchIO, 'progress'>, terminalId))
+  return () => (seen ??= look(wiring.io as Omit<SwitchIO, 'progress'>, terminalId))
+}
+
+/** Keystrokes gathered into the line they make until its Enter, with Backspace, Ctrl+U and Ctrl+C
+ *  taken into account and escape sequences left out; `onLine` gets each whole line. */
+function gatherLines(terminalId: string, typed: string, onLine: (line: string) => void): void {
+  let line = typedLines.get(terminalId) ?? ''
   for (let i = 0; i < typed.length; i++) {
     const c = typed[i]
     if (c === '\r' || c === '\n') {
-      result = noteLine(terminalId, line, now, lookNow)
+      onLine(line)
       line = ''
     } else if (c === '\x7f' || c === '\b') line = line.slice(0, -1)
     else if (c === '\x15' || c === '\x03') line = ''
@@ -370,7 +381,20 @@ export function noteTypedInput(terminalId: string, typed: string, now: number = 
   }
   if (line) typedLines.set(terminalId, line)
   else typedLines.delete(terminalId)
-  return result
+}
+
+/**
+ * What an MCP client (the conductor) writes into a swarm worker (index.ts): a prompt entered in the
+ * worker's box is the worker's turn (R4), which a restarted worker's carried stop asks about.
+ * Nothing else is read from it: a task can name a profile variable without changing an account.
+ * Any other terminal's MCP writes are left alone.
+ */
+export function noteWorkerInput(terminalId: string, typed: string, now: number = Date.now()): void {
+  if (!workers.has(terminalId)) return
+  const lookNow = oneLook(terminalId)
+  gatherLines(terminalId, typed, (line) => {
+    if (line.trim()) noteLife(terminalId, line.trim(), now, lookNow)
+  })
 }
 
 /** The account Termpolis put this terminal on: undefined when it never did (a terminal from

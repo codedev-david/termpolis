@@ -611,7 +611,7 @@ import {
 } from './agentIntegrationManager'
 import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount, isTerminalAccountConnected,
-  noteSwarmWorker, noteTypedInput, noteWorkerCommand, registerAccountsIpc, resolveLaunchTarget, withLimitChooser,
+  noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
@@ -3698,8 +3698,8 @@ async function semanticPoolOptions(
       },
       writeToTerminal: (terminalId, text) => {
         writeToTerminal(terminalId, text)
-        // As typed, as terminal:write's keys are: a prompt the conductor sends a worker is a turn (R4).
-        try { noteTypedInput(terminalId, text) } catch {}
+        // A prompt the conductor sends a worker is the worker's turn (R4).
+        try { noteWorkerInput(terminalId, text) } catch {}
       },
       getFileTree: (path) => {
         return listPathEntries(path)

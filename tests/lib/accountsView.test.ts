@@ -134,6 +134,9 @@ describe('agentOfTerminal: the agent a terminal runs, as Termpolis knows it', ()
     expect(agentOfTerminal({ agentCommand: 'codex -m x' })).toBe('codex')
     expect(agentOfTerminal({ isSwarm: true, swarmAgent: 'claude' })).toBe('claude')
     expect(agentOfTerminal({ isSwarm: true })).toBeNull()
+    // agy's switch is its own sign-in, which a worker's hidden terminal can't show.
+    expect(agentOfTerminal({ isSwarm: true, swarmAgent: 'agy' })).toBeNull()
+    expect(agentOfTerminal({ isSwarm: true, swarmAgent: 'codex' })).toBe('codex')
     // A recorded agent counts only on a worker's terminal.
     expect(agentOfTerminal({ swarmAgent: 'claude' })).toBeNull()
     expect(agentOfTerminal({ agentCommand: 'claude', isConductor: true, isSwarm: true })).toBeNull()
