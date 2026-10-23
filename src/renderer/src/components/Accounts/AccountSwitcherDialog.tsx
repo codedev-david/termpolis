@@ -21,7 +21,7 @@ import {
   checkSignIn, openOnAccount, openOtherAgent, outcomeView, runSwitch, switchQuestions, switchTargets, terminalAgent,
 } from '../../lib/accountSwitchFlow'
 import type { SwitchProgress } from '../../../../shared/accountSwitch'
-import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgents } from '../../lib/limitChooser'
+import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgents, recentCheck } from '../../lib/limitChooser'
 import type { LimitContext } from '../../lib/limitWatch'
 import { modelHoldBridge, relaunchHeld } from '../../lib/modelRelaunch'
 import { AGENT_COLOR } from '../../lib/accountsView'
@@ -121,9 +121,13 @@ export function AccountSwitcherDialog() {
     // Only the accounts that are a way out by what Termpolis knows already: a check is a child
     // process, and never runs for nothing (§4.4).
     const lim = open!.limit!
-    for (const t of limitTargets(view.accounts, limitAgent, { accountId: lim.accountId, email: limitedAccount(view, lim).email }, Date.now())) {
+    const now = Date.now()
+    for (const t of limitTargets(view.accounts, limitAgent, { accountId: lim.accountId, email: limitedAccount(view, lim).email }, now)) {
       if (t.state !== 'available') continue
-      void checkSignIn(window.accounts!, t.row).then((c) => { if (alive) setChecks((m) => ({ ...m, [t.row.id]: c })) })
+      // An answer younger than a minute stands (§3.4): no process for it.
+      const recent = recentCheck(t.row, now)
+      if (recent) setChecks((m) => ({ ...m, [t.row.id]: recent }))
+      else void checkSignIn(window.accounts!, t.row).then((c) => { if (alive) setChecks((m) => ({ ...m, [t.row.id]: c })) })
     }
     try {
       window.termpolis.detectAgents?.()

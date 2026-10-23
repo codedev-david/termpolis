@@ -2,7 +2,7 @@
 // that ran out and the sign-in it actually has (R23), what is left when nothing is a way out, the
 // other terminals the same limit stopped, and the agents "Use another agent" offers.
 import { describe, it, expect } from 'vitest'
-import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgents } from '../../src/renderer/src/lib/limitChooser'
+import { AGENT_COMMAND, CHECK_REUSE_MS, groupNote, limitOn, limitedAccount, noWayOut, otherAgents, recentCheck } from '../../src/renderer/src/lib/limitChooser'
 import type { LimitContext } from '../../src/renderer/src/lib/limitWatch'
 import type { LimitTarget } from '../../src/shared/accountLimits'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
@@ -73,5 +73,19 @@ describe('otherAgents', () => {
     expect(otherAgents({ claude: true, codex: false }, 'agy')).toEqual(['claude'])
     expect(otherAgents(null, 'claude')).toEqual([])
     expect(AGENT_COMMAND).toEqual({ claude: 'claude', codex: 'codex', agy: 'agy' })
+  })
+})
+
+describe('recentCheck (§3.4)', () => {
+  const now = 1_000_000
+  const id = (over: Partial<NonNullable<AccountRowView['identity']>>) => row({ identity: { email: 'a@example.test', signedIn: true, checkedAt: now - 1000, source: 'auth-status', ...over } })
+  it("reuses what the agent said within a minute, and nothing older or that wasn't its answer", () => {
+    expect(recentCheck(id({}), now)).toEqual({ kind: 'signed-in', email: 'a@example.test' })
+    expect(recentCheck(id({ signedIn: false, email: null, source: 'sign-in-screen' }), now)).toEqual({ kind: 'signed-out' })
+    expect(recentCheck(id({ source: 'login-status', email: null }), now)).toEqual({ kind: 'signed-in', email: null })
+    expect(recentCheck(id({ checkedAt: now - CHECK_REUSE_MS }), now)).toBeNull()
+    expect(recentCheck(id({ source: 'claude.json' }), now)).toBeNull()
+    expect(recentCheck(id({ signedIn: null }), now)).toBeNull()
+    expect(recentCheck(row({}), now)).toBeNull()
   })
 })

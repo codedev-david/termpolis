@@ -4,7 +4,7 @@
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
 import { untilText } from '../../../shared/accountLimits'
-import type { LimitTarget } from '../../../shared/accountLimits'
+import type { LimitTarget, TargetCheck } from '../../../shared/accountLimits'
 import type { LimitContext } from './limitWatch'
 
 /** The account that ran out, and the email its profile is actually signed in to (R23): for a
@@ -42,6 +42,18 @@ export function groupNote(limit: LimitContext, view: AccountsView): string | nul
   const label = limit.accountId ? view.accounts.find((r) => r.id === limit.accountId)?.label : undefined
   const on = label ? ` on ${label}` : ''
   return `${more} more ${ACCOUNT_AGENT_LABEL[limit.agent]} terminal${more === 1 ? '' : 's'} ran out${on} too: Termpolis asks about each after this one.`
+}
+
+/** How long a "signed in now" answer stands, for the chooser (§3.4): within it, no CLI is asked again. */
+export const CHECK_REUSE_MS = 60_000
+
+/** What the account's agent said when last asked whether it is signed in now, while that is recent
+ *  enough to stand (CHECK_REUSE_MS); null when it must be asked. What its profile last named ("last
+ *  signed in as") is no answer to that. */
+export function recentCheck(r: AccountRowView, now: number): TargetCheck | null {
+  const id = r.identity
+  if (!id || id.source === 'claude.json' || id.signedIn === null || now - id.checkedAt >= CHECK_REUSE_MS) return null
+  return id.signedIn ? { kind: 'signed-in', email: id.email } : { kind: 'signed-out' }
 }
 
 /** The command each agent starts with, bare, for "Use another agent". */

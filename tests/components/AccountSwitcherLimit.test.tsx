@@ -177,6 +177,16 @@ describe('AccountSwitcherDialog in limit mode', () => {
     expect(useTerminalStore.getState().accountSwitch).toBeNull()
   })
 
+  it("takes an answer younger than a minute as it stands, asking no agent for it (§3.4)", async () => {
+    const fresh = { email: 'b@example.test', signedIn: true, checkedAt: Date.now() - 5_000, source: 'auth-status' as const }
+    useTerminalStore.setState({ accountsView: view([A, row({ ...B, identity: fresh }), C]) })
+    render(<AccountSwitcherDialog />)
+    openLimit()
+    expect(screen.getAllByTestId('limit-row')[0]).toHaveTextContent('codedevsigned in as b@example.test')
+    await waitFor(() => expect(accounts.check).toHaveBeenCalledWith('acc_c'))
+    expect(accounts.check).not.toHaveBeenCalledWith('acc_b')
+  })
+
   it('says when nothing is a way out, and which account frees up first', async () => {
     const soon = Date.now() + 3_600_000
     const later = Date.now() + 7_200_000
