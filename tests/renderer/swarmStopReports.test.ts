@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { noteWorkerStatus } from '../../src/renderer/src/lib/swarmStopReports'
+import { carryWorkerStop, noteWorkerStatus, reportWorkerStop } from '../../src/renderer/src/lib/swarmStopReports'
 
 // GitHub #36 item 5: a worker a usage limit or a menu stopped is reported to the conductor once per
 // stop, not on every read of its screen.
@@ -224,5 +224,82 @@ describe('noteWorkerStatus', () => {
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
     ;(window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('bus down'))
     await expect(noteWorkerStatus(worker(), LIMIT)).resolves.toBeUndefined()
+  })
+})
+
+// v1.55.0, §9: a worker's new usage limit can go to the swarm restart offer first, once per stop as
+// a report is; the offer tells the conductor itself, or the report goes as v1.54.0 sends it.
+describe('noteWorkerStatus with the swarm restart offer', () => {
+  it('asks the offer once per stop, at its first read, and sends nothing itself when the offer takes it', async () => {
+    const w = worker()
+    const offer = vi.fn(async () => true)
+    for (let i = 0; i < 4; i++) await noteWorkerStatus(w, LIMIT, offer)
+    expect(offer).toHaveBeenCalledTimes(1)
+    expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
+    // A new stop, after the worker got going, asks it again.
+    await noteWorkerStatus(w, WORKING, offer)
+    await noteWorkerStatus(w, LIMIT, offer)
+    expect(offer).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports a limit as v1.54.0 does, byte for byte, when the offer declines', async () => {
+    const w = worker()
+    const offer = vi.fn(() => false)
+    await noteWorkerStatus(w, LIMIT, offer)
+    expect(offer).toHaveBeenCalledTimes(1)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledWith(
+      'system', 'conductor', 'info',
+      `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). ` +
+        'Check its screen with read_output first: if the limit is there, close its terminal, then give its task to another installed agent.',
+    )
+  })
+
+  it('never asks it about a menu, and hands it the screen\'s words for a limit', async () => {
+    const offer = vi.fn(async () => true)
+    await noteWorkerStatus(worker(), MENU, offer)
+    expect(offer).not.toHaveBeenCalled()
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+    const words = () => "You've hit your session limit · resets 3pm"
+    const w = worker()
+    await noteWorkerStatus(w, LIMIT, offer, words)
+    expect(offer).toHaveBeenCalledWith(w, LIMIT, words)
+  })
+})
+
+describe('reportWorkerStop', () => {
+  it('is v1.54.0\'s report, sent whenever asked', async () => {
+    const w = worker()
+    await reportWorkerStop(w, LIMIT)
+    await reportWorkerStop(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
+    expect((window.swarmAPI.sendMessage as ReturnType<typeof vi.fn>).mock.calls[1][3]).toBe(
+      `Codex (Tests, terminal ${w.terminalId}) is blocked: usage limit reached (resets 3:04 PM). ` +
+        'Check its screen with read_output first: if the limit is there, close its terminal, then give its task to another installed agent.',
+    )
+  })
+})
+
+// R4: a worker restarted on another account can draw its last limit reply again as it resumes.
+describe('carryWorkerStop', () => {
+  it('keeps the stop through reads with no stop, so the same limit drawn again is no new stop, until the worker is at work', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, LIMIT)
+    carryWorkerStop(w.terminalId, LIMIT.summary)
+    for (let i = 0; i < 4; i++) await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, { status: 'blocked', summary: 'usage limit reached (resets 4pm)' })
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+    await noteWorkerStatus(w, WORKING)
+    await noteWorkerStatus(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('carries a stop the worker no longer showed', async () => {
+    const w = worker()
+    carryWorkerStop(w.terminalId, LIMIT.summary)
+    await noteWorkerStatus(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
+    // Another stop is a new one, carried or not.
+    await noteWorkerStatus(w, MENU)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
   })
 })

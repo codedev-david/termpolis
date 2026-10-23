@@ -43,6 +43,9 @@ export interface TerminalSession {
   /** Claude Code: the session Termpolis started it with (--session-id) or resumed, which a switch
    *  resumes when the agent printed no exit hint. */
   agentSessionId?: string
+  /** A swarm worker's agent, as main recorded the command run_command started it with: a worker
+   *  has no agentCommand, and its terminal's name is the conductor's choice. */
+  swarmAgent?: AccountAgent
   isSwarm?: boolean
   hidden?: boolean
   isConductor?: boolean

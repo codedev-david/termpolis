@@ -19,7 +19,7 @@ import { ACCOUNT_AGENT_LABEL } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountsView } from '../../../shared/agentAccounts'
 import type { AccountsAPI, PaneNode, TerminalSession } from '../types'
 import { READS_TO_CLEAR, noteWorkerStatus } from './swarmStopReports'
-import type { SwarmWorker } from './swarmStopReports'
+import type { StopOffer, SwarmWorker } from './swarmStopReports'
 
 /** A limit the chooser offers a way out of: the account that ran out, the terminals it stopped. */
 export interface LimitContext {
@@ -263,10 +263,11 @@ export function osNotify(title: string, body: string, onClick: () => void): void
 
 // ── Swarm workers: item 8's seam ──────────────────────────────────────────────────────
 
-/** The swarm restart offer (item 8, §9): given a worker's usage limit, it offers to restart the
- *  worker on another account, and returns true when it took the stop over (the conductor is then
- *  told to wait, by the offer). None is installed yet: every worker's stop goes to the conductor. */
-export type SwarmStopOffer = (worker: SwarmWorker, result: AgentStatusResult) => boolean | Promise<boolean>
+/** The swarm restart offer (item 8, §9, swarmRestart.ts): given a worker's new usage limit, it
+ *  offers to restart the worker on another account, and returns true when it took the stop over
+ *  (the offer tells the conductor to wait). With none installed, or one that declines, the stop
+ *  goes to the conductor as v1.54.0 sends it. */
+export type SwarmStopOffer = StopOffer
 
 let swarmOffer: SwarmStopOffer | null = null
 
@@ -274,12 +275,12 @@ export function setSwarmStopOffer(offer: SwarmStopOffer | null): void {
   swarmOffer = offer
 }
 
-/** A swarm worker's status, from the swarm's 5 s loop: the chooser never opens for a worker. Its
- *  limit goes to the restart offer when one is installed and takes it, else, with every other stop,
- *  to the conductor, as v1.54.0 sends it (swarmStopReports.ts). */
-export async function noteSwarmStop(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
-  if (swarmOffer && stopKind(result) === 'limit' && (await swarmOffer(worker, result))) return
-  await noteWorkerStatus(worker, result)
+/** A swarm worker's status, from the swarm's 5 s loop: the chooser never opens for a worker. A new
+ *  limit, once per stop, goes to the restart offer when one is installed and takes it; else, with
+ *  every other stop, to the conductor, as v1.54.0 sends it (swarmStopReports.ts). `words` reads
+ *  the CLI's own words for it off the screen. */
+export async function noteSwarmStop(worker: SwarmWorker, result: AgentStatusResult, words?: () => string | null): Promise<void> {
+  await noteWorkerStatus(worker, result, swarmOffer ?? undefined, words)
 }
 
 // ── The look, and what follows it ─────────────────────────────────────────────────────

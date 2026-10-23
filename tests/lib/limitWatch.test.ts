@@ -307,9 +307,16 @@ describe('noteSwarmStop: item 8\'s seam', () => {
   it('lets an installed offer take a limit over, and nothing else', async () => {
     const offer = vi.fn(async () => true)
     setSwarmStopOffer(offer)
-    await noteSwarmStop(worker, LIMIT)
-    expect(offer).toHaveBeenCalledWith(worker, LIMIT)
+    const words = () => 'the CLI\'s words'
+    // A worker of its own: the reports remember each terminal's stop (the test above has w1's).
+    const w = { ...worker, terminalId: 'w-offer' }
+    await noteSwarmStop(w, LIMIT, words)
+    expect(offer).toHaveBeenCalledWith(w, LIMIT, words)
     expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
+    // Once per stop: the 5 s loop reads the same limit again and again.
+    await noteSwarmStop(w, LIMIT, words)
+    await noteSwarmStop(w, LIMIT)
+    expect(offer).toHaveBeenCalledTimes(1)
     // A menu is never offered.
     await noteSwarmStop({ ...worker, terminalId: 'w2' }, MENU)
     expect(offer).toHaveBeenCalledTimes(1)

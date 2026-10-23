@@ -20,10 +20,11 @@ export async function refreshAccounts(api: Pick<AccountsAPI, 'list'> | undefined
 }
 
 /** Main told the renderer where a terminal's account stands: changed by hand, or the account it
- *  put it on (a switch). */
+ *  put it on (a switch); and for a swarm worker, which agent run_command started in it. */
 export function noteTerminalAccount(e: TerminalAccountEvent): void {
   const store = useTerminalStore.getState()
   store.setAccountByHand(e.terminalId, e.byHand)
+  if (e.agent) store.updateTerminal(e.terminalId, { swarmAgent: e.agent })
   if (!e.byHand) store.updateTerminal(e.terminalId, e.accountId ? { agentAccountId: e.accountId } : { agentAccountId: undefined })
 }
 

@@ -53,7 +53,7 @@ import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { noteKeyTyped, noteSwarmStop, osNotify, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
-import { detectAgentStatus } from '../../shared/agentStatusDetector'
+import { detectAgentStatus, limitWords } from '../../shared/agentStatusDetector'
 import { screenOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
@@ -695,10 +695,12 @@ export default function App() {
           const dismissKey = screenKey(output)
           if (lastDismissedPrompt.get(agent.terminalId) !== dismissKey) {
             lastDismissedPrompt.set(agent.terminalId, dismissKey)
+            // Its agent as main recorded run_command's line, else as its name says (R10).
+            const worker = store.terminals.find((t) => t.id === agent.terminalId)
             const dismissChar = await replyToScreen(
               output, agent.agentName,
               () => mayTrustFolder(agent.terminalId), () => readScreen(agent.terminalId),
-              !hasManyAccounts(store.accountsView, agentOfName(agent.agentName)),
+              !hasManyAccounts(store.accountsView, worker?.swarmAgent ?? agentOfName(agent.agentName)),
             )
             if (dismissChar) {
               window.termpolis.writeToTerminal(agent.terminalId, dismissChar)
@@ -714,7 +716,7 @@ export default function App() {
           // told about once per stop.
           const screen = screenOfReplay(bufferRes.data)
           const result = detectAgentStatus(screen.lines().join('\n'), agent.agentName, agent.status, { screen: true, title: screen.title })
-          void noteSwarmStop(agent, result)
+          void noteSwarmStop(agent, result, () => limitWords(screen.lines().join('\n')))
 
           // Only update if status or summary actually changed
           if (result.status !== agent.status || (result.summary && result.summary !== agent.summary)) {

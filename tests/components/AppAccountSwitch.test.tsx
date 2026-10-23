@@ -123,6 +123,30 @@ describe('App: the account switch', () => {
     const answers = api.writeToTerminal.mock.calls.filter((c: unknown[]) => c[0] === 't1').map((c: unknown[]) => c[1])
     expect(answers).toEqual(expected === null ? [] : [expected])
   })
+
+  // A swarm worker restarted on another account can land on that account's login picker (R10):
+  // what its agent is comes from main's record of run_command, not from the name the conductor
+  // gave its terminal.
+  it.each([
+    ['leaves the login picker to the user in a worker whose agent has two accounts, whatever the worker is named', 'claude' as const, null],
+    ['answers it in a worker whose recorded agent has one account', 'codex' as const, '\r'],
+  ])('%s', async (_name, swarmAgent, expected) => {
+    const api = bridge(PICKER)
+    ;(window as any).swarmAPI = { getTasks: vi.fn(async () => ({ success: true, data: [] })), sendMessage: vi.fn(async () => ({ success: true })) }
+    render(<App />)
+    await settle()
+    act(() => {
+      useTerminalStore.setState({
+        terminals: [{ ...T, id: 'w1', isSwarm: true, hidden: true, agentCommand: undefined, swarmAgent }], accountsView: view(2),
+        swarmAgents: [{ terminalId: 'w1', agentName: 'Backend Dev', role: 'API', status: 'working' }],
+      })
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
+    await settle()
+    const answers = api.writeToTerminal.mock.calls.filter((c: unknown[]) => c[0] === 'w1').map((c: unknown[]) => c[1])
+    expect(answers).toEqual(expected === null ? [] : [expected])
+    delete (window as any).swarmAPI
+  })
 })
 
 // The usage-limit chooser in the 2 s loop (§8.1, R22): main's look at each agent terminal Termpolis

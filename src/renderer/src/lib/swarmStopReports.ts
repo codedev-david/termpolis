@@ -14,6 +14,9 @@
  *
  * The report is addressed to the conductor. swarm_read_messages marks a broadcast read for every
  * reader at once, so a Claude worker that read the bus first would have taken it.
+ *
+ * From v1.55.0 a worker's usage limit can go to the swarm restart offer first (swarmRestart.ts,
+ * §9), once per stop like a report; the offer then tells the conductor itself, or falls back here.
  */
 
 import { menuAnswer, stopKind, type AgentStatusResult } from '../../../shared/agentStatusDetector'
@@ -25,8 +28,15 @@ export interface SwarmWorker {
   role: string
 }
 
-/** What stopped each worker, while it is stopped, and how many reads in a row since showed no stop. */
-const stopped = new Map<string, { key: string; clear: number }>()
+/** What stopped each worker, while it is stopped, and how many reads in a row since showed no stop.
+ *  `carried`: the stop the worker showed before Termpolis restarted it on another account, which
+ *  the resumed session can draw again (R4): only the worker read at work ends it. */
+const stopped = new Map<string, { key: string; clear: number; carried?: boolean }>()
+
+/** Who may take a new usage limit over from the report (the swarm restart offer, §9): true when it
+ *  did, and told the conductor itself. `words` reads the CLI's own words for the limit off the
+ *  screen, when the offer needs them. */
+export type StopOffer = (worker: SwarmWorker, result: AgentStatusResult, words?: () => string | null) => boolean | Promise<boolean>
 
 /** How many reads in a row with no stop end one, the worker not read at work. A single read is no
  *  end: while ConPTY repaints a resized screen, a stopped worker reads idle for a moment, or thinking
@@ -34,12 +44,13 @@ const stopped = new Map<string, { key: string; clear: number }>()
  *  reads every 5 seconds; on real Claude Code screens such a moment lasted under a second. */
 export const READS_TO_CLEAR = 2
 
-export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
+export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult, offer?: StopOffer, words?: () => string | null): Promise<void> {
   const kind = stopKind(result)
   const last = stopped.get(worker.terminalId)
   if (kind === null) {
-    // It got going, or showed no stop for long enough: a stop after this is another one.
-    if (last && (result.status === 'working' || ++last.clear >= READS_TO_CLEAR)) stopped.delete(worker.terminalId)
+    // It got going, or showed no stop for long enough: a stop after this is another one. A stop
+    // carried across a restart ends only once the worker is at work.
+    if (last && (result.status === 'working' || (!last.carried && ++last.clear >= READS_TO_CLEAR))) stopped.delete(worker.terminalId)
     return
   }
   const key = stopKey(result.summary)
@@ -48,6 +59,22 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
     return
   }
   stopped.set(worker.terminalId, { key, clear: 0 })
+  if (kind === 'limit' && offer && (await offer(worker, result, words))) return
+  await reportWorkerStop(worker, result)
+}
+
+/** A worker Termpolis restarted on another account (§9): the stop it showed is carried, so the same
+ *  stop drawn again by the resumed session tells the conductor nothing, until the worker has been
+ *  read at work: its first turn there (R4). */
+export function carryWorkerStop(terminalId: string, summary: string): void {
+  stopped.set(terminalId, { key: stopKey(summary), clear: 0, carried: true })
+}
+
+/** v1.54.0's report of a stop to the conductor: for a limit, to close the worker and give its task
+ *  to another installed agent; for a menu, to answer it. Sent also when the restart offer for a
+ *  limit is declined, fails or has no answer in time (§9). */
+export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
+  const kind = stopKind(result)
   // The conductor sent the task, so it knows which one this terminal has; when the task was
   // assigned to it, say which.
   let task = ''

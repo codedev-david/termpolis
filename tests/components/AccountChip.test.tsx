@@ -119,6 +119,15 @@ describe('accountsState', () => {
     expect(useTerminalStore.getState().terminals[0].agentAccountId).toBeUndefined()
   })
 
+  // §9: a swarm worker has no agentCommand; main says which agent run_command started in it.
+  it('records a swarm worker\'s agent as main names it, and keeps it while a line typed there changes the account', () => {
+    noteTerminalAccount({ terminalId: 't1', accountId: 'acc_a', byHand: false, agent: 'codex' })
+    expect(useTerminalStore.getState().terminals[0]).toMatchObject({ agentAccountId: 'acc_a', swarmAgent: 'codex' })
+    noteTerminalAccount({ terminalId: 't1', accountId: null, byHand: true })
+    expect(useTerminalStore.getState().terminals[0].swarmAgent).toBe('codex')
+    expect(useTerminalStore.getState().accountsByHand).toEqual({ t1: true })
+  })
+
   it('follows main\'s word and reads the view once, until unsubscribed', async () => {
     let listener: ((e: { terminalId: string; accountId: string | null; byHand: boolean }) => void) | null = null
     const off = vi.fn()
