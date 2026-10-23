@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: October 14, 2026 (Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers)
+Last updated: October 23, 2026 (Linked machines recognises a private key by its decoded bytes, and refuses a URL given as a folder; the prompt-watch description is corrected)
 
 ## Overview
 
@@ -245,12 +245,12 @@ locally and every log stays on the machine.
 - **Strict Mode — block free-tier Gemini.** When enabled, Termpolis
   intercepts `gemini` invocations from any terminal and refuses to forward
   them unless paid-tier credentials are detected.
-- **Auto-scan on every prompt.** Once the user types `claude`, `codex`,
-  `gemini` in a terminal, every subsequent keystroke is staged
-  in main-process memory and scanned with a 70+ rule regex catalog
-  on each Enter or paste-sized chunk (≥32 bytes). Hits are redacted in
-  place before reaching the PTY, audited as `redaction_hit` events, and
-  surfaced via a dismissable banner in the renderer. Catalog covers AWS
+- **Auto-scan on every prompt.** Once `claude`, `codex` or `gemini` runs in
+  a terminal, what you type or paste is checked, on each Enter or paste-sized
+  chunk, against the same 97 rules as Commit Shield. The text reaches the agent
+  unchanged. A hit is recorded in the audit log as a `prompt_secret_sent`
+  event, with the rule ids and variable names, never the value, and shown in a
+  dismissable banner. Catalog covers AWS
   (access keys, secrets, session tokens), GitHub (classic + fine-grained
   PATs, OAuth client secrets), GitLab, Bitbucket, Azure (Storage, SAS,
   AD client secret, DevOps PAT, connection strings), GCP (service-account
@@ -270,13 +270,16 @@ locally and every log stays on the machine.
   AI-agent terminal launch, optionally with byte counts and hit counts.
   Append-only, 10MB-rotated, wipeable from Settings.
 - **Linked machines.** A prompt or an answer passed between two of your
-  computers is screened with the same rules on both: a credential whose own
-  shape names it (a vendor token such as `sk-ant-` / `ghp_` / `AKIA`, a
-  private-key block) is replaced with `[REDACTED:<rule>]` before it leaves and
-  again when it arrives; a value that only looks like one (a password in a test
-  fixture, a URL with a user and password) is left in and named in a note to
-  the agent. Each finding adds a line to the audit log on the computer that
-  screened it, with the rule ids and counts only, never the value.
+  computers is screened on both. A vendor token whose own shape names it
+  (`sk-ant-` / `ghp_` / `AKIA` and the like) is replaced with
+  `[REDACTED:<rule>]` before it leaves and again when it arrives. So is a
+  private key, recognised by what its bytes decode to (PEM, OpenSSH, PGP,
+  PuTTY, a JWK, a base64 key file), in the ways its lines are usually written
+  out: as a file, in code, JSON or YAML, in a diff, a listing or a log. A value
+  that only looks like a credential (a password in a test fixture, a URL with a
+  user and password, a test key with a made-up body) is left in and named in a
+  note to the agent. Each finding adds a line to the audit log on the computer
+  that screened it, with the rule ids and counts only, never the value.
 
 The redaction scanner is **not a comprehensive DLP solution** — it targets
 high-confidence patterns to keep false-positive rates low. Custom corporate
