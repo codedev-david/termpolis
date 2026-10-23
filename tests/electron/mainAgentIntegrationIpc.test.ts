@@ -1037,6 +1037,21 @@ describe('Settings ▸ Accounts wiring', () => {
     H.mcpHandlers!.closeTerminal(worker)
     expect(H.forgetTerminalAccount).toHaveBeenCalledWith(worker)
   })
+
+  // R4 for workers: a prompt the conductor sends a worker is a turn, as a typed one is in any other
+  // terminal; and the phone's keys count as typed too. Watched after the PTY has it, and a watch
+  // that throws never stops a write.
+  it('watches what an MCP client writes into a terminal as typed input, after the PTY has it', async () => {
+    const order: string[] = []
+    mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
+    H.noteTypedInput.mockImplementationOnce(() => { order.push('watch'); return null })
+    H.mcpHandlers!.writeToTerminal('w-typed', 'Continue your task.')
+    expect(order).toEqual(['pty', 'watch'])
+    expect(H.noteTypedInput).toHaveBeenCalledWith('w-typed', 'Continue your task.')
+    H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })
+    expect(() => H.mcpHandlers!.writeToTerminal('w-typed', '\r')).not.toThrow()
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('w-typed', '\r')
+  })
 })
 
 // ===========================================================================

@@ -11,7 +11,7 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, envAccountOf, envAccounts, forgetTerminalAccount, isAccountChangedByHand, noteSwarmWorker,
-  noteWorkerCommand, registerAccountsIpc, terminalAccountId, terminalAgentStart,
+  noteTypedInput, noteWorkerCommand, registerAccountsIpc, terminalAccountId, terminalAgentStart,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { _resetSwitchLocksForTest, relaunchLockReason } from '../../src/main/accountSwitch'
@@ -197,6 +197,20 @@ describe('noteWorkerCommand: a worker\'s start, as run_command typed it', () => 
     noteWorkerCommand('w1', 'claude --dangerously-skip-permissions')
     expect(terminalAgentStart('w1')).toBeUndefined()
     expect(accountEvents()).toHaveLength(1)
+  })
+
+  // What the conductor sends a worker reaches main's typed-line watch (index.ts): a prompt entered
+  // while the worker's box shows is its turn (R4), which a carried stop asks about.
+  it('counts a prompt entered in the worker\'s box as its turn', async () => {
+    await accounts()
+    noteSwarmWorker('w1')
+    end = term.launchedAt
+    noteWorkerCommand('w1', term.launchLine())
+    expect(terminalAgentStart('w1')!.turned).toBeUndefined()
+    noteTypedInput('w1', 'Continue your task.')
+    expect(terminalAgentStart('w1')!.turned).toBeUndefined()
+    noteTypedInput('w1', '\r')
+    expect(terminalAgentStart('w1')!.turned).toBe(true)
   })
 
   it('never throws: the worker runs as before', async () => {

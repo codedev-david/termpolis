@@ -3698,6 +3698,8 @@ async function semanticPoolOptions(
       },
       writeToTerminal: (terminalId, text) => {
         writeToTerminal(terminalId, text)
+        // As typed, as terminal:write's keys are: a prompt the conductor sends a worker is a turn (R4).
+        try { noteTypedInput(terminalId, text) } catch {}
       },
       getFileTree: (path) => {
         return listPathEntries(path)

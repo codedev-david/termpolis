@@ -998,4 +998,19 @@ describe('the usage-limit chooser and its banners (§8.4)', () => {
     st().dismissLimitBanner('b1')
     expect(st().limitBanners.map((b) => b.id)).toEqual(['b2'])
   })
+
+  it('shows a swarm restart offer, replaces it by its id, and takes it down (§9)', () => {
+    const st = useTerminalStore.getState
+    const offer = (id: string, workers: string[]) => ({
+      id, agent: 'claude' as const, accountId: 'acc_m', words: 'w', resetsAt: null, targets: ['acc_c'], phase: { kind: 'offered' as const },
+      workers: workers.map((terminalId) => ({ terminalId, agentName: 'Claude', role: 'r', summary: 's' })),
+    })
+    useTerminalStore.setState({ swarmRestarts: [] })
+    st().putSwarmRestart(offer('g1', ['w1']))
+    st().putSwarmRestart(offer('g2', ['w3']))
+    st().putSwarmRestart(offer('g1', ['w1', 'w2']))
+    expect(st().swarmRestarts.map((g) => [g.id, g.workers.map((w) => w.terminalId)])).toEqual([['g1', ['w1', 'w2']], ['g2', ['w3']]])
+    st().dropSwarmRestart('g1')
+    expect(st().swarmRestarts.map((g) => g.id)).toEqual(['g2'])
+  })
 })

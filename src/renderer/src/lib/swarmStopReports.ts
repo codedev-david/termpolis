@@ -30,8 +30,10 @@ export interface SwarmWorker {
 
 /** What stopped each worker, while it is stopped, and how many reads in a row since showed no stop.
  *  `carried`: the stop the worker showed before Termpolis restarted it on another account, which
- *  the resumed session can draw again (R4): only the worker read at work ends it. */
-const stopped = new Map<string, { key: string; clear: number; carried?: boolean }>()
+ *  the resumed session can draw again (R4). Only the worker read at work ends it, or the same stop
+ *  seen once this says the worker took a turn since (a prompt the conductor sent it): then it is a
+ *  new one. */
+const stopped = new Map<string, { key: string; clear: number; carried?: () => Promise<boolean> }>()
 
 /** Who may take a new usage limit over from the report (the swarm restart offer, §9): true when it
  *  did, and told the conductor itself. `words` reads the CLI's own words for the limit off the
@@ -54,7 +56,7 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
     return
   }
   const key = stopKey(result.summary)
-  if (last && last.key === key) {
+  if (last && last.key === key && !(last.carried && (await last.carried()))) {
     last.clear = 0
     return
   }
@@ -63,11 +65,15 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
   await reportWorkerStop(worker, result)
 }
 
+export function _resetStopReportsForTest(): void {
+  stopped.clear()
+}
+
 /** A worker Termpolis restarted on another account (§9): the stop it showed is carried, so the same
- *  stop drawn again by the resumed session tells the conductor nothing, until the worker has been
- *  read at work: its first turn there (R4). */
-export function carryWorkerStop(terminalId: string, summary: string): void {
-  stopped.set(terminalId, { key: stopKey(summary), clear: 0, carried: true })
+ *  stop drawn again by the resumed session tells the conductor nothing, until the worker took a
+ *  turn there (R4): read at work, or `turned` says so. */
+export function carryWorkerStop(terminalId: string, summary: string, turned: () => Promise<boolean>): void {
+  stopped.set(terminalId, { key: stopKey(summary), clear: 0, carried: turned })
 }
 
 /** v1.54.0's report of a stop to the conductor: for a limit, to close the worker and give its task

@@ -7,6 +7,7 @@ import type { ConversationIndex, ConversationTurn } from '../lib/conversationPar
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
 import type { AccountsView } from '../../../shared/agentAccounts'
 import type { LimitBanner, LimitContext } from '../lib/limitWatch'
+import type { SwarmRestartGroup } from '../lib/swarmRestart'
 
 // ---- Pane tree helpers ----
 
@@ -162,6 +163,9 @@ interface TerminalStore {
   accountSwitch: { terminalId: string; limit?: LimitContext } | null
   /** The usage-limit banners on screen (§8.4), one per stop or per account's group of stops. */
   limitBanners: LimitBanner[]
+  /** The swarm restart offers on screen (§9): one per agent and account that ran out, with the
+   *  workers it stopped (swarmRestart.ts). */
+  swarmRestarts: SwarmRestartGroup[]
   /** Terminals whose agent Termpolis is relaunching, and for what: one at a time per terminal, the
    *  model picker and the account switch alike. Their panes take no keys meanwhile, and the
    *  prompt pollers answer nothing in them. 'sign-in': agy's switch waits for the user to sign in
@@ -223,6 +227,9 @@ interface TerminalStore {
   /** Shows a banner, or replaces the one with its id. */
   showLimitBanner: (banner: LimitBanner) => void
   dismissLimitBanner: (id: string) => void
+  /** Shows a swarm restart offer, or replaces the one with its id. */
+  putSwarmRestart: (group: SwarmRestartGroup) => void
+  dropSwarmRestart: (id: string) => void
   /** Takes the terminal's relaunch lock: false when a relaunch already holds it. */
   beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
   endRelaunch: (terminalId: string) => void
@@ -260,6 +267,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   accountsByHand: {},
   accountSwitch: null,
   limitBanners: [],
+  swarmRestarts: [],
   relaunching: {},
 
   addTerminal: (t) => set(s => {
@@ -522,6 +530,11 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     return { limitBanners: at < 0 ? [...s.limitBanners, banner] : s.limitBanners.map((b, i) => (i === at ? banner : b)) }
   }),
   dismissLimitBanner: (id) => set(s => ({ limitBanners: s.limitBanners.filter((b) => b.id !== id) })),
+  putSwarmRestart: (group) => set(s => {
+    const at = s.swarmRestarts.findIndex((g) => g.id === group.id)
+    return { swarmRestarts: at < 0 ? [...s.swarmRestarts, group] : s.swarmRestarts.map((g, i) => (i === at ? group : g)) }
+  }),
+  dropSwarmRestart: (id) => set(s => ({ swarmRestarts: s.swarmRestarts.filter((g) => g.id !== id) })),
   beginRelaunch: (terminalId, kind) => {
     if (useTerminalStore.getState().relaunching[terminalId]) return false
     set(s => ({ relaunching: { ...s.relaunching, [terminalId]: kind } }))

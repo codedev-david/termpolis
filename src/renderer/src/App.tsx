@@ -66,6 +66,7 @@ import { agentOfName } from './lib/accountsView'
 import { launchTerminalArgs } from './lib/accountLaunch'
 import { AccountSwitcherDialog } from './components/Accounts/AccountSwitcherDialog'
 import { LimitBanners } from './components/Accounts/LimitBanners'
+import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
 
 // May the prompt pollers answer the folder-trust dialog in this terminal? Main judges
 // the shell's live directory (the store's cwd follows `cd` via shell integration, and
@@ -1131,6 +1132,7 @@ export default function App() {
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
         {showAppLog && <AppLogModal onClose={() => setShowAppLog(false)} />}
         <AccountSwitcherDialog />
+        <SwarmRestartOffers />
         {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
         {showAddModal && (
           <AddTerminalModal

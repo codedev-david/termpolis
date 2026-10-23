@@ -281,10 +281,11 @@ describe('reportWorkerStop', () => {
 
 // R4: a worker restarted on another account can draw its last limit reply again as it resumes.
 describe('carryWorkerStop', () => {
+  const never = async () => false
   it('keeps the stop through reads with no stop, so the same limit drawn again is no new stop, until the worker is at work', async () => {
     const w = worker()
     await noteWorkerStatus(w, LIMIT)
-    carryWorkerStop(w.terminalId, LIMIT.summary)
+    carryWorkerStop(w.terminalId, LIMIT.summary, never)
     for (let i = 0; i < 4; i++) await noteWorkerStatus(w, IDLE)
     await noteWorkerStatus(w, { status: 'blocked', summary: 'usage limit reached (resets 4pm)' })
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
@@ -295,11 +296,32 @@ describe('carryWorkerStop', () => {
 
   it('carries a stop the worker no longer showed', async () => {
     const w = worker()
-    carryWorkerStop(w.terminalId, LIMIT.summary)
+    carryWorkerStop(w.terminalId, LIMIT.summary, never)
     await noteWorkerStatus(w, LIMIT)
     expect(window.swarmAPI.sendMessage).not.toHaveBeenCalled()
     // Another stop is a new one, carried or not.
     await noteWorkerStatus(w, MENU)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  // A turn the 5 s loop never saw at work: the conductor's 'Continue your task.' answered at once
+  // with a limit of the new account's.
+  it('takes the same limit for a new stop once the worker took a turn since its restart, and asks the offer again', async () => {
+    const w = worker()
+    let turned = false
+    const turnedYet = vi.fn(async () => turned)
+    carryWorkerStop(w.terminalId, LIMIT.summary, turnedYet)
+    const offer = vi.fn(async () => false)
+    await noteWorkerStatus(w, LIMIT, offer)
+    expect(turnedYet).toHaveBeenCalledTimes(1)
+    expect(offer).not.toHaveBeenCalled()
+    turned = true
+    await noteWorkerStatus(w, LIMIT, offer)
+    expect(offer).toHaveBeenCalledTimes(1)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+    // Not carried any more: the same stop, read again, is no new one, and nothing is asked.
+    await noteWorkerStatus(w, LIMIT, offer)
+    expect(turnedYet).toHaveBeenCalledTimes(2)
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
   })
 })
