@@ -153,6 +153,8 @@ export const ACCOUNTS_IPC = {
   clearLimit: 'accounts:clear-limit',
   /** "Re-copy from main profile": fresh stripped copies over the profile's own. */
   recopy: 'accounts:recopy',
+  /** The account a launch goes on: the one asked for, else the agent's preferred one. */
+  launchAccount: 'accounts:launch-account',
   /** The line a launch types: the agent's command on its account (§6.2). */
   launchLine: 'accounts:launch-line',
   /** main → renderer: the account Termpolis now knows a terminal runs on, or that it was changed

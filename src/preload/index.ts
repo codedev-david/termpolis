@@ -646,6 +646,7 @@ const accounts: AccountsAPI = {
     ipcRenderer.on('accounts:sign-in-progress', handler)
     return () => ipcRenderer.removeListener('accounts:sign-in-progress', handler)
   },
+  launchAccount: (agent, accountId) => ipcRenderer.invoke('accounts:launch-account', { agent, accountId }),
   launchLine: (req) => ipcRenderer.invoke('accounts:launch-line', req),
   onTerminalAccount: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, e: Parameters<typeof cb>[0]) => cb(e)

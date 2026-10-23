@@ -49,8 +49,12 @@ export function WorkspaceList() {
       await window.termpolis.createTerminal(id, t.shellType as any, cwd, undefined, isClaudeCommand(t.agentCommand))
       // agentCommand has to be carried across: it is what makes this an AI terminal
       // rather than a bare shell, it is what gets re-launched below, and dropping it
-      // here also lost it from the workspace on the next save.
-      newTerminals.push({ id, name: t.name, color: t.color, shellType: t.shellType as any, cwd, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily, agentCommand: t.agentCommand })
+      // here also lost it from the workspace on the next save. Its account too: the agent
+      // launches on the account it ran on (main falls back to the preferred one if it is gone).
+      newTerminals.push({
+        id, name: t.name, color: t.color, shellType: t.shellType as any, cwd, fontSize: t.fontSize, theme: t.theme, fontFamily: t.fontFamily, agentCommand: t.agentCommand,
+        ...(t.agentAccountId ? { agentAccountId: t.agentAccountId } : {}),
+      })
     }
     useTerminalStore.setState({
       terminals: newTerminals,

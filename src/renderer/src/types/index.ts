@@ -34,6 +34,13 @@ export interface TerminalSession {
   theme: string
   fontFamily: string
   agentCommand?: string
+  /** The account Termpolis launched or switched this terminal's agent on, as main answered it
+   *  (accounts:launch-line): kept in workspaces, so a restored one launches on the same account.
+   *  `agentCommand` stays the bare CLI line, which is how the agent is known. */
+  agentAccountId?: string
+  /** Claude Code: the session Termpolis started it with (--session-id) or resumed, which a switch
+   *  resumes when the agent printed no exit hint. */
+  agentSessionId?: string
   isSwarm?: boolean
   hidden?: boolean
   isConductor?: boolean
@@ -1316,6 +1323,9 @@ export interface AccountsAPI {
   /** "Mark available": forget the account's recorded limit. */
   clearLimit(id: string): Promise<IpcResponse<AccountRowView | undefined>>
   onSignInProgress(cb: (p: SignInProgress) => void): () => void
+  /** The account a launch of `agent` goes on: `accountId` while it is registered, else the
+   *  agent's preferred one; null for an agent with no accounts. */
+  launchAccount(agent: AccountAgent, accountId?: string | null): Promise<IpcResponse<{ accountId: string | null }>>
   /** The line a launch types: main builds it (the renderer never builds a path or an env value)
    *  and remembers it, so the terminal's account is main's own record. */
   launchLine(req: LaunchLineRequest): Promise<IpcResponse<LaunchLineResult>>

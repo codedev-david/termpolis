@@ -9,8 +9,8 @@ import { mkdirSync } from 'fs'
 import { join } from 'path'
 import {
   OWN_LINE_MS, _resetTerminalAccountsForTest, claudeSessionOf, forgetTerminalAccount, isAccountChangedByHand,
-  isTerminalAccountConnected, launchAccountOf, noteAgentStart, noteTerminalAccount, noteTypedInput, registerAccountsIpc,
-  terminalAccountId, terminalAgentStart,
+  isTerminalAccountConnected, launchAccountOf, noteAgentStart, noteTerminalAccount, noteTerminalSession, noteTypedInput,
+  registerAccountsIpc, terminalAccountId, terminalAgentStart, terminalSessionId,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
@@ -171,6 +171,34 @@ describe('accounts:launch-line', () => {
     expect(await fails(ACCOUNTS_IPC.launchLine, { terminalId: 't', agent: 'claude', command: 'claude %x%', shellType: 'cmd', accountId: b }))
       .toBe('Termpolis won\'t type that line: cmd would expand a % or ! in the line')
     expect(terminalAccountId('t')).toBeUndefined()
+  })
+})
+
+describe('accounts:launch-account', () => {
+  it('names the account a launch goes on before its line is built, recording nothing', async () => {
+    const { main, b } = await twoClaude()
+    expect(await ok(ACCOUNTS_IPC.launchAccount, { agent: 'claude' })).toEqual({ accountId: main })
+    expect(await ok(ACCOUNTS_IPC.launchAccount, { agent: 'claude', accountId: b })).toEqual({ accountId: b })
+    expect(await ok(ACCOUNTS_IPC.launchAccount, { agent: 'codex' })).toEqual({ accountId: null })
+    expect(terminalAccountId('t1')).toBeUndefined()
+    expect(await fails(ACCOUNTS_IPC.launchAccount, { agent: 'gemini' })).toBe('unknown agent')
+    writeText(join(sb.paths.userData, 'agent-accounts.json'), '{ broken')
+    expect(await ok(ACCOUNTS_IPC.launchAccount, { agent: 'claude' })).toEqual({ accountId: null })
+  })
+
+  it('keeps the Claude Code session each launch line starts or resumes, as main\'s own record', async () => {
+    const { b } = await twoClaude()
+    const r = await line({ accountId: b })
+    expect(terminalSessionId('t1')).toBe(r.sessionId)
+    await line({ accountId: b, command: 'claude --continue' })
+    expect(terminalSessionId('t1')).toBeUndefined()
+    // Not Claude Code: its record is left alone.
+    noteTerminalSession('t1', 'kept')
+    await ok(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g' })
+    await line({ agent: 'agy', command: 'agy' })
+    expect(terminalSessionId('t1')).toBe('kept')
+    forgetTerminalAccount('t1')
+    expect(terminalSessionId('t1')).toBeUndefined()
   })
 })
 

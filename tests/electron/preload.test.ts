@@ -1095,6 +1095,7 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.stopSignIn('acc_1'), ACCOUNTS_IPC.stopSignIn, { accountId: 'acc_1' }],
       [() => a.noteLimit('acc_1', { text: 'You\'ve hit your session limit', resetsAt: 5 }), ACCOUNTS_IPC.noteLimit, { id: 'acc_1', text: 'You\'ve hit your session limit', resetsAt: 5 }],
       [() => a.clearLimit('acc_1'), ACCOUNTS_IPC.clearLimit, { id: 'acc_1' }],
+      [() => a.launchAccount('codex', 'acc_1'), ACCOUNTS_IPC.launchAccount, { agent: 'codex', accountId: 'acc_1' }],
       [() => a.launchLine({ terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }), ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }],
     ]
     for (const [call, channel, payload] of cases) {

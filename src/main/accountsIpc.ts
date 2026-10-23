@@ -88,10 +88,24 @@ export function noteTerminalAccount(terminalId: string, accountId: string | null
 
 export function forgetTerminalAccount(terminalId: string): void {
   terminalAccounts.delete(terminalId)
+  sessionIds.delete(terminalId)
   ownLines.delete(terminalId)
   typedLines.delete(terminalId)
   byHand.delete(terminalId)
   agentStarts.delete(terminalId)
+}
+
+/** The Claude Code session Termpolis started each terminal's agent with (--session-id) or resumed
+ *  in it: what a switch resumes when the agent printed no exit hint (R8). */
+const sessionIds = new Map<string, string>()
+
+export function terminalSessionId(terminalId: string): string | undefined {
+  return sessionIds.get(terminalId)
+}
+
+export function noteTerminalSession(terminalId: string, sessionId: string | null): void {
+  if (sessionId) sessionIds.set(terminalId, sessionId)
+  else sessionIds.delete(terminalId)
 }
 
 /** How long a line main built stays Termpolis's own: the renderer types it within moments. */
@@ -194,6 +208,7 @@ export function terminalsOnAccount(accountId: string): number {
 
 export function _resetTerminalAccountsForTest(): void {
   terminalAccounts.clear()
+  sessionIds.clear()
   ownLines.clear()
   typedLines.clear()
   byHand.clear()
@@ -887,6 +902,16 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     return { stopped: !!w }
   })
 
+  // The account a launch of `agent` goes on, before its line is built: its folder trust and its
+  // Codex prepare are written into that account's profile.
+  handle(ACCOUNTS_IPC.launchAccount, (input): { accountId: string | null } => {
+    const agent = ACCOUNT_AGENTS.find((a) => a === input.agent)
+    if (!agent) throw new Error('unknown agent')
+    const loaded = loadAccounts(userData(), fsx)
+    const accounts = loaded.ok ? sortedAccounts(loaded.doc).filter((a) => a.agent === agent) : []
+    return { accountId: loaded.ok && accounts.length > 0 ? launchAccountOf(loaded.doc, accounts, input.accountId).id : null }
+  })
+
   handle(ACCOUNTS_IPC.launchLine, (input): LaunchLineResult => {
     const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
     const agent = ACCOUNT_AGENTS.find((a) => a === input.agent)
@@ -922,6 +947,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       line = built.line
     }
     noteTerminalAccount(terminalId, account.id)
+    if (agent === 'claude') noteTerminalSession(terminalId, sessionId ?? null)
     const t = now()
     ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > t), { line, until: t + OWN_LINE_MS }])
     return { line, accountId: account.id, explicit, ...(sessionId ? { sessionId } : {}) }
