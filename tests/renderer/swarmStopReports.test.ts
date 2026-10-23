@@ -7,6 +7,8 @@ import { noteWorkerStatus } from '../../src/renderer/src/lib/swarmStopReports'
 const LIMIT = { status: 'blocked' as const, summary: 'usage limit reached (resets 3:04 PM)' }
 const MENU = { status: 'blocked' as const, summary: 'waiting on a menu: Codex asks whether to switch to a model that uses fewer credits' }
 const WORKING = { status: 'working' as const, summary: 'Working' }
+const IDLE = { status: 'idle' as const, summary: 'Waiting at prompt' }
+const THINKING = { status: 'thinking' as const, summary: 'Analyzing and generating response...' }
 
 let n = 0
 /** A worker of its own: the module remembers each terminal's stop. */
@@ -49,6 +51,92 @@ describe('noteWorkerStatus', () => {
     await noteWorkerStatus(w, LIMIT)
     await noteWorkerStatus(w, WORKING)
     await noteWorkerStatus(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  // MW1-3: while ConPTY repaints a resized screen, a stopped worker reads idle for a moment, or
+  // thinking while no input box is drawn yet, and the next read shows the same stop: told twice.
+  it.each([
+    ['idle', IDLE],
+    ['thinking', THINKING],
+  ])('tells it once when one read between shows no stop, %s as a resized screen redraws', async (_name, between) => {
+    const w = worker()
+    await noteWorkerStatus(w, LIMIT)
+    await noteWorkerStatus(w, between)
+    await noteWorkerStatus(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells it again when the worker stops again after two reads in a row with no stop', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, LIMIT)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, THINKING)
+    await noteWorkerStatus(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('counts the reads with no stop only in a row: a read of the stop between starts them over', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, LIMIT)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, LIMIT)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps each worker\'s reads apart: another worker read with no stop forgets nothing of this one', async () => {
+    const w1 = worker()
+    const w2 = worker()
+    await noteWorkerStatus(w1, LIMIT)
+    await noteWorkerStatus(w2, IDLE)
+    await noteWorkerStatus(w2, IDLE)
+    await noteWorkerStatus(w1, IDLE)
+    await noteWorkerStatus(w1, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  // Several Claude workers on one account hit the limit together, and the poller reads them in
+  // turn: each stopped worker's reads with no stop are its own (MR2-3).
+  it("keeps each stopped worker's count apart while several are stopped, read in turn", async () => {
+    const w1 = worker()
+    const w2 = worker()
+    await noteWorkerStatus(w1, LIMIT)
+    await noteWorkerStatus(w2, LIMIT)
+    await noteWorkerStatus(w1, IDLE)
+    await noteWorkerStatus(w2, IDLE)
+    await noteWorkerStatus(w1, IDLE)
+    await noteWorkerStatus(w1, LIMIT)
+    // w1 showed no stop on two reads in a row of its own, so its stop after them is another one;
+    // w2's one read between counts for w2 only, so w2 read stopped again is the same stop.
+    await noteWorkerStatus(w2, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(3)
+  })
+
+  // Each stopped worker's one read with no stop, while its resized screen is drawn again, is no
+  // end of its stop, whichever other stopped worker is read between (MW1-3, MR2-3).
+  it('keeps a stopped worker stopped after one read of its own with no stop, another stopped worker read between', async () => {
+    const w1 = worker()
+    const w2 = worker()
+    await noteWorkerStatus(w1, LIMIT)
+    await noteWorkerStatus(w2, LIMIT)
+    await noteWorkerStatus(w1, IDLE)
+    await noteWorkerStatus(w2, IDLE)
+    await noteWorkerStatus(w2, LIMIT)
+    await noteWorkerStatus(w1, LIMIT)
+    expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  // A new stop counts its reads with no stop from 0: the one read after the stop before it is not
+  // one of them (MR2-3, MW2-2).
+  it('counts the reads with no stop from a new stop on: one read before it does not count toward forgetting it', async () => {
+    const w = worker()
+    await noteWorkerStatus(w, LIMIT)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, MENU)
+    await noteWorkerStatus(w, IDLE)
+    await noteWorkerStatus(w, MENU)
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)
   })
 

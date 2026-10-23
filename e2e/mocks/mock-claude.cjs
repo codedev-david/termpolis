@@ -47,6 +47,13 @@ if (pIdx !== -1) {
     console.error(`error: unknown option '${unknown}'`);
     process.exit(1);
   }
+  // Termpolis starts the conductor's session under an id of its own, so that Trace follows that
+  // session's transcript. The real CLI refuses one that is no UUID, in these words.
+  const sidIdx = argv.indexOf('--session-id');
+  if (sidIdx !== -1 && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(argv[sidIdx + 1] || '')) {
+    console.error('Error: Invalid session ID. Must be a valid UUID.');
+    process.exit(1);
+  }
   readPrompt(argv, pIdx)
     .then((prompt) => {
       if (process.env.MOCK_CLAUDE_RECORD) {
@@ -93,7 +100,7 @@ if (pIdx !== -1) {
 // The options the conductor launch can pass, each with how many values it takes.
 // -p takes the prompt as its value only when one follows; otherwise it's on stdin.
 function unknownOption(args) {
-  const values = { '--mcp-config': 1, '--model': 1, '--output-format': 1 };
+  const values = { '--mcp-config': 1, '--model': 1, '--output-format': 1, '--session-id': 1 };
   const flags = new Set(['-p', '--print', '--dangerously-skip-permissions', '--verbose']);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];

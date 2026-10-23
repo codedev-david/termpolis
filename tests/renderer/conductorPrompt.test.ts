@@ -190,28 +190,20 @@ describe('buildConductorPrompt', () => {
 
   it("says what to do when submit refused to send a text behind other text, or into a shell its agent left", () => {
     const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
-    expect(step5).toMatch(/already held other text, nothing was sent: clear the input[\s\S]*then send the text again/)
+    expect(step5).toMatch(/held other text\s+that clearing didn't remove, nothing was sent: give the task to a new agent \(STEP 3 to 5\), not that one again\./)
     // Submit refuses only once the agent is gone: right after a restart it waits for the agent's input.
     expect(step5).toMatch(/at its shell's prompt, the agent is not running: start it again \(STEP 4\),\s+then send the text again\. Right after STEP 4, submit=true waits for the agent to show its input\./)
     expect(step5).not.toMatch(/still starting/)
   })
 
-  // R4-3: "the keys a person would press" named none, and the one a person reaches for, Ctrl+C, leaves
-  // the text in Gemini CLI's input and quits it when pressed again. Ctrl+U clears a line of the input
-  // in each of the three, sends nothing and quits none (live, in Windows PowerShell 5.1: Claude Code
-  // 2.1.302, Codex 0.153.4, Antigravity 1.4.2); twenty in one write clear a long or tall text there,
-  // while a write of eighty reads to Claude Code as a paste and clears nothing.
-  it('names the key that clears an agent\'s input, Ctrl+U for each agent, and warns off Ctrl+C and Esc', () => {
+  // The review of fix/swarm154 (W0-1, S0-2): STEP 5 told the conductor to clear a worker's input with
+  // twenty Ctrl+U written without submit. Run as the conductor, no Claude model delivered one: Haiku
+  // wrote the escape out as 120 characters, Sonnet line feeds or nothing, Opus nothing (while saying
+  // it had sent them), so the input never emptied and the task was never sent. Submit clears it now.
+  it("leaves clearing an agent's input to submit: no keys for the conductor to write", () => {
     const step5 = block(buildDefault(), 'STEP 5', 'STEP 6')
-    expect(step5).toMatch(/clears it is Ctrl\+U for each agent: Claude Code, Codex and Gemini CLI \(agy\)/)
-    const clear = step5.split('\n').find((l) => l.includes("write_to_terminal(terminalId='[id]', text='\\u0015"))!
-    expect(clear.trim()).toBe(`write_to_terminal(terminalId='[id]', text='${'\\u0015'.repeat(20)}')`)
-    expect(clear).not.toMatch(/submit/)
-    expect(step5).toMatch(/without submit/)
-    expect(step5).toMatch(/read_output, and write them again until the input is empty/)
-    expect(step5).toMatch(/Never clear it with Ctrl\+C or Esc: a second\s+Ctrl\+C quits the agent/)
-    expect(step5).not.toMatch(/keys a person/)
-    // The escape as six characters, for the conductor to put in its call: no raw control character.
+    expect(step5).toMatch(/submit=true clears anything else in the agent's input before it types\./)
+    expect(step5).not.toMatch(/Ctrl\+U|u0015|write them again|keys a person/)
     expect(buildDefault()).not.toMatch(/\u0015/)
   })
 

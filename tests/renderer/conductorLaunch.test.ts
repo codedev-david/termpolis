@@ -13,13 +13,18 @@ import {
 // the prompt arrived as extra arguments, `--watch`-like words as options, and claude exited.
 // The prompt now goes on stdin. These pin the shape; conductorLaunch.win.test.ts runs it.
 
+const SESSION = '1b4e28ba-2fa1-41d2-883f-0016d3cca427'
 const WIN = {
   taskFile: "C:\\Users\\O'Brien $x\\.termpolis-conductor-task.md",
   mcpConfigPath: "C:\\Users\\O'Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json",
+  sessionId: SESSION,
+  claudeHomeFile: "C:\\Users\\O'Brien $x\\.termpolis-conductor-claude-home",
 }
 const UNIX = {
   taskFile: "/home/o'brien/.termpolis-conductor-task.md",
   mcpConfigPath: "/home/o'brien/.config/termpolis/claude-mcp-config.json",
+  sessionId: SESSION,
+  claudeHomeFile: "/home/o'brien/.termpolis-conductor-claude-home",
 }
 
 describe('conductorRunScript on Windows', () => {
@@ -28,7 +33,7 @@ describe('conductorRunScript on Windows', () => {
   it('pipes the task file into claude on stdin and puts only flags on its command line', () => {
     expect(script).toContain(
       "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\Users\\O''Brien $x\\.termpolis-conductor-task.md' | " +
-        "& $claudeExe -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --dangerously-skip-permissions",
+        "& $claudeExe -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions",
     )
     expect(script).not.toContain('$task')
   })
@@ -53,30 +58,71 @@ describe('conductorRunScript on Windows', () => {
     expect(script.indexOf('[Console]::InputEncoding = $enc')).toBeLessThan(pipe)
   })
 
-  it('falls back to the stock UTF-8 under Constrained Language Mode, and says so in its output', () => {
-    // AppLocker and WDAC run an untrusted script, such as one in the home folder, in
-    // ConstrainedLanguage, which refuses New-Object and setting [Console]::InputEncoding. The
-    // defaults then turned every non-ASCII character of the prompt into '?', with no word of it.
+  // AppLocker and WDAC run an untrusted script, such as one in the home folder, in
+  // ConstrainedLanguage, which refuses New-Object and setting [Console]::InputEncoding. The
+  // defaults then turned every non-ASCII character of the prompt into '?', with no word of it, and
+  // its stock UTF-8 put a BOM in front (WL-4). Start-Process hands claude the task file itself.
+  const START = (program: string, args: string): string =>
+    `$run = Start-Process -FilePath ${program} -ArgumentList '${args}' -NoNewWindow -PassThru -RedirectStandardInput 'C:\\Users\\O''Brien $x\\.termpolis-conductor-task.md'\n` +
+    'if ($run) {\n  $null = $run.Handle\n  while (-not $run.HasExited) { Start-Sleep -Milliseconds 200 }\n  $global:LASTEXITCODE = $run.ExitCode\n}'
+  const ARGS = `-p --mcp-config "C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json" --session-id ${SESSION} --dangerously-skip-permissions`
+  const indented = (text: string, by: number): string => text.split('\n').map((line) => ' '.repeat(by) + line).join('\n')
+
+  it('pipes the task only in FullLanguage, where the encodings can be set', () => {
     expect(script).toContain(
-      "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {\n  $enc = New-Object System.Text.UTF8Encoding $false\n",
+      "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {\n  $enc = New-Object System.Text.UTF8Encoding $false\n" +
+        '  $OutputEncoding = $enc\n  [Console]::InputEncoding = $enc\n  Get-Content -Raw ',
     )
-    expect(script).toMatch(/\n\} else \{\n {2}\$OutputEncoding = \[System\.Text\.Encoding\]::UTF8\n {2}Write-Output '[^'\n]*ConstrainedLanguage[^'\n]*'\n\}\n/)
-    expect(script.indexOf('[System.Text.Encoding]::UTF8')).toBeLessThan(script.indexOf('Get-Content -Raw'))
   })
 
-  it("clears the last exit code before the pipe: a claude that never starts reports 1, not the probe's 0", () => {
+  it('in ConstrainedLanguage hands claude the task file itself as its stdin, with Start-Process', () => {
+    expect(script).toContain(`\n  } else {\n${indented(START('$launcher', ARGS), 4)}\n  }\n}\n$code = $LASTEXITCODE\n`)
+    // Neither the pipe's BOM nor its encodings: the only Start-Process is after the FullLanguage pipe.
+    expect(script.indexOf('Start-Process')).toBeGreaterThan(script.indexOf("-eq 'FullLanguage'"))
+  })
+
+  it("starts the claude.cmd npm writes beside its PowerShell shim, which Start-Process can't start", () => {
+    expect(script).toContain(
+      "} else {\n  $launcher = $claudeExe\n  $cmdShim = $launcher -replace '\\.ps1$', '.cmd'\n" +
+        "  if ($launcher -like '*.ps1' -and (Test-Path -LiteralPath $cmdShim)) { $launcher = $cmdShim }\n  if ($launcher -like '*.ps1') {\n",
+    )
+  })
+
+  it('pipes to a .ps1 with no claude.cmd beside it in ConstrainedLanguage, as UTF-8 behind a BOM, and says so', () => {
+    expect(script).toMatch(
+      /\n {2}if \(\$launcher -like '\*\.ps1'\) \{\n {4}\$OutputEncoding = \[System\.Text\.Encoding\]::UTF8\n {4}Write-Output '[^'\n]*ConstrainedLanguage[^'\n]*byte order mark[^'\n]*'\n {4}Get-Content -Raw -Encoding UTF8 -LiteralPath '[^\n]*\.termpolis-conductor-task\.md' \| & \$launcher -p --mcp-config '[^\n]*' --session-id '[^']+' --dangerously-skip-permissions\n {2}\} else \{\n/,
+    )
+  })
+
+  it("in test mode starts the stand-in's program with Start-Process, its arguments in front of claude's", () => {
+    const test = conductorRunScript(true, { ...WIN, testCommand: 'node e2e/mocks/mock-claude.cjs' })
+    expect(test).toContain(`\n} else {\n${indented(START("'node'", `e2e/mocks/mock-claude.cjs ${ARGS}`), 2)}\n}\n$code = $LASTEXITCODE\n`)
+    expect(test).not.toContain('$launcher')
+    // A program alone, with no arguments of its own.
+    expect(conductorRunScript(true, { ...WIN, testCommand: 'mock-claude' })).toContain(`-FilePath 'mock-claude' -ArgumentList '${ARGS}' `)
+  })
+
+  it('leaves --mcp-config out of the Start-Process command line too when there is no config path', () => {
+    const bare = conductorRunScript(true, { ...WIN, mcpConfigPath: '' })
+    expect(bare).toContain(`-ArgumentList '-p --session-id ${SESSION} --dangerously-skip-permissions' `)
+  })
+
+  it("clears the last exit code before claude is started either way: one that never starts reports 1, not the probe's 0", () => {
     // Resolve-WorkingClaude's `--version` leaves $LASTEXITCODE at 0, so a pipe that failed before
-    // claude ran (a binding error, a binary gone) reported "exited 0". Global: a script-scope
-    // variable would hide the one the native command sets.
+    // claude ran (a binding error, a binary gone) reported "exited 0", and so would a Start-Process
+    // that started nothing. Global: a script-scope variable would hide the one the native command sets.
     for (const s of [script, conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' })]) {
-      expect(s).toMatch(/\n\$global:LASTEXITCODE = \$null\nGet-Content -Raw /)
+      expect(s).toMatch(/\n\$global:LASTEXITCODE = \$null\nif \(\$ExecutionContext\.SessionState\.LanguageMode -eq 'FullLanguage'\) \{\n/)
+      expect(s.match(/\$global:LASTEXITCODE = \$null/g)).toHaveLength(1)
       expect(s).toContain('if ($null -eq $code) { $code = 1 }')
     }
   })
 
-  it('never puts a path in double quotes, where a $ or a backtick in it would expand', () => {
-    expect(script).not.toMatch(/"[^"\n]*termpolis-conductor-task\.md"/)
-    expect(script).not.toMatch(/"[^"\n]*claude-mcp-config\.json"/)
+  it('never puts a path in a double-quoted PowerShell string, where a $ or a backtick in it would expand', () => {
+    // Start-Process's command line is a single-quoted literal, whose double quotes are the program's.
+    const outsideLiterals = script.replace(/'(?:[^']|'')*'/g, "''")
+    expect(outsideLiterals).not.toMatch(/termpolis-conductor-task\.md|claude-mcp-config\.json/)
+    expect(script).not.toMatch(/"[^"'\n]*termpolis-conductor-task\.md"/)
   })
 
   it('still probes for a claude binary that answers --version', () => {
@@ -92,7 +138,7 @@ describe('conductorRunScript on Windows', () => {
   it('leaves --mcp-config out when there is no config path, rather than pass it empty', () => {
     const bare = conductorRunScript(true, { ...WIN, mcpConfigPath: '' })
     expect(bare).not.toContain('--mcp-config')
-    expect(bare).toContain('| & $claudeExe -p --dangerously-skip-permissions')
+    expect(bare).toContain("| & $claudeExe -p --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions")
   })
 
   it('in test mode runs the stand-in with the same delivery and skips the binary probe', () => {
@@ -101,7 +147,7 @@ describe('conductorRunScript on Windows', () => {
     expect(test).toContain('[Console]::InputEncoding = $enc')
     expect(test).toContain(
       "Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\Users\\O''Brien $x\\.termpolis-conductor-task.md' | " +
-        "node e2e/mocks/mock-claude.cjs -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --dangerously-skip-permissions",
+        "node e2e/mocks/mock-claude.cjs -p --mcp-config 'C:\\Users\\O''Brien $x\\AppData\\Roaming\\termpolis\\claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions",
     )
   })
 })
@@ -113,7 +159,7 @@ describe('conductorRunScript on Linux and macOS', () => {
     expect(script.startsWith('#!/bin/bash\n')).toBe(true)
     expect(script).toContain("TASK_FILE='/home/o'\\''brien/.termpolis-conductor-task.md'")
     expect(script).toContain(
-      `"$CLAUDE_EXE" -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --dangerously-skip-permissions < "$TASK_FILE"`,
+      `"$CLAUDE_EXE" -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions < "$TASK_FILE"`,
     )
     expect(script).not.toContain('$(cat')
   })
@@ -121,15 +167,59 @@ describe('conductorRunScript on Linux and macOS', () => {
   it('leaves --mcp-config out when there is no config path', () => {
     const bare = conductorRunScript(false, { ...UNIX, mcpConfigPath: '' })
     expect(bare).not.toContain('--mcp-config')
-    expect(bare).toContain('"$CLAUDE_EXE" -p --dangerously-skip-permissions < "$TASK_FILE"')
+    expect(bare).toContain(`"$CLAUDE_EXE" -p --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions < "$TASK_FILE"`)
   })
 
   it('in test mode runs the stand-in with the same delivery and skips the binary probe', () => {
     const test = conductorRunScript(false, { ...UNIX, testCommand: 'node e2e/mocks/mock-claude.cjs' })
     expect(test).not.toContain('resolve_claude')
     expect(test).toContain(
-      "node e2e/mocks/mock-claude.cjs -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --dangerously-skip-permissions < \"$TASK_FILE\"",
+      "node e2e/mocks/mock-claude.cjs -p --mcp-config '/home/o'\\''brien/.config/termpolis/claude-mcp-config.json' --session-id '1b4e28ba-2fa1-41d2-883f-0016d3cca427' --dangerously-skip-permissions < \"$TASK_FILE\"",
     )
+  })
+})
+
+// Trace follows the conductor's own session's transcript, `<id>.jsonl`, which claude names after
+// the id it is started with: not the newest transcript in the folder, which could be another's.
+describe('the run scripts start claude under the session id they are given', () => {
+  it('hand it to claude with --session-id in every launch mode: a single-quoted literal where it is code', () => {
+    const id = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
+    // Every way a script starts claude: the pipe (bash's, PowerShell's in FullLanguage and to a lone
+    // .ps1 in ConstrainedLanguage), and Start-Process's command line, itself a literal.
+    for (const [isWindows, paths, starts] of [[true, WIN, 3], [false, UNIX, 1]] as const) {
+      for (const testCommand of [undefined, 'node e2e/mocks/mock-claude.cjs']) {
+        const script = conductorRunScript(isWindows, { ...paths, sessionId: id, testCommand })
+        const given = [...script.matchAll(/--session-id (\S+) --dangerously-skip-permissions/g)].map((m) => m[1])
+        expect(given).toHaveLength(isWindows && testCommand ? 2 : starts)
+        for (const value of given) expect([`'${id}'`, id]).toContain(value)
+        expect(script.match(/--session-id/g)).toHaveLength(given.length)
+        expect(script).toContain(` --session-id '${id}' --dangerously-skip-permissions`)
+      }
+    }
+  })
+})
+
+// Claude Code keeps that session's transcript under the config home claude gets from the shell it
+// runs in, which a profile or a command typed before the run can set: main can't tell it, so the
+// script records it, with the session id, before claude starts.
+describe('the run scripts record the session and the config home claude gets', () => {
+  it('on Windows, with Set-Content, which Constrained Language Mode allows, as single-quoted literals', () => {
+    for (const testCommand of [undefined, 'node e2e/mocks/mock-claude.cjs']) {
+      const script = conductorRunScript(true, { ...WIN, testCommand })
+      const line = `Set-Content -LiteralPath 'C:\\Users\\O''Brien $x\\.termpolis-conductor-claude-home' -Value '${SESSION}', "$env:CLAUDE_CONFIG_DIR" -Encoding UTF8 -ErrorAction SilentlyContinue`
+      expect(script).toContain(`\n${line}\n$global:LASTEXITCODE = $null\n`)
+      // Before claude is started, whichever way: the first start is the FullLanguage pipe.
+      expect(script.indexOf(line)).toBeLessThan(script.indexOf('Get-Content -Raw'))
+    }
+  })
+
+  it('on Linux and macOS, with printf, saying nothing when the home folder is not writable', () => {
+    for (const testCommand of [undefined, 'node e2e/mocks/mock-claude.cjs']) {
+      const script = conductorRunScript(false, { ...UNIX, testCommand })
+      const line = `printf '%s\\n%s\\n' '${SESSION}' "\${CLAUDE_CONFIG_DIR-}" 2>/dev/null > '/home/o'\\''brien/.termpolis-conductor-claude-home'`
+      expect(script).toContain(`\n${line}\n`)
+      expect(script.indexOf(line)).toBeLessThan(script.indexOf(' < "$TASK_FILE"'))
+    }
   })
 })
 
@@ -138,7 +228,8 @@ describe('conductorRunScript on Linux and macOS', () => {
 describe('the run scripts report when claude exits', () => {
   it('print the sentinel and claude\'s exit code on a line of their own, then exit with that code (Windows)', () => {
     for (const script of [conductorRunScript(true, WIN), conductorRunScript(true, { ...WIN, testCommand: 'node e2e/mocks/mock-claude.cjs' })]) {
-      expect(script).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n/)
+      // After claude, however it was started: the last } closes the FullLanguage test.
+      expect(script).toMatch(/\n\}\n\$code = \$LASTEXITCODE\n/)
       // Two blank lines first: claude's output ending mid-line would otherwise take the report in,
       // and ConPTY draws the first of them as nothing when that output filled its last row.
       expect(script).toContain(`Write-Output ''\nWrite-Output ''\nWrite-Output "${CONDUCTOR_EXIT_SENTINEL} $code"\nexit $code\n`)
@@ -156,7 +247,7 @@ describe('the run scripts report when claude exits', () => {
   it('print a start line before anything else, so a report can leave out the echoed launch line', () => {
     // After the BOM, which is no line.
     expect(conductorRunScript(true, WIN).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\nfunction Resolve-WorkingClaude {`)).toBe(true)
-    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\nif ($ExecutionContext`)).toBe(true)
+    expect(conductorRunScript(true, { ...WIN, testCommand: 'node m.cjs' }).startsWith(`\uFEFFWrite-Output '${CONDUCTOR_START_LINE}'\nSet-Content -LiteralPath `)).toBe(true)
     expect(conductorRunScript(false, UNIX).startsWith(`#!/bin/bash\necho '${CONDUCTOR_START_LINE}'\nTASK_FILE=`)).toBe(true)
   })
 

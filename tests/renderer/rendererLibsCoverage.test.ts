@@ -761,8 +761,10 @@ describe('conductorManager — uncovered branches', () => {
         const psWrite = tp().writeConfigFile.mock.calls.find(([p]) =>
           typeof p === 'string' && p.endsWith('.termpolis-conductor-run.ps1'))
         const body = psWrite![1] as string
-        // Same stdin delivery as production (GitHub #36), just without the probe.
-        expect(body).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+' \| node e2e\/mocks\/mock-claude\.cjs -p /m)
+        // Same stdin delivery as production (GitHub #36), just without the probe: piped in
+        // FullLanguage, and the file itself in Constrained Language Mode.
+        expect(body).toMatch(/^ {2}Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+' \| node e2e\/mocks\/mock-claude\.cjs -p /m)
+        expect(body).toMatch(/^ {2}\$run = Start-Process -FilePath 'node' -ArgumentList 'e2e\/mocks\/mock-claude\.cjs -p /m)
         expect(body).not.toContain('Resolve-WorkingClaude')
         // And the same exit report, which the monitor reads to notice the mock is gone.
         expect(body).toContain('Write-Output "[termpolis-conductor-exited] $code"\nexit $code\n')

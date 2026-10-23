@@ -12,6 +12,7 @@ import {
   stopBridgeForAgent,
   stopAllBridges,
 } from '../../src/renderer/src/lib/swarmBridgeManager'
+import { WorkerFeed } from '../../src/renderer/src/lib/swarmBridge'
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -191,6 +192,64 @@ describe('startBridgeForAgent', () => {
     expect(read).toHaveBeenNthCalledWith(4, 't1', 15)
     expect(read).toHaveBeenNthCalledWith(6, 't1', 15)
     expect(read).toHaveBeenCalledTimes(6)
+  })
+
+  // W2: on Linux and macOS a terminal made smaller says nothing of it in its output, no report and
+  // no cell past the smaller edge. Main's size, on every read, does.
+  it('reads a terminal again from the start when the size main gives with a read is smaller', async () => {
+    const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>
+    read
+      .mockResolvedValueOnce({ success: true, data: { output: 'hi', length: 2, nextOffset: 2, missed: 0, cols: 80, rows: 24 } })
+      .mockResolvedValueOnce({ success: true, data: { output: 'small', length: 5, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+      .mockResolvedValueOnce({ success: true, data: { output: 'hismall', length: 7, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(read).toHaveBeenNthCalledWith(2, 't1', 2)
+    expect(read).toHaveBeenNthCalledWith(3, 't1')
+    // Read on from there at 60x20, which every read then says: no whole read again.
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(read).toHaveBeenNthCalledWith(4, 't1', 7)
+    expect(read).toHaveBeenNthCalledWith(6, 't1', 7)
+    expect(read).toHaveBeenCalledTimes(6)
+  })
+
+  // What the whole read is for: the screen is built again from all main holds, at the size it is
+  // drawn for, and not from the 5 seconds of output that showed the resize.
+  it('starts the screen over from the whole read, not from the read that showed the resize', async () => {
+    const update = vi.spyOn(WorkerFeed.prototype, 'update')
+    try {
+      const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>
+      read
+        .mockResolvedValueOnce({ success: true, data: { output: 'hi', length: 2, nextOffset: 2, missed: 0, cols: 80, rows: 24 } })
+        .mockResolvedValueOnce({ success: true, data: { output: 'small', length: 5, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+        .mockResolvedValueOnce({ success: true, data: { output: 'hismall', length: 7, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+        .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+
+      startBridgeForAgent('t1', 'Codex')
+      await vi.advanceTimersByTimeAsync(10000)
+      expect(update).toHaveBeenCalledTimes(2)
+      expect(update).toHaveBeenNthCalledWith(2, expect.objectContaining({ output: 'hismall', cols: 60, rows: 20 }))
+    } finally {
+      update.mockRestore()
+    }
+  })
+
+  // And reads on from where the whole read ended: the output that came after the read that showed
+  // the resize is in the whole read, and read again it would be drawn on the screen twice.
+  it('reads on from where the whole read ended, though more came after the read that showed the resize', async () => {
+    const read = window.termpolis.readTerminalBuffer as ReturnType<typeof vi.fn>
+    read
+      .mockResolvedValueOnce({ success: true, data: { output: 'hi', length: 2, nextOffset: 2, missed: 0, cols: 80, rows: 24 } })
+      .mockResolvedValueOnce({ success: true, data: { output: 'small', length: 5, nextOffset: 7, missed: 0, cols: 60, rows: 20 } })
+      .mockResolvedValueOnce({ success: true, data: { output: 'hismall, and more', length: 17, nextOffset: 17, missed: 0, cols: 60, rows: 20 } })
+      .mockResolvedValue({ success: true, data: { output: '', length: 0, nextOffset: 17, missed: 0, cols: 60, rows: 20 } })
+
+    startBridgeForAgent('t1', 'Codex')
+    await vi.advanceTimersByTimeAsync(15000)
+    expect(read).toHaveBeenNthCalledWith(3, 't1')
+    expect(read).toHaveBeenNthCalledWith(4, 't1', 17)
   })
 
   it('keeps going when that second read fails', async () => {

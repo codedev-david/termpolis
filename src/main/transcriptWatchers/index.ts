@@ -1,4 +1,4 @@
-import { attachClaudeCodeWatcher, type ClaudeCodeWatcherHandle } from './claudeCodeWatcher'
+import { attachClaudeCodeWatcher, attachClaudeSessionWatcher, type ClaudeCodeWatcherHandle, type ClaudeSessionWatcherHandle } from './claudeCodeWatcher'
 import { attachCodexWatcher, type CodexWatcherHandle } from './codexWatcher'
 import { attachGeminiWatcher, type GeminiWatcherHandle } from './geminiWatcher'
 
@@ -20,6 +20,7 @@ import { attachGeminiWatcher, type GeminiWatcherHandle } from './geminiWatcher'
 
 export type AttachedWatcher =
   | ClaudeCodeWatcherHandle
+  | ClaudeSessionWatcherHandle
   | CodexWatcherHandle
   | GeminiWatcherHandle
 
@@ -27,14 +28,24 @@ const active = new Map<string, AttachedWatcher[]>()
 
 export type DetectedAgent = 'claude' | 'codex' | 'gemini'
 
-export function attachWatcher(terminalId: string, cwd: string, agentType: DetectedAgent): AttachedWatcher | null {
+/** `sessionId`: the Claude Code session whose transcript to follow, the swarm conductor's (it is
+ *  started with `claude -p --session-id`). Without one a pane's newest transcript in `cwd` is. */
+export function attachWatcher(terminalId: string, cwd: string, agentType: DetectedAgent, sessionId?: string): AttachedWatcher | null {
   if (!terminalId || typeof terminalId !== 'string') return null
   if (!cwd || typeof cwd !== 'string') return null
 
   let handle: AttachedWatcher | null = null
   switch (agentType) {
     case 'claude':
-      handle = attachClaudeCodeWatcher(terminalId, cwd)
+      if (typeof sessionId === 'string') {
+        // Once however often it is asked for: a second watcher of the same file would put every
+        // event on the bus twice, and Trace would show each step twice.
+        const following = active.get(terminalId)?.find((h) => 'sessionId' in h && h.sessionId === sessionId)
+        if (following) return following
+        handle = attachClaudeSessionWatcher(terminalId, cwd, sessionId)
+      } else {
+        handle = attachClaudeCodeWatcher(terminalId, cwd)
+      }
       break
     case 'codex':
       handle = attachCodexWatcher(terminalId)

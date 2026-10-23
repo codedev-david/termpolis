@@ -26,6 +26,7 @@ import fs from 'fs'
 import os from 'os'
 import { e2eLaunchArgs, dismissOnboarding, e2eUserDataDir, e2eShimEnv, quitApp, ensureE2eBuild } from './helpers/launch'
 import { findConductorExit, type ConductorExit } from '../src/renderer/src/lib/conductorLaunch'
+import { CONDUCTOR_CLAUDE_HOME_FILE } from '../src/shared/conductorFiles'
 
 let app: ElectronApplication
 let page: Page
@@ -36,6 +37,7 @@ const TASK_FILE = path.join(os.homedir(), '.termpolis-conductor-task.md')
 const RUN_PS1 = path.join(os.homedir(), '.termpolis-conductor-run.ps1')
 const RUN_SH = path.join(os.homedir(), '.termpolis-conductor-run.sh')
 const RUN_CMD = path.join(os.homedir(), '.termpolis-conductor-run.cmd')
+const CLAUDE_HOME_FILE = path.join(os.homedir(), CONDUCTOR_CLAUDE_HOME_FILE)
 // Quotes, option-like words and non-ASCII: each one broke or garbled the argv delivery.
 const GOAL = 'Build a tiny feature to validate the launch command: run "npm test --watch" -NoProfile, then reply "all good" — ✓ →'
 
@@ -52,7 +54,7 @@ test.beforeAll(async () => {
   fs.mkdirSync(SCREENSHOTS, { recursive: true })
 
   // Clear any prior run artifacts so our assertions can't false-pass on stale files
-  for (const f of [TASK_FILE, RUN_PS1, RUN_SH, RUN_CMD, RECEIVED]) {
+  for (const f of [TASK_FILE, RUN_PS1, RUN_SH, RUN_CMD, RECEIVED, CLAUDE_HOME_FILE]) {
     try { if (fs.existsSync(f)) fs.unlinkSync(f) } catch {}
   }
 
@@ -155,22 +157,25 @@ test.describe.serial('Swarm launch command shape', () => {
       expect(psBody).toContain('claude')
       expect(psBody).toContain('--dangerously-skip-permissions')
       // The task is piped in, as UTF-8 without a BOM, and never put on the command line.
-      expect(psBody).toMatch(/^Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+\.termpolis-conductor-task\.md' \| \S.* -p (--mcp-config '[^']+' )?--dangerously-skip-permissions$/m)
+      // Under a session id of its own, whose transcript Trace follows.
+      expect(psBody).toMatch(/^ {2}Get-Content -Raw -Encoding UTF8 -LiteralPath '[^']+\.termpolis-conductor-task\.md' \| \S.* -p (--mcp-config '[^']+' )?--session-id '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}' --dangerously-skip-permissions$/m)
       expect(psBody).toContain('$OutputEncoding = $enc')
       expect(psBody).toContain('[Console]::InputEncoding = $enc')
       expect(psBody).not.toContain('$task')
       // It marks where its output starts, and reports claude's exit on a line of its own: 1 when
       // claude never started, after two blank lines.
       expect(psBody.startsWith("Write-Output '[termpolis-conductor-started]'\n")).toBe(true)
-      expect(psBody).toContain('\n$global:LASTEXITCODE = $null\nGet-Content -Raw ')
-      expect(psBody).toMatch(/ --dangerously-skip-permissions\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
+      expect(psBody).toContain("\n$global:LASTEXITCODE = $null\nif ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {\n")
+      // In Constrained Language Mode, Start-Process hands claude the task file itself, with no BOM.
+      expect(psBody).toContain(' -NoNewWindow -PassThru -RedirectStandardInput ')
+      expect(psBody).toMatch(/\n\}\n\$code = \$LASTEXITCODE\n[\s\S]*Write-Output ''\nWrite-Output ''\nWrite-Output "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
     } else {
       for (let i = 0; i < 40 && !fs.existsSync(RUN_SH); i++) await page.waitForTimeout(250)
       expect(fs.existsSync(RUN_SH)).toBe(true)
       const shBody = fs.readFileSync(RUN_SH, 'utf-8')
       expect(shBody).toContain('claude')
       expect(shBody).toContain('--dangerously-skip-permissions')
-      expect(shBody).toMatch(/ -p (--mcp-config '[^']+' )?--dangerously-skip-permissions < "\$TASK_FILE"$/m)
+      expect(shBody).toMatch(/ -p (--mcp-config '[^']+' )?--session-id '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}' --dangerously-skip-permissions < "\$TASK_FILE"$/m)
       expect(shBody).not.toContain('$(cat')
       expect(shBody).toContain("\necho '[termpolis-conductor-started]'\n")
       expect(shBody).toMatch(/< "\$TASK_FILE"\ncode=\$\?\necho\necho "\[termpolis-conductor-exited\] \$code"\nexit \$code\n$/)
@@ -257,7 +262,14 @@ test.describe.serial('Swarm launch command shape', () => {
     expect(task).toContain(GOAL)
     // PowerShell appends one CRLF to what it pipes; bash's `<` hands the file over as it is.
     expect(received!.prompt).toBe(process.platform === 'win32' ? task + '\r\n' : task)
-    expect(received!.argv).toEqual(['-p', '--mcp-config', expect.stringMatching(/claude-mcp-config\.json$/), '--dangerously-skip-permissions'])
+    expect(received!.argv).toEqual([
+      '-p', '--mcp-config', expect.stringMatching(/claude-mcp-config\.json$/),
+      '--session-id', expect.stringMatching(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/), '--dangerously-skip-permissions',
+    ])
+    // Before it started claude, the script recorded that session, and the config home claude got
+    // from its shell, for Trace to find the session's transcript under.
+    const recorded = fs.readFileSync(CLAUDE_HOME_FILE, 'utf-8').replace(/^\uFEFF/, '').split(/\r?\n/)
+    expect(recorded[0]).toBe(received!.argv[4])
   })
 
   test('9. The conductor terminal shows the exit report, and the swarm ends on its tasks', async () => {

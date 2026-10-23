@@ -550,7 +550,9 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     expect(data.skip).toBe(5)
   })
 
-  it("leaves a poller's read exactly as it was — no preamble, skip or size for a read from its own offset", async () => {
+  // W2: the swarm bridge reads on from its own offset, and on Linux and macOS nothing in a
+  // worker's output says its terminal was made smaller (only ConPTY reports a resize).
+  it("hands a poller's read from its own offset the size the pty draws for, and no preamble or skip", async () => {
     const id = 'buf-poller'
     mockGetTerminalSize.mockReturnValue({ cols: 120, rows: 30 })
     const onData = await spawnWithPump(id)
@@ -558,9 +560,23 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     onData('x'.repeat(32768))
     onData('NEW')
     expect(await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 32776 })).toEqual({
-      success: true, data: { output: 'NEW', length: 3, nextOffset: 32779, missed: 0 },
+      success: true, data: { output: 'NEW', length: 3, nextOffset: 32779, missed: 0, cols: 120, rows: 30 },
     })
-    expect(mockGetTerminalSize).not.toHaveBeenCalled()
+    // Read when asked, not when the terminal opened: the size it has now.
+    mockGetTerminalSize.mockReturnValue({ cols: 60, rows: 20 })
+    expect((await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 32779 })).data).toEqual({
+      output: '', length: 0, nextOffset: 32779, missed: 0, cols: 60, rows: 20,
+    })
+    expect(mockGetTerminalSize).toHaveBeenLastCalledWith(id)
+  })
+
+  it("leaves the size out of a poller's read when no pty is known for the terminal", async () => {
+    const id = 'buf-poller-nopty'
+    const onData = await spawnWithPump(id)
+    onData('abc')
+    expect(await invoke('terminal:read-buffer', { terminalId: id, fromOffset: 1 })).toEqual({
+      success: true, data: { output: 'bc', length: 2, nextOffset: 3, missed: 0 },
+    })
   })
 
   it('reads from an offset so a poller only gets what is new', async () => {

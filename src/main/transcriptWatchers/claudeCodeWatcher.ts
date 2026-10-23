@@ -2,7 +2,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { publish } from '../agentEventBus'
-import { tailFile, resolvePathWithinRoot, type TailHandle } from './baseWatcher'
+import { tailFile, resolvePathWithinRoot, POLL_INTERVAL_MS, type TailHandle } from './baseWatcher'
+import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../shared/conductorFiles'
 
 /**
  * Claude Code transcript watcher.
@@ -34,6 +35,9 @@ export interface ClaudeCodeWatcherHandle {
   stop(): void
 }
 
+/** How long a folder name Claude Code makes from a working folder gets before it is cut short. */
+const MANGLED_MAX = 200
+
 /**
  * Convert a working-directory path to Claude Code's mangled form.
  *
@@ -47,8 +51,35 @@ export function mangleCwd(cwd: string): string {
   if (!cwd) return ''
   // Claude Code turns every character but an ASCII letter or digit into "-", not only the
   // separators and the drive colon: in a folder with a dot, a space or an underscore in its path
-  // there was no transcript to find, so no activity was read from Claude Code there.
-  return cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  // there was no transcript to find, so no activity was read from Claude Code there. That takes in
+  // the "~" of a Windows short name (TERMPO~1) and every letter outside ASCII, one dash for each
+  // UTF-16 unit: a live claude 2.1.303 named "x~José😀" as "x-Jos---". Past 200 characters it
+  // keeps the first 200 and adds a hash of the folder, as its own code does: no transcript of a
+  // folder that deep was found.
+  const mangled = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  if (mangled.length <= MANGLED_MAX) return mangled
+  return `${mangled.slice(0, MANGLED_MAX)}-${Math.abs(folderHash(cwd)).toString(36)}`
+}
+
+/** The 32-bit string hash Claude Code adds to a folder name it cut short. */
+function folderHash(text: string): number {
+  let hash = 0
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0
+  return hash
+}
+
+/** A working folder as Claude Code reads it when it names its transcripts' folder: every link on
+ *  the way resolved. Live, claude started in a junction kept its transcript under the junction's
+ *  target, so nothing was found under the folder as given. It keeps the rest as it was given, a
+ *  Windows short name too. A folder that can't be read is taken as given, and so is none at all,
+ *  which Node's realpathSync reads as the folder the process runs in. */
+export function claudeCwd(cwd: string): string {
+  if (!cwd) return cwd
+  try {
+    return fs.realpathSync(cwd)
+  } catch {
+    return cwd
+  }
 }
 
 /**
@@ -65,7 +96,7 @@ export function findLatestSessionFile(cwd: string): string | null {
  * (liveTranscript); the watcher above only ever wants the newest.
  */
 export function listSessionFiles(cwd: string): string[] {
-  const mangled = mangleCwd(cwd)
+  const mangled = mangleCwd(claudeCwd(cwd))
   if (!mangled) return []
 
   const dir = path.join(CLAUDE_PROJECTS_DIR, mangled)
@@ -285,4 +316,134 @@ export function attachClaudeCodeWatcher(terminalId: string, cwd: string): Claude
     sessionFile,
     stop: () => tail.stop(),
   }
+}
+
+/** What `claude --session-id` takes, and so all a session's transcript is named: `<id>.jsonl`. */
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** While a session's transcript is not where it is looked for, every this many looks (one as the
+ *  watcher starts, then one a poll) it is looked for in every project folder too (sessionFileIn),
+ *  up to this many looks: 5 minutes. */
+const SCAN_EVERY_POLLS = 4
+const SCAN_POLLS = 200
+
+export interface ClaudeSessionWatcherHandle extends ClaudeCodeWatcherHandle {
+  sessionId: string
+}
+
+/** The folder Claude Code keeps its sessions in, under its config home: CLAUDE_CONFIG_DIR when its
+ *  environment sets one (read from the folder it runs in, as its own code does), else ~/.claude. */
+export function claudeProjectsDir(cwd: string, env: NodeJS.ProcessEnv = process.env, homeDir: string = os.homedir()): string {
+  const configDir = env.CLAUDE_CONFIG_DIR
+  return path.join(configDir ? path.resolve(cwd, configDir) : path.join(homeDir, '.claude'), 'projects')
+}
+
+/** The CLAUDE_CONFIG_DIR the conductor's run script recorded for this session ('' for none), or
+ *  null while the file holds another session's, or none (CONDUCTOR_CLAUDE_HOME_FILE). */
+function recordedConfigDir(file: string, sessionId: string): string | null {
+  let text: string
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+  // Windows PowerShell 5.1 writes it as UTF-8 with a BOM, and its lines end in CRLF.
+  const [id, configDir = ''] = text.replace(/^\uFEFF/, '').split(/\r?\n/)
+  return id.toLowerCase() === sessionId.toLowerCase() ? configDir : null
+}
+
+/** A working folder as PowerShell hands it to a program it starts: with a Windows short name
+ *  spelled out (TERMPO~1 as TermpolisUser1, as seen live), and every link resolved, as Claude
+ *  Code then does. Taken as given when it can't be read. */
+function spelledOut(cwd: string): string {
+  try {
+    return fs.realpathSync.native(cwd)
+  } catch {
+    return cwd
+  }
+}
+
+/** The transcript called `name` in any of Claude Code's project folders, or null. Off the main
+ *  thread: there can be thousands of them. */
+async function sessionFileIn(projectsDir: string, name: string): Promise<string | null> {
+  let folders: string[]
+  try {
+    folders = await fs.promises.readdir(projectsDir)
+  } catch {
+    return null
+  }
+  const found = await Promise.all(folders.map(async (folder) => {
+    const file = path.join(projectsDir, folder, name)
+    try {
+      await fs.promises.access(file)
+      return file
+    } catch {
+      return null
+    }
+  }))
+  return found.find((file) => file !== null) ?? null
+}
+
+/**
+ * Follow one Claude Code session's transcript, from its first byte: the file a `claude -p
+ * --session-id <id>` writes, `<id>.jsonl`, which the swarm conductor is started with. Unlike
+ * attachClaudeCodeWatcher's newest transcript in the folder, it can never be another session's,
+ * the last swarm's conductor or a Claude Code worker in the same folder (GitHub #36), and nothing
+ * before the session's own first line is in it, so no history is replayed.
+ *
+ * It is under claude's config home: the one the conductor's run script recorded for this session
+ * in `<home>/CONDUCTOR_CLAUDE_HOME_FILE`, which the shell claude runs in decides, and until the
+ * script has, the one Termpolis's environment, which its terminals are started with, gives. The
+ * file appears once claude has started (about 5 seconds, live). Until then it is looked for in
+ * the folder Claude Code names for the working folder, read as it reads it and as PowerShell hands
+ * it on; and, every few polls for a while, in every project folder: the id names one session only,
+ * so a file of that name is this one wherever Claude Code put it.
+ */
+export function attachClaudeSessionWatcher(
+  terminalId: string,
+  cwd: string,
+  sessionId: string,
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir: string = os.homedir(),
+): ClaudeSessionWatcherHandle | null {
+  if (!SESSION_ID.test(sessionId)) return null
+  const name = `${sessionId}.jsonl`
+  const folders = [...new Set([claudeCwd(cwd), spelledOut(cwd)].map(mangleCwd))]
+  const record = path.join(homeDir, CONDUCTOR_CLAUDE_HOME_FILE)
+  let recorded: string | null = null
+  const projectsDir = (): string => {
+    if (recorded === null) recorded = recordedConfigDir(record, sessionId)
+    return claudeProjectsDir(cwd, recorded === null ? env : { CLAUDE_CONFIG_DIR: recorded }, homeDir)
+  }
+  const expected = (): string[] => folders.map((folder) => path.join(projectsDir(), folder, name))
+  let tail: TailHandle | null = null
+  let stopped = false
+  let polls = 0
+  const handle: ClaudeSessionWatcherHandle = {
+    terminalId,
+    sessionId,
+    sessionFile: expected()[0],
+    stop: () => {
+      stopped = true
+      clearInterval(locator)
+      tail?.stop()
+    },
+  }
+  const follow = (file: string): void => {
+    if (stopped || tail) return
+    clearInterval(locator)
+    handle.sessionFile = file
+    tail = tailFile(file, (line) => processClaudeLine(line, terminalId))
+  }
+  const locate = (): void => {
+    const file = expected().find((f) => fs.existsSync(f))
+    if (file) return follow(file)
+    polls += 1
+    if (polls % SCAN_EVERY_POLLS !== 0 || polls > SCAN_POLLS) return
+    void sessionFileIn(projectsDir(), name).then((found) => {
+      if (found) follow(found)
+    })
+  }
+  const locator = setInterval(locate, POLL_INTERVAL_MS)
+  locate()
+  return handle
 }

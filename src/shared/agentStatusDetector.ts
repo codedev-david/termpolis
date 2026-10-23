@@ -366,11 +366,11 @@ function isWaitingForInput(tail: string, agentName: string): boolean {
  *  is out of usage". Not "You've hit your fast limit · resets in 4h 59m": fast mode turns itself
  *  off, and the session goes on. */
 const CLAUDE_LIMIT_MESSAGES: readonly RegExp[] = [
-  /^[ \t]*(?:⎿[ \t]+)?You['’]ve hit your (?!fast limit)[\w'’ ]{0,40}?(?:limit|budget)\b/,
-  /^[ \t]*(?:⎿[ \t]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
-  /^[ \t]*(?:⎿[ \t]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
-  /^[ \t]*(?:⎿[ \t]+)?You['’]re out of (?:usage credits|extra usage)\b/,
-  /^[ \t]*(?:⎿[ \t]+)?Your org is out of usage\b/,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]ve hit your (?!fast limit)[\w'’ ]{0,40}?(?:limit|budget)\b/,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]re out of (?:usage credits|extra usage)\b/,
+  /^[ \t]*(?:⎿[ \t\u00a0]+)?Your org is out of usage\b/,
 ]
 /** Claude Code's, and Antigravity 1.4's two, which its footer could show. */
 const LIMIT_MESSAGES: readonly RegExp[] = [
@@ -390,6 +390,15 @@ const WAITING_FOOTER = /^[ \t]*(?:Usage limit reached(?: again)? · c|C)ontinuin
 const RESETS_AT = /\bresets\s+(?:at\s+)?([^·│\n]{1,48}?)\.?\s*(?:·|│|$)/m
 const CONTINUES_AT = /\bcontinu(?:e|ing) automatically at\s+([^·│\n]{1,48}?)\s*(?:·|│|$)/im
 const TRY_AGAIN_AT = /\b[Tt]ry again at (.{1,48}?)\.(?:\s|$)/
+/** When the limit lifts, as Claude Code's limit reply words it: "resets 3pm (America/New_York)",
+ *  "resets Oct 20, 9am (UTC)". claude.exe 2.1.302 to 2.1.304 put the time zone after every reset
+ *  time in the message (zT(time, true)), so the reset ends at its bracket, whatever its su() draws
+ *  under the message, in the same column: a note of the server's, "Press ⏎ to continue after reset",
+ *  a checkpoint, the hint for the account ("/upgrade to increase your usage limit."), an offer of
+ *  usage credits. Their words are the account's and the release's, and some are the server's. The
+ *  time, then the zone in its brackets: the system's name for it, which runs to 32 characters
+ *  (America/Argentina/ComodRivadavia) and has no space in it. */
+const CLAUDE_RESETS_AT = /\bresets ([^()]{1,40})\(([^()]{1,40})\)/
 
 const LIMIT_SUMMARY = 'usage limit reached'
 const MENU_SUMMARY = 'waiting on a menu'
@@ -456,7 +465,14 @@ function stopAroundBox(rows: readonly string[], box: number): string | null {
 //  - Antigravity 1.4's, at the start of a row: "✕ You have exhausted your quota on this model.".
 //  - Claude Code 2.1.302's reply to the prompt it stopped, when no rate-limit menu opens (Max 20x, an
 //    API key, a Team plan): "  ⎿  You've hit your session limit · resets 3pm" right under the
-//    prompt's echo, whose rows are indented under its ❯ (or >).
+//    prompt's echo, whose rows are indented under its ❯ (or >). Its ⎿ and the gap after it are
+//    MessageResponse's, a space and a no-break space; other rows of its have two spaces (BEH-1: no
+//    real reply was read). Or, a limit that stops it mid-turn, right under the output of the tool
+//    it ran last (M-2), or under the row it folds the turn's reads and searches into (M1-1). Not
+//    after a tool it draws no row for (TodoWrite, ToolSearch): the reply is then right under the
+//    turn's text, as a tool's output is right under its call, told apart only by reading what the
+//    agent wrote. Under the reply, as at the end of every turn, it draws a line with how long the
+//    turn took (TURN_END).
 // An answer or a tool's output indents what it quotes, or puts its own mark first; a prompt or an
 // answer after the message makes it history. Read only with the agent at rest: while it works, the
 // echo of the prompt it was just sent can end in anything.
@@ -464,32 +480,117 @@ const CODEX_LIMIT_CELL = /^■ You['’]ve hit your usage limit\b/
 const AGY_LIMIT_CELL = /^✕ You have exhausted your quota on this model\./
 /** A row that starts a cell of its own in an agent's transcript: not the rest of a wrapped one. */
 const CELL_START = /^(?:[•■⚠✕›>❯●]|\s*⎿)/
-const CLAUDE_REPLY = /^[ \t]+⎿[ \t]+\S/
+const CLAUDE_REPLY = /^[ \t]+⎿[ \t\u00a0]+\S/
+/** MessageResponse's ⎿ exactly as claude.exe 2.1.302 to 2.1.304 draw it in front of a reply or a
+ *  tool's output: two in (two no-break spaces in for one summary of a tool's output), a space and a
+ *  no-break space after it. An answer's text is indented two as well, and one that quotes a screen
+ *  is taken to type the same rows with plain spaces: one that keeps the no-break space can read as
+ *  the reply itself mid-turn or under a tall prompt, where the reply is read only as drawn so
+ *  (MW2-1). */
+const CLAUDE_RESPONSE = /^\s{2}⎿ \u00a0/
+/** Claude Code's line at the end of every turn, under what the turn ended on (claude.exe's
+ *  turn_duration line, showTurnDuration being on by default): its ✻ at the left edge, then one of its
+ *  verbs (Baked, Brewed, Churned, Cogitated, Cooked, Crunched, Sautéed, Worked) and how long the turn
+ *  took, "✻ Crunched for 0s · done 1:21 AM", or what it waits on, "✻ Waiting for 2 background agents
+ *  to finish". Read with the rows a narrow screen wraps it onto, indented two. Its other rows led by
+ *  ✻, "✻ Conversation compacted (ctrl+o for history)" and a scheduled task's prompt among them, are
+ *  not stepped over (M-0). */
+const TURN_END = /^✻ \S+ for \d/
+/** The end of the row Claude Code folds a turn's reads and searches into, under the turn's text, two
+ *  in: "Read 1 file (ctrl+o to expand)", "Searched for 1 pattern, read 1 file (ctrl+o to expand)"
+ *  (claude.exe 2.1.304). The key is the one that shows the transcript, ctrl+o unless rebound. */
+const FOLDED_READS = /\([^()]+ to expand\)$/
 
 function turnEndLimit(rows: readonly string[], box: number): string | null {
-  // The last thing above the box: up past its top rule and the blank rows under the transcript.
+  // The last thing above the box: up past its top rule and the blank rows under the transcript, and
+  // past Claude Code's line at the turn's end.
   let end = box - 1
   if (end >= 0 && RULE.test(rows[end])) end--
   while (end >= 0 && rows[end].trim() === '') end--
+  end = aboveTurnEnd(rows, end)
   if (end < 0) return null
+  // Up to the blank row above it, or the screen's top: the cell, however many rows a narrow screen
+  // wrapped it onto, and its message read with those rows run together.
   let start = end
-  while (start > 0 && rows[start - 1].trim() !== '' && end - start < 4) start--
+  while (start > 0 && rows[start - 1].trim() !== '') start--
   const cell = rows.slice(start, end + 1)
-  if ((CODEX_LIMIT_CELL.test(cell[0]) || AGY_LIMIT_CELL.test(cell[0])) && !cell.slice(1).some((row) => CELL_START.test(row))) {
-    return start === 0 || rows[start - 1].trim() === '' ? limitSummary(cell.join('\n')) : null
+  const message = runTogether(cell)
+  if ((CODEX_LIMIT_CELL.test(message) || AGY_LIMIT_CELL.test(message)) && !cell.slice(1).some((row) => CELL_START.test(row))) {
+    return limitSummary(cell.join('\n'))
   }
   return claudeLimitReply(rows, end)
 }
 
-/** Claude Code's limit reply ending on row `end`: on that row, or on the one above when a narrow
- *  screen wrapped it, right under the echo of the prompt it stopped. */
+/** The last row above Claude Code's line at a turn's end (TURN_END) that ends on row `end`, past the
+ *  blank rows between them; `end` itself where no such line ends there. */
+function aboveTurnEnd(rows: readonly string[], end: number): number {
+  let start = end
+  while (start > 0 && /^ {2}[^\s⎿]/.test(rows[start])) start--
+  if (!TURN_END.test(runTogether(rows.slice(start, end + 1)))) return end
+  let above = start - 1
+  while (above >= 0 && rows[above].trim() === '') above--
+  return above
+}
+
+/** Claude Code's limit reply ending on row `end`: its ⎿ row and every row a narrow screen wrapped it
+ *  onto, indented under its text. Right under the echo of the prompt it stopped; or, drawn as
+ *  MessageResponse draws it (CLAUDE_RESPONSE), under an echo whose first rows went off the top of
+ *  the screen, or when the limit stopped it mid-turn, under the output of the tool it ran last (M-2)
+ *  or the row it folded the turn's reads into (M1-1). */
 function claudeLimitReply(rows: readonly string[], end: number): string | null {
-  const at = CLAUDE_REPLY.test(rows[end]) ? end : end > 0 && CLAUDE_REPLY.test(rows[end - 1]) && /^\s{4,}[^\s⎿]/.test(rows[end]) ? end - 1 : -1
-  if (at < 0 || !CLAUDE_LIMIT_MESSAGES.some((p) => p.test(rows[at]))) return null
+  let at = end
+  while (at > 0 && /^\s{4,}[^\s⎿]/.test(rows[at])) at--
+  const reply = runTogether(rows.slice(at, end + 1))
+  if (!CLAUDE_REPLY.test(rows[at]) || !CLAUDE_LIMIT_MESSAGES.some((p) => p.test(reply))) return null
   // Up through the rows the prompt wraps onto, indented two under its glyph, and its blank lines.
   let up = at - 1
   while (up >= 0 && (rows[up].trim() === '' || /^ {2}[^\s⎿]/.test(rows[up]))) up--
-  return up >= 0 && /^[❯>] \S/.test(rows[up]) ? limitSummary(rows.slice(at, end + 1).join('\n')) : null
+  if (up >= 0 && /^[❯>] \S/.test(rows[up])) return claudeLimitSummary(reply)
+  if (!CLAUDE_RESPONSE.test(rows[at])) return null
+  // A prompt taller than the screen: rows of it, and nothing else, up to the top.
+  if (up < 0) return rows.slice(0, at).some((row) => row.trim() !== '') ? claudeLimitSummary(reply) : null
+  return underToolOutput(rows, up) || underFoldedReads(rows, up, at) ? claudeLimitSummary(reply) : null
+}
+
+/** Whether the rows between row `up` and the reply on row `at` end on the row Claude Code folds the
+ *  turn's reads and searches into (FOLDED_READS), the turn's text on row `up`, led by ● at the left
+ *  edge (⏺ on macOS). They are that text's rows, indented two, the folded row and blank rows; none
+ *  starts with a mark of the turn's: one that does is a screen an answer quotes, row for row, under
+ *  the answer's own ●. */
+function underFoldedReads(rows: readonly string[], up: number, at: number): boolean {
+  const between = rows.slice(up + 1, at)
+  return /^[●⏺] /.test(rows[up]) && !between.some((row) => /^ {2}[●⏺]/.test(row)) && FOLDED_READS.test(runTogether(between))
+}
+
+/** Whether row `up` ends a tool's output in Claude Code's transcript: the rows it draws a ⎿ in, two
+ *  in, the rows indented under them and blank rows, up to the row of the tool's call, led by ● at the
+ *  left edge (⏺ on macOS), past the rows a long call wraps onto, none of which starts with a call's
+ *  mark: one that does is a call an answer quotes, row for row, under the answer's own ●. One of the
+ *  rows under the call is the tool's output, as MessageResponse draws it (CLAUDE_RESPONSE); the
+ *  others can be its hook rows ("  ⎿  Ran 1 PreToolUse hook (12ms)", with plain spaces), and what
+ *  comes right under them is the output. */
+function underToolOutput(rows: readonly string[], up: number): boolean {
+  let head = up
+  let output = false
+  for (; head >= 0 && (rows[head].trim() === '' || /^\s{2}⎿/.test(rows[head]) || /^\s{4,}\S/.test(rows[head])); head--) {
+    if (CLAUDE_RESPONSE.test(rows[head])) output = true
+  }
+  if (!output) return false
+  while (head >= 0 && /^ {2}[^\s⎿●⏺]/.test(rows[head])) head--
+  return head >= 0 && /^[●⏺] /.test(rows[head])
+}
+
+/** "usage limit reached", with when it lifts if Claude Code's limit reply says it as it does
+ *  (CLAUDE_RESETS_AT): a reset in any other form, or none, is no time. A zone too long for the row
+ *  is broken where the row ends, and read without the break. */
+function claudeLimitSummary(reply: string): string {
+  const reset = CLAUDE_RESETS_AT.exec(reply)
+  return reset ? `${LIMIT_SUMMARY} (resets ${reset[1]}(${reset[2].replace(/\s/g, '')}))` : LIMIT_SUMMARY
+}
+
+/** Rows as one line, each run of spaces one space: a message a narrow screen wrapped, read whole. */
+function runTogether(rows: readonly string[]): string {
+  return rows.join(' ').replace(/\s+/g, ' ')
 }
 
 /** What a CLI draws in place of its input box that holds the worker: a menu, a limit's own prompt,

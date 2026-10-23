@@ -134,9 +134,11 @@ describe('BrainProcessPanel', () => {
       .mockResolvedValueOnce({ success: true, data: { mode: 'starting', pid: 7 } })
       .mockResolvedValue({ success: true, data: { mode: 'host', pid: 7 } })
     render(<BrainProcessPanel refreshToken={0} />)
-    await vi.advanceTimersByTimeAsync(2500)
+    // In act(), as above: outside it React applies the probe's state update when it gets to it, so the
+    // read it triggers could land after `settled` was counted, and the count came out one short.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
     const settled = hostStatus.mock.calls.length
-    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000) })
     expect(hostStatus).toHaveBeenCalledTimes(settled) // a probe, not a poll
   })
 

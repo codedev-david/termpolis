@@ -51,6 +51,20 @@ describe('preload: termpolis API', () => {
     })
   })
 
+  it('falls back to what it knows of the platform when the sync channel answers nothing', async () => {
+    // A second load of the preload, whose sendSync answers nothing (a stubbed bridge), and then
+    // the first one's API back, for the tests after this one.
+    const first = { ...exposed }
+    try {
+      mockIpcRenderer.sendSync.mockReturnValueOnce(undefined as never)
+      vi.resetModules()
+      await import('../../src/preload/index')
+      expect(exposed.termpolis.platformInfo).toEqual({ platform: process.platform, windowsPty: null, homedir: '' })
+    } finally {
+      Object.assign(exposed, first)
+    }
+  })
+
   it('createTerminal invokes terminal:create', async () => {
     await exposed.termpolis.createTerminal('id1', 'bash', '/tmp', [])
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('terminal:create', {
@@ -618,6 +632,13 @@ describe('preload: agentActivity API', () => {
   it('attachWatcher invokes agentWatcher:attach', async () => {
     await exposed.agentActivity.attachWatcher('t1', '/cwd', 'claude')
     expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('agentWatcher:attach', { terminalId: 't1', cwd: '/cwd', agentType: 'claude' })
+  })
+
+  it("attachWatcher hands on a session id, the swarm conductor's", async () => {
+    await exposed.agentActivity.attachWatcher('c1', '/cwd', 'claude', '1b4e28ba-2fa1-41d2-883f-0016d3cca427')
+    expect(mockIpcRenderer.invoke).toHaveBeenLastCalledWith('agentWatcher:attach', {
+      terminalId: 'c1', cwd: '/cwd', agentType: 'claude', sessionId: '1b4e28ba-2fa1-41d2-883f-0016d3cca427',
+    })
   })
 
   it('detachWatcher invokes agentWatcher:detach', async () => {
