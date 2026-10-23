@@ -149,6 +149,42 @@ describe('SwarmRestartOffers', () => {
     expect(screen.getByText('Claude (Build UI), a swarm worker, ran out of usage.')).toBeTruthy()
   })
 
+  // P2: the conductor's own limit. Running it again is conductorManager's; with no conductor to run,
+  // the card says so.
+  it('offers to run the conductor again, with no reassigning, and says how it went', async () => {
+    useTerminalStore.setState({ swarmRestarts: [group({ conductor: true, workers: [] })] })
+    render(<SwarmRestartOffers deps={() => deps} />)
+    expect(screen.getByText('The swarm\'s conductor ran out of usage on personal.')).toBeTruthy()
+    expect(screen.getByText(/It resumes its conversation where that account can see it, or starts again with the same goal\. The swarm's workers and tasks stay\./)).toBeTruthy()
+    expect(screen.queryByTestId('swarm-restart-decline')).toBeNull()
+    expect(screen.getByTestId('swarm-restart-close').getAttribute('aria-label')).toBe('Close')
+    expect(screen.getByTestId('swarm-restart-on').textContent).toBe('Run the conductor again on codedev')
+    fireEvent.click(screen.getByTestId('swarm-restart-on'))
+    expect(screen.getByTestId('swarm-restart-running').textContent).toBe('Running the conductor again on codedev…')
+    await flush()
+    expect(screen.getByTestId('swarm-restart-done').textContent).toBe('The conductor wasn\'t run again: the conductor is gone: start the swarm again from its dashboard.')
+    fireEvent.click(screen.getByTestId('swarm-restart-close'))
+    expect(useTerminalStore.getState().swarmRestarts).toEqual([])
+    expect(messages()).toEqual([])
+  })
+
+  it('asks the conductor\'s second question, and runs it or not on the answer', async () => {
+    useTerminalStore.setState({ swarmRestarts: [group({ conductor: true, workers: [], phase: { kind: 'confirm', targetId: 'acc_c', question: 'q' } })] })
+    render(<SwarmRestartOffers deps={() => deps} />)
+    expect(screen.getByTestId('swarm-restart-confirm').textContent).toBe('Run it on codedev')
+    expect(screen.getByTestId('swarm-restart-decline').textContent).toBe('Don\'t run it again')
+    fireEvent.click(screen.getByTestId('swarm-restart-confirm'))
+    await flush()
+    expect(screen.getByTestId('swarm-restart-done')).toBeTruthy()
+    cleanup()
+    useTerminalStore.setState({ swarmRestarts: [group({ conductor: true, workers: [], phase: { kind: 'confirm', targetId: 'acc_c', question: 'q' } })] })
+    render(<SwarmRestartOffers deps={() => deps} />)
+    fireEvent.click(screen.getByTestId('swarm-restart-decline'))
+    await flush()
+    expect(useTerminalStore.getState().swarmRestarts).toEqual([])
+    expect(messages()).toEqual([])
+  })
+
   it('takes no key: a key pressed anywhere changes nothing', () => {
     useTerminalStore.setState({ swarmRestarts: [group()] })
     render(<SwarmRestartOffers deps={() => deps} />)

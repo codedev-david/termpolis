@@ -18,6 +18,10 @@
 // while the worker's relaunch lock is held (R16). A restart is refused once the conductor closed
 // the worker or gave its task to another (R16), and a restarted worker's stop is carried, so the
 // same limit drawn again by the resumed session is no new one until it took a turn (R4).
+//
+// The conductor's own limit (P2) ends its `claude -p`: the swarm loop never sees it, its run
+// script's report does (conductorManager.ts). Where a Claude Code account is a way out, the same
+// card offers to run the conductor again there (offerConductorRun), which conductorManager does.
 import { v4 as uuid } from 'uuid'
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../shared/agentAccounts'
 import type { AccountRowView, AccountsView, ProfileAgent } from '../../../shared/agentAccounts'
@@ -59,9 +63,10 @@ export type RestartPhase =
   | { kind: 'done'; lines: string[] }
 
 /** One offer: the workers of one agent that ran out on one account, and the accounts that are a way
- *  out, in failover order. */
+ *  out, in failover order; or, `conductor`, the swarm's conductor, which has no workers here. */
 export interface SwarmRestartGroup {
   id: string
+  conductor?: true
   agent: ProfileAgent
   /** The account that ran out. */
   accountId: string
@@ -124,8 +129,24 @@ export function restartTargets(
   kind: LimitKind,
 ): LimitTarget[] {
   return limitTargets(view.accounts, agent, limited, now, checks).filter((t) =>
-    t.state === 'available' && workerBlocker(t.row, view) === null &&
-    !(kind.scope === 'model' && t.row.limit?.scope === 'model' && limitKindOf(t.row.limit.text).model === kind.model))
+    t.state === 'available' && workerBlocker(t.row, view) === null && !outOnModel(t.row, kind))
+}
+
+/** The account is out of usage on the very model a model's limit names (R15). */
+const outOnModel = (row: AccountRowView, kind: LimitKind): boolean =>
+  kind.scope === 'model' && row.limit?.scope === 'model' && limitKindOf(row.limit.text).model === kind.model
+
+/** The accounts the swarm's conductor can be run again on at its limit: Claude Code's ways out
+ *  that skip the bypass-permissions warning its --dangerously-skip-permissions would open (R16).
+ *  Its tools come from its own --mcp-config, so no connection is asked of them. */
+export function conductorTargets(
+  view: AccountsView,
+  limited: { accountId: string; email: string | null },
+  now: number,
+  checks: Readonly<Record<string, TargetCheck>>,
+  kind: LimitKind,
+): LimitTarget[] {
+  return limitTargets(view.accounts, 'claude', limited, now, checks).filter((t) => t.state === 'available' && t.row.bypassReady && !outOnModel(t.row, kind))
 }
 
 // ── What the conductor is told (§9, R16) ─────────────────────────────────────────────────
@@ -252,11 +273,7 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
   const limited = { accountId: own.id, email: own.lastEmail }
   const candidates = restartTargets(view, agent, limited, now, {}, kind)
   if (candidates.length === 0) return false
-  // Signed in now (§4.4), each asked at once; an answer under a minute old stands (§3.4).
-  const checks: Record<string, TargetCheck> = {}
-  await Promise.all(candidates.map(async (t) => {
-    checks[t.row.id] = recentCheck(t.row, now) ?? await checkSignIn(deps.accounts, t.row)
-  }))
+  const checks = await signedInNow(candidates, now, deps)
   const targets = restartTargets(view, agent, limited, now, checks, kind)
   if (targets.length === 0) return false
   const taskId = await taskOf(worker.terminalId, deps)
@@ -275,10 +292,56 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
   return true
 }
 
-/** "3 of the swarm's workers ran out of usage on personal", or for one, which one. */
-export function offerTitle(g: Pick<SwarmRestartGroup, 'workers' | 'accountId'>, view: AccountsView | null): string {
+/** Whether each account is signed in now (§4.4), each asked at once; an answer under a minute old
+ *  stands (§3.4). */
+async function signedInNow(candidates: readonly LimitTarget[], now: number, deps: RestartDeps): Promise<Record<string, TargetCheck>> {
+  const checks: Record<string, TargetCheck> = {}
+  await Promise.all(candidates.map(async (t) => {
+    checks[t.row.id] = recentCheck(t.row, now) ?? await checkSignIn(deps.accounts, t.row)
+  }))
+  return checks
+}
+
+/** When a limit lifts, from the CLI's words: "... · resets 3pm (America/New_York)". */
+function resetOfWords(words: string, now: number): number | null {
+  const m = / · resets (.+)$/.exec(words)
+  return m ? parseResetsAt(m[1], now) : null
+}
+
+/**
+ * The conductor's `claude -p` exited at its usage limit (conductorLimitOf), in `words`, on
+ * `accountId`, the account it ran on: offer to run it again on another account where one is a way
+ * out (conductorTargets, each asked whether it is signed in now), and answer true. The limit is
+ * recorded against its account all the same (§8.2, R23).
+ */
+export async function offerConductorRun(words: string, accountId: string | null, deps: RestartDeps): Promise<boolean> {
+  const view = deps.store().accountsView
+  const own = accountId ? view?.accounts.find((r) => r.id === accountId && r.agent === 'claude') : undefined
+  if (!view || !own) return false
+  const now = deps.now()
+  const kind = limitKindOf(words)
+  const resetsAt = resetOfWords(words, now)
+  void deps.accounts.noteLimit(own.id, { text: words, resetsAt, scope: kind.scope, window: kind.window, ...(own.lastEmail ? { email: own.lastEmail } : {}) })
+    .catch(() => { /* the offer goes on without the record */ })
+  const limited = { accountId: own.id, email: own.lastEmail }
+  const candidates = conductorTargets(view, limited, now, {}, kind)
+  if (candidates.length === 0) return false
+  const targets = conductorTargets(view, limited, now, await signedInNow(candidates, now, deps), kind)
+  if (targets.length === 0) return false
+  const group: SwarmRestartGroup = {
+    id: deps.newId(), conductor: true, agent: 'claude', accountId: own.id, words, resetsAt, workers: [], targets: targets.map((t) => t.row.id), phase: { kind: 'offered' },
+  }
+  deps.store().putSwarmRestart(group)
+  if (!deps.focused()) deps.notify('The swarm\'s conductor ran out of usage', offerTitle(group, view), () => undefined)
+  return true
+}
+
+/** "3 of the swarm's workers ran out of usage on personal", or for one, which one; or the
+ *  conductor. */
+export function offerTitle(g: Pick<SwarmRestartGroup, 'workers' | 'accountId' | 'conductor'>, view: AccountsView | null): string {
   const label = view?.accounts.find((r) => r.id === g.accountId)?.label
   const on = label ? ` on ${label}` : ''
+  if (g.conductor) return `The swarm's conductor ran out of usage${on}.`
   if (g.workers.length === 1) return `${g.workers[0].agentName} (${g.workers[0].role}), a swarm worker, ran out of usage${on}.`
   return `${g.workers.length} of the swarm's workers ran out of usage${on}.`
 }

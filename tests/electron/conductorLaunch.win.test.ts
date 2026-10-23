@@ -67,7 +67,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
    *  PATH too, for a test command that starts `node` by name, as e2e's does. `vanishTask` removes the
    *  task file instead, once the probe's --version answered. `configDir` is the CLAUDE_CONFIG_DIR the
    *  script's shell has, none without it. */
-  function launch(name: string, opts: { bin?: Record<string, string>; binName?: string; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string; vanishTask?: boolean; nodeOnPath?: boolean; configDir?: string }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string; recorded: Buffer | null } {
+  function launch(name: string, opts: { bin?: Record<string, string>; binName?: string; testCommand?: string; utf8Console?: boolean; exitCode?: number; say?: string; constrained?: boolean; vanish?: string; vanishTask?: boolean; nodeOnPath?: boolean; configDir?: string; account?: { profile: string | null }; resume?: boolean }): { status: number | null; stdout: string; stderr: string; argv: string[] | null; stdin: Buffer | null; cfg: string; recorded: Buffer | null } {
     const root = join(dir, name)
     const home = join(root, 'home')
     const bin = join(root, opts.binName ?? 'bin')
@@ -81,7 +81,7 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
     const script = join(home, '.termpolis-conductor-run.ps1')
     writeFileSync(taskFile, task, 'utf8') // BOM-less, as configFileManager writes it
     writeFileSync(cfg, '{"mcpServers":{}}')
-    writeFileSync(script, conductorRunScript(true, { taskFile, mcpConfigPath: cfg, sessionId: SESSION, claudeHomeFile, testCommand: opts.testCommand }))
+    writeFileSync(script, conductorRunScript(true, { taskFile, mcpConfigPath: cfg, sessionId: SESSION, claudeHomeFile, testCommand: opts.testCommand, account: opts.account, resume: opts.resume }))
     const outer = join(root, 'outer.ps1')
     const pre = opts.utf8Console ? '[Console]::InputEncoding = [Text.Encoding]::UTF8\r\n' : ''
     const run = opts.constrained
@@ -299,6 +299,22 @@ describe.runIf(process.platform === 'win32')('conductor run script on real Windo
       const set = launch(`${tag}record-set`, { bin: { 'claude.cmd': cmdShim() }, constrained, configDir })
       expect(set.recorded?.toString('utf8'), set.stderr).toBe(`\uFEFF${SESSION}\r\n${configDir}\r\n`)
       expectDelivered(set, 0, constrained ? task : task + '\r\n')
+    }
+  }, 240_000)
+
+  // §9 (P2): the conductor run again on another account at its usage limit. The script puts claude
+  // on that account itself, over the config home the shell had, and resumes the session by its id.
+  it('puts claude on the account it is given, over the shell\'s own, and resumes the session, in either language mode', () => {
+    const profile = join(dir, 'profiles', 'O\'Brien ’s codedev')
+    const old = join(dir, 'profiles', 'old')
+    for (const constrained of [false, true]) {
+      const tag = constrained ? 'clm-' : ''
+      const set = launch(`${tag}account-set`, { bin: { 'claude.cmd': cmdShim() }, constrained, configDir: old, account: { profile }, resume: true })
+      expect(set.recorded?.toString('utf8'), set.stderr).toBe(`\uFEFF${SESSION}\r\n${profile}\r\n`)
+      expect(set.argv, set.stderr).toEqual(['-p', '--mcp-config', set.cfg, '--resume', SESSION, '--dangerously-skip-permissions'])
+      const unset = launch(`${tag}account-unset`, { bin: { 'claude.cmd': cmdShim() }, constrained, configDir: old, account: { profile: null } })
+      expect(unset.recorded?.toString('utf8'), unset.stderr).toBe(`\uFEFF${SESSION}\r\n\r\n`)
+      expectDelivered(unset, 0, constrained ? task : task + '\r\n')
     }
   }, 240_000)
 })

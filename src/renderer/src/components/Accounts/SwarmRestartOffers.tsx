@@ -5,6 +5,7 @@
 // What each button does, and what the conductor is told, is swarmRestart.ts's.
 import { useEffect } from 'react'
 import { declineRestart, installSwarmRestart, liveRestartDeps, offerTitle, restartOn, RESTART_WAIT_MS } from '../../lib/swarmRestart'
+import { runConductorOn } from '../../lib/conductorManager'
 import type { RestartDeps, SwarmRestartGroup } from '../../lib/swarmRestart'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { AccountsView } from '../../../../shared/agentAccounts'
@@ -18,6 +19,10 @@ function Offer({ g, view, deps }: { g: SwarmRestartGroup; view: AccountsView | n
   const label = (id: string): string => view?.accounts.find((r) => r.id === id)?.label ?? 'that account'
   const one = g.workers.length === 1
   const decline = (): void => { void declineRestart(g.id, deps()) }
+  // The conductor's offer runs it again (conductorManager.ts); a worker's restarts it in place.
+  const run = (id: string, confirmed = false): void => {
+    void (g.conductor ? runConductorOn(g.id, id, confirmed) : restartOn(g.id, id, deps(), confirmed))
+  }
   const done = g.phase.kind === 'done'
   let body: React.ReactNode
   switch (g.phase.kind) {
@@ -26,14 +31,16 @@ function Offer({ g, view, deps }: { g: SwarmRestartGroup; view: AccountsView | n
         <>
           <div className="flex gap-2 flex-wrap">
             {g.targets.map((id) => (
-              <button key={id} type="button" className={PRIMARY} onClick={() => { void restartOn(g.id, id, deps()) }} data-testid="swarm-restart-on">
-                {one ? 'Restart it' : 'Restart all'} on {label(id)}
+              <button key={id} type="button" className={PRIMARY} onClick={() => run(id)} data-testid="swarm-restart-on">
+                {g.conductor ? 'Run the conductor again' : one ? 'Restart it' : 'Restart all'} on {label(id)}
               </button>
             ))}
-            <button type="button" className={BUTTON} onClick={decline} data-testid="swarm-restart-decline">Let the conductor reassign</button>
+            {!g.conductor && <button type="button" className={BUTTON} onClick={decline} data-testid="swarm-restart-decline">Let the conductor reassign</button>}
           </div>
           <p className="text-[#9ca3af]">
-            {one ? 'It keeps its conversation and its task' : 'They keep their conversations and their tasks'}. With no answer in {minutes} minutes, the conductor gives {one ? 'its task' : 'their tasks'} to another agent.
+            {g.conductor
+              ? 'It resumes its conversation where that account can see it, or starts again with the same goal. The swarm\'s workers and tasks stay.'
+              : `${one ? 'It keeps its conversation and its task' : 'They keep their conversations and their tasks'}. With no answer in ${minutes} minutes, the conductor gives ${one ? 'its task' : 'their tasks'} to another agent.`}
           </p>
         </>
       )
@@ -44,15 +51,15 @@ function Offer({ g, view, deps }: { g: SwarmRestartGroup; view: AccountsView | n
         <>
           <p data-testid="swarm-restart-question">{question}</p>
           <div className="flex gap-2">
-            <button type="button" className={PRIMARY} onClick={() => { void restartOn(g.id, targetId, deps(), true) }} data-testid="swarm-restart-confirm">Restart on {label(targetId)}</button>
-            <button type="button" className={BUTTON} onClick={decline} data-testid="swarm-restart-decline">Don&apos;t restart</button>
+            <button type="button" className={PRIMARY} onClick={() => run(targetId, true)} data-testid="swarm-restart-confirm">{g.conductor ? 'Run it' : 'Restart'} on {label(targetId)}</button>
+            <button type="button" className={BUTTON} onClick={decline} data-testid="swarm-restart-decline">Don&apos;t {g.conductor ? 'run it again' : 'restart'}</button>
           </div>
         </>
       )
       break
     }
     case 'restarting':
-      body = <p data-testid="swarm-restart-running">Restarting on {label(g.phase.targetId)}…</p>
+      body = <p data-testid="swarm-restart-running">{g.conductor ? 'Running the conductor again' : 'Restarting'} on {label(g.phase.targetId)}…</p>
       break
     default:
       body = (
@@ -74,8 +81,8 @@ function Offer({ g, view, deps }: { g: SwarmRestartGroup; view: AccountsView | n
           <button
             type="button"
             className="px-1.5 rounded hover:bg-white/10"
-            aria-label={done ? 'Close' : 'Don\'t restart: the conductor reassigns'}
-            title={done ? 'Close' : 'Don\'t restart: the conductor reassigns'}
+            aria-label={done || g.conductor ? 'Close' : 'Don\'t restart: the conductor reassigns'}
+            title={done || g.conductor ? 'Close' : 'Don\'t restart: the conductor reassigns'}
             onClick={done ? () => useTerminalStore.getState().dropSwarmRestart(g.id) : decline}
             data-testid="swarm-restart-close"
           >

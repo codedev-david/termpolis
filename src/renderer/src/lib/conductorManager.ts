@@ -2,7 +2,8 @@ import { v4 as uuid } from 'uuid'
 import { useTerminalStore } from '../store/terminalStore'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
-import { conductorRunScript, conductorLaunchCommand, findConductorExit, type ConductorExit } from './conductorLaunch'
+import { conductorRunScript, conductorLaunchCommand, conductorLimitOf, findConductorExit, type ConductorExit } from './conductorLaunch'
+import { liveRestartDeps, offerConductorRun } from './swarmRestart'
 import { getTerminalDefaults } from './terminalDefaults'
 import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../../shared/conductorFiles'
 import { recordSwarmError } from './sentry'
@@ -18,6 +19,11 @@ interface ConductorState {
   /** The id this launch's `claude -p` was started with (`--session-id`), whose transcript Trace
    *  follows. Null until sendTask launches it. */
   sessionId: string | null
+  /** The task sendTask handed it: a conductor run again on another account at its limit gets it
+   *  again, when it can't resume (§9). */
+  taskDescription?: string
+  /** The account it was run again on (§9); until then, the one Termpolis's environment gives it. */
+  accountId?: string
 }
 
 /** What was already there when the conductor was launched, and so says nothing about this run.
@@ -189,67 +195,15 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   }
 
   conductorState.status = 'running'
+  conductorState.taskDescription = taskDescription
 
-  // Get installed agents
-  const agentsRes = await window.termpolis.detectAgents()
-  const installedAgents = agentsRes.success && agentsRes.data ? agentsRes.data : {}
-
-  // Build the conductor prompt. A worker can be restarted on another account (§9) only where its
-  // agent has two accounts or more.
   const isWindows = navigator.platform.startsWith('Win')
-  const view = useTerminalStore.getState().accountsView
-  const prompt = buildConductorPrompt({
-    taskDescription,
-    installedAgents,
-    projectCwd: cwd,
-    shellType: isWindows ? 'powershell' : 'bash',
-    agentRatingOverrides: useTerminalStore.getState().agentRatingOverrides,
-    restartOffer: !!view && (['claude', 'codex'] as const).some((agent) => view.accounts.filter((r) => r.agent === agent).length > 1),
-  })
-
-  // Write prompt to a temp file
-  const homedirRes = await window.termpolis.getHomedir()
-  const homedir = homedirRes.success && homedirRes.data ? homedirRes.data : cwd
-  const homeSlash = homedir.replace(/\\/g, '/')
-  const tempFile = homeSlash + '/.termpolis-conductor-task.md'
-  await window.termpolis.writeConfigFile(tempFile, prompt)
-
-  // Headless `claude -p` does NOT auto-load user-scope MCP plugins that
-  // `claude mcp list` reports as connected. Without an explicit
-  // --mcp-config, the conductor spins up with ZERO Termpolis tools and
-  // silently bypasses the swarm — even when the MCP server is healthy,
-  // the adapter file ships in the installer, and Claude's settings.json
-  // is fully wired. The userData-scoped claude-mcp-config.json is written
-  // on every app start (src/main/index.ts around line 966), so the path
-  // is guaranteed to point at a valid config once main is up.
-  const mcpCfgRes = await window.termpolis.getMcpConfigPath()
-  const mcpConfigPath = mcpCfgRes.success && mcpCfgRes.data ? mcpCfgRes.data : ''
-
-  // Launch Claude Code with -p, its prompt piped in from the temp file (see conductorLaunch.ts).
-  // Claude -p with --dangerously-skip-permissions HAS full tool access
-  // (MCP tools, file read/write, bash execution) — it's just non-interactive.
-  //
-  // In E2E test mode the command is substituted to a node-based mock shim, which can't pass
-  // the production script's `--version` probe, so the script runs it directly instead.
-  const claudeCmd = resolveAgentCommand('claude')
-  const testCommand = claudeCmd !== 'claude' ? claudeCmd : undefined
-  const native = (p: string): string => (isWindows ? p.replace(/\//g, '\\') : p)
-  const scriptFile = homeSlash + (isWindows ? '/.termpolis-conductor-run.ps1' : '/.termpolis-conductor-run.sh')
+  const prompt = await promptFor(taskDescription, cwd)
   // A new session for each launch: the id names the transcript Trace follows, which must be this
   // launch's alone.
   const sessionId = uuid()
   conductorState.sessionId = sessionId
-  await window.termpolis.writeConfigFile(
-    scriptFile,
-    conductorRunScript(isWindows, {
-      taskFile: native(tempFile),
-      mcpConfigPath: native(mcpConfigPath),
-      sessionId,
-      claudeHomeFile: native(`${homeSlash}/${CONDUCTOR_CLAUDE_HOME_FILE}`),
-      testCommand,
-    }),
-  )
-  const runCmd = conductorLaunchCommand(isWindows, native(scriptFile))
+  const runCmd = await writeRun(cwd, prompt, sessionId, {})
   // The last swarm's workers, which only Clear closes, are none of this one's: their bridges
   // would post to the new conductor under their agents' names, and their stops be reported to it.
   stopAllBridges()
@@ -284,6 +238,142 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
 
   // Start monitoring
   startMonitoring()
+}
+
+/** The conductor's prompt for a task. A worker can be restarted on another account (§9) only where
+ *  its agent has two accounts or more. */
+async function promptFor(taskDescription: string, cwd: string): Promise<string> {
+  const agentsRes = await window.termpolis.detectAgents()
+  const installedAgents = agentsRes.success && agentsRes.data ? agentsRes.data : {}
+  const view = useTerminalStore.getState().accountsView
+  return buildConductorPrompt({
+    taskDescription,
+    installedAgents,
+    projectCwd: cwd,
+    shellType: navigator.platform.startsWith('Win') ? 'powershell' : 'bash',
+    agentRatingOverrides: useTerminalStore.getState().agentRatingOverrides,
+    restartOffer: !!view && (['claude', 'codex'] as const).some((agent) => view.accounts.filter((r) => r.agent === agent).length > 1),
+  })
+}
+
+/** Writes a launch's task file and run script, and answers the line that runs it. */
+async function writeRun(cwd: string, prompt: string, sessionId: string, on: { account?: { profile: string | null }; resume?: boolean }): Promise<string> {
+  const isWindows = navigator.platform.startsWith('Win')
+  // Write prompt to a temp file
+  const homedirRes = await window.termpolis.getHomedir()
+  const homedir = homedirRes.success && homedirRes.data ? homedirRes.data : cwd
+  const homeSlash = homedir.replace(/\\/g, '/')
+  const tempFile = homeSlash + '/.termpolis-conductor-task.md'
+  await window.termpolis.writeConfigFile(tempFile, prompt)
+
+  // Headless `claude -p` does NOT auto-load user-scope MCP plugins that
+  // `claude mcp list` reports as connected. Without an explicit
+  // --mcp-config, the conductor spins up with ZERO Termpolis tools and
+  // silently bypasses the swarm — even when the MCP server is healthy,
+  // the adapter file ships in the installer, and Claude's settings.json
+  // is fully wired. The userData-scoped claude-mcp-config.json is written
+  // on every app start (src/main/index.ts around line 966), so the path
+  // is guaranteed to point at a valid config once main is up.
+  const mcpCfgRes = await window.termpolis.getMcpConfigPath()
+  const mcpConfigPath = mcpCfgRes.success && mcpCfgRes.data ? mcpCfgRes.data : ''
+
+  // Launch Claude Code with -p, its prompt piped in from the temp file (see conductorLaunch.ts).
+  // Claude -p with --dangerously-skip-permissions HAS full tool access
+  // (MCP tools, file read/write, bash execution) — it's just non-interactive.
+  //
+  // In E2E test mode the command is substituted to a node-based mock shim, which can't pass
+  // the production script's `--version` probe, so the script runs it directly instead.
+  const claudeCmd = resolveAgentCommand('claude')
+  const testCommand = claudeCmd !== 'claude' ? claudeCmd : undefined
+  const native = (p: string): string => (isWindows ? p.replace(/\//g, '\\') : p)
+  const scriptFile = homeSlash + (isWindows ? '/.termpolis-conductor-run.ps1' : '/.termpolis-conductor-run.sh')
+  await window.termpolis.writeConfigFile(
+    scriptFile,
+    conductorRunScript(isWindows, {
+      taskFile: native(tempFile),
+      mcpConfigPath: native(mcpConfigPath),
+      sessionId,
+      claudeHomeFile: native(`${homeSlash}/${CONDUCTOR_CLAUDE_HOME_FILE}`),
+      testCommand,
+      ...on,
+    }),
+  )
+  return conductorLaunchCommand(isWindows, native(scriptFile))
+}
+
+/** What a conductor run again on another account with its own session is told (§9). */
+export const CONDUCTOR_RESUMED = 'You stopped at a usage limit, and Termpolis runs you again on another account. A swarm is in progress. ' +
+  'Read swarm_list_tasks and swarm_read_messages before you create tasks, then carry on from where you stopped.'
+/** What a conductor run again without its session gets after its whole prompt (§9). */
+export const CONDUCTOR_IN_PROGRESS = 'A swarm is in progress. Read swarm_list_tasks and swarm_read_messages before you create tasks.'
+
+/** The account the conductor's claude runs on: the one it was last run again on, else the one
+ *  Termpolis's environment gives a terminal with no account line. */
+function conductorAccountId(): string | null {
+  return conductorState.accountId ?? useTerminalStore.getState().accountsView?.envAccount?.claude ?? null
+}
+
+/**
+ * Runs the conductor again in its terminal, on the account `targetId`, after its usage limit ended
+ * it (§9, P2): the run script puts claude on that account, and it resumes its own session by its
+ * id where that account can see the transcript (both profiles share projects/), or starts anew
+ * with the same goal and a word that a swarm is in progress. The swarm's workers and tasks stay.
+ * Answers why it couldn't, or null.
+ */
+export async function relaunchConductor(targetId: string): Promise<string | null> {
+  const { terminalId: id, cwd, taskDescription } = conductorState
+  const store = useTerminalStore.getState()
+  if (!id || !cwd || taskDescription === undefined || conductorState.status !== 'error' || !store.terminals.some((t) => t.id === id)) {
+    return 'the conductor is gone: start the swarm again from its dashboard'
+  }
+  const view = store.accountsView
+  const target = view?.accounts.find((r) => r.id === targetId && r.agent === 'claude')
+  if (!target) return 'that account isn\'t registered any more'
+  const from = view!.accounts.find((r) => r.id === conductorAccountId())
+  const seesTranscripts = (r: { isDefault: boolean; shares: string[] }): boolean => r.isDefault || r.shares.includes('projects')
+  const resume = !!conductorState.sessionId && !!from && seesTranscripts(from) && seesTranscripts(target)
+  const prompt = resume ? CONDUCTOR_RESUMED : `${await promptFor(taskDescription, cwd)}\n\n${CONDUCTOR_IN_PROGRESS}`
+  const sessionId = resume ? conductorState.sessionId! : uuid()
+  const runCmd = await writeRun(cwd, prompt, sessionId, { account: { profile: target.profile }, resume })
+  // What the terminal showed before, its last report among it, is no part of this run.
+  launch = { ...launch, outputOffset: (await readLaunchBaseline(id)).outputOffset }
+  conductorState = { ...conductorState, status: 'running', error: null, sessionId, accountId: target.id }
+  if (!resume) traceWatchedFor = null
+  store.setSwarmActive(true)
+  store.setSwarmNotification(null)
+  window.termpolis.writeToTerminal(id, runCmd + '\r')
+  watchConductorTrace()
+  try {
+    await window.swarmAPI.sendMessage('system', 'all', 'info', `Conductor run again on ${target.label} after its usage limit, ${resume ? 'resuming its session' : 'with a new session'}.`)
+  } catch {}
+  startMonitoring()
+  return null
+}
+
+/** [Run the conductor again on <account>] on the conductor's offer: runs it, and says how it went.
+ *  Its conversation off an account not offered automatically asks once more first (R17), unless
+ *  `confirmed`. */
+export async function runConductorOn(groupId: string, targetId: string, confirmed = false): Promise<void> {
+  const store = useTerminalStore.getState()
+  const g = store.swarmRestarts.find((x) => x.id === groupId)
+  if (!g || (g.phase.kind !== 'offered' && g.phase.kind !== 'confirm')) return
+  const rows = store.accountsView?.accounts ?? []
+  const from = rows.find((r) => r.id === g.accountId)
+  const to = rows.find((r) => r.id === targetId)
+  if (!confirmed && from && to && !from.autoOffer) {
+    store.putSwarmRestart({ ...g, phase: { kind: 'confirm', targetId, question: `${from.label} isn't offered automatically. Carry the conductor's conversation to ${to.label}?` } })
+    return
+  }
+  store.putSwarmRestart({ ...g, phase: { kind: 'restarting', targetId } })
+  const label = store.accountsView?.accounts.find((r) => r.id === targetId)?.label ?? 'that account'
+  let why: string | null
+  try {
+    why = await relaunchConductor(targetId)
+  } catch (e) {
+    why = e instanceof Error ? e.message : String(e)
+  }
+  const now = useTerminalStore.getState().swarmRestarts.find((x) => x.id === groupId)
+  if (now) useTerminalStore.getState().putSwarmRestart({ ...now, phase: { kind: 'done', lines: [why ? `The conductor wasn't run again: ${why}.` : `The conductor runs again on ${label}.`] } })
 }
 
 /** The baseline for a run (LaunchBaseline). A read that fails sets nothing aside, which is how
@@ -620,6 +710,11 @@ async function endOnConductorExit(
   try {
     await window.swarmAPI.sendMessage('system', 'all', 'info', `${error}: ${quoted || '(no output)'}`)
   } catch {}
+  // At its usage limit: run it again on another account, where one is a way out (§9, P2).
+  const limit = conductorLimitOf(exit)
+  if (limit) {
+    try { await offerConductorRun(limit, conductorAccountId(), liveRestartDeps()) } catch { /* the exit report stands */ }
+  }
 }
 
 // Cleanup

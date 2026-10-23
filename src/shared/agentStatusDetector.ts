@@ -372,6 +372,12 @@ const CLAUDE_LIMIT_MESSAGES: readonly RegExp[] = [
   /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]re out of (?:usage credits|extra usage)\b/,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?Your org is out of usage\b/,
 ]
+/** Whether a row starts with one of Claude Code's limit messages (CLAUDE_LIMIT_MESSAGES): the run
+ *  script's report of the conductor's `claude -p` ends in one at its limit (§9). */
+export function isClaudeLimitMessage(row: string): boolean {
+  return CLAUDE_LIMIT_MESSAGES.some((p) => p.test(row))
+}
+
 /** Claude Code's, and Antigravity 1.4's two, which its footer could show. */
 const LIMIT_MESSAGES: readonly RegExp[] = [
   ...CLAUDE_LIMIT_MESSAGES,

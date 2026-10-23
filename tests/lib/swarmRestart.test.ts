@@ -5,7 +5,7 @@
 // own.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
-  LOCK_RECHECK_MS, RESTART_WAIT_MS, _resetSwarmRestartForTest, declineRestart, freshMessage, installSwarmRestart, offerRestart,
+  LOCK_RECHECK_MS, RESTART_WAIT_MS, _resetSwarmRestartForTest, declineRestart, freshMessage, installSwarmRestart, offerConductorRun, offerRestart,
   offerTitle, offeredMessage, restartOn, restartTargets, restartedMessage, workerBlocker,
 } from '../../src/renderer/src/lib/swarmRestart'
 import type { RestartDeps, SwarmRestartGroup } from '../../src/renderer/src/lib/swarmRestart'
@@ -536,5 +536,57 @@ describe('installSwarmRestart', () => {
     off()
     await noteSwarmStop(W2, LIMIT)
     expect(messages()[1]).toBe(reassignOf(W2))
+  })
+})
+
+// P2: the conductor's own limit ends its `claude -p`, which its run script reports.
+describe('offerConductorRun', () => {
+  const SESSION_WORDS = "You've hit your session limit · resets 3pm (America/New_York)"
+
+  it('offers to run the conductor again on a Claude Code account that is a way out and skips the bypass warning, recording its limit', async () => {
+    useTerminalStore.setState({ accountsView: view([MAIN, { ...CODEDEV, connect: false, connection: null }, { ...WORK, autoOffer: true, id: 'acc_x', label: 'x', bypassReady: false, order: 3 }]) })
+    expect(await offerConductorRun(SESSION_WORDS, 'acc_m', deps)).toBe(true)
+    expect(groups()).toEqual([{
+      id: 'g1', conductor: true, agent: 'claude', accountId: 'acc_m', words: SESSION_WORDS, resetsAt: expect.any(Number),
+      workers: [], targets: ['acc_c'], phase: { kind: 'offered' },
+    }])
+    expect(deps.accounts.noteLimit).toHaveBeenCalledWith('acc_m', { text: SESSION_WORDS, resetsAt: groups()[0].resetsAt, scope: 'account', window: 'session', email: 'a@example.test' })
+    // The conductor is told nothing: it is gone.
+    expect(messages()).toEqual([])
+    expect(offerTitle(groups()[0], view([MAIN]))).toBe('The swarm\'s conductor ran out of usage on personal.')
+  })
+
+  it('notifies an unfocused window, and reads no reset where the words give none', async () => {
+    deps = makeDeps({ focused: () => false })
+    expect(await offerConductorRun("You've reached your Fable limit.", 'acc_m', deps)).toBe(true)
+    expect(groups()[0].resetsAt).toBeNull()
+    expect(deps.notify).toHaveBeenCalledWith('The swarm\'s conductor ran out of usage', 'The swarm\'s conductor ran out of usage on personal.', expect.any(Function))
+    ;(deps.notify as ReturnType<typeof vi.fn>).mock.calls[0][2]()
+  })
+
+  it.each([
+    ['no account it ran on', null, view([MAIN, CODEDEV])],
+    ['an account no longer registered', 'acc_gone', view([MAIN, CODEDEV])],
+    ['no accounts view', 'acc_m', null],
+  ])('offers nothing for %s', async (_name, accountId, v) => {
+    useTerminalStore.setState({ accountsView: v })
+    expect(await offerConductorRun(SESSION_WORDS, accountId, deps)).toBe(false)
+    expect(deps.accounts.noteLimit).not.toHaveBeenCalled()
+  })
+
+  it('offers nothing, as v1.54.0, when no other account is a way out, or the only one is signed out; the limit is recorded', async () => {
+    useTerminalStore.setState({ accountsView: view([{ ...MAIN, lastEmail: null }, { ...CODEDEV, bypassReady: false }]) })
+    expect(await offerConductorRun(SESSION_WORDS, 'acc_m', deps)).toBe(false)
+    expect(deps.accounts.noteLimit).toHaveBeenCalledWith('acc_m', expect.not.objectContaining({ email: expect.anything() }))
+    useTerminalStore.setState({ accountsView: view([MAIN, CODEDEV]) })
+    ;(deps.accounts.check as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: { ...CODEDEV, identity: { email: null, signedIn: false, checkedAt: NOW, source: 'auth-status' } } })
+    ;(deps.accounts.noteLimit as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('locked'))
+    expect(await offerConductorRun(SESSION_WORDS, 'acc_m', deps)).toBe(false)
+    expect(groups()).toEqual([])
+  })
+
+  it('skips an account out of usage on the very model the conductor ran out on', async () => {
+    useTerminalStore.setState({ accountsView: view([MAIN, { ...CODEDEV, limit: { seenAt: NOW, resetsAt: NOW + 3_600_000, text: "You've hit your Opus limit", scope: 'model' } }]) })
+    expect(await offerConductorRun("You've hit your Opus limit · resets 3pm", 'acc_m', deps)).toBe(false)
   })
 })
