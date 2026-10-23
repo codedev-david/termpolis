@@ -1046,8 +1046,12 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
       php_dot: JOIN.php_dot,
       cat_A: (ls) => ls.map((l) => `${l}$`).join('\n'),
       java_lineSep: (ls) => 'String KEY = ' + ls.map((l) => `"${l}"`).join(' + System.lineSeparator()\n    + ') + ';',
+      // Python's and Rust's line continuations: a backslash before the line break
+      py_backslash: (ls) => 'KEY = ' + ls.map((l) => `"${l}${BS}n"`).join(` ${BS}\n    `),
+      rust_cont: (ls) => 'let key = "' + ls.join(`${BS}n${BS}\n`) + '";',
     }
-    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'openssh'] as const) {
+    // (a PGP export's checksum line between its last line and the END line, in the joining's frame)
+    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'openssh', 'pgp_rsa_hdr'] as const) {
       const lines = K.F[format]
       const secret = secretLinesOf(lines)
       for (const [name, join] of Object.entries(joinings)) {
@@ -1241,6 +1245,118 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
         expect(r.flagged.private_key, `${format} cut at ${at}`).toBe(1)
       }
     }
+  })
+})
+
+describe("the round-1 rules at their edges", () => {
+  const BS = '\\'
+  const arrived = (text: string, at: number): ReturnType<typeof screenKeys> => screenKeys(`…${text.slice(at)}`, { cutStart: true })
+  const prose = (n: number): string => {
+    let s = ''
+    for (let i = 0; s.length < n; i++) s += `Step ${i}: the build copied the assets and wrote out/report-${i}.txt.\n`
+    return s.slice(0, n)
+  }
+
+  it('walks up over line breaks written as CR alone, and over a \\u000a escape right under a block whose frame changed', () => {
+    const lines = K.F.pkcs8_rsa
+    const secret = secretLinesOf(lines)
+    // an older computer's cut through a key whose lines a lone CR joins
+    const cr = `Key:\n${JOIN.cr(lines)}\nDone.\n`
+    expect(leakedWindows(arrived(cr, cr.indexOf(lines[0]) + Math.floor(JOIN.cr(lines).length * 0.6)).text, secret)).toBe(0)
+    // the lines after the frame change start right under the block, behind an escape the
+    // between-test reads as no line break
+    const half = lines.length >> 1
+    const u = `"${[...lines.slice(0, half), ...lines.slice(half, -1).map((l) => `  ${l}`), lines[lines.length - 1]].join(`${BS}u000a`)}"`
+    const r = screenKeys(u)
+    expect(leakedWindows(r.text, secret)).toBe(0)
+    expect(r.spans.filter((s) => s.cls === 'remove').map((s) => s.why)).toEqual(['pkcs8-prefix', 'tail-with-end'])
+  })
+
+  it("the doing side's window start inside a listing of a key's tail that starts the text: taken from the window's start", () => {
+    // (the walk up from the END line reaches the text's start on a whole line: the key's head is
+    // not in the answer, so the tail goes from where the window starts)
+    const exp = pgpPhotoExport(20_000)
+    const tail = exp.slice(100)
+    const listing = tail.map((l, i) => `export.asc:${i + 101}:${l}`).join('\n')
+    const text = `${listing}\n${prose(210_000)}`
+    const from = text.indexOf(`export.asc:${101 + 200}:`)
+    expect(from).toBeGreaterThan(8_000)
+    const r = screenKeys(text, { keep: text.length - from })
+    expect(r.removed).toEqual({ gpg_block: 1 })
+    expect(leakedWindows(r.text, secretLinesOf(exp))).toBe(0)
+  })
+
+  it('a line holding more than a frame between a block and its tail stays, and the tail is reported', () => {
+    const lines = K.F.pkcs8_rsa
+    const body = lines.slice(1, -1)
+    // a structured log line, no spaces, with a 20-character id: more than a key line's frame
+    const log = `{"level":"info","ts":"2026-10-23T12:00:00Z","msg":"rotating","id":"${randomBytes(15).toString('base64')}"}`
+    const text = [lines[0], ...body.slice(0, 6), `  ${body[6]}`, log, ...body.slice(7), lines[lines.length - 1], 'done'].join('\n')
+    const r = screenKeys(text)
+    expect(r.text.includes(log)).toBe(true)
+    // (the tail at its END line, and what follows the uneven line)
+    expect(Object.keys(r.flagged)).toEqual(['private_key'])
+    expect(r.spans.filter((s) => s.cls === 'remove').map((s) => s.why)).toEqual(['pkcs8-prefix'])
+  })
+
+  it("a DSA key rotated in a diff: the new key's lines under the old block go with it, END line and all", () => {
+    const other = makeKeys()
+    const a = K.F.dsa
+    const b = other.F.dsa
+    const diff = ['--- a/k', '+++ b/k', '@@ -1 +1 @@', ` ${a[0]}`, ...a.slice(1, -1).map((l) => `-${l}`), ...b.slice(1, -1).map((l) => `+${l}`), ` ${a[a.length - 1]}`].join('\n')
+    const r = screenKeys(diff)
+    expect(leakedWindows(r.text, secretLinesOf(a))).toBe(0)
+    expect(leakedWindows(r.text, secretLinesOf(b))).toBe(0)
+  })
+
+  it("an older computer's cut in a BEGIN line: an excerpt of two of a key's first lines goes, a truncated example's one line stays", () => {
+    const l = K.F.pkcs1_rsa
+    const two = [l[0], l[1], l[2], l[l.length - 1]].join('\n')
+    expect(arrived(two, 5).removed).toEqual({ private_key: 1 })
+    // a documentation example: a key's header line and its END line, nothing else
+    const example = `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ${randomBytes(12).toString('base64').slice(0, 14)}\n-----END PRIVATE KEY-----\n`
+    // ...and the OpenSSH one a test writes with its line breaks escaped
+    const ssh = `-----BEGIN OPENSSH PRIVATE KEY-----${BS}r${BS}nb3BlbnNzaC1rZXktdjEAAAAA${BS}r${BS}n-----END OPENSSH PRIVATE KEY-----${BS}r${BS}nafter`
+    for (const text of [example, ssh]) {
+      for (const at of [3, 10, 20]) {
+        const r = arrived(text, at)
+        expect(r.text, `cut at ${at}`).toBe(`…${text.slice(at)}`)
+        expect(r.removed, `cut at ${at}`).toEqual({})
+      }
+    }
+    // lines that decode to a key of another kind than the END line names are no head of its key
+    const mislabelled = [...K.F.openssh.slice(0, -1), '-----END PRIVATE KEY-----'].join('\n')
+    expect(arrived(mislabelled, 4).spans.some((s) => s.why === 'tail-decoded')).toBe(false)
+  })
+
+  it("a run of fewer than 40 characters right under a key block is no rotated key's lines", () => {
+    const l = K.F.pkcs8_rsa
+    const body = l.slice(1, -1)
+    const x = randomBytes(24).toString('base64').slice(0, 30)
+    const text = [l[0], ...body.slice(0, -1), body[body.length - 1].slice(0, 10), `  ${x}`, l[l.length - 1], 'done'].join('\n')
+    const r = screenKeys(text)
+    expect(r.removed).toEqual({ private_key: 1 })
+    expect(r.text.includes(`  ${x}\n${l[l.length - 1]}`)).toBe(true)
+  })
+
+  it("a PKCS#1 key's tail at the top of what is screened goes, with no DEK-Info line above it", () => {
+    const l = K.F.pkcs1_rsa
+    const r = screenKeys(`${l.slice(8).join('\n')}\nDone.\n`)
+    expect(r.removed).toEqual({ private_key: 1 })
+    expect(leakedWindows(r.text, secretLinesOf(l))).toBe(0)
+  })
+
+  it('reports what goes on past an uneven line up to the next key block, after a tail removed above', () => {
+    const top = K.F.pkcs1_rsa.slice(8)
+    const a = K.F.pkcs8_rsa
+    const body = a.slice(1, -1)
+    const uneven = [a[0], ...body.slice(0, 8), `  ${body[8]}`, ...body.slice(9)]
+    const text = [...top, 'and the next one:', ...uneven, 'and then', ...K.F.sec1_ec].join('\n')
+    const r = screenKeys(text)
+    expect(r.removed).toEqual({ private_key: 3 })
+    expect(r.flagged).toEqual({ private_key: 1 })
+    expect(r.spans.filter((s) => s.why === 'block-rest')).toHaveLength(1)
+    expect(leakedWindows(r.text, secretLinesOf(K.F.sec1_ec))).toBe(0)
   })
 })
 
@@ -1676,7 +1792,8 @@ describe('the detectors cost in step with the text, whatever the other computer 
 
   it('key blocks: BEGIN lines written one after another on one line are scanned in step with their number', () => {
     // Each block looked for the end of its first line from its BEGIN marker on: with no line
-    // break, the rest of the text once per marker (80,000 characters of them took 0.9 s).
+    // break, the rest of the text once per marker (80,000 characters of them took 0.9 s, 160,000
+    // some 4 s). Now about 60 ms, twice that under coverage: the bound is for what costs seconds.
     const run = randomBytes(30).toString('base64')
     for (const unit of [
       '-----BEGIN PRIVATE KEY----- ',
@@ -1685,10 +1802,10 @@ describe('the detectors cost in step with the text, whatever the other computer 
       '-----BEGIN OpenVPN Static key V1----- ',
       `-----BEGIN PRIVATE KEY----- ${run} `,
     ]) {
-      const line = unit.repeat(Math.ceil(80_000 / unit.length))
-      expect(bestOf3(() => keySpans(line)), unit).toBeLessThan(60)
+      const line = unit.repeat(Math.ceil(160_000 / unit.length))
+      expect(bestOf3(() => keySpans(line)), unit).toBeLessThan(1_000)
       // a line break every few markers was always fast: the result is the same as with none
-      expect(keyBlocks(line).length).toBe(Math.ceil(80_000 / unit.length))
+      expect(keyBlocks(line).length).toBe(Math.ceil(160_000 / unit.length))
     }
   })
 })

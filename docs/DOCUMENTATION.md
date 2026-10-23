@@ -1412,8 +1412,9 @@ audit log.
     out of view: where the end of the text that is kept starts inside the key,
     where the text starts with two or more of its lines (its last line or two
     alone can cross), and wherever lines that decode to a key's first bytes run
-    down to its END line (a key whose BEGIN line was lost, the new key in a diff
-    that rotates one). A note tells your agent how
+    down to its END line (a key whose BEGIN line was lost). So are key lines
+    right under a key block that was removed, down to an END line of its kind:
+    the new key in a diff that rotates one. A note tells your agent how
     many this computer removed, and by which rules, from the prompt it sent and
     from an answer that arrived with one still in it; one the other computer
     removed shows only as its marker.
@@ -1457,10 +1458,11 @@ audit log.
   still crossed between your two computers, sealed. Versions 1.50 to 1.53.0
   cut an answer to its end before screening it (1.50 to 1.52 don't screen it
   at all). A private key their cut ran through is still removed here if its
-  END line is in what arrived, and reported if it isn't (but for an Ed25519
-  key in OpenSSH's format, whose few lines are too regular to tell from other
-  base64). A token whose start the cut took arrives without its prefix and is
-  not recognised.
+  END line is in what arrived, and reported if it isn't, but for a key written
+  all on one line, echoed into a file line by line or URL-encoded whole, and
+  (with no END line) an Ed25519 key in OpenSSH's format, whose few lines are
+  too regular to tell from other base64. A token whose start the cut took
+  arrives without its prefix and is not recognised.
 - **Memory.** The agent doing the work starts with that computer's own memory
   primer (up to 6,000 characters), as a local run would, so its answer can
   quote that machine's memory. Nothing of the job becomes that computer's own

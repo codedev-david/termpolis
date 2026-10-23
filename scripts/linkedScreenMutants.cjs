@@ -152,6 +152,11 @@ const REVIEW = {
   "b64: a cut's short first line skipped (F-E)": [KEY, '    if (i - a < 40 && !(cutText && a <= start + 1 && i - a >= 4)) continue', '    if (i - a < 40) continue'],
   'json: no escaped base64 read (F-C)': [KEY, '  if (!B64_ESC_RE.test(text.slice(start))) return out\n', '  if (start >= 0) return out\n'],
   'decode: a glue of 3 at most (F-D)': [KEY, '  for (let k = 0; k <= 4; k++) {\n    const glue = text.slice(runs[0][0], runs[0][0] + k)', '  for (let k = 0; k <= 3; k++) {\n    const glue = text.slice(runs[0][0], runs[0][0] + k)'],
+  'top: no line continuation in a cut remnant (FR-4)': [KEY, '|`[nr]|[ \\t"\'`,;+.&_$)\\]}|])*\\\\?(?:\\r\\n|\\r|\\n)?)$/', '|`[nr]|[ \\t"\'`,;+.&_$)\\]}|])*(?:\\r\\n|\\r|\\n)?)$/'],
+  "tail: a PGP checksum only between plain joiners (FR-4)": [KEY, '{4}[\\s"\'`,;+&_.)\\]}|\\\\$]*$/.test(blankNl(seg))', '{4}[\\s"\'`,;+)\\]}|\\\\]*$/.test(seg)'],
+  "cut: a key's first bytes taken for a tail": [KEY, 'const fake = madeUp(text, runs) || keyHead(text, runs)', 'const fake = madeUp(text, runs)'],
+  'cut: lines of hex digests taken for a key': [KEY, "  if (hexy.length && hexy.every((l) => /^[0-9a-fA-F]+$/.test(l))) return true\n", ''],
+  'tail: a made-up run anchored as a key tail': [KEY, 'const head = framed && !ownFloor && !madeUp(text, runs) ?', 'const head = framed && !ownFloor ?'],
 }
 
 /** Mutants no test can kill, because they change nothing the screen returns. */

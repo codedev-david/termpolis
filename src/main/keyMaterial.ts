@@ -671,9 +671,11 @@ export function keyBlocks(text: string, start = 0): KeyBlock[] {
 // ---------------------------------------------------------------------------------------------
 const END_RE = /-----END ((?:[A-Z0-9]+ ){0,3})PRIVATE KEY(?: BLOCK)?-----|---- END SSH2 ENCRYPTED PRIVATE KEY ----/g
 // One partial line: its frame, its base64, then what ends a key line (an escaped break as nextBreak
-// reads them, a closing quote, a concatenation, PHP's `" .`, VB's `& _`, cat -A's `$`, one real
-// line break). Newline constants are blanked before it is matched.
-const PARTIAL_RE = /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)((?:\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]|[ \t"'`,;+.&_$)\]}|])*(?:\r\n|\r|\n)?)$/
+// reads them, a closing quote, a concatenation, PHP's `" .`, VB's `& _`, cat -A's `$`, Python's or
+// Rust's `\` line continuation, one real line break). Newline constants are blanked before it is
+// matched. (The continuation is one backslash before the break only: as a character anywhere, it and
+// the escapes' `\\+` could share a run of backslashes every way there is.)
+const PARTIAL_RE = /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)((?:\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]|[ \t"'`,;+.&_$)\]}|])*\\?(?:\r\n|\r|\n)?)$/
 
 /** Payload lines read forward from `s`: one width (the last may be shorter), one frame.
  *  `partialHead`: the first line is not one of the key's full lines (what another computer's cut
@@ -802,7 +804,8 @@ function tailAbove(text: string, at: number, floor: number): Run[] {
       const seg = text.slice(s, e)
       const joinerOnly = FRAGMENT_LINE.test(blankNl(seg))
       // (the checksum line keeps its listing frame: `deploy.asc:41:=AbCd`, `    41\t=AbCd`)
-      const checksum = runs.length === 0 && /=[A-Za-z0-9+/]{4}[\s"'`,;+)\]}|\\]*$/.test(seg) && !/[A-Za-z0-9+/]{16}/.test(seg.slice(0, seg.lastIndexOf('=')))
+      // (in any of the key lines' joinings: a literal's `" + System.lineSeparator()`, cat -A's `$`)
+      const checksum = runs.length === 0 && /=[A-Za-z0-9+/]{4}[\s"'`,;+&_.)\]}|\\$]*$/.test(blankNl(seg)) && !/[A-Za-z0-9+/]{16}/.test(seg.slice(0, seg.lastIndexOf('=')))
       if ((runs.length === 0 && (joinerOnly || checksum)) || (runs.length > 0 && joinerOnly && seg.length <= 16 && !skipped)) {
         if (runs.length > 0) skipped = true
         e = stepBack(text, s, floor)
@@ -953,19 +956,16 @@ function headInReach(text: string, at: number, floor: number, runs: Run[]): bool
 const tailRule = (end: string): string => (end.includes('PGP') ? 'gpg_block' : end.includes('SSH2') ? 'ssh2_private_key' : 'private_key')
 
 /** Whether every logical line in [a, b) is blank or a key line's: a base64 run of 16 or more, and
- *  besides its runs a frame of 64 characters at most with no words in it. */
+ *  besides its runs a frame of 64 characters at most with no words in it. (`b` starts a logical
+ *  line, so each line in [a, b) ends with a line break before it.) */
 function keyShapedLines(text: string, a: number, b: number): boolean {
   let any = false
-  for (let i = a; i < b; ) {
-    const br = nextBreak(text, i, b)
-    const line = text.slice(i, br ? br[0] : b)
-    if (line.trim()) {
-      if (!/[A-Za-z0-9+/=]{16,}/.test(line) || /[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/.test(line)) return false
-      if (line.replace(/[A-Za-z0-9+/=]{16,}/g, '').length > 64) return false
-      any = true
-    }
-    if (!br) break
-    i = br[1]
+  for (let br = nextBreak(text, a, b), i = a; br; i = br[1], br = nextBreak(text, i, b)) {
+    const line = text.slice(i, br[0])
+    if (!line.trim()) continue
+    if (!/[A-Za-z0-9+/=]{16,}/.test(line) || /[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/.test(line)) return false
+    if (line.replace(/[A-Za-z0-9+/=]{16,}/g, '').length > 64) return false
+    any = true
   }
   return any
 }
@@ -997,9 +997,10 @@ function blockLead(text: string, runs: Run[], floor: number, blocks: readonly Ke
   return bk.to >= floor && ls - bk.to <= REACH_BEGIN && keyShapedLines(text, bk.to, ls) ? bk.to : null
 }
 
-/** The key block taken, of the END line `end`'s kind, that the key lines `runs` start inside and
- *  that ends before the END line at `at`, or null. Blocks are sorted and disjoint. */
-function blockHolding(runs: Run[], blocks: readonly KeyBlock[], end: string, at: number): KeyBlock | null {
+/** The key block taken that the key lines `runs` start inside, or null: their first line is its
+ *  own key's, so they are the rest of it. (A flagged block's span is its BEGIN line, and an END
+ *  line a block ends at is its own: neither holds a run.) Blocks are sorted and disjoint. */
+function blockHolding(runs: Run[], blocks: readonly KeyBlock[]): KeyBlock | null {
   let lo = 0
   let hi = blocks.length - 1
   while (lo <= hi) {
@@ -1007,29 +1008,23 @@ function blockHolding(runs: Run[], blocks: readonly KeyBlock[], end: string, at:
     const b = blocks[mid]
     if (b.to <= runs[0][0]) lo = mid + 1
     else if (b.from > runs[0][0]) hi = mid - 1
-    else return b.cls !== 'flag' && b.to <= at && sameKind(b, end) ? b : null
+    else return b
   }
   return null
 }
 
 /** Whether the key block `bk` is of the END line `end`'s kind (its rule is the one a tail ending
  *  there gets; DSA's is its own). */
-const sameKind = (bk: KeyBlock | null, end: string): boolean => bk !== null && (bk.rule === tailRule(end) || (bk.rule === 'ssh_dsa_pubkey' && end.includes(' DSA ')))
+const sameKind = (bk: KeyBlock, end: string): boolean => bk.rule === tailRule(end) || (bk.rule === 'ssh_dsa_pubkey' && end.includes(' DSA '))
 
-/** Whether the first of the key lines `runs` starts, with the glue decodeHead tries, with a
- *  private key's first bytes: the OpenSSH or SSH2 magic, or a DER SEQUENCE over a version 0 or 1
- *  (PKCS#8, PKCS#1, SEC1) or an AlgorithmIdentifier (encrypted PKCS#8). Random key bytes start so
- *  about once in 10^7. */
+/** Whether the key lines `runs` start with a private key's first bytes, with the glue decodeHead
+ *  tries: a structure decodeHead reads (DER, OpenPGP, SSH2), or the OpenSSH magic a truncated
+ *  example shows without the header after it. A key's own tail starts so by chance about once in
+ *  10^7. */
 function keyHead(text: string, runs: Run[]): boolean {
+  if (decodeHead(text, runs)) return true
   const r = text.slice(runs[0][0], runs[0][1])
-  for (let k = 0; k <= 4; k++) {
-    const b = Buffer.from(r.slice(k, k + 24), 'base64')
-    if (b.length < 8) break
-    if (startsWith(b, OPENSSH.slice(0, 14)) || startsWith(b, SSH2_MAGIC)) return true
-    if (b[0] !== 0x30) continue
-    const n = b[1] & 0x80 ? 2 + (b[1] & 0x7f) : 2
-    if (n <= 5 && ((b[n] === 0x02 && b[n + 1] === 0x01 && b[n + 2] <= 1) || (b[n] === 0x30 && !(b[n + 1] & 0x80) && b[n + 2] === 0x06))) return true
-  }
+  for (let k = 0; k <= 4; k++) if (startsWith(Buffer.from(r.slice(k, k + 24), 'base64'), OPENSSH.slice(0, 14))) return true
   return false
 }
 
@@ -1128,7 +1123,7 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
       const framed = endFramed(text, at, floor, runs)
       const rule = tailRule(m[0])
       const cutText = opts.cutAt === 0 && floor === start
-      const holder = framed && runs.length > 0 ? blockHolding(runs, blocks, m[0], at) : null
+      const holder = framed && runs.length > 0 ? blockHolding(runs, blocks) : null
       const lead = framed && runs.length > 0 && !holder ? blockLead(text, runs, floor, blocks, m[0]) : null
       if (holder) {
         // They go on from inside a key block taken, whose lines stopped keeping one width and frame
