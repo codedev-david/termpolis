@@ -652,6 +652,7 @@ const accounts: AccountsAPI = {
   agySwitch: (req) => ipcRenderer.invoke('accounts:agy-switch', req),
   modelHold: (req) => ipcRenderer.invoke('accounts:model-hold', req),
   modelRelease: (terminalId, key) => ipcRenderer.invoke('accounts:model-release', { terminalId, key }),
+  limitLook: (terminalId) => ipcRenderer.invoke('accounts:limit-look', { terminalId }),
   onSwitchProgress: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
     ipcRenderer.on('accounts:switch-progress', handler)

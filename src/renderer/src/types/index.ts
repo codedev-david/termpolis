@@ -9,6 +9,7 @@ import type {
   TerminalAccountEvent,
 } from '../../../shared/agentAccounts'
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, ModelHoldRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
+import type { LimitLook } from '../../../shared/accountLimits'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -1347,6 +1348,9 @@ export interface AccountsAPI {
   modelHold(req: ModelHoldRequest): Promise<IpcResponse<ModelHold>>
   /** Lets the model picker's hold go. */
   modelRelease(terminalId: string, key: string): Promise<IpcResponse<boolean>>
+  /** The usage-limit chooser's look at an agent terminal whose screen changed (§8.1): judged in
+   *  main, beside its buffer, with main's record of the agent started there (R5). */
+  limitLook(terminalId: string): Promise<IpcResponse<LimitLook>>
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

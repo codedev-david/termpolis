@@ -56,6 +56,9 @@ describe('parseResetsAt', () => {
     expect(parseResetsAt('3pm (America/New_York)', at('2026-10-31T23:00:00Z'))).toBe(at('2026-11-01T20:00:00Z'))
     // And enters it on Mar 8 2026: 3pm that day is UTC-4.
     expect(parseResetsAt('3pm (America/New_York)', at('2026-03-08T05:00:00Z'))).toBe(at('2026-03-08T19:00:00Z'))
+    // A time right after the clocks go back: read at the UTC guess, the offset is still daylight
+    // time's; only read again at the answer is it standard time's (3am EST is 08:00 UTC, not 07:00).
+    expect(parseResetsAt('3am (America/New_York)', at('2026-11-01T01:00:00Z'))).toBe(at('2026-11-01T08:00:00Z'))
   })
 
   it("reads the weekly form: a date and a time, as David's transcripts show it (R15)", () => {
@@ -184,8 +187,11 @@ describe('limitTargets', () => {
     expect(t.map((x) => [x.row.id, x.state])).toEqual([
       ['a', 'limited'], ['b', 'limited'], ['c', 'folder-missing'], ['d', 'same-sign-in'], ['personal', 'this'],
     ])
-    expect(t[0].text).toMatch(/^out of usage/)
+    expect(t[0].text).toMatch(/^out of usage until /)
     expect(t[1].text).toBe('out of usage (seen by your failover hook)')
+    // A weekly limit whose reset didn't read: out, with no time to name.
+    const weekly = row('w', { order: 1, limit: { seenAt: now, resetsAt: null, text: 'x', scope: 'account', window: 'weekly' } })
+    expect(limitTargets([personal, weekly], 'claude', { accountId: 'personal', email: null }, now)[0]).toMatchObject({ state: 'limited', text: 'out of usage' })
     expect(t[3].text).toBe('signed in to codedev@example.test, the same account')
   })
 
@@ -230,5 +236,22 @@ describe('limitTargets', () => {
     const t = limitTargets([g1, g2, g3], 'agy', { accountId: 'g1', email: 'g1@example.test' }, now)
     expect(t.map((x) => [x.row.id, x.state])).toEqual([['g2', 'available'], ['g3', 'same-sign-in'], ['g1', 'this']])
     expect(t[0].text).toBe('g2@example.test')
+    // One registered with no email: nothing to compare, and the row says so.
+    const bare = row('g4', { agent: 'agy', profile: null, folder: null, folderExists: false, lastEmail: null, order: 3 })
+    expect(limitTargets([g1, bare], 'agy', { accountId: 'g1', email: 'g1@example.test' }, now)[0]).toMatchObject({ state: 'available', text: 'no email given' })
+  })
+
+  it('reads a check that says signed in with no email by what the profile last named', () => {
+    const a = row('a', { order: 1, lastEmail: 'personal@example.test' })
+    const b = row('b', { order: 2, lastEmail: null })
+    const t = limitTargets([personal, a, b], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now, {
+      a: { kind: 'signed-in', email: null },
+      b: { kind: 'signed-in', email: null },
+    })
+    expect(t.map((x) => [x.row.id, x.state, x.text])).toEqual([
+      ['a', 'same-sign-in', 'signed in to personal@example.test, the same account'],
+      ['b', 'available', 'signed in'],
+      ['personal', 'this', "this terminal's account"],
+    ])
   })
 })

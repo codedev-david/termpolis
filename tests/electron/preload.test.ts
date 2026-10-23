@@ -1109,6 +1109,7 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.modelHold({ terminalId: 't1', line: 'codex --model gpt-5.5 resume --last' }), ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'codex --model gpt-5.5 resume --last' }],
       [() => a.modelRelease('t1', 'k1'), ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key: 'k1' }],
       [() => a.launchLine({ terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }), ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }],
+      [() => a.limitLook('t1'), ACCOUNTS_IPC.limitLook, { terminalId: 't1' }],
     ]
     for (const [call, channel, payload] of cases) {
       mockIpcRenderer.invoke.mockClear()

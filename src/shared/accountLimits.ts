@@ -10,6 +10,28 @@
 //   Codex 0.153.4        "3:04 PM"; another day "Oct 24th, 2026 4:15 PM"; local time.
 import { isProfileAgent } from './agentAccounts'
 import type { AccountAgent, AccountLimit, AccountRowView } from './agentAccounts'
+import type { AgentStatusResult } from './agentStatusDetector'
+
+/** What the chooser reads off a terminal (accounts:limit-look, main's limitLook.ts): one judgement of
+ *  its screen, and where the agent Termpolis started there stands (R5). */
+export interface LimitLook {
+  /** The agent Termpolis started there (a launch it typed, or one typed by hand that main saw);
+   *  null when it started none. */
+  agent: AccountAgent | null
+  /** That agent still runs: nothing on screen counts once it exited (R5). */
+  live: boolean
+  /** It took a turn since it was started: a limit before that is an old one drawn again (R4). */
+  turned: boolean
+  /** Where it was started in the terminal's output: another value is a relaunch. */
+  startAt: number | null
+  status: AgentStatusResult
+  /** The CLI's own words for the limit it shows, if it shows one (R15). */
+  words: string | null
+  /** The account main put the terminal on; null when it put it on none. */
+  accountId: string | null
+  /** A line typed by hand changed its account since: Termpolis doesn't know it. */
+  byHand: boolean
+}
 
 /** A stop, without when it lifts: a reset time the CLI redraws as a countdown is the same stop. */
 export function stopKey(summary: string): string {

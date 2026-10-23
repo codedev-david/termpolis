@@ -252,7 +252,7 @@ describe('the typed-line watch (§6.1, R1)', () => {
     ends.set('t1', 4242)
     expect(noteTypedInput('t1', r.line + '\r', clock)).toBe('own')
     expect(isAccountChangedByHand('t1')).toBe(false)
-    expect(terminalAgentStart('t1')).toEqual({ at: 4242, commands: [r.line] })
+    expect(terminalAgentStart('t1')).toEqual({ at: 4242, commands: [r.line], agent: 'claude', time: clock })
     expect(sent).toEqual([])
     // The same line typed again later is the user's: it does change the account by hand.
     expect(noteTypedInput('t1', r.line + '\r', clock)).toBe('by-hand')

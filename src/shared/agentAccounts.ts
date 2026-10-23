@@ -173,6 +173,8 @@ export const ACCOUNTS_IPC = {
   modelHold: 'accounts:model-hold',
   /** Lets the model picker's hold go ({ terminalId, key }). */
   modelRelease: 'accounts:model-release',
+  /** The usage-limit chooser's look at a terminal whose screen changed ({ terminalId } → LimitLook). */
+  limitLook: 'accounts:limit-look',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────

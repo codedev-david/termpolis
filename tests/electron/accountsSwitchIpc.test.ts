@@ -326,7 +326,7 @@ describe('accounts:model-hold and accounts:model-release (§7.5)', () => {
     log.mockRestore()
     // The picker's line, as typed: the agent's start is now there, and it reads as Termpolis's own.
     expect(noteTypedInput('t1', 'claude --model opus --continue\r', 43)).toBe('own')
-    expect(terminalAgentStart('t1')).toEqual({ at: 99, commands: ['claude --model opus --continue'] })
+    expect(terminalAgentStart('t1')).toEqual({ at: 99, commands: ['claude --model opus --continue'], agent: 'claude', time: 43 })
     expect(terminalAccountId('t1')).toBe(main)
     expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key: 'not-its-key' })).toBe(true)
     expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' })).toBe('an account switch or another model change is running in this terminal')

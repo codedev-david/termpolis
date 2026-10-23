@@ -181,7 +181,7 @@ const bare = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '')
 export const plain = (s: string): string => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '').replace(/\x1b./g, '')
 
 /** The first words of each CLI's exit hint, as it prints them when it exits. */
-const HINT_HEAD: Readonly<Record<AccountAgent, RegExp>> = {
+export const HINT_HEAD: Readonly<Record<AccountAgent, RegExp>> = {
   claude: /Resume this session with:/,
   codex: /To continue this session, run|Session ID:/,
   agy: /Resume with -c \(or command below\):/,

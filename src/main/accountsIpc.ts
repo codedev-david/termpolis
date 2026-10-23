@@ -13,6 +13,9 @@ import { runAgyStep } from './agySwitch'
 import { carryTranscript, findTranscript } from './accountCarry'
 import { holdForModel, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { SwitchIO } from './accountSwitch'
+import { agentOfLaunch, lookForLimit, noteEnteredLine } from './limitLook'
+import type { LiveStart } from './limitLook'
+import type { LimitLook } from '../shared/accountLimits'
 import {
   ACCOUNTS_IPC, ACCOUNT_AGENTS, ACCOUNT_AGENT_LABEL, SHAREABLE_FOLDERS, accountEnv, accountLine, cleanLabel, familyOf,
   isPlainEmail, isProfileAgent, signInCommand, signInTerminalName, slugOf, tildifyPath,
@@ -121,26 +124,36 @@ export const OWN_LINE_MS = 10_000
 /** The lines main built for each terminal (launch-line), each until it is typed or OWN_LINE_MS
  *  pass: typed through terminal:write, one of them is Termpolis's own line, not a change by hand
  *  (R1). */
-const ownLines = new Map<string, Array<{ line: string; until: number }>>()
+const ownLines = new Map<string, Array<{ line: string; until: number; agent?: AccountAgent }>>()
+
+/** Remembers a line main built for a terminal, for OWN_LINE_MS: once typed, it is Termpolis's own,
+ *  and starts `agent` (a launch's line can name it otherwise: a test shim, a wrapper). */
+function noteOwnLine(terminalId: string, line: string, now: number, agent?: AccountAgent): void {
+  ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > now), { line, until: now + OWN_LINE_MS, ...(agent ? { agent } : {}) }])
+}
 /** What was typed into each terminal since its last Enter, gathered from keystrokes. */
 const typedLines = new Map<string, string>()
 /** Terminals whose account a line typed by hand changed: Termpolis no longer knows it. */
 const byHand = new Set<string>()
 
 /** Where each terminal's agent was started in its output, and the line that started it: what the
- *  switch reads its exit and its relaunch from (accountSwitch.ts), as submit does run_command's. */
-export interface AgentStart {
-  at: number
-  commands: string[]
-}
+ *  switch reads its exit and its relaunch from (accountSwitch.ts), as submit does run_command's,
+ *  and the usage-limit chooser the agent's lifecycle (limitLook.ts). */
+export type AgentStart = LiveStart
 const agentStarts = new Map<string, AgentStart>()
 
 export function terminalAgentStart(terminalId: string): AgentStart | undefined {
   return agentStarts.get(terminalId)
 }
 
-export function noteAgentStart(terminalId: string, start: AgentStart): void {
-  agentStarts.set(terminalId, start)
+/** A start as main records it: the agent its line names, and when, with nothing seen of it yet. */
+function startRecord(start: AgentStart, now: number): AgentStart {
+  const agent = start.agent ?? agentOfLaunch(start.commands[0] ?? '')
+  return { at: start.at, commands: start.commands, ...(agent ? { agent } : {}), time: start.time ?? now }
+}
+
+export function noteAgentStart(terminalId: string, start: AgentStart, now: number = Date.now()): void {
+  agentStarts.set(terminalId, startRecord(start, now))
 }
 
 /** A line typed by hand changed the terminal's account (it set or unset a profile variable). */
@@ -150,11 +163,24 @@ export function isAccountChangedByHand(terminalId: string): boolean {
 
 /** What index.ts's terminal:write and the switch reach main's other parts through, once
  *  registerAccountsIpc has run. */
-const wiring: { send?: (channel: string, payload: unknown) => void; outputEnd?: (terminalId: string) => number } = {}
+const wiring: { send?: (channel: string, payload: unknown) => void; outputEnd?: (terminalId: string) => number; io?: Omit<SwitchIO, 'progress'> } = {}
 
 /** The longest typed line kept: a pasted file is no account line. */
 const TYPED_LINE_MAX = 4096
 const ESCAPE_SEQUENCE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|.)?/
+
+/** A line typed by hand, for the agent's lifecycle (limitLook.ts): an agent started at the shell, or
+ *  a prompt entered in the agent's box. A look that fails changes nothing, and never stops the
+ *  line's other checks. */
+function noteLife(terminalId: string, typed: string, now: number): void {
+  const io = wiring.io
+  const end = wiring.outputEnd?.(terminalId)
+  if (!io || end === undefined) return
+  try {
+    const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now)
+    if (started) agentStarts.set(terminalId, started)
+  } catch { /* the next look reads it */ }
+}
 
 /** A whole line was typed into a terminal: Termpolis's own (one main built), or one that changes
  *  the account by hand, which marks the terminal so (§6.1) and tells the renderer. */
@@ -164,12 +190,13 @@ function noteLine(terminalId: string, line: string, now: number): 'own' | 'by-ha
   const mine = (ownLines.get(terminalId) ?? []).filter((l) => l.until > now)
   const at = mine.findIndex((l) => l.line === typed)
   if (at >= 0) {
-    mine.splice(at, 1)
+    const [own] = mine.splice(at, 1)
     ownLines.set(terminalId, mine)
     const end = wiring.outputEnd?.(terminalId)
-    if (end !== undefined) agentStarts.set(terminalId, { at: end, commands: [typed] })
+    if (end !== undefined) agentStarts.set(terminalId, startRecord({ at: end, commands: [typed], ...(own.agent ? { agent: own.agent } : {}) }, now))
     return 'own'
   }
+  noteLife(terminalId, typed, now)
   if (!changesAccountByHand(typed)) return null
   byHand.add(terminalId)
   wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: terminalAccounts.get(terminalId) ?? null, byHand: true })
@@ -471,6 +498,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   const watches = new Map<string, { timer: unknown; until: number; mtime: number | null; email: string | null }>()
   wiring.send = deps.send
   wiring.outputEnd = deps.outputEnd
+  wiring.io = deps.switchIO
 
   const view = (doc: AccountsDoc): AccountsView => {
     const p = deps.paths()
@@ -927,10 +955,14 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (!agent) throw new Error('unknown agent')
     if (!command) throw new Error('there is no command to run')
     // With no account for the agent, or a registry that can't be read, the launch is today's: the
-    // bare command on the default profile, and nothing recorded (D13).
+    // bare command on the default profile, and no account recorded (D13). The line is still
+    // Termpolis's own, so the agent it starts is watched for a usage limit (limitLook.ts).
     const loaded = loadAccounts(userData(), fsx)
     const accounts = loaded.ok ? sortedAccounts(loaded.doc).filter((a) => a.agent === agent) : []
-    if (!loaded.ok || accounts.length === 0) return { line: command, accountId: null, explicit: false }
+    if (!loaded.ok || accounts.length === 0) {
+      noteOwnLine(terminalId, command, now(), agent)
+      return { line: command, accountId: null, explicit: false }
+    }
     const account = launchAccountOf(loaded.doc, accounts, input.accountId)
     // Named on the line once the agent has more than one account: a CLAUDE_CONFIG_DIR a shell's rc
     // file exports can't then move the launch (§6.2). The default profile's line unsets it.
@@ -957,9 +989,19 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     }
     noteTerminalAccount(terminalId, account.id)
     if (agent === 'claude') noteTerminalSession(terminalId, sessionId ?? null)
-    const t = now()
-    ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > t), { line, until: t + OWN_LINE_MS }])
+    noteOwnLine(terminalId, line, now(), agent)
     return { line, accountId: account.id, explicit, ...(sessionId ? { sessionId } : {}) }
+  })
+
+  // The usage-limit chooser's look at a terminal whose screen changed (§8.1): judged here, next to
+  // the buffer, with main's record of the agent started there and of the terminal's account.
+  handle(ACCOUNTS_IPC.limitLook, (input): LimitLook => {
+    const io = deps.switchIO
+    if (!io) throw new Error('main has no terminals to look at')
+    const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
+    if (!terminalId) throw new Error('which terminal?')
+    const seen = lookForLimit(io, terminalId, agentStarts.get(terminalId), now())
+    return { ...seen, accountId: terminalAccounts.get(terminalId) ?? null, byHand: byHand.has(terminalId) }
   })
 
   handle(ACCOUNTS_IPC.switchAccount, async (input): Promise<SwitchOutcome> => {
@@ -1002,7 +1044,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       newSessionId: () => randomUUID(),
       record: (r) => {
         noteTerminalAccount(terminalId, r.accountId)
-        noteAgentStart(terminalId, r.start)
+        noteAgentStart(terminalId, r.start, now())
         if (agent === 'claude') noteTerminalSession(terminalId, r.sessionId)
         deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: r.accountId, byHand: false })
       },
@@ -1032,7 +1074,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       io,
       ...(terminalAgentStart(terminalId) ? { start: terminalAgentStart(terminalId) } : {}),
       env,
-      record: (r) => noteAgentStart(terminalId, r.start),
+      record: (r) => noteAgentStart(terminalId, r.start, now()),
     })
     if (outcome.kind === 'switched') {
       // One Google sign-in for the computer user: every agy terminal Termpolis knows moved with it,
@@ -1064,7 +1106,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const t = now()
     const key = holdForModel(terminalId, t)
     if (!key) throw new Error(MODEL_HELD)
-    ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > t), { line, until: t + OWN_LINE_MS }])
+    noteOwnLine(terminalId, line, t)
     return { key }
   })
 
