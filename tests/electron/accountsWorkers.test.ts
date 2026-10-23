@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
-  _resetTerminalAccountsForTest, envAccountOf, envAccounts, forgetTerminalAccount, isAccountChangedByHand, noteSwarmWorker,
+  _resetTerminalAccountsForTest, envAccountOf, envAccounts, forgetTerminalAccount, isAccountChangedByHand, noteAgentStart, noteSwarmWorker,
   noteWorkerCommand, noteWorkerInput, registerAccountsIpc, terminalAccountId, terminalAgentStart,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
@@ -223,8 +223,10 @@ describe('noteWorkerCommand: a worker\'s start, as run_command typed it', () => 
     noteWorkerInput('w1', 'Set CLAUDE_CONFIG_DIR=/tmp/x in the docs\r\r')
     expect(isAccountChangedByHand('w1')).toBe(false)
     expect(terminalAccountId('w1')).toBe(main)
+    // Another terminal's agent, at its box: the phone's prompt to it is no turn of a worker's.
+    noteAgentStart('mine', { at: term.launchedAt, commands: [term.launchLine()] })
     noteWorkerInput('mine', 'Continue your task.\r')
-    expect(terminalAgentStart('mine')).toBeUndefined()
+    expect(terminalAgentStart('mine')!.turned).toBeUndefined()
   })
 
   it('never throws: the worker runs as before', async () => {
