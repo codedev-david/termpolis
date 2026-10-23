@@ -804,6 +804,62 @@ function headAnchor(text: string, runs: Run[], floor: number, atTop: boolean, bl
   return m[2] ? floor + (above.startsWith('…') ? 1 : 0) + m[1].length : runs[0][0]
 }
 
+/** A tool's own frame in front of an END line, where only one partial key line above it is left
+ *  to compare it with: a listing's `path:N:` or `path-N-`, a log line's clock time, a pod's
+ *  `[pod/name] ` or compose's `name  | `, a literal's `b"`, `u8"` or `L"`, an echo per line. A
+ *  sentence or an assignment that names an END line (`Nothing ends with `, `B = "`) is none of
+ *  them. */
+const TOOL_FRAME: readonly RegExp[] = [
+  /[:-]\d{1,9}[:-]\s?$/,
+  /\d{1,2}:\d\d:\d\d/,
+  /^\s*\[[^\]\s]{1,128}\]\s$/,
+  /^\s*[\w.-]{1,64}\s+\|\s$/,
+  /^\s*(?:[bruBRU]{1,2}|u8|L)["']$/,
+  /^\s*(?:echo|printf)\s+(?:-[a-z]+\s+)?["']?$/,
+]
+
+/** Whether the private-key END marker at `at` is written as the END line of the key lines `runs`
+ *  above it, and not named in a sentence or a code constant: the last key line is on the END line
+ *  itself; or what comes before the marker on its line holds no letter (a diff's `+`, a quote, an
+ *  indent, a line number); or it is the key lines' own frame (a listing's path, a log's time
+ *  stamp), judged against the last key line when that line starts in view, and against the one
+ *  partial line a cut left only for a tool's own frame (TOOL_FRAME). Taken anywhere, a report's
+ *  hashes or a path printed above `... ends with -----END PRIVATE KEY-----` were removed as a key's
+ *  tail. */
+function endFramed(text: string, at: number, floor: number, runs: Run[]): boolean {
+  const s = logicalLineStart(text, at, floor)
+  if (runs.length && logicalLineStart(text, runs[runs.length - 1][0], floor) === s) return true
+  const prefix = text.slice(s, at)
+  if (!/[A-Za-z]/.test(prefix)) return true
+  if (!runs.length) return false
+  const r = runs[runs.length - 1]
+  const ls = logicalLineStart(text, r[0], floor)
+  const keyFrame = frameAt(text, ls, r[0])
+  const endFrame = frameAt(text, s, at)
+  if (runs.length > 1 || ls > floor) return endFrame === keyFrame
+  // (':' and '-' alike: frameOf's `:N:`/`-N-` rule depends on where the cut fell in a timestamp)
+  const loose = (x: string): string => x.replace(/-/g, ':')
+  if (!loose(endFrame).endsWith(loose(keyFrame.replace(/^…/, '')))) return false
+  return TOOL_FRAME.some((re) => re.test(prefix))
+}
+
+/** Whether the key lines that end at the END line at `at` stop in view, below a BEGIN line's reach
+ *  past `floor`, the doing side's own window start: their head is then in the answer, so they are
+ *  no key the window cut off (a dump or a list of hashes whose first line the window's start fell
+ *  under, or under which the token lookback's start fell). False when the walk runs to that reach,
+ *  or stops at the partial line it starts with: the head is out of reach there, as a key longer
+ *  than the reach has it. At the text's start, a line is whole. */
+function headInReach(text: string, at: number, floor: number, runs: Run[]): boolean {
+  const lower = Math.max(0, floor - REACH_BEGIN)
+  // (walked from the same END line with a lower floor, the lines are the same ones and more: its
+  // top line is the walk's first, never below `runs`' own)
+  const top = tailAbove(text, at, lower).reduce((x, r) => Math.min(x, r[0]), runs[0][0])
+  const ls0 = logicalLineStart(text, top, lower)
+  if (ls0 <= lower) return false
+  if (lower === 0) return true
+  return logicalLineStart(text, stepBack(text, ls0, lower), lower) > lower
+}
+
 const tailRule = (end: string): string => (end.includes('PGP') ? 'gpg_block' : end.includes('SSH2') ? 'ssh2_private_key' : 'private_key')
 
 /** Key tails with no BEGIN line in view, from `start` on. `blocks` are keyBlocks' from the same
@@ -831,12 +887,17 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
       // was removed.
       const floor = Math.max(prev, at - MAX_BLOCK)
       const runs = tailAbove(text, at, floor)
+      const framed = endFramed(text, at, floor, runs)
       if (isKeyRun(text, runs)) {
         const rule = tailRule(m[0])
-        const head = headAnchor(text, runs, floor, floor === start || floor === at - MAX_BLOCK, blocks)
+        // An END line named in prose or code ends no key: what looks like one above it is reported
+        // as anywhere else. So is a run whose head the doing side's own window start fell under
+        // while it is still in the answer: only a key longer than the BEGIN line's reach is cut off.
+        const ownFloor = framed && floor === start && start > 0 && opts.cutAt !== 0 && headInReach(text, at, start, runs)
+        const head = framed && !ownFloor ? headAnchor(text, runs, floor, floor === start || floor === at - MAX_BLOCK, blocks) : null
         if (head !== null) out.push({ rule, cls: 'remove', why: 'tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
-        else out.push({ rule, cls: 'flag', why: 'tail-unanchored', from: at, to: at + m[0].length })
-      } else if (opts.cutAt === 0 && floor === start && runs.length >= 1 && runs.reduce((n, [a, b]) => n + b - a, 0) >= 16) {
+        else out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed', from: at, to: at + m[0].length })
+      } else if (framed && opts.cutAt === 0 && floor === start && runs.length >= 1 && runs.reduce((n, [a, b]) => n + b - a, 0) >= 16) {
         // At the start of a text another computer cut, the few characters of key a cut left right
         // above a private END line are a key's tail whatever their length (a cut at 95% of a key
         // leaves a partial line and the short last one, under the 80 characters a key run needs).

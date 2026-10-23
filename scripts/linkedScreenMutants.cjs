@@ -5,13 +5,14 @@
 // is a vitest run of the screen's six test files, about a minute, so a group takes 20 minutes or
 // more.
 //
-//   node scripts/linkedScreenMutants.cjs [judge|wiring|all] [part of a mutant's name]
+//   node scripts/linkedScreenMutants.cjs [judge|wiring|review|all] [part of a mutant's name]
 //
 //   judge   (the default) the design's own 20 mutants of its decisions, ported from the judge's
 //           prototype probe (k9-mutants-final.cjs) to the TypeScript; its 21st, "public: never
 //           public", went with publicStructure, which the port drops
 //   wiring  what screenText does with the detectors, and the asking side's cut (two of these are
 //           equivalent by construction and expected to survive: see EQUIVALENT)
+//   review  the guards the round-1 fixes of the review's findings added
 //
 // Each mutant edits its source file in place, and the file is written back after the run, and
 // at the end whatever happens. The script refuses to start while any of the files it edits has
@@ -52,7 +53,7 @@ const JUDGE = {
   'legacy PEM: no DEK-Info needed': [KEY, 'const legacy = headers.some((h) => /Proc-Type: ?4,ENCRYPTED/.test(h)) && headers.some((h) => DEK_RE.test(h))', 'const legacy = headers.some((h) => /Proc-Type/.test(h))'],
   'tail: no head anchor (J6 reverted)': [KEY, "if (head !== null) out.push({ rule, cls: 'remove', why: 'tail-with-end'", "if (head !== -2) out.push({ rule, cls: 'remove', why: 'tail-with-end'"],
   'tail: no joiner-fragment skip': [KEY, '(runs.length > 0 && joinerOnly && seg.length <= 16 && !skipped)', '(runs.length < 0)'],
-  'tail: no short cut tail': [KEY, '} else if (opts.cutAt === 0 && floor === start && runs.length >= 1', '} else if (opts.cutAt === -1 && floor === start && runs.length >= 1'],
+  'tail: no short cut tail': [KEY, '} else if (framed && opts.cutAt === 0 && floor === start && runs.length >= 1', '} else if (framed && opts.cutAt === -1 && floor === start && runs.length >= 1'],
   'tail: strict partial-line frame': [KEY, "if (fr !== '' && !loose(frame).endsWith(loose(fr)) && !JOINER_FRAME.test(m[1])) return null", "if (fr !== '' && !frame.endsWith(fr)) return null"],
   'ppk: no length from Private-Lines': [KEY, "const cls = (got.length >= 2 || (got.length === n && n > 0)) && looksRandom(all) ? 'remove' : 'flag'", "const cls = got.length > 0 ? 'remove' : 'flag'"],
   'b64: removed on the signature alone': [KEY, "const cls = inner.some((s) => s.cls === 'remove') ? 'remove' : 'flag'", "const cls = inner.length >= 0 ? 'remove' : 'flag'"],
@@ -99,6 +100,21 @@ const WIRING = {
   'tail: full key lines 15 wide allowed': [KEY, 'if (w < runs[0][1] - runs[0][0] || w < MIN_RUN) break', 'if (w < runs[0][1] - runs[0][0] || w < MIN_RUN - 1) break'],
 }
 
+const REVIEW = {
+  // FR-1: an END line named in a sentence or code ends no key
+  'tail: every END line written as a key\'s': [KEY, 'const framed = endFramed(text, at, floor, runs)', 'const framed = runs.length >= 0'],
+  'tail: a cut\'s partial line under any frame': [KEY, 'return TOOL_FRAME.some((re) => re.test(prefix))', 'return prefix.length >= 0'],
+  'tail: an unframed END line not reported': [KEY, "else out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed'", "else if (framed) out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed'"],
+  // FR-2: a run whose head the doing side's window start fell under, still in the answer
+  'tail: a head in the answer anchored at the window\'s start': [KEY, '&& opts.cutAt !== 0 && headInReach(text, at, start, runs)', '&& opts.cutAt !== 0 && headInReach(text, at, start, runs) && runs.length < 0'],
+  'tail: the reach\'s partial line read as a head in view': [KEY, 'return logicalLineStart(text, stepBack(text, ls0, lower), lower) > lower', 'return ls0 >= 0'],
+  'tail: the text\'s first line read as a partial one': [KEY, '  if (lower === 0) return true\n', ''],
+  // cost: one break search per line, one way to match an RSAKeyValue member
+  'cost: a fresh break search per block': [KEY, '    const br = nextBr(lineStart, end)\n', '    const br = nextBreak(text, lineStart, end)\n'],
+  'cost: an RSAKeyValue value and its trailing whitespace overlap': [KEY, '([A-Za-z0-9+/=][A-Za-z0-9+/=\\s]*)(?=<|&lt;|\\\\u003[cC])/g', '([A-Za-z0-9+/=\\s]{1,}?)\\s*(?=<|&lt;|\\\\u003[cC])/g'],
+  'cost: an RSAKeyValue member takes the next tag\'s <': [KEY, '([A-Za-z0-9+/=][A-Za-z0-9+/=\\s]*)(?=<|&lt;|\\\\u003[cC])/g', '([A-Za-z0-9+/=][A-Za-z0-9+/=\\s]*)(?:<|&lt;|\\\\u003[cC])/g'],
+}
+
 /** Mutants no test can kill, because they change nothing the screen returns. */
 const EQUIVALENT = new Set([
   // A flag a text's start gets when a removal runs through the cut starts inside that removal, so
@@ -110,9 +126,9 @@ const EQUIVALENT = new Set([
 
 const group = process.argv[2] ?? 'judge'
 const only = process.argv[3]
-const mutants = group === 'all' ? { ...JUDGE, ...WIRING } : group === 'wiring' ? WIRING : group === 'judge' ? JUDGE : null
+const mutants = group === 'all' ? { ...JUDGE, ...WIRING, ...REVIEW } : group === 'wiring' ? WIRING : group === 'review' ? REVIEW : group === 'judge' ? JUDGE : null
 if (!mutants) {
-  console.error('usage: node scripts/linkedScreenMutants.cjs [judge|wiring|all] [part of a mutant name]')
+  console.error('usage: node scripts/linkedScreenMutants.cjs [judge|wiring|review|all] [part of a mutant name]')
   process.exit(2)
 }
 const files = [...new Set(Object.values(mutants).map(([file]) => file))]

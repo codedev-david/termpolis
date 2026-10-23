@@ -552,6 +552,19 @@ describe('T2: what only looks like a key is left byte for byte', () => {
     }
   })
 
+  it('leaves each of them byte for byte as an end an older computer cut, wherever its cut fell', () => {
+    // (the round-0 review's FR-1: an END line named in code or prose ended a "key's tail" made of
+    // the pins, paths, an alphabet or a public key's lines above it, where a cut fell among them)
+    for (const [name, text] of Object.entries(CASES)) {
+      if (name.startsWith('tokens:')) continue
+      const step = Math.max(1, Math.ceil(text.length / 400))
+      for (let k = 1; k < text.length - 8; k += step) {
+        const r = screenKeys(text.slice(k), { cutStart: true })
+        expect(r.removed, `${name}, cut at ${k}`).toEqual({})
+      }
+    }
+  })
+
   const BODY = ['MIIEvQIBADANBgkq' + 'Q'.repeat(48), 'R'.repeat(64), 'S'.repeat(64), 'T'.repeat(40) + '==']
   const begin = '-----BEGIN PRIVATE KEY-----'
   const end = '-----END PRIVATE KEY-----'
@@ -1228,9 +1241,13 @@ describe('each detector at its edges', () => {
     // a cut-start tail of 20 characters under two lines of words: not a tail
     const under = `word\nmore\n${body[body.length - 1].slice(-20)}\n${END}\n`
     expect(screenKeys(under, { cutStart: true }).removed).toEqual({})
-    // a key line glued to the END marker, and one with a stray mark before it
+    // a key line glued to the END marker, and one with a stray mark before it: an END line that
+    // carries more than a key line and joiners in front of it is not written as a key's END line,
+    // so what is above it is only reported
     expect(screenKeys(`${body.slice(5).join('')}${END}`).removed).toEqual({})
-    expect(screenKeys(`${body.slice(5, -1).join('\n')}\n${body[body.length - 1]}!!${END}\n`).removed).toEqual({ private_key: 1 })
+    const stray = screenKeys(`${body.slice(5, -1).join('\n')}\n${body[body.length - 1]}!!${END}\n`)
+    expect(stray.removed).toEqual({})
+    expect(stray.flagged).toEqual({ private_key: 1 })
   })
 
   it('a cut-start run: one width, one frame, and no words after it', () => {

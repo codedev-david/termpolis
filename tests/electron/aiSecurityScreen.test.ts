@@ -5,7 +5,7 @@
 // remove is made fresh in memory by each run (fixtures/freshKeys.ts) and never printed: the screen
 // knows a key by what its bytes decode to, so a made-up body is no key and is only reported.
 import { describe, it, expect, vi, beforeAll } from 'vitest'
-import { generateKeyPairSync } from 'crypto'
+import { generateKeyPairSync, randomBytes } from 'crypto'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
@@ -438,6 +438,121 @@ describe('the Linked screen finds a private key by what its bytes decode to', ()
     // A token further back than the lookback is not looked for.
     const far = `ghp_${'q'.repeat(36)}${'.'.repeat(5_000)}`
     expect(screenText(far, 100, SCREEN_LOOKBACK_CHARS)).toEqual({ text: '.'.repeat(100), removed: {}, flagged: {}, markers: [] })
+  })
+})
+
+describe('an END line named in a sentence or code ends no key, wherever a cut falls above it', () => {
+  // Found by the round-0 false-removal review (FR-1, FR-2): random lines of one width above a
+  // private-key END line were taken for a key's tail where a cut fell among them, though the END
+  // line was a sentence's or a constant's, or the lines' first one was in the answer.
+  const KEY_IDS = ['private_key', 'gpg_block', 'ssh_dsa_pubkey', 'ssh2_private_key', 'private_key_b64']
+  const keyRemoved = (removed: Record<string, number>): string[] => Object.keys(removed).filter((k) => KEY_IDS.includes(k))
+  const prose = (n: number): string => {
+    let s = ''
+    for (let i = 0; s.length < n; i++) s += `Paragraph ${i}: the build step copies the assets, runs the linter and writes the report to out/report-${i}.txt.\n`
+    return s.slice(0, n)
+  }
+  const b64 = (n: number): string => randomBytes(n).toString('base64')
+  const hex = (n: number): string => randomBytes(n).toString('hex')
+  /** The four ways an answer is screened: the doing side's end (and its error's), the asking side's
+   *  view of an end another computer cut, and its error behind an ellipsis. Returns which changed. */
+  function everyWay(answer: string, cut: number): string[] {
+    const changed: string[] = []
+    const kept = answer.slice(cut)
+    const doer = screenText(answer, kept.length, SCREEN_LOOKBACK_CHARS)
+    if (doer.text !== kept || keyRemoved(doer.removed).length) changed.push('doing side')
+    const view = screenText(kept, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)
+    if (view.text !== kept || keyRemoved(view.removed).length) changed.push('asking side, cut view')
+    const err = `…${answer.slice(Math.max(cut, answer.length - (MAX_ERROR_CHARS - 1)))}`
+    const error = screenText(err, MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, true)
+    if (error.text !== err || keyRemoved(error.removed).length) changed.push('asking side, error')
+    return changed
+  }
+
+  it("keeps lnk3's F1a where the doing side's cut falls on its first path line", () => {
+    const F1A =
+      "I searched every file for a `-----BEGIN RSA PRIVATE KEY-----` line. The two folders that hold PEM files:\n/Users/alice/Projects/PaymentService/src/main/resources\n/Users/alice/Projects/PaymentService/src/test/resources\nBoth only hold certificates (`server.crt`, `ca.crt`), no keys. Nothing ends with `-----END RSA PRIVATE KEY-----`,\nso there is no private key in the repository. The audit is complete."
+    const answer = `${prose(30_000)}\n${F1A}\n${prose(150_000)}`
+    const cut = answer.indexOf('/Users/alice/Projects/PaymentService/src/main')
+    const kept = answer.slice(cut)
+    expect(screenText(answer, kept.length, SCREEN_LOOKBACK_CHARS).text).toBe(kept)
+    expect(everyWay(answer, cut)).toEqual([])
+  })
+
+  it('keeps a lockfile integrity list and a digest diff above a sentence that names an END line', () => {
+    // a list of npm integrity values, then a summary naming an END line
+    const ints = Array.from({ length: 900 }, () => `  sha512-${b64(64)}`).join('\n')
+    const answer = `Integrity of the 900 packages in package-lock.json:\n${ints}\nNone of these is a key, and no file in the tree ends with -----END PRIVATE KEY-----.\nAudit complete.\n`
+    for (const at of [0.2, 0.5, 0.9]) {
+      const cut = answer.indexOf('\n', Math.floor(answer.length * at)) + 3
+      expect(everyWay(answer, cut), String(at)).toEqual([])
+    }
+    // a failed job's stderr: a test runner's diff of digests, then an assertion naming an END line
+    const rows = Array.from({ length: 160 }, () => `    "${b64(32)}",`).join('\n')
+    const stderr = `FAIL  tests/pem.test.ts > keeps every fixture digest\nAssertionError: expected [ …(160) ] to deeply equal [ …(160) ]\n\n- Expected\n+ Received\n\n  [\n${rows}\n  ]\nError: expected tests/fixtures/key.pem to end with '-----END PRIVATE KEY-----'\n ❯ tests/pem.test.ts:42:17\n`
+    expect(screenText(stderr, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS).text).toBe(stderr.slice(-(MAX_ERROR_CHARS - 1)))
+    expect(everyWay(stderr, stderr.length - (MAX_ERROR_CHARS - 1))).toEqual([])
+  })
+
+  it('keeps 15 kinds of report whose every line ends in a hash, an id or a digest, above a line naming an END line', () => {
+    const LINES: Record<string, (i: number) => string> = {
+      'sha256 hex after =': (i) => `  ok ${i} - fixture tests/fixtures/sample-${i}.pem sha256=${hex(32)}`,
+      'sha256 hex after a space': (i) => `fixture ${String(i).padStart(4, '0')} checked, digest ${hex(32)}`,
+      'git sha': (i) => `  commit ${i}: ${hex(20)}`,
+      'git log --format': (i) => `Fix flaky test number ${i} ${hex(20)}`,
+      'uuid with no dashes': (i) => `job ${i} finished, id ${hex(16)}`,
+      nanoid: (i) => `row ${i} saved as ${randomBytes(16).toString('base64url').slice(0, 21)}`,
+      'sri sha384 in a list': () => `  - sha384-${b64(48)}`,
+      'npm integrity line': () => `      "integrity": "sha512-${b64(64)}",`,
+      'yarn integrity line': () => `  integrity sha512-${b64(64)}`,
+      'json array of hex': () => `  "${hex(32)}",`,
+      'base64 sha256 pins': () => `  pin-sha256="${b64(32)}";`,
+      'docker image digests': (i) => `app-${i}  latest  sha256:${hex(32)}`,
+      'vitest lines, a word at the end': (i) => `   ✓ tests/electron/case${i}.test.ts > keeps the text byte for byte as expected`,
+      'cargo checksums': () => `checksum = "${hex(32)}"`,
+      'go.sum lines': (i) => `github.com/acme/mod${i} v1.${i}.0 h1:${b64(32)}`,
+    }
+    const ENDS = ['-----END PRIVATE KEY-----', '-----END RSA PRIVATE KEY-----', '-----END OPENSSH PRIVATE KEY-----', '-----END PGP PRIVATE KEY BLOCK-----']
+    const SUMMARIES = [
+      (end: string) => `Summary: none of the fixtures ends with ${end}; all checks passed.`,
+      (end: string) => `  expected the file to end with "${end}"`,
+      (end: string) => `grep found ${end} in 0 files`,
+    ]
+    for (const [shape, line] of Object.entries(LINES)) {
+      for (let t = 0; t < 4; t++) {
+        const lines = Array.from({ length: 80 + 60 * t }, (_, i) => line(i + 1)).join('\n')
+        const text = `Here is the report.\n${lines}\n${SUMMARIES[t % 3](ENDS[t])}\nDone.\n`
+        const cut = 20 + Math.floor(((t + 1) / 6) * (text.indexOf(ENDS[t]) - 20))
+        expect(everyWay(text, cut), `${shape} ${t}`).toEqual([])
+        expect(screenText(text).text, `${shape} ${t}`).toBe(text)
+      }
+    }
+  })
+
+  it("keeps a dump or a list of hashes above a bare END line in the middle of an answer where the doing side's cut falls inside it", () => {
+    // judge 1's C2 (a 64-wide random dump above a line holding only an END marker): its first line
+    // is in the answer, so it is no key the cut ran through, whether the window's start fell under
+    // the dump's start (cut more than 4,096 characters into it) or inside a list longer than that.
+    const dump = wrap(randomBytes(60_000).toString('base64')).join('\n')
+    const hashes = Array.from({ length: 400 }, () => `  sha512-${b64(64)}`).join('\n')
+    for (const [name, body, above] of [
+      ['dump', dump, prose(20_000)],
+      ['hash list', hashes, prose(20_000)],
+      // (the line above it the answer's first: a whole line, where the text starts)
+      ['dump on the second line', dump, ''],
+    ]) {
+      const answer = `${above}The fixture parser's input:\n${body}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n${prose(3_000)}`
+      const from = answer.indexOf(body)
+      for (const into of [5_000, 12_000, 30_000]) {
+        if (into > body.length - 200) continue
+        const kept = answer.slice(from + into)
+        const r = screenText(answer, kept.length, SCREEN_LOOKBACK_CHARS)
+        expect(r.text, `${name} ${into}`).toBe(kept)
+        expect(r.removed, `${name} ${into}`).toEqual({})
+        // (reported: at its END line, and as the run of key-like lines the kept end starts with)
+        expect(Object.keys(r.flagged), `${name} ${into}`).toEqual(['private_key'])
+      }
+    }
   })
 })
 
