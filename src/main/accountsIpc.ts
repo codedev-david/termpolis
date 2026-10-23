@@ -11,8 +11,8 @@ import { MODEL_HELD, changesAccountByHand, isSessionId } from '../shared/account
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
 import { runAgyStep } from './agySwitch'
 import { carryTranscript, findTranscript } from './accountCarry'
-import { holdForModel, releaseModelHold, runAccountSwitch } from './accountSwitch'
-import type { SwitchIO } from './accountSwitch'
+import { holdForModel, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
+import type { Look, SwitchIO } from './accountSwitch'
 import { agentOfLaunch, lookForLimit, noteEnteredLine } from './limitLook'
 import { setExtraTranscriptRoots } from './conversationIngest'
 import type { ConversationSource } from './conversationIngest'
@@ -229,19 +229,19 @@ const ESCAPE_SEQUENCE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|.)?/
 /** A line typed by hand, for the agent's lifecycle (limitLook.ts): an agent started at the shell, or
  *  a prompt entered in the agent's box. A look that fails changes nothing, and never stops the
  *  line's other checks. */
-function noteLife(terminalId: string, typed: string, now: number): void {
+function noteLife(terminalId: string, typed: string, now: number, lookNow: () => Look): void {
   const io = wiring.io
   const end = wiring.outputEnd?.(terminalId)
   if (!io || end === undefined) return
   try {
-    const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now)
+    const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now, lookNow)
     if (started) agentStarts.set(terminalId, started)
   } catch { /* the next look reads it */ }
 }
 
 /** A whole line was typed into a terminal: Termpolis's own (one main built), or one that changes
  *  the account by hand, which marks the terminal so (§6.1) and tells the renderer. */
-function noteLine(terminalId: string, line: string, now: number): 'own' | 'by-hand' | null {
+function noteLine(terminalId: string, line: string, now: number, lookNow: () => Look): 'own' | 'by-hand' | null {
   const typed = line.trim()
   if (!typed) return null
   const mine = (ownLines.get(terminalId) ?? []).filter((l) => l.until > now)
@@ -253,7 +253,7 @@ function noteLine(terminalId: string, line: string, now: number): 'own' | 'by-ha
     if (end !== undefined) agentStarts.set(terminalId, startRecord({ at: end, commands: [typed], ...(own.agent ? { agent: own.agent } : {}) }, now))
     return 'own'
   }
-  noteLife(terminalId, typed, now)
+  noteLife(terminalId, typed, now, lookNow)
   if (!changesAccountByHand(typed)) return null
   byHand.add(terminalId)
   wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: terminalAccounts.get(terminalId) ?? null, byHand: true })
@@ -269,10 +269,14 @@ function noteLine(terminalId: string, line: string, now: number): 'own' | 'by-ha
 export function noteTypedInput(terminalId: string, typed: string, now: number = Date.now()): 'own' | 'by-hand' | null {
   let line = typedLines.get(terminalId) ?? ''
   let result: 'own' | 'by-hand' | null = null
+  // One look for all the lines of this write, taken when a line first needs it: the screen can't
+  // change while it runs.
+  let seen: Look | null = null
+  const lookNow = (): Look => (seen ??= look(wiring.io as Omit<SwitchIO, 'progress'>, terminalId))
   for (let i = 0; i < typed.length; i++) {
     const c = typed[i]
     if (c === '\r' || c === '\n') {
-      result = noteLine(terminalId, line, now)
+      result = noteLine(terminalId, line, now, lookNow)
       line = ''
     } else if (c === '\x7f' || c === '\b') line = line.slice(0, -1)
     else if (c === '\x15' || c === '\x03') line = ''

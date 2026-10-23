@@ -90,13 +90,18 @@ export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefi
  * the shell once the one before is gone, which starts a new record (R5: watched from now on); or,
  * while the agent runs with its box on screen, a prompt entered in it, which is a turn (R4). A slash
  * command is the CLI's own (/exit, /model) and no turn. Returns the start to record, if any.
+ * The screen is looked at (`lookNow`, which one write's lines share) only when that could change
+ * something: a pasted block of lines is no replay per line on main's thread.
  */
-export function noteEnteredLine(io: SwitchIO, id: string, start: LiveStart | undefined, line: string, at: number, now: number): LiveStart | null {
+export function noteEnteredLine(
+  io: SwitchIO, id: string, start: LiveStart | undefined, line: string, at: number, now: number, lookNow: () => Look = () => look(io, id),
+): LiveStart | null {
   const launched = agentOfLaunch(line)
-  const l = look(io, id)
+  if (!launched && (!start || start.ended || start.turned || line.startsWith('/'))) return null
+  const l = lookNow()
   const gone = !start || agentGone(io, id, start, now, l)
   if (start && gone) start.ended = true
   if (launched && gone) return { at, commands: [line], agent: launched, time: now }
-  if (start && !gone && !line.startsWith('/') && l.box >= 0) start.turned = true
+  if (start && !gone && l.box >= 0) start.turned = true
   return null
 }

@@ -167,6 +167,46 @@ describe("the agent's lifecycle, from what is typed", () => {
     expect(isAccountChangedByHand('t1')).toBe(true)
   })
 
+  it('looks at the screen once per write at most, and never for a line that could change nothing', async () => {
+    const output = vi.fn(term.io().output)
+    register({ switchIO: { ...term.io(), output } })
+    // A plain shell, nothing started there: a pasted block of lines never replays the screen.
+    noteTypedInput('t1', 'ls\rgit status\recho hi\r', clock)
+    expect(output).not.toHaveBeenCalled()
+    // Two launches in one paste: one look, shared. The second line goes to the Codex the first
+    // started, as a paste's would, so the start stays Codex's.
+    noteTypedInput('t1', 'codex\rclaude\r', clock)
+    expect(output).toHaveBeenCalledTimes(1)
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'] })
+  })
+
+  it('takes a live agent\'s first turn with one look, and needs none for the lines after it', async () => {
+    const output = vi.fn(term.io().output)
+    register({ switchIO: { ...term.io(), output } })
+    // Termpolis's own launch line: no look.
+    await launch('claude')
+    expect(output).not.toHaveBeenCalled()
+    term.mode = 'agent'
+    term.out += term.frame()
+    noteTypedInput('t1', 'one\rtwo\rthree\r', clock)
+    expect(output).toHaveBeenCalledTimes(1)
+    expect(terminalAgentStart('t1')!.turned).toBe(true)
+    noteTypedInput('t1', 'four\r/model sonnet\r', clock)
+    expect(output).toHaveBeenCalledTimes(1)
+  })
+
+  it('takes no turn from a slash command, and looks for none', () => {
+    const output = vi.fn(term.io().output)
+    register({ switchIO: { ...term.io(), output } })
+    noteTypedInput('t1', 'claude\r', clock)
+    output.mockClear()
+    term.mode = 'agent'
+    term.out += term.frame()
+    noteTypedInput('t1', '/model sonnet\r', clock)
+    expect(output).not.toHaveBeenCalled()
+    expect(terminalAgentStart('t1')!.turned).toBeUndefined()
+  })
+
   it('records the agent a relaunch starts, and when', () => {
     noteAgentStart('t1', { at: 5, commands: ['codex -m x resume 01a1664b-6312-7121-97f6-88c7f6793c64'] }, 9)
     expect(terminalAgentStart('t1')).toEqual({ at: 5, commands: ['codex -m x resume 01a1664b-6312-7121-97f6-88c7f6793c64'], agent: 'codex', time: 9 })
