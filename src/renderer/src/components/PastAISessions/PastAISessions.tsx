@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
 import { isClaudeCommand } from '../../lib/testAgents'
-import { accountLaunchLine, launchAccountFor } from '../../lib/accountLaunch'
+import { accountLaunchLine, launchAccountFor, launchTerminalArgs } from '../../lib/accountLaunch'
 import type { AISessionSummary, ShellType } from '../../types'
 
 interface Props {
@@ -157,7 +157,7 @@ export function PastAISessions({ open, onClose }: Props) {
     try {
       // On the preferred account: a shared projects/ folder makes every account's sessions resumable.
       const accountId = await launchAccountFor('claude')
-      await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, true, ...(accountId ? [accountId] as [string] : [] as [])) // resume always runs `claude --resume`
+      await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, true, ...launchTerminalArgs(accountId, 'claude')) // resume always runs `claude --resume`
       await trustFolder(session.cwd, accountId)
       const line = await lineFor(newId, defaultShell, 'claude --resume ' + session.id, accountId)
       if (line === null) return
@@ -247,7 +247,7 @@ export function PastAISessions({ open, onClose }: Props) {
       onClose()
       try {
         const accountId = await launchAccountFor(cmd)
-        await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd), ...(accountId ? [accountId] as [string] : [] as []))
+        await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd), ...launchTerminalArgs(accountId, cmd))
         if (isClaudeCommand(cmd)) await trustFolder(session.cwd, accountId)
         const line = await lineFor(newId, defaultShell, cmd, accountId)
         if (line === null) return

@@ -56,7 +56,7 @@ describe('Past AI Sessions on an account', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('past-ai-session-row')) })
     await waitFor(() => expect(api().writeToTerminal).toHaveBeenCalled(), { timeout: 1500 })
     expect(accounts.launchAccount).toHaveBeenCalledWith('claude', null)
-    expect(api().createTerminal).toHaveBeenCalledWith('new-term', 'gitbash', session.cwd, undefined, true, 'acc_p')
+    expect(api().createTerminal).toHaveBeenCalledWith('new-term', 'gitbash', session.cwd, undefined, true, 'acc_p', 'claude')
     expect(api().claudeTrustWorkspace).toHaveBeenCalledWith(session.cwd, 'acc_p')
     expect(api().writeToTerminal).toHaveBeenCalledWith('new-term', `unset CLAUDE_CONFIG_DIR && claude --resume ${session.id}\r`)
     expect(useTerminalStore.getState().terminals.find((t) => t.id === 'new-term')).toEqual(expect.objectContaining({ agentAccountId: 'acc_p', agentSessionId: session.id }))
@@ -105,7 +105,7 @@ describe('Past AI Sessions on an account', () => {
     await act(async () => { fireEvent.click(await screen.findByText('Continue in Codex')) })
     await waitFor(() => expect(api().writeToTerminal).toHaveBeenCalled(), { timeout: 1500 })
     expect(accounts.launchAccount).toHaveBeenCalledWith('codex', null)
-    expect(api().createTerminal).toHaveBeenCalledWith('new-term', 'gitbash', session.cwd, undefined, false, 'acc_p')
+    expect(api().createTerminal).toHaveBeenCalledWith('new-term', 'gitbash', session.cwd, undefined, false, 'acc_p', 'codex')
     expect(api().writeToTerminal).toHaveBeenCalledWith('new-term', 'unset CLAUDE_CONFIG_DIR && codex\r')
     // Not Claude: no folder trust is seeded.
     expect(api().claudeTrustWorkspace).not.toHaveBeenCalled()
@@ -217,7 +217,8 @@ describe('Past AI Sessions on an account', () => {
     await open()
     await act(async () => { fireEvent.click(screen.getByTestId('past-ai-session-row')) })
     await waitFor(() => expect(api().writeToTerminal).toHaveBeenCalled(), { timeout: 1500 })
-    expect(api().createTerminal.mock.calls[0]).toHaveLength(5)
+    // No account; the agent Termpolis watches there, which main marks only once it has two (R6).
+    expect(api().createTerminal.mock.calls[0]).toEqual(['new-term', 'gitbash', session.cwd, undefined, true, undefined, 'claude'])
     expect(api().claudeTrustWorkspace.mock.calls).toEqual([[session.cwd]])
     expect(useTerminalStore.getState().terminals.find((t) => t.id === 'new-term')).not.toHaveProperty('agentAccountId')
   })

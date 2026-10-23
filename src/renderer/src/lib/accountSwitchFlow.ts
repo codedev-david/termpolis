@@ -10,6 +10,7 @@ import type { AccountsAPI, TermpolisAPI, TerminalSession } from '../types'
 import { signedInEmail } from './accountChip'
 import { accountBadge, agentOfCommand } from './accountsView'
 import type { AgentLaunchTarget } from './agentLaunch'
+import { launchTerminalArgs } from './accountLaunch'
 import { isClaudeCommand } from './testAgents'
 
 export interface SwitchTarget {
@@ -187,7 +188,7 @@ export async function openOnAccount(source: TerminalSession, target: AccountRowV
   const id = deps.newId()
   const command = source.agentCommand as string
   try {
-    const res = await deps.createTerminal(id, source.shellType, source.cwd, undefined, isClaudeCommand(command), target.id)
+    const res = await deps.createTerminal(id, source.shellType, source.cwd, undefined, isClaudeCommand(command), ...launchTerminalArgs(target.id, command))
     if (!res.success) return { ok: false, error: `Termpolis couldn't open the terminal: ${res.error}` }
   } catch (e) {
     return { ok: false, error: `Termpolis couldn't open the terminal: ${e instanceof Error ? e.message : String(e)}` }
@@ -206,7 +207,7 @@ export async function openOnAccount(source: TerminalSession, target: AccountRowV
 export async function openOtherAgent(source: TerminalSession, command: string, label: string, deps: NewTerminalDeps): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const id = deps.newId()
   try {
-    const res = await deps.createTerminal(id, source.shellType, source.cwd, undefined, isClaudeCommand(command))
+    const res = await deps.createTerminal(id, source.shellType, source.cwd, undefined, isClaudeCommand(command), ...launchTerminalArgs(undefined, command))
     if (!res.success) return { ok: false, error: `Termpolis couldn't open the terminal: ${res.error}` }
   } catch (e) {
     return { ok: false, error: `Termpolis couldn't open the terminal: ${e instanceof Error ? e.message : String(e)}` }

@@ -5,12 +5,12 @@
 // line, a switch's relaunch, an agent typed by hand) and of the terminal's account. The terminal is
 // the scripted one of _switchTerminal.ts, in the sandbox of accountsIpc.test.ts: a scratch home
 // under TERMPOLIS_TEST_AGENT_HOME, never a real profile.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync } from 'fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, isAccountChangedByHand, noteAgentStart, noteTerminalAccount, noteTypedInput, registerAccountsIpc,
-  terminalAccountId, terminalAgentStart,
+  terminalAccountId, terminalAgentStart, LIMIT_CHOOSER_VAR, withLimitChooser,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { _resetSwitchLocksForTest } from '../../src/main/accountSwitch'
@@ -186,5 +186,80 @@ describe("the agent's lifecycle, from what is typed", () => {
     expect(typeof key).toBe('string')
     noteTypedInput('t1', 'claude --model sonnet --continue\r', clock)
     expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', commands: ['claude --model sonnet --continue'] })
+  })
+})
+
+// The chooser's marker (§8.6, R6): TERMPOLIS_LIMIT_CHOOSER=1 only on a terminal Termpolis creates to
+// launch an agent it watches, once that agent has two accounts; any other terminal never carries
+// one, not even one Termpolis inherited.
+describe('withLimitChooser', () => {
+  const two = async (agent: 'claude' | 'codex' = 'claude') => {
+    if (agent === 'claude') {
+      mkdirSync(join(sb.paths.claudeDir, 'projects'), { recursive: true })
+      await ok(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', copy: false, share: [] })
+    } else {
+      mkdirSync(sb.paths.codexHome, { recursive: true })
+      await ok(ACCOUNTS_IPC.add, { agent: 'codex', label: 'cb', folder: 'new', copy: false, share: [] })
+    }
+  }
+
+  it('adds nothing while no agent has two accounts (D13): every terminal is today\'s', () => {
+    expect(withLimitChooser(undefined, 'claude')).toBeUndefined()
+    expect(withLimitChooser(undefined, true)).toBeUndefined()
+    const proxied = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }
+    expect(withLimitChooser(proxied, 'claude')).toBe(proxied)
+  })
+
+  it('adds nothing for an agent with one account: the chooser has nowhere to switch it', async () => {
+    await ok(ACCOUNTS_IPC.add, { agent: 'agy', label: 'home', email: 'home@example.test' })
+    expect(withLimitChooser(undefined, 'agy')).toBeUndefined()
+    expect(withLimitChooser(undefined, true)).toBeUndefined()
+    await ok(ACCOUNTS_IPC.add, { agent: 'agy', label: 'school', email: 'school@example.test' })
+    expect(withLimitChooser(undefined, 'agy')).toEqual({ TERMPOLIS_LIMIT_CHOOSER: '1' })
+  })
+
+  it("marks a launch of an agent with two accounts, keeping the launch's own env", async () => {
+    await two()
+    expect(withLimitChooser(undefined, 'claude')).toEqual({ [LIMIT_CHOOSER_VAR]: '1' })
+    expect(withLimitChooser({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }, 'claude')).toEqual({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:9', TERMPOLIS_LIMIT_CHOOSER: '1' })
+    // A swarm worker, its agent not known yet: any agent with two.
+    expect(withLimitChooser(undefined, true)).toEqual({ TERMPOLIS_LIMIT_CHOOSER: '1' })
+    // Another agent's launch, with fewer: unmarked.
+    expect(withLimitChooser(undefined, 'codex')).toBeUndefined()
+    expect(withLimitChooser(undefined, 'agy')).toBeUndefined()
+  })
+
+  it('never marks a terminal it does not watch: a plain shell, a phone\'s, anything not an agent', async () => {
+    await two()
+    for (const watch of [undefined, false, null, 'gemini', 'bash', 1]) expect(withLimitChooser(undefined, watch), String(watch)).toBeUndefined()
+  })
+
+  it('clears a marker Termpolis inherited on a terminal it does not mark', async () => {
+    register({ env: { [LIMIT_CHOOSER_VAR]: '1' } })
+    expect(withLimitChooser(undefined, undefined)).toEqual({ TERMPOLIS_LIMIT_CHOOSER: '' })
+    expect(withLimitChooser({ A: 'b' }, 'claude')).toEqual({ A: 'b', TERMPOLIS_LIMIT_CHOOSER: '' })
+    await two('codex')
+    expect(withLimitChooser(undefined, 'codex')).toEqual({ TERMPOLIS_LIMIT_CHOOSER: '1' })
+  })
+
+  it("marks nothing before accounts are wired, and reads Termpolis's own env for an inherited one", async () => {
+    vi.resetModules()
+    const fresh = await import('../../src/main/accountsIpc')
+    const saved = process.env[LIMIT_CHOOSER_VAR]
+    try {
+      process.env[LIMIT_CHOOSER_VAR] = '1'
+      expect(fresh.withLimitChooser(undefined, 'claude')).toEqual({ TERMPOLIS_LIMIT_CHOOSER: '' })
+      delete process.env[LIMIT_CHOOSER_VAR]
+      expect(fresh.withLimitChooser(undefined, true)).toBeUndefined()
+    } finally {
+      if (saved === undefined) delete process.env[LIMIT_CHOOSER_VAR]
+      else process.env[LIMIT_CHOOSER_VAR] = saved
+    }
+  })
+
+  it('marks nothing while the registry is unreadable', async () => {
+    await two()
+    writeFileSync(join(sb.paths.userData, 'agent-accounts.json'), '{ not json')
+    expect(withLimitChooser(undefined, 'claude')).toBeUndefined()
   })
 })

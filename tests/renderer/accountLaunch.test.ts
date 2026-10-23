@@ -1,7 +1,7 @@
 // Launching an agent on an account, the renderer's side (src/renderer/src/lib/accountLaunch.ts):
 // main names the account and builds the line; with no bridge, every launch is today's.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { accountLaunchLine, accountsBridge, launchAccountFor } from '../../src/renderer/src/lib/accountLaunch'
+import { accountLaunchLine, accountsBridge, launchAccountFor, launchTerminalArgs } from '../../src/renderer/src/lib/accountLaunch'
 import type { AccountsBridge } from '../../src/renderer/src/lib/accountLaunch'
 
 function bridge(over: Partial<Record<keyof AccountsBridge, unknown>> = {}): AccountsBridge {
@@ -76,5 +76,17 @@ describe('accountLaunchLine', () => {
     expect(await accountLaunchLine('t1', 'bash', 'codex', 'codex', undefined, throwing)).toEqual({ refused: 'Termpolis didn\'t start Codex: ipc closed' })
     const odd = bridge({ launchLine: vi.fn(async () => { throw 'odd' }) })
     expect(await accountLaunchLine('t1', 'bash', 'agy', 'agy', undefined, odd)).toEqual({ refused: 'Termpolis didn\'t start Gemini / Antigravity CLI: odd' })
+  })
+})
+
+describe('launchTerminalArgs', () => {
+  it("passes the account and the agent Termpolis will watch there (R6), and nothing more than a call needs", () => {
+    expect(launchTerminalArgs('acc_1', 'claude --model opus')).toEqual(['acc_1', 'claude'])
+    expect(launchTerminalArgs(undefined, 'codex')).toEqual([undefined, 'codex'])
+    expect(launchTerminalArgs(undefined, 'agy')).toEqual([undefined, 'agy'])
+    // Not an account agent: no watch, and no argument at all without an account.
+    expect(launchTerminalArgs('acc_1', 'aider')).toEqual(['acc_1'])
+    expect(launchTerminalArgs(undefined, 'aider')).toEqual([])
+    expect(launchTerminalArgs(undefined, undefined)).toEqual([])
   })
 })

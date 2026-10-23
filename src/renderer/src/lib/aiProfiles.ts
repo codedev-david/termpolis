@@ -6,7 +6,7 @@ import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
-import { accountLaunchLine, launchAccountFor } from './accountLaunch'
+import { accountLaunchLine, launchAccountFor, launchTerminalArgs } from './accountLaunch'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
 import {
   waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
@@ -85,7 +85,8 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // that account's profile's. None for an agent with no accounts, and every call is today's.
   const accountId = await launchAccountFor(profile.command, deps.accountId)
   const onAccount: [] | [string] = accountId ? [accountId] : []
-  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...onAccount)
+  // Watched for usage limits for its whole life (R6): main marks it so for the agent's hooks.
+  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...launchTerminalArgs(accountId, profile.command))
   if (!res.success) {
     setLaunchingAgent(null)
     alert(`Failed to open terminal: ${res.error}`)

@@ -281,6 +281,8 @@ describe('conductorManager', () => {
       '/tmp/project',
       undefined,
       true, // conductor always launches Claude → Headroom proxy env requested
+      undefined,
+      'claude', // watched (R6): a StopFailure hook opens no window on another account at its limit
     )
     // Should have written the claude --version command
     expect(window.termpolis.writeToTerminal).toHaveBeenCalledWith(

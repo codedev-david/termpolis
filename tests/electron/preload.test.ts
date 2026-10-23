@@ -1127,6 +1127,9 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
     const cases: Array<[() => unknown, unknown[], unknown[]]> = [
       [() => t.createTerminal('id1', 'bash', '/tmp', [], true), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true }], []],
       [() => t.createTerminal('id1', 'bash', '/tmp', [], true, 'acc_1'), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true, accountId: 'acc_1' }], []],
+      // What the launch watches for usage limits (R6), only when there is one: a plain terminal's payload is as it was.
+      [() => t.createTerminal('id1', 'bash', '/tmp', [], true, 'acc_1', 'claude'), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: [], claudeHeadroom: true, accountId: 'acc_1', limitWatch: 'claude' }], []],
+      [() => t.createTerminal('id1', 'bash', '/tmp', undefined, false, undefined, true), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: undefined, claudeHeadroom: false, limitWatch: true }], []],
       [() => t.claudeTrustWorkspace('/repo'), ['claude:trust-workspace', { cwd: '/repo' }], []],
       [() => t.claudeTrustWorkspace('/repo', 'acc_1'), ['claude:trust-workspace', { cwd: '/repo', accountId: 'acc_1' }], []],
       [() => t.memoryPrepareCodexContext('/repo'), ['memory:prepare-codex-context', { cwd: '/repo' }], []],

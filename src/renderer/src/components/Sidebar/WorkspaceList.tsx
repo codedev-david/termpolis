@@ -4,6 +4,7 @@ import { useTerminalStore } from '../../store/terminalStore'
 import { getHomedir } from '../../lib/homedir'
 import { isClaudeCommand } from '../../lib/testAgents'
 import { agentTargets, launchAgents } from '../../lib/agentLaunch'
+import { launchTerminalArgs } from '../../lib/accountLaunch'
 import { v4 as uuid } from 'uuid'
 
 export function WorkspaceList() {
@@ -46,7 +47,7 @@ export function WorkspaceList() {
       const cwd = t.cwd || homedir
       // Gate the compression proxy on the workspace's persisted agentCommand — a saved Claude terminal
       // gets ANTHROPIC_BASE_URL so a manual `claude` in it is compressed too (matches session-restore).
-      await window.termpolis.createTerminal(id, t.shellType as any, cwd, undefined, isClaudeCommand(t.agentCommand))
+      await window.termpolis.createTerminal(id, t.shellType as any, cwd, undefined, isClaudeCommand(t.agentCommand), ...launchTerminalArgs(undefined, t.agentCommand))
       // agentCommand has to be carried across: it is what makes this an AI terminal
       // rather than a bare shell, it is what gets re-launched below, and dropping it
       // here also lost it from the workspace on the next save. Its account too: the agent

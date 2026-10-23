@@ -334,7 +334,9 @@ export interface BillBreakdownView {
 
 export interface TermpolisAPI {
   /** `accountId`: the account a launch runs on (Settings ▸ Accounts), for the proxy's step-aside. */
-  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string) => Promise<IpcResponse>
+  /** `limitWatch`: the terminal is created to launch an agent Termpolis watches for usage limits (the
+   *  agent, or true for one not known yet): main marks it so for its whole life (§8.6, R6). */
+  createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string, limitWatch?: AccountAgent | true) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
   /** Both stores in one call — global workflows first, then this project's. */
   listWorkflows: (cwd: string) => Promise<IpcResponse<WorkflowListItem[]>>

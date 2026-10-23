@@ -143,7 +143,7 @@ describe('AccountSwitcherDialog', () => {
     expect(first[0]).toHaveTextContent('New terminal')
     expect(first[1]).toHaveTextContent('Switch here')
     await act(async () => { fireEvent.click(first[0]) })
-    expect(termpolis.createTerminal).toHaveBeenCalledWith('new-term', 'gitbash', '/repo', undefined, true, 'acc_a')
+    expect(termpolis.createTerminal).toHaveBeenCalledWith('new-term', 'gitbash', '/repo', undefined, true, 'acc_a', 'claude')
     expect(useTerminalStore.getState().terminals.find((t) => t.id === 'new-term')).toEqual(expect.objectContaining({ agentAccountId: 'acc_a' }))
     expect(screen.queryByTestId('account-switcher')).toBeNull()
   })

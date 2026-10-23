@@ -212,11 +212,11 @@ describe('openOnAccount (§7.4)', () => {
   it('opens the same agent beside the terminal, on the account, for a fresh session', async () => {
     const d = deps()
     expect(await openOnAccount(term, B, d as never)).toEqual({ ok: true, id: 't2' })
-    expect(d.createTerminal).toHaveBeenCalledWith('t2', 'gitbash', '/repo', undefined, true, 'acc_b')
+    expect(d.createTerminal).toHaveBeenCalledWith('t2', 'gitbash', '/repo', undefined, true, 'acc_b', 'claude')
     expect(d.addTerminal).toHaveBeenCalledWith(expect.objectContaining({ id: 't2', name: 'Claude Code — repo · codedev', cwd: '/repo', agentCommand: 'claude', agentAccountId: 'acc_b' }))
     expect(d.launch).toHaveBeenCalledWith([{ id: 't2', agentCommand: 'claude', cwd: '/repo', shellType: 'gitbash', agentAccountId: 'acc_b' }])
     await openOnAccount({ ...term, agentCommand: 'codex' }, B, d as never)
-    expect(d.createTerminal).toHaveBeenLastCalledWith('t2', 'gitbash', '/repo', undefined, false, 'acc_b')
+    expect(d.createTerminal).toHaveBeenLastCalledWith('t2', 'gitbash', '/repo', undefined, false, 'acc_b', 'codex')
   })
 
   it('says why, and adds nothing, when the terminal can\'t open', async () => {
@@ -244,12 +244,12 @@ describe('openOtherAgent (§8.4 Use another agent)', () => {
   it("opens the other agent beside the terminal, in its folder, on that agent's preferred account", async () => {
     const d = deps()
     expect(await openOtherAgent(term, 'codex', 'Codex', d as never)).toEqual({ ok: true, id: 't3' })
-    expect(d.createTerminal).toHaveBeenCalledWith('t3', 'gitbash', '/repo', undefined, false)
+    expect(d.createTerminal).toHaveBeenCalledWith('t3', 'gitbash', '/repo', undefined, false, undefined, 'codex')
     expect(d.addTerminal).toHaveBeenCalledWith(expect.objectContaining({ id: 't3', name: 'Claude Code — repo · Codex', agentCommand: 'codex', cwd: '/repo' }))
     expect(d.addTerminal.mock.calls[0][0]).not.toHaveProperty('agentAccountId')
     expect(d.launch).toHaveBeenCalledWith([{ id: 't3', agentCommand: 'codex', cwd: '/repo', shellType: 'gitbash' }])
     await openOtherAgent({ ...term, agentCommand: 'codex' }, 'claude', 'Claude Code', d as never)
-    expect(d.createTerminal).toHaveBeenLastCalledWith('t3', 'gitbash', '/repo', undefined, true)
+    expect(d.createTerminal).toHaveBeenLastCalledWith('t3', 'gitbash', '/repo', undefined, true, undefined, 'claude')
   })
 
   it('says why the terminal could not open, and opens nothing', async () => {

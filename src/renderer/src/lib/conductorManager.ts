@@ -89,7 +89,9 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   const id = uuid()
   const isWindows = navigator.platform.startsWith('Win')
   const shellType = isWindows ? 'powershell' as const : 'bash' as const
-  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, true) // conductor always runs `claude`
+  // Marked as watched (R6): a StopFailure hook then opens no window on another account at the
+  // conductor's limit, which would --continue the swarm folder's newest session.
+  const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, true, undefined, 'claude') // conductor always runs `claude`
 
   if (!res.success) {
     conductorState = { terminalId: null, status: 'error', error: res.error || 'Failed to create terminal', cwd: null, preSwarmSha: null, sessionId: null }

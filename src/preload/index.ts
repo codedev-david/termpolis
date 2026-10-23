@@ -16,8 +16,8 @@ import type {
 } from '../renderer/src/types'
 
 const api: TermpolisAPI = {
-  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom, accountId) =>
-    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom, ...(accountId ? { accountId } : {}) }),
+  createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch) =>
+    ipcRenderer.invoke('terminal:create', { id, shellType, cwd, extraPaths, claudeHeadroom, ...(accountId ? { accountId } : {}), ...(limitWatch ? { limitWatch } : {}) }),
 
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),

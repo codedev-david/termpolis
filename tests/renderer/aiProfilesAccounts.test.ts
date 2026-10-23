@@ -59,7 +59,7 @@ describe('launchAgentProfile on an account', () => {
     await launchAgentProfile(claude, { availableShells: shells, addTerminal, setLaunchingAgent })
     expect(accounts.launchAccount).toHaveBeenCalledWith('claude', null)
     const id = createdId()
-    expect(api().createTerminal).toHaveBeenCalledWith(id, 'powershell', '/repo', undefined, true, 'acc_b')
+    expect(api().createTerminal).toHaveBeenCalledWith(id, 'powershell', '/repo', undefined, true, 'acc_b', 'claude')
     expect(api().claudeTrustWorkspace).toHaveBeenCalledWith('/repo', 'acc_b')
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ id, agentCommand: 'claude', agentAccountId: 'acc_b' }))
     expect(accounts.launchLine).toHaveBeenCalledWith({ terminalId: id, agent: 'claude', shellType: 'powershell', command: 'claude', accountId: 'acc_b' })
@@ -97,7 +97,8 @@ describe('launchAgentProfile on an account', () => {
     accounts.launchAccount.mockResolvedValue({ success: true, data: { accountId: null } })
     accounts.launchLine.mockResolvedValue({ success: true, data: { line: 'claude', accountId: null, explicit: false } })
     await launchAgentProfile(claude, { availableShells: shells, addTerminal, setLaunchingAgent })
-    expect(api().createTerminal.mock.calls[0]).toHaveLength(5)
+    // No account; the agent Termpolis watches there, which main marks only once it has two (R6).
+    expect(api().createTerminal.mock.calls[0].slice(3)).toEqual([undefined, true, undefined, 'claude'])
     expect(api().claudeTrustWorkspace.mock.calls).toEqual([['/repo']])
     expect(addTerminal.mock.calls[0][0]).not.toHaveProperty('agentAccountId')
     expect(typed()).toEqual(['\r', 'claude\r'])

@@ -3,6 +3,7 @@
 // path or an env value, and what a terminal records about its account is what main answered.
 // Where this preload has no accounts bridge, every launch is today's: the bare command.
 import { ACCOUNT_AGENT_LABEL } from '../../../shared/agentAccounts'
+import type { AccountAgent } from '../../../shared/agentAccounts'
 import type { AccountsAPI } from '../types'
 import { agentOfCommand } from './accountsView'
 
@@ -35,6 +36,15 @@ export async function launchAccountFor(command: string | undefined, requested?: 
   } catch {
     return undefined
   }
+}
+
+/** The trailing arguments createTerminal takes for a launch of `command`: its account, and the agent
+ *  Termpolis will watch there for usage limits (R6: main marks the terminal so); none for a command
+ *  of no account agent, so that call is today's. */
+export function launchTerminalArgs(accountId: string | undefined, command: string | undefined): [] | [string] | [string | undefined, AccountAgent] {
+  const agent = agentOfCommand(command)
+  if (agent) return [accountId, agent]
+  return accountId ? [accountId] : []
 }
 
 /** What to type to start `command` in terminal `terminalId`: main's line, on `accountId` (else the

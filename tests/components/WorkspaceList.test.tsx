@@ -258,6 +258,8 @@ describe('WorkspaceList', () => {
           '/work',
           undefined,
           true, // agentCommand 'claude' → gate ON so a manual `claude` in the restored terminal compresses
+          undefined,
+          'claude', // watched for usage limits (R6)
         )
       })
     })

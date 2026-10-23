@@ -163,7 +163,42 @@ export function isAccountChangedByHand(terminalId: string): boolean {
 
 /** What index.ts's terminal:write and the switch reach main's other parts through, once
  *  registerAccountsIpc has run. */
-const wiring: { send?: (channel: string, payload: unknown) => void; outputEnd?: (terminalId: string) => number; io?: Omit<SwitchIO, 'progress'> } = {}
+const wiring: {
+  send?: (channel: string, payload: unknown) => void
+  outputEnd?: (terminalId: string) => number
+  io?: Omit<SwitchIO, 'progress'>
+  paths?: () => Pick<AgentIntegrationPaths, 'userData'>
+  env?: Readonly<Record<string, string | undefined>>
+  fsx?: AccountFs
+} = {}
+
+// ── The usage-limit chooser's marker (§8.6, R6) ────────────────────────────────────────
+
+/** In a terminal's env: Termpolis watches this terminal for usage limits for its whole life, so a
+ *  StopFailure hook (David's ~/.claude/hooks/auth-failover.sh) stands down there instead of opening
+ *  a second window on another account. */
+export const LIMIT_CHOOSER_VAR = 'TERMPOLIS_LIMIT_CHOOSER'
+
+/**
+ * A new terminal's extra env with the marker's part (R6): `TERMPOLIS_LIMIT_CHOOSER=1` only on a
+ * terminal Termpolis creates to launch an agent, and watches (`watch`: that agent, or true for one
+ * not known yet, a swarm worker's), once that agent (any agent, when not known) has two accounts
+ * or more; a promise kept for the terminal's whole life, whatever the chooser setting says later
+ * (switched off, its limits get the banner). Any other terminal never carries it: one Termpolis
+ * inherited is cleared, since there a Claude Code typed by hand isn't watched and the hook must
+ * act. `extra` comes back unchanged when there is nothing to add.
+ */
+export function withLimitChooser(extra: Record<string, string> | undefined, watch: unknown): Record<string, string> | undefined {
+  const agent = ACCOUNT_AGENTS.find((a) => a === watch)
+  let marked = false
+  if ((agent || watch === true) && wiring.paths) {
+    const loaded = loadAccounts(wiring.paths().userData, wiring.fsx)
+    const count = (a: AccountAgent): number => (loaded.ok ? loaded.doc.file.accounts.filter((x) => x.agent === a).length : 0)
+    marked = (agent ? [agent] : ACCOUNT_AGENTS).some((a) => count(a) >= 2)
+  }
+  if (marked) return { ...(extra ?? {}), [LIMIT_CHOOSER_VAR]: '1' }
+  return (wiring.env ?? process.env)[LIMIT_CHOOSER_VAR] !== undefined ? { ...(extra ?? {}), [LIMIT_CHOOSER_VAR]: '' } : extra
+}
 
 /** The longest typed line kept: a pasted file is no account line. */
 const TYPED_LINE_MAX = 4096
@@ -499,6 +534,9 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   wiring.send = deps.send
   wiring.outputEnd = deps.outputEnd
   wiring.io = deps.switchIO
+  wiring.paths = deps.paths
+  wiring.env = env
+  wiring.fsx = fsx
 
   const view = (doc: AccountsDoc): AccountsView => {
     const p = deps.paths()

@@ -104,6 +104,8 @@ const H = vi.hoisted(() => {
     accountSettingsEnv: vi.fn((_paths: unknown, _id: unknown): Record<string, unknown> | null | undefined => undefined),
     forgetTerminalAccount: vi.fn((_id: string) => undefined),
     noteTypedInput: vi.fn((_id: string, _typed: string): 'own' | 'by-hand' | null => null),
+    // The chooser's marker (R6): the extra env as it came, so every other test sees today's.
+    withLimitChooser: vi.fn((extra: Record<string, string> | undefined, _watch: unknown) => extra),
     relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
     getTerminalSize: vi.fn((_id: string): { cols: number; rows: number } | null => null),
     isShellInForeground: vi.fn((_id: string): boolean | null => null),
@@ -431,6 +433,7 @@ vi.mock('../../src/main/accountsIpc', () => ({
   accountSettingsEnv: H.accountSettingsEnv,
   forgetTerminalAccount: H.forgetTerminalAccount,
   noteTypedInput: H.noteTypedInput,
+  withLimitChooser: H.withLimitChooser,
 }))
 // The switch's lock, so a test can hold a terminal as a switch would.
 vi.mock('../../src/main/accountSwitch', () => ({ relaunchLockReason: H.relaunchLockReason }))
@@ -966,6 +969,24 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(await invoke(IPC.removeCodexHomeTrust, { accountId: 'acc_lost' }))
       .toEqual({ success: true, data: { changed: false, error: 'lost\'s profile folder doesn\'t exist' } })
     expect(H.removeCodexHomeTrust).not.toHaveBeenCalled()
+  })
+
+  it("hands the chooser's marker the extra env and what the launch watches, for a terminal and for a swarm worker (R6)", async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    const marked = { TERMPOLIS_LIMIT_CHOOSER: '1' }
+    H.withLimitChooser.mockReturnValueOnce(marked)
+    await invoke('terminal:create', { id: 't-watch', shellType: 'powershell', cwd: '/repo', limitWatch: 'claude' })
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(undefined, 'claude')
+    expect(mockSpawnTerminal.mock.calls[0][5]).toBe(marked)
+    const proxied = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }
+    H.getProxyEnv.mockReturnValueOnce(proxied)
+    await invoke('terminal:create', { id: 't-plain2', shellType: 'powershell', cwd: '/repo', claudeHeadroom: true })
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(proxied, undefined)
+    // A swarm worker is watched (by the swarm's loop); a phone's terminal isn't.
+    await H.mcpHandlers!.createTerminal('Claude (Build UI)', 'powershell', '/repo')
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(undefined, true)
+    await H.mcpHandlers!.createTerminal('Phone', 'powershell', '/repo', { agentCommand: 'claude' })
+    expect(H.withLimitChooser).toHaveBeenLastCalledWith(undefined, false)
   })
 
   it('judges a Claude launch\'s proxy by its own account\'s profile, and forgets a terminal\'s account when it closes', async () => {

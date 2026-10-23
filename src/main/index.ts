@@ -611,7 +611,7 @@ import {
 } from './agentIntegrationManager'
 import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount, isTerminalAccountConnected,
-  noteTypedInput, registerAccountsIpc, resolveLaunchTarget,
+  noteTypedInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
@@ -798,7 +798,7 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
   return ok()
 })
 
-ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId }) => {
+ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom, accountId, limitWatch }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
@@ -827,7 +827,8 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // phone subscribed this is a set lookup that finds nothing.
           remoteNoteTerminalOutput(id)
           // A launch on an account steps aside for that profile's own routing, not the default one's.
-        }, allExtraPaths, claudeHeadroom ? (getProxyEnv(process.env, accountSettingsEnv(agentIntegrationPaths(), accountId)) ?? undefined) : undefined)
+          // A terminal launched to run an agent Termpolis watches carries the chooser's marker (R6).
+        }, allExtraPaths, withLimitChooser(claudeHeadroom ? (getProxyEnv(process.env, accountSettingsEnv(agentIntegrationPaths(), accountId)) ?? undefined) : undefined, limitWatch))
         resolve()
       } catch (e) {
         reject(e)
@@ -3618,7 +3619,8 @@ async function semanticPoolOptions(
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
           // (codex/gemini read OPENAI_*/Google env), so this compresses every Claude worker and
           // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
-          }, getAgentExtraPaths(), getProxyEnv() ?? undefined)
+          // A swarm worker is watched, by the swarm's loop (R6); a phone's terminal isn't.
+          }, getAgentExtraPaths(), withLimitChooser(getProxyEnv() ?? undefined, !remote))
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
