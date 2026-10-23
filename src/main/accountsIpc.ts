@@ -106,6 +106,7 @@ export function forgetTerminalAccount(terminalId: string): void {
   byHand.delete(terminalId)
   agentStarts.delete(terminalId)
   workers.delete(terminalId)
+  shellAccounts.delete(terminalId)
 }
 
 /** The Claude Code session Termpolis started each terminal's agent with (--session-id) or resumed
@@ -230,6 +231,10 @@ export function withLimitChooser(extra: Record<string, string> | undefined, watc
  *  its terminal as a worker's (R7), and types the worker's own flags again. */
 const workers = new Set<string>()
 
+/** The account a line Termpolis typed into a worker (a restart's) put its shell on, per agent: the
+ *  variable stays set in that shell, so a later start of that agent there runs on it. */
+const shellAccounts = new Map<string, Partial<Record<ProfileAgent, string>>>()
+
 export function noteSwarmWorker(terminalId: string): void {
   workers.add(terminalId)
 }
@@ -275,15 +280,19 @@ export function noteWorkerCommand(terminalId: string, command: string, now: numb
     }
     agentStarts.set(terminalId, startRecord({ at: wiring.outputEnd?.(terminalId) ?? 0, commands: [typed], agent }, now))
     const handSet = byHand.has(terminalId)
-    let account: AgentAccount | null = null
-    if (!handSet && isProfileAgent(agent) && wiring.paths) {
-      const loaded = loadAccounts(wiring.paths().userData, wiring.fsx)
-      // The env is wired with the paths, at registration.
-      if (loaded.ok) account = envAccountOf(loaded.doc, agent, wiring.env!, wiring.fsx)
+    let accountId: string | null = null
+    if (!handSet && isProfileAgent(agent)) {
+      // The account a restart's line put this shell on, for this agent: the variable stays set there.
+      accountId = shellAccounts.get(terminalId)?.[agent] ?? null
+      if (accountId === null && wiring.paths) {
+        const loaded = loadAccounts(wiring.paths().userData, wiring.fsx)
+        // The env is wired with the paths, at registration.
+        if (loaded.ok) accountId = envAccountOf(loaded.doc, agent, wiring.env!, wiring.fsx)?.id ?? null
+      }
     }
-    if (account) terminalAccounts.set(terminalId, account.id)
+    if (accountId) terminalAccounts.set(terminalId, accountId)
     else terminalAccounts.delete(terminalId)
-    wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: account?.id ?? null, byHand: handSet, agent })
+    wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId, byHand: handSet, agent })
   } catch { /* the worker runs as before; a restart then finds no record */ }
 }
 
@@ -385,6 +394,7 @@ export function _resetTerminalAccountsForTest(): void {
   byHand.clear()
   agentStarts.clear()
   workers.clear()
+  shellAccounts.clear()
 }
 
 // ── Lookups index.ts uses ──────────────────────────────────────────────────────────────
@@ -1190,6 +1200,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       newSessionId: () => randomUUID(),
       record: (r) => {
         noteTerminalAccount(terminalId, r.accountId)
+        if (workers.has(terminalId)) shellAccounts.set(terminalId, { ...shellAccounts.get(terminalId), [agent]: r.accountId })
         noteAgentStart(terminalId, r.start, now())
         if (agent === 'claude') noteTerminalSession(terminalId, r.sessionId)
         deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: r.accountId, byHand: false })

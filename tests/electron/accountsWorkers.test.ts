@@ -241,6 +241,35 @@ describe('accounts:switch on a worker (§9)', () => {
     expect(accountEvents().pop()).toEqual({ terminalId: 't1', accountId: b, byHand: false })
   })
 
+  // The restart's account line stays set in the worker's shell: an agent run_command starts there
+  // later runs on the target, not on the account Termpolis's environment names.
+  it('keeps the worker on the target for a later start in the same shell', async () => {
+    const { main, b } = await accounts()
+    noteSwarmWorker('t1')
+    end = term.launchedAt
+    noteWorkerCommand('t1', term.launchLine())
+    expect(terminalAccountId('t1')).toBe(main)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    await ok<SwitchOutcome>(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: b, shellType: 'gitbash' })
+    log.mockRestore()
+    noteWorkerCommand('t1', 'claude --dangerously-skip-permissions')
+    expect(terminalAccountId('t1')).toBe(b)
+    expect(accountEvents().pop()).toEqual({ terminalId: 't1', accountId: b, byHand: false, agent: 'claude' })
+    // Another agent there reads its own variable, which no line set; Claude Code's stays set.
+    mkdirSync(sb.paths.codexHome, { recursive: true })
+    await ok(ACCOUNTS_IPC.add, { agent: 'codex', label: 'cx', folder: 'new', copy: false, share: [] })
+    const codexMain = doc().file.accounts.find((a) => a.agent === 'codex' && a.profile === null)!.id
+    noteWorkerCommand('t1', 'codex -a never -s workspace-write -c check_for_update_on_startup=false')
+    expect(terminalAccountId('t1')).toBe(codexMain)
+    noteWorkerCommand('t1', 'claude --dangerously-skip-permissions')
+    expect(terminalAccountId('t1')).toBe(b)
+    // A closed worker's id starts over.
+    forgetTerminalAccount('t1')
+    noteSwarmWorker('t1')
+    noteWorkerCommand('t1', 'claude --dangerously-skip-permissions')
+    expect(terminalAccountId('t1')).toBe(main)
+  })
+
   it('holds any other terminal as an account switch', async () => {
     const { main, b } = await accounts()
     term = new FakeTerminal({ agent: 'claude', family: 'posix', start: 'idle', exit: 'hint' })
