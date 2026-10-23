@@ -275,12 +275,12 @@ describe('AccountSwitcherDialog', () => {
     expect(useTerminalStore.getState().showSettings).toBe(true)
   })
 
-  it('shows agy\'s card for an agy terminal, and closes on Escape', () => {
+  it('hands an agy terminal to agy\'s guided switch, and closes on Escape', () => {
     const G = row({ id: 'g1', agent: 'agy', label: 'home', profile: null, folder: null, isDefault: false })
     useTerminalStore.setState({ terminals: [{ ...T, agentCommand: 'agy', agentAccountId: 'g1' }], accountsView: view([G]) })
     render(<AccountSwitcherDialog />)
     openFor()
-    expect(screen.getByTestId('account-switcher-agy')).toHaveTextContent('one Google sign-in for your whole computer user')
+    expect(screen.getByTestId('account-switcher-empty')).toHaveTextContent('agy has no other account here')
     fireEvent.keyDown(window, { key: 'Enter' })
     expect(screen.getByTestId('account-switcher')).toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'Escape' })

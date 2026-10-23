@@ -1097,6 +1097,7 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => a.clearLimit('acc_1'), ACCOUNTS_IPC.clearLimit, { id: 'acc_1' }],
       [() => a.launchAccount('codex', 'acc_1'), ACCOUNTS_IPC.launchAccount, { agent: 'codex', accountId: 'acc_1' }],
       [() => a.switchAccount({ terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }), ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: 'acc_1', shellType: 'cmd', fresh: true }],
+      [() => a.agySwitch({ terminalId: 't1', targetId: 'g1', shellType: 'bash', step: 'check', mark: 3 }), ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: 'g1', shellType: 'bash', step: 'check', mark: 3 }],
       [() => a.launchLine({ terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }), ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude', accountId: 'acc_1' }],
     ]
     for (const [call, channel, payload] of cases) {

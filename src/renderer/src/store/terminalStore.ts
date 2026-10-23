@@ -160,8 +160,9 @@ interface TerminalStore {
   accountSwitch: { terminalId: string } | null
   /** Terminals whose agent Termpolis is relaunching, and for what: one at a time per terminal, the
    *  model picker and the account switch alike. Their panes take no keys meanwhile, and the
-   *  prompt pollers answer nothing in them. */
-  relaunching: Record<string, 'account' | 'model'>
+   *  prompt pollers answer nothing in them. 'sign-in': agy's switch waits for the user to sign in
+   *  there, so the pane takes keys, and the pollers still answer nothing. */
+  relaunching: Record<string, 'account' | 'model' | 'sign-in'>
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -209,7 +210,7 @@ interface TerminalStore {
   openAccountSwitch: (terminalId: string) => void
   closeAccountSwitch: () => void
   /** Takes the terminal's relaunch lock: false when a relaunch already holds it. */
-  beginRelaunch: (terminalId: string, kind: 'account' | 'model') => boolean
+  beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
   endRelaunch: (terminalId: string) => void
 }
 

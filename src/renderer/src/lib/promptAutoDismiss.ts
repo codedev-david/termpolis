@@ -258,9 +258,10 @@ export function detectDismissChar(rawTail: string, ctx: DismissContext): string 
     return ctx.answerSignIn === false ? null : '\r'
   }
 
-  // 5. Gemini-specific — onboarding auth menu
+  // 5. Gemini-specific — onboarding auth menu (a sign-in choice too: the user's, once the agent has
+  //    accounts)
   if (isGemini && /accept\s+(?:the\s+)?terms|authenticate\s+with/i.test(tail)) {
-    return '\r'
+    return ctx.answerSignIn === false ? null : '\r'
   }
 
   return null

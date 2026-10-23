@@ -91,7 +91,7 @@ async function twoClaude(share: string[] = []): Promise<{ main: string; b: strin
   const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'b', folder: 'new', copy: false, share })
   const doc = loadAccounts(sb.paths.userData)
   if (!doc.ok) throw new Error(doc.error)
-  return { main: doc.doc.file.accounts.find((a) => a.profile === null)!.id, b: r.account.id, bDir: r.account.profile! }
+  return { main: doc.doc.file.accounts.find((a) => a.agent === 'claude' && a.profile === null)!.id, b: r.account.id, bDir: r.account.profile! }
 }
 
 const switchTo = (targetId: string, over: Record<string, unknown> = {}): Promise<SwitchOutcome> =>
@@ -219,6 +219,68 @@ describe('accounts:switch, the run', () => {
     expect(term.ran[1]).toContain(`codex -m gpt-5.6-sol -c "developer_instructions='Use the memory tools.'" resume ${ID}`)
     // Codex's session id is not Claude Code's: none is recorded.
     expect(terminalSessionId('t1')).toBeUndefined()
+    log.mockRestore()
+  })
+})
+
+describe('accounts:agy-switch', () => {
+  async function agyAccounts(): Promise<{ g1: string; g2: string }> {
+    await ok(ACCOUNTS_IPC.add, { agent: 'agy', label: 'home', email: 'home@example.test' })
+    await ok(ACCOUNTS_IPC.add, { agent: 'agy', label: 'work', email: 'work@example.test' })
+    const doc = loadAccounts(sb.paths.userData)
+    if (!doc.ok) throw new Error(doc.error)
+    const [g1, g2] = doc.doc.file.accounts.filter((a) => a.agent === 'agy').map((a) => a.id)
+    return { g1, g2 }
+  }
+
+  it('needs main\'s terminals, a terminal, a known step and an agy account', async () => {
+    const { g2 } = await agyAccounts()
+    const { b } = await twoClaude()
+    expect(await fails(ACCOUNTS_IPC.agySwitch, { targetId: g2, step: 'check' })).toBe('which terminal?')
+    // No shell named: only a typing step needs one, and refuses then.
+    expect(await ok(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, step: 'sign-out' })).toEqual({ kind: 'refused', why: 'Termpolis can' + "'" + 't type into this terminal' + "'" + 's shell' })
+    expect(await fails(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, step: 'jump' })).toBe('unknown step')
+    expect(await fails(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: b, step: 'check' })).toBe('b is not an Antigravity CLI account')
+    register({ switchIO: undefined })
+    expect(await fails(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, step: 'check' })).toBe('switching accounts isn\'t available')
+  })
+
+  it('runs each step with main\'s records, and moves every agy terminal and new launches once agy is back', async () => {
+    const { g1, g2 } = await agyAccounts()
+    const { main } = await twoClaude()
+    term = new FakeTerminal({ agent: 'agy', family: 'posix', start: 'idle', exit: 'hint' })
+    noteTerminalAccount('t1', g1)
+    noteTerminalAccount('t-other-agy', g1)
+    noteTerminalAccount('t-claude', main)
+    noteAgentStart('t1', { at: term.launchedAt, commands: [term.launchLine()] })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const out = await ok<any>(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, shellType: 'gitbash', step: 'sign-out' })
+    expect(out).toEqual({ kind: 'signing-in', conversationId: ID, mark: expect.any(Number) })
+    expect(await ok(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, shellType: 'gitbash', step: 'check', mark: out.mark })).toEqual({ kind: 'waiting' })
+    term.completeSignIn('work@example.test')
+    expect(await ok(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, shellType: 'gitbash', step: 'check', mark: out.mark, conversationId: 'not-an-id', assumeExited: 'yes' })).toEqual({ kind: 'signed-in' })
+    expect(terminalAccountId('t1')).toBe(g1)
+    const done = await ok(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, shellType: 'gitbash', step: 'resume', conversationId: out.conversationId })
+    expect(done).toEqual({ kind: 'switched', fresh: false, conversationId: ID, shownEmail: 'work@example.test' })
+    expect(terminalAccountId('t1')).toBe(g2)
+    expect(terminalAccountId('t-other-agy')).toBe(g2)
+    expect(terminalAccountId('t-claude')).toBe(main)
+    expect(terminalAgentStart('t1')!.commands).toEqual([`agy --conversation=${ID}`])
+    const moved = sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount).map((s) => s.payload.terminalId).sort()
+    expect(moved).toEqual(['t-other-agy', 't1'])
+    const doc = loadAccounts(sb.paths.userData)
+    expect(doc.ok && doc.doc.file.preferred.agy).toBe(g2)
+    expect(log).toHaveBeenCalledWith('[accounts] agy moved to work: 2 terminals')
+    log.mockRestore()
+  })
+
+  it('moves the one terminal it ran in, said in the singular, and ignores a bad mark', async () => {
+    const { g2 } = await agyAccounts()
+    term = new FakeTerminal({ agent: 'agy', family: 'posix', start: 'gone-quiet', exit: 'hint' })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    expect(await ok(ACCOUNTS_IPC.agySwitch, { terminalId: 't1', targetId: g2, shellType: 'gitbash', step: 'resume', assumeExited: true, mark: -5 }))
+      .toEqual(expect.objectContaining({ kind: 'switched', fresh: true }))
+    expect(log).toHaveBeenCalledWith('[accounts] agy moved to work: 1 terminal')
     log.mockRestore()
   })
 })

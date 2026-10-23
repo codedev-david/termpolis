@@ -1137,6 +1137,17 @@ describe('TerminalPane — the account switch', () => {
     expect(e.preventDefault).toHaveBeenCalled()
   })
 
+  it("takes the user's keys, with no overlay, while agy's switch waits for their sign-in", async () => {
+    mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'sign-in' } }))
+    await renderPane()
+    expect(screen.queryByTestId('relaunch-overlay')).toBeNull()
+    const e = switchKey({ key: 'a', ctrlKey: false, shiftKey: false })
+    let handled!: boolean
+    await act(async () => { handled = mockKeyHandlerCb!(e) })
+    expect(handled).not.toBe(false)
+    expect(e.preventDefault).not.toHaveBeenCalled()
+  })
+
   it('says a model change is under way while the model picker relaunches', async () => {
     mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'model' } }))
     await renderPane({ agentCommand: 'claude' } as never)

@@ -18,6 +18,7 @@ import { refreshAccounts } from '../../lib/accountsState'
 import { requestSettingsTab } from '../../lib/settingsNav'
 import { isAutoPrimerEnabled } from '../../hooks/useAutoPrimer'
 import { useTerminalStore } from '../../store/terminalStore'
+import { AgySwitchFlow } from './AgySwitchFlow'
 
 const BUTTON = 'text-xs px-2 py-1 rounded bg-[#2d2d2d] text-[#d4d4d4] hover:bg-[#3a3a3a] disabled:opacity-50'
 const PRIMARY = 'text-xs px-2 py-1 rounded bg-[#0e639c] text-white hover:bg-[#1177bb] disabled:opacity-50'
@@ -51,12 +52,17 @@ export function AccountSwitcherDialog() {
   const [phase, setPhase] = useState<Phase>({ kind: 'pick' })
   const [copied, setCopied] = useState(false)
 
-  // Each time it opens: the accounts as main has them now, and the list.
+  // Each time it opens: the accounts as main has them now, and the list. When it closes while agy's
+  // switch waits for a sign-in, the pollers may answer in that terminal again.
   useEffect(() => {
-    if (!open) return
+    if (!open) return undefined
     setPhase({ kind: 'pick' })
     setCopied(false)
     void refreshAccounts()
+    return () => {
+      const store = useTerminalStore.getState()
+      if (store.relaunching[open.terminalId] === 'sign-in') store.endRelaunch(open.terminalId)
+    }
   }, [open])
 
   // A switch's steps, as main reports them.
@@ -71,19 +77,22 @@ export function AccountSwitcherDialog() {
   const running = phase.kind === 'running' || phase.kind === 'checking'
   useEffect(() => {
     if (!open) return undefined
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !running) close() }
+    // Not while a switch types, and not while the user signs in to agy: their Esc is agy's then.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !running && !useTerminalStore.getState().relaunching[open.terminalId]) close()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, running, close])
 
   if (!open) return null
   const agent = terminalAgent(terminal)
-  const frame = (body: React.ReactNode) => (
+  const frame = (body: React.ReactNode, closable = !running) => (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" data-testid="account-switcher-overlay">
       <div role="dialog" aria-label="Switch account" data-testid="account-switcher" className="w-[520px] max-w-[92vw] max-h-[85vh] overflow-y-auto bg-[#1f1f1f] border border-[#3c3c3c] rounded-lg p-4 flex flex-col gap-3 text-xs text-[#d4d4d4]">
         {body}
         <div className="flex justify-end">
-          <button type="button" className={BUTTON} onClick={close} disabled={running} data-testid="account-switcher-close">Close</button>
+          <button type="button" className={BUTTON} onClick={close} disabled={!closable} data-testid="account-switcher-close">Close</button>
         </div>
       </div>
     </div>
@@ -105,12 +114,7 @@ export function AccountSwitcherDialog() {
   )
 
   if (agent === 'agy') {
-    return frame(<>
-      {header}
-      <p data-testid="account-switcher-agy">
-        The Antigravity CLI keeps one Google sign-in for your whole computer user, in the OS keyring, so it has no separate profiles. To use another Google account, type /logout in agy and sign in again. Every agy terminal moves to that account.
-      </p>
-    </>)
+    return <AgySwitchFlow terminal={terminal} rows={targets.map((t) => t.account)} header={header} close={close} frame={frame} />
   }
 
   const go = async (target: AccountRowView, answers: SwitchAnswers): Promise<void> => {

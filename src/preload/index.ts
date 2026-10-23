@@ -649,6 +649,7 @@ const accounts: AccountsAPI = {
   launchAccount: (agent, accountId) => ipcRenderer.invoke('accounts:launch-account', { agent, accountId }),
   launchLine: (req) => ipcRenderer.invoke('accounts:launch-line', req),
   switchAccount: (req) => ipcRenderer.invoke('accounts:switch', req),
+  agySwitch: (req) => ipcRenderer.invoke('accounts:agy-switch', req),
   onSwitchProgress: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, p: Parameters<typeof cb>[0]) => cb(p)
     ipcRenderer.on('accounts:switch-progress', handler)

@@ -1222,7 +1222,8 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       // A relaunch (an account switch, a model change) is typing into this terminal: keys typed
       // meanwhile would sit on the shell's line, and its Enter would run them (R7).
-      if (useTerminalStore.getState().relaunching?.[terminalId]) {
+      const relaunch = useTerminalStore.getState().relaunching?.[terminalId]
+      if (relaunch === 'account' || relaunch === 'model') {
         e.preventDefault()
         return false
       }
@@ -1883,7 +1884,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           which under `box-sizing: border-box` reports the parent's BORDER box —
           padding on this element would be counted as usable space, so the rows
           overflowed to the right and painted over the scrollbar. */}
-      {relaunching && (
+      {(relaunching === 'account' || relaunching === 'model') && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none" data-testid="relaunch-overlay">
           <span className="text-xs text-[#e0e0e0] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5">
             {relaunching === 'account' ? 'Switching account…' : 'Changing model…'}

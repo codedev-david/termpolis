@@ -164,6 +164,8 @@ export const ACCOUNTS_IPC = {
   switchAccount: 'accounts:switch',
   /** main → renderer: the step a switch is at (SwitchProgress). */
   switchProgress: 'accounts:switch-progress',
+  /** One step of agy's guided switch (AgyStepRequest → AgyStepOutcome). */
+  agySwitch: 'accounts:agy-switch',
 } as const
 
 // ── What the renderer is shown ────────────────────────────────────────────────────────

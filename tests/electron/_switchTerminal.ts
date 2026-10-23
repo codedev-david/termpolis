@@ -52,7 +52,16 @@ export interface TermScript {
   deadAfterRelaunches?: number
   /** The agent's last answer quotes its own exit hint, above its box. */
   quoteHint?: boolean
+  /** agy: what /logout shows: its sign-in screen (the default), or its box again. */
+  logout?: 'screen' | 'box'
+  /** agy: the Google account its header shows. */
+  email?: string
+  /** agy, started bare: draws neither its box nor its sign-in (it hangs). */
+  agyHangs?: boolean
 }
+
+/** The conversation id a later exit of agy names: a new, empty one, never the first. */
+export const THROWAWAY = '7d7d7d7d-0000-4000-8000-000000000000'
 
 const BOX_FOOTER: Record<Agent, string> = {
   claude: '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
@@ -76,7 +85,14 @@ export class FakeTerminal {
   box = ''
   line = ''
   relaunches = 0
+  /** agy: signed out, by /logout, until the user signs in (completeSignIn). */
+  signedOut = false
+  /** How many times the agent exited. */
+  exits = 0
+  /** The account agy's header shows. */
+  email: string
   constructor(public s: TermScript) {
+    this.email = s.email ?? 'home.user@example.test'
     this.mode = s.start === 'gone-hint' || s.start === 'gone-quiet' ? 'shell' : 'agent'
     this.agentState = s.start
     this.out = this.prompt() + this.launchLine() + '\r\n'
@@ -108,6 +124,7 @@ export class FakeTerminal {
     const a = this.s.agent
     const st = this.agentState
     if (st === 'sign-in') return a === 'codex' ? ['  Sign in with ChatGPT to use Codex', '', '› 1. Sign in with ChatGPT', '  2. Provide your own API key', '', '  Press enter to continue'] : ['  Select login method:', '', '  ❯ 1. Claude account with subscription', '    2. Anthropic Console account', '', '  Enter to confirm · Esc to cancel']
+    if (st === 'sign-in' && a === 'agy') return ['Welcome back! You are currently not signed in.', '', 'Select login method:', '', '> Continue with Google', '  Other sign-in options', '', '↑/↓ Navigate · enter Confirm']
     if (st === 'asks') return ['  WARNING: Claude Code running in Bypass Permissions mode', '', '  ❯ 1. No, exit', '    2. Yes, I accept', '', '  Enter to confirm · Esc to cancel']
     // Claude Code's permission dialog and its rate-limit menu, laid out as the real captures show
     // them (tests/fixtures/agentScreensInput.json rateLimitMenu): under a rule, the box gone.
@@ -126,7 +143,8 @@ export class FakeTerminal {
       return ['• Ready.', '', ...above, composer, ...popup, '', BOX_FOOTER.codex]
     }
     const glyph = a === 'claude' ? '❯' : '>'
-    return [...above, RULE, `${glyph} ${this.box}`, RULE, BOX_FOOTER[a]]
+    const header = a === 'agy' ? ['      ▄▀▀▄        Antigravity CLI 1.4.3', `     ▀▀▀▀▀▀       ${this.email} (Google AI Pro)`, ''] : []
+    return [...header, ...above, RULE, `${glyph} ${this.box}`, RULE, BOX_FOOTER[a]]
   }
 
   /** The agent's screen, as ConPTY paints it: cleared, then each row at its place. */
@@ -135,7 +153,7 @@ export class FakeTerminal {
   }
 
   hint(): string {
-    const id = this.s.id ?? ID
+    const id = this.exits > 1 ? THROWAWAY : this.s.id ?? ID
     if (this.s.agent === 'claude') {
       const cmd = this.s.worktree ? `claude --worktree "${this.s.worktree}" --resume ${id}` : `claude --resume ${id}`
       return `\r\n${E}[2m\r\nResume this session with:\r\n${cmd}\r\n${E}[22m`
@@ -153,6 +171,7 @@ export class FakeTerminal {
   }
 
   private exitAgent(): void {
+    this.exits++
     this.mode = 'shell'
     this.out += this.s.exit === 'no-hint' ? '\r\n' : this.hint()
     if (this.s.nestedReport) this.out += this.prompt(this.s.nestedReport)
@@ -167,6 +186,15 @@ export class FakeTerminal {
     }
     if (!/\b(claude|codex|agy)\b/.test(line)) {
       this.out += `bash: ${line.split(' ')[0]}: command not found\r\n${this.prompt()}`
+      return
+    }
+    if (line === 'agy') {
+      // A new agy, as the guided switch starts one to sign out: its sign-in screen when signed out.
+      if (this.s.agyHangs) return
+      this.mode = 'agent'
+      this.box = ''
+      this.agentState = this.signedOut ? 'sign-in' : 'idle'
+      this.redraw()
       return
     }
     const list = this.s.relaunch ?? ['box']
@@ -228,7 +256,15 @@ export class FakeTerminal {
       } else if (c === '\r') {
         const exitCmd = this.s.agent === 'codex' ? '/quit' : '/exit'
         if (this.box === exitCmd && this.s.exit !== 'ignore') this.exitAgent()
-        else {
+        else if (this.s.agent === 'agy' && (this.box === '/logout' || this.box === '/login')) {
+          // agy's own commands: /logout signs this computer's agy out (and shows its sign-in, or its
+          // box again); /login shows its sign-in.
+          const cmd = this.box
+          this.box = ''
+          if (cmd === '/logout') this.signedOut = true
+          this.agentState = cmd === '/logout' && this.s.logout === 'box' ? 'idle' : 'sign-in'
+          this.redraw()
+        } else {
           if (this.box) this.sentPrompts.push(this.box)
           this.box = ''
           this.redraw()
@@ -240,6 +276,15 @@ export class FakeTerminal {
         this.redraw()
       }
     }
+  }
+
+  /** The user signs in, in agy's sign-in screen: agy says so and shows its box, under the account. */
+  completeSignIn(email = this.email): void {
+    this.signedOut = false
+    this.email = email
+    this.out += '\r\nAuthentication successful!\r\n'
+    this.agentState = 'idle'
+    this.redraw()
   }
 
   io(): SwitchIO {

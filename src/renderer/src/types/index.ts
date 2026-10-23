@@ -8,7 +8,7 @@ import type {
   PickFolderResult, ProfileAgent, RecopyView, SignInLineRequest, SignInLineResult, SignInProgress,
   TerminalAccountEvent,
 } from '../../../shared/agentAccounts'
-import type { SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
+import type { AgyStepOutcome, AgyStepRequest, SwitchOutcome, SwitchProgress, SwitchRequest } from '../../../shared/accountSwitch'
 import type { ModelCatalog } from '../lib/modelCatalog'
 
 export type ShellType = 'bash' | 'zsh' | 'cmd' | 'powershell' | 'gitbash'
@@ -1337,6 +1337,9 @@ export interface AccountsAPI {
   switchAccount(req: SwitchRequest): Promise<IpcResponse<SwitchOutcome>>
   /** The step a switch is at. */
   onSwitchProgress(cb: (p: SwitchProgress) => void): () => void
+  /** One step of agy's guided switch: one Google sign-in for the computer user, so a sign-out,
+   *  the user's own sign-in, and the conversation resumed by its id. */
+  agySwitch(req: AgyStepRequest): Promise<IpcResponse<AgyStepOutcome>>
 }
 
 /** Which of the three diffs a Changes-rail row refers to. */

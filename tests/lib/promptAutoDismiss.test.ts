@@ -347,6 +347,10 @@ describe('promptAutoDismiss.detectDismissChar', () => {
         expect(detectDismissChar(tail, { agentName: 'Claude Code', answerSignIn: true })).toBe('\r')
       }
       expect(detectDismissChar('All set! Press Enter to begin.', { agentName: 'Claude Code', answerSignIn: false })).toBe('\r')
+      // Gemini's own sign-in method menu is one too.
+      const gemini = 'Accept the terms of service to authenticate with Google\n● Yes'
+      expect(detectDismissChar(gemini, { agentName: 'Gemini CLI', answerSignIn: false })).toBeNull()
+      expect(detectDismissChar(gemini, { agentName: 'Gemini CLI' })).toBe('\r')
     })
   })
 })

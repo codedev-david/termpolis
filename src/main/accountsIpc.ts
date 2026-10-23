@@ -8,7 +8,8 @@
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { changesAccountByHand, isSessionId } from '../shared/accountSwitch'
-import type { SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
+import type { AgyStepOutcome, AgyStepRequest, SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
+import { runAgyStep } from './agySwitch'
 import { carryTranscript, findTranscript } from './accountCarry'
 import { runAccountSwitch } from './accountSwitch'
 import type { SwitchIO } from './accountSwitch'
@@ -1006,6 +1007,42 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     })
     // Labels only, never emails.
     console.log(`[accounts] switch of a ${ACCOUNT_AGENT_LABEL[agent]} terminal from ${source?.label ?? 'an account Termpolis didn\'t know'} to ${target.label}${req.reason ? ` (${req.reason})` : ''}: ${outcome.kind}`)
+    return outcome
+  })
+
+  handle(ACCOUNTS_IPC.agySwitch, async (input): Promise<AgyStepOutcome> => {
+    const io = deps.switchIO
+    if (!io) throw new Error('switching accounts isn\'t available')
+    const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
+    if (!terminalId) throw new Error('which terminal?')
+    const step = (['sign-out', 'login', 'check', 'resume'] as const).find((s) => s === input.step)
+    if (!step) throw new Error('unknown step')
+    const target = accountOf(loadDoc(), input.targetId)
+    if (target.agent !== 'agy') throw new Error(`${target.label} is not an Antigravity CLI account`)
+    const req: AgyStepRequest = { terminalId, targetId: target.id, shellType: String(input.shellType ?? ''), step }
+    if (isSessionId(input.conversationId)) req.conversationId = input.conversationId
+    if (typeof input.mark === 'number' && Number.isFinite(input.mark) && input.mark >= 0) req.mark = input.mark
+    if (input.assumeExited === true) req.assumeExited = true
+    const outcome = await runAgyStep(req, {
+      io,
+      ...(terminalAgentStart(terminalId) ? { start: terminalAgentStart(terminalId) } : {}),
+      env,
+      record: (r) => noteAgentStart(terminalId, r.start),
+    })
+    if (outcome.kind === 'switched') {
+      // One Google sign-in for the computer user: every agy terminal Termpolis knows moved with it,
+      // and new ones launch on it.
+      const doc = loadDoc()
+      const agyIds = new Set(doc.file.accounts.filter((a) => a.agent === 'agy').map((a) => a.id))
+      const moved = new Set([terminalId])
+      for (const [tid, aid] of terminalAccounts) if (aid !== null && agyIds.has(aid)) moved.add(tid)
+      for (const tid of moved) {
+        noteTerminalAccount(tid, target.id)
+        deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId: tid, accountId: target.id, byHand: false })
+      }
+      update((d) => { d.file.preferred.agy = target.id })
+      console.log(`[accounts] agy moved to ${target.label}: ${moved.size} terminal${moved.size === 1 ? '' : 's'}`)
+    }
     return outcome
   })
 

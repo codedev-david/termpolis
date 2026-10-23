@@ -97,7 +97,8 @@ export interface SwitchContext {
 
 // ── The lock ───────────────────────────────────────────────────────────────────────────
 
-const locks = new Map<string, number>()
+/** The terminals a switch holds, each until when (LOCK_MS at most). */
+export const locks = new Map<string, number>()
 
 /** Why nothing may be typed into the terminal now, or null. */
 export function relaunchLockReason(terminalId: string, now: number = Date.now()): string | null {
@@ -116,7 +117,7 @@ export function _resetSwitchLocksForTest(): void {
 
 // ── Reading the screen ─────────────────────────────────────────────────────────────────
 
-interface Look {
+export interface Look {
   lines: string[]
   title: string
   raw: string
@@ -128,7 +129,7 @@ interface Look {
 /** What a terminal with no output shows: nothing, and no box. */
 const BLANK: Look = { lines: [], title: '', raw: '', end: 0, box: -1 }
 
-function look(io: SwitchIO, id: string): Look {
+export function look(io: SwitchIO, id: string): Look {
   const out = io.output(id)
   if (!out) return BLANK
   const { lines, title } = drawn(out.raw, io.size(id))
@@ -136,13 +137,13 @@ function look(io: SwitchIO, id: string): Look {
 }
 
 /** Where the absolute offset `at` falls in a look's text. */
-const indexOf = (l: Look, at: number): number => Math.max(0, l.raw.length - (l.end - at))
+export const indexOf = (l: Look, at: number): number => Math.max(0, l.raw.length - (l.end - at))
 
 /** Letters and digits: how a typed text is matched on a screen, which wraps and colours it. */
 const bare = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '')
 
 /** Escape sequences out, for the CLIs' own words in raw output. */
-const plain = (s: string): string => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '').replace(/\x1b./g, '')
+export const plain = (s: string): string => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '').replace(/\x1b./g, '')
 
 /** The first words of each CLI's exit hint, as it prints them when it exits. */
 const HINT_HEAD: Readonly<Record<AccountAgent, RegExp>> = {
@@ -153,7 +154,7 @@ const HINT_HEAD: Readonly<Record<AccountAgent, RegExp>> = {
 
 /** The exit hint at the screen's foot with no input box under it (R3): one quoted in an answer,
  *  or redrawn by ConPTY, has the agent's box under it. */
-function hintAtFoot(l: Look, agent: AccountAgent): ExitHint | null {
+export function hintAtFoot(l: Look, agent: AccountAgent): ExitHint | null {
   const hint = exitHintOf(l.lines, agent)
   return hint && (l.box < 0 || l.box < hint.row) ? hint : null
 }
@@ -169,11 +170,11 @@ const WAITING_OUT = /continuing automatically at.*\besc to cancel\b/
 /** How many of the screen's last rows hold the box, its status line and its footer. */
 const STATUS_ROWS = 8
 
-type Liveness = { state: 'live' } | { state: 'gone'; hint: ExitHint | null } | { state: 'unknown' }
+export type Liveness = { state: 'live' } | { state: 'gone'; hint: ExitHint | null } | { state: 'unknown' }
 
 /** Is the agent live on screen (R2)? Gone: its exit hint at the foot, or a prompt since it was
  *  started. Live: its box, a menu or a busy line on screen. Neither: unknown. */
-function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined): Liveness {
+export function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined): Liveness {
   const l = look(io, id)
   const hint = hintAtFoot(l, agent)
   if (hint) return { state: 'gone', hint }
@@ -186,7 +187,7 @@ function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: AgentSta
 // ── The steps ──────────────────────────────────────────────────────────────────────────
 
 /** Polls `test` every POLL_MS for up to `ms`; its first truthy answer, or null. */
-async function waitFor<T>(io: SwitchIO, ms: number, test: () => T | null | false): Promise<T | null> {
+export async function waitFor<T>(io: SwitchIO, ms: number, test: () => T | null | false): Promise<T | null> {
   for (let t = 0; t < ms; t += POLL_MS) {
     await io.sleep(POLL_MS)
     const r = test()
@@ -196,7 +197,7 @@ async function waitFor<T>(io: SwitchIO, ms: number, test: () => T | null | false
 }
 
 /** The agent at its idle box: a box on screen, and no busy line. */
-function atIdleBox(io: SwitchIO, id: string): Look | null {
+export function atIdleBox(io: SwitchIO, id: string): Look | null {
   const l = look(io, id)
   return l.box >= 0 && !isBusyOnScreen(l.lines, l.title) ? l : null
 }
@@ -211,7 +212,7 @@ function boxShows(l: Look, text: string): boolean {
 /** Types `text` into the agent's own box, at its idle box `l`, and presses Enter only once its box
  *  shows it: what an agent is exited with (step 3). The box is emptied first (Ctrl+U, as submit
  *  clears one). */
-async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Look): Promise<'entered' | 'not-shown' | 'held'> {
+export async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Look): Promise<'entered' | 'not-shown' | 'held'> {
   if (!emptyInputBox(l.lines)) {
     io.write(id, CLEAR_BOX_KEYS)
     const cleared = await waitFor(io, CLEAR_WAIT_MS, () => {
@@ -236,7 +237,7 @@ async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Look): Pro
 
 /** What shows the exit, from `mark` on (step 4): the hint at the screen's foot, printed since; or
  *  the shell's prompt since, with no box drawn after it. */
-function exitShown(io: SwitchIO, id: string, agent: AccountAgent, mark: number): { hint: ExitHint | null } | null {
+export function exitShown(io: SwitchIO, id: string, agent: AccountAgent, mark: number): { hint: ExitHint | null } | null {
   const l = look(io, id)
   const hint = hintAtFoot(l, agent)
   if (hint && HINT_HEAD[agent].test(plain(io.outputFrom(id, mark)))) return { hint }
@@ -254,12 +255,12 @@ function landed(l: Look, line: string, echo: string): 'box' | 'shell' | null {
   return bare(plain(echo)).includes(key) && bare(l.lines.slice(-6).join('')).includes(key) ? 'shell' : null
 }
 
-type Typed = { outcome: 'entered'; enterAt: number } | { outcome: 'agent-alive' | 'didnt-start' | 'mismatch' }
+export type Typed = { outcome: 'entered'; enterAt: number } | { outcome: 'agent-alive' | 'didnt-start' | 'mismatch' }
 
 /** Types an account line at the shell's prompt (step 8): the line cleared, a sacrificial Enter and
  *  the shell's answer to it, then the line without its Enter, which is pressed only once the line
  *  shows outside every agent box. `enterAt` is where the output ended before that Enter. */
-async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily, line: string, mark: number): Promise<Typed> {
+export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily, line: string, mark: number): Promise<Typed> {
   io.write(id, LINE_CLEAR[family])
   const before = io.end(id)
   io.write(id, '\r')
@@ -292,12 +293,12 @@ async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily, line:
   return { outcome: 'didnt-start' }
 }
 
-type Watched = 'switched' | 'not-found' | 'sign-in' | 'no-outcome' | { asks: string }
+export type Watched = 'switched' | 'not-found' | 'sign-in' | 'no-outcome' | { asks: string }
 
 /** What the relaunch did, from `mark` (its Enter) on (step 10): its box back, the CLI's "no such
  *  session", its sign-in screen, or a question only the user answers. agy says it found no such
  *  conversation and starts a new one: that is noted, and its box is waited for. */
-async function watchOutcome(io: SwitchIO, id: string, agent: AccountAgent, mark: number, line: string, until: number): Promise<{ seen: Watched; notFound: boolean }> {
+export async function watchOutcome(io: SwitchIO, id: string, agent: AccountAgent, mark: number, line: string, until: number): Promise<{ seen: Watched; notFound: boolean }> {
   let notFound = false
   for (let t = 0; t < OUTCOME_MS && io.now() < until; t += POLL_MS * 2) {
     await io.sleep(POLL_MS * 2)
