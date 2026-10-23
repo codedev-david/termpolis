@@ -18,7 +18,7 @@ import { ok, err } from './ipcResult'
 import { isExecAgent, type ExecRequest, type ExecResult } from './headlessExec'
 import { isSafeModelId } from './modelCatalog'
 import { inspectResult, peerAnswerBanner, riskBanner } from './mcpGateway/guard'
-import type { SecretScreen } from './aiSecurity'
+import type { CutStart, SecretScreen } from './aiSecurity'
 import {
   REMOTE_KEYS_NOT_LOCKED,
   beginRemoteLinkPairing,
@@ -183,7 +183,7 @@ export interface LinkedHostBinding {
    *  characters only: an answer is screened before it is cut to its tail; with
    *  `lookback`, the rules look no further than that before the tail; and with
    *  `cutStart`, the text is an end the other computer cut. */
-  screenSecrets(text: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen
+  screenSecrets(text: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen
   /** aiSecurity.maskForDisplay: a job's summary with every possible credential taken out, the
    *  heuristic ones too, before the Activity list shows it, the job history keeps it or a
    *  notification shows it; and a refusal's reason, and the folder a refusal repeats, before

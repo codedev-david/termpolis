@@ -770,6 +770,53 @@ describe('T2: what only looks like a key is left byte for byte', () => {
     }
   })
 
+  it('leaves a made-up body byte for byte where an older computer cut it, and reports it', () => {
+    // At the start of an end a version before 1.55 cut, a few characters above an END line are
+    // taken as what its cut left of a key; a made-up body's are not (the round-0 review's FR-3).
+    const ab = (n: number): string[] => Array.from({ length: n }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(2, '0')}`)
+    const abcd = Array.from({ length: 6 }, (_, i) => ('AbCdEfGhIjKlMnOpQrStUvWxYz' + String(i).padStart(4, '0')).repeat(3).slice(0, 64))
+    const fakes = [
+      ['-----BEGIN RSA PRIVATE KEY-----', ...ab(10), '-----END RSA PRIVATE KEY-----'].join('\n'),
+      [begin, ...abcd, end].join('\n'),
+      ['-----BEGIN OPENSSH PRIVATE KEY-----', ...Array<string>(8).fill('A'.repeat(70)), '-----END OPENSSH PRIVATE KEY-----'].join('\n'),
+      [begin, ...BODY, end].join('\n'),
+      // a test runner's diff of a fixture, and a fixture in a literal
+      ['- Expected', '+ Received', '', '  "-----BEGIN RSA PRIVATE KEY-----', ...ab(10).map((l) => `+ ${l}`), '+ -----END RSA PRIVATE KEY-----"', ''].join('\n'),
+      ['const FAKE = [', "  '-----BEGIN RSA PRIVATE KEY-----',", ...ab(10).map((l) => `  '${l}',`), "  '-----END RSA PRIVATE KEY-----',", "].join('\\n')"].join('\n'),
+    ]
+    let reported = 0
+    for (const fake of fakes) {
+      const e = fake.lastIndexOf('-----END')
+      for (let i = fake.indexOf('\n') + 1; i < e - 1; i += 3) {
+        for (const view of [fake.slice(i), `…${fake.slice(i)}`]) {
+          const r = screenKeys(view, { cutStart: true })
+          expect(r.text, `${fake.slice(0, 30)} cut at ${i}`).toBe(view)
+          expect(r.removed, `${fake.slice(0, 30)} cut at ${i}`).toEqual({})
+          if (r.spans.some((s) => s.why === 'cut-tail-made-up')) reported++
+        }
+      }
+    }
+    expect(reported).toBeGreaterThan(100)
+  })
+
+  it("leaves a JWK's placeholder that the text's end cut short, and takes a real value cut so", () => {
+    // (the round-0 review's FR-7: cut to 23 characters, a slug no longer read as one)
+    const jwk = '{"kty":"oct","alg":"HS256","k":"your-256-bit-secret-goes-here"}'
+    const at = jwk.indexOf('your-')
+    for (let n = 8; n <= 28; n++) {
+      const view = jwk.slice(0, at + n)
+      expect(screenKeys(view).removed, String(n)).toEqual({})
+    }
+    const k = randomBytes(32).toString('base64url')
+    for (const n of [22, 30, 43]) {
+      const view = `{"kty":"oct","alg":"HS256","k":"${k.slice(0, n)}`
+      expect(screenKeys(view).removed, String(n)).toEqual({ jwk_private_key: 1 })
+    }
+    // a value the text does not end inside is judged by its length as before
+    expect(placeholderWhy('your-256-bit-secret-go', 'b62')).toBeNull()
+    expect(placeholderWhy('your-256-bit-secret-go', 'b62', true)).toBe('slug')
+  })
+
   it('leaves a public key, a certificate and a CSR under a private BEGIN line, and random bytes no format names', () => {
     const certLike = der(0x30, Buffer.concat([der(0x30, Buffer.concat([der(0xa0, der(0x02, Buffer.from([2]))), der(0x02, randomBytes(16)), randomBytes(400)])), randomBytes(64)]))
     const csrLike = der(0x30, Buffer.concat([der(0x30, Buffer.concat([der(0x02, Buffer.from([0])), der(0x30, randomBytes(60)), randomBytes(300)])), randomBytes(64)]))

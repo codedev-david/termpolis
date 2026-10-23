@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomBytes } from 'crypto'
 import * as path from 'path'
 import type { LinkTarget, PeerRequest } from '../../src/main/remoteBridge/protocol'
 import type { LinkedMachineView } from '../../src/main/linkedDirectory'
-import { screenText, type SecretScreen } from '../../src/main/aiSecurity'
+import { maskForDisplay, screenText, type CutStart, type SecretScreen } from '../../src/main/aiSecurity'
 import type { LinkMeta } from '../../src/main/linkedStore'
 import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, createLinkedJobs, type LinkedActivity } from '../../src/main/linkedJobs'
 import {
@@ -15,6 +15,7 @@ import {
   POLL_GRACE_MS,
   RUN_TIMEOUT_MS,
   createLinkedTool,
+  screensBeforeCut,
   type LinkedToolArgs,
   type LinkedToolDeps,
 } from '../../src/main/linkedTool'
@@ -91,13 +92,18 @@ const view = (over: Record<string, unknown> = {}) => ({ jobId: JOB, agent: 'code
 
 /** A remote that starts JOB and answers each poll with the next scripted view.
  *  A poll answered "running" holds for its whole waitMs; a finished one comes
- *  back after a second, as a job that ends mid-poll does. */
-function scripted(h: ReturnType<typeof setup>, polls: unknown[], run: unknown = view()) {
+ *  back after a second, as a job that ends mid-poll does. `hello`, when given,
+ *  is its answer to `peerHello` (an Error is thrown). */
+function scripted(h: ReturnType<typeof setup>, polls: unknown[], run: unknown = view(), hello?: unknown) {
   const queue = [...polls]
   h.handler = (_target, request) => {
     if (request.kind === 'peerRun') {
       if (run instanceof Error) throw run
       return run
+    }
+    if (request.kind === 'peerHello' && hello !== undefined) {
+      if (hello instanceof Error) throw hello
+      return hello
     }
     if (request.kind === 'peerResult') {
       const next = queue.shift()
@@ -388,6 +394,16 @@ describe('run: checks before anything is sent', () => {
     expect(h.calls).toHaveLength(0)
     expect(h.activity).toHaveLength(0)
   })
+
+  it('sends a folder on a drive with an @ in it, which is no URL', async () => {
+    // (the round-0 review's FR-6: `C:x@y` read as a user `C` and a password before an `@`)
+    for (const cwd of ['C:x@y', 'D:builds@2026', 'c:repos@feature/app']) {
+      const h = setup()
+      scripted(h, [view({ status: 'done', output: 'ok', durationMs: 5 })])
+      await run(h, { cwd })
+      expect(h.calls[0].request, cwd).toMatchObject({ kind: 'peerRun', cwd })
+    }
+  })
 })
 
 describe('run', () => {
@@ -552,6 +568,28 @@ describe('run', () => {
     const busy = 'busy: linux is already running 2 jobs for this computer. Wait for one to finish, or cancel one.'
     expect(await outcome(new Error(busy))).toEqual({ error: busy, machine: 'linux' })
     expect((await outcome(new Error('x'.repeat(2_000)))).error).toBe(`${'x'.repeat(999)}…`)
+  })
+
+  it('masks what an older machine repeats in its refusal before the agent reads it', async () => {
+    // A version before 1.55 repeats a refused folder as it came: a token the agent passed as one
+    // came back whole (the round-0 review's MX-1). It is masked, then cut.
+    const token = `ghp_${'a'.repeat(36)}`
+    const h = setup({ mask: maskForDisplay })
+    scripted(h, [], new Error(`Not an absolute folder on "linux": ${token}`))
+    expect(await run(h, { cwd: token })).toEqual({ error: 'Not an absolute folder on "linux": [REDACTED:gh_pat]', machine: 'linux' })
+    // masked before the cut: a token the cut would have split is gone whole
+    const long = setup({ mask: maskForDisplay })
+    scripted(long, [], new Error(`${'x'.repeat(980)} ${token}`))
+    const cut = (await run(long)).error as string
+    expect(cut).toBe(`${'x'.repeat(980)} [REDACTED:gh_pat]`)
+    // and a refusal that cannot be masked is not shown
+    const broken = setup({
+      mask: () => {
+        throw new Error('mask failed')
+      },
+    })
+    scripted(broken, [], new Error(`Not an absolute folder on "linux": ${token}`))
+    expect(await run(broken)).toEqual({ error: '"linux" refused the request. Its reason could not be checked for credentials, so it is not shown.', machine: 'linux' })
   })
 
   it('refuses an answer to the start it does not understand', async () => {
@@ -1174,6 +1212,81 @@ describe('credentials, asking', () => {
       [9, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, false],
       [7, MAX_ERROR_CHARS, SCREEN_LOOKBACK_CHARS, false],
     ])
+  })
+
+  it('screens an end a 1.55 machine cut as one it screened first, and asks a machine its version once, only when such an end comes', async () => {
+    // From 1.55 the other machine screens an answer with the same key detectors before it cuts
+    // it, and takes whole any key its cut runs through: what it sends starts with nothing left to
+    // take. Screened as an end that may start inside a key, a dump or a list of hashes above an END
+    // line there was taken for a key's tail (the round-0 review's FR-3).
+    const seen: Array<[number | undefined, CutStart | undefined]> = []
+    const screen = (text: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen => {
+      seen.push([keep, cutStart])
+      return { text, removed: {}, flagged: {}, markers: [] }
+    }
+    const HELLO = { version: '1.55.0', agents: { codex: true }, grants: { run: true, write: false }, confirmed: true }
+    const h = setup({ screen })
+    const hellos = () => h.calls.filter((c) => c.request.kind === 'peerHello')
+    // (each its own job: a finished answer is screened once per job)
+    const job = (id: string, over: Record<string, unknown>) => scripted(h, [view({ jobId: id, status: 'done', durationMs: 5, ...over })], view({ jobId: id }), HELLO)
+    // an end that was not cut: no question
+    job('00000000000a', { output: 'all of it' })
+    await run(h)
+    expect(hellos()).toHaveLength(0)
+    // an end it cut: asked once, with the time a list gives it, and screened as one it screened
+    job('00000000000b', { status: 'failed', output: 'the end of it', truncated: true, error: '…the end of stderr' })
+    await run(h)
+    expect(hellos().map((c) => c.timeoutMs)).toEqual([HELLO_TIMEOUT_MS])
+    job('00000000000c', { output: 'more of it', truncated: true })
+    await run(h)
+    expect(hellos()).toHaveLength(1)
+    expect(seen.filter(([keep]) => keep !== undefined)).toEqual([
+      [MAX_OUTPUT_CHARS, false],
+      [MAX_OUTPUT_CHARS, 'screened'],
+      [MAX_ERROR_CHARS, 'screened'],
+      [MAX_OUTPUT_CHARS, 'screened'],
+    ])
+    // what `list` heard is used, and a version before 1.55, none, or a machine that cannot say is
+    // taken for one that may have cut first (one `list` could not reach is asked again)
+    for (const [hello, expected, asked] of [
+      [{ ...HELLO, version: '1.56.2' }, 'screened', 1],
+      [{ ...HELLO, version: '1.54.0' }, true, 1],
+      [{ ...HELLO, version: undefined }, true, 1],
+      [new Error('timed out'), true, 2],
+    ] as Array<[unknown, CutStart, number]>) {
+      seen.length = 0
+      const k = setup({ screen }, [LINUX])
+      k.handler = (_target, request) => {
+        if (request.kind !== 'peerHello') throw new Error(`unexpected ${request.kind}`)
+        if (hello instanceof Error) throw hello
+        return hello
+      }
+      await k.tool.call({ action: 'list' })
+      scripted(k, [view({ status: 'done', output: 'the end', truncated: true, durationMs: 5 })])
+      await run(k)
+      expect(k.calls.filter((c) => c.request.kind === 'peerHello'), JSON.stringify(hello)).toHaveLength(asked)
+      expect(seen.filter(([keep]) => keep !== undefined), JSON.stringify(hello)).toEqual([[MAX_OUTPUT_CHARS, expected]])
+    }
+  })
+
+  it('reads the version a machine reports: 1.55.0 and later screen before they cut', () => {
+    for (const v of ['1.55.0', '1.55.1', '1.56.0', '2.0.0', '1.100.3', '1.55.0-beta.2']) expect(screensBeforeCut(v), v).toBe(true)
+    for (const v of ['1.54.9', '1.54.0', '1.53.1', '1.50.0', '0.99.99', '1.55', 'v1.55.0', '', undefined]) expect(screensBeforeCut(v), String(v)).toBe(false)
+  })
+
+  it("keeps a dump above an END line whole where a 1.55 machine's cut fell inside it, and reports it", async () => {
+    const dump = Array.from({ length: 90 }, () => randomBytes(48).toString('base64')).join('\n')
+    const output = `${dump.slice(1_500)}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n`
+    const HELLO = { version: '1.55.0', agents: { codex: true }, grants: { run: true, write: false }, confirmed: true }
+    const h = setup({ screen: screenText })
+    scripted(h, [view({ status: 'done', output, truncated: true, durationMs: 5 })], view(), HELLO)
+    const r = await run(h)
+    expect(r.output).toBe(`[answer from linux/codex]\n${output}`)
+    expect(r.note).toBe('Possible credential in this answer (private_key), not removed.')
+    // From a machine older than 1.55, the same end may start inside a key its cut ran through.
+    const old = setup({ screen: screenText })
+    scripted(old, [view({ status: 'done', output, truncated: true, durationMs: 5 })], view(), { ...HELLO, version: '1.54.0' })
+    expect((await run(old)).output).toBe('[answer from linux/codex]\n[REDACTED:private_key]\n(the footer the parser expects)\n')
   })
 
   it('removes a key an older version cut through before it screened, from the END line in the end that arrived', async () => {

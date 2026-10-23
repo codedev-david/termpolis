@@ -662,6 +662,10 @@ export function scanText(input: string): ScanResult {
 }
 
 /** What screenText found, by rule id: how many matches. */
+/** What screenText is told of where `input` starts (its `cutStart`): at no cut, or at a cut another
+ *  computer made before screening (`true`) or after screening with this screen (`'screened'`). */
+export type CutStart = boolean | 'screened'
+
 export interface SecretScreen {
   /** The text with every credential it removed replaced by `[REDACTED:<rule>]`: a high-precision
    *  rule's match, or a private key its bytes show to be one (keyMaterial). Nothing else in it
@@ -727,10 +731,14 @@ export const SCREEN_RULES: readonly RedactionRule[] = RULES.filter((rule) => !KE
  *  back, each for its own opener (keyMaterial's detectorStart): a BEGIN line up to 256 KB back when
  *  the cut falls among key lines. A longer key is taken from its END line.
  *
- *  `cutStart`: `input` is itself an end another computer cut, maybe before screening it (a version
- *  before 1.53.1). A key's tail at its start is removed with its END line however few of its lines
- *  the cut left, and a run of key lines there with no END line below it is reported. */
-export function screenText(input: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen {
+ *  `cutStart`: `input` is itself an end another computer cut. `true`: maybe before screening it, or
+ *  with a screen that took keys by their layout (a version before 1.55): a key's tail at its start
+ *  is removed with its END line however few of its lines the cut left, and a run of key lines there
+ *  with no END line below it is reported. `'screened'`: after screening it with this screen (1.55
+ *  or later), which took whole any key its cut ran through: nothing at its start is a key's tail,
+ *  so random lines there above an END line (a dump, a list of hashes, a test key's made-up body)
+ *  are only reported, as in the middle of a text. */
+export function screenText(input: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen {
   const removed: Record<string, number> = {}
   const flagged: Record<string, number> = {}
   if (typeof input !== 'string' || !input) return { text: input ?? '', removed, flagged, markers: [] }
@@ -750,8 +758,8 @@ export function screenText(input: string, keep?: number, lookback?: number, cutS
   // Where the tail starts, unless a removal runs through it, a key's tail can sit right under it
   // with its head out of view; a text another computer cut starts at 0.
   const straddled = found.some((f) => f.cls === 'remove' && f.from < from && f.to > from)
-  const cutAt = cutStart ? 0 : from > 0 && !straddled ? from : undefined
-  for (const span of headless(input, keys.blocks, { start: keysFrom, cutAt })) found.push(span)
+  const cutAt = cutStart === true ? 0 : from > 0 && !straddled ? from : undefined
+  for (const span of headless(input, keys.blocks, { start: keysFrom, cutAt, screenedStart: cutStart === 'screened' })) found.push(span)
   // Sorted by start; a stable sort keeps table order among those that start together.
   const taken = found.filter((f) => f.cls === 'remove').sort((a, b) => a.from - b.from)
   const cuts: Finding[] = []

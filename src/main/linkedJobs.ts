@@ -33,7 +33,7 @@ import {
 } from './headlessExec'
 import type { LinkTarget, PeerAgent, PeerHelloInfo, PeerJobView, PeerRequest } from './remoteBridge/protocol'
 import { normalizeGrants, refOf, type LinkedGrants, type LinkMeta } from './linkedStore'
-import type { SecretScreen } from './aiSecurity'
+import type { CutStart, SecretScreen } from './aiSecurity'
 
 /** What screening text on its way between two computers found, for the audit log: rule ids and
  *  counts, never the text. */
@@ -113,7 +113,7 @@ export interface LinkedJobsDeps {
    *  only what the screen made of the last `keep` characters comes back, and with `lookback` the
    *  rules look no further than that before them (screenTail). `cutStart`, for text another
    *  computer cut, is never set here: what this computer screens is its own job's. */
-  screen(text: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen
+  screen(text: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen
   /** aiSecurity.maskForDisplay: every possible credential out of a job's summary, the ones
    *  screening leaves in for the agent too, before the activity view shows it, the job history
    *  keeps it and a notification shows it (activitySummary); and out of a folder a refusal

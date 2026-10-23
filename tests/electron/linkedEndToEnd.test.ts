@@ -15,7 +15,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { generateKeyPairSync } from 'crypto'
+import { generateKeyPairSync, randomBytes } from 'crypto'
 import { createBridgeCore, type BridgeCore } from '../../src/main/remoteBridge/entry'
 import type { BridgeToHost, HostToBridge } from '../../src/main/remoteBridge/protocol'
 import {
@@ -180,13 +180,15 @@ const idOf = (ref: string): string => ref.slice(ref.indexOf(':') + 1)
  * One Termpolis desktop: main's remote host and linked host, and the bridge
  * child main supervises, with only the process boundary faked. `from` starts
  * it again on the folders of one that quit -- the same computer, restarted --
- * and `keychain` is the keyring it comes up with.
+ * `keychain` is the keyring it comes up with, and `version` the app version
+ * it tells the other computer.
  */
 async function machine(
   relay: MemoryRelay,
   name: string,
   from?: Machine,
   keychain = fakeSafeStorage(),
+  version = '1.50.0',
 ): Promise<Machine> {
   // Each computer is its own copy of main's modules: linkedHost keeps its
   // service in a module singleton, exactly as in the app, so a second computer
@@ -307,7 +309,7 @@ async function machine(
   // it for the bridge's init.
   linked.startLinkedHost({
     userDataDir: dir,
-    version: '1.50.0',
+    version,
     sendStatus: () => undefined,
     sendEvent: (e) => events.push(e),
     runHeadless: (req) => {
@@ -393,10 +395,10 @@ async function allowEdit(m: Machine, ref: string): Promise<void> {
 
 /** The laptop and the build box, linked and confirmed on both sides. Edit, where asked for, is
  *  turned on after the confirmation, the only way it can be. */
-async function linkedPair(grants: { onA?: LinkedGrants; onB?: LinkedGrants } = {}) {
+async function linkedPair(grants: { onA?: LinkedGrants; onB?: LinkedGrants; version?: string } = {}) {
   const relay = newRelay()
-  const a = await machine(relay, LAPTOP)
-  const b = await machine(relay, BUILDBOX)
+  const a = await machine(relay, LAPTOP, undefined, undefined, grants.version)
+  const b = await machine(relay, BUILDBOX, undefined, undefined, grants.version)
   await enable(a)
   await enable(b)
   const l = await link(a, b, grants)
@@ -698,6 +700,25 @@ describe('delegating a job', () => {
     expect(failed.note).toBeUndefined()
     expect(a.audits).toEqual([])
     expect(b.audits).toEqual([])
+  })
+
+  it("hands back a dump above an END line whole where the build box's cut fell inside it, both computers on 1.55", async () => {
+    // judge 1's C2 shape: a screenshot's base64 above a line holding only an END marker. The
+    // build box reports it and keeps its end; this side knows that computer screened before it
+    // cut, so the end's start is no key's tail (the round-0 review's FR-2 and FR-3).
+    const { a, b } = await linkedPair({ version: '1.55.0' })
+    const dump = `Screenshot:\n${Array.from({ length: 100 }, () => randomBytes(48).toString('base64')).join('\n')}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n`
+    // (the end kept, its last 200,000 characters, starts 3,000 characters into the dump)
+    const rest = 'Step ok: the report is written.\n'.repeat(Math.ceil((200_000 - dump.length + 3_000) / 32))
+    const log = `${'Step ok: the build copied the assets.\n'.repeat(1_000)}${dump}${rest}`
+    const cut = log.length - 200_000
+    expect(cut).toBeGreaterThan(log.indexOf(dump) + 2_000)
+    expect(cut).toBeLessThan(log.indexOf('-----END'))
+    b.agent = async (req) => finished(req, log)
+    const done = await a.tool({ action: 'run', machine: BUILDBOX_ON_LAPTOP, agent: 'codex', prompt: 'Print the build log.', cwd: b.work })
+    expect(done).toMatchObject({ status: 'done', truncated: true, output: answered(BUILDBOX_ON_LAPTOP, 'codex', log.slice(-200_000)) })
+    expect(done.note).toBe('Possible credential in this answer (private_key), not removed.')
+    expect([...a.audits, ...b.audits].map((x) => x.event)).toEqual(['linked_secret_flagged', 'linked_secret_flagged'])
   })
 
   it('hands back code with test fixtures in it byte for byte, naming what looked like credentials', async () => {

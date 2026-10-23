@@ -24,7 +24,7 @@
 // a possible one is left in and named in a note, because the text is usually
 // code and its fixtures and examples look like credentials too.
 import type { LinkTarget, PeerAgent, PeerJobView, PeerRequest } from './remoteBridge/protocol'
-import type { SecretScreen } from './aiSecurity'
+import type { CutStart, SecretScreen } from './aiSecurity'
 import { sanitizeDeviceLabel } from './remoteBridge/deviceLabel'
 import { resolveMachine, type LinkedMachineView } from './linkedDirectory'
 import { refOf, targetOf } from './linkedStore'
@@ -69,9 +69,10 @@ export interface LinkedToolDeps {
   frame(text: string, machine: string, agent: string): string
   /** aiSecurity.screenText; with `keep`, only what it made of the last `keep` characters, with
    *  `lookback`, the rules looking no further than that before them, and with `cutStart`, for an
-   *  end the other machine cut. */
-  screen(text: string, keep?: number, lookback?: number, cutStart?: boolean): SecretScreen
-  /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary). */
+   *  end the other machine cut (before screening it, or after: aiSecurity.CutStart). */
+  screen(text: string, keep?: number, lookback?: number, cutStart?: CutStart): SecretScreen
+  /** aiSecurity.maskForDisplay, for a job's summary in the activity view (activitySummary), and
+   *  for a refusal the other machine worded before the agent reads it. */
   mask(text: string): string
   /** Told what a screen found, for the audit log. */
   onSecrets?(finding: LinkedSecretFinding): void
@@ -112,6 +113,22 @@ const MAX_CHECKED_ANSWERS = 8
 
 const MAX_REFUSAL_CHARS = 1_000
 
+/** The first version that screens an answer with the key detectors before it cuts it to its end,
+ *  taking whole any key its cut runs through: the end it sends starts with nothing unscreened. */
+const SCREENS_BEFORE_CUT: readonly number[] = [1, 55, 0]
+
+/** Whether a machine that says it runs `version` screens an answer so before it cuts it. A version
+ *  it did not say, or one that reads as none, is taken for one that does not. */
+export function screensBeforeCut(version: string | undefined): boolean {
+  const m = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})/.exec(version ?? '')
+  if (!m) return false
+  for (let i = 0; i < 3; i++) {
+    const v = Number(m[i + 1])
+    if (v !== SCREENS_BEFORE_CUT[i]) return v > SCREENS_BEFORE_CUT[i]
+  }
+  return true
+}
+
 const PEER_AGENTS: readonly PeerAgent[] = ['claude', 'codex', 'gemini']
 const JOB_STATUSES: readonly PeerJobView['status'][] = ['running', 'done', 'failed', 'cancelled']
 const REMOTE_JOB_ID_RE = /^[0-9a-f]{12}$/
@@ -144,13 +161,15 @@ const checkLater = (jobId: string): string =>
   `The job may still be running there: call linked_machines with action "result" and jobId "${jobId}" to check on it.`
 const tooLongScreened = `Invalid prompt: longer than ${MAX_PROMPT_CHARS} characters once the credentials in it were removed. Shorten it.`
 const urlCwd = (name: string): string => `cwd is a URL, not a folder on "${name}"; nothing was sent. A clone URL can carry a token.`
+const refusedUnshown = (name: string): string => `"${name}" refused the request. Its reason could not be checked for credentials, so it is not shown.`
 
 /** A URL's start: a scheme and `//` (`https://`, `ssh://`, `file://`), or a user and a password
- *  before an `@` (`user:token@host:repo`, an scp-style remote). No folder starts as either: one
- *  starts with `/`, `\` or `~`, or a drive letter and `\` or `/`. (The other machine would read a
- *  `file://` URL as the folder it names; written as that folder, it runs.) */
+ *  before an `@` (`user:token@host:repo`, an scp-style remote), the user not a drive letter
+ *  (`C:x@y` is a folder on drive C). No folder starts as either: one starts with `/`, `\` or `~`,
+ *  or a drive letter. (The other machine would read a `file://` URL as the folder it names;
+ *  written as that folder, it runs.) */
 const URL_SCHEME_RE = /^[a-z][a-z0-9+.-]{1,31}:\/\//i
-const URL_USERINFO_RE = /^[^\s/\\:@]{1,256}:[^\s/\\@]{1,512}@/
+const URL_USERINFO_RE = /^(?![A-Za-z]:)[^\s/\\:@]{1,256}:[^\s/\\@]{1,512}@/
 
 /** Whether `cwd` is written as a URL, read as the other machine reads a folder: trimmed, and out of
  *  the quotes a shell puts around one (cwdPath). A folder's name is not screened for credentials:
@@ -270,6 +289,8 @@ function jobViewOf(v: unknown, expectedId?: string): JobView | null {
 export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolArgs): Promise<unknown> } {
   const sent = new Map<string, SentJob>()
   const checked = new Map<string, Checked>()
+  /** What each machine said its app version is (`peerHello`), by ref: '' when it could not say. */
+  const versions = new Map<string, string>()
 
   function reportSecrets(finding: LinkedSecretFinding): void {
     if (!deps.onSecrets || !foundAny(finding)) return
@@ -285,10 +306,30 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
    *  screenTail, which the other machine runs on its side). A version that sent more than it may
    *  is not screened whole; the screen is told how far back to look rather than given a slice,
    *  where a rule would see the start of a word. `cut`: the other machine cut `text` from a longer
-   *  one, and a version before 1.53.1 cut before it screened, so it can start inside a key the cut
-   *  ran through (aiSecurity.screenText's cutStart). */
-  function screenTail(text: string, keep: number, cut: boolean): SecretScreen {
+   *  one (aiSecurity.screenText's cutStart): after it screened it with the key detectors (1.55 or
+   *  later), or maybe before (a version before 1.53.1 cut before it screened, and 1.53.1 and 1.54
+   *  screened keys by their layout), so it can start inside a key the cut ran through. */
+  function screenTail(text: string, keep: number, cut: CutStart): SecretScreen {
     return deps.screen(text, keep, SCREEN_LOOKBACK_CHARS, cut)
+  }
+
+  /** How an end `job`'s machine cut is screened here: as one cut after its own screen took what the
+   *  cut ran through, when it said it runs a version that does (screensBeforeCut), or else as one
+   *  that may start inside a key. */
+  const cutBy = (job: Followed): CutStart => (screensBeforeCut(versions.get(refOf(job.target))) ? 'screened' : true)
+
+  /** Asks `job`'s machine its version when an answer it cut has come and this computer does not
+   *  know it yet (an agent that called `list` first told it): once per machine, never throwing, and
+   *  for no longer than a `list` waits. */
+  async function learnVersion(job: Followed, view: JobView): Promise<void> {
+    const ref = refOf(job.target)
+    if (versions.has(ref) || !(view.truncated === true || view.error?.startsWith('…') === true)) return
+    try {
+      const hello = await deps.call(job.target, { kind: 'peerHello' }, HELLO_TIMEOUT_MS)
+      versions.set(ref, isRecord(hello) && typeof hello.version === 'string' ? hello.version : '')
+    } catch {
+      versions.set(ref, '')
+    }
   }
 
   /** A job's output and error as an agent may read them: screened and labelled, with notes for
@@ -301,9 +342,9 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     // Each is an end that machine cut when it says so: the output when the view is truncated, the
     // error when it starts with the ellipsis that machine's cut puts in front.
     const long = view.output !== undefined && view.output.length > MAX_OUTPUT_CHARS
-    const output = view.output === undefined ? null : screenTail(view.output, MAX_OUTPUT_CHARS, view.truncated === true)
+    const output = view.output === undefined ? null : screenTail(view.output, MAX_OUTPUT_CHARS, view.truncated === true && cutBy(job))
     const longError = view.error !== undefined && view.error.length > MAX_ERROR_CHARS
-    const error = view.error === undefined ? null : screenTail(view.error, longError ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS, view.error.startsWith('…'))
+    const error = view.error === undefined ? null : screenTail(view.error, longError ? MAX_ERROR_CHARS - 1 : MAX_ERROR_CHARS, view.error.startsWith('…') && cutBy(job))
     const found = mergeScreens([output, error])
     reportSecrets({ hop: 'answer-in', machine: job.name, agent: view.agent, removed: found.removed, flagged: found.flagged })
     const out: Checked = {
@@ -321,14 +362,22 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
   }
 
   /** Why a call to `name` failed, as a sentence. The bridge's own two words are
-   *  translated; anything else was worded by the other machine and is checked for injection. */
+   *  translated; anything else was worded by the other machine and is checked for injection,
+   *  with anything in it that might be a credential masked first: a version before 1.55 repeats a
+   *  refused folder as it came, and the agent may have passed a token as one. */
   function failure(message: string, name: string, agent: string): string {
     if (message === 'offline') return offline(name)
     if (message === 'timed out') return `"${name}" did not answer in time.`
     if (message === OLD_VERSION_REFUSAL) {
       return `"${name}" runs a version of Termpolis without Linked machines. Update Termpolis there.`
     }
-    return deps.inspect(clip(message, MAX_REFUSAL_CHARS), name, agent)
+    let shown: string
+    try {
+      shown = deps.mask(message)
+    } catch {
+      return refusedUnshown(name)
+    }
+    return deps.inspect(clip(shown, MAX_REFUSAL_CHARS), name, agent)
   }
 
   /** Record a job's status for the activity view, once per change. */
@@ -417,6 +466,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     }
     // Reached only with a view: the first pass always polls when there is none.
     const final = view as JobView
+    await learnVersion(job, final)
     return answer(job, final, final.status === 'running' ? stillRunning(job.name, job.jobId) : undefined)
   }
 
@@ -459,6 +509,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
         if (!isRecord(hello) || !isRecord(hello.agents) || !isRecord(hello.grants) || typeof hello.confirmed !== 'boolean') {
           return { ...base, ...unknown, note: malformed(m.name) }
         }
+        versions.set(refOf(target), typeof hello.version === 'string' ? hello.version : '')
         if (!hello.confirmed) {
           return {
             ...base,

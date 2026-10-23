@@ -529,6 +529,35 @@ describe('an END line named in a sentence or code ends no key, wherever a cut fa
     }
   })
 
+  it('screens an end a 1.55 computer cut as one it screened: nothing at its start is taken for a key cut there', () => {
+    // That computer's screen took whole any key its cut ran through (the round-0 review's FR-3):
+    // a dump, a list of hashes or a made-up body above an END line at its start is reported, as in
+    // the middle of a text. An end an older computer cut may start inside a key, so there they go.
+    const dump = wrap(randomBytes(6_000).toString('base64')).join('\n')
+    const hashes = Array.from({ length: 60 }, () => `  "${b64(32)}",`).join('\n')
+    const fake = Array.from({ length: 10 }, (_, i) => `${'Ab'.repeat(28)}${String(i).padStart(2, '0')}`).join('\n')
+    for (const [name, body] of [['dump', dump], ['hashes', hashes], ['made-up body', fake]]) {
+      const view = `${body.slice(body.indexOf('\n', 700) + 1)}\n-----END PRIVATE KEY-----\n(the footer the parser expects)\n`
+      for (const [keep, text] of [[MAX_OUTPUT_CHARS, view], [MAX_ERROR_CHARS, `…${view.slice(-(MAX_ERROR_CHARS - 1))}`]] as const) {
+        const r = screenText(text, keep, SCREEN_LOOKBACK_CHARS, 'screened')
+        expect(r.text, `${name} ${keep}`).toBe(text)
+        expect(r.removed, `${name} ${keep}`).toEqual({})
+        // (random lines above an END line are reported; a made-up body is no key's to name)
+        expect(r.flagged, `${name} ${keep}`).toEqual(name === 'made-up body' ? {} : { private_key: 1 })
+      }
+      const old = screenText(view, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)
+      if (name === 'made-up body') expect(old.text, name).toBe(view)
+      else expect(old.removed, name).toEqual({ private_key: 1 })
+    }
+    // ...and an end a 1.55 computer kept starts with the marker of any key its cut ran through,
+    // which the second screen leaves as it is
+    const lines = K.F.pkcs8_rsa
+    const answer = `${prose(20_000)}\n${lines.join('\n')}\n${prose(5_000)}`
+    const kept = screenText(answer, answer.length - answer.indexOf(lines[4]), SCREEN_LOOKBACK_CHARS)
+    expect(kept.text.startsWith('[REDACTED:private_key]\n')).toBe(true)
+    expect(screenText(kept.text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, 'screened')).toEqual({ text: kept.text, removed: {}, flagged: {}, markers: [] })
+  })
+
   it("keeps a dump or a list of hashes above a bare END line in the middle of an answer where the doing side's cut falls inside it", () => {
     // judge 1's C2 (a 64-wide random dump above a line holding only an END marker): its first line
     // is in the answer, so it is no key the cut ran through, whether the window's start fell under

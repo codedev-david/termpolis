@@ -862,11 +862,35 @@ function headInReach(text: string, at: number, floor: number, runs: Run[]): bool
 
 const tailRule = (end: string): string => (end.includes('PGP') ? 'gpg_block' : end.includes('SSH2') ? 'ssh2_private_key' : 'private_key')
 
+/** Whether the key lines `runs` a cut left are a made-up body, not a key's: a line as wide as a
+ *  key's (48 or more) of fewer than 16 different characters ('AbAb...' and a number, 'AAAA...'),
+ *  or with eight letters or digits in order, in either case (lnk3's 'AbCdEfGh...'); or fewer than
+ *  a third of them different in all (10 at most needed). A real key's lines hold 25 or more
+ *  different characters, its structured ones too (an OpenSSH header, a photo ID's zero bytes), and
+ *  2,000,000 random lines of 48 held 16 or more every time; eight in order come about once in 10^9
+ *  random lines. */
+function madeUp(text: string, runs: Run[]): boolean {
+  for (const [a, b] of runs) {
+    const line = text.slice(a, b)
+    if (b - a >= 48 && new Set(line).size < 16) return true
+    const lower = line.toLowerCase()
+    for (let i = 1, n = 1; i < lower.length; i++) {
+      const c = lower.charCodeAt(i)
+      n = c === lower.charCodeAt(i - 1) + 1 && ((c > 97 && c <= 122) || (c > 48 && c <= 57)) ? n + 1 : 1
+      if (n >= 8) return true
+    }
+  }
+  const all = runs.map(([a, b]) => text.slice(a, b)).join('')
+  return new Set(all.toLowerCase()).size < Math.min(10, Math.ceil(all.length / 3))
+}
+
 /** Key tails with no BEGIN line in view, from `start` on. `blocks` are keyBlocks' from the same
  *  `start` (an END line inside one is its own). `cutAt`: where the text someone else cut starts
  *  (0: the whole text is the end an older doing computer cut; another offset: where the screen's
- *  own cut falls, nothing running through it). */
-export function headless(text: string, blocks: readonly KeyBlock[], opts: { start?: number; cutAt?: number } = {}): KeySpan[] {
+ *  own cut falls, nothing running through it). `screenedStart`: the text starts where another
+ *  computer cut it after screening it with these detectors, which took whole any key the cut ran
+ *  through: nothing at its start is a key's tail. */
+export function headless(text: string, blocks: readonly KeyBlock[], opts: { start?: number; cutAt?: number; screenedStart?: boolean } = {}): KeySpan[] {
   const out: KeySpan[] = []
   const start = opts.start ?? 0
   const re = new RegExp(END_RE.source, 'g')
@@ -894,15 +918,19 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
         // as anywhere else. So is a run whose head the doing side's own window start fell under
         // while it is still in the answer: only a key longer than the BEGIN line's reach is cut off.
         const ownFloor = framed && floor === start && start > 0 && opts.cutAt !== 0 && headInReach(text, at, start, runs)
-        const head = framed && !ownFloor ? headAnchor(text, runs, floor, floor === start || floor === at - MAX_BLOCK, blocks) : null
+        const atTop = (floor === start && !(opts.screenedStart === true && floor === 0)) || floor === at - MAX_BLOCK
+        const head = framed && !ownFloor ? headAnchor(text, runs, floor, atTop, blocks) : null
         if (head !== null) out.push({ rule, cls: 'remove', why: 'tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
         else out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed', from: at, to: at + m[0].length })
       } else if (framed && opts.cutAt === 0 && floor === start && runs.length >= 1 && runs.reduce((n, [a, b]) => n + b - a, 0) >= 16) {
         // At the start of a text another computer cut, the few characters of key a cut left right
         // above a private END line are a key's tail whatever their length (a cut at 95% of a key
         // leaves a partial line and the short last one, under the 80 characters a key run needs).
-        const head = headAnchor(text, runs, floor, true, blocks)
+        // A made-up body's lines (a test's fixture, which a key never is) are reported instead.
+        const fake = madeUp(text, runs)
+        const head = fake ? null : headAnchor(text, runs, floor, true, blocks)
         if (head !== null) out.push({ rule: tailRule(m[0]), cls: 'remove', why: 'cut-tail-with-end', from: Math.min(head, runs[0][0]), to: at + m[0].length })
+        else if (fake) out.push({ rule: tailRule(m[0]), cls: 'flag', why: 'cut-tail-made-up', from: at, to: at + m[0].length })
       }
     }
     prev = at + m[0].length
@@ -1137,11 +1165,16 @@ export function jwkKeys(text: string, start = 0): KeySpan[] {
     const win = text.slice(ws, we)
     const mem = new RegExp(MEMBER_RE.source, 'g')
     let mm: RegExpExecArray | null
-    const priv: Array<{ name: string; value: string; at: number }> = []
+    const priv: Array<{ name: string; value: string; at: number; cut: boolean }> = []
     let crv: string | undefined
     while ((mm = mem.exec(win)) !== null) {
       if (mm[1] === 'crv') crv = mm[2]
-      else priv.push({ name: mm[1], value: mm[2], at: ws + mm.index + mm[0].length - mm[2].length })
+      else {
+        const at = ws + mm.index + mm[0].length - mm[2].length
+        // (a quoted value the text ends inside is cut short: its length then says nothing)
+        const cut = at + mm[2].length === text.length && /(?:["']|\\u0022|&quot;)$/.test(text.slice(Math.max(0, at - 6), at))
+        priv.push({ name: mm[1], value: mm[2], at, cut })
+      }
     }
     let ok: typeof priv
     if (kty === 'EC') ok = priv.filter((p) => p.name === 'd' && (EC_SIZES.get(crv) ?? [32, 48, 65, 66]).includes(b64urlLen(p.value)))
@@ -1149,7 +1182,7 @@ export function jwkKeys(text: string, start = 0): KeySpan[] {
     // RSA: d, the primes and CRT values, and a multi-prime key's `oth` members (r, d, t).
     else if (kty === 'RSA') ok = priv.filter((p) => RSA_MEMBERS.includes(p.name) && b64urlLen(p.value) >= 32)
     else ok = priv.filter((p) => p.name === 'k' && b64urlLen(p.value) >= 16) // oct
-    ok = ok.filter((p) => looksRandomToken(p.value))
+    ok = ok.filter((p) => looksRandomToken(p.value, p.cut))
     if (ok.length) {
       for (const p of ok) out.push({ rule: 'jwk_private_key', cls: 'remove', why: `jwk ${kty} ${p.name}`, from: p.at, to: p.at + p.value.length, group: ws })
     } else {
@@ -1221,7 +1254,7 @@ const PLACEHOLDER_WORDS = new RegExp(WORDS.flatMap((w) => [w, w.toUpperCase(), w
  *  of its alphabet trips it less than once in a million: case-sensitive repeats of 6 (hex 8), an
  *  ascending run of 8 (`12345678`, `abcdefgh`), under a quarter distinct characters, a short unit
  *  repeated, a placeholder word, one case only over 32 characters, or a name made of words. */
-export function placeholderWhy(body: string, alphabet: 'hex' | 'b62'): string | null {
+export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = false): string | null {
   const core = body.replace(/[^A-Za-z0-9]/g, '')
   if (core.length < 8) return 'short'
   const hex = alphabet === 'hex'
@@ -1242,8 +1275,12 @@ export function placeholderWhy(body: string, alphabet: 'hex' | 'b62'): string | 
   if (!hex && core.length >= 32 && (!/[A-Z]/.test(core) || !/[a-z]/.test(core)) && !/^[0-9a-f]+$/.test(core)) return 'one-case'
   // A lower-case slug: `your-256-bit-secret-goes-here`, `my_dev_signing_key_2026`. The two name
   // checks only on 24 characters or more: shorter, they misfire on random base64url.
-  if (core.length >= 24 && (body.match(/[-_]/g) ?? []).length >= 3 && !/[A-Z]/.test(body) && body.split(/[-_]+/).every((x) => /^[a-z0-9]{0,12}$/.test(x))) return 'slug'
-  if (!hex && core.length >= 24 && wordy(body)) return 'wordy'
+  // A value the text's end cut short (`cut`) is judged by them at any length: what was cut off may
+  // have made it long enough, and a placeholder cut so read as a random value. (Random values cut
+  // to 12 or 16 characters trip them 7 and 2 times in 100,000.)
+  const named = cut || core.length >= 24
+  if (named && (body.match(/[-_]/g) ?? []).length >= 3 && !/[A-Z]/.test(body) && body.split(/[-_]+/).every((x) => /^[a-z0-9]{0,12}$/.test(x))) return 'slug'
+  if (!hex && named && wordy(body)) return 'wordy'
   return null
 }
 
@@ -1257,7 +1294,7 @@ function wordy(body: string): boolean {
   return words.length >= 3 && words.every((s) => WORD_SEG.test(s) && /[aeiouy]/.test(s))
 }
 
-const looksRandomToken = (s: string): boolean => placeholderWhy(s, /^[0-9a-f]+$/i.test(s) && s.length >= 16 ? 'hex' : 'b62') === null
+const looksRandomToken = (s: string, cut = false): boolean => placeholderWhy(s, /^[0-9a-f]+$/i.test(s) && s.length >= 16 ? 'hex' : 'b62', cut) === null
 
 // ---------------------------------------------------------------------------------------------
 // A key block URL-encoded whole (K9): a query string, a form post.
