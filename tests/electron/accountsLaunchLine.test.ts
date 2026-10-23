@@ -15,6 +15,7 @@ import {
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
 import type { AddAccountResult, LaunchLineResult } from '../../src/shared/agentAccounts'
+import { shQuote } from '../../src/shared/shellQuote'
 import { loadAccounts } from '../../src/main/agentAccounts'
 import { createSandbox, writeJson, writeText } from './_agentIntegrationManagerFixture'
 import type { Sandbox } from './_agentIntegrationManagerFixture'
@@ -139,7 +140,7 @@ describe('accounts:launch-line', () => {
   })
 
   it('names a lone account that isn\'t the default profile, and leaves a lone default one bare', async () => {
-    // Codex with one account: its default profile, so nothing changes (D13).
+    // agy with one account: nothing changes (D13).
     await ok(ACCOUNTS_IPC.add, { agent: 'agy', label: 'personal', email: 'p@example.test' })
     const agy = await line({ agent: 'agy', command: 'agy' })
     expect(agy).toEqual(expect.objectContaining({ line: 'agy', explicit: false }))
@@ -148,6 +149,27 @@ describe('accounts:launch-line', () => {
     // Two agy accounts: agy has no variable, so the line stays bare, but it is the account's.
     const two = await line({ agent: 'agy', command: 'agy', accountId: agy.accountId })
     expect(two).toEqual({ line: 'agy', accountId: agy.accountId, explicit: true })
+    // In every shell: with nothing to set there is nothing to wrap, and PowerShell's `& { agy }`
+    // would hide the launch from the audit, which reads `agy` at a line's start or after ; & |.
+    for (const shellType of ['powershell', 'cmd', 'fish']) {
+      expect(await line({ agent: 'agy', command: 'agy', accountId: agy.accountId, shellType })).toEqual({ line: 'agy', accountId: agy.accountId, explicit: true })
+    }
+  })
+
+  it('names a Codex account by CODEX_HOME, its default profile by unsetting it, and gives Codex no session id', async () => {
+    mkdirSync(join(sb.paths.codexHome, 'sessions'), { recursive: true })
+    const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'cb', folder: 'new', copy: false })
+    const doc = loadAccounts(sb.paths.userData)
+    if (!doc.ok) throw new Error(doc.error)
+    const main = doc.doc.file.accounts.find((a) => a.agent === 'codex' && a.profile === null)!.id
+    const codex = { agent: 'codex', command: 'codex -m gpt-5.5' }
+    expect(await line({ ...codex, accountId: r.account.id })).toEqual({
+      line: `export CODEX_HOME=${shQuote(r.account.profile!)} && codex -m gpt-5.5`, accountId: r.account.id, explicit: true,
+    })
+    expect(await line({ ...codex, accountId: main, shellType: 'powershell' })).toEqual({
+      line: '& { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue; codex -m gpt-5.5 }', accountId: main, explicit: true,
+    })
+    expect(terminalSessionId('t1')).toBeUndefined()
   })
 
   it('names the account when it is the agent\'s only one and not its default profile', async () => {

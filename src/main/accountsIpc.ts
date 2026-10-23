@@ -937,7 +937,9 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const explicit = accounts.length > 1 || (isProfileAgent(agent) && account.profile !== null)
     let line = command
     let sessionId: string | undefined
-    if (explicit) {
+    // agy has no variable to set, so its line stays the bare command in every shell: wrapped, as
+    // PowerShell's `& { agy }`, it would hide the launch from the audit.
+    if (explicit && isProfileAgent(agent)) {
       let typed = command
       if (agent === 'claude') {
         const session = claudeSessionOf(command)
