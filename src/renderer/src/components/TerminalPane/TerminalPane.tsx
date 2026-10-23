@@ -27,6 +27,8 @@ import { hostHomedir } from '../../lib/platform'
 import { DiffViewer } from '../DiffViewer/DiffViewer'
 import { PastAISessions } from '../PastAISessions/PastAISessions'
 import { AccountChip } from '../Accounts/AccountChip'
+import { SwitchOverlay } from '../Accounts/SwitchOverlay'
+import { LimitCard } from '../Accounts/LimitCard'
 import { agentOfCommand } from '../../lib/accountsView'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -1225,13 +1227,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // meanwhile would sit on the shell's line, and its Enter would run them (R7).
       const relaunch = useTerminalStore.getState().relaunching?.[terminalId]
       if (relaunch === 'account' || relaunch === 'model') {
+        // An account switch's overlay says the keys are held.
+        if (relaunch === 'account' && e.type === 'keydown') useTerminalStore.getState().noteHeldKey?.(terminalId)
         e.preventDefault()
         return false
       }
 
       // The account switch dialog for this terminal (default Ctrl+Shift+N), so its shell gets no
       // stray Ctrl+N.
-      if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.switchAccount)) {
+      // D13: with no account registered, the key is the shell's, as before accounts.
+      if (e.type === 'keydown' && useTerminalStore.getState().accountsView?.accounts.length && matchesKeybinding(e, useTerminalStore.getState().keybindings.switchAccount)) {
         e.preventDefault()
         useTerminalStore.getState().openAccountSwitch(terminalId)
         return false
@@ -1877,6 +1882,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
   return (
     <div
+      data-terminal-id={terminalId}
       className="absolute inset-0 flex flex-col"
       style={{ visibility: isVisible ? 'visible' : 'hidden' }}
     >
@@ -1885,10 +1891,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           which under `box-sizing: border-box` reports the parent's BORDER box —
           padding on this element would be counted as usable space, so the rows
           overflowed to the right and painted over the scrollbar. */}
-      {(relaunching === 'account' || relaunching === 'model') && (
+      <SwitchOverlay terminalId={terminalId} />
+      <LimitCard terminalId={terminalId} />
+      {relaunching === 'model' && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none" data-testid="relaunch-overlay">
           <span className="text-xs text-[#e0e0e0] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5">
-            {relaunching === 'account' ? 'Switching account…' : 'Changing model…'}
+            Changing model…
           </span>
         </div>
       )}

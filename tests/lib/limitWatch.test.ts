@@ -5,8 +5,8 @@
 // (item 8): a worker's stop goes to the conductor as in v1.54.0.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
-  KEY_QUIET_MS, _resetLimitWatchForTest, bannerText, decideLimit, isTerminalVisible, mayOpenChooser, noteKeyTyped, noteLook,
-  noteSwarmStop, osNotify, pruneStops, sameGroup, setSwarmStopOffer, showLimit, watchTerminal,
+  _resetLimitWatchForTest, bannerText, decideLimit, isTerminalVisible, noteLook,
+  noteSwarmStop, osNotify, pruneChooser, pruneStops, sameGroup, setSwarmStopOffer, showLimit, watchTerminal,
 } from '../../src/renderer/src/lib/limitWatch'
 import type { DecideEnv, LimitBanner, LimitContext, LimitNote, ShowStore } from '../../src/renderer/src/lib/limitWatch'
 import type { LimitLook } from '../../src/shared/accountLimits'
@@ -147,7 +147,7 @@ describe('decideLimit', () => {
       .toEqual({ kind: 'banner', banner: { id: 'w', kind: 'choose', ctx: ctx({ terminals: ['t1', 't2'] }) } })
   })
 
-  it("banners a stop when the chooser is off, the focus rules say no, or another dialog is open", () => {
+  it("banners a stop when the chooser is off, its terminal is out of view, or another chooser is open", () => {
     const choose = { kind: 'banner', banner: { id: 'b1', kind: 'choose', ctx: ctx() } }
     expect(decideLimit(limit(), env({ view: view([A, B], { chooser: false }) }))).toEqual(choose)
     expect(decideLimit(limit(), env({ mayOpen: false }))).toEqual(choose)
@@ -163,15 +163,23 @@ describe('decideLimit', () => {
   })
 })
 
-describe('the focus rules (§8.4)', () => {
-  it('opens the chooser only with the window focused, the terminal on screen, and no key typed for a while', () => {
-    noteKeyTyped(10_000)
-    expect(mayOpenChooser({ focused: true, visible: true, now: 10_000 + KEY_QUIET_MS })).toBe(true)
-    expect(mayOpenChooser({ focused: true, visible: true, now: 10_000 + KEY_QUIET_MS - 1 })).toBe(false)
-    expect(mayOpenChooser({ focused: false, visible: true, now: 99_999 })).toBe(false)
-    expect(mayOpenChooser({ focused: true, visible: false, now: 99_999 })).toBe(false)
+describe('pruneChooser', () => {
+  it('gives up each terminal that closed, or runs another agent now, and keeps the rest', () => {
+    const leaveLimitChooser = vi.fn()
+    const accountSwitch = { terminalId: 'gone', limit: ctx({ terminals: ['gone', 't1', 't2', 't3'] }) }
+    pruneChooser({ accountSwitch, terminals: [term('t1'), term('t2', { agentCommand: 'codex' }), term('t3', { agentCommand: undefined })], leaveLimitChooser })
+    expect(leaveLimitChooser.mock.calls.map((c) => c[0])).toEqual(['gone', 't2', 't3'])
   })
 
+  it('does nothing with no chooser, or one opened for no limit', () => {
+    const leaveLimitChooser = vi.fn()
+    pruneChooser({ accountSwitch: null, terminals: [], leaveLimitChooser })
+    pruneChooser({ accountSwitch: { terminalId: 't1' }, terminals: [], leaveLimitChooser })
+    expect(leaveLimitChooser).not.toHaveBeenCalled()
+  })
+})
+
+describe('where the stopped terminal is', () => {
   it("reads a terminal as on screen: its tab active, or a pane of the split, with Settings not over them", () => {
     const s = { terminals: [term('t1'), term('t2'), term('w', { hidden: true })], viewMode: 'tabs' as const, activeTerminalId: 't1', paneTree: null, showSettings: false }
     expect(isTerminalVisible(s, 't1')).toBe(true)
@@ -216,10 +224,18 @@ describe('showLimit', () => {
   }
   const deps = (s: ShowStore, focused = true, notify = vi.fn()) => ({ store: () => s, focused: () => focused, now: () => 1_000_000, newId: () => 'b1', notify })
 
-  it('opens the chooser for a stop on the terminal in view', () => {
+  it('opens the chooser\'s card for a stop on the terminal in view, and tells the OS only when the window is elsewhere', () => {
     const s = store()
-    showLimit({ kind: 'limit', ctx: ctx() }, deps(s))
+    const notify = vi.fn()
+    showLimit({ kind: 'limit', ctx: ctx() }, deps(s, true, notify))
     expect(s.openLimitChooser).toHaveBeenCalledWith(ctx())
+    expect(notify).not.toHaveBeenCalled()
+    const away = store()
+    showLimit({ kind: 'limit', ctx: ctx() }, deps(away, false, notify))
+    expect(away.openLimitChooser).toHaveBeenCalledWith(ctx())
+    expect(notify).toHaveBeenCalledWith('Claude Code ran out of usage', 'Claude Code ran out of usage on personal.', expect.any(Function))
+    // Its click brings the window up, where the card is already.
+    expect(notify.mock.calls[0][2]()).toBeUndefined()
   })
 
   it('joins a stop to the chooser open for its account', () => {

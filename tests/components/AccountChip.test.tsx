@@ -29,7 +29,7 @@ function term(over: Partial<TerminalSession>): TerminalSession {
 }
 
 beforeEach(() => {
-  useTerminalStore.setState({ terminals: [term({ agentAccountId: 'acc_b' })], activeTerminalId: 't1', accountsView: VIEW, accountsByHand: {}, accountSwitch: null })
+  useTerminalStore.setState({ terminals: [term({ agentAccountId: 'acc_b' })], activeTerminalId: 't1', accountsView: VIEW, accountsByHand: {}, accountSwitch: null, accountMenu: null, queuedSwitches: {} })
 })
 
 afterEach(() => { delete (window as { accounts?: unknown }).accounts })
@@ -42,7 +42,7 @@ describe('AccountChip', () => {
     expect(chip).toHaveAttribute('data-alert', 'false')
     expect(chip.getAttribute('title')).toMatch(/^Claude Code on codedev/)
     fireEvent.click(chip)
-    expect(useTerminalStore.getState().accountSwitch).toEqual({ terminalId: 't1' })
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
   })
 
   it('turns red with "?" once main says the account was changed by hand', () => {
@@ -67,7 +67,7 @@ describe('ActiveTerminalAccount', () => {
     render(<ActiveTerminalAccount view={VIEW} />)
     expect(screen.getByTestId('accounts-active-terminal')).toHaveTextContent('Active terminal: Claude Code — repo — Claude Code on codedev')
     fireEvent.click(screen.getByTestId('accounts-switch-active'))
-    expect(useTerminalStore.getState().accountSwitch).toEqual({ terminalId: 't1' })
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
   })
 
   it('says how the account stands when it isn\'t a registered one', () => {
@@ -149,8 +149,8 @@ describe('accountsState', () => {
 describe('the store\'s switch dialog state', () => {
   it('opens for one terminal and closes', () => {
     useTerminalStore.getState().openAccountSwitch('t9')
-    expect(useTerminalStore.getState().accountSwitch).toEqual({ terminalId: 't9' })
-    useTerminalStore.getState().closeAccountSwitch()
-    expect(useTerminalStore.getState().accountSwitch).toBeNull()
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't9' })
+    useTerminalStore.getState().closeAccountMenu()
+    expect(useTerminalStore.getState().accountMenu).toBeNull()
   })
 })

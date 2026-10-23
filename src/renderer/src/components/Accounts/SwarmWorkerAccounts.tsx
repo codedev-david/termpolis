@@ -1,10 +1,12 @@
 // The swarm's workers' accounts (§9, T11), in the swarm dashboard: each worker's account chip, for a
 // worker whose agent has two accounts or more (D13). A worker's terminal is hidden, so this is where
-// its chip is: a click opens the switch dialog for it, which restarts the worker on another account
-// in place, and the conductor is told as after the restart offer's (swarmRestart.ts).
+// its chip is: a click opens the account menu for it, which restarts the worker on another account
+// in place, with its progress beside the chip, and the conductor is told as after the restart
+// offer's (swarmRestart.ts).
 import { useTerminalStore } from '../../store/terminalStore'
 import { accountChipFor } from '../../lib/accountChip'
 import { AccountChip } from './AccountChip'
+import { SwitchStatusLine } from './SwitchOverlay'
 
 export function SwarmWorkerAccounts() {
   // A store that holds no workers or accounts state (a dashboard's tests mock one) shows no chip.
@@ -21,6 +23,7 @@ export function SwarmWorkerAccounts() {
         <span key={w.terminalId} className="flex items-center gap-1.5" data-testid="swarm-worker-account">
           {w.agentName} ({w.role})
           <AccountChip terminalId={w.terminalId} />
+          <SwitchStatusLine terminalId={w.terminalId} />
         </span>
       ))}
     </div>

@@ -7,6 +7,7 @@ import type { ConversationIndex, ConversationTurn } from '../lib/conversationPar
 import type { AgentRatingOverrides } from '../lib/agentCapabilities'
 import type { AccountsView } from '../../../shared/agentAccounts'
 import type { LimitBanner, LimitContext } from '../lib/limitWatch'
+import type { QueuedSwitch, SwitchRun } from '../lib/accountSwitchRun'
 import type { SwarmRestartGroup } from '../lib/swarmRestart'
 
 // ---- Pane tree helpers ----
@@ -158,9 +159,17 @@ interface TerminalStore {
   /** Terminals whose account a line typed by hand changed (main's accounts:terminal-account):
    *  Termpolis no longer knows it, and their chip shows "?". */
   accountsByHand: Record<string, true>
-  /** The terminal the account switch dialog is open for; with `limit`, the usage-limit chooser:
-   *  opened for a limit that stopped it, and the other terminals the same limit stopped. */
+  /** The usage-limit chooser, open for the limit that stopped `terminalId`, and the other terminals
+   *  the same limit stopped. */
   accountSwitch: { terminalId: string; limit?: LimitContext } | null
+  /** The account menu, open for a terminal: its chip's popover (the in-app account UI, §2.1). */
+  accountMenu: { terminalId: string } | null
+  /** Each terminal's last switch while its pane shows it: the overlay, then a toast or an error card. */
+  switchRuns: Record<string, SwitchRun>
+  /** Switches waiting for a busy agent to finish its turn (§2.2). */
+  queuedSwitches: Record<string, QueuedSwitch>
+  /** agy's switch-all sheet, open for the agy account every agy terminal moves to (§2.4). */
+  agySwitchSheet: { targetId: string } | null
   /** The usage-limit banners on screen (§8.4), one per stop or per account's group of stops. */
   limitBanners: LimitBanner[]
   /** The swarm restart offers on screen (§9): one per agent and account that ran out, with the
@@ -218,8 +227,18 @@ interface TerminalStore {
   setAgentRatingOverrides: (overrides: AgentRatingOverrides) => void
   setAccountsView: (view: AccountsView | null) => void
   setAccountByHand: (terminalId: string, byHand: boolean) => void
+  /** Switch account…, from the chip, Ctrl+Shift+N, the palette or the context menu: the account menu. */
   openAccountSwitch: (terminalId: string) => void
+  closeAccountMenu: () => void
   closeAccountSwitch: () => void
+  putSwitchRun: (run: SwitchRun) => void
+  dropSwitchRun: (terminalId: string) => void
+  /** A key typed into a pane while its switch holds it: the overlay says so. */
+  noteHeldKey: (terminalId: string) => void
+  queueSwitch: (terminalId: string, q: QueuedSwitch) => void
+  dropQueuedSwitch: (terminalId: string) => void
+  openAgySwitchSheet: (targetId: string) => void
+  closeAgySwitchSheet: () => void
   /** The chooser, in limit mode, for its first terminal. */
   openLimitChooser: (ctx: LimitContext) => void
   /** A stop on the same account joins the chooser open for it (R22). */
@@ -271,6 +290,10 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   accountsView: null,
   accountsByHand: {},
   accountSwitch: null,
+  accountMenu: null,
+  switchRuns: {},
+  queuedSwitches: {},
+  agySwitchSheet: null,
   limitBanners: [],
   swarmRestarts: [],
   relaunching: {},
@@ -517,8 +540,27 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     else delete next[terminalId]
     return { accountsByHand: next }
   }),
-  openAccountSwitch: (terminalId) => set({ accountSwitch: { terminalId } }),
+  openAccountSwitch: (terminalId) => set({ accountMenu: { terminalId } }),
+  closeAccountMenu: () => set({ accountMenu: null }),
   closeAccountSwitch: () => set({ accountSwitch: null }),
+  putSwitchRun: (run) => set(s => ({ switchRuns: { ...s.switchRuns, [run.terminalId]: run } })),
+  dropSwitchRun: (terminalId) => set(s => {
+    const next = { ...s.switchRuns }
+    delete next[terminalId]
+    return { switchRuns: next }
+  }),
+  noteHeldKey: (terminalId) => set(s => {
+    const run = s.switchRuns[terminalId]
+    return run ? { switchRuns: { ...s.switchRuns, [terminalId]: { ...run, heldAt: Date.now() } } } : {}
+  }),
+  queueSwitch: (terminalId, q) => set(s => ({ queuedSwitches: { ...s.queuedSwitches, [terminalId]: q } })),
+  dropQueuedSwitch: (terminalId) => set(s => {
+    const next = { ...s.queuedSwitches }
+    delete next[terminalId]
+    return { queuedSwitches: next }
+  }),
+  openAgySwitchSheet: (targetId) => set({ agySwitchSheet: { targetId } }),
+  closeAgySwitchSheet: () => set({ agySwitchSheet: null }),
   openLimitChooser: (ctx) => set({ accountSwitch: { terminalId: ctx.terminals[0], limit: ctx } }),
   joinLimitChooser: (terminalId) => set(s => {
     const open = s.accountSwitch

@@ -1,5 +1,5 @@
-// The switch dialog in limit mode, its words (§8.4): what ran out, on which sign-in, and what is left
-// to do when no account is a way out. Pure; the dialog (AccountSwitcherDialog.tsx) draws it, and
+// The usage-limit chooser, its words (§8.4): what ran out, on which sign-in, and what is left
+// to do when no account is a way out. Pure; the limit card (LimitCard.tsx) draws it, and
 // limitTargets (src/shared/accountLimits.ts) says which accounts are a way out.
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
@@ -35,13 +35,13 @@ export function noWayOut(agent: AccountAgent, targets: readonly LimitTarget[], n
   return first ? `No other ${name} account is free. ${first.row.label} is out of usage ${untilText(first.row.limit!.resetsAt, now)}.` : `No other ${name} account is free.`
 }
 
-/** The other terminals the same limit stopped, which the dialog asks about next, one at a time. */
+/** The other terminals the same limit stopped: each pane shows its own card for it. */
 export function groupNote(limit: LimitContext, view: AccountsView): string | null {
   const more = limit.terminals.length - 1
   if (more <= 0) return null
   const label = limit.accountId ? view.accounts.find((r) => r.id === limit.accountId)?.label : undefined
   const on = label ? ` on ${label}` : ''
-  return `${more} more ${ACCOUNT_AGENT_LABEL[limit.agent]} terminal${more === 1 ? '' : 's'} ran out${on} too: Termpolis asks about each after this one.`
+  return `${more} more ${ACCOUNT_AGENT_LABEL[limit.agent]} terminal${more === 1 ? '' : 's'} ran out${on} too.`
 }
 
 /** How long a "signed in now" answer stands, for the chooser (§3.4): within it, no CLI is asked again. */

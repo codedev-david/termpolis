@@ -1,36 +1,26 @@
-// agy's guided account switch (scope for v1.55.0; facts in handoff verify-accounts154/agy-signin.md).
+// agy's switch-all (the in-app account UI, §2.4; facts in handoff verify-accounts154/agy-signin.md).
 // agy keeps ONE Google sign-in for the computer user, in the OS keyring, so an agy "account" is a
-// label, and moving to one signs every agy on this computer out and into it. The user asks for it,
-// after a confirmation that says so (the dialog's). Then, one step per call:
+// label, and moving to one moves every agy on this computer. The user asks for it, after a
+// confirmation that says so. Then, for each agy terminal, these two steps, around the sign-in
+// itself, which runs in main's hidden session (signInSession.ts) and never in a terminal:
 //
-//   sign-out  agy is exited only while it is live on screen, with its own /exit (R2), and its exit
-//             hint gives the conversation's id; agy is started again and its own /logout typed in
-//             its box, Enter only once the box shows it. Its sign-in screen comes next, or its box.
-//   login     on the user's click only: /login, where agy showed its box and no sign-in screen.
-//   check     one look: agy's box back after its sign-in screen means the user finished signing in.
-//             Termpolis answers nothing on the sign-in (it decides which account and which method),
-//             and never reads agy's keyring entry or token files to tell.
-//   resume    agy exited again, and `agy --conversation=<id>` typed: the same conversation, by its
-//             exact id, on the new sign-in.
+//   exit    agy is exited only while it is live on screen and at its input, with its own /exit
+//           (R2: no Ctrl+C, which stops a turn and kills agy), entered once its box shows it; its
+//           exit hint gives the conversation's id. A turn at work is waited for (busy), never
+//           interrupted.
+//   resume  `agy --conversation=<id>` typed at the prompt, entered once it shows there: the same
+//           conversation, by its exact id, on the new sign-in.
 //
-// Wherever a step can't be driven safely, the outcome says what to type instead, in exact words,
-// and the resume line still names the conversation's id. Each typing step holds the terminal's
-// relaunch lock (accountSwitch.ts, R7); none is held while the user signs in.
-import { EXIT_COMMAND, SIGN_IN_SCREEN, AGY_SIGNED_IN, relaunchCommand } from '../shared/accountSwitch'
+// Each step holds the terminal's relaunch lock while it types (accountSwitch.ts, R7). Where a step
+// can't be driven safely, it says why and types nothing more: the user's terminal is never handed a
+// command to type.
+import { EXIT_COMMAND, relaunchCommand } from '../shared/accountSwitch'
 import type { AgyStepOutcome, AgyStepRequest } from '../shared/accountSwitch'
 import { familyOf } from '../shared/agentAccounts'
-import type { ShellFamily } from '../shared/agentAccounts'
 import {
-  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, indexOf, liveness, locks, look, plain, relaunchLockReason,
-  typeAtPrompt, typeIntoBox, waitFor, watchOutcome,
+  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, liveness, locks, look, relaunchLockReason, typeAtPrompt, typeIntoBox, watchOutcome,
 } from './accountSwitch'
-import { sinceStarted } from './mcpServer'
 import type { AgentStartRecord, SwitchIO } from './accountSwitch'
-
-/** How long agy gets to draw its box or its sign-in screen after it starts: it is slow to start. */
-export const AGY_START_MS = 20_000
-/** How long its sign-in screen gets to show after /logout or /login. */
-export const SIGN_IN_SHOW_MS = 10_000
 
 /** Variables that make agy sign in without its own Google sign-in: /logout signs nothing out then
  *  (agy's changelog). Names only; their values are never read. */
@@ -42,7 +32,7 @@ export interface AgyContext {
   start?: AgentStartRecord
   /** Termpolis's environment, for AGY_ENV_AUTH's names. */
   env: Readonly<Record<string, string | undefined>>
-  /** What main records once the conversation is back: every agy terminal is on the target now. */
+  /** What main records once the conversation is typed again: agy's new start there. */
   record: (r: { start: AgentStartRecord }) => void
 }
 
@@ -56,16 +46,9 @@ export function shownEmail(rows: readonly string[]): string | null {
   return null
 }
 
-/** agy's sign-in screen is on screen now. */
-const signInShown = (io: SwitchIO, id: string): boolean => SIGN_IN_SCREEN.agy.test(look(io, id).lines.join('\n'))
-
-/** The agy started at `mark` is up: its sign-in screen drawn since, or its idle box drawn since. The
- *  last frame the agy before it left, box and all, is still on screen above the prompt: no box of
- *  this one. */
-function agyUp(io: SwitchIO, id: string, mark: number): 'sign-in' | 'box' | null {
-  if (SIGN_IN_SCREEN.agy.test(plain(io.outputFrom(id, mark)))) return 'sign-in'
-  const l = atIdleBox(io, id)
-  return l && sinceStarted(l.raw, indexOf(l, mark), false, io.size(id), ['agy']).started ? 'box' : null
+/** The agy env sign-in that makes a switch pointless here, by name; null for none. */
+export function agyEnvAuth(env: Readonly<Record<string, string | undefined>>): string | null {
+  return AGY_ENV_AUTH.find((name) => !!env[name]) ?? null
 }
 
 /** Holds the terminal for a typing step, and lets it go after, whatever happens. */
@@ -81,95 +64,58 @@ async function locked(io: SwitchIO, id: string, run: () => Promise<AgyStepOutcom
   }
 }
 
-/** Exits a live agy with its own /exit, or reads the hint of one gone already: the conversation's
- *  id, or what the user does instead. */
-async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undefined, assumeExited: boolean): Promise<{ id: string | null } | AgyStepOutcome> {
+/** Exits a live agy with its own /exit, or reads the hint of one gone already: the conversation's id. */
+async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undefined, assumeExited: boolean): Promise<AgyStepOutcome> {
   if (assumeExited) {
     const hint = liveness(io, id, 'agy', undefined)
-    return { id: hint.state === 'gone' && hint.hint ? hint.hint.id : null }
+    return { kind: 'exited', conversationId: hint.state === 'gone' && hint.hint ? hint.hint.id : null }
   }
   const alive = liveness(io, id, 'agy', start)
   if (alive.state === 'unknown') return { kind: 'unknown-exit' }
-  if (alive.state === 'gone') return { id: alive.hint?.id ?? null }
+  if (alive.state === 'gone') return { kind: 'exited', conversationId: alive.hint?.id ?? null }
+  // At work, or asking something: its turn is waited for, never stopped.
   const idle = atIdleBox(io, id)
-  if (!idle) return { kind: 'do-it-yourself', say: 'agy isn\'t at its input: let it finish, or answer what it asks, then type /exit in agy and switch again.' }
+  if (!idle) return { kind: 'busy' }
   const mark = io.end(id)
   const typed = await typeIntoBox(io, id, EXIT_COMMAND.agy, idle)
-  if (typed !== 'entered') return { kind: 'do-it-yourself', say: 'Termpolis couldn\'t type /exit into agy: type /exit in agy yourself, then switch again.' }
+  if (typed !== 'entered') return { kind: 'not-exited', why: 'Termpolis couldn\'t type /exit into agy\'s input, so it typed nothing more' }
   const shown = await exitConfirmed(io, id, 'agy', mark)
-  if (!shown) return { kind: 'do-it-yourself', say: 'Termpolis couldn\'t confirm agy exited: type /exit in agy yourself, then switch again.' }
-  return { id: shown.hint?.id ?? null }
+  if (!shown) return { kind: 'not-exited', why: 'agy didn\'t confirm it exited, so Termpolis typed nothing more' }
+  return { kind: 'exited', conversationId: shown.hint?.id ?? null }
 }
 
-/** After /logout or /login: agy's sign-in screen, or its box with none. */
-async function afterSignOut(io: SwitchIO, id: string, conversationId: string | null, mark: number): Promise<AgyStepOutcome> {
-  const shown = await waitFor(io, SIGN_IN_SHOW_MS, () => signInShown(io, id))
-  if (shown) return { kind: 'signing-in', conversationId, mark }
-  return atIdleBox(io, id) ? { kind: 'needs-login', conversationId, mark } : { kind: 'do-it-yourself', say: 'agy didn\'t show its sign-in: type /login in agy and sign in there.' }
+const NOT_TYPED: Readonly<Record<'agent-alive' | 'didnt-start' | 'mismatch', string>> = {
+  'agent-alive': 'agy is running in this terminal again',
+  'didnt-start': 'the line never showed in the terminal, so nothing was entered',
+  mismatch: 'a shell of another kind runs in this terminal now (one started inside it)',
 }
 
 export async function runAgyStep(req: AgyStepRequest, ctx: AgyContext): Promise<AgyStepOutcome> {
   const { io } = ctx
   const id = req.terminalId
-  const family: ShellFamily | null = familyOf(req.shellType)
+  const family = familyOf(req.shellType)
   if (!family) return { kind: 'refused', why: 'Termpolis can\'t type into this terminal\'s shell' }
+
+  if (req.step === 'exit') {
+    const env = agyEnvAuth(ctx.env)
+    if (env) return { kind: 'refused', why: `agy signs in with ${env} from the environment here, so switching its sign-in changes nothing: change ${env} instead` }
+    return locked(io, id, () => exitAgy(io, id, ctx.start, !!req.assumeExited))
+  }
+
+  // resume: the conversation by its id, at the shell's prompt, on the sign-in agy has now.
   const conversationId = req.conversationId ?? null
-  const resumeLine = relaunchCommand({ agent: 'agy', id: conversationId })
-
-  if (req.step === 'check') {
-    const l = look(io, id)
-    const since = plain(io.outputFrom(id, req.mark ?? 0))
-    const saw = SIGN_IN_SCREEN.agy.test(since) || AGY_SIGNED_IN.test(since)
-    return saw && l.box >= 0 && !signInShown(io, id) ? { kind: 'signed-in' } : { kind: 'waiting' }
-  }
-
-  if (req.step === 'login') {
-    return locked(io, id, async () => {
-      const idle = atIdleBox(io, id)
-      if (!idle) return { kind: 'do-it-yourself', say: 'Type /login in agy and sign in there.' }
-      const mark = io.end(id)
-      const typed = await typeIntoBox(io, id, '/login', idle)
-      if (typed !== 'entered') return { kind: 'do-it-yourself', say: 'Termpolis couldn\'t type /login into agy: type /login in agy yourself and sign in there.' }
-      return afterSignOut(io, id, conversationId, mark)
-    })
-  }
-
-  if (req.step === 'sign-out') {
-    const env = AGY_ENV_AUTH.find((name) => !!ctx.env[name])
-    if (env) return { kind: 'refused', why: `agy signs in with ${env} from the environment here, so /logout signs nothing out: change ${env} instead` }
-    return locked(io, id, async () => {
-      const exited = await exitAgy(io, id, ctx.start, !!req.assumeExited)
-      if ('kind' in exited) return exited
-      // A new agy, only to sign out: its own /logout, typed in its box.
-      const mark = io.end(id)
-      const started = await typeAtPrompt(io, id, family, 'agy', mark)
-      if (started.outcome !== 'entered') {
-        return { kind: 'do-it-yourself', say: 'Termpolis couldn\'t start agy here: type agy, then /logout in it, and sign in again.', line: resumeLine }
-      }
-      const up = await waitFor(io, AGY_START_MS, () => agyUp(io, id, mark))
-      if (up === 'sign-in') return { kind: 'signing-in', conversationId: exited.id, mark }
-      const idle = up ? atIdleBox(io, id) : null
-      if (!idle) return { kind: 'do-it-yourself', say: 'agy didn\'t come up: type /logout in agy once it shows its input, and sign in again.', line: relaunchCommand({ agent: 'agy', id: exited.id }) }
-      const typed = await typeIntoBox(io, id, '/logout', idle)
-      if (typed !== 'entered') return { kind: 'do-it-yourself', say: 'Termpolis couldn\'t type /logout into agy: type /logout in agy yourself, and sign in again.', line: relaunchCommand({ agent: 'agy', id: exited.id }) }
-      return afterSignOut(io, id, exited.id, mark)
-    })
-  }
-
-  // resume: agy exited again (signed in now, its box back), and the conversation by its id.
   return locked(io, id, async () => {
-    const exited = await exitAgy(io, id, undefined, !!req.assumeExited)
-    if ('kind' in exited) return { kind: 'do-it-yourself', say: `Type /exit in agy, then: ${resumeLine}`, line: resumeLine }
+    const line = relaunchCommand({ agent: 'agy', id: conversationId })
     const at = io.end(id)
-    const typed = await typeAtPrompt(io, id, family, resumeLine, at)
-    if (typed.outcome !== 'entered') return { kind: 'do-it-yourself', say: `Termpolis couldn't type the line: type ${resumeLine} in the terminal.`, line: resumeLine }
-    ctx.record({ start: { at, commands: [resumeLine] } })
-    const watched = await watchOutcome(io, id, 'agy', typed.enterAt, resumeLine, io.now() + OUTCOME_MS)
-    if (watched.seen === 'sign-in') return { kind: 'do-it-yourself', say: 'agy is still signed out: sign in there, then it continues.' }
-    if (watched.seen !== 'switched') return { kind: 'do-it-yourself', say: `agy didn't come back within 30 seconds: look at the terminal. The conversation resumes with ${resumeLine}.`, line: resumeLine }
+    const typed = await typeAtPrompt(io, id, family, line, at)
+    if (typed.outcome !== 'entered') return { kind: 'not-resumed', why: NOT_TYPED[typed.outcome] }
+    ctx.record({ start: { at, commands: [line] } })
+    const watched = await watchOutcome(io, id, 'agy', typed.enterAt, line, io.now() + OUTCOME_MS)
+    if (watched.seen === 'sign-in') return { kind: 'not-resumed', why: 'agy shows its sign-in in the terminal: it isn\'t signed in' }
+    if (watched.seen !== 'switched') return { kind: 'not-resumed', why: 'agy didn\'t come back within 30 seconds' }
     const email = shownEmail(look(io, id).lines)
     // agy's own "not found, ignoring --conversation": a new conversation, which it started itself.
     const fresh = watched.notFound || conversationId === null
-    return { kind: 'switched', fresh, conversationId: fresh ? null : conversationId, ...(email ? { shownEmail: email } : {}) }
+    return { kind: 'resumed', fresh, conversationId: fresh ? null : conversationId, ...(email ? { shownEmail: email } : {}) }
   })
 }

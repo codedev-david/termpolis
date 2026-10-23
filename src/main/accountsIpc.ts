@@ -1281,13 +1281,12 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (!io) throw new Error('switching accounts isn\'t available')
     const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
     if (!terminalId) throw new Error('which terminal?')
-    const step = (['sign-out', 'login', 'check', 'resume'] as const).find((s) => s === input.step)
+    const step = (['exit', 'resume'] as const).find((s) => s === input.step)
     if (!step) throw new Error('unknown step')
     const target = accountOf(loadDoc(), input.targetId)
     if (target.agent !== 'agy') throw new Error(`${target.label} is not an Antigravity CLI account`)
     const req: AgyStepRequest = { terminalId, targetId: target.id, shellType: String(input.shellType ?? ''), step }
     if (isSessionId(input.conversationId)) req.conversationId = input.conversationId
-    if (typeof input.mark === 'number' && Number.isFinite(input.mark) && input.mark >= 0) req.mark = input.mark
     if (input.assumeExited === true) req.assumeExited = true
     const outcome = await runAgyStep(req, {
       io,
@@ -1295,7 +1294,11 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       env,
       record: (r) => noteAgentStart(terminalId, r.start, now()),
     })
-    if (outcome.kind === 'switched') moveAgy(target, [terminalId])
+    // On the sign-in the hidden session moved every agy to: this terminal is on it too now.
+    if (outcome.kind === 'resumed') {
+      noteTerminalAccount(terminalId, target.id)
+      deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: target.id, byHand: false })
+    }
     return outcome
   })
 

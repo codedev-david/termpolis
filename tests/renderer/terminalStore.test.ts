@@ -978,15 +978,45 @@ describe('the usage-limit chooser and its banners (§8.4)', () => {
     expect(st().accountSwitch).toBeNull()
   })
 
-  it('joins and leaves nothing while the dialog is open for a manual switch, or closed', () => {
+  it('joins and leaves nothing while no chooser is open, or one opened for no limit', () => {
     const st = useTerminalStore.getState
     st().joinLimitChooser('t2')
     st().leaveLimitChooser('t2')
     expect(st().accountSwitch).toBeNull()
-    st().openAccountSwitch('t1')
+    useTerminalStore.setState({ accountSwitch: { terminalId: 't1' } })
     st().joinLimitChooser('t2')
     st().leaveLimitChooser('t1')
     expect(st().accountSwitch).toEqual({ terminalId: 't1' })
+    st().closeAccountSwitch()
+    expect(st().accountSwitch).toBeNull()
+  })
+
+  it('opens the account menu for Switch account…, and closes it', () => {
+    const st = useTerminalStore.getState
+    st().openAccountSwitch('t1')
+    expect(st().accountMenu).toEqual({ terminalId: 't1' })
+    st().closeAccountMenu()
+    expect(st().accountMenu).toBeNull()
+  })
+
+  it('keeps each terminal\'s switch, its held key, the queue and agy\'s sheet', () => {
+    const st = useTerminalStore.getState
+    const run = { terminalId: 't1', agent: 'claude' as const, from: null, to: { id: 'b', label: 'b', color: '#fff' }, reason: 'by hand', status: 'running' as const, steps: ['working', 'pending', 'pending'] as ['working', 'pending', 'pending'], answers: {} }
+    st().noteHeldKey('t1')
+    expect(st().switchRuns).toEqual({})
+    st().putSwitchRun(run)
+    st().noteHeldKey('t1')
+    expect(st().switchRuns.t1.heldAt).toEqual(expect.any(Number))
+    st().dropSwitchRun('t1')
+    expect(st().switchRuns).toEqual({})
+    st().queueSwitch('t1', { targetId: 'b', reason: 'by hand' })
+    expect(st().queuedSwitches).toEqual({ t1: { targetId: 'b', reason: 'by hand' } })
+    st().dropQueuedSwitch('t1')
+    expect(st().queuedSwitches).toEqual({})
+    st().openAgySwitchSheet('g2')
+    expect(st().agySwitchSheet).toEqual({ targetId: 'g2' })
+    st().closeAgySwitchSheet()
+    expect(st().agySwitchSheet).toBeNull()
   })
 
   it('shows a banner, replaces it by its id, and dismisses it', () => {

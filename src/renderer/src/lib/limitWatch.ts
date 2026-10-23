@@ -20,6 +20,7 @@ import type { AccountAgent, AccountsView } from '../../../shared/agentAccounts'
 import type { AccountsAPI, PaneNode, TerminalSession } from '../types'
 import { READS_TO_CLEAR, noteWorkerStatus } from './swarmStopReports'
 import type { StopOffer, SwarmWorker } from './swarmStopReports'
+import { agentOfTerminal } from './accountsView'
 
 /** A limit the chooser offers a way out of: the account that ran out, the terminals it stopped. */
 export interface LimitContext {
@@ -43,9 +44,6 @@ export interface LimitBanner {
   kind: 'single' | 'choose' | 'menu'
   ctx: LimitContext
 }
-
-/** No key typed for this long, and the chooser may open in front of the terminals. */
-export const KEY_QUIET_MS = 2000
 
 /** What each terminal last showed: its stop's key, the start it showed under and whether the agent
  *  had taken a turn there, and how many looks in a row since showed no stop. */
@@ -95,9 +93,19 @@ export function pruneStops(open: ReadonlySet<string>): void {
   for (const id of stops.keys()) if (!open.has(id)) stops.delete(id)
 }
 
+/** The chooser gives up a terminal that closed, or that runs another agent now: its card was on
+ *  that pane, so the chooser moves on to the limit's next terminal, or closes. */
+export function pruneChooser(s: { accountSwitch: ShowStore['accountSwitch']; terminals: readonly TerminalSession[]; leaveLimitChooser: (terminalId: string) => void }): void {
+  const limit = s.accountSwitch?.limit
+  if (!limit) return
+  for (const id of limit.terminals) {
+    const t = s.terminals.find((x) => x.id === id)
+    if (agentOfTerminal(t) !== limit.agent) s.leaveLimitChooser(id)
+  }
+}
+
 export function _resetLimitWatchForTest(): void {
   stops.clear()
-  lastKeyAt = 0
   swarmOffer = null
 }
 
@@ -123,7 +131,8 @@ export interface DecideEnv {
   /** The switch dialog is open, and for which limit, if it was opened for one. */
   dialog: { limit?: LimitContext } | null
   banners: readonly LimitBanner[]
-  /** The focus rules allow a dialog in front of the terminals now (mayOpenChooser). */
+  /** The stopped terminal is on screen: its card shows there (it takes no key, so nothing else
+   *  needs to hold for it). */
   mayOpen: boolean
   newId: () => string
 }
@@ -147,20 +156,7 @@ export function decideLimit(note: Exclude<LimitNote, { kind: 'none' }>, env: Dec
   return { kind: 'open', ctx }
 }
 
-// ── The focus rules (§8.4): the chooser never takes keys meant for a terminal ──────────
-
-/** When a key was last typed anywhere in the window (App.tsx's capture-phase listener). */
-let lastKeyAt = 0
-
-export function noteKeyTyped(now: number): void {
-  lastKeyAt = now
-}
-
-/** The chooser opens by itself only with the window focused, the stopped terminal on screen, and no
- *  key typed for KEY_QUIET_MS: otherwise a banner, which opens it. */
-export function mayOpenChooser(f: { focused: boolean; visible: boolean; now: number }): boolean {
-  return f.focused && f.visible && f.now - lastKeyAt >= KEY_QUIET_MS
-}
+// ── Where the stopped terminal is ─────────────────────────────────────────────────────
 
 function paneIds(node: PaneNode | null): string[] {
   if (!node) return []
@@ -224,18 +220,21 @@ export interface ShowDeps {
   notify: (title: string, body: string, onClick: () => void) => void
 }
 
-/** A new stop, shown as decideLimit says: the chooser opened or joined, or a banner; and, for a
- *  chooser that couldn't open while the window was elsewhere, an OS notification that opens it. */
+/** A new stop, shown as decideLimit says: the chooser's card on the stopped terminal's pane, opened
+ *  or joined, or a banner; and, while the window is elsewhere, an OS notification that brings it up.
+ *  The card never takes a key or the focus (§2.6), so it opens on a pane on screen whatever the
+ *  user is doing; a pane out of view gets a banner that shows it. */
 export function showLimit(note: Exclude<LimitNote, { kind: 'none' }>, deps: ShowDeps): void {
   const s = deps.store()
   const now = deps.now()
   const visible = isTerminalVisible(s, note.ctx.terminals[0])
-  const action = decideLimit(note, {
-    view: s.accountsView, dialog: s.accountSwitch, banners: s.limitBanners,
-    mayOpen: mayOpenChooser({ focused: deps.focused(), visible, now }), newId: deps.newId,
-  })
+  const action = decideLimit(note, { view: s.accountsView, dialog: s.accountSwitch, banners: s.limitBanners, mayOpen: visible, newId: deps.newId })
   if (action.kind === 'join') return s.joinLimitChooser(note.ctx.terminals[0])
-  if (action.kind === 'open') return s.openLimitChooser(action.ctx)
+  if (action.kind === 'open') {
+    s.openLimitChooser(action.ctx)
+    if (!deps.focused()) deps.notify(`${ACCOUNT_AGENT_LABEL[note.ctx.agent]} ran out of usage`, bannerText({ id: '', kind: 'choose', ctx: action.ctx }, s.accountsView, s.terminals, now), () => undefined)
+    return
+  }
   if (action.kind === 'nothing') return
   const fresh = !s.limitBanners.some((b) => b.id === action.banner.id)
   s.showLimitBanner(action.banner)

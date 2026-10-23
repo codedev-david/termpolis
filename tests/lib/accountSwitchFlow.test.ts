@@ -4,7 +4,7 @@
 // says, and "New terminal on <account>" (§7.4).
 import { describe, it, expect, vi } from 'vitest'
 import {
-  checkSignIn, hasManyAccounts, openOnAccount, openOtherAgent, outcomeView, runSwitch, switchQuestions, switchTargets, terminalAgent,
+  checkSignIn, hasManyAccounts, openOnAccount, openOtherAgent, outcomeView, runSwitch, terminalAgent,
 } from '../../src/renderer/src/lib/accountSwitchFlow'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { SwitchOutcome } from '../../src/shared/accountSwitch'
@@ -37,40 +37,6 @@ describe('terminalAgent', () => {
     expect(terminalAgent({ agentCommand: 'claude', isConductor: true })).toBeNull()
     expect(terminalAgent({})).toBeNull()
     expect(terminalAgent(undefined)).toBeNull()
-  })
-})
-
-describe('switchTargets', () => {
-  it('lists the agent\'s other accounts with their state, one with no folder blocked', () => {
-    const gone = row({ ...B, id: 'acc_g', label: 'gone', folderExists: false })
-    const codex = row({ id: 'acc_c', agent: 'codex', label: 'c' })
-    const t = switchTargets(view([A, B, gone, codex]), 'claude', 'acc_a', 0)
-    expect(t.map((x) => [x.account.id, x.state, x.blocked])).toEqual([
-      ['acc_b', 'last signed in as b@example.test', null],
-      ['acc_g', 'folder missing', 'gone\'s profile folder doesn\'t exist'],
-    ])
-  })
-
-  it('lists every account when the terminal\'s own is unknown, and never blocks an agy label', () => {
-    expect(switchTargets(view([A, B]), 'claude', undefined, 0)).toHaveLength(2)
-    const g = row({ id: 'g', agent: 'agy', label: 'home', profile: null, folder: null, isDefault: false, folderExists: false })
-    expect(switchTargets(view([g]), 'agy', undefined, 0)[0].blocked).toBeNull()
-  })
-})
-
-describe('switchQuestions (D14, R30)', () => {
-  it('asks a second confirmation onto or off an account not offered automatically', () => {
-    expect(switchQuestions('claude', A, W)).toEqual([
-      'work isn\'t offered automatically. Switch this terminal to work?',
-      'work isn\'t connected to Termpolis. This conversation will lose Termpolis\'s tools and memory, and its earlier tool calls to them will fail.',
-    ])
-    expect(switchQuestions('claude', W, A)).toEqual(['This conversation is on work, which isn\'t offered automatically. Carry it to personal? (New terminal on personal starts a fresh session there instead.)'])
-  })
-
-  it('asks nothing between two ordinary connected accounts, or of the default profile, or of agy', () => {
-    expect(switchQuestions('claude', A, B)).toEqual([])
-    expect(switchQuestions('claude', undefined, row({ ...A, connect: false }))).toEqual([])
-    expect(switchQuestions('agy', undefined, row({ agent: 'agy', isDefault: false, connect: false }))).toEqual([])
   })
 })
 

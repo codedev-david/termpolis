@@ -37,7 +37,6 @@ vi.mock('../../src/renderer/src/components/ConsentReview/ConsentReviewModal', ()
 }))
 vi.mock('../../src/renderer/src/hooks/useAutoCodeIndex', () => ({ startRepoResweep: () => () => {} }))
 // The dialog has its own suite: here only whether App mounts it for the terminal asked.
-vi.mock('../../src/renderer/src/components/Accounts/AccountSwitcherDialog', () => ({ AccountSwitcherDialog: () => null }))
 
 import App from '../../src/renderer/src/App'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -85,7 +84,7 @@ beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('termpolis.onboarding.seen.v1', '1')
   _resetLimitWatchForTest()
-  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null, limitBanners: [] })
+  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null, limitBanners: [], accountMenu: null, switchRuns: {}, queuedSwitches: {} })
 })
 
 afterEach(() => {
@@ -94,19 +93,23 @@ afterEach(() => {
   vi.useRealTimers()
   delete (window as any).termpolis
   delete (window as any).mcpEvents
-  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null, limitBanners: [] })
+  useTerminalStore.setState({ terminals: [], swarmAgents: [], activeTerminalId: null, accountSwitch: null, relaunching: {}, accountsView: null, limitBanners: [], accountMenu: null, switchRuns: {}, queuedSwitches: {} })
 })
 
 describe('App: the account switch', () => {
-  it('opens the switch dialog for the active terminal on Ctrl+Shift+N, and for none without one', async () => {
+  it('opens the account menu for the active terminal on Ctrl+Shift+N, for none without one, and never with no account (D13)', async () => {
     bridge('')
     render(<App />)
     await settle()
+    act(() => { useTerminalStore.setState({ terminals: [T], activeTerminalId: 't1', accountsView: null, accountMenu: null }) })
     fireEvent.keyDown(window, { key: 'N', ctrlKey: true, shiftKey: true })
-    expect(useTerminalStore.getState().accountSwitch).toBeNull()
+    expect(useTerminalStore.getState().accountMenu).toBeNull()
+    act(() => { useTerminalStore.setState({ terminals: [], activeTerminalId: null, accountsView: view(2) }) })
+    fireEvent.keyDown(window, { key: 'N', ctrlKey: true, shiftKey: true })
+    expect(useTerminalStore.getState().accountMenu).toBeNull()
     act(() => { useTerminalStore.setState({ terminals: [T], activeTerminalId: 't1' }) })
     fireEvent.keyDown(window, { key: 'N', ctrlKey: true, shiftKey: true })
-    expect(useTerminalStore.getState().accountSwitch).toEqual({ terminalId: 't1' })
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
   })
 
   it.each([
@@ -186,7 +189,7 @@ describe('App: the usage-limit chooser', () => {
     expect(useTerminalStore.getState().accountSwitch).toMatchObject({ terminalId: 't1', limit: { agent: 'claude', accountId: 'acc_0', terminals: ['t1'] } })
   })
 
-  it('banners it instead while a key is being typed: the chooser never takes keys meant for a terminal', async () => {
+  it('opens its card even while a key is being typed: the card never takes a key meant for the terminal', async () => {
     bridge('a screen')
     accounts()
     vi.spyOn(document, 'hasFocus').mockReturnValue(true)
@@ -197,8 +200,8 @@ describe('App: the usage-limit chooser', () => {
     fireEvent.keyDown(window, { key: 'a' })
     await act(async () => { await vi.advanceTimersByTimeAsync(600) })
     await settle()
-    expect(useTerminalStore.getState().accountSwitch).toBeNull()
-    expect(useTerminalStore.getState().limitBanners).toMatchObject([{ kind: 'choose', ctx: { terminals: ['t1'] } }])
+    expect(useTerminalStore.getState().accountSwitch).toMatchObject({ terminalId: 't1', limit: { terminals: ['t1'] } })
+    expect(useTerminalStore.getState().limitBanners).toEqual([])
   })
 
   it("never looks at the conductor's terminal", async () => {

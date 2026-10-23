@@ -315,50 +315,36 @@ export type SwitchOutcome =
   /** Refused before anything was typed. */
   | { kind: 'refused'; why: string }
 
-// ── agy's guided switch ────────────────────────────────────────────────────────────────
+// ── agy's switch-all ─────────────────────────────────────────────────────────────────────
 
-/** agy keeps one Google sign-in for the computer user, so its switch is a sign-out and a new
- *  sign-in, the user's own, in between an exit and a resume by id. Each step is its own call: the
- *  sign-in is the user's, in the terminal, and the dialog follows it from main's looks. */
-export type AgyStep =
-  /** Exit agy (or read its hint, gone already), start it again and type its own /logout. */
-  | 'sign-out'
-  /** Type /login, on the user's click, when agy's box came back with no sign-in screen. */
-  | 'login'
-  /** One look: has the sign-in finished (agy's box back after its sign-in screen)? */
-  | 'check'
-  /** Exit agy and resume the conversation by its id on the new sign-in. */
-  | 'resume'
+/** agy keeps one Google sign-in for the computer user, so its switch moves every agy terminal: each
+ *  is exited, the sign-in itself moves in main's hidden session (signInSession.ts), then each
+ *  resumes its conversation by its id. These are a terminal's two steps. */
+export type AgyStep = 'exit' | 'resume'
 
 export interface AgyStepRequest {
   terminalId: string
   targetId: string
   shellType: string
   step: AgyStep
-  /** The conversation the sign-out step read from agy's exit hint, for the resume. */
+  /** The conversation the exit read from agy's exit hint, for the resume. */
   conversationId?: string | null
-  /** Where the output ended before the sign-out: the sign-in screen is looked for after it. */
-  mark?: number
   /** The user said agy has exited, where Termpolis couldn't tell. */
   assumeExited?: boolean
 }
 
 export type AgyStepOutcome =
-  /** agy shows its sign-in screen: the user signs in there. `mark` is for the next steps. */
-  | { kind: 'signing-in'; conversationId: string | null; mark: number }
-  /** agy signed out and shows its box, with no sign-in screen: the user types /login (or asks
-   *  Termpolis to). */
-  | { kind: 'needs-login'; conversationId: string | null; mark: number }
-  /** The sign-in finished: agy's box is back. */
-  | { kind: 'signed-in' }
-  /** Still at the sign-in. */
-  | { kind: 'waiting' }
-  /** On the target, with the conversation (or a new one agy started, `fresh`). `shownEmail` is the
-   *  address agy's own header shows, for the user to read; never what decided anything. */
-  | { kind: 'switched'; fresh: boolean; conversationId: string | null; shownEmail?: string }
-  /** A step Termpolis couldn't drive safely: `say` is what the user does instead, in exact words. */
-  | { kind: 'do-it-yourself'; say: string; line?: string }
+  /** agy is out of the terminal: the conversation its hint named, or null for none. */
+  | { kind: 'exited'; conversationId: string | null }
+  /** agy is at work, or asks something: its turn is waited for. Nothing was typed. */
+  | { kind: 'busy' }
+  /** Termpolis can't tell whether agy still runs here. Nothing was typed. */
   | { kind: 'unknown-exit' }
+  | { kind: 'not-exited'; why: string }
+  /** On the new sign-in, with the conversation (or a new one agy started, `fresh`). `shownEmail` is
+   *  the address agy's own header shows, for the user to read; never what decided anything. */
+  | { kind: 'resumed'; fresh: boolean; conversationId: string | null; shownEmail?: string }
+  | { kind: 'not-resumed'; why: string }
   | { kind: 'refused'; why: string }
 
 /** The model picker asks main for its half of the terminal's relaunch lock (§7.5), with the line

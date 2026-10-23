@@ -61,9 +61,9 @@ describe('groupNote', () => {
   it('says how many more terminals the same limit stopped, on which account', () => {
     const v = view([row({})])
     expect(groupNote(ctx(), v)).toBeNull()
-    expect(groupNote(ctx({ terminals: ['t1', 't2'] }), v)).toBe('1 more Claude Code terminal ran out on personal too: Termpolis asks about each after this one.')
-    expect(groupNote(ctx({ terminals: ['t1', 't2', 't3'], accountId: null }), v)).toBe('2 more Claude Code terminals ran out too: Termpolis asks about each after this one.')
-    expect(groupNote(ctx({ terminals: ['t1', 't2'], accountId: 'gone' }), v)).toBe('1 more Claude Code terminal ran out too: Termpolis asks about each after this one.')
+    expect(groupNote(ctx({ terminals: ['t1', 't2'] }), v)).toBe('1 more Claude Code terminal ran out on personal too.')
+    expect(groupNote(ctx({ terminals: ['t1', 't2', 't3'], accountId: null }), v)).toBe('2 more Claude Code terminals ran out too.')
+    expect(groupNote(ctx({ terminals: ['t1', 't2'], accountId: 'gone' }), v)).toBe('1 more Claude Code terminal ran out too.')
   })
 })
 

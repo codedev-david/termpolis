@@ -256,6 +256,7 @@ describe('accounts:sign-in-start and sign-in-input', () => {
     const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', email: 'new.person@example.test' })
     noteTerminalAccount('agy-1', old.account.id)
     noteTerminalAccount('claude-1', null)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     const { sessionId } = await ok<{ sessionId: string }>(ACCOUNTS_IPC.signInStart, { accountId: g.account.id, mode: 'agy-switch' })
     expect(spawned[0].file).toBe('agy')
     expect(spawned[0].env.CLAUDE_CONFIG_DIR).toBeUndefined()
@@ -266,8 +267,27 @@ describe('accounts:sign-in-start and sign-in-input', () => {
     expect(await until('success')).toEqual({ kind: 'success', email: 'new.person@example.test' })
     const moves = sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount).map((s) => s.payload)
     expect(moves).toEqual([{ terminalId: 'agy-1', accountId: g.account.id, byHand: false }])
+    expect(log).toHaveBeenCalledWith('[accounts] agy moved to g: 1 terminal')
     const doc = loadAccounts(sb.paths.userData)
     expect(doc.ok && doc.doc.file.preferred.agy).toBe(g.account.id)
+    log.mockRestore()
+  })
+
+  it('says how many agy terminals moved, for several', async () => {
+    const old = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'old', email: 'old@example.test' })
+    const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', email: 'new.person@example.test' })
+    noteTerminalAccount('agy-1', old.account.id)
+    noteTerminalAccount('agy-2', old.account.id)
+    mockEnv = { MOCK_AGY_SIGNED_IN: '0' }
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const { sessionId } = await ok<{ sessionId: string }>(ACCOUNTS_IPC.signInStart, { accountId: g.account.id, mode: 'agy-switch' })
+    await until('choose')
+    await ok(ACCOUNTS_IPC.signInInput, { sessionId, kind: 'pick', index: 0, label: 'Continue with Google' })
+    await until('browser')
+    await ok(ACCOUNTS_IPC.signInInput, { sessionId, kind: 'code', value: 'good-code' })
+    await until('success')
+    expect(log).toHaveBeenCalledWith('[accounts] agy moved to g: 2 terminals')
+    log.mockRestore()
   })
 
   it('ends a window\'s sessions when it goes, watching each window once', async () => {

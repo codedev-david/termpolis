@@ -52,7 +52,7 @@ import type { ShellInfo } from './types'
 import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
-import { noteKeyTyped, noteSwarmStop, osNotify, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
+import { noteSwarmStop, osNotify, pruneChooser, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
 import { detectAgentStatus, limitWords } from '../../shared/agentStatusDetector'
 import { screenOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
@@ -64,8 +64,10 @@ import { watchAccounts } from './lib/accountsState'
 import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
 import { agentOfName } from './lib/accountsView'
 import { launchTerminalArgs } from './lib/accountLaunch'
-import { AccountSwitcherDialog } from './components/Accounts/AccountSwitcherDialog'
 import { SignInSheet } from './components/Accounts/SignInSheet'
+import { AccountMenu } from './components/Accounts/AccountMenu'
+import { AgySwitchSheet } from './components/Accounts/AgySwitchSheet'
+import { installSwitchQueue } from './lib/accountSwitchRun'
 import { LimitBanners } from './components/Accounts/LimitBanners'
 import { SwarmRestartOffers } from './components/Accounts/SwarmRestartOffers'
 
@@ -386,7 +388,8 @@ export default function App() {
 
       // The account switch dialog for the active terminal (§7.1). A focused pane handles the key
       // itself, so its shell gets no stray Ctrl+N.
-      if (matchesKeybinding(e, kb.switchAccount)) {
+      // D13: with no account registered, the key is the terminal's, as before accounts.
+      if (useTerminalStore.getState().accountsView?.accounts.length && matchesKeybinding(e, kb.switchAccount)) {
         e.preventDefault()
         const { activeTerminalId: switchId } = useTerminalStore.getState()
         if (switchId) useTerminalStore.getState().openAccountSwitch(switchId)
@@ -783,6 +786,7 @@ export default function App() {
         (t) => t.agentCommand && !swarmIds.has(t.id) && !store.relaunching[t.id],
       )
       pruneStops(new Set(store.terminals.map((t) => t.id)))
+      pruneChooser(store)
       if (agentTerminals.length === 0) return
 
       for (const term of agentTerminals) {
@@ -827,14 +831,8 @@ export default function App() {
   // The accounts the chips, the switch dialog and the sidebar show, and main's word on each
   // terminal's account (a switch, or a change typed by hand).
   useEffect(() => watchAccounts(), [])
-
-  // When a key was last typed anywhere in the window, caught before any pane takes it: the
-  // usage-limit chooser never opens over someone typing (§8.4).
-  useEffect(() => {
-    const onKey = () => noteKeyTyped(Date.now())
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [])
+  // A switch waiting for a busy agent's turn to end runs once it is done.
+  useEffect(() => (window.accounts ? installSwitchQueue() : undefined), [])
 
   // A Linked machines job notification, clicked: main has brought the window forward, and this
   // opens the pane listing that job, where it can be stopped. Settings may be open already, on
@@ -939,7 +937,7 @@ export default function App() {
         setShowMemory(v => !v)
         break
       case 'switch_account':
-        if (state.activeTerminalId) useTerminalStore.getState().openAccountSwitch(state.activeTerminalId)
+        if (state.activeTerminalId && state.accountsView?.accounts.length) useTerminalStore.getState().openAccountSwitch(state.activeTerminalId)
         break
       case 'launch_claude':
       case 'launch_codex':
@@ -1132,8 +1130,9 @@ export default function App() {
       <Suspense fallback={null}>
         {historyOpen && <HistorySearchModal onClose={() => setHistoryOpen(false)} />}
         {showAppLog && <AppLogModal onClose={() => setShowAppLog(false)} />}
-        <AccountSwitcherDialog />
         <SignInSheet />
+        <AccountMenu />
+        <AgySwitchSheet />
         <SwarmRestartOffers />
         {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
         {showAddModal && (

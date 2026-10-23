@@ -15,6 +15,8 @@ const mockPromptTemplates = [
 // template is typed into (null: none is active).
 const setActiveTerminal = vi.fn()
 let activeTerminalId: string | null = 't1'
+// The accounts registered: Switch account… is offered only with one (D13).
+let accountsView: { accounts: unknown[] } | null = null
 
 vi.mock('../../src/renderer/src/store/terminalStore', () => ({
   useTerminalStore: Object.assign(
@@ -23,6 +25,7 @@ vi.mock('../../src/renderer/src/store/terminalStore', () => ({
         terminals: mockTerminals,
         activeTerminalId: 't1',
         promptTemplates: mockPromptTemplates,
+        accountsView,
       }
       return selector ? selector(state) : state
     },
@@ -65,12 +68,28 @@ describe('CommandPalette', () => {
     expect(screen.queryByText('Split Right')).not.toBeInTheDocument()
   })
 
-  it('offers Switch account… for the active agent terminal', () => {
+  it('offers Switch account… for the active agent terminal, once an account is registered', () => {
     const onAction = vi.fn()
+    accountsView = { accounts: [{ id: 'acc_a' }] }
     render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
     fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'switch account' } })
     fireEvent.click(screen.getByText('Switch account…'))
     expect(onAction).toHaveBeenCalledWith('switch_account', undefined)
+    accountsView = null
+  })
+
+  it('offers no Switch account… with no account registered, typed or listed (D13)', () => {
+    for (const view of [null, { accounts: [] }]) {
+      accountsView = view
+      const { unmount } = render(<CommandPalette onAction={vi.fn()} onClose={vi.fn()} />)
+      expect(screen.queryByText('Switch account…')).toBeNull()
+      fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'switch account' } })
+      expect(screen.queryByText('Switch account…')).toBeNull()
+      fireEvent.change(screen.getByPlaceholderText('Type a command...'), { target: { value: 'account' } })
+      expect(screen.queryByText('Switch account…')).toBeNull()
+      unmount()
+    }
+    accountsView = null
   })
 
   it('calls onAction with correct action when command clicked', () => {

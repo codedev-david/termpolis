@@ -1,64 +1,24 @@
-// The account switch dialog's logic (§7): which accounts a terminal can move to and what each row
-// says, the checks before a switch (§7.2 step 0), the target's preparation the launch makes too
-// (folder trust, Codex's instruction), the run itself in main (accounts:switch), and what each
-// outcome tells the user. Main does the typing; this never writes to a terminal.
-import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../shared/agentAccounts'
+// The account switch's logic (§7), under the account menu and the limit card: the target's sign-in
+// check (§4.4), the target's preparation the launch makes too (folder trust, Codex's instruction),
+// the run itself in main (accounts:switch), what each outcome tells a swarm worker's conductor, and
+// the new terminals the menu and the card open. Main does the typing; this never writes to a
+// terminal.
+import { ACCOUNT_AGENT_LABEL } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
 import type { SwitchOutcome, SwitchRequest } from '../../../shared/accountSwitch'
 import { isShellSafeInstruction } from '../../../shared/agentIntegration'
 import type { AccountsAPI, TermpolisAPI, TerminalSession } from '../types'
 import { signedInEmail } from './accountChip'
-import { accountBadge, agentOfTerminal, workerBlocker } from './accountsView'
+import { agentOfTerminal } from './accountsView'
 import type { AgentLaunchTarget } from './agentLaunch'
 import { launchTerminalArgs } from './accountLaunch'
 import { isClaudeCommand } from './testAgents'
-
-export interface SwitchTarget {
-  account: AccountRowView
-  /** What the row says about the account now. */
-  state: string
-  /** Why it can't be switched to, or null. */
-  blocked: string | null
-}
 
 /** The agent a terminal runs, as Termpolis knows it: the one it launched there, or a swarm
  *  worker's (main's record of run_command). Never the conductor's, which runs `claude -p` behind
  *  its script and is never switched. */
 export function terminalAgent(t: Pick<TerminalSession, 'agentCommand' | 'isConductor' | 'isSwarm' | 'swarmAgent'> | undefined): AccountAgent | null {
   return agentOfTerminal(t)
-}
-
-const WORKER_BLOCKED: Readonly<Record<'not-connected' | 'bypass', string>> = {
-  'not-connected': 'not connected: a swarm worker needs Termpolis\'s tools',
-  bypass: 'can\'t take over swarm workers until you accept bypass mode in it once',
-}
-
-/** The other accounts of the terminal's agent, in their order, each with its state. For a swarm
- *  worker (`worker`), an account that can't take one over is blocked, and says why (§9). */
-export function switchTargets(view: AccountsView, agent: AccountAgent, currentId: string | undefined, now: number, worker = false): SwitchTarget[] {
-  return view.accounts
-    .filter((r) => r.agent === agent && r.id !== currentId)
-    .map((r) => {
-      const why = worker ? workerBlocker(r, view) : null
-      return {
-        account: r,
-        state: accountBadge(r, now).text,
-        blocked: isProfileAgent(agent) && !r.folderExists ? `${r.label}'s profile folder doesn't exist` : why ? WORKER_BLOCKED[why] : null,
-      }
-    })
-}
-
-/** The questions a switch asks before it runs (§7.2 step 0): moving onto or off an account not
- *  offered automatically (work) needs a second confirmation (D14), and one not connected loses
- *  Termpolis's tools mid-conversation (R30). Empty: nothing to ask. */
-export function switchQuestions(agent: AccountAgent, from: AccountRowView | undefined, to: AccountRowView): string[] {
-  const out: string[] = []
-  if (!to.autoOffer) out.push(`${to.label} isn't offered automatically. Switch this terminal to ${to.label}?`)
-  if (from && !from.autoOffer) out.push(`This conversation is on ${from.label}, which isn't offered automatically. Carry it to ${to.label}? (New terminal on ${to.label} starts a fresh session there instead.)`)
-  if (isProfileAgent(agent) && !to.isDefault && !to.connect) {
-    out.push(`${to.label} isn't connected to Termpolis. This conversation will lose Termpolis's tools and memory, and its earlier tool calls to them will fail.`)
-  }
-  return out
 }
 
 export type SignInCheck =

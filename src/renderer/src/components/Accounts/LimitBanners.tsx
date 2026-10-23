@@ -1,7 +1,7 @@
 // The usage-limit banners (§8.4): one line each, under the title bar like the memory notice. An
 // agent with one account (or none) out of usage, and until when, with [Add an account] and
-// [Don't show again]; a chooser that couldn't open by itself (the window was elsewhere, a key was
-// being typed, the terminal was hidden, or the chooser is switched off), with [Choose an account];
+// [Don't show again]; a chooser whose terminal is out of view, or that is switched off, with
+// [Choose an account], which shows that terminal and its card;
 // an agent waiting on a menu, which only the user answers. A banner never takes a key: it is a line,
 // not a dialog. One whose terminals all closed goes.
 import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
@@ -25,10 +25,13 @@ export function LimitBanners() {
     requestSettingsTab('accounts', s.showSettings)
     s.setShowSettings(true)
   }
+  /** The chooser's card is on the stopped terminal's pane: that pane, on screen, with its card. */
   const choose = (b: LimitBanner): void => {
     const s = store()
     s.dismissLimitBanner(b.id)
-    s.openLimitChooser(b.ctx)
+    if (!s.accountSwitch) s.openLimitChooser(b.ctx)
+    if (s.showSettings) s.setShowSettings(false)
+    s.setActiveTerminal(b.ctx.terminals[0])
   }
   const hideForGood = (b: LimitBanner): void => {
     store().dismissLimitBanner(b.id)
