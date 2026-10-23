@@ -1387,6 +1387,39 @@ describe("the round-1 rules at their edges", () => {
     expect(r.spans.filter((s) => s.why === 'block-rest')).toHaveLength(1)
     expect(leakedWindows(r.text, secretLinesOf(K.F.sec1_ec))).toBe(0)
   })
+
+  it('a key line holding vbLf, vbCrLf or vbNewLine by chance is a key line still: a newline constant stands apart from the base64', () => {
+    // (random base64 holds vbLf about once in 270,000 characters: one RSA key's lines in some
+    // 10,000 do, and a keyring export's tail with a photo ID often; written in code, a newline
+    // constant stands apart, `" & vbCrLf & _`, `"+Environment.NewLine+"`)
+    for (const name of ['vbLf', 'vbCrLf', 'vbNewLine']) {
+      for (const [fmt, rule] of [['pkcs8_rsa', 'private_key'], ['pgp_rsa_hdr', 'gpg_block']] as const) {
+        // at the start of a line, inside it, and at its end
+        for (const [where, plant] of [
+          ['start', (l: string) => `${name}A${l.slice(name.length + 1)}`],
+          ['inside', (l: string) => `${l.slice(0, 10)}A${name}A${l.slice(12 + name.length)}`],
+          ['end', (l: string) => `${l.slice(0, l.length - name.length - 1)}A${name}`],
+        ] as const) {
+          const lines = K.F[fmt].slice()
+          const k = lines.length - 6
+          lines[k] = plant(lines[k])
+          const secret = secretLinesOf(lines)
+          const body = lines.findIndex((l, i) => i > 0 && /^[A-Za-z0-9+/]{64}$/.test(l))
+          const what = `${fmt}, ${name} at the line's ${where}`
+          // a text that starts inside the key, at one of its lines, and an older computer's cut in one
+          const inside = screenKeys(`${lines.slice(body + 1).join('\n')}\nDone.\n`)
+          expect(inside.removed, what).toEqual({ [rule]: 1 })
+          expect(leakedWindows(inside.text, secret)).toBe(0)
+          const text = `Key:\n${lines.join('\n')}\nDone.\n`
+          const cut = arrived(text, text.indexOf(lines[body + 2]) + 30)
+          expect(cut.removed, `${what}, cut`).toEqual({ [rule]: 1 })
+          expect(leakedWindows(cut.text, secret)).toBe(0)
+          // and the whole key, from its BEGIN line
+          expect(screenKeys(text).removed, `${what}, whole`).toEqual({ [rule]: 1 })
+        }
+      }
+    }
+  })
 })
 
 describe('the structure checks, on decoded bytes', () => {

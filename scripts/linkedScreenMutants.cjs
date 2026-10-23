@@ -158,6 +158,7 @@ const REVIEW = {
   'cut: lines of hex digests taken for a key': [KEY, "  if (hexy.length && hexy.every((l) => /^[0-9a-fA-F]+$/.test(l))) return true\n", ''],
   'tail: a made-up run anchored as a key tail': [KEY, 'const head = framed && !ownFloor && !madeUp(text, runs) ?', 'const head = framed && !ownFloor ?'],
   "tail: a legacy key's tail from its first line under a block": [KEY, '(legacy ? lead ?? runs[0][0] :', '(legacy ? runs[0][0] :'],
+  "nl: a newline constant's name inside a key's base64 blanked": [KEY, '/(?<![A-Za-z0-9/=_])(?:vbCrLf|vbNewLine|vbLf|Environment\\.NewLine|System\\.lineSeparator\\(\\)|os\\.linesep|PHP_EOL)(?![A-Za-z0-9/=_])/g', '/vbCrLf|vbNewLine|vbLf|Environment\\.NewLine|System\\.lineSeparator\\(\\)|os\\.linesep|PHP_EOL/g'],
 }
 
 /** Mutants no test can kill, because they change nothing the screen returns. */

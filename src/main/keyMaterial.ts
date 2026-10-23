@@ -406,8 +406,10 @@ const CRC_LINE = /^=[A-Za-z0-9+/]{4}[\s"'`,;+)\]}|\\]*$/
 const FRAGMENT = /^[\s"'`,;+.&_)\]}|\\]*$/
 const LINE_END_RUN = /[A-Za-z0-9+/=]+[\s"'`,;+&_)\]}|\\]*$/
 /** Newline constants a literal is joined with: VB's `& vbCrLf & _`, C#'s `+ Environment.NewLine +`.
- *  They count as joiners: blanked to spaces of the same length, so offsets hold. */
-const NL_CONST = /vbCrLf|vbNewLine|vbLf|Environment\.NewLine|System\.lineSeparator\(\)|os\.linesep|PHP_EOL/g
+ *  They count as joiners: blanked to spaces of the same length, so offsets hold. Only standing
+ *  apart from the base64 around them (a `+` may join them): random base64 holds vbLf about once in
+ *  270,000 characters, inside a key's line. */
+const NL_CONST = /(?<![A-Za-z0-9/=_])(?:vbCrLf|vbNewLine|vbLf|Environment\.NewLine|System\.lineSeparator\(\)|os\.linesep|PHP_EOL)(?![A-Za-z0-9/=_])/g
 const blankNl = (s: string): string => s.replace(NL_CONST, (x) => ' '.repeat(x.length))
 /** The written-out line breaks nextBreak reads, as answers write them. */
 const ESC_FORMS = ['<br>', '<br/>', '<br />', '\\n', '\\r', '\\u000a', '\\u000A', '\\x0a', '\\x0A', '%0A', '%0a', '&#xA;', '&#xa;', '&#x0A;', '&#10;', '`n', '`r']
