@@ -5,7 +5,7 @@
 // footer opens a new terminal on another account or Settings ▸ Accounts. Keyboard: arrows,
 // Home/End, type-ahead, Enter/Space, Esc back to the terminal. Nothing at all with no account (D13).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { TerminalSession } from '../../src/renderer/src/types'
 
@@ -74,6 +74,9 @@ beforeEach(() => {
 
 afterEach(() => {
   useTerminalStore.setState({ accountMenu: null })
+  // React's tree first: emptying the body under a mounted portal leaves React removing a node
+  // that is no longer there, an uncaught error that fails the whole run.
+  cleanup()
   document.body.innerHTML = ''
 })
 
