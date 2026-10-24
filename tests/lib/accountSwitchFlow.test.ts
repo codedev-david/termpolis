@@ -143,7 +143,8 @@ describe('outcomeView: what each outcome says', () => {
     [{ kind: 'agent-alive' }, { tone: 'bad', done: false }],
     [{ kind: 'didnt-start', line: 'L' }, { line: 'L', retry: { label: 'Try again', answers: { assumeExited: true } } }],
     [{ kind: 'resume-not-found' }, { text: 'codedev can\'t see that conversation.', retry: { label: 'Start a new session on codedev', answers: { assumeExited: true, fresh: true } } }],
-    [{ kind: 'sign-in' }, { tone: 'bad', done: true }],
+    // Its sign-in is the sign-in sheet's, from the account's card: never one typed in a terminal.
+    [{ kind: 'sign-in' }, { tone: 'bad', done: true, text: 'codedev\'s sign-in has expired: sign it in again from its card in Settings ▸ Accounts. Termpolis answers nothing on its sign-in screen.' }],
     [{ kind: 'asks-user', what: 'x' }, { tone: 'warn', done: true, text: 'codedev is asking something only you can answer: answer it in the terminal.' }],
     [{ kind: 'no-outcome' }, { done: true }],
     [{ kind: 'refused', why: 'no' }, { tone: 'bad', done: false, text: 'Termpolis didn\'t switch: no.' }],

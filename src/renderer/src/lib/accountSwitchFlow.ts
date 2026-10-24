@@ -134,7 +134,7 @@ export function outcomeView(o: SwitchOutcome, agent: AccountAgent, target: Accou
     case 'resume-not-found':
       return { tone: 'bad', text: `${target.label} can't see that conversation.`, retry: { label: `Start a new session on ${target.label}`, answers: { assumeExited: true, fresh: true } }, done: false }
     case 'sign-in':
-      return { tone: 'bad', text: `${target.label} needs a sign-in. Termpolis doesn't answer it: sign in there in the terminal, or from Settings ▸ Accounts.`, done: true }
+      return { tone: 'bad', text: `${target.label}'s sign-in has expired: sign it in again from its card in Settings ▸ Accounts. Termpolis answers nothing on its sign-in screen.`, done: true }
     case 'asks-user':
       return { tone: 'warn', text: `${target.label} is asking something only you can answer: answer it in the terminal.`, done: true }
     case 'no-outcome':
