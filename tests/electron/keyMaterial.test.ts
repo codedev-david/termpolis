@@ -1097,6 +1097,20 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
     // an OpenVPN static key in a coloured diff
     const ovpn = screenKeys(K.F.openvpn.map((l) => `${ESC}[32m+${l}${ESC}[m`).join('\n'))
     expect(ovpn.removed).toEqual({ openvpn_static_key: 1 })
+    // A legacy encrypted key, whose headers say it is one, in lines a colour code starts: the `m`
+    // that ends it is glued to Proc-Type and DEK-Info (a terminal's colour, GitHub Actions' log).
+    const legacy = K.F.rsa_legacy_enc
+    for (const [style, color] of [
+      ['a line colour', (l: string) => `${ESC}[33m${l}${ESC}[39m`],
+      ['GitHub Actions', (l: string) => `2026-10-18T12:00:01.1234567Z ${ESC}[36;1m${l}${ESC}[0m`],
+    ] as const) {
+      for (const end of [true, false]) {
+        const ls = end ? legacy : legacy.slice(0, -1)
+        const r = screenKeys(`Config:\n${ls.map(color).join('\n')}\nDone.\n`)
+        expect(r.removed, `${style}, END ${end}`).toEqual({ private_key: 1 })
+        expect(leakedWindows(r.text, secretLinesOf(ls))).toBe(0)
+      }
+    }
   })
 
   it('F-E: a base64 key file an older computer cut through goes, its first line too', () => {

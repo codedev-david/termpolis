@@ -164,6 +164,7 @@ const REVIEW = {
   'cut: a last line counted under a line between the partial one and it': [KEY, '(from === runs[0][0] ? last.short : 0)', 'last.short'],
   'cut: a partial line counted where it does not start the text': [KEY, 'const extra = !atTop ? 0 :', 'const extra ='],
   "cut: a truncated OpenSSH example's magic, cut inside, taken for a tail": [KEY, "OPENSSH_RUN.includes(b.toString('latin1'))", 'false'],
+  'block: a header glued to a colour code not read as one': [KEY, '|\\x1b\\[[0-9;]{0,16}m)(Proc-Type', ')(Proc-Type'],
 }
 
 /** Mutants no test can kill, because they change nothing the screen returns. */

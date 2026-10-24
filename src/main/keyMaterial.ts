@@ -373,7 +373,9 @@ export function looksRandom(s: string): boolean {
 // Key blocks with a BEGIN line (K1-K3).
 // ---------------------------------------------------------------------------------------------
 const BEGIN_RE = /-----BEGIN ((?:[A-Z0-9]+ ){0,3})PRIVATE KEY(?: BLOCK)?-----|---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----|-----BEGIN OpenVPN Static key V1-----/g
-const HEADER_WORD = /(?:^|[^A-Za-z0-9])(Proc-Type|DEK-Info|Version|Comment|Hash|Charset|MessageID): ?/
+/** An armor or PEM header's name, at a line's start or after its frame: a colour code too, whose
+ *  final `m` a terminal or a CI log glues to it (`ESC[33mProc-Type: 4,ENCRYPTED`). */
+const HEADER_WORD = /(?:^|[^A-Za-z0-9]|\x1b\[[0-9;]{0,16}m)(Proc-Type|DEK-Info|Version|Comment|Hash|Charset|MessageID): ?/
 const DEK_RE = /DEK-Info: ?(?:DES[A-Z0-9-]*,[0-9A-Fa-f]{16}|[A-Z0-9-]{3,32},[0-9A-Fa-f]{32})/
 /** Only what ends a key line or joins two: whitespace, quotes, a concatenation, a closing bracket. */
 const JOINERS = /^[\s"'`,;+)\]}|\\]*$/
