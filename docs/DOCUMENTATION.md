@@ -1408,16 +1408,18 @@ audit log.
     line once the lines before the uneven one show it is a key, and with no END
     line is removed up to the uneven line and the rest named in a note; when too
     few lines come before it to show that, it is named in a note. A key's tail is
-    removed with its END line even when its BEGIN line is
-    out of view: where the end of the text that is kept starts inside the key,
-    where the text starts with two or more of its lines (its last line or two
-    alone can cross), and wherever lines that decode to a key's first bytes run
-    down to its END line (a key whose BEGIN line was lost). So are key lines
-    right under a key block that was removed, down to an END line of its kind:
-    the new key in a diff that rotates one. A note tells your agent how
-    many this computer removed, and by which rules, from the prompt it sent and
-    from an answer that arrived with one still in it; one the other computer
-    removed shows only as its marker.
+    removed with its END line even when its BEGIN line is out of view: where
+    the end of the text that is kept starts inside the key, where the text
+    starts with two or more of its lines (its last line or two alone can cross,
+    or three when the last is a few characters long, and so can an Ed25519 key
+    in OpenSSH's format, whose few lines are too regular to tell from other
+    base64), and wherever lines that decode to a key's first bytes run down to
+    its END line (a key whose BEGIN line was lost). So are key lines right under
+    a key block that was removed, down to an END line of its kind: the new key
+    in a diff that rotates one. A note tells your agent how many this computer
+    removed, and by which rules, from the prompt it sent and from an answer that
+    arrived with one still in it; one the other computer removed shows only as
+    its marker.
   - **Left as it is, and named in a note** (*possible credential, not
     removed*): everything that only looks like a credential, because a
     delegated job's answer is usually code, and its test fixtures and examples
