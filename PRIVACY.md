@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: October 14, 2026 (Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers)
+Last updated: October 23, 2026 (Accounts: more than one sign-in per coding agent, each in a profile of its own, signed in from Termpolis's own sheet)
 
 ## Overview
 
@@ -30,8 +30,9 @@ to keep your data local.
   Settings → Token Savings — see [The Claude Code compression
   proxy](#the-claude-code-compression-proxy).
 - Termpolis changes Claude Code, Codex and Gemini CLI settings **only if you
-  connect them**, and Disconnect removes everything it wrote — see [Your
-  coding agents' settings](#your-coding-agents-settings).
+  connect them**, and the same goes for the profile of each account you add;
+  Disconnect removes everything it wrote — see [Your coding agents'
+  settings](#your-coding-agents-settings).
 
 ## Data Stored Locally
 
@@ -73,13 +74,20 @@ upload it.
   credential rules matched, how it ended and why a request
   was refused. Never the prompt or the answer.
 - If you add **accounts** (Settings → Accounts): the accounts you registered
-  (`userData/agent-accounts.json`): each one's name, colour, the email you gave
-  it, its profile folder, its place in the order and whether it is offered
-  automatically; the account new terminals start on; what each agent last said
-  when Termpolis asked who is signed in (signed in or not, and the email and plan
-  it reported); and a usage limit an agent showed, in its own words, until it
-  resets. Never a sign-in, a token or a key: those stay in each agent's own
-  profile, where the agent keeps them. See [Signing in to an account](#signing-in-to-an-account).
+  (`userData/agent-accounts.json`). For each one: its name and colour, the email
+  you gave it, its profile folder and the links Termpolis made in it, its place
+  in the order, whether it is offered automatically when another account runs
+  out of usage, and whether you connected it. Also the account new terminals
+  start on; what each agent last said when Termpolis asked who is signed in
+  (signed in or not, and the email and plan it reported); and the last usage
+  limit each account hit: the agent's own words, when it resets, and the email
+  of the sign-in it hit, kept until the next limit replaces it, you mark the
+  account available, or you remove it. Never a sign-in, a token or a key: those
+  stay in each agent's own profile, where the agent keeps them. Claude Code's
+  own `.claude.json` can hold an Anthropic Console key; from that file Termpolis
+  reads only the email of the account signed in there, besides the entries it
+  writes itself, and never copies it. See [Signing in to an
+  account](#signing-in-to-an-account).
 
 The `userData` directory lives at:
 
@@ -176,24 +184,30 @@ printed, a field for a code.
 - The session is not a terminal: it is never in your terminal list, a
   workspace, the phone app or a swarm, and no agent, tool or MCP call can read
   it or type into it. Termpolis types into it only what you choose in the
-  sheet: the option you click, a code you paste, and, for a Gemini CLI switch
-  you confirmed, agy's own `/logout` and `/login`.
+  sheet: the option you click, a code you paste, the Google Cloud project you
+  name, and the keys you type yourself after **Let me type here** (offered only
+  when Termpolis can't read the agent's screen); and, for a Gemini CLI switch
+  you confirmed, agy's own `/logout` and `/login`, and `/exit` once it is signed
+  in again.
 - **The browser is opened by the agent**, as when you sign in at a prompt.
   Termpolis opens an address itself only when you click Open again, and only
   the agent's own sign-in page (an `https` address on Anthropic's, OpenAI's or
   Google's sign-in host).
 - **A code you paste goes to the agent and is not kept.** The field is cleared
   as you submit it; the code is never held by the page, written to a file, put
-  in a log or sent anywhere else, and where it shows on the agent's own screen
-  Termpolis masks it.
+  in a log or sent anywhere else. Termpolis holds it in memory only to mask it
+  where it shows on the agent's own screen, and forgets it when the session
+  ends.
 - **Nothing the session shows is logged.** The app log records only which
   account a sign-in was for and how it ended (signed in, cancelled, an error).
   If the agent fails, its own words are shown to you in the sheet, masked for
   anything that looks like a credential, and kept nowhere.
 - When the agent says it is done, Termpolis asks it who is signed in
-  (`claude auth status`, `codex login status`) and keeps the email and plan it
-  reports, as above. Then the session ends, and its processes with it. Closing
-  the sheet, the window, or Termpolis ends it too.
+  (`claude auth status`; for Codex, `codex login status` and Codex's own app
+  server, for the email and plan) and keeps the email and plan it reports, as
+  above. agy has no such command: Termpolis shows the email agy itself prints
+  on its screen, and keeps none. Then the session ends, and its processes with
+  it. Closing the sheet, the window, or Termpolis ends it too.
 
 ## What We Never Collect
 
@@ -384,6 +398,55 @@ into `AGENTS.md` in project folders; Termpolis removes that note (and the file,
 if the note was all it held) the next time you launch Codex from Termpolis in
 that folder.
 
+### More than one account
+
+If you add accounts in Settings → Accounts, each Claude Code or Codex account
+gets a profile folder of its own: a new one, such as `~/.claude-work` or, for
+Codex, `~/.codex-work`, or one you already have. Termpolis starts the agent
+there by setting `CLAUDE_CONFIG_DIR` or `CODEX_HOME` on the command it types
+into the terminal. The setting stays in that terminal's shell, so an agent you
+start there later runs on the same account. Each account signs in by itself,
+in Termpolis's sign-in sheet (see [Signing in to an
+account](#signing-in-to-an-account)).
+
+A new folder shares some subfolders with your main profile through links, which
+you can untick when you add the account. For Claude Code these are `projects`
+(your conversations and Claude's own memory, so a conversation can continue on
+another account), `commands`, `skills` and `agents`; for Codex, `sessions`.
+Unless you untick it, Termpolis also copies your main `settings.json` and
+`CLAUDE.md` (for Codex, `config.toml`) into the new folder once. The copy leaves
+out every setting that can hold a key or a token (an `env` block, a key helper,
+MCP servers' tokens and headers) and tells you which it left out. Termpolis
+never copies, links or reads a sign-in.
+
+When you switch a conversation to an account whose `projects` folder isn't
+shared, Termpolis copies that one conversation's transcript into the other
+profile's folder, so the agent can continue it there. A copy already there is
+replaced only when it is older and no longer; otherwise it is kept beside the
+new one.
+
+When you connect an account, Termpolis writes into that profile what it writes
+into your main one, listed above; the Add account sheet lists it first.
+Termpolis's memory is shared by every connected account, and an account you
+don't let Termpolis offer automatically, such as a work account, isn't connected
+unless you tick Connect for it. Termpolis's learning reads the conversations in
+each registered Claude Code and Codex account's profile, as it reads your main
+profile's.
+
+To tell which account a profile is signed in to, Termpolis reads the email
+address Claude Code keeps in that profile's `.claude.json`, whenever it shows
+your accounts: when it starts, when you open Settings → Accounts or a
+terminal's account menu, and after a change or a switch. It asks the agent
+itself (`claude auth status`; for Codex, `codex login status` and Codex's own
+app server, for the email and plan) only when you press Check, after a sign-in,
+before a switch, and when an agent runs out of usage, for the accounts it could
+offer. Except right after a sign-in, it never asks while a Termpolis terminal
+runs on that account, since a check could refresh the sign-in that terminal
+uses. An agent may contact its provider to answer, as it does when it starts.
+
+Disconnect and uninstalling take Termpolis's entries out of every account's
+profile. The profile folders, and the sign-ins in them, stay.
+
 ## Your Choices
 
 - **Turn crash reports or usage statistics on or off** — Settings → General →
@@ -394,6 +457,11 @@ that folder.
 - **Disconnect your coding agents** — Disconnect in Settings → Agent
   Integration removes everything Termpolis wrote into their settings. Folders
   trusted before v1.49 stay trusted (see above).
+- **Forget an account** — **Remove…** on its card in Settings → Accounts
+  forgets the account, and takes Termpolis's entries out of its profile
+  folder. The folder and the sign-in in it stay: Termpolis never deletes a
+  profile folder, because some of its subfolders are links into your main
+  profile.
 - **Delete local data** — quit Termpolis and delete the `userData` directory
   listed above.
 - **Uninstall** — remove Termpolis through your OS's normal application
