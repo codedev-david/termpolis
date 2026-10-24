@@ -154,3 +154,26 @@ describe('the store\'s switch dialog state', () => {
     expect(useTerminalStore.getState().accountMenu).toBeNull()
   })
 })
+
+describe('AccountChip: a switch waiting for the agent\'s turn to end', () => {
+  it('marks the chip, says where it goes, and cancels it with its ×', () => {
+    render(<AccountChip terminalId="t1" />)
+    act(() => { useTerminalStore.setState({ queuedSwitches: { t1: { targetId: 'acc_a', reason: 'by hand' } } }) })
+    expect(screen.getByTestId('account-chip-queued')).toBeInTheDocument()
+    const name = useTerminalStore.getState().accountsView!.accounts.find((r) => r.id === 'acc_a')!.label
+    expect(screen.getByTestId('account-chip').getAttribute('title')).toContain(`Switching to ${name} when it finishes.`)
+    expect(screen.getByTestId('account-chip-cancel')).toHaveAttribute('aria-label', `Cancel the switch to ${name}`)
+    fireEvent.click(screen.getByTestId('account-chip-cancel'))
+    expect(useTerminalStore.getState().queuedSwitches).toEqual({})
+    expect(screen.queryByTestId('account-chip-queued')).toBeNull()
+    // The cancel is the chip's own: it opens no menu.
+    expect(useTerminalStore.getState().accountMenu).toBeNull()
+  })
+
+  it('names no account it no longer has', () => {
+    render(<AccountChip terminalId="t1" />)
+    act(() => { useTerminalStore.setState({ queuedSwitches: { t1: { targetId: 'gone', reason: 'by hand' } } }) })
+    expect(screen.getByTestId('account-chip').getAttribute('title')).toContain('Switching to another account when it finishes.')
+    expect(screen.getByTestId('account-chip-cancel')).toHaveAttribute('aria-label', 'Cancel the switch to another account')
+  })
+})

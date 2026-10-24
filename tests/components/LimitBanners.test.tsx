@@ -80,12 +80,27 @@ describe('LimitBanners', () => {
     expect(useTerminalStore.getState().limitBanners).toEqual([])
   })
 
-  it('opens the chooser from its banner, for every terminal it gathered', () => {
+  it('opens the chooser from its banner, for every terminal it gathered, and shows the first one with its card', () => {
     render(<LimitBanners />)
     show([{ id: 'b1', kind: 'choose', ctx: ctx({ terminals: ['t1', 't2'] }) }])
+    act(() => { useTerminalStore.setState({ showSettings: true, activeTerminalId: 't2' }) })
     expect(screen.getByTestId('limit-banner').textContent).toContain('2 Claude Code terminals ran out of usage on personal.')
     fireEvent.click(screen.getByTestId('limit-banner-choose'))
     expect(useTerminalStore.getState().accountSwitch).toEqual({ terminalId: 't1', limit: ctx({ terminals: ['t1', 't2'] }) })
+    expect(useTerminalStore.getState().limitBanners).toEqual([])
+    // The card is on that terminal's pane: Settings gives way, and the terminal shows.
+    expect(useTerminalStore.getState().showSettings).toBe(false)
+    expect(useTerminalStore.getState().activeTerminalId).toBe('t1')
+  })
+
+  it('leaves a chooser already open as it is, and only shows the banner\'s terminal', () => {
+    render(<LimitBanners />)
+    const open = { terminalId: 't2', limit: ctx({ terminals: ['t2'], accountId: 'acc_b' }) }
+    show([{ id: 'b1', kind: 'choose', ctx: ctx() }])
+    act(() => { useTerminalStore.setState({ accountSwitch: open, activeTerminalId: 't2' }) })
+    fireEvent.click(screen.getByTestId('limit-banner-choose'))
+    expect(useTerminalStore.getState().accountSwitch).toBe(open)
+    expect(useTerminalStore.getState().activeTerminalId).toBe('t1')
     expect(useTerminalStore.getState().limitBanners).toEqual([])
   })
 

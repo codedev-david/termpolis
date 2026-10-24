@@ -91,6 +91,14 @@ describe('SwarmWorkerAccounts', () => {
   })
 })
 
+describe('the workers\' chips in a store that holds no swarm or accounts state', () => {
+  it('shows no chip', () => {
+    act(() => { useTerminalStore.setState({ swarmAgents: undefined as never, accountsView: undefined as never }) })
+    const { container } = render(<SwarmWorkerAccounts />)
+    expect(container.innerHTML).toBe('')
+  })
+})
+
 describe('the account menu on a swarm worker', () => {
   const openFor = (id: string) => act(() => { useTerminalStore.getState().openAccountSwitch(id) })
   const rows = () => screen.getAllByTestId('account-menu-row')
