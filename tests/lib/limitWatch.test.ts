@@ -129,11 +129,17 @@ describe('decideLimit', () => {
     expect(decideLimit(limit(), env())).toEqual({ kind: 'open', ctx: ctx() })
   })
 
-  it('shows the one-line banner for an agent with one account or none (D13), unless hidden for good', () => {
+  it('shows the one-line banner for an agent with one account, or with none once another agent has one, unless hidden for good', () => {
     expect(decideLimit(limit(), env({ view: view([A]) }))).toEqual({ kind: 'banner', banner: { id: 'b1', kind: 'single', ctx: ctx() } })
-    expect(decideLimit(limit(), env({ view: null }))).toEqual({ kind: 'banner', banner: { id: 'b1', kind: 'single', ctx: ctx() } })
     expect(decideLimit(limit(ctx({ agent: 'codex' })), env()).kind).toBe('banner')
     expect(decideLimit(limit(), env({ view: view([A], { hidden: { limitBanner: true } }) }))).toEqual({ kind: 'nothing' })
+  })
+
+  it('shows nothing at all, a menu included, while no account is registered: v1.54.0 as it was (D13)', () => {
+    expect(decideLimit(limit(), env({ view: view([]) }))).toEqual({ kind: 'nothing' })
+    expect(decideLimit(limit(), env({ view: null }))).toEqual({ kind: 'nothing' })
+    expect(decideLimit({ kind: 'menu', ctx: ctx() }, env({ view: view([]) }))).toEqual({ kind: 'nothing' })
+    expect(decideLimit({ kind: 'menu', ctx: ctx() }, env({ view: null }))).toEqual({ kind: 'nothing' })
   })
 
   it('banners a menu, never opening the chooser for it (R22)', () => {

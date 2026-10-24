@@ -1,5 +1,6 @@
-// The usage-limit banners (§8.4): one line each, under the title bar like the memory notice. An
-// agent with one account (or none) out of usage, and until when, with [Add an account] and
+// The usage-limit banners (§8.4): one line each, under the title bar like the memory notice, and
+// none at all while no account is registered (D13). An agent with one account (or none, while
+// another agent has some) out of usage, and until when, with [Add an account] and
 // [Don't show again]; a chooser whose terminal is out of view, or that is switched off, with
 // [Choose an account], which shows that terminal and its card;
 // an agent waiting on a menu, which only the user answers. A banner never takes a key: it is a line,

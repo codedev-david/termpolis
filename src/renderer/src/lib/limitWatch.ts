@@ -138,21 +138,23 @@ export interface DecideEnv {
 }
 
 /**
- * Where a new stop goes (§8.4). A menu: its banner. A limit of an agent with one account (or none):
- * the one-line banner, unless hidden. Else it joins a prompt open for the same account; or the
- * chooser opens, when it is on, the focus rules allow it, and no other dialog is open; or a banner
- * opens it later.
+ * Where a new stop goes (§8.4). With no account registered at all, nowhere: a user who never added
+ * one sees v1.54.0 as it was (D13). A menu: its banner. A limit of an agent with one account (or
+ * none, while another agent has some): the one-line banner, unless hidden. Else it joins a prompt
+ * open for the same account; or the chooser opens, when it is on, the focus rules allow it, and no
+ * other dialog is open; or a banner opens it later.
  */
 export function decideLimit(note: Exclude<LimitNote, { kind: 'none' }>, env: DecideEnv): LimitAction {
   const banner = (kind: LimitBanner['kind'], ctx: LimitContext): LimitAction => ({ kind: 'banner', banner: { id: env.newId(), kind, ctx } })
+  if (!env.view || env.view.accounts.length === 0) return { kind: 'nothing' }
   if (note.kind === 'menu') return banner('menu', note.ctx)
   const ctx = note.ctx
-  const accounts = env.view ? env.view.accounts.filter((r) => r.agent === ctx.agent) : []
-  if (accounts.length <= 1) return env.view?.hidden.limitBanner ? { kind: 'nothing' } : banner('single', ctx)
+  const accounts = env.view.accounts.filter((r) => r.agent === ctx.agent)
+  if (accounts.length <= 1) return env.view.hidden.limitBanner ? { kind: 'nothing' } : banner('single', ctx)
   if (env.dialog?.limit && sameGroup(env.dialog.limit, ctx)) return { kind: 'join' }
   const waiting = env.banners.find((b) => b.kind === 'choose' && sameGroup(b.ctx, ctx))
   if (waiting) return { kind: 'banner', banner: { ...waiting, ctx: { ...waiting.ctx, terminals: [...waiting.ctx.terminals, ...ctx.terminals] } } }
-  if (!env.view!.chooser || !env.mayOpen || env.dialog) return banner('choose', ctx)
+  if (!env.view.chooser || !env.mayOpen || env.dialog) return banner('choose', ctx)
   return { kind: 'open', ctx }
 }
 
