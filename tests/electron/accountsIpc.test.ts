@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { existsSync, lstatSync, mkdirSync, readdirSync, utimesSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount,
@@ -375,9 +375,13 @@ describe('accounts:add, Codex and agy', () => {
     expect(c.account.color).toBe('#7ee2a3')
     const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', color: '#C678DD' })
     expect(g.account.color).toBe('#C678DD')
+    const onDisk = (): unknown[] => (JSON.parse(readFileSync(join(sb.paths.userData, 'agent-accounts.json'), 'utf8')) as { accounts: Array<{ color?: string }> })
+      .accounts.map((a) => a.color).filter((c) => c !== undefined)
     for (const [label, color] of [['plain', undefined], ['named', 'red'], ['short', '#abc'], ['script', 'url(javascript:x)'], ['num', 7]] as const) {
       const r = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label, color })
       expect(r.account.color).toBeUndefined()
+      // Never written either, not even until the next save: the registry holds the good colours only.
+      expect(onDisk()).toEqual(['#7ee2a3', '#C678DD'])
     }
   })
 
