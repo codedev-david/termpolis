@@ -102,8 +102,10 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwdAsync: async (...args: any[]) => mockGetTerminalCwd(...args),
   // terminal:read-buffer hands a replaying pane the pty's size; no pty is known here.
   getTerminalSize: (...args: any[]) => mockGetTerminalSize(...args),
+  terminalShellAlone: (...args: any[]) => mockTerminalShellAlone(...args),
 }))
 const mockGetTerminalSize = vi.fn((..._args: any[]): { cols: number; rows: number } | null => null)
+const mockTerminalShellAlone = vi.fn(async (..._args: any[]): Promise<boolean | null> => null)
 
 const mockDetectAvailableShells = vi.fn()
 vi.mock('../../src/main/shellDetector', () => ({
@@ -2382,6 +2384,13 @@ describe('MCP handler callbacks', () => {
     expect(capturedMcpHandlers.outputOffset('term-offset-test')).toBe(40_009)
     expect(capturedMcpHandlers.readOutput('term-offset-test', 1000).length).toBeLessThan(40_009)
     expect(capturedMcpHandlers.outputOffset('no-such-term')).toBe(0)
+  })
+
+  it('shellAlone hands submit what the OS says runs in the terminal', async () => {
+    // Submit types nothing into an agent's input where nothing runs but the shell (shellAlone.ts).
+    mockTerminalShellAlone.mockResolvedValueOnce(true)
+    expect(await capturedMcpHandlers.shellAlone('agent-term')).toBe(true)
+    expect(mockTerminalShellAlone).toHaveBeenCalledWith('agent-term')
   })
 
   it('readOutput clamps lines to valid range', async () => {

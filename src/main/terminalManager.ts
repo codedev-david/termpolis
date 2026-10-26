@@ -8,6 +8,7 @@ import { execShellCaptureOffThread } from './procClient'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { sudoAskpassEnv } from './sudoAskpass'
+import { shellAlone } from './shellAlone'
 import {
   detectShellKind,
   integrationArgs,
@@ -30,6 +31,8 @@ interface PtyProcess {
    *  CURRENT size, so it is recorded on the way through instead. */
   cols: number
   rows: number
+  /** What was started in the PTY: the shell, or the agent itself for a workflow's agent step. */
+  executable: string
 }
 
 /** A terminal's current geometry, or null when there is no such terminal.
@@ -244,7 +247,7 @@ export function spawnTerminal(
     try { coalescer.dispose() } catch {}
     try { onExit?.(e.exitCode) } finally { processes.delete(id) }
   })
-  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS })
+  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable })
 }
 
 export function killTerminal(id: string): void {
@@ -323,6 +326,13 @@ export function _resetTerminalExitsForTests(): void {
 export function getTerminalPid(id: string): number | null {
   const proc = processes.get(id)
   return proc?.pty.pid ?? null
+}
+
+/** Whether nothing runs in terminal `id` but its shell (shellAlone.ts); null for no such terminal,
+ *  or where that can't be told. */
+export function terminalShellAlone(id: string): Promise<boolean | null> {
+  const proc = processes.get(id)
+  return proc?.pty.pid ? shellAlone(proc.pty.pid, proc.executable) : Promise.resolve(null)
 }
 
 /** The shell pipeline that reads a pid's cwd: fast /proc on Linux, lsof on macOS. */

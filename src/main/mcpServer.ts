@@ -645,6 +645,10 @@ export interface McpToolHandlers {
    *  readOutputFrom's nextOffset). Submit marks it at a run_command that starts an agent, and reads
    *  what the agent did from the output after it. */
   outputOffset?: (terminalId: string) => number
+  /** Whether nothing runs in the terminal but its shell, as the OS tells (shellAlone.ts): true once
+   *  whatever its prompt ran, an agent among them, has exited; null where main can't tell. Submit
+   *  types into an agent only where this isn't true. */
+  shellAlone?: (terminalId: string) => Promise<boolean | null>
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
   getFileTree: (path: string) => { name: string; isDir: boolean }[]
@@ -1144,6 +1148,17 @@ async function submitNow(handlers: McpToolHandlers, terminalId: string, text: st
   const waitedMs = clock.now() - start
   if ((!agent || ready.shell) && agentStarts.has(terminalId)) {
     return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: the agent exited or never started. Check it with read_output, then start the agent again with run_command and send the text again.", ready)
+  }
+  // An agent's input on the screen, and nothing running in the terminal but its shell: the last
+  // frame an agent left when it exited, which a shell that reports no prompts, or an agent started
+  // by hand, leaves for the screen alone to read (shellAlone.ts). Asked before anything is written,
+  // the Ctrl+U that clears the input among it.
+  if (agent && handlers.shellAlone) {
+    const alone = await handlers.shellAlone(terminalId).catch(() => null)
+    if (abandoned?.aborted) return { submitted: false, waitedMs, error: 'The call was abandoned before the text was typed.' }
+    if (alone === true) {
+      return failed(waitedMs, "The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: nothing runs in it but its shell, so the agent exited. Check it with read_output, then start the agent again with run_command and send the text again.", ready)
+    }
   }
   const closed: SubmitResult = { submitted: false, waitedMs, error: `Terminal ${terminalId} was closed.` }
   const unpressed: SubmitResult = { submitted: false, waitedMs, error: 'The call was abandoned before Enter was pressed.' }

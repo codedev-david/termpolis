@@ -2361,3 +2361,130 @@ describe('write_to_terminal', () => {
     }
   })
 })
+
+// The last frame Claude Code leaves when it exits, input box and all, read as the agent at its
+// input where nothing else on the screen said it was gone: a shell that reports no prompts (zsh,
+// fish), or an agent a person started. The task was typed at the shell's prompt, where bash and zsh
+// ran each line of it as its line feed came, and PowerShell all of them at the next Enter. What
+// runs in the terminal, as main reads it from the OS (shellAlone.ts), has the last word.
+describe('write_to_terminal submit and what runs in the terminal', () => {
+  const CLAUDE = 'claude --dangerously-skip-permissions'
+  const TASK = 'Clean the build.\nrm -rf build\nTask ID: t-1'
+  const ZSH = 'david@mac portal % '
+  const PS = `${E}]9;9;C:\\p\x07PS C:\\p> `
+  /** The last frame Claude Code leaves when it exits, and the shell's prompt under it. */
+  const exitedTo = (prompt: string) => `${idle()}${E}[7;1HResume this session with: claude --resume 1234${E}[8;1H${prompt}`
+  /** A terminal whose agent, once `up`, shows what is typed in its box and works on Enter; until
+   *  then what is typed goes to the shell's prompt. `alone` is main's answer to what runs in it. */
+  function terminal(alone: () => Promise<boolean | null>) {
+    let now = 0
+    let out = ''
+    let agentUp = false
+    let inBox = ''
+    const writes: string[] = []
+    const shellAlone = vi.fn((_id: string) => alone())
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn((_id: string, command: string) => { out += `${command}\r\n` }),
+      readOutput: () => out,
+      outputOffset: () => out.length,
+      terminalSize: () => ({ cols: 80, rows: 24 }),
+      shellAlone,
+      writeToTerminal: (_id: string, text: string) => {
+        writes.push(text)
+        if (!agentUp) out += text
+        else if (text === '\r') out += busy()
+        else out += idle((inBox = text === CLEAR ? '' : inBox + text))
+      },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    const clock: SubmitClock = { now: () => now, sleep: async (ms) => { now += ms } }
+    return { handlers, clock, writes, shellAlone, print: (text: string) => { out += text }, up: () => { agentUp = true } }
+  }
+
+  it('types nothing under the last frame of an agent that exited to a prompt its shell reports nothing of', async () => {
+    const t = terminal(async () => true)
+    t.print(ZSH)
+    await executeTool('run_command', { terminalId: 'zsh-1', command: CLAUDE }, t.handlers)
+    t.print(idle())
+    t.print(exitedTo(ZSH))
+    const res = await submitToTerminal(t.handlers, 'zsh-1', TASK, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt, not at the agent's input, so nothing was typed: nothing runs in it but its shell/) })
+    expect(res.screen).toContain('Resume this session with')
+    expect(t.writes).toEqual([])
+    expect(t.shellAlone).toHaveBeenCalledWith('zsh-1')
+  })
+
+  it('types nothing under the last frame of an agent a person started, that exited', async () => {
+    const t = terminal(async () => true)
+    t.print(`${PS}claude\r\n${idle()}`)
+    t.print(exitedTo(PS))
+    const res = await submitToTerminal(t.handlers, 'hand-1', TASK, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The terminal is at its shell's prompt, not at the agent's input, so nothing was typed/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it('clears nothing in a box that holds text either, with nothing running but the shell', async () => {
+    const t = terminal(async () => true)
+    t.print(ZSH)
+    await executeTool('run_command', { terminalId: 'held-1', command: CLAUDE }, t.handlers)
+    t.print(`${idle('half a prompt')}${E}[7;1H${ZSH}`)
+    const res = await submitToTerminal(t.handlers, 'held-1', TASK, t.clock)
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/nothing runs in it but its shell/) })
+    expect(t.writes).toEqual([])
+  })
+
+  it.each([
+    ['something runs besides the shell', async () => false],
+    ["main can't tell", async () => null],
+    ['main failed to tell', () => Promise.reject(new Error('no helper'))],
+  ])('types into an agent at its input where %s', async (_case, alone: () => Promise<boolean | null>) => {
+    const t = terminal(alone)
+    t.print(PS)
+    await executeTool('run_command', { terminalId: 'live-1', command: CLAUDE }, t.handlers)
+    t.up()
+    t.print(idle())
+    const res = await submitToTerminal(t.handlers, 'live-1', 'Write the docs. Task ID: t-1', t.clock)
+    expect(res).toMatchObject({ submitted: true })
+    expect(t.writes).toEqual(['Write the docs. Task ID: t-1', '\r'])
+    expect(t.shellAlone).toHaveBeenCalledTimes(1)
+  })
+
+  it('types nothing once the call is abandoned while main reads what runs', async () => {
+    const abandon = new AbortController()
+    const t = terminal(async () => { abandon.abort(); return false })
+    t.print(PS)
+    await executeTool('run_command', { terminalId: 'gone-2', command: CLAUDE }, t.handlers)
+    t.up()
+    t.print(idle())
+    const res = await submitToTerminal(t.handlers, 'gone-2', 'Write the docs. Task ID: t-1', t.clock, abandon.signal)
+    expect(res).toMatchObject({ submitted: false, error: 'The call was abandoned before the text was typed.' })
+    expect(t.writes).toEqual([])
+  })
+
+  it("doesn't ask about a plain shell it types a command into", async () => {
+    const lines = ['Windows PowerShell', 'Copyright (C) Microsoft Corporation. All rights reserved.', '', 'PS C:\\p> dir', 'ok']
+    let line = ''
+    const writes: string[] = []
+    const shellAlone = vi.fn(async () => true)
+    const handlers = {
+      listTerminals: () => [],
+      runCommand: vi.fn(),
+      readOutput: () => `${E}]9;9;C:\\p\x07` + frame([...lines, `PS C:\\p> ${line}`]),
+      shellAlone,
+      writeToTerminal: (_id: string, text: string) => {
+        writes.push(text)
+        if (text === '\r') {
+          lines.push(`PS C:\\p> ${line}`, 'hi')
+          line = ''
+        } else line += text
+      },
+      closeTerminal: vi.fn(),
+    } as unknown as McpToolHandlers
+    let now = 0
+    const clock: SubmitClock = { now: () => now, sleep: async (ms) => { now += ms } }
+    expect((await submitToTerminal(handlers, 'plain-2', 'echo hi', clock)).submitted).toBe(true)
+    expect(writes).toEqual(['echo hi', '\r'])
+    expect(shellAlone).not.toHaveBeenCalled()
+  })
+})

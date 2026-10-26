@@ -27,6 +27,8 @@ vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal() as any
   return { ...actual, execSync: vi.fn() }
 })
+// What the OS says runs in a terminal is shellAlone.test.ts's; here, only whose question it gets.
+vi.mock('../../src/main/shellAlone', () => ({ shellAlone: vi.fn(async () => true) }))
 
 const { existsSync, writeFileSync } = await import('fs')
 const { execSync } = await import('child_process')
@@ -44,8 +46,10 @@ const {
   getTerminalPid,
   getTerminalCwd,
   getTerminalSize,
+  terminalShellAlone,
   computeWindowsPty,
 } = await import('../../src/main/terminalManager')
+const { shellAlone } = await import('../../src/main/shellAlone')
 
 describe('terminalManager', () => {
   beforeEach(() => {
@@ -256,6 +260,17 @@ describe('terminalManager', () => {
     expect(processKillSpy).toHaveBeenCalledWith(12345)
     expect(getTerminalPid('t5')).toBeNull()
     processKillSpy.mockRestore()
+  })
+
+  it('asks what runs in a terminal of the shell it started there, by its pid', async () => {
+    spawnTerminal('alone-1', '/bin/zsh', '/tmp', vi.fn())
+    expect(await terminalShellAlone('alone-1')).toBe(true)
+    expect(shellAlone).toHaveBeenCalledWith(12345, '/bin/zsh')
+  })
+
+  it('has no answer for a terminal it has no process for', async () => {
+    expect(await terminalShellAlone('no-such-terminal')).toBeNull()
+    expect(shellAlone).not.toHaveBeenCalled()
   })
 
   // 6. killTerminal handles non-existent terminal gracefully

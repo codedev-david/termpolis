@@ -120,7 +120,7 @@ import {
   replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -3572,6 +3572,7 @@ async function semanticPoolOptions(
       },
       terminalSize: (terminalId) => getTerminalSize(terminalId),
       outputOffset: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
+      shellAlone: (terminalId) => terminalShellAlone(terminalId),
       runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
         if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }
         // stepId only keys the runner's in-flight map, so per-call uniqueness is all it needs.
