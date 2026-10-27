@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 
 // --- Mocks ---
 
@@ -12,7 +12,13 @@ const mockPty = {
 }
 
 vi.mock('node-pty', () => ({ spawn: vi.fn(() => mockPty) }))
-vi.mock('electron', () => ({ app: { isPackaged: false } }))
+// A real folder: the fs mock below does not reach terminalManager's own fs import, so the
+// integration script is really written (and removed again in afterAll).
+const { USER_DATA } = vi.hoisted(() => {
+  const base = process.env.RUNNER_TEMP || process.env.TEMP || process.env.TMPDIR || '/tmp'
+  return { USER_DATA: `${base}${base.includes('\\') ? '\\' : '/'}termpolis-test-userdata-${process.pid}` }
+})
+vi.mock('electron', () => ({ app: { isPackaged: false, getPath: (name: string) => (name === 'userData' ? USER_DATA : '') } }))
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal() as any
   // writeFileSync is stubbed so spawning a PowerShell terminal in a unit test does
@@ -50,6 +56,11 @@ const {
   computeWindowsPty,
 } = await import('../../src/main/terminalManager')
 const { shellAlone } = await import('../../src/main/shellAlone')
+
+afterAll(async () => {
+  const { rmSync } = await vi.importActual<typeof import('fs')>('fs')
+  rmSync(USER_DATA, { recursive: true, force: true })
+})
 
 describe('terminalManager', () => {
   beforeEach(() => {
@@ -129,6 +140,16 @@ describe('terminalManager', () => {
     expect(args[0]).toBe('-NoExit')
     expect(args[1]).toBe('-Command')
     expect(args[2]).toContain('termpolis-shell-integration.ps1')
+  })
+
+  it('keeps the integration script in Termpolis\'s data folder, never the temp dir', async () => {
+    // PowerShell dot-sourcing a script from %TEMP% is a pattern endpoint security flags.
+    const { tmpdir } = await vi.importActual<typeof import('os')>('os')
+    const { join } = await vi.importActual<typeof import('path')>('path')
+    spawnTerminal('si-dir', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', '/tmp', vi.fn())
+    const args = vi.mocked(pty.spawn).mock.calls[0][1] as string[]
+    expect(args[2]).toBe(`. '${join(USER_DATA, 'termpolis-shell-integration.ps1')}'`)
+    expect(args[2]).not.toContain(join(tmpdir(), 'termpolis-shell-integration.ps1'))
   })
 
   it('spawnTerminal gives bash a prompt hook without touching its argv', () => {

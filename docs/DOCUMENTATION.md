@@ -276,7 +276,7 @@ Anything listening on a TCP port is never marked stuck — it may be a server yo
 
 **Kill selected** and **Kill all stuck** end the whole process tree after an inline confirmation. Before anything is signalled, each target is checked again against a fresh scan by pid *and* start time, and skipped (and reported) if it has exited, is still running but no longer listed, or its pid now belongs to a different process; **Kill all stuck** also skips anything that is no longer stuck. Anything not skipped is ended together with the child processes that the fresh scan finds under it. On macOS and Linux a kill is SIGTERM, then SIGKILL after 3 seconds. A git killed mid-write can leave a stale `.git/index.lock` — delete it if the next git command complains.
 
-Scanning happens only when the tab opens or you press **Refresh**, never on a timer. Termpolis itself, the programs that launched it, and its own windows and terminal shells are never listed. Processes in other Windows sessions (other users' processes on macOS and Linux) are not listed; elevated ones can only be killed from an elevated Termpolis.
+Scanning happens only when you press **Scan** or **Refresh** — never when the tab opens, and never on a timer. A scan reads every process's command line and the TCP port table, which endpoint-security software logs as discovery (v1.54.3). Termpolis itself, the programs that launched it, and its own windows and terminal shells are never listed. Processes in other Windows sessions (other users' processes on macOS and Linux) are not listed; elevated ones can only be killed from an elevated Termpolis.
 
 ---
 

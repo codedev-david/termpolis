@@ -198,9 +198,9 @@ export function ProcessesSettings(): JSX.Element {
     }
   }, [api])
 
-  useEffect(() => {
-    void load()
-  }, [load])
+  // No scan when the tab opens: a scan lists every process with its command line and the TCP port
+  // table, the discovery an endpoint-security product logs and may alert on. It runs only when
+  // someone presses Scan or Refresh (tests/electron/endpointActivityGuard.test.ts).
 
   const rows = scan?.processes ?? []
   const selectedRows = rows.filter((p) => selected.has(processKey(p)))
@@ -285,9 +285,23 @@ export function ProcessesSettings(): JSX.Element {
     return (
       <div className="settings-section" data-testid="processes-settings">
         <h2 className="text-sm font-semibold text-[#e0e0e0] mb-2">Processes</h2>
-        <p className="text-xs text-[#9ca3af]" data-testid="processes-loading">
-          Scanning…
-        </p>
+        {busy ? (
+          <p className="text-xs text-[#9ca3af]" data-testid="processes-loading">
+            Scanning…
+          </p>
+        ) : (
+          <>
+            <p className="text-xs text-[#9ca3af] mb-3" data-testid="processes-intro">
+              Finds headless AI agents, frozen or runaway git, and the shells and tools they leave behind. A scan
+              lists every process with its command line (PowerShell on Windows, ps elsewhere) and the open TCP
+              ports (netstat, ss or lsof). Nothing is scanned until you press Scan, and never in the background.
+              On a work computer, endpoint security software may log the scan.
+            </p>
+            <button type="button" data-testid="processes-scan" onClick={() => void load()} className={BUTTON}>
+              Scan
+            </button>
+          </>
+        )}
       </div>
     )
   }
@@ -349,7 +363,7 @@ export function ProcessesSettings(): JSX.Element {
       <p className="text-xs text-[#9ca3af] mb-4">
         Headless AI agents, frozen or runaway git, and the shells and tools they leave behind. They pile up when
         a scheduled job, hook or crashed session never cleans up after itself, and each one holds memory and file
-        handles. Nothing is scanned in the background — only when this tab opens or you press Refresh.
+        handles. Nothing is scanned in the background — only when you press Scan or Refresh.
       </p>
 
       {error && (

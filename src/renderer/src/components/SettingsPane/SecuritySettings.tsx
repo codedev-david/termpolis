@@ -617,7 +617,7 @@ export function SecuritySettings() {
             Per-agent egress audit
           </span>
           <p className="text-[11px] text-[#9ca3af] leading-relaxed">
-            Polls each agent's open TCP connections once a minute (via <code>netstat</code>/<code>ss</code>/<code>lsof</code>) and records the unique <code>host:port</code> pairs. OS-level ground truth — independent of what the agent's own logs say. Visible alongside the entries below when the audit log is enabled.
+            Off in this version: Termpolis does not list network connections. It would read each agent's open TCP connections with <code>netstat</code>/<code>ss</code>/<code>lsof</code>, and endpoint security treats repeated connection listing as network discovery, so nothing polls them.
           </p>
         </div>
       </div>

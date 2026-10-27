@@ -294,7 +294,7 @@ describe('findConductorExit', () => {
   it('leaves out every piece of the echoed launch line, as ConPTY really draws it', () => {
     const typed = (end: string) => "$p\x1b[90m=\x1b[36m'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'\x1b[37m; " +
       '\x1b[92mif \x1b[37m(\x1b[90m-not \x1b[37m(\x1b[93mTest-Path \x1b[92m$p\x1b[37m)) { \x1b[92m$p\x1b[90m=\x1b[37m(\x1b[93mGet-Process ' +
-      '\x1b[90m-Id \x1b[92m$PID\x1b[37m).\x1b[97mPath \x1b[37m}; & \x1b[92m$p \x1b[90m-ExecutionPolicy \x1b[37mBypass \x1b[90m-File ' +
+      '\x1b[90m-Id \x1b[92m$PID\x1b[37m).\x1b[97mPath \x1b[37m}; & \x1b[92m$p \x1b[90m-ExecutionPolicy \x1b[37mRemoteSigned \x1b[90m-File ' +
       "\x1b[36m'C:\\Users\\me\\" + end
     const out = '\x1b[?25l\x1b[93m$\x1b[?25h\x1b[m\x1b[?25l\x1b[92m\x08' + typed('.termpolis-conductor') +
       '\x1b[?25l\x1b[m\x1b[92m\x1b[2;63H' + typed(".termpolis-conductor-run.ps1'\r\n") +
@@ -326,7 +326,7 @@ describe('findConductorExit', () => {
 
   it('quotes at most the last 15 non-empty lines printed after the start line, not the echoed launch line', () => {
     const lines = Array.from({ length: 30 }, (_, i) => `line ${i}`)
-    const out = "PS C:\\> & $p -ExecutionPolicy Bypass -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n[termpolis-conductor-started]\r\n" +
+    const out = "PS C:\\> & $p -ExecutionPolicy RemoteSigned -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n[termpolis-conductor-started]\r\n" +
       lines.join('\r\n\r\n') + '\r\n[termpolis-conductor-exited] 2\r\n'
     expect(findConductorExit(out)).toEqual({ code: 2, lastLines: lines.slice(-15) })
     expect(findConductorExit("$ bash '/home/me/.termpolis-conductor-run.sh'\r\n[termpolis-conductor-started]\r\n\r\n[termpolis-conductor-exited] 0\r\n"))
@@ -373,7 +373,7 @@ describe('conductorLaunchCommand', () => {
     expect(cmd).toBe(
       "$p='C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'; " +
         'if (-not (Test-Path $p)) { $p=(Get-Process -Id $PID).Path }; ' +
-        "& $p -ExecutionPolicy Bypass -File 'C:\\Users\\O''Brien $x\\.termpolis-conductor-run.ps1'",
+        "& $p -ExecutionPolicy RemoteSigned -File 'C:\\Users\\O''Brien $x\\.termpolis-conductor-run.ps1'",
     )
   })
 

@@ -959,7 +959,7 @@ describe('conductorManager', () => {
     // What the terminal shows from launch on: the echoed launch line, then the script's first line.
     const launchEcho =
       "PS C:\\proj> $p='C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'; " +
-      "& $p -ExecutionPolicy Bypass -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n" +
+      "& $p -ExecutionPolicy RemoteSigned -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n" +
       '[termpolis-conductor-started]\r\n'
     function screen(output: string, nextOffset = 4321) {
       ;(window.termpolis.readTerminalBuffer as Mock).mockResolvedValue({ success: true, data: { output, length: output.length, nextOffset } })
@@ -1743,7 +1743,8 @@ describe('conductorManager', () => {
       const { writeTerminalCalls } = await launchAndGetWrites()
       const cmd = getLaunchCmd(writeTerminalCalls)
       expect(cmd).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
-      expect(cmd).toContain('-ExecutionPolicy Bypass')
+      expect(cmd).toContain('-ExecutionPolicy RemoteSigned')
+      expect(cmd).not.toContain('Bypass')
       expect(cmd).toMatch(/& \$p /)
     })
 
@@ -1789,7 +1790,7 @@ describe('conductorManager', () => {
       // One line (no embedded \n or \r within body)
       expect(cmd.includes('\n')).toBe(false)
       // Has the three-part structure we expect: $p= ; if ; &
-      expect(cmd).toMatch(/^\$p='[^']+'; if \(-not \(Test-Path \$p\)\) \{ \$p=\(Get-Process -Id \$PID\)\.Path \}; & \$p -ExecutionPolicy Bypass -File '[^']+\.ps1'$/)
+      expect(cmd).toMatch(/^\$p='[^']+'; if \(-not \(Test-Path \$p\)\) \{ \$p=\(Get-Process -Id \$PID\)\.Path \}; & \$p -ExecutionPolicy RemoteSigned -File '[^']+\.ps1'$/)
     })
   })
 

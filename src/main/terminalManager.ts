@@ -1,7 +1,7 @@
 import * as pty from 'node-pty'
-import { homedir, tmpdir } from 'os'
-import { existsSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { homedir } from 'os'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
 import { execShellCaptureOffThread } from './procClient'
@@ -388,16 +388,18 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
  *
  * PowerShell is the only shell whose integration cannot travel in the environment — it
  * has no PROMPT_COMMAND equivalent — so the wrapper needs a real file to dot-source.
- * It goes in the temp dir, never anywhere the user owns, and is rewritten if something
- * cleaned it up mid-session.
+ * It goes in Termpolis's own data folder, never anywhere the user owns, and is rewritten
+ * if something cleaned it up mid-session. Not the temp dir: PowerShell running a script
+ * from %TEMP% is a pattern endpoint security flags (malware stages scripts there).
  *
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
 let integrationScriptPath: string | null = null
 function ensureIntegrationScript(): string | null {
   try {
-    const p = integrationScriptPath ?? join(tmpdir(), 'termpolis-shell-integration.ps1')
+    const p = integrationScriptPath ?? join(app.getPath('userData'), 'termpolis-shell-integration.ps1')
     if (integrationScriptPath === null || !existsSync(p)) {
+      mkdirSync(dirname(p), { recursive: true })
       writeFileSync(p, POWERSHELL_INTEGRATION_SCRIPT, 'utf8')
     }
     integrationScriptPath = p

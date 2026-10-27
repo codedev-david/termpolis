@@ -2054,9 +2054,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                   const alias = e.target.value
                   if (alias === REFRESH_MODELS_VALUE) {
                     // Discovery found nothing for this provider — Codex has never been run
-                    // (so it has published no cache), or `agy models` failed offline. Give
-                    // the otherwise-dead dropdown one honest action rather than waiting out
-                    // the 12h TTL. Never becomes liveModel: it is not a model.
+                    // (so it has published no cache), or `agy models` has not run yet (only
+                    // this refresh runs it) or failed offline. Give the otherwise-dead
+                    // dropdown one honest action rather than waiting out the 12h TTL. Never
+                    // becomes liveModel: it is not a model.
                     void window.termpolis.refreshModelCatalog?.()
                       ?.then((res) => { if (res?.success && res.data) setModelCatalog(res.data) })
                       ?.catch(() => { /* still nothing to offer — the row stays */ })
