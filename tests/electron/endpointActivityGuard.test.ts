@@ -15,8 +15,10 @@
  *
  * Related guards: the Processes panel scans only on Scan or Refresh
  * (tests/renderer/processesSettings.test.tsx), no agent CLI starts at launch
- * (tests/electron/mainIpcRemaining.test.ts), and PowerShell's integration script is never run from
- * the temp dir (tests/electron/terminalManager.test.ts).
+ * (tests/electron/mainIpcRemaining.test.ts), PowerShell's integration script is never run from
+ * the temp dir (tests/electron/terminalManager.test.ts), and the Windows installer closes a running
+ * Termpolis without a process query (tests/electron/installerNsh.test.ts, and the Tests workflow's
+ * installer-update job).
  *
  * Only string and template literals are read, with TypeScript's own parser: a command Termpolis can
  * run is built from strings, while a comment, or UI prose that names a tool, is not.

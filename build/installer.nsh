@@ -53,3 +53,90 @@
     ClearErrors
   ${endIf}
 !macroend
+
+; Close a running Termpolis before its files are replaced, without listing processes.
+;
+; electron-builder's own check (allowOnlyOneInstallerInstance.nsh) runs PowerShell's
+; Get-CimInstance Win32_Process, or tasklist, on every install, uninstall and auto-update. On a
+; monitored work computer that process query, started under Termpolis.exe, reads as discovery to
+; endpoint security. This asks Windows a narrower question instead: can Termpolis.exe be opened
+; for writing? Windows refuses that while anything runs from the file - the app, or a helper run
+; from it as Node (ELECTRON_RUN_AS_NODE, how Termpolis starts its MCP adapter when there is no
+; Node) - so the answer covers exactly what would block the update, in this install only.
+;
+; Something is running: it is asked to close (taskkill without /F sends its windows a close),
+; then made to (taskkill /F), by name and for this user only, as electron-builder does. An update
+; first gets 5 seconds to let the quitting app finish on its own. Kept honest by
+; tests/electron/installerNsh.test.ts (no process query in here) and the Tests workflow's
+; installer-update job (updates over a running Termpolis on every build).
+;
+; Defined in this include, which electron-builder reads before its own, so its check and the
+; variable only that check uses are left out.
+
+; Leaves 1 in _OUT while Termpolis.exe is in use, 0 when it is not, or not installed yet.
+; Uses $R9, which customCheckAppRunning saves.
+!macro termpolisExeInUse _OUT
+  StrCpy ${_OUT} 0
+  ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+    ClearErrors
+    FileOpen $R9 "$INSTDIR\${APP_EXECUTABLE_FILENAME}" a
+    ${If} ${Errors}
+      StrCpy ${_OUT} 1
+    ${Else}
+      FileClose $R9
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro customCheckAppRunning
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R9
+  ${If} $EXEFILE != "${APP_EXECUTABLE_FILENAME}"
+    !insertmacro termpolisExeInUse $R0
+    ${If} $R0 == 1
+    ${AndIf} ${isUpdated}
+      StrCpy $R1 0
+      ${DoWhile} $R0 == 1
+        ${If} $R1 >= 10
+          ${ExitDo}
+        ${EndIf}
+        Sleep 500
+        IntOp $R1 $R1 + 1
+        !insertmacro termpolisExeInUse $R0
+      ${Loop}
+    ${EndIf}
+    ${If} $R0 == 1
+      ${IfNot} ${isUpdated}
+        MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK +2
+        Quit
+      ${EndIf}
+      DetailPrint "$(appClosing)"
+      ExpandEnvStrings $R2 "%USERNAME%"
+      StrCpy $R1 0
+      ${DoWhile} $R0 == 1
+        ${If} $R1 == 0
+          nsExec::Exec `"$SYSDIR\taskkill.exe" /IM "${APP_EXECUTABLE_FILENAME}" /FI "USERNAME eq $R2"`
+        ${Else}
+          nsExec::Exec `"$SYSDIR\taskkill.exe" /F /IM "${APP_EXECUTABLE_FILENAME}" /FI "USERNAME eq $R2"`
+        ${EndIf}
+        Pop $R9
+        Sleep 1000
+        IntOp $R1 $R1 + 1
+        !insertmacro termpolisExeInUse $R0
+        ${If} $R0 == 1
+        ${AndIf} $R1 >= 6
+          ; Still in use after six tries: most likely running elevated, out of this user's reach.
+          MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY +2
+          Quit
+          StrCpy $R1 1
+        ${EndIf}
+      ${Loop}
+    ${EndIf}
+  ${EndIf}
+  Pop $R9
+  Pop $R2
+  Pop $R1
+  Pop $R0
+!macroend
