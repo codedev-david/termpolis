@@ -862,6 +862,15 @@ const aiInputStaging = new Map<string, string>()
 const PASTE_THRESHOLD = 32
 const STAGE_CAP = 64 * 1024 // 64 KB per terminal — safety bound on staging
 
+// Whether nothing runs in a terminal but its shell, as the OS tells (shellAlone.ts). The model
+// switcher polls this after it quits an agent: the agent is gone when this turns true, and typing
+// the relaunch any earlier lands in a process that is still shutting down and is lost. Only that
+// terminal's own console or process group is read, never a process listing. null = cannot tell.
+ipcMain.handle('terminal:shell-alone', async (_, { id }: { id?: unknown } = {}) => {
+  if (typeof id !== 'string' || !id) return err('Invalid terminal id')
+  return ok(await terminalShellAlone(id).catch(() => null))
+})
+
 ipcMain.handle('terminal:kill', async (_, { id }) => {
   try {
     killTerminal(id)

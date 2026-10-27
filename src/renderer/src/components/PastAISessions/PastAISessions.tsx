@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { useTerminalStore } from '../../store/terminalStore'
 import { getTerminalDefaults } from '../../lib/terminalDefaults'
 import { isClaudeCommand } from '../../lib/testAgents'
+import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from '../../lib/agentModelDefaults'
 import type { AISessionSummary, ShellType } from '../../types'
 
 interface Props {
@@ -15,7 +16,9 @@ type HandoffAgent = 'claude' | 'codex' | 'gemini'
 const AGENT_COMMANDS: Record<HandoffAgent, string> = {
   claude: 'claude',
   codex: 'codex',
-  gemini: 'gemini',
+  // Gemini's CLI is the Antigravity CLI now (`agy`); the old `gemini` is not installed on a current
+  // setup, so this typed a command that did not exist.
+  gemini: 'agy',
 }
 
 const AGENT_LABELS: Record<HandoffAgent, string> = {
@@ -222,10 +225,14 @@ export function PastAISessions({ open, onClose }: Props) {
       try {
         await window.termpolis.createTerminal(newId, defaultShell as ShellType, session.cwd, undefined, isClaudeCommand(cmd))
         if (isClaudeCommand(cmd)) await trustFolder(session.cwd)
+        // Settings › General › Default Models: the agent this hands off to starts on the model
+        // chosen for it, like any other new terminal of that agent.
+        const model = defaultModelFor(cmd, await catalogForLaunch())
+        if (model.dropped) useTerminalStore.getState().setMemoryNotice(droppedDefaultNotice(cmd, model.dropped))
         // 1. Boot the agent. 2. Wait for it to be ready. 3. Paste the prompt.
         // Two-step delay because agents take time to print their banner.
         setTimeout(() => {
-          window.termpolis.writeToTerminal(newId, cmd + '\r')
+          window.termpolis.writeToTerminal(newId, cmd + model.arg + '\r')
           setTimeout(() => {
             // Write the prompt without auto-submit. User reads + presses Enter
             // when they're satisfied — gives them an "abort" lever if the

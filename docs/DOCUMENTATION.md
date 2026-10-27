@@ -234,7 +234,7 @@ Click **Split View** / **Tab View** in the sidebar toolbar, press `Ctrl+Shift+G`
 
 Open with the gear icon at the top of the sidebar, or choose **Open Settings** in the command palette (`Ctrl+K`). `Ctrl+/` opens it straight on the Keybindings tab. Settings takes the place of the terminals in the main area until you close it, and the installed version and a **Check for updates** button sit at the top. Tabs across the top group the settings:
 
-- **General** — Safe Import (scan a third-party skill, plugin or MCP server before you install it), the default shell, terminal defaults (theme, font size, font family), naming agent terminals after their folder, whether terminal apps may capture the mouse, memory recall on agent launch, **Import / Export Memory**, and **Privacy**: crash reports and anonymous usage statistics are two separate switches, both off unless you turn them on, and a change applies at once (details in `PRIVACY.md`).
+- **General** — Safe Import (scan a third-party skill, plugin or MCP server before you install it), the default shell, terminal defaults (theme, font size, font family), naming agent terminals after their folder, the **default model** for each AI agent (Claude Code, OpenAI Codex, Antigravity CLI), whether terminal apps may capture the mouse, memory recall on agent launch, **Import / Export Memory**, and **Privacy**: crash reports and anonymous usage statistics are two separate switches, both off unless you turn them on, and a change applies at once (details in `PRIVACY.md`).
 - **Memory & Learning** — the memory dashboard: what is stored and where it came from, the knowledge graph, learning over time, self-competence by domain, receipts, and every recent memory operation. It also shows whether memory runs in its own process, and can store vectors as int8 to use 4× less RAM.
 - **AI Security** — Strict Mode, the Gemini account mode, what each agent does with your data, always-on prompt watching (it records a secret you send to an agent but never changes or holds back what you type), Commit Shield and its git hooks (block a commit or push that carries a secret), Egress Guard (flags agent traffic to unexpected hosts), memory scrub (redacts secrets before they are stored), the always-on background watchers, the cloud-bound audit log, and a manual pre-paste secret scan.
 - **Voice** — voice dictation: the on/off switch, your Groq API key, hold or tap activation, and auto-submit (see [Voice Dictation](#voice-dictation)).
@@ -506,6 +506,27 @@ Launch any AI CLI as a profiled terminal: Claude Code, Codex, Gemini CLI. Profil
 - A distinct working directory if you want one.
 
 Custom profiles take any command — if it's in your PATH, you can profile it. Add one with the **+** button on the sidebar's **AI Agents** section.
+
+### Choosing the model
+
+Two things set which model an agent runs on: a default per agent, and a menu on each running terminal.
+
+**Default models** (Settings → General → Default Models) pick the model that each of Claude Code, OpenAI Codex and the Antigravity CLI starts on in a *new* terminal: from the sidebar, the launch shortcuts, the Welcome screen, the command palette, a restored workspace, or a handoff. **Agent's own default** adds nothing, so the agent's own setting decides.
+
+- Claude's menu holds its four aliases (Fable, Opus, Sonnet, Haiku), which always mean the newest model in each family.
+- Codex's and the Antigravity CLI's menus are read from each agent's own list, never typed in. Codex publishes its list after it has run once; the Antigravity CLI's appears when you press **Refresh lists**, which asks it for its models.
+- A profile's own pinned Claude model beats the default. A command that already names a model (`--model`) or resumes a session (`--resume`, `--continue`) is left alone. A default its agent no longer lists is skipped, and a notice says so.
+- A terminal that is already running never changes.
+
+**The Model… menu** in the header of a Claude Code, Codex or Antigravity terminal that Termpolis launched switches that one terminal while you work. It presses Ctrl+C three times to quit the agent, waits until the operating system confirms the agent has exited, reads the line the agent prints as it goes (`Resume this session with: claude --resume …`, or `agy --conversation=…`), and starts the agent again on the new model, resuming exactly that conversation. The menu reads **Restarting on …** meanwhile, which takes a few seconds, longer for an agent that runs shutdown hooks.
+
+- **Switch before anything has been said** and there is nothing to resume, so the agent starts a new session on the new model, and a notice says so. (Asking Claude Code to continue a conversation that does not exist only gives "No conversation found to continue", and the Antigravity CLI would pick up a conversation from another project.)
+- **If Termpolis cannot tell which conversation was running** (it could not read the agent's exit line, the agent had already exited, or the OS could not see it), Claude Code and Codex resume their most recent conversation in that folder, and if that leaves nothing running, a new session is started and a notice says so. The Antigravity CLI is never asked for its most recent conversation, because that one is global and can belong to another project: it starts a new session, says so, and your earlier conversation is still saved. Codex's exit line has not been confirmed against the real CLI, so Codex takes the most-recent route unless its line is recognised.
+- **Launch flags carry over**: `--dangerously-skip-permissions` or `--yolo`, for example, with the value of each flag that has one. A launch command that holds quotes, shell operators, variables, or a prompt (`claude /review`) cannot be repeated safely, because it could re-submit the prompt or change what a flag means. Then the agent comes back with its default options, and a notice says so. (A quoted value that is replaced anyway, such as `--model 'opus[1m]'`, does not get in the way.)
+- **A terminal started by a wrapper** such as `claude-sandbox` or `claudex` is not restarted. Its command starts with an agent's name but is another program, and the bare agent would run without whatever the wrapper adds, a sandbox included. A notice says so; open a new terminal on that model instead.
+- **If the agent has not quit after 30 seconds**, Termpolis types nothing more and tells you. If it never quits, it is still on its previous model.
+- The menu appears only for terminals Termpolis launched. It sends Ctrl+C to whatever is running in the terminal, so if you quit the agent and started something else there, leave the menu alone.
+- Switching again within a few seconds, while the agent is still starting up, is the least reliable moment: wait until it has finished starting.
 
 ### Second Opinion
 

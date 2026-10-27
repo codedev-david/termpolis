@@ -34,8 +34,13 @@ import { moveCaret, toLinearSelection, selectionKeyAction, isAnchorSelectClick, 
 import { useVoiceInput } from '../../hooks/useVoiceInput'
 import { tapOrHoldKeydownAction, tapOrHoldKeyupAction, pushToTalkMainKey, computeDisplayLevel, RELIABLE_SPEECH_RMS } from '../../lib/voice/voicePipeline'
 import { modelSwitchCommand } from '../../lib/modelBroker'
-import { relaunchAgentWithModel } from '../../lib/modelRelaunch'
-import { modelOptionsFor, providerForAgent, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
+import { relaunchAgentWithModel, EXIT_CEILING_MS } from '../../lib/modelRelaunch'
+import { beginModelSwitch, endModelSwitch, useModelSwitch } from '../../lib/modelSwitchState'
+
+// Sentinel <option> shown while a model switch is under way (never a model id: it fails
+// isSafeModelId, so it cannot reach an argv).
+const SWITCHING_VALUE = '__switching__'
+import { carryLaunchArgs, modelOptionsFor, providerForAgent, PROVIDER_BIN, PROVIDER_INSTALL_KEY, PROVIDER_LABEL, REFRESH_MODELS_VALUE, type ModelCatalog } from '../../lib/modelCatalog'
 import { buildSecondOpinionMenu, parseSecondOpinion } from '../../lib/secondOpinion'
 import { DIFF_PATTERN, ERROR_PATTERN } from '../../lib/outputPatterns'
 import { useAgentDetection } from '../../hooks/useAgentDetection'
@@ -498,19 +503,22 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // Reactive so the on-pane mic button appears/disappears as voice is toggled in Settings.
   const voiceEnabled = useTerminalStore((s) => s.voiceSettings?.enabled ?? false)
   const setShowSettings = useTerminalStore((s) => s.setShowSettings)
+  const setMemoryNotice = useTerminalStore((s) => s.setMemoryNotice)
   // Local hot-swap model for this terminal's agent — relaunches with the provider's own
   // --model + resume flags for an authoritatively-launched session (see
   // authoritativeProvider above); falls back to a plain /model hot-swap for a
   // heuristically-detected Claude session we can't safely interrupt.
   const [liveModel, setLiveModel] = useState('')
-  // Re-entrancy guard for the authoritative relaunch path only: relaunchAgentWithModel
-  // is an async ~1.8s multi-step PTY sequence (Ctrl+C, Ctrl+D xN, retype). A second
-  // pick landing before the first settles would interleave its writes into the same
-  // PTY as the in-flight sequence — e.g. sequence B's Ctrl+D arriving after sequence A
-  // already exited Claude back to an empty shell prompt, where Ctrl+D exits the shell
-  // itself. The heuristic /model hot-swap branch is a single synchronous write with no
-  // overlap window, so it needs no guard.
-  const [relaunchInFlight, setRelaunchInFlight] = useState(false)
+  // Re-entrancy guard for the authoritative relaunch path only: relaunchAgentWithModel is an
+  // async multi-step PTY sequence that runs for seconds (Ctrl+C x3, a wait for the OS to say the
+  // agent has exited, the retype). A second pick landing before the first settles would interleave
+  // its writes into the same PTY — e.g. sequence B's Ctrl+C arriving at the agent sequence A has
+  // just relaunched, interrupting it while it starts. The guard is NOT component state: the sequence
+  // outlives this pane (opening Settings, or toggling split or tab view, unmounts it mid-switch), so
+  // it is kept per terminal in modelSwitchState and the next pane to mount sees it. The heuristic
+  // /model hot-swap branch is a single synchronous write with no overlap window, so it needs none.
+  const switchingTo = useModelSwitch(terminalId)
+  const relaunchInFlight = switchingTo !== undefined
   const voiceToggleRef = useRef<() => void>(() => {})
   const voiceStartRef = useRef<() => void>(() => {})
   const voiceStopRef = useRef<() => void>(() => {})
@@ -2047,7 +2055,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
             return (
               <select
                 data-testid="model-picker"
-                value={liveModel}
+                value={relaunchInFlight ? SWITCHING_VALUE : liveModel}
                 onClick={(e) => e.stopPropagation()}
                 onChange={(e) => {
                   e.stopPropagation()
@@ -2063,17 +2071,81 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                       ?.catch(() => { /* still nothing to offer — the row stays */ })
                     return
                   }
-                  setLiveModel(alias)
+                  // The "Model…" placeholder is not a choice: leave the picker on what it shows.
+                  if (!alias) return
                   if (authoritativeProvider === provider) {
-                    // Guard against a second pick overlapping this one — see
-                    // relaunchInFlight's declaration for why.
-                    if (relaunchInFlight) return
-                    setRelaunchInFlight(true)
+                    // Claim the terminal first: one call both checks and takes it, so two picks
+                    // cannot both pass, and a pane remounted mid-switch is refused too.
+                    if (!beginModelSwitch(terminalId, alias)) return
+                    const previous = liveModel
+                    setLiveModel(alias)
+                    const target = options.find((o) => o.alias === alias)?.label ?? alias
                     void relaunchAgentWithModel(provider, alias, modelCatalog, {
                       write: (data) => window.termpolis.writeToTerminal(terminalId, data),
                       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-                    }).finally(() => setRelaunchInFlight(false))
+                      // The OS's own answer to "has the agent really exited?". Without it the
+                      // relaunch was typed on a timer, into a Claude Code still shutting down.
+                      shellAlone: async () => {
+                        const res = await window.termpolis.terminalShellAlone?.(terminalId)
+                        return res?.success ? res.data : null
+                      },
+                      // What the agent prints as it exits names the conversation to resume.
+                      outputMark: async () => {
+                        const res = await window.termpolis.readTerminalBuffer?.(terminalId)
+                        const at = res?.success && res.data ? res.data.nextOffset : null
+                        // A mark that is not a real offset would read as "nothing was printed".
+                        return typeof at === 'number' && Number.isFinite(at) ? at : null
+                      },
+                      outputSince: async (mark) => {
+                        const res = await window.termpolis.readTerminalBuffer?.(terminalId, mark ?? undefined)
+                        if (!res?.success || !res.data) return null
+                        // Output that fell out of the buffer between the mark and now is output
+                        // that was never read: not conclusive, so report it as unreadable.
+                        if (mark !== null && res.data.missed > 0) return null
+                        // A cursor-forward is how a TUI draws a space: keep it as one, or the words of
+                        // the exit line run together.
+                        return stripAnsi(res.data.output.replace(/\x1b\[\d*C/g, ' '))
+                      },
+                    }, agentCommand).then((outcome) => {
+                      // Options the launch command held that could not be repeated faithfully: the agent
+                      // came back on its defaults, which can be looser than what it was started with.
+                      const lostOptions = !carryLaunchArgs(provider, agentCommand).complete
+                      const lost = ' It was started with options Termpolis cannot repeat safely (quotes, operators or a prompt), so it came back with its defaults.'
+                      if (outcome === 'relaunched') {
+                        if (lostOptions) setMemoryNotice?.(`⚠️ ${label} restarted on ${target}.${lost}`)
+                        return
+                      }
+                      if (outcome === 'started-new') {
+                        // Quit before anything was said: there was nothing to lose, but say what happened.
+                        setMemoryNotice?.(`ℹ️ ${label} had nothing to resume, so it started a new session on ${target}.${lostOptions ? lost : ''}`)
+                        return
+                      }
+                      if (outcome === 'started-unsure') {
+                        setMemoryNotice?.(`ℹ️ Termpolis could not tell which ${label} conversation to resume, so it started a new session on ${target}. If there was an earlier conversation, it is still saved.${lostOptions ? lost : ''}`)
+                        return
+                      }
+                      if (outcome === 'started-fresh') {
+                        // The cause is not known (nothing to continue, a missing command, a crash): say only what is.
+                        setMemoryNotice?.(`ℹ️ ${label} was not running after the resume, so Termpolis started a new session on ${target}.${lostOptions ? lost : ''}`)
+                        return
+                      }
+                      // Nothing was started, so do not leave the picker claiming a model that is
+                      // not running; and when the agent would not quit, say why nothing happened.
+                      setLiveModel(previous)
+                      if (outcome === 'unsupported') {
+                        // `claude-sandbox`, `claudex`: it starts with the agent's name, but is another program.
+                        const ran = (agentCommand ?? '').trim().split(/\s+/)[0] || label
+                        setMemoryNotice?.(`⚠️ This ${label} terminal was started with "${ran}", not plain ${PROVIDER_BIN[provider]}, so Termpolis did not restart it: the bare agent would not run the way "${ran}" does. Open a new terminal on ${target} instead.`)
+                      }
+                      if (outcome === 'still-running') {
+                        setMemoryNotice?.(`⚠️ ${label} had not quit after ${EXIT_CEILING_MS / 1000} s, so Termpolis left it alone: it pressed Ctrl+C three times and typed nothing else. If it is still running, it is on its previous model; if it is at a prompt, start ${label} again.`)
+                      }
+                    }).catch(() => {
+                      setLiveModel(previous)
+                      setMemoryNotice?.(`⚠️ Switching ${label} to ${target} failed, so nothing more was typed. The terminal is as the failure left it.`)
+                    }).finally(() => endModelSwitch(terminalId))
                   } else if (provider === 'claude') {
+                    setLiveModel(alias)
                     const cmd = modelSwitchCommand(alias)
                     if (cmd) window.termpolis.writeToTerminal(terminalId, cmd + '\r')
                   }
@@ -2082,6 +2154,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
                 title={`Switch this ${label} agent's model (restarts this terminal's session on the new model and resumes your conversation, when Termpolis launched it; cheaper models save tokens).`}
                 className="text-[10px] font-medium text-[#e0e0e0] bg-[#2d2d2d]/90 hover:bg-[#0e639c] border border-[#3c3c3c] hover:border-[#1177bb] rounded px-1.5 py-1 transition-colors outline-hidden disabled:opacity-60"
               >
+                {relaunchInFlight && (
+                  <option value={SWITCHING_VALUE}>Restarting on {options.find((o) => o.alias === switchingTo)?.label ?? switchingTo}…</option>
+                )}
                 <option value="">{options.length === 0 ? 'Model — none found' : 'Model…'}</option>
                 {options.length === 0 && <option value={REFRESH_MODELS_VALUE}>Retry discovery</option>}
                 {options.map((m) => (

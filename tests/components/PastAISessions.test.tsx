@@ -406,6 +406,90 @@ describe('PastAISessions', () => {
     }, { timeout: 5000 })
   })
 
+  it('Continue in Codex: starts Codex on the model chosen in Settings › General › Default Models', async () => {
+    localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ codex: 'gpt-5.5' }))
+    ;(window as any).termpolis.getModelCatalog = vi.fn().mockResolvedValue({
+      success: true,
+      data: { codex: { provider: 'codex', models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }], source: 'cli', fetchedAt: 1 } },
+    })
+    try {
+      render(<PastAISessions open={true} onClose={vi.fn()} />)
+      await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+      fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+      const codexBtn = await screen.findByText('Continue in Codex')
+      await act(async () => {
+        fireEvent.click(codexBtn)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await waitFor(() => {
+        const calls = (window as any).termpolis.writeToTerminal.mock.calls
+        expect(calls.some((c: any[]) => c[1] === 'codex --model gpt-5.5\r')).toBe(true)
+      }, { timeout: 2000 })
+      // The handoff terminal's recorded command stays the plain agent: the model is a launch detail.
+      expect(mockAddTerminal.mock.calls[0][0].agentCommand).toBe('codex')
+    } finally {
+      localStorage.removeItem('termpolis.agent.modelDefaults')
+    }
+  })
+
+  it('Continue in Gemini CLI: starts the Antigravity CLI (agy), not the retired `gemini`, on its default model', async () => {
+    localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ gemini: 'gemini-3.8-flash-high' }))
+    ;(window as any).termpolis.getModelCatalog = vi.fn().mockResolvedValue({
+      success: true,
+      data: { gemini: { provider: 'gemini', models: [{ id: 'gemini-3.8-flash-high', label: 'Flash' }], source: 'cli', fetchedAt: 1 } },
+    })
+    try {
+      render(<PastAISessions open={true} onClose={vi.fn()} />)
+      await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+      fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+      const geminiBtn = await screen.findByText('Continue in Gemini CLI')
+      await act(async () => {
+        fireEvent.click(geminiBtn)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(mockAddTerminal.mock.calls[0][0].agentCommand).toBe('agy')
+      await waitFor(() => {
+        const calls = (window as any).termpolis.writeToTerminal.mock.calls
+        expect(calls.some((c: any[]) => c[1] === 'agy --model gemini-3.8-flash-high\r')).toBe(true)
+      }, { timeout: 2000 })
+      const calls = (window as any).termpolis.writeToTerminal.mock.calls
+      expect(calls.some((c: any[]) => typeof c[1] === 'string' && c[1].startsWith('gemini'))).toBe(false)
+    } finally {
+      localStorage.removeItem('termpolis.agent.modelDefaults')
+    }
+  })
+
+  it('Continue in Codex: a saved default Codex no longer lists is dropped, with a notice', async () => {
+    const setMemoryNotice = vi.fn()
+    const store = (await import('../../src/renderer/src/store/terminalStore')).useTerminalStore as any
+    store.getState.mockReturnValue({ defaultShell: 'bash', setMemoryNotice })
+    localStorage.setItem('termpolis.agent.modelDefaults', JSON.stringify({ codex: 'gpt-5.3-codex' }))
+    ;(window as any).termpolis.getModelCatalog = vi.fn().mockResolvedValue({
+      success: true,
+      data: { codex: { provider: 'codex', models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }], source: 'cli', fetchedAt: 1 } },
+    })
+    try {
+      render(<PastAISessions open={true} onClose={vi.fn()} />)
+      await waitFor(() => expect(screen.getAllByTestId('past-ai-session-row').length).toBe(3))
+      fireEvent.click(screen.getAllByTestId('past-ai-session-handoff-btn')[0])
+      const codexBtn = await screen.findByText('Continue in Codex')
+      await act(async () => {
+        fireEvent.click(codexBtn)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await waitFor(() => {
+        const calls = (window as any).termpolis.writeToTerminal.mock.calls
+        expect(calls.some((c: any[]) => c[1] === 'codex\r')).toBe(true)
+      }, { timeout: 2000 })
+      expect(setMemoryNotice).toHaveBeenCalledWith(expect.stringMatching(/Codex no longer offers your default model "gpt-5\.3-codex"/))
+    } finally {
+      localStorage.removeItem('termpolis.agent.modelDefaults')
+    }
+  })
+
   it('digest failure surfaces an error in the footer status', async () => {
     ;(window as any).termpolis.digestAISession.mockResolvedValueOnce({ success: false, error: 'parse fail' })
     render(<PastAISessions open={true} onClose={vi.fn()} />)
