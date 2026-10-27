@@ -131,6 +131,8 @@ describe('endpoint activity guard', () => {
       ['connection table', /\bnetstat(\.exe)?\b|Get-NetTCPConnection|Get-NetUDPEndpoint/i],
       // Case-sensitive: the program names are lowercase, and the sidebar labels PowerShell "PS".
       ['process or socket lister', /^(ps|pgrep|ss|lsof)(\.exe)?$/],
+      // With arguments, inside a command line: `ps -ef`, BSD-style `ps aux`, `pgrep node`, `lsof -i`, `ss -tlnp`.
+      ['process or socket lister, with arguments', /(^|[\s'"`|;&(])(ps\s+(-|[auxefwlj]+\b)|(pgrep|lsof)\s+\S|ss\s+-)/],
     ]
     expectOnly(hits(DISCOVERY), {
       'src/main/stuckProcesses.ts':
@@ -139,6 +141,12 @@ describe('endpoint activity guard', () => {
         'Per-agent egress audit: nothing calls it (asserted below).',
       'src/main/shellAlone.ts':
         'macOS/Linux: the terminal\'s own shell and process group (ps -p, pgrep -g), before typing into an agent.',
+      'src/main/terminalManager.ts':
+        'macOS: the working directory of the terminal\'s own shell (lsof -p <pid>), so the git badge follows cd.',
+      'src/main/sudoAskpass.ts':
+        'macOS/Linux: the one process that asked for the sudo password dialog (ps -p <its parent>).',
+      'src/main/noNewPrivs.ts':
+        'Linux: whether Termpolis\'s own old process has exited before it relaunches (ps -p <its pid>).',
     })
   })
 
