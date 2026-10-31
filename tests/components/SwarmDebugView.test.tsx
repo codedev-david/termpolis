@@ -24,7 +24,7 @@ import type { TerminalSession } from '../../src/renderer/src/types'
 const terminal = (id: string, extra: Partial<TerminalSession> = {}): TerminalSession => ({
   id, name: id, color: '#fff', shellType: 'powershell', cwd: '/proj', fontSize: 14, theme: 'dark', fontFamily: 'monospace', ...extra,
 })
-const CONDUCTOR_OUTPUT = "PS C:\\proj> & $p -ExecutionPolicy Bypass -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n" +
+const CONDUCTOR_OUTPUT = "PS C:\\proj> & $p -ExecutionPolicy RemoteSigned -File 'C:\\Users\\me\\.termpolis-conductor-run.ps1'\r\n" +
   "\x1b[31merror: unknown option '-NoProfile'\x1b[0m\r\n[termpolis-conductor-exited] 1\r\nPS C:\\proj> "
 
 beforeEach(() => {

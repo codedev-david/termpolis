@@ -37,7 +37,7 @@ const {
   mockOpenExternal, mockOpenPath,
   mockCreateFromBuffer,
   mockSpawnTerminal, mockKillTerminal, mockWriteToTerminal, mockResizeTerminal,
-  mockGetTerminalCwd, mockGetTerminalPid, mockComputeWindowsPty, mockGetTerminalSize,
+  mockGetTerminalCwd, mockGetTerminalPid, mockComputeWindowsPty, mockGetTerminalSize, mockTerminalShellAlone,
   mockDetectAvailableShells,
   mockLoadSession, mockLoadRestoreSession, mockSaveSession,
   mockAppendCommand, mockSearchHistory,
@@ -72,6 +72,8 @@ const {
   // The geometry the pty is drawing for, which terminal:read-buffer hands a replaying pane.
   // Default: no pty known, so the reply carries no size.
   mockGetTerminalSize: vi.fn((): { cols: number; rows: number } | null => null),
+  // Whether nothing runs in a terminal but its shell (shellAlone.ts): the answer the model switcher polls.
+  mockTerminalShellAlone: vi.fn(async (_id: string): Promise<boolean | null> => null),
   mockDetectAvailableShells: vi.fn(async () => [] as Array<{ type: string; executable: string; name?: string }>),
   mockLoadSession: vi.fn(() => ({ terminals: [] })),
   mockLoadRestoreSession: vi.fn(() => ({ terminals: [] })),
@@ -181,6 +183,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalCwdAsync: mockGetTerminalCwdAsync,
   getTerminalPid: mockGetTerminalPid,
   getTerminalSize: mockGetTerminalSize,
+  terminalShellAlone: mockTerminalShellAlone,
   computeWindowsPty: mockComputeWindowsPty,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
@@ -387,6 +390,8 @@ beforeEach(() => {
   mockDetectAvailableShells.mockResolvedValue([])
   mockAppendAudit.mockImplementation(async () => undefined)
   mockGetTerminalSize.mockReturnValue(null)
+  mockTerminalShellAlone.mockReset()
+  mockTerminalShellAlone.mockResolvedValue(null)
 })
 
 // ===========================================================================
@@ -621,6 +626,33 @@ describe('terminal output buffering (terminal:create onData -> terminal:read-buf
     expect(await invoke('terminal:read-buffer', { terminalId: 'never-spawned' })).toEqual({
       success: true, data: { output: '', length: 0, nextOffset: 0, missed: 0 },
     })
+  })
+})
+
+// ===========================================================================
+// terminal:shell-alone
+// ===========================================================================
+// The model switcher asks this to learn when the old agent has really gone: a fixed wait
+// after the quit keys typed the relaunch into a Claude Code that was still shutting down.
+describe('terminal:shell-alone', () => {
+  it.each([true, false, null])('hands the OS answer (%s) back untouched', async (answer) => {
+    mockTerminalShellAlone.mockResolvedValueOnce(answer)
+    const r = await invoke('terminal:shell-alone', { id: 'alone-1' })
+    expect(r).toEqual({ success: true, data: answer })
+    expect(mockTerminalShellAlone).toHaveBeenCalledWith('alone-1')
+  })
+
+  it('reads a failing query as "cannot tell", not as an error', async () => {
+    mockTerminalShellAlone.mockRejectedValueOnce(new Error('helper died'))
+    expect(await invoke('terminal:shell-alone', { id: 'alone-2' })).toEqual({ success: true, data: null })
+  })
+
+  it('refuses an id that is not a string, without asking the OS', async () => {
+    for (const id of [undefined, 42, { id: 'x' }, '']) {
+      const r = await invoke('terminal:shell-alone', { id })
+      expect(r.success).toBe(false)
+    }
+    expect(mockTerminalShellAlone).not.toHaveBeenCalled()
   })
 })
 

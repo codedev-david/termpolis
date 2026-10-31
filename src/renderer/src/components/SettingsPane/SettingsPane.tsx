@@ -9,6 +9,7 @@ import { AgentRatingsSettings } from './AgentRatingsSettings'
 import { SecuritySettings } from './SecuritySettings'
 import { MemoryLearningSettings } from './MemoryLearningSettings'
 import { SafeImportPanel } from './SafeImportPanel'
+import { DefaultModelsSettings } from './DefaultModelsSettings'
 import { VoiceSettings } from './VoiceSettings'
 import { TokenSavingsSettings } from './TokenSavingsSettings'
 import { RemoteSettings } from './RemoteSettings'
@@ -391,6 +392,8 @@ export function SettingsPane() {
               </span>
             </label>
           </div>
+          {/* Which model each AI agent starts on in a new terminal (Claude, Codex, Antigravity). */}
+          <DefaultModelsSettings />
           <div className="flex items-start gap-3">
             <button
               onClick={() => setAllowAppMouseControl(!allowAppMouseControl)}

@@ -237,8 +237,8 @@ test.describe.serial('Swarm launch command shape', () => {
     expect(cmd).toMatch(/if \(-not \(Test-Path \$p\)\)/)
     expect(cmd).toContain('(Get-Process -Id $PID).Path')
 
-    // Invokes the script via the call operator with ExecutionPolicy Bypass
-    expect(cmd).toMatch(/& \$p -ExecutionPolicy Bypass -File '[^']+\.ps1'/)
+    // Invokes the script via the call operator with ExecutionPolicy RemoteSigned, never Bypass
+    expect(cmd).toMatch(/& \$p -ExecutionPolicy RemoteSigned -File '[^']+\.ps1'/)
   })
 
   test('7. Unix launch command invokes bash directly', async () => {

@@ -1732,6 +1732,24 @@ describe('startup keeps slow work OFF the launch path', () => {
       vi.useRealTimers()
     }
   })
+
+  it('starts no agent CLI at launch: `agy models` waits for an explicit refresh', async () => {
+    // An agent CLI Termpolis starts on its own reads its saved sign-in under Termpolis.exe, and
+    // endpoint security attributes that to Termpolis. The launch refresh may read Codex's cache
+    // file; only the picker's Refresh runs agy (see the models: catalog suite below).
+    vi.useFakeTimers()
+    try {
+      M.execSync.mockReturnValue(Buffer.from('/usr/bin/agy')) // agy on PATH
+      M.execFileSync.mockReset()
+      vi.resetModules()
+      await import('../../src/main/index')
+      await vi.advanceTimersByTimeAsync(0) // let app.whenReady().then(...) flush
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(M.execFileSync).not.toHaveBeenCalledWith('agy', expect.anything(), expect.anything())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // ===========================================================================

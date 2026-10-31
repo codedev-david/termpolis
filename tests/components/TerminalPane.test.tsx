@@ -294,6 +294,7 @@ vi.mock('../../src/renderer/src/components/PinnedOutput/PinnedOutput', () => ({
 
 // --- Global window.termpolis mock ---
 const mockWriteToTerminal = vi.fn()
+const mockSetMemoryNotice = vi.fn()
 const mockReadTerminalBuffer = vi.fn(() =>
   Promise.resolve({ success: true, data: { output: '' } })
 )
@@ -361,6 +362,10 @@ beforeAll(() => {
 
 // Import after all mocks are set up
 import { TerminalPane } from '../../src/renderer/src/components/TerminalPane/TerminalPane'
+import { resetModelSwitches } from '../../src/renderer/src/lib/modelSwitchState'
+import {
+  CLAUDE_EXIT_AFTER_A_TURN, CLAUDE_EXIT_NO_TURN, AGY_EXIT_AFTER_A_TURN, CLAUDE_SESSION_ID, AGY_CONVERSATION_ID,
+} from '../fixtures/agentExitOutput'
 import { DEFAULT_KEYBINDINGS } from '../../src/renderer/src/lib/keybindings'
 
 const defaultProps = {
@@ -419,6 +424,9 @@ describe('TerminalPane', () => {
   })
 
   afterEach(() => {
+    // A test that fails while it holds a fake clock must not leave it behind for the next one.
+    vi.useRealTimers()
+    resetModelSwitches()
     vi.restoreAllMocks()
     mocks.mockTerminal.buffer.active.type = 'normal'
   })
@@ -1320,6 +1328,28 @@ describe('TerminalPane', () => {
   // =====================================================
   // 2d2. Live model picker — hot-swap a Claude agent's model from the header.
   // =====================================================
+  // What the OS says about the terminal, in order, last one repeating: false while the agent still
+  // runs, true once only the shell is left, null where main cannot tell. Installed on the preload
+  // mock for the duration of one test; the afterEach below removes it.
+  function osSaysShellAlone(...answers: Array<boolean | null>) {
+    let i = 0
+    const fn = vi.fn(async () => ({ success: true, data: answers[Math.min(i++, answers.length - 1)] }))
+    ;(window as any).termpolis.terminalShellAlone = fn
+    return fn
+  }
+  afterEach(() => { delete (window as any).termpolis.terminalShellAlone })
+
+  // What the terminal's output buffer holds, as the switcher reads it: the first read (no offset) is
+  // the MARK taken before the quit keys, the second (from that offset) is what the quit printed.
+  // `tail` is what an unmarked read returns (the retained window, for an agent that had already exited).
+  function exitPrints(output: string | null, opts: { missed?: number; tail?: string } = {}) {
+    mockReadTerminalBuffer.mockImplementation(((_id: string, from?: number) => {
+      if (from === undefined) return Promise.resolve({ success: true, data: { output: opts.tail ?? '', nextOffset: 10, length: 0, missed: 0 } })
+      if (output === null) return Promise.resolve({ success: false, error: 'terminal gone' })
+      return Promise.resolve({ success: true, data: { output, nextOffset: 99, length: output.length, missed: opts.missed ?? 0 } })
+    }) as never)
+  }
+
   describe('live model picker (single-agent hot-swap)', () => {
     function withClaudeTerminal(agentCommand: string | undefined) {
       mocks.mockGetState.mockImplementation(() => ({
@@ -1332,32 +1362,163 @@ describe('TerminalPane', () => {
         focusActiveTerminal: mocks.mockFocusActiveTerminal,
         focusNonce: 0,
         voiceSettings: { enabled: false },
+        setMemoryNotice: mockSetMemoryNotice,
       }))
     }
 
-    it('shows the picker for an authoritatively-launched Claude terminal and relaunches with --model + --continue on change', async () => {
+    const CTRL_C_x3 = [['term-1', '\x03'], ['term-1', '\x03'], ['term-1', '\x03']]
+    const FLAGS = 'claude --dangerously-skip-permissions'
+    const resumeLine = (model: string) => `${FLAGS} --model ${model} --resume ${CLAUDE_SESSION_ID}\r`
+
+    it('quits Claude with Ctrl+C and resumes EXACTLY the session it names as it exits', async () => {
       vi.useFakeTimers()
-      withClaudeTerminal('claude --dangerously-skip-permissions')
+      const os = osSaysShellAlone(false, false, true) // running, still tearing down, gone
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
       render(<TerminalPane {...defaultProps} />)
       fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
       await vi.runAllTimersAsync()
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', '\x04')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', 'claude --model sonnet --continue\r')
+      expect(mockWriteToTerminal.mock.calls).toEqual([...CTRL_C_x3, ['term-1', resumeLine('sonnet')]])
+      expect(os).toHaveBeenCalledTimes(3)
+      expect(os).toHaveBeenCalledWith('term-1')
+      // It marked the buffer before the keys, and read from that mark afterwards.
+      expect(mockReadTerminalBuffer).toHaveBeenCalledWith('term-1', 10)
       vi.useRealTimers()
+    })
+
+    it('types the relaunch only AFTER the OS says the agent is gone — typed into a Claude still shutting down, it is lost', async () => {
+      vi.useFakeTimers()
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      // The poll is held open: the agent is still tearing down (7-11 s on a machine with hooks).
+      let gone!: (r: { success: boolean; data: boolean }) => void
+      ;(window as any).termpolis.terminalShellAlone = vi.fn()
+        .mockResolvedValueOnce({ success: true, data: false })
+        .mockImplementation(() => new Promise((resolve) => { gone = resolve }))
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(mockWriteToTerminal.mock.calls).toEqual(CTRL_C_x3) // the old 1.5 s timer would have typed it by now
+      gone({ success: true, data: true })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', resumeLine('sonnet'))
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(4)
+      vi.useRealTimers()
+    })
+
+    it('starts a NEW session when the quit named nothing (switching right after launch), and says so', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_NO_TURN)
+      withClaudeTerminal(FLAGS)
+      mockSetMemoryNotice.mockClear()
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      // No "No conversation found to continue": a new session on the model, and no resume flag at all.
+      expect(mockWriteToTerminal.mock.calls).toEqual([...CTRL_C_x3, ['term-1', `${FLAGS} --model sonnet\r`]])
+      // A conversation that was not recognised would vanish the same way, so it is always reported.
+      expect(mockSetMemoryNotice).toHaveBeenCalledTimes(1)
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith('ℹ️ Claude had nothing to resume, so it started a new session on Sonnet.')
+      expect((screen.getByTestId('model-picker') as HTMLSelectElement).value).toBe('sonnet')
+      vi.useRealTimers()
+    })
+
+    it('goes straight to the relaunch when the agent has already exited (no keys into the shell)', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(true, false) // already gone; then, after the resume, something is running
+      exitPrints('', { tail: CLAUDE_EXIT_AFTER_A_TURN })
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'haiku' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal.mock.calls).toEqual([['term-1', resumeLine('haiku')]])
+      vi.useRealTimers()
+    })
+
+    it('keeps the flags the terminal was launched with, and swaps a pinned model for the new one', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(true, false)
+      exitPrints('', { tail: CLAUDE_EXIT_AFTER_A_TURN })
+      withClaudeTerminal('claude --dangerously-skip-permissions --model opus --effort max')
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'haiku' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal.mock.calls).toEqual([['term-1', `claude --dangerously-skip-permissions --effort max --model haiku --resume ${CLAUDE_SESSION_ID}\r`]])
+      vi.useRealTimers()
+    })
+
+    it('waits a long blind beat when the OS bridge is absent, then relaunches', async () => {
+      vi.useFakeTimers()
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS) // no terminalShellAlone on the bridge
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'opus' } })
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(mockWriteToTerminal.mock.calls).toEqual(CTRL_C_x3)
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', resumeLine('opus'))
+      vi.useRealTimers()
+    })
+
+    it('reads a failed OS reply as "cannot tell"', async () => {
+      vi.useFakeTimers()
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      ;(window as any).termpolis.terminalShellAlone = vi.fn(async () => ({ success: false, error: 'Invalid terminal id' }))
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'opus' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', resumeLine('opus'))
+      vi.useRealTimers()
+    })
+
+    it('resumes the agent\'s latest, and double-checks it, when what the quit printed was partly lost', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true, false) // running, gone, and then up again after the resume
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN, { missed: 4096 })
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', `${FLAGS} --model sonnet --continue\r`)
+      expect(mockWriteToTerminal).toHaveBeenCalledTimes(4)
+      vi.useRealTimers()
+    })
+
+    it('resumes the agent\'s latest when the buffer cannot be read at all, and when its offsets make no sense', async () => {
+      for (const reader of [
+        () => Promise.resolve({ success: false, error: 'x' }),
+        () => Promise.resolve({ success: true, data: { output: 'bye', nextOffset: 'soon', missed: 0 } }),
+        () => Promise.reject(new Error('ipc down')),
+      ]) {
+        mockWriteToTerminal.mockClear()
+        vi.useFakeTimers()
+        osSaysShellAlone(false, true, false)
+        mockReadTerminalBuffer.mockImplementation(reader as never)
+        withClaudeTerminal(FLAGS)
+        const { unmount } = render(<TerminalPane {...defaultProps} />)
+        fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+        await vi.runAllTimersAsync()
+        expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', `${FLAGS} --model sonnet --continue\r`)
+        unmount()
+        resetModelSwitches()
+        vi.useRealTimers()
+      }
     })
 
     it('switches models back and forth midstream, relaunching each time', async () => {
       vi.useFakeTimers()
-      withClaudeTerminal('claude --dangerously-skip-permissions')
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
       render(<TerminalPane {...defaultProps} />)
       const picker = screen.getByTestId('model-picker')
       for (const alias of ['opus', 'sonnet', 'haiku', 'opus', 'fable']) {
         mockWriteToTerminal.mockClear()
+        osSaysShellAlone(false, true)
         fireEvent.change(picker, { target: { value: alias } })
         await vi.runAllTimersAsync()
-        expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', `claude --model ${alias} --continue\r`)
+        expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', resumeLine(alias))
       }
       vi.useRealTimers()
     })
@@ -1379,67 +1540,226 @@ describe('TerminalPane', () => {
       expect(screen.queryByTestId('model-picker')).not.toBeInTheDocument()
     })
 
-    it('sends nothing for the placeholder option (no injection)', () => {
-      withClaudeTerminal('claude --dangerously-skip-permissions')
+    it('sends nothing for the placeholder option (no injection), and does not move the picker', () => {
+      withClaudeTerminal(FLAGS)
       render(<TerminalPane {...defaultProps} />)
       mockWriteToTerminal.mockClear()
       fireEvent.change(screen.getByTestId('model-picker'), { target: { value: '' } })
       expect(mockWriteToTerminal).not.toHaveBeenCalled()
+      expect((screen.getByTestId('model-picker') as HTMLSelectElement).value).toBe('')
     })
 
-    // --- Re-entrancy guard: a relaunch is a ~1.8s async sequence (Ctrl+C, two
-    // Ctrl+D, then the retype). Picking a second model before it settles must NOT
-    // let a second sequence's writes interleave into the same PTY as the first's
-    // (concretely: sequence B's Ctrl+D landing after sequence A already exited
-    // Claude back to an empty shell prompt, where Ctrl+D exits the shell itself).
+    // --- Re-entrancy guard: a relaunch is a multi-second async sequence (Ctrl+C presses, a wait
+    // for the agent to go, then the retype). Picking a second model before it settles must NOT
+    // let a second sequence's keys interleave into the same PTY as the first's (concretely: a
+    // second sequence's Ctrl+C landing on the relaunched agent, interrupting it as it starts).
     it('ignores a second pick while a relaunch is still in flight (re-entrancy guard)', async () => {
       vi.useFakeTimers()
-      withClaudeTerminal('claude --dangerously-skip-permissions')
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
       render(<TerminalPane {...defaultProps} />)
       const picker = screen.getByTestId('model-picker')
       fireEvent.change(picker, { target: { value: 'sonnet' } })
-      // Mid-sequence: only Ctrl+C + the first Ctrl+D have gone out (150ms in); the
-      // second Ctrl+D and the retype are still pending.
+      // Mid-sequence: the first Ctrl+C is out, the other two and the retype are still pending.
       await vi.advanceTimersByTimeAsync(150)
       fireEvent.change(picker, { target: { value: 'opus' } })
       await vi.runAllTimersAsync()
       // Exactly ONE full 4-call sequence total — the second pick contributed nothing.
-      expect(mockWriteToTerminal).toHaveBeenCalledTimes(4)
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', '\x04')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', 'claude --model sonnet --continue\r')
+      expect(mockWriteToTerminal.mock.calls).toEqual([...CTRL_C_x3, ['term-1', resumeLine('sonnet')]])
       expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', expect.stringContaining('opus'))
       vi.useRealTimers()
     })
 
-    it('disables the picker while a relaunch is in flight and re-enables it once the relaunch settles', async () => {
+    it('the guard survives the pane being unmounted and mounted again mid-switch (Settings opened, view toggled)', async () => {
       vi.useFakeTimers()
-      withClaudeTerminal('claude --dangerously-skip-permissions')
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
+      const first = render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.advanceTimersByTimeAsync(150)
+      first.unmount()
+
+      // The sequence is still running when the next pane for the same terminal mounts.
       render(<TerminalPane {...defaultProps} />)
-      const picker = screen.getByTestId('model-picker')
+      const picker = screen.getByTestId('model-picker') as HTMLSelectElement
+      expect(picker).toBeDisabled()
+      expect(picker.textContent).toContain('Restarting on Sonnet')
+      fireEvent.change(picker, { target: { value: 'opus' } })
+      await vi.runAllTimersAsync()
+
+      // Still exactly one sequence, and the new pane learned it had finished.
+      expect(mockWriteToTerminal.mock.calls).toEqual([...CTRL_C_x3, ['term-1', resumeLine('sonnet')]])
+      expect(picker).not.toBeDisabled()
+      vi.useRealTimers()
+    })
+
+    it('shows the switch in progress, disables the picker meanwhile, and re-enables it once the relaunch settles', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker') as HTMLSelectElement
       fireEvent.change(picker, { target: { value: 'sonnet' } })
       expect(picker).toBeDisabled()
+      // The switch takes seconds, so say so rather than showing a model that is not running yet.
+      expect(picker.textContent).toContain('Restarting on Sonnet')
       await vi.runAllTimersAsync()
       expect(picker).not.toBeDisabled()
+      expect(picker.textContent).not.toContain('Restarting')
+      expect(picker.value).toBe('sonnet')
       vi.useRealTimers()
     })
 
     it('does not block a new pick once a prior relaunch has fully completed', async () => {
       vi.useFakeTimers()
-      withClaudeTerminal('claude --dangerously-skip-permissions')
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
       render(<TerminalPane {...defaultProps} />)
       const picker = screen.getByTestId('model-picker')
       fireEvent.change(picker, { target: { value: 'sonnet' } })
       await vi.runAllTimersAsync()
       mockWriteToTerminal.mockClear()
+      osSaysShellAlone(false, true)
       fireEvent.change(picker, { target: { value: 'opus' } })
       await vi.runAllTimersAsync()
-      expect(mockWriteToTerminal).toHaveBeenCalledTimes(4)
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', '\x04')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(4, 'term-1', 'claude --model opus --continue\r')
+      expect(mockWriteToTerminal.mock.calls).toEqual([...CTRL_C_x3, ['term-1', resumeLine('opus')]])
+      vi.useRealTimers()
+    })
+
+    it('types nothing more, puts the picker back and says so when the agent never quits', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false) // still running, whatever we do
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
+      mockSetMemoryNotice.mockClear()
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker') as HTMLSelectElement
+      fireEvent.change(picker, { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal.mock.calls).toEqual(CTRL_C_x3) // no relaunch into a live agent
+      expect(picker.value).toBe('') // not left claiming a model that never started
+      expect(picker).not.toBeDisabled()
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith(expect.stringMatching(/Claude had not quit after 30 s.*left it alone.*typed nothing else.*start Claude again/))
+      vi.useRealTimers()
+    })
+
+    it('says when it had to start a new session because the resume left nothing running', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true, true) // the resume of "the latest" left only the shell
+      exitPrints(null)
+      withClaudeTerminal(FLAGS)
+      mockSetMemoryNotice.mockClear()
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal.mock.calls.slice(-2)).toEqual([
+        ['term-1', `${FLAGS} --model sonnet --continue\r`],
+        ['term-1', `${FLAGS} --model sonnet\r`],
+      ])
+      // Nothing to continue, a missing command and a crash all look alike from here, so it names none.
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith('ℹ️ Claude was not running after the resume, so Termpolis started a new session on Sonnet.')
+      expect((screen.getByTestId('model-picker') as HTMLSelectElement).value).toBe('sonnet')
+      vi.useRealTimers()
+    })
+
+    it('reads an exit line the agent PAINTED with cursor movement instead of spaces', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      // A TUI draws a space as a cursor-forward; stripping the escapes alone would run the words together.
+      exitPrints(`\x1b[2mResume\x1b[1Cthis\x1b[1Csession\x1b[1Cwith:\r\nclaude\x1b[1C--resume\x1b[1C${CLAUDE_SESSION_ID}\r\n`)
+      withClaudeTerminal(FLAGS)
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', resumeLine('sonnet'))
+      vi.useRealTimers()
+    })
+
+    it('says so when the launch options could not be repeated and the agent came back on its defaults', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal('claude --permission-mode plan --append-system-prompt "be careful"')
+      mockSetMemoryNotice.mockClear()
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      // The bare agent, resuming its own conversation: nothing the quote could break.
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', `claude --model sonnet --resume ${CLAUDE_SESSION_ID}\r`)
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith(expect.stringMatching(/^⚠️ Claude restarted on Sonnet\..*cannot repeat safely.*came back with its defaults/))
+      vi.useRealTimers()
+    })
+
+    it('adds the lost-options warning to a new-session notice too', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_NO_TURN)
+      withClaudeTerminal('claude /review')
+      mockSetMemoryNotice.mockClear()
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', 'claude --model sonnet\r') // the prompt is not sent again
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith(expect.stringMatching(/had nothing to resume.*cannot repeat safely/))
+      vi.useRealTimers()
+    })
+
+    it('stays quiet about options when the command was just the agent', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal('claude')
+      mockSetMemoryNotice.mockClear()
+      render(<TerminalPane {...defaultProps} />)
+      fireEvent.change(screen.getByTestId('model-picker'), { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockSetMemoryNotice).not.toHaveBeenCalled()
+      vi.useRealTimers()
+    })
+
+    it('does not restart a wrapper such as claude-sandbox as the bare agent: nothing is typed, and it says why', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      // It starts with "claude", so the picker is offered; but it is another program.
+      withClaudeTerminal('claude-sandbox --verbose')
+      mockSetMemoryNotice.mockClear()
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker') as HTMLSelectElement
+      fireEvent.change(picker, { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).not.toHaveBeenCalled() // no Ctrl+C, no relaunch: the sandbox stays on
+      expect(picker.value).toBe('')
+      expect(picker).not.toBeDisabled()
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith(expect.stringMatching(/started with "claude-sandbox", not plain claude, so Termpolis did not restart it.*Open a new terminal on Sonnet instead/))
+      vi.useRealTimers()
+    })
+
+    it('recovers from something unexpected going wrong mid-switch: releases the terminal and says so', async () => {
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(CLAUDE_EXIT_AFTER_A_TURN)
+      withClaudeTerminal(FLAGS)
+      mockSetMemoryNotice.mockClear()
+      // The relaunch line itself cannot be written.
+      mockWriteToTerminal.mockImplementation((_id: string, data: string) => { if (data.startsWith('claude')) throw new Error('pty gone') })
+      render(<TerminalPane {...defaultProps} />)
+      const picker = screen.getByTestId('model-picker') as HTMLSelectElement
+      fireEvent.change(picker, { target: { value: 'sonnet' } })
+      await vi.runAllTimersAsync()
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith(expect.stringMatching(/Switching Claude to Sonnet failed/))
+      expect(picker).not.toBeDisabled()
+      expect(picker.value).toBe('')
+      // ...and the terminal can be switched again afterwards.
+      mockWriteToTerminal.mockReset()
+      osSaysShellAlone(false, true)
+      fireEvent.change(picker, { target: { value: 'opus' } })
+      await vi.runAllTimersAsync()
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', resumeLine('opus'))
       vi.useRealTimers()
     })
   })
@@ -1466,6 +1786,7 @@ describe('TerminalPane', () => {
         focusActiveTerminal: mocks.mockFocusActiveTerminal,
         focusNonce: 0,
         voiceSettings: { enabled: false },
+        setMemoryNotice: mockSetMemoryNotice,
       }))
       ;(window as any).termpolis.getModelCatalog = vi.fn(async () => ({ success: true, data: catalog }))
       // Reset the two APIs individual cases below override, so a stub cannot leak forward.
@@ -1491,29 +1812,53 @@ describe('TerminalPane', () => {
       expect(picker.textContent).not.toContain('Sonnet')
     })
 
-    it('relaunches Codex with its own resume flag and a SINGLE Ctrl+D', async () => {
+    it('relaunches Codex on the session it names, after quitting it with Ctrl+C (never Ctrl+D)', async () => {
       withAgentTerminal('codex --yolo')
       render(<TerminalPane {...defaultProps} />)
       const picker = await pickerWithModels()
       vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(`To continue this session, run codex resume ${CLAUDE_SESSION_ID}\n`)
       fireEvent.change(picker, { target: { value: 'gpt-5.6-sol' } })
       await vi.runAllTimersAsync()
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(1, 'term-1', '\x03')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(2, 'term-1', '\x04')
-      expect(mockWriteToTerminal).toHaveBeenNthCalledWith(3, 'term-1', 'codex --model gpt-5.6-sol resume --last\r')
-      expect(mockWriteToTerminal).toHaveBeenCalledTimes(3)
+      expect(mockWriteToTerminal.mock.calls).toEqual([
+        ['term-1', '\x03'], ['term-1', '\x03'], ['term-1', '\x03'],
+        ['term-1', `codex --yolo --model gpt-5.6-sol resume ${CLAUDE_SESSION_ID}\r`],
+      ])
       vi.useRealTimers()
     })
 
-    it('lists Gemini\'s models and relaunches the Antigravity CLI with --continue', async () => {
+    it('lists Gemini\'s models and relaunches the Antigravity CLI on exactly the conversation it names', async () => {
       withAgentTerminal('agy')
       render(<TerminalPane {...defaultProps} />)
       const picker = await pickerWithModels()
       expect(picker.textContent).toContain('Gemini 3.8 Flash (High)')
       vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(AGY_EXIT_AFTER_A_TURN)
       fireEvent.change(picker, { target: { value: 'gemini-3.8-flash-high' } })
       await vi.runAllTimersAsync()
-      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', 'agy --model gemini-3.8-flash-high --continue\r')
+      // Antigravity ignores Ctrl+D (it prints "press ctrl+d again to exit" and stays), so it is
+      // quit with Ctrl+C like the others; and its "--continue" is global, so it resumes by id.
+      expect(mockWriteToTerminal).not.toHaveBeenCalledWith('term-1', '\x04')
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', `agy --model gemini-3.8-flash-high --conversation=${AGY_CONVERSATION_ID}\r`)
+      vi.useRealTimers()
+    })
+
+    it('starts a NEW Antigravity session, and says so, when it cannot tell which conversation is the terminal\'s', async () => {
+      withAgentTerminal('agy')
+      render(<TerminalPane {...defaultProps} />)
+      const picker = await pickerWithModels()
+      vi.useFakeTimers()
+      osSaysShellAlone(false, true)
+      exitPrints(null) // what the quit printed could not be read
+      mockSetMemoryNotice.mockClear()
+      fireEvent.change(picker, { target: { value: 'gemini-3.8-flash-high' } })
+      await vi.runAllTimersAsync()
+      // Its "--continue" is GLOBAL (another project's conversation), so it is never typed.
+      expect(mockWriteToTerminal.mock.calls.map((c) => c[1]).join('')).not.toContain('--continue')
+      expect(mockWriteToTerminal).toHaveBeenLastCalledWith('term-1', 'agy --model gemini-3.8-flash-high\r')
+      expect(mockSetMemoryNotice).toHaveBeenCalledWith('ℹ️ Termpolis could not tell which Gemini conversation to resume, so it started a new session on Gemini 3.8 Flash (High). If there was an earlier conversation, it is still saved.')
       vi.useRealTimers()
     })
 

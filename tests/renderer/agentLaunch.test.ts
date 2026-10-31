@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setAgentModelDefault } from '../../src/renderer/src/lib/agentModelDefaults'
+import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import {
   launchAgents,
   agentTargets,
@@ -157,6 +159,17 @@ describe('agentLaunch', () => {
       expect(onSettled).toHaveBeenCalledOnce()
     })
 
+    it('waits longer to settle for the Antigravity CLI (agy) too: Gemini is agy now', () => {
+      const onSettled = vi.fn()
+      launchAgents([{ id: 't1', agentCommand: 'agy' }], { write: vi.fn(), onSettled })
+
+      vi.advanceTimersByTime(DISMISS_MS)
+      expect(onSettled).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(SLOW_DISMISS_MS - DISMISS_MS)
+      expect(onSettled).toHaveBeenCalledOnce()
+    })
+
     it('settles immediately and writes nothing when no target has an agent', () => {
       const write = vi.fn()
       const onSettled = vi.fn()
@@ -179,6 +192,71 @@ describe('agentLaunch', () => {
       vi.advanceTimersByTime(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
 
       expect(writeToTerminal).toHaveBeenCalledWith('t1', 'claude\r')
+    })
+  })
+
+  describe('default models (Settings › General › Default Models)', () => {
+    const CATALOG = {
+      claude: { provider: 'claude', models: [], source: 'builtin', fetchedAt: 0 },
+      codex: { provider: 'codex', models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }], source: 'cli', fetchedAt: 1 },
+      gemini: { provider: 'gemini', models: [{ id: 'gemini-3.8-flash-high', label: 'Flash' }], source: 'cli', fetchedAt: 1 },
+    }
+    beforeEach(() => {
+      localStorage.clear()
+      ;(window as any).termpolis = { getModelCatalog: vi.fn(async () => ({ success: true, data: CATALOG })) }
+      useTerminalStore.getState().setMemoryNotice(null)
+    })
+    const typed = (write: ReturnType<typeof vi.fn>): string[] => write.mock.calls.map(c => c[1] as string).filter(d => d !== '\r')
+
+    it('starts each agent on its own saved default', async () => {
+      setAgentModelDefault('claude', 'haiku')
+      setAgentModelDefault('codex', 'gpt-5.5')
+      setAgentModelDefault('gemini', 'gemini-3.8-flash-high')
+      const write = vi.fn()
+      launchAgents([{ id: 'a', agentCommand: 'claude' }, { id: 'b', agentCommand: 'codex' }, { id: 'c', agentCommand: 'agy' }], { write })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(typed(write)).toEqual(['claude --model haiku\r', 'codex --model gpt-5.5\r', 'agy --model gemini-3.8-flash-high\r'])
+    })
+
+    it('adds nothing when no default is saved, and makes no catalog call', async () => {
+      const write = vi.fn()
+      launchAgents([{ id: 'a', agentCommand: 'codex' }], { write })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(typed(write)).toEqual(['codex\r'])
+      expect((window as any).termpolis.getModelCatalog).not.toHaveBeenCalled()
+    })
+
+    it('leaves a restored command that already names its model, or resumes a session, alone', async () => {
+      setAgentModelDefault('claude', 'haiku')
+      const write = vi.fn()
+      launchAgents([{ id: 'a', agentCommand: 'claude --model opus' }, { id: 'b', agentCommand: 'claude --resume abc' }], { write })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(typed(write)).toEqual(['claude --model opus\r', 'claude --resume abc\r'])
+    })
+
+    it('does not type a model flag after a plain shell', async () => {
+      setAgentModelDefault('claude', 'haiku')
+      const write = vi.fn()
+      launchAgents([{ id: 'shell' }, { id: 'a', agentCommand: 'claude' }], { write })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(write).not.toHaveBeenCalledWith('shell', expect.anything())
+    })
+
+    it('drops a default the agent no longer lists and says so through the injected notifier', async () => {
+      setAgentModelDefault('codex', 'gpt-5.3-codex')
+      const write = vi.fn()
+      const notify = vi.fn()
+      launchAgents([{ id: 'a', agentCommand: 'codex' }], { write, notify })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(typed(write)).toEqual(['codex\r'])
+      expect(notify).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/Codex no longer offers your default model "gpt-5\.3-codex"/))
+    })
+
+    it("says so in the app's notice bar when no notifier is injected", async () => {
+      setAgentModelDefault('gemini', 'gemini-9')
+      launchAgents([{ id: 'a', agentCommand: 'agy' }], { write: vi.fn() })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(useTerminalStore.getState().memoryNotice).toMatch(/Antigravity CLI no longer offers your default model "gemini-9"/)
     })
   })
 })

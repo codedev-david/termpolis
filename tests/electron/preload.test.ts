@@ -346,6 +346,13 @@ describe('preload: model catalog API', () => {
   })
 })
 
+describe('preload: terminal shell-alone API', () => {
+  it('terminalShellAlone invokes terminal:shell-alone with the terminal id', async () => {
+    await exposed.termpolis.terminalShellAlone('t-7')
+    expect(mockIpcRenderer.invoke).toHaveBeenCalledWith('terminal:shell-alone', { id: 't-7' })
+  })
+})
+
 describe('preload: globalEvents API', () => {
   it('exposes globalEvents on the window', () => {
     expect(exposed.globalEvents).toBeDefined()

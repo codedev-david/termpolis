@@ -21,6 +21,9 @@ const api: TermpolisAPI = {
   killTerminal: (id) =>
     ipcRenderer.invoke('terminal:kill', { id }),
 
+  terminalShellAlone: (id) =>
+    ipcRenderer.invoke('terminal:shell-alone', { id }),
+
   listWorkflows: (cwd) => ipcRenderer.invoke('workflow:list', { cwd }),
   readWorkflow: (cwd, id, scope) => ipcRenderer.invoke('workflow:read', { cwd, id, scope }),
   saveWorkflow: (cwd, workflow, fromScope) => ipcRenderer.invoke('workflow:save', { cwd, workflow, fromScope }),

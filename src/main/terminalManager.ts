@@ -1,13 +1,14 @@
 import * as pty from 'node-pty'
-import { homedir, tmpdir } from 'os'
-import { existsSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { homedir } from 'os'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
 import { execShellCaptureOffThread } from './procClient'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { sudoAskpassEnv } from './sudoAskpass'
+import { shellAlone } from './shellAlone'
 import {
   detectShellKind,
   integrationArgs,
@@ -30,6 +31,8 @@ interface PtyProcess {
    *  CURRENT size, so it is recorded on the way through instead. */
   cols: number
   rows: number
+  /** What was started in the PTY: the shell, or the agent itself for a workflow's agent step. */
+  executable: string
 }
 
 /** A terminal's current geometry, or null when there is no such terminal.
@@ -244,7 +247,7 @@ export function spawnTerminal(
     try { coalescer.dispose() } catch {}
     try { onExit?.(e.exitCode) } finally { processes.delete(id) }
   })
-  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS })
+  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable })
 }
 
 export function killTerminal(id: string): void {
@@ -325,6 +328,13 @@ export function getTerminalPid(id: string): number | null {
   return proc?.pty.pid ?? null
 }
 
+/** Whether nothing runs in terminal `id` but its shell (shellAlone.ts); null for no such terminal,
+ *  or where that can't be told. */
+export function terminalShellAlone(id: string): Promise<boolean | null> {
+  const proc = processes.get(id)
+  return proc?.pty.pid ? shellAlone(proc.pty.pid, proc.executable) : Promise.resolve(null)
+}
+
 /** The shell pipeline that reads a pid's cwd: fast /proc on Linux, lsof on macOS. */
 function cwdProbeCommand(pid: number): string {
   return `readlink /proc/${pid}/cwd 2>/dev/null || lsof -p ${pid} -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-`
@@ -378,16 +388,18 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
  *
  * PowerShell is the only shell whose integration cannot travel in the environment — it
  * has no PROMPT_COMMAND equivalent — so the wrapper needs a real file to dot-source.
- * It goes in the temp dir, never anywhere the user owns, and is rewritten if something
- * cleaned it up mid-session.
+ * It goes in Termpolis's own data folder, never anywhere the user owns, and is rewritten
+ * if something cleaned it up mid-session. Not the temp dir: PowerShell running a script
+ * from %TEMP% is a pattern endpoint security flags (malware stages scripts there).
  *
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
 let integrationScriptPath: string | null = null
 function ensureIntegrationScript(): string | null {
   try {
-    const p = integrationScriptPath ?? join(tmpdir(), 'termpolis-shell-integration.ps1')
+    const p = integrationScriptPath ?? join(app.getPath('userData'), 'termpolis-shell-integration.ps1')
     if (integrationScriptPath === null || !existsSync(p)) {
+      mkdirSync(dirname(p), { recursive: true })
       writeFileSync(p, POWERSHELL_INTEGRATION_SCRIPT, 'utf8')
     }
     integrationScriptPath = p

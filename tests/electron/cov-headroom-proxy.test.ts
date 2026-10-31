@@ -15,21 +15,25 @@ const ctl = vi.hoisted(() => {
     cb: (up: unknown) => void
     body: Buffer | null
     onError: Array<(e: Error) => void>
+    destroyed: boolean
   }
   const state = {
     calls: [] as Call[],
     /** set to make agentMod.request throw synchronously, the way an invalid method/header does */
     throwOnRequest: null as Error | null,
+    /** set to make the upstream request's destroy() throw */
+    destroyThrows: false,
     request(opts: Record<string, unknown>, cb: (up: unknown) => void): unknown {
       if (state.throwOnRequest) throw state.throwOnRequest
-      const call: Call = { opts, cb, body: null, onError: [] }
+      const call: Call = { opts, cb, body: null, onError: [], destroyed: false }
       state.calls.push(call)
       return {
         on(ev: string, h: (e: Error) => void) { if (ev === 'error') call.onError.push(h); return this },
         end(b?: Buffer) { call.body = b ?? null },
+        destroy() { if (state.destroyThrows) throw new Error('already gone'); call.destroyed = true },
       }
     },
-    reset(): void { state.calls = []; state.throwOnRequest = null },
+    reset(): void { state.calls = []; state.throwOnRequest = null; state.destroyThrows = false },
   }
   return state
 })
@@ -81,10 +85,14 @@ class FakeRes {
   ended = false
   endedBody = ''
   destroyed = false
+  writableFinished = false
   writeHeadThrows = false
   writeThrows = false
   endThrows = false
   destroyThrows = false
+  private handlers: Record<string, Handler[]> = {}
+  on(ev: string, h: Handler): this { (this.handlers[ev] ||= []).push(h); return this }
+  emit(ev: string): void { for (const h of this.handlers[ev] || []) h() }
   writeHead(code: number, headers?: unknown): void {
     if (this.writeHeadThrows) throw new Error('socket already gone')
     this.head = [code, headers]
@@ -338,7 +346,7 @@ describe('headroom proxy — a dead client response never takes the child down',
     expect(res.ended).toBe(true)
   })
 
-  it('an upstream stream error ends the client response and reports NO result', async () => {
+  it('an upstream stream error breaks the client connection and reports NO result', async () => {
     const res = new FakeRes()
     await drive(server, makeReq('/v1/messages', 'POST', {}), res, [Buffer.from(COMPRESSIBLE)])
     const up = makeUp(200, {})
@@ -346,19 +354,56 @@ describe('headroom proxy — a dead client response never takes the child down',
     up.emit('data', Buffer.from('event: message_start\n'))
     up.emit('error', new Error('ECONNRESET mid-stream'))
 
-    expect(res.ended).toBe(true) // the client is released rather than left hanging on an open body
+    // Broken, not ended: an ended response would look finished, and its cut-short body (gzip-encoded,
+    // as the real API sends it) would fail to decode on the client instead of failing as a connection.
+    expect(res.destroyed).toBe(true)
+    expect(res.ended).toBe(false)
     expect(results).toEqual([]) // a truncated stream has no trustworthy usage to record
   })
 
-  it('an upstream stream error whose res.end also throws is swallowed', async () => {
+  it('an upstream stream error whose res.destroy also throws is swallowed', async () => {
     const res = new FakeRes()
     await drive(server, makeReq('/v1/messages', 'POST', {}), res, [Buffer.from(COMPRESSIBLE)])
     const up = makeUp(200, {})
     ctl.calls[0].cb(up)
-    res.endThrows = true
+    res.destroyThrows = true
     expect(() => up.emit('error', new Error('ECONNRESET'))).not.toThrow()
     expect(results).toEqual([])
   })
+
+  it('a client that hangs up mid-answer stops the upstream request', async () => {
+    const res = new FakeRes()
+    await drive(server, makeReq('/v1/messages', 'POST', {}), res, [Buffer.from(COMPRESSIBLE)])
+    const up = makeUp(200, {})
+    ctl.calls[0].cb(up)
+    up.emit('data', Buffer.from('event: message_start\n'))
+    res.emit('close') // the client went away before the answer finished
+
+    expect(ctl.calls[0].destroyed).toBe(true)
+  })
+
+  it('a response that finished closes without touching the upstream request', async () => {
+    const res = new FakeRes()
+    await drive(server, makeReq('/v1/messages', 'POST', {}), res, [Buffer.from(COMPRESSIBLE)])
+    const up = makeUp(200, {})
+    ctl.calls[0].cb(up)
+    up.emit('data', Buffer.from(SSE))
+    up.emit('end')
+    res.writableFinished = true
+    res.emit('close')
+
+    expect(ctl.calls[0].destroyed).toBe(false)
+    expect(results).toHaveLength(1) // the finished answer is still recorded
+  })
+
+  it('a hang-up whose upstream request cannot be destroyed is swallowed', async () => {
+    const res = new FakeRes()
+    await drive(server, makeReq('/v1/messages', 'POST', {}), res, [Buffer.from(COMPRESSIBLE)])
+    ctl.calls[0].cb(makeUp(200, {}))
+    ctl.destroyThrows = true
+    expect(() => res.emit('close')).not.toThrow()
+  })
+
 })
 
 /* ── proxyMain: request-path failures ───────────────────────────────────────────────────────── */
@@ -377,14 +422,26 @@ describe('headroom proxy — an unreachable upstream answers 502 rather than han
     expect(res.endedBody).toBe('headroom proxy upstream error: connect ECONNREFUSED')
   })
 
-  it('a connection error AFTER the status line does not overwrite it', async () => {
+  it('a connection error AFTER the status line breaks the connection and writes nothing after the answer', async () => {
     const res = new FakeRes()
     await drive(server, makeReq('/v1/messages', 'POST', {}), res, [Buffer.from(COMPRESSIBLE)])
     ctl.calls[0].cb(makeUp(200, {})) // headers already committed to the client
     for (const h of ctl.calls[0].onError) h(new Error('socket hang up'))
 
     expect(res.head?.[0]).toBe(200) // a second writeHead here would throw inside Node
-    expect(res.ended).toBe(true)
+    expect(res.destroyed).toBe(true)
+    // Text added now would sit inside the answer's body, which may be gzip-encoded.
+    expect(res.endedBody).toBe('')
+    expect(res.ended).toBe(false)
+  })
+
+  it('a connection error after the status line, onto a response that cannot be destroyed, is swallowed', async () => {
+    const res = new FakeRes()
+    await drive(server, makeReq('/v1/messages', 'POST', {}), res, [Buffer.from(COMPRESSIBLE)])
+    ctl.calls[0].cb(makeUp(200, {}))
+    res.destroyThrows = true
+    expect(() => { for (const h of ctl.calls[0].onError) h(new Error('socket hang up')) }).not.toThrow()
+    expect(res.endedBody).toBe('')
   })
 
   it('a request that cannot even be constructed returns 502 and forwards nothing', async () => {

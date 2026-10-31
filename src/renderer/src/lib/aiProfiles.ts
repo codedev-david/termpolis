@@ -6,6 +6,8 @@ import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
+import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from './agentModelDefaults'
+import { providerForCommand } from './modelCatalog'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
 import {
   waitForShellReady, afterCommandDelay, SHELL_READY_CEILING_MS, SHELL_QUIET_MS,
@@ -90,9 +92,15 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   // there's no saved memory for this project, in which case we launch bare.
   // The other agents get the slim typed pointer via useAutoPrimer on detection.
   let launchCommand = resolveAgentCommand(profile.command)
+  // Judged on the command as the user configured it, before any primer arguments are appended, so
+  // text inside those can never read as a flag. Settings › General › Default Models.
+  const baseCommand = launchCommand
   let launchPrimed = false
   const project = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
   const label = project || 'this project'
+  // The agent's own list, for checking a saved Codex or Antigravity default against. Asked for now
+  // so it overlaps the shell wait; a launch with no such default saved makes no call at all.
+  const catalogPromise = catalogForLaunch()
 
   // START the recall now; do NOT await it yet. It used to sit in front of the shell wait, so its
   // whole duration was added to the launch — usually ~275 ms, but the tail is long (a 24 s recall
@@ -179,8 +187,18 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
       ? `🧹 Deleted AGENTS.md in "${label}": it held only the memory note older Termpolis versions wrote`
       : `🧹 Removed the memory note older Termpolis versions wrote into AGENTS.md in "${label}"`)
   }
-  // Per-profile model selection: append a validated --model for Claude launches.
-  if (isClaude) launchCommand = launchCommand + claudeModelArg(profile.model)
+  // Model selection, most specific first: the profile's own pinned model (Claude), else the
+  // General › Default Models choice for this agent, else nothing (the agent's own default).
+  // A Claude command is one however it is spelled (`C:\tools\claude.exe`): the pin and the default
+  // must agree about that, or a pin would lose to a default that reads the command more carefully.
+  const pinnedModel = isClaude || providerForCommand(baseCommand) === 'claude' ? claudeModelArg(profile.model) : ''
+  if (pinnedModel) {
+    launchCommand = launchCommand + pinnedModel
+  } else {
+    const model = defaultModelFor(baseCommand, await catalogPromise)
+    launchCommand = launchCommand + model.arg
+    if (model.dropped) useTerminalStore.getState().setMemoryNotice(droppedDefaultNotice(baseCommand, model.dropped))
+  }
   // Registered as soon as the recall lands — exactly as before — so the pane appears while the
   // shell is still coming up rather than waiting on it.
   addTerminal({

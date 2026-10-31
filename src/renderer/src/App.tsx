@@ -288,6 +288,12 @@ export default function App() {
         agentRatingOverrides: state.agentRatingOverrides,
       })
     }, 1000) // debounce 1 second
+    // Nothing pending may outlive App: an unmounted App used to leave this timer to fire a second
+    // later, into a window whose bridge was already gone. (The next run of this effect clears it too.)
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
   }, [terminals, workspaces, keybindings, customKeybindings, voiceSettings, aiProfiles, promptTemplates, agentRatingOverrides, allowAppMouseControl])
 
   // Global keyboard shortcuts
