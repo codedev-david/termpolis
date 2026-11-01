@@ -97,17 +97,22 @@ async function lastTerminalId(): Promise<string> {
  * wanted or `ms` is up, and returns the last answer: true, false, null (it cannot tell) or
  * undefined (the call failed). `alone` wants a definite yes. `running` wants anything else: a
  * process seen there, or an OS that cannot tell (the re-primer then types as it always did).
- * On Windows each answer takes a second or two, so this is a deadline, not a count.
+ * On Windows each answer takes a second or two, so this is a deadline, not a count. For `alone` it
+ * also stops once the OS has said nothing six times running: a shell it cannot read is not going
+ * to be read, and waiting out the whole budget for it only delays the skip.
  */
 async function askShellAlone(termId: string, wanted: 'alone' | 'running', ms: number): Promise<boolean | null | undefined> {
   return page.evaluate(async ({ id, want, budget }) => {
     const api = (window as any).termpolis
     const until = Date.now() + budget
     let last: boolean | null | undefined
+    let silent = 0 // answers in a row that were null (it cannot tell) or undefined (the call failed)
     while (Date.now() < until) {
       const r = await api.terminalShellAlone(id)
       last = r && r.success ? r.data : undefined
       if (want === 'alone' ? last === true : last !== true) break
+      silent = last === null || last === undefined ? silent + 1 : 0
+      if (want === 'alone' && silent >= 6) break
       await new Promise((res) => setTimeout(res, 500))
     }
     return last
@@ -148,7 +153,11 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     //    no agent, and the pointer is not typed where nothing runs but the shell. Not mock-claude:
     //    it opens on a trust prompt, which the re-primer waits out.
     await page.evaluate((id) => (window as any).termpolis.writeToTerminal(id, 'node -e "setInterval(Boolean,1e3)"\r'), termId)
-    expect(await askShellAlone(termId, 'running', 45_000), 'expected the OS to see node running in the terminal').not.toBe(true)
+    const running = await askShellAlone(termId, 'running', 45_000)
+    expect(running, 'expected the OS to see node running in the terminal (is `node` on the PATH of the terminals the app opens?)').not.toBe(true)
+    // Where the OS cannot read the shell the pointer is typed as it always was, so this test runs
+    // the flow without exercising the guard. Say so in the report instead of passing silently.
+    if (running === null) test.info().annotations.push({ type: 'note', description: 'the OS cannot tell what runs in this shell: the guard was not exercised here' })
 
     // 1) Detect an agent (the re-primer only fires when an agent is present). The
     //    launch primer is disabled, so this does NOT paste.
@@ -212,7 +221,7 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     await createTerminal('Reprime2')
     const termId = await lastTerminalId()
     expect(termId).toBeTruthy()
-    const alone = await askShellAlone(termId, 'alone', 30_000)
+    const alone = await askShellAlone(termId, 'alone', 15_000)
     // The OS reads a terminal's processes only for the shells it knows (bash, zsh, fish, sh, ksh,
     // and PowerShell, cmd and Git Bash on Windows). For any other shell it answers null, and the
     // guard has nothing to act on: the pointer is typed, as it always was.
@@ -226,6 +235,10 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
       termId)
 
     // Longer than the first test saw the same flow take, so a pointer that was going to be typed has been.
+    // That first test is this one's control: the describe is serial, so this runs only after the same
+    // flow, fed the same two signals, typed its pointer where a process ran. The unit tests
+    // (useAutoPrimer.test.tsx) show the flow reaching the OS question here; this shows the real OS
+    // answering it for an idle terminal and the real app honouring the answer.
     await page.waitForTimeout(Math.max(12_000, rePrimeMs * 2 + 3000))
     expect(await pastesTo(termId), 'a pointer was typed at a bare shell prompt').toBe(0)
     // Still only a shell: the silence is the OS's answer, not an agent that came and went.
