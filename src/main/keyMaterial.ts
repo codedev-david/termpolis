@@ -108,24 +108,26 @@ function breakCursor(text: string): (i: number, limit: number) => Run | null {
   }
 }
 
-/** Base64 runs of at least `min` characters in [s, e). A `=` with base64 after it is no padding but a
- *  name's (`message=`, `data=`, a properties file's or journalctl's `MESSAGE=`): the run starts after
- *  the last of them. (Padding is the only `=` a key line holds, and only at its end.) */
+/** Where the value starts in the base64 run [a, e) of `text`: after a name and its `=` (`message=`,
+ *  `data=`, `TLS_KEY=`, journalctl's `MESSAGE=`), which is the last `=` that has base64 after it and
+ *  something before it in the run; else `a`. (Padding is the only `=` a key line holds, and only at its
+ *  end; a checksum line's own `=` leads its run.) */
+function valueStart(text: string, a: number, e: number): number {
+  let end = e
+  while (end > a && text.charCodeAt(end - 1) === 61) end--
+  for (let p = end - 1; p > a; p--) if (text.charCodeAt(p) === 61) return p + 1
+  return a
+}
+
+/** Base64 runs of at least `min` characters in [s, e), each starting at its value (see valueStart). */
 function runsIn(text: string, s: number, e: number, min = MIN_RUN): Run[] {
   const runs: Run[] = []
   let i = s
   while (i < e) {
     while (i < e && !isB64(text.charCodeAt(i))) i++
-    let a = i
+    const a0 = i
     while (i < e && isB64(text.charCodeAt(i))) i++
-    let end = i
-    while (end > a && text.charCodeAt(end - 1) === 61) end--
-    for (let p = end - 1; p >= a; p--) {
-      if (text.charCodeAt(p) === 61) {
-        a = p + 1
-        break
-      }
-    }
+    const a = valueStart(text, a0, i)
     if (i - a >= min) runs.push([a, i])
   }
   return runs
@@ -475,17 +477,6 @@ const ONE_LINE_SEP = /^[ \t"'`,;+]{1,8}$/
 const SAME_LINE_TAIL = /^([A-Za-z0-9+/]{1,15}={0,2})(?![A-Za-z0-9+/=])/
 const CRC_RUN = /^=[A-Za-z0-9+/]{4}(?![A-Za-z0-9+/=])/
 
-/** Where the value starts in the base64 run of `line` that starts at `from`, when a name and its `=`
- *  come first (`line=EkIZ`, `MESSAGE=dJWt`, as runsIn reads them): after the last `=` that has base64
- *  after it and something before it in the run. Else `from` (a checksum line's own `=` leads its run). */
-function valueAt(line: string, from: number): number {
-  let end = from
-  while (end < line.length && isB64(line.charCodeAt(end))) end++
-  while (end > from && line.charCodeAt(end - 1) === 61) end--
-  for (let p = end - 1; p > from; p--) if (line.charCodeAt(p) === 61) return p + 1
-  return from
-}
-
 /** With no END line, where a key's last line ends when that line is shorter than a payload run: the
  *  next logical line, when it is directly under the last key line (ending at `at`), in the key
  *  lines' `frame`, and holds nothing but 1-15 base64 characters (with = padding) and joiners; and a
@@ -516,7 +507,7 @@ function shortLastLine(text: string, at: number, frame: string, right: string, f
     // its frame: what comes before the base64, as the key lines' frame is measured
     const m = LINE_END_RUN.exec(line)
     if (!m) break
-    const from = valueAt(line, m.index)
+    const from = valueStart(line, m.index, m.index + m[1].length)
     // (behind a name, a checksum line's own `=` is the last one: `line==0TKB`, framed `line=`)
     const crc = from > m.index ? from - 1 : from
     const framed = (to: number): boolean => frameAt(text, ls, ls + to) === frame || JOINER_FRAME.test(line.slice(0, to))
@@ -1402,17 +1393,24 @@ export function encodedKeys(text: string, start = 0, cutText = false): KeySpan[]
   let i = start
   while (i < text.length) {
     while (i < text.length && !isB64(text.charCodeAt(i))) i++
-    const a = i
+    const a0 = i
     while (i < text.length && isB64(text.charCodeAt(i))) i++
+    // (`TLS_KEY=LS0t...`: a name and its `=` come first, and a decode stops at that `=`: the value is the run,
+    // and the name stays)
+    const a = valueStart(text, a0, i)
     // (at the start of a text another computer cut, a shorter run can be what its cut left of a line)
-    if (i - a < 40 && !(cutText && a <= start + 1 && i - a >= 4)) continue
+    if (i - a < 40 && !(cutText && a0 <= start + 1 && i - a >= 4)) continue
     // Join the wrapped lines after it (base64 and openssl wrap at 64 or 76), whatever frames them
     // (indentation, a listing's number, a quote): one width, and from the second line one frame.
     const runs: Run[] = [[a, i]]
     let width = i - a
     let frame: string | null = null
+    // (the first line's own frame: a second line with a label of its own is another value, not a wrapped
+    // line, as `tls.key` is under `tls.crt` in a Secret)
+    const first = frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)
     let j = i
-    for (let n = 0; n < 65536; n++) {
+    // (base64 padding ends a value: a padded line has none after it)
+    for (let n = 0; n < 65536 && text.charCodeAt(j - 1) !== 61; n++) {
       const br = nextBreak(text, j, Math.min(text.length, j + 256))
       if (!br) break
       const stop = Math.min(text.length, br[1] + 4096)
@@ -1425,7 +1423,10 @@ export function encodedKeys(text: string, start = 0, cutText = false): KeySpan[]
       // (a first line narrower than the second was cut: the second sets the width)
       if (runs.length === 1 && w > width) width = w
       if (w > width || (frame !== null && f !== frame)) break
-      if (frame === null) frame = f
+      if (frame === null) {
+        if (f !== first && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break
+        frame = f
+      }
       runs.push(last)
       j = last[1]
       if (w < width) break

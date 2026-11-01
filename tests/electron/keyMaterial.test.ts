@@ -408,6 +408,92 @@ describe('T1 K5: a key file stored base64 encoded', () => {
     }
   })
 
+  /** The base64 of a PEM file as a Secret holds it, padded or not (the length of the file decides): the
+   *  key's file gets extra blank lines until it is, a certificate a longer body. */
+  const keyFile = (padded: boolean): string => {
+    for (let n = 1; n < 6; n++) {
+      const b = Buffer.from(K.F.sec1_ec.join('\n') + '\n'.repeat(n)).toString('base64')
+      if (b.endsWith('=') === padded) return b
+    }
+    throw new Error('no length')
+  }
+  const certFile = (padded: boolean): string => {
+    for (let n = 600; n < 700; n++) {
+      const b = Buffer.from(['-----BEGIN CERTIFICATE-----', ...wrap(randomBytes(n).toString('base64')), '-----END CERTIFICATE-----', ''].join('\n')).toString('base64')
+      if (b.endsWith('=') === padded) return b
+    }
+    throw new Error('no length')
+  }
+
+  it("removes the key of a Kubernetes TLS Secret whose certificate is listed above it, padded or not, and leaves the lines around its value", () => {
+    for (const certPadded of [true, false]) {
+      for (const keyPadded of [true, false]) {
+        const crt = certFile(certPadded)
+        const key = keyFile(keyPadded)
+        const label = `certificate ${certPadded ? "padded" : "unpadded"}, key ${keyPadded ? "padded" : "unpadded"}`
+        // kubectl get secret -o yaml: the keys come sorted, so tls.crt is right above tls.key
+        const yaml = ['apiVersion: v1', 'data:', `  tls.crt: ${crt}`, `  tls.key: ${key}`, 'kind: Secret', 'metadata:', '  name: my-app-tls', 'type: kubernetes.io/tls', ''].join('\n')
+        const r = screenKeys(yaml)
+        expect(r.text, label).toBe(yaml.replace(key, '[REDACTED:private_key_b64]'))
+        expect(r.removed, label).toEqual({ private_key_b64: 1 })
+        // kubectl get secret -o json, indented
+        const json = ['{', '    "apiVersion": "v1",', '    "data": {', `        "tls.crt": "${crt}",`, `        "tls.key": "${key}"`, '    },', '    "kind": "Secret",', '    "type": "kubernetes.io/tls"', '}', ''].join('\n')
+        const j = screenKeys(json)
+        expect(j.text, label).toBe(json.replace(key, '[REDACTED:private_key_b64]'))
+        expect(j.removed, label).toEqual({ private_key_b64: 1 })
+      }
+    }
+    // the lines under a key's value are not its wrapped lines: a label of their own ends the value
+    const key = keyFile(false)
+    const under = [
+      `  tls.key: ${key}`,
+      'kind: Secret',
+      'type: kubernetes.io/tls',
+      '  secretName: my-app-tls-secret',
+      `  crt: ${certFile(false).slice(0, 60)}`,
+      '  SHA: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08=',
+      `bundle: ${certFile(false).slice(0, 48)}`,
+      '  replicas: 3',
+    ]
+    const r = screenKeys(under.join('\n'))
+    expect(r.text).toBe(['  tls.key: [REDACTED:private_key_b64]', ...under.slice(1)].join('\n'))
+    // two files with no labels, one after the other (cat tls.crt.b64 tls.key.b64): the padded certificate ends its value
+    const crt = certFile(true)
+    const bare = screenKeys(crt + '\n' + keyFile(true) + '\n')
+    expect(bare.text).toBe(crt + '\n[REDACTED:private_key_b64]\n')
+    expect(bare.removed).toEqual({ private_key_b64: 1 })
+  })
+
+  it('removes a key file stored base64 encoded and written NAME=<base64>, keeping the name', () => {
+    const key = keyFile(false)
+    const padded = keyFile(true)
+    const forms: Record<string, [string, string]> = {
+      'a .env file': [`TLS_KEY_B64=${key}\nPORT=8080\n`, `TLS_KEY_B64=[REDACTED:private_key_b64]\nPORT=8080\n`],
+      'export in a shell': [`export TLS_KEY=${padded}\n`, `export TLS_KEY=[REDACTED:private_key_b64]\n`],
+      'a properties file': [`tls.key=${key}\n`, `tls.key=[REDACTED:private_key_b64]\n`],
+      'docker run -e': [`docker run -e KEY=${key} -p 80:80 app\n`, `docker run -e KEY=[REDACTED:private_key_b64] -p 80:80 app\n`],
+      'a compose environment': [`environment:\n  - TLS_KEY=${padded}\n  - PORT=8080\n`, `environment:\n  - TLS_KEY=[REDACTED:private_key_b64]\n  - PORT=8080\n`],
+      'a URL query': [`curl "https://host/path?key=${key}&x=1"\n`, `curl "https://host/path?key=[REDACTED:private_key_b64]&x=1"\n`],
+      'curl -d': [`curl -d key=${padded} https://host/\n`, `curl -d key=[REDACTED:private_key_b64] https://host/\n`],
+      'an ini file': [`[tls]\nprivate_key=${key}\n`, `[tls]\nprivate_key=[REDACTED:private_key_b64]\n`],
+    }
+    for (const [name, [text, want]] of Object.entries(forms)) {
+      const r = screenKeys(text)
+      expect(r.text, name).toBe(want)
+      expect(r.removed, name).toEqual({ private_key_b64: 1 })
+    }
+    // wrapped at 76 behind its name (a .env file whose value was folded), and a service-account JSON file
+    const wrapped = wrap(keyFile(true), 76)
+    const folded = screenKeys(`TLS_KEY=${wrapped[0]}\n${wrapped.slice(1).join("\n")}\nPORT=1\n`)
+    expect(folded.removed).toEqual({ private_key_b64: 1 })
+    expect(leakedWindows(folded.text, wrapped)).toBe(0)
+    const sa = Buffer.from(JSON.stringify({ type: 'service_account', private_key: K.F.pkcs8_rsa.join('\n') + '\n', client_email: 'a@b.iam.gserviceaccount.com' })).toString('base64')
+    for (const name of ['GOOGLE_CREDENTIALS', 'GCP_SA_KEY']) {
+      const r = screenKeys(`${name}=${sa}\n`)
+      expect(r.text, name).toBe(`${name}=[REDACTED:private_key_b64]\n`)
+    }
+  })
+
   it('leaves a base64 certificate, a base64 template with a made-up body, and a header constant', () => {
     const cert = Buffer.from(['-----BEGIN CERTIFICATE-----', ...wrap(randomBytes(600).toString('base64')), '-----END CERTIFICATE-----', ''].join('\n')).toString('base64')
     const template = Buffer.from(['-----BEGIN PRIVATE KEY-----', ...Array.from({ length: 6 }, (_, i) => ('AbCdEfGhIjKlMnOpQrStUvWxYz' + String(i).padStart(4, '0')).repeat(3).slice(0, 64)), '-----END PRIVATE KEY-----', ''].join('\n')).toString('base64')
