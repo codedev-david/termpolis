@@ -552,7 +552,7 @@ export function TokenSavingsSettings() {
             </div>
           </div>
           <div style={{ fontSize: 13, opacity: 0.8, marginTop: 8 }}>
-            Tool-output savings — session<span data-testid="hr-session-saved">{fmt(receipt?.session.netSaved ?? 0)}</span> · all-time <span data-testid="hr-cumulative-saved">{fmt(receipt?.cumulative.netSaved ?? 0)}</span> tokens
+            Tool-output savings — session <span data-testid="hr-session-saved">{fmt(receipt?.session.netSaved ?? 0)}</span> · all-time <span data-testid="hr-cumulative-saved">{fmt(receipt?.cumulative.netSaved ?? 0)}</span> tokens
           </div>
         </>
       )}

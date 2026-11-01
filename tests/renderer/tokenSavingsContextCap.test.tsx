@@ -252,6 +252,18 @@ describe('what the control says', () => {
   })
 })
 
+describe('the line the control sits above', () => {
+  it('reads as a sentence: a figure is never run into the word before it', async () => {
+    serve()
+    tp().tokenSavingsGetReceipt = vi.fn().mockResolvedValue({ success: true, data: { session: { netSaved: 12_345, events: 3, byTool: {} }, cumulative: { netSaved: 99_999, events: 40, byTool: {} } } })
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-session-saved')).toHaveTextContent('12,345'))
+    const line = screen.getByTestId('hr-session-saved').parentElement as HTMLElement
+    // A space lost in the markup shows as "session12,345", which no assertion on the figure's own element can see.
+    expect(line.textContent).toBe('Tool-output savings — session 12,345 · all-time 99,999 tokens')
+  })
+})
+
 describe('the control when the main process is old or fails', () => {
   it('does not render before the settings have loaded, and survives a failed load', async () => {
     tp().tokenSavingsGetSettings = vi.fn().mockResolvedValue({ success: false, error: 'boom' })

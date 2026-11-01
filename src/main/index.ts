@@ -201,7 +201,7 @@ import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setPro
 import { readJsonObject } from './agentConfigIO'
 import { claudeLaunchEnv as buildClaudeLaunchEnv } from './headroom/shapingEnv'
 import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
-import { recordProxyResult,summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
+import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
