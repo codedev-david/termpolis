@@ -37,6 +37,23 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     }
     return best
   }
+  /** The fastest of three runs of each of two sizes of the same work, taken in turn (small, large, small, large, ...), so
+   *  a stretch of load on a busy runner reaches both alike and cannot fall on the larger one alone: it once did, in a
+   *  coverage run beside the whole Linked suite, and 4 MB took 5 times its usual 2 s while 1 MB took its usual 0.5 s, a
+   *  ratio of 22 for linear work (best of three runs one size after the other cannot tell that from a quadratic). */
+  function pair(small: () => void, large: () => void): [number, number] {
+    let s = Infinity
+    let l = Infinity
+    for (let i = 0; i < 3; i++) {
+      let t = performance.now()
+      small()
+      s = Math.min(s, performance.now() - t)
+      t = performance.now()
+      large()
+      l = Math.min(l, performance.now() - t)
+    }
+    return [s, l]
+  }
   const fill = (s: string, n: number): string => (s.length >= n ? s.slice(0, n) : s.repeat(Math.ceil(n / s.length)).slice(0, n))
   const ROOT = join(__dirname, '..', '..')
   const read = (dir: string, ext: string): string =>
@@ -170,13 +187,15 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     const one = fill('-----BEGIN PRIVATE KEY----- ', MB) + '\nnext line'
     const four = fill('-----BEGIN PRIVATE KEY----- ', 4 * MB) + '\nnext line'
     expect(maskForDisplay(one)).toBe('[REDACTED:private_key]\nnext line')
-    expect(bestOf3(() => maskForDisplay(four))).toBeLessThan(12 * bestOf3(() => maskForDisplay(one)))
+    const [t1, t4] = pair(() => maskForDisplay(one), () => maskForDisplay(four))
+    expect(t4, `1 MB ${t1.toFixed(0)} ms, 4 MB ${t4.toFixed(0)} ms`).toBeLessThan(12 * t1)
   }, 120_000)
 
   it.each(Object.keys(HOSTILE))('grows in step with %s: 4 MB of it takes under 12 times as long as 1 MB', (shape) => {
     const one = HOSTILE[shape](MB)
     const four = HOSTILE[shape](4 * MB)
     // Linear is 4 times; measured at most 4.9 (judge's p6b) and 7 on a loaded laptop; a quadratic is 16.
-    expect(bestOf3(() => screenText(four))).toBeLessThan(12 * bestOf3(() => screenText(one)))
-  }, 60_000)
+    const [t1, t4] = pair(() => screenText(one), () => screenText(four))
+    expect(t4, `${shape}: 1 MB ${t1.toFixed(0)} ms, 4 MB ${t4.toFixed(0)} ms`).toBeLessThan(12 * t1)
+  }, 120_000)
 })
