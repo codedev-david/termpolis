@@ -34,6 +34,11 @@ import { psQuote } from '../../../shared/shellQuote'
 // missing binary, a failed sign-in, a crash on boot) leaves exactly that prompt, which the screen
 // can't always tell from an agent at its input. So before the paste, and again before the Enter,
 // the OS is asked whether anything but the shell runs in the terminal (shellAloneNow).
+//
+// That question takes a second or two on Windows, and a person starts typing into a fresh agent in
+// that time. So the idle check is not made once, ahead of it: it is made LAST, after the OS and the
+// screen, right before the paste and again right before the Enter (canTypePointer). A draft that
+// shows up in between holds the paste back, or, when the pointer is already pasted, the Enter.
 
 const SETTING_KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const INJECT_DELAY_MS = 1500 // let the agent CLI finish booting before we paste
@@ -150,27 +155,33 @@ export async function shellAloneNow(terminalId: string): Promise<boolean> {
 
 /**
  * Whether the pointer may be typed into this terminal right now: an agent runs in it (the OS does
- * not say that only the shell does) and its screen shows nothing waiting for an answer. The OS is
- * asked FIRST and the screen LAST. The OS takes a second or two on Windows, and the screen look is
- * what keeps an Enter from answering a trust or approval prompt, so it has to be the last look
- * before the write, not one that a prompt coming up meanwhile slips in behind.
+ * not say that only the shell does), its screen shows nothing waiting for an answer, and the line
+ * is still idle (`stillIdle`, the caller's own look at the user's draft). The OS is asked FIRST,
+ * the screen next and the draft LAST. The OS takes a second or two on Windows, and a person starts
+ * typing into a fresh agent in that time, so the draft look has to come after the slowest question
+ * and right before the write; so does the screen look, which is what keeps an Enter from answering
+ * a trust or approval prompt that came up while the OS was answering.
  */
-async function canTypePointer(terminalId: string): Promise<boolean> {
+async function canTypePointer(terminalId: string, stillIdle?: () => boolean | Promise<boolean>): Promise<boolean> {
   if (await shellAloneNow(terminalId)) return false
-  return !(await promptShowing(terminalId))
+  if (await promptShowing(terminalId)) return false
+  return stillIdle ? await stillIdle() : true
 }
 
 // Check that relevant memory exists for this project and, if so, paste a short
 // pointer into the freshly-launched agent terminal directing it to load the
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
 // Best-effort and silent: a no-op if the API is unavailable or there is no
-// relevant memory yet. Returns whether it injected.
+// relevant memory yet. Returns whether it injected. `stillIdle` is the caller's look at the user's
+// draft, asked last before the paste and again before the Enter (canTypePointer): false means the
+// user is typing, and nothing more is written.
 export async function injectAutoPrimer(
   terminalId: string,
   cwd: string,
   selfRecord = false,
   notify = false,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+  stillIdle?: () => boolean | Promise<boolean>,
 ): Promise<boolean> {
   try {
     const api = window.termpolis
@@ -188,7 +199,7 @@ export async function injectAutoPrimer(
     // prompt. At a SHELL's prompt the same Enter runs the pointer as a command, and that is where
     // an agent that died while it started has left the terminal. Checked after the recall, right
     // before typing, and again before the Enter (canTypePointer).
-    if (!(await canTypePointer(terminalId))) return false
+    if (!(await canTypePointer(terminalId, stillIdle))) return false
     // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
     // memories" banner Claude gets — so Codex/Gemini recall doesn't look like
     // nothing happened. Compaction re-primes pass notify=false and stay silent.
@@ -212,9 +223,10 @@ export async function injectAutoPrimer(
     // the same constant, as SUBMIT_SETTLE_MS in the remote dispatcher, which
     // fixed the identical symptom for messages sent from the phone.
     await sleep(PRIMER_SUBMIT_SETTLE_MS)
-    // A prompt can have come up since the paste, or the agent can have exited. What was pasted
-    // then stays where it is and is never submitted.
-    if (!(await canTypePointer(terminalId))) return false
+    // A prompt can have come up since the paste, the agent can have exited, or the user can have
+    // started typing. What was pasted then stays where it is and is never submitted: an Enter now
+    // would send their draft together with it.
+    if (!(await canTypePointer(terminalId, stillIdle))) return false
     api.writeToTerminal(terminalId, '\r')
     return true
   } catch {
@@ -261,6 +273,14 @@ export async function reprimeAfterCompaction(
   opts: {
     isLaunchPrimed: () => boolean
     pending?: (id: string) => Promise<boolean>
+    /**
+     * The un-submitted draft on the pane's input line, '' when it is idle. Looked at again right
+     * before the paste and before the Enter, after the OS question has had its time. It is the
+     * pane's own record of the user's keystrokes, not `pending`: main stages what is written to an
+     * AI-flagged terminal, the pointer's own paste included, so `pending` would hold back the Enter
+     * for the paste just made.
+     */
+    draft?: () => string
     /** A prompt is on screen (promptShowing). Waited out like a draft. */
     awaiting?: (id: string) => Promise<boolean>
     inject?: (id: string, cwd: string) => Promise<boolean>
@@ -272,7 +292,8 @@ export async function reprimeAfterCompaction(
   if (opts.isLaunchPrimed()) return false // rule 1 — it re-primes itself, silently
   const pending = opts.pending ?? inputPending
   const awaiting = opts.awaiting ?? promptShowing
-  const inject = opts.inject ?? ((id, c) => injectAutoPrimer(id, c))
+  const draft = opts.draft
+  const inject = opts.inject ?? ((id, c) => injectAutoPrimer(id, c, false, false, undefined, draft && (() => draft() === '')))
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const pollMs = opts.pollMs ?? REPRIME_IDLE_POLL_MS
   const maxWaitMs = opts.maxWaitMs ?? REPRIME_IDLE_MAX_WAIT_MS
@@ -350,10 +371,6 @@ export async function primeOnLaunch(
     delayMs?: number
   } = {},
 ): Promise<boolean> {
-  // Claude and Codex are learned from their on-disk transcripts. agy (Gemini) keeps its sessions
-  // where Termpolis doesn't read them, so it is asked to record its own lesson (selfRecordsLessons).
-  // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
-  const inject = opts.inject ?? ((id, c, selfRecord) => injectAutoPrimer(id, c, selfRecord, true))
   const awaiting = opts.awaiting ?? promptShowing
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const stopped = opts.stopped ?? (() => false)
@@ -362,6 +379,14 @@ export async function primeOnLaunch(
   const delayMs = opts.delayMs ?? INJECT_DELAY_MS
 
   const open = (): boolean => gate.launchedAgent() != null && gate.draft().length === 0
+  // Claude and Codex are learned from their on-disk transcripts. agy (Gemini) keeps its sessions
+  // where Termpolis doesn't read them, so it is asked to record its own lesson (selfRecordsLessons).
+  // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
+  // The gate is looked at once more inside the inject, after the OS question and right before each
+  // write: the person keeps typing while it answers. A pane that has gone is not looked at either,
+  // since the gate then reads a draft that nothing feeds any more.
+  const inject =
+    opts.inject ?? ((id, c, selfRecord) => injectAutoPrimer(id, c, selfRecord, true, undefined, () => !stopped() && open()))
   let waited = 0
   while (!open()) {
     if (waited >= maxWaitMs) return false
@@ -473,9 +498,12 @@ export function useCompactionReprimer(
   terminalId: string,
   detectedAgent: AgentInfo | null,
   cwd: string,
+  draft?: () => string,
 ): (stripped: string) => void {
   const cwdRef = useRef(cwd)
   cwdRef.current = cwd
+  const draftRef = useRef(draft)
+  draftRef.current = draft
   const agentRef = useRef<string | null>(detectedAgent?.name ?? null)
   agentRef.current = detectedAgent?.name ?? null
 
@@ -485,6 +513,8 @@ export function useCompactionReprimer(
       hasAgent: () => agentRef.current != null,
       reprime: () => {
         void reprimeAfterCompaction(terminalId, cwdRef.current, {
+          // The pane's draft is read at fire time too, through the ref: the accessor can change.
+          draft: () => draftRef.current?.() ?? '',
           // Read at FIRE time, not mount time: the flag is set when the agent profile launches,
           // which can land after this controller is constructed.
           isLaunchPrimed: () =>

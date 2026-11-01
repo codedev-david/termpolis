@@ -1739,6 +1739,47 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       expect(mockWriteToTerminal).not.toHaveBeenCalled() // a paste would corrupt the draft
     })
 
+    // The OS question before the paste takes a second or two on Windows, and the person types into
+    // the pane meanwhile. The pane's own draft (what onData recorded) is what the re-primer reads.
+    describe('a draft that starts while the OS is still answering', () => {
+      /** An OS that answers "an agent runs" and, on its nth answer, has the user type into the pane. */
+      const userTypesDuring = (nth: number): void => {
+        let asks = 0
+        ;(window as any).termpolis.terminalShellAlone = vi.fn(async () => {
+          if (++asks === nth) H.dataCbs[H.dataCbs.length - 1]?.('fix the')
+          return { success: true, data: false }
+        })
+      }
+
+      it('is not pasted over', async () => {
+        useTimers()
+        claudeAgentPane(false)
+        userTypesDuring(1)
+        render(<TerminalPane {...defaultProps} />)
+
+        emitPty('Compacting conversation… (esc to interrupt)\n')
+        await settle(10_000)
+
+        expect(mockMemoryBuildPrimer).toHaveBeenCalledTimes(1) // the re-prime ran…
+        expect(mockWriteToTerminal.mock.calls.map((c) => String(c[1]))).toEqual(['fix the']) // …and typed nothing of its own
+      })
+
+      it('is not submitted with the pointer', async () => {
+        useTimers()
+        claudeAgentPane(false)
+        userTypesDuring(2)
+        render(<TerminalPane {...defaultProps} />)
+
+        emitPty('Compacting conversation… (esc to interrupt)\n')
+        await settle(10_000)
+
+        const sent = mockWriteToTerminal.mock.calls.map((c) => String(c[1]))
+        expect(sent).toHaveLength(2)
+        expect(sent[0]).toContain('memory_primer') // the paste went in…
+        expect(sent[1]).toBe('fix the') // …then only the user's keystrokes: the pointer's Enter was held back
+      })
+    })
+
     it('ordinary output never arms the re-primer', async () => {
       useTimers()
       claudeAgentPane(false)

@@ -487,8 +487,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     launchCommand: () => (agentFromCommand(agentCommand) ? agentCommand : lastCommandRef.current),
   })
   // Re-seed it after Claude compacts its conversation, restoring the detail it
-  // summarized away from the durable memory brain (opt-out in Settings).
-  const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd)
+  // summarized away from the durable memory brain (opt-out in Settings). The draft is the same
+  // un-submitted input line the launch gate reads: the pointer is held back while it is not empty.
+  const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd, () => inputBufferRef.current)
   // Learn from this solo agent session: reflect the transcript delta into the brain on a
   // task pause / terminal close. Uses the authoritative launched-agent identity so Codex/
   // Gemini/Claude are all covered (opt-out in Settings).
