@@ -402,7 +402,8 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   if (body.length === 0) return null
 
   // F24: only the flat (score-sorted) path is truly "most relevant first"; the project
-  // path leads with conversations under its own sub-headers, so don't claim it up top.
+  // path leads with its notes, lessons and conversations under its own sub-headers, so
+  // don't claim it up top.
   const header = (project || recentLines.length > 0)
     ? 'Relevant context from your memory — background only:'
     : 'Relevant context from your memory (most relevant first) — background only:'
