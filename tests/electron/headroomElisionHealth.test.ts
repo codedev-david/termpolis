@@ -242,14 +242,52 @@ describe('totals and shape', () => {
     expect(v.elided).toBe(0)
     expect(v.firstSight.verdict).toBe('unknown')
     expect(v.regime).toBe('unknown')
-    expect(v.turns).toEqual({ count: 0, units: 0, unitsPerTurn: ASSUMED_TURN_UNITS, costBasis: 'assumed', observed: 0, sharePct: null })
+    expect(v.turns).toEqual({ count: 0, units: 0, unitsPerTurn: ASSUMED_TURN_UNITS, costBasis: 'assumed', observed: 0, sharePct: null, hops: 0, askable: 0, unaskable: 0, shareBasis: 'responses' })
   })
 })
 
 describe('retrieval turns', () => {
   it('reports the count, the units, the cost per turn and the share of responses', () => {
     const v = buildElisionHealth(input({ turns: { retrievalTurns: 230, retrievalTurnUnits: 3_910_000, turnRequests: 1000 } }))
-    expect(v.turns).toEqual({ count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', observed: 1000, sharePct: 23 })
+    expect(v.turns).toEqual({ count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', observed: 1000, sharePct: 23, hops: 0, askable: 0, unaskable: 0, shareBasis: 'responses' })
+  })
+
+  // R1 criterion 10: an ask rate is a share of the requests that could ask. A request whose tools
+  // list holds neither retrieve_full nor a ToolSearch tool to load it through says nothing about
+  // whether the model would have asked.
+  it('takes the share over the requests that could ask, and says how many could not', () => {
+    const v = buildElisionHealth(input({ turns: { retrievalTurns: 230, retrievalTurnUnits: 3_910_000, turnRequests: 1000, offerDirect: 600, offerDeferred: 200, offerAbsent: 200 } }))
+    expect(v.turns.askable).toBe(800)
+    expect(v.turns.unaskable).toBe(200)
+    expect(v.turns.observed).toBe(1000)
+    expect(v.turns.shareBasis).toBe('could-ask')
+    expect(v.turns.sharePct).toBe(28.8) // 230 of the 800 that could ask, not of all 1000
+  })
+
+  it('does not let requests that could not ask dilute the rate', () => {
+    const base = { retrievalTurns: 100, retrievalTurnUnits: 1_700_000, turnRequests: 1000 }
+    const noneAbsent = buildElisionHealth(input({ turns: { ...base, offerDirect: 1000, offerDeferred: 0, offerAbsent: 0 } }))
+    const halfAbsent = buildElisionHealth(input({ turns: { ...base, offerDirect: 500, offerDeferred: 0, offerAbsent: 500 } }))
+    expect(noneAbsent.turns.sharePct).toBe(10)
+    expect(halfAbsent.turns.sharePct).toBe(20)
+  })
+
+  it('falls back to every observed response when the ledger has no offer counts (a ledger from before them)', () => {
+    const v = buildElisionHealth(input({ turns: { retrievalTurns: 50, retrievalTurnUnits: 850_000, turnRequests: 500, offerDirect: 0, offerDeferred: 0, offerAbsent: 40 } }))
+    expect(v.turns.askable).toBe(0)
+    expect(v.turns.shareBasis).toBe('responses')
+    expect(v.turns.sharePct).toBe(10)
+  })
+
+  it('counts the asks that needed a ToolSearch turn first, and prices an ask with both turns in it', () => {
+    const v = buildElisionHealth(input({ turns: { retrievalTurns: 100, retrievalTurnUnits: 2_000_000, retrievalHops: 40, turnRequests: 1000, offerDirect: 100, offerDeferred: 900 } }))
+    expect(v.turns.hops).toBe(40)
+    expect(v.turns.unitsPerTurn).toBe(20_000) // per ask: the hop's cost is in the units
+  })
+
+  it('reads damaged offer counts as zero', () => {
+    const v = buildElisionHealth(input({ turns: { retrievalTurns: 5, retrievalTurnUnits: 100, turnRequests: 10, offerDirect: Number.NaN, offerDeferred: -4, offerAbsent: '3' as unknown as number, retrievalHops: Infinity } }))
+    expect(v.turns).toMatchObject({ askable: 0, unaskable: 0, hops: 0, shareBasis: 'responses', sharePct: 50 })
   })
 
   it('has no share until responses have been observed', () => {

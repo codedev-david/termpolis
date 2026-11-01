@@ -10,8 +10,9 @@ export interface ProxyResultMsg {
   changed: boolean
   stats: WireStats
   usage: Usage
-  /** Absent only on a message from a child that predates it; the ledger reads absence as "not pure". */
-  turn?: TurnShape
+  /** Always sent (proxyMain.resultFrame builds the message, and the compiler holds it to this). The
+   *  ledger still reads an absent or malformed one as "not pure", for a child older than the app. */
+  turn: TurnShape
   stashes: StashEntry[]
   status: number
 }

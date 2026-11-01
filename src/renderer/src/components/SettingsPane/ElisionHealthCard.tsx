@@ -51,11 +51,17 @@ function Turns({ t }: { t: ElisionHealthView['turns'] }) {
   if (t.count === 0) {
     return <div data-testid="hr-elision-turns" style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>No turns that only fetched elided text yet.</div>
   }
+  // The share is of the requests that could ask for text back when the ledger has counted those, and of
+  // every response it read when it has not (a ledger from before it counted them).
+  const share = t.shareBasis === 'could-ask' ? `${t.sharePct}% of the ${fmt(t.askable)} responses to requests that could ask` : `${t.sharePct}% of responses`
   return (
     <div data-testid="hr-elision-turns" style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
       Retrieval turns: <b>{fmt(t.count)}</b> {t.count === 1 ? 'turn' : 'turns'} that only fetched elided text
-      {t.sharePct !== null && <> ({t.sharePct}% of responses)</>} cost <b>{fmt(Math.round(t.units))} billed units</b>,
-      about {fmt(t.unitsPerTurn)} each ({t.costBasis}). Each re-reads the whole cached prefix, which is why one costs far more than the text it brings back.
+      {t.sharePct !== null && <> ({share})</>} cost <b>{fmt(Math.round(t.units))} billed units</b>,
+      about {fmt(t.unitsPerTurn)} each ({t.costBasis}).
+      {t.hops > 0 && <> {fmt(t.hops)} of them {t.hops === 1 ? 'was' : 'were'} preceded by a turn that only loaded the tool (Claude Code keeps it deferred behind ToolSearch); that turn is in the cost.</>}
+      {' '}Each re-reads the whole cached prefix, which is why one costs far more than the text it brings back.
+      {t.shareBasis === 'could-ask' && t.unaskable > 0 && <> {fmt(t.unaskable)} {t.unaskable === 1 ? 'response' : 'responses'} came from requests with no way to ask, and {t.unaskable === 1 ? 'is' : 'are'} left out of the rate.</>}
     </div>
   )
 }

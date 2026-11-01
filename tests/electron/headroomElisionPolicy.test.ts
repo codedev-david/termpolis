@@ -295,7 +295,7 @@ describe('armForBody', () => {
 
     it('puts a conversation with nothing to hash in the default arm, group 0', () => {
       for (const body of [userText(''), { messages: [] }, null, 5, { get messages(): never { throw new Error('boom') } }]) {
-        expect(armOf(body)).toEqual({ arm: 'late', cluster: 0 })
+        expect(armOf(body)).toEqual({ arm: 'late', cluster: 0, key: 0 })
       }
     })
 
@@ -361,5 +361,91 @@ describe('armForBody', () => {
       expect(share).toBeGreaterThan(0.4)
       expect(share).toBeLessThan(1.8)
     })
+  })
+})
+
+/**
+ * The arm is pinned, not only bounded. A holdout share inside 10% +/- 1.5 points is satisfied by any
+ * good hash, so a changed salt, a different slice of the message or a hash that also read the system
+ * prompt would pass every distribution test above while moving conversations between the arms. That
+ * has a price: a conversation that changes arm in flight rewrites its cached prefix once, and the
+ * persisted per-arm ledger would mix two partitions, which is the comparison's whole instrument.
+ * These vectors were computed from the shipped function; changing one is a decision to re-partition.
+ */
+describe('armOf is pinned', () => {
+  const GOLDEN: Array<[string, string, 'late' | 'holdout', number, number]> = [
+    ['a', 'a', 'holdout', 10, 216939230],
+    ['hello', 'hello', 'holdout', 14, 309901836],
+    ['a sentence', 'Please fix the failing test in src/main/index.ts', 'late', 11, 2695996405],
+    ['continue', 'continue', 'late', 9, 2309817492],
+    ['2049 x', 'x'.repeat(2049), 'late', 13, 3078410575],
+    ['golden-vector-0', 'golden-vector-0', 'holdout', 13, 280641147],
+    ['golden-vector-1', 'golden-vector-1', 'late', 12, 2933833596],
+    ['golden-vector-2', 'golden-vector-2', 'late', 17, 3734568669],
+    ['golden-vector-3', 'golden-vector-3', 'late', 7, 1802377660],
+    ['golden-vector-4', 'golden-vector-4', 'late', 14, 3180615464],
+    ['golden-vector-5', 'golden-vector-5', 'holdout', 2, 57828297],
+    ['golden-vector-6', 'golden-vector-6', 'late', 14, 3252450338],
+    ['golden-vector-7', 'golden-vector-7', 'late', 4, 1256340161],
+    ['golden-vector-8', 'golden-vector-8', 'late', 1, 759616036],
+    ['golden-vector-9', 'golden-vector-9', 'late', 0, 482083290],
+    ['non-ASCII', 'Prüfe die Tests — 日本語 ✓ 🙂', 'late', 2, 885121896],
+    ['several lines', 'line one\nline two\n\nline four', 'holdout', 5, 125041616],
+    ['6,000 characters', 'ab'.repeat(3000), 'late', 7, 1862429421],
+  ]
+
+  it.each(GOLDEN)('pins %s to its arm, group and key, however the client writes the message', (_label, text, arm, cluster, key) => {
+    expect(armOf(userText(text))).toEqual({ arm, cluster, key })
+    expect(armForBody(userText(text))).toBe(arm)
+    // The same text as one block, and cut in two: the same conversation.
+    expect(armOf({ messages: [{ role: 'user', content: [{ type: 'text', text }] }] })).toEqual({ arm, cluster, key })
+    const cut = Math.floor(text.length / 2)
+    expect(armOf({ messages: [{ role: 'user', content: [{ type: 'text', text: text.slice(0, cut) }, { type: 'text', text: text.slice(cut) }] }] })).toEqual({ arm, cluster, key })
+  })
+
+  it('reads the first message and nothing else, over 300 different conversations', () => {
+    for (let i = 0; i < 300; i++) {
+      const first = `Conversation ${i}: please look into why module ${i * 13} fails its ${i % 7} case, then summarise.`
+      const base = armOf(userText(first))
+      const grown = {
+        messages: [
+          { role: 'user', content: first },
+          { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: `src/${i}.ts` } }] },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: `later text ${i}` }] },
+          { role: 'user', content: `a later user message ${i}` },
+        ],
+        system: [{ type: 'text', text: `You are agent ${i}. ⁣termpolis-steer⁣` }],
+        tools: [{ name: `tool_${i}`, description: 'x', input_schema: { type: 'object' } }],
+        model: `model-${i % 5}`,
+        thinking: { type: 'enabled', budget_tokens: 1024 + i },
+        metadata: { user_id: `user-${i}` },
+        max_tokens: 1000 + i,
+      }
+      expect(armOf(grown), first).toEqual(base)
+      expect(armOf(JSON.stringify(grown)), first).toEqual(base)
+    }
+  })
+
+  it('names the conversation: the key is the same on every turn and different between conversations', () => {
+    const keys = new Set<number>()
+    for (let i = 0; i < 500; i++) {
+      const k = armOf(userText(`Conversation number ${i} about the build`)).key
+      expect(k).toBeGreaterThan(0)
+      expect(Number.isInteger(k)).toBe(true)
+      expect(k).toBeLessThan(2 ** 32)
+      keys.add(k)
+    }
+    // 32 bits: a handful of collisions in 500 would be a broken hash, not bad luck.
+    expect(keys.size).toBeGreaterThanOrEqual(499)
+  })
+
+  it('and the arm and the group are read off that same key', () => {
+    for (let i = 0; i < 300; i++) {
+      const { arm, cluster, key } = armOf(userText(`Please handle ticket ${i}.`))
+      const p = key / 2 ** 32
+      expect(arm).toBe(p < ELISION_HOLDOUT_RATE ? 'holdout' : 'late')
+      const within = p < ELISION_HOLDOUT_RATE ? p / ELISION_HOLDOUT_RATE : (p - ELISION_HOLDOUT_RATE) / (1 - ELISION_HOLDOUT_RATE)
+      expect(cluster).toBe(Math.min(ARM_CLUSTERS - 1, Math.floor(within * ARM_CLUSTERS)))
+    }
   })
 })

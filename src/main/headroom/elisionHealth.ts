@@ -86,14 +86,25 @@ export interface ElisionHealthView {
   /** Whether the recent redemption rate has moved away from the all-time one. */
   regime: 'rising' | 'falling' | 'steady' | 'unknown'
   turns: {
-    /** Turns that only fetched elided text, and what they cost in billed units. */
+    /** Asks for elided text back, and what they cost in billed units. An ask is the turn that called
+     *  retrieve_full; when the tool had to be loaded through ToolSearch first, that turn's cost is
+     *  in `units` too and the ask still counts once. */
     count: number
     units: number
-    /** Billed units per turn: the ledger's own once it has MIN_TURNS_MEASURED, else the research's. */
+    /** Billed units per ask: the ledger's own once it has MIN_TURNS_MEASURED, else the research's. */
     unitsPerTurn: number
     costBasis: 'measured' | 'assumed'
-    /** Responses whose shape was read, and the share of them that were retrieval turns. */
+    /** Of the asks, how many were two turns because the tool had to be loaded first. */
+    hops: number
+    /** Responses whose shape was read. */
     observed: number
+    /** Of the responses to a request that completed: those on which the model could ask for text back
+     *  (retrieve_full listed, or loadable through ToolSearch), and those on which it could not. */
+    askable: number
+    unaskable: number
+    /** What `sharePct` is a share of: the requests that could ask, or, for a ledger that has not
+     *  counted those, every response whose shape was read. */
+    shareBasis: 'could-ask' | 'responses'
     sharePct: number | null
   }
   /**
@@ -108,7 +119,10 @@ export interface ElisionHealthView {
 export interface ElisionHealthInput {
   state: ElisionState
   recent: Map<string, ClassCounts>
-  turns: { retrievalTurns?: number; retrievalTurnUnits?: number; turnRequests?: number }
+  turns: {
+    retrievalTurns?: number; retrievalTurnUnits?: number; retrievalHops?: number; turnRequests?: number
+    offerDirect?: number; offerDeferred?: number; offerAbsent?: number
+  }
   /** The arm ledger; absent reads as empty. */
   arms?: ArmState
 }
@@ -135,6 +149,12 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
   const measured = turnCount >= MIN_TURNS_MEASURED
   const unitsPerTurn = measured ? turnUnits / turnCount : ASSUMED_TURN_UNITS
   const observed = num(input.turns.turnRequests)
+  // A rate of asking is taken over the requests that could ask: a request with no way to call
+  // retrieve_full says nothing about whether the model would have. A ledger that has not counted
+  // them yet (all three zero) falls back to every response read.
+  const askable = num(input.turns.offerDirect) + num(input.turns.offerDeferred)
+  const unaskable = num(input.turns.offerAbsent)
+  const couldAsk = askable > 0
 
   const classes: ElisionClassView[] = []
   let verdictElided = 0, verdictRedeemed = 0, verdictNet = 0, breakEvenWeighted = 0
@@ -217,8 +237,12 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
       units: turnUnits,
       unitsPerTurn: Math.round(unitsPerTurn),
       costBasis: measured ? 'measured' : 'assumed',
+      hops: num(input.turns.retrievalHops),
       observed,
-      sharePct: pct1(turnCount, observed),
+      askable,
+      unaskable,
+      shareBasis: couldAsk ? 'could-ask' : 'responses',
+      sharePct: pct1(turnCount, couldAsk ? askable : observed),
     },
     arms: compareArms(input.arms),
   }

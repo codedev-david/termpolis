@@ -419,11 +419,18 @@ export interface ElisionHealthView {
   }
   regime: 'rising' | 'falling' | 'steady' | 'unknown'
   turns: {
+    /** Asks for elided text back (a ToolSearch turn and the retrieve_full turn after it are one ask). */
     count: number
     units: number
     unitsPerTurn: number
     costBasis: 'measured' | 'assumed'
+    /** Of the asks, how many took two turns because retrieve_full had to be loaded first. */
+    hops: number
     observed: number
+    /** Responses to requests on which the model could ask (retrieve_full listed, or loadable) and could not. */
+    askable: number
+    unaskable: number
+    shareBasis: 'could-ask' | 'responses'
     sharePct: number | null
   }
   arms: ArmComparisonView

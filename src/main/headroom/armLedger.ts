@@ -61,17 +61,23 @@ export interface ArmSample {
   turnUnits: number
 }
 
+/** The counts a request of this arm and group belongs in, or null for one the ledger does not know. */
+function groupFor(arm: LedgerArm, cluster: number): ArmCounts | null {
+  if (arm === 'legacy') return state.legacy
+  if ((arm === 'late' || arm === 'holdout') && Number.isInteger(cluster) && cluster >= 0 && cluster < ARM_CLUSTERS) return state[arm][cluster]
+  return null
+}
+
 /**
  * Count one request. Anything it cannot place is dropped rather than put somewhere it does not
  * belong: an arm it does not know, a group that does not exist, or a cost that is not a positive
- * number (a request the API refused costs nothing and says nothing about either policy).
+ * number (a request the API refused costs nothing and says nothing about either policy). Says
+ * whether the request was counted, which a caller that may have to move it later needs to know.
  */
-export function recordArmRequest(arm: LedgerArm, cluster: number, sample: ArmSample): void {
-  if (!sample || typeof sample.units !== 'number' || !Number.isFinite(sample.units) || sample.units <= 0) return
-  let c: ArmCounts
-  if (arm === 'legacy') c = state.legacy
-  else if ((arm === 'late' || arm === 'holdout') && Number.isInteger(cluster) && cluster >= 0 && cluster < ARM_CLUSTERS) c = state[arm][cluster]
-  else return
+export function recordArmRequest(arm: LedgerArm, cluster: number, sample: ArmSample): boolean {
+  if (!sample || typeof sample.units !== 'number' || !Number.isFinite(sample.units) || sample.units <= 0) return false
+  const c = groupFor(arm, cluster)
+  if (!c) return false
   c.requests += 1
   c.units += sample.units
   if (sample.pureTurn) {
@@ -80,6 +86,22 @@ export function recordArmRequest(arm: LedgerArm, cluster: number, sample: ArmSam
   } else {
     c.work += 1
   }
+  return true
+}
+
+/**
+ * A request counted as work turns out to have been the first half of an ask: a turn that only loaded
+ * retrieve_full, whose retrieve_full turn has now arrived (proxyLedger.ts pairs them). Move it from
+ * the work column to the turns, with the part of its cost that was the turn, so the two arms are
+ * compared on the same definition the receipt charges. A group with no work left to move (the ledger
+ * was zeroed in between) is left alone: the count never goes below zero.
+ */
+export function settleArmHop(arm: LedgerArm, cluster: number, turnUnits: number): void {
+  const c = groupFor(arm, cluster)
+  if (!c || c.work <= 0) return
+  c.work -= 1
+  c.turns += 1
+  c.turnUnits += count(turnUnits)
 }
 
 /** The counts, copied: a caller cannot edit the ledger through what it is handed. */

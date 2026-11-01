@@ -20,6 +20,14 @@ export interface TurnShape {
   /** How many of them were retrieve_full, under any MCP or plugin namespace. */
   retrieveCalls: number
   pure: boolean
+  /**
+   * Present, and true, only on a turn that did nothing but load retrieve_full. Claude Code runs with
+   * ENABLE_TOOL_SEARCH, so retrieve_full is usually a deferred tool and a conversation's first ask
+   * arrives as two turns: this one, a ToolSearch call whose query names the tool, and then the
+   * `pure` one that calls it. The ledger charges the pair as one ask (proxyLedger.ts). A ToolSearch
+   * turn that loads anything else, or does other work besides, is not a hop.
+   */
+  hop?: true
 }
 
 /** Decode an HTTP body buffer honoring content-encoding; falls back to utf8 on any error. */
@@ -62,6 +70,18 @@ export function parseUsageFromSse(sse: string): Usage {
  *  that also searched the web is not a turn that only fetched. */
 const TOOL_CALL_BLOCKS = new Set(['tool_use', 'server_tool_use', 'mcp_tool_use'])
 
+/** The client-side tool Claude Code loads a deferred tool through. A server-run search block with a
+ *  similar name loads inside the one response and costs no turn, so only a `tool_use` counts. */
+const TOOL_SEARCH = 'ToolSearch'
+/** How much of one ToolSearch call's input is read. A query is a few dozen characters; the cap bounds
+ *  what a damaged or hostile stream can make the parser hold. */
+const SEARCH_INPUT_CAP = 2048
+/** How many ToolSearch calls of one answer are followed. The rest still count as tool calls. */
+const SEARCH_CALLS_MAX = 16
+/** The tool's name as a word of its own: `select:mcp__termpolis__retrieve_full`, a bare name or a
+ *  keyword all match, a longer name that merely begins with it does not. */
+const NAMES_RETRIEVE_FULL = /(?<![A-Za-z0-9])retrieve_full(?![A-Za-z0-9_])/
+
 /**
  * Read which tools an Anthropic Messages SSE stream (already decoded) called. Total by design: a
  * body it cannot read counts as no call, so a damaged or foreign one is never taken for a
@@ -70,23 +90,50 @@ const TOOL_CALL_BLOCKS = new Set(['tool_use', 'server_tool_use', 'mcp_tool_use']
 export function parseTurnShapeFromSse(sse: string): TurnShape {
   let toolCalls = 0
   let retrieveCalls = 0
+  let searchCalls = 0
+  // What each ToolSearch call is being asked, by content-block index, assembled from its input
+  // deltas. Created by the first ToolSearch call, so an answer without one never pays for it.
+  let searchInput: Map<number, string> | null = null
   try {
     for (const line of sse.split('\n')) {
       if (!line.startsWith('data:')) continue
       const j = line.slice(5).trim()
       // A tool call announces itself on one event type only. Skipping the many delta lines before
-      // the parse keeps this cheap on a long answer, which parseUsageFromSse already walks once.
-      if (!j.includes('content_block_start')) continue
-      let o: { type?: unknown; content_block?: { type?: unknown; name?: unknown } | null }
+      // the parse keeps this cheap on a long answer, which parseUsageFromSse already walks once. The
+      // one exception is the input of a ToolSearch call, wanted only once such a call has started.
+      const starts = j.includes('content_block_start')
+      if (!starts && !(searchInput !== null && j.includes('input_json_delta'))) continue
+      let o: { type?: unknown; index?: unknown; content_block?: { type?: unknown; name?: unknown } | null; delta?: { type?: unknown; partial_json?: unknown } | null }
       try { o = JSON.parse(j) } catch { continue }
-      if (!o || typeof o !== 'object' || o.type !== 'content_block_start') continue
-      const b = o.content_block
-      if (!b || typeof b !== 'object' || typeof b.type !== 'string' || !TOOL_CALL_BLOCKS.has(b.type)) continue
-      toolCalls++
-      if (b.type === 'tool_use' && typeof b.name === 'string' && bareToolName(b.name) === 'retrieve_full') retrieveCalls++
+      if (!o || typeof o !== 'object') continue
+      if (o.type === 'content_block_start') {
+        const b = o.content_block
+        if (!b || typeof b !== 'object' || typeof b.type !== 'string' || !TOOL_CALL_BLOCKS.has(b.type)) continue
+        toolCalls++
+        if (b.type !== 'tool_use' || typeof b.name !== 'string') continue
+        const name = bareToolName(b.name)
+        if (name === 'retrieve_full') retrieveCalls++
+        else if (name === TOOL_SEARCH) {
+          searchCalls++
+          if (typeof o.index === 'number') {
+            if (searchInput === null) searchInput = new Map()
+            if (searchInput.size < SEARCH_CALLS_MAX) searchInput.set(o.index, '')
+          }
+        }
+      } else if (o.type === 'content_block_delta' && searchInput !== null) {
+        const d = o.delta
+        if (typeof o.index !== 'number' || !d || typeof d !== 'object' || d.type !== 'input_json_delta' || typeof d.partial_json !== 'string') continue
+        const have = searchInput.get(o.index)
+        if (have !== undefined && have.length < SEARCH_INPUT_CAP) searchInput.set(o.index, (have + d.partial_json).slice(0, SEARCH_INPUT_CAP))
+      }
     }
   } catch {
     return { toolCalls: 0, retrieveCalls: 0, pure: false }
   }
-  return { toolCalls, retrieveCalls, pure: toolCalls > 0 && retrieveCalls === toolCalls }
+  const shape: TurnShape = { toolCalls, retrieveCalls, pure: toolCalls > 0 && retrieveCalls === toolCalls }
+  // A hop is a turn made of ToolSearch calls and nothing else, one of which asks for retrieve_full.
+  if (searchCalls > 0 && searchCalls === toolCalls && searchInput !== null) {
+    for (const q of searchInput.values()) if (NAMES_RETRIEVE_FULL.test(q)) { shape.hop = true; break }
+  }
+  return shape
 }

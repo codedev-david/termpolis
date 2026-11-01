@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   FLOOR, FIRST_MESSAGE, conversationCases, caseBody, longRun, realistic, editLoop,
 } from './fixtures/lateGoldenCases'
-import { armForBody, ARM_CLUSTERS } from '../../src/main/headroom/elisionPolicy'
+import { armForBody, armOf, ARM_CLUSTERS } from '../../src/main/headroom/elisionPolicy'
 import { ccrPut, resetCcr } from '../../src/main/headroom/ccrStore'
 import { retrieveFull } from '../../src/main/headroom/compressToolResult'
+import { armState, resetArmLedger } from '../../src/main/headroom/armLedger'
+import { recordProxyResult } from '../../src/main/headroomProxy/proxyLedger'
+import type { ProxyResultMsg } from '../../src/main/headroomProxy/proxySupervisor'
 
 /**
  * The late policy as a property of whole requests: what the model is shown, whether the cached
@@ -19,7 +22,7 @@ interface Rewritten {
   body: string
   changed: boolean
   stashes: Array<{ token: string; original: string; meta?: { kind: string; tool?: string; chars: number; view: number } }>
-  stats: { arm: string; armCluster: number; kinds: Record<string, number>; trOrigChars: number; trCompChars: number }
+  stats: { arm: string; armCluster: number; convKey: number; kinds: Record<string, number>; trOrigChars: number; trCompChars: number }
 }
 interface Wire {
   rewriteMessagesBody: (raw: string, opts?: { decay?: boolean }) => Rewritten
@@ -407,6 +410,51 @@ describe('every request records the arm it ran under', () => {
     expect(m.rewriteMessagesBody(withSystem).stats.arm).toBe('holdout')
     const steered = JSON.stringify({ ...JSON.parse(raw), system: [{ type: 'text', text: 'Be brief. ⁣termpolis-steer⁣' }] })
     expect(m.rewriteMessagesBody(steered).stats.arm).toBe('holdout')
+  })
+
+  it('records the arm, the group and the conversation key armOf chose, for 70 different conversations', async () => {
+    const m = await launch('late')
+    const groups = new Set<number>()
+    let held = 0
+    for (let i = 0; i < 70; i++) {
+      const first = `Conversation ${i}: ${FIRST_MESSAGE}`
+      const raw = caseBody('Read', 'code', 5_000, 'string', first)
+      const chosen = armOf(JSON.parse(raw))
+      const r = m.rewriteMessagesBody(raw)
+      expect(r.stats.arm, first).toBe(chosen.arm)
+      expect(r.stats.armCluster, first).toBe(chosen.cluster)
+      expect(r.stats.convKey, first).toBe(chosen.key)
+      groups.add(chosen.cluster)
+      if (chosen.arm === 'holdout') held++
+    }
+    // A hand-off that dropped the group would put every request in group 0, and the comparison would
+    // wait for ever for the five groups it needs.
+    expect(groups.size).toBeGreaterThanOrEqual(5)
+    expect(held).toBeGreaterThan(0)
+  })
+
+  it('and the ledger files a request in the group the rewriter reported', async () => {
+    const m = await launch('late')
+    resetArmLedger()
+    const filed: Array<{ arm: 'late' | 'holdout'; cluster: number }> = []
+    for (let i = 0; i < 40; i++) {
+      const raw = caseBody('Read', 'code', 5_000, 'string', `Conversation ${i}: ${FIRST_MESSAGE}`)
+      const r = m.rewriteMessagesBody(raw)
+      const before = armState()
+      recordProxyResult({
+        kind: 'result', changed: r.changed, stats: r.stats, stashes: [], status: 200,
+        usage: { input_tokens: 10, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 0, output_tokens: 10 },
+        turn: { toolCalls: 0, retrieveCalls: 0, pure: false },
+      } as unknown as ProxyResultMsg)
+      const after = armState()
+      const arm = r.stats.arm as 'late' | 'holdout'
+      expect(after[arm][r.stats.armCluster].requests - before[arm][r.stats.armCluster].requests).toBe(1)
+      filed.push({ arm, cluster: r.stats.armCluster })
+    }
+    const total = armState()
+    const counted = total.late.reduce((n, c) => n + c.requests, 0) + total.holdout.reduce((n, c) => n + c.requests, 0)
+    expect(counted).toBe(filed.length)
+    expect(new Set(filed.map((f) => `${f.arm}/${f.cluster}`)).size).toBeGreaterThan(5)
   })
 
   it('holds out about one conversation in ten of a realistic mix', async () => {

@@ -30,7 +30,7 @@ const view = (over: Partial<ElisionHealthView> = {}): ElisionHealthView => ({
   windowSize: 2000, classes: [cls()], elided: 100, redeemed: 66, legacyRedeemed: 0, recentElided: 0, recentRedeemed: 0,
   firstSight: { verdict: 'costs', basis: 'all-time', elided: 100, ratePct: 66, breakEvenPct: 40.2, netUnits: -863_500 },
   regime: 'unknown',
-  turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', observed: 1000, sharePct: 23 },
+  turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 1000, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: 23 },
   arms: arms(),
   ...over,
 })
@@ -185,7 +185,7 @@ describe('Elision health card — regime, turns and notes', () => {
   })
 
   it('says the cost per turn is an assumption until enough turns have been seen', async () => {
-    serve(view({ turns: { count: 4, units: 70_000, unitsPerTurn: 16_800, costBasis: 'assumed', observed: 90, sharePct: 4.4 } }))
+    serve(view({ turns: { count: 4, units: 70_000, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 0, observed: 90, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: 4.4 } }))
     render(<ElisionHealthCard />)
     const t = await screen.findByTestId('hr-elision-turns')
     expect(t).toHaveTextContent('4 turns')
@@ -195,17 +195,54 @@ describe('Elision health card — regime, turns and notes', () => {
   })
 
   it('says there are none yet rather than showing zeros', async () => {
-    serve(view({ turns: { count: 0, units: 0, unitsPerTurn: 16_800, costBasis: 'assumed', observed: 0, sharePct: null } }))
+    serve(view({ turns: { count: 0, units: 0, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 0, observed: 0, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: null } }))
     render(<ElisionHealthCard />)
     expect(await screen.findByTestId('hr-elision-turns')).toHaveTextContent('No turns that only fetched elided text yet')
   })
 
   it('counts a single turn in the singular and leaves out a share it cannot compute', async () => {
-    serve(view({ turns: { count: 1, units: 20_000, unitsPerTurn: 16_800, costBasis: 'assumed', observed: 0, sharePct: null } }))
+    serve(view({ turns: { count: 1, units: 20_000, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 0, observed: 0, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: null } }))
     render(<ElisionHealthCard />)
     const t = await screen.findByTestId('hr-elision-turns')
     expect(t).toHaveTextContent('1 turn that only fetched elided text')
     expect(t).not.toHaveTextContent('of responses')
+  })
+
+  // R1 criterion 10 on the card: the rate is over the requests that could ask, and the card says so.
+  it('takes the share over the requests that could ask, and says how many could not', async () => {
+    serve(view({ turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 1000, askable: 800, unaskable: 200, shareBasis: 'could-ask', sharePct: 28.8 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('230 turns that only fetched elided text')
+    expect(t).toHaveTextContent('28.8% of the 800 responses to requests that could ask')
+    expect(t).not.toHaveTextContent('of responses)')
+    expect(t).toHaveTextContent('200 responses came from requests with no way to ask, and are left out of the rate')
+  })
+
+  it('does not mention requests that could not ask when there were none', async () => {
+    serve(view({ turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 800, askable: 800, unaskable: 0, shareBasis: 'could-ask', sharePct: 28.8 } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-turns')).not.toHaveTextContent('no way to ask')
+  })
+
+  it('says how many asks took a second turn to load the tool first, and that the cost includes it', async () => {
+    serve(view({ turns: { count: 100, units: 2_000_000, unitsPerTurn: 20_000, costBasis: 'measured', hops: 40, observed: 1000, askable: 1000, unaskable: 0, shareBasis: 'could-ask', sharePct: 10 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('40 of them were preceded by a turn that only loaded the tool')
+    expect(t).toHaveTextContent('that turn is in the cost')
+  })
+
+  it('says it in the singular for one', async () => {
+    serve(view({ turns: { count: 3, units: 60_000, unitsPerTurn: 20_000, costBasis: 'assumed', hops: 1, observed: 10, askable: 10, unaskable: 0, shareBasis: 'could-ask', sharePct: 30 } }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-turns')).toHaveTextContent('1 of them was preceded by a turn that only loaded the tool')
+  })
+
+  it('leaves the hop sentence out when no ask needed one', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-turns')).not.toHaveTextContent('only loaded the tool')
   })
 
   it('notes the redemptions of text the ledger could not class (older versions, earlier launches), only when there are some', async () => {

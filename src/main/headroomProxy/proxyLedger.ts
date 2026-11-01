@@ -5,7 +5,7 @@ import { recordDepthSample } from '../headroom/sessionDepth'
 import type { ProxyResultMsg } from './proxySupervisor'
 import { recordProxyOutput } from '../headroom/outputEconomyStore'
 import { W_CACHE_READ, W_CACHE_WRITE, W_INPUT, W_OUTPUT } from '../headroom/effectiveUnits'
-import { recordArmRequest, armState, loadArmState, resetArmLedger } from '../headroom/armLedger'
+import { recordArmRequest, settleArmHop, armState, loadArmState, resetArmLedger, type LedgerArm } from '../headroom/armLedger'
 import { recordRedemption, resetElisionLedger } from '../headroom/elisionLedger'
 import { loadElisionFromDisk, saveElisionToDisk } from '../headroom/elisionStore'
 import type { ElisionMeta } from '../headroom/elisionMeta'
@@ -75,10 +75,26 @@ export interface ProxyTotals {
    */
   retrievalTurns: number
   retrievalTurnUnits: number
+  /**
+   * Asks that needed a second turn: the model had to load retrieve_full through ToolSearch before
+   * it could call it. `retrievalTurns` counts the ask once, however many turns it took, and its
+   * `retrievalTurnUnits` hold both turns; this is how many of them held a ToolSearch turn too.
+   */
+  retrievalHops: number
   /** Responses whose shape was read, the denominator of the retrieval-turn share. `requests` has
    *  counted every response since v1.29 and `retrievalTurns` only those since v1.55, so dividing one
    *  by the other would be the category error unifiedReceipt's prefix-head note describes. */
   turnRequests: number
+  /**
+   * Of the responses counted in `turnRequests` that completed, how many came from a request on which
+   * the model could ask for elided text back: retrieve_full was in its tools list (`offerDirect`),
+   * or a ToolSearch tool was, to load it through (`offerDeferred`), or neither (`offerAbsent`). An ask
+   * rate is a share of the requests that could ask; a request with no way to ask says nothing about
+   * whether the model would have.
+   */
+  offerDirect: number
+  offerDeferred: number
+  offerAbsent: number
   /**
    * What the tool results in each forwarded request were, by what was done to them (see
    * forwardedKinds.ts), summed over requests. A stub that stays in a conversation is counted by
@@ -139,7 +155,7 @@ export interface ProxyReceipt {
 function empty(): ProxyTotals {
   // worstSavedPct starts at 100 and only ever ratchets DOWN, so an untouched ledger never claims
   // a floor breach it never saw.
-  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0, turnRequests: 0, stubPlain: 0, stubCompact: 0, stubDedup: 0, stubDiff: 0, stubAged: 0, stubAgedEarly: 0, stubAgedEarlyRequests: 0, lateTextOrigTokens: 0, lateTextSavedTokens: 0 }
+  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0, retrievalHops: 0, turnRequests: 0, offerDirect: 0, offerDeferred: 0, offerAbsent: 0, stubPlain: 0, stubCompact: 0, stubDedup: 0, stubDiff: 0, stubAged: 0, stubAgedEarly: 0, stubAgedEarlyRequests: 0, lateTextOrigTokens: 0, lateTextSavedTokens: 0 }
 }
 
 let session = empty()
@@ -148,12 +164,42 @@ let flush: (() => void) | null = null
 
 export function setProxyLedgerFlush(fn: (() => void) | null): void { flush = fn }
 
+/**
+ * ToolSearch turns that loaded retrieve_full and are waiting to see whether the conversation's next
+ * turn is the retrieve_full call they were for (R1 criterion 9). One slot per conversation, kept in
+ * memory only: a hop pending at quit is simply never charged. Bounded, oldest out, so a long run of
+ * conversations that hop and never ask cannot grow it.
+ */
+const PENDING_HOP_MAX = 256
+interface PendingHop {
+  /** What the hop turn cost as part of the ask: the prefix it re-read plus the call it wrote. */
+  units: number
+  /** The arm the arm ledger counted the hop request under, or null when it counted none. */
+  arm: LedgerArm | null
+  cluster: number
+}
+const pendingHops = new Map<number, PendingHop>()
+
+/** The hop this conversation left waiting, removed: whatever its next request is, the wait is over. */
+function takeHop(key: number): PendingHop | undefined {
+  const h = pendingHops.get(key)
+  if (h) pendingHops.delete(key)
+  return h
+}
+
+/** Leave a hop waiting for its conversation's next turn, the newest at the back of the line. */
+function rememberHop(key: number, h: PendingHop): void {
+  pendingHops.delete(key)
+  pendingHops.set(key, h)
+  if (pendingHops.size > PENDING_HOP_MAX) pendingHops.delete(pendingHops.keys().next().value as number)
+}
+
 /** A counter read back from disk: a finite number above zero, else zero. */
 function counter(n: unknown): number { return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0 }
 
 /** The counters added after v1.54. */
 const NEWER_COUNTERS = [
-  'retrievalTurns', 'retrievalTurnUnits', 'turnRequests',
+  'retrievalTurns', 'retrievalTurnUnits', 'retrievalHops', 'turnRequests', 'offerDirect', 'offerDeferred', 'offerAbsent',
   'stubPlain', 'stubCompact', 'stubDedup', 'stubDiff', 'stubAged', 'stubAgedEarly', 'stubAgedEarlyRequests',
   'lateTextOrigTokens', 'lateTextSavedTokens',
 ] as const
@@ -211,22 +257,48 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   // A turn spent only on retrieve_full. What it added is the whole cached prefix read again and the
   // call it wrote. Its fresh input and cache write are the request's new content, which the session
   // sends anyway, and the text it fetched is priced by givebackTokens when it re-enters the prefix.
-  if (r.turn && typeof r.turn.pure === 'boolean') session.turnRequests += 1
-  if (r.turn && r.turn.pure === true) {
+  const ok = r.status >= 200 && r.status < 300
+  const turnCost = W_CACHE_READ * (u.cache_read_input_tokens || 0) + W_OUTPUT * (u.output_tokens || 0)
+  const pure = !!r.turn && r.turn.pure === true
+  // The ToolSearch turn this conversation left waiting, taken now whatever this request turns out to be:
+  // either this is the ask it was the first half of, or it was no ask and is forgotten uncharged.
+  const key = Number.isInteger(s.convKey) && s.convKey > 0 ? s.convKey : 0
+  const hop = ok && key !== 0 ? takeHop(key) : undefined
+  if (r.turn && typeof r.turn.pure === 'boolean') {
+    session.turnRequests += 1
+    // Requests that could not ask are tallied apart, so a rate is taken over the ones that could.
+    if (ok) {
+      if (s.retrieveOffer === 'direct') session.offerDirect += 1
+      else if (s.retrieveOffer === 'deferred') session.offerDeferred += 1
+      else if (s.retrieveOffer === 'absent') session.offerAbsent += 1
+    }
+  }
+  if (pure) {
     session.retrievalTurns += 1
-    session.retrievalTurnUnits += W_CACHE_READ * (u.cache_read_input_tokens || 0) + W_OUTPUT * (u.output_tokens || 0)
+    session.retrievalTurnUnits += turnCost
+    // One ask, two turns: the ToolSearch turn that loaded the tool is part of what the ask cost.
+    if (hop) {
+      session.retrievalHops += 1
+      session.retrievalTurnUnits += hop.units
+      if (hop.arm) settleArmHop(hop.arm, hop.cluster, hop.units)
+    }
   }
   // What this request cost, by the first-sight arm it ran under: the comparison of the two policies
   // reads these. A result from a child that predates the arm, or one the API refused, adds nothing.
-  if ((s.arm === 'late' || s.arm === 'holdout' || s.arm === 'legacy') && r.status >= 200 && r.status < 300) {
+  let armCounted: LedgerArm | null = null
+  if ((s.arm === 'late' || s.arm === 'holdout' || s.arm === 'legacy') && ok) {
     const read = u.cache_read_input_tokens || 0
     const out = u.output_tokens || 0
-    const pure = !!r.turn && r.turn.pure === true
-    recordArmRequest(s.arm, s.armCluster, {
+    if (recordArmRequest(s.arm, s.armCluster, {
       units: W_INPUT * (u.input_tokens || 0) + W_CACHE_READ * read + W_CACHE_WRITE * (u.cache_creation_input_tokens || 0) + W_OUTPUT * out,
       pureTurn: pure,
       turnUnits: pure ? W_CACHE_READ * read + W_OUTPUT * out : 0,
-    })
+    })) armCounted = s.arm
+  }
+  // A turn that only loaded retrieve_full is counted as work for now. If the retrieve_full turn comes
+  // next it becomes the first half of an ask (above), and if anything else comes it stays work.
+  if (ok && key !== 0 && !pure && r.turn && r.turn.hop === true) {
+    rememberHop(key, { units: turnCost, arm: armCounted, cluster: s.armCluster })
   }
   // What the forwarded body's tool results were. A tally from a child that predates it, or a damaged
   // one, adds nothing.
@@ -321,5 +393,5 @@ export function saveProxyTotalsToDisk(dir: string): void {
 /** Zero the lifetime meter (session + on-disk base) WITHOUT dropping the flush wiring, so the
  *  ledger keeps persisting afterward. Used for a live "reset lifetime savings" (e.g. after a
  *  compression-methodology change) — unlike resetProxyLedger(), which also nulls flush for tests. */
-export function resetProxyCounters(): void { session = empty(); base = empty(); resetElisionLedger(); resetArmLedger() }
-export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null; resetElisionLedger(); resetArmLedger() }
+export function resetProxyCounters(): void { session = empty(); base = empty(); pendingHops.clear(); resetElisionLedger(); resetArmLedger() }
+export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null; pendingHops.clear(); resetElisionLedger(); resetArmLedger() }

@@ -163,8 +163,8 @@ function tailOf(texts: string[], n: number): string {
   return out
 }
 
-/** Where the first user message falls in [0, 1), or null when it has no text to hash. */
-function armPosition(body: unknown): number | null {
+/** The 32-bit hash of the first user message, or null when it has no text to hash. */
+function armHash(body: unknown): number | null {
   let texts: string[] | null
   try { texts = firstUserText(body) } catch { return null }
   if (!texts) return null
@@ -191,16 +191,22 @@ function armPosition(body: unknown): number | null {
   h ^= h >>> 13
   h = Math.imul(h, 0xc2b2ae35) >>> 0
   h ^= h >>> 16
-  return (h >>> 0) / 0x100000000
+  return h >>> 0
 }
 
-/** The arm of a conversation and the group of conversations it falls in within that arm. */
-export function armOf(body: unknown): { arm: 'late' | 'holdout'; cluster: number } {
-  const p = armPosition(body)
-  if (p === null) return { arm: 'late', cluster: 0 }
+/**
+ * The arm of a conversation, the group of conversations it falls in within that arm, and `key`: the
+ * hash itself, which names the conversation to anything that has to follow it from one request to the
+ * next (a ToolSearch turn and the retrieve_full turn after it, proxyLedger.ts). 0 means a first
+ * message with nothing to hash, which names nothing.
+ */
+export function armOf(body: unknown): { arm: 'late' | 'holdout'; cluster: number; key: number } {
+  const h = armHash(body)
+  if (h === null) return { arm: 'late', cluster: 0, key: 0 }
+  const p = h / 0x100000000
   const holdout = p < ELISION_HOLDOUT_RATE
   const within = holdout ? p / ELISION_HOLDOUT_RATE : (p - ELISION_HOLDOUT_RATE) / (1 - ELISION_HOLDOUT_RATE)
-  return { arm: holdout ? 'holdout' : 'late', cluster: Math.min(ARM_CLUSTERS - 1, Math.floor(within * ARM_CLUSTERS)) }
+  return { arm: holdout ? 'holdout' : 'late', cluster: Math.min(ARM_CLUSTERS - 1, Math.floor(within * ARM_CLUSTERS)), key: h }
 }
 
 export function armForBody(body: unknown): 'late' | 'holdout' {

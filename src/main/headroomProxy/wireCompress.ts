@@ -7,7 +7,7 @@ import { mapOutsideReminders } from './reminders'
 import { bestDiff, makeCandidate, type DiffCandidate } from '../headroom/diffEncode'
 import { compactJson } from './jsonCompact'
 import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
-import { isExempt } from '../headroom/router'
+import { bareToolName, isExempt } from '../headroom/router'
 import { STEERING_MARK } from '../headroom/outputSteering'
 import { makeMeta, stampModel, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
 import { armOf, effectiveFloor, isFirstSightPolicy, LEGACY_POLICY, policyFor, type ElisionPolicy, type FirstSightPolicy } from '../headroom/elisionPolicy'
@@ -64,6 +64,15 @@ export interface WireStats {
   /** The group of conversations, within the arm, this request's conversation falls in. 0 unless the
    *  arm is late or holdout. */
   armCluster: number
+  /** The conversation this request belongs to: a hash of its first user message (elisionPolicy.armOf),
+   *  the same on every turn of it. It lets the ledger pair a ToolSearch turn with the retrieve_full
+   *  turn after it. 0 when there was nothing to hash or the request was not read. */
+  convKey: number
+  /** Whether the model could ask for elided text back on this request: `direct` when retrieve_full is
+   *  in its `tools` list under any of its names, `deferred` when it is not but a ToolSearch tool is
+   *  (the client loads tools through it), `absent` when neither. `unknown` for a body not read as a
+   *  Messages request. Measurement only: nothing about the forwarded bytes depends on it. */
+  retrieveOffer: 'unknown' | 'direct' | 'deferred' | 'absent'
 }
 export interface WireResult {
   body: string
@@ -78,7 +87,7 @@ function emptyStats(): WireStats {
     trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
     images: 0, imgOrigBytes: 0, imgCompBytes: 0,
     sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, thinkBudget: 0, steered: false,
-    kinds: emptyKinds(), arm: 'none', armCluster: 0,
+    kinds: emptyKinds(), arm: 'none', armCluster: 0, convKey: 0, retrieveOffer: 'unknown',
   }
 }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
@@ -345,10 +354,12 @@ function processPolicy(): ElisionPolicy {
  * conversation in ten, chosen by its first user message, stays on the old behaviour so the two can
  * be compared (elisionPolicy.ts armOf). Read off the body already parsed: no second parse.
  */
-function requestPolicy(obj: { model?: unknown; messages?: unknown }): { policy: ElisionPolicy; arm: WireStats['arm']; cluster: number } {
-  if (firstSight !== 'late') return { policy: LEGACY_POLICY, arm: 'legacy', cluster: 0 }
+function requestPolicy(obj: { model?: unknown; messages?: unknown }): { policy: ElisionPolicy; arm: WireStats['arm']; cluster: number; key: number } {
   const a = armOf(obj)
-  return { policy: a.arm === 'holdout' ? LEGACY_POLICY : policyFor('late', obj.model), arm: a.arm, cluster: a.cluster }
+  // The key names the conversation whatever the policy, so a run on the kill switch pairs a ToolSearch
+  // turn with its retrieve_full turn like any other. The arm is what the kill switch overrides.
+  if (firstSight !== 'late') return { policy: LEGACY_POLICY, arm: 'legacy', cluster: 0, key: a.key }
+  return { policy: a.arm === 'holdout' ? LEGACY_POLICY : policyFor('late', obj.model), arm: a.arm, cluster: a.cluster, key: a.key }
 }
 
 /** Blocks already met in THIS body: hashes for exact-duplicate collapse, texts as diff bases. */
@@ -527,15 +538,25 @@ function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void
   stats.thinkBudget =
     thinking?.type === 'enabled' && typeof thinking.budget_tokens === 'number' ? thinking.budget_tokens : 0
   const tools = obj.tools
-  if (!Array.isArray(tools)) return
+  // No tools at all: the model cannot call retrieve_full, however it is named or loaded.
+  if (!Array.isArray(tools)) { stats.retrieveOffer = 'absent'; return }
   stats.toolCount = tools.length
+  let direct = false
+  let search = false
   for (const t of tools) {
+    const name = (t as { name?: unknown } | null)?.name
+    // Whether the model could ask for text back: the tool is listed, or the client can load it.
+    if (typeof name === 'string') {
+      const bare = bareToolName(name)
+      if (bare === 'retrieve_full') direct = true
+      else if (bare === 'ToolSearch') search = true
+    }
     let size: number
     try { size = JSON.stringify(t)?.length ?? 0 } catch { continue } // a cyclic tool is not ours to count
     stats.toolsChars += size
-    const name = (t as { name?: unknown })?.name
     if (typeof name === 'string' && name.startsWith(TP_TOOL_PREFIX)) stats.tpToolsChars += size
   }
+  stats.retrieveOffer = direct ? 'direct' : search ? 'deferred' : 'absent'
 }
 
 export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number; decay?: boolean } = {}): WireResult {
@@ -565,9 +586,10 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
     return { body: raw, changed: false, stats, stashes }
   }
   // The policy and arm are read from the first user message BEFORE anything below rewrites a block.
-  const { policy, arm, cluster } = requestPolicy(obj)
+  const { policy, arm, cluster, key } = requestPolicy(obj)
   stats.arm = arm
   stats.armCluster = cluster
+  stats.convKey = key
   let changed = clampThinkingBudget(obj)
   // Built once, up front: a tool_result's file hint lives in the tool_use it answers, which sits
   // in an EARLIER message, and the lookup must not depend on how far the walk has got.

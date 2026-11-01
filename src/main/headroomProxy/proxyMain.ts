@@ -4,6 +4,7 @@ import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, setF
 import { parseUsageFromSse, parseTurnShapeFromSse, decodeBody, type Usage, type TurnShape } from './usageParse'
 import { compressImage } from './imageCodec'
 import type { StashEntry } from '../headroom/elisionMeta'
+import type { ProxyResultMsg, ProxyStashMsg } from './proxySupervisor'
 
 /**
  * Prefix decay, opt-in. Module scope rather than a closure because the HTTP server is built once
@@ -141,6 +142,21 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
   })
 }
 
+/**
+ * The two messages the child posts to the main process. They are built here, in the open, and not
+ * inline in the child entry below, because that entry is excluded from coverage and a field dropped
+ * from either one would silently zero a whole class of the ledger: the retrieval-turn charge rides on
+ * `turn`, the stub-kind tally and the first-sight arms on `stats`, and the stash metadata on `stashes`.
+ * Typed against the receiving side's own message types, so a field the ledger reads cannot go missing
+ * without the compiler saying so.
+ */
+export function resultFrame(r: ProxyResult): ProxyResultMsg {
+  return { kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }
+}
+export function stashFrame(stashes: StashEntry[]): ProxyStashMsg {
+  return { kind: 'stash', stashes }
+}
+
 /* v8 ignore start -- utilityProcess child entry: exercised at runtime in the fork, not unit-testable */
 const parentPort = (process as unknown as { parentPort?: { on: (ev: string, cb: (e: { data: unknown }) => void) => void; postMessage: (m: unknown) => void } }).parentPort
 if (parentPort) {
@@ -166,7 +182,7 @@ if (parentPort) {
         // Request-path commit — the main process must be able to answer retrieve_full for a token
         // that is already on the wire, not only once the response has finished streaming.
         onStash: (stashes) => {
-          try { parentPort.postMessage({ kind: 'stash', stashes }) } catch (err) {
+          try { parentPort.postMessage(stashFrame(stashes)) } catch (err) {
             // The tokens for these originals are ALREADY in the body heading upstream. If the
             // commit cannot cross to MAIN, every one of them is a handle nothing can ever redeem —
             // the only way this proxy can mint an unredeemable token. It still must not fail the
@@ -179,7 +195,7 @@ if (parentPort) {
         },
         // Still carried on the result as an idempotent backstop: ccrPut is content-hash keyed, so
         // a re-put of the same original is a no-op.
-        onResult: (r) => { try { parentPort.postMessage({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }) } catch { /* ignore */ } },
+        onResult: (r) => { try { parentPort.postMessage(resultFrame(r)) } catch { /* ignore */ } },
       })
       server = s
       s.on('error', () => {
