@@ -828,22 +828,32 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(((await screen.findByTestId('hr-first-sight-select')) as HTMLSelectElement).value).toBe('legacy')
   })
 
-  it('says honestly what it does, what is modelled, and what it cannot see', async () => {
+  it('says honestly what it does, what is modeled, who measured it and what it cannot see', async () => {
     serve(settingsWith({ firstSightElision: 'late' }))
     render(<TokenSavingsSettings />)
     const n = await screen.findByTestId('hr-first-sight-note')
+    // Whose figures: one machine's, and the model they differ by.
+    expect(n).toHaveTextContent('On the author’s machine, since late August')
     expect(n).toHaveTextContent('about two thirds')
+    expect(n).toHaveTextContent('about 69% on Opus 5.5 and 44% on Sonnet 5.5')
     expect(n).toHaveTextContent('whole extra turn')
     expect(n).toHaveTextContent('40,000 characters')
-    expect(n).toHaveTextContent('11.7%')
-    expect(n).toHaveTextContent('from one person’s history; that is a modelled figure, not a promise for your work')
+    // What it is worth: about 10%, where the model asks that often, less where it asks less, a cost below.
+    expect(n).toHaveTextContent('saves about 10% of the bill where the model asks that often')
+    expect(n).toHaveTextContent('It saves less where the model asks for fewer results back, and it costs a little below roughly a third to a half')
+    expect(n).toHaveTextContent('a modeled figure from one person’s history, not a promise for your work')
+    expect(n).not.toHaveTextContent('11.7%')
     expect(n).toHaveTextContent('repeats are still collapsed')
     expect(n).toHaveTextContent('retrieve_full')
     expect(n).toHaveTextContent('cannot measure')
     expect(n).toHaveTextContent('quality')
-    expect(n).toHaveTextContent('never less')
-    expect(n).toHaveTextContent('one conversation in ten')
-    expect(n).toHaveTextContent('Elision health')
+    // What the model sees: at least as much as under Legacy, and all of anything under the floor.
+    expect(n).toHaveTextContent('at least as much of every result as under Legacy, and the whole of every result under 40,000 characters')
+    expect(n).not.toHaveTextContent('never less')
+    // The holdout, as it really is chosen, and where the card is.
+    expect(n).toHaveTextContent('one distinct opening message in ten')
+    expect(n).toHaveTextContent('Elision health card at the top of this tab')
+    expect(n).not.toHaveTextContent('card below')
     expect(n).toHaveTextContent('next time Termpolis starts')
   })
 

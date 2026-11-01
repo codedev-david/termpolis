@@ -273,6 +273,12 @@ export interface UnifiedTotalsView {
    *  headline nets these; `givebackTokens` prices the text that came back, not the turn. */
   retrievalTurns: number
   retrievalTurnUnits: number
+  /** Responses whose shape was read for retrieval turns. Counted from v1.55, while `requests` has counted
+   *  every response since v1.29, so the share of the history the headline has netted is this over `requests`. */
+  turnRequests: number
+  /** Tokens a request kept off the wire that its own conversation had already fetched back: the credit
+   *  is withdrawn for them, since the text was on the wire again. Already out of `netSavedTokens`. */
+  askedBackTokens: number
   /** What the tool results in forwarded requests were, by what was done to them, summed over requests. */
   stubKinds: {
     plain: number

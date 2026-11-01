@@ -128,7 +128,9 @@ describe('the context window control', () => {
     serve()
     render(<TokenSavingsSettings />)
     const sel = await select()
-    expect(screen.getByLabelText('Context window for Claude Code compaction')).toBe(sel)
+    // The wrapping label names it: a separate aria-label would hide the words the user can see.
+    expect(sel.getAttribute('aria-label')).toBeNull()
+    expect(screen.getByLabelText(/Compact long Claude Code conversations at/)).toBe(sel)
     expect(sel.className).toContain('bg-[#2d2d2d]')
     expect(sel.className).toContain('text-[#d4d4d4]')
     for (const o of sel.querySelectorAll('option')) expect(o.className).toContain('bg-[#2d2d2d]')
@@ -163,10 +165,11 @@ describe('what the control says', () => {
     expect(text(0)).toContain('Off')
     expect(text(0)).not.toMatch(/\d%/)
     expect(text(500_000)).toContain('500,000 tokens')
-    expect(text(500_000)).toContain('modeled saving about 5 to 7%')
-    expect(text(400_000)).toContain('modeled saving about 10 to 13%')
-    expect(text(300_000)).toContain('modeled saving about 16 to 21%')
-    expect(text(200_000)).toContain('modeled saving about 20 to 29%')
+    expect(text(500_000)).toContain('estimated saving about 5 to 7%')
+    expect(text(500_000)).not.toContain('modeled saving')
+    expect(text(400_000)).toContain('modeled saving about 10 to 13%, for a 1M-window model')
+    expect(text(300_000)).toContain('modeled saving about 16 to 21%, for a 1M-window model')
+    expect(text(200_000)).toContain('modeled saving about 20 to 29%, for a 1M-window model')
   })
 
   it('says it is Off by default and a choice, and what Off means', async () => {
@@ -182,7 +185,8 @@ describe('what the control says', () => {
     serve({ contextCap: 300_000 })
     render(<TokenSavingsSettings />)
     const status = await screen.findByTestId('hr-context-cap-status')
-    expect(status).toHaveTextContent('On at 300,000 tokens')
+    expect(status).toHaveTextContent('Set to 300,000 tokens for new Claude Code terminals, unless you already have a window of your own')
+    expect(status.getAttribute('role')).toBe('status')
     expect(status).toHaveTextContent('new Claude Code terminals')
     expect(status).toHaveTextContent('already open')
     // The note says it again, for someone who has not chosen yet.
@@ -194,7 +198,7 @@ describe('what the control says', () => {
     render(<TokenSavingsSettings />)
     expect(await screen.findByTestId('hr-context-cap-status')).toHaveTextContent('Off')
     fireEvent.change(await select(), { target: { value: '200000' } })
-    await waitFor(() => expect(screen.getByTestId('hr-context-cap-status')).toHaveTextContent('On at 200,000 tokens'))
+    await waitFor(() => expect(screen.getByTestId('hr-context-cap-status')).toHaveTextContent('Set to 200,000 tokens'))
   })
 
   it('says what it does and what it costs', async () => {
@@ -216,6 +220,24 @@ describe('what the control says', () => {
     expect(note).toHaveTextContent('one person’s October Claude Code history')
     expect(note).toHaveTextContent('15,000 to 80,000 tokens lost to each one')
     expect(note).toHaveTextContent('not a promise')
+  })
+
+  it('says exactly what it reads, what an unreadable file means, and which other terminals get the variable', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    expect(note).toHaveTextContent('reads the window variable in the env block, and any saved window, of your Claude Code settings files')
+    expect(note).toHaveTextContent('A file it cannot read for a moment is tried once more, and if it still cannot be read the window is left unset, because Termpolis cannot tell')
+    expect(note).toHaveTextContent('Terminals that swarm workers, agents and a paired phone open through Termpolis get the variable too')
+    expect(note).toHaveTextContent('Codex and Gemini CLI ignore it')
+    expect(note).not.toHaveTextContent('reads the env and window keys')
+  })
+
+  it('names the places a window lives that this variable also beats and Termpolis cannot read', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    expect(note).toHaveTextContent('It also wins over a window set in a subagent’s definition, in a --settings argument, or by your organization’s managed settings, none of which Termpolis can read')
   })
 
   it('says where the figures stop being true: a model whose own window is smaller, the exact point, the interpolated 500,000', async () => {
@@ -248,7 +270,7 @@ describe('what the control says', () => {
     expect(note).toHaveTextContent('/autocompact')
     expect(note).toHaveTextContent('It cannot see a --autocompact flag typed on a command line')
     expect(note).toHaveTextContent('Claude Code lets this variable win over that flag, so to use the flag turn this Off first')
-    expect(note).toHaveTextContent('reads the env and window keys of your Claude Code settings files')
+    expect(note).toHaveTextContent('reads the window variable in the env block, and any saved window, of your Claude Code settings files')
     expect(note).toHaveTextContent('the project’s in the folder a terminal opens in')
     expect(note).toHaveTextContent('when a terminal opens, and nothing else in them')
   })
