@@ -238,7 +238,7 @@ import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
 import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
 import { withoutCandidates } from './lessonSubstance'
-import { runClaudeNotesIngest, removeImportedNotes, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
+import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
 import { registerClaudeNotesIpc } from './claudeNotesIpc'
 import { withBorrowedNotes, withoutUnshareableNotes } from './claudeNotesShare'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
@@ -4285,6 +4285,8 @@ async function semanticPoolOptions(
           const notes = await runClaudeNotesIngest(claudeNotesDeps())
           notesWritten = notes.chunksWritten
           notesMore = notes.truncated
+          // An idle pass reads nothing, so it cannot retry a removal that memory being locked left queued: this does.
+          if (notes.idle) await finishQueuedRemovals(claudeNotesDeps())
         } catch { /* the next tick tries again */ }
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }

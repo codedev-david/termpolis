@@ -193,7 +193,15 @@ export async function findNotes(roots: readonly string[], fs: NotesFs, opts: { m
       const folderDir = join(root, project.name)
       const memoryDir = join(folderDir, 'memory')
       const memoryReal = await fs.real(memoryDir)
-      if (!memoryReal) continue // no notes here
+      if (!memoryReal) {
+        // Nothing at the notes folder's path. Deleting a project's notes means deleting this folder, with the project and its
+        // sessions left in place, so when the project folder reads fine and holds no entry called memory the notes are gone and
+        // whatever was imported from here goes with them. Anything short of that is unknown, not empty: a project folder that
+        // cannot be listed, or an entry that is there and cannot be resolved (a dangling link, a drive not mounted).
+        const around = await fs.list(folderDir)
+        if (around && !around.some((e) => e.name.toLowerCase() === 'memory')) out.listed.add(project.name)
+        continue
+      }
       if (!within(rootReal, memoryReal)) { out.skipped.links++; continue } // a notes folder that is a link out
       const files = await fs.list(memoryDir)
       if (!files) continue
@@ -513,7 +521,10 @@ class Ledger {
     if (ids.length === 0) return true
     if (!this.begin()) return false
     this.bump()
-    for (const id of ids) if (!this.m.stale.includes(id)) this.m.stale.push(id)
+    for (const id of ids) {
+      if (this.m.stale.includes(id)) continue // already queued (a killed pass wrote it ahead)
+      this.m.stale.push(id)
+    }
     if (!this.save()) return false
     for (const id of ids) {
       try {
@@ -714,6 +725,25 @@ export function removeImportedNotes(deps: NotesDeps): Promise<RemoveResult> {
     m.dirty = !listed || m.stale.length > 0
     ledger.save()
     return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : ids.size }
+  })
+}
+
+/**
+ * Finish the removals an earlier one left queued. "Remove imported notes" turns the switch off first, so when memory is
+ * locked every removal fails and waits on the manifest's `stale` list, and the panel says they will be retried; a pass with
+ * the switch off reads nothing, so it retries nothing. This does, from the tick. It reads no folder and no note, only this
+ * computer's own record and the store, and does nothing (not even a write) when nothing is queued.
+ */
+export function finishQueuedRemovals(deps: NotesDeps): Promise<RemoveResult> {
+  return exclusive(async () => {
+    const m = parseManifest(deps.manifest.read())
+    if (m.stale.length === 0) return { removed: 0, failed: 0 }
+    const queued = m.stale.length
+    const stats = emptyStats()
+    const ledger = new Ledger(deps, m, stats)
+    const wroteAhead = await ledger.retire([...m.stale])
+    ledger.save()
+    return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : queued }
   })
 }
 

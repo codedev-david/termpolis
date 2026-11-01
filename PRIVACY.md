@@ -401,7 +401,8 @@ these notes too.
   pieces of at most 1,800 characters, under the project the folder belongs to,
   after the same secret redaction every memory gets, and the record listed
   under Data Stored Locally. Nothing is written into Claude Code's folders. An
-  edited note updates its copy and a deleted one removes it.
+  edited note updates its copy and a deleted one removes it, as does deleting a
+  project's whole `memory` folder.
 - **Who sees the copies.** Every agent you connected can find them through the
   memory tools (`memory_search`, `memory_list`, `memory_primer`) in that same
   project, so Codex and the Antigravity CLI get what Claude knew. One project's
@@ -418,7 +419,8 @@ these notes too.
   copy out of memory and turns the import off; Claude's own notes are not
   touched. Turning the switch off stops the reading and leaves the existing
   copies until you remove them. Disconnecting your agents stops it too, and a
-  locked memory pauses it.
+  locked memory pauses it; copies that could not be removed because memory was
+  locked are removed by the next indexer pass once it opens.
 
 ## Your Choices
 

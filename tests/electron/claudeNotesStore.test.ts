@@ -286,6 +286,41 @@ describe('a pass that is killed', () => {
     expect(stored()).toHaveLength(1)
   })
 
+  // The flag that makes the sweep happen is set by the first change a pass makes, not by the manifest being new: a manifest
+  // from a COMPLETE pass is clean, and an edit pass killed right after its first store write leaves a chunk nothing records.
+  // If the note is edited again before the next pass, only the sweep can find that chunk.
+  it('sweeps a chunk a killed edit pass left behind even though the manifest was clean, when the note is edited again before the next pass', async () => {
+    const line = (tag: string): string => `${tag} ${'w'.repeat(1500)}`
+    const body = (second: string): string => `---\nname: n\ntype: reference\n---\n${line('First')}\n\n${line(second)}\n\n${line('Third')}`
+    const p = note(FOLDER, 'n.md', body('Second'))
+    session(FOLDER, CWD)
+    await runClaudeNotesIngest(deps(realStore)) // a complete pass: the manifest is clean
+    expect(manifestJson().dirty).toBe(false)
+    expect(stored()).toHaveLength(3)
+    fs.writeFileSync(p, body('SecondEDIT1')); touch(p, 5)
+    // The next pass is killed right after its first store write: the manifest saves after that write are lost.
+    let frozen = false
+    const disk = deps(realStore).manifest
+    const killed = deps({
+      ...realStore,
+      write: async (i) => { try { return await realStore.write(i) } finally { frozen = true } },
+    }, { manifest: { read: () => disk.read(), write: (t) => { if (!frozen) disk.write(t) } } })
+    await runClaudeNotesIngest(killed)
+    const orphan = stored().find((r) => r.content.includes('SecondEDIT1'))! // it reached the store...
+    expect(orphan).toBeDefined()
+    expect(JSON.stringify(manifestJson())).not.toContain(orphan.id) // ...and no record of it did
+    expect(manifestJson().dirty).toBe(true) // but the manifest was flagged before the first change was made
+    restart()
+    fs.writeFileSync(p, body('SecondEDIT2')); touch(p, 9) // edited again before the next pass
+    await runClaudeNotesIngest(deps(realStore))
+    const texts = stored().map((r) => r.content)
+    expect(texts.some((c) => c.includes('SecondEDIT1'))).toBe(false) // the orphan is gone
+    expect(texts.some((c) => c.includes('SecondEDIT2'))).toBe(true)
+    expect(texts).toHaveLength(3)
+    expectConsistent()
+    expect(manifestJson().dirty).toBe(false)
+  })
+
   it('a manifest lost entirely costs a re-import and a sweep, not a duplicate', async () => {
     three()
     await runClaudeNotesIngest(deps(realStore))

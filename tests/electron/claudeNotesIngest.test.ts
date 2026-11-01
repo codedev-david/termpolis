@@ -9,8 +9,10 @@ import * as os from 'os'
 import * as path from 'path'
 import {
   MAX_NOTE_BYTES,
+  MAX_NOTE_FILES,
   NOTES_MANIFEST_FILE,
   fileManifest,
+  finishQueuedRemovals,
   findNotes,
   noteRoots,
   notesStatus,
@@ -120,6 +122,26 @@ describe('findNotes: which files are notes', () => {
     expect(found.skipped).toMatchObject({ empty: 1, oversize: 1, links: 0, capped: 0, duplicate: 0 })
   })
 
+  // PRIVACY.md and DOCUMENTATION.md tell the user these two numbers ("files over 64 KB", "anything past 2,000 files"). They
+  // are pinned by value here, so a change to either is a change to what the user was told.
+  it('has the limits the privacy notes disclose: 64 KB a note, 2,000 notes', () => {
+    expect(MAX_NOTE_BYTES).toBe(64 * 1024)
+    expect(MAX_NOTE_FILES).toBe(2000)
+  })
+
+  it('keeps the first 2,000 notes by default and counts the rest, whatever the caller passes', async () => {
+    const dir = path.join(root, 'P', 'memory')
+    const names = Array.from({ length: MAX_NOTE_FILES + 3 }, (_, i) => `n${String(i).padStart(4, '0')}.md`)
+    const f = spyFs({
+      dirs: { [root]: [{ name: 'P', kind: 'dir' }], [dir]: names.map((name) => ({ name, kind: 'file' as const })) },
+      stats: Object.fromEntries(names.map((n) => [path.join(dir, n), { size: 3, mtimeMs: 1 }])),
+    })
+    const found = await findNotes([root], f)
+    expect(found.notes).toHaveLength(MAX_NOTE_FILES)
+    expect(found.notes[MAX_NOTE_FILES - 1].fileName).toBe(names[MAX_NOTE_FILES - 1])
+    expect(found.skipped.capped).toBe(3)
+  })
+
   it('a note exactly at the size limit is still a note', async () => {
     note('P', 'edge.md', 'x'.repeat(MAX_NOTE_BYTES))
     expect((await findNotes([root], realNotesFs)).notes).toHaveLength(1)
@@ -131,7 +153,33 @@ describe('findNotes: which files are notes', () => {
     const found = await findNotes([root], realNotesFs)
     expect(found.notes).toEqual([])
     expect([...found.folders]).toEqual(['bare'])
-    expect(found.listed.size).toBe(0)
+    expect([...found.listed]).toEqual(['bare']) // it was read, and holds no notes folder: whatever was imported from it is gone
+  })
+
+  // A project folder with no notes folder is "listed" (nothing in it) only when that was SEEN: the project folder read fine
+  // and has no entry called memory. Anything short of that is unknown, and unknown removes nothing.
+  describe('a project folder with no notes folder to read', () => {
+    const memoryDir = (): string => path.join(root, 'P', 'memory')
+    const seen = (entries: Array<{ name: string; kind: 'file' | 'dir' | 'link' | 'other' }> | null) =>
+      spyFs({ dirs: { [root]: [{ name: 'P', kind: 'dir' }], [path.join(root, 'P')]: entries }, reals: { [memoryDir()]: null } })
+
+    it('is listed, empty, when the project folder reads fine and holds no notes folder', async () => {
+      const found = await findNotes([root], seen([{ name: 'aaaa.jsonl', kind: 'file' }]))
+      expect([...found.listed]).toEqual(['P'])
+      expect(found.notes).toEqual([])
+    })
+
+    it('is not listed when the project folder cannot be read', async () => {
+      expect([...(await findNotes([root], seen(null))).listed]).toEqual([])
+    })
+
+    it('is not listed when there is an entry called memory that cannot be resolved (a dangling link, a drive not mounted)', async () => {
+      expect([...(await findNotes([root], seen([{ name: 'memory', kind: 'link' }]))).listed]).toEqual([])
+    })
+
+    it('is not listed when the entry is spelt in another case, which a case-sensitive disk keeps apart', async () => {
+      expect([...(await findNotes([root], seen([{ name: 'Memory', kind: 'dir' }]))).listed]).toEqual([])
+    })
   })
 
   it('a root that does not exist is skipped, and a missing list of roots finds nothing', async () => {
@@ -554,6 +602,20 @@ describe('a pass: limits, interruptions, failures', () => {
     expect(manifestJson().last.secretsRedacted).toBe(2)
   })
 
+  it('keeps the redaction count across passes: Settings shows the total, not the last pass\'s', async () => {
+    note(FOLDER, 'a.md', '---\nname: a\n---\nFirst key is here.')
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    const write = store.write.bind(store)
+    store.write = async (i) => ({ ...(await write(i)), scrubbed: 1 }) as StoredNote
+    await runClaudeNotesIngest(deps(store))
+    note(FOLDER, 'b.md', '---\nname: b\n---\nSecond key is here.')
+    expect(await runClaudeNotesIngest(deps(store))).toMatchObject({ secretsRedacted: 1 }) // this pass redacted one...
+    expect(notesStatus(fileManifest(data)).secretsRedacted).toBe(2) // ...and the panel counts both
+    await runClaudeNotesIngest(deps(store)) // a pass that redacts nothing does not reset it
+    expect(notesStatus(fileManifest(data)).secretsRedacted).toBe(2)
+  })
+
   it('stops without touching the store when the manifest cannot be saved', async () => {
     note(FOLDER, 'n.md', FEEDBACK)
     session(FOLDER, CWD)
@@ -632,6 +694,40 @@ describe('a pass: what it will not delete', () => {
     fs.mkdirSync(path.join(root, 'some-other-folder'))
     expect((await runClaudeNotesIngest(deps(store))).chunksDeleted).toBe(1)
     expect(store.rows.size).toBe(0)
+  })
+
+  // Wiping a project's notes means deleting its memory folder; the project folder and its sessions stay. The copies go with
+  // the notes (PRIVACY.md: "a deleted one removes it"), or text the user wanted gone keeps being served to every agent.
+  it('removes the copies of a project whose whole notes folder was deleted, while the project and its sessions remain', async () => {
+    const store = await importedOne()
+    fs.rmSync(path.join(root, FOLDER, 'memory'), { recursive: true })
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats).toMatchObject({ filesRemoved: 1, chunksDeleted: 1 })
+    expect(store.rows.size).toBe(0)
+    expect(manifestJson().files).toEqual({})
+    expect(manifestJson().cwds[FOLDER]).toBe(CWD) // the project is still known: a new note there needs no second look at the sessions
+    note(FOLDER, 'again.md', FEEDBACK) // and a notes folder made afresh imports again
+    expect((await runClaudeNotesIngest(deps(store))).chunksWritten).toBe(1)
+    expect(store.rows.size).toBe(1)
+  })
+
+  it('keeps the copies when the notes folder cannot be resolved though the project folder lists an entry for it', async () => {
+    const store = await importedOne()
+    const dangling: NotesFs = { ...realNotesFs, real: async (p) => (p === path.join(root, FOLDER, 'memory') ? null : realNotesFs.real(p)) }
+    const stats = await runClaudeNotesIngest(deps(store, { fs: dangling }))
+    expect(stats).toMatchObject({ filesRemoved: 0, chunksDeleted: 0 })
+    expect(store.rows.size).toBe(1)
+  })
+
+  it('keeps the copies when the project folder itself cannot be listed', async () => {
+    const store = await importedOne()
+    const blind: NotesFs = {
+      ...realNotesFs,
+      real: async (p) => (p === path.join(root, FOLDER, 'memory') ? null : realNotesFs.real(p)),
+      list: async (d) => (d === path.join(root, FOLDER) ? null : realNotesFs.list(d)),
+    }
+    expect((await runClaudeNotesIngest(deps(store, { fs: blind }))).chunksDeleted).toBe(0)
+    expect(store.rows.size).toBe(1)
   })
 })
 
@@ -866,6 +962,74 @@ describe('Remove imported notes', () => {
     store.failRemoves(null)
     expect(await removeImportedNotes(deps(store))).toEqual({ removed: 1, failed: 0 })
     expect(store.rows.size).toBe(0)
+  })
+
+  // "Remove imported notes" turns the switch off first, so when memory is locked the removals fail and queue, and the panel
+  // says they "will be retried". A pass with the switch off reads nothing and so retries nothing: the tick finishes them.
+  describe('finishing a removal that memory being locked left behind', () => {
+    async function queued(): Promise<ReturnType<typeof fakeStore>> {
+      note(FOLDER, 'a.md', '---\nname: a\n---\nAlpha.')
+      session(FOLDER, CWD)
+      const store = fakeStore()
+      await runClaudeNotesIngest(deps(store))
+      store.failRemoves(new Error('Memory is locked'))
+      expect(await removeImportedNotes(deps(store, { enabled: () => false }))).toEqual({ removed: 0, failed: 1 })
+      store.failRemoves(null)
+      return store
+    }
+
+    it('removes what is queued once memory opens, though the switch is off, and clears the queue', async () => {
+      const store = await queued()
+      const res = await finishQueuedRemovals(deps(store, { enabled: () => false }))
+      expect(res).toEqual({ removed: 1, failed: 0 })
+      expect(store.rows.size).toBe(0)
+      expect(manifestJson().stale).toEqual([])
+      expect(notesStatus(fileManifest(data)).pending).toBe(0)
+    })
+
+    it('reads no folder and no note: it works from this computer\'s own record and the store', async () => {
+      const store = await queued()
+      const f = spyFs()
+      await finishQueuedRemovals(deps(store, { enabled: () => false, fs: f, roots: vi.fn(async () => [root]) }))
+      expect(f.calls).toEqual({ list: [], stat: [], real: [], read: [] })
+    })
+
+    it('keeps what still cannot be removed on the queue', async () => {
+      const store = await queued()
+      store.failRemoves(new Error('Memory is locked'))
+      expect(await finishQueuedRemovals(deps(store, { enabled: () => false }))).toEqual({ removed: 0, failed: 1 })
+      expect(manifestJson().stale).toHaveLength(1)
+    })
+
+    it('does nothing, and writes nothing, when nothing is queued', async () => {
+      const manifest: NotesManifestIO = { read: vi.fn(() => null), write: vi.fn() }
+      const store = fakeStore()
+      expect(await finishQueuedRemovals(deps(store, { enabled: () => false, manifest }))).toEqual({ removed: 0, failed: 0 })
+      expect(manifest.write).not.toHaveBeenCalled()
+      expect(store.removed).toEqual([])
+    })
+
+    it('reports a queue it could not even save as failed, and removes nothing', async () => {
+      const store = await queued()
+      const stale = manifestJson().stale.length
+      const res = await finishQueuedRemovals(deps(store, { enabled: () => false, manifest: flakyManifest(0) }))
+      expect(res).toEqual({ removed: 0, failed: stale })
+      expect(store.rows.size).toBe(1)
+    })
+
+    it('waits for a pass in progress, like a removal does, and so never removes the same copy twice', async () => {
+      const store = await queued()
+      let release: () => void = () => {}
+      const gate = new Promise<void>((r) => { release = r })
+      const pass = runClaudeNotesIngest(deps(store, { roots: async () => { await gate; return [root] } }))
+      const finished = finishQueuedRemovals(deps(store, { enabled: () => false }))
+      await new Promise((r) => setTimeout(r, 20))
+      expect(store.removed).toEqual([]) // the pass has the line and has not got as far as its own removals
+      release()
+      await pass
+      expect(await finished).toEqual({ removed: 0, failed: 0 }) // the pass finished the queue: nothing was left to do twice
+      expect(store.removed).toHaveLength(1)
+    })
   })
 
   it('still removes what the manifest knows when the store cannot be listed, and keeps the manifest dirty', async () => {

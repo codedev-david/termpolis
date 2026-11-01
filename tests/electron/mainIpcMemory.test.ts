@@ -344,12 +344,14 @@ vi.mock('../../src/main/mnemeConsolidateRun', () => ({ runConsolidation: mneme.r
 const notesMock = vi.hoisted(() => ({
   runClaudeNotesIngest: vi.fn(async (_deps?: any) => ({ chunksWritten: 0, truncated: false })),
   removeImportedNotes: vi.fn(async (_deps?: any) => ({ removed: 2, failed: 0 })),
+  finishQueuedRemovals: vi.fn(async (_deps?: any) => ({ removed: 0, failed: 0 })),
   notesStatus: vi.fn((_io?: any) => ({ notes: 3, chunks: 4, projects: 2, lastAt: 1700000000000, noProject: 0, secretsRedacted: 0, pending: 0 })),
 }))
 vi.mock('../../src/main/claudeNotesIngest', async () => ({
   ...(await vi.importActual<typeof import('../../src/main/claudeNotesIngest')>('../../src/main/claudeNotesIngest')),
   runClaudeNotesIngest: notesMock.runClaudeNotesIngest,
   removeImportedNotes: notesMock.removeImportedNotes,
+  finishQueuedRemovals: notesMock.finishQueuedRemovals,
   notesStatus: notesMock.notesStatus,
 }))
 // WEAVE_NEIGHBOUR_K is a real export index.ts now reads (so the k it pre-fetches neighbours with
@@ -389,11 +391,14 @@ let eventFeed: Function
 let recalls: typeof import('../../src/main/recallLedger')
 /** What index.ts told the audit at startup, captured for the same reason. */
 let auditInit: unknown[] | undefined
+/** The quit handler index.ts registers at startup: it tears the module down, so only the LAST describe of this file fires it. */
+let onBeforeQuit: (() => void) | undefined
 
 beforeAll(async () => {
   vi.resetModules()
   await import('../../src/main/index')
   auditInit = mneme.initMemoryAudit.mock.calls[0]
+  onBeforeQuit = ((await import('electron')) as any).app.on.mock.calls.find((c: unknown[]) => c[0] === 'before-quit')?.[1]
   // Same post-reset registry index.ts loaded from — a statically imported ledger would be a
   // different module object holding a different Map.
   recalls = await import('../../src/main/recallLedger')
@@ -2654,6 +2659,8 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     notesMock.runClaudeNotesIngest.mockReset()
     notesMock.runClaudeNotesIngest.mockImplementation(async () => NO_RUN)
     notesMock.removeImportedNotes.mockClear()
+    notesMock.finishQueuedRemovals.mockReset()
+    notesMock.finishQueuedRemovals.mockImplementation(async () => ({ removed: 0, failed: 0 }))
     // Back to the defaults, whatever a test chose: notes on, sharing off.
     await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
@@ -2713,6 +2720,36 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     expect(d.stopped()).toBe(false)
     // The manifest lives beside the other app data, and a read of an absent one is null.
     expect(typeof d.manifest.read).toBe('function')
+  })
+
+  // An idle pass (the switch is off, or the agents are not connected) reads nothing, so it cannot retry a removal that memory
+  // being locked left queued ("Remove imported notes" turns the switch off first). The tick finishes those itself.
+  describe('a pass that stayed idle', () => {
+    it('is followed by finishing the removals still queued, handed the same deps', async () => {
+      for (const idle of ['off', 'not-connected']) {
+        notesMock.finishQueuedRemovals.mockClear()
+        notesMock.runClaudeNotesIngest.mockResolvedValueOnce({ chunksWritten: 0, truncated: false, idle })
+        await indexer.run()
+        expect(notesMock.finishQueuedRemovals, idle).toHaveBeenCalledTimes(1)
+        const d = notesMock.finishQueuedRemovals.mock.calls[0][0]
+        expect(typeof d.store.remove).toBe('function')
+        expect(d.enabled).toBe(depsOfLastPass().enabled)
+      }
+    })
+
+    it('is not, when the pass ran: its own first step retires the queue', async () => {
+      await indexer.run()
+      expect(notesMock.runClaudeNotesIngest).toHaveBeenCalled()
+      expect(notesMock.finishQueuedRemovals).not.toHaveBeenCalled()
+    })
+
+    it('costs the tick nothing when the finishing fails', async () => {
+      const baseline = await indexer.run() // what a tick with a quiet notes pass does
+      notesMock.runClaudeNotesIngest.mockResolvedValueOnce({ chunksWritten: 0, truncated: false, idle: 'off' })
+      notesMock.finishQueuedRemovals.mockRejectedValueOnce(new Error('memory is locked'))
+      await expect(indexer.run()).resolves.toEqual(baseline)
+      expect(notesMock.finishQueuedRemovals).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('tells the pass which computer this is once the store says so (memory sync), and none before', async () => {
@@ -2860,5 +2897,18 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
       const recent = (buildContextPrimer as any).mock.calls[0][1].recent
       expect(await recent({ limit: 3, project: 'app' })).toEqual([expect.objectContaining({ id: 'r1', projectKey: 'pk:app' })])
     })
+  })
+})
+
+// LAST in the file, on purpose: before-quit tears the module down (the memory host stops, the terminals are killed).
+describe('the saved-notes pass and the app quitting', () => {
+  it('ends its pass when the app quits: the pass is handed a quit signal that turns true at before-quit', async () => {
+    expect(typeof onBeforeQuit).toBe('function')
+    notesMock.runClaudeNotesIngest.mockClear()
+    await indexer.run()
+    const d = notesMock.runClaudeNotesIngest.mock.calls[notesMock.runClaudeNotesIngest.mock.calls.length - 1][0]
+    expect(d.stopped()).toBe(false)
+    onBeforeQuit!()
+    expect(d.stopped()).toBe(true)
   })
 })
