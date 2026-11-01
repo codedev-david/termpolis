@@ -13,6 +13,8 @@ import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
 import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
+import { isCandidate } from './lessonSubstance'
+import { isClaudeNote } from './claudeNotesParse'
 import { mmrRerank } from './mmrRerank'
 import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
 import { relationPrior, filterSuperseded } from './mnemeGraphLogic'
@@ -1560,8 +1562,10 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   if (orphans > 0 && orphans / vectorStore.size > 0.45 && !hnswBuilding) compactVectorStore()
 
   bumpSearchGen() // a new entry invalidates cached searches
-  // WP-E: audit what the brain stored (secret-redacted preview; full content stays only in the store).
-  if (durable) auditMemory({ event: 'write', id: stored.id, kind: stored.kind, agentId: stored.agentId, preview: redactPreview(stored.content) })
+  // WP-E: audit what the brain stored (secret-redacted preview; full content stays only in the store). No preview for a
+  // row the product holds back from agents (a candidate lesson) or promises to take out whole (an imported note): the
+  // audit file is plain text and would keep their words after the row is gone.
+  if (durable) auditMemory({ event: 'write', id: stored.id, kind: stored.kind, agentId: stored.agentId, preview: isCandidate(stored) || isClaudeNote(stored) ? '' : redactPreview(stored.content) })
 
   // Knowledge graph: auto-link a curated memory to its nearest neighbours so the
   // graph grows passively as you work. High-value kinds only (transcript/code

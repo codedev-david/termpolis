@@ -1433,7 +1433,14 @@ export async function executeTool(
     }
     case 'memory_audit': {
       const limit = Math.min(Math.max(Number(args.limit ?? 50) || 50, 1), 1000)
-      return { events: readMemoryAudit(limit), summary: memoryAuditSummary() } // WP-E: inspectable, local
+      // A write's preview is the opening of what was stored, and this tool is open to every agent in every project (no
+      // prompt): it says what was stored, when and by whom, never the words. The file keeps the clipped preview.
+      const events = readMemoryAudit(limit).map((e) => {
+        if (e.event !== 'write') return e
+        const { preview: _preview, ...rest } = e
+        return rest
+      })
+      return { events, summary: memoryAuditSummary() } // WP-E: inspectable, local
     }
     case 'memory_link':
       return handlers.memoryLink({ from: args.from, to: args.to, relation: args.relation })

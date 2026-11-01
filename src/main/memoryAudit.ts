@@ -20,9 +20,10 @@
 // the other is appending to, and a read merges them. The main process's copy was never initialised until
 // 1.55.0, which is why memory_audit used to show only the host's writes.
 //
-// WHAT MAY BE PERSISTED is counts, ids, kinds, the agent and the project, plus the redacted preview of a
-// STORED memory (the host has always kept that). The text of a QUERY is never persisted: a recall's query is
-// the beginning of whatever an agent, or with the prompt-time recall hook the user, just typed.
+// WHAT MAY BE PERSISTED is counts, ids, kinds and the agent, plus the redacted preview of a STORED memory (the
+// host has always kept that; swarmMemory leaves it empty for a held-back lesson and an imported note). The text of
+// a QUERY is never persisted: a recall's query is the beginning of whatever an agent, or with the prompt-time
+// recall hook the user, just typed. The memory_audit tool hands agents the events WITHOUT the previews.
 import { appendFileSync, existsSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)

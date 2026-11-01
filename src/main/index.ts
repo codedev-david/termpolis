@@ -1651,7 +1651,7 @@ function groundOutcomeInMemories(project: string, success: boolean, now: number)
     auditMemory({
       event: 'learn',
       kind: 'feedback',
-      detail: `outcome ${success ? 'success' : 'FAILURE'} in ${project} → ${ids.length} recalled memories ${success ? 'reinforced' : 'demoted'}`,
+      detail: `outcome ${success ? 'success' : 'FAILURE'} → ${ids.length} recalled memories ${success ? 'reinforced' : 'demoted'}`, // no project name: memory_audit hands this to every agent
     })
   } catch { /* best effort */ }
 }

@@ -80,12 +80,17 @@ upload it.
 - What the memory brain recorded about its own work (`userData/memory-audit.jsonl`
   and `userData/memory-audit-main.jsonl`, each with a `.prev.jsonl` copy once it
   passes 2 MB; the memory process writes the first and the main process the
-  second): a line for each memory stored (a clipped preview of its text, with
-  anything that might be a credential taken out), each recall (which agent asked,
-  how many memories it found and the ids of the top few), each context digest
-  handed to an agent (its approximate size) and each learning pass (which kind
-  and how many). Never what an agent asked for: the text of a search or a request
-  is not kept. The `memory_audit` tool reads it back to an agent that asks.
+  second): a line for each memory stored (its kind, which agent stored it and a
+  clipped preview of its text, with anything that might be a credential taken
+  out; no preview at all for a lesson held back as a candidate or a note copied
+  from Claude Code's folders), each recall (the agent filter the search named, if
+  any, how many memories it found and the ids of the top few), each context
+  digest handed to an agent (its approximate size) and each learning pass (its
+  kind and a one-line note, which for a commit or test run says whether it passed
+  and how many memories it touched, never which project). Never what an agent
+  asked for: the text of a search or a request is not kept. The `memory_audit`
+  tool reads it back to an agent that asks, without the previews: an agent is
+  told what was stored and by which agent, never the words.
 - The lessons Termpolis writes down after a finished session, in swarm memory
   like any other memory. Since 1.55.0 a lesson that says nothing a later reader
   could use, such as "Root cause found." or a progress note, is not stored. One
