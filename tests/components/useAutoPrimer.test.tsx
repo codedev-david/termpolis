@@ -1536,7 +1536,11 @@ describe('the pointer is never typed over what the user is typing', () => {
 // (shellQuote.ts); otherwise it is left out and the agent calls memory_primer with no arguments.
 // ---------------------------------------------------------------------------------------------
 describe('the pointer names the folder safely', () => {
+  /** Termpolis does not know the terminal's folder: the tool is called as it is. */
   const NO_FOLDER = buildPrimerPointer('')
+  /** It knows one that cannot be written into a command line: the agent is told to use its own. */
+  const UNNAMED_TARGET = 'with cwd set to your current working directory'
+  const UNNAMED = buildPrimerPointer('/tmp/$(touch pwned)')
 
   /** Names that are ordinary on somebody's machine, and so must still reach the agent. */
   const ORDINARY: Array<[string, string]> = [
@@ -1617,10 +1621,28 @@ describe('the pointer names the folder safely', () => {
   describe('a name no shell could take for plain text', () => {
     it.each(HOSTILE)('is left out: %s', (_what, cwd) => {
       const pointer = buildPrimerPointer(cwd)
-      // Exactly the pointer for no folder at all: nothing of the name is written anywhere.
-      expect(pointer).toBe(NO_FOLDER)
-      expect(pointer).toContain('memory_primer with no arguments')
+      // Exactly the pointer for any other such name: nothing of the name is written anywhere.
+      expect(pointer).toBe(UNNAMED)
       expect(pointer).not.toContain('touch pwned')
+    })
+
+    it('has the agent pass its own working directory, which keeps the recall scoped to the project', () => {
+      // memory_primer scopes by the cwd it is given (the full path, then its last segment). The agent
+      // knows its folder, and what it passes is a tool argument, which no shell reads.
+      expect(UNNAMED).toContain(`memory_primer ${UNNAMED_TARGET} and read it as background only`)
+      expect(UNNAMED).not.toContain('with no arguments')
+      expect(UNNAMED).not.toBe(NO_FOLDER)
+    })
+
+    it('keeps a project scoped when only a parent folder has a name no shell could take', () => {
+      for (const cwd of ["C:\\Users\\Sean O'Brien\\proj", 'C:\\Users\\me\\R&D\\proj', '\\\\wsl$\\Ubuntu\\home\\me\\proj', '/home/me/résumé–2020/proj']) {
+        expect(buildPrimerPointer(cwd)).toBe(UNNAMED)
+      }
+    })
+
+    it('still says "with no arguments" when there is no folder to name at all', () => {
+      expect(NO_FOLDER).toContain('memory_primer with no arguments and read it')
+      expect(NO_FOLDER).not.toContain('your current working directory')
     })
 
     it('keeps the pointer one line of paste-safe text whatever the folder is called', () => {
@@ -1633,25 +1655,58 @@ describe('the pointer names the folder safely', () => {
     })
   })
 
+  describe('the first word of the pointer', () => {
+    // At a cmd.exe prompt the first word of a line is looked up as a program in the CURRENT folder
+    // first, so a repository that carries a Termpolis.bat or Termpolis.cmd would run it when the
+    // pointer is typed there. A colon cannot be in the name of a file git checks out on Windows.
+    // primerPointerShell.test.ts types it into the real cmd.exe to prove it.
+    it.each([
+      ['no folder', ''],
+      ['an ordinary folder', '/home/me/proj'],
+      ['a folder that cannot be named', '/tmp/$(touch pwned)'],
+    ])('is not the name of a file a folder could hold: %s', (_what, cwd) => {
+      expect(buildPrimerPointer(cwd).split(' ')[0]).toBe('Termpolis:')
+      expect(buildPrimerPointer(cwd, true).split(' ')[0]).toBe('Termpolis:')
+    })
+
+    it('still opens by telling the agent which tool to call', () => {
+      expect(buildPrimerPointer('/home/me/proj').startsWith('Termpolis: memory — call the termpolis MCP tool memory_primer with cwd set to ')).toBe(true)
+    })
+  })
+
   describe('which characters a folder name may carry', () => {
     it('accepts exactly these ASCII characters, and not one control character', () => {
+      // "Named" is decided by what the pointer says, not by looking for the raw text: psQuote doubles
+      // an apostrophe, so a search for the unquoted name would never see one that had been let in.
+      const named = (cwd: string): boolean => !buildPrimerPointer(cwd).includes(UNNAMED_TARGET)
       let accepted = ''
       for (let code = 0; code < 0x80; code++) {
         const ch = String.fromCharCode(code)
-        if (buildPrimerPointer(`/a${ch}b`).includes(`'/a${ch}b'`)) accepted += ch
+        if (named(`/a${ch}b`)) accepted += ch
       }
       expect(accepted).toBe(' #()+,-./0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]_abcdefghijklmnopqrstuvwxyz{}~')
+      // What it names is the folder itself, in single quotes.
+      for (const ch of accepted) expect(buildPrimerPointer(`/a${ch}b`)).toContain(`with cwd set to ${psQuote(`/a${ch}b`)} and`)
+    })
+
+    it('accepts combining marks and letters of other scripts, and nothing from the private or format ranges', () => {
+      const cp = (code: number): string => String.fromCodePoint(code)
+      const withMark = `/home/proje${cp(0x301)}t`
+      expect(buildPrimerPointer(withMark)).toContain(`with cwd set to '${withMark}' and`)
+      expect(buildPrimerPointer('/home/用户')).toContain("with cwd set to '/home/用户' and")
+      // A zero-width joiner or non-joiner, a private-use character, a byte-order mark, a bidirectional isolate.
+      for (const code of [0x200d, 0x200c, 0xe000, 0xfeff, 0x2066]) expect(buildPrimerPointer(`/a${cp(code)}b`)).toBe(UNNAMED)
     })
 
     it('refuses the C1 controls and the no-break space too', () => {
       for (let code = 0x80; code <= 0xa0; code++) {
         const cwd = `/a${String.fromCharCode(code)}b`
-        expect(buildPrimerPointer(cwd)).toBe(NO_FOLDER)
+        expect(buildPrimerPointer(cwd)).toBe(UNNAMED)
       }
     })
 
     it('does not name a folder that ends in a backslash, but names the same one without it', () => {
-      expect(buildPrimerPointer('C:\\code\\acme\\')).toBe(NO_FOLDER)
+      expect(buildPrimerPointer('C:\\code\\acme\\')).toBe(UNNAMED)
       expect(buildPrimerPointer('C:\\code\\acme')).toContain("with cwd set to 'C:\\code\\acme' and")
     })
   })
@@ -1664,7 +1719,7 @@ describe('the pointer names the folder safely', () => {
       // The recall check is not a shell: it keeps the real folder, so the digest is as relevant as ever.
       expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.stringContaining('$(touch pwned)'), undefined, cwd)
       const [, paste] = api.writeToTerminal.mock.calls[0]
-      expect(paste).toBe('\x1b[200~' + NO_FOLDER + '\x1b[201~')
+      expect(paste).toBe('\x1b[200~' + UNNAMED + '\x1b[201~')
       expect(paste).not.toContain('$(')
     })
 

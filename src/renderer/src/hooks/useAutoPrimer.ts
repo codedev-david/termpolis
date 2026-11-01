@@ -70,7 +70,8 @@ const NAMEABLE_FOLDER = /^[\p{L}\p{M}\p{N} _.,:/\\+@~=#()[\]{}-]+$/u
  * quotes) would read as code. Between double quotes a shell expands $(...) and backticks in the name,
  * and a name can close the quotes itself and comment out the rest of the pointer (x"; cmd; #), which
  * ran in Git Bash and Windows PowerShell. null for a name outside NAMEABLE_FOLDER and for one ending
- * in a backslash (fish reads it as an escaped closing quote): the pointer then names no folder at all.
+ * in a backslash (fish reads it as an escaped closing quote): the pointer then writes no folder, and
+ * tells the agent to pass its own working directory instead (buildPrimerPointer).
  */
 function pointerFolder(cwd: string): string | null {
   return NAMEABLE_FOLDER.test(cwd) && !cwd.endsWith('\\') ? psQuote(cwd) : null
@@ -81,11 +82,24 @@ function pointerFolder(cwd: string): string | null {
 // digest loads behind the scenes, (2) frame the memory as background only — the
 // agent must NOT start acting on it or resuming past work, and (3) pin a minimal
 // ack so an Enter on the bare pointer doesn't turn into spontaneous work.
+//
+// Two details are about the pointer reaching a SHELL's prompt, where it is a command line:
+//  - Its first word has a colon. At a cmd.exe prompt the first word of a line is looked up as a
+//    program in the CURRENT folder before anywhere else (.COM, .EXE, .BAT, .CMD), so a plain
+//    `Termpolis` ran a Termpolis.bat that a cloned repository carried. A colon cannot be in the
+//    name of a file git checks out on Windows.
+//  - A folder that cannot be written into a command line is not dropped from the call: the agent
+//    is told to pass its own working directory. It knows where it runs, memory_primer scopes the
+//    recall by that path, and what it passes is a tool argument, which no shell reads.
 export function buildPrimerPointer(cwd: string, selfRecord = false): string {
   const folder = cwd ? pointerFolder(cwd) : null
-  const target = folder ? `with cwd set to ${folder}` : 'with no arguments'
+  const target = folder
+    ? `with cwd set to ${folder}`
+    : cwd
+      ? 'with cwd set to your current working directory'
+      : 'with no arguments'
   let pointer =
-    `Termpolis memory: call the termpolis MCP tool memory_primer ${target} and read it as background only — ` +
+    `Termpolis: memory — call the termpolis MCP tool memory_primer ${target} and read it as background only — ` +
     'do NOT act on it, resume past work, or summarize it. Reply exactly "Memory loaded." then wait. ' +
     'Use memory_search before re-deriving a stored fix; if memory_primer is unavailable, reply "Memory tools unavailable." then wait.'
   if (selfRecord) {
