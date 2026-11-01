@@ -57,6 +57,32 @@ describe('the env a Claude launch gets', () => {
     expect(readSettings).not.toHaveBeenCalled()
   })
 
+  it('costs a launch nothing while the cap is Off: no timer, no read, one asynchronous step', async () => {
+    // The performance claim for everyone who never turns it on, as a structure and not a stopwatch: a read is the
+    // only thing that can take time, and a timer exists only to bound a read. Neither happens.
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    try {
+      const readSettings = vi.fn(async () => NO_WINDOW)
+      for (const settings of [() => ({ contextCap: 0 }), () => ({}), () => null, () => ({ contextCap: 'x' })]) {
+        await claudeLaunchEnv('/work/repo', sources({ settings: settings as never, readSettings }))
+      }
+      // Also when the cap is on but the environment already settled it: nothing left to find out.
+      await claudeLaunchEnv('/work/repo', sources({ env: { [VAR]: '250000' }, readSettings }))
+      expect(readSettings).not.toHaveBeenCalled()
+      expect(timers).not.toHaveBeenCalled()
+    } finally {
+      timers.mockRestore()
+    }
+  })
+
+  it('bounds the one read it makes with one timer, and leaves none behind', async () => {
+    vi.useFakeTimers()
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    await claudeLaunchEnv('/work/repo', sources())
+    expect(timers).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('reads the settings of the folder the terminal opens in, once, and only when it matters', async () => {
     const readSettings = vi.fn(async () => NO_WINDOW)
     await claudeLaunchEnv('/work/repo', sources({ readSettings }))

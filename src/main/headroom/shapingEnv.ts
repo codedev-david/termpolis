@@ -49,7 +49,8 @@ export function isContextCapSetting(v: unknown): v is number {
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const isHeld = (v: unknown): boolean => v !== undefined && v !== null
 
-/** Whether a block of variables holds the window. The name is read in any case, because Windows does. */
+/** Whether a block of variables holds the window. The name is read in any case, because Windows does; on a
+ *  system where names are case-sensitive that errs toward leaving a value alone, which is the safe side. */
 function holdsWindow(block: unknown): boolean {
   if (!isRecord(block)) return false
   return Object.keys(block).some((key) => key.toUpperCase() === CONTEXT_WINDOW_VAR && isHeld(block[key]))
