@@ -18,7 +18,7 @@
 
 import { existsSync } from 'fs'
 import { adaptiveGate, dedupeHits, diversifyHits, dropPrefixDuplicates, isStrictPrefix, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
-import { isCandidate, withoutCandidates } from './lessonSubstance'
+import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote } from './claudeNotesParse'
 import { projectKeyOf } from './projectKey'
 
@@ -44,6 +44,10 @@ export interface PrimerHit {
   /** The stable key of the project's full path, when the caller has it. Two repos can share a folder name; a saved
    *  note (claudeNotesIngest.ts) is shown only to the one whose key it carries. */
   projectKey?: string
+  /** The memory's cognitive type, when the caller has it. `semantic` and `procedural` are what the lesson writer stores. */
+  memoryType?: string
+  /** Set by the correction overlay (memoryCorrectionStore) when someone has demoted, amended or retracted this memory. */
+  correction?: { kind: string }
 }
 
 export type PrimerSearch = (opts: { query: string; limit?: number; project?: string }) => Promise<PrimerHit[]>
@@ -81,6 +85,24 @@ const isConversation = (h: PrimerHit): boolean =>
   h.kind === 'message' && CONVERSATION_SOURCES.has(h.source || '')
 
 const hitKey = (h: PrimerHit): string => h.id || h.content
+
+/** How many saved notes may lead the project block, and how many lessons the substance gate vouches for. Past these a
+ *  note or a lesson ranks with the conversations, on the relevance the search gave it: a crowd of either cannot fill
+ *  the block. */
+export const LEADING_NOTES = 3
+export const LEADING_LESSONS = 2
+
+/** A lesson the substance gate vouches for: a distilled memory (the lesson writer's semantic or procedural type) whose
+ *  text scores at the keep bar and that nobody has demoted.
+ *
+ *  The text is judged, not the importance the lesson was stored with. A lesson written before 1.55 carries an importance
+ *  of 0.5-0.95 whatever it says (a hand-label of 54 found it separates nothing), and one that sits in the gate's middle
+ *  band is stored and not yet re-checked, so only its words can say. A demotion is a person or a failed outcome saying
+ *  the lesson is unreliable: it stays where relevance puts it. */
+const isGatedLesson = (h: PrimerHit): boolean =>
+  (h.memoryType === 'semantic' || h.memoryType === 'procedural') &&
+  h.correction?.kind !== 'demote' &&
+  lessonSubstance(h.content).score >= KEEP_SCORE
 
 // How many candidates to pull per inject slot before the relevance gate trims them.
 const CANDIDATE_FACTOR = 4
@@ -209,7 +231,7 @@ function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => bo
   const path = codeFilePath(h)
   const base = path !== null && !fileExists(path)
     ? `${h.source || 'code'} ⚠ STALE — file removed, verify before use`
-    : isClaudeNote(h) ? 'note' : (h.source || h.kind || 'note') // a saved note says so; its age is its last edit
+    : isClaudeNote(h) ? 'note' : isGatedLesson(h) ? 'lesson' : (h.source || h.kind || 'note') // a saved note says so (its age is its last edit), and so does a lesson
   // F24: stamp a relative age so recency is legible in the primer (the leading line
   // is what the agent 'holds' about the project).
   const label = typeof h.ts === 'number' && h.ts > 0 ? `${base} · ${relativeAge(h.ts, now)}` : base
@@ -327,22 +349,33 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       if (h.project === project || (slugRe && slugRe.test(h.content || ''))) promoted.push(h)
       else others.push(h)
     }
-    // Saved notes lead the project bucket (curated and verified by their author), then past conversations;
-    // the stable sort preserves the score order the search already returned within each class.
-    const rank = (h: PrimerHit): number => (isClaudeNote(h) ? 0 : isConversation(h) ? 1 : 2)
-    const bucket = [...projectHits, ...promoted]
+    // The project bucket leads with what its author vouched for: saved notes (curated and verified), then lessons the
+    // substance gate vouches for, then past conversations, then the rest (code and the like). The caps keep a crowd of
+    // notes or lessons from filling the block; past them they rank with the conversations. The stable sort preserves the
+    // score order the search already returned within each class, and the budget is the same one: this reorders, never adds.
+    const pool = [...projectHits, ...promoted]
+    let leadingNotes = 0
+    let leadingLessons = 0
+    const tier = pool.map((h): number => {
+      if (isClaudeNote(h)) return leadingNotes++ < LEADING_NOTES ? 0 : 2
+      if (isGatedLesson(h)) return leadingLessons++ < LEADING_LESSONS ? 1 : 2
+      return isConversation(h) ? 2 : 3
+    })
+    const bucket = pool
       .map((h, i) => ({ h, i }))
-      .sort((a, b) => rank(a.h) - rank(b.h) || a.i - b.i)
+      .sort((a, b) => tier[a.i] - tier[b.i] || a.i - b.i)
       .map((x) => x.h)
 
     const projLines: string[] = []
     let notesShown = 0
+    let lessonsShown = 0
     for (const h of bucket) {
       if (projLines.length >= relevanceBudget) break
       const line = renderLine(h, maxSnip, fileExists, now)
       if (!line) continue
       projLines.push(line)
       if (isClaudeNote(h)) notesShown++
+      else if (isGatedLesson(h)) lessonsShown++
     }
     const otherLines: string[] = []
     for (const h of others) {
@@ -350,7 +383,9 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       const line = renderLine(h, maxSnip, fileExists, now)
       if (line) otherLines.push(line)
     }
-    section(`This project (${project}) — ${notesShown > 0 ? 'saved notes, then past conversations' : 'past conversations first'}:`, projLines)
+    // The title says what leads the block, and only what is really there to lead it.
+    const led = [notesShown > 0 ? 'saved notes' : '', lessonsShown > 0 ? 'lessons learned' : ''].filter(Boolean)
+    section(`This project (${project}) — ${led.length > 0 ? `${led.join(', ')}, then past conversations` : 'past conversations first'}:`, projLines)
     section('Other saved context (may NOT apply to this project):', otherLines)
   }
   if (body.length === 0) return null

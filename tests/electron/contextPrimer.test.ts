@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
 import { projectKeyOf } from '../../src/main/projectKey'
+import { KEEP_SCORE, lessonSubstance } from '../../src/main/lessonSubstance'
 
 const hits: PrimerHit[] = [
   { content: 'auth uses JWT middleware\nvalidated per request', source: 'claude', kind: 'message', score: 0.9 },
@@ -598,6 +599,170 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
     const out = (await build(list))!
     expect(out).toContain(`This project (${proj}) — past conversations first:`)
     expect(out.indexOf('we decided to use HNSW')).toBeLessThan(out.indexOf('a code chunk'))
+  })
+})
+
+// 1.55: inside the project block the digest leads with what its author vouched for. Saved notes come first (at most
+// three), then lessons the substance gate vouches for (at most two), then past conversations, then the rest; every one
+// of them from the same relevance-gated set and inside the same line and character budget as before.
+describe('buildContextPrimer — notes, then lessons the gate vouches for, then conversations', () => {
+  const proj = 'termpolis'
+  const NOW = 1_700_000_000_000
+  const DAY = 86_400_000
+  const HOUR = 3_600_000
+
+  // Lessons the gate keeps (score 5, 4 and exactly the bar of 2) and ones it would not.
+  const G1 = 'The installer check fails with ENOENT because `winget` is not on PATH inside the sandbox, so call it by its full path.'
+  const G2 = 'Never run `git worktree remove --force` while node_modules is a junction, because it deletes through the link.'
+  const G3 = 'Always run the full suite and not only the touched files, because new modules that import fs broke unrelated suites.'
+  const J1 = 'Root cause found.'
+  const J2 = 'Next: I will check the build tomorrow and then update the plan.'
+
+  it('uses lessons the gate really does keep and drop', () => {
+    for (const g of [G1, G2, G3]) expect(lessonSubstance(g).score).toBeGreaterThanOrEqual(KEEP_SCORE)
+    expect(lessonSubstance(G3).score).toBe(KEEP_SCORE)
+    for (const j of [J1, J2]) expect(lessonSubstance(j).score).toBeLessThan(KEEP_SCORE)
+  })
+
+  const note = (id: string, content: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id, content, source: 'claude-notes', agentId: 'claude-notes', kind: 'fact', score: 0.7, project: proj, ts: NOW - 52 * DAY, tags: ['type:reference', `note:${id}.md`], ...over })
+  const lesson = (id: string, content: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id, content, source: 'claude', agentId: 'mneme', kind: 'fact', memoryType: 'procedural', importance: 0.8, score: 0.7, project: proj, ts: NOW - 3 * DAY, ...over })
+  // Wording of its own, so the diversity pass keeps every conversation.
+  const conv = (n: number, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id: `c${n}`, content: `conversation ${n} alpha${n} beta${n} gamma${n} delta${n}`, source: 'claude', agentId: 'claude-history', kind: 'message', score: 0.9, project: proj, ts: NOW - 5 * HOUR, ...over })
+  const code = (over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id: 'code1', content: 'src/main/cache.ts:1-40 export const cache = new Map()', source: 'code', agentId: 'code-index', kind: 'note', score: 0.6, project: proj, ts: NOW - 5 * HOUR, ...over })
+  const asked = (list: PrimerHit[], elsewhere: PrimerHit[] = []) => vi.fn(async (o: { project?: string }) => (o.project ? list : elsewhere))
+  const build = (list: PrimerHit[], extra: Record<string, unknown> = {}, elsewhere: PrimerHit[] = []) =>
+    buildContextPrimer(asked(list, elsewhere), { query: 'q', project: proj, now: NOW, fileExists: () => true, ...extra })
+  const rows = (out: string | null): string[] => (out ?? '').split('\n').filter((l) => l.startsWith('- ['))
+  /** Positions of the markers in the digest: every one found, and in the order given. */
+  const inOrder = (out: string | null, marks: string[]): void => {
+    const at = marks.map((m) => (out ?? '').indexOf(m))
+    expect(at.every((p) => p >= 0)).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+  }
+  const recentOne = (id: string, text: string, ago: number): PrimerHit =>
+    ({ id, content: `${text} ${'detail '.repeat(30)}`, source: 'claude', kind: 'message', score: 0, project: proj, ts: NOW - ago })
+
+  // The doc's scenario: seven conversations, two kept lessons, one demoted lesson, two notes.
+  const crowd = (): PrimerHit[] => [
+    ...[0.9, 0.88, 0.86, 0.84, 0.82, 0.8, 0.55].map((s, i) => conv(i + 1, { score: s })),
+    note('n1', 'Invalidate the cache on write, never on a timer', { score: 0.75 }),
+    note('n2', 'Run the full suite, not only the touched files', { score: 0.72 }),
+    lesson('g1', G1, { score: 0.7 }),
+    lesson('g2', G2, { score: 0.68 }),
+    lesson('d1', G3, { score: 0.75 * 0.35, correction: { kind: 'demote' } }), // the overlay already scaled it
+  ]
+
+  it('puts the notes first, then the two kept lessons, then the conversations, within the line budget', async () => {
+    const out = await build(crowd())
+    inOrder(out, ['Invalidate the cache on write', 'Run the full suite, not only', 'installer check fails', 'worktree remove --force', 'conversation 1 ', 'conversation 2 '])
+    expect(rows(out)).toHaveLength(10) // the default limit; the seventh conversation fell to the cap, the demoted lesson to the cut
+    expect(out).not.toContain('Always run the full suite and not only') // the demoted lesson is absent
+    expect(out).not.toContain('conversation 7 ')
+  })
+
+  it('lets the order decide who is cut when the lane has taken three of the ten slots', async () => {
+    const recent = vi.fn().mockResolvedValue([recentOne('r1', 'shipped the first fix', HOUR), recentOne('r2', 'wired the check', 2 * HOUR), recentOne('r3', 'wrote the docs', 3 * HOUR)])
+    const out = await build(crowd(), { recent })
+    const project = (out ?? '').split('This project')[1]
+    inOrder(project, ['Invalidate the cache', 'Run the full suite, not only', 'installer check fails', 'worktree remove --force', 'conversation 1 ', 'conversation 2 ', 'conversation 3 '])
+    expect(project).not.toContain('conversation 4 ') // seven slots: two notes, two lessons, three conversations
+    expect(rows(out)).toHaveLength(10)
+  })
+
+  it('reads the lessons as lessons, with their age, and the notes as notes', async () => {
+    const out = (await build(crowd()))!
+    expect(out).toMatch(/- \[lesson · 3d ago\] The installer check fails/)
+    expect(out).toMatch(/- \[note · 1mo ago\] Invalidate the cache on write/)
+    expect(out).toMatch(/- \[claude · 5h ago\] conversation 1 /)
+  })
+
+  it('titles the block for what leads it', async () => {
+    const both = (await build([conv(1), note('n1', 'a note'), lesson('g1', G1)]))!
+    expect(both).toContain(`This project (${proj}) — saved notes, lessons learned, then past conversations:`)
+    const onlyLessons = (await build([conv(1), lesson('g1', G1)]))!
+    expect(onlyLessons).toContain(`This project (${proj}) — lessons learned, then past conversations:`)
+    const onlyNotes = (await build([conv(1), note('n1', 'a note')]))!
+    expect(onlyNotes).toContain(`This project (${proj}) — saved notes, then past conversations:`)
+    const neither = (await build([conv(1), code()]))!
+    expect(neither).toContain(`This project (${proj}) — past conversations first:`)
+  })
+
+  it('keeps every line to the same snippet length: a note or a lesson is not given more room than a conversation', async () => {
+    const wide = 'x'.repeat(900)
+    const out = await build([note('n1', `note ${wide}`), lesson('g1', `${G1} ${wide}`), conv(1, { content: `conversation ${wide}` })], { maxSnippetChars: 100 })
+    for (const r of rows(out)) expect(r.length).toBeLessThanOrEqual(100 + '- [lesson · 3d ago] '.length + 1) // the snippet and its ellipsis, behind the label
+  })
+
+  describe('the caps', () => {
+    it('lets three notes lead, and the notes after them rank with the conversations by relevance', async () => {
+      const list = [
+        note('n1', 'first note', { score: 0.9 }), note('n2', 'second note', { score: 0.85 }), note('n3', 'third note', { score: 0.8 }),
+        conv(1, { score: 0.78 }), note('n4', 'fourth note', { score: 0.75 }), note('n5', 'fifth note', { score: 0.7 }), conv(2, { score: 0.6 }),
+      ]
+      inOrder(await build(list), ['first note', 'second note', 'third note', 'conversation 1 ', 'fourth note', 'fifth note', 'conversation 2 '])
+    })
+
+    it('lets two kept lessons lead, and a third ranks with the conversations by relevance', async () => {
+      const list = [lesson('g1', G1, { score: 0.9 }), lesson('g2', G2, { score: 0.85 }), conv(1, { score: 0.8 }), lesson('g3', G3, { score: 0.75 }), conv(2, { score: 0.6 })]
+      inOrder(await build(list), ['installer check fails', 'worktree remove --force', 'conversation 1 ', 'Always run the full suite and not only', 'conversation 2 '])
+    })
+
+    it('counts the notes and the lessons separately', async () => {
+      const list = [conv(1), lesson('g1', G1), lesson('g2', G2), lesson('g3', G3), note('n1', 'a note one'), note('n2', 'a note two'), note('n3', 'a note three'), note('n4', 'a note four')]
+      const lines = rows(await build(list, { limit: 20 }))
+      expect(lines.slice(0, 5).map((l) => l.slice(2, 8))).toEqual(['[note ', '[note ', '[note ', '[lesso', '[lesso'])
+    })
+  })
+
+  describe('what is not promoted', () => {
+    it('does not lead with a lesson the gate would not keep, and reads it as it always did', async () => {
+      const out = await build([lesson('j1', J1, { score: 0.95 }), lesson('j2', J2, { score: 0.9 }), conv(1, { score: 0.5 })])
+      inOrder(out, ['conversation 1 ', 'Root cause found.', 'Next: I will check'])
+      expect(out).toMatch(/- \[claude · 3d ago\] Root cause found\./)
+    })
+
+    it('does not lead with a demoted lesson, however it scores, and does not call it a lesson', async () => {
+      const out = await build([lesson('d1', G1, { score: 0.9, correction: { kind: 'demote' } }), lesson('g2', G2, { score: 0.4 }), conv(1, { score: 0.5 })])
+      inOrder(out, ['worktree remove --force', 'conversation 1 ', 'installer check fails'])
+      expect(out).toMatch(/- \[claude · 3d ago\] The installer check fails/)
+    })
+
+    it('judges an amended lesson on the text that replaced it', async () => {
+      const kept = await build([conv(1, { score: 0.9 }), lesson('a1', G2, { score: 0.5, correction: { kind: 'amend' } })])
+      inOrder(kept, ['worktree remove --force', 'conversation 1 '])
+      const thin = await build([conv(1, { score: 0.9 }), lesson('a2', J1, { score: 0.5, correction: { kind: 'amend' } })])
+      inOrder(thin, ['conversation 1 ', 'Root cause found.'])
+    })
+
+    it('does not take a memory of another type for a lesson, whatever it says', async () => {
+      const list = [conv(1, { score: 0.9 }), lesson('s1', G1, { memoryType: 'summary', score: 0.5 }), lesson('e1', G2, { memoryType: undefined, score: 0.45 })]
+      const out = await build(list)
+      inOrder(out, ['conversation 1 ', 'installer check fails', 'worktree remove --force'])
+      expect(out).not.toContain('[lesson')
+    })
+
+    it('does not lift a lesson from another project into this one\'s block', async () => {
+      const out = await build([conv(1)], {}, [lesson('o1', G1, { project: 'billing', score: 0.9 })])
+      const [mine, others] = (out ?? '').split('Other saved context (may NOT apply to this project):')
+      expect(mine).not.toContain('installer check fails')
+      expect(others).toContain('installer check fails')
+    })
+  })
+
+  it('leaves a digest with no project in the order of the search, but still reads a kept lesson as one', async () => {
+    const out = await buildContextPrimer(vi.fn(async () => [conv(1, { score: 0.9, project: undefined }), lesson('g1', G1, { score: 0.8, project: undefined }), conv(2, { score: 0.7, project: undefined })]), { query: 'q', now: NOW })
+    inOrder(out, ['conversation 1 ', 'installer check fails', 'conversation 2 '])
+    expect(out).toMatch(/- \[lesson · 3d ago\] The installer check fails/)
+  })
+
+  it('reads a kept lesson in the freshness lane as one too', async () => {
+    const recent = vi.fn().mockResolvedValue([lesson('g1', `${G1} ${'detail '.repeat(20)}`, { score: 0, ts: NOW - HOUR })])
+    const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toMatch(/- \[lesson · 1h ago\] The installer check fails/)
   })
 })
 
