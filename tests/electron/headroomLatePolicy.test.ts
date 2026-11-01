@@ -217,15 +217,18 @@ describe('late keeps the cached prefix still as a conversation grows', () => {
   })
 
   it('gives a conversation the same arm on every turn, so the transform cannot change under the cache', async () => {
+    // The arm is a function of the first message alone (pinned for 300 different ones in headroomElisionPolicy);
+    // what is checked here is that nothing later in a growing conversation reaches the rewriter's choice of it.
+    // Fourteen conversations at five depths each show that, and cost a seventh of what forty at nine did.
     const m = await launch('late')
-    for (let c = 0; c < 40; c++) {
+    for (let c = 0; c < 14; c++) {
       const first = `${FIRST_MESSAGE} variant ${c}`
       const convo = longRun(first, 12)
       const arms = new Set<string>()
-      for (let n = 1; n <= 25; n += 3) arms.add(m.rewriteMessagesBody(slice(convo, n)).stats.arm)
+      for (let n = 1; n <= 25; n += 6) arms.add(m.rewriteMessagesBody(slice(convo, n)).stats.arm)
       expect(arms.size, first).toBe(1)
     }
-  })
+  }, 120_000)
 
   it('does not move the prefix for a conversation in the holdout either', async () => {
     const m = await launch('late')

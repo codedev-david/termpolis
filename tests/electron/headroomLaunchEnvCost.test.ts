@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import * as fs from 'fs'
 import { readFile, stat } from 'fs/promises'
 import * as os from 'os'
@@ -86,17 +86,27 @@ describe('what the context window costs a launch', () => {
     expect(Object.keys(out ?? {}).filter((k) => !(k in PROXY))).toEqual([VAR])
   })
 
-  it('costs a launch microseconds while Off: far under a millisecond, and no slower than On', async () => {
-    // Off does no I/O, so the bound is wide (2 ms a launch against a measured 1 to 10 microseconds) and exists to catch
-    // a read or a parse that found its way onto the Off path, which would cost a thousand times more.
+  it('does no reading at all while Off, which is what makes it cost a launch nothing', async () => {
+    // The mechanism, exactly: with the choice off the settings are not asked for, so there is no I/O to cost anything.
+    // This is the assertion that cannot flake; the timing below only guards the same thing from the other side.
+    const readSettings = vi.fn(async () => ({ env: null, savedWindow: false }))
+    expect(await claudeLaunchEnv(project, sources(0, { readSettings }))).toEqual(before(() => PROXY))
+    expect(readSettings).not.toHaveBeenCalled()
+  })
+
+  it('costs a launch next to nothing while Off, measured against the launch it replaced in the same process', async () => {
+    // Relative, as every committed timing is: the launch as it was before the choice existed against the launch with
+    // the choice Off, best of five rounds of 2,000 each, alternating. Off does no I/O, so it is a function call or two
+    // more than the old launch (measured 0.3 to 0.7 microseconds against 0.07 to 0.11). The bound allows 50 times the
+    // old launch and half a millisecond besides; a read or a parse that found its way onto the Off path costs a
+    // hundred times that, and no amount of load on the machine moves a best-of-five that far.
     let old = Infinity
     let off = Infinity
     for (let r = 0; r < 5; r++) {
       old = Math.min(old, await mean(() => before(() => PROXY), 2000))
       off = Math.min(off, await mean(() => claudeLaunchEnv(project, sources(0)), 2000))
     }
-    expect(old).toBeLessThan(2)
-    expect(off).toBeLessThan(2)
+    expect(off).toBeLessThanOrEqual(old * 50 + 0.5)
   })
 
   it('costs a launch a small multiple of the bare reads when On, and never more than its own deadline', async () => {
@@ -111,11 +121,13 @@ describe('what the context window costs a launch', () => {
       bareBest = Math.min(bareBest, await mean(bare, 10))
       onBest = Math.min(onBest, await mean(() => claudeLaunchEnv(project, sources(300_000)), 10))
     }
-    // Measured about 1 to 2 times the bare reads. Four times plus 25 ms is far past that, so only a real mistake gets there:
-    // a read made twice, one made after another instead of together, a synchronous call, or a parse of something large.
-    expect(onBest).toBeLessThan(bareBest * 4 + 25)
-    // And never past the deadline that bounds a read that hangs.
-    expect(onBest).toBeLessThan(1_500)
+    // Measured about 1 to 2 times the bare reads on a quiet machine, and up to 18 times in a full parallel run under
+    // coverage, where a mean of ten reads is mostly the other workers. So the bound is wide: 25 times plus 100 ms is
+    // past anything load does and still under what a real mistake costs (a parse of something large, or reads made
+    // one after another across many files). The structure that makes it cheap is pinned exactly, not timed: the
+    // reads are issued together (headroomShapingEnvReaderFs), nothing is called synchronously (this file, below),
+    // and the deadline that bounds a read that hangs is tested with fake timers (headroomShapingEnv).
+    expect(onBest).toBeLessThan(bareBest * 25 + 100)
   })
 
   it('hands control back while the files are still being read: it waits on them, it does not do them itself', async () => {

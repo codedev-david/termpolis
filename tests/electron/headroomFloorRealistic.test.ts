@@ -288,36 +288,59 @@ describe('under the late policy the 50% floor is retired and this is what holds 
       for (let i = 3; i < token.length; i++) { h ^= token.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
       return h / 0x100000000 < rate
     }
-    async function replay(policy: 'late' | 'legacy', trace: string, rate: number): Promise<{ turns: number; asked: number; requests: number }> {
-      const m = await launch(policy)
-      const all = (JSON.parse(trace) as { messages: Msg[] }).messages
-      let turns = 0, asked = 0, requests = 0
-      for (let end = 1; end <= all.length; end++) {
-        const last = all[end - 1]
-        if (last.role !== 'user' || !Array.isArray(last.content) || (last.content as Array<{ type?: string }>)[0]?.type !== 'tool_result') continue
-        requests++
-        const forwarded = textsOf(m.rewriteMessagesBody(JSON.stringify({ model: 'claude-opus-4', messages: all.slice(0, end) })).body)
-        const newest = forwarded[forwarded.length - 1] ?? ''
-        const token = /token "(hr_[0-9a-f]{16})"/.exec(newest)?.[1]
-        if (token) { asked++; if (wants(token, rate)) turns++ }
+    /**
+     * What the proxy leaves the model to ask for on each request of the replay: the token of the newest
+     * result when it was shortened, and the number of requests. This is the expensive half (a rewrite of
+     * a growing conversation for every tool result) and it does not depend on the stand-in model at all,
+     * only the policy and the trace. So it is done once for each, and every redemption rate below reads
+     * the same answer: the test then takes seconds where it took a minute under load.
+     */
+    const replays = new Map<string, Promise<{ tokens: string[]; requests: number }>>()
+    function replayOnce(policy: 'late' | 'legacy', label: string, trace: string): Promise<{ tokens: string[]; requests: number }> {
+      const key = `${policy}/${label}`
+      let hit = replays.get(key)
+      if (!hit) {
+        hit = (async () => {
+          const m = await launch(policy)
+          const all = (JSON.parse(trace) as { messages: Msg[] }).messages
+          const tokens: string[] = []
+          let requests = 0
+          for (let end = 1; end <= all.length; end++) {
+            const last = all[end - 1]
+            if (last.role !== 'user' || !Array.isArray(last.content) || (last.content as Array<{ type?: string }>)[0]?.type !== 'tool_result') continue
+            requests++
+            const forwarded = textsOf(m.rewriteMessagesBody(JSON.stringify({ model: 'claude-opus-4', messages: all.slice(0, end) })).body)
+            const newest = forwarded[forwarded.length - 1] ?? ''
+            const token = /token "(hr_[0-9a-f]{16})"/.exec(newest)?.[1]
+            if (token) tokens.push(token)
+          }
+          return { tokens, requests }
+        })()
+        replays.set(key, hit)
       }
-      return { turns, asked, requests }
+      return hit
+    }
+    async function replay(policy: 'late' | 'legacy', label: string, trace: string, rate: number): Promise<{ turns: number; asked: number; requests: number }> {
+      const { tokens, requests } = await replayOnce(policy, label, trace)
+      return { turns: tokens.filter((t) => wants(t, rate)).length, asked: tokens.length, requests }
     }
 
+    // A generous budget of its own (the first of these pays for both replays): a test that does this much work
+    // must not be at the mercy of the default 30 seconds when the machine is busy.
     it.each([0.13, 0.66, 1])('needs no more turns than legacy at a redemption rate of %s, on a long mixed-size run', async (rate) => {
       const trace = longRun(FIRST_MESSAGE, 40)
-      const late = await replay('late', trace, rate)
-      const legacy = await replay('legacy', trace, rate)
+      const late = await replay('late', 'long', trace, rate)
+      const legacy = await replay('legacy', 'long', trace, rate)
       expect(late.requests).toBe(legacy.requests)
       expect(late.requests).toBeGreaterThanOrEqual(40)
       expect(late.asked).toBeLessThanOrEqual(legacy.asked)
       expect(late.turns).toBeLessThanOrEqual(legacy.turns)
-    })
+    }, 180_000)
 
     it('and strictly fewer on a conversation made of results under the floor, where there is nothing to ask for', async () => {
       const trace = realisticBody()
-      const late = await replay('late', trace, 0.66)
-      const legacy = await replay('legacy', trace, 0.66)
+      const late = await replay('late', 'floor', trace, 0.66)
+      const legacy = await replay('legacy', 'floor', trace, 0.66)
       expect(legacy.asked).toBeGreaterThanOrEqual(4)
       expect(late.asked).toBeLessThan(legacy.asked)
       expect(late.turns).toBeLessThanOrEqual(legacy.turns)
