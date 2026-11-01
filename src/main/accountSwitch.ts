@@ -256,15 +256,15 @@ export interface OsMemo {
 }
 
 /** The OS's word now, with what it said before in this switch taken into account. */
-async function askOs(io: SwitchIO, id: string, memo?: OsMemo): Promise<boolean | null> {
+async function askOs(io: SwitchIO, id: string, memo: OsMemo): Promise<boolean | null> {
   const alone = await aloneNow(osOf(io, id))
-  if (alone === false && memo) memo.known = true
-  return alone === null && memo?.known ? false : alone
+  if (alone === false) memo.known = true
+  return alone === null && memo.known ? false : alone
 }
 
 /**
- * Waits for the agent's process to go, when the OS says it is still running: 	rue once it has
- * (the shell then needs a moment to draw its prompt), alse if it is still there at the ceiling.
+ * Waits for the agent's process to go, when the OS says it is still running: `true` once it has
+ * (the shell then needs a moment to draw its prompt), `false` if it is still there at the ceiling.
  * The screen's word, where there is any, is what a caller falls back on then: an exit it showed
  * stands, and the line is entered only once it shows at the shell (R3), so a program that really is
  * still running (a background job in the same terminal) costs the wait, not a wrong action.
@@ -281,7 +281,7 @@ async function processGone(io: SwitchIO, id: string): Promise<boolean> {
  * exit key is sent to a shell. An agent the screen shows gone while a program still runs in the
  * terminal (quit by hand a moment ago, its hooks still going) is waited for before anything is typed.
  */
-export async function livenessNow(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined, memo?: OsMemo): Promise<Liveness> {
+export async function livenessNow(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined, memo: OsMemo): Promise<Liveness> {
   const alone = await askOs(io, id, memo)
   const alive = liveness(io, id, agent, start)
   if (alone === true && alive.state !== 'gone') return { state: 'gone', hint: hintAtFoot(look(io, id), agent) }
@@ -378,7 +378,7 @@ function exitOnScreen(io: SwitchIO, id: string, agent: AccountAgent, mark: numbe
  * ceiling; what the screen proved stands if the process never goes, and with nothing proved the exit
  * is not confirmed. It cannot tell: the screen's word, as ever.
  */
-export async function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mark: number, memo?: OsMemo): Promise<{ hint: ExitHint | null } | null> {
+export async function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mark: number, memo: OsMemo): Promise<{ hint: ExitHint | null } | null> {
   const screen = await exitOnScreen(io, id, agent, mark)
   const alone = await askOs(io, id, memo)
   if (alone === null) return screen

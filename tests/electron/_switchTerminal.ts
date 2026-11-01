@@ -71,10 +71,10 @@ export interface TermScript {
    *  prompt only when the process is gone, and keys typed to the terminal meanwhile are lost, the
    *  shell not reading yet. An agent gone at the start (gone-*) is still going this long. */
   teardownMs?: number
-  /** With 	eardownMs, the hint is printed only when the process is gone (after the hooks). */
+  /** With `teardownMs`, the hint is printed only when the process is gone (after the hooks). */
   hintAfterTeardown?: boolean
-  /** What the OS says about the terminal (shellAlone.ts): 	ells (true once only the shell is
-   *  left), lind (it cannot tell), laky (cannot tell once in a while). Absent: the switch has
+  /** What the OS says about the terminal (shellAlone.ts): `tells` (true once only the shell is
+   *  left), `blind` (it cannot tell), `flaky` (cannot tell once in a while). Absent: the switch has
    *  no such read. */
   os?: 'tells' | 'blind' | 'flaky'
 }

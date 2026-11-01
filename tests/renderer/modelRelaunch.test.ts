@@ -323,6 +323,13 @@ describe('relaunchAgentWithModel: when it cannot be sure', () => {
     expect(f.writes()).not.toContain('claude --model opus\r')
   })
 
+  it('takes a terminal that gives no way to read its output as an exit it could not read, and resumes the latest', async () => {
+    // Marked, but nothing to read the exit with: all that is known is that the agent quit.
+    const f = fakeIo({ alone: [false, true, false], mark: 100 })
+    const { outputSince: _noReader, ...io } = f.io
+    expect(await relaunchAgentWithModel('claude', 'opus', CAT, io)).toBe('relaunched')
+    expect(f.writes()).toEqual([CTRL_C, CTRL_C, CTRL_C, 'claude --model opus --continue\r'])
+  })
   it('still resumes the exact conversation when the OS could not see the agent but the hint is after the mark', async () => {
     const f = fakeIo({ alone: [null], output: CLAUDE_EXIT_AFTER_A_TURN })
     expect(await relaunchAgentWithModel('claude', 'opus', CAT, f.io)).toBe('relaunched')
