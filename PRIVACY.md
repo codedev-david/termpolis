@@ -72,6 +72,24 @@ upload it.
   80 characters, with anything that might be a credential taken out), the
   credential rules matched, how it ended and why a request
   was refused. Never the prompt or the answer.
+- What the memory brain recorded about its own work (`userData/memory-audit.jsonl`
+  and `userData/memory-audit-main.jsonl`, each with a `.prev.jsonl` copy once it
+  passes 2 MB; the memory process writes the first and the main process the
+  second): a line for each memory stored (a clipped preview of its text, with
+  anything that might be a credential taken out), each recall (which agent asked,
+  how many memories it found and their ids), each context digest handed to an
+  agent (its size and the ids) and each learning pass (which kind and how
+  many). Never what an agent asked for: the text of a search or a request is not
+  kept. The `memory_audit` tool reads it back to an agent that asks.
+- The lessons Termpolis writes down after a finished session, in swarm memory
+  like any other memory. Since 1.55.0 a lesson that says nothing a later reader
+  could use, such as "Root cause found." or a progress note, is not stored. One
+  on the borderline is stored marked as a candidate: the Memory panel shows it
+  and no agent is ever given it. How many were not stored is counted in
+  `userData/memory-metrics.jsonl`. A one-time re-check of the lessons already
+  stored lowers the rank of those it would now refuse (recorded in
+  `userData/memory-corrections.jsonl`; nothing is deleted) and leaves a marker,
+  `userData/mneme-lesson-recheck-v2.json`, so it runs once.
 
 The `userData` directory lives at:
 

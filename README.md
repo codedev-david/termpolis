@@ -585,10 +585,10 @@ Once you connect your agents — on the first step of the first-run tour, or in 
 | `memory_link` | Record a typed edge between two memories (knowledge graph) |
 | `memory_graph` | Multi-hop walk of the knowledge graph from a seed memory |
 | `memory_anticipate` | Surface lessons the fleet already found for a task before you start |
-| `memory_pool` | Pool cross-agent lessons multiple agents independently arrived at |
+| `memory_pool` | Pool cross-agent lessons multiple agents independently arrived at, with the ids of the lessons pooled |
 | `memory_selfcheck` | Report the brain's calibrated self-competence in a domain |
 | `memory_feedback` | Mark a recalled memory as helpful so the useful ones rank higher |
-| `memory_conflicts` | Surface pairs of lessons different agents learned that assert opposite things about the same subject |
+| `memory_conflicts` | Surface pairs of lessons different agents learned that assert opposite things about the same subject, each with its id so the loser can be marked `supersedes` |
 | `memory_audit` | Inspect the brain's own behaviour — what it stored, recalled, and learned, computed from the local store |
 | `memory_correct` | Retract, amend or demote a memory that recall got wrong; nothing is deleted, and the reason is kept with it |
 
