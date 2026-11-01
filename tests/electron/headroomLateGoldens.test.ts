@@ -3,7 +3,7 @@ import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
-  TOOLS, KINDS, SIZES, FIRST_MESSAGE, singleCases, conversationCases, caseBody, type Outcome,
+  TOOLS, KINDS, SIZES, FLOOR, FIRST_MESSAGE, singleCases, conversationCases, caseBody, type Outcome,
 } from './fixtures/lateGoldenCases'
 
 /**
@@ -23,15 +23,22 @@ const golden = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'lateGoldens.
 
 const WIRE = '../../src/main/headroomProxy/wireCompress'
 
+interface Rewritten {
+  body: string
+  changed: boolean
+  stashes: Array<{ token: string }>
+  stats: { kinds: { plain: number; compact: number; dedup: number; diff: number; aged: number } }
+}
 interface Wire {
-  rewriteMessagesBody: (raw: string, opts?: { decay?: boolean }) => { body: string; changed: boolean; stashes: Array<{ token: string }> }
+  rewriteMessagesBody: (raw: string, opts?: { decay?: boolean }) => Rewritten
 }
 
-/** A fresh module is a fresh launch: the compaction floor is resolved once per process. */
-async function launch(mode: string): Promise<Wire> {
+/** A fresh module is a fresh launch: the compaction floor and the policy are resolved once per process. */
+async function launch(mode: string, policy?: 'late' | 'legacy'): Promise<Wire> {
   vi.resetModules()
   const m = await import(WIRE)
   m.setWireWindow(m.windowForMode(mode))
+  if (policy) m.setFirstSightPolicy(policy)
   return m as Wire
 }
 
@@ -50,9 +57,12 @@ describe('the goldens', () => {
   })
 })
 
-describe('legacy is v1.54.4, byte for byte', () => {
+describe.each([
+  ['with no policy pushed (the default of a module nothing has configured)', undefined],
+  ['under the legacy policy (the Settings kill switch)', 'legacy' as const],
+])('legacy is v1.54.4, byte for byte, %s', (_name, policy) => {
   it.each(TOOLS)('%s: every kind and size forwards what v1.54.4 forwarded', async (tool) => {
-    const m = await launch('aggressive')
+    const m = await launch('aggressive', policy)
     const cases = singleCases().filter((c) => c.tool === tool)
     expect(cases.length).toBeGreaterThan(KINDS.length * SIZES.length - 1)
     for (const c of cases) {
@@ -61,7 +71,48 @@ describe('legacy is v1.54.4, byte for byte', () => {
   })
 
   it.each(conversationCases().map((c) => [c.id, c] as const))('conversation %s forwards what v1.54.4 forwarded', async (_id, c) => {
-    const m = await launch(c.mode)
+    const m = await launch(c.mode, policy)
     expect(outcome(m.rewriteMessagesBody(c.body, { decay: c.decay })), c.id).toEqual(golden.conversations[c.id])
+  })
+})
+
+describe('late: nothing under 40,000 characters is shortened at first sight', () => {
+  it.each(TOOLS)('%s: every kind and every size under the floor goes through whole, stashing nothing', async (tool) => {
+    const m = await launch('aggressive', 'late')
+    const cases = singleCases().filter((c) => c.tool === tool && c.chars < FLOOR)
+    expect(cases.length).toBeGreaterThanOrEqual(KINDS.length * 4)
+    for (const c of cases) {
+      const raw = caseBody(c.tool, c.kind, c.chars, c.shape)
+      const r = m.rewriteMessagesBody(raw)
+      expect(r.changed, c.id).toBe(false)
+      expect(r.body, c.id).toBe(raw)
+      expect(r.stashes, c.id).toHaveLength(0)
+      expect(r.stats.kinds, c.id).toMatchObject({ plain: 1, compact: 0, dedup: 0, diff: 0, aged: 0 })
+    }
+  })
+
+  it.each(TOOLS)('%s: from 40,000 characters up it forwards exactly what v1.54.4 forwarded', async (tool) => {
+    const m = await launch('aggressive', 'late')
+    const cases = singleCases().filter((c) => c.tool === tool && c.chars >= FLOOR)
+    expect(cases.length).toBeGreaterThanOrEqual(KINDS.length * 3)
+    for (const c of cases) {
+      const r = m.rewriteMessagesBody(caseBody(c.tool, c.kind, c.chars, c.shape))
+      expect(r.changed, c.id).toBe(true)
+      expect(outcome(r), c.id).toEqual(golden.single[c.id])
+    }
+  })
+
+  it('keeps the edge exactly where the floor is: 39,999 whole, 40,000 shortened', async () => {
+    const m = await launch('aggressive', 'late')
+    expect(m.rewriteMessagesBody(caseBody('Read', 'code', 39_999)).changed).toBe(false)
+    expect(m.rewriteMessagesBody(caseBody('Read', 'code', 40_000)).changed).toBe(true)
+  })
+
+  it('holds at every tier: the floor in force is the larger of the tier and the policy, so Maximum does not reach under it', async () => {
+    for (const mode of ['conservative', 'balanced', 'aggressive', 'max']) {
+      const m = await launch(mode, 'late')
+      expect(m.rewriteMessagesBody(caseBody('Bash', 'log', 20_000)).changed, mode).toBe(false)
+      expect(m.rewriteMessagesBody(caseBody('Bash', 'log', 1_600)).changed, mode).toBe(false)
+    }
   })
 })

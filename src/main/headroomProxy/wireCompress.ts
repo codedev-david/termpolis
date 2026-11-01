@@ -10,6 +10,7 @@ import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
 import { isExempt } from '../headroom/router'
 import { STEERING_MARK } from '../headroom/outputSteering'
 import { makeMeta, stampModel, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
+import { armOf, effectiveFloor, isFirstSightPolicy, LEGACY_POLICY, policyFor, type ElisionPolicy, type FirstSightPolicy } from '../headroom/elisionPolicy'
 import { classifyMessages, emptyKinds, type StubKindCounts } from './forwardedKinds'
 
 // The same tally for a caller holding a body as a string. The rewriter never uses this entry: it
@@ -55,6 +56,14 @@ export interface WireStats {
   /** What the forwarded body's tool results were, by what was done to them (forwardedKinds.ts).
    *  Zero for a body that could not be read as a Messages request. */
   kinds: StubKindCounts
+  /** Which first-sight policy this request ran under (elisionPolicy.ts): `late`, or `holdout` for
+   *  the conversations kept on the old behaviour to be measured against, or `legacy` when the whole
+   *  run is on the kill switch. `none` for a request the rewriter did not transform. Recorded per
+   *  request so the two policies can be compared on what they cost afterwards. */
+  arm: 'none' | 'late' | 'holdout' | 'legacy'
+  /** The group of conversations, within the arm, this request's conversation falls in. 0 unless the
+   *  arm is late or holdout. */
+  armCluster: number
 }
 export interface WireResult {
   body: string
@@ -69,7 +78,7 @@ function emptyStats(): WireStats {
     trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
     images: 0, imgOrigBytes: 0, imgCompBytes: 0,
     sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, thinkBudget: 0, steered: false,
-    kinds: emptyKinds(),
+    kinds: emptyKinds(), arm: 'none', armCluster: 0,
   }
 }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
@@ -118,6 +127,28 @@ let wireWindow: WireWindow = { headLines: 12, tailLines: 6, maxChars: 1000, floo
  * resolution unspent for a later push rather than locking in the fail-safe default.
  */
 let floorResolved = false
+
+/**
+ * The first-sight policy (elisionPolicy.ts), resolved once per process and then frozen, for the same
+ * reason as the floor above: it decides WHICH tool results are shortened, so changing it while a
+ * session is live would bring every result between the two floors back shortened (or whole) on the
+ * next turn and rewrite the cached prefix. The proxy child serves every Claude session of an app
+ * run, so it takes the policy from the first push that carries a usable one and ignores the rest.
+ * Settings changes it for the NEXT launch.
+ *
+ * `legacy` until a push says otherwise: a module nothing has configured is v1.54, and a failure to
+ * read settings can never be what changes what the model sees. The default the app ships (`late`)
+ * arrives with the config the main process sends before the first request.
+ */
+let firstSight: FirstSightPolicy = 'legacy'
+let firstSightResolved = false
+
+export function setFirstSightPolicy(v: unknown): void {
+  if (firstSightResolved || !isFirstSightPolicy(v)) return
+  firstSight = v
+  firstSightResolved = true
+}
+export function getFirstSightPolicy(): FirstSightPolicy { return firstSight }
 
 export function setWireWindow(w: WireWindow | null | undefined): void {
   if (w && Number.isFinite(w.headLines) && Number.isFinite(w.tailLines) && Number.isFinite(w.maxChars)
@@ -246,8 +277,9 @@ export function windowStructured(s: string, win: WireWindow): { text: string; el
  * head/tail window (wireWindow). When it elides content it appends a footer with a CONTENT-HASH
  * token (so re-compression is byte-identical → cache-safe) and returns the original to stash.
  */
-export function compactToolText(text: string, hint?: ContentHint): { text: string; stash?: { token: string; original: string } } {
-  if (text.length < wireWindow.floorChars) return { text }
+export function compactToolText(text: string, hint?: ContentHint, policy: ElisionPolicy = processPolicy()): { text: string; stash?: { token: string; original: string } } {
+  // The floor for THIS result: the tier's, or under `late` the larger first-sight floor of its tool.
+  if (text.length < effectiveFloor(wireWindow.floorChars, policy, hint?.toolName)) return { text }
   // Content-aware pre-pass, one branch per shape. Each reduces the block to its meaningful
   // structure BEFORE the window, so the surviving bytes are chosen rather than sliced:
   //   HTML  → readable text          (a line window barely helps markup-dense, few-newline HTML)
@@ -303,6 +335,22 @@ export function compactToolText(text: string, hint?: ContentHint): { text: strin
   return { text: withNotice, stash: { token, original: text } }
 }
 
+/** The policy this process runs under, for a caller with no request to read an arm from. */
+function processPolicy(): ElisionPolicy {
+  return firstSight === 'late' ? policyFor('late') : LEGACY_POLICY
+}
+
+/**
+ * The policy ONE request runs under, and the arm to record for it. Under `late` about one
+ * conversation in ten, chosen by its first user message, stays on the old behaviour so the two can
+ * be compared (elisionPolicy.ts armOf). Read off the body already parsed: no second parse.
+ */
+function requestPolicy(obj: { model?: unknown; messages?: unknown }): { policy: ElisionPolicy; arm: WireStats['arm']; cluster: number } {
+  if (firstSight !== 'late') return { policy: LEGACY_POLICY, arm: 'legacy', cluster: 0 }
+  const a = armOf(obj)
+  return { policy: a.arm === 'holdout' ? LEGACY_POLICY : policyFor('late', obj.model), arm: a.arm, cluster: a.cluster }
+}
+
 /** Blocks already met in THIS body: hashes for exact-duplicate collapse, texts as diff bases. */
 export interface SeenIndex { keys: Set<string>; blocks: DiffCandidate[] }
 export function emptySeen(): SeenIndex { return { keys: new Set<string>(), blocks: [] } }
@@ -325,6 +373,7 @@ function compactOrDedup(
   stats: WireStats,
   stashes: StashEntry[],
   hint?: ContentHint,
+  policy: ElisionPolicy = LEGACY_POLICY,
 ): { text: string; changed: boolean } {
   stats.trOrigChars += text.length
   let out = text
@@ -339,7 +388,7 @@ function compactOrDedup(
     stats.trBlocks++
     stashes.push({ token: key, original: text, meta: makeMeta('dedup', hint?.toolName, text.length, out.length) })
   } else {
-    const c = compactToolText(text, hint)
+    const c = compactToolText(text, hint, policy)
     let best = c.text
     let stash = c.stash
     // What replaced the text, for the elision ledger: the window compaction unless a patch beats it.
@@ -515,6 +564,10 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
     stats.kinds = classifyMessages(obj.messages as unknown[])
     return { body: raw, changed: false, stats, stashes }
   }
+  // The policy and arm are read from the first user message BEFORE anything below rewrites a block.
+  const { policy, arm, cluster } = requestPolicy(obj)
+  stats.arm = arm
+  stats.armCluster = cluster
   let changed = clampThinkingBudget(obj)
   // Built once, up front: a tool_result's file hint lives in the tool_use it answers, which sits
   // in an EARLIER message, and the lookup must not depend on how far the walk has got.
@@ -546,7 +599,7 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
           if (hint?.toolName && isExempt(hint.toolName)) continue
           // Harness <system-reminder> blocks inside the result are instructions to the model, not
           // tool output — only the text around them is compressed (see reminders.ts).
-          const compact = (seg: string) => compactOrDedup(seg, seen, stats, stashes, hint)
+          const compact = (seg: string) => compactOrDedup(seg, seen, stats, stashes, hint, policy)
           if (typeof b.content === 'string') {
             const r = mapOutsideReminders(b.content, compact)
             if (r.changed) { b.content = r.text; changed = true }

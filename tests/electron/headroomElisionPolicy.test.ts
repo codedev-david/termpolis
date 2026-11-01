@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  LATE_FLOOR_CHARS, ELISION_HOLDOUT_RATE, FLOOR_OVERRIDES, LEGACY_POLICY,
-  isFirstSightPolicy, policyFor, effectiveFloor, armForBody,
+  LATE_FLOOR_CHARS, ELISION_HOLDOUT_RATE, ARM_CLUSTERS, FLOOR_OVERRIDES, LEGACY_POLICY,
+  isFirstSightPolicy, policyFor, effectiveFloor, armForBody, armOf,
 } from '../../src/main/headroom/elisionPolicy'
 import { assignArm, HOLDOUT_RATE } from '../../src/main/headroom/outputEconomy'
 
@@ -178,6 +178,51 @@ describe('armForBody', () => {
     ]
     for (const body of cases) expect(() => armForBody(body)).not.toThrow()
     for (const body of cases) expect(['late', 'holdout']).toContain(armForBody(body))
+  })
+
+  describe('armOf: the arm and the group of conversations it falls in', () => {
+    it('agrees with armForBody and puts every conversation in one of ARM_CLUSTERS groups', () => {
+      expect(ARM_CLUSTERS).toBe(20)
+      for (let i = 0; i < 500; i++) {
+        const body = userText(`${FIRST} number ${i}`)
+        const { arm, cluster } = armOf(body)
+        expect(arm).toBe(armForBody(body))
+        expect(Number.isInteger(cluster)).toBe(true)
+        expect(cluster).toBeGreaterThanOrEqual(0)
+        expect(cluster).toBeLessThan(ARM_CLUSTERS)
+      }
+    })
+
+    it('is as pure as the arm: the same first message always falls in the same group', () => {
+      for (let i = 0; i < 100; i++) {
+        const body = userText(`${FIRST} ${i}`)
+        expect(armOf(body)).toEqual(armOf(JSON.stringify(body)))
+        expect(armOf(body)).toEqual(armOf(body))
+      }
+    })
+
+    it('puts a conversation with nothing to hash in the default arm, group 0', () => {
+      for (const body of [userText(''), { messages: [] }, null, 5, { get messages(): never { throw new Error('boom') } }]) {
+        expect(armOf(body)).toEqual({ arm: 'late', cluster: 0 })
+      }
+    })
+
+    it('spreads each arm evenly over its groups, so a group is a random slice of the arm', () => {
+      const counts = { late: new Array<number>(ARM_CLUSTERS).fill(0), holdout: new Array<number>(ARM_CLUSTERS).fill(0) }
+      const N = 40_000
+      for (let i = 0; i < N; i++) {
+        const { arm, cluster } = armOf(userText(`Please review module ${i} and fix the failing test number ${i * 7}.`))
+        counts[arm][cluster]++
+      }
+      for (const arm of ['late', 'holdout'] as const) {
+        const total = counts[arm].reduce((a, b) => a + b, 0)
+        const even = total / ARM_CLUSTERS
+        for (const c of counts[arm]) {
+          expect(c).toBeGreaterThan(even * 0.7)
+          expect(c).toBeLessThan(even * 1.3)
+        }
+      }
+    })
   })
 
   describe('over many conversations', () => {

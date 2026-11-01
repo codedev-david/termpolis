@@ -18,8 +18,8 @@
  * characters at Aggressive) and the policy's, so a policy can never shorten more than the tier would
  * have, and the model sees at least what it saw before.
  *
- * Pure and clock-free, like everything the proxy child imports: no fs, no electron, no Date, no
- * Math.random (tests/electron/noNondeterministicCompression.test.ts sweeps this directory).
+ * Pure and clock-free, like everything the proxy child imports: no fs, no electron, no clock and no
+ * random numbers (tests/electron/noNondeterministicCompression.test.ts sweeps this directory).
  */
 
 export type FirstSightPolicy = 'late' | 'legacy'
@@ -99,6 +99,13 @@ export function effectiveFloor(tierFloorChars: number, policy: ElisionPolicy, to
  * holdout through the hash of an empty string. Total: it never throws.
  */
 export const ELISION_HOLDOUT_RATE = 0.1
+/**
+ * Each arm is cut into this many groups of conversations by where the same hash falls inside it.
+ * Requests of one conversation are alike, so counting every request as an independent sample would
+ * make the comparison look surer than it is; the group is the unit its uncertainty is measured in
+ * (armCompare.ts).
+ */
+export const ARM_CLUSTERS = 20
 const ARM_SALT = 'termpolis/first-sight-arm/1'
 
 /** The text of the first user message, in order, or null when it has none. */
@@ -124,10 +131,11 @@ function firstUserText(body: unknown): string[] | null {
   return null
 }
 
-export function armForBody(body: unknown): 'late' | 'holdout' {
+/** Where the first user message falls in [0, 1), or null when it has no text to hash. */
+function armPosition(body: unknown): number | null {
   let texts: string[] | null
-  try { texts = firstUserText(body) } catch { return 'late' }
-  if (!texts) return 'late'
+  try { texts = firstUserText(body) } catch { return null }
+  if (!texts) return null
   // FNV-1a over the salt and then the characters, with no separator between blocks.
   let h = 0x811c9dc5
   const feed = (s: string): void => {
@@ -139,7 +147,7 @@ export function armForBody(body: unknown): 'late' | 'holdout' {
   feed(ARM_SALT)
   let hashed = 0
   for (const t of texts) { feed(t); hashed += t.length }
-  if (hashed === 0) return 'late'
+  if (hashed === 0) return null
   // FNV-1a alone leaves keys that share a long prefix and differ in a counter slightly uneven in
   // the top bits, which is where the bucket is read. The murmur3 finalizer spreads them.
   h ^= h >>> 16
@@ -147,5 +155,18 @@ export function armForBody(body: unknown): 'late' | 'holdout' {
   h ^= h >>> 13
   h = Math.imul(h, 0xc2b2ae35) >>> 0
   h ^= h >>> 16
-  return (h >>> 0) / 0x100000000 < ELISION_HOLDOUT_RATE ? 'holdout' : 'late'
+  return (h >>> 0) / 0x100000000
+}
+
+/** The arm of a conversation and the group of conversations it falls in within that arm. */
+export function armOf(body: unknown): { arm: 'late' | 'holdout'; cluster: number } {
+  const p = armPosition(body)
+  if (p === null) return { arm: 'late', cluster: 0 }
+  const holdout = p < ELISION_HOLDOUT_RATE
+  const within = holdout ? p / ELISION_HOLDOUT_RATE : (p - ELISION_HOLDOUT_RATE) / (1 - ELISION_HOLDOUT_RATE)
+  return { arm: holdout ? 'holdout' : 'late', cluster: Math.min(ARM_CLUSTERS - 1, Math.floor(within * ARM_CLUSTERS)) }
+}
+
+export function armForBody(body: unknown): 'late' | 'holdout' {
+  return armOf(body).arm
 }

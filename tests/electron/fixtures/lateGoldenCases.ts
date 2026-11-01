@@ -153,7 +153,7 @@ const cmdOutput = (n: number): string =>
   Array.from({ length: n }, (_, i) => `2026-08-09T12:00:${pad2(i)}Z [info] task ${i} completed in ${i * 3}ms (worker ${i % 8})`).join('\n')
 
 /** Read, run, write, read again, repeat: exact repeats, near repeats and bulk tool_use input. */
-function realistic(first: string): string {
+export function realistic(first: string): string {
   const fileA = srcFile('a', 220)
   const fileAEdited = fileA.replace('export const a7 =', 'export const a7 = /* patched */')
   const fileB = srcFile('b', 180)
@@ -172,7 +172,7 @@ function realistic(first: string): string {
 }
 
 /** A big file read, edited twice, read again after each edit and once unchanged, with a huge log. */
-function editLoop(first: string): string {
+export function editLoop(first: string): string {
   const v1 = srcFile('m', 600) // about 52k characters
   const v2 = v1.replace('export const m10 =', 'export const m10 = /* one */')
   const small1 = srcFile('s', 90) // about 8k
@@ -200,7 +200,7 @@ const CYCLE = [700, 2000, 5000, 12_000, 30_000, 45_000, 90_000]
 const CYCLE_TOOLS = ['Read', 'Bash', 'Grep', 'Bash', 'Read', 'PowerShell', 'WebFetch']
 
 /** `pairs` tool calls with results whose sizes cycle through every band, 1 + 2 x pairs messages. */
-function longRun(first: string, pairs: number): string {
+export function longRun(first: string, pairs: number): string {
   const msgs: Msg[] = [{ role: 'user', content: first }]
   for (let k = 0; k < pairs; k++) {
     const size = CYCLE[k % CYCLE.length]
