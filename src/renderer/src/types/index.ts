@@ -256,6 +256,10 @@ export interface UnifiedTotalsView {
   byTool: Record<string, number>
   retrieves: number
   givebackTokens: number
+  /** Turns whose only tool calls were `retrieve_full`, and what they cost in effective units. The
+   *  headline nets these; `givebackTokens` prices the text that came back, not the turn. */
+  retrievalTurns: number
+  retrievalTurnUnits: number
   grossSavedTokens: number
   netSavedTokens: number
   savedPct: number
@@ -313,6 +317,11 @@ export interface BillBreakdownView {
   inputPct: number
   outputPct: number
   prefixTokenWeight: number
+  /** Units kept off the bill before the cost of the retrieval turns. */
+  grossAvoided: number
+  /** Units the turns that only fetched elided text cost. */
+  retrievalTurnUnits: number
+  /** `grossAvoided - retrievalTurnUnits`: the headline. Negative when the turns cost more. */
   avoided: number
   totalBillSavedPct: number
 }

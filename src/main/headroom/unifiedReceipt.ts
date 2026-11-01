@@ -32,6 +32,10 @@ export interface UnifiedTotals {
   /** What reversing compression cost, summed across both layers. */
   retrieves: number
   givebackTokens: number
+  /** The turns that only fetched elided text, and what they cost in effective units. Not in
+   *  `givebackTokens`: that prices the text that came back, this prices the turn that asked. */
+  retrievalTurns: number
+  retrievalTurnUnits: number
   /** The bottom line. */
   grossSavedTokens: number
   netSavedTokens: number
@@ -140,6 +144,8 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     byTool: { ...tool.byTool },
     retrieves,
     givebackTokens,
+    retrievalTurns: proxy.retrievalTurns,
+    retrievalTurnUnits: proxy.retrievalTurnUnits,
     grossSavedTokens,
     netSavedTokens,
     savedPct: denom > 0 ? Math.round((netSavedTokens / denom) * 100) : 0,
@@ -154,8 +160,10 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     outputTokens: proxy.outputTokens,
     // Net, not gross: tokens handed back through retrieve_full were re-billed, and a savings
     // figure that ignores its own giveback is the same species of lie as a compressible-only
-    // denominator. Only the proxy counters are priced here — the tool-layer ledger never touches
-    // the wire, so its savings show up as prefix tokens that were never sent.
+    // denominator. The turns that fetched them were billed too, and are netted inside
+    // billBreakdown from the proxy's own counters. Only the proxy counters are priced here — the
+    // tool-layer ledger never touches the wire, so its savings show up as prefix tokens that were
+    // never sent.
     bill: billBreakdown(proxy, netSavedTokens),
     retrieveMisses: tool.retrieveMisses,
     retrieveBadTokens: tool.retrieveBadTokens,

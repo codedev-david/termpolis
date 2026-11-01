@@ -114,6 +114,10 @@ export function TokenSavingsSettings() {
 
   const cacheHealthy = (proxy?.cumulative.cacheReadTokens ?? 0) >= (proxy?.cumulative.cacheCreationTokens ?? 0)
   const outShare = outputCostShare(unified?.cumulative)
+  // The headline: billed units avoided, NET of the turns that only fetched elided text.
+  const bill = unified?.cumulative.bill
+  const turnUnits = unified?.cumulative.retrievalTurnUnits ?? 0
+  const turns = unified?.cumulative.retrievalTurns ?? 0
 
   return (
     <div className="settings-section">
@@ -124,24 +128,40 @@ export function TokenSavingsSettings() {
           which layer issued the token, and the receipt could read deeply negative while the proxy
           beside it had genuinely saved hundreds of millions. This block is the merged total. */}
       <div className="hr-unified-receipt" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
-        <h4 style={{ margin: '0 0 6px' }}>Net tokens saved <span style={{ fontWeight: 400, opacity: 0.65 }}>— everything Headroom does, counted once</span></h4>
+        <h4 style={{ margin: '0 0 6px' }}>Billed units avoided <span style={{ fontWeight: 400, opacity: 0.65 }}>— everything Headroom does, counted once, net of the turns that fetched elided text</span></h4>
         <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'baseline' }}>
           <div>
-            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-unified-net">{fmt(unified?.cumulative.netSavedTokens ?? 0)}</div>
-            <div style={{ opacity: 0.7 }}>tokens saved · all-time</div>
-            <div style={{ opacity: 0.7, fontSize: 13 }}>
-              <span data-testid="hr-unified-gross">{fmt(unified?.cumulative.grossSavedTokens ?? 0)}</span> removed
-              {' '}− <span data-testid="hr-unified-giveback">{fmt(unified?.cumulative.givebackTokens ?? 0)}</span> given back by{' '}
-              {fmt(unified?.cumulative.retrieves ?? 0)} <code>retrieve_full</code> calls
+            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-bill-avoided">{fmt(Math.round(bill?.avoided ?? 0))}</div>
+            <div style={{ opacity: 0.7 }}>billed units avoided · all-time</div>
+            <div style={{ opacity: 0.7, fontSize: 13 }} data-testid="hr-bill-parts">
+              <span data-testid="hr-bill-gross">{fmt(Math.round(bill?.grossAvoided ?? 0))}</span> kept off the bill
+              {' '}− <span data-testid="hr-bill-turn-units">{fmt(Math.round(turnUnits))}</span> spent on{' '}
+              <span data-testid="hr-bill-turns">{fmt(turns)}</span> {turns === 1 ? 'turn' : 'turns'} that only fetched elided text
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-unified-pct">{unified?.cumulative.savedPct ?? 0}%</div>
-            <div style={{ opacity: 0.7 }}>of compressible volume</div>
+            <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-bill-pct">{bill?.totalBillSavedPct ?? 0}%</div>
+            <div style={{ opacity: 0.7 }}>of what the conversation would have cost</div>
             <div style={{ opacity: 0.7, fontSize: 13 }} data-testid="hr-unified-session">
-              this session: {fmt(unified?.session.netSavedTokens ?? 0)} tokens
+              this session: {fmt(Math.round(unified?.session.bill?.avoided ?? 0))} units
             </div>
           </div>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }} data-testid="hr-bill-note">
+          One unit is what a fresh input token costs at Anthropic&rsquo;s rates: cache reads count 0.1, cache writes 1.25, output 5.
+          A turn that only fetches elided text re-reads the whole cached prefix, so it is charged here, not just the text it brings back.
+        </div>
+        {(bill?.avoided ?? 0) < 0 && (
+          <div style={{ marginTop: 8, fontSize: 13, color: '#f87171' }} data-testid="hr-bill-negative">
+            Negative: the turns that fetched elided text cost more than eliding them saved. It is shown as it is, not rounded up to zero;
+            the Elision health card below shows which kinds of result are being asked back.
+          </div>
+        )}
+        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }} data-testid="hr-unified-tokens">
+          In tokens: <b data-testid="hr-unified-net">{fmt(unified?.cumulative.netSavedTokens ?? 0)}</b> net ={' '}
+          <span data-testid="hr-unified-gross">{fmt(unified?.cumulative.grossSavedTokens ?? 0)}</span> removed from the wire
+          {' '}− <span data-testid="hr-unified-giveback">{fmt(unified?.cumulative.givebackTokens ?? 0)}</span> given back by{' '}
+          {fmt(unified?.cumulative.retrieves ?? 0)} <code>retrieve_full</code> calls, <b data-testid="hr-unified-pct">{unified?.cumulative.savedPct ?? 0}%</b> of the text Headroom is allowed to touch.
         </div>
 
         {/* THREE denominators, not one.

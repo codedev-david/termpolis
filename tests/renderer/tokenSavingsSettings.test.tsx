@@ -681,3 +681,102 @@ describe('TokenSavingsSettings — the proxy master switch and what it reports',
     expect(card).toHaveTextContent('api.anthropic.com and nowhere else')
   })
 })
+
+/**
+ * R1: the headline is billed units avoided NET of the turns that fetched elided text. The old
+ * headline was net tokens and a percentage of the text the compressor was allowed to touch, which
+ * is how a feature gets quoted as a bill cut it never delivered. The fixture's bill is worked out
+ * by hand: cache reads 900,000 x 0.1 = 90,000; cache writes 20,000 x 1.25 = 25,000; input 500;
+ * output 8,000 x 5 = 40,000; the bill is 155,500 units; prefix weight (90,000 + 25,000) / 920,000
+ * = 0.125, so 100,000 tokens kept off the wire are worth 12,500 units.
+ */
+describe('TokenSavingsSettings - billed units avoided, net of retrieval turns', () => {
+  const withTurns = (over: Record<string, number>) => {
+    const api = (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+    api.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: { session: unifiedTotals(over), cumulative: unifiedTotals(over) },
+    })
+  }
+
+  it('leads with the units avoided and shows what the retrieval turns took off', async () => {
+    withTurns({ retrievalTurns: 12, retrievalTurnUnits: 3000 })
+    render(<TokenSavingsSettings />)
+    const head = await screen.findByTestId('hr-bill-avoided')
+    expect(head).toHaveTextContent('9,500') // 12,500 kept off the bill - 3,000 spent on retrieval turns
+    expect(screen.getByTestId('hr-bill-gross')).toHaveTextContent('12,500')
+    expect(screen.getByTestId('hr-bill-turn-units')).toHaveTextContent('3,000')
+    expect(screen.getByTestId('hr-bill-turns')).toHaveTextContent('12')
+    expect(screen.getByTestId('hr-bill-pct')).toHaveTextContent('5.8%') // 9,500 / (155,500 + 9,500)
+    expect(screen.getByTestId('hr-bill-parts')).toHaveTextContent('spent on 12 turns that only fetched elided text')
+  })
+
+  it('says in words that it is net of the retrieval turns and what a unit is', async () => {
+    withTurns({})
+    render(<TokenSavingsSettings />)
+    const card = (await screen.findByTestId('hr-bill-avoided')).closest('.hr-unified-receipt') as HTMLElement
+    expect(card).toHaveTextContent('Billed units avoided')
+    expect(card).toHaveTextContent('net of the turns that fetched elided text')
+    expect(screen.getByTestId('hr-bill-note')).toHaveTextContent('cache reads count 0.1')
+  })
+
+  it('reads a negative honestly, with the reason, instead of rounding up to zero', async () => {
+    withTurns({ retrievalTurns: 40, retrievalTurnUnits: 20_000 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-bill-avoided')).toHaveTextContent('-7,500') // 12,500 - 20,000
+    expect(screen.getByTestId('hr-bill-pct')).toHaveTextContent('-5.1%') // -7,500 / (155,500 - 7,500)
+    expect(screen.getByTestId('hr-bill-negative')).toHaveTextContent('cost more than eliding them saved')
+  })
+
+  it('has no negative note when the turns cost less than the elision saved', async () => {
+    withTurns({ retrievalTurns: 12, retrievalTurnUnits: 3000 })
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-bill-avoided')
+    expect(screen.queryByTestId('hr-bill-negative')).toBeNull()
+  })
+
+  it('counts a single retrieval turn in the singular', async () => {
+    withTurns({ retrievalTurns: 1, retrievalTurnUnits: 500 })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-bill-parts')).toHaveTextContent('spent on 1 turn that only fetched elided text')
+  })
+
+  it('keeps the token figures as a reconciliation line, not as the headline', async () => {
+    withTurns({ grossSavedTokens: 2_500_000, netSavedTokens: 2_400_000, givebackTokens: 100_000, retrieves: 12, savedPct: 47 })
+    render(<TokenSavingsSettings />)
+    const line = await screen.findByTestId('hr-unified-tokens')
+    expect(screen.getByTestId('hr-unified-net')).toHaveTextContent('2,400,000')
+    expect(screen.getByTestId('hr-unified-gross')).toHaveTextContent('2,500,000')
+    expect(screen.getByTestId('hr-unified-giveback')).toHaveTextContent('100,000')
+    expect(screen.getByTestId('hr-unified-pct')).toHaveTextContent('47%')
+    expect(line).toHaveTextContent('given back by 12')
+  })
+
+  it('shows this session beside the lifetime figure', async () => {
+    const api = (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+    api.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: { session: unifiedTotals({ retrievalTurnUnits: 2000 }), cumulative: unifiedTotals({ retrievalTurnUnits: 3000 }) },
+    })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-unified-session')).toHaveTextContent('this session: 10,500 units')
+  })
+
+  it('renders nothing odd while there is no receipt yet', async () => {
+    const api = (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+    api.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({ success: false, error: 'no handler' })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-bill-avoided')).toHaveTextContent('0')
+    expect(screen.getByTestId('hr-bill-pct')).toHaveTextContent('0%')
+    expect(screen.queryByTestId('hr-bill-negative')).toBeNull()
+  })
+
+  it('survives a receipt from a main process that has no bill breakdown at all', async () => {
+    const api = (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+    const bare = { ...unifiedTotals({}), bill: undefined }
+    api.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({ success: true, data: { session: bare, cumulative: bare } })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-bill-avoided')).toHaveTextContent('0')
+    expect(screen.getByTestId('hr-bill-parts')).toHaveTextContent('0 kept off the bill')
+  })
+})
