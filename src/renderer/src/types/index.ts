@@ -527,6 +527,12 @@ export interface TermpolisAPI {
   /** Primer size (memories injected per primer): the user-tunable Memory-panel control. */
   memoryGetPrimerLimit: () => Promise<IpcResponse<number>>
   memorySetPrimerLimit: (value: number) => Promise<IpcResponse<{ primerLimit: number }>>
+  /** Claude Code's saved notes in memory: the two switches, what was imported, whether the agents are connected. */
+  memoryGetNotesSettings: () => Promise<IpcResponse<ClaudeNotesSettings>>
+  /** Change either switch (only a real boolean counts). Answers with the new state. */
+  memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => Promise<IpcResponse<ClaudeNotesSettings>>
+  /** Take every imported note out of memory and turn the import off. */
+  memoryRemoveImportedNotes: () => Promise<IpcResponse<{ removed: number; failed: number; settings: ClaudeNotesSettings }>>
   /** Reflect a solo agent session's transcript delta into the learning brain (idle-settle / on close). */
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => Promise<IpcResponse<{ fired: boolean; lessons: number }>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
@@ -957,6 +963,29 @@ export interface VectorRamInfo {
   ramBytesInt8: number
   /** The persisted choice — what will be applied at the next launch. */
   persisted: boolean
+}
+
+/** Settings > Memory > Claude Code's saved notes (main: claudeNotesIpc.ts). */
+export interface ClaudeNotesSettings {
+  /** Bring the notes into memory. On by default, and only acted on while the agents are connected. */
+  indexClaudeNotes: boolean
+  /** Lend reference / feedback / user notes to other projects' searches. Off by default. */
+  shareNotesAcrossProjects: boolean
+  /** The user's agents are connected: until they are, no note is read. */
+  connected: boolean
+  status: {
+    notes: number
+    chunks: number
+    projects: number
+    /** When the last pass finished, or null before the first. */
+    lastAt: number | null
+    /** Notes left alone because no session says which project their folder belongs to. */
+    noProject: number
+    /** Secrets redacted out of notes as they were stored. */
+    secretsRedacted: number
+    /** Removals waiting to be retried. */
+    pending: number
+  }
 }
 
 // ─── Workflow Orchestrator ───────────────────────────────────────────────

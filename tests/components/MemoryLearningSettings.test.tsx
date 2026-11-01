@@ -35,6 +35,30 @@ function stub(data: MemoryMetrics | null, ok = true, error = ''): ReturnType<typ
 }
 
 describe('MemoryLearningSettings', () => {
+  // 1.55.0: Claude Code's saved notes get their own panel here, beside the vector-memory one. It reads on open and on
+  // Refresh like the rest of the tab, and a bridge that lacks it must not take the dashboard down with it.
+  it('shows the saved-notes panel, reading its settings once on open and again on Refresh', async () => {
+    stub(metrics())
+    const notes = vi.fn(async () => ({
+      success: true,
+      data: { indexClaudeNotes: true, shareNotesAcrossProjects: false, connected: true, status: { notes: 3, chunks: 4, projects: 2, lastAt: 1, noProject: 0, secretsRedacted: 0, pending: 0 } },
+    }))
+    ;(window as unknown as { termpolis: Record<string, unknown> }).termpolis.memoryGetNotesSettings = notes
+    render(<MemoryLearningSettings />)
+    const panel = await screen.findByTestId('claude-notes-panel')
+    expect(panel.textContent).toContain('3 notes from 2 projects')
+    expect(notes).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('ml-refresh'))
+    await waitFor(() => expect(notes).toHaveBeenCalledTimes(2))
+  })
+
+  it('still renders the dashboard when the bridge has no saved-notes calls (an older preload)', async () => {
+    stub(metrics({ store: { total: 40, capacity: 500000, byType: { episodic: 40 }, bySource: { claude: 40 }, lessons: 0, timeline: [] } }))
+    render(<MemoryLearningSettings />)
+    expect((await screen.findByTestId('claude-notes-error')).textContent).toBe('Could not read the saved-notes settings')
+    expect(await screen.findByTestId('ml-receipts')).toBeTruthy()
+  })
+
   it('renders the populated dashboard with real receipt numbers', async () => {
     stub(metrics({
       store: { total: 12847, capacity: 500000, byType: { episodic: 9000, semantic: 2000 }, bySource: { claude: 6000, codex: 2000 }, lessons: 2920, timeline: [{ t: 1, total: 100, lessons: 5 }, { t: 2, total: 12847, lessons: 2920 }] },

@@ -238,6 +238,9 @@ import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
 import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
 import { withoutCandidates } from './lessonSubstance'
+import { runClaudeNotesIngest, removeImportedNotes, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
+import { registerClaudeNotesIpc } from './claudeNotesIpc'
+import { withBorrowedNotes, withoutUnshareableNotes } from './claudeNotesShare'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -368,6 +371,31 @@ function ingestMemoryDeps() {
       // but the rejection is CAUGHT: an unhandled one in the main process is a crash, and losing a
       // backbone edge is not worth that.
       void memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }).catch(() => {})
+    },
+  }
+}
+
+/**
+ * The saved-notes pass's deps (claudeNotesIngest.ts): one definition for the indexer tick, the "Remove imported
+ * notes" undo and the switch that starts a pass at once. The pass reads nothing unless the switch is on AND the user's
+ * agents are connected (the consent every agent integration is gated on).
+ *
+ * `roots: noteRoots` is the ONE call site to change once fix/accounts154 merges: noteRoots() (claudeNotesIngest.ts)
+ * then returns `walkRoots(transcriptRoots('claude'))`, so every sign-in profile's notes are read.
+ */
+function claudeNotesDeps(): NotesDeps {
+  return {
+    enabled: getIndexClaudeNotes,
+    connected: () => isAgentIntegrationConnected(agentIntegrationPaths()),
+    roots: noteRoots,
+    fs: realNotesFs,
+    manifest: fileManifest(app.getPath('userData')),
+    store: { write: memoryWrite, remove: memoryDelete, list: memoryList },
+    stopped: () => appQuitting,
+    // The id the store stamps on this computer's entries once memory sync has one (fix/memsync); until then, none.
+    ownOrigin: async () => {
+      const id = ((await getSyncStatus()) as { deviceId?: unknown }).deviceId
+      return typeof id === 'string' && id ? id : undefined
     },
   }
 }
@@ -512,7 +540,7 @@ async function reflectOnTask(
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import { scheduleNoNewPrivsNotice } from './noNewPrivs'
 import { installSudoAskpass, sudoAskpassPath } from './sudoAskpass'
@@ -601,6 +629,7 @@ import {
   bootAgentIntegration,
   disconnectAgentIntegration,
   getAgentIntegrationStatus,
+  isAgentIntegrationConnected,
   setAgentIntegration,
   isFolderTrustAllowed,
   trustFolderForAgents,
@@ -2452,6 +2481,7 @@ const primerRecent: PrimerRecent = async (o) =>
     score: 0, // not a scored hit — the lane is ordered by time, on purpose
     id: e.id,
     project: e.project,
+    projectKey: e.projectKey, // a saved note is shown only to the project it came from, told apart by key (contextPrimer)
     ts: e.ts,
     tags: e.tags, // the primer drops a lesson the substance gate holds back (`candidate`),
     agentId: e.agentId, // ...but only one the lesson writer stored, not a note that merely carries the tag
@@ -2481,6 +2511,17 @@ ipcMain.handle('memory:get-primer-limit', async () => {
 })
 ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => {
   try { return ok(setPrimerLimit(opts?.value)) } catch (e: any) { return err(e.message) }
+})
+
+// Claude Code's saved notes in memory (claudeNotesIngest.ts): the two switches, what was imported, and the undo.
+registerClaudeNotesIpc(ipcMain, {
+  index: { get: getIndexClaudeNotes, set: setIndexClaudeNotes },
+  share: { get: getShareNotesAcrossProjects, set: setShareNotesAcrossProjects },
+  connected: () => isAgentIntegrationConnected(agentIntegrationPaths()),
+  status: () => notesStatus(fileManifest(app.getPath('userData'))),
+  remove: () => removeImportedNotes(claudeNotesDeps()),
+  // Turning the notes on starts a pass now, not at the next 30-minute tick; a locked memory just waits.
+  passSoon: () => { void memoryIsLocked().then((locked) => (locked ? undefined : runClaudeNotesIngest(claudeNotesDeps()))).catch(() => {}) },
 })
 
 // Vector quantization — the RAM/exactness dial for the packed vector store.
@@ -3735,7 +3776,15 @@ async function semanticPoolOptions(
         // waiting for a re-index would mean the wrong fact gets used again in the same
         // session it was corrected in. Retracted entries are dropped; amended ones carry
         // the replacement text; demoted ones keep their place in the list but not their rank.
-        const served = applyCorrections(res)
+        // 1.55.0: with "let general notes help in other projects" on, a project-scoped search is also handed up to two
+        // reference / feedback / user notes from another project, after its own results (claudeNotesShare.ts).
+        const served = await withBorrowedNotes(applyCorrections(res), {
+          enabled: getShareNotesAcrossProjects(),
+          project: opts.project ? normalizeProjectSlug(opts.project) : '',
+          query: opts.query,
+          limit: opts.limit,
+          search: async (o) => applyCorrections(await memorySearch(o)),
+        })
         // Note what the agent actually received, not what the store returned: a retracted entry
         // was never served, so an outcome must not be charged to it.
         noteServed(opts.project, served)
@@ -3833,7 +3882,9 @@ async function semanticPoolOptions(
         const limit = opts.limit ?? 5
         // F12: over-fetch, THEN filter to procedural/high-importance and cap — otherwise a lesson
         // ranked just below the naive top-`limit` is a false negative and the fleet re-derives it.
-        const hits = await correctedSearch({ query: q, limit: limit * 8 })
+        // 1.55.0: this door names no project, so a saved note (importance 0.9) would reach every project: none does unless
+        // the user lets general notes help in other projects, and then only the general kinds (claudeNotesShare.ts).
+        const hits = withoutUnshareableNotes(await correctedSearch({ query: q, limit: limit * 8 }), getShareNotesAcrossProjects())
         return hits.filter((h) => h.memoryType === 'procedural' || (h.importance ?? 0) >= 0.6).slice(0, limit)
       },
       memoryConflicts: async (opts) => {
@@ -4233,6 +4284,15 @@ async function semanticPoolOptions(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
           { maxChunks: 250, stopped: () => appQuitting, onDelegated: (hashes) => { for (const h of hashes) delegatedHashes.add(h) } },
         )
+        // 1.55.0: Claude Code's saved notes into shared memory (claudeNotesIngest.ts). The pass checks the switch and the
+        // agent-connection consent itself and reads nothing when either is off. Best effort, like the rest of this tick.
+        let notesWritten = 0
+        let notesMore = false
+        try {
+          const notes = await runClaudeNotesIngest(claudeNotesDeps())
+          notesWritten = notes.chunksWritten
+          notesMore = notes.truncated
+        } catch { /* the next tick tries again */ }
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
         // Once per install: demote the sessions other computers' jobs left in memory through 1.52
@@ -4377,7 +4437,7 @@ async function semanticPoolOptions(
           }
           await weaveEdges.flush()
         } catch { /* best effort */ }
-        return { written: stats.chunksWritten, more: stats.truncated }
+        return { written: stats.chunksWritten + notesWritten, more: stats.truncated || notesMore }
       },
       // Fast tier (#2 live-session lag): every 90s, ingest ONLY transcripts touched
       // in the last 10 min — i.e. the ACTIVE session — so its new turns become

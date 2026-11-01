@@ -161,6 +161,7 @@ function makeTermpolis(): Record<string, unknown> {
     memoryGraphSample: vi.fn().mockResolvedValue(EMPTY_GRAPH),
     memoryGetVectorRam: vi.fn().mockResolvedValue({ success: true, data: VECTOR_RAM }),
     memorySetVectorQuantize: vi.fn().mockResolvedValue({ success: true, data: { ...VECTOR_RAM, quantized: true, persisted: true } }),
+    memoryGetNotesSettings: vi.fn().mockResolvedValue({ success: true, data: { indexClaudeNotes: true, shareNotesAcrossProjects: false, connected: true, status: { notes: 0, chunks: 0, projects: 0, lastAt: null, noProject: 0, secretsRedacted: 0, pending: 0 } } }),
     groqGetKeyStatus: vi.fn().mockResolvedValue({ success: true, data: { connected: false, hint: '' } }),
   }
 }

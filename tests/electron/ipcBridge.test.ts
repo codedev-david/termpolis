@@ -154,6 +154,23 @@ describe('window.termpolis IPC channels', () => {
     expect(mockInvoke).toHaveBeenCalledWith('memory:set-vector-quantize', { value: true })
   })
 
+  // Claude Code's saved notes in memory (1.55.0). Same seam, same reason: a channel renamed on one side only
+  // would leave Settings showing switches that change nothing.
+  it('memoryGetNotesSettings invokes memory:get-notes-settings', async () => {
+    await exposed.termpolis.memoryGetNotesSettings()
+    expect(mockInvoke).toHaveBeenCalledWith('memory:get-notes-settings')
+  })
+
+  it('memorySetNotesSettings invokes memory:set-notes-settings with the switches as given', async () => {
+    await exposed.termpolis.memorySetNotesSettings({ indexClaudeNotes: false, shareNotesAcrossProjects: true })
+    expect(mockInvoke).toHaveBeenCalledWith('memory:set-notes-settings', { indexClaudeNotes: false, shareNotesAcrossProjects: true })
+  })
+
+  it('memoryRemoveImportedNotes invokes memory:remove-imported-notes', async () => {
+    await exposed.termpolis.memoryRemoveImportedNotes()
+    expect(mockInvoke).toHaveBeenCalledWith('memory:remove-imported-notes')
+  })
+
   // The freeze history went with the profiler that fed it and is not coming back.
   it('exposes no bridge to the deleted freeze-history IPC', () => {
     expect(exposed.termpolis.memoryGetStalls).toBeUndefined()

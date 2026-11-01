@@ -266,6 +266,10 @@ const api: TermpolisAPI = {
   memorySetVectorQuantize: (value: boolean) => ipcRenderer.invoke('memory:set-vector-quantize', { value }),
   memoryGetPrimerLimit: () => ipcRenderer.invoke('memory:get-primer-limit'),
   memorySetPrimerLimit: (value: number) => ipcRenderer.invoke('memory:set-primer-limit', { value }),
+  // Claude Code's saved notes (claudeNotesIpc.ts): the two switches, what was imported, and the undo.
+  memoryGetNotesSettings: () => ipcRenderer.invoke('memory:get-notes-settings'),
+  memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => ipcRenderer.invoke('memory:set-notes-settings', p),
+  memoryRemoveImportedNotes: () => ipcRenderer.invoke('memory:remove-imported-notes'),
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => ipcRenderer.invoke('memory:reflect-session', { terminalId, cwd, agent }),
   memorySyncStatus: () => ipcRenderer.invoke('memory:sync-status'),
   memorySetSyncDir: (dir: string | null) => ipcRenderer.invoke('memory:set-sync-dir', { dir }),

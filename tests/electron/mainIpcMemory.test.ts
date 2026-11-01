@@ -338,6 +338,20 @@ vi.mock('../../src/main/mnemeCompetence', () => ({
 vi.mock('../../src/main/mnemeIdentity', () => ({ initIdentity: mneme.initIdentity, identitySummary: mneme.identitySummary }))
 vi.mock('../../src/main/mnemeCuriosity', () => ({ findGaps: mneme.findGaps, curiosityPrompts: mneme.curiosityPrompts }))
 vi.mock('../../src/main/mnemeConsolidateRun', () => ({ runConsolidation: mneme.runConsolidation, runSummarization: mneme.runSummarization }))
+// Claude Code's saved notes (1.55.0): the pass, the undo and the status are spies, so this suite tests the WIRING in
+// index.ts (when the pass runs, what it is handed, how the settings IPC answers). The module's own behaviour is in
+// claudeNotesIngest*.test.ts; the real file, manifest and noteRoots stay real.
+const notesMock = vi.hoisted(() => ({
+  runClaudeNotesIngest: vi.fn(async (_deps?: any) => ({ chunksWritten: 0, truncated: false })),
+  removeImportedNotes: vi.fn(async (_deps?: any) => ({ removed: 2, failed: 0 })),
+  notesStatus: vi.fn((_io?: any) => ({ notes: 3, chunks: 4, projects: 2, lastAt: 1700000000000, noProject: 0, secretsRedacted: 0, pending: 0 })),
+}))
+vi.mock('../../src/main/claudeNotesIngest', async () => ({
+  ...(await vi.importActual<typeof import('../../src/main/claudeNotesIngest')>('../../src/main/claudeNotesIngest')),
+  runClaudeNotesIngest: notesMock.runClaudeNotesIngest,
+  removeImportedNotes: notesMock.removeImportedNotes,
+  notesStatus: notesMock.notesStatus,
+}))
 // WEAVE_NEIGHBOUR_K is a real export index.ts now reads (so the k it pre-fetches neighbours with
 // cannot drift from the k runWeave uses). Omitting it here makes vitest's mock proxy THROW on access
 // — inside the weave's best-effort catch, so the whole pass would silently do nothing.
@@ -1199,22 +1213,22 @@ describe('memory:get-primer-limit / memory:set-primer-limit', () => {
   })
 
   it('clamps a too-small value up to the minimum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false })
-    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('clamps a too-large value down to the maximum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('rounds a fractional value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('falls back to the default for junk and for a missing value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false })
-    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false })
-    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
+    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
   })
 
   it('a new limit is what the NEXT primer is built with', async () => {
@@ -2516,5 +2530,227 @@ describe('recall noting — a recall is remembered long enough for the outcome t
     })
     await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
     expect(recalls.claimRecalled('termpolis', Date.now())).toEqual(['p1'])
+  })
+})
+
+// ===========================================================================
+// Claude Code's saved notes (1.55.0): how index.ts wires them. The pass, the undo and the status are spies
+// (see notesMock); the settings, the sync status and the corrections are the real ones.
+// ===========================================================================
+describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
+  const NO_RUN = { chunksWritten: 0, truncated: false }
+  const lockedOnce = (): void => { mem.getSyncStatus.mockResolvedValueOnce({ ownLocked: true, lockReason: 'key-unreadable' } as never) }
+  const depsOfLastPass = (): any => { const calls = notesMock.runClaudeNotesIngest.mock.calls; return calls[calls.length - 1][0] }
+
+  afterEach(async () => {
+    notesMock.runClaudeNotesIngest.mockReset()
+    notesMock.runClaudeNotesIngest.mockImplementation(async () => NO_RUN)
+    notesMock.removeImportedNotes.mockClear()
+    // Back to the defaults, whatever a test chose: notes on, sharing off.
+    await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false })
+  })
+
+  it('the full pass runs the notes pass, adds what it stored to the pass total, and carries its backlog forward', async () => {
+    notesMock.runClaudeNotesIngest.mockResolvedValueOnce({ chunksWritten: 3, truncated: true })
+    expect(await indexer.run()).toEqual({ written: 4 + 3, more: true }) // the conversation ingest wrote 4
+    expect(notesMock.runClaudeNotesIngest).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs it before the index is persisted, so the notes are in the persisted graph', async () => {
+    const order: string[] = []
+    notesMock.runClaudeNotesIngest.mockImplementationOnce(async () => { order.push('notes'); return NO_RUN })
+    mem.persistMemoryIndex.mockImplementationOnce(async () => { order.push('persist') })
+    await indexer.run()
+    expect(order).toEqual(['notes', 'persist'])
+  })
+
+  it('a failing notes pass costs the tick nothing else', async () => {
+    notesMock.runClaudeNotesIngest.mockRejectedValueOnce(new Error('disk gone'))
+    mneme.runConsolidation.mockClear()
+    expect(await indexer.run()).toEqual({ written: 4, more: false })
+    expect(mneme.runConsolidation).toHaveBeenCalled()
+    expect(mneme.runWeave).toHaveBeenCalled()
+  })
+
+  it('the fast pass never runs it: notes are checked on the slow tick only', async () => {
+    await indexer.fastRun()
+    expect(notesMock.runClaudeNotesIngest).not.toHaveBeenCalled()
+  })
+
+  it('a locked brain does not run it', async () => {
+    lockedOnce()
+    await expect(indexer.run()).resolves.toEqual({ written: 0 })
+    expect(notesMock.runClaudeNotesIngest).not.toHaveBeenCalled()
+  })
+
+  it('hands the pass the real switch, the real consent, the noteRoots seam, the real store calls and the quit signal', async () => {
+    const { noteRoots, realNotesFs } = await import('../../src/main/claudeNotesIngest')
+    await indexer.run()
+    const d = depsOfLastPass()
+    expect(d.roots).toBe(noteRoots)
+    expect(d.fs).toBe(realNotesFs)
+    // The switch is memorySettings' (on by default); consent is the agent-integration ledger's (not granted here).
+    expect(d.enabled()).toBe(true)
+    await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+    expect(d.enabled()).toBe(false)
+    expect(d.connected()).toBe(false)
+    // The store: the memory client's own write / delete / list.
+    mem.memoryWrite.mockClear()
+    await d.store.write({ agentId: 'claude-notes', content: 'x' })
+    expect(mem.memoryWrite).toHaveBeenCalledWith({ agentId: 'claude-notes', content: 'x' })
+    await d.store.remove('mem-1')
+    expect(mem.memoryDelete).toHaveBeenCalledWith('mem-1')
+    await d.store.list({ agentId: 'claude-notes', limit: 5 })
+    expect(mem.memoryList).toHaveBeenCalledWith({ agentId: 'claude-notes', limit: 5 })
+    expect(d.stopped()).toBe(false)
+    // The manifest lives beside the other app data, and a read of an absent one is null.
+    expect(typeof d.manifest.read).toBe('function')
+  })
+
+  it('tells the pass which computer this is once the store says so (memory sync), and none before', async () => {
+    await indexer.run()
+    const d = depsOfLastPass()
+    expect(await d.ownOrigin()).toBeUndefined() // the store reports no device id today
+    mem.getSyncStatus.mockResolvedValueOnce({ deviceId: 'laptop-7' } as never)
+    expect(await d.ownOrigin()).toBe('laptop-7')
+    mem.getSyncStatus.mockResolvedValueOnce({ deviceId: '' } as never)
+    expect(await d.ownOrigin()).toBeUndefined()
+    mem.getSyncStatus.mockResolvedValueOnce({ deviceId: 42 } as never)
+    expect(await d.ownOrigin()).toBeUndefined()
+  })
+
+  describe('memory:get-notes-settings / memory:set-notes-settings / memory:remove-imported-notes', () => {
+    it('answers with both switches at their defaults, whether the agents are connected, and the status', async () => {
+      const res = await invoke('memory:get-notes-settings')
+      expect(res).toEqual({
+        success: true,
+        data: {
+          indexClaudeNotes: true,
+          shareNotesAcrossProjects: false,
+          connected: false,
+          status: { notes: 3, chunks: 4, projects: 2, lastAt: 1700000000000, noProject: 0, secretsRedacted: 0, pending: 0 },
+        },
+      })
+    })
+
+    it('changes a switch, and the change is the real setting, kept on disk', async () => {
+      const res = await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect(res.data).toMatchObject({ indexClaudeNotes: true, shareNotesAcrossProjects: true })
+      expect(fsMock.writeFileSync.mock.calls.some(([f, text]) => String(f).endsWith('memory-settings.json') && JSON.parse(String(text)).shareNotesAcrossProjects === true)).toBe(true)
+    })
+
+    it('turning the notes on starts a pass at once, unless memory is locked', async () => {
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+      notesMock.runClaudeNotesIngest.mockClear()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true })
+      await vi.waitFor(() => expect(notesMock.runClaudeNotesIngest).toHaveBeenCalledTimes(1))
+
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+      notesMock.runClaudeNotesIngest.mockClear()
+      lockedOnce()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true })
+      await new Promise((r) => setTimeout(r, 30))
+      expect(notesMock.runClaudeNotesIngest).not.toHaveBeenCalled()
+    })
+
+    it('a pass started that way which fails is not an unhandled rejection', async () => {
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
+      notesMock.runClaudeNotesIngest.mockRejectedValueOnce(new Error('boom'))
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true })
+      await new Promise((r) => setTimeout(r, 30))
+      expect(notesMock.runClaudeNotesIngest).toHaveBeenCalled()
+    })
+
+    it('"Remove imported notes" turns the import off, then removes with the same deps a pass gets', async () => {
+      const res = await invoke('memory:remove-imported-notes')
+      expect(res.success).toBe(true)
+      expect(res.data).toMatchObject({ removed: 2, failed: 0, settings: { indexClaudeNotes: false } })
+      expect(notesMock.removeImportedNotes).toHaveBeenCalledTimes(1)
+      expect(typeof notesMock.removeImportedNotes.mock.calls[0][0].store.remove).toBe('function')
+      expect((await invoke('memory:get-notes-settings')).data.indexClaudeNotes).toBe(false)
+    })
+  })
+
+  describe('memory_search lends general notes to another project only when both switches say so', () => {
+    const own = { id: 'own1', content: 'billing own result', score: 0.9, project: 'billing', source: 'claude', agentId: 'claude-history', tags: [] as string[] }
+    const lendable = { id: 'note1', content: 'a reference note from the app project', score: 0.8, project: 'app', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:reference', 'note:a.md'] }
+    const projectNote = { ...lendable, id: 'note2', tags: ['type:project', 'note:b.md'] }
+    const backend = (): void => {
+      mem.memorySearch.mockImplementation(async (o: any) => (o.agentId === 'claude-notes' ? [projectNote, lendable] : [own]) as never)
+    }
+    const ask = (over: Record<string, unknown> = {}) => mcp.memorySearch({ query: 'cache', limit: 5, project: 'C:\\w\\billing', ...over })
+
+    afterEach(() => { mem.memorySearch.mockReset(); mem.memorySearch.mockImplementation(async () => [] as any[]) })
+
+    it('does not, by default', async () => {
+      backend()
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
+      expect(mem.memorySearch).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not when only the import switch is on', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: true, shareNotesAcrossProjects: false })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
+    })
+
+    it('goes by the sharing switch alone: copies already made stay in use after the import is turned off', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { indexClaudeNotes: false, shareNotesAcrossProjects: true })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+    })
+
+    it('does, after the project\'s own results, one project note left out, when sharing is on', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+      expect(mem.memorySearch).toHaveBeenLastCalledWith({ query: 'cache', limit: 6, agentId: 'claude-notes' })
+    })
+
+    it('lends nothing to a search that names no project', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask({ project: undefined })).map((r: any) => r.id)).toEqual(['own1'])
+    })
+
+    // memory_anticipate names no project and keeps anything with importance >= 0.6, which a note (0.9) is.
+    describe('memory_anticipate, which cannot tell which project is asking', () => {
+      const lesson = { id: 'les1', content: 'a procedural lesson', score: 0.9, memoryType: 'procedural', importance: 0.5, tags: [] as string[], source: 'claude', agentId: 'mneme' }
+      const noteOf = (id: string, type: string) => ({ ...lendable, id, importance: 0.9, memoryType: 'summary', tags: [`type:${type}`, 'note:x.md'] })
+      const hits = (): any[] => [noteOf('n-ref', 'reference'), noteOf('n-proj', 'project'), noteOf('n-fb', 'feedback'), lesson, noteOf('n-user', 'user'), noteOf('n-untyped', 'untyped')]
+      const ids = async (): Promise<string[]> => (await mcp.memoryAnticipate({ task: 'the deploy fails with ENOENT', limit: 10 })).map((r: any) => r.id)
+
+      it('returns no saved note by default, only the lesson', async () => {
+        mem.memorySearch.mockResolvedValueOnce(hits() as never)
+        expect(await ids()).toEqual(['les1'])
+      })
+
+      it('returns the general kinds once notes may help in other projects, never a project or untyped note', async () => {
+        await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+        mem.memorySearch.mockResolvedValueOnce(hits() as never)
+        expect(await ids()).toEqual(['les1', 'n-ref', 'n-fb', 'n-user']) // by score: the lesson 0.9, the notes 0.8
+      })
+    })
+
+    it('a retracted note is not lent: the lending search goes through the same corrections', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      const { correctMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+      resetMemoryCorrections()
+      correctMemory({ id: 'note1', kind: 'retract', reason: 'wrong', by: 'user' })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
+      resetMemoryCorrections()
+    })
+  })
+
+  describe('the freshness lane carries the project key, so a saved note reaches only its own project\'s primer', () => {
+    it('hands the primer the key of each recent entry', async () => {
+      mem.memoryList.mockResolvedValueOnce([{ id: 'r1', content: 'recent', kind: 'note', ts: 5, project: 'app', projectKey: 'pk:app', tags: [], agentId: 'a' }] as never)
+      const { buildContextPrimer } = await import('../../src/main/contextPrimer')
+      ;(buildContextPrimer as any).mockClear()
+      await invoke('memory:build-primer', { query: 'q', cwd: 'C:\\w\\app' })
+      const recent = (buildContextPrimer as any).mock.calls[0][1].recent
+      expect(await recent({ limit: 3, project: 'app' })).toEqual([expect.objectContaining({ id: 'r1', projectKey: 'pk:app' })])
+    })
   })
 })

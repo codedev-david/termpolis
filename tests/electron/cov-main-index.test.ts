@@ -86,6 +86,11 @@ const M = vi.hoisted(() => ({
   setPrimerLimit: vi.fn((v: number) => v),
   getVectorQuantize: vi.fn(() => false),
   setVectorQuantize: vi.fn((v: boolean) => v),
+  getIndexClaudeNotes: vi.fn(() => true),
+  setIndexClaudeNotes: vi.fn((v: boolean) => v),
+  getShareNotesAcrossProjects: vi.fn(() => false),
+  setShareNotesAcrossProjects: vi.fn((v: boolean) => v),
+  isAgentIntegrationConnected: vi.fn<(...a: unknown[]) => boolean>(() => true),
   // context pins
   listPins: vi.fn(() => [] as unknown[]),
   addPin: vi.fn(() => ({ id: 'pin-1' })),
@@ -367,6 +372,8 @@ vi.mock('../../src/main/importTrust', () => ({
 vi.mock('../../src/main/memorySettings', () => ({
   getPrimerLimit: M.getPrimerLimit, setPrimerLimit: M.setPrimerLimit,
   getVectorQuantize: M.getVectorQuantize, setVectorQuantize: M.setVectorQuantize,
+  getIndexClaudeNotes: M.getIndexClaudeNotes, setIndexClaudeNotes: M.setIndexClaudeNotes,
+  getShareNotesAcrossProjects: M.getShareNotesAcrossProjects, setShareNotesAcrossProjects: M.setShareNotesAcrossProjects,
 }))
 vi.mock('../../src/main/contextPinStore', () => ({
   initContextPinStore: vi.fn(),
@@ -380,6 +387,7 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   bootAgentIntegration: M.bootAgentIntegration,
   disconnectAgentIntegration: M.disconnectAgentIntegration,
   getAgentIntegrationStatus: M.getAgentIntegrationStatus,
+  isAgentIntegrationConnected: M.isAgentIntegrationConnected,
   setAgentIntegration: M.setAgentIntegration,
   isFolderTrustAllowed: M.isFolderTrustAllowed,
   trustFolderForAgents: M.trustFolderForAgents,
