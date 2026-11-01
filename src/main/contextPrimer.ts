@@ -364,7 +364,9 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // substance gate vouches for, then past conversations, then the rest (code and the like). The caps keep a crowd of
     // notes or lessons from filling the block; past them they rank with the conversations. The stable sort preserves the
     // score order the search already returned within each class, and the budget is the same one: this reorders, never adds.
-    const pool = [...projectHits, ...promoted]
+    // The two searches rank the same corpus on different candidate sets, so a head can reach one list and the fuller chunk the
+    // other: say it once here too, now that the lists are one.
+    const pool = dropPrefixDuplicates([...projectHits, ...promoted])
     let leadingNotes = 0
     let leadingLessons = 0
     const tier = pool.map((h): number => {

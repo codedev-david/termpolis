@@ -903,6 +903,14 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
     expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
   })
 
+  it('shows the fuller chunk once when only the unscoped search found the head of it, and the project search the fuller chunk', async () => {
+    // The two searches rank the same corpus on different candidate sets, so a head can reach one list and its fuller chunk the other.
+    const search = vi.fn(async (o: { project?: string }) => (o.project ? [chunk('full', FULL, { score: 0.9 }), OTHER] : [chunk('head', HEAD, { score: 0.85 })]))
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 })
+    expect(rows(out).filter((r) => r.includes('how do I cut a release'))).toHaveLength(1)
+    expect(out).toContain('the release workflow writes it')
+  })
+
   describe('in the freshness lane', () => {
     const lane = (list: PrimerHit[], extra: Record<string, unknown> = {}) =>
       buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent: vi.fn().mockResolvedValue(list), now: NOW, ...extra })
