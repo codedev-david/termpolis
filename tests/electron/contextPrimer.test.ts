@@ -708,6 +708,12 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
     expect(rows(out).length).toBeLessThanOrEqual(10)
     const widest = (o: string | null): number => Math.max(...rows(o).map((r) => r.length))
     expect(widest(out)).toBeLessThanOrEqual(widest(base) + 'lesson'.length - 'claude'.length)
+    // The character budget: the same memories, so the same snippets, in the lines of the same total length or shorter (a note's
+    // label is shorter than a conversation's, a lesson's the same).
+    const snippets = (o: string | null): string[] => rows(o).map((r) => r.replace(/^- \[[^\]]*\] /, '')).sort()
+    const chars = (o: string | null): number => rows(o).reduce((n, r) => n + r.length, 0)
+    expect(snippets(out)).toEqual(snippets(base))
+    expect(chars(out)).toBeLessThanOrEqual(chars(base))
   })
 
   it('keeps every line to the same snippet length: a note or a lesson is not given more room than a conversation', async () => {
