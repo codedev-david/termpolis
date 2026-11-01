@@ -108,14 +108,24 @@ function breakCursor(text: string): (i: number, limit: number) => Run | null {
   }
 }
 
-/** Base64 runs of at least `min` characters in [s, e). */
+/** Base64 runs of at least `min` characters in [s, e). A `=` with base64 after it is no padding but a
+ *  name's (`message=`, `data=`, a properties file's or journalctl's `MESSAGE=`): the run starts after
+ *  the last of them. (Padding is the only `=` a key line holds, and only at its end.) */
 function runsIn(text: string, s: number, e: number, min = MIN_RUN): Run[] {
   const runs: Run[] = []
   let i = s
   while (i < e) {
     while (i < e && !isB64(text.charCodeAt(i))) i++
-    const a = i
+    let a = i
     while (i < e && isB64(text.charCodeAt(i))) i++
+    let end = i
+    while (end > a && text.charCodeAt(end - 1) === 61) end--
+    for (let p = end - 1; p >= a; p--) {
+      if (text.charCodeAt(p) === 61) {
+        a = p + 1
+        break
+      }
+    }
     if (i - a >= min) runs.push([a, i])
   }
   return runs
@@ -225,6 +235,31 @@ export interface Structure {
   type: 'openssh' | 'ssh2' | 'pgp' | 'pkcs8' | 'encrypted-pkcs8' | 'pkcs1-or-dsa' | 'sec1'
   /** How long the DER says it is, in bytes (0 for the kinds that don't say). */
   declared: number
+  /** Where the key's private value starts and ends in the DER, for the structures whose first line
+   *  already holds some of it: a SEC1 EC key's, an EC or EdDSA/XDH PKCS#8 key's. (An RSA or DSA key's
+   *  first line is its modulus or its parameters, an encrypted key's its salt: documentation shows
+   *  those.) */
+  priv?: [number, number]
+}
+
+/** 1.2.840.10045.2.1 (id-ecPublicKey) and 1.3.101.110-113 (X25519, X448, Ed25519, Ed448). */
+const EC_OID = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
+
+/** Where the private value starts and ends in a PKCS#8 key whose algorithm `oid` is an EC or EdDSA/XDH
+ *  one (`d`: the OCTET STRING that holds the key), or undefined. An ECPrivateKey is a SEQUENCE { 1,
+ *  OCTET STRING value, ... }, a CurvePrivateKey just the OCTET STRING. */
+function pkcs8PrivateAt(b: Uint8Array, oid: Uint8Array, d: Tlv): [number, number] | undefined {
+  if (oid.length === EC_OID.length && startsWith(oid, EC_OID)) {
+    const seq = tlv(b, d.body)
+    const ver = seq && seq.tag === 0x30 ? tlv(b, seq.body) : null
+    const key = ver && ver.tag === 0x02 ? tlv(b, ver.end) : null
+    return key && key.tag === 0x04 ? [key.body, key.end] : undefined
+  }
+  if (oid.length === 3 && oid[0] === 0x2b && oid[1] === 0x65 && oid[2] >= 0x6e && oid[2] <= 0x71) {
+    const key = tlv(b, d.body)
+    return key && key.tag === 0x04 ? [key.body, key.end] : undefined
+  }
+  return undefined
 }
 
 /** What private-key structure `b` starts with, and how long it says it is, or null. */
@@ -244,11 +279,14 @@ export function structureOf(b: Buffer): Structure | null {
       // PKCS#8 / OneAsymmetricKey: version, AlgorithmIdentifier { OID ... }, OCTET STRING key
       const oid = tlv(b, c.body)
       const d = tlv(b, c.end)
-      if (oid && oid.tag === 0x06 && (!d || d.tag === 0x04)) return { type: 'pkcs8', declared: outer.end }
+      if (oid && oid.tag === 0x06 && (!d || d.tag === 0x04)) {
+        const priv = d ? pkcs8PrivateAt(b, b.subarray(oid.body, oid.end), d) : undefined
+        return { type: 'pkcs8', declared: outer.end, ...(priv === undefined ? {} : { priv }) }
+      }
       return null
     }
     if (c.tag === 0x02 && v === 0 && c.len >= 64) return { type: 'pkcs1-or-dsa', declared: outer.end }
-    if (c.tag === 0x04 && v === 1 && c.len >= 16 && c.len <= 72) return { type: 'sec1', declared: outer.end }
+    if (c.tag === 0x04 && v === 1 && c.len >= 16 && c.len <= 72) return { type: 'sec1', declared: outer.end, priv: [c.body, c.end] }
     return null
   }
   if (a.tag === 0x30) {
@@ -409,13 +447,13 @@ const frameAt = (text: string, lineStart: number, r0: number): string => frameOf
 
 // With no END line, a key's last line can be shorter than a payload run, so the block's last run
 // leaves it behind. These take it (see scanBlock).
-const SHORT_TAIL = /^([A-Za-z0-9+/]{1,15}={0,2})[\s"'`,;+&_)\]}|\\]*$/
-const CRC_LINE = /^=[A-Za-z0-9+/]{4}[\s"'`,;+)\]}|\\]*$/
+const SHORT_TAIL = /^([A-Za-z0-9+/]{1,15}={0,2})[\s"'`,;+&_.)\]}|\\]*$/
+const CRC_LINE = /^=[A-Za-z0-9+/]{4}[\s"'`,;+&_.)\]}|\\]*$/
 /** A code literal's `" +`, `" .`, `" & _` or `",` left between two lines. */
 const FRAGMENT = /^[\s"'`,;+.&_)\]}|\\]*$/
 // (a match starts where a base64 run does, and takes it whole: `+` is a joiner too, and tried from each
 // of a run of n `+` with the joiners after it, the ways of splitting it cost n * n * n)
-export const LINE_END_RUN = /(?<![A-Za-z0-9+/=])(?=([A-Za-z0-9+/=]+))\1[\s"'`,;+&_)\]}|\\]*$/
+export const LINE_END_RUN = /(?<![A-Za-z0-9+/=])(?=([A-Za-z0-9+/=]+))\1[\s"'`,;+&_.)\]}|\\]*$/
 /** Newline constants a literal is joined with: VB's `& vbCrLf & _`, C#'s `+ Environment.NewLine +`.
  *  They count as joiners: blanked to spaces of the same length, so offsets hold. Only standing
  *  apart from the base64 around them (a `+` may join them): random base64 holds vbLf about once in
@@ -436,6 +474,17 @@ const nlTail = (s: string): boolean => {
 const ONE_LINE_SEP = /^[ \t"'`,;+]{1,8}$/
 const SAME_LINE_TAIL = /^([A-Za-z0-9+/]{1,15}={0,2})(?![A-Za-z0-9+/=])/
 const CRC_RUN = /^=[A-Za-z0-9+/]{4}(?![A-Za-z0-9+/=])/
+
+/** Where the value starts in the base64 run of `line` that starts at `from`, when a name and its `=`
+ *  come first (`line=EkIZ`, `MESSAGE=dJWt`, as runsIn reads them): after the last `=` that has base64
+ *  after it and something before it in the run. Else `from` (a checksum line's own `=` leads its run). */
+function valueAt(line: string, from: number): number {
+  let end = from
+  while (end < line.length && isB64(line.charCodeAt(end))) end++
+  while (end > from && line.charCodeAt(end - 1) === 61) end--
+  for (let p = end - 1; p > from; p--) if (line.charCodeAt(p) === 61) return p + 1
+  return from
+}
 
 /** With no END line, where a key's last line ends when that line is shorter than a payload run: the
  *  next logical line, when it is directly under the last key line (ending at `at`), in the key
@@ -467,18 +516,20 @@ function shortLastLine(text: string, at: number, frame: string, right: string, f
     // its frame: what comes before the base64, as the key lines' frame is measured
     const m = LINE_END_RUN.exec(line)
     if (!m) break
-    const fr = frameAt(text, ls, ls + m.index)
-    if (fr !== frame && !JOINER_FRAME.test(line.slice(0, m.index))) break
-    const rest = line.slice(m.index)
-    const short = took || !full ? null : SHORT_TAIL.exec(rest)
+    const from = valueAt(line, m.index)
+    // (behind a name, a checksum line's own `=` is the last one: `line==0TKB`, framed `line=`)
+    const crc = from > m.index ? from - 1 : from
+    const framed = (to: number): boolean => frameAt(text, ls, ls + to) === frame || JOINER_FRAME.test(line.slice(0, to))
+    if (!framed(from) && !framed(crc)) break
+    const short = took || !full || !framed(from) ? null : SHORT_TAIL.exec(line.slice(from))
     if (short) {
-      tailEnd = ls + m.index + short[1].length
+      tailEnd = ls + from + short[1].length
       at = tailEnd
       took = true
       skipped = 0
       continue
     }
-    if (CRC_LINE.test(rest)) tailEnd = ls + m.index + 5
+    if (framed(crc) && CRC_LINE.test(line.slice(crc))) tailEnd = ls + crc + 5
     break
   }
   return tailEnd
@@ -645,7 +696,18 @@ function scanBlock(
       if (endAt === -1 && payload >= LONG_PAYLOAD && random) return span('remove', `${st.type}-prefix`) // cut short
       // A verified private-key header over a random body of two lines or more: an excerpt of a
       // real key's own bytes.
-      return runs.length >= 2 && payload >= 80 && random ? span('remove', `${st.type}-incomplete`) : span('flag', `${st.type}-example`)
+      if (runs.length >= 2 && payload >= 80 && random) return span('remove', `${st.type}-incomplete`)
+      // Or over one line that already holds the key's private value: `head -2 key.pem` of an EC or
+      // EdDSA key shows a SEC1 key's whole scalar, a PKCS#8 key's first 12 bytes of it. (An RSA, DSA or
+      // encrypted key's first line holds a modulus or parameters: a documentation example.)
+      if (runs.length === 1 && st.priv !== undefined) {
+        const [from, to] = st.priv
+        const line = text.slice(runs[0][0] + st.offset, runs[0][1])
+        const seen = Math.min(to, Math.floor((line.length * 3) / 4))
+        // (only the characters that are the value's alone: those a header or a following field shares are not)
+        if (seen - from >= 12 && looksRandomToken(line.slice(Math.ceil((from * 4) / 3), Math.floor((seen * 4) / 3)))) return span('remove', `${st.type}-line`)
+      }
+      return span('flag', `${st.type}-example`)
     }
     // OpenSSH, SSH2 and OpenPGP carry no overall length: the magic or the packet header anchors
     // them. A verified OpenSSH blob or OpenPGP packet is not asked to look random: a real
@@ -1749,32 +1811,45 @@ export function percentEncoded(text: string, start = 0): KeySpan[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// A key block in a JSON string whose writer escapes base64's own characters (F-C): PHP's
-// json_encode writes `/` as `\/`, .NET's System.Text.Json `+` as the escape of U+002B. The escape
-// splits each line's base64, so the block is read as the text with those escapes decoded.
+// A key block or a PuTTY file in a JSON string whose writer escapes base64's own characters (F-C):
+// PHP's json_encode writes `/` as `\/`, .NET's System.Text.Json `+` as the escape of U+002B. The escape
+// splits each line's base64, so the key is read as the text with those escapes decoded. A key written
+// as an array of its lines (PHP's json_encode(file($pem))) is a string per line: the string goes on
+// across a closing quote that another string follows.
 // ---------------------------------------------------------------------------------------------
 const B64_ESC_RE = /\\\/|\\u00(?:2[bBfF]|3[dD])/
 
-/** Each private-key BEGIN line from `start` on whose first 4 KB hold an escaped base64 character:
- *  the JSON string from there decoded of those escapes only (an escaped line break is kept as
- *  written: it ends a key line), to its closing quote or 256 KB, its key blocks found, and their
- *  spans mapped back. */
+/** Each private-key BEGIN line, and each PuTTY file's first line, from `start` on whose first 4 KB
+ *  hold an escaped base64 character: the JSON string from there decoded of those escapes only (an
+ *  escaped line break is kept as written: it ends a key line), to its closing quote or 256 KB, its
+ *  key blocks or PuTTY lines found, and their spans mapped back. */
 export function jsonEscaped(text: string, start = 0): KeySpan[] {
   const out: KeySpan[] = []
   if (!B64_ESC_RE.test(text.slice(start))) return out
-  const re = new RegExp(BEGIN_RE.source, 'g')
+  const re = new RegExp(BEGIN_RE.source + '|PuTTY-User-Key-File-', 'g')
   re.lastIndex = start
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const s = m.index
     const e = Math.min(text.length, s + 262144)
     if (!B64_ESC_RE.test(text.slice(s, Math.min(e, s + 4096)))) continue
+    const ppk = m[0] === 'PuTTY-User-Key-File-'
     let dec = ''
     const map: number[] = []
     let i = s
+    let between = false // after the closing quote of one string of an array of lines
     while (i < e) {
       const c = text.charCodeAt(i)
-      if (c === 34 /* " */) break // the JSON string ends
+      if (c === 34 /* " */) {
+        if (between || /^"\s*[,+.&]?\s*["']/.test(text.slice(i, i + 64))) {
+          between = !between
+          map.push(i)
+          dec += '"'
+          i++
+          continue
+        }
+        break // the JSON string ends
+      }
       if (c === 92 /* \ */) {
         const n = text[i + 1]
         if (n === '/') {
@@ -1800,7 +1875,7 @@ export function jsonEscaped(text: string, start = 0): KeySpan[] {
       i++
     }
     map.push(i)
-    for (const blk of keyBlocks(dec)) out.push({ rule: blk.rule, cls: blk.cls, why: `json:${blk.why}`, from: map[blk.from], to: map[blk.to] })
+    for (const blk of ppk ? puttyKeys(dec) : keyBlocks(dec)) out.push({ rule: blk.rule, cls: blk.cls, why: `json:${blk.why}`, from: map[blk.from], to: map[blk.to] })
     re.lastIndex = Math.max(re.lastIndex, i)
   }
   return out

@@ -93,6 +93,14 @@ const FORMATS = Object.keys(EXPECT) as Format[]
 const lastLine = (ls: string[]): string => ls.filter((l) => /^[A-Za-z0-9+/]+=*$/.test(l) && !l.startsWith('=')).pop() as string
 /** The base64 lines of a PEM file between its BEGIN and END lines, joined. */
 const bodyOf = (ls: string[]): string => ls.slice(1, -1).join('')
+/** A key file's lines with no END line and its last base64 line cut to `cut` characters (the short last line
+ *  an OpenSSH or PGP file ends in), its PGP checksum line after it; and that short line. */
+function shortLast(file: string[], cut: number): { lines: string[]; last: string } {
+  const body = file.slice(0, -1)
+  const at = body.reduce((n, l, i) => (/^[A-Za-z0-9+/]+=*$/.test(l) && !l.startsWith('=') ? i : n), -1)
+  const last = body[at].slice(0, cut)
+  return { lines: [...body.slice(0, at), last, ...body.slice(at + 1)], last }
+}
 
 let K: KeySet
 beforeAll(() => {
@@ -141,6 +149,117 @@ describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => 
     // an OpenSSH key's first two lines, with its END line: too short for its own structure (128)
     const os = K.F.openssh
     expect(keyBlocks([os[0], os[1], '...', os[os.length - 1]].join('\n')).map((b) => [b.cls, b.why])).toEqual([['flag', 'openssh-example']])
+  })
+
+  it('takes the first body line of an EC or EdDSA key, which already holds its private value (head -2 key.pem); not an RSA, DSA or encrypted key\'s, which holds a modulus or parameters', () => {
+    const pem = (key: crypto.KeyObject, type: 'sec1' | 'pkcs8'): string[] => (key.export({ type, format: 'pem' }) as string).trim().split('\n')
+    const heads: Array<[string, string[]]> = []
+    for (const curve of ['secp256k1', 'P-256', 'P-384', 'P-521']) {
+      const key = generateKeyPairSync('ec', { namedCurve: curve }).privateKey
+      heads.push([`SEC1 ${curve}`, pem(key, 'sec1')], [`PKCS#8 EC ${curve}`, pem(key, 'pkcs8')])
+    }
+    heads.push(['PKCS#8 ed448', pem(generateKeyPairSync('ed448').privateKey, 'pkcs8')], ['PKCS#8 x448', pem(generateKeyPairSync('x448').privateKey, 'pkcs8')], ['PKCS#8 x25519', pem(generateKeyPairSync('x25519').privateKey, 'pkcs8')])
+    for (const [name, ls] of heads) {
+      for (const withEnd of [false, true]) {
+        const label = `${name}, ${withEnd ? "with" : "no"} END`
+        const text = ['Here is the head of the file:', ls[0], ls[1], ...(withEnd ? [ls[ls.length - 1]] : []), 'and that is all.'].join('\n')
+        const r = screenKeys(text)
+        expect(r.removed, label).toEqual({ private_key: 1 })
+        expect(leakedWindows(r.text, [ls[1]]), label).toBe(0)
+        expect(r.text.startsWith('Here is the head of the file:\n') && r.text.endsWith('\nand that is all.'), label).toBe(true)
+      }
+    }
+    // an RSA, DSA or encrypted key's first line is its modulus, its parameters or its salt: a documentation example
+    for (const [name, ls] of [
+      ['PKCS#8 RSA', K.F.pkcs8_rsa],
+      ['PKCS#1 RSA', K.F.pkcs1_rsa],
+      ['DSA', K.F.dsa],
+      ['encrypted PKCS#8', K.F.enc_pkcs8],
+    ] as Array<[string, string[]]>) {
+      for (const withEnd of [false, true]) {
+        const text = ['Here is the head of the file:', ls[0], ls[1], ...(withEnd ? [ls[ls.length - 1]] : []), 'and that is all.'].join('\n')
+        const r = screenKeys(text)
+        expect(r.text, name).toBe(text)
+        expect(r.removed, name).toEqual({})
+      }
+    }
+    // a SEC1 or PKCS#8 EC header over a made-up value is no key's
+    const scalar = Buffer.alloc(32, 0x41)
+    const sec1 = der(0x30, Buffer.concat([der(0x02, Buffer.from([1])), der(0x04, scalar), der(0xa0, der(0x06, Buffer.from('2a8648ce3d030107', 'hex'))), der(0xa1, der(0x03, Buffer.concat([Buffer.from([0, 4]), randomBytes(64)])))]))
+    const madeUp = ['-----BEGIN EC PRIVATE KEY-----', wrap(sec1.toString('base64'))[0], '-----END EC PRIVATE KEY-----'].join('\n')
+    expect(structureOf(sec1)).toMatchObject({ type: 'sec1' })
+    expect(screenKeys(madeUp).text).toBe(madeUp)
+    expect(screenKeys(madeUp).removed).toEqual({})
+  })
+
+  it('takes a key written one NAME=<line> per line, whatever the name: padding is the only = inside a key line', () => {
+    // A properties file, journalctl -o export (MESSAGE=), a log field: the name and its = were part of the
+    // base64 run, which then decoded to nothing (names of 4 characters or more; 3 worked by luck).
+    for (const format of FORMATS) {
+      const [rule] = EXPECT[format]
+      for (const name of ['line', 'data', 'value', 'message', 'MESSAGE', 'payload', 'stdout', 'msg', 'k']) {
+        for (const withEnd of [true, false]) {
+          const label = `${format}/${name}=/${withEnd ? "END" : "no END"}`
+          const ls = withEnd ? K.F[format] : K.F[format].slice(0, -1)
+          const r = screenKeys('Answer follows.\n' + ls.map((l) => `${name}=${l}`).join('\n') + '\nThat was the file.')
+          expect(leakedWindows(r.text, secretLinesOf(K.F[format])), label).toBe(0)
+          expect(r.removed, label).toEqual({ [rule]: 1 })
+        }
+      }
+    }
+    // with no END line, the key's short last line and its checksum line (PGP) carry the name too
+    for (const format of ['pgp_rsa_hdr', 'pgp_ed_nohdr', 'pkcs8_rsa', 'openssh'] as Format[]) {
+      for (const cut of [4, 8, 12]) {
+        const { lines, last } = shortLast(K.F[format], cut)
+        const r = screenKeys('Answer follows.\n' + lines.map((l) => `line=${l}`).join('\n') + '\nThat was the file.')
+        expect(r.removed, `${format}/${cut}`).toEqual({ [EXPECT[format][0]]: 1 })
+        expect(shownWhole(r.text, last), `${format}/${cut}`).toBe(false)
+        expect(r.text.includes(`line=${lines[lines.length - 1]}`), `${format}/${cut}`).toBe(false)
+      }
+    }
+  })
+
+  it('takes a key written as a JSON array of its lines, the writer escaping base64 characters: PHP json_encode(file($pem)), .NET string[]', () => {
+    // Each element is its own JSON string, so the string does not end at the first closing quote.
+    const php = (json: string): string => json.replace(/\//g, '\\/')
+    const net = (json: string): string => json.replace(/\+/g, '\\' + 'u002B')
+    const shapes: Record<string, (ls: string[]) => string> = {
+      'PHP, inline': (ls) => php(JSON.stringify(ls)),
+      'PHP, each line ending in \\n': (ls) => php(JSON.stringify(ls.map((l) => l + '\n'))),
+      'PHP, JSON_PRETTY_PRINT': (ls) => php(JSON.stringify(ls.map((l) => l + '\n'), null, 4)),
+      '.NET string[]': (ls) => net(JSON.stringify(ls)),
+      '.NET, both escapes': (ls) => net(php(JSON.stringify(ls.map((l) => l + '\n'), null, 2))),
+    }
+    for (const format of FORMATS) {
+      const [rule] = EXPECT[format]
+      for (const [shape, write] of Object.entries(shapes)) {
+        for (const withEnd of [true, false]) {
+          const label = `${format}/${shape}/${withEnd ? "END" : "no END"}`
+          const ls = withEnd ? K.F[format] : K.F[format].slice(0, -1)
+          const r = screenKeys('Answer follows.\n' + write(ls) + '\nThat was the file.')
+          expect(leakedWindows(r.text, secretLinesOf(K.F[format])), label).toBe(0)
+          expect(r.removed, label).toEqual({ [rule]: 1 })
+        }
+      }
+    }
+    // elements that are not a key's lines stay: an array of words after the key's END line
+    const ls = K.F.pkcs8_rsa
+    const after = '["' + ls.join('\\n') + '\\n","next","and then \\/ this"]'
+    const r = screenKeys(php('{"files":["a.txt"],"key":' + JSON.stringify(ls.join('\n') + '\n') + '}') + '\n' + after)
+    expect(r.text).toContain('"next","and then \\/ this"]')
+  })
+
+  it('takes a key written as PHP string literals joined with ". PHP_EOL .", its last short line and its checksum line too, with no END line', () => {
+    for (const format of ['pgp_rsa_hdr', 'pgp_ed_hdr', 'pgp_rsa_nohdr', 'pkcs8_rsa', 'pkcs1_rsa'] as Format[]) {
+      for (const cut of [4, 8, 12]) {
+        const { lines, last } = shortLast(K.F[format], cut)
+        const text = '$key = ' + lines.map((l) => `"${l}"`).join(' . PHP_EOL .\n    ') + ';\nDone.'
+        const r = screenKeys(text)
+        expect(r.removed, `${format}/${cut}`).toEqual({ [EXPECT[format][0]]: 1 })
+        expect(shownWhole(r.text, last), `${format}/${cut}`).toBe(false)
+        expect(r.text.endsWith(';\nDone.'), `${format}/${cut}`).toBe(true)
+      }
+    }
   })
 
   it('takes a key written on one line after its headers, its last short line too', () => {
@@ -323,6 +442,26 @@ describe('T1 K6: a PuTTY key file', () => {
     // the whole file from its first line to its MAC, in its own lines
     const whole = screenKeys(`Here:\n${ppk.join('\n')}\nDone.`)
     expect(whole.text).toBe('Here:\n[REDACTED:putty_private_key]\nDone.')
+  })
+
+  it('takes the private lines of a PuTTY file in a JSON string whose writer escapes base64 characters (PHP \\/, .NET \\u002B), with its MAC line and without', () => {
+    const ppk = K.ppk
+    const secret = secretLinesOf(ppk, true)
+    const php = (t: string): string => t.replace(/\//g, '\\/')
+    const net = (t: string): string => t.replace(/\+/g, '\\' + 'u002B').replace(/\//g, '\\' + 'u002F')
+    const withoutMac = ppk.slice(0, -1)
+    for (const [name, escape] of [['PHP', php], ['.NET', net]] as Array<[string, (t: string) => string]>) {
+      for (const [macName, lines] of [['with the MAC line', ppk], ['without it', withoutMac]] as Array<[string, string[]]>) {
+        const text = '{"ppk":' + escape(JSON.stringify(lines.join('\n'))) + ',"ok":true}'
+        const r = screenKeys(text)
+        expect(r.removed, `${name} ${macName}`).toEqual({ putty_private_key: 1 })
+        expect(leakedWindows(r.text, secret), `${name} ${macName}`).toBe(0)
+        expect(r.text.endsWith(',"ok":true}'), `${name} ${macName}`).toBe(true)
+      }
+    }
+    // the same file in an array of lines
+    const lines = ppk.map((l) => l + '\n')
+    expect(screenKeys(php(JSON.stringify(lines))).removed).toEqual({ putty_private_key: 1 })
   })
 
   it('takes private lines written with no break, cut short, or behind a log prefix with words', () => {
@@ -1963,10 +2102,11 @@ describe('the detectors cost in step with the text, whatever the other computer 
 })
 
 describe('the linear replacements of three regexes and a prose test give what those gave', () => {
-  // The regexes as they were, each cubic or quadratic in a run of plus signs or letters: the oracle.
+  // The regexes as they were (LINE_END_RUN with the dot of a PHP `" .` since), each cubic or quadratic in a
+  // run of plus signs or letters: the oracle.
   const PARTIAL_OLD = /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)((?:\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]|[ \t"'`,;+.&_$)\]}|])*\\?(?:\r\n|\r|\n)?)$/
   const SHORT_OLD = /([A-Za-z0-9+/]{1,7}={0,2})[\s"'`,;+&_)\]}|\\$]*$/
-  const LINE_END_OLD = /[A-Za-z0-9+/=]+[\s"'`,;+&_)\]}|\\]*$/
+  const LINE_END_OLD = /[A-Za-z0-9+/=]+[\s"'`,;+&_.)\]}|\\]*$/
   const PROSE_OLD = /[A-Za-z]{2,}[ \t]+[A-Za-z]{2,}/
 
   // A seeded generator: the same strings on every run.
@@ -2031,7 +2171,7 @@ describe('the linear replacements of three regexes and a prose test give what th
   it('LINE_END_RUN matches where /[A-Za-z0-9+/=]+(joiners)$/ matched, as much as it matched', () => {
     const got = lineEnd(LINE_END_RUN)
     const want = lineEnd(LINE_END_OLD)
-    expect(differ((visit) => everyString(['a', '=', '+', ' ', '"', BS, '!', '/'], 6, visit), got, want)).toEqual([])
+    expect(differ((visit) => everyString(['a', '=', '+', ' ', '"', BS, '.', '/'], 6, visit), got, want)).toEqual([])
     expect(differ(randomInputs, got, want)).toEqual([])
   })
 
