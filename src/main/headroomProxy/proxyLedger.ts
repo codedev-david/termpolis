@@ -187,9 +187,9 @@ function takeHop(key: number): PendingHop | undefined {
   return h
 }
 
-/** Leave a hop waiting for its conversation's next turn, the newest at the back of the line. */
+/** Leave a hop waiting for its conversation's next turn, the newest at the back of the line. The
+ *  caller has just taken any older hop of this conversation (takeHop), so setting it appends. */
 function rememberHop(key: number, h: PendingHop): void {
-  pendingHops.delete(key)
   pendingHops.set(key, h)
   if (pendingHops.size > PENDING_HOP_MAX) pendingHops.delete(pendingHops.keys().next().value as number)
 }
