@@ -53,15 +53,17 @@ export const PRIMER_SUBMIT_SETTLE_MS = 150
 // reach (POSIX shells, fish, PowerShell, cmd.exe) and in the paste itself, which no control
 // character may be part of: an Escape in a name could end the bracketed paste early and type the
 // rest. A name is data somebody else chose (a cloned repository's directory), so it is checked
-// against what is allowed, not against what is known to be bad.
+// against what is allowed, not against what is known to be bad. primerPointerShell.test.ts types
+// the pointer into the real bash, PowerShell and cmd.exe to prove it.
 const NAMEABLE_FOLDER = /^[\p{L}\p{M}\p{N} _.,:/\\+@~=#()[\]{}-]+$/u
 
 /**
  * The folder as the pointer names it: a single-quoted literal (shellQuote.ts), in which nothing is
  * special to a POSIX shell, fish or PowerShell, and which holds nothing cmd.exe (it has no single
- * quotes) would read as code. Between double quotes a shell expands $(...) and backticks in the name
- * and runs them. null for a name outside NAMEABLE_FOLDER and for one ending in a backslash (fish
- * reads it as an escaped closing quote): the pointer then names no folder at all.
+ * quotes) would read as code. Between double quotes a shell expands $(...) and backticks in the name,
+ * and a name can close the quotes itself and comment out the rest of the pointer (x"; cmd; #), which
+ * ran in Git Bash and Windows PowerShell. null for a name outside NAMEABLE_FOLDER and for one ending
+ * in a backslash (fish reads it as an escaped closing quote): the pointer then names no folder at all.
  */
 function pointerFolder(cwd: string): string | null {
   return NAMEABLE_FOLDER.test(cwd) && !cwd.endsWith('\\') ? psQuote(cwd) : null
