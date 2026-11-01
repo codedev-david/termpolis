@@ -274,10 +274,13 @@ export const JOIN: Record<string, (ls: string[]) => string> = {
   // the six characters of a JSON line feed escape: a backslash, u, 000a
   u000a: (ls) => '"' + ls.join(BS + 'u000a') + '"',
   space_one_line: (ls) => 'PRIVATE_KEY="' + ls.join(' ') + '"',
+  // (a key with its line breaks taken out: `tr -d "\n"`, a PowerShell -join '')
+  no_sep: (ls) => 'PRIVATE_KEY="' + ls.join('') + '"',
+  shell_echo: (ls) => ls.map((l, i) => `echo '${l}' ${i ? '>>' : '>'} key.pem`).join('\n'),
   js_template: (ls) => 'const KEY = ' + BT + ls.join('\n') + BT,
 }
-/** The reduced matrix of the design's T1: 20 joinings. */
-export const T1_JOININGS = ['lf', 'crlf', 'cr', 'json_n', 'json_nn', 'java_concat', 'py_bytes', 'yaml_block2', 'cat_n', 'rg_win', 'rg_C_win', 'rg_long_posix', 'select_string', 'docker_t', 'compose', 'slash_comment', 'quote', 'diff_plus', 'u000a', 'space_one_line']
+/** The reduced matrix of the design's T1: 20 joinings, and the key with no separator at all and the key echoed into a file line by line. */
+export const T1_JOININGS = ['lf', 'crlf', 'cr', 'json_n', 'json_nn', 'java_concat', 'py_bytes', 'yaml_block2', 'cat_n', 'rg_win', 'rg_C_win', 'rg_long_posix', 'select_string', 'docker_t', 'compose', 'slash_comment', 'quote', 'diff_plus', 'u000a', 'space_one_line', 'no_sep', 'shell_echo']
 
 /** The key lines of a key file: every line of 8 or more base64 characters (headers, armor, the
  *  checksum and the BEGIN and END lines excluded); for a PuTTY file, its private lines. */

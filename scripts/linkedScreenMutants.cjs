@@ -169,9 +169,20 @@ const REVIEW = {
   'tail: any last word above an END line is its short last line': [KEY, 'const SHORT_JOINER = /[\\s"\'`,;+&_)\\]}|\\\\$]/', 'const SHORT_JOINER = /\\W/'],
   // the final false-removal round: an OpenVPN key is lines of exactly 32 hex digits; a value that names a key is no key
   'K3: lines of any hex length (a list of sha256sums)': [KEY, "if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''", "if (!/^[0-9a-f]+$/i.test(v)) return ''"],
-  'K3: a file name after the digits (md5sums)': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) ? v : ''", "return v"],
-  'K3: a key written on one line, the next value after a space': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) ? v : ''", "return KEY_LINE_TAIL.test(rest) ? v : ''"],
-  'K3: a colour code after the digits': [KEY, ".replace(/\\x1b\\[[0-9;]*m/g, ' ')", ''],
+  'K3: a file name after the digits (md5sums)': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''", "return v"],
+  'K3: a key written on one line, the next value after a space': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''", "return KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''"],
+  'K3: a colour code after the digits': [KEY, "const rest = blankNl(text.slice(e, stop)).replace(/\\x1b\\[[0-9;]*m/g, ' ')", 'const rest = blankNl(text.slice(e, stop))'],
+  // the recall findings of the final round 2: a key with no line breaks, an OpenVPN key a script echoes line by line
+  'valueStart: a name of any length (the = before a glued checksum)': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p + 1'],
+  'valueStart: a 64-character key line and its checksum read as a name': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p - a > MAX_NAME ? a : p + 1'],
+  'valueStart: a name of 62 characters is none': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p - a >= MAX_NAME - 2 ? a : p + 1'],
+  'K3: a run of 512 digits (line breaks taken out) not read': [KEY, "        const one = /^[^0-9a-fA-F]{0,16}([0-9a-fA-F]{512})$/.exec(text.slice(s, e))\n        if (one) return one[1]\n", ''],
+  'K3: a run of 512 digits behind a long frame': [KEY, '/^[^0-9a-fA-F]{0,16}([0-9a-fA-F]{512})$/', '/^[^0-9a-fA-F]{0,100}([0-9a-fA-F]{512})$/'],
+  "K3: the header line's text after its marker not used": [KEY, ' || tailForm(rest) === beginTail ? v', ' ? v'],
+  'K3: any text after the digits is the same as the header line\'s': [KEY, 'tailForm(rest) === beginTail', 'true'],
+  'K3: an echo that starts the file with > and adds with >>': [KEY, ".replace(/>>/g, '>')", ''],
+  'K3: the number of a line after its digits': [KEY, ".replace(/\\d+/g, '0').replace(/>>/g, '>')", ".replace(/>>/g, '>')"],
+  "K3: a colour code on the header line's text": [KEY, "const tailForm = (s: string): string => s.replace(/\\x1b\\[[0-9;]*m/g, ' ')", 'const tailForm = (s: string): string => s'],
   'K3: a run of six equal hex digits is a placeholder\'s': [KEY, 'const maxRun = hex ? 8 : 5', 'const maxRun = 5'],
   'K3: a run of any length of equal hex digits is random': [KEY, 'const maxRun = hex ? 8 : 5', 'const maxRun = hex ? 100000 : 5'],
   "jwk: an environment variable's name is a key": [KEY, "  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(body)) return 'env-name'\n", ''],
@@ -267,8 +278,54 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'linked-mutants-'))
 const json = path.join(tmp, 'run.json')
 // vitest's own entry point, run by this node: no shell between this script and the tests.
 const vitest = path.join(path.dirname(require.resolve('vitest/package.json', { paths: [ROOT] })), 'vitest.mjs')
+// What a vitest file that could not start says (a worker that did not come up, a timeout, no memory): under load these look like a
+// run with no failed test, and a mutant would be reported SURVIVED when it was never run. A file that fails to LOAD for another
+// reason (the mutated source throws as it is imported) is a failure the mutant caused, and kills it.
+const COULD_NOT_RUN = /Failed to start|worker|time ?out|ENOMEM|EAGAIN|EBUSY|spawn|out of memory|heap/i
+
+/** Runs the tests with the sources as they are on disk: { ran, failed (titles), noRun (why a file did not start) }. */
+function runTests(more) {
+  fs.rmSync(json, { force: true })
+  const run = spawnSync(process.execPath, [vitest, 'run', ...TESTS, ...(more ?? []), '--reporter=json', `--outputFile=${json}`], { cwd: ROOT, encoding: 'utf8' })
+  const failed = []
+  const noRun = []
+  let ran = 0
+  try {
+    const report = JSON.parse(fs.readFileSync(json, 'utf8'))
+    ran = report.numTotalTests
+    for (const f of report.testResults) {
+      for (const a of f.assertionResults) if (a.status === 'failed') failed.push(`${path.basename(f.name)}: ${a.title}`)
+      if (f.status === 'failed' && f.assertionResults.length === 0) {
+        const why = String(f.message || '').split('\n')[0]
+        if (COULD_NOT_RUN.test(why)) noRun.push(`${path.basename(f.name)}: ${why}`)
+        else failed.push(`${path.basename(f.name)}: did not load (${why})`)
+      }
+    }
+  } catch {
+    noRun.push(`no report (vitest exited ${run.status})`)
+  }
+  return { ran, failed, noRun }
+}
+
 let bad = 0
 try {
+  // The tests as they are, once for each set of test files a mutant runs: how many there are, so a run of a mutant that ran fewer
+  // is known not to be a whole run.
+  const baselines = new Map()
+  const baseline = (more) => {
+    const key = (more ?? []).join('|')
+    if (!baselines.has(key)) {
+      const b = runTests(more)
+      if (b.failed.length || b.noRun.length) {
+        console.log(`the tests do not pass as they are (${b.failed.length} failed, ${b.noRun.length} files did not run): fix that first`)
+        for (const t of [...b.failed, ...b.noRun].slice(0, 6)) console.log(`           ${t}`)
+        process.exit(2)
+      }
+      console.log(`baseline: ${b.ran} tests pass${more ? ` (with ${more.join(', ')})` : ''}`)
+      baselines.set(key, b)
+    }
+    return baselines.get(key)
+  }
   for (const [name, [file, from, to, more]] of Object.entries(mutants)) {
     if (only && !name.includes(only)) continue
     const src = originals.get(file)
@@ -278,24 +335,22 @@ try {
       bad++
       continue
     }
+    const base = baseline(more)
     fs.writeFileSync(path.join(ROOT, file), src.replace(from, to))
-    fs.rmSync(json, { force: true })
-    const run = spawnSync(process.execPath, [vitest, 'run', ...TESTS, ...(more ?? []), '--reporter=json', `--outputFile=${json}`], { cwd: ROOT, encoding: 'utf8' })
+    const { ran, failed, noRun } = runTests(more)
     restore()
-    let failed = []
-    let ran = 0
-    try {
-      const report = JSON.parse(fs.readFileSync(json, 'utf8'))
-      ran = report.numTotalTests
-      for (const f of report.testResults) for (const a of f.assertionResults) if (a.status === 'failed') failed.push(`${path.basename(f.name)}: ${a.title}`)
-    } catch {
-      failed = [`no report (vitest exited ${run.status})`]
-    }
     const killed = failed.length > 0
+    // (a run that lost tests, or a file that did not start, with no failure to show for it, proves nothing: run it again alone)
+    if (!killed && (noRun.length > 0 || ran !== base.ran)) {
+      bad++
+      console.log(`NO RUN   ${name} (${ran} of ${base.ran} tests ran)`)
+      for (const t of noRun.slice(0, 4)) console.log(`           ${t}`)
+      continue
+    }
     const expected = EQUIVALENT.has(name) ? !killed : killed
     if (!expected) bad++
     const verdict = killed ? 'KILLED  ' : EQUIVALENT.has(name) ? 'EQUIVALENT' : 'SURVIVED'
-    console.log(`${verdict} ${name}${killed ? ` (${failed.length} of ${ran} tests failed)` : ''}`)
+    console.log(`${verdict} ${name} (${failed.length} of ${ran} tests failed)`)
     for (const t of failed.slice(0, 4)) console.log(`           ${t}`)
   }
 } finally {

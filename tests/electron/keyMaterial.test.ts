@@ -114,7 +114,7 @@ beforeAll(() => {
 
 describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => {
   for (const format of FORMATS) {
-    it(`${format}: removed whole in the 20 joinings, with its END line and without`, () => {
+    it(`${format}: removed whole in the 22 joinings, with its END line and without`, () => {
       const [rule, why] = EXPECT[format]
       const lines = K.F[format]
       // what decided, on the file as it is
@@ -222,6 +222,18 @@ describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => 
         expect(r.text.includes(`line=${lines[lines.length - 1]}`), `${format}/${cut}`).toBe(false)
       }
     }
+  })
+
+  it('takes the = before 4 characters, far from the run start, for the checksum that ends an OpenPGP key written with no line breaks, not for a name', () => {
+    // `gpg --armor --export-secret-keys | tr -d '\n'`: the body, its padding and `=XXXX` are one run, and the = that is nearest its
+    // end was taken for a NAME= with the checksum for its value, which dropped the whole body and kept 4 characters. A name is
+    // shorter than a key line (64); a body that long is read whole. (A line of 63 characters and a checksum is a name's.)
+    const b64 = (n: number): string => randomBytes(Math.ceil(n * 0.75)).toString('base64').replace(/[+/=]/g, 'a').slice(0, n)
+    // (header-only: no payload run was found under the BEGIN line)
+    const why = (n: number): string => keyBlocks(`-----BEGIN PRIVATE KEY-----\n${b64(n)}=ab12\n-----END PRIVATE KEY-----\n`)[0].why
+    expect(why(63), 'a name of 63').toBe('header-only')
+    expect(why(64), 'a body of 64').not.toBe('header-only')
+    expect(why(2500), 'a body of 2,500').not.toBe('header-only')
   })
 
   it('takes a key written as a JSON array of its lines, the writer escaping base64 characters: PHP json_encode(file($pem)), .NET string[]', () => {
@@ -378,6 +390,53 @@ describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and no
       expect(r.text, name).toBe(text)
       expect(r.removed, name).toEqual({})
       expect(r.flagged, name).toEqual({ openvpn_static_key: 1 })
+    }
+  })
+  // The ways a script, a page or a table writes the file out line by line: the same text after every line's digits, and the
+  // header line has it too (an echo starts the file with `>` and adds to it with `>>`).
+  const BS = '\\'
+  const SHAPES: Record<string, (ls: string[]) => string> = {
+    'echo into a file, the first with >': (ls) => ls.map((l, i) => `echo '${l}' ${i ? '>>' : '>'} ta.key`).join('\n'),
+    'echo in a Dockerfile': (ls) => ls.map((l) => `RUN echo "${l}" >> /etc/openvpn/ta.key ${BS}`).join('\n'),
+    'a batch file': (ls) => ls.map((l) => `echo ${l}>>ta.key`).join('\n'),
+    printf: (ls) => ls.map((l) => `printf '%s${BS}n' "${l}" >> ta.key`).join('\n'),
+    'sed inserting each line': (ls) => ls.map((l, i) => `sed -i '${i + 1}i ${l}' ta.key`).join('\n'),
+    'a paragraph each': (ls) => ls.map((l) => `<p>${l}</p>`).join('\n'),
+    'a CSV row each': (ls) => ls.map((l, i) => `${i + 1},${l},ok`).join('\n'),
+    'a markdown table row each': (ls) => ls.map((l, i) => `| ${i + 1} | ${l} | ok |`).join('\n'),
+    'a YAML list with comments': (ls) => ls.map((l) => `- ${l}  # line`).join('\n'),
+    'a numbered comment each': (ls) => ls.map((l, i) => `${l}  # line ${i + 1}`).join('\n'),
+    'a coloured diff of the echo script': (ls) => ls.map((l, i) => `\x1b[32m+\x1b[m\x1b[32mecho '${l}' ${i ? '>>' : '>'} ta.key\x1b[m`).join('\n'),
+    'the 512 digits in one run (line breaks taken out)': (ls) => [ls[0], ls.filter((l) => /^[0-9a-f]{32}$/.test(l)).join(''), ...ls.slice(1).filter((l) => !/^[0-9a-f]{32}$/.test(l))].join('\n'),
+  }
+  it.each(Object.keys(SHAPES))('a key written out as %s is removed', (name) => {
+    const key = K.F.openvpn.slice(3) // BEGIN, 16 lines of digits, END (the comment lines above are not the key)
+    const values = key.filter((l) => /^[0-9a-f]{32}$/.test(l))
+    for (const lines of [key, key.slice(0, -1)]) {
+      const label = `${name}/${lines.length === key.length ? 'END' : 'no END'}`
+      const text = `Answer follows.\n${SHAPES[name](lines)}\nThat was the file.`
+      const r = screenKeys(text)
+      expect(r.removed, label).toEqual({ openvpn_static_key: 1 })
+      expect(leakedWindows(r.text, values), label).toBe(0)
+      expect(r.text.startsWith('Answer follows.') && r.text.endsWith('That was the file.'), label).toBe(true)
+    }
+  })
+  it('but the same cell after a list of digests, under a header that does not have it, is no key', () => {
+    // (a table of md5 sums with the same status on every row, under a header row of its own; the header in a sentence, in a list
+    // item, in an echo that only writes it; sha256 sums and git ids with a constant cell)
+    const sums = (n: number): string[] => Array.from({ length: n }, () => randomBytes(16).toString('hex'))
+    const docs: Record<string, string> = {
+      'a status column under the header row': `| file | status |\n|---|---|\n| ${HEADER} |\n${sums(20).map((h) => `| ${h} | ok |`).join('\n')}\n`,
+      'the same cell after each, the header in a sentence': `The header ${HEADER} marks a static key.\n${sums(20).map((h) => `${h} OK`).join('\n')}\n`,
+      'a list of digests under a header in a list item': `- ${HEADER}\n${sums(20).map((h) => `- ${h} verified`).join('\n')}\n`,
+      'an echo that writes only the header': `echo '${HEADER}' >> key.pem   # (this writes the header)\n\nmd5s:\n${sums(20).map((h) => `${h} ok`).join('\n')}\n`,
+      'sha256 digests with a constant cell': `${HEADER}\n${Array.from({ length: 20 }, () => `${randomBytes(32).toString('hex')} OK`).join('\n')}\n`,
+      'git ids with a constant cell': `${HEADER}\n${Array.from({ length: 20 }, () => `${randomBytes(20).toString('hex')} OK`).join('\n')}\n`,
+    }
+    for (const [name, text] of Object.entries(docs)) {
+      const r = screenKeys(text)
+      expect(r.text, name).toBe(text)
+      expect(r.removed, name).toEqual({})
     }
   })
 })
@@ -1475,7 +1534,8 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
     // frame only, so 847 of 4,618 cuts left the key's lines in view in 14 of the joinings.
     const lines = K.F.rsa_legacy_enc
     const secret = secretLinesOf(lines)
-    const joinings = Object.keys(JOIN).filter((j) => j !== 'space_one_line')
+    // (not the three the docs name as crossing an older computer's cut: a key all on one line, with no separator, echoed line by line)
+    const joinings = Object.keys(JOIN).filter((j) => !['space_one_line', 'no_sep', 'shell_echo'].includes(j))
     expect(joinings.length).toBeGreaterThanOrEqual(24)
     let cuts = 0
     for (const joining of joinings) {

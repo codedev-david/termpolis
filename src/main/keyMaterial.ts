@@ -56,6 +56,8 @@ const MAX_GAP = 320
 const MAX_LEAD = 2048
 /** The longest block followed: a PGP keyring export with a photo ID runs to hundreds of KB. */
 const MAX_BLOCK = 4 * 1024 * 1024
+/** A `NAME=` in front of a value is shorter than a key line is wide (64 characters, at the least). */
+const MAX_NAME = 64
 /** Payload characters a verified header must carry over a body that does not say how long it is
  *  (OpenSSH, SSH2, OpenPGP), or over a DER key cut short before its END line. */
 const LONG_PAYLOAD = 128
@@ -111,11 +113,14 @@ function breakCursor(text: string): (i: number, limit: number) => Run | null {
 /** Where the value starts in the base64 run [a, e) of `text`: after a name and its `=` (`message=`,
  *  `data=`, `TLS_KEY=`, journalctl's `MESSAGE=`), which is the last `=` that has base64 after it and
  *  something before it in the run; else `a`. (Padding is the only `=` a key line holds, and only at its
- *  end; a checksum line's own `=` leads its run.) */
+ *  end; a checksum line's own `=` leads its run, unless the key was written with no line breaks.) A name
+ *  is shorter than a key line: an OpenPGP key written with no line breaks (`| tr -d '\n'`) ends in its
+ *  padding and then `=XXXX`, its checksum, and the `=` far from the run's start is no name's. (Taken for
+ *  one, it dropped the whole key and kept 4 characters.) */
 function valueStart(text: string, a: number, e: number): number {
   let end = e
   while (end > a && text.charCodeAt(end - 1) === 61) end--
-  for (let p = end - 1; p > a; p--) if (text.charCodeAt(p) === 61) return p + 1
+  for (let p = end - 1; p > a; p--) if (text.charCodeAt(p) === 61) return p - a >= MAX_NAME ? a : p + 1
   return a
 }
 
@@ -495,6 +500,10 @@ export const LINE_END_RUN = /(?<![A-Za-z0-9+/=])(?=([A-Za-z0-9+/=]+))\1[\s"'`,;+
  *  270,000 characters, inside a key's line. */
 const NL_CONST = /(?<![A-Za-z0-9/=_])(?:vbCrLf|vbNewLine|vbLf|Environment\.NewLine|System\.lineSeparator\(\)|os\.linesep|PHP_EOL)(?![A-Za-z0-9/=_])/g
 const blankNl = (s: string): string => s.replace(NL_CONST, (x) => ' '.repeat(x.length))
+/** What follows a value on its line, to be compared with what follows another line's: colour codes as blanks, digits
+ *  (a line number) as 0, `>>` as `>` (an echo into a file starts it with `>` and adds the rest with `>>`), no blanks
+ *  at either end. */
+const tailForm = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, ' ').replace(/\d+/g, '0').replace(/>>/g, '>').trim()
 /** The written-out line breaks nextBreak reads, as answers write them. */
 const ESC_FORMS = ['<br>', '<br/>', '<br />', '\\n', '\\r', '\\u000a', '\\u000A', '\\x0a', '\\x0A', '%0A', '%0a', '&#xA;', '&#xa;', '&#x0A;', '&#10;', '`n', '`r']
 /** Whether `s` is what a cut left of a written-out line break (`br>` of `<br>`). */
@@ -706,18 +715,24 @@ function scanBlock(
   })
 
   if (rule === 'openvpn_static_key') {
-    // The file's own shape: lines of exactly 32 hex digits, a frame in front and joiners after (a key written
-    // on one line: the next value after a space, and whatever follows the last). A list of digests (sha256sums:
-    // 64 digits; md5sums: 32 and a file name) is not one, however random its digits look.
+    // The file's own shape: lines of exactly 32 hex digits (or its 512 in one run, the line breaks taken out), a
+    // frame in front and, after them, joiners (a key written on one line: the next value after a space, and
+    // whatever follows the last) or what follows the BEGIN line's marker (a script that echoes each line into a
+    // file, a table row, a tag around each line writes the same after each). A list of digests (sha256sums: 64
+    // digits; md5sums: 32 and a file name, another on every line) is not one, however random its digits look.
+    const beginBr = nextBreak(text, me, Math.min(text.length, me + 1024))
+    const beginTail = tailForm(text.slice(me, beginBr ? beginBr[0] : Math.min(text.length, me + 1024)))
     const hex = runs
       .map(([s, e]) => {
+        const one = /^[^0-9a-fA-F]{0,16}([0-9a-fA-F]{512})$/.exec(text.slice(s, e))
+        if (one) return one[1]
         // (a frame glued on: a diff's +, a coloured diff's `32m+`)
         const v = text.slice(s, e).replace(/^(?:\d{1,3}m)?[^0-9a-fA-F]{0,3}(?=[0-9a-fA-F]{32}$)/, '')
         if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''
         const br = nextBreak(text, e, Math.min(text.length, e + 1024))
         const stop = Math.min(br ? br[0] : text.length, nextMark(e) ?? text.length, e + 1024)
         const rest = blankNl(text.slice(e, stop)).replace(/\x1b\[[0-9;]*m/g, ' ')
-        return /^[\s"'`,;+]{1,8}\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) ? v : ''
+        return /^[\s"'`,;+]{1,8}\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''
       })
       .join('')
     return hex.length >= 256 && looksRandom(hex) ? span('remove', 'openvpn-hex') : span('flag', 'openvpn-header')

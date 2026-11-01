@@ -1412,7 +1412,7 @@ audit log.
     base64 under a private-key BEGIN line must decode to a private key's
     structure: PKCS#8, encrypted PKCS#8, PKCS#1 RSA, DSA, SEC1 EC, OpenSSH,
     OpenPGP or SSH2. An OpenVPN static key (its 2,048 random bits, as lines of
-    exactly 32 hex digits) is removed too, and so is a legacy encrypted PEM key
+    exactly 32 hex digits, or all 512 digits in one run) is removed too, and so is a legacy encrypted PEM key
     with its Proc-Type and DEK-Info lines. A key's lines count when they are
     framed in any of these ways: indented, as string literals joined with `+`, `.`, `&`
     or a newline constant, as `\n` escapes in a JSON string or one JSON string per
