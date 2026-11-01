@@ -11,7 +11,7 @@ import { join } from 'path'
 
 const SRC = join(__dirname, '..', '..', 'src', 'main')
 const index = readFileSync(join(SRC, 'index.ts'), 'utf8')
-const CALL = "logToApp('info', 'main', [describeWireTier(hs.mode, wireMode, hs.floorControl)])"
+const CALL = "logToApp('info', 'main', [describeWireTier(hs.mode, wireMode, hs.floorControl, getProxyFirstSight())])"
 
 describe('the launch tier log', () => {
   it('is one call, and it logs the resolved tier, not the selected one', () => {

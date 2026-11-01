@@ -197,7 +197,7 @@ import { describeWireTier } from './headroom/wireTier'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { summarizeElisionHealth } from './headroom/elisionHealth'
-import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader } from './headroomProxy/proxySupervisor'
+import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight } from './headroomProxy/proxySupervisor'
 import { readJsonObject } from './agentConfigIO'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
@@ -4007,7 +4007,7 @@ async function semanticPoolOptions(
         const patch = (p || {}) as Record<string, unknown>
         if ('mode' in patch || 'floorControl' in patch) {
           try {
-            const wm = next.floorControl ? resolveWireMode(next.mode, summarizeProxySavings().cumulative) : next.mode
+            const wm = next.floorControl ? resolveWireMode(next.mode, summarizeProxySavings().cumulative, getProxyFirstSight()) : next.mode
             setProxyMode(wm)
           } catch { /* proxy honors the new mode live; aggressive default holds if this fails */ }
         }
@@ -4094,6 +4094,7 @@ async function semanticPoolOptions(
         return ok({
           enabled: isProxyEnabled(), running: isProxyStarted(), healthy: isProxyHealthy(),
           bypassVar: userRoutingVar(), selectedMode: hs.mode, effectiveMode: getProxyMode(),
+          selectedFirstSight: hs.firstSightElision, effectiveFirstSight: getProxyFirstSight(),
         })
       })
       const hrProxyEntry = fileURLToPath(new URL('./headroomProxy.js', import.meta.url))
@@ -4106,16 +4107,19 @@ async function semanticPoolOptions(
       try {
         const hs = getHeadroomSettings()
         let wireMode = hs.mode
+        // The first-sight policy is taken once per run, here, and frozen (proxySupervisor): it is
+        // pushed before anything is resolved from it. A Settings change takes effect at the next start.
+        setProxyFirstSight(hs.firstSightElision)
         if (hs.floorControl) {
           const cum = summarizeProxySavings().cumulative
-          wireMode = resolveWireMode(wireMode, cum)
+          wireMode = resolveWireMode(wireMode, cum, getProxyFirstSight())
         }
         setProxyMode(wireMode)
         setProxyThinkingCap(hs.thinkingCap)
         setProxyDecay(hs.prefixDecay)
         setProxyEnabled(hs.wireProxy)
         // Last, and once per launch: which tier this run's proxy uses and from what size it elides.
-        logToApp('info', 'main', [describeWireTier(hs.mode, wireMode, hs.floorControl)])
+        logToApp('info', 'main', [describeWireTier(hs.mode, wireMode, hs.floorControl, getProxyFirstSight())])
       } catch { /* defaults hold */ }
       // Switched off → no child at all. Settings starts it the moment the user turns it back on.
       if (getHeadroomSettings().wireProxy) ensureHeadroomProxy()

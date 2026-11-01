@@ -158,6 +158,8 @@ const M = vi.hoisted(() => ({
   setProxyMode: vi.fn(),
   setProxyThinkingCap: vi.fn(),
   setProxyDecay: vi.fn(),
+  setProxyFirstSight: vi.fn(),
+  getProxyFirstSight: vi.fn((): string => 'legacy'),
   setProxyEnabled: vi.fn(),
   setAgentEnvReader: vi.fn(),
   isProxyEnabled: vi.fn(() => true),
@@ -535,6 +537,7 @@ vi.mock('../../src/main/headroomProxy/proxySupervisor', () => ({
   setProxySpawner: M.setProxySpawner, createProxyTransport: M.createProxyTransport,
   pickFreePort: M.pickFreePort, setProxyMode: M.setProxyMode,
   setProxyThinkingCap: M.setProxyThinkingCap, setProxyDecay: M.setProxyDecay,
+  setProxyFirstSight: M.setProxyFirstSight, getProxyFirstSight: M.getProxyFirstSight,
   setProxyEnabled: M.setProxyEnabled, isProxyEnabled: M.isProxyEnabled, isProxyStarted: M.isProxyStarted,
   isProxyHealthy: M.isProxyHealthy, userRoutingVar: M.userRoutingVar, getProxyMode: M.getProxyMode,
   setAgentEnvReader: M.setAgentEnvReader,
@@ -700,7 +703,7 @@ async function withPlatform(platform: NodeJS.Platform, fn: () => Promise<void> |
 
 const BASE_HR = {
   enabled: true, wireProxy: true, steering: true, mode: 'balanced', adaptiveSteering: false,
-  thinkingCap: 0, prefixDecay: false, floorControl: true,
+  thinkingCap: 0, prefixDecay: false, floorControl: true, firstSightElision: 'late',
 }
 
 let exitSpy: ReturnType<typeof vi.spyOn>
@@ -1029,7 +1032,7 @@ describe('tokenSavings IPC', () => {
     M.resolveWireMode.mockReturnValueOnce('max')
     M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, mode: 'aggressive', floorControl: true } as never)
     await invoke('tokenSavings:set-settings', { mode: 'aggressive' })
-    expect(M.resolveWireMode).toHaveBeenCalledWith('aggressive', expect.anything())
+    expect(M.resolveWireMode).toHaveBeenCalledWith('aggressive', expect.anything(), 'legacy')
     expect(M.setProxyMode).toHaveBeenCalledWith('max')
     // Turning the floor off drops straight to the selector's tier, no ledger consulted.
     M.setProxyMode.mockClear(); M.resolveWireMode.mockClear()
@@ -1037,6 +1040,28 @@ describe('tokenSavings IPC', () => {
     await invoke('tokenSavings:set-settings', { floorControl: false })
     expect(M.resolveWireMode).not.toHaveBeenCalled()
     expect(M.setProxyMode).toHaveBeenCalledWith('aggressive')
+  })
+
+  it('set-settings asks the floor about the policy the proxy RUNS, not the one Settings now selects', async () => {
+    // The proxy froze `late` at launch; Settings has since been switched to legacy for the next start.
+    // Escalating the running proxy's window on the strength of the selection would change a live run.
+    M.setProxyMode.mockClear(); M.resolveWireMode.mockClear()
+    M.getProxyFirstSight.mockReturnValueOnce('late')
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, mode: 'aggressive', floorControl: true, firstSightElision: 'legacy' } as never)
+    await invoke('tokenSavings:set-settings', { mode: 'aggressive' })
+    expect(M.resolveWireMode).toHaveBeenCalledWith('aggressive', expect.anything(), 'late')
+  })
+
+  it('set-settings saves a change of the first-sight policy and pushes nothing live: it is frozen for the run', async () => {
+    M.setProxyMode.mockClear(); M.resolveWireMode.mockClear(); M.setProxyFirstSight.mockClear(); M.saveSettingsToDisk.mockClear()
+    M.setHeadroomSettings.mockReturnValueOnce({ ...BASE_HR, firstSightElision: 'legacy' } as never)
+    const r = await invoke('tokenSavings:set-settings', { firstSightElision: 'legacy' })
+    expect(r.success).toBe(true)
+    expect(r.data.firstSightElision).toBe('legacy')
+    expect(M.saveSettingsToDisk).toHaveBeenCalled()
+    expect(M.setProxyFirstSight).not.toHaveBeenCalled()
+    expect(M.setProxyMode).not.toHaveBeenCalled()
+    expect(M.resolveWireMode).not.toHaveBeenCalled()
   })
 
   it('set-settings leaves a floor-raised tier alone when an unrelated box changes', async () => {
@@ -1060,9 +1085,13 @@ describe('tokenSavings IPC', () => {
     M.isProxyEnabled.mockReturnValueOnce(true); M.isProxyStarted.mockReturnValueOnce(true)
     M.isProxyHealthy.mockReturnValueOnce(false); M.userRoutingVar.mockReturnValueOnce('HTTPS_PROXY')
     M.getProxyMode.mockReturnValueOnce('max')
+    M.getProxyFirstSight.mockReturnValueOnce('legacy')
     expect(await invoke('tokenSavings:get-proxy-status')).toEqual({
       success: true,
-      data: { enabled: true, running: true, healthy: false, bypassVar: 'HTTPS_PROXY', selectedMode: 'aggressive', effectiveMode: 'max' },
+      data: {
+        enabled: true, running: true, healthy: false, bypassVar: 'HTTPS_PROXY', selectedMode: 'aggressive', effectiveMode: 'max',
+        selectedFirstSight: 'late', effectiveFirstSight: 'legacy',
+      },
     })
   })
 
