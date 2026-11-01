@@ -37,6 +37,10 @@ const zero = (): ClassCounts => ({ elided: 0, redeemed: 0, chars: 0, view: 0 })
 
 let classes = new Map<string, ClassCounts>()
 let legacyRedeemed = 0
+/** Moves on every change to the lifetime counts, so a writer can tell that there is something new to
+ *  save without comparing them. A counter and not a clock: nothing under here may read one. */
+let revision = 0
+export function elisionRevision(): number { return revision }
 
 interface Live { key: string; chars: number; view: number; redeemed: boolean }
 /** token -> its newest elision, oldest first (a Map keeps insertion order). */
@@ -45,6 +49,7 @@ const recent = new Map<string, Live>()
 /** Count one elision. The caller decides that a token is new: this does not second-guess it, and a
  *  token that comes back (its stash was lost) holds one live place in the window, the newest. */
 export function recordElision(token: string, meta: ElisionMeta): void {
+  revision++
   const key = classKey(meta)
   const c = classes.get(key) ?? zero()
   c.elided += 1
@@ -64,6 +69,7 @@ export function recordElision(token: string, meta: ElisionMeta): void {
  * asked than elided, which is the honest reading of a ledger that started late.
  */
 export function recordRedemption(token: string | undefined, meta?: ElisionMeta): void {
+  revision++
   const live = token === undefined ? undefined : recent.get(token)
   const key = meta ? classKey(meta) : live?.key
   if (key === undefined) { legacyRedeemed += 1; return }
@@ -103,6 +109,7 @@ const count = (n: unknown): number => (typeof n === 'number' && Number.isFinite(
  * table or put NaN into a rate. The window is this run's by design and is left alone.
  */
 export function loadElisionState(raw: unknown): void {
+  revision++
   classes = new Map()
   legacyRedeemed = 0
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
@@ -119,6 +126,7 @@ export function loadElisionState(raw: unknown): void {
 
 /** Empty the ledger and the window. For the lifetime-meter reset, and for tests. */
 export function resetElisionLedger(): void {
+  revision++
   classes = new Map()
   legacyRedeemed = 0
   recent.clear()

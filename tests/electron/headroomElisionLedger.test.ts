@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  recordElision, recordRedemption, recentByClass, elisionState, loadElisionState, resetElisionLedger, ELISION_WINDOW,
+  recordElision, recordRedemption, recentByClass, elisionState, loadElisionState, resetElisionLedger, elisionRevision, ELISION_WINDOW,
 } from '../../src/main/headroom/elisionLedger'
 import type { ElisionMeta } from '../../src/main/headroom/elisionMeta'
 
@@ -189,5 +189,39 @@ describe('reset', () => {
     recordRedemption(tok(1), compactRead())
     expect(recentByClass().size).toBe(0)
     expect(elisionState().classes['compact|Read|4-10k'].redeemed).toBe(1)
+  })
+})
+
+describe('revision', () => {
+  it('moves on every change to the lifetime counts and on nothing else', () => {
+    const r0 = elisionRevision()
+    recordElision(tok(1), compactRead())
+    const r1 = elisionRevision()
+    expect(r1).not.toBe(r0)
+    recordRedemption(tok(1), compactRead())
+    const r2 = elisionRevision()
+    expect(r2).not.toBe(r1)
+    recordRedemption(undefined) // a redemption no class can claim is still a change to the counts
+    const r3 = elisionRevision()
+    expect(r3).not.toBe(r2)
+    loadElisionState({ classes: {}, legacyRedeemed: 4 })
+    const r4 = elisionRevision()
+    expect(r4).not.toBe(r3)
+    resetElisionLedger()
+    const r5 = elisionRevision()
+    expect(r5).not.toBe(r4)
+    // Reading it, in any way, is not a change.
+    elisionState(); recentByClass(); elisionState()
+    expect(elisionRevision()).toBe(r5)
+  })
+
+  it('never repeats a value, so "unchanged since" cannot be fooled by a reset back to zero', () => {
+    const seen = new Set<number>([elisionRevision()])
+    for (let i = 0; i < 20; i++) {
+      recordElision(tok(i), compactRead())
+      if (i % 5 === 4) resetElisionLedger()
+      seen.add(elisionRevision())
+    }
+    expect(seen.size).toBe(21)
   })
 })
