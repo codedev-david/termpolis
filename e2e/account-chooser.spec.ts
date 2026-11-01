@@ -581,11 +581,12 @@ test.describe.serial('Gemini CLI at its usage limit', () => {
     await expect(done).toBeVisible({ timeout: 90_000 })
     await expect(done).toContainText(`Gemini CLI is on ${EMAILS.agyTwo} now.`)
     await expect(done).toContainText('1 of 1 conversation resumed.')
-    // What the terminal's agy was given: its own /exit, never Ctrl+C (which kills agy).
+    // What the terminal's agy was given: its own /exit, never Ctrl+C (which kills agy). The last line
+    // is the hidden agy Termpolis runs for the sign-in: the mock logs its /logout like any line.
     const agy = eventsOf(w, 'agy')
     expect(agy.filter((e) => e.event === 'key')).toEqual([])
-    expect(agy.filter((e) => e.event === 'line').map((e) => e.text)).toEqual(['please hit the limit', '/exit'])
-    // The hidden agy Termpolis runs for the sign-in was signed out, once.
+    expect(agy.filter((e) => e.event === 'line').map((e) => e.text)).toEqual(['please hit the limit', '/exit', '/logout'])
+    // That hidden agy was signed out, once.
     expect(agy.filter((e) => e.event === 'logout')).toHaveLength(1)
     // The same conversation, by its exact id, on the new sign-in.
     const starts = agy.filter((e) => e.event === 'start')

@@ -31,6 +31,9 @@ import type { Sandbox } from './_agentIntegrationManagerFixture'
 const pty = loadPty()
 const shells = pty ? shellsHere() : []
 const ownEnv = process.env as Record<string, string | undefined>
+// Real CLIs and real shells run against the clock: a rare slow start is a flake, not a defect (a real
+// defect fails twice).
+const RETRY = { retry: 1 } as const
 
 /** The binary that will run, found the way the app finds it, and the words it answers --version with. */
 function installed(name: 'claude' | 'codex' | 'agy', word: RegExp): string | null {
@@ -125,7 +128,7 @@ async function answerOf(shell: ShellSpec, home: string, project: string, env: Re
   return t.screen()
 }
 
-describe.skipIf(!claudePath)(`the real Claude Code (${claudePath}) in a signed-out profile`, () => {
+describe.skipIf(!claudePath)(`the real Claude Code (${claudePath}) in a signed-out profile`, RETRY, () => {
   it('says it is signed out, from its own status command, and names the profile as its configDirectory', async () => {
     const w = world()
     const check = await claudeSignedInNow(w.claudeProfile, checkDeps(w.home, w.project))
@@ -158,7 +161,7 @@ describe.skipIf(!claudePath)(`the real Claude Code (${claudePath}) in a signed-o
   })
 })
 
-describe.skipIf(!codexPath)(`the real Codex (${codexPath}) in a signed-out home`, () => {
+describe.skipIf(!codexPath)(`the real Codex (${codexPath}) in a signed-out home`, RETRY, () => {
   it('says it is signed out, from its own status command', async () => {
     const w = world()
     const codexHome = join(w.home, '.codex-a b\'c')

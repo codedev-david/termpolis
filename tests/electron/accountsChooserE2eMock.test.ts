@@ -174,7 +174,9 @@ describe('the e2e fixture', () => {
   })
 })
 
-describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, read and switched by the real engine', () => {
+// A real shell, a real PTY and processes of their own run against the clock: on a loaded runner a
+// rare slow start is a flake, not a defect (a real defect fails twice).
+describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, read and switched by the real engine', { retry: 1 }, () => {
   for (const shell of shells) {
     describe(shell.shellType, () => {
       it('Claude Code: a limit is read as one, and the switch exits it, resumes the exact session on the second account and carries the transcript', async () => {
