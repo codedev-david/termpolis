@@ -680,6 +680,13 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
     expect(out).toMatch(/- \[claude · 5h ago\] conversation 1 /)
   })
 
+  it('treats a kept lesson of either type as one: a fact filed as semantic leads, and so does a rule filed as procedural', async () => {
+    const out = await build([conv(1, { score: 0.9 }), lesson('s1', G1, { memoryType: 'semantic', score: 0.5 }), lesson('p1', G2, { memoryType: 'procedural', score: 0.45 })])
+    inOrder(out, ['installer check fails', 'worktree remove --force', 'conversation 1 '])
+    expect(out).toMatch(/- \[lesson · 3d ago\] The installer check fails/)
+    expect(out).toMatch(/- \[lesson · 3d ago\] Never run `git worktree remove --force`/)
+  })
+
   it('titles the block for what leads it', async () => {
     const both = (await build([conv(1), note('n1', 'a note'), lesson('g1', G1)]))!
     expect(both).toContain(`This project (${proj}) — saved notes, lessons learned, then past conversations:`)

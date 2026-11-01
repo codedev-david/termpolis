@@ -359,6 +359,8 @@ describe('memoryEconomy', () => {
       expect(isStrictPrefix('see v1', 'see v10 for the fix')).toBe(false)
       expect(isStrictPrefix('see the café', 'see the cafés nearby')).toBe(false) // letters beyond ASCII are letters
       expect(isStrictPrefix('snake_case', 'snake_cased value')).toBe(false) // an underscore is part of a word
+      expect(isStrictPrefix('call memory', 'call memory_search first')).toBe(false) // and joins what follows it too
+      expect(isStrictPrefix('call memory_', 'call memory_search first')).toBe(false) // and what comes before it
     })
 
     it('does when the shorter ends on punctuation, or the longer goes on with punctuation or a new line', () => {

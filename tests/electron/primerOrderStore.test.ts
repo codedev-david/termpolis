@@ -63,6 +63,8 @@ afterEach(() => {
 
 const lesson = (content: string, over: Partial<Lesson> = {}): Lesson =>
   ({ memoryType: 'procedural', kind: 'fact', content, entities: [], importance: 0.9, links: [], ...over })
+/** The extractor files a fact as semantic and a rule as procedural; a kept lesson of either type leads. */
+const FACT: Partial<Lesson> = { memoryType: 'semantic', kind: 'fact' }
 
 /** Lessons through the real writer and the real store, backdated so the ages in the digest are fixed. */
 async function learn(lessons: Lesson[], ago = 3 * DAY) {
@@ -108,7 +110,7 @@ describe('the digest\'s order against the real stores', () => {
   })
 
   it('leads with the note, then the two lessons the gate vouches for, then the conversations', async () => {
-    const written = await learn([lesson(KEPT_1), lesson(KEPT_2), lesson(HELD), lesson(NOTHING)])
+    const written = await learn([lesson(KEPT_1, FACT), lesson(KEPT_2), lesson(HELD), lesson(NOTHING)])
     expect(written.written).toHaveLength(3) // two kept and one held back; the one that says nothing is not stored
     expect(written.skipped).toBe(1)
     await saveNote(NOTE)
@@ -126,7 +128,7 @@ describe('the digest\'s order against the real stores', () => {
   })
 
   it('does not take a lesson someone demoted, or one a pre-1.55 brain stored in the middle band, for a lesson the gate vouches for', async () => {
-    const { written } = await learn([lesson(KEPT_1), lesson(KEPT_3)])
+    const { written } = await learn([lesson(KEPT_1, FACT), lesson(KEPT_3)])
     correctMemory({ id: written[1], kind: 'demote', reason: 'it broke a fix', by: 'user' }) // KEPT_3, the second one written
     await memoryWrite({ agentId: 'mneme', source: 'claude', kind: 'decision', memoryType: 'semantic', importance: 0.95, project: REPO, content: OLD_MIDDLE, ts: NOW - 4 * DAY })
     for (const [i, c] of CONVERSATIONS.entries()) await converse(c, (5 + i) * HOUR)
@@ -143,7 +145,7 @@ describe('the digest\'s order against the real stores', () => {
   })
 
   it('shows the lane\'s newest lesson as a lesson, and leaves out the ones the search leaves out', async () => {
-    await learn([lesson(KEPT_1)], 1 * HOUR)
+    await learn([lesson(KEPT_1, FACT)], 1 * HOUR)
     const { written } = await learn([lesson(KEPT_2)], 30 * 60_000) // newer than the first, then retracted
     correctMemory({ id: written[0], kind: 'retract', reason: 'wrong', by: 'user' })
     await learn([lesson(HELD)], 10 * 60_000) // held back, and the newest of all
