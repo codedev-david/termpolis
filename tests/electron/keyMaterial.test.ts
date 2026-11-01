@@ -250,14 +250,27 @@ describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => 
   })
 
   it('takes a key written as PHP string literals joined with ". PHP_EOL .", its last short line and its checksum line too, with no END line', () => {
-    for (const format of ['pgp_rsa_hdr', 'pgp_ed_hdr', 'pgp_rsa_nohdr', 'pkcs8_rsa', 'pkcs1_rsa'] as Format[]) {
-      for (const cut of [4, 8, 12]) {
-        const { lines, last } = shortLast(K.F[format], cut)
-        const text = '$key = ' + lines.map((l) => `"${l}"`).join(' . PHP_EOL .\n    ') + ';\nDone.'
-        const r = screenKeys(text)
-        expect(r.removed, `${format}/${cut}`).toEqual({ [EXPECT[format][0]]: 1 })
-        expect(shownWhole(r.text, last), `${format}/${cut}`).toBe(false)
-        expect(r.text.endsWith(';\nDone.'), `${format}/${cut}`).toBe(true)
+    // (the dot also follows the last line when every line ends in the newline constant, as a Perl or Lua concatenation
+    // does: the checksum line is then `"=AbCd" . PHP_EOL;`, and a dot after the base64 joins as well as a plus does)
+    const forms: Record<string, [(ls: string[]) => string, string]> = {
+      'PHP_EOL between the lines': [(ls) => '$key = ' + ls.map((l) => `"${l}"`).join(' . PHP_EOL .\n    ') + ';\nDone.', ';\nDone.'],
+      'PHP_EOL after every line': [(ls) => '$key = ' + ls.map((l) => `"${l}" . PHP_EOL`).join(' .\n    ') + ';\nDone.', ';\nDone.'],
+      'a "\\n" string after every line': [(ls) => '$key = ' + ls.map((l) => `"${l}" . "\\n"`).join(' .\n    ') + ';\nDone.', ';\nDone.'],
+      'Lua': [(ls) => 'key = ' + ls.map((l) => `"${l}" .. "\\n"`).join(' ..\n    ') + '\nDone.', '\nDone.'],
+    }
+    for (const [name, [write, tail]] of Object.entries(forms)) {
+      for (const format of ['pgp_rsa_hdr', 'pgp_ed_hdr', 'pgp_rsa_nohdr', 'pkcs8_rsa', 'pkcs1_rsa'] as Format[]) {
+        for (const cut of [4, 8, 12]) {
+          const { lines, last } = shortLast(K.F[format], cut)
+          const label = `${name}/${format}/${cut}`
+          const r = screenKeys(write(lines))
+          expect(r.removed, label).toEqual({ [EXPECT[format][0]]: 1 })
+          expect(shownWhole(r.text, last), label).toBe(false)
+          // (a PGP file's checksum line: `=` and four characters)
+          const crc = lines[lines.length - 1]
+          if (crc.startsWith('=')) expect(r.text.includes(crc), label).toBe(false)
+          expect(r.text.endsWith(tail), label).toBe(true)
+        }
       }
     }
   })
@@ -301,6 +314,9 @@ describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and no
     'an rg listing of digests': `${HEADER}\n${FILES.map((f, i) => `docs/checksums.txt:${i + 1}:${sha(f)}  ${f}`).join("\n")}\n`,
     'md5sums': `The header is ${HEADER}\n${FILES.map((f) => `${md5(f)}  ${f}`).join("\n")}\n`,
     'digests in a table of 32': `${HEADER}\n\n${FILES.map((f) => `${md5(f)} | ${f}`).join("\n")}\n`,
+    // (nothing after the digits to tell them from a key's lines but their number: 64 and 40, not 32)
+    'bare sha256 digests, one per line': `${HEADER}\n${FILES.map((f) => sha(f)).join("\n")}\n`,
+    'git object ids, one per line': `Static keys begin with ${HEADER}.\n${FILES.map(() => randomBytes(20).toString("hex")).join("\n")}\n`,
   }
   it('are left byte for byte, and reported', () => {
     for (const [name, text] of Object.entries(documents)) {
@@ -332,6 +348,32 @@ describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and no
     expect(leakedWindows(r.text, key.filter((l) => /^[0-9a-f]{32}$/.test(l)))).toBe(0)
     // ...and the documents above it stay
     expect(r.text.startsWith(documents['md5sums'])).toBe(true)
+  })
+  it('a key with a run of six to eight equal digits is still one: random digits hold one about once in 2,000 keys', () => {
+    const key = K.F.openvpn
+    for (const n of [6, 7, 8]) {
+      // (neighbours that are not 7, so the run is exactly n long)
+      const lines = key.map((l, i) => (/^[0-9a-f]{32}$/.test(l) && i % 5 === 2 ? `${l.slice(0, 5)}a${'7'.repeat(n)}b${l.slice(7 + n)}` : l))
+      expect(lines.some((l) => l.includes('7'.repeat(n))), String(n)).toBe(true)
+      const r = screenKeys(`The key file:\n${lines.join('\n')}\nThat was the file.\n`)
+      expect(r.removed, String(n)).toEqual({ openvpn_static_key: 1 })
+      expect(leakedWindows(r.text, lines.filter((l) => /^[0-9a-f]{32}$/.test(l))), String(n)).toBe(0)
+    }
+  })
+  it('and one with nine in a row, or a few digits repeated, is a placeholder: reported, left as it is', () => {
+    const key = K.F.openvpn
+    const fakes: Record<string, string[]> = {
+      'a run of nine': key.map((l, i) => (/^[0-9a-f]{32}$/.test(l) && i % 5 === 2 ? `${l.slice(0, 5)}a${'7'.repeat(9)}b${l.slice(16)}` : l)),
+      'one digit': key.map((l) => (/^[0-9a-f]{32}$/.test(l) ? '0'.repeat(32) : l)),
+      'two digits': key.map((l) => (/^[0-9a-f]{32}$/.test(l) ? 'ab'.repeat(16) : l)),
+    }
+    for (const [name, lines] of Object.entries(fakes)) {
+      const text = `The key file:\n${lines.join('\n')}\nThat was the file.\n`
+      const r = screenKeys(text)
+      expect(r.text, name).toBe(text)
+      expect(r.removed, name).toEqual({})
+      expect(r.flagged, name).toEqual({ openvpn_static_key: 1 })
+    }
   })
 })
 
@@ -1664,6 +1706,29 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
         const partial = wrapped[8].slice(-n)
         expect(r.text.includes(partial), `${name} ${n}`).toBe(false)
         expect(r.removed, `${name} ${n}`).toEqual({ private_key_b64: 1 })
+      }
+    }
+  })
+
+  it('F-E: a base64 key file an older computer cut through goes with its first line behind frames with letters in them', () => {
+    const wrapped = wrap(Buffer.from(K.F.pkcs8_rsa.join('\n') + '\n').toString('base64'), 76)
+    // (the cut took the first line's frame with the start of its data. The other lines carry a path, a container's name or a
+    // host, which is not the first line's frame, and a second line with a label of its own is another value, not a wrapped
+    // line: except at the start of a text another computer cut, where the first line has no frame left to compare)
+    const forms: Record<string, (l: string, i: number) => string> = {
+      'rg listing': (l, i) => `deploy/config/secret.yaml:${i + 12}:${l}`,
+      'docker logs': (l) => `web-1  | ${l}`,
+      journalctl: (l) => `Oct 31 10:00:01 host app[123]: ${l}`,
+    }
+    for (const [name, frame] of Object.entries(forms)) {
+      const text = `${wrapped.map(frame).join('\n')}\nthe end of the file\n`
+      const data = text.indexOf(wrapped[3])
+      for (const n of [10, 30, 60]) {
+        const r = arrived(text, data + n)
+        expect(r.text.includes(wrapped[3].slice(n)), `${name} ${n}: the first line`).toBe(false)
+        expect(wrapped.slice(4).filter((l) => r.text.includes(l.slice(0, 16))), `${name} ${n}: the lines after it`).toEqual([])
+        expect(r.removed, `${name} ${n}`).toEqual({ private_key_b64: 1 })
+        expect(r.text.endsWith('\nthe end of the file\n'), `${name} ${n}`).toBe(true)
       }
     }
   })

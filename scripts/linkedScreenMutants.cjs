@@ -158,9 +158,11 @@ const REVIEW = {
   'tail: any last word above an END line is its short last line': [KEY, 'const SHORT_JOINER = /[\\s"\'`,;+&_)\\]}|\\\\$]/', 'const SHORT_JOINER = /\\W/'],
   // the final false-removal round: an OpenVPN key is lines of exactly 32 hex digits; a value that names a key is no key
   'K3: lines of any hex length (a list of sha256sums)': [KEY, "if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''", "if (!/^[0-9a-f]+$/i.test(v)) return ''"],
-  'K3: a file name after the digits (md5sums)': [KEY, "return KEY_LINE_TAIL.test(rest) ? v : ''", 'return v'],
-  "K3: a key written on one line, the next value after a space": [KEY, ".replace(/(?<![A-Za-z0-9+/=])\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/g, ' ')", ''],
+  'K3: a file name after the digits (md5sums)': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) ? v : ''", "return v"],
+  'K3: a key written on one line, the next value after a space': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) ? v : ''", "return KEY_LINE_TAIL.test(rest) ? v : ''"],
   'K3: a colour code after the digits': [KEY, ".replace(/\\x1b\\[[0-9;]*m/g, ' ')", ''],
+  'K3: a run of six equal hex digits is a placeholder\'s': [KEY, 'const maxRun = hex ? 8 : 5', 'const maxRun = 5'],
+  'K3: a run of any length of equal hex digits is random': [KEY, 'const maxRun = hex ? 8 : 5', 'const maxRun = hex ? 100000 : 5'],
   "jwk: an environment variable's name is a key": [KEY, "  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(body)) return 'env-name'\n", ''],
   "jwk: two words of a key's name are a name": [KEY, "  if (new Set(body.toLowerCase().match(NAME_WORDS) ?? []).size >= 2) return 'named'\n", ''],
   "jwk: one word of a key's name is a name": [KEY, 'match(NAME_WORDS) ?? []).size >= 2', 'match(NAME_WORDS) ?? []).size >= 1'],

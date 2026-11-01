@@ -400,12 +400,15 @@ export function looksRandom(s: string): boolean {
   const hex = /^[0-9a-fA-F]+$/.test(sample)
   const distinct = new Set(sample).size
   if (distinct < (hex ? Math.min(13, sample.length * 0.3) : Math.min(40, sample.length * 0.45))) return false
+  // (a run of six equal characters is a placeholder's, but 512 random hex digits hold one about once in 2,000 keys: an
+  // OpenVPN static key was only reported then. Nine in a row is one in ten million.)
+  const maxRun = hex ? 8 : 5
   let rep = 1
   let seq = 0
   const tri = new Set<string>()
   for (let i = 1; i < sample.length; i++) {
     rep = sample[i] === sample[i - 1] ? rep + 1 : 1
-    if (rep >= 6) return false
+    if (rep > maxRun) return false
     const d = sample.charCodeAt(i) - sample.charCodeAt(i - 1)
     if (d === 1 || d === -1) seq++
     if (i >= 2) tri.add(sample.slice(i - 2, i + 1))
