@@ -8,8 +8,10 @@ import * as crypto from 'crypto'
 import { createHash, generateKeyPairSync, randomBytes } from 'crypto'
 import {
   decodeHead,
+  DEK_REMNANT,
   detectorStart,
   encodedKeys,
+  hasWords,
   headless,
   jwkKeys,
   keyBlocks,
@@ -26,6 +28,9 @@ import {
   rsaKeyValues,
   shortAbove,
   structureOf,
+  TRAILING_BLANKS,
+  TRAILING_HEAD_JOINERS,
+  TRAILING_NL_JOINERS,
   type KeySpan,
 } from '../../src/main/keyMaterial'
 import { COST_SHAPES, within } from './fixtures/costShapes'
@@ -2682,5 +2687,88 @@ describe('the linear replacements of three regexes and a prose test give what th
     const long = 'ab '.repeat(30_000)
     expect(proseEnds(long, 0)(0)).toBe(5)
     expect(proseEnds(long, 0)(long.length - 2)).toBe(Infinity)
+  })
+})
+
+describe('the linear replacements of the word-pair test and of the joiner strips give what the regexes gave', () => {
+  // The regexes as they were, each quadratic in a long run of letters or joiners before a character that ends neither: the oracle.
+  const WORDS_OLD = /[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/
+  const WORDS_SPACE_OLD = /[A-Za-z]{3,}\s+[A-Za-z]{3,}/
+  const NL_OLD = /[\s"'`,;+&_]+$/
+  const HEAD_OLD = /[\s"'`,;+.&_\\$]+$/
+  const BLANKS_OLD = /\s+$/
+  const DEK_OLD = /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?[\s"'`,;+.&_)\]}|\\$]*$/
+
+  let seed = 20261101
+  const rnd = (): number => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 4294967296
+  }
+  const pick = <T>(a: readonly T[]): T => a[Math.floor(rnd() * a.length)]
+  /** Every string of up to maxLen of the alphabet's symbols. */
+  function everyString(alphabet: readonly string[], maxLen: number, fn: (s: string) => void): number {
+    let n = 0
+    const go = (s: string, left: number): void => {
+      n++
+      fn(s)
+      if (left > 0) for (const c of alphabet) go(s + c, left - 1)
+    }
+    go('', maxLen)
+    return n
+  }
+  const BS = '\\'
+  const random = (alphabet: readonly string[], count: number, fn: (s: string) => void): void => {
+    for (let i = 0; i < count; i++) fn(Array.from({ length: Math.floor(rnd() * 18) }, () => pick(alphabet)).join(''))
+  }
+
+  it('hasWords finds what /[A-Za-z]{3,}[ \\t]+[A-Za-z]{3,}/ finds, and with anySpace what the same with \\s+ finds', () => {
+    const bad: string[] = []
+    const check = (s: string): void => {
+      if (hasWords(s) !== WORDS_OLD.test(s)) bad.push(`blanks ${JSON.stringify(s)}`)
+      if (hasWords(s, true) !== WORDS_SPACE_OLD.test(s)) bad.push(`space ${JSON.stringify(s)}`)
+    }
+    // (letters in runs of one to four, a blank, a tab, a line break, other characters, and the whitespace \s has beyond ASCII's)
+    const n = everyString(['a', 'Bc', 'dEf', ' ', '\t', '\n', '1', '-'], 6, check)
+    random(['abc', 'Q', 'x', ' ', '  ', '\t', '\n', '\u00a0', '\u2003', '\u2028', '\ufeff', '\u180e', '1', '-', '=', 'word', 'AB'], 40_000, check)
+    expect(n).toBe(299_593)
+    expect(bad.slice(0, 5)).toEqual([])
+    // the cases it exists for: one long run of letters (it took the regex 2 s at 40,000), then words
+    expect(hasWords('Aa'.repeat(60_000) + 'x')).toBe(false)
+    expect(hasWords('Aa'.repeat(60_000) + ' bcd')).toBe(true)
+    expect(hasWords('ab cd')).toBe(false)
+    expect(hasWords('abc  \t def')).toBe(true)
+    expect(hasWords('abc\ndef')).toBe(false)
+    expect(hasWords('abc\ndef', true)).toBe(true)
+  })
+
+  it('the joiner strips take the same trailing run as the regexes they replace', () => {
+    const bad: string[] = []
+    const check = (s: string): void => {
+      for (const [name, got, want] of [
+        ['nl', TRAILING_NL_JOINERS, NL_OLD],
+        ['head', TRAILING_HEAD_JOINERS, HEAD_OLD],
+        ['blanks', TRAILING_BLANKS, BLANKS_OLD],
+      ] as const) {
+        if (s.replace(got, '') !== s.replace(want, '')) bad.push(`${name} ${JSON.stringify(s)}`)
+      }
+    }
+    everyString(['a', ' ', '"', '+', '.', '$', BS, '_', '\n', '&'], 6, check)
+    random(['a', 'Q9', ' ', '\t', '\n', '"', "'", '`', ',', ';', '+', '.', '&', '_', '$', BS, '=', '/'], 40_000, check)
+    expect(bad.slice(0, 5)).toEqual([])
+    // a long run of joiners before a character that is none: the case they exist for
+    expect('"'.repeat(80_000) + 'x').toBe(('"'.repeat(80_000) + 'x').replace(TRAILING_NL_JOINERS, ''))
+    expect(('x' + ' '.repeat(80_000)).replace(TRAILING_BLANKS, '')).toBe('x')
+  })
+
+  it('DEK_REMNANT accepts what the regex with the leading \\s* outside its group accepted', () => {
+    const bad: string[] = []
+    const check = (s: string): void => {
+      if (DEK_REMNANT.test(s) !== DEK_OLD.test(s)) bad.push(JSON.stringify(s))
+    }
+    everyString(['A', 'f', '0', ' ', '-', ':', ',', '"', '$', 'g'], 6, check)
+    random(['DEK-Info: ', 'AES-128-CBC,', 'F0DF', 'ab', 'Z', ' ', '\t', '"', '+', '$', BS, ',', ':', '-', '0123456789ABCDEF0123456789ABCDEF', 'x'], 40_000, check)
+    expect(bad.slice(0, 5)).toEqual([])
+    expect(DEK_REMNANT.test('EK-Info: AES-128-CBC,F0DFE2B3C0A1D2E3F4A5B6C7D8E9F0A1"')).toBe(true)
+    expect(DEK_REMNANT.test(' '.repeat(60_000) + 'x')).toBe(false)
   })
 })

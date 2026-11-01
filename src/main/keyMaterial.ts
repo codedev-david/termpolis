@@ -453,6 +453,33 @@ const frameAt = (text: string, lineStart: number, r0: number): string => frameOf
  *  timestamp (or a listing's number). */
 const loose = (x: string): string => x.replace(/-/g, ':')
 
+const isLetter = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+const isBlank = (c: number): boolean => c === 32 || c === 9
+/** JavaScript's `\s`. */
+const isSpace = (c: number): boolean =>
+  c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a) || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff
+/** Whether `s` holds two words (3 or more ASCII letters each) with blanks between them: what
+ *  /[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/ finds (`anySpace`: with `\s+` between), read once. (The regex, tried from each
+ *  letter of a long run of them, cost n * n: a line of 40,000 letters took 2 seconds.) */
+export function hasWords(s: string, anySpace = false): boolean {
+  const space = anySpace ? isSpace : isBlank
+  const n = s.length
+  let i = 0
+  while (i < n) {
+    if (!isLetter(s.charCodeAt(i))) {
+      i++
+      continue
+    }
+    const a = i
+    while (i < n && isLetter(s.charCodeAt(i))) i++
+    if (i - a < 3 || i >= n || !space(s.charCodeAt(i))) continue
+    let j = i + 1
+    while (j < n && space(s.charCodeAt(j))) j++
+    if (j + 2 < n && isLetter(s.charCodeAt(j)) && isLetter(s.charCodeAt(j + 1)) && isLetter(s.charCodeAt(j + 2))) return true
+  }
+  return false
+}
+
 // With no END line, a key's last line can be shorter than a payload run, so the block's last run
 // leaves it behind. These take it (see scanBlock).
 const SHORT_TAIL = /^([A-Za-z0-9+/]{1,15}={0,2})[\s"'`,;+&_.)\]}|\\]*$/
@@ -473,9 +500,15 @@ const ESC_FORMS = ['<br>', '<br/>', '<br />', '\\n', '\\r', '\\u000a', '\\u000A'
 /** Whether `s` is what a cut left of a written-out line break (`br>` of `<br>`). */
 const escTail = (s: string): boolean => s !== '' && ESC_FORMS.some((f) => f.length > s.length && f.endsWith(s))
 const NL_NAMES = ['vbCrLf', 'vbNewLine', 'vbLf', 'Environment.NewLine', 'System.lineSeparator()', 'os.linesep', 'PHP_EOL']
+// The joiners at the end of a string, found from the start of their run. (`[…]+$` is tried from each of a run of n before a
+// character that is none, and fails n times: n * n. A match cannot start inside a run, and the one that ends the string
+// starts a run, so the result is the same.)
+export const TRAILING_NL_JOINERS = /(?<![\s"'`,;+&_])[\s"'`,;+&_]+$/
+export const TRAILING_HEAD_JOINERS = /(?<![\s"'`,;+.&_\\$])[\s"'`,;+.&_\\$]+$/
+export const TRAILING_BLANKS = /(?<!\s)\s+$/
 /** Whether `s` is what a cut left of a newline constant, and the joiners after it (`tor() +`). */
 const nlTail = (s: string): boolean => {
-  const t = s.replace(/[\s"'`,;+&_]+$/, '')
+  const t = s.replace(TRAILING_NL_JOINERS, '')
   return t !== '' && NL_NAMES.some((n) => n.endsWith(t))
 }
 /** What joins the lines of a key written on one line: a space, a literal's `","` or `' '`. */
@@ -846,7 +879,7 @@ function leadingRun(text: string, s: number, limit: number, partialHead = false)
       }
       runs.push(r)
       if (w < width) break
-      if (/[A-Za-z]{3,}\s+[A-Za-z]{3,}/.test(text.slice(r[1], Math.min(lineEnd, r[1] + 256)))) break
+      if (hasWords(text.slice(r[1], Math.min(lineEnd, r[1] + 256)), true)) break
       gap = 0
     } else {
       gap += lineEnd - lineStart
@@ -1045,7 +1078,7 @@ function headAnchor(text: string, runs: Run[], floor: number, atTop: boolean, bl
   const bk = bi >= 0 ? blocks[bi] : null
   if (bk && bk.cls !== 'flag' && runs[0][0] - bk.to <= 512) {
     const between = text.slice(bk.to, ls)
-    if ((between.match(/\r\n|\r|\n|\\n/g) ?? []).length <= 1 && !/[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/.test(between)) return runs[0][0]
+    if ((between.match(/\r\n|\r|\n|\\n/g) ?? []).length <= 1 && !hasWords(between)) return runs[0][0]
   }
   if (!atTop) return null
   // At the top: nothing above, an ellipsis, or one partial key line (a suffix of the key lines'
@@ -1127,7 +1160,7 @@ function keyShapedLines(text: string, a: number, b: number): boolean {
   for (let br = nextBreak(text, a, b), i = a; br; i = br[1], br = nextBreak(text, i, b)) {
     const line = text.slice(i, br[0])
     if (!line.trim()) continue
-    if (!/[A-Za-z0-9+/=]{16,}/.test(line) || /[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/.test(line)) return false
+    if (!/[A-Za-z0-9+/=]{16,}/.test(line) || hasWords(line)) return false
     if (line.replace(/[A-Za-z0-9+/=]{16,}/g, '').length > 64) return false
     any = true
   }
@@ -1155,7 +1188,7 @@ function blockLead(text: string, runs: Run[], floor: number, blocks: readonly Ke
   if (!bk || bk.cls === 'flag' || !sameKind(bk, end)) return null
   const ls = logicalLineStart(text, runs[0][0], floor)
   const between = text.slice(bk.to, ls)
-  if (runs[0][0] - bk.to <= 512 && (between.match(/\r\n|\r|\n|\\n/g) ?? []).length <= 1 && !/[A-Za-z]{3,}[ \t]+[A-Za-z]{3,}/.test(between)) {
+  if (runs[0][0] - bk.to <= 512 && (between.match(/\r\n|\r|\n|\\n/g) ?? []).length <= 1 && !hasWords(between)) {
     return runs.reduce((n, [a, b]) => n + b - a, 0) >= 40 ? runs[0][0] : null
   }
   return bk.to >= floor && ls - bk.to <= REACH_BEGIN && keyShapedLines(text, bk.to, ls) ? bk.to : null
@@ -1228,7 +1261,7 @@ function decodedHead(text: string, runs: Run[], end: string): boolean {
 const BREAKS = /\r\n|\r|\n|(?<!\\)\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]/
 /** What a cut leaves of a DEK-Info line's rest: a header name's end, a cipher's end, an IV's end, and
  *  what a listing, a log or a literal adds after it (joiners; `cat -A` ends every line in `$`). */
-const DEK_REMNANT = /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?[\s"'`,;+.&_)\]}|\\$]*$/
+export const DEK_REMNANT = /^(?:\s*(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?[\s"'`,;+.&_)\]}|\\$]*$/
 
 /** Whether a legacy encrypted PEM key's DEK-Info line is in the 4 lines above the key lines
  *  `runs`, or, at the start of a text another computer cut (`cutText`), what its cut left of one
@@ -1254,7 +1287,7 @@ function legacyAbove(text: string, runs: Run[], floor: number, cutText: boolean)
   // it, whose literal's quote and continuation backslash (`n" \`) or `$` follow, or, the cut having taken
   // it whole, the rest of the frame of the blank line under it)
   const head = (l: string): boolean =>
-    DEK_REMNANT.test(l) || blank(l) || escTail(l.replace(/[\s"'`,;+.&_\\$]+$/, '')) || nlTail(l) || (frame !== '' && own(l) !== '' && loose(frame).endsWith(loose(own(l))))
+    DEK_REMNANT.test(l) || blank(l) || escTail(l.replace(TRAILING_HEAD_JOINERS, '')) || nlTail(l) || (frame !== '' && own(l) !== '' && loose(frame).endsWith(loose(own(l))))
   return lines.length >= 2 && head(lines[0]) && lines.slice(1).every(blank)
 }
 
@@ -1733,7 +1766,7 @@ export function rsaKeyValues(text: string, start = 0): KeySpan[] {
     const at = new Map<string, [number, number, string, number]>()
     while ((mm = mem.exec(win)) !== null) {
       // (the whitespace before the closing tag is the XML's, not the value's)
-      const value = mm[2].replace(/\s+$/, '')
+      const value = mm[2].replace(TRAILING_BLANKS, '')
       if (value.length < 16) continue
       const v = value.replace(/\s+/g, '')
       const s = m.index + mm.index + mm[0].length - mm[2].length

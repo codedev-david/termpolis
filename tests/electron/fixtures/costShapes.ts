@@ -2,7 +2,7 @@
 // these took seconds or minutes to screen (a screen of the end of an answer runs on the main thread,
 // twice per job) at 1,000 to 100,000 characters, and takes milliseconds now. keyMaterial.test.ts and
 // linkedScreenCost.test.ts both screen them. Keys are fresh random base64 and never printed.
-import { randomBytes } from 'crypto'
+import { generateKeyPairSync, randomBytes } from 'crypto'
 import { headless, keySpans } from '../../../src/main/keyMaterial'
 
 const QUIET_MS = 14
@@ -41,6 +41,8 @@ const r64 = (): string => randomBytes(48).toString('base64')
 const lines = (n: number): string => Array.from({ length: n }, r64).join('\n')
 const fill = (unit: string, n: number): string => unit.repeat(Math.ceil(n / unit.length)).slice(0, n)
 const ANSWER: CostAsk = { keep: 200_000 }
+/** A real PKCS#8 key's lines (BEGIN, 12 body lines, END), made once: the paths that read a key's lines between its parts need a key that decodes. */
+const REAL = generateKeyPairSync('rsa', { modulusLength: 1024 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString().trim().split('\n')
 
 /** [text, how the screen is asked, the bound in ms]. The bounds are for what costs seconds, with room
  *  for a loaded runner and for coverage (which makes the detectors four or five times slower). */
@@ -59,4 +61,13 @@ export const COST_SHAPES: Record<string, [string, CostAsk, number]> = {
   'a line of plus signs and spaces above an END line': [`${lines(3)}\n${'+ '.repeat(50_000)}x\n${END}\n`, ANSWER, 500],
   'Private-Lines anchors with no line after them': [fill('Private-Lines: 9999//', 100_000), ANSWER, 1_000],
   'Private-Lines anchors, then a long run of letters': ['Private-Lines: 9999'.repeat(1_315) + 'a'.repeat(75_000), ANSWER, 500],
+  // (the first line of a text an older computer cut, above the blank line and key lines of a legacy encrypted key: the rule that reads
+  // what its cut left of the headers took the joiners off the line's end with `[…]+$`, which cost n * n; 60,000 took 8 and 13 seconds)
+  'a line of quotes at the start of a text an older computer cut, above key lines': [`${'"'.repeat(60_000)}x\n\n${lines(3)}\n-----END RSA PRIVATE KEY-----\n`, { keep: 200_000, cutStart: true }, 500],
+  'a line of spaces at the start of a text an older computer cut, above key lines': [`${' '.repeat(60_000)}x\n\n${lines(3)}\n-----END RSA PRIVATE KEY-----\n`, { keep: 200_000, cutStart: true }, 500],
+  // (a key whose block stopped at an uneven line, which is a long line of letters: the tail's lines were asked, line by line, whether two words
+  // stood in them, with a regex that cost n * n in a run of letters; 60,000 letters took 15 seconds, in every mode)
+  'a line of letters between the lines of a real key': [[...REAL.slice(0, 4), `${'Aa'.repeat(30_000)}x`, ...REAL.slice(4)].join('\n'), ANSWER, 500],
+  // (a value's trailing whitespace is taken off with `\s+$`, retried from each blank of a run inside the value: 400,000 characters took 2.9 s)
+  'RSAKeyValue members with a long run of whitespace inside their values': [`<RSAKeyValue><D>QUJDREVGR0hJSktMTU5PUA${' '.repeat(12_000)}QUJDREVGR0hJSktMTU5PUA</D></RSAKeyValue>\n`.repeat(33), ANSWER, 500],
 }
