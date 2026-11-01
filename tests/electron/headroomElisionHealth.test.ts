@@ -155,7 +155,7 @@ describe('which counts a verdict rests on', () => {
 
   it('reports no first-sight verdict when no compact class has enough results', () => {
     const v = buildElisionHealth(input({ classes: { [KEY]: cls(5, 5), 'dedup|Read|4-10k': cls(900, 100) } }))
-    expect(v.firstSight).toEqual({ verdict: 'unknown', basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 })
+    expect(v.firstSight).toEqual({ policy: 'legacy', verdict: 'unknown', basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 })
   })
 
   it('names the basis of the overall verdict by where most of its results came from', () => {
@@ -357,5 +357,93 @@ describe('the live view', () => {
     expect(v.classes[0]).toMatchObject({ key: KEY, elided: 40, redeemed: 30, recentElided: 40, recentRedeemed: 30, basis: 'recent' })
     expect(v.turns).toMatchObject({ count: 3, observed: 4, sharePct: 75, costBasis: 'assumed' })
     expect(v.turns.units).toBeCloseTo(3 * (0.1 * 170_000 + 5 * 137), 6)
+  })
+})
+
+/**
+ * The verdict is about the policy in force. Under Late, results are shortened at first sight only from
+ * 40,000 characters, so nearly every compaction in the ledger comes from the conversations held out on
+ * the old behaviour, which shorten everything over the tier floor. Judging all of them as one would tell
+ * a user running Late, in red, that Late costs them what the holdout costs them. Each policy's
+ * compactions are judged on their own: the one in force is the verdict, the other is reported beside it.
+ */
+describe('the verdict is about the policy in force', () => {
+  const LATE_KEY = 'compact|Read|40k+|late'
+  const lateCls = (elided: number, redeemed: number): ClassCounts => cls(elided, redeemed, 60_000, 1_100)
+  const both = (over: Over = {}): Over => ({
+    classes: { [KEY]: cls(300, 240), [LATE_KEY]: lateCls(100, 30) },
+    ...over,
+  })
+
+  it('judges only the compactions of the policy in force: Late, here, with 100 results at a 30% ask rate', () => {
+    const v = buildElisionHealth({ ...input(both()), policy: 'late' })
+    expect(v.firstSight.policy).toBe('late')
+    expect(v.firstSight.elided).toBe(100)
+    expect(v.firstSight.ratePct).toBe(30)
+    // 60,000-char results left as 1,100: B = (60000 - 1100)/4 x 11 = 161,975 units, V = 275 x 11 = 3,025,
+    // E = 17,000. Break-even = B / (B + E + V) = 161975 / 182000 = 89.0%. At 30% it pays.
+    expect(v.firstSight.breakEvenPct).toBeCloseTo(89, 0)
+    expect(v.firstSight.verdict).toBe('pays')
+  })
+
+  it('reports the other policy beside it, so the holdout is shown and not hidden or blamed on the setting', () => {
+    const v = buildElisionHealth({ ...input(both()), policy: 'late' })
+    expect(v.oldBehaviour).not.toBeNull()
+    expect(v.oldBehaviour?.elided).toBe(300)
+    expect(v.oldBehaviour?.ratePct).toBe(80)
+    // 80% asked back of 6,000-char results: well past the 35% break-even, so the old behaviour costs.
+    expect(v.oldBehaviour?.verdict).toBe('costs')
+    expect(v.oldBehaviour?.netUnits).toBeLessThan(0)
+  })
+
+  it('under the Legacy setting the old behaviour IS the policy in force, and there is nothing else to report', () => {
+    const v = buildElisionHealth({ ...input(both()), policy: 'legacy' })
+    expect(v.firstSight.policy).toBe('legacy')
+    expect(v.firstSight.elided).toBe(300)
+    expect(v.firstSight.verdict).toBe('costs')
+    expect(v.oldBehaviour).toBeNull()
+  })
+
+  it('defaults to Legacy, the policy a process runs until it has been told otherwise', () => {
+    const v = buildElisionHealth(input(both()))
+    expect(v.firstSight.policy).toBe('legacy')
+    expect(v.firstSight.elided).toBe(300)
+  })
+
+  it('an install with no Late compaction yet says "not enough" about Late, whatever the holdout shows', () => {
+    const v = buildElisionHealth({ ...input({ classes: { [KEY]: cls(300, 240) } }), policy: 'late' })
+    expect(v.firstSight.verdict).toBe('unknown')
+    expect(v.firstSight.elided).toBe(0)
+    expect(v.oldBehaviour?.verdict).toBe('costs')
+  })
+
+  it('names the policy of every class row, so a table can say which is which', () => {
+    const v = buildElisionHealth({ ...input(both()), policy: 'late' })
+    expect(v.classes.find((c) => c.key === LATE_KEY)?.policy).toBe('late')
+    expect(v.classes.find((c) => c.key === KEY)?.policy).toBe('legacy')
+    expect(v.classes.find((c) => c.key === 'decay|Read|4-10k')).toBeUndefined()
+  })
+
+  it('still gives each compaction row its own verdict, whichever policy it belongs to', () => {
+    const v = buildElisionHealth({ ...input(both()), policy: 'late' })
+    expect(v.classes.find((c) => c.key === KEY)?.verdict).toBe('costs')
+    expect(v.classes.find((c) => c.key === LATE_KEY)?.verdict).toBe('pays')
+  })
+
+  it('judges the regime of the policy in force, not a pool that moves when the setting does', () => {
+    // The holdout's recent rate is far above its life rate (rising); Late's is flat. Under Late the
+    // alarm is about Late.
+    const over = both({
+      recent: { [KEY]: cls(100, 95), [LATE_KEY]: lateCls(60, 18) },
+      classes: { [KEY]: cls(300, 150), [LATE_KEY]: lateCls(100, 30) },
+    })
+    expect(buildElisionHealth({ ...input(over), policy: 'late' }).regime).toBe('steady')
+    expect(buildElisionHealth({ ...input(over), policy: 'legacy' }).regime).toBe('rising')
+  })
+
+  it('reads a key from a ledger written before the policy as the old behaviour', () => {
+    const v = buildElisionHealth({ ...input({ classes: { 'compact|Bash|1.6-4k': cls(50, 40, 2500, 1100) } }), policy: 'late' })
+    expect(v.firstSight.elided).toBe(0)
+    expect(v.oldBehaviour?.elided).toBe(50)
   })
 })

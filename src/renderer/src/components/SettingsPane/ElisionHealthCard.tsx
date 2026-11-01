@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ArmComparisonView, ArmSummaryView, ElisionClassView, ElisionHealthView } from '../../types'
+import type { ArmComparisonView, ArmSummaryView, ElisionClassView, ElisionHealthView, FirstSightSummaryView } from '../../types'
 
 const fmt = (n: number): string => n.toLocaleString('en-US')
 const pctText = (n: number | null): string => (n === null ? '—' : `${Math.round(n)}%`)
@@ -10,6 +10,10 @@ const TOP_ROWS = 8
 const MIN_SAMPLES = 30
 /** Mirrors UNITS_PER_KEPT_TOKEN, ASSUMED_TURN_UNITS and MIN_TURNS_MEASURED in the same file. */
 const UNITS_PER_KEPT_TOKEN = 11
+/** Mirrors LATE_FLOOR_CHARS in src/main/headroom/elisionPolicy.ts. */
+const LATE_FLOOR = '40,000'
+/** Mirrors DECAY_FIRST_THRESHOLD in src/main/headroomProxy/prefixDecay.ts. */
+const DECAY_FIRST = 128
 
 const KIND_LABEL: Record<ElisionClassView['kind'], string> = {
   compact: 'Compacted at first sight',
@@ -26,23 +30,49 @@ const BAND_LABEL: Record<ElisionClassView['band'], string> = {
 }
 const VERDICT_COLOR: Record<ElisionClassView['verdict'], string> = { pays: '#4ade80', costs: '#f87171', unknown: 'inherit' }
 
-/** What the verdict rests on, in words: the recent window of this run, or everything so far. */
-function basisText(v: ElisionHealthView['firstSight']): string {
+/** What a verdict rests on, in words: the recent window of this run, or everything so far. */
+function basisText(v: FirstSightSummaryView): string {
   return v.basis === 'recent' ? `the last ${fmt(v.elided)} results of this run` : `all ${fmt(v.elided)} results so far`
 }
 
+/** The rate a verdict was reached at, and the break-even it was set against. */
+function rateText(v: FirstSightSummaryView): string {
+  return `the model asked for ${pctText(v.ratePct)} of them back, and compacting ${v.verdict === 'costs' ? 'pays only below' : 'pays up to'} ${pctText(v.breakEvenPct)}`
+}
+
+/** The verdict is about the policy in force, and says which. Under Late a result is shortened at first
+ *  sight only from 40,000 characters, so what is judged is those; the conversations kept on the old
+ *  behaviour are reported apart (OldBehaviour) and never as the setting's own cost. */
 function Verdict({ v }: { v: ElisionHealthView['firstSight'] }) {
+  const late = v.policy === 'late'
   let text: string
   if (v.verdict === 'unknown') {
-    text = `Not enough results yet to say. Each kind of result needs at least ${MIN_SAMPLES} first-sight compactions before its rate means anything.`
+    text = late
+      ? `Late shortens a result at first sight only from ${LATE_FLOOR} characters, and not enough of that size have been shortened yet to say anything. Each kind of result needs at least ${MIN_SAMPLES} first-sight compactions before its rate means anything.`
+      : `Not enough results yet to say. Each kind of result needs at least ${MIN_SAMPLES} first-sight compactions before its rate means anything.`
   } else {
     const units = `${fmt(Math.abs(v.netUnits))} billed units`
-    const rate = `the model asked for ${pctText(v.ratePct)} of them back, and compacting ${v.verdict === 'costs' ? 'pays only below' : 'pays up to'} ${pctText(v.breakEvenPct)}`
-    text = `Eliding results at first sight is ${v.verdict === 'costs' ? 'costing' : 'saving'} you about ${units} over ${basisText(v)}: ${rate}.`
+    const gain = v.verdict === 'costs' ? 'costing' : 'saving'
+    text = late
+      ? `Under Late, shortening results of ${LATE_FLOOR} characters or more at first sight is ${gain} you about ${units} over ${basisText(v)}: ${rateText(v)}.`
+      : `Eliding results at first sight is ${gain} you about ${units} over ${basisText(v)}: ${rateText(v)}.`
   }
   return (
     <div data-testid="hr-elision-verdict" data-verdict={v.verdict} style={{ marginTop: 6, fontSize: 14, fontWeight: 600, color: VERDICT_COLOR[v.verdict] }}>
       {text}
+    </div>
+  )
+}
+
+/** What the old behaviour did in the conversations held out on it, beside the verdict and plainly not
+ *  the setting's own: a user running Late must not read the holdout's cost as Late's. */
+function OldBehaviour({ o }: { o: FirstSightSummaryView | null }) {
+  if (!o || o.verdict === 'unknown') return null
+  const units = `${fmt(Math.abs(o.netUnits))} billed units`
+  return (
+    <div data-testid="hr-elision-old" data-verdict={o.verdict} style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
+      For comparison, the conversations kept on the old behaviour (the holdout) have results shortened at first sight from 1,600 characters up (the default tier&rsquo;s floor).
+      Over {basisText(o)} that {o.verdict === 'costs' ? 'cost' : 'saved'} about {units}: {rateText(o)}. This is not what your setting does.
     </div>
   )
 }
@@ -75,6 +105,7 @@ const groupsText = (n: number): string => `${n} ${n === 1 ? 'group' : 'groups'}`
 function ArmVerdictLine({ a }: { a: ArmComparisonView }) {
   const delta = a.costDeltaPct ?? 0
   const margin = a.costMarginPct ?? 0
+  const give = `give or take ${margin} points at 99% confidence`
   let text: string
   let color = 'inherit'
   if (a.verdict === 'not-enough-data') {
@@ -84,13 +115,16 @@ function ArmVerdictLine({ a }: { a: ArmComparisonView }) {
       : `Not enough data yet to compare. It needs at least ${fmt(a.minRequests)} requests in each arm, from at least ${MIN_ARM_GROUPS} different groups of conversations. So far: late ${fmt(a.late.requests)} requests in ${groupsText(a.late.groups)}, the holdout ${fmt(a.holdout.requests)} in ${groupsText(a.holdout.groups)}.`
   } else if (a.verdict === 'late-cheaper') {
     color = '#4ade80'
-    text = `Late is cheaper. It used about ${Math.abs(delta)}% fewer billed units per unit of work than the holdout (give or take ${margin} points).`
+    text = `Late is cheaper. It used about ${Math.abs(delta)}% fewer billed units per unit of work than the holdout (${give}).`
   } else if (a.verdict === 'late-costlier') {
     color = RED
-    text = `Late is costing more. It used about ${delta}% more billed units per unit of work than the holdout (give or take ${margin} points), which is more than chance explains. You can switch to Legacy above; it applies the next time Termpolis starts.`
+    text = `Late is costing more. It used about ${delta}% more billed units per unit of work than the holdout (${give}), which is more than chance explains. You can switch to Legacy in Settings > Token Savings > Shorten tool results; it applies the next time Termpolis starts.`
   } else {
     const gap = delta === 0 ? 'running level with the holdout' : `running ${Math.abs(delta)}% ${delta < 0 ? 'cheaper than' : 'dearer than'} the holdout`
-    text = `No clear difference yet. Late is ${gap}, give or take ${margin} points, so this could be chance. A gap this small takes more conversations to settle.`
+    const more = a.moreDataFactor !== null
+      ? `A gap this size would take about ${a.moreDataFactor} times as many conversations as so far to settle.`
+      : 'A gap this small would take far more conversations than there are to settle.'
+    text = `No clear difference yet. Late is ${gap}, ${give}, so this could be chance. ${more}`
   }
   return (
     <div data-testid="hr-arms-verdict" data-verdict={a.verdict} style={{ marginTop: 6, fontSize: 14, fontWeight: 600, color }}>
@@ -101,11 +135,15 @@ function ArmVerdictLine({ a }: { a: ArmComparisonView }) {
 
 function ArmTurnsLine({ a }: { a: ArmComparisonView }) {
   const shares = `${a.late.sharePct === null ? '—' : `${a.late.sharePct}%`} of late’s requests against ${a.holdout.sharePct === null ? '—' : `${a.holdout.sharePct}%`} of the holdout’s`
+  // The same turns in money: what the mechanism is worth, and the figure that settles soonest.
+  const units = a.late.turnUnitSharePct !== null && a.holdout.turnUnitSharePct !== null
+    ? ` They took ${a.late.turnUnitSharePct}% of late’s billed units against ${a.holdout.turnUnitSharePct}% of the holdout’s.`
+    : ''
   let text: string
   let color = 'inherit'
-  if (a.turnVerdict === 'fewer') text = `Retrieval turns: ${shares} — clearly fewer round trips.`
-  else if (a.turnVerdict === 'more') { color = RED; text = `Retrieval turns: ${shares} — MORE round trips under late, the opposite of what it is for.` }
-  else if (a.turnVerdict === 'no-clear-difference') text = `Retrieval turns: ${shares} — no clear difference yet.`
+  if (a.turnVerdict === 'fewer') text = `Retrieval turns: ${shares} — clearly fewer round trips.${units}`
+  else if (a.turnVerdict === 'more') { color = RED; text = `Retrieval turns: ${shares} — MORE round trips under late, the opposite of what it is for.${units}` }
+  else if (a.turnVerdict === 'no-clear-difference') text = `Retrieval turns: ${shares} — no clear difference yet.${units}`
   else text = 'Retrieval turns: not enough data yet.'
   return (
     <div data-testid="hr-arms-turns" data-verdict={a.turnVerdict ?? 'none'} style={{ marginTop: 6, fontSize: 13, color: color === 'inherit' ? undefined : color, opacity: color === 'inherit' ? 0.85 : 1 }}>
@@ -127,25 +165,27 @@ function ArmRow({ id, label, s, note }: { id: string; label: string; s: ArmSumma
 }
 
 /**
- * Late against the holdout. About one conversation in ten keeps running the old behaviour whichever
- * setting is on, so the saving the research modelled from one history can be checked on this
+ * Late against the holdout. About one distinct opening message in ten keeps running the old behaviour
+ * whichever setting is on, so the saving the research modelled from one history can be checked on this
  * person's own work, and so can the thing that matters more: that it did not cost anything. This is
  * the card's answer, with the margin stated and a plain "not enough data yet" until there is some.
  */
 function Arms({ a }: { a: ArmComparisonView }) {
+  const total = a.late.requests + a.holdout.requests
+  const holdoutShare = total > 0 ? Math.round((a.holdout.requests / total) * 100) : null
   return (
     <div data-testid="hr-arms" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid #8883' }}>
-      <div style={{ fontWeight: 600 }}>Late compared with the holdout <span style={{ fontWeight: 400, opacity: 0.65 }}>— the same work, run both ways</span></div>
+      <div style={{ fontWeight: 600 }}>Late compared with the holdout <span style={{ fontWeight: 400, opacity: 0.65 }}>— conversations split at random, compared on cost per working request</span></div>
       <ArmVerdictLine a={a} />
       <ArmTurnsLine a={a} />
-      <table data-testid="hr-arms-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
+      <table data-testid="hr-arms-table" aria-label="Late compared with the holdout" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
         <thead>
           <tr style={{ textAlign: 'left', opacity: 0.7 }}>
-            <th style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>Arm</th>
-            <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }}>Requests</th>
-            <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Turns that only fetched elided text, and their share of the requests">Retrieval turns</th>
-            <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request, retrieval turns counted as requests">Units per request</th>
-            <th style={{ padding: '3px 0 3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request that was not a retrieval turn, the retrieval turns counted as cost">Units per working request</th>
+            <th scope="col" style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>Arm</th>
+            <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }}>Requests</th>
+            <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Turns that only fetched elided text, and their share of the requests">Retrieval turns</th>
+            <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request, retrieval turns counted as requests">Units per request</th>
+            <th scope="col" style={{ padding: '3px 0 3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request that was not a retrieval turn, the retrieval turns counted as cost">Units per working request</th>
           </tr>
         </thead>
         <tbody>
@@ -159,22 +199,27 @@ function Arms({ a }: { a: ArmComparisonView }) {
         so cost per request would make late look dearer even while it lowers the bill; cost per working request counts those turns as cost
         without counting them as work, and is the figure the verdict uses. The margin is measured between groups of conversations, not between
         requests, because the requests of one conversation cost alike; nothing is claimed before there are at least {fmt(a.minRequests)} requests
-        and {MIN_ARM_GROUPS} groups on each side. This compares cost and round trips. It cannot see the quality of an answer; under late the
-        model is shown the whole of a result where the holdout is shown a window of it.
+        and {MIN_ARM_GROUPS} groups on each side, and a verdict needs a gap that a 99% interval cannot explain, because this card is read again and again.
+        A difference in cost takes many conversations to read; the retrieval-turn lines settle first. This compares cost and round trips.
+        It cannot see the quality of an answer; under late the model is shown the whole of a result where the holdout is shown a window of it.
       </div>
       <div data-testid="hr-arms-holdout-note" style={{ marginTop: 4, fontSize: 12, opacity: 0.65 }}>
-        The holdout is about one conversation in ten, chosen by a hash of the conversation’s first message and kept for its whole length.
-        It runs the old behaviour whichever setting is on.
+        The holdout is about one distinct opening message in ten, chosen by a hash of the conversation’s first message and kept for its whole length,
+        so an opening message you use again and again always lands in the same arm. It runs the old behaviour whichever setting is on.
+        {holdoutShare !== null && <> It is {holdoutShare}% of the requests so far.</>}
       </div>
     </div>
   )
 }
 
-function Row({ c }: { c: ElisionClassView }) {
+function Row({ c, inForce }: { c: ElisionClassView; inForce: 'late' | 'legacy' }) {
   const judged = c.kind === 'compact'
+  // Under Late there are two sorts of compaction in the table and the reader has to be able to tell
+  // them apart. A repeat, a patch and an aged-out result are made the same way under both.
+  const tag = judged && inForce === 'late' ? (c.policy === 'late' ? 'Late' : 'old behaviour') : null
   return (
     <tr data-testid={`hr-elision-row-${c.key}`}>
-      <td style={{ padding: '3px 8px 3px 0' }}>{KIND_LABEL[c.kind]}</td>
+      <td style={{ padding: '3px 8px 3px 0' }}>{KIND_LABEL[c.kind]}{tag && <span style={{ opacity: 0.6 }}> ({tag})</span>}</td>
       <td style={{ padding: '3px 8px' }}>{TOOL_LABEL[c.tool]}</td>
       <td style={{ padding: '3px 8px' }}>{BAND_LABEL[c.band]}</td>
       <td style={{ padding: '3px 8px', textAlign: 'right' }} data-testid="hr-elision-elided">{fmt(c.elided)}</td>
@@ -190,6 +235,8 @@ function Row({ c }: { c: ElisionClassView }) {
   )
 }
 
+const BUTTON = 'bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-xs hover:bg-[#3a3a3a] disabled:opacity-50 disabled:hover:bg-[#2d2d2d]'
+
 /**
  * Elision health: how often the model asks for elided text back, by kind of result, and whether
  * eliding it at first sight pays at that rate. The rate moved from 13% to 66% in one week of
@@ -199,13 +246,19 @@ function Row({ c }: { c: ElisionClassView }) {
 export function ElisionHealthCard() {
   const [view, setView] = useState<ElisionHealthView | null>(null)
   const [failed, setFailed] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [all, setAll] = useState(false)
 
   const load = useCallback(async (): Promise<void> => {
+    setBusy(true)
+    let next: ElisionHealthView | null = null
     try {
       const r = await window.termpolis.tokenSavingsGetElisionHealth?.()
-      if (r?.success) { setView(r.data); setFailed(false) } else setFailed(true)
-    } catch { setFailed(true) }
+      if (r?.success) next = r.data
+    } catch { /* a read that throws is a read that failed: the notice below says so */ }
+    // One batch, so the numbers, the notice and the button change together.
+    if (next) { setView(next); setFailed(false) } else setFailed(true)
+    setBusy(false)
   }, [])
   useEffect(() => { void load() }, [load])
 
@@ -215,19 +268,26 @@ export function ElisionHealthCard() {
     <div data-testid="hr-elision-health" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
         <h4 style={{ margin: '0 0 6px' }}>Elision health <span style={{ fontWeight: 400, opacity: 0.65 }}>— how often the model asks for elided text back</span></h4>
-        <button data-testid="hr-elision-refresh" type="button" onClick={() => { void load() }}
-          className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-xs">Refresh</button>
+        <button data-testid="hr-elision-refresh" type="button" disabled={busy} onClick={() => { if (!busy) void load() }}
+          className={BUTTON}>Refresh</button>
       </div>
 
       {!view && (
-        <div data-testid={failed ? 'hr-elision-unavailable' : 'hr-elision-loading'} style={{ fontSize: 13, opacity: 0.7 }}>
+        <div data-testid={failed ? 'hr-elision-unavailable' : 'hr-elision-loading'} role="status" style={{ fontSize: 13, opacity: 0.7 }}>
           {failed ? 'Elision health is unavailable right now.' : 'Reading the ledger…'}
+        </div>
+      )}
+
+      {view && failed && (
+        <div data-testid="hr-elision-stale" role="status" style={{ fontSize: 12, opacity: 0.8 }}>
+          Could not refresh. These numbers are from the last read.
         </div>
       )}
 
       {view && (
         <>
           <Verdict v={view.firstSight} />
+          <OldBehaviour o={view.oldBehaviour} />
           {view.regime === 'rising' && (
             <div data-testid="hr-elision-regime" style={{ marginTop: 6, fontSize: 13, color: '#f87171' }}>
               Lately the model has been asking for elided text back more often than it did over the whole history.
@@ -245,24 +305,24 @@ export function ElisionHealthCard() {
             </div>
           ) : (
             <>
-              <table data-testid="hr-elision-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 10 }}>
+              <table data-testid="hr-elision-table" aria-label="Elision by kind of result" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 10 }}>
                 <thead>
                   <tr style={{ textAlign: 'left', opacity: 0.7 }}>
-                    <th style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>What was done</th>
-                    <th style={{ padding: '3px 8px', fontWeight: 600 }}>Tool</th>
-                    <th style={{ padding: '3px 8px', fontWeight: 600 }}>Size</th>
-                    <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Results of this kind elided, all time">Elided</th>
-                    <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Share of them the model later asked for back, all time">Asked back</th>
-                    <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title={`The same over the last ${fmt(view.windowSize)} elisions of this run`}>Recent</th>
-                    <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="The asked-back rate above which eliding this kind at first sight loses money">Break-even</th>
-                    <th style={{ padding: '3px 0 3px 8px', fontWeight: 600 }}>Verdict</th>
+                    <th scope="col" style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>What was done</th>
+                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600 }}>Tool</th>
+                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600 }}>Size</th>
+                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Distinct results of this kind elided, all time. A result sent in several conversations counts once.">Elided</th>
+                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Share of those distinct results the model later asked for back, all time">Asked back</th>
+                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title={`The same over the last ${fmt(view.windowSize)} elisions of this run`}>Recent</th>
+                    <th scope="col" style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="The asked-back rate above which eliding this kind at first sight loses money">Break-even</th>
+                    <th scope="col" style={{ padding: '3px 0 3px 8px', fontWeight: 600 }}>Verdict</th>
                   </tr>
                 </thead>
-                <tbody>{shown.map((c) => <Row key={c.key} c={c} />)}</tbody>
+                <tbody>{shown.map((c) => <Row key={c.key} c={c} inForce={view.firstSight.policy} />)}</tbody>
               </table>
               {view.classes.length > TOP_ROWS && (
-                <button data-testid="hr-elision-more" type="button" onClick={() => setAll(!all)}
-                  className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-xs" style={{ marginTop: 8 }}>
+                <button data-testid="hr-elision-more" type="button" aria-expanded={all} onClick={() => setAll(!all)}
+                  className={BUTTON} style={{ marginTop: 8 }}>
                   {all ? 'Show fewer' : `Show all ${view.classes.length}`}
                 </button>
               )}
@@ -271,6 +331,13 @@ export function ElisionHealthCard() {
 
           <Turns t={view.turns} />
           <Arms a={view.arms} />
+          {view.agedEarly.requests > 0 || view.agedEarly.stubs > 0 ? (
+            <div data-testid="hr-elision-aged-early" style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>
+              Aged-out stubs in conversations shorter than {DECAY_FIRST} messages: {fmt(view.agedEarly.requests)} {view.agedEarly.requests === 1 ? 'request' : 'requests'}
+              {' '}({fmt(view.agedEarly.stubs)} {view.agedEarly.stubs === 1 ? 'stub' : 'stubs'}). The ageing-out pass starts at {DECAY_FIRST} messages, so there should be none;
+              a count here means something else is ageing results out.
+            </div>
+          ) : null}
           {view.legacyRedeemed > 0 && (
             <div data-testid="hr-elision-legacy" style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
               {fmt(view.legacyRedeemed)} {view.legacyRedeemed === 1 ? 'retrieval was' : 'retrievals were'} of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes {view.legacyRedeemed === 1 ? 'it' : 'them'}.

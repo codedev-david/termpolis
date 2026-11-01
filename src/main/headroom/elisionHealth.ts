@@ -1,8 +1,10 @@
 import { elisionState, recentByClass, ELISION_WINDOW, type ClassCounts, type ElisionState } from './elisionLedger'
 import { parseClassKey, type ElisionKind, type SizeBand, type ToolClass } from './elisionMeta'
+import type { FirstSightPolicy } from './elisionPolicy'
 import { armState, type ArmState } from './armLedger'
 import { compareArms, type ArmComparison } from './armCompare'
-import { summarizeProxySavings } from '../headroomProxy/proxyLedger'
+import { summarizeProxySavings, stubKindsOf } from '../headroomProxy/proxyLedger'
+import { getProxyFirstSight } from '../headroomProxy/proxySupervisor'
 
 /**
  * The "Elision health" view: for each class of result the proxy elides, how often the model asked
@@ -14,8 +16,15 @@ import { summarizeProxySavings } from '../headroomProxy/proxyLedger'
  * cached prefix read again, measured by the ledger), plus V, the view that stays resident. So at a
  * redemption rate r the net per result is (1 - r) x B - r x (E + V), and eliding pays while r stays
  * under the break-even B / (B + E + V). The research measured r at 13% until late August and 66%
- * since; below roughly 40,000 characters no class of Read, Bash or Grep result cleared break-even
- * at 66%.
+ * since; below roughly 40,000 characters almost no class of Read, Bash or Grep result cleared
+ * break-even at 66% (Grep and PowerShell between 10,000 and 40,000 characters came close, and a
+ * retrieval cheaper than the average one would have tipped them).
+ *
+ * The verdict is about the policy in force. Under `late` the proxy shortens a result at first sight only
+ * from 40,000 characters, so nearly all of the compactions in the ledger are the conversations held
+ * out on the old behaviour, which shorten everything over the tier floor. Judging them together would
+ * tell a user running Late that Late costs what the holdout costs. So the compactions of each policy are
+ * judged on their own: the one in force is the verdict, and the other is reported beside it.
  *
  * Everything here is an ESTIMATE built on two stated constants; the counts and the rates are
  * measured. Pure, and clock-free like everything under src/main/headroom.
@@ -44,6 +53,9 @@ export interface ElisionClassView {
   kind: ElisionKind
   tool: ToolClass
   band: SizeBand
+  /** The first-sight policy this class was made under: `late`, or `legacy` for the old behaviour (which
+   *  is also what a class that is not a compaction reports, because it is made the same either way). */
+  policy: FirstSightPolicy
   /** Lifetime counts. `ratePct` is null with nothing elided in the class. */
   elided: number
   redeemed: number
@@ -62,6 +74,18 @@ export interface ElisionClassView {
   basis: 'recent' | 'all-time' | null
 }
 
+/** First-sight compaction as a whole, for the compactions of one policy. */
+export interface FirstSightSummary {
+  verdict: HealthVerdict
+  basis: 'recent' | 'all-time' | null
+  /** Results the verdict rests on, their redemption rate, and the elided-weighted break-even. */
+  elided: number
+  ratePct: number | null
+  breakEvenPct: number | null
+  /** Estimated billed units gained (positive) or lost over those results. */
+  netUnits: number
+}
+
 export interface ElisionHealthView {
   windowSize: number
   classes: ElisionClassView[]
@@ -72,18 +96,12 @@ export interface ElisionHealthView {
   legacyRedeemed: number
   recentElided: number
   recentRedeemed: number
-  /** First-sight compaction as a whole: the one decision R2 changes. */
-  firstSight: {
-    verdict: HealthVerdict
-    basis: 'recent' | 'all-time' | null
-    /** Results the verdict rests on, their redemption rate, and the elided-weighted break-even. */
-    elided: number
-    ratePct: number | null
-    breakEvenPct: number | null
-    /** Estimated billed units gained (positive) or lost over those results. */
-    netUnits: number
-  }
-  /** Whether the recent redemption rate has moved away from the all-time one. */
+  /** First-sight compaction under the policy in force: the one decision R2 changes. */
+  firstSight: FirstSightSummary & { policy: FirstSightPolicy }
+  /** The same for the old behaviour when the policy in force is `late`: the conversations held out on
+   *  it. Null under the Legacy setting, where the old behaviour is the policy in force. */
+  oldBehaviour: FirstSightSummary | null
+  /** Whether the recent redemption rate of the policy in force has moved away from its all-time one. */
   regime: 'rising' | 'falling' | 'steady' | 'unknown'
   turns: {
     /** Asks for elided text back, and what they cost in billed units. An ask is the turn that called
@@ -114,6 +132,9 @@ export interface ElisionHealthView {
    * model anything: a plain verdict, "not enough data yet" until there is some.
    */
   arms: ArmComparison
+  /** Aged-out stubs found in conversations too short for the decay pass to have made them (research
+   *  section 9): requests that carried at least one, and how many stubs. Zero is the expected answer. */
+  agedEarly: { requests: number; stubs: number }
 }
 
 export interface ElisionHealthInput {
@@ -123,8 +144,12 @@ export interface ElisionHealthInput {
     retrievalTurns?: number; retrievalTurnUnits?: number; retrievalHops?: number; turnRequests?: number
     offerDirect?: number; offerDeferred?: number; offerAbsent?: number
   }
+  /** The first-sight policy this run uses. Absent reads as `legacy`, what a process runs until told otherwise. */
+  policy?: FirstSightPolicy
   /** The arm ledger; absent reads as empty. */
   arms?: ArmState
+  /** The stub-kind tally's early aged-out counters; absent reads as zero. */
+  agedEarly?: { requests?: number; stubs?: number }
 }
 
 const num = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0)
@@ -143,6 +168,22 @@ function economics(c: ClassCounts, r: number, turnUnits: number): { net: number;
   return { net: (1 - r) * saved - r * cost, breakEven: denom > 0 ? saved / denom : 0 }
 }
 
+/** What the verdict of one policy is made from, summed over its compaction classes. */
+interface Agg { elided: number; redeemed: number; net: number; breakEvenWeighted: number; fromRecent: number; fromAll: number }
+const newAgg = (): Agg => ({ elided: 0, redeemed: 0, net: 0, breakEvenWeighted: 0, fromRecent: 0, fromAll: 0 })
+
+function summarize(a: Agg): FirstSightSummary {
+  return {
+    verdict: a.elided === 0 ? 'unknown' : a.net > 0 ? 'pays' : 'costs',
+    // The overall verdict rests on whichever counts most of its results came from.
+    basis: a.elided === 0 ? null : a.fromRecent >= a.fromAll ? 'recent' : 'all-time',
+    elided: a.elided,
+    ratePct: pct1(a.redeemed, a.elided),
+    breakEvenPct: a.elided > 0 ? Math.round((a.breakEvenWeighted / a.elided) * 1000) / 10 : null,
+    netUnits: Math.round(a.net),
+  }
+}
+
 export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView {
   const turnCount = num(input.turns.retrievalTurns)
   const turnUnits = num(input.turns.retrievalTurnUnits)
@@ -155,11 +196,13 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
   const askable = num(input.turns.offerDirect) + num(input.turns.offerDeferred)
   const unaskable = num(input.turns.offerAbsent)
   const couldAsk = askable > 0
+  const inForce: FirstSightPolicy = input.policy === 'late' ? 'late' : 'legacy'
 
   const classes: ElisionClassView[] = []
-  let verdictElided = 0, verdictRedeemed = 0, verdictNet = 0, breakEvenWeighted = 0
-  let basisRecent = 0, basisAll = 0
+  // The compactions of each policy, judged on their own.
+  const aggs: Record<FirstSightPolicy, Agg> = { late: newAgg(), legacy: newAgg() }
   let lifeElided = 0, lifeRedeemed = 0, recentElided = 0, recentRedeemed = 0
+  // The regime is read from the policy in force only: a pool of both moves whenever the setting does.
   let compactLifeElided = 0, compactLifeRedeemed = 0, compactRecentElided = 0, compactRecentRedeemed = 0
 
   for (const [key, life] of Object.entries(input.state.classes)) {
@@ -177,10 +220,12 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
     let breakEvenPct: number | null = null
     let netUnitsPer1000: number | null = null
     if (parsed.kind === 'compact') {
-      compactLifeElided += life.elided
-      compactLifeRedeemed += life.redeemed
-      compactRecentElided += re
-      compactRecentRedeemed += rr
+      if (parsed.policy === inForce) {
+        compactLifeElided += life.elided
+        compactLifeRedeemed += life.redeemed
+        compactRecentElided += re
+        compactRecentRedeemed += rr
+      }
       const use = rec && re >= MIN_SAMPLES ? { c: rec, why: 'recent' as const } : life.elided >= MIN_SAMPLES ? { c: life, why: 'all-time' as const } : null
       if (use) {
         const r = Math.min(1, use.c.redeemed / use.c.elided)
@@ -189,16 +234,17 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
         breakEvenPct = Math.round(e.breakEven * 1000) / 10
         netUnitsPer1000 = Math.round(e.net * 1000)
         verdict = e.net > 0 ? 'pays' : 'costs'
-        verdictElided += use.c.elided
-        verdictRedeemed += use.c.redeemed
-        verdictNet += e.net * use.c.elided
-        breakEvenWeighted += e.breakEven * use.c.elided
-        if (use.why === 'recent') basisRecent += use.c.elided
-        else basisAll += use.c.elided
+        const a = aggs[parsed.policy]
+        a.elided += use.c.elided
+        a.redeemed += use.c.redeemed
+        a.net += e.net * use.c.elided
+        a.breakEvenWeighted += e.breakEven * use.c.elided
+        if (use.why === 'recent') a.fromRecent += use.c.elided
+        else a.fromAll += use.c.elided
       }
     }
     classes.push({
-      key, kind: parsed.kind, tool: parsed.tool, band: parsed.band,
+      key, kind: parsed.kind, tool: parsed.tool, band: parsed.band, policy: parsed.policy,
       elided: life.elided, redeemed: life.redeemed, ratePct: pct1(life.redeemed, life.elided),
       recentElided: re, recentRedeemed: rr, recentRatePct: pct1(rr, re),
       breakEvenPct, netUnitsPer1000, verdict, basis,
@@ -206,8 +252,6 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
   }
   classes.sort((a, b) => b.elided - a.elided || (a.key < b.key ? -1 : 1))
 
-  // The overall verdict rests on whichever counts most of its results came from.
-  const firstBasis: ElisionHealthView['firstSight']['basis'] = verdictElided === 0 ? null : basisRecent >= basisAll ? 'recent' : 'all-time'
   let regime: ElisionHealthView['regime'] = 'unknown'
   if (compactRecentElided >= MIN_SAMPLES && compactLifeElided >= MIN_SAMPLES) {
     const recentRate = (compactRecentRedeemed / compactRecentElided) * 100
@@ -223,14 +267,8 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
     legacyRedeemed: input.state.legacyRedeemed,
     recentElided,
     recentRedeemed,
-    firstSight: {
-      verdict: verdictElided === 0 ? 'unknown' : verdictNet > 0 ? 'pays' : 'costs',
-      basis: firstBasis,
-      elided: verdictElided,
-      ratePct: pct1(verdictRedeemed, verdictElided),
-      breakEvenPct: verdictElided > 0 ? Math.round((breakEvenWeighted / verdictElided) * 1000) / 10 : null,
-      netUnits: Math.round(verdictNet),
-    },
+    firstSight: { policy: inForce, ...summarize(aggs[inForce]) },
+    oldBehaviour: inForce === 'late' ? summarize(aggs.legacy) : null,
     regime,
     turns: {
       count: turnCount,
@@ -245,11 +283,17 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
       sharePct: pct1(turnCount, couldAsk ? askable : observed),
     },
     arms: compareArms(input.arms),
+    agedEarly: { requests: num(input.agedEarly?.requests), stubs: num(input.agedEarly?.stubs) },
   }
 }
 
-/** The live view: the elision ledger's counts and window, with the proxy ledger's retrieval turns. */
+/** The live view: the elision ledger's counts and window, with the proxy ledger's retrieval turns and
+ *  the policy this run really uses (which Settings may have since been changed away from). */
 export function summarizeElisionHealth(): ElisionHealthView {
   const c = summarizeProxySavings().cumulative
-  return buildElisionHealth({ state: elisionState(), recent: recentByClass(), turns: c, arms: armState() })
+  const kinds = stubKindsOf(c)
+  return buildElisionHealth({
+    state: elisionState(), recent: recentByClass(), turns: c, arms: armState(), policy: getProxyFirstSight(),
+    agedEarly: { requests: kinds.agedEarlyRequests, stubs: kinds.agedEarly },
+  })
 }

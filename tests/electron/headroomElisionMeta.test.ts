@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  ELISION_KINDS, SIZE_BANDS, TOOL_CLASSES, sizeBand, toolClass, classKey, parseClassKey, makeMeta, sanitizeMeta, stampModel,
+  ELISION_KINDS, SIZE_BANDS, TOOL_CLASSES, sizeBand, toolClass, classKey, parseClassKey, makeMeta, sanitizeMeta, stampModel, stampPolicy,
   type StashEntry,
 } from '../../src/main/headroom/elisionMeta'
 
@@ -53,7 +53,7 @@ describe('class keys', () => {
   })
 
   it('parses a key back, and refuses anything it did not build', () => {
-    expect(parseClassKey('compact|Read|40k+')).toEqual({ kind: 'compact', tool: 'Read', band: '40k+' })
+    expect(parseClassKey('compact|Read|40k+')).toEqual({ kind: 'compact', tool: 'Read', band: '40k+', policy: 'legacy' })
     for (const bad of ['', 'compact|Read', 'compact|Read|40k+|x', 'nope|Read|40k+', 'compact|Nope|40k+', 'compact|Read|9k']) {
       expect(parseClassKey(bad)).toBeNull()
     }
@@ -61,7 +61,7 @@ describe('class keys', () => {
 
   it('round-trips every kind, tool class and band', () => {
     for (const kind of ELISION_KINDS) for (const tool of TOOL_CLASSES) for (const band of SIZE_BANDS) {
-      expect(parseClassKey(`${kind}|${tool}|${band}`)).toEqual({ kind, tool, band })
+      expect(parseClassKey(`${kind}|${tool}|${band}`)).toEqual({ kind, tool, band, policy: 'legacy' })
     }
   })
 })
@@ -131,5 +131,73 @@ describe('stampModel', () => {
     const e = entries()
     stampModel(e, 'm'.repeat(300))
     expect(e[0].meta?.model).toHaveLength(80)
+  })
+})
+
+/**
+ * Which first-sight policy produced an elision is part of what the ledger counts, because the question
+ * the Elision health card answers is "is the policy in force paying", and the conversations held out on
+ * the old behaviour elide a different set of results. Only a compaction under `late` is named: a key
+ * with no policy on it is the old behaviour, which is what every key written before the policy existed
+ * was and what the holdout and the Legacy setting run. A repeat, a patch and an aged-out result are
+ * collapsed the same way under both, so their keys do not split.
+ */
+describe('class keys name the policy of a Late compaction', () => {
+  it('adds |late to a compaction made under late, and nothing to any other', () => {
+    expect(classKey({ kind: 'compact', tool: 'Read', chars: 50_000, view: 1100, policy: 'late' })).toBe('compact|Read|40k+|late')
+    expect(classKey({ kind: 'compact', tool: 'Read', chars: 5_000, view: 1100, policy: 'legacy' })).toBe('compact|Read|4-10k')
+    expect(classKey({ kind: 'compact', tool: 'Read', chars: 5_000, view: 1100 })).toBe('compact|Read|4-10k')
+    for (const kind of ['dedup', 'diff', 'decay'] as const) {
+      expect(classKey({ kind, tool: 'Bash', chars: 5_000, view: 100, policy: 'late' })).toBe(`${kind}|Bash|4-10k`)
+    }
+  })
+
+  it('parses both forms, naming the policy, and refuses a fourth part it did not build', () => {
+    expect(parseClassKey('compact|Read|40k+|late')).toEqual({ kind: 'compact', tool: 'Read', band: '40k+', policy: 'late' })
+    expect(parseClassKey('compact|Read|4-10k')).toEqual({ kind: 'compact', tool: 'Read', band: '4-10k', policy: 'legacy' })
+    expect(parseClassKey('dedup|Bash|4-10k')).toEqual({ kind: 'dedup', tool: 'Bash', band: '4-10k', policy: 'legacy' })
+    for (const bad of ['compact|Read|40k+|legacy', 'compact|Read|40k+|Late', 'compact|Read|40k+|', 'dedup|Read|4-10k|late', 'compact|Read|40k+|late|x', 'compact|Read']) {
+      expect(parseClassKey(bad), bad).toBeNull()
+    }
+  })
+
+  it('round-trips through classKey for every kind, tool class, band and policy', () => {
+    for (const kind of ELISION_KINDS) for (const tool of TOOL_CLASSES) for (const chars of [100, 2_000, 5_000, 20_000, 50_000]) for (const policy of ['late', 'legacy', undefined] as const) {
+      const key = classKey({ kind, tool: tool === 'mcp' ? 'mcp__x__y' : tool === 'other' ? 'Zed' : tool, chars, view: 10, policy })
+      const parsed = parseClassKey(key)
+      expect(parsed, key).not.toBeNull()
+      expect(parsed?.kind).toBe(kind)
+      expect(parsed?.policy).toBe(kind === 'compact' && policy === 'late' ? 'late' : 'legacy')
+    }
+  })
+})
+
+describe('the policy a stash was made under', () => {
+  it('is kept by sanitizeMeta when it is one of the two, and dropped when it is anything else', () => {
+    expect(sanitizeMeta({ kind: 'compact', chars: 100, view: 10, policy: 'late' })?.policy).toBe('late')
+    expect(sanitizeMeta({ kind: 'compact', chars: 100, view: 10, policy: 'legacy' })?.policy).toBe('legacy')
+    for (const bad of ['LATE', 'holdout', 5, null, {}, ['late']]) {
+      const m = sanitizeMeta({ kind: 'compact', chars: 100, view: 10, policy: bad })
+      expect(m).toBeDefined()
+      expect('policy' in (m as object)).toBe(false)
+    }
+    expect('policy' in (sanitizeMeta({ kind: 'compact', chars: 100, view: 10 }) as object)).toBe(false)
+  })
+
+  it('stampPolicy puts the policy on every meta of a request, skips an entry with no meta, and ignores a name it does not know', () => {
+    const entries = [
+      { token: 'hr_a', original: 'x', meta: makeMeta('compact', 'Read', 50_000, 1_000) },
+      { token: 'hr_b', original: 'y' },
+      { token: 'hr_c', original: 'z', meta: makeMeta('decay', 'Bash', 3_000, 100) },
+    ]
+    stampPolicy(entries, 'late')
+    expect(entries[0].meta?.policy).toBe('late')
+    expect(entries[1]).toEqual({ token: 'hr_b', original: 'y' })
+    expect(entries[2].meta?.policy).toBe('late')
+    stampPolicy(entries, 'legacy')
+    expect(entries[0].meta?.policy).toBe('legacy')
+    stampPolicy(entries, 'holdout' as never)
+    stampPolicy(entries, undefined as never)
+    expect(entries[0].meta?.policy).toBe('legacy')
   })
 })

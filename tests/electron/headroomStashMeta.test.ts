@@ -31,12 +31,13 @@ function bodyWith(texts: string[], opts: { tool?: string; model?: string | null 
 const resultText = (body: string, idx: number): string => JSON.parse(body).messages[idx * 2 + 1].content[0].content
 
 describe('stash metadata — first-sight compaction', () => {
-  it('records the tool, the size removed and the size left, and the model', () => {
+  it('records the tool, the size removed and the size left, the model and the policy it ran under', () => {
     const big = file(60)
     const r = rewriteMessagesBody(bodyWith([big]))
     expect(r.stashes).toHaveLength(1)
     const view = resultText(r.body, 0)
-    expect(r.stashes[0].meta).toEqual({ kind: 'compact', tool: 'Read', chars: big.length, view: view.length, model: 'claude-x' })
+    // A process that has been told no policy runs the old behaviour, which is the one it records.
+    expect(r.stashes[0].meta).toEqual({ kind: 'compact', tool: 'Read', chars: big.length, view: view.length, model: 'claude-x', policy: 'legacy' })
     expect(view.length).toBeLessThan(big.length)
   })
 

@@ -2,11 +2,11 @@ import type { ArmCounts, ArmState } from './armLedger'
 
 /**
  * Late against the holdout: did leaving results whole cost less, and did it need fewer retrieval
- * turns? The research modelled a saving of about 11.7% from one history. This is how the same
+ * turns? The research modelled a saving of about 10% from one history. This is how the same
  * question is asked of the user's own work, with the uncertainty stated and a verdict that says
  * "not enough data yet" until there is some.
  *
- * Three decisions carry it:
+ * Four decisions carry it:
  *
  *  - THE UNIT OF WORK IS A WORKING REQUEST, one that was not a turn spent only on fetching elided
  *    text. A retrieval turn costs about two thirds of an average request (it re-reads the cached
@@ -18,12 +18,26 @@ import type { ArmCounts, ArmState } from './armLedger'
  *  - THE UNCERTAINTY IS MEASURED BETWEEN GROUPS OF CONVERSATIONS, NOT BETWEEN REQUESTS. A
  *    conversation is dozens of requests that cost alike, so treating each request as an independent
  *    sample would make the margin look an order of magnitude tighter than it is. Each arm is cut into
- *    groups by the same hash that chose the arm (elisionPolicy.ts armOf), and the standard error is
- *    the spread of the groups: a ratio estimator linearised around the pooled ratio, with a
- *    t quantile for the number of groups.
+ *    groups by the same hash that chose the arm (elisionPolicy.ts armOf).
  *
- *  - IT SAYS NOTHING EARLY. Fewer than 500 requests in either arm, or requests from fewer than five
- *    groups, is "not enough data yet", not a verdict with a wide margin.
+ *  - THE COST INTERVAL IS BUILT ON THE LOG SCALE FROM A LEAVE-ONE-GROUP-OUT JACKKNIFE. The cost of a
+ *    group of conversations is right-skewed, and an interval on the relative difference (late over
+ *    holdout, minus one) with a delta-method error then says "late is cheaper" far more often than its
+ *    stated level allows and almost never errs the other way: at a group spread of 1.0, 9 times in 100
+ *    when the two arms were identical, against 2.5 intended (simulated on this very code before it was
+ *    replaced). On the log scale, with the spread taken from dropping each group in turn, the same
+ *    simulation gives 3 in 100, in both directions.
+ *
+ *  - IT SAYS NOTHING EARLY, AND NOTHING LOUD ON A GLANCE. Fewer than 500 requests in either arm, or
+ *    requests from fewer than five groups, is "not enough data yet". A verdict is only given outside a
+ *    99% interval, not a 95% one, because the card is read again and again and each look is a chance to
+ *    be fooled: a 95% rule read weekly for two months falsely announced a difference about one time in
+ *    four (simulated), and a 99% rule cuts that by two thirds.
+ *
+ * A cost difference needs a lot of conversations to read: a true saving of a tenth shows up, at the
+ * volume of a heavy user, after months, not days. What is read in days is the mechanism, the share of
+ * requests and of billed units that were retrieval turns, so the comparison gives both, and for a gap
+ * it cannot yet settle it says how much more data would.
  *
  * Pure: no I/O, no clock.
  */
@@ -33,16 +47,19 @@ export const MIN_ARM_REQUESTS = 500
 /** Fewer groups of conversations than this in either arm and the margin cannot be measured. */
 export const MIN_ARM_GROUPS = 5
 
-/** Two-sided 95% quantiles of the t distribution for 1 to 30 degrees of freedom. */
-const T95 = [
-  12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131,
-  2.12, 2.11, 2.101, 2.093, 2.086, 2.08, 2.074, 2.069, 2.064, 2.06, 2.056, 2.052, 2.048, 2.045, 2.042,
+/** Two-sided 99% quantiles of the t distribution (the 0.995 quantile) for 1 to 30 degrees of freedom. */
+const T99 = [
+  63.657, 9.925, 5.841, 4.604, 4.032, 3.707, 3.499, 3.355, 3.25, 3.169, 3.106, 3.055, 3.012, 2.977, 2.947,
+  2.921, 2.898, 2.878, 2.861, 2.845, 2.831, 2.819, 2.807, 2.797, 2.787, 2.779, 2.771, 2.763, 2.756, 2.75,
 ]
 /** With no degrees of freedom there is no margin to speak of, so nothing can clear it. */
 export function tCritical(df: number): number {
   if (!(df >= 1)) return Number.POSITIVE_INFINITY
-  return df <= T95.length ? T95[Math.floor(df) - 1] : 1.96
+  return df <= T99.length ? T99[Math.floor(df) - 1] : 2.576
 }
+
+/** A gap needing more than this many times the data so far is not worth a number: it is "far more". */
+export const MORE_DATA_CAP = 100
 
 export type ArmVerdict = 'not-enough-data' | 'late-cheaper' | 'late-costlier' | 'no-clear-difference'
 export type TurnVerdict = 'fewer' | 'more' | 'no-clear-difference'
@@ -56,6 +73,8 @@ export interface ArmSummary {
   groups: number
   /** Retrieval turns as a share of requests, percent. */
   sharePct: number | null
+  /** The share of billed units that went on retrieval turns, percent: the mechanism, in money. */
+  turnUnitSharePct: number | null
   /** Billed units per request: the misleading one, shown with the note that says why. */
   unitsPerRequest: number | null
   /** Billed units per working request, the retrieval turns counted as cost. */
@@ -73,8 +92,12 @@ export interface ArmComparison {
   verdict: ArmVerdict
   /** Late's cost per working request against the holdout's, percent: negative is cheaper. */
   costDeltaPct: number | null
-  /** Half the width of the 95% interval round that, in points. */
+  /** Half the width of the 99% interval round that, in points. */
   costMarginPct: number | null
+  /** For a gap the data cannot yet settle: how many times as much data as so far would make the margin
+   *  half the gap seen. Null when the verdict is already clear, when there is no gap to settle, and
+   *  above MORE_DATA_CAP, where it is no number worth quoting. */
+  moreDataFactor: number | null
   turnVerdict: TurnVerdict | null
   /** Late's retrieval-turn share minus the holdout's, in percentage points, and its margin. */
   shareDeltaPts: number | null
@@ -108,6 +131,7 @@ function summarize(groups: ArmCounts[]): ArmSummary {
     turns: s.turns,
     groups: s.groups,
     sharePct: s.requests > 0 ? round1((s.turns / s.requests) * 100) : null,
+    turnUnitSharePct: s.units > 0 ? round1((s.turnUnits / s.units) * 100) : null,
     unitsPerRequest: s.requests > 0 ? round(s.units / s.requests) : null,
     unitsPerWorking: s.work > 0 ? round(s.units / s.work) : null,
     turnUnitsPerWorking: s.work > 0 ? round(s.turnUnits / s.work) : null,
@@ -137,6 +161,30 @@ function ratio(groups: ArmCounts[], numer: (g: ArmCounts) => number, denom: (g: 
   return { value, se: Math.sqrt((used.length / (used.length - 1)) * ss) / d }
 }
 
+/**
+ * ln of the same ratio, and its jackknife variance: the ratio is recomputed with each group left out
+ * in turn, and the variance is (G - 1) / G times the squared spread of those G values. Null on the same
+ * conditions as `ratio`, and wherever the logarithm does not exist: a ratio that is nothing, or that
+ * leaving one group out makes nothing or unmeasurable (the other groups did no work, or cost nothing).
+ */
+function logRatio(groups: ArmCounts[], numer: (g: ArmCounts) => number, denom: (g: ArmCounts) => number): { ln: number; variance: number } | null {
+  const used = groups.filter((g) => num(g?.requests) > 0)
+  if (used.length < MIN_ARM_GROUPS) return null
+  let n = 0, d = 0
+  for (const g of used) { n += numer(g); d += denom(g) }
+  if (!(d > 0) || !(n > 0)) return null
+  const left: number[] = []
+  for (const g of used) {
+    const ln = n - numer(g), ld = d - denom(g)
+    if (!(ld > 0) || !(ln > 0)) return null
+    left.push(Math.log(ln / ld))
+  }
+  const mean = left.reduce((s, x) => s + x, 0) / left.length
+  let ss = 0
+  for (const x of left) ss += (x - mean) ** 2
+  return { ln: Math.log(n / d), variance: ((used.length - 1) / used.length) * ss }
+}
+
 function emptyState(): ArmState {
   return { late: [], holdout: [], legacy: { requests: 0, work: 0, units: 0, turns: 0, turnUnits: 0 } }
 }
@@ -149,7 +197,7 @@ export function compareArms(raw: ArmState | undefined): ArmComparison {
   const legacy = summarize([s.legacy])
   const out: ArmComparison = {
     minRequests: MIN_ARM_REQUESTS, late, holdout, legacy,
-    verdict: 'not-enough-data', costDeltaPct: null, costMarginPct: null,
+    verdict: 'not-enough-data', costDeltaPct: null, costMarginPct: null, moreDataFactor: null,
     turnVerdict: null, shareDeltaPts: null, shareMarginPts: null,
   }
   if (late.requests < MIN_ARM_REQUESTS || holdout.requests < MIN_ARM_REQUESTS) return out
@@ -158,18 +206,23 @@ export function compareArms(raw: ArmState | undefined): ArmComparison {
   // only with MIN_ARM_GROUPS groups on each side.
   const t = tCritical(Math.min(late.groups, holdout.groups) - 1)
 
-  // Cost per working request, late against the holdout.
+  // Cost per working request, late against the holdout, on the log scale.
   const cost = (g: ArmCounts): number => num(g?.units)
   const work = (g: ArmCounts): number => num(g?.work)
-  const cl = ratio(s.late, cost, work)
-  const ch = ratio(s.holdout, cost, work)
-  if (cl && ch && ch.value > 0) {
-    const rel = cl.value / ch.value - 1
-    const se = Math.sqrt((cl.se / ch.value) ** 2 + ((cl.value * ch.se) / (ch.value * ch.value)) ** 2)
-    const margin = t * se
-    out.costDeltaPct = round1(rel * 100)
-    out.costMarginPct = round1(margin * 100)
-    out.verdict = rel < -margin ? 'late-cheaper' : rel > margin ? 'late-costlier' : 'no-clear-difference'
+  const cl = logRatio(s.late, cost, work)
+  const ch = logRatio(s.holdout, cost, work)
+  if (cl && ch) {
+    const d = cl.ln - ch.ln
+    const margin = t * Math.sqrt(cl.variance + ch.variance)
+    out.costDeltaPct = round1((Math.exp(d) - 1) * 100)
+    out.costMarginPct = round1(((Math.exp(d + margin) - Math.exp(d - margin)) / 2) * 100)
+    out.verdict = d < -margin ? 'late-cheaper' : d > margin ? 'late-costlier' : 'no-clear-difference'
+    if (out.verdict === 'no-clear-difference' && d !== 0) {
+      // The margin shrinks with the square root of the data, so halving it relative to the gap takes
+      // (2 x margin / gap) squared times as much.
+      const factor = (2 * margin / Math.abs(d)) ** 2
+      out.moreDataFactor = Number.isFinite(factor) && factor <= MORE_DATA_CAP ? Math.ceil(factor) : null
+    }
   }
 
   // The share of requests that were retrieval turns: the round trips late was meant to take away.

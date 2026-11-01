@@ -9,7 +9,7 @@ import { compactJson } from './jsonCompact'
 import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
 import { bareToolName, isExempt } from '../headroom/router'
 import { STEERING_MARK } from '../headroom/outputSteering'
-import { makeMeta, stampModel, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
+import { makeMeta, stampModel, stampPolicy, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
 import { armOf, effectiveFloor, isFirstSightPolicy, LEGACY_POLICY, policyFor, type ElisionPolicy, type FirstSightPolicy } from '../headroom/elisionPolicy'
 import { classifyMessages, emptyKinds, type StubKindCounts } from './forwardedKinds'
 
@@ -650,6 +650,9 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   // The model is one field of the body, so naming it on each stash keeps the metadata a function
   // of the body alone. It rides beside the stash and never enters the forwarded bytes.
   stampModel(stashes, obj.model)
+  // And the policy the request ran under, so the ledger can tell a compaction the policy in force made
+  // from one the holdout made on the old behaviour.
+  stampPolicy(stashes, policy.kind)
   // Read off the REWRITTEN messages, which are what `out` serializes; classifyMessages only reads.
   stats.kinds = classifyMessages(obj.messages as unknown[])
   if (!changed) return { body: raw, changed: false, stats, stashes }

@@ -359,6 +359,9 @@ export interface ElisionClassView {
   kind: 'compact' | 'dedup' | 'diff' | 'decay'
   tool: 'Read' | 'Bash' | 'Grep' | 'Glob' | 'PowerShell' | 'WebFetch' | 'WebSearch' | 'mcp' | 'other'
   band: '<1.6k' | '1.6-4k' | '4-10k' | '10-40k' | '40k+'
+  /** The first-sight policy a compaction was made under: `late`, or `legacy` for the old behaviour (the
+   *  holdout, the Legacy setting, a ledger from before). Every other kind reports `legacy`. */
+  policy: 'late' | 'legacy'
   elided: number
   redeemed: number
   ratePct: number | null
@@ -379,6 +382,8 @@ export interface ArmSummaryView {
   turns: number
   groups: number
   sharePct: number | null
+  /** The share of billed units that went on retrieval turns, percent. */
+  turnUnitSharePct: number | null
   unitsPerRequest: number | null
   unitsPerWorking: number | null
   turnUnitsPerWorking: number | null
@@ -393,10 +398,23 @@ export interface ArmComparisonView {
   legacy: ArmSummaryView
   verdict: 'not-enough-data' | 'late-cheaper' | 'late-costlier' | 'no-clear-difference'
   costDeltaPct: number | null
+  /** Half the width of the 99% interval round the cost gap, in points. */
   costMarginPct: number | null
+  /** How many times as much data as so far would settle a gap the data cannot yet; null when clear, absent or too large to quote. */
+  moreDataFactor: number | null
   turnVerdict: 'fewer' | 'more' | 'no-clear-difference' | null
   shareDeltaPts: number | null
   shareMarginPts: number | null
+}
+
+/** First-sight compaction as a whole, for the compactions of one policy. */
+export interface FirstSightSummaryView {
+  verdict: 'pays' | 'costs' | 'unknown'
+  basis: 'recent' | 'all-time' | null
+  elided: number
+  ratePct: number | null
+  breakEvenPct: number | null
+  netUnits: number
 }
 
 /** The Elision health card's data: redemption by class, the break-even verdict and the retrieval
@@ -409,14 +427,10 @@ export interface ElisionHealthView {
   legacyRedeemed: number
   recentElided: number
   recentRedeemed: number
-  firstSight: {
-    verdict: 'pays' | 'costs' | 'unknown'
-    basis: 'recent' | 'all-time' | null
-    elided: number
-    ratePct: number | null
-    breakEvenPct: number | null
-    netUnits: number
-  }
+  /** First-sight compaction under the policy in force. */
+  firstSight: FirstSightSummaryView & { policy: 'late' | 'legacy' }
+  /** The same for the old behaviour (the holdout) when the policy in force is Late; null under Legacy. */
+  oldBehaviour: FirstSightSummaryView | null
   regime: 'rising' | 'falling' | 'steady' | 'unknown'
   turns: {
     /** Asks for elided text back (a ToolSearch turn and the retrieve_full turn after it are one ask). */
@@ -434,6 +448,8 @@ export interface ElisionHealthView {
     sharePct: number | null
   }
   arms: ArmComparisonView
+  /** Aged-out stubs found in conversations too short for the decay pass to have made them. */
+  agedEarly: { requests: number; stubs: number }
 }
 
 export interface TermpolisAPI {

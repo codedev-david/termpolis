@@ -21,7 +21,7 @@ const WIRE = '../../src/main/headroomProxy/wireCompress'
 interface Rewritten {
   body: string
   changed: boolean
-  stashes: Array<{ token: string; original: string; meta?: { kind: string; tool?: string; chars: number; view: number } }>
+  stashes: Array<{ token: string; original: string; meta?: { kind: string; tool?: string; chars: number; view: number; policy?: string } }>
   stats: { arm: string; armCluster: number; convKey: number; kinds: Record<string, number>; trOrigChars: number; trCompChars: number }
 }
 interface Wire {
@@ -455,6 +455,33 @@ describe('every request records the arm it ran under', () => {
     const counted = total.late.reduce((n, c) => n + c.requests, 0) + total.holdout.reduce((n, c) => n + c.requests, 0)
     expect(counted).toBe(filed.length)
     expect(new Set(filed.map((f) => `${f.arm}/${f.cluster}`)).size).toBeGreaterThan(5)
+  })
+
+  it('stamps each stash with the policy the request really ran under: late, or legacy for the holdout and the kill switch', async () => {
+    type Stash = { meta?: { policy?: string; kind: string } }
+    const policies = (r: { stashes: Stash[] }): string[] => r.stashes.map((x) => x.meta?.policy ?? 'none')
+    // 80,000 characters is shortened under every policy, so each arm has a stash to look at.
+    const big = (first: string): string => caseBody('Read', 'code', 80_000, 'string', first)
+    const late = (await launch('late')).rewriteMessagesBody(big(lateFirst()))
+    expect(late.stats.arm).toBe('late')
+    expect(late.stashes.length).toBeGreaterThan(0)
+    expect(new Set(policies(late))).toEqual(new Set(['late']))
+    const held = (await launch('late')).rewriteMessagesBody(big(holdoutFirst()))
+    expect(held.stats.arm).toBe('holdout')
+    expect(held.stashes.length).toBeGreaterThan(0)
+    expect(new Set(policies(held))).toEqual(new Set(['legacy']))
+    const off = (await launch('legacy')).rewriteMessagesBody(big(lateFirst()))
+    expect(off.stats.arm).toBe('legacy')
+    expect(off.stashes.length).toBeGreaterThan(0)
+    expect(new Set(policies(off))).toEqual(new Set(['legacy']))
+  })
+
+  it('and a result between the tier floor and 40,000 characters is shortened only by the old behaviour, so only it has a stash', async () => {
+    const mid = (first: string): string => caseBody('Bash', 'log', 12_000, 'string', first)
+    expect((await launch('late')).rewriteMessagesBody(mid(lateFirst())).stashes).toHaveLength(0)
+    const held = (await launch('late')).rewriteMessagesBody(mid(holdoutFirst()))
+    expect(held.stashes.length).toBeGreaterThan(0)
+    expect(held.stashes.every((x) => x.meta?.policy === 'legacy')).toBe(true)
   })
 
   it('holds out about one conversation in ten of a realistic mix', async () => {

@@ -7,6 +7,8 @@
  * compression sweep forbids anything here that would make a stash depend on when it was made.
  */
 
+import { isFirstSightPolicy, type FirstSightPolicy } from './elisionPolicy'
+
 /** How a token came to be on the wire. A `compact` is the first-sight head/tail window or
  *  structural reduction; `dedup` and `diff` replace a repeat or a near-repeat of an earlier result
  *  in the same request; `decay` ages out the old half of a long conversation. */
@@ -23,6 +25,10 @@ export interface ElisionMeta {
   /** Characters of what replaced it on the wire. */
   view: number
   model?: string
+  /** The first-sight policy the request ran under: `late`, or `legacy` for a conversation held out on the
+   *  old behaviour and for a run on the Settings kill switch. Absent on a stash from before it was
+   *  recorded, which ran the old behaviour. Only a compaction's class depends on it (see classKey). */
+  policy?: FirstSightPolicy
 }
 
 /** One original handed from the proxy to the stash. `meta` is absent on a stash from before v1.55. */
@@ -43,6 +49,13 @@ export function stampModel(stashes: StashEntry[], model: unknown): void {
   if (typeof model !== 'string' || model === '') return
   const name = model.slice(0, MAX_NAME)
   for (const s of stashes) if (s.meta) s.meta.model = name
+}
+
+/** Put the policy a request ran under on every meta of a body. Like the model it is a function of the
+ *  request alone, and it rides beside the stash without entering the forwarded bytes. */
+export function stampPolicy(stashes: StashEntry[], policy: FirstSightPolicy): void {
+  if (!isFirstSightPolicy(policy)) return
+  for (const s of stashes) if (s.meta) s.meta.policy = policy
 }
 
 /** The size bands of the research's redemption table (section 5.2). */
@@ -70,22 +83,31 @@ export function toolClass(tool: unknown): ToolClass {
   return tool.startsWith('mcp__') ? 'mcp' : 'other'
 }
 
-/** The ledger's class: kind, tool class and size band, joined by `|`. */
+/**
+ * The ledger's class: kind, tool class and size band, joined by `|`. A compaction made under the `late`
+ * policy carries a fourth part, `late`. A key without one is the old behaviour, which is what every key
+ * written before the policy was recorded was, and what the holdout and the Legacy setting run: so the
+ * Elision health card can judge the policy in force apart from the one kept for comparison, and a ledger
+ * from before reads as it always did. A repeat, a patch and an aged-out result are made the same way
+ * under both policies, so their keys do not split.
+ */
 export function classKey(meta: ElisionMeta): string {
-  return `${meta.kind}|${toolClass(meta.tool)}|${sizeBand(meta.chars)}`
+  const base = `${meta.kind}|${toolClass(meta.tool)}|${sizeBand(meta.chars)}`
+  return meta.kind === 'compact' && meta.policy === 'late' ? `${base}|late` : base
 }
 
-export interface ParsedClass { kind: ElisionKind; tool: ToolClass; band: SizeBand }
+export interface ParsedClass { kind: ElisionKind; tool: ToolClass; band: SizeBand; policy: FirstSightPolicy }
 
 /** The inverse of classKey; null for anything classKey could not have built. */
 export function parseClassKey(key: string): ParsedClass | null {
   const parts = key.split('|')
-  if (parts.length !== 3) return null
-  const [kind, tool, band] = parts
+  if (parts.length !== 3 && parts.length !== 4) return null
+  const [kind, tool, band, policy] = parts
   if (!(ELISION_KINDS as readonly string[]).includes(kind)) return null
   if (!(TOOL_CLASSES as readonly string[]).includes(tool)) return null
   if (!(SIZE_BANDS as readonly string[]).includes(band)) return null
-  return { kind: kind as ElisionKind, tool: tool as ToolClass, band: band as SizeBand }
+  if (parts.length === 4 && !(kind === 'compact' && policy === 'late')) return null
+  return { kind: kind as ElisionKind, tool: tool as ToolClass, band: band as SizeBand, policy: parts.length === 4 ? 'late' : 'legacy' }
 }
 
 /**
@@ -101,5 +123,6 @@ export function sanitizeMeta(raw: unknown): ElisionMeta | undefined {
   if (!size(r.chars) || !size(r.view)) return undefined
   const m = makeMeta(r.kind as ElisionKind, typeof r.tool === 'string' ? r.tool : undefined, r.chars, r.view)
   if (typeof r.model === 'string') m.model = r.model.slice(0, MAX_NAME)
+  if (isFirstSightPolicy(r.policy)) m.policy = r.policy
   return m
 }
