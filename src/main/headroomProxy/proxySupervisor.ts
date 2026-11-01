@@ -1,6 +1,7 @@
 import * as net from 'net'
 import type { WireStats } from './wireCompress'
 import type { Usage, TurnShape } from './usageParse'
+import type { StashEntry } from '../headroom/elisionMeta'
 import { killUtility } from '../utilityKill'
 
 export interface ProxyResultMsg {
@@ -10,7 +11,7 @@ export interface ProxyResultMsg {
   usage: Usage
   /** Absent only on a message from a child that predates it; the ledger reads absence as "not pure". */
   turn?: TurnShape
-  stashes: Array<{ token: string; original: string }>
+  stashes: StashEntry[]
   status: number
 }
 
@@ -18,7 +19,7 @@ export interface ProxyResultMsg {
  *  result message carries them too, but by then Claude may already have called retrieve_full. */
 export interface ProxyStashMsg {
   kind: 'stash'
-  stashes: Array<{ token: string; original: string }>
+  stashes: StashEntry[]
 }
 
 /** Minimal transport over the child — abstracted so the supervisor is unit-testable without Electron. */

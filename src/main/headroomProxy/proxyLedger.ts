@@ -5,6 +5,9 @@ import { recordDepthSample } from '../headroom/sessionDepth'
 import type { ProxyResultMsg } from './proxySupervisor'
 import { recordProxyOutput } from '../headroom/outputEconomyStore'
 import { W_CACHE_READ, W_OUTPUT } from '../headroom/effectiveUnits'
+import { recordRedemption, resetElisionLedger } from '../headroom/elisionLedger'
+import { loadElisionFromDisk, saveElisionToDisk } from '../headroom/elisionStore'
+import type { ElisionMeta } from '../headroom/elisionMeta'
 
 export interface ProxyTotals {
   requests: number
@@ -162,16 +165,21 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   // request the ledger just counted, so the experiment can never sample a different
   // population than the invoice does. `s.steered` is what actually reached the model.
   try { recordProxyOutput(!!s.steered, u.output_tokens || 0, s.thinkBudget || 0, s.msgCount || 0, u.cache_read_input_tokens || 0) } catch { /* never fail a request over a stat */ }
-  if (Array.isArray(r.stashes)) for (const st of r.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } }
+  if (Array.isArray(r.stashes)) for (const st of r.stashes) { try { ccrPut(st.token, st.original, 'proxy', st.meta) } catch { /* best effort */ } }
   try { flush?.() } catch { /* best effort */ }
 }
 
 /** Charge one `retrieve_full` give-back to THIS layer — the wire proxy issues the vast majority
  *  of tokens agents actually redeem, and before v1.34.0 every one of them was billed to the
- *  tool-layer ledger instead, which is what made the receipt read negative. */
-export function recordProxyGiveback(tokens: number): void {
+ *  tool-layer ledger instead, which is what made the receipt read negative.
+ *
+ *  `redeemed` names the token and what its stash recorded, so the elision ledger counts the same
+ *  redemption by class. It is counted here, in the same call as the retrieve it belongs to, so the
+ *  two ledgers cannot drift apart: a give-back with no token is a legacy redemption. */
+export function recordProxyGiveback(tokens: number, redeemed?: { token: string; meta?: ElisionMeta }): void {
   session.retrieves += 1
   session.givebackTokens += Math.max(0, tokens)
+  recordRedemption(redeemed?.token, redeemed?.meta)
   try { flush?.() } catch { /* best effort */ }
 }
 
@@ -198,14 +206,18 @@ export function summarizeProxySavings(): ProxyReceipt {
   return { session: withPct(session), cumulative: withPct(sumWithBase()) }
 }
 export function currentProxyTotals(): ProxyTotals { return sumWithBase() }
+// The elision ledger's counts (redemptions especially) are the proxy ledger's `retrieves` told by
+// class, so they live and die with it: loaded with the totals, saved with them, zeroed with them.
 export function loadProxyBaseFromDisk(dir: string): void {
   try { loadProxyBase(JSON.parse(readFileSync(join(dir, 'proxy-totals.json'), 'utf8'))) } catch { /* start at zero */ }
+  loadElisionFromDisk(dir)
 }
 export function saveProxyTotalsToDisk(dir: string): void {
   try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'proxy-totals.json'), JSON.stringify(currentProxyTotals()), 'utf8') } catch { /* best effort */ }
+  saveElisionToDisk(dir)
 }
 /** Zero the lifetime meter (session + on-disk base) WITHOUT dropping the flush wiring, so the
  *  ledger keeps persisting afterward. Used for a live "reset lifetime savings" (e.g. after a
  *  compression-methodology change) — unlike resetProxyLedger(), which also nulls flush for tests. */
-export function resetProxyCounters(): void { session = empty(); base = empty() }
-export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null }
+export function resetProxyCounters(): void { session = empty(); base = empty(); resetElisionLedger() }
+export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null; resetElisionLedger() }

@@ -1227,10 +1227,13 @@ describe('headroom proxy wiring', () => {
     const onStash = cbOf(M.onProxyStash)
     M.ccrPut.mockClear()
     M.ccrPut.mockImplementationOnce(() => { throw new Error('disk full') })
-    onStash({ stashes: [{ token: 't1', original: 'A' }, { token: 't2', original: 'B' }] })
+    const meta = { kind: 'compact', tool: 'Read', chars: 5000, view: 1100 }
+    onStash({ stashes: [{ token: 't1', original: 'A' }, { token: 't2', original: 'B', meta }] })
     // Second stash still lands: retrieve_full on t2 must work even though t1 could not be written.
     expect(M.ccrPut).toHaveBeenCalledTimes(2)
-    expect(M.ccrPut).toHaveBeenLastCalledWith('t2', 'B', 'proxy')
+    // ...and carries what the proxy recorded about how it was elided, for the elision ledger.
+    expect(M.ccrPut).toHaveBeenLastCalledWith('t2', 'B', 'proxy', meta)
+    expect(M.ccrPut).toHaveBeenNthCalledWith(1, 't1', 'A', 'proxy', undefined)
   })
 
   it('restores the measured totals and the fitted depth curve from disk at boot', () => {

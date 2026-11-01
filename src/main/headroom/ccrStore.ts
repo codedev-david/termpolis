@@ -1,10 +1,14 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import * as crypto from 'crypto'
+import { sanitizeMeta, type ElisionMeta } from './elisionMeta'
+import { recordElision } from './elisionLedger'
 
 /** Which compression layer issued a token — so its give-back is charged to the right ledger. */
 export type CcrOrigin = 'mcp' | 'proxy'
-export interface CcrRecord { value: unknown; origin: CcrOrigin }
+/** `meta` says how the wire proxy elided the text (see elisionMeta.ts). Absent on an MCP-layer
+ *  stash and on any stash written before v1.55, which still resolve exactly as they did. */
+export interface CcrRecord { value: unknown; origin: CcrOrigin; meta?: ElisionMeta }
 
 /**
  * The reversible-compression cache: the escape hatch behind every `retrieve_full` token.
@@ -253,7 +257,12 @@ function diskGet(token: string): CcrRecord | undefined {
   try {
     const rec = JSON.parse(readFileSync(f, 'utf8')) as CcrRecord
     if (!rec || typeof rec !== 'object' || !('value' in rec)) throw new Error('not a record')
-    return { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp' }
+    // A file from before v1.55 has no meta, and a damaged one reads as none: the value is what
+    // retrieve_full promises, and it must never fail to resolve over its bookkeeping.
+    const meta = sanitizeMeta(rec.meta)
+    return meta
+      ? { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp', meta }
+      : { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp' }
   } catch {
     // Indexed but unreadable — truncated by a hard kill mid-write, or corrupted underneath us.
     // Leaving it indexed makes the damage PERMANENT: diskPut short-circuits on `diskIndex.has` for
@@ -312,11 +321,29 @@ export function ccrStash(value: unknown, origin: CcrOrigin = 'mcp'): string {
   return token
 }
 
-/** Stash under a caller-provided (already deterministic) token — used by the wire proxy, whose
- *  content-hash tokens must resolve through the same `retrieve_full` tool. */
-export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy'): void {
-  const rec: CcrRecord = { value, origin }
-  put(token, rec)
+/**
+ * Stash under a caller-provided (already deterministic) token — used by the wire proxy, whose
+ * content-hash tokens must resolve through the same `retrieve_full` tool.
+ *
+ * The proxy re-sends a conversation's whole history every turn, so the same token arrives again
+ * and again, from the request path and from the result. Only the FIRST put of a token counts as an
+ * elision and only its `meta` is kept: a token the store already holds keeps the class it was
+ * first stored with, and one the disk tier holds from an earlier run counts as nothing now.
+ */
+export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy', meta?: ElisionMeta): void {
+  const resident = store.get(token)
+  const onDisk = diskIndex.has(token)
+  // A hash token IS the sha1 of its content, so an indexed one names a file already holding this
+  // value (see diskPut): nothing to write, and no reason to read it back just to cache it again.
+  // Its record on disk may carry a meta, and caching it here without one would misfile it.
+  if (!resident && onDisk && HASH_TOKEN_RE.test(token)) return
+  let m: ElisionMeta | undefined
+  if (resident !== undefined || onDisk) m = resident?.meta
+  else {
+    m = sanitizeMeta(meta)
+    if (m) recordElision(token, m)
+  }
+  put(token, m ? { value, origin, meta: m } : { value, origin })
 }
 
 /**

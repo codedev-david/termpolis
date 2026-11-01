@@ -3,6 +3,7 @@ import * as https from 'https'
 import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, type WireStats } from './wireCompress'
 import { parseUsageFromSse, parseTurnShapeFromSse, decodeBody, type Usage, type TurnShape } from './usageParse'
 import { compressImage } from './imageCodec'
+import type { StashEntry } from '../headroom/elisionMeta'
 
 /**
  * Prefix decay, opt-in. Module scope rather than a closure because the HTTP server is built once
@@ -18,7 +19,7 @@ export interface ProxyResult {
   usage: Usage
   /** Which tools the answer called, so a turn spent only on retrieve_full can be charged. */
   turn: TurnShape
-  stashes: Array<{ token: string; original: string }>
+  stashes: StashEntry[]
   status: number
 }
 export interface ProxyOpts {
@@ -26,7 +27,7 @@ export interface ProxyOpts {
   upstreamPort?: number
   useHttps?: boolean
   onResult?: (r: ProxyResult) => void
-  onStash?: (stashes: Array<{ token: string; original: string }>) => void
+  onStash?: (stashes: StashEntry[]) => void
 }
 
 /**
@@ -56,7 +57,7 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
 
     async function handle(): Promise<void> {
       let body = Buffer.concat(chunks)
-      let rewritten: { changed: boolean; stats: WireStats; stashes: Array<{ token: string; original: string }> } | null = null
+      let rewritten: { changed: boolean; stats: WireStats; stashes: StashEntry[] } | null = null
       if (isMessages) {
         try {
           const r = rewriteMessagesBody(body.toString('utf8'), { compressImage, decay: decayEnabled })

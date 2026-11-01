@@ -109,7 +109,7 @@ export async function retrieveFull(token: string): Promise<unknown> {
   if (ccrMarkRedeemed(token)) {
     try {
       const cost = estimateTokens(typeof rec.value === 'string' ? rec.value : JSON.stringify(rec.value, null, 2))
-      if (rec.origin === 'proxy') recordProxyGiveback(cost)
+      if (rec.origin === 'proxy') recordProxyGiveback(cost, { token, meta: rec.meta })
       else recordEvent({ tool: 'retrieve_full', kind: 'retrieve', savedTokens: -cost })
     } catch { /* best effort */ }
   }

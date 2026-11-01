@@ -4068,7 +4068,7 @@ async function semanticPoolOptions(
       onProxyResult((r) => { try { recordProxyResult(r) } catch { /* best effort */ } })
       // The result only lands once the upstream response ends, but Claude can call retrieve_full
       // the moment the token streams back — so the originals are committed on the request path too.
-      onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy') } catch { /* best effort */ } } })
+      onProxyStash((s) => { for (const st of s.stashes) { try { ccrPut(st.token, st.original, 'proxy', st.meta) } catch { /* best effort */ } } })
       // A route set in Claude Code's own settings.json `env` block counts like one in our env.
       setAgentEnvReader(() => {
         // A blank home leaves claudeDir '', and joined that would read a settings.json

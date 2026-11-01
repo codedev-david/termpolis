@@ -9,6 +9,7 @@ import { compactJson } from './jsonCompact'
 import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
 import { isExempt } from '../headroom/router'
 import { STEERING_MARK } from '../headroom/outputSteering'
+import { makeMeta, stampModel, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
 
 export interface WireStats {
   trBlocks: number
@@ -51,7 +52,7 @@ export interface WireResult {
   body: string
   changed: boolean
   stats: WireStats
-  stashes: Array<{ token: string; original: string }>
+  stashes: StashEntry[]
 }
 export type ImageCompressor = (dataB64: string, mediaType: string) => { data: string; mediaType: string; changed: boolean }
 
@@ -313,7 +314,7 @@ function compactOrDedup(
   text: string,
   seen: SeenIndex,
   stats: WireStats,
-  stashes: Array<{ token: string; original: string }>,
+  stashes: StashEntry[],
   hint?: ContentHint,
 ): { text: string; changed: boolean } {
   stats.trOrigChars += text.length
@@ -327,16 +328,18 @@ function compactOrDedup(
     out = `[headroom] Identical to an earlier tool result in this conversation — call the retrieve_full tool with token "${key}" to expand it.`
     changed = true
     stats.trBlocks++
-    stashes.push({ token: key, original: text })
+    stashes.push({ token: key, original: text, meta: makeMeta('dedup', hint?.toolName, text.length, out.length) })
   } else {
     const c = compactToolText(text, hint)
     let best = c.text
     let stash = c.stash
+    // What replaced the text, for the elision ledger: the window compaction unless a patch beats it.
+    let kind: ElisionKind = 'compact'
     if (text.length >= wireWindow.floorChars) {
       const cand = makeCandidate(text)
       // Diff BEFORE recording this block, so it can never be its own base.
       const p = bestDiff(seen.blocks, cand.lines, text.length, key)
-      if (p && p.text.length < best.length) { best = p.text; stash = { token: key, original: text } }
+      if (p && p.text.length < best.length) { best = p.text; stash = { token: key, original: text }; kind = 'diff' }
       seen.keys.add(key)
       seen.blocks.push(cand)
     }
@@ -344,7 +347,7 @@ function compactOrDedup(
       out = best
       changed = true
       stats.trBlocks++
-      if (stash) stashes.push(stash)
+      if (stash) stashes.push({ ...stash, meta: makeMeta(kind, hint?.toolName, text.length, best.length) })
     }
   }
   stats.trCompChars += out.length
@@ -479,11 +482,11 @@ function measurePrefixHead(obj: Record<string, unknown>, stats: WireStats): void
 
 export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCompressor; maxBodyChars?: number; decay?: boolean } = {}): WireResult {
   const stats = emptyStats()
-  const stashes: Array<{ token: string; original: string }> = []
+  const stashes: StashEntry[] = []
   const seen = emptySeen() // per-body dedup/diff index over earlier tool_result text + tool_use artifacts, filled left-to-right
   const maxChars = opts.maxBodyChars ?? 10_000_000
   if (raw.length > maxChars) return { body: raw, changed: false, stats, stashes }
-  let obj: { messages?: unknown[]; thinking?: unknown }
+  let obj: { messages?: unknown[]; thinking?: unknown; model?: unknown }
   try { obj = JSON.parse(raw) } catch { return { body: raw, changed: false, stats, stashes } }
   if (!obj || !Array.isArray(obj.messages)) return { body: raw, changed: false, stats, stashes }
   // Measured here, BEFORE the round-trip guard below can fail us open: the prefix head is an
@@ -556,6 +559,9 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   } catch {
     return { body: raw, changed: false, stats: emptyStats(), stashes: [] } // fail-open
   }
+  // The model is one field of the body, so naming it on each stash keeps the metadata a function
+  // of the body alone. It rides beside the stash and never enters the forwarded bytes.
+  stampModel(stashes, obj.model)
   if (!changed) return { body: raw, changed: false, stats, stashes }
   let out: string
   try { out = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats: emptyStats(), stashes: [] } }
