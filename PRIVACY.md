@@ -61,7 +61,15 @@ upload it.
   compressed, on the Claude Code proxy or in its own MCP tool output, so an
   agent can ask for it back with `retrieve_full` (`userData/headroom/ccr`, one
   file per block, capped at 200 MB, **not encrypted**), plus running counts of
-  what was saved.
+  what was saved. Beside each original it keeps the name of the tool whose
+  result it was, the model's name, the two sizes (the original and what replaced
+  it) and which first-sight setting the request ran under. It also keeps counts,
+  by kind of tool and size of result, of how many results were shortened and how
+  many of those the agent later asked back for
+  (`userData/headroom/elision-ledger.json`), and cost counters for the two
+  groups of conversations that Settings → Token Savings compares (inside
+  `userData/headroom/proxy-totals.json`). Counts, sizes and names only, never
+  the content of a conversation.
 - If you turn on **Termpolis Remote**: this desktop's X25519 identity key
   (`userData/remote-identity-key`, encrypted at rest through the OS keystore —
   DPAPI on Windows, Keychain on macOS, libsecret on Linux), one record per
@@ -160,6 +168,19 @@ can ask for it back; none of it is sent to Termpolis.
   route you configured, nothing is compressed, and Settings → Token Savings
   shows which variable it found.
 - Codex, Gemini CLI and your shells never go through it.
+- **When it shortens a tool result.** Since v1.55 the proxy leaves a tool
+  result whole until it reaches 40,000 characters and shortens it from there
+  (Settings → Token Savings → Shorten tool results: **Late**, the default).
+  Choose **Legacy** and it shortens from the size of your tier, as v1.54 did. A
+  change applies the next time Termpolis starts. Repeats still collapse and old
+  history still ages out under both.
+- **A comparison on your machine.** About one distinct opening message in ten,
+  chosen by a hash of the conversation's first message, computed on your
+  machine and kept for the conversation's whole length, always runs the Legacy
+  behaviour whichever setting is on, so that Termpolis can compare the two on
+  your own work (the Elision health card). Which group a request belonged to is
+  recorded with its cost, locally. The comparison is computed locally and
+  nothing about it is sent anywhere.
 
 ## What We Never Collect
 
@@ -356,25 +377,39 @@ Off by default. In Settings → Token Savings → Long conversations you can pic
 smaller window (500,000, 400,000, 300,000 or 200,000 tokens) at which Claude
 Code compacts a long conversation into a summary. If you do, Termpolis adds
 Claude Code's own `CLAUDE_CODE_AUTO_COMPACT_WINDOW` variable to the environment
-of the terminals it opens for Claude Code, and to the terminals of the workers
-a swarm starts (the command a worker will run is not known yet when its
-terminal is created, so every worker gets it; Codex and Gemini CLI never read
-it). Not to your own shells, and not to a terminal that is already open. The
-variable is read by Claude Code on your machine. Nothing about it is sent to
-Termpolis or to anyone else, and it does not use the compression proxy.
+of the terminals it opens for Claude Code, and to every terminal created through
+Termpolis's MCP `create_terminal` tool: the terminals a swarm starts for its
+workers, terminals an agent opens, and the shell a paired phone opens (the
+command is not known yet when such a terminal is created, so all of them get
+it; Codex and Gemini CLI never read it). Not to the other shells you open
+yourself, and not to a terminal that is already open. The variable is read by
+Claude Code on your machine. Nothing about it is sent to Termpolis or to anyone
+else, and it does not use the compression proxy.
 
 To leave a window you set yourself alone, Termpolis checks whether you already
-have one, and only while this choice is on and only when it opens a Claude
-terminal. It looks in your environment, then reads three files if they exist:
-`settings.json` in Claude Code's config folder (`~/.claude`, or the folder
-`CLAUDE_CONFIG_DIR` names) and `.claude/settings.json` and
-`.claude/settings.local.json` in the folder the terminal opens in. From each it
-keeps two things and drops the rest on the spot: the `env` block and whether a
-window is saved (`autoCompactWindow`, or the one `/autocompact` saves per
-model). Your permissions, hooks, helpers and the rest of those files are not
-kept, not logged and not sent anywhere, and Termpolis writes nothing to them.
-If a window is already set in any of those places, Termpolis sets none. A file
-it cannot read counts as holding nothing.
+have one, and only while this choice is on and only when it opens a terminal it
+sets the variable for. It looks in your environment, then reads three files if
+they exist: `settings.json` in Claude Code's config folder (`~/.claude`, or the
+folder `CLAUDE_CONFIG_DIR` names in Termpolis's own environment) and
+`.claude/settings.json` and `.claude/settings.local.json` in the folder the
+terminal opens in. From each it keeps two things and drops the rest on the
+spot: the value of the window variable in the `env` block (no other entry of
+that block, which can hold keys of its own) and whether a window is saved
+(`autoCompactWindow`, or the one `/autocompact` saves per model). Your
+permissions, hooks, helpers and the rest of those files are not kept, not
+logged and not sent anywhere, and Termpolis writes nothing to them. If a window
+is already set in any of those places, Termpolis sets none. A file that is not
+there, or is not valid JSON, counts as holding nothing, as it does for Claude
+Code. A file that is there but cannot be read, because another program has it
+locked for a moment, is tried once more; if it still cannot be read Termpolis
+sets none, since it cannot tell.
+
+It does not see every place a window can live, and Claude Code lets this
+variable win over all of them: a window set in a subagent's definition, in a
+`--settings` argument, by your organization's managed settings, or by a
+`CLAUDE_CONFIG_DIR` that a script sets inside the terminal (to switch accounts,
+say) names a folder Termpolis did not check. Turn the choice Off first if you
+rely on one of those.
 
 It is yours to turn off: choose Off, and new terminals go back to Claude Code's
 own behaviour. Nothing is read while it is Off.

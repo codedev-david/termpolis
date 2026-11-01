@@ -56,12 +56,13 @@ describe('the context window is disclosed, and the disclosure matches what is re
 
   it('says what is kept, and that the rest of the files is not', () => {
     expect(privacySection).toContain('keeps two things and drops the rest on the spot')
-    expect(privacySection).toContain('the `env` block')
+    // Of the env block, which can hold keys of the user's own, only the window variable's value.
+    expect(privacySection).toContain('the value of the window variable in the `env` block (no other entry of that block')
     expect(privacySection).toContain('`autoCompactWindow`')
     expect(privacySection).toContain('`/autocompact`')
     expect(privacySection).toContain('permissions, hooks, helpers')
     expect(privacySection).toContain('not kept, not logged and not sent anywhere')
-    expect(docsSection).toContain('Nothing else in them is kept, nothing is written')
+    expect(docsSection).toContain('Of the `env` block only the window variable\'s value is kept, nothing else in those files is kept, nothing is written')
   })
 
   it('says it writes nothing to those files, and sends nothing anywhere', () => {
@@ -69,24 +70,44 @@ describe('the context window is disclosed, and the disclosure matches what is re
     expect(privacySection).toContain('Nothing about it is sent to Termpolis or to anyone else')
   })
 
-  it('says when it reads: only while the choice is on, and only when a Claude terminal opens', () => {
-    expect(privacySection).toContain('only while this choice is on and only when it opens a Claude terminal')
+  it('says when it reads: only while the choice is on, and only when it opens a terminal it sets the variable for', () => {
+    expect(privacySection).toContain('only while this choice is on and only when it opens a terminal it sets the variable for')
     expect(privacySection).toContain('Nothing is read while it is Off')
     expect(docsSection).toContain('while this is on and when it opens a Claude terminal')
   })
 
-  it('says which terminals get it: those opened for Claude Code and every swarm worker, new ones only, never your shells', () => {
-    // A worker's command is not known when its terminal is created, so every worker has the variable in its environment.
-    // Saying Codex "does not get it" would be false of a worker; what is true is that Codex and Gemini CLI never read it.
+  it('says what a file it cannot read means: tried once more, and then counted as a window it cannot see', () => {
+    expect(privacySection).toContain('A file that is not there, or is not valid JSON, counts as holding nothing, as it does for Claude Code')
+    expect(privacySection).toContain('is tried once more; if it still cannot be read Termpolis sets none, since it cannot tell')
+    expect(docsSection).toContain('a file that is missing or is not valid JSON counts as not set (as it does for Claude Code)')
+    expect(docsSection).toContain('is tried once more and, if it still cannot be read, counts as set, because Termpolis cannot tell')
+  })
+
+  it('says which terminals get it: those opened for Claude Code and every terminal the MCP create_terminal tool makes, new ones only, never your other shells', () => {
+    // The command is not known when a swarm worker, an agent-made terminal or the phone's shell is created, so
+    // every one of them has the variable in its environment. Saying Codex "does not get it" would be false of
+    // a worker; what is true is that Codex and Gemini CLI never read it.
     for (const text of [privacySection, docsSection]) {
       expect(text).toContain('swarm')
-      expect(text).toContain('every worker gets it')
+      expect(text).toContain('`create_terminal`')
+      expect(text).toContain('paired phone')
       expect(text).toContain('Codex and Gemini CLI never read it')
-      expect(text).toContain('your own shells')
+      expect(text).toContain('the other shells you open yourself')
+      expect(text).not.toContain('every worker gets it')
       expect(text).not.toMatch(/not (to )?Codex/i)
     }
     expect(privacySection).toContain('not to a terminal that is already open')
     expect(docsSection).toContain('**new** terminals only')
+  })
+
+  it('names the places a window can live that Termpolis cannot see and the variable still beats', () => {
+    for (const text of [privacySection, docsSection]) {
+      expect(text).toContain('a subagent\'s definition')
+      expect(text).toContain('`--settings` argument')
+      expect(text).toContain('organization\'s managed settings')
+    }
+    expect(docsSection).toContain('**Places it cannot see.**')
+    expect(privacySection).toContain('names a folder Termpolis did not check')
   })
 
   it('lists the limits of what it can check, one of them the config folder a script picks inside the terminal', () => {
@@ -150,5 +171,61 @@ describe('the context window is disclosed, and the disclosure matches what is re
     for (const text of [privacySection, docsSection]) {
       expect(text).not.toMatch(/guarantee|will save|saves you|you will save/i)
     }
+  })
+})
+
+/**
+ * The first-sight policy and the comparison behind it are disclosed too: v1.55 changed what the proxy does by
+ * default and keeps a local record of it, which the privacy policy and the guide must say, and say with the
+ * numbers the code uses.
+ */
+describe('the first-sight policy, the holdout and what is kept about them are disclosed', () => {
+  const privacyProxy = flat(section(privacy, '### The Claude Code compression proxy'))
+  const privacyStored = flat(section(privacy, '## Data Stored Locally'))
+  const docsProxy = flat(section(docs, '### Token Savings — the Claude Code compression proxy'))
+
+  it('says Late is the default, from how many characters, that Legacy is v1.54, and that a change applies at the next start', () => {
+    for (const text of [privacyProxy, docsProxy]) {
+      expect(text).toContain('40,000 characters')
+      expect(text).toContain('Shorten tool results')
+      expect(text).toContain('Late')
+      expect(text).toContain('Legacy')
+      expect(text).toContain('the next time Termpolis starts')
+    }
+    expect(privacyProxy).toContain('as v1.54 did')
+    expect(docsProxy).toContain('as v1.54 did')
+  })
+
+  it('says about one distinct opening message in ten always runs Legacy, chosen on the machine, and that nothing about it is sent', () => {
+    expect(privacyProxy).toContain('About one distinct opening message in ten')
+    expect(privacyProxy).toContain('chosen by a hash of the conversation\'s first message, computed on your machine')
+    expect(privacyProxy).toContain('always runs the Legacy behaviour whichever setting is on')
+    expect(privacyProxy).toContain('nothing about it is sent anywhere')
+    expect(docsProxy).toContain('About one *distinct opening message* in ten')
+    expect(docsProxy).toContain('always lands in the same group')
+  })
+
+  it('names what is kept beside each original and the two local files, and that it is counts, sizes and names only', () => {
+    expect(privacyStored).toContain('the name of the tool whose result it was, the model\'s name, the two sizes')
+    expect(privacyStored).toContain('which first-sight setting the request ran under')
+    expect(privacyStored).toContain('`userData/headroom/elision-ledger.json`')
+    expect(privacyStored).toContain('`userData/headroom/proxy-totals.json`')
+    expect(privacyStored).toContain('Counts, sizes and names only, never the content of a conversation')
+    expect(docsProxy).toContain('`headroom/elision-ledger.json`')
+    expect(docsProxy).toContain('`headroom/proxy-totals.json`')
+    expect(docsProxy).toContain('Counts, sizes and names only')
+  })
+
+  it('describes the Elision health card and the headline as the code computes them', () => {
+    expect(docsProxy).toContain('**Elision health.**')
+    expect(docsProxy).toContain('billed units avoided, net of the turns that fetched elided text and of text asked back')
+    expect(docsProxy).toContain('Retrieval turns are counted from v1.55 on')
+    expect(docsProxy).toContain('including the turn that first had to load `retrieve_full` through ToolSearch')
+  })
+
+  it('holds the numbers the documents quote to the numbers the code uses', async () => {
+    const { LATE_FLOOR_CHARS, ELISION_HOLDOUT_RATE } = await import('../../src/main/headroom/elisionPolicy')
+    expect(LATE_FLOOR_CHARS.toLocaleString('en-US')).toBe('40,000')
+    expect(ELISION_HOLDOUT_RATE).toBe(0.1) // "one in ten"
   })
 })
