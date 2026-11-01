@@ -180,6 +180,26 @@ const REVIEW = {
     "        if (/[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1) && f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)) break",
     "        if (f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a) && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break",
   ],
+  'tail: a path run followed by a listing separator is the payload of a cut key line (leadingRun)': [
+    KEY,
+    '    const lr = runsIn(text, lineStart, lineEnd, 8).filter(([, e]) => !LISTING_SEP.test(text.slice(e, e + 24)))\n    if (lr.length) {\n      const r = lr.reduce',
+    '    const lr = runsIn(text, lineStart, lineEnd, 8)\n    if (lr.length) {\n      const r = lr.reduce',
+  ],
+  // the leak findings of the final round 2: a legacy key written with a cipher of a 64-bit block that is not DES
+  'legacy: only DES takes an IV of 16 digits': [KEY, '(?:(?:DES|BF|CAST5|RC2|IDEA)[A-Z0-9-]*,', '(?:DES[A-Z0-9-]*,'],
+  'legacy: any cipher takes an IV of 16 digits': [KEY, '(?:(?:DES|BF|CAST5|RC2|IDEA)[A-Z0-9-]*,[0-9A-Fa-f]{16}', '(?:[A-Z0-9-]{3,32},[0-9A-Fa-f]{16}'],
+  // the false-removal findings of the final round 2: the END line of a certificate after a key with no END line of its own
+  'scan: any END marker closes a key block': [KEY, '      if (CLOSING_END.test(text)) {', "      if (text.startsWith('-----END ', mk) || text.startsWith('---- END ', mk)) {"],
+  "scan: an OpenVPN key's END does not close its block": [KEY, '(?: BLOCK)?|OpenVPN Static key V1)|---- END', '(?: BLOCK)?)|---- END'],
+  "scan: an SSH2 key's END does not close its block": [KEY, '|---- END SSH2 ENCRYPTED PRIVATE KEY/y', '/y'],
+  'scan: an END line cut before its dashes does not close a block': [KEY, 'OpenVPN Static key V1)|---- END', 'OpenVPN Static key V1)(?=-----)|---- END'],
+  // the false-removal findings of the final round 2: base64 of a phrase is a made-up value, not a key's member
+  "jwk: base64 of a phrase is random": [KEY, "  if (!hex && printableText(body)) return 'text'\n", ''],
+  'jwk: a hex string is read as base64 for a phrase': [KEY, "  if (!hex && printableText(body)) return 'text'", "  if (printableText(body)) return 'text'"],
+  'jwk: a phrase of 11 bytes is one': [KEY, '  if (core.length < 16 || /[^A-Za-z0-9+/]/.test(core)) return false', '  if (core.length < 12 || /[^A-Za-z0-9+/]/.test(core)) return false'],
+  'jwk: a value with a character outside base64 is read as a phrase': [KEY, '  if (core.length < 16 || /[^A-Za-z0-9+/]/.test(core)) return false', '  if (core.length < 16) return false'],
+  'jwk: one unprintable byte still makes a phrase': [KEY, "  for (const x of Buffer.from(core, 'base64')) if (x < 0x20 || x > 0x7e) return false", "  let bad = 0\n  for (const x of Buffer.from(core, 'base64')) if (x < 0x20 || x > 0x7e) bad++\n  if (bad > 1) return false"],
+  'jwk: the url-safe alphabet is not read as base64': [KEY, ".replace(/-/g, '+').replace(/_/g, '/')\n  if (core.length < 16", "\n  if (core.length < 16"],
   // the recall findings of the final round 2: a key with no line breaks, an OpenVPN key a script echoes line by line
   'valueStart: a name of any length (the = before a glued checksum)': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p + 1'],
   'valueStart: a 64-character key line and its checksum read as a name': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p - a > MAX_NAME ? a : p + 1'],

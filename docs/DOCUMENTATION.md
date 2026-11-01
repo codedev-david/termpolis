@@ -1463,10 +1463,14 @@ audit log.
   screened: the rule ids and how often each matched, never the value. A
   credential you deliberately want on the other computer should live in a file
   there, not in the prompt.
-  Not recognised: a private key in a format Termpolis can't decode (reported,
-  as above); an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
-  private lines run together with no separator; a PKCS#12 (`.pfx`) file in
-  base64; a JWK or an `RSAKeyValue` stored base64 encoded; a JWK nested inside another
+  Not recognised: a private key in a format Termpolis can't decode, or whose
+  lines were re-wrapped to alternating widths (both reported, as above); a key
+  written on one line with a `NAME=` in front of each of its lines (reported);
+  an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
+  private lines run together with no separator; a PKCS#12 (`.pfx`) file or a
+  binary OpenPGP export in base64; a key file base64 encoded twice, or from
+  UTF-16 text (Windows PowerShell's `>`); a JWK or an `RSAKeyValue` stored
+  base64 encoded; a JWK nested inside another
   JWK, or one whose start (its `kty`) an older computer's cut took; the hex
   components `openssl rsa -text` prints; a key block longer than 256 KB with no
   END line, once the end that is kept starts more than 256 KB after its BEGIN
@@ -1490,6 +1494,11 @@ audit log.
   END line and 16 or more of its characters are in what arrived, and reported
   if 80 or more of them arrived without its END line. Not so for a key written
   all on one line, echoed into a file line by line or URL-encoded whole; for a
+  key whose lines carry markup, colour codes or a blame prefix (a coloured
+  `git diff`, `git blame`, HTML tags or table cells) or another language's
+  string concatenation (SQL, Lua, MATLAB); for a listing of Windows paths in
+  which a folder's name starts with `r` or `n` (`\repos`, `\notes`), whose
+  backslash and letter read as an escaped line break; for a
   key with no END line whose cut fell inside its BEGIN line, its header lines
   (`Version`, `Comment`, `Proc-Type`, `DEK-Info`) or a string literal's line break, which
   crosses without a note; for the last line of a key written as a template

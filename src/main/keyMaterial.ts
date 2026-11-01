@@ -164,6 +164,9 @@ function nextRun(text: string, i: number, stop: number): Run | number {
 }
 
 const MARK_RE = /-----(?:BEGIN|END) |---- (?:BEGIN|END) /g
+/** The END marker that closes a key block (the BEGIN_RE kinds': a private key's, an OpenVPN static key's), at its `lastIndex`.
+ *  (Its closing dashes may be missing: an END line a cut took the end of closes it all the same.) */
+const CLOSING_END = /-----END (?:(?:[A-Z0-9]+ ){0,3}PRIVATE KEY(?: BLOCK)?|OpenVPN Static key V1)|---- END SSH2 ENCRYPTED PRIVATE KEY/y
 
 /** A cursor over BEGIN/END marker positions: next(at) is the first marker at or after `at`. Each
  *  search runs once: the answer is reused until `at` passes it. */
@@ -430,7 +433,9 @@ const BEGIN_RE = /-----BEGIN ((?:[A-Z0-9]+ ){0,3})PRIVATE KEY(?: BLOCK)?-----|--
 /** An armor or PEM header's name, at a line's start or after its frame: a colour code too, whose
  *  final `m` a terminal or a CI log glues to it (`ESC[33mProc-Type: 4,ENCRYPTED`). */
 const HEADER_WORD = /(?:^|[^A-Za-z0-9]|\x1b\[[0-9;]{0,16}m)(Proc-Type|DEK-Info|Version|Comment|Hash|Charset|MessageID): ?/
-const DEK_RE = /DEK-Info: ?(?:DES[A-Z0-9-]*,[0-9A-Fa-f]{16}|[A-Z0-9-]{3,32},[0-9A-Fa-f]{32})/
+// (a cipher's IV is its block's size: 8 bytes, 16 digits, for DES and the other 64-bit ciphers OpenSSL writes a traditional key with;
+// 16 bytes, 32 digits, for AES and the rest)
+const DEK_RE = /DEK-Info: ?(?:(?:DES|BF|CAST5|RC2|IDEA)[A-Z0-9-]*,[0-9A-Fa-f]{16}|[A-Z0-9-]{3,32},[0-9A-Fa-f]{32})/
 /** Only what ends a key line or joins two: whitespace, quotes, a concatenation, a closing bracket. */
 const JOINERS = /^[\s"'`,;+)\]}|\\]*$/
 /** A frame made of joiners, indentation and comment or quote marks only. */
@@ -664,7 +669,10 @@ function scanBlock(
       if (runs.length > 0 && gap > MAX_GAP) break
     }
     if (mk !== -1) {
-      if (text.startsWith('-----END ', mk) || text.startsWith('---- END ', mk)) {
+      // (only a private key's END line closes it: a key whose own is missing ends at its last line, and the END line of a
+      // certificate or a public key after it is not the key's)
+      CLOSING_END.lastIndex = mk
+      if (CLOSING_END.test(text)) {
         endAt = mk
         const four = text.startsWith('---- END ', mk)
         const close = four ? text.indexOf(' ----', mk + 9) : text.indexOf('-----', mk + 9)
@@ -878,7 +886,8 @@ function leadingRun(text: string, s: number, limit: number, partialHead = false)
   while (lineStart < limit) {
     const br = nextBreak(text, lineStart, limit)
     const lineEnd = br ? br[0] : limit
-    const lr = runsIn(text, lineStart, lineEnd, 8)
+    // (a run that a listing separator follows at once is a path's, as in scanBlock: a path longer than a key line is the longest run)
+    const lr = runsIn(text, lineStart, lineEnd, 8).filter(([, e]) => !LISTING_SEP.test(text.slice(e, e + 24)))
     if (lr.length) {
       const r = lr.reduce((x, y) => (y[1] - y[0] >= x[1] - x[0] ? y : x))
       const w = r[1] - r[0]
@@ -1863,7 +1872,18 @@ export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = fals
   const named = cut || core.length >= 24
   if (named && (body.match(/[-_]/g) ?? []).length >= 3 && !/[A-Z]/.test(body) && body.split(/[-_]+/).every((x) => /^[a-z0-9]{0,12}$/.test(x))) return 'slug'
   if (!hex && named && wordy(body)) return 'wordy'
+  // Every check above reads the encoded characters, and base64 of a phrase passes them all (`bXktc2VjcmV0LWtleQ`, a test
+  // secret's "my-secret-key"). A key's bytes are random: 16 of them are all printable ASCII about once in 10^7.
+  if (!hex && printableText(body)) return 'text'
   return null
+}
+
+/** Whether `body`, read as base64 or base64url, decodes to 12 bytes or more (16 characters) that are all printable ASCII. */
+function printableText(body: string): boolean {
+  const core = body.replace(/[\s=]/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  if (core.length < 16 || /[^A-Za-z0-9+/]/.test(core)) return false
+  for (const x of Buffer.from(core, 'base64')) if (x < 0x20 || x > 0x7e) return false
+  return true
 }
 
 /** A name made of words: `ExperimentalPrototypeProjects2026`, `hynix-firmware-tools`. Three or

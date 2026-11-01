@@ -322,6 +322,47 @@ describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => 
     expect(leakedWindows(r.text, [...a.slice(1, 10), ...secretLinesOf(b)])).toBe(0)
   })
 
+  it('a legacy encrypted key written with a cipher of an 8-byte block (DES, BF, CAST5, RC2, IDEA) is removed: its IV is 16 hex digits', () => {
+    const body = wrap(randomBytes(1200).toString('base64'))
+    for (const cipher of ['DES-CBC', 'DES-EDE-CBC', 'DES-EDE3-CBC', 'BF-CBC', 'CAST5-CBC', 'RC2-CBC', 'RC2-40-CBC', 'RC2-64-CBC', 'IDEA-CBC']) {
+      for (const withEnd of [true, false]) {
+        const lines = ['-----BEGIN RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', `DEK-Info: ${cipher},${randomBytes(8).toString('hex').toUpperCase()}`, '', ...body]
+        const text = `Answer follows.\n${(withEnd ? [...lines, '-----END RSA PRIVATE KEY-----'] : lines).join('\n')}\nThat was the file.`
+        const r = screenKeys(text)
+        expect(r.removed, `${cipher}/${withEnd}`).toEqual({ private_key: 1 })
+        expect(leakedWindows(r.text, body), `${cipher}/${withEnd}`).toBe(0)
+      }
+    }
+    // an IV of the wrong size for its cipher is no proof: AES takes 32 digits (any cipher is taken with that many), only the 64-bit
+    // ciphers 16, a cipher no one writes with 16 is no 64-bit one, and a 12-digit IV is none
+    for (const dek of [`AES-128-CBC,${randomBytes(8).toString('hex')}`, `FOO-CBC,${randomBytes(8).toString('hex')}`, `BF-CBC,${randomBytes(6).toString('hex')}`]) {
+      const text = ['-----BEGIN RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', `DEK-Info: ${dek}`, '', ...body, '-----END RSA PRIVATE KEY-----'].join('\n')
+      expect(screenKeys(text).text, dek).toBe(text)
+    }
+  })
+
+  it('a key with no END line of its own ends where its lines do: the END line of a certificate, a CSR or a public key after it stays', () => {
+    // The scan closed a block at ANY `-----END ` marker and the removal ran to that marker's end: a truncated key (its END line
+    // lost to a cut, `rg -A`, `head`) took the public marker line that came next with it.
+    for (const format of ['pkcs8_rsa', 'openssh', 'pgp_rsa_hdr', 'rsa_legacy_enc'] as Format[]) {
+      const [rule] = EXPECT[format]
+      for (const marker of ['-----END CERTIFICATE-----', '-----END CERTIFICATE REQUEST-----', '-----END PUBLIC KEY-----', '-----END X509 CRL-----']) {
+        const lines = K.F[format].slice(0, -1)
+        const text = `Answer follows.\n${lines.join('\n')}\n${marker}\nThat was the file.`
+        const r = screenKeys(text)
+        expect(r.removed, `${format}/${marker}`).toEqual({ [rule]: 1 })
+        expect(r.text, `${format}/${marker}`).toBe(`Answer follows.\n[REDACTED:${rule}]\n${marker}\nThat was the file.`)
+      }
+    }
+    // a private key's END of another kind, an SSH2 key's (four dashes), an OpenVPN key's and an END line cut before its closing dashes
+    // close it, and go with it
+    const p8 = K.F.pkcs8_rsa
+    const text = `${p8.slice(0, -1).join('\n')}\n-----END RSA PRIVATE KEY-----\nThat was the file.`
+    expect(screenKeys(text).text).toBe('[REDACTED:private_key]\nThat was the file.')
+    expect(screenKeys(`${K.F.ssh2.join('\n')}\nThat was the file.`).text).toBe('[REDACTED:ssh2_private_key]\nThat was the file.')
+    expect(screenKeys(`${K.F.openvpn.slice(3).join('\n')}\nThat was the file.`).text).toBe('[REDACTED:openvpn_static_key]\nThat was the file.')
+    expect(screenKeys(`${p8.slice(0, -1).join('\n')}\n-----END PRIVATE KEY\nThat was the file.`).text).toBe('[REDACTED:private_key]\nThat was the file.')
+  })
 })
 
 describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and nothing else is', () => {
@@ -617,6 +658,37 @@ describe('a key tail when the screen knows of no cut (no cutAt): the window star
     const text = `${"x".repeat(60)}\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`
     const spans = headless(text, [], { start: 60 })
     expect(spans.map((x) => [x.cls, x.why])).toEqual([['flag', 'tail-unanchored']])
+  })
+})
+
+describe('F4: a key with no END line, an older computer cut it, in a listing whose path is a long run of letters', () => {
+  // The docs promise that 80 or more characters of such a key arrive reported. The longest base64-alphabet run of each line was
+  // taken for its payload, and a path of 65 characters or more (/Users/alice/Projects/PaymentService/src/main/resources/certs/private)
+  // is longer than the key's 64-character line: no key run was found, and the key crossed with no note.
+  const PATHS = ['/etc/ssl/private/server', '/Users/alice/Projects/PaymentService/src/main/resources/certs/private', `./${'a'.repeat(90)}/deploy`]
+  const FRAMED: Record<string, (path: string, ls: string[]) => string> = {
+    'rg -n': (p, ls) => ls.map((l, i) => `${p}.key:${i + 1}:${l}`).join('\n'),
+    'rg -A (context lines)': (p, ls) => ls.map((l, i) => (i === 0 ? `${p}.key:${i + 1}:${l}` : `${p}.key-${i + 1}-${l}`)).join('\n'),
+    'grep -r (no line numbers)': (p, ls) => ls.map((l) => `${p}.key:${l}`).join('\n'),
+    'rg with CRLF line ends': (p, ls) => ls.map((l, i) => `${p}.key:${i + 1}:${l}`).join('\r\n'),
+  }
+  it.each(Object.keys(FRAMED))('%s: every cut of the key with 80 or more of its characters left leaves no key line in view without a note', (listing) => {
+    for (const format of ['pkcs8_rsa', 'pgp_rsa_nohdr'] as Format[]) {
+      const lines = K.F[format].slice(0, -1) // no END line
+      for (const path of PATHS) {
+        const text = FRAMED[listing](path, lines)
+        const secret = secretLinesOf(lines)
+        const first = text.indexOf(secret[0])
+        const keyCharsAfter = (o: number): number => secret.reduce((n, s) => n + Math.max(0, text.indexOf(s) + s.length - Math.max(o, text.indexOf(s))), 0)
+        for (let o = first; o < text.length - 20; o += 37) {
+          if (keyCharsAfter(o) < 80) continue
+          const r = screenKeys(text.slice(o), { cutStart: true })
+          if (leakedWindows(r.text, secret) === 0) continue
+          const label = `${format}/${path.length} chars of path/cut at ${o - first}`
+          expect(Object.keys(r.removed).length + Object.keys(r.flagged).length, label).toBeGreaterThan(0)
+        }
+      }
+    }
   })
 })
 
@@ -2383,6 +2455,46 @@ describe('looksRandom and placeholderWhy', () => {
     expect(placeholderWhy(randomBytes(16).toString('hex'), 'b62')).toBeNull() // hex in a base62 slot: not one case
   })
 
+  it('names a value that decodes to a phrase, and passes the random ones of every size a key has', () => {
+    // The checks above read the encoded characters, and base64 of a phrase passes every one of them: a test secret
+    // ("my-super-secret-key") in a JWK. A key's bytes are random: 16 of them are all printable ASCII about once in 10^7.
+    // (the last two encode with a - or _ in base64url and a + or / in base64)
+    for (const phrase of ['my-super-secret-key', 'this is a test key for unit tests', 'change-me-in-production-please', 'not-a-real-key-just-an-example-value', 'Some documentation text that is base64 encoded', 'what is the secret key?? maybe>>>', 'the test key is ???~~~ not real']) {
+      expect(placeholderWhy(Buffer.from(phrase).toString('base64url'), 'b62'), phrase).toBe('text')
+      expect(placeholderWhy(Buffer.from(phrase).toString('base64'), 'b62'), phrase).toBe('text')
+    }
+    // (twelve bytes is the least: a shorter run of letters is a word the checks above judged)
+    expect(placeholderWhy(Buffer.from('eleven bytes').toString('base64'), 'b62')).toBe('text')
+    expect(placeholderWhy(Buffer.from('ten bytes!!').toString('base64'), 'b62')).not.toBe('text')
+    // the real sizes of a key's members, 20,000 of each (a fixed stream of bytes, so what this asserts of a statistic is the same every run):
+    // none of them is taken for a phrase
+    const stream = (size: number, i: number): Buffer => Buffer.concat(Array.from({ length: Math.ceil(size / 32) }, (_, k) => createHash('sha256').update(`${size}/${i}/${k}`).digest())).subarray(0, size)
+    for (const size of [16, 32, 48, 64, 128, 256]) {
+      for (let i = 0; i < (size > 64 ? 1_000 : 20_000); i++) {
+        expect(placeholderWhy(stream(size, i).toString('base64url'), 'b62'), `${size}/${i}`).not.toBe('text')
+      }
+    }
+    // hex is read as hex, never as base64: these 32 digits, read as base64, are 24 printable bytes
+    const hex = ['a0d1', 'b1c3', 'c2d9', 'd3de', 'e0d4', 'a2c5', 'b3dc', 'c0d6'].join('')
+    expect(Buffer.from(hex, 'base64').every((x) => x >= 0x20 && x <= 0x7e)).toBe(true)
+    expect(placeholderWhy(hex, 'hex')).toBeNull()
+    expect(placeholderWhy(hex, 'b62')).toBe('text')
+  })
+
+  it('leaves a JWK or an RSAKeyValue whose private member is a phrase byte for byte, and takes the random ones', () => {
+    const phrase = (s: string): string => Buffer.from(s).toString('base64url')
+    const text = JSON.stringify({ kty: 'oct', k: phrase('my-super-secret-key-for-tests') })
+    expect(screenKeys(text).text).toBe(text)
+    expect(screenKeys(text).removed).toEqual({})
+    const rsa = `<RSAKeyValue><Modulus>${randomBytes(128).toString('base64')}</Modulus><Exponent>AQAB</Exponent><P>${Buffer.from('lorem ipsum dolor sit amet, consectetur adipiscing elit').toString('base64')}</P><Q>${Buffer.from('sed do eiusmod tempor incididunt ut labore et dolore magna').toString('base64')}</Q></RSAKeyValue>`
+    expect(screenKeys(rsa).text).toBe(rsa)
+    expect(screenKeys(rsa).removed).toEqual({})
+    // a random oct key of 16 bytes (the least) is removed, its object left parseable
+    const real = JSON.stringify({ kty: 'oct', k: randomBytes(16).toString('base64url') })
+    const r = screenKeys(real)
+    expect(r.removed).toEqual({ jwk_private_key: 1 })
+    expect(JSON.parse(r.text.replace('[REDACTED:jwk_private_key]', 'x')).kty).toBe('oct')
+  })
 })
 
 describe('detectorStart: each detector looks back for its own opener', () => {
