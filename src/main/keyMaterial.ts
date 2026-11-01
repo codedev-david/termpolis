@@ -244,7 +244,7 @@ export interface Structure {
   priv?: [number, number]
 }
 
-/** 1.2.840.10045.2.1 (id-ecPublicKey) and 1.3.101.110-113 (X25519, X448, Ed25519, Ed448). */
+/** 1.2.840.10045.2.1: id-ecPublicKey. (X25519, X448, Ed25519 and Ed448 are 1.3.101.110-113, in pkcs8PrivateAt.) */
 const EC_OID = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
 
 /** Where the private value starts and ends in a PKCS#8 key whose algorithm `oid` is an EC or EdDSA/XDH
@@ -671,8 +671,8 @@ function scanBlock(
 
   if (rule === 'openvpn_static_key') {
     // The file's own shape: lines of exactly 32 hex digits, a frame in front and joiners after (a key written
-    // on one line: the next value after a space). A list of digests (sha256sums: 64 digits; md5sums: 32 and
-    // a file name) is not one, however random its digits look.
+    // on one line: the next value after a space, and whatever follows the last). A list of digests (sha256sums:
+    // 64 digits; md5sums: 32 and a file name) is not one, however random its digits look.
     const hex = runs
       .map(([s, e]) => {
         // (a frame glued on: a diff's +, a coloured diff's `32m+`)
@@ -680,8 +680,8 @@ function scanBlock(
         if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''
         const br = nextBreak(text, e, Math.min(text.length, e + 1024))
         const stop = Math.min(br ? br[0] : text.length, nextMark(e) ?? text.length, e + 1024)
-        const rest = blankNl(text.slice(e, stop)).replace(/\x1b\[[0-9;]*m/g, ' ').replace(/(?<![A-Za-z0-9+/=])\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/g, ' ')
-        return KEY_LINE_TAIL.test(rest) ? v : ''
+        const rest = blankNl(text.slice(e, stop)).replace(/\x1b\[[0-9;]*m/g, ' ')
+        return /^[\s"'`,;+]{1,8}\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) ? v : ''
       })
       .join('')
     return hex.length >= 256 && looksRandom(hex) ? span('remove', 'openvpn-hex') : span('flag', 'openvpn-header')

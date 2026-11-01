@@ -13,7 +13,7 @@ vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
 import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
 import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS } from '../../src/main/linkedJobs'
-import { COST_SHAPES } from './fixtures/costShapes'
+import { COST_SHAPES, within } from './fixtures/costShapes'
 import { makeKeys, wrap, type KeySet } from './fixtures/freshKeys'
 
 const GH = `ghp_${'b'.repeat(36)}`
@@ -68,12 +68,12 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
 
   it('screens the end of a 465,000-character answer of each kind in 300 ms, and the end of its error in 60 ms', () => {
     // Measured at 17-51 ms and 0.7-5.3 ms (judge's p6), and under coverage, which makes the detectors four
-    // or five times slower, at 46-127 ms and 4-20 ms. The bounds leave a runner a third slower than this
-    // laptop (and a loaded one) room; the shapes below, not these, are what catch a quadratic.
+    // or five times slower, at 46-127 ms and 4-20 ms. The bounds are for a quiet laptop and are multiplied by
+    // how much slower this process is right now (within); the shapes below, not these, catch a quadratic.
     for (const [kind, text] of Object.entries(KINDS)) {
       expect(text.length).toBe(N)
-      expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS)), kind).toBeLessThan(300)
-      expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), `${kind}, error`).toBeLessThan(60)
+      expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS)), kind).toBeLessThan(within(300))
+      expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), `${kind}, error`).toBeLessThan(within(60))
     }
   })
 
@@ -95,9 +95,9 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     // fix, 5.9 s and 0.5 s, and an open member over 4,000 spaces 9 s a window. (Bounds for what
     // costs seconds, with room for a loaded runner: what an answer costs is the 150 ms test above's.)
     const text = ONE_LINE[shape](N)
-    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS))).toBeLessThan(1_000)
-    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)), 'cut by an older doing computer').toBeLessThan(1_000)
-    expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), 'error').toBeLessThan(100)
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS))).toBeLessThan(within(1_000))
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)), 'cut by an older doing computer').toBeLessThan(within(1_000))
+    expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), 'error').toBeLessThan(within(100))
   })
 
   const BS = '\\'
@@ -120,9 +120,9 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
   it.each(Object.keys(ROUND1))('screens the end of 465,000 characters of %s in under a second, as both computers do, and its error in 100 ms', (shape) => {
     // (as above: bounds for what costs seconds)
     const text = ROUND1[shape](N)
-    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS))).toBeLessThan(1_000)
-    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)), 'cut by an older doing computer').toBeLessThan(1_000)
-    expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), 'error').toBeLessThan(100)
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS))).toBeLessThan(within(1_000))
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, true)), 'cut by an older doing computer').toBeLessThan(within(1_000))
+    expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), 'error').toBeLessThan(within(100))
   })
 
   /** Inputs built to make a detector or a rule do the most work per character. */
@@ -160,8 +160,8 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
   it.each(Object.keys(COST_SHAPES))('%s is screened and masked in step with its length', (shape) => {
     // Each took seconds to minutes before (a run of 60,000 backslashes 3.6 s, 1,000 plus signs 1.2 s).
     const [text, ask, bound] = COST_SHAPES[shape]
-    expect(bestOf3(() => screenText(text, ask.keep, SCREEN_LOOKBACK_CHARS, ask.cutStart), bound * 4), shape).toBeLessThan(bound)
-    expect(bestOf3(() => maskForDisplay(text), bound * 4), `${shape}, masked`).toBeLessThan(bound)
+    expect(bestOf3(() => screenText(text, ask.keep, SCREEN_LOOKBACK_CHARS, ask.cutStart), within(bound) * 4), shape).toBeLessThan(within(bound))
+    expect(bestOf3(() => maskForDisplay(text), within(bound) * 4), `${shape}, masked`).toBeLessThan(within(bound))
   })
 
   it('masks BEGIN lines on one line in step with their number: 4 MB of them take under 12 times as long as 1 MB', () => {

@@ -28,7 +28,7 @@ import {
   structureOf,
   type KeySpan,
 } from '../../src/main/keyMaterial'
-import { COST_SHAPES } from './fixtures/costShapes'
+import { COST_SHAPES, within } from './fixtures/costShapes'
 import { JOIN, T1_JOININGS, der, leakedWindows, makeKeys, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
 
 /** What a screen makes of `text` with the detectors alone (screenText adds the token rules): the
@@ -310,6 +310,20 @@ describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and no
       expect(r.flagged, name).toEqual({ openvpn_static_key: 1 })
     }
   })
+  it('a key written on one line is still one with words after it, however many', () => {
+    const key = K.F.openvpn
+    const values = key.filter((l) => /^[0-9a-f]{32}$/.test(l))
+    expect(values).toHaveLength(16)
+    for (const tail of [' and that is all', ' ' + 'and then some more words of text '.repeat(60), '']) {
+      for (const end of [true, false]) {
+        const text = `ta.key: ${key[3]} ${values.join(" ")}${end ? ` ${key[key.length - 1]}` : ""}${tail}\nNext line.\n`
+        const r = screenKeys(text)
+        expect(r.removed, JSON.stringify([tail.length, end])).toEqual({ openvpn_static_key: 1 })
+        expect(leakedWindows(r.text, values), JSON.stringify([tail.length, end])).toBe(0)
+        expect(r.text.startsWith('ta.key: [REDACTED:openvpn_static_key]'), JSON.stringify([tail.length, end])).toBe(true)
+      }
+    }
+  })
   it('and a key is removed from the same header whatever lines come after it', () => {
     const key = K.F.openvpn
     const text = `${documents["md5sums"]}\n${key.join("\n")}\n`
@@ -479,6 +493,17 @@ describe('T1 K4: a PGP export whose checksum line sits behind a listing path wit
         expect(r.removed, `${n}/${JSON.stringify(dot)}`).toEqual({})
       }
     }
+  })
+})
+
+describe('a key tail when the screen knows of no cut (no cutAt): the window starts inside the text', () => {
+  it('is reported, not removed, when its head is in the text above the window', () => {
+    // three key-shaped lines above an END line, the window starting 60 characters in: a hash list or a
+    // dump whose first line the window's start fell under is no key the window cut off
+    const lines = Array.from({ length: 3 }, () => randomBytes(48).toString('base64').replace(/[+/=]/g, 'x'))
+    const text = `${"x".repeat(60)}\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`
+    const spans = headless(text, [], { start: 60 })
+    expect(spans.map((x) => [x.cls, x.why])).toEqual([['flag', 'tail-unanchored']])
   })
 })
 
@@ -2090,6 +2115,61 @@ describe('the structure checks, on decoded bytes', () => {
   })
 })
 
+describe("where a key's private value is in its DER: the first line of an EC or EdDSA key", () => {
+  const seq = (...parts: Buffer[]): Buffer => der(0x30, Buffer.concat(parts))
+  const int = (n: number): Buffer => der(0x02, Buffer.from([n]))
+  const oid = (hex: string): Buffer => der(0x06, Buffer.from(hex, 'hex'))
+  const octet = (b: Buffer): Buffer => der(0x04, b)
+  const EC_PUBLIC_KEY = '2a8648ce3d0201'
+  const P256 = '2a8648ce3d030107'
+  const scalar = (): Buffer => randomBytes(32)
+  /** A PKCS#8 key: version 0, the algorithm (its OID, then the parameters), the key bytes. */
+  const pkcs8 = (alg: Buffer, inner: Buffer): Buffer => seq(int(0), alg, octet(inner))
+  const priv = (b: Buffer): [number, number] | undefined => structureOf(b)?.priv
+
+  it('is found in a SEC1 key, an EC PKCS#8 key and the key of an Ed25519, X25519, Ed448 or X448 PKCS#8 key', () => {
+    const d = scalar()
+    const sec1 = seq(int(1), octet(d), der(0xa0, oid(P256)))
+    expect(priv(sec1)).toEqual([sec1.indexOf(d), sec1.indexOf(d) + 32])
+    const ecKey = seq(int(1), octet(d))
+    const ec = pkcs8(seq(oid(EC_PUBLIC_KEY), oid(P256)), ecKey)
+    expect(priv(ec)).toEqual([ec.indexOf(d), ec.indexOf(d) + 32])
+    for (const last of ['70', '71', '6e', '6f']) {
+      const curve = pkcs8(seq(oid('2b65' + last)), octet(d))
+      expect(priv(curve), last).toEqual([curve.lastIndexOf(d), curve.lastIndexOf(d) + 32])
+    }
+  })
+
+  it('is not found where the key is something else, or malformed: an RSA key, another OID, a key that is not what its OID says', () => {
+    const d = scalar()
+    // RSA: its first line holds a modulus
+    expect(priv(pkcs8(seq(oid('2a864886f70d010101'), der(0x05, Buffer.alloc(0))), seq(int(0), der(0x02, randomBytes(40)))))).toBeUndefined()
+    // an Ed-curve OID's neighbours: 1.3.101.112 is the last, 1.3.101.113 too; 1.3.101.114 and 1.3.100.110 are not
+    expect(priv(pkcs8(seq(oid('2b6572')), octet(d)))).toBeUndefined()
+    expect(priv(pkcs8(seq(oid('2b646e')), octet(d)))).toBeUndefined()
+    expect(priv(pkcs8(seq(oid('2c656e')), octet(d)))).toBeUndefined()
+    // an EC key whose ECPrivateKey is not a SEQUENCE, has no version, or whose key is not an OCTET STRING
+    expect(priv(pkcs8(seq(oid(EC_PUBLIC_KEY), oid(P256)), randomBytes(48)))).toBeUndefined()
+    expect(priv(pkcs8(seq(oid(EC_PUBLIC_KEY), oid(P256)), seq(octet(d), octet(d))))).toBeUndefined()
+    expect(priv(pkcs8(seq(oid(EC_PUBLIC_KEY), oid(P256)), seq(int(1), int(2))))).toBeUndefined()
+    // a curve key that is not an OCTET STRING
+    expect(priv(pkcs8(seq(oid('2b656e')), der(0x02, d)))).toBeUndefined()
+    // cut short: the key's bytes end before its first field
+    expect(structureOf(pkcs8(seq(oid(EC_PUBLIC_KEY), oid(P256)), Buffer.alloc(0)).subarray(0, 40))?.priv).toBeUndefined()
+  })
+
+  it('a first line that holds fewer than 12 bytes of the value is only reported: a long algorithm parameter pushes the value down the line', () => {
+    const d = scalar()
+    const long = der(0x06, randomBytes(34))
+    const key = pkcs8(seq(oid(EC_PUBLIC_KEY), long), seq(int(1), octet(d)))
+    const line = wrap(key.toString('base64'), 64)[0]
+    const [from] = priv(key) as [number, number]
+    expect(Math.floor((line.length * 3) / 4) - from).toBeLessThan(12)
+    const text = ['-----BEGIN PRIVATE KEY-----', line].join('\n')
+    expect(keyBlocks(text).map((b) => [b.cls, b.why])).toEqual([['flag', 'pkcs8-example']])
+  })
+})
+
 describe('looksRandom and placeholderWhy', () => {
   it('tells random base64 and hex from text, fills, sequences and short values', () => {
     expect(looksRandom(randomBytes(48).toString('base64'))).toBe(true)
@@ -2375,7 +2455,7 @@ describe('the detectors cost in step with the text, whatever the other computer 
     // tag, every way of sharing a run of spaces between them was tried (4,000 spaces took 9 s).
     for (const ws of [' ', '\n', '\r\n\t']) {
       const open = `<RSAKeyValue><D>${ws.repeat(3000)}`
-      expect(bestOf3(() => rsaKeyValues(open)), JSON.stringify(ws)).toBeLessThan(50)
+      expect(bestOf3(() => rsaKeyValues(open)), JSON.stringify(ws)).toBeLessThan(within(50))
       expect(rsaKeyValues(open)).toEqual([])
     }
     // whitespace around a value, inside its tags, is the XML's: only the value goes
@@ -2404,7 +2484,7 @@ describe('the detectors cost in step with the text, whatever the other computer 
       `-----BEGIN PRIVATE KEY----- ${run} `,
     ]) {
       const line = unit.repeat(Math.ceil(160_000 / unit.length))
-      expect(bestOf3(() => keySpans(line)), unit).toBeLessThan(1_000)
+      expect(bestOf3(() => keySpans(line)), unit).toBeLessThan(within(1_000))
       // a line break every few markers was always fast: the result is the same as with none
       expect(keyBlocks(line).length).toBe(Math.ceil(160_000 / unit.length))
     }
@@ -2412,7 +2492,7 @@ describe('the detectors cost in step with the text, whatever the other computer 
 
   it.each(Object.keys(COST_SHAPES))('%s is screened in step with its length', (shape) => {
     const [text, opts, bound] = COST_SHAPES[shape]
-    expect(bestOf3(() => screenKeys(text, opts), bound * 4), shape).toBeLessThan(bound)
+    expect(bestOf3(() => screenKeys(text, opts), within(bound) * 4), shape).toBeLessThan(within(bound))
   })
 })
 

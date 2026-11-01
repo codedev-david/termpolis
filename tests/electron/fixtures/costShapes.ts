@@ -3,6 +3,31 @@
 // twice per job) at 1,000 to 100,000 characters, and takes milliseconds now. keyMaterial.test.ts and
 // linkedScreenCost.test.ts both screen them. Keys are fresh random base64 and never printed.
 import { randomBytes } from 'crypto'
+import { headless, keySpans } from '../../../src/main/keyMaterial'
+
+const QUIET_MS = 14
+let sample = ''
+let measured = { at: 0, factor: 1 }
+/** How much slower than a quiet laptop this process runs the detectors right now. Coverage's instrumentation (four to five
+ *  times) and a loaded runner slow every screen alike, and a bound that fits a quiet machine fails a busy one. A fixed piece of
+ *  detector work (about `QUIET_MS` ms there) is timed, best of five, and its ratio to that is the factor a bound is multiplied
+ *  by (never under 1); redone at most every 5 s. A text that makes a detector quadratic costs a hundred times a bound, not five. */
+export function slowdown(): number {
+  if (Date.now() - measured.at < 5_000) return measured.factor
+  if (!sample) {
+    sample = Array.from({ length: 4_000 }, (_, i) => `line ${i}: the quick brown fox ${i % 7 === 0 ? "ghp_" + "x".repeat(30) : "jumps over"} the lazy dog ${"AbCdEfGhIj".repeat(i % 5)} -----BEGIN CERTIFICATE----- ${"QUJDREVGR0hJSktM".repeat(i % 4)}`).join('\n')
+  }
+  let best = Infinity
+  for (let i = 0; i < 5; i++) {
+    const t = performance.now()
+    headless(sample, keySpans(sample).blocks, { start: 0 })
+    best = Math.min(best, performance.now() - t)
+  }
+  measured = { at: Date.now(), factor: Math.max(1, best / QUIET_MS) }
+  return measured.factor
+}
+/** A bound in milliseconds, for this process right now. */
+export const within = (ms: number): number => ms * slowdown()
 
 /** How the screen is asked: the end it keeps, and whether an older doing computer cut the text. */
 export interface CostAsk {
