@@ -19,6 +19,7 @@ vi.mock('../../src/renderer/src/lib/accountSwitchRun', () => ({
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { newTerminalOn, startSwitch } from '../../src/renderer/src/lib/accountSwitchRun'
 import { LimitCard } from '../../src/renderer/src/components/Accounts/LimitCard'
+import { beginModelSwitch, endModelSwitch, modelSwitchTarget, resetModelSwitches } from '../../src/renderer/src/lib/modelSwitchState'
 import { CLAUDE_EXIT_AFTER_A_TURN, CLAUDE_SESSION_ID } from '../fixtures/agentExitOutput'
 
 
@@ -74,6 +75,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.useRealTimers()
+  resetModelSwitches()
 })
 
 const openLimit = (c: LimitContext = ctx()) => act(() => { st().openLimitChooser(c) })
@@ -411,6 +413,34 @@ describe('the other ways', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
     expect(screen.getByTestId('limit-card-error')).toHaveTextContent('Switching Claude to Sonnet failed, so nothing more was typed. The terminal is as the failure left it.')
     expect(st().relaunching).toEqual({})
+  })
+
+  it('claims the terminal\'s model switch for as long as it runs, so the menu shows "Restarting on …" and no second pick overlaps it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    agentQuits([false, false, true], CLAUDE_EXIT_AFTER_A_TURN)
+    card()
+    openLimit(OPUS())
+    await act(async () => { click('limit-card-model') })
+    expect(modelSwitchTarget('t1')).toBe('sonnet')
+    // A pick from the header's menu meanwhile is refused by the same guard.
+    expect(beginModelSwitch('t1', 'haiku')).toBe(false)
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(modelSwitchTarget('t1')).toBeUndefined()
+    expect(beginModelSwitch('t1', 'haiku')).toBe(true)
+    endModelSwitch('t1')
+  })
+
+  it('types nothing when the header\'s menu has a model switch under way on this terminal', async () => {
+    expect(beginModelSwitch('t1', 'haiku')).toBe(true)
+    card()
+    openLimit(OPUS())
+    await act(async () => { click('limit-card-model') })
+    expect(screen.getByTestId('limit-card-error')).toHaveTextContent('Termpolis didn\'t change the model: an account switch or another model change is running in this terminal.')
+    expect(accounts.modelHold).not.toHaveBeenCalled()
+    expect(termpolis.writeToTerminal).not.toHaveBeenCalled()
+    // The header's switch is still the terminal's.
+    expect(modelSwitchTarget('t1')).toBe('haiku')
+    endModelSwitch('t1')
   })
 
   it('offers the one click for any terminal that runs plain claude, its .exe included, and only advises for a wrapper', async () => {

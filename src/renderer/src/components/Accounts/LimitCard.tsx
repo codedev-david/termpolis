@@ -22,6 +22,8 @@ import { newTerminalOn, startSwitch } from '../../lib/accountSwitchRun'
 import { modelHoldBridge, relaunchHeld, terminalRelaunchIo } from '../../lib/modelRelaunch'
 import { relaunchNotice } from '../../lib/modelRelaunchNotice'
 import { PROVIDER_LABEL, providerForCommand } from '../../lib/modelCatalog'
+import { beginModelSwitch, endModelSwitch } from '../../lib/modelSwitchState'
+import { MODEL_HELD } from '../../../../shared/accountSwitch'
 import { launchAgents } from '../../lib/agentLaunch'
 import { SMALL_BUTTON, SMALL_PRIMARY, STOP_CARD } from './ui'
 
@@ -121,6 +123,9 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
    *  No account changes: the shell keeps the account's variable. */
   const toModel = async (alias: string): Promise<void> => {
     const target = alias.charAt(0).toUpperCase() + alias.slice(1)
+    // The terminal's model switch, claimed as the header's menu claims it: the menu then reads
+    // "Restarting on …", and no pick from either place overlaps this one.
+    if (!beginModelSwitch(terminal.id, alias)) return setError(`Termpolis didn't change the model: ${MODEL_HELD}.`)
     try {
       const result = await relaunchHeld({
         terminalId: terminal.id, provider: 'claude', modelId: alias, catalog: null, launchCommand: terminal.agentCommand,
@@ -131,12 +136,15 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
         io: terminalRelaunchIo(terminal.id),
       })
       if ('refused' in result) return setError(`Termpolis didn't change the model: ${result.refused}.`)
-      const { text, reverted } = relaunchNotice(result.outcome, { provider: 'claude', label: PROVIDER_LABEL.claude, target, agentCommand: terminal.agentCommand })
-      if (reverted) return setError(text ?? `Termpolis didn't change the model: ${target} isn't one Claude Code offers.`)
-      if (text) store().setMemoryNotice(text)
+      const notice = relaunchNotice(result.outcome, { provider: 'claude', label: PROVIDER_LABEL.claude, target, agentCommand: terminal.agentCommand })
+      // Nothing was started: the card stays, with why, for another try or another way out.
+      if (notice.reverted) return setError(notice.text)
+      if (notice.text) store().setMemoryNotice(notice.text)
       leave()
     } catch {
       setError(`Switching ${PROVIDER_LABEL.claude} to ${target} failed, so nothing more was typed. The terminal is as the failure left it.`)
+    } finally {
+      endModelSwitch(terminal.id)
     }
   }
 

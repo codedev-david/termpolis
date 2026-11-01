@@ -14,12 +14,9 @@ export interface RelaunchNoticeContext {
   agentCommand: string | null | undefined
 }
 
-export interface RelaunchNotice {
-  /** The line to show, or null when there is nothing to say (a clean relaunch). */
-  text: string | null
-  /** Nothing was started: the picker must not go on claiming the new model. */
-  reverted: boolean
-}
+/** The line to show (null when there is nothing to say: a clean relaunch), and whether nothing was
+ *  started, so the picker must not go on claiming the new model. A reverted one always says why. */
+export type RelaunchNotice = { text: string | null; reverted: false } | { text: string; reverted: true }
 
 export function relaunchNotice(outcome: RelaunchOutcome, c: RelaunchNoticeContext): RelaunchNotice {
   const { label, target } = c
@@ -47,6 +44,6 @@ export function relaunchNotice(outcome: RelaunchOutcome, c: RelaunchNoticeContex
       return { text: `⚠️ ${label} had not quit after ${EXIT_CEILING_MS / 1000} s, so Termpolis left it alone: it pressed Ctrl+C three times and typed nothing else. If it is still running, it is on its previous model; if it is at a prompt, start ${label} again.`, reverted: true }
     default:
       // 'invalid': not a model the provider offers; nothing was sent.
-      return { text: null, reverted: true }
+      return { text: `⚠️ ${label} does not offer ${target}, so Termpolis changed nothing.`, reverted: true }
   }
 }
