@@ -1227,8 +1227,8 @@ function decodedHead(text: string, runs: Run[], end: string): boolean {
  *  rest of the run from every one, n * n. */
 const BREAKS = /\r\n|\r|\n|(?<!\\)\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]/
 /** What a cut leaves of a DEK-Info line's rest: a header name's end, a cipher's end, an IV's end, and
- *  what a listing, a log or a literal adds after it (joiners). */
-const DEK_REMNANT = /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?[\s"'`,;+.&_)\]}|\\]*$/
+ *  what a listing, a log or a literal adds after it (joiners; `cat -A` ends every line in `$`). */
+const DEK_REMNANT = /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?[\s"'`,;+.&_)\]}|\\$]*$/
 
 /** Whether a legacy encrypted PEM key's DEK-Info line is in the 4 lines above the key lines
  *  `runs`, or, at the start of a text another computer cut (`cutText`), what its cut left of one
@@ -1247,11 +1247,14 @@ function legacyAbove(text: string, runs: Run[], floor: number, cutText: boolean)
   // DEK-Info line's end left none of it)
   const frame = frameAt(text, ls, runs[0][0])
   const own = (l: string): string => frameOf(l.slice(-512)).slice(-64)
-  const blank = (l: string): boolean => /^[\s\d:|>#*+-]*$/.test(l) || FRAGMENT.test(l) || (frame !== '' && own(l) === frame)
+  // (a blank line in a literal's frame closes the quote it opens: `    r""` under `    r"`; cat -A ends it in `$`)
+  const blank = (l: string): boolean =>
+    /^[\s\d:|>#*+$-]*$/.test(l) || FRAGMENT.test(l) || (frame !== '' && (own(l) === frame || (own(l).startsWith(frame) && FRAGMENT.test(own(l).slice(frame.length)))))
   // (the first line: the rest of the DEK-Info line, or of the line break or newline constant that ended
-  // it, or, the cut having taken it whole, the rest of the frame of the blank line under it)
+  // it, whose literal's quote and continuation backslash (`n" \`) or `$` follow, or, the cut having taken
+  // it whole, the rest of the frame of the blank line under it)
   const head = (l: string): boolean =>
-    DEK_REMNANT.test(l) || blank(l) || escTail(l.replace(/[\s"'`,;+.&_]+$/, '')) || nlTail(l) || (frame !== '' && own(l) !== '' && loose(frame).endsWith(loose(own(l))))
+    DEK_REMNANT.test(l) || blank(l) || escTail(l.replace(/[\s"'`,;+.&_\\$]+$/, '')) || nlTail(l) || (frame !== '' && own(l) !== '' && loose(frame).endsWith(loose(own(l))))
   return lines.length >= 2 && head(lines[0]) && lines.slice(1).every(blank)
 }
 

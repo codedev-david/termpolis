@@ -1487,6 +1487,33 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
     expect(cuts).toBeGreaterThan(4_000)
   })
 
+  it('F-B: and in a Python raw string, a Python or Rust line continuation, and cat -A, where the blank line under the headers is r"", "\\n" \\ or $', () => {
+    // (the lines the cut left of the headers end in a joiner the first rule did not know: the raw string's r before its
+    // quotes, a continuation's backslash, the `$` cat -A puts at each line's end. Every offset, not every second:
+    // two of these leaked at one offset only)
+    const more: Record<string, (ls: string[]) => string> = {
+      py_raw: (ls) => 'KEY = (\n' + ls.map((l) => `    r"${l}"`).join('\n') + '\n)',
+      py_backslash: (ls) => 'KEY = ' + ls.map((l) => `"${l}\\n"`).join(' \\\n    '),
+      rust_cont: (ls) => 'let key = "' + ls.join('\\n\\\n') + '";',
+      cat_A: (ls) => ls.map((l) => `${l}$`).join('\n'),
+    }
+    const lines = K.F.rsa_legacy_enc
+    const secret = secretLinesOf(lines)
+    let cuts = 0
+    for (const [joining, join] of Object.entries(more)) {
+      const text = join(lines) + '\nThe deploy finished.\n'
+      const firstBody = text.indexOf(secret[0].slice(0, 16))
+      for (let at = Math.max(1, firstBody - 260); at < firstBody; at++) {
+        for (const lead of ['', '…']) {
+          const r = screenKeys(lead + text.slice(at), { cutStart: true })
+          cuts++
+          expect(leakedWindows(r.text, secret), `${joining} cut ${firstBody - at} before the first key line${lead ? ', after an ellipsis' : ''}`).toBe(0)
+        }
+      }
+    }
+    expect(cuts).toBeGreaterThan(1_000)
+  })
+
   it('FR-4: an older computer cut through a key joined by escapes, newline constants or a per-line suffix: taken from its END line', () => {
     const joinings: Record<string, (ls: string[]) => string> = {
       json_rn: (ls) => `{"key": "${ls.join(`${BS}r${BS}n`)}${BS}r${BS}n"}`,
