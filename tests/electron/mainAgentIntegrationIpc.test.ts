@@ -859,6 +859,10 @@ describe('Settings ▸ Accounts wiring', () => {
     H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })
     expect(() => write('x')).not.toThrow()
     expect(mockWriteToTerminal).toHaveBeenLastCalledWith('t-typed', 'x')
+    // Only text is a typed line: a write that is not a string (a malformed message) is shown to the watch as nothing.
+    H.noteTypedInput.mockClear()
+    for (const h of ipcOnHandlers.get('terminal:write') ?? []) h({}, { id: 't-typed', data: 42 })
+    expect(H.noteTypedInput).not.toHaveBeenCalled()
   })
 
   it('drops the renderer\'s keys, and refuses MCP\'s, for a terminal a switch holds (R7)', () => {

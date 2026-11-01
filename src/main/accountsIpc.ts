@@ -137,12 +137,12 @@ export const OWN_LINE_MS = 10_000
 /** The lines main built for each terminal (launch-line), each until it is typed or OWN_LINE_MS
  *  pass: typed through terminal:write, one of them is Termpolis's own line, not a change by hand
  *  (R1). */
-const ownLines = new Map<string, Array<{ line: string; until: number; agent?: AccountAgent }>>()
+const ownLines = new Map<string, Array<{ line: string; until: number; agent: AccountAgent }>>()
 
 /** Remembers a line main built for a terminal, for OWN_LINE_MS: once typed, it is Termpolis's own,
  *  and starts `agent` (a launch's line can name it otherwise: a test shim, a wrapper). */
-function noteOwnLine(terminalId: string, line: string, now: number, agent?: AccountAgent): void {
-  ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > now), { line, until: now + OWN_LINE_MS, ...(agent ? { agent } : {}) }])
+function noteOwnLine(terminalId: string, line: string, now: number, agent: AccountAgent): void {
+  ownLines.set(terminalId, [...(ownLines.get(terminalId) ?? []).filter((l) => l.until > now), { line, until: now + OWN_LINE_MS, agent }])
 }
 /** What was typed into each terminal since its last Enter, gathered from keystrokes. */
 const typedLines = new Map<string, string>()
@@ -356,7 +356,7 @@ function noteLine(terminalId: string, line: string, now: number, lookNow: () => 
     const [own] = mine.splice(at, 1)
     ownLines.set(terminalId, mine)
     const end = wiring.outputEnd?.(terminalId)
-    if (end !== undefined) agentStarts.set(terminalId, startRecord({ at: end, commands: [typed], ...(own.agent ? { agent: own.agent } : {}) }, now))
+    if (end !== undefined) agentStarts.set(terminalId, startRecord({ at: end, commands: [typed], agent: own.agent }, now))
     return 'own'
   }
   noteLife(terminalId, typed, now, lookNow)
