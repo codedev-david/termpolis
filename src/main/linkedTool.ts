@@ -112,6 +112,10 @@ const MAX_REMEMBERED_JOBS = 100
 const MAX_CHECKED_ANSWERS = 8
 
 const MAX_REFUSAL_CHARS = 1_000
+/** How much of a refusal is masked: what is shown, and the stretch before a credential's end that the
+ *  screen looks back over. A refusal is any string up to a relay frame (a megabyte); masked whole, it
+ *  cost the main thread its whole length before all but the first MAX_REFUSAL_CHARS were dropped. */
+const REFUSAL_MASKED_CHARS = MAX_REFUSAL_CHARS + SCREEN_LOOKBACK_CHARS
 
 /** The first version that screens an answer with the key detectors before it cuts it to its end,
  *  taking whole any key its cut runs through: the end it sends starts with nothing unscreened. */
@@ -373,7 +377,7 @@ export function createLinkedTool(deps: LinkedToolDeps): { call(args: LinkedToolA
     }
     let shown: string
     try {
-      shown = deps.mask(message)
+      shown = deps.mask(message.length > REFUSAL_MASKED_CHARS ? message.slice(0, REFUSAL_MASKED_CHARS) : message)
     } catch {
       return refusedUnshown(name)
     }

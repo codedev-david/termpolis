@@ -77,6 +77,9 @@ function nextBreak(text: string, i: number, limit: number): Run | null {
       ESC_RE.lastIndex = i
       const m = ESC_RE.exec(text)
       if (m) return [i, i + m[0].length]
+      // No escape starts at this backslash, so none starts at the others in its run: each reads on
+      // to the same character. (Tried at each one, a run of n backslashes cost n * n.)
+      if (c === 92) while (i + 1 < limit && text.charCodeAt(i + 1) === 92) i++
     }
   }
   return null
@@ -130,6 +133,8 @@ function nextRun(text: string, i: number, stop: number): Run | null {
         i += m[0].length
         continue
       }
+      // (as in nextBreak: none starts at the rest of this backslash's run either)
+      if (c === 92) while (i + 1 < stop && text.charCodeAt(i + 1) === 92) i++
     }
     if (isB64(c)) break
     i++
@@ -408,7 +413,9 @@ const SHORT_TAIL = /^([A-Za-z0-9+/]{1,15}={0,2})[\s"'`,;+&_)\]}|\\]*$/
 const CRC_LINE = /^=[A-Za-z0-9+/]{4}[\s"'`,;+)\]}|\\]*$/
 /** A code literal's `" +`, `" .`, `" & _` or `",` left between two lines. */
 const FRAGMENT = /^[\s"'`,;+.&_)\]}|\\]*$/
-const LINE_END_RUN = /[A-Za-z0-9+/=]+[\s"'`,;+&_)\]}|\\]*$/
+// (a match starts where a base64 run does, and takes it whole: `+` is a joiner too, and tried from each
+// of a run of n `+` with the joiners after it, the ways of splitting it cost n * n * n)
+export const LINE_END_RUN = /(?<![A-Za-z0-9+/=])(?=([A-Za-z0-9+/=]+))\1[\s"'`,;+&_)\]}|\\]*$/
 /** Newline constants a literal is joined with: VB's `& vbCrLf & _`, C#'s `+ Environment.NewLine +`.
  *  They count as joiners: blanked to spaces of the same length, so offsets hold. Only standing
  *  apart from the base64 around them (a `+` may join them): random base64 holds vbLf about once in
@@ -681,7 +688,62 @@ const END_RE = /-----END ((?:[A-Z0-9]+ ){0,3})PRIVATE KEY(?: BLOCK)?-----|---- E
 // Rust's `\` line continuation, one real line break). Newline constants are blanked before it is
 // matched. (The continuation is one backslash before the break only: as a character anywhere, it and
 // the escapes' `\\+` could share a run of backslashes every way there is.)
-const PARTIAL_RE = /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)((?:\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]|[ \t"'`,;+.&_$)\]}|])*\\?(?:\r\n|\r|\n)?)$/
+const PARTIAL_JOINERS = ' \t"\'`,;+.&_$)]}|'
+/** What /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)(trailer)$/ finds in a partial line `s` (the trailer being those
+ *  ends of a key line: joiners, written-out breaks, a `\` and one real break): the frame before its
+ *  base64 (the shortest there is), and whether the base64 is there. That regex let the frame, the
+ *  base64 and the trailer each hold a `+`, which took n * n * n for a line of n of them; here the
+ *  positions a trailer can start at are found once, from the end, and the first start of a base64
+ *  run that reaches one is the answer. */
+export function partialLine(s: string): { frame: string; run: boolean } | null {
+  const n = s.length
+  const s0 = s.charCodeAt(0) === 0x2026 ? 1 : 0
+  const endOk = (p: number): boolean => p === n || (p === n - 1 && (s.charCodeAt(p) === 10 || s.charCodeAt(p) === 13)) || (p === n - 2 && s.charCodeAt(p) === 13 && s.charCodeAt(p + 1) === 10)
+  const hex = (p: number): boolean => p < n && 'aAdD'.includes(s[p])
+  const trailer = new Uint8Array(n + 2) // s[p..] is a trailer
+  const backslashes = new Int32Array(n + 2) // the backslashes from p on
+  for (let p = n; p >= 0; p--) {
+    if (p < n && s.charCodeAt(p) === 92) backslashes[p] = backslashes[p + 1] + 1
+    let ok = endOk(p) || (p < n && s.charCodeAt(p) === 92 && endOk(p + 1))
+    if (!ok && p < n) {
+      const c = s[p]
+      if (PARTIAL_JOINERS.includes(c) && trailer[p + 1]) ok = true
+      if (c === '\\') {
+        const q = p + backslashes[p]
+        if ((s[q] === 'n' || s[q] === 'r') && trailer[q + 1]) ok = true
+        else if (s.startsWith('u000', q) && hex(q + 4) && trailer[q + 5]) ok = true
+        else if (s.startsWith('x0', q) && hex(q + 2) && trailer[q + 3]) ok = true
+      } else if (c === '%') {
+        if (s[p + 1] === '0' && hex(p + 2) && trailer[p + 3]) ok = true
+      } else if (c === '&') {
+        if (s.startsWith('&#x0', p) && hex(p + 4) && s[p + 5] === ';' && trailer[p + 6]) ok = true
+        else if (s.startsWith('&#x', p) && hex(p + 3) && s[p + 4] === ';' && trailer[p + 5]) ok = true
+        else if ((s.startsWith('&#10;', p) || s.startsWith('&#13;', p)) && trailer[p + 5]) ok = true
+      } else if (c === '<' && s.startsWith('<br', p)) {
+        let q = p + 3
+        while (q < n && /\s/.test(s[q])) q++
+        if (s[q] === '/') q++
+        if (s[q] === '>' && trailer[q + 1]) ok = true
+      } else if (c === '`') {
+        if ((s[p + 1] === 'n' || s[p + 1] === 'r') && trailer[p + 2]) ok = true
+      }
+    }
+    trailer[p] = ok ? 1 : 0
+  }
+  const nextTrailer = new Int32Array(n + 2) // the first position at or after p that a trailer starts at
+  const runEnd = new Int32Array(n + 2) // the end of the base64 run at p
+  nextTrailer[n + 1] = Number.MAX_SAFE_INTEGER
+  for (let p = n; p >= 0; p--) {
+    nextTrailer[p] = trailer[p] ? p : nextTrailer[p + 1]
+    runEnd[p] = p < n && isB64(s.charCodeAt(p)) ? runEnd[p + 1] : p
+  }
+  let firstBreak = s0
+  while (firstBreak < n && s.charCodeAt(firstBreak) !== 10 && s.charCodeAt(firstBreak) !== 13) firstBreak++
+  for (let p = s0; p <= firstBreak; p++) {
+    if (nextTrailer[p] <= runEnd[p]) return { frame: s.slice(s0, p), run: runEnd[p] > p }
+  }
+  return null
+}
 
 /** Payload lines read forward from `s`: one width (the last may be shorter), one frame.
  *  `partialHead`: the first line is not one of the key's full lines (what another computer's cut
@@ -773,8 +835,28 @@ function stepBack(text: string, s: number, floor: number): number {
 /** What may follow a key line's base64 on its line, newline constants blanked: joiners, a code
  *  literal's `" & vbCrLf & _` or `" + System.lineSeparator()`, and cat -A's `$`. */
 const KEY_LINE_TAIL = /^[\s"'`,;+&_)\]}|\\$]*$/
-/** A key's last line of 1-7 characters, which holds no run of 8 (every P-521 PKCS#8 key's). */
-const SHORT_ABOVE = /([A-Za-z0-9+/]{1,7}={0,2})[\s"'`,;+&_)\]}|\\$]*$/
+/** A key's last line of 1-7 characters, which holds no run of 8 (every P-521 PKCS#8 key's): in `s`,
+ *  where the first 1-7 base64 characters (and up to two `=`) that only KEY_LINE_TAIL follows start,
+ *  and how many of them there are. What /([A-Za-z0-9+/]{1,7}={0,2})[\s"'`,;+&_)\]}|\\$]*$/ finds, longest
+ *  first: that regex reads the joiners after it from every start, and a `+` is a joiner too, so a
+ *  line of them took n * n. Here the joiners at the end are measured once, and no start before
+ *  the 9 characters that can reach them is tried. */
+const SHORT_JOINER = /[\s"'`,;+&_)\]}|\\$]/
+export function shortAbove(s: string): { index: number; length: number } | null {
+  let joined = s.length
+  while (joined > 0 && SHORT_JOINER.test(s[joined - 1])) joined--
+  const base64 = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47
+  for (let at = Math.max(0, joined - 9); at < s.length; at++) {
+    let k = 0
+    while (k < 7 && at + k < s.length && base64(s.charCodeAt(at + k))) k++
+    for (let g = k; g >= 1; g--) {
+      let pad = 0
+      while (pad < 2 && s.charCodeAt(at + g + pad) === 61) pad++
+      for (let x = pad; x >= 0; x--) if (at + g + x >= joined) return { index: at, length: g + x }
+    }
+  }
+  return null
+}
 /** What an escaped break leaves of a code literal's line between two key lines: joiners, and PHP's
  *  `" .` (a dot right after the closing quote; a line of dots is no literal's). */
 const FRAGMENT_LINE = /^[\s"'`,;+&_)\]}|\\]*(?:["'`]\s*\.[\s"'`,;+&_)\]}|\\]*)?$/
@@ -821,10 +903,10 @@ function tailAbove(text: string, at: number, floor: number, last?: { short: numb
       }
       // The key's last line, when it is 1-7 characters (an OpenSSH or PGP file whose base64 runs
       // that far past a full line): once, before any key line, under one in its frame.
-      const short = runs.length === 0 && shortFrame === null ? SHORT_ABOVE.exec(blankNl(seg)) : null
+      const short = runs.length === 0 && shortFrame === null ? shortAbove(blankNl(seg)) : null
       if (short) {
         shortFrame = seg.slice(0, short.index)
-        shortLen = short[1].length
+        shortLen = short.length
         e = stepBack(text, s, floor)
         continue
       }
@@ -898,13 +980,13 @@ function headAnchor(text: string, runs: Run[], floor: number, atTop: boolean, bl
   // frame, then base64).
   const above = text.slice(floor, ls)
   if (above.length > 1024) return null
-  const m = PARTIAL_RE.exec(blankNl(above))
+  const m = partialLine(blankNl(above))
   if (!m) return null
   // (':' and '-' alike: frameOf's `:N:`/`-N-` rule depends on where the cut fell in a timestamp)
   const loose = (x: string): string => x.replace(/-/g, ':')
-  const fr = frameOf(m[1])
-  if (fr !== '' && !loose(frame).endsWith(loose(fr)) && !JOINER_FRAME.test(m[1]) && !escTail(m[1]) && !nlTail(above.replace(/^…/, '').trimEnd())) return null
-  return m[2] ? floor + (above.startsWith('…') ? 1 : 0) + m[1].length : runs[0][0]
+  const fr = frameOf(m.frame)
+  if (fr !== '' && !loose(frame).endsWith(loose(fr)) && !JOINER_FRAME.test(m.frame) && !escTail(m.frame) && !nlTail(above.replace(/^…/, '').trimEnd())) return null
+  return m.run ? floor + (above.startsWith('…') ? 1 : 0) + m.frame.length : runs[0][0]
 }
 
 /** A tool's own frame in front of an END line, where only one partial key line above it is left
@@ -1078,7 +1160,9 @@ function legacyAbove(text: string, runs: Run[], floor: number, cutText: boolean)
   const above = text.slice(a, ls)
   if (DEK_RE.test(above)) return true
   if (!cutText || a !== floor) return false
-  const lines = above.replace(/^…/, '').split(/\r\n|\r|\n|\\+[nr]/)
+  // (a written-out break starts at the first backslash of its run: tried at each of a run of n that no
+  // `n` or `r` follows, `\\+[nr]` read the rest of the run from every one, n * n)
+  const lines = above.replace(/^…/, '').split(/\r\n|\r|\n|(?<!\\)\\+[nr]/)
   // (a blank line keeps a listing's number: `     4\t`; a cut at the DEK-Info line's end left none of it)
   return lines.length >= 2 && /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?\s*$/.test(lines[0]) && lines.slice(1).every((l) => /^[\s\d:|>#*-]*$/.test(l))
 }
@@ -1305,6 +1389,39 @@ export function encodedKeys(text: string, start = 0, cutText = false): KeySpan[]
 // ---------------------------------------------------------------------------------------------
 // PuTTY (K6): the private part names its own length.
 // ---------------------------------------------------------------------------------------------
+/** A test for prose, asked of many stretches of one text: ends(from) is where the first match of
+ *  /[A-Za-z]{2,}[ \t]+[A-Za-z]{2,}/ in the text from `from` on ends, or Infinity when none does; so the
+ *  stretch [from, to) holds a match exactly when ends(from) <= to. (Asked afresh of each stretch, the
+ *  regex read the stretch again for every candidate line and for every anchor that shared it, and a
+ *  long run of letters took it n * n.) A match is a run of spaces and tabs with two letters on each
+ *  side, so those are found once, in order, and the first that starts at or after `from` is the one
+ *  that ends soonest. `from` is `start` or after. */
+export function proseEnds(text: string, start = 0): (from: number) => number {
+  let words: Array<[number, number]> | null = null
+  return (from) => {
+    if (words === null) {
+      words = []
+      const letter = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+      for (let p = start; p < text.length; p++) {
+        const c = text.charCodeAt(p)
+        if (c !== 32 && c !== 9) continue
+        let q = p
+        while (q < text.length && (text.charCodeAt(q) === 32 || text.charCodeAt(q) === 9)) q++
+        if (p >= start + 2 && letter(text.charCodeAt(p - 1)) && letter(text.charCodeAt(p - 2)) && q + 1 < text.length && letter(text.charCodeAt(q)) && letter(text.charCodeAt(q + 1))) words.push([p - 2, q + 2])
+        p = q
+      }
+    }
+    let lo = 0
+    let hi = words.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (words[mid][0] < from) lo = mid + 1
+      else hi = mid
+    }
+    return lo < words.length ? words[lo][1] : Infinity
+  }
+}
+
 export function puttyKeys(text: string, start = 0): KeySpan[] {
   const out: KeySpan[] = []
   const heads: number[] = []
@@ -1315,6 +1432,10 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
   re.lastIndex = start
   let m: RegExpExecArray | null
   let prevStop = 0
+  // (the prose test below is answered from one list of the text's spoken stretches, and one break cursor
+  // serves all the anchors, which move forward)
+  const wordsEnd = proseEnds(text, start)
+  const nextLineBreak = breakCursor(text)
   while ((m = re.exec(text)) !== null) {
     const n = Number(m[1])
     // The private lines are the next n base64 runs of a line's width (64, with up to 4 characters
@@ -1341,8 +1462,8 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
       // next line's prefix is the frame the private lines share, and a log prefix holds words.)
       if (runs.length === 0) {
         const ae = m.index + m[0].length
-        const br = nextBreak(text, ae, a)
-        if (/[A-Za-z]{2,}[ \t]+[A-Za-z]{2,}/.test(text.slice(ae, br ? br[0] : a))) break
+        const br = nextLineBreak(ae, a)
+        if (wordsEnd(ae) <= (br ? br[0] : a)) break
       }
       // A run followed at once by a listing separator (the `.` of `deploy.ppk:12:`) is a path.
       if (len <= 68 && LISTING_SEP.test(text.slice(e, e + 24))) continue

@@ -13,6 +13,7 @@ vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
 import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
 import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS } from '../../src/main/linkedJobs'
+import { COST_SHAPES } from './fixtures/costShapes'
 import { makeKeys, wrap, type KeySet } from './fixtures/freshKeys'
 
 const GH = `ghp_${'b'.repeat(36)}`
@@ -24,13 +25,15 @@ beforeAll(() => {
 })
 
 describe("the Linked screen's cost where only an answer's end is kept", () => {
-  /** The fastest of three runs, so a pause on a busy CI box doesn't count against the screen. */
-  function bestOf3(run: () => void): number {
+  /** The fastest of three runs, so a pause on a busy CI box doesn't count against the screen; no more
+   *  runs once one took longer than `giveUp` (a run that long is the answer already). */
+  function bestOf3(run: () => void, giveUp = Infinity): number {
     let best = Infinity
     for (let i = 0; i < 3; i++) {
       const t = performance.now()
       run()
       best = Math.min(best, performance.now() - t)
+      if (best > giveUp) break
     }
     return best
   }
@@ -63,12 +66,14 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     })
   })
 
-  it('screens the end of a 465,000-character answer of each kind in 150 ms, and the end of its error in 20 ms', () => {
-    // Measured at 17-36 ms and 0.7-5.3 ms (judge's p6).
+  it('screens the end of a 465,000-character answer of each kind in 300 ms, and the end of its error in 60 ms', () => {
+    // Measured at 17-51 ms and 0.7-5.3 ms (judge's p6), and under coverage, which makes the detectors four
+    // or five times slower, at 46-127 ms and 4-20 ms. The bounds leave a runner a third slower than this
+    // laptop (and a loaded one) room; the shapes below, not these, are what catch a quadratic.
     for (const [kind, text] of Object.entries(KINDS)) {
       expect(text.length).toBe(N)
-      expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS)), kind).toBeLessThan(150)
-      expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), `${kind}, error`).toBeLessThan(20)
+      expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS)), kind).toBeLessThan(300)
+      expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS)), `${kind}, error`).toBeLessThan(60)
     }
   })
 
@@ -145,21 +150,32 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
       ),
     'a listing of key lines with long paths': (n) => fill(Array.from({ length: 64 }, (_, i) => `/home/dev/projects/infrastructure/deployment/keys/production/deploy.key:${i + 1}:${r64()}\n`).join(''), n),
     'PGP mentions and hashes, repeated': (n) => fill(`-----BEGIN PGP PRIVATE KEY BLOCK----- not here; digests:\n${r64().slice(0, 44)}\n${r64().slice(0, 44)}\n`, n),
+    'a run of backslashes under a key block': (n) => `-----BEGIN PRIVATE KEY-----\n${lines(2)}\n${BS.repeat(n)}\n`,
+    'a run of backslashes after Private-Lines': (n) => `Private-Lines: 9999\n${BS.repeat(n)}\n`,
+    'a line of plus signs above an END line': (n) => `${lines(3)}\n${'+'.repeat(n)}x\n-----END PRIVATE KEY-----\n`,
+    'a line of plus signs and spaces above an END line': (n) => `${lines(3)}\n${'+ '.repeat(n >> 1)}x\n-----END PRIVATE KEY-----\n`,
   }
   const MB = 1 << 20
 
-  it('masks BEGIN lines on one line in step with their number: 4 MB of them take under 8 times as long as 1 MB', () => {
+  it.each(Object.keys(COST_SHAPES))('%s is screened and masked in step with its length', (shape) => {
+    // Each took seconds to minutes before (a run of 60,000 backslashes 3.6 s, 1,000 plus signs 1.2 s).
+    const [text, ask, bound] = COST_SHAPES[shape]
+    expect(bestOf3(() => screenText(text, ask.keep, SCREEN_LOOKBACK_CHARS, ask.cutStart), bound * 4), shape).toBeLessThan(bound)
+    expect(bestOf3(() => maskForDisplay(text), bound * 4), `${shape}, masked`).toBeLessThan(bound)
+  })
+
+  it('masks BEGIN lines on one line in step with their number: 4 MB of them take under 12 times as long as 1 MB', () => {
     // Each BEGIN line is masked to the end of its line, which was looked for once per BEGIN.
     const one = fill('-----BEGIN PRIVATE KEY----- ', MB)
     const four = fill('-----BEGIN PRIVATE KEY----- ', 4 * MB)
     expect(maskForDisplay(`${one}\nnext line`)).toBe('[REDACTED:private_key]\nnext line')
-    expect(bestOf3(() => maskForDisplay(four))).toBeLessThan(8 * bestOf3(() => maskForDisplay(one)))
+    expect(bestOf3(() => maskForDisplay(four))).toBeLessThan(12 * bestOf3(() => maskForDisplay(one)))
   }, 120_000)
 
-  it.each(Object.keys(HOSTILE))('grows in step with %s: 4 MB of it takes under 8 times as long as 1 MB', (shape) => {
+  it.each(Object.keys(HOSTILE))('grows in step with %s: 4 MB of it takes under 12 times as long as 1 MB', (shape) => {
     const one = HOSTILE[shape](MB)
     const four = HOSTILE[shape](4 * MB)
-    // Linear is 4 times; measured at most 4.9 (judge's p6b).
-    expect(bestOf3(() => screenText(four))).toBeLessThan(8 * bestOf3(() => screenText(one)))
+    // Linear is 4 times; measured at most 4.9 (judge's p6b) and 7 on a loaded laptop; a quadratic is 16.
+    expect(bestOf3(() => screenText(four))).toBeLessThan(12 * bestOf3(() => screenText(one)))
   }, 60_000)
 })

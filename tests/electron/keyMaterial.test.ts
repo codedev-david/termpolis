@@ -14,16 +14,21 @@ import {
   jwkKeys,
   keyBlocks,
   keySpans,
+  LINE_END_RUN,
   looksRandom,
   opensshHeader,
+  partialLine,
   percentEncoded,
   pgpPacket,
   placeholderWhy,
+  proseEnds,
   puttyKeys,
   rsaKeyValues,
+  shortAbove,
   structureOf,
   type KeySpan,
 } from '../../src/main/keyMaterial'
+import { COST_SHAPES } from './fixtures/costShapes'
 import { JOIN, T1_JOININGS, der, leakedWindows, makeKeys, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
 
 /** What a screen makes of `text` with the detectors alone (screenText adds the token rules): the
@@ -1898,13 +1903,15 @@ describe('the detectors find nothing in text that has no key', () => {
 })
 
 describe('the detectors cost in step with the text, whatever the other computer sends', () => {
-  /** The fastest of three runs, so a pause on a busy box doesn't count against a detector. */
-  function bestOf3(run: () => void): number {
+  /** The fastest of three runs, so a pause on a busy box doesn't count against a detector; no more
+   *  runs once one took longer than `giveUp` (a run that long is the answer already). */
+  function bestOf3(run: () => void, giveUp = Infinity): number {
     let best = Infinity
     for (let i = 0; i < 3; i++) {
       const t = performance.now()
       run()
       best = Math.min(best, performance.now() - t)
+      if (best > giveUp) break
     }
     return best
   }
@@ -1947,5 +1954,106 @@ describe('the detectors cost in step with the text, whatever the other computer 
       // a line break every few markers was always fast: the result is the same as with none
       expect(keyBlocks(line).length).toBe(Math.ceil(160_000 / unit.length))
     }
+  })
+
+  it.each(Object.keys(COST_SHAPES))('%s is screened in step with its length', (shape) => {
+    const [text, opts, bound] = COST_SHAPES[shape]
+    expect(bestOf3(() => screenKeys(text, opts), bound * 4), shape).toBeLessThan(bound)
+  })
+})
+
+describe('the linear replacements of three regexes and a prose test give what those gave', () => {
+  // The regexes as they were, each cubic or quadratic in a run of plus signs or letters: the oracle.
+  const PARTIAL_OLD = /^…?([^\r\n]*?)([A-Za-z0-9+/=]*)((?:\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]|[ \t"'`,;+.&_$)\]}|])*\\?(?:\r\n|\r|\n)?)$/
+  const SHORT_OLD = /([A-Za-z0-9+/]{1,7}={0,2})[\s"'`,;+&_)\]}|\\$]*$/
+  const LINE_END_OLD = /[A-Za-z0-9+/=]+[\s"'`,;+&_)\]}|\\]*$/
+  const PROSE_OLD = /[A-Za-z]{2,}[ \t]+[A-Za-z]{2,}/
+
+  // A seeded generator: the same strings on every run.
+  let seed = 20261031
+  const rnd = (): number => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 4294967296
+  }
+  const pick = <T>(a: readonly T[]): T => a[Math.floor(rnd() * a.length)]
+  /** Every string of up to maxLen of the alphabet's symbols. */
+  function everyString(alphabet: readonly string[], maxLen: number, fn: (s: string) => void): number {
+    let n = 0
+    const go = (s: string, left: number): void => {
+      n++
+      fn(s)
+      if (left > 0) for (const c of alphabet) go(s + c, left - 1)
+    }
+    go('', maxLen)
+    return n
+  }
+  const BS = '\\'
+  /** The written-out breaks, joiners and base64 these read, joined at random. */
+  const TOKENS = ['a', 'Q9', '/', '=', '==', '+', '++', ' ', '\t', '"', "'", '`', ',', ';', '.', '&', '_', '$', ')', ']', '}', '|', BS, BS + BS, BS + 'n', BS + 'r', BS + 'u000a', BS + 'u000D', BS + 'x0a', '%0A', '%0d', '&#xA;', '&#x0d;', '&#x0A;', '&#10;', '&#13;', '<br>', '<br/>', '<br />', '`n', '`r', '\n', '\r\n', '\r', '…', 'n', 'x', '0']
+  const tokens = (): string => Array.from({ length: Math.floor(rnd() * 15) }, () => pick(TOKENS)).join('')
+  /** The inputs on which `got` and `want` differ, the first few of them. */
+  function differ(inputs: (visit: (s: string) => void) => void, got: (s: string) => unknown, want: (s: string) => unknown): string[] {
+    const bad: string[] = []
+    inputs((s) => {
+      if (bad.length < 5 && JSON.stringify(got(s)) !== JSON.stringify(want(s))) bad.push(`${JSON.stringify(s)}: ${JSON.stringify(got(s))} but ${JSON.stringify(want(s))}`)
+    })
+    return bad
+  }
+  const randomInputs = (visit: (s: string) => void): void => {
+    for (let i = 0; i < 40_000; i++) visit((rnd() < 0.2 ? '…' : '') + tokens())
+  }
+
+  const partialOld = (s: string): { frame: string; run: boolean } | null => {
+    const m = PARTIAL_OLD.exec(s)
+    return m ? { frame: m[1], run: m[2] !== '' } : null
+  }
+  const shortOld = (s: string): { index: number; length: number } | null => {
+    const m = SHORT_OLD.exec(s)
+    return m ? { index: m.index, length: m[1].length } : null
+  }
+  const lineEnd = (re: RegExp) => (s: string): [number, string] | null => {
+    const m = re.exec(s)
+    return m ? [m.index, m[0]] : null
+  }
+
+  it('partialLine finds the frame and the base64 that /^…?(frame)(base64)(trailer)$/ found', () => {
+    let n = 0
+    expect(differ((visit) => (n = everyString(['a', '=', '+', ' ', '\n', BS, 'n', '"'], 6, visit)), partialLine, partialOld)).toEqual([])
+    expect(n).toBeGreaterThan(299_000)
+    expect(differ(randomInputs, partialLine, partialOld)).toEqual([])
+  })
+
+  it('shortAbove finds the 1-7 characters that /([A-Za-z0-9+/]{1,7}={0,2})(joiners)$/ found', () => {
+    expect(differ((visit) => everyString(['a', 'Q', '=', '+', ' ', '"', BS, '$', '!'], 6, visit), shortAbove, shortOld)).toEqual([])
+    expect(differ(randomInputs, shortAbove, shortOld)).toEqual([])
+  })
+
+  it('LINE_END_RUN matches where /[A-Za-z0-9+/=]+(joiners)$/ matched, as much as it matched', () => {
+    const got = lineEnd(LINE_END_RUN)
+    const want = lineEnd(LINE_END_OLD)
+    expect(differ((visit) => everyString(['a', '=', '+', ' ', '"', BS, '!', '/'], 6, visit), got, want)).toEqual([])
+    expect(differ(randomInputs, got, want)).toEqual([])
+  })
+
+  it('proseEnds says a stretch holds two words exactly when /[A-Za-z]{2,}[ \\t]+[A-Za-z]{2,}/ matches it', () => {
+    const bad: string[] = []
+    const check = (text: string, start: number): void => {
+      const ends = proseEnds(text, start)
+      for (let from = start; from <= text.length; from++) {
+        for (let to = from; to <= text.length; to++) {
+          if (bad.length < 5 && (ends(from) <= to) !== PROSE_OLD.test(text.slice(from, to))) bad.push(JSON.stringify([text, start, from, to]))
+        }
+      }
+    }
+    everyString(['a', 'b', ' ', '\t', '\n', '1'], 6, (s) => check(s, 0))
+    for (let i = 0; i < 3_000; i++) {
+      const text = Array.from({ length: 4 + Math.floor(rnd() * 14) }, () => pick(['ab', 'Q', 'x', ' ', '  ', '\t', '\n', '1', '-', 'word'])).join('')
+      check(text, Math.floor(rnd() * 4))
+    }
+    expect(bad).toEqual([])
+    // a run of words many times the length of any one: found in one pass
+    const long = 'ab '.repeat(30_000)
+    expect(proseEnds(long, 0)(0)).toBe(5)
+    expect(proseEnds(long, 0)(long.length - 2)).toBe(Infinity)
   })
 })
