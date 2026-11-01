@@ -25,6 +25,20 @@ export interface MemorySettings {
    * migration.
    */
   vectorQuantize: boolean
+  /**
+   * Bring Claude Code's saved notes (~/.claude/projects/*\/memory/*.md) into memory, so Codex and Antigravity
+   * can find them too and a search finds them by their own wording. ON by default, and only ever acted on while
+   * the user's agents are connected (the consent every agent integration is gated on). Turning it off stops
+   * the reading; "Remove imported notes" takes what was read back out.
+   */
+  indexClaudeNotes: boolean
+  /**
+   * Let a search scoped to one project be handed up to two reference / feedback / user notes from another
+   * (claudeNotesShare.ts). OFF by default (David, 2026-10-31): the store holds employer and personal projects
+   * side by side, and a note that crosses over widens what goes into a prompt. Notes about one project's own
+   * state never travel, on or off.
+   */
+  shareNotesAcrossProjects: boolean
 }
 
 // UI/UX bounds. The pure builder still hard-caps at 100; this keeps the panel
@@ -38,7 +52,7 @@ function clampPrimerLimit(value: unknown): number {
   return Math.min(PRIMER_LIMIT_MAX, Math.max(PRIMER_LIMIT_MIN, n))
 }
 
-let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false }
+let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false }
 let initialized = false
 
 function settingsPath(): string {
@@ -55,6 +69,10 @@ function init(): void {
           primerLimit: clampPrimerLimit(parsed.primerLimit),
           // Absent key => false. A memory system defaults to EXACT; you opt in to the approximation.
           vectorQuantize: parsed.vectorQuantize === true,
+          // Absent key => ON (the notes are a default, disclosed); only a literal false turns them off.
+          indexClaudeNotes: parsed.indexClaudeNotes !== false,
+          // Absent key => OFF: nothing crosses between projects until the user says so.
+          shareNotesAcrossProjects: parsed.shareNotesAcrossProjects === true,
         }
       }
     }
@@ -101,6 +119,32 @@ export function getVectorQuantize(): boolean {
 export function setVectorQuantize(value: unknown): MemorySettings {
   if (!initialized) init()
   settings.vectorQuantize = value === true
+  persist()
+  return getMemorySettings()
+}
+
+export function getIndexClaudeNotes(): boolean {
+  if (!initialized) init()
+  return settings.indexClaudeNotes
+}
+
+/** Persist the switch. Only a literal true turns it on: anything else is the user not having agreed. */
+export function setIndexClaudeNotes(value: unknown): MemorySettings {
+  if (!initialized) init()
+  settings.indexClaudeNotes = value === true
+  persist()
+  return getMemorySettings()
+}
+
+export function getShareNotesAcrossProjects(): boolean {
+  if (!initialized) init()
+  return settings.shareNotesAcrossProjects
+}
+
+/** Persist the switch. Only a literal true lets a note cross from one project to another. */
+export function setShareNotesAcrossProjects(value: unknown): MemorySettings {
+  if (!initialized) init()
+  settings.shareNotesAcrossProjects = value === true
   persist()
   return getMemorySettings()
 }

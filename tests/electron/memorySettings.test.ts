@@ -32,14 +32,14 @@ describe('memorySettings — primer limit', () => {
   it('defaults to 10 when nothing is persisted', async () => {
     const m = await freshModule()
     expect(m.getPrimerLimit()).toBe(10)
-    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false })
+    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
     expect(m.PRIMER_LIMIT_MIN).toBe(1)
     expect(m.PRIMER_LIMIT_MAX).toBe(50)
   })
 
   it('persists a set value to disk and returns it', async () => {
     const m = await freshModule()
-    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false })
+    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false, indexClaudeNotes: true, shareNotesAcrossProjects: false })
     expect(m.getPrimerLimit()).toBe(20)
     expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).primerLimit).toBe(20)
   })
@@ -144,5 +144,66 @@ describe('vectorQuantize', () => {
     const s = m.setVectorQuantize(true)
     expect(s.primerLimit).toBe(19)
     expect(s.vectorQuantize).toBe(true)
+  })
+})
+
+// --------------------------------------------------------------------------------------------
+// Claude Code's saved notes (1.55.0). Two switches with opposite defaults, and the asymmetry is the
+// point: bringing a user's own notes into their own memory is on (and disclosed, and gated on the agents
+// being connected); letting a note cross from one project to another is off until they say so.
+// --------------------------------------------------------------------------------------------
+describe('indexClaudeNotes and shareNotesAcrossProjects', () => {
+  it('read the notes: ON by default. lend them to other projects: OFF by default', async () => {
+    const m = await freshModule()
+    expect(m.getIndexClaudeNotes()).toBe(true)
+    expect(m.getShareNotesAcrossProjects()).toBe(false)
+  })
+
+  it('an existing settings file from before they existed reads the same way: notes on, sharing off', async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ primerLimit: 12, vectorQuantize: true }))
+    const m = await freshModule()
+    expect(m.getIndexClaudeNotes()).toBe(true)
+    expect(m.getShareNotesAcrossProjects()).toBe(false)
+    expect(m.getPrimerLimit()).toBe(12)
+  })
+
+  it('persist, survive a restart, and do not disturb the other settings', async () => {
+    const m = await freshModule()
+    m.setPrimerLimit(14)
+    expect(m.setIndexClaudeNotes(false)).toMatchObject({ indexClaudeNotes: false, primerLimit: 14 })
+    expect(m.setShareNotesAcrossProjects(true)).toMatchObject({ shareNotesAcrossProjects: true, indexClaudeNotes: false })
+    const again = await freshModule()
+    expect(again.getIndexClaudeNotes()).toBe(false)
+    expect(again.getShareNotesAcrossProjects()).toBe(true)
+    expect(again.getPrimerLimit()).toBe(14)
+    expect(JSON.parse(readFileSync(settingsFile(), 'utf8'))).toMatchObject({ indexClaudeNotes: false, shareNotesAcrossProjects: true })
+  })
+
+  it('only a literal true turns either on: anything else is off, so a bad value never agrees for the user', async () => {
+    const m = await freshModule()
+    for (const junk of ['true', 1, 'yes', null, undefined, {}]) {
+      expect(m.setIndexClaudeNotes(junk).indexClaudeNotes).toBe(false)
+      expect(m.setShareNotesAcrossProjects(junk).shareNotesAcrossProjects).toBe(false)
+    }
+    expect(m.setIndexClaudeNotes(true).indexClaudeNotes).toBe(true)
+    expect(m.setShareNotesAcrossProjects(true).shareNotesAcrossProjects).toBe(true)
+  })
+
+  it('in a saved file, only a literal false turns the notes off and only a literal true turns sharing on', async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: 'no', shareNotesAcrossProjects: 'yes' }))
+    const a = await freshModule()
+    expect(a.getIndexClaudeNotes()).toBe(true)
+    expect(a.getShareNotesAcrossProjects()).toBe(false)
+    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: false, shareNotesAcrossProjects: true }))
+    const b = await freshModule()
+    expect(b.getIndexClaudeNotes()).toBe(false)
+    expect(b.getShareNotesAcrossProjects()).toBe(true)
+  })
+
+  it('an unreadable settings file leaves the defaults', async () => {
+    writeFileSync(settingsFile(), '{ nope')
+    const m = await freshModule()
+    expect(m.getIndexClaudeNotes()).toBe(true)
+    expect(m.getShareNotesAcrossProjects()).toBe(false)
   })
 })

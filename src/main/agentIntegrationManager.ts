@@ -834,6 +834,17 @@ export function getAgentIntegrationStatus(paths: AgentIntegrationPaths): AgentIn
   }
 }
 
+/** Has the user connected their agents (granted, or an older install not yet asked)? The consent the rest
+ *  of Termpolis gates what it does with their agents' data on (the saved-notes import is one). Reads the
+ *  ledger alone and opens no agent config, so a background pass can ask on every tick. False when unreadable. */
+export function isAgentIntegrationConnected(paths: AgentIntegrationPaths): boolean {
+  try {
+    return isConnected(loadLedger(paths))
+  } catch {
+    return false
+  }
+}
+
 /** Onboarding, the review and Settings: record the answer, then apply or disconnect. Never throws.
  *  `saveError` says the answer could not be saved, so the next start would not know it. A connect
  *  then writes nothing into agent configs; a disconnect still takes everything out. */

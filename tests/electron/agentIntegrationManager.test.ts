@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync } from 'fs'
 import { homedir } from 'os'
 import { join, parse } from 'path'
 import {
-  bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isFolderTrustAllowed,
+  bootAgentIntegration, conductorMcpConfig, getAgentIntegrationStatus, isAgentIntegrationConnected, isFolderTrustAllowed,
   prepareCodexLaunch, removeCodexHomeTrust, resolveAgentIntegrationPaths, setAgentIntegration,
   trustFolderForAgents,
 } from '../../src/main/agentIntegrationManager'
@@ -258,6 +258,38 @@ describe('getAgentIntegrationStatus', () => {
     expect(getAgentIntegrationStatus(sb.paths)).toMatchObject({ consent: null, connected: false })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not save agent-integration.json'))
     expect(existsSync(sb.ledgerFile)).toBe(false)
+  })
+})
+
+// The saved-notes import (and anything else that reads an agent's data) is gated on this one answer, so it
+// must agree with the status the rest of the app shows, and it must not open an agent's config to say so.
+describe('isAgentIntegrationConnected', () => {
+  it.each<[string, Record<string, unknown>, boolean]>([
+    ['granted', { consent: 'granted' }, true],
+    ['declined on a legacy install', { consent: 'declined', legacy: true }, false],
+    ['a legacy install not yet asked', { consent: null, legacy: true }, true],
+    ['not asked, not legacy', { consent: null }, false],
+    ['hand-edited values', { consent: 'maybe', legacy: 'yes' }, false],
+  ])('says %s: %s', (_label, fields, expected) => {
+    writeLedger(sb, fields)
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(expected)
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(getAgentIntegrationStatus(sb.paths).connected)
+  })
+
+  it('opens no agent config: with every one of them unreadable the answer is the same', () => {
+    writeLedger(sb, { consent: 'granted' })
+    for (const f of [sb.files.claudeJson, sb.files.codex, sb.files.gemini]) mkdirSync(f, { recursive: true }) // a folder where a file should be
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(true)
+  })
+
+  it('first call creates the ledger, as the status does, and says not connected', () => {
+    expect(isAgentIntegrationConnected(sb.paths)).toBe(false)
+    expect(readText(sb.ledgerFile)).toBe(JSON.stringify(freshLedger, null, 2) + '\n')
+  })
+
+  it('is false, never a throw, when the paths are unusable', () => {
+    expect(isAgentIntegrationConnected({ ...sb.paths, userData: undefined as never })).toBe(false)
+    expect(isAgentIntegrationConnected(undefined as never)).toBe(false)
   })
 })
 

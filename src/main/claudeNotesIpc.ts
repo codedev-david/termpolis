@@ -1,0 +1,76 @@
+// The IPC behind Settings > Memory > "Claude Code's saved notes": the two switches, what was imported, and
+// "Remove imported notes". Kept out of index.ts (which registers it with one call) so it can be tested without
+// the 3,700-line main entry. Every answer is the app's usual envelope (ipcResult.ts).
+
+import { err, ok } from './ipcResult'
+import type { NotesStatus, RemoveResult } from './claudeNotesIngest'
+
+export const NOTES_IPC = {
+  get: 'memory:get-notes-settings',
+  set: 'memory:set-notes-settings',
+  remove: 'memory:remove-imported-notes',
+} as const
+
+export interface NotesIpcLike {
+  handle(channel: string, listener: (event: unknown, input?: unknown) => unknown): void
+}
+
+export interface NotesSettingsView {
+  indexClaudeNotes: boolean
+  shareNotesAcrossProjects: boolean
+  /** The user's agents are connected. Until they are, no note is read, whatever the first switch says. */
+  connected: boolean
+  status: NotesStatus
+}
+
+export interface NotesIpcDeps {
+  index: { get(): boolean; set(on: boolean): unknown }
+  share: { get(): boolean; set(on: boolean): unknown }
+  connected(): boolean
+  status(): NotesStatus
+  remove(): Promise<RemoveResult>
+  /** Run a pass now. Called when the first switch has just been turned on, so the user does not wait for the next tick. */
+  passSoon(): void
+}
+
+const isRec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
+
+export function registerClaudeNotesIpc(ipc: NotesIpcLike, d: NotesIpcDeps): void {
+  const view = (): NotesSettingsView => ({
+    indexClaudeNotes: d.index.get(),
+    shareNotesAcrossProjects: d.share.get(),
+    connected: d.connected(),
+    status: d.status(),
+  })
+
+  ipc.handle(NOTES_IPC.get, () => {
+    try { return ok(view()) } catch (e) { return err(message(e)) }
+  })
+
+  // Either switch, or both. Only a real boolean counts: anything else is ignored, never read as a "yes".
+  ipc.handle(NOTES_IPC.set, (_event, input) => {
+    try {
+      const req = isRec(input) ? input : {}
+      const wasOn = d.index.get()
+      if (typeof req.indexClaudeNotes === 'boolean') d.index.set(req.indexClaudeNotes)
+      if (typeof req.shareNotesAcrossProjects === 'boolean') d.share.set(req.shareNotesAcrossProjects)
+      if (!wasOn && d.index.get()) d.passSoon()
+      return ok(view())
+    } catch (e) {
+      return err(message(e))
+    }
+  })
+
+  // The switch goes off FIRST, or a pass could bring the notes straight back; and it stays off, so the
+  // removal is not undone at the next tick. Turning it on again re-imports from scratch.
+  ipc.handle(NOTES_IPC.remove, async () => {
+    try {
+      d.index.set(false)
+      const result = await d.remove()
+      return ok({ ...result, settings: view() })
+    } catch (e) {
+      return err(message(e))
+    }
+  })
+}
