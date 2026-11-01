@@ -15,6 +15,7 @@ import { detectAgentStatus, limitWords, stopKind } from '../shared/agentStatusDe
 import { ACCOUNT_AGENT_LABEL } from '../shared/agentAccounts'
 import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
+import { agentOfLaunch } from '../shared/launchCarry'
 import { HINT_HEAD, hintAtFoot, indexOf, look, plain } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 import { PROMPT_REPORT, sinceStarted } from './mcpServer'
@@ -38,16 +39,9 @@ export interface LiveStart {
  *  the shell takes to start the agent. */
 export const FOREGROUND_GRACE_MS = 3000
 
-/** An agent launch in a typed line, as the launch audit reads one (index.ts auditLaunchPattern): the
- *  agent's name at the start of a command, after `;`, `&&`, `|`, a PowerShell block's `{` or cmd's
- *  `call`, as Termpolis's own account lines put it. */
-const AGENT_LAUNCH = /(?:^|[;&|{]|\bcall\b)\s*(claude|codex|agy)(?=[\s}]|$)/
-
-/** The agent a line starts, or null. */
-export function agentOfLaunch(line: string): AccountAgent | null {
-  const m = AGENT_LAUNCH.exec(line)
-  return m ? (m[1] as AccountAgent) : null
-}
+/** The agent a typed line starts, or null (src/shared/launchCarry.ts: the one reading of such a line,
+ *  as the launch audit reads one too, index.ts auditLaunchPattern). */
+export { agentOfLaunch }
 
 /** Has the agent `start` recorded exited (or never started)? The look `l` is the screen now. */
 export function agentGone(io: SwitchIO, id: string, start: LiveStart, now: number, l: Look = look(io, id)): boolean {

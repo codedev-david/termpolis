@@ -6,6 +6,8 @@
 // Every rule here reads what a CLI draws itself, at the bottom of its own screen, or what
 // Termpolis typed: never text an agent's answer could hold, which can quote any of it.
 import type { AccountAgent, ShellFamily } from './agentAccounts'
+import { agentCommandIn, carryLaunchArgs, isPlainLaunchWord, modelOfCommand, providerForCommand, withoutInjected } from './launchCarry'
+import type { LaunchProvider } from './launchCarry'
 
 /** The id Claude Code, Codex and agy give a session: a UUID (Codex's are version 7). */
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -16,7 +18,7 @@ export function isSessionId(v: unknown): v is string {
 
 /** A model name Termpolis puts on a command line: Claude Code's aliases, Codex's ids. */
 export function isSafeModelName(v: unknown): v is string {
-  return typeof v === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(v)
+  return typeof v === 'string' && /^[A-Za-z0-9._[\]-]{1,64}$/.test(v)
 }
 
 /** The command each agent exits with. It is typed into the agent's own input box and entered only
@@ -131,19 +133,13 @@ export interface RelaunchSpec {
   worktree?: string
   /** The terminal's model: Claude Code's and agy's --model, Codex's -m. */
   model?: string
-  /** A Claude Code swarm worker's --dangerously-skip-permissions. */
-  skipPermissions?: boolean
-  /** Codex's -a (approval policy) and -s (sandbox), as a swarm worker runs them. */
-  approval?: string
-  sandbox?: string
+  /** The other flags the agent was started with, as it was started with them (carryForSwitch): each
+   *  one a word a relaunch can re-type faithfully (isPlainLaunchWord). */
+  extra?: string[]
   /** Codex's -c developer_instructions, when the text is shell-safe (isShellSafeInstruction). */
   instructions?: string
   /** Claude Code, a new session: the id to start it with (--session-id), so it can be resumed. */
   sessionId?: string
-  /** Codex's `-c check_for_update_on_startup=false`, as a swarm worker runs it: a Codex started
-   *  while a newer one is out opens on its update offer otherwise, a menu that holds it until
-   *  someone answers (GitHub #36). */
-  noUpdateCheck?: boolean
 }
 
 /**
@@ -156,67 +152,82 @@ export interface RelaunchSpec {
 export function relaunchCommand(spec: RelaunchSpec): string {
   if (spec.id !== null && !isSessionId(spec.id)) throw new Error('not a session id')
   if (spec.model !== undefined && !isSafeModelName(spec.model)) throw new Error('not a model name')
+  if (spec.extra !== undefined && !spec.extra.every(isPlainLaunchWord)) throw new Error('not a flag a relaunch can repeat')
+  const extra = spec.extra ?? []
   if (spec.agent === 'claude') {
     if (spec.worktree !== undefined && !WORKTREE_NAME.test(spec.worktree)) throw new Error('not a worktree name')
     if (spec.sessionId !== undefined && !isSessionId(spec.sessionId)) throw new Error('not a session id')
     const parts = ['claude']
     if (spec.worktree !== undefined) parts.push(`--worktree "${spec.worktree}"`)
     if (spec.model) parts.push(`--model ${spec.model}`)
-    if (spec.skipPermissions) parts.push('--dangerously-skip-permissions')
+    parts.push(...extra)
     if (spec.id) parts.push(`--resume ${spec.id}`)
     else if (spec.sessionId) parts.push(`--session-id ${spec.sessionId}`)
     return parts.join(' ')
   }
   if (spec.agent === 'codex') {
     if (spec.instructions !== undefined && !/^[A-Za-z0-9 .,:;()_/-]{1,1500}$/.test(spec.instructions)) throw new Error('not a shell-safe instruction')
-    if ([spec.approval, spec.sandbox].some((v) => v !== undefined && !CODEX_POLICY.test(v))) throw new Error('not a Codex policy')
     const parts = ['codex']
     if (spec.model) parts.push(`-m ${spec.model}`)
-    if (spec.approval) parts.push(`-a ${spec.approval}`)
-    if (spec.sandbox) parts.push(`-s ${spec.sandbox}`)
-    if (spec.noUpdateCheck) parts.push(`-c ${NO_UPDATE_CHECK}`)
+    parts.push(...extra)
     if (spec.instructions) parts.push(`-c "developer_instructions='${spec.instructions}'"`)
     if (spec.id) parts.push(`resume ${spec.id}`)
     return parts.join(' ')
   }
   const parts = ['agy']
   if (spec.model) parts.push(`--model ${spec.model}`)
+  parts.push(...extra)
   if (spec.id) parts.push(`--conversation=${spec.id}`)
   return parts.join(' ')
 }
 
-/** A Codex approval policy or sandbox, as `-a`/`-s` take it: never, on-request, workspace-write. */
-const CODEX_POLICY = /^[a-z-]{1,32}$/
+/** What a switch repeats of the line the agent was started with (carryForSwitch). */
+export type SwitchCarry = { ok: true; model?: string; extra: string[] } | { ok: false; why: string }
 
-/** The one `-c` setting a relaunch carries, word for word (agentCommandSanitizer.ts gives it to every
- *  Codex worker). */
-const NO_UPDATE_CHECK = 'check_for_update_on_startup=false'
+/**
+ * The flags a relaunch keeps from the line that started the agent, read by the rule the model switcher
+ * uses (launchCarry.ts): its model in any spelling, and every other flag that can be re-typed word
+ * for word (permission mode, effort, directories, a swarm worker's --dangerously-skip-permissions or
+ * Codex's -a and -s). The conversation is named by the switch itself, and what Termpolis added to the
+ * line (a primer file, Codex's developer instructions) is added again by the relaunch where it applies.
+ *
+ * A line it cannot repeat faithfully is refused, before anything is typed, because a relaunch would
+ * come back WITHOUT what the line held, and some of that is a restriction: a prompt, a quote, an
+ * operator, a flag whose value is several words, a model name with odd characters. A command that
+ * is not the agent itself (a wrapper such as claude-sandbox) never gets this far: it has no account
+ * (accountsView.ts agentOfCommand). Pure.
+ */
+export function carryForSwitch(agent: AccountAgent, line: string | undefined): SwitchCarry {
+  const found = line ? agentCommandIn(line) : null
+  // Nothing recorded of how it was started: the bare command, as before.
+  if (found === null) return { ok: true, extra: [] }
+  const provider: LaunchProvider = agent === 'agy' ? 'gemini' : agent
+  const command = withoutInjected(found)
+  if (providerForCommand(command) !== provider) return { ok: true, extra: [] }
+  const name = agent === 'agy' ? 'agy' : agent === 'codex' ? 'Codex' : 'Claude Code'
+  const refuse = (what: string): SwitchCarry => ({ ok: false, why: `${name} was started with ${what}, which switching in place would not repeat faithfully, so it would come back without it` })
+  const model = modelOfCommand(provider, command)
+  if (model !== undefined && !isSafeModelName(model)) return refuse('a model name Termpolis cannot repeat')
+  const carry = carryLaunchArgs(provider, command)
+  if (!carry.complete) return refuse('options it cannot repeat (a prompt, a quote, an operator, or a flag with several values)')
+  // Claude Code's worktree is the exit hint's to name (ExitHint.worktree), once.
+  const extra = agent === 'claude' ? withoutWorktree(carry.args) : carry.args
+  return { ok: true, ...(model ? { model } : {}), extra }
+}
 
-type CarriedFlags = Pick<RelaunchSpec, 'model' | 'skipPermissions' | 'approval' | 'sandbox' | 'noUpdateCheck'>
-
-/** The flags a relaunch keeps from the line that started the agent: its model, a Claude Code swarm
- *  worker's --dangerously-skip-permissions, a Codex worker's -a, -s and update check off. Each value
- *  only when it is plainly one (isSafeModelName, CODEX_POLICY); never a flag a relaunch would get
- *  wrong, such as --append-system-prompt-file, which the SessionStart hook replaces on a resume. */
-export function carriedFlags(agent: AccountAgent, line: string | undefined): CarriedFlags {
-  const tokens = (line ?? '').split(/\s+/)
-  const after = (names: readonly string[], ok: (v: string) => boolean): string | undefined => {
-    const at = tokens.findIndex((t) => names.includes(t))
-    const v = at < 0 ? undefined : tokens[at + 1]
-    return v !== undefined && ok(v) ? v : undefined
+/** `--worktree [name]` and `-w [name]` out of `args`: the relaunch passes the one the exit hint names. */
+function withoutWorktree(args: readonly string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i]
+    if (w === '--worktree' || w === '-w') {
+      if (args[i + 1] !== undefined && !args[i + 1].startsWith('-')) i++
+      continue
+    }
+    if (w.startsWith('--worktree=')) continue
+    out.push(w)
   }
-  const flags: CarriedFlags = {}
-  const model = after(agent === 'codex' ? ['-m', '--model'] : ['--model'], isSafeModelName)
-  if (model) flags.model = model
-  if (agent === 'claude' && tokens.includes('--dangerously-skip-permissions')) flags.skipPermissions = true
-  if (agent === 'codex') {
-    const approval = after(['-a', '--ask-for-approval'], (v) => CODEX_POLICY.test(v))
-    const sandbox = after(['-s', '--sandbox'], (v) => CODEX_POLICY.test(v))
-    if (approval) flags.approval = approval
-    if (sandbox) flags.sandbox = sandbox
-    if (tokens.some((t, i) => t === NO_UPDATE_CHECK && tokens[i - 1] === '-c')) flags.noUpdateCheck = true
-  }
-  return flags
+  return out
 }
 
 /** What each CLI says when the session it was told to resume isn't there (F6). Claude Code and
@@ -230,7 +241,9 @@ export const RESUME_NOT_FOUND: Readonly<Record<AccountAgent, RegExp>> = {
 /** A sign-in screen of each CLI: a relaunch into a profile whose sign-in expired lands there. Its
  *  answers decide something (which account, which method), so Termpolis never gives one (R10). */
 export const SIGN_IN_SCREEN: Readonly<Record<AccountAgent, RegExp>> = {
-  claude: /Select login method:|Paste code here(?: if prompted)? >|Please run \/login/,
+  // The last is the footer of Claude Code 2.1.316's box in a profile that is onboarded but signed out
+  // ("Not logged in · Run /login"); its separator is a middle dot, matched loosely as the terminals differ.
+  claude: /Select login method:|Paste code here(?: if prompted)? >|Please run \/login|Not logged in .{1,3}Run \/login/,
   codex: /Sign in with ChatGPT|Provide your own API key/,
   agy: /You are currently not signed in|Select login method:|Paste the authorization code|Enter the authorization code|Select Google Cloud sign-in method:/,
 }
@@ -240,8 +253,9 @@ export const AGY_SIGNED_IN = /Authentication successful!|Successfully authentica
 
 /** A question after a relaunch that only the user can answer, which Termpolis never answers:
  *  Claude Code's bypass-permissions warning, a new MCP server to approve, the folder-trust
- *  question (answered by the prompt pollers where the user allows it, once the switch is over). */
-export const ASKS_USER = /Bypass Permissions mode|New MCP servers? found|Do you trust the (?:files|contents)|trust this folder/i
+ *  question (answered by the prompt pollers where the user allows it, once the switch is over), and
+ *  the one-time "Try the new fullscreen renderer?" offer a profile never used before opens on. */
+export const ASKS_USER = /Bypass Permissions mode|New MCP servers? found|Do you trust the (?:files|contents)|trust this folder|Try the new fullscreen renderer/i
 
 /** The variables that move an agent's profile, as a typed line could set or unset them. */
 const PROFILE_VARS = '(?:CLAUDE_CONFIG_DIR|CODEX_HOME|GEMINI_CLI_HOME)'

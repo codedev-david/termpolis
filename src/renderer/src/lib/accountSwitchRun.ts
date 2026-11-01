@@ -141,7 +141,7 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
     case 'no-outcome':
       return { what: 'Nothing showed in the terminal within 30 seconds.', now: 'Look at the terminal.', actions: [{ kind: 'retry', label: 'Try again' }, CLOSE] }
     default:
-      return { what: `Termpolis didn't switch: ${o.why}.`, now: 'Nothing was typed.', actions: [{ kind: 'retry', label: 'Try again' }, CLOSE] }
+      return { what: `Termpolis didn't switch: ${o.why}.`, now: 'Nothing was typed.', actions: [{ kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
   }
 }
 

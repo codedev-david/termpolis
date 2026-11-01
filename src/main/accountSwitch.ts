@@ -28,7 +28,7 @@ import { randomUUID } from 'crypto'
 import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind } from '../shared/agentStatusDetector'
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
-  ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carriedFlags, exitHintOf,
+  ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carryForSwitch, exitHintOf,
   otherShellReported, relaunchCommand,
 } from '../shared/accountSwitch'
 import type { ExitHint, RelaunchHold, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
@@ -544,6 +544,11 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   const os: OsMemo = { known: false }
   let hint: ExitHint | null = null
 
+  // What the agent was started with is decided before anything is typed: a relaunch that could not
+  // repeat it would come back without it, and some of it is a restriction (carryForSwitch).
+  const carry = carryForSwitch(agent, ctx.start?.commands[0])
+  if (!carry.ok) return { kind: 'refused', why: carry.why }
+
   if (req.assumeExited) {
     // The user's word that it exited: an exit hint on screen still names the session.
     hint = hintAtFoot(look(io, id), agent)
@@ -596,9 +601,8 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
     try { carried = ctx.carry(sessionId) } catch { /* resumed without it */ }
   }
   // Step 8: the line, typed at the prompt and entered once it shows there.
-  const flags = carriedFlags(agent, ctx.start?.commands[0])
   const fresh = agent === 'claude' && !sessionId ? ctx.newSessionId() : undefined
-  const spec: RelaunchSpec = { agent, id: sessionId, ...flags, ...(worktree ? { worktree } : {}), ...(fresh ? { sessionId: fresh } : {}) }
+  const spec: RelaunchSpec = { agent, id: sessionId, ...(carry.model ? { model: carry.model } : {}), extra: carry.extra, ...(worktree ? { worktree } : {}), ...(fresh ? { sessionId: fresh } : {}) }
   if (agent === 'codex' && req.instructions) spec.instructions = req.instructions
   const run = async (s: RelaunchSpec): Promise<Typed & { line: string; at: number }> => {
     // Never refused here: the same line, with the agent's name for its command, was built before

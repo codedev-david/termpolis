@@ -2,6 +2,7 @@
 // little decisions the tab makes. Main sends the rows (src/main/accountsIpc.ts); nothing here
 // reads a file or builds a path or an env value.
 import { isProfileAgent, tildifyPath } from '../../../shared/agentAccounts'
+import { agentNamed } from '../../../shared/launchCarry'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
 
 /** Each agent's colour, as its terminal tab and badge show it: an account with no colour of its own. */
@@ -60,14 +61,11 @@ export function folderLine(r: AccountRowView, home: string): string {
   return r.isDefault ? `${shown} (main profile)` : shown
 }
 
-/** The account agent a terminal's launch command runs, or null. agy only: Termpolis launches
- *  agy for its Gemini profile, and the legacy `gemini` CLI has no accounts in 1.54. */
+/** The account agent a terminal's launch command runs, or null: its first word is exactly the agent's
+ *  (a wrapper such as claude-sandbox has no account). agy only: Termpolis launches agy for its Gemini
+ *  profile, and the legacy `gemini` CLI has no accounts in 1.54. */
 export function agentOfCommand(command: string | undefined): AccountAgent | null {
-  const c = (command ?? '').trim().toLowerCase()
-  if (c.startsWith('claude')) return 'claude'
-  if (c.startsWith('codex')) return 'codex'
-  if (c.startsWith('agy')) return 'agy'
-  return null
+  return agentNamed(command)
 }
 
 /** The agent a terminal runs, as Termpolis knows it: the one it launched there, or a swarm worker's,

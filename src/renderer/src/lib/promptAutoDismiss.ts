@@ -36,6 +36,7 @@
 // This module is pure: no IPC, no state. Callers decide when to poll and how
 // to track "already dismissed" so the same prompt isn't re-answered on every
 // tick.
+import { SIGN_IN_SCREEN } from '../../../shared/accountSwitch'
 
 export interface DismissContext {
   agentName: string
@@ -240,6 +241,12 @@ export function detectDismissChar(rawTail: string, ctx: DismissContext): string 
   //    Claude's "Claude Code may make mistakes" notice, Gemini's welcome, etc.
   //    Only while it is the last thing drawn and no menu or session prompt is:
   //    Enter there would pick a row or send the user's draft.
+  // An agent with more than one account: its sign-in screen is the user's to answer (R10), however
+  // tall it is. The rule below reads only the last RECENT_LINES rows for a marked row, and Codex's real
+  // picker is eleven rows tall, so its marked row sits above them and its "Press enter to continue"
+  // looked like a splash: Enter on that row starts a browser sign-in for whichever account is open.
+  if (ctx.answerSignIn === false && Object.values(SIGN_IN_SCREEN).some((screen) => screen.test(tail))) return null
+
   const recent = tail.split('\n').map(unframed).filter(Boolean).slice(-RECENT_LINES)
   if (PRESS_ENTER.test(recent.join('\n')) && !recent.some(l => MARKED_LINE.test(l))) {
     return '\r'

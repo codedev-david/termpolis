@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   checkSignIn, hasManyAccounts, openOnAccount, openOtherAgent, runSwitch, terminalAgent,
 } from '../../src/renderer/src/lib/accountSwitchFlow'
+import { freshCommand } from '../../src/shared/launchCarry'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { SwitchOutcome } from '../../src/shared/accountSwitch'
 import type { TerminalSession } from '../../src/renderer/src/types'
@@ -203,5 +204,67 @@ describe('openOtherAgent (§8.4 Use another agent)', () => {
     expect(await openOtherAgent(term, 'agy', 'agy', odd as never)).toEqual({ ok: false, error: "Termpolis couldn't open the terminal: odd" })
     expect(failed.addTerminal).not.toHaveBeenCalled()
     expect(failed.launch).not.toHaveBeenCalled()
+  })
+})
+
+describe('freshCommand: a new terminal on an account is a new conversation (R8)', () => {
+  const SID = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+
+  it.each([
+    ['claude', 'claude'],
+    [`claude --resume ${SID}`, 'claude'],
+    [`claude -r ${SID} --model opus`, 'claude --model opus'],
+    ['claude --continue --dangerously-skip-permissions', 'claude --dangerously-skip-permissions'],
+    ['claude -c', 'claude'],
+    [`claude --session-id ${SID} --permission-mode plan`, 'claude --permission-mode plan'],
+    [`claude --resume=${SID}`, 'claude'],
+    ['claude --fork-session --verbose', 'claude --verbose'],
+    ['claude --resume --verbose', 'claude --verbose'],
+    [`codex resume ${SID}`, 'codex'],
+    ['codex resume --last -m gpt-5.6-sol', 'codex -m gpt-5.6-sol'],
+    [`codex -a never resume ${SID}`, 'codex -a never'],
+    [`agy --conversation=${SID} --model m`, 'agy --model m'],
+    ['agy --continue', 'agy'],
+  ])('%s -> %s', (from, to) => {
+    expect(freshCommand(from)).toBe(to)
+  })
+
+  it('leaves a command that is no agent\'s as it is (a test shim), and quotes that can be taken apart', () => {
+    expect(freshCommand('node mock-codex.cjs')).toBe('node mock-codex.cjs')
+    expect(freshCommand(`claude --resume ${SID} --append-system-prompt-file "C:/p.txt"`)).toBe('claude --append-system-prompt-file "C:/p.txt"')
+  })
+
+  it('gives up, rather than guess, on a command that picks a conversation and cannot be taken apart', () => {
+    expect(freshCommand('claude --resume $(cat id) --model opus')).toBeNull()
+    expect(freshCommand('claude --resume "a\\b"')).toBeNull()
+    // Nothing to drop: the same text, though it cannot be split.
+    expect(freshCommand('claude --model "a$b"')).toBe('claude --model "a$b"')
+  })
+})
+
+describe('openOnAccount never carries the source\'s conversation to the new terminal (R8)', () => {
+  const SID = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+  const deps = () => ({ createTerminal: vi.fn(async () => ({ success: true as const })), addTerminal: vi.fn(), launch: vi.fn(), newId: () => 't2' })
+
+  it.each([
+    ['claude', `claude --resume ${SID}`, 'claude'],
+    ['claude', 'claude --continue --model opus', 'claude --model opus'],
+    ['codex', `codex resume ${SID}`, 'codex'],
+    ['codex', 'codex resume --last', 'codex'],
+    ['agy', `agy --conversation=${SID}`, 'agy'],
+  ])('%s: %s starts %s', async (_agent, from, to) => {
+    const d = deps()
+    expect(await openOnAccount({ ...term, agentCommand: from }, B, d as never)).toEqual({ ok: true, id: 't2' })
+    expect(d.launch).toHaveBeenCalledWith([expect.objectContaining({ id: 't2', agentCommand: to })])
+    expect(d.addTerminal).toHaveBeenCalledWith(expect.objectContaining({ agentCommand: to }))
+    expect(d.createTerminal.mock.calls[0][4]).toBe(to.startsWith('claude'))
+  })
+
+  it('opens nothing for a command that picks a conversation and cannot be taken apart, and says why', async () => {
+    const d = deps()
+    const r = await openOnAccount({ ...term, agentCommand: 'claude --resume $(cat id)' }, B, d as never)
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("can't start a new session") })
+    expect(d.createTerminal).not.toHaveBeenCalled()
+    expect(d.launch).not.toHaveBeenCalled()
   })
 })

@@ -13,6 +13,7 @@ import { agentOfTerminal } from './accountsView'
 import type { AgentLaunchTarget } from './agentLaunch'
 import { launchTerminalArgs } from './accountLaunch'
 import { isClaudeCommand } from './testAgents'
+import { freshCommand } from '../../../shared/launchCarry'
 
 /** The agent a terminal runs, as Termpolis knows it: the one it launched there, or a swarm
  *  worker's (main's record of run_command). Never the conductor's, which runs `claude -p` behind
@@ -107,7 +108,9 @@ export interface NewTerminalDeps {
  *  account, with a fresh session, for parallel work while this one waits out its reset. */
 export async function openOnAccount(source: TerminalSession, target: AccountRowView, deps: NewTerminalDeps): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const id = deps.newId()
-  const command = source.agentCommand as string
+  // A new session beside the source, never its conversation: two agents on one transcript is the R8 harm.
+  const command = freshCommand(source.agentCommand as string)
+  if (command === null) return { ok: false, error: "Termpolis can't start a new session from this terminal's command: it picks a conversation and holds options Termpolis can't take apart. Start the agent from the sidebar on that account instead." }
   try {
     const res = await deps.createTerminal(id, source.shellType, source.cwd, undefined, isClaudeCommand(command), ...launchTerminalArgs(target.id, command))
     if (!res.success) return { ok: false, error: `Termpolis couldn't open the terminal: ${res.error}` }

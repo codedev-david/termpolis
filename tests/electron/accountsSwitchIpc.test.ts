@@ -440,3 +440,47 @@ describe('accounts:switch, an account that isn\'t offered automatically (D14, R1
     expect((await switchTo(b)).kind).toBe('switched')
   })
 })
+
+describe('accounts:switch, what the agent was started with comes back with it (carryForSwitch)', () => {
+  /** A terminal on the default account whose agent was started with `line`, on a conversation. */
+  async function startedWith(line: string): Promise<{ main: string; b: string }> {
+    const { main, b } = await twoClaude()
+    noteTerminalAccount('t1', main)
+    noteAgentStart('t1', { at: term.launchedAt, commands: [line] })
+    noteTerminalSession('t1', ID)
+    mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+    writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+    return { main, b }
+  }
+
+  it('repeats the permission mode, the denied tools, the added folder and the model, in the order they were given', async () => {
+    const { b } = await startedWith('claude --permission-mode plan --disallowedTools Bash --add-dir /srv/data --model sonnet')
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(term.ran[term.ran.length - 1]).toMatch(/&& claude --model sonnet --permission-mode plan --disallowedTools Bash --add-dir \/srv\/data --resume /)
+  })
+
+  it('repeats the flags of a line Termpolis typed with an account in front of it, and leaves its primer file out', async () => {
+    const { b } = await startedWith(`export CLAUDE_CONFIG_DIR='/h/.claude' && claude --dangerously-skip-permissions --append-system-prompt-file "/p/primer.txt" --session-id ${ID}`)
+    expect((await switchTo(b)).kind).toBe('switched')
+    const typed = term.ran[term.ran.length - 1]
+    expect(typed).toMatch(/&& claude --dangerously-skip-permissions --resume /)
+    expect(typed).not.toContain('primer')
+  })
+
+  it('refuses a line it cannot repeat, before the agent is asked to exit: nothing is typed, and the terminal stays where it was', async () => {
+    const { main, b } = await startedWith('claude --dangerously-skip-permissions "fix the login page"')
+    const out = await switchTo(b)
+    expect(out.kind).toBe('refused')
+    expect((out as { why: string }).why).toMatch(/^Claude Code was started with options it cannot repeat/)
+    expect(term.writes).toEqual([])
+    expect(term.ran).toEqual([])
+    expect(terminalAccountId('t1')).toBe(main)
+  })
+
+  it('keeps asking nothing of a terminal whose start was never recorded: the bare command, as before', async () => {
+    const { b } = await twoClaude()
+    noteTerminalAccount('t1', 'whoever')
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(term.ran[term.ran.length - 1]).toMatch(/&& claude(?: --resume \S+)?$/)
+  })
+})

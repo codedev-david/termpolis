@@ -482,3 +482,49 @@ describe('promptAutoDismiss.isAwaitingAnswer', () => {
     expect(isAwaitingAnswer('› yes, go ahead with the rename\n\n• Renamed 3 files.\n\n› ')).toBe(false)
   })
 })
+
+// Codex 0.164.0's real sign-in picker (a signed-out CODEX_HOME), captured through ConPTY in a temp
+// profile: eleven rows, so its marked row sits above the last eight that the splash rule reads.
+const CODEX_SIGN_IN_PICKER = [
+  "  Welcome to Codex, OpenAI's command-line coding agent",
+  '  Choose how you want to use Codex.',
+  '> 1. Sign in with ChatGPT',
+  '     Usage included with Plus, Pro, Business, and Enterprise plans',
+  '  2. Sign in with Device Code',
+  '     Sign in from another device with a one-time code',
+  '  3. Use an OpenAI API key',
+  '     Pay for what you use',
+  '  4. Use Amazon Bedrock',
+  '     Connect using your AWS credentials',
+  '  Press enter to continue',
+].join('\n')
+
+describe("promptAutoDismiss: Codex's real sign-in picker for an agent with accounts (R10)", () => {
+  it('is left to the user when told to, though its marked row is above the last eight rows', async () => {
+    for (const agentName of ['OpenAI Codex', 'Codex']) {
+      expect(detectDismissChar(CODEX_SIGN_IN_PICKER, { agentName, answerSignIn: false })).toBeNull()
+      expect(detectDismissChar(CODEX_SIGN_IN_PICKER, { agentName, allowFolderTrust: true, answerSignIn: false })).toBeNull()
+    }
+    expect(await dismissReply(CODEX_SIGN_IN_PICKER, 'OpenAI Codex', async () => false, false)).toBeNull()
+    expect(await replyToScreen(CODEX_SIGN_IN_PICKER, 'OpenAI Codex', async () => false, async () => CODEX_SIGN_IN_PICKER, false)).toBeNull()
+  })
+
+  it('is answered as before for an agent with one account (D13)', async () => {
+    expect(detectDismissChar(CODEX_SIGN_IN_PICKER, { agentName: 'OpenAI Codex' })).toBe('\r')
+    expect(detectDismissChar(CODEX_SIGN_IN_PICKER, { agentName: 'OpenAI Codex', answerSignIn: true })).toBe('\r')
+    expect(await replyToScreen(CODEX_SIGN_IN_PICKER, 'OpenAI Codex', async () => false, async () => CODEX_SIGN_IN_PICKER)).toBe('\r')
+  })
+
+  it("still answers Codex's other 'Press enter to continue' screens when told not to answer a sign-in", () => {
+    const tip = 'Tip: use /status to see usage.\nPress enter to continue'
+    expect(detectDismissChar(tip, { agentName: 'OpenAI Codex', answerSignIn: false })).toBe('\r')
+    expect(detectDismissChar(CODEX_TRUST('> 1. Yes, continue\n  2. No, quit'), { agentName: 'OpenAI Codex', answerSignIn: false })).toBeNull()
+  })
+
+  it("leaves the other agents' sign-in screens alone too, wherever the marked row sits", () => {
+    const claude = 'Welcome\nSelect login method:\n\n  Press enter to continue'
+    const agy = 'You are currently not signed in\n\nPress enter to continue'
+    expect(detectDismissChar(claude, { agentName: 'Claude Code', answerSignIn: false })).toBeNull()
+    expect(detectDismissChar(agy, { agentName: 'Gemini CLI', answerSignIn: false })).toBeNull()
+  })
+})

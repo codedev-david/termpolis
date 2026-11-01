@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   AGY_SIGNED_IN, ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, HINT_FROM_FOOT_ROWS, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND,
-  SIGN_IN_SCREEN, carriedFlags, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, otherShellReported,
+  SIGN_IN_SCREEN, carryForSwitch, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, otherShellReported,
   relaunchCommand,
 } from '../../src/shared/accountSwitch'
 
@@ -24,7 +24,7 @@ describe('ids and names that go on a command line', () => {
   })
 
   it('takes a plain model name only', () => {
-    for (const v of ['opus', 'gpt-5.6-sol', 'claude-opus-5-5', 'a_b']) expect(isSafeModelName(v)).toBe(true)
+    for (const v of ['opus', 'gpt-5.6-sol', 'claude-opus-5-5', 'a_b', 'opus[1m]']) expect(isSafeModelName(v)).toBe(true)
     for (const v of ['', 'op us', 'opus;x', '$(x)', 'a'.repeat(65), null]) expect(isSafeModelName(v)).toBe(false)
   })
 })
@@ -109,7 +109,7 @@ describe('exitHintOf: agy', () => {
 describe('relaunchCommand (R8: never --continue or resume --last)', () => {
   it('Claude Code: resumes by id with the terminal\'s flags, in a worktree too', () => {
     expect(relaunchCommand({ agent: 'claude', id: ID })).toBe(`claude --resume ${ID}`)
-    expect(relaunchCommand({ agent: 'claude', id: ID, model: 'opus', skipPermissions: true })).toBe(`claude --model opus --dangerously-skip-permissions --resume ${ID}`)
+    expect(relaunchCommand({ agent: 'claude', id: ID, model: 'opus', extra: ['--dangerously-skip-permissions'] })).toBe(`claude --model opus --dangerously-skip-permissions --resume ${ID}`)
     expect(relaunchCommand({ agent: 'claude', id: ID, worktree: 'feat-x', model: 'sonnet' })).toBe(`claude --worktree "feat-x" --model sonnet --resume ${ID}`)
   })
 
@@ -153,6 +153,10 @@ describe('what a relaunch can land on', () => {
     expect(SIGN_IN_SCREEN.agy.test('Welcome back! You are currently not signed in.')).toBe(true)
     expect(SIGN_IN_SCREEN.agy.test('Paste the authorization code below:')).toBe(true)
     expect(SIGN_IN_SCREEN.claude.test('❯ hello')).toBe(false)
+    // Claude Code 2.1.316's footer in a profile that is onboarded but signed out, as two terminals draw its dot.
+    expect(SIGN_IN_SCREEN.claude.test('? for shortcuts      Not logged in · Run /login')).toBe(true)
+    expect(SIGN_IN_SCREEN.claude.test('? for shortcuts      Not logged in \ufffd Run /login')).toBe(true)
+    expect(SIGN_IN_SCREEN.claude.test('She was not logged in, so run /login')).toBe(false)
   })
 
   it('reads agy\'s words for a finished sign-in', () => {
@@ -166,6 +170,8 @@ describe('what a relaunch can land on', () => {
     expect(ASKS_USER.test('New MCP server found in .mcp.json: x')).toBe(true)
     expect(ASKS_USER.test('Do you trust the files in this folder?')).toBe(true)
     expect(ASKS_USER.test('Do you trust the contents of this directory?')).toBe(true)
+    // The one-time offer a profile never used before opens on (real Claude Code 2.1.316).
+    expect(ASKS_USER.test('Try the new fullscreen renderer?  Enter to confirm / Esc to cancel')).toBe(true)
     expect(ASKS_USER.test('❯ ready')).toBe(false)
   })
 })
@@ -217,47 +223,100 @@ describe('otherShellReported (R1: a positive mismatch only)', () => {
 })
 
 describe('relaunchCommand: the flags a relaunch keeps', () => {
-  it('puts Codex\'s approval and sandbox after its model, and agy\'s model before its conversation', () => {
-    expect(relaunchCommand({ agent: 'codex', id: ID2, model: 'gpt-5.6-sol', approval: 'never', sandbox: 'workspace-write' }))
+  it("puts a Codex worker's other flags after its model, and agy's model before its conversation", () => {
+    expect(relaunchCommand({ agent: 'codex', id: ID2, model: 'gpt-5.6-sol', extra: ['-a', 'never', '-s', 'workspace-write'] }))
       .toBe(`codex -m gpt-5.6-sol -a never -s workspace-write resume ${ID2}`)
-    expect(relaunchCommand({ agent: 'agy', id: ID, model: 'gemini-4-argon' })).toBe(`agy --model gemini-4-argon --conversation=${ID}`)
-    expect(() => relaunchCommand({ agent: 'codex', id: null, approval: 'never; rm' })).toThrow('not a Codex policy')
-    expect(() => relaunchCommand({ agent: 'codex', id: null, sandbox: 'A' })).toThrow('not a Codex policy')
+    expect(relaunchCommand({ agent: 'agy', id: ID, model: 'gemini-4-argon', extra: ['--mode', 'plan'] })).toBe(`agy --model gemini-4-argon --mode plan --conversation=${ID}`)
+    expect(relaunchCommand({ agent: 'codex', id: null, extra: ['-c', 'check_for_update_on_startup=false'], instructions: 'Use the memory tools.' }))
+      .toBe(`codex -c check_for_update_on_startup=false -c "developer_instructions='Use the memory tools.'"`)
+  })
+
+  it('types only words it can repeat faithfully', () => {
+    for (const extra of [['a b'], ['x;y'], ['$(x)'], ['"q"'], ['a|b'], ['{']]) {
+      expect(() => relaunchCommand({ agent: 'claude', id: null, extra }), extra.join()).toThrow('not a flag a relaunch can repeat')
+    }
+    expect(relaunchCommand({ agent: 'claude', id: null, model: 'opus[1m]', extra: ['--add-dir', '../lib'] })).toBe('claude --model opus[1m] --add-dir ../lib')
   })
 })
 
-describe('carriedFlags', () => {
-  it('keeps Claude Code\'s model and a worker\'s --dangerously-skip-permissions, never its primer file', () => {
-    expect(carriedFlags('claude', 'claude --model opus --append-system-prompt-file "C:/p.txt" --dangerously-skip-permissions'))
-      .toEqual({ model: 'opus', skipPermissions: true })
-    expect(carriedFlags('claude', `export CLAUDE_CONFIG_DIR='x' && claude --session-id ${ID}`)).toEqual({})
+describe('carryForSwitch: what a switch repeats of the line the agent was started with', () => {
+  it("carries Claude Code's model in any spelling, and its other flags word for word", () => {
+    expect(carryForSwitch('claude', 'claude --model opus --dangerously-skip-permissions')).toEqual({ ok: true, model: 'opus', extra: ['--dangerously-skip-permissions'] })
+    expect(carryForSwitch('claude', 'claude --model=opus[1m] --permission-mode plan --effort max')).toEqual({ ok: true, model: 'opus[1m]', extra: ['--permission-mode', 'plan', '--effort', 'max'] })
+    expect(carryForSwitch('claude', "claude --model 'sonnet'")).toEqual({ ok: true, model: 'sonnet', extra: [] })
+    expect(carryForSwitch('claude', 'claude --disallowedTools Bash --add-dir ../lib')).toEqual({ ok: true, extra: ['--disallowedTools', 'Bash', '--add-dir', '../lib'] })
   })
 
-  it('keeps Codex\'s model, approval and sandbox in their short and long forms', () => {
-    expect(carriedFlags('codex', 'codex -m gpt-5.6-sol -a never -s workspace-write')).toEqual({ model: 'gpt-5.6-sol', approval: 'never', sandbox: 'workspace-write' })
-    expect(carriedFlags('codex', 'codex --model x1 --ask-for-approval on-request --sandbox read-only')).toEqual({ model: 'x1', approval: 'on-request', sandbox: 'read-only' })
-    // Codex reads --model too; Claude Code has no -m.
-    expect(carriedFlags('claude', 'claude -m opus')).toEqual({})
+  it('leaves out the conversation, which the switch names itself, and what Termpolis added to the line', () => {
+    expect(carryForSwitch('claude', `claude --session-id ${ID}`)).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', `claude --resume ${ID} --model opus`)).toEqual({ ok: true, model: 'opus', extra: [] })
+    expect(carryForSwitch('claude', 'claude --model opus --append-system-prompt-file "C:/p.txt" --dangerously-skip-permissions'))
+      .toEqual({ ok: true, model: 'opus', extra: ['--dangerously-skip-permissions'] })
+    expect(carryForSwitch('claude', "claude --append-system-prompt-file='/p x.txt' --verbose")).toEqual({ ok: true, extra: ['--verbose'] })
+    expect(carryForSwitch('codex', `codex -a never -c "developer_instructions='Use the memory tools.'"`)).toEqual({ ok: true, extra: ['-a', 'never'] })
+    expect(carryForSwitch('codex', "codex -c 'developer_instructions=Use it' --full-auto")).toEqual({ ok: true, extra: ['--full-auto'] })
   })
 
-  it('keeps agy\'s model, and nothing it can\'t check', () => {
-    expect(carriedFlags('agy', 'agy --model gemini-4-argon --dangerously-skip-permissions')).toEqual({ model: 'gemini-4-argon' })
-    expect(carriedFlags('codex', 'codex -m "a b" -a NEVER -s')).toEqual({})
-    expect(carriedFlags('claude', undefined)).toEqual({})
+  it("reads the agent's command out of the account line Termpolis typed, in every shell", () => {
+    const cmd = 'claude --dangerously-skip-permissions --resume ' + ID
+    const expected = { ok: true, extra: ['--dangerously-skip-permissions'] }
+    expect(carryForSwitch('claude', `export CLAUDE_CONFIG_DIR='/h/.claude-b' && unset ANTHROPIC_BASE_URL && ${cmd}`)).toEqual(expected)
+    expect(carryForSwitch('claude', `& { $env:CLAUDE_CONFIG_DIR = 'C:\\h\\.claude-b'; ${cmd} }`)).toEqual(expected)
+    expect(carryForSwitch('claude', `set "CLAUDE_CONFIG_DIR=C:\\h\\.claude-b" && call ${cmd}`)).toEqual(expected)
+    expect(carryForSwitch('claude', `cd repo && ${cmd}`)).toEqual(expected)
   })
 
-  // A swarm worker restarted on another account (§9) keeps its update check off: a Codex started
-  // while a newer one is out opens on the update offer otherwise, a menu nobody answers there.
-  it('keeps a Codex worker\'s update check off, as run_command started it, and only that setting', () => {
-    const worker = 'codex -a never -s workspace-write -c check_for_update_on_startup=false'
-    expect(carriedFlags('codex', worker)).toEqual({ approval: 'never', sandbox: 'workspace-write', noUpdateCheck: true })
-    expect(relaunchCommand({ agent: 'codex', id: ID2, ...carriedFlags('codex', worker) }))
-      .toBe(`codex -a never -s workspace-write -c check_for_update_on_startup=false resume ${ID2}`)
-    expect(carriedFlags('codex', 'codex -c check_for_update_on_startup=true')).toEqual({})
-    expect(carriedFlags('codex', 'codex check_for_update_on_startup=false')).toEqual({})
-    expect(carriedFlags('claude', 'claude -c check_for_update_on_startup=false')).toEqual({})
-    expect(relaunchCommand({ agent: 'codex', id: null, noUpdateCheck: true, instructions: 'Use the memory tools.' }))
-      .toBe('codex -c check_for_update_on_startup=false -c "developer_instructions=\'Use the memory tools.\'"')
+  it("carries Codex's model, approval, sandbox and update check in their short and long forms", () => {
+    expect(carryForSwitch('codex', 'codex -m gpt-5.6-sol -a never -s workspace-write')).toEqual({ ok: true, model: 'gpt-5.6-sol', extra: ['-a', 'never', '-s', 'workspace-write'] })
+    expect(carryForSwitch('codex', 'codex --model x1 --ask-for-approval on-request --sandbox read-only')).toEqual({ ok: true, model: 'x1', extra: ['--ask-for-approval', 'on-request', '--sandbox', 'read-only'] })
+    expect(carryForSwitch('codex', 'codex -a never -s workspace-write -c check_for_update_on_startup=false'))
+      .toEqual({ ok: true, extra: ['-a', 'never', '-s', 'workspace-write', '-c', 'check_for_update_on_startup=false'] })
+    expect(carryForSwitch('codex', 'codex -mgpt-5.6-sol --search -c model_reasoning_effort=high')).toEqual({ ok: true, model: 'gpt-5.6-sol', extra: ['--search', '-c', 'model_reasoning_effort=high'] })
+    expect(carryForSwitch('codex', `codex resume ${ID2} --last`)).toEqual({ ok: true, extra: [] })
+  })
+
+  it("carries agy's model and other options", () => {
+    expect(carryForSwitch('agy', 'agy --model gemini-4-argon')).toEqual({ ok: true, model: 'gemini-4-argon', extra: [] })
+    expect(carryForSwitch('agy', 'agy --model gemini-4-argon --dangerously-skip-permissions --add-dir ../x')).toEqual({ ok: true, model: 'gemini-4-argon', extra: ['--dangerously-skip-permissions', '--add-dir', '../x'] })
+    expect(carryForSwitch('agy', `agy --conversation=${ID}`)).toEqual({ ok: true, extra: [] })
+  })
+
+  it('leaves out a worktree, which the exit hint names', () => {
+    expect(carryForSwitch('claude', 'claude --worktree feat-x --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
+    expect(carryForSwitch('claude', 'claude -w --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
+    expect(carryForSwitch('claude', 'claude --worktree=feat-x --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
+  })
+
+  it("has nothing to repeat when nothing was recorded, or the line is another agent's", () => {
+    expect(carryForSwitch('claude', undefined)).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', '')).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', 'ls -la')).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', 'codex -a never')).toEqual({ ok: true, extra: [] })
+  })
+
+  it('refuses a line it cannot repeat faithfully, before anything is typed: a prompt, a quote, an operator, a flag with several values, an odd model name', () => {
+    const refused = (agent: 'claude' | 'codex' | 'agy', line: string): string => {
+      const r = carryForSwitch(agent, line)
+      expect(r.ok, line).toBe(false)
+      return (r as { why: string }).why
+    }
+    expect(refused('claude', 'claude "fix the bug"'))
+      .toBe('Claude Code was started with options it cannot repeat (a prompt, a quote, an operator, or a flag with several values), which switching in place would not repeat faithfully, so it would come back without it')
+    expect(refused('claude', 'claude --dangerously-skip-permissions /review')).toMatch(/^Claude Code was started with options/)
+    expect(refused('claude', 'claude --disallowedTools Bash Edit')).toMatch(/^Claude Code was started with options/)
+    expect(refused('claude', 'claude --add-dir "my dir"')).toMatch(/options/)
+    expect(refused('claude', 'claude --verbose; rm x')).toMatch(/options/)
+    expect(refused('codex', 'codex -m "a b" -a NEVER -s')).toMatch(/^Codex was started with/)
+    expect(refused('agy', 'agy -- prompt')).toMatch(/^agy was started with/)
+    expect(refused('claude', 'claude --model "op;us"')).toMatch(/a model name Termpolis cannot repeat/)
+    expect(refused('claude', 'claude --model a' + 'b'.repeat(70))).toMatch(/a model name Termpolis cannot repeat/)
+  })
+
+  it('has no model for a flag with no value, and refuses a command it cannot take apart', () => {
+    expect(carryForSwitch('claude', 'claude --model')).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', 'claude --model=')).toEqual({ ok: true, extra: [] })
+    // An unclosed quote is not repeated, so it is refused.
+    expect(carryForSwitch('claude', 'claude --model "opus').ok).toBe(false)
   })
 })
 

@@ -14,7 +14,7 @@
 // Each step holds the terminal's relaunch lock while it types (accountSwitch.ts, R7). Where a step
 // can't be driven safely, it says why and types nothing more: the user's terminal is never handed a
 // command to type.
-import { EXIT_COMMAND, relaunchCommand } from '../shared/accountSwitch'
+import { EXIT_COMMAND, carryForSwitch, relaunchCommand } from '../shared/accountSwitch'
 import type { AgyStepOutcome, AgyStepRequest } from '../shared/accountSwitch'
 import { familyOf } from '../shared/agentAccounts'
 import {
@@ -100,13 +100,19 @@ export async function runAgyStep(req: AgyStepRequest, ctx: AgyContext): Promise<
   if (req.step === 'exit') {
     const env = agyEnvAuth(ctx.env)
     if (env) return { kind: 'refused', why: `agy signs in with ${env} from the environment here, so switching its sign-in changes nothing: change ${env} instead` }
+    // What agy was started with is decided before anything is typed (carryForSwitch).
+    const carry = carryForSwitch('agy', ctx.start?.commands[0])
+    if (!carry.ok) return { kind: 'refused', why: carry.why }
     return locked(io, id, () => exitAgy(io, id, ctx.start, !!req.assumeExited))
   }
 
   // resume: the conversation by its id, at the shell's prompt, on the sign-in agy has now.
   const conversationId = req.conversationId ?? null
   return locked(io, id, async () => {
-    const line = relaunchCommand({ agent: 'agy', id: conversationId })
+    // Its model and its other options come back with it (carryForSwitch), as in Claude Code's and Codex's.
+    const carry = carryForSwitch('agy', ctx.start?.commands[0])
+    if (!carry.ok) return { kind: 'refused', why: carry.why }
+    const line = relaunchCommand({ agent: 'agy', id: conversationId, ...(carry.model ? { model: carry.model } : {}), extra: carry.extra })
     const at = io.end(id)
     const typed = await typeAtPrompt(io, id, family, line, at)
     if (typed.outcome !== 'entered') return { kind: 'not-resumed', why: NOT_TYPED[typed.outcome] }

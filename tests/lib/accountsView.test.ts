@@ -125,6 +125,17 @@ describe('agentOfCommand: which account agent a terminal runs', () => {
     expect(agentOfCommand('npm test')).toBe(null)
     expect(agentOfCommand(undefined)).toBe(null)
   })
+
+  it('names the agent by its first word, with a path or an .exe, and never a wrapper that only starts with it', () => {
+    expect(agentOfCommand('  C:\\tools\\claude.exe --verbose')).toBe('claude')
+    expect(agentOfCommand('/usr/local/bin/codex -a never')).toBe('codex')
+    expect(agentOfCommand('CLAUDE')).toBe('claude')
+    // A wrapper adds something (a sandbox) that a relaunch of the bare agent would drop: it has no
+    // account, no chip and no switch, and launches as it did before accounts (D13).
+    for (const wrapper of ['claude-sandbox --permission-mode plan', 'claudex', 'codex-wrapper', 'agy2', 'agyx --model m', 'npx claude', 'sandbox-run claude --model x']) {
+      expect(agentOfCommand(wrapper), wrapper).toBeNull()
+    }
+  })
 })
 
 describe('agentOfTerminal: the agent a terminal runs, as Termpolis knows it', () => {

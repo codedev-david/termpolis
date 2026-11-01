@@ -182,3 +182,43 @@ describe('shownEmail: what agy\'s header shows, for display only', () => {
     expect(shownEmail(['no address here'])).toBeNull()
   })
 })
+
+describe('what agy was started with comes back with it (carryForSwitch)', () => {
+  it('resumes with the terminal\'s model and its other options, as it was started', async () => {
+    const t = new FakeTerminal(agy({ launch: 'agy --model gemini-4-argon --add-dir ../lib' }))
+    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: ID })
+    t.writes.length = 0
+    const out = await step(t, { step: 'resume', conversationId: ID }).p
+    expect(out.kind).toBe('resumed')
+    expect(t.ran).toContain(`agy --model gemini-4-argon --add-dir ../lib --conversation=${ID}`)
+  })
+
+  it('records the line it typed as the start, so the next switch repeats the same options', async () => {
+    const t = new FakeTerminal(agy({ launch: 'agy --model gemini-4-argon' }))
+    await step(t, {}).p
+    const { p, recorded } = step(t, { step: 'resume', conversationId: ID })
+    await p
+    expect(recorded).toContainEqual({ start: { at: expect.any(Number), commands: [`agy --model gemini-4-argon --conversation=${ID}`] } })
+  })
+
+  it('refuses a start it cannot repeat before it exits agy: nothing is typed', async () => {
+    const t = new FakeTerminal(agy({ launch: 'agy "summarize the repo"' }))
+    const out = await step(t, {}).p
+    expect(out.kind).toBe('refused')
+    expect((out as { why: string }).why).toMatch(/^agy was started with options it cannot repeat/)
+    expect(t.writes).toEqual([])
+    expect(relaunchLockReason('t1', t.clock)).toBeNull()
+  })
+
+  it('refuses at the resume too, when the start it knows is one it cannot repeat, and types nothing', async () => {
+    const t = new FakeTerminal(agy({ launch: 'agy --model gemini-4-argon' }))
+    await step(t, {}).p
+    t.writes.length = 0
+    const out = await runAgyStep(
+      { terminalId: 't1', targetId: 'g2', shellType: 'gitbash', step: 'resume', conversationId: ID },
+      { io: t.io(), start: { at: t.launchedAt, commands: ['agy "a prompt"'] }, env: {}, record: () => undefined },
+    )
+    expect(out.kind).toBe('refused')
+    expect(t.writes).toEqual([])
+  })
+})
