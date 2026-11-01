@@ -282,6 +282,22 @@ describe('its ways out', () => {
     expect(newTerminalOn).toHaveBeenLastCalledWith(expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 'acc_b' }))
   })
 
+  it('opens one new terminal for a double click, and can be asked again once it answered', async () => {
+    let answer!: (v: { ok: true; id: string } | { ok: false; error: string }) => void
+    vi.mocked(newTerminalOn).mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+    card()
+    openLimit()
+    await waitFor(() => expect(accounts.check).toHaveBeenCalledTimes(2))
+    click('limit-card-more')
+    click('limit-card-fresh-first')
+    click('limit-card-fresh-first')
+    expect(newTerminalOn).toHaveBeenCalledTimes(1)
+    // It could not open: the way out is free again.
+    await act(async () => { answer({ ok: false, error: 'no shell' }) })
+    click('limit-card-fresh-first')
+    expect(newTerminalOn).toHaveBeenCalledTimes(2)
+  })
+
   it('stays, with why, when the new terminal could not be opened: the stop keeps its card and its other ways out', async () => {
     vi.mocked(newTerminalOn).mockResolvedValueOnce({ ok: false, error: "Termpolis couldn't open the terminal: no shell" })
     card()
@@ -589,6 +605,7 @@ describe('a terminal on the work account (R17)', () => {
     openLimit(ctx({ accountId: 'acc_w' }))
     click('limit-card-new')
     expect(newTerminalOn).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 'acc_a' }))
+    await act(async () => undefined)
     openLimit(ctx({ accountId: 'acc_w' }))
     click('limit-card-continue')
     click('limit-card-carry-new')

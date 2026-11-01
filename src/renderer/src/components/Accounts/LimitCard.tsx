@@ -7,7 +7,7 @@
 // offered automatically are a way out (D14), a work terminal's first choice is a fresh session
 // there (R17), a model's limit offers that model's way out first (R15), and each way out is asked
 // whether it is signed in now, at once and in parallel (§4.4, a minute's answer reused).
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { v4 as uuid } from 'uuid'
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../../shared/agentAccounts'
@@ -46,6 +46,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   const [installed, setInstalled] = useState<Record<string, boolean> | null>(null)
   const [more, setMore] = useState(false)
   const [carry, setCarry] = useState<AccountRowView | null>(null)
+  const opening = useRef(false)
   /** The carry question was asked on the way to a sign-in (a signed-out row): its yes opens the
    *  sign-in sheet, and the switch goes on when that finishes. */
   const [carrySignsIn, setCarrySignsIn] = useState(false)
@@ -103,9 +104,16 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   /** A new terminal beside this one. The card goes once the terminal exists; if it could not be opened, the
    *  card stays, with why, and its other ways out. */
   const fresh = async (to: AccountRowView): Promise<void> => {
-    const r = await newTerminalOn(terminal, to)
-    if (r.ok) leave()
-    else setError(r.error)
+    // One at a time: a second click while the first terminal is still opening would open another.
+    if (opening.current) return
+    opening.current = true
+    try {
+      const r = await newTerminalOn(terminal, to)
+      if (r.ok) leave()
+      else setError(r.error)
+    } finally {
+      opening.current = false
+    }
   }
 
   const openSignIn = (to: AccountRowView, confirmed: boolean): void => {
