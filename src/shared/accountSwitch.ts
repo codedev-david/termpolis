@@ -411,3 +411,13 @@ const WINDOWS_REPORT = /\x1b\]9;9;/
 export function otherShellReported(output: string, family: ShellFamily): boolean {
   return family === 'posix' ? WINDOWS_REPORT.test(output) : POSIX_REPORT.test(output)
 }
+
+/** Whether a shell of another kind runs here now: another family reported, and the terminal's own did
+ *  not. A prompt can write both (oh-my-posh's pwd=osc99 in Git Bash adds Windows Terminal's cwd marker to
+ *  the bash prompt's own OSC 7; a PowerShell prompt can write OSC 7), and then no shell is nested: a line
+ *  of the wrong family is harmless anyway (it fails to parse and runs nothing, verified for all nine
+ *  pairs), so only this clear case, a family heard from and the own one silent, refuses. */
+export function nestedShellReported(output: string, family: ShellFamily): boolean {
+  const own = family === 'posix' ? POSIX_REPORT.test(output) : WINDOWS_REPORT.test(output)
+  return !own && otherShellReported(output, family)
+}

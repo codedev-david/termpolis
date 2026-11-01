@@ -13,10 +13,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
-  releaseModelHold, runAccountSwitch,
+  exitShown, hintAtFoot, look, releaseModelHold, runAccountSwitch, typeAtPrompt,
 } from '../../src/main/accountSwitch'
-import type { SwitchContext } from '../../src/main/accountSwitch'
+import type { Look, SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
 import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
+import { HINT_FROM_FOOT_ROWS, exitHintOf } from '../../src/shared/accountSwitch'
 import type { SwitchOutcome, SwitchRequest } from '../../src/shared/accountSwitch'
 import type { AgentAccount } from '../../src/shared/agentAccounts'
 import { FakeTerminal, ID, ID2, keys } from './_switchTerminal'
@@ -66,6 +67,42 @@ function cleanRun(r: Run): void {
 }
 
 beforeEach(() => _resetSwitchLocksForTest())
+
+describe("a pane too narrow for the exit hint's command row (round 1)", () => {
+  const look = (lines: string[], cols: number, box = -1): Look => ({ lines, title: '', raw: '', end: 0, box, cols })
+  const wrap = (text: string, cols: number): string[] => text.match(new RegExp(`.{1,${cols}}`, 'g')) as string[]
+
+  it.each([50, 40, 30])('reads the session id of a Claude Code hint that wraps at %i columns', (cols) => {
+    const rows = ['', 'Resume this session with:', ...wrap(`claude --resume ${ID}`, cols), '']
+    expect(rows.length).toBeGreaterThan(4)
+    expect(hintAtFoot(look(rows, cols), 'claude')).toMatchObject({ id: ID, row: 1 })
+  })
+
+  it('reads a worktree hint that wraps, and a Codex one, an agy one', () => {
+    const cols = 36
+    expect(hintAtFoot(look(['Resume this session with:', ...wrap(`claude --worktree "feat-x" --resume ${ID}`, cols)], cols), 'claude')).toMatchObject({ id: ID, worktree: 'feat-x' })
+    expect(hintAtFoot(look(['To continue this session, run:', ...wrap(`  codex resume ${ID2}`, cols)], cols), 'codex')).toMatchObject({ id: ID2 })
+    expect(hintAtFoot(look(['Resume with -c (or command below):', ...wrap(`agy --conversation=${ID}`, cols)], cols), 'agy')).toMatchObject({ id: ID })
+  })
+
+  it('still reads rows that are not wrapped, whatever the width says, and joins nothing it does not need to', () => {
+    const rows = ['Resume this session with:', `  claude --resume ${ID}`]
+    expect(hintAtFoot(look(rows, 80), 'claude')).toMatchObject({ id: ID })
+    expect(hintAtFoot(look(rows, undefined as unknown as number), 'claude')).toMatchObject({ id: ID })
+    // A full-width row that merely ends there is not joined to the next, and what follows does not spoil it.
+    const full = 'x'.repeat(40)
+    expect(hintAtFoot(look([full, 'Resume this session with:', `  claude --resume ${ID}`], 40), 'claude')).toMatchObject({ id: ID, row: 1 })
+  })
+
+  it('names no id for a hint cut short with nothing under it, as before', () => {
+    expect(hintAtFoot(look(['Resume this session with:', 'claude --resume 3f2a9c1e-5b7d'], 29), 'claude')).toMatchObject({ id: null })
+  })
+
+  it('keeps the box rule: a hint above the input box is history, not an exit', () => {
+    const rows = ['Resume this session with:', ...wrap(`claude --resume ${ID}`, 40), '', '─'.repeat(40), '❯ ', '─'.repeat(40)]
+    expect(hintAtFoot(look(rows, 40, 4), 'claude')).toBeNull()
+  })
+})
 
 describe('Claude Code: the whole switch (§7.2)', () => {
   it('exits with /exit, resumes the hint\'s session on the target, and records it', async () => {
@@ -355,6 +392,16 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
     const r = await run(claude({ nestedReport: 'powershell' }))
     expect(r.outcome).toEqual({ kind: 'refused', why: 'a shell of another kind runs in this terminal now (one started inside it), so the account line wouldn\'t take: exit it, then switch again' })
     expect(r.t.ran).toEqual([''])
+  })
+
+  it("is not refused by a prompt that writes the other family's report beside its own (oh-my-posh in Git Bash, OSC 7 from PowerShell)", async () => {
+    for (const [script, over] of [
+      [claude({ alsoReports: 'powershell' }), {}],
+      [claude({ family: 'powershell', alsoReports: 'posix' }), { shellType: 'powershell' }],
+    ] as const) {
+      const r = await run(script, {}, over)
+      expect(r.outcome.kind, JSON.stringify(over)).toBe('switched')
+    }
   })
 
   it('refuses, before touching the agent, a line it can\'t build for this shell', async () => {
@@ -699,6 +746,19 @@ describe('the OS has the last word on whether the agent is gone', () => {
     expect(r.t.ran).toEqual([])
   })
 
+  // The OS answered "a program still runs" for the whole ceiling, though the exit hint is on screen (a
+  // teardown that outlasts it, or a background job in the shell that keeps the console busy). The model
+  // switch types nothing then, and neither does this one: its keys would reach whatever still holds the
+  // terminal. The card's "It has exited, switch now" is the user's word that it has.
+  it.each([45_000, 90_000])('types nothing more when the process outlives the ceiling, though its hint shows (teardown %i ms)', async (teardownMs) => {
+    const r = await run(claude({ reports: false, os: 'tells', teardownMs }))
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.t.writes).toEqual(['/exit', '\r'])
+    expect(r.t.ran).toEqual([])
+    expect(keys(r.t)).not.toMatch(/[\u0003\u0004]/)
+  })
+
+
   it('goes on the screen\'s word where the OS cannot tell, as before it was asked', async () => {
     const blind = await run(claude({ os: 'blind' }))
     expect(blind.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
@@ -723,5 +783,97 @@ describe('the OS has the last word on whether the agent is gone', () => {
     const r = await run(claude({ reports: false, os: 'tells', teardownMs: 28_000, hintAfterTeardown: true }))
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     expect(relaunchLockReason('t1', r.t.clock)).toBeNull()
+  })
+})
+
+// Three guards that defend in depth and that no test pinned (found by mutation): each is what keeps a
+// leftover on the screen from passing for this switch's own evidence.
+describe('what on the screen is not this switch\'s own evidence', () => {
+  const LINE = `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`
+
+  it('an exit hint printed before the exit command was typed is no exit (the hint must be printed since)', async () => {
+    const t = new FakeTerminal(claude({ start: 'gone-hint' }))
+    const io = t.io()
+    // The hint is at the screen's foot, a leftover of an earlier exit: nothing was printed since this mark.
+    const mark = io.end('t1')
+    expect(hintAtFoot(look(io, 't1'), 'claude')).not.toBeNull()
+    expect(exitShown(io, 't1', 'claude', mark)).toBeNull()
+    // Printed after the mark, the same hint is the exit.
+    expect(exitShown(io, 't1', 'claude', 0)?.hint?.id).toBe(ID)
+  })
+
+  it("an exit hint far above the screen's foot is history, not this exit", () => {
+    // 14 rows from the foot is as far as a hint counts (HINT_FROM_FOOT_ROWS); these are literal rows, not that constant.
+    const filler = (n: number): string[] => Array.from({ length: n }, () => 'x')
+    expect(exitHintOf(['Resume this session with:', `  claude --resume ${ID}`, ...filler(10)], 'claude')?.id).toBe(ID)
+    expect(exitHintOf(['Resume this session with:', `  claude --resume ${ID}`, ...filler(20)], 'claude')).toBeNull()
+  })
+
+  it('the same account line still on the screen from an earlier switch is no echo of this one', async () => {
+    // The screen's last rows still hold the very line, typed before; what the shell wrote since is nothing.
+    const raw = `\x1b]7;file://host/c/repo\x07me@host MINGW64 /c/repo\r\n$ ${LINE}\r\nsome output\r\n\x1b]7;file://host/c/repo\x07me@host MINGW64 /c/repo\r\n$ `
+    let clock = 0
+    const io: SwitchIO = {
+      output: () => ({ raw, end: raw.length }),
+      outputFrom: () => '',
+      end: () => raw.length,
+      size: () => ({ cols: 120, rows: 24 }),
+      write: () => undefined,
+      sleep: async (ms: number) => { clock += ms },
+      now: () => clock,
+    }
+    const typed = await typeAtPrompt(io, 't1', 'posix', LINE, raw.length)
+    expect(typed.outcome).toBe('didnt-start')
+    // A line no longer than the first part typed has only that one look to pass: its echo must be in what was written since.
+    const short = 'claude --x'
+    const raw2 = `$ ${short}\r\nsome output\r\n\x1b]7;file://host/c/repo\x07me@host MINGW64 /c/repo\r\n$ `
+    const io2: SwitchIO = { ...io, output: () => ({ raw: raw2, end: raw2.length }), end: () => raw2.length }
+    expect((await typeAtPrompt(io2, 't1', 'posix', short, raw2.length)).outcome).toBe('didnt-start')
+  })
+
+  it('presses no Enter on a line that came back with a character dropped from its middle, though both its ends show', async () => {
+    const at = LINE.indexOf('claude-b') + 3
+    const dropped = LINE.slice(0, at) + LINE.slice(at + 1)
+    expect(dropped).not.toBe(LINE)
+    const prompt = '\x1b]7;file://host/c/repo\x07me@host MINGW64 /c/repo\r\n$ '
+    let raw = prompt
+    let clock = 0
+    const writes: string[] = []
+    const io: SwitchIO = {
+      output: () => ({ raw, end: raw.length }),
+      outputFrom: (_id, from) => raw.slice(Math.max(0, from)),
+      end: () => raw.length,
+      size: () => ({ cols: 120, rows: 24 }),
+      // The shell echoes what it is given, but loses a character of the path in the middle.
+      write: (_id, data) => {
+        writes.push(data)
+        if (data === LINE.slice(0, 16)) raw += data
+        else if (data === LINE.slice(16)) raw += dropped.slice(16)
+      },
+      sleep: async (ms: number) => { clock += ms },
+      now: () => clock,
+    }
+    const typed = await typeAtPrompt(io, 't1', 'posix', LINE, raw.length)
+    expect(typed.outcome).toBe('didnt-start')
+    // One Enter only: the sacrificial one before the line. None for the line.
+    expect(writes.filter((w) => w === '\r')).toHaveLength(1)
+  })
+
+  it('shows a long line whole on a narrow pane, wrapped over several rows', async () => {
+    const long = `& { $env:CODEX_HOME = 'C:\\Users\\me\\.codex-b'; codex -m gpt-5.6-sol resume ${ID2} }`
+    const cols = 40
+    expect(Math.ceil(long.length / cols)).toBeGreaterThan(2)
+    let raw = 'PS C:\\repo> '
+    let clock = 0
+    const io: SwitchIO = {
+      output: () => ({ raw, end: raw.length }),
+      outputFrom: (_id, from) => raw.slice(Math.max(0, from)),
+      end: () => raw.length,
+      size: () => ({ cols, rows: 24 }),
+      write: (_id, data) => { if (data !== '\x1b' && data !== '\r') raw += data },
+      sleep: async (ms: number) => { clock += ms },
+      now: () => clock,
+    }
+    expect((await typeAtPrompt(io, 't1', 'powershell', long, raw.length)).outcome).toBe('entered')
   })
 })

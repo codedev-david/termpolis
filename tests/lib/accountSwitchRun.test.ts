@@ -229,7 +229,7 @@ describe('startSwitch', () => {
     useTerminalStore.setState({ switchRuns: {}, relaunching: { t1: 'model' } })
     await startSwitch('t1', 'acc_b', {}, d)
     expect(raw.accounts.check).not.toHaveBeenCalled()
-    expect(st().switchRuns.t1).toMatchObject({ status: 'failed', card: { what: 'A model change or another switch is already running here.', now: 'Nothing was typed.', actions: [{ kind: 'close' }] } })
+    expect(st().switchRuns.t1).toMatchObject({ status: 'failed', card: { what: 'A model change or another switch is already running here.', now: 'Nothing was typed.', actions: [{ kind: 'retry' }, { kind: 'close' }] } })
     expect(st().relaunching).toEqual({ t1: 'model' })
   })
 
@@ -619,5 +619,50 @@ describe('a switch that landed on an expired sign-in has a way on (round 1)', ()
     st().signInSheet!.then!()
     await new Promise((r) => setTimeout(r, 0))
     expect(raw.termpolis.createTerminal).not.toHaveBeenCalled()
+  })
+})
+
+describe('a queued switch while a model change holds the terminal (round 1)', () => {
+  beforeEach(() => {
+    useTerminalStore.setState({ accountsView: view([A, B]), terminals: [T], relaunching: {}, queuedSwitches: {}, switchRuns: {} })
+  })
+
+  it('waits for the next look instead of being deleted, and nothing is typed or shown meanwhile', async () => {
+    const { d, raw } = deps()
+    queueSwitch('t1', 'acc_b', 'by hand', true)
+    expect(st().beginRelaunch('t1', 'model')).toBe(true)
+    await processQueue(d)
+    expect(raw.accounts.switchAccount).not.toHaveBeenCalled()
+    expect(raw.accounts.check).not.toHaveBeenCalled()
+    expect(st().queuedSwitches.t1).toEqual({ targetId: 'acc_b', reason: 'by hand', confirmed: true })
+    expect(st().switchRuns.t1).toBeUndefined()
+    // The model change is over: the next look runs it.
+    st().endRelaunch('t1')
+    await processQueue(d)
+    expect(raw.accounts.switchAccount).toHaveBeenCalledWith(expect.objectContaining({ targetId: 'acc_b', confirmedCarry: true }))
+    expect(st().queuedSwitches).toEqual({})
+  })
+
+  it('keeps the queued switch when a start is refused because the terminal is held, and says Try again', async () => {
+    const { d } = deps()
+    queueSwitch('t1', 'acc_b')
+    expect(st().beginRelaunch('t1', 'account')).toBe(true)
+    await startSwitch('t1', 'acc_b', {}, d)
+    // The refusal is the card's; the request is not lost with it.
+    expect(st().queuedSwitches.t1).toEqual({ targetId: 'acc_b', reason: 'by hand' })
+    expect(st().switchRuns.t1.card).toMatchObject({ what: 'A model change or another switch is already running here.', actions: [{ kind: 'retry', label: 'Try again' }, { kind: 'close' }] })
+    // Try again once it is free runs the switch.
+    st().endRelaunch('t1')
+    const again = deps()
+    await actOnRun('t1', 'retry', again.d)
+    expect(again.raw.accounts.switchAccount).toHaveBeenCalledWith(expect.objectContaining({ targetId: 'acc_b' }))
+  })
+
+  it('drops the queued switch only once it really starts', async () => {
+    const { d, raw } = deps()
+    queueSwitch('t1', 'acc_b')
+    await startSwitch('t1', 'acc_b', {}, d)
+    expect(raw.accounts.switchAccount).toHaveBeenCalledTimes(1)
+    expect(st().queuedSwitches).toEqual({})
   })
 })

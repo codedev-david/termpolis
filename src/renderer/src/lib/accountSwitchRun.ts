@@ -212,11 +212,13 @@ export async function startSwitch(terminalId: string, targetId: string, opts: St
     status: 'checking', steps: ['pending', 'pending', 'pending'], answers, ...(answers.fresh ? { fresh: true } : {}),
     ...(opts.confirmed ? { confirmed: true } : {}),
   }
-  s.dropQueuedSwitch(terminalId)
   put(base)
   if (!s.beginRelaunch(terminalId, 'account')) {
-    return put({ ...base, status: 'failed', card: { what: 'A model change or another switch is already running here.', now: 'Nothing was typed.', actions: [CLOSE] } })
+    // The queued switch, if there is one, is not given up with the refusal: it is the user's request, and the
+    // terminal is held for a moment (a model change, another switch).
+    return put({ ...base, status: 'failed', card: { what: 'A model change or another switch is already running here.', now: 'Nothing was typed.', actions: [TRY_AGAIN, CLOSE] } })
   }
+  s.dropQueuedSwitch(terminalId)
   const signIn = opts.known ?? await checkSignIn(deps.accounts, target)
   if (signIn.kind !== 'signed-in') {
     store().endRelaunch(terminalId)
@@ -343,6 +345,8 @@ export async function processQueue(deps: RunDeps = liveRunDeps()): Promise<void>
       store().dropQueuedSwitch(terminalId)
       continue
     }
+    // Held by a model change or another switch: it looks again at the next tick, with the request kept.
+    if (s.relaunching[terminalId]) continue
     try {
       const res = await deps.accounts.limitLook(terminalId)
       if (!res.success || (res.data.live && res.data.status.status === 'working')) continue

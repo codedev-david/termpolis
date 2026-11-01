@@ -48,6 +48,9 @@ export interface TermScript {
   shellDead?: boolean
   /** A shell of another family reports at the exit (one started inside it). */
   nestedReport?: Family
+  /** The shell's own prompt also writes the other family's report (oh-my-posh's pwd=osc99 in Git Bash, a
+   *  PowerShell prompt that writes OSC 7), beside its own: no shell of another kind is nested. */
+  alsoReports?: Family
   /** The shell stops echoing after this many relaunches. */
   deadAfterRelaunches?: number
   /** The agent's last answer quotes its own exit hint, above its box. */
@@ -155,11 +158,15 @@ export class FakeTerminal {
     return this.s.launch ?? { claude: `claude --model opus --session-id ${ID}`, codex: 'codex -m gpt-5.6-sol', agy: 'agy' }[this.s.agent]
   }
 
-  prompt(family: Family = this.s.family): string {
+  prompt(asked?: Family): string {
+    // A shell started inside the terminal's own answers every prompt after the agent's exit, not only the first.
+    const family = asked ?? (this.s.nestedReport && this.mode === 'shell' ? this.s.nestedReport : this.s.family)
     const reports = this.s.reports !== false
-    if (family === 'posix') return `${reports ? `${E}]7;file://host/c/repo\x07` : ''}me@host MINGW64 /c/repo\r\n$ `
-    if (family === 'powershell') return `${reports ? `${E}]9;9;C:\\repo\x07` : ''}PS C:\\repo> `
-    return `${reports ? `${E}]9;9;C:\\repo\x07` : ''}C:\\repo>`
+    // A prompt that also writes the other family's report: Windows Terminal's cwd marker from a bash prompt, OSC 7 from PowerShell's.
+    const also = reports && this.s.alsoReports && !asked && family === this.s.family ? (this.s.alsoReports === 'posix' ? `${E}]7;file://host/c/repo\x07` : `${E}]9;9;C:\\repo\x07`) : ''
+    if (family === 'posix') return `${reports ? `${E}]7;file://host/c/repo\x07` : ''}${also}me@host MINGW64 /c/repo\r\n$ `
+    if (family === 'powershell') return `${reports ? `${E}]9;9;C:\\repo\x07` : ''}${also}PS C:\\repo> `
+    return `${reports ? `${E}]9;9;C:\\repo\x07` : ''}${also}C:\\repo>`
   }
 
   private rows(): string[] {
@@ -216,7 +223,7 @@ export class FakeTerminal {
     this.exits++
     this.mode = 'shell'
     const hint = this.s.exit === 'no-hint' ? '\r\n' : this.hint()
-    const prompt = this.s.nestedReport ? this.prompt(this.s.nestedReport) : this.prompt()
+    const prompt = this.prompt()
     if (this.s.teardownMs) {
       this.goneAt = this.clock + this.s.teardownMs
       if (this.s.hintAfterTeardown) this.late = { at: this.goneAt, text: hint + prompt }

@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   AGY_SIGNED_IN, ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, HINT_FROM_FOOT_ROWS, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND,
-  SIGN_IN_SCREEN, carryForSwitch, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, otherShellReported,
+  SIGN_IN_SCREEN, carryForSwitch, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, nestedShellReported, otherShellReported,
   relaunchCommand,
 } from '../../src/shared/accountSwitch'
 
@@ -219,6 +219,26 @@ describe('otherShellReported (R1: a positive mismatch only)', () => {
     expect(otherShellReported('\x1b]9;9;C:\\w\x07', 'powershell')).toBe(false)
     expect(otherShellReported('plain text', 'posix')).toBe(false)
     expect(otherShellReported('plain text', 'cmd')).toBe(false)
+  })
+})
+
+describe('nestedShellReported: another family heard from, and the own one silent', () => {
+  it('is a shell of another kind when only its family reported', () => {
+    expect(nestedShellReported('x]9;9;C:\wy', 'posix')).toBe(true)
+    expect(nestedShellReported('x]7;file://h/w', 'powershell')).toBe(true)
+    expect(nestedShellReported('x]7;file://h/w', 'cmd')).toBe(true)
+  })
+
+  it('is none when the own family reported too: a prompt that writes both (oh-my-posh in Git Bash, OSC 7 from PowerShell)', () => {
+    expect(nestedShellReported(']7;file://h/w]9;9;C:\w', 'posix')).toBe(false)
+    expect(nestedShellReported(']9;9;C:\w]7;file://h/w', 'powershell')).toBe(false)
+    expect(nestedShellReported(']9;9;C:\w]7;file://h/w', 'cmd')).toBe(false)
+  })
+
+  it('is none when nothing reported, or only the own family did', () => {
+    expect(nestedShellReported('plain text', 'posix')).toBe(false)
+    expect(nestedShellReported(']7;file://h/w', 'posix')).toBe(false)
+    expect(nestedShellReported(']9;9;C:\w', 'powershell')).toBe(false)
   })
 })
 

@@ -29,7 +29,7 @@ import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentSt
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
   ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carryForSwitch, exitHintOf,
-  otherShellReported, relaunchCommand,
+  nestedShellReported, relaunchCommand,
 } from '../shared/accountSwitch'
 import type { ExitHint, RelaunchHold, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
 import { PROMPT_SETTLE_MS, aloneNow, waitForExit } from '../shared/agentExit'
@@ -191,6 +191,8 @@ export interface Look {
   end: number
   /** The agent's input box row, or -1. */
   box: number
+  /** The terminal's width in columns, when it is known: a row this wide may go on in the next. */
+  cols?: number
 }
 
 /** What a terminal with no output shows: nothing, and no box. */
@@ -199,8 +201,9 @@ const BLANK: Look = { lines: [], title: '', raw: '', end: 0, box: -1 }
 export function look(io: SwitchIO, id: string): Look {
   const out = io.output(id)
   if (!out) return BLANK
-  const { lines, title } = drawn(out.raw, io.size(id))
-  return { lines, title, raw: out.raw, end: out.end, box: inputBoxRow(lines) }
+  const size = io.size(id)
+  const { lines, title } = drawn(out.raw, size)
+  return { lines, title, raw: out.raw, end: out.end, box: inputBoxRow(lines), ...(size?.cols ? { cols: size.cols } : {}) }
 }
 
 /** Where the absolute offset `at` falls in a look's text. */
@@ -222,8 +225,28 @@ export const HINT_HEAD: Readonly<Record<AccountAgent, RegExp>> = {
 /** The exit hint at the screen's foot with no input box under it (R3): one quoted in an answer,
  *  or redrawn by ConPTY, has the agent's box under it. */
 export function hintAtFoot(l: Look, agent: AccountAgent): ExitHint | null {
-  const hint = exitHintOf(l.lines, agent)
+  // The rows as drawn; and, if they name no hint, with each full-width row joined to the one under it: a
+  // pane narrower than the hint's command row wraps it, and the id (or the worktree) is cut in two.
+  const drawnHint = exitHintOf(l.lines, agent)
+  const joined = l.cols && (!drawnHint || drawnHint.id === null) ? exitHintOf(joinWrapped(l.lines, l.cols), agent) : null
+  const hint = joined?.id ? joined : drawnHint ?? joined
   return hint && (l.box < 0 || l.box < hint.row) ? hint : null
+}
+
+/** `rows` with each row as wide as the terminal joined to the next, which it may go on in; the rows
+ *  taken in stay as empty ones, so every row keeps its place. */
+export function joinWrapped(rows: readonly string[], cols: number): string[] {
+  const out = [...rows]
+  for (let i = 0; i < rows.length - 1; i++) {
+    let j = i
+    while (j < rows.length - 1 && rows[j].length >= cols) {
+      out[i] += rows[j + 1]
+      out[j + 1] = ''
+      j++
+    }
+    i = j
+  }
+  return out
 }
 
 /** The shell printed its prompt after `at`, and no agent box was drawn after it. */
@@ -386,14 +409,17 @@ function exitOnScreen(io: SwitchIO, id: string, agent: AccountAgent, mark: numbe
  * screen showed nothing (Windows shows no foreground, and a session with no turns prints no hint).
  * It says a program still runs: Claude Code's teardown took 4 to 11 s, and the screen shows its
  * goodbye at the start of it or only at the end, so the wait goes on past the screen's 8 s, up to the
- * ceiling; what the screen proved stands if the process never goes, and with nothing proved the exit
- * is not confirmed. It cannot tell: the screen's word, as ever.
+ * ceiling; if it never goes the exit is not confirmed, whatever the screen showed. It cannot tell: the
+ * screen's word, as ever.
  */
 export async function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mark: number, memo: OsMemo): Promise<{ hint: ExitHint | null } | null> {
   const screen = await exitOnScreen(io, id, agent, mark)
   const alone = await askOs(io, id, memo)
   if (alone === null) return screen
-  if (alone === false && !(await processGone(io, id))) return screen
+  // A program still runs after the ceiling: the exit is not confirmed, whatever the screen showed (a hint
+  // printed at once, or a teardown that outlasts the ceiling, or a background job keeping the console busy).
+  // What would be typed next reaches whatever holds the terminal; "It has exited" is the user's word for it.
+  if (alone === false && !(await processGone(io, id))) return null
   // Gone by the OS's word: what the screen shows now names the session, if it names one.
   return screen ?? exitShown(io, id, agent, mark) ?? { hint: null }
 }
@@ -414,7 +440,11 @@ function landed(l: Look, line: string, echo: string): 'box' | 'shell' | null {
  *  the rest is still on its way. */
 function lineShown(l: Look, line: string, echo: string): boolean {
   const key = bare(line.slice(-24))
-  return bare(plain(echo)).includes(key) && bare(l.lines.slice(-6).join('')).includes(key)
+  if (!(bare(plain(echo)).includes(key) && bare(l.lines.slice(-6).join('')).includes(key))) return false
+  // And the whole of it, not only its two ends: a character dropped in the middle (a path) would be caught
+  // here and not by them. The rows it can take up on this width, and the prompt's, are the window read.
+  const window = Math.ceil(line.length / (l.cols ?? 80)) + 3
+  return bare(l.lines.slice(-window).join('')).includes(bare(line))
 }
 
 export type Typed = { outcome: 'entered'; enterAt: number } | { outcome: 'agent-alive' | 'didnt-start' | 'mismatch' }
@@ -438,7 +468,7 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   })
   // A shell of another family reported since: a shell started inside this one, which the line
   // built for this terminal's shell doesn't fit (R1: only such a positive mismatch refuses).
-  if (otherShellReported(io.outputFrom(id, mark), family)) return { outcome: 'mismatch' }
+  if (nestedShellReported(io.outputFrom(id, mark), family)) return { outcome: 'mismatch' }
   const typedAt = io.end(id)
   const probe = line.slice(0, ECHO_PROBE_CHARS)
   const started = io.now()
