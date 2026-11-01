@@ -16,6 +16,7 @@ vi.mock('../../src/renderer/src/hooks/useAutoCodeIndex', () => ({ autoIndexRepo:
 
 import { DEFAULT_AI_PROFILES, launchAgentProfile } from '../../src/renderer/src/lib/aiProfiles'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
+import { answerLaunchAsk } from '../../src/renderer/src/lib/launchAsk'
 import type { ShellInfo } from '../../src/renderer/src/types'
 
 const shells: ShellInfo[] = [{ type: 'powershell', label: 'PowerShell', executable: 'powershell.exe' }]
@@ -102,5 +103,55 @@ describe('launchAgentProfile on an account', () => {
     expect(api().claudeTrustWorkspace.mock.calls).toEqual([['/repo']])
     expect(addTerminal.mock.calls[0][0]).not.toHaveProperty('agentAccountId')
     expect(typed()).toEqual(['\r', 'claude\r'])
+  })
+})
+
+describe('launchAgentProfile when the account it would go on is out of usage', () => {
+  const NOW = Date.now()
+  const row = (over: Record<string, unknown>) => ({
+    id: 'acc_a', agent: 'claude', label: 'personal', profile: null, folder: '/h/.claude', isDefault: true, autoOffer: true, order: 0, connect: true,
+    origin: 'adopted', folderExists: true, shares: [], lastEmail: 'a@example.test', connection: null, bypassReady: true, terminals: 0, recopyAvailable: false, ...over,
+  })
+  const view = (accounts: unknown[]) => ({ accounts, preferred: {}, chooser: true, hidden: {}, integrationConnected: true, importAvailable: false, drift: [], advice: { stopFailureHooks: [], authOverrides: [] }, home: '/h' })
+  const OUT = { seenAt: NOW - 1000, resetsAt: NOW + 3_600_000, text: "You've hit your session limit", scope: 'account' }
+
+  beforeEach(() => {
+    accounts.launchAccount.mockImplementation(async (_agent: string, requested: string | null) => ({ success: true, data: { accountId: requested ?? 'acc_a' } }))
+    useTerminalStore.setState({
+      accountsView: view([row({ limit: OUT }), row({ id: 'acc_b', label: 'codedev', profile: '/h/.claude-b', folder: '/h/.claude-b', isDefault: false, order: 1, lastEmail: 'b@example.test' })]) as never,
+      launchAsk: null,
+    })
+  })
+  afterEach(() => useTerminalStore.setState({ accountsView: null, launchAsk: null }))
+
+  async function answered(choice: { kind: 'on'; accountId: string } | { kind: 'anyway' } | { kind: 'cancel' }): Promise<void> {
+    const launching = launchAgentProfile(claude, { availableShells: shells, addTerminal, setLaunchingAgent })
+    await vi.waitFor(() => expect(useTerminalStore.getState().launchAsk).not.toBeNull())
+    answerLaunchAsk(choice)
+    await launching
+  }
+
+  it('asks first, and launches on the account the user picks', async () => {
+    await answered({ kind: 'on', accountId: 'acc_b' })
+    expect(addTerminal.mock.calls[0][0]).toMatchObject({ agentAccountId: 'acc_b' })
+    expect(api().createTerminal.mock.calls[0].slice(5)).toEqual(['acc_b', 'claude'])
+  })
+
+  it('launches on the account that is out of usage when the user says anyway', async () => {
+    await answered({ kind: 'anyway' })
+    expect(addTerminal.mock.calls[0][0]).toMatchObject({ agentAccountId: 'acc_a' })
+  })
+
+  it('makes no terminal at all when the user cancels, and clears the launching mark', async () => {
+    await answered({ kind: 'cancel' })
+    expect(api().createTerminal).not.toHaveBeenCalled()
+    expect(addTerminal).not.toHaveBeenCalled()
+    expect(setLaunchingAgent.mock.calls.map((c) => c[0])).toEqual(['Claude Code', null])
+  })
+
+  it('asks nothing when the account is one the user picked (Launch on ▸)', async () => {
+    await launchAgentProfile(claude, { availableShells: shells, addTerminal, setLaunchingAgent, accountId: 'acc_a' })
+    expect(useTerminalStore.getState().launchAsk).toBeNull()
+    expect(addTerminal.mock.calls[0][0]).toMatchObject({ agentAccountId: 'acc_a' })
   })
 })

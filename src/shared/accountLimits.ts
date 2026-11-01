@@ -206,6 +206,13 @@ function liftedLimit(limit: { resetsAt: number | null }, now: number): boolean {
   return limit.resetsAt !== null && limit.resetsAt <= now
 }
 
+/** Is the account out of usage as Termpolis knows it now: a limit of the whole account that has not
+ *  lifted, or one its failover hook saw. A model's limit leaves the account on offer (R15). */
+export function isAccountLimited(r: Pick<AccountRowView, 'limit' | 'limitedOutside'>, now: number): boolean {
+  if (r.limit && r.limit.scope === 'account' && !liftedLimit(r.limit, now)) return true
+  return r.limitedOutside !== undefined
+}
+
 /**
  * The accounts the chooser lists when a terminal of `agent` ran out on `limited` (its account, and
  * the email its profile is signed in to: a limit belongs to the login, R23): the agent's accounts

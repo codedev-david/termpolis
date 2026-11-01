@@ -135,6 +135,16 @@ describe('AIProfiles', () => {
       expect((window as any).accounts.launchAccount).not.toHaveBeenCalled()
     })
 
+    it('marks an account that is out of usage in the list, with when it is back, and no other', async () => {
+      const soon = Date.now() + 3 * 3_600_000
+      mockAccountsView = { accounts: [{ ...acc('acc_a', 'claude', 'personal'), limit: { seenAt: 1, resetsAt: soon, text: 'x', scope: 'account' } }, acc('acc_b', 'claude', 'codedev'), { ...acc('acc_d', 'claude', 'noted'), limit: { seenAt: 1, resetsAt: null, text: 'x', scope: 'account' } }, { ...acc('acc_e', 'claude', 'model'), limit: { seenAt: 1, resetsAt: soon, text: 'x', scope: 'model' } }], preferred: {}, chooser: true, hidden: {}, integrationConnected: true, importAvailable: false, drift: [], advice: { stopFailureHooks: [], authOverrides: [] }, home: '/h' }
+      render(<AIProfiles availableShells={defaultShells} />)
+      fireEvent.contextMenu(screen.getByText('Claude Code').closest('.group') as HTMLElement)
+      const items = screen.getAllByTestId('launch-on-account')
+      expect(items.map((b) => b.textContent)).toEqual([expect.stringMatching(/^personalout of usage until /), 'codedev', 'notedout of usage', 'model'])
+      expect(screen.getAllByTestId('launch-on-limited')).toHaveLength(2)
+    })
+
     it('is reachable without a mouse: a button on the profile opens the same list, with menu semantics and arrow keys', async () => {
       render(<AIProfiles availableShells={defaultShells} />)
       await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())

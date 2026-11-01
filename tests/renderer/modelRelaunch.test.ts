@@ -189,6 +189,15 @@ describe('relaunchAgentWithModel: quitting the agent', () => {
     expect(f.slept()).toContain(BLIND_EXIT_WAIT_MS)
   })
 
+  it('does NOT go blind when the question asked first said "still running" and the first poll after it fails', async () => {
+    // The OS answered before the quit keys (so it can tell); a failed poll right after is a hiccup too.
+    const f = fakeIo({ alone: [false, null, true], output: CLAUDE_EXIT_AFTER_A_TURN })
+    const outcome = await relaunchAgentWithModel('claude', 'opus', CAT, f.io)
+    expect(outcome).toBe('relaunched')
+    expect(f.slept()).not.toContain(BLIND_EXIT_WAIT_MS)
+    expect(f.questions()).toBe(3)
+  })
+
   it('does NOT go blind when a query that worked a moment ago fails once: it asks again', async () => {
     // The OS could answer ("still running"), so a single hiccup is a hiccup, not a reason to type
     // into an agent that may still be tearing down.

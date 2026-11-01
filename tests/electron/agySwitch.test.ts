@@ -222,3 +222,41 @@ describe('what agy was started with comes back with it (carryForSwitch)', () => 
     expect(t.writes).toEqual([])
   })
 })
+
+describe('agy: the terminal is held for every key a step types', () => {
+  it('holds it at each write of the exit step and of the resume step, and lets it go after', async () => {
+    const t = new FakeTerminal(agy())
+    const heldAt: Array<string | null> = []
+    const io = t.io()
+    const write = io.write
+    io.write = (id: string, data: string) => { heldAt.push(relaunchLockReason(id, io.now())); write(id, data) }
+    const exit = await runAgyStep(
+      { terminalId: 't1', targetId: 'g2', shellType: 'gitbash', step: 'exit' },
+      { io, start: { at: t.launchedAt, commands: [t.launchLine()] }, env: {}, record: () => undefined },
+    )
+    expect(exit.kind).toBe('exited')
+    expect(heldAt.length).toBeGreaterThan(0)
+    expect(heldAt.every((r) => r !== null)).toBe(true)
+    expect(relaunchLockReason('t1', io.now())).toBeNull()
+    heldAt.length = 0
+    const resume = await runAgyStep(
+      { terminalId: 't1', targetId: 'g2', shellType: 'gitbash', step: 'resume', conversationId: ID },
+      { io, start: { at: t.launchedAt, commands: [t.launchLine()] }, env: {}, record: () => undefined },
+    )
+    expect(resume.kind).toBe('resumed')
+    expect(heldAt.length).toBeGreaterThan(0)
+    expect(heldAt.every((r) => r !== null)).toBe(true)
+    expect(relaunchLockReason('t1', io.now())).toBeNull()
+  })
+
+  it('refuses a step while another holds the terminal, typing nothing', async () => {
+    const t = new FakeTerminal(agy())
+    locks.set('t1', { until: t.clock + 60_000, kind: 'account' })
+    const out = await runAgyStep(
+      { terminalId: 't1', targetId: 'g2', shellType: 'gitbash', step: 'exit' },
+      { io: t.io(), start: { at: t.launchedAt, commands: [t.launchLine()] }, env: {}, record: () => undefined },
+    )
+    expect(out).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
+    expect(t.writes).toEqual([])
+  })
+})

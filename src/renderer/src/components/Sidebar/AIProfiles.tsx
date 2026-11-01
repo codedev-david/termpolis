@@ -6,6 +6,7 @@ import type { AIProfile, ShellInfo, ShellType } from '../../types'
 import { DEFAULT_AI_PROFILES, launchAgentProfile, resolveShellType } from '../../lib/aiProfiles'
 import { CLAUDE_MODEL_OPTIONS } from '../../lib/modelBroker'
 import { AGENT_COLOR, agentOfCommand } from '../../lib/accountsView'
+import { isAccountLimited, untilText } from '../../../../shared/accountLimits'
 
 interface AddProfileModalProps {
   availableShells: ShellInfo[]
@@ -287,6 +288,11 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                       >
                         <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: r.color ?? AGENT_COLOR[r.agent] }} />
                         {r.label}
+                        {isAccountLimited(r, Date.now()) && (
+                          <span className="text-[10px] text-[#e5c07b]" data-testid="launch-on-limited">
+                            out of usage{r.limit && untilText(r.limit.resetsAt, Date.now()) ? ` ${untilText(r.limit.resetsAt, Date.now())}` : ''}
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>

@@ -49,6 +49,7 @@ vi.mock('../../src/renderer/src/lib/agentLaunch', async (importOriginal) => ({
 
 import App from '../../src/renderer/src/App'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
+import { answerLaunchAsk } from '../../src/renderer/src/lib/launchAsk'
 
 let api: Record<string, any>
 let created: unknown[][]
@@ -139,5 +140,66 @@ describe('the account an agent launched from the Welcome screen or the palette i
     fireEvent.click(await screen.findByTestId('welcome-claude'))
     await settle()
     expect(created[0].slice(5)).toEqual([undefined, 'claude'])
+  })
+})
+
+describe("the Welcome screen and the palette, when the agent's preferred account is out of usage", () => {
+  const NOW = Date.now()
+  const row = (over: Record<string, unknown>) => ({
+    id: 'acc_a', agent: 'claude', label: 'personal', profile: null, folder: '/h/.claude', isDefault: true, autoOffer: true, order: 0, connect: true,
+    origin: 'adopted', folderExists: true, shares: [], lastEmail: 'a@example.test', connection: null, bypassReady: true, terminals: 0, recopyAvailable: false, ...over,
+  })
+  const OUT = { seenAt: NOW - 1000, resetsAt: NOW + 3_600_000, text: "You've hit your session limit", scope: 'account' }
+  const asked = (): void => {
+    useTerminalStore.setState({
+      accountsView: {
+        accounts: [row({ limit: OUT }), row({ id: 'acc_b', label: 'codedev', profile: '/h/.claude-b', folder: '/h/.claude-b', isDefault: false, order: 1, lastEmail: 'b@example.test' })],
+        preferred: {}, chooser: true, hidden: {}, integrationConnected: true, importAvailable: false, drift: [], advice: { stopFailureHooks: [], authOverrides: [] }, home: '/h',
+      } as never,
+    })
+  }
+
+  it('asks before the terminal is made, and launches on the account picked', async () => {
+    accountsBridge((agent) => (agent === 'claude' ? 'acc_a' : null))
+    render(<App />)
+    await settle()
+    asked()
+    fireEvent.click(await screen.findByTestId('welcome-claude'))
+    await vi.waitFor(() => expect(useTerminalStore.getState().launchAsk).not.toBeNull())
+    expect(created).toHaveLength(0)
+    await act(async () => { answerLaunchAsk({ kind: 'on', accountId: 'acc_b' }) })
+    await settle()
+    expect(created[0].slice(5)).toEqual(['acc_b', 'claude'])
+  })
+
+  it('makes no terminal when the user cancels the Welcome launch', async () => {
+    accountsBridge((agent) => (agent === 'claude' ? 'acc_a' : null))
+    render(<App />)
+    await settle()
+    asked()
+    fireEvent.click(await screen.findByTestId('welcome-claude'))
+    await vi.waitFor(() => expect(useTerminalStore.getState().launchAsk).not.toBeNull())
+    await act(async () => { answerLaunchAsk({ kind: 'cancel' }) })
+    await settle()
+    expect(created).toHaveLength(0)
+  })
+
+  it('asks from the palette too, and a cancel there makes no terminal either', async () => {
+    accountsBridge((agent) => (agent === 'claude' ? 'acc_a' : null))
+    render(<App />)
+    await settle()
+    asked()
+    await act(async () => { (window as any).__openCommandPalette(true) })
+    fireEvent.click(await screen.findByTestId('palette-claude'))
+    await vi.waitFor(() => expect(useTerminalStore.getState().launchAsk).not.toBeNull())
+    await act(async () => { answerLaunchAsk({ kind: 'cancel' }) })
+    await settle()
+    expect(created).toHaveLength(0)
+    // And on a yes, the launch goes on the account asked for.
+    fireEvent.click(await screen.findByTestId('palette-claude'))
+    await vi.waitFor(() => expect(useTerminalStore.getState().launchAsk).not.toBeNull())
+    await act(async () => { answerLaunchAsk({ kind: 'anyway' }) })
+    await settle()
+    expect(created[0].slice(5)).toEqual(['acc_a', 'claude'])
   })
 })

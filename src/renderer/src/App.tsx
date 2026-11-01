@@ -63,8 +63,10 @@ import { requestSettingsTab } from './lib/settingsNav'
 import { watchAccounts } from './lib/accountsState'
 import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
 import { agentOfName, canSwitchAccount } from './lib/accountsView'
-import { launchAccountFor, launchTerminalArgs } from './lib/accountLaunch'
+import { launchTerminalArgs } from './lib/accountLaunch'
 import { SignInSheet } from './components/Accounts/SignInSheet'
+import { LaunchAskSheet } from './components/Accounts/LaunchAskSheet'
+import { launchAccountAsked } from './lib/launchAsk'
 import { AddAccountSheet } from './components/Accounts/AddAccountSheet'
 import { AccountMenu } from './components/Accounts/AccountMenu'
 import { AgySwitchSheet } from './components/Accounts/AgySwitchSheet'
@@ -966,7 +968,10 @@ export default function App() {
         const pShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
         // The account it will launch on (launchAgents resolves the same one): the proxy's step-aside and the
         // folder trust are that account's profile's.
-        const pAccount = await launchAccountFor(prof.command)
+        // (Asked first, in a sheet, when that account is out of usage and another is free: launchAsk.ts.)
+        const picked = await launchAccountAsked(prof.command)
+        if (picked.cancelled) break
+        const pAccount = picked.accountId
         const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command), ...launchTerminalArgs(pAccount, prof.command))
         if (pRes.success) {
           addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
@@ -1000,7 +1005,12 @@ export default function App() {
     setLaunchingAgent(config.name)
     const id = uuid()
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-    const account = await launchAccountFor(config.command)
+    const picked = await launchAccountAsked(config.command)
+    if (picked.cancelled) {
+      setLaunchingAgent(null)
+      return
+    }
+    const account = picked.accountId
     const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command), ...launchTerminalArgs(account, config.command))
     if (res.success) {
       addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
@@ -1153,6 +1163,7 @@ export default function App() {
         <AddAccountSheet />
         <AccountMenu />
         <AgySwitchSheet />
+        <LaunchAskSheet />
         <SwarmRestartOffers dashboardOpen={showSwarmDashboard} />
         {showPrompts && <PromptTemplates onClose={() => setShowPrompts(false)} />}
         {showAddModal && (

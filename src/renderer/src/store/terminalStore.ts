@@ -9,6 +9,7 @@ import type { AccountAgent, AccountsView } from '../../../shared/agentAccounts'
 import type { LimitBanner, LimitContext } from '../lib/limitWatch'
 import type { QueuedSwitch, SwitchRun } from '../lib/accountSwitchRun'
 import type { SwarmRestartGroup } from '../lib/swarmRestart'
+import type { LaunchAskContext } from '../lib/launchAsk'
 
 // ---- Pane tree helpers ----
 
@@ -164,6 +165,8 @@ interface TerminalStore {
   accountSwitch: { terminalId: string; limit?: LimitContext } | null
   /** The account menu, open for a terminal: its chip's popover (the in-app account UI, §2.1). */
   accountMenu: { terminalId: string } | null
+  /** A fresh launch on an account that is out of usage, waiting for the user's word (launchAsk.ts). */
+  launchAsk: LaunchAskContext | null
   /** Each terminal's last switch while its pane shows it: the overlay, then a toast or an error card. */
   switchRuns: Record<string, SwitchRun>
   /** Switches waiting for a busy agent to finish its turn (§2.2). */
@@ -232,6 +235,7 @@ interface TerminalStore {
   /** Switch account…, from the chip, Ctrl+Shift+N, the palette or the context menu: the account menu. */
   openAccountSwitch: (terminalId: string) => void
   closeAccountMenu: () => void
+  setLaunchAsk: (ctx: LaunchAskContext | null) => void
   closeAccountSwitch: () => void
   putSwitchRun: (run: SwitchRun) => void
   dropSwitchRun: (terminalId: string) => void
@@ -295,6 +299,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   accountsByHand: {},
   accountSwitch: null,
   accountMenu: null,
+  launchAsk: null,
   switchRuns: {},
   queuedSwitches: {},
   agySwitchSheet: null,
@@ -547,6 +552,7 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
   }),
   openAccountSwitch: (terminalId) => set({ accountMenu: { terminalId } }),
   closeAccountMenu: () => set({ accountMenu: null }),
+  setLaunchAsk: (ctx) => set({ launchAsk: ctx }),
   closeAccountSwitch: () => set({ accountSwitch: null }),
   putSwitchRun: (run) => set(s => ({ switchRuns: { ...s.switchRuns, [run.terminalId]: run } })),
   dropSwitchRun: (terminalId) => set(s => {

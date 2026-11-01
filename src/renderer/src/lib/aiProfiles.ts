@@ -6,7 +6,8 @@ import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { autoIndexRepo } from '../hooks/useAutoCodeIndex'
 import { useTerminalStore } from '../store/terminalStore'
 import { claudeModelArg } from './modelBroker'
-import { accountLaunchLine, launchAccountFor, launchTerminalArgs } from './accountLaunch'
+import { accountLaunchLine, launchTerminalArgs } from './accountLaunch'
+import { launchAccountAsked } from './launchAsk'
 import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from './agentModelDefaults'
 import { providerForCommand } from './modelCatalog'
 import { isShellSafeInstruction, type CodexLaunchContext } from '../../../shared/agentIntegration'
@@ -85,7 +86,13 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
   const isCodex = profile.id === 'codex' || profile.command.trim().toLowerCase().startsWith('codex')
   // The account it launches on, first: its proxy step-aside, folder trust and Codex prepare are
   // that account's profile's. None for an agent with no accounts, and every call is today's.
-  const accountId = await launchAccountFor(profile.command, deps.accountId)
+  // (Asked first, in a sheet, when it is the preferred account that is out of usage and another is free.)
+  const picked = await launchAccountAsked(profile.command, deps.accountId)
+  if (picked.cancelled) {
+    setLaunchingAgent(null)
+    return
+  }
+  const accountId = picked.accountId
   const onAccount: [] | [string] = accountId ? [accountId] : []
   // Watched for usage limits for its whole life (R6): main marks it so for the agent's hooks.
   const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaude, ...launchTerminalArgs(accountId, profile.command))
