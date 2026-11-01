@@ -2528,6 +2528,7 @@ registerClaudeNotesIpc(ipcMain, {
   index: { get: getIndexClaudeNotes, set: setIndexClaudeNotes },
   share: { get: getShareNotesAcrossProjects, set: setShareNotesAcrossProjects },
   connected: () => isAgentIntegrationConnected(agentIntegrationPaths()),
+  locked: () => memoryIsLocked(),
   status: () => notesStatus(fileManifest(app.getPath('userData'))),
   remove: () => removeImportedNotes(claudeNotesDeps()),
   // Turning the notes on starts a pass now, not at the next 30-minute tick; a locked memory just waits.

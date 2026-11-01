@@ -168,6 +168,13 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
         </div>
       ) : null}
 
+      {s.locked ? (
+        <div data-testid="claude-notes-locked" role="status" className="text-xs text-[#e2c08d] p-3 border border-[#e2c08d]/40 rounded bg-[#e2c08d]/10 leading-relaxed">
+          Memory is locked, so nothing is read or removed until it opens (the Memory panel says why and what to do). The switches
+          still keep what you choose.
+        </div>
+      ) : null}
+
       <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
         <Switch
           on={s.shareNotesAcrossProjects}

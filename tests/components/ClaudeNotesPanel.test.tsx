@@ -10,6 +10,7 @@ type View = {
   indexClaudeNotes: boolean
   shareNotesAcrossProjects: boolean
   connected: boolean
+  locked?: boolean
   status: { notes: number; chunks: number; projects: number; lastAt: number | null; noProject: number; secretsRedacted: number; pending: number }
 }
 
@@ -489,5 +490,34 @@ describe('ClaudeNotesPanel: keyboard and screen reader', () => {
     mockApi(view({}, { notes: 2, chunks: 3, projects: 1 }))
     await open()
     expect(screen.getByTestId('claude-notes-status').textContent).toContain('2 notes from 1 project are in memory')
+  })
+})
+
+describe('ClaudeNotesPanel: memory is locked', () => {
+  it('says so, instead of leaving a switch that does nothing and a status that gives no reason', async () => {
+    mockApi(view({ locked: true }))
+    await open()
+    const banner = screen.getByTestId('claude-notes-locked')
+    expect(banner.getAttribute('role')).toBe('status')
+    expect(banner.textContent).toContain('Memory is locked')
+    expect(banner.textContent).toContain('nothing is read or removed')
+    expect(banner.textContent).toContain('Memory panel')
+  })
+
+  it('says nothing when memory is open, or when the answer does not say', async () => {
+    mockApi(view({ locked: false }))
+    await open()
+    expect(screen.queryByTestId('claude-notes-locked')).toBeNull()
+    cleanup()
+    mockApi(view())
+    await open()
+    expect(screen.queryByTestId('claude-notes-locked')).toBeNull()
+  })
+
+  it('can be shown with the agents-not-connected note: they are two separate reasons', async () => {
+    mockApi(view({ locked: true, connected: false }))
+    await open()
+    expect(screen.getByTestId('claude-notes-locked')).toBeTruthy()
+    expect(screen.getByTestId('claude-notes-waiting')).toBeTruthy()
   })
 })

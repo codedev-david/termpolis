@@ -20,6 +20,8 @@ export interface NotesSettingsView {
   shareNotesAcrossProjects: boolean
   /** The user's agents are connected. Until they are, no note is read, whatever the first switch says. */
   connected: boolean
+  /** Memory is locked (its key cannot be opened): the import and every removal wait until it opens. */
+  locked: boolean
   status: NotesStatus
 }
 
@@ -27,6 +29,8 @@ export interface NotesIpcDeps {
   index: { get(): boolean; set(on: boolean): unknown }
   share: { get(): boolean; set(on: boolean): unknown }
   connected(): boolean
+  /** Whether memory is locked. A store that cannot even answer is not reported as locked. */
+  locked(): Promise<boolean>
   status(): NotesStatus
   remove(): Promise<RemoveResult>
   /** Run a pass now. Called when the first switch has just been turned on, so the user does not wait for the next tick. */
@@ -37,26 +41,27 @@ const isRec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 export function registerClaudeNotesIpc(ipc: NotesIpcLike, d: NotesIpcDeps): void {
-  const view = (): NotesSettingsView => ({
+  const view = async (): Promise<NotesSettingsView> => ({
     indexClaudeNotes: d.index.get(),
     shareNotesAcrossProjects: d.share.get(),
     connected: d.connected(),
+    locked: await d.locked().catch(() => false),
     status: d.status(),
   })
 
-  ipc.handle(NOTES_IPC.get, () => {
-    try { return ok(view()) } catch (e) { return err(message(e)) }
+  ipc.handle(NOTES_IPC.get, async () => {
+    try { return ok(await view()) } catch (e) { return err(message(e)) }
   })
 
   // Either switch, or both. Only a real boolean counts: anything else is ignored, never read as a "yes".
-  ipc.handle(NOTES_IPC.set, (_event, input) => {
+  ipc.handle(NOTES_IPC.set, async (_event, input) => {
     try {
       const req = isRec(input) ? input : {}
       const wasOn = d.index.get()
       if (typeof req.indexClaudeNotes === 'boolean') d.index.set(req.indexClaudeNotes)
       if (typeof req.shareNotesAcrossProjects === 'boolean') d.share.set(req.shareNotesAcrossProjects)
       if (!wasOn && d.index.get()) d.passSoon()
-      return ok(view())
+      return ok(await view())
     } catch (e) {
       return err(message(e))
     }
@@ -68,7 +73,7 @@ export function registerClaudeNotesIpc(ipc: NotesIpcLike, d: NotesIpcDeps): void
     try {
       d.index.set(false)
       const result = await d.remove()
-      return ok({ ...result, settings: view() })
+      return ok({ ...result, settings: await view() })
     } catch (e) {
       return err(message(e))
     }

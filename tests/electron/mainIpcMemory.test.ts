@@ -2828,6 +2828,13 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
   })
 
   describe('memory:get-notes-settings / memory:set-notes-settings / memory:remove-imported-notes', () => {
+    it('says whether memory is locked, from the same answer every other writer is held by', async () => {
+      expect((await invoke('memory:get-notes-settings')).data.locked).toBe(false)
+      lockedOnce()
+      expect((await invoke('memory:get-notes-settings')).data.locked).toBe(true)
+      expect((await invoke('memory:get-notes-settings')).data.locked).toBe(false) // and only the once
+    })
+
     it('answers with both switches at their defaults, whether the agents are connected, and the status', async () => {
       const res = await invoke('memory:get-notes-settings')
       expect(res).toEqual({
@@ -2836,6 +2843,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
           indexClaudeNotes: true,
           shareNotesAcrossProjects: false,
           connected: false,
+          locked: false,
           status: { notes: 3, chunks: 4, projects: 2, lastAt: 1700000000000, noProject: 0, secretsRedacted: 0, pending: 0 },
         },
       })

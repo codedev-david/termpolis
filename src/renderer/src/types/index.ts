@@ -973,6 +973,8 @@ export interface ClaudeNotesSettings {
   shareNotesAcrossProjects: boolean
   /** The user's agents are connected: until they are, no note is read. */
   connected: boolean
+  /** Memory is locked: the import and every removal wait until it opens. */
+  locked: boolean
   status: {
     notes: number
     chunks: number

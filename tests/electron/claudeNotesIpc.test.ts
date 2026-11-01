@@ -9,19 +9,20 @@ import type { NotesStatus } from '../../src/main/claudeNotesIngest'
 const STATUS: NotesStatus = { notes: 3, chunks: 5, projects: 2, lastAt: 1700000000000, noProject: 1, secretsRedacted: 0, pending: 0 }
 
 let handlers: Map<string, (event: unknown, input?: unknown) => unknown>
-let state: { index: boolean; share: boolean; connected: boolean }
+let state: { index: boolean; share: boolean; connected: boolean; locked: boolean }
 let calls: string[]
 let d: NotesIpcDeps
 
 beforeEach(() => {
   handlers = new Map()
-  state = { index: true, share: false, connected: true }
+  state = { index: true, share: false, connected: true, locked: false }
   calls = []
   const ipc: NotesIpcLike = { handle: (channel, fn) => { handlers.set(channel, fn) } }
   d = {
     index: { get: () => state.index, set: (on) => { calls.push(`index:${on}`); state.index = on } },
     share: { get: () => state.share, set: (on) => { calls.push(`share:${on}`); state.share = on } },
     connected: () => state.connected,
+    locked: async () => state.locked,
     status: () => STATUS,
     remove: vi.fn(async () => { calls.push('remove'); return { removed: 5, failed: 0 } }),
     passSoon: vi.fn(() => { calls.push('pass') }),
@@ -40,10 +41,28 @@ describe('Claude Code\'s saved notes: the settings IPC', () => {
   it('get answers with both switches, whether the agents are connected, and what was imported', async () => {
     expect(await call(NOTES_IPC.get)).toEqual({
       success: true,
-      data: { indexClaudeNotes: true, shareNotesAcrossProjects: false, connected: true, status: STATUS },
+      data: { indexClaudeNotes: true, shareNotesAcrossProjects: false, connected: true, locked: false, status: STATUS },
     })
     state.connected = false
     expect((await call(NOTES_IPC.get)).data.connected).toBe(false)
+  })
+
+  // Memory locked (its key cannot be opened) pauses the import and every removal. The panel has to be able to say so, or a switch
+  // turned on does nothing and "Nothing imported yet" gives no reason.
+  it('every answer that carries the settings says whether memory is locked', async () => {
+    state.locked = true
+    expect((await call(NOTES_IPC.get)).data.locked).toBe(true)
+    expect((await call(NOTES_IPC.set, { shareNotesAcrossProjects: true })).data.locked).toBe(true)
+    expect((await call(NOTES_IPC.remove)).data.settings.locked).toBe(true)
+    state.locked = false
+    expect((await call(NOTES_IPC.get)).data.locked).toBe(false)
+  })
+
+  it('a lock that cannot be read is not reported as locked, and does not fail the answer', async () => {
+    d.locked = async () => { throw new Error('host down') }
+    const res = await call(NOTES_IPC.get)
+    expect(res.success).toBe(true)
+    expect(res.data.locked).toBe(false)
   })
 
   it('set changes the switch it is given and answers with the new state', async () => {
@@ -81,7 +100,7 @@ describe('Claude Code\'s saved notes: the settings IPC', () => {
     expect(calls).toEqual(['index:false', 'remove']) // off before the first delete, or a pass could bring them straight back
     expect(res).toEqual({
       success: true,
-      data: { removed: 5, failed: 0, settings: { indexClaudeNotes: false, shareNotesAcrossProjects: false, connected: true, status: STATUS } },
+      data: { removed: 5, failed: 0, settings: { indexClaudeNotes: false, shareNotesAcrossProjects: false, connected: true, locked: false, status: STATUS } },
     })
   })
 
