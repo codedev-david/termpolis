@@ -75,14 +75,25 @@ describe('the context window is disclosed, and the disclosure matches what is re
     expect(docsSection).toContain('while this is on and when it opens a Claude terminal')
   })
 
-  it('says which terminals get it: Claude Code ones that are new, not Codex, Gemini or a shell', () => {
+  it('says which terminals get it: those opened for Claude Code and every swarm worker, new ones only, never your shells', () => {
+    // A worker's command is not known when its terminal is created, so every worker has the variable in its environment.
+    // Saying Codex "does not get it" would be false of a worker; what is true is that Codex and Gemini CLI never read it.
     for (const text of [privacySection, docsSection]) {
-      expect(text).toMatch(/not (to )?Codex/i)
-      expect(text).toContain('Gemini CLI')
-      expect(text).toContain('own shells')
+      expect(text).toContain('swarm')
+      expect(text).toContain('every worker gets it')
+      expect(text).toContain('Codex and Gemini CLI never read it')
+      expect(text).toContain('your own shells')
+      expect(text).not.toMatch(/not (to )?Codex/i)
     }
     expect(privacySection).toContain('not to a terminal that is already open')
     expect(docsSection).toContain('**new** terminals only')
+  })
+
+  it('says what it cannot see and what it does not change: a flag on a command line, and the meters', () => {
+    expect(docsSection).toContain('A `--autocompact` flag typed on a command line cannot be seen when the terminal opens')
+    expect(docsSection).toContain('Claude Code lets the variable win over the flag')
+    expect(docsSection).toContain('turn the window Off first')
+    expect(docsSection).toContain('Context meters, in Claude Code\'s status line and in Termpolis, keep measuring against the model\'s full window')
   })
 
   it('says it is off by default, and what never gets overridden', () => {

@@ -356,10 +356,12 @@ Off by default. In Settings → Token Savings → Long conversations you can pic
 smaller window (500,000, 400,000, 300,000 or 200,000 tokens) at which Claude
 Code compacts a long conversation into a summary. If you do, Termpolis adds
 Claude Code's own `CLAUDE_CODE_AUTO_COMPACT_WINDOW` variable to the environment
-of the Claude Code terminals it opens, and nowhere else: not to Codex, not to
-Gemini CLI, not to your own shells, and not to a terminal that is already open.
-The variable is read by Claude Code on your machine. Nothing about it is sent
-to Termpolis or to anyone else, and it does not use the compression proxy.
+of the terminals it opens for Claude Code, and to the terminals of the workers
+a swarm starts (the command a worker will run is not known yet when its
+terminal is created, so every worker gets it; Codex and Gemini CLI never read
+it). Not to your own shells, and not to a terminal that is already open. The
+variable is read by Claude Code on your machine. Nothing about it is sent to
+Termpolis or to anyone else, and it does not use the compression proxy.
 
 To leave a window you set yourself alone, Termpolis checks whether you already
 have one, and only while this choice is on and only when it opens a Claude

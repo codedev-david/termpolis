@@ -228,6 +228,14 @@ describe('what the control says', () => {
     expect(note).toHaveTextContent('500,000 figure is estimated between two modeled windows')
   })
 
+  it('says the context meters do not show the smaller window', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    expect(note).toHaveTextContent('Context meters, in Claude Code’s status line and in Termpolis, keep measuring against the model’s full window')
+    expect(note).toHaveTextContent('so they do not show how near the smaller one is')
+  })
+
   it('says what Termpolis sets, that it works without the proxy, and what it never overrides', async () => {
     serve()
     render(<TokenSavingsSettings />)
@@ -238,6 +246,8 @@ describe('what the control says', () => {
     expect(note).toHaveTextContent('in your environment')
     expect(note).toHaveTextContent('env block of your Claude Code settings.json')
     expect(note).toHaveTextContent('/autocompact')
+    expect(note).toHaveTextContent('It cannot see a --autocompact flag typed on a command line')
+    expect(note).toHaveTextContent('Claude Code lets this variable win over that flag, so to use the flag turn this Off first')
     expect(note).toHaveTextContent('reads the env and window keys of your Claude Code settings files')
     expect(note).toHaveTextContent('the project’s in the folder a terminal opens in')
     expect(note).toHaveTextContent('when a terminal opens, and nothing else in them')

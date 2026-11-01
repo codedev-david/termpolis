@@ -30,7 +30,7 @@ const THINKING_CAPS: Array<{ value: number; label: string }> = [
 // 600,000), so its figure is estimated. Off first, then the largest window down.
 //
 // Mirrors CONTEXT_CAP_CHOICES in src/main/headroom/shapingEnv.ts. The renderer cannot import from main, so
-// the pane lists them itself; tests/renderer/tokenSavingsContextCap.test.tsx keeps the two lists one list.
+// the pane lists them itself; tests/renderer/contextCapSettings.test.tsx keeps the two lists one list.
 const CONTEXT_CAPS: Array<{ value: number; label: string }> = [
   { value: 0, label: 'Off — Claude Code decides (default)' },
   { value: 500000, label: '500,000 tokens — modeled saving about 5 to 7%' },
@@ -540,14 +540,16 @@ export function TokenSavingsSettings() {
                 that window and 15,000 to 80,000 tokens lost to each one, as a share of the bill. It is not a promise for your work. Anthropic does
                 not say how close to the window a conversation compacts, so the real saving may differ. It is zero on a model whose own window is
                 already this size or smaller, because Claude Code never uses a window larger than the model’s. The 500,000 figure is estimated
-                between two modeled windows.
+                between two modeled windows. Context meters, in Claude Code’s status line and in Termpolis, keep measuring against the model’s
+                full window, so they do not show how near the smaller one is.
               </p>
               <p style={{ margin: 0 }}>
                 It applies to new Claude Code terminals only; a terminal that is already open keeps what it started with. It works with or without
                 the compression proxy. Termpolis sets Claude Code’s own <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> variable, and never overrides a
                 window you set yourself: in your environment, in the env block of your Claude Code <code>settings.json</code>, or with{' '}
-                <code>/autocompact</code>. To tell, it reads the env and window keys of your Claude Code settings files (your own, and the
-                project’s in the folder a terminal opens in) when a terminal opens, and nothing else in them.
+                <code>/autocompact</code>. It cannot see a <code>--autocompact</code> flag typed on a command line, and Claude Code lets this variable
+                win over that flag, so to use the flag turn this Off first. To tell, it reads the env and window keys of your Claude Code settings
+                files (your own, and the project’s in the folder a terminal opens in) when a terminal opens, and nothing else in them.
               </p>
             </div>
           </div>
