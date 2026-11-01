@@ -24,6 +24,30 @@ const THINKING_CAPS: Array<{ value: number; label: string }> = [
   { value: 2000, label: '2,000 tokens' },
 ]
 
+// The windows offered for the opt-in context cap (R3), each with the research's modeled saving: a share of
+// the bill, replayed from one person's October history with a compaction at that window and 15,000 to
+// 80,000 tokens lost to each one. 500,000 lies between the two nearest modeled windows (400,000 and
+// 600,000), so its figure is estimated. Off first, then the largest window down.
+//
+// Mirrors CONTEXT_CAP_CHOICES in src/main/headroom/shapingEnv.ts. The renderer cannot import from main, so
+// the pane lists them itself; tests/renderer/tokenSavingsContextCap.test.tsx keeps the two lists one list.
+const CONTEXT_CAPS: Array<{ value: number; label: string }> = [
+  { value: 0, label: 'Off — Claude Code decides (default)' },
+  { value: 500000, label: '500,000 tokens — modeled saving about 5 to 7%' },
+  { value: 400000, label: '400,000 tokens — modeled saving about 10 to 13%' },
+  { value: 300000, label: '300,000 tokens — modeled saving about 16 to 21%' },
+  { value: 200000, label: '200,000 tokens — modeled saving about 20 to 29%' },
+]
+
+/** The choices, with a window set outside Settings (a hand-edited file) shown as itself and in its place,
+ *  never as one of the windows it is not. */
+function contextCapChoices(current: number): Array<{ value: number; label: string }> {
+  if (CONTEXT_CAPS.some((c) => c.value === current)) return CONTEXT_CAPS
+  const extra = { value: current, label: `${fmt(current)} tokens — set outside Settings` }
+  const at = CONTEXT_CAPS.findIndex((c) => c.value > 0 && c.value < current)
+  return at === -1 ? [...CONTEXT_CAPS, extra] : [...CONTEXT_CAPS.slice(0, at), extra, ...CONTEXT_CAPS.slice(at)]
+}
+
 // Honest "share of your TOTAL input" — textSavedTokens over the full ingested
 // prompt volume (uncached + cache-read + cache-create), pre-compression. This is
 // far smaller than savedPct (which is only the shrink of the tool-output slice),
@@ -150,6 +174,8 @@ export function TokenSavingsSettings() {
   const bill = unified?.cumulative.bill
   const turnUnits = unified?.cumulative.retrievalTurnUnits ?? 0
   const turns = unified?.cumulative.retrievalTurns ?? 0
+  // 0 = Off. A main process that predates the setting sends none, which is Off as well.
+  const contextCap = typeof settings?.contextCap === 'number' && Number.isFinite(settings.contextCap) && settings.contextCap > 0 ? settings.contextCap : 0
 
   return (
     <div className="settings-section">
@@ -478,8 +504,55 @@ export function TokenSavingsSettings() {
               and unlike everything else here it trades reasoning depth, not inline context, so it is off by default.
             </div>
           </label>
+          {/* Claude Code's own compaction window, not a compression setting: it needs neither the proxy nor the
+              tool-output compression above, so nothing here is disabled by them. Off until chosen, because it
+              changes what the model keeps of a long conversation and Termpolis cannot see what that does to answers. */}
+          <div data-testid="hr-context-cap" style={{ margin: '12px 0' }}>
+            <h4 style={{ margin: '18px 0 6px' }}>Long conversations <span style={{ fontWeight: 400, opacity: 0.65 }}>— when Claude Code summarises one (opt-in)</span></h4>
+            <label style={{ display: 'block', margin: '8px 0 4px' }}>
+              Compact long Claude Code conversations at:{' '}
+              <select
+                data-testid="hr-context-cap-select"
+                aria-label="Context window for Claude Code compaction"
+                value={String(contextCap)}
+                onChange={(e) => update({ contextCap: Number(e.target.value) })}
+                className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
+              >
+                {contextCapChoices(contextCap).map((c) => (
+                  <option key={c.value} value={String(c.value)} className="bg-[#2d2d2d] text-[#d4d4d4]">{c.label}</option>
+                ))}
+              </select>
+            </label>
+            <div data-testid="hr-context-cap-status" style={{ fontSize: 13, opacity: 0.85, margin: '4px 0 4px' }}>
+              {contextCap === 0
+                ? <>Off: Claude Code decides when to compact a conversation, as it always has.</>
+                : <>On at <b>{fmt(contextCap)} tokens</b>: new Claude Code terminals compact a long conversation once it nears this size. Terminals that are already open are unchanged.</>}
+            </div>
+            <div data-testid="hr-context-cap-note" style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+              <p style={{ margin: '0 0 6px' }}>
+                Claude Code compacts a long conversation into a summary when it nears the model’s context window, and every request until then
+                re-reads the whole history. A smaller window makes it compact sooner, so later requests carry less. The cost is that the model
+                keeps less of a long conversation word for word and works from the summary instead. Termpolis cannot measure what that does to
+                the quality of answers on your work, so this is off until you choose it.
+              </p>
+              <p style={{ margin: '0 0 6px' }}>
+                The saving beside each window is modeled, not measured: a replay of one person’s October Claude Code history, with a compaction at
+                that window and 15,000 to 80,000 tokens lost to each one, as a share of the bill. It is not a promise for your work. Anthropic does
+                not say how close to the window a conversation compacts, so the real saving may differ. It is zero on a model whose own window is
+                already this size or smaller, because Claude Code never uses a window larger than the model’s. The 500,000 figure is estimated
+                between two modeled windows.
+              </p>
+              <p style={{ margin: 0 }}>
+                It applies to new Claude Code terminals only; a terminal that is already open keeps what it started with. It works with or without
+                the compression proxy. Termpolis sets Claude Code’s own <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> variable, and never overrides a
+                window you set yourself: in your environment, in the env block of your Claude Code <code>settings.json</code>, or with{' '}
+                <code>/autocompact</code>. To tell, it reads the env and window keys of your Claude Code settings files (your own, and the
+                project’s in the folder a terminal opens in) when a terminal opens, and nothing else in them.
+              </p>
+            </div>
+          </div>
           <div style={{ fontSize: 13, opacity: 0.8, marginTop: 8 }}>
-            Tool-output savings — session <span data-testid="hr-session-saved">{fmt(receipt?.session.netSaved ?? 0)}</span> · all-time <span data-testid="hr-cumulative-saved">{fmt(receipt?.cumulative.netSaved ?? 0)}</span> tokens
+            Tool-output savings — session<span data-testid="hr-session-saved">{fmt(receipt?.session.netSaved ?? 0)}</span> · all-time <span data-testid="hr-cumulative-saved">{fmt(receipt?.cumulative.netSaved ?? 0)}</span> tokens
           </div>
         </>
       )}
