@@ -652,7 +652,7 @@ describe('proxy supervisor — thinking cap and prefix decay ride the config cha
   it('pushes a live cap to the running child and floors a fractional budget', () => {
     startProxy({ port: 7301 })
     setProxyThinkingCap(8192.9)
-    expect(lastConfig(children[0])).toEqual({ kind: 'config', mode: 'aggressive', thinkingCap: 8192, decay: false })
+    expect(lastConfig(children[0])).toEqual({ kind: 'config', mode: 'aggressive', thinkingCap: 8192, decay: false, firstSight: 'legacy' })
   })
 
   it('normalises every non-positive or non-finite budget to 0 (off), never to NaN or a negative', () => {
@@ -711,6 +711,6 @@ describe('proxy supervisor — thinking cap and prefix decay ride the config cha
     setProxyThinkingCap(3000)
     setProxyDecay(true)
     setProxyMode('conservative')
-    expect(lastConfig(children[0])).toEqual({ kind: 'config', mode: 'conservative', thinkingCap: 3000, decay: true })
+    expect(lastConfig(children[0])).toEqual({ kind: 'config', mode: 'conservative', thinkingCap: 3000, decay: true, firstSight: 'legacy' })
   })
 })

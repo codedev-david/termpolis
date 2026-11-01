@@ -2,6 +2,7 @@ import * as net from 'net'
 import type { WireStats } from './wireCompress'
 import type { Usage, TurnShape } from './usageParse'
 import type { StashEntry } from '../headroom/elisionMeta'
+import { isFirstSightPolicy, type FirstSightPolicy } from '../headroom/elisionPolicy'
 import { killUtility } from '../utilityKill'
 
 export interface ProxyResultMsg {
@@ -45,6 +46,11 @@ let proxyThinkingCap = 0 // extended-thinking budget ceiling pushed to the child
 // is the value the child runs with if reading settings throws, and a failure to read config must
 // never be what turns a cache-breaking transform on. index.ts pushes the real value at boot.
 let proxyDecay = false
+// The first-sight elision policy (elisionPolicy.ts). Like the seed above it is `legacy` until the
+// main process says otherwise, and for the same reason: a failure to read settings must never be
+// what changes what the model is shown. It is resolved ONCE per run (see setProxyFirstSight).
+let proxyFirstSight: FirstSightPolicy = 'legacy'
+let firstSightResolved = false
 let upstream = 'api.anthropic.com'
 let proxyEnabled = true
 let started = false
@@ -65,7 +71,12 @@ export function onProxyStash(cb: ((s: ProxyStashMsg) => void) | null): void { st
  *  holds in the child, so savings never silently drop. */
 export function setProxyMode(m: string): void {
   proxyMode = m
-  try { transport?.postMessage({ kind: 'config', mode: m, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { /* best effort */ }
+  try { transport?.postMessage(configMessage()) } catch { /* best effort */ }
+}
+
+/** Every frame carries all of the config, so no frame can undo what another set. */
+function configMessage(): { kind: 'config'; mode: string; thinkingCap: number; decay: boolean; firstSight: FirstSightPolicy } {
+  return { kind: 'config', mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay, firstSight: proxyFirstSight }
 }
 
 /** The tier the child runs — floor control may have raised it above the Settings selector. */
@@ -76,14 +87,29 @@ export function getProxyMode(): string {
  *  respawned child re-adopts it from init and can't quietly revert to the user's full budget. */
 export function setProxyThinkingCap(n: number): void {
   proxyThinkingCap = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
-  try { transport?.postMessage({ kind: 'config', mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { /* best effort */ }
+  try { transport?.postMessage(configMessage()) } catch { /* best effort */ }
 }
 /** Push the prefix-decay flag on the same channel, so a respawned child re-adopts it from init
  *  rather than reverting to the default and silently changing the transform mid-conversation. */
 export function setProxyDecay(on: boolean): void {
   proxyDecay = on === true
-  try { transport?.postMessage({ kind: 'config', mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { /* best effort */ }
+  try { transport?.postMessage(configMessage()) } catch { /* best effort */ }
 }
+/**
+ * Push the first-sight elision policy. It is taken ONCE per run, from the first usable value, and
+ * the child does the same: the proxy serves every Claude session of an app run, and changing which
+ * tool results are shortened while they are live would rewrite each cached prefix. A Settings change
+ * therefore takes effect when Termpolis next starts; until then this keeps saying what is in force.
+ * A value that is not a policy is ignored and spends nothing.
+ */
+export function setProxyFirstSight(v: unknown): void {
+  if (firstSightResolved || !isFirstSightPolicy(v)) return
+  proxyFirstSight = v
+  firstSightResolved = true
+  try { transport?.postMessage(configMessage()) } catch { /* best effort */ }
+}
+/** The policy the proxy runs, which Settings may have since been changed away from. */
+export function getProxyFirstSight(): FirstSightPolicy { return proxyFirstSight }
 export function isProxyHealthy(): boolean { return healthy && port > 0 }
 export function getProxyPort(): number { return port }
 
@@ -198,7 +224,11 @@ function spawnOnce(): void {
   // transport of the child that replaced it -- leaving that one running where stopProxy can't
   // reach it -- and then spawn yet another.
   t.onExit(() => { if (transport !== t) return; healthy = false; transport = null; maybeRestart() })
-  try { t.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay }) } catch { healthy = false }
+  try {
+    t.postMessage({ kind: 'init', port, upstreamHost: upstream, mode: proxyMode, thinkingCap: proxyThinkingCap, decay: proxyDecay, firstSight: proxyFirstSight })
+    // The child freezes what its first init carries, so from here this is the policy for the run.
+    firstSightResolved = true
+  } catch { healthy = false }
 }
 
 function maybeRestart(): void {
@@ -259,4 +289,5 @@ export function _resetProxyForTest(): void {
   agentEnvReader = null
   if (cooldownTimer) { clearTimeout(cooldownTimer); cooldownTimer = null }
   transport = null; healthy = false; port = 0; restartTimes = []; stopped = false; shutDown = false; resultCb = null; stashCb = null; spawner = null; upstream = 'api.anthropic.com'; proxyMode = 'aggressive'; proxyEnabled = true; started = false
+  proxyFirstSight = 'legacy'; firstSightResolved = false
 }

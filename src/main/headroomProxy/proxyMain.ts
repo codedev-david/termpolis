@@ -1,6 +1,6 @@
 import * as http from 'http'
 import * as https from 'https'
-import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, type WireStats } from './wireCompress'
+import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, setFirstSightPolicy, type WireStats } from './wireCompress'
 import { parseUsageFromSse, parseTurnShapeFromSse, decodeBody, type Usage, type TurnShape } from './usageParse'
 import { compressImage } from './imageCodec'
 import type { StashEntry } from '../headroom/elisionMeta'
@@ -12,6 +12,26 @@ import type { StashEntry } from '../headroom/elisionMeta'
  */
 let decayEnabled = false
 export function setPrefixDecay(on: unknown): void { decayEnabled = on === true }
+
+/**
+ * Apply a config frame from the main process (on init, again on every respawn, and live on a
+ * Settings change). Each field is validated where it lands: an unknown tier leaves the window as it
+ * is, so a garbled frame can never downgrade it, a cap that is not a number leaves the ceiling in
+ * place, and the first-sight policy is taken from the first frame that carries a usable one and then
+ * frozen (wireCompress.setFirstSightPolicy). Total: a frame that is not an object changes nothing.
+ */
+export function applyProxyConfig(msg: unknown): void {
+  if (!msg || typeof msg !== 'object') return
+  const m = msg as { mode?: unknown; thinkingCap?: unknown; decay?: unknown; firstSight?: unknown }
+  // Translate a mode string to the wire window; unknown or garbled gives null, setWireWindow no-ops
+  // on it, and the aggressive default holds (never downgrades on a bad message).
+  if (typeof m.mode === 'string') setWireWindow(windowForMode(m.mode))
+  // The thinking cap rides the same message as the mode; setThinkingCap validates, so a garbled
+  // or absent value simply leaves the current ceiling in place.
+  setThinkingCap(m.thinkingCap)
+  setPrefixDecay(m.decay)
+  setFirstSightPolicy(m.firstSight)
+}
 
 export interface ProxyResult {
   changed: boolean
@@ -131,18 +151,12 @@ if (parentPort) {
   process.on('unhandledRejection', (err) => { try { parentPort.postMessage({ kind: 'error', message: 'rejection: ' + String(err) }) } catch { /* ignore */ } })
 
   let server: http.Server | null = null
-  // Translate a mode string → wire window. Unknown/garbled → windowForMode returns null →
-  // setWireWindow no-ops, so the aggressive default holds (never downgrades on a bad message).
-  const applyMode = (mode: unknown): void => { if (typeof mode === 'string') setWireWindow(windowForMode(mode)) }
-  // The thinking cap rides the same message as the mode; setThinkingCap validates, so a garbled
-  // or absent value simply leaves the current ceiling in place.
-  const applyConfig = (msg: { mode?: unknown; thinkingCap?: unknown; decay?: unknown }): void => { applyMode(msg.mode); setThinkingCap(msg.thinkingCap); setPrefixDecay(msg.decay) }
   parentPort.on('message', (e) => {
-    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string; mode?: unknown; thinkingCap?: unknown; decay?: unknown })
+    const msg = e && (e.data as { kind?: string; port?: number; upstreamHost?: string })
     if (!msg) return
-    if (msg.kind === 'config') { applyConfig(msg); return } // live mode/cap change (Settings → supervisor)
+    if (msg.kind === 'config') { applyProxyConfig(msg); return } // live mode/cap change (Settings → supervisor)
     if (msg.kind !== 'init' || server) return
-    applyConfig(msg) // honor the config carried on init — and re-applied on every respawn
+    applyProxyConfig(msg) // honor the config carried on init — and re-applied on every respawn
     const targetPort = msg.port || 0
     let attempts = 0
     const start = (): void => {
