@@ -577,6 +577,129 @@ describe('terminal:create — the Headroom proxy env reaches the PTY only when e
 })
 
 // ===========================================================================
+// The opt-in context window (R3): it rides with a Claude launch whether or not the proxy is up
+// ===========================================================================
+describe('terminal:create and the swarm worker — the context window is the user\'s choice, and independent of the proxy', () => {
+  const VAR = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW'
+  const PROXY_ENV = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:41999' }
+  let cfg: typeof import('../../src/main/headroom/config')
+  let userClaudeDir: string
+
+  beforeAll(async () => {
+    // Imported after index.ts so it is the very instance index.ts reads its settings from.
+    cfg = await import('../../src/main/headroom/config')
+    userClaudeDir = join(process.env.TERMPOLIS_TEST_AGENT_HOME as string, '.claude')
+  })
+  beforeEach(async () => {
+    cfg.resetSettings()
+    X.getProxyEnv.mockReset()
+    X.getProxyEnv.mockReturnValue(PROXY_ENV)
+    delete process.env[VAR]
+    M.spawnTerminal.mockClear()
+    const { rm } = await import('node:fs/promises')
+    await rm(userClaudeDir, { recursive: true, force: true })
+  })
+  afterAll(async () => {
+    cfg.resetSettings()
+    X.getProxyEnv.mockReturnValue(null)
+    delete process.env[VAR]
+    const { rm } = await import('node:fs/promises')
+    await rm(userClaudeDir, { recursive: true, force: true })
+  })
+
+  const createClaude = async (id: string, cwd = '/repo'): Promise<Record<string, string> | undefined> => {
+    M.spawnTerminal.mockClear()
+    expect((await invoke('terminal:create', { id, shellType: 'powershell', cwd, claudeHeadroom: true })).success).toBe(true)
+    return M.spawnTerminal.mock.calls[0][5]
+  }
+  const createWorker = async (name: string, cwd = '/repo'): Promise<Record<string, string> | undefined> => {
+    M.spawnTerminal.mockClear()
+    const id = await mcp().createTerminal(name, 'powershell', cwd)
+    const env = M.spawnTerminal.mock.calls[0][5]
+    mcp().closeTerminal(id)
+    return env
+  }
+  const writeUserSettings = async (obj: unknown): Promise<void> => {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    await mkdir(userClaudeDir, { recursive: true })
+    await writeFile(join(userClaudeDir, 'settings.json'), JSON.stringify(obj), 'utf8')
+  }
+
+  it('changes nothing while the cap is Off: the same env as before, a Claude terminal and a swarm worker alike', async () => {
+    expect(await createClaude('cap-off')).toEqual(PROXY_ENV)
+    expect(await createWorker('Backend Dev')).toEqual(PROXY_ENV)
+    X.getProxyEnv.mockReturnValue(null)
+    expect(await createClaude('cap-off-direct')).toBeUndefined()
+    expect(await createWorker('Direct Dev')).toBeUndefined()
+  })
+
+  it('adds the window beside the proxy route once the cap is on, at both sites', async () => {
+    cfg.setSettings({ contextCap: 300_000 })
+    expect(await createClaude('cap-on')).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
+    expect(await createWorker('Backend Dev')).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
+  })
+
+  it('keeps the window when the proxy is not healthy (R3 criterion 3), at both sites', async () => {
+    cfg.setSettings({ contextCap: 400_000 })
+    X.getProxyEnv.mockReturnValue(null)
+    expect(await createClaude('cap-on-direct')).toEqual({ [VAR]: '400000' })
+    expect(await createWorker('Direct Dev')).toEqual({ [VAR]: '400000' })
+  })
+
+  it('keeps the window when the proxy is switched off in Settings too: the cap does not depend on it', async () => {
+    cfg.setSettings({ contextCap: 200_000, wireProxy: false })
+    X.getProxyEnv.mockReturnValue(null)
+    expect(await createClaude('cap-no-proxy')).toEqual({ [VAR]: '200000' })
+  })
+
+  it('gives a terminal that will not run Claude nothing, and does not even ask the proxy', async () => {
+    cfg.setSettings({ contextCap: 300_000 })
+    M.spawnTerminal.mockClear(); X.getProxyEnv.mockClear()
+    expect((await invoke('terminal:create', { id: 'cap-codex', shellType: 'powershell', cwd: '/repo', claudeHeadroom: false })).success).toBe(true)
+    expect(M.spawnTerminal.mock.calls[0][5]).toBeUndefined()
+    expect(X.getProxyEnv).not.toHaveBeenCalled()
+    // A terminal opened without the flag at all, the way a plain shell is.
+    M.spawnTerminal.mockClear()
+    await invoke('terminal:create', { id: 'cap-shell', shellType: 'powershell', cwd: '/repo' })
+    expect(M.spawnTerminal.mock.calls[0][5]).toBeUndefined()
+  })
+
+  it('never overrides a value in the environment Termpolis passes on', async () => {
+    cfg.setSettings({ contextCap: 300_000 })
+    process.env[VAR] = '250000'
+    expect(await createClaude('cap-env')).toEqual(PROXY_ENV)
+    expect(await createWorker('Backend Dev')).toEqual(PROXY_ENV)
+  })
+
+  it('never overrides a value in the env block of the user\'s Claude Code settings, nor a window saved there', async () => {
+    cfg.setSettings({ contextCap: 300_000 })
+    await writeUserSettings({ env: { [VAR]: '250000' } })
+    expect(await createClaude('cap-settings-env')).toEqual(PROXY_ENV)
+    expect(await createWorker('Backend Dev')).toEqual(PROXY_ENV)
+    await writeUserSettings({ autoCompactWindow: 500_000 })
+    expect(await createClaude('cap-saved-window')).toEqual(PROXY_ENV)
+    await writeUserSettings({ modelSettings: { 'claude-opus-5-5': { autoCompactWindow: 500_000 } } })
+    expect(await createWorker('Backend Dev')).toEqual(PROXY_ENV)
+  })
+
+  it('still sets it when the user\'s settings hold other things, or cannot be read', async () => {
+    cfg.setSettings({ contextCap: 300_000 })
+    await writeUserSettings({ env: { API_TIMEOUT_MS: '1200000' }, permissions: { allow: ['Bash(ls)'] } })
+    expect(await createClaude('cap-other-settings')).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
+    await writeUserSettings('not an object { ')
+    expect(await createClaude('cap-bad-settings')).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
+  })
+
+  it('applies to the next terminal at once, and to no running one: it is read at creation, not frozen for the run', async () => {
+    expect(await createClaude('before')).toEqual(PROXY_ENV)
+    cfg.setSettings({ contextCap: 300_000 })
+    expect(await createClaude('after-on')).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
+    cfg.setSettings({ contextCap: 0 })
+    expect(await createClaude('after-off')).toEqual(PROXY_ENV)
+  })
+})
+
+// ===========================================================================
 // terminal:write — the e2e write recorder must not exist outside tests
 // ===========================================================================
 describe('terminal:write — the raw-write recorder is test-only', () => {

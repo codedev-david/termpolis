@@ -168,3 +168,35 @@ export function composeLaunchEnv(
   const merged = { ...(proxyEnv ?? {}), ...shaping }
   return Object.keys(merged).length > 0 ? merged : undefined
 }
+
+/** Where a Claude launch's extra environment comes from. Each source is a function, read when the terminal is created. */
+export interface LaunchEnvSources {
+  /** The headroom settings as they are now; only `contextCap` is looked at. */
+  settings: () => { contextCap?: unknown } | null | undefined
+  /** The proxy route (getProxyEnv): null whenever the proxy is off, stepping aside or unhealthy. */
+  proxyEnv: () => Record<string, string> | null | undefined
+  /** The environment the terminal inherits. */
+  env: Env
+  /** The Claude Code settings in force for a launch in this folder (see shapingEnvReader.ts). */
+  readSettings?: (cwd: string) => Promise<ClaudeWindowSettings | null | undefined>
+}
+
+/**
+ * The whole extra environment of a Claude terminal: the proxy route and the opt-in window, composed. The one
+ * place both are decided, so a spawn site cannot take one and miss the other; a source guard in the tests
+ * holds every site to it.
+ *
+ * The window is settled first and the proxy asked last, so the proxy's health is judged when the terminal is
+ * about to start, as it was when getProxyEnv() was called at the spawn itself. Total: a source that throws
+ * counts as having nothing (a launch goes direct and without a window rather than not at all), and a read of
+ * the settings that hangs is given up on.
+ */
+export async function claudeLaunchEnv(cwd: string, sources: LaunchEnvSources): Promise<Record<string, string> | undefined> {
+  const { readSettings } = sources
+  const shaping = await resolveShapingEnv(
+    attempt(sources.settings),
+    sources.env,
+    readSettings ? () => readSettings(cwd) : undefined,
+  )
+  return composeLaunchEnv(attempt(sources.proxyEnv), shaping)
+}

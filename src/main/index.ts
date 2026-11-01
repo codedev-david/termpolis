@@ -199,7 +199,9 @@ import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { summarizeElisionHealth } from './headroom/elisionHealth'
 import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader, setProxyFirstSight, getProxyFirstSight } from './headroomProxy/proxySupervisor'
 import { readJsonObject } from './agentConfigIO'
-import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
+import { claudeLaunchEnv as buildClaudeLaunchEnv } from './headroom/shapingEnv'
+import { readClaudeWindowSettings } from './headroom/shapingEnvReader'
+import { recordProxyResult,summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
 import { loadDepthCurveFromDisk, saveDepthCurveToDisk } from './headroom/sessionDepth'
 import { fileURLToPath } from 'url'
 import { summarizeSavings as summarizeHeadroomSavings, setLedgerFlush } from './headroom/savingsLedger'
@@ -794,11 +796,22 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
   return ok()
 })
 
+// The extra environment of a Claude terminal: the proxy route, when the proxy is up, and the user's opt-in
+// context window, which has nothing to do with the proxy (headroom/shapingEnv.ts). The only place the proxy
+// route is taken, so a spawn site cannot carry one and miss the other.
+const claudeLaunchEnv = (cwd: string) => buildClaudeLaunchEnv(cwd, {
+  settings: getHeadroomSettings,
+  proxyEnv: getProxyEnv,
+  env: process.env,
+  readSettings: (dir) => readClaudeWindowSettings(agentIntegrationPaths().claudeDir, dir),
+})
+
 ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, claudeHeadroom }) => {
   try {
     const shells = await detectAvailableShells()
     const shell = shells.find(s => s.type === shellType) ?? shells[0]
     if (!shell) return err('No shell available')
+    const launchEnv = claudeHeadroom ? await claudeLaunchEnv(cwd) : undefined
     // No folder trust is seeded here any more. Opening a terminal is not agreeing to let
     // an agent run in that folder unasked; Claude Code's own trust prompt stays the gate
     // unless the user connected the agents, and then only where Termpolis launches Claude
@@ -822,7 +835,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
           remoteNoteTerminalOutput(id)
-        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined)
+        }, allExtraPaths, launchEnv)
         resolve()
       } catch (e) {
         reject(e)
@@ -3550,6 +3563,7 @@ async function semanticPoolOptions(
         const shells = await detectAvailableShells()
         const shellInfo = shells.find(s => s.type === shell) || shells[0]
         if (shellInfo) {
+          const launchEnv = await claudeLaunchEnv(resolvedCwd)
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             // Buffer first: the event carries the chunk's end offset (see terminal:create).
             const end = appendOutput(terminalOutputBuffers, id, data)
@@ -3559,8 +3573,9 @@ async function semanticPoolOptions(
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
           // (codex/gemini read OPENAI_*/Google env), so this compresses every Claude worker and
-          // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
-          }, getAgentExtraPaths(), getProxyEnv() ?? undefined)
+          // no-ops the rest; the proxy route is absent when the proxy is unhealthy → direct launch. The opt-in
+          // context window rides in the same env, proxy or not, and is just as inert for a Codex or Gemini worker.
+          }, getAgentExtraPaths(), launchEnv)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
