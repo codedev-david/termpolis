@@ -260,6 +260,18 @@ export interface UnifiedTotalsView {
    *  headline nets these; `givebackTokens` prices the text that came back, not the turn. */
   retrievalTurns: number
   retrievalTurnUnits: number
+  /** What the tool results in forwarded requests were, by what was done to them, summed over requests. */
+  stubKinds: {
+    plain: number
+    compact: number
+    dedup: number
+    diff: number
+    aged: number
+    /** Aged-out stubs in a body too short for the decay pass to have made them. */
+    agedEarly: number
+    /** Requests that carried at least one of those. */
+    agedEarlyRequests: number
+  }
   grossSavedTokens: number
   netSavedTokens: number
   savedPct: number

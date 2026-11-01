@@ -193,6 +193,7 @@ import { buildInjectedInstruction } from './headroom/injectedInstruction'
 import { adaptSteeringMode, steeringDirective, type SteeringMode } from './headroom/outputSteering'
 import { initOutputEconomy, armForSession, flushOutputEconomy, outputEconomyReport } from './headroom/outputEconomyStore'
 import { resolveWireMode } from './headroom/savingsFloor'
+import { describeWireTier } from './headroom/wireTier'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
 import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader } from './headroomProxy/proxySupervisor'
@@ -4107,6 +4108,8 @@ async function semanticPoolOptions(
         setProxyThinkingCap(hs.thinkingCap)
         setProxyDecay(hs.prefixDecay)
         setProxyEnabled(hs.wireProxy)
+        // Last, and once per launch: which tier this run's proxy uses and from what size it elides.
+        logToApp('info', 'main', [describeWireTier(hs.mode, wireMode, hs.floorControl)])
       } catch { /* defaults hold */ }
       // Switched off → no child at all. Settings starts it the moment the user turns it back on.
       if (getHeadroomSettings().wireProxy) ensureHeadroomProxy()

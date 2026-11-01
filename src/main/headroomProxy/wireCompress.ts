@@ -10,6 +10,7 @@ import { familyForPath, looksLikeCode, outlineCode } from './codeOutline'
 import { isExempt } from '../headroom/router'
 import { STEERING_MARK } from '../headroom/outputSteering'
 import { makeMeta, stampModel, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
+import { classifyMessages, emptyKinds, type StubKindCounts } from './forwardedKinds'
 
 export interface WireStats {
   trBlocks: number
@@ -47,6 +48,9 @@ export interface WireStats {
    *  largest single bucket on the bill; steering is the only lever aimed at it, and until now
    *  nothing recorded whether it was even present, let alone what it earned. */
   steered: boolean
+  /** What the forwarded body's tool results were, by what was done to them (forwardedKinds.ts).
+   *  Zero for a body that could not be read as a Messages request. */
+  kinds: StubKindCounts
 }
 export interface WireResult {
   body: string
@@ -61,6 +65,7 @@ function emptyStats(): WireStats {
     trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
     images: 0, imgOrigBytes: 0, imgCompBytes: 0,
     sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, thinkBudget: 0, steered: false,
+    kinds: emptyKinds(),
   }
 }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
@@ -501,7 +506,11 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   /* v8 ignore next -- the catch is unreachable here: `obj` is the untouched JSON.parse result and
      nothing has mutated it yet, so stringify cannot throw. Kept as a fail-open guard. */
   try { reserialized = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats, stashes } }
-  if (reserialized !== raw) return { body: raw, changed: false, stats, stashes }
+  if (reserialized !== raw) {
+    // Forwarded untouched, so what the model sees is what the client sent: still worth counting.
+    stats.kinds = classifyMessages(obj.messages as unknown[])
+    return { body: raw, changed: false, stats, stashes }
+  }
   let changed = clampThinkingBudget(obj)
   // Built once, up front: a tool_result's file hint lives in the tool_use it answers, which sits
   // in an EARLIER message, and the lookup must not depend on how far the walk has got.
@@ -562,6 +571,8 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   // The model is one field of the body, so naming it on each stash keeps the metadata a function
   // of the body alone. It rides beside the stash and never enters the forwarded bytes.
   stampModel(stashes, obj.model)
+  // Read off the REWRITTEN messages, which are what `out` serializes; classifyMessages only reads.
+  stats.kinds = classifyMessages(obj.messages as unknown[])
   if (!changed) return { body: raw, changed: false, stats, stashes }
   let out: string
   try { out = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats: emptyStats(), stashes: [] } }

@@ -72,6 +72,20 @@ export interface ProxyTotals {
    */
   retrievalTurns: number
   retrievalTurnUnits: number
+  /**
+   * What the tool results in each forwarded request were, by what was done to them (see
+   * forwardedKinds.ts), summed over requests. A stub that stays in a conversation is counted by
+   * every request that carries it, the way `textSavedTokens` credits an elided token. `stubAgedEarly`
+   * is the aged-out stubs in a body too short for the decay pass to have made them, and
+   * `stubAgedEarlyRequests` the requests that carried at least one: the unexplained case.
+   */
+  stubPlain: number
+  stubCompact: number
+  stubDedup: number
+  stubDiff: number
+  stubAged: number
+  stubAgedEarly: number
+  stubAgedEarlyRequests: number
 }
 
 /** The floor this release is held to, as a percentage of compressible wire text. */
@@ -87,7 +101,7 @@ export interface ProxyReceipt {
 function empty(): ProxyTotals {
   // worstSavedPct starts at 100 and only ever ratchets DOWN, so an untouched ledger never claims
   // a floor breach it never saw.
-  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0 }
+  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0, stubPlain: 0, stubCompact: 0, stubDedup: 0, stubDiff: 0, stubAged: 0, stubAgedEarly: 0, stubAgedEarlyRequests: 0 }
 }
 
 let session = empty()
@@ -99,12 +113,17 @@ export function setProxyLedgerFlush(fn: (() => void) | null): void { flush = fn 
 /** A counter read back from disk: a finite number above zero, else zero. */
 function counter(n: unknown): number { return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0 }
 
+/** The counters added after v1.54. */
+const NEWER_COUNTERS = [
+  'retrievalTurns', 'retrievalTurnUnits',
+  'stubPlain', 'stubCompact', 'stubDedup', 'stubDiff', 'stubAged', 'stubAgedEarly', 'stubAgedEarlyRequests',
+] as const
+
 export function loadProxyBase(b: Partial<ProxyTotals>): void {
   base = { ...empty(), ...b }
-  // Counters added after v1.54: a file written before them has none, and one damaged in the new
-  // fields must read as zero rather than turn every later sum into NaN.
-  base.retrievalTurns = counter(base.retrievalTurns)
-  base.retrievalTurnUnits = counter(base.retrievalTurnUnits)
+  // A file written before them has none, and one damaged in the new fields must read as zero
+  // rather than turn every later sum into NaN.
+  for (const k of NEWER_COUNTERS) base[k] = counter(base[k])
 }
 
 /**
@@ -147,6 +166,18 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   if (r.turn && r.turn.pure === true) {
     session.retrievalTurns += 1
     session.retrievalTurnUnits += W_CACHE_READ * (u.cache_read_input_tokens || 0) + W_OUTPUT * (u.output_tokens || 0)
+  }
+  // What the forwarded body's tool results were. A tally from a child that predates it, or a damaged
+  // one, adds nothing.
+  const kinds = s.kinds
+  if (kinds && typeof kinds === 'object') {
+    session.stubPlain += counter(kinds.plain)
+    session.stubCompact += counter(kinds.compact)
+    session.stubDedup += counter(kinds.dedup)
+    session.stubDiff += counter(kinds.diff)
+    session.stubAged += counter(kinds.aged)
+    session.stubAgedEarly += counter(kinds.agedEarly)
+    if (counter(kinds.agedEarly) > 0) session.stubAgedEarlyRequests += 1
   }
   // Depth curve. Recorded here rather than at the caller so the two meters cannot drift: every
   // request that moves the token ledger moves the curve, or neither does.
