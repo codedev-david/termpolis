@@ -1530,10 +1530,15 @@ describe('the pointer is never typed over what the user is typing', () => {
 // ---------------------------------------------------------------------------------------------
 // The pointer is one line of text, and it can still land at a SHELL's prompt: the OS answers null
 // for shells it can't read, and an agent can die between the last question and the Enter. A
-// folder's name is data somebody else chose (a cloned repository's directory), and inside double
-// quotes a $(...) or a backtick in it ran in bash, zsh and PowerShell. So the folder is named only
-// when every character of it is inert in every shell, and then as a single-quoted literal
-// (shellQuote.ts); otherwise it is left out and the agent calls memory_primer with no arguments.
+// folder's name is data somebody else chose (a cloned repository's directory). Between double
+// quotes a name can close the quotes itself and comment out the rest of the pointer (x"; cmd; #),
+// which ran in Git Bash and Windows PowerShell, and in cmd.exe with & and rem. A $(...) or a
+// backtick is expanded between double quotes as well; on a one-line paste it did not run because of
+// the pointer's own words after the folder (bash waits for more, PowerShell rejects the line), not
+// because of the quoting. zsh and fish were not available to run: what is said of them comes from
+// their documented quoting rules. So the folder is named only when every character of it is inert
+// in every shell, and then as a single-quoted literal (shellQuote.ts); otherwise the pointer writes
+// no folder and the agent passes its own working directory.
 // ---------------------------------------------------------------------------------------------
 describe('the pointer names the folder safely', () => {
   /** Termpolis does not know the terminal's folder: the tool is called as it is. */
