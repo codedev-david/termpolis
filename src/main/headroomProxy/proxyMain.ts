@@ -1,7 +1,7 @@
 import * as http from 'http'
 import * as https from 'https'
 import { rewriteMessagesBody, setWireWindow, windowForMode, setThinkingCap, type WireStats } from './wireCompress'
-import { parseUsageFromSse, decodeBody, type Usage } from './usageParse'
+import { parseUsageFromSse, parseTurnShapeFromSse, decodeBody, type Usage, type TurnShape } from './usageParse'
 import { compressImage } from './imageCodec'
 
 /**
@@ -16,6 +16,8 @@ export interface ProxyResult {
   changed: boolean
   stats: WireStats
   usage: Usage
+  /** Which tools the answer called, so a turn spent only on retrieve_full can be charged. */
+  turn: TurnShape
   stashes: Array<{ token: string; original: string }>
   status: number
 }
@@ -85,7 +87,8 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
                 try {
                   const sse = decodeBody(Buffer.concat(respChunks), String(up.headers['content-encoding'] || ''))
                   const usage = parseUsageFromSse(sse)
-                  opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, stashes: rewritten.stashes, status: up.statusCode || 0 })
+                  const turn = parseTurnShapeFromSse(sse)
+                  opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, turn, stashes: rewritten.stashes, status: up.statusCode || 0 })
                 } catch { /* best effort */ }
               }
             })
@@ -161,7 +164,7 @@ if (parentPort) {
         },
         // Still carried on the result as an idempotent backstop: ccrPut is content-hash keyed, so
         // a re-put of the same original is a no-op.
-        onResult: (r) => { try { parentPort.postMessage({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, stashes: r.stashes, status: r.status }) } catch { /* ignore */ } },
+        onResult: (r) => { try { parentPort.postMessage({ kind: 'result', changed: r.changed, stats: r.stats, usage: r.usage, turn: r.turn, stashes: r.stashes, status: r.status }) } catch { /* ignore */ } },
       })
       server = s
       s.on('error', () => {

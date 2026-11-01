@@ -1,6 +1,6 @@
 import * as net from 'net'
 import type { WireStats } from './wireCompress'
-import type { Usage } from './usageParse'
+import type { Usage, TurnShape } from './usageParse'
 import { killUtility } from '../utilityKill'
 
 export interface ProxyResultMsg {
@@ -8,6 +8,8 @@ export interface ProxyResultMsg {
   changed: boolean
   stats: WireStats
   usage: Usage
+  /** Absent only on a message from a child that predates it; the ledger reads absence as "not pure". */
+  turn?: TurnShape
   stashes: Array<{ token: string; original: string }>
   status: number
 }

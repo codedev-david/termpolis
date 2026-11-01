@@ -4,6 +4,7 @@ import { ccrPut } from '../headroom/ccrStore'
 import { recordDepthSample } from '../headroom/sessionDepth'
 import type { ProxyResultMsg } from './proxySupervisor'
 import { recordProxyOutput } from '../headroom/outputEconomyStore'
+import { W_CACHE_READ, W_OUTPUT } from '../headroom/effectiveUnits'
 
 export interface ProxyTotals {
   requests: number
@@ -60,6 +61,14 @@ export interface ProxyTotals {
   steeredOutputTokens: number
   unsteeredRequests: number
   unsteeredOutputTokens: number
+  /**
+   * Turns whose only tool calls were retrieve_full, and what they cost in effective units: the
+   * cached prefix they re-read (0.1x) plus the output they wrote (5x). `givebackTokens` prices the
+   * text that came back; this prices the TURN that fetched it, which is an order of magnitude
+   * more. Mixed turns add nothing here: their other tool calls are work the session wanted anyway.
+   */
+  retrievalTurns: number
+  retrievalTurnUnits: number
 }
 
 /** The floor this release is held to, as a percentage of compressible wire text. */
@@ -75,7 +84,7 @@ export interface ProxyReceipt {
 function empty(): ProxyTotals {
   // worstSavedPct starts at 100 and only ever ratchets DOWN, so an untouched ledger never claims
   // a floor breach it never saw.
-  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0 }
+  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0 }
 }
 
 let session = empty()
@@ -83,7 +92,17 @@ let base = empty() // cumulative baseline loaded from disk
 let flush: (() => void) | null = null
 
 export function setProxyLedgerFlush(fn: (() => void) | null): void { flush = fn }
-export function loadProxyBase(b: Partial<ProxyTotals>): void { base = { ...empty(), ...b } }
+
+/** A counter read back from disk: a finite number above zero, else zero. */
+function counter(n: unknown): number { return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0 }
+
+export function loadProxyBase(b: Partial<ProxyTotals>): void {
+  base = { ...empty(), ...b }
+  // Counters added after v1.54: a file written before them has none, and one damaged in the new
+  // fields must read as zero rather than turn every later sum into NaN.
+  base.retrievalTurns = counter(base.retrievalTurns)
+  base.retrievalTurnUnits = counter(base.retrievalTurnUnits)
+}
 
 /**
  * Fold one request into the floor evidence. Requests with too little compressible text to reach
@@ -119,6 +138,13 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   session.cacheCreationTokens += u.cache_creation_input_tokens || 0
   session.inputTokens += u.input_tokens || 0
   session.outputTokens += u.output_tokens || 0
+  // A turn spent only on retrieve_full. What it added is the whole cached prefix read again and the
+  // call it wrote. Its fresh input and cache write are the request's new content, which the session
+  // sends anyway, and the text it fetched is priced by givebackTokens when it re-enters the prefix.
+  if (r.turn && r.turn.pure === true) {
+    session.retrievalTurns += 1
+    session.retrievalTurnUnits += W_CACHE_READ * (u.cache_read_input_tokens || 0) + W_OUTPUT * (u.output_tokens || 0)
+  }
   // Depth curve. Recorded here rather than at the caller so the two meters cannot drift: every
   // request that moves the token ledger moves the curve, or neither does.
   recordDepthSample(s.msgCount || 0, u.cache_read_input_tokens || 0, u.cache_creation_input_tokens || 0)
