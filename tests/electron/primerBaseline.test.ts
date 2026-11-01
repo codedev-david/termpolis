@@ -3,7 +3,8 @@
 // substance gate vouches for, 1.55.0 builds exactly the text 1.54 built. The expected text in
 // fixtures/primerBaseline.json was captured from the 1.54 builder, before the primer was reordered, and is
 // compared byte for byte. If this fails, a change meant for notes, lessons, the lane or duplicates has leaked
-// into a digest that has none of them.
+// into a digest that has none of them. (One scenario holds saved notes, so it pins the new order, not 1.54's:
+// the notes lead there. The rest are 1.54's text.)
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'

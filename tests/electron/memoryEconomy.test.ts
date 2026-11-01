@@ -394,6 +394,34 @@ describe('memoryEconomy', () => {
       expect(out.map((h) => h.id)).toEqual(['x', 'y', 'full'])
     })
 
+    describe('atFirst: for a ranking that is not sorted again', () => {
+      const MIDDLE = `${FIRST}\n\nuser: done, thanks`
+      const ids = (hits: Array<{ id: string }>) => hits.map((h) => h.id)
+
+      it('puts the fuller chunk where the head it replaces was ranked', () => {
+        const out = dropPrefixDuplicates([mk('head', FIRST, 0.9), mk('x', 'one unrelated thing', 0.8), mk('y', 'another unrelated thing', 0.7), mk('full', FULL, 0.6)], true)
+        expect(ids(out)).toEqual(['full', 'x', 'y'])
+        expect(out[0].score).toBe(0.9) // and it still takes the head's better score
+      })
+
+      it('takes the earliest place of several heads, whichever order they come in', () => {
+        const list = [mk('x', 'one unrelated thing', 0.9), mk('mid', MIDDLE, 0.8), mk('y', 'another unrelated thing', 0.7), mk('head', FIRST, 0.6), mk('full', FULL, 0.5)]
+        expect(ids(dropPrefixDuplicates(list, true))).toEqual(['x', 'full', 'y'])
+        expect(ids(dropPrefixDuplicates([list[0], list[3], list[2], list[1], list[4]], true))).toEqual(['x', 'full', 'y'])
+      })
+
+      it('leaves a fuller chunk that is already ranked first where it is, and an untouched list alone', () => {
+        expect(ids(dropPrefixDuplicates([mk('full', FULL, 0.9), mk('x', 'one unrelated thing', 0.8), mk('head', FIRST, 0.7)], true))).toEqual(['full', 'x'])
+        const clean = [mk('a', 'alpha beta gamma', 0.9), mk('b', 'delta epsilon zeta', 0.8)]
+        expect(dropPrefixDuplicates(clean, true)).toBe(clean)
+      })
+
+      it('is the same as the default mode when no head is ranked ahead of the fuller chunk', () => {
+        const list = [mk('x', 'one unrelated thing', 0.9), mk('full', FULL, 0.8), mk('head', FIRST, 0.7)]
+        expect(dropPrefixDuplicates(list, true)).toEqual(dropPrefixDuplicates(list))
+      })
+    })
+
     it('lets the fuller chunk take the better score, so the passage is not lost to the relevance cut', () => {
       const head = mk('head', FIRST, 0.9)
       const full = mk('full', FULL, 0.4)

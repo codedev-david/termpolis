@@ -549,6 +549,50 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
     expect(await buildContextPrimer(vi.fn(async () => [note('n1', 'only a note')]), { query: 'q', now: NOW })).toBeNull()
   })
 
+  // The freshness lane lists the newest rows with no score and no project filter of its own when the digest names no
+  // project (memory_primer without a cwd, the Memory panel's Inject with no terminal open), and a note's date is its last
+  // edit, so a note touched in the last week is among the newest rows of ANY project. A note belongs to the project it was
+  // written in, in the lane as in a search.
+  describe('in the freshness lane', () => {
+    const lane = (rows: PrimerHit[]) => vi.fn().mockResolvedValue(rows)
+    const recentNote = (id: string, text: string, over: Partial<PrimerHit> = {}) =>
+      note(id, long(text), { score: 0, ts: NOW - 3_600_000, ...over })
+
+    it('never shows another project\'s note, of any type, to a primer that names no project', async () => {
+      const recent = lane([
+        recentNote('n1', 'how we onboard the other client', { project: 'other-app', tags: ['type:project', 'note:a.md'] }),
+        recentNote('n2', 'where the other client keeps its keys', { project: 'other-app' }),
+        chunk('c1', long('a conversation from today'), { score: 0, project: undefined }),
+      ])
+      const out = (await buildContextPrimer(vi.fn(async () => []), { query: 'q', recent, now: NOW }))!
+      expect(out).toContain('a conversation from today')
+      expect(out).not.toContain('how we onboard the other client')
+      expect(out).not.toContain('where the other client keeps its keys')
+      expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', recent: lane([recentNote('n3', 'only a note', { project: 'other-app' })]), now: NOW })).toBeNull()
+    })
+
+    it('never shows another project\'s note to a primer about this project', async () => {
+      const recent = lane([
+        recentNote('n1', 'how we onboard the other client', { project: 'other-app' }),
+        chunk('c1', long('shipped the first fix'), { score: 0, ts: NOW - 2 * 3_600_000 }),
+      ])
+      const out = (await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW }))!
+      expect(out).not.toContain('how we onboard the other client')
+      expect(out).toContain('shipped the first fix')
+    })
+
+    it('tells two repos with the same folder name apart in the lane too, by key', async () => {
+      const recent = lane([recentNote('n1', 'the other termpolis checkout', { projectKey: 'not-this-repos-key' })])
+      expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, projectPath: 'C:/work/termpolis', recent, now: NOW })).toBeNull()
+    })
+
+    it('still shows this project\'s own recent note, labelled as one', async () => {
+      const recent = lane([recentNote('n1', 'the note I edited an hour ago')])
+      const out = (await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW }))!
+      expect(out).toMatch(/- \[note · 1h ago\] the note I edited an hour ago/)
+    })
+  })
+
   it('compares projects without regard to case', async () => {
     const out = (await build([note('n1', 'a note', { project: 'Termpolis' })]))!
     expect(out).toContain('a note')
@@ -678,6 +722,30 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
     expect(out).toMatch(/- \[lesson · 3d ago\] The installer check fails/)
     expect(out).toMatch(/- \[note · 1mo ago\] Invalidate the cache on write/)
     expect(out).toMatch(/- \[claude · 5h ago\] conversation 1 /)
+  })
+
+  // The lesson writer files a lesson as a decision, a fact or a note, by what the extractor made of it: the kind says nothing
+  // about whether it is one. Only the memory type and the text do.
+  it('treats a kept lesson of any kind as one', async () => {
+    for (const kind of ['decision', 'fact', 'note']) {
+      const out = await build([conv(1, { score: 0.9 }), lesson('k1', G1, { kind, score: 0.5 })])
+      inOrder(out, ['installer check fails', 'conversation 1 '])
+      expect(out).toMatch(/- \[lesson · 3d ago\] The installer check fails/)
+    }
+  })
+
+  it('keeps the rest of the block when a hit has no text of its own to show', async () => {
+    const out = await build([conv(1, { score: 0.95, content: '   ' }), conv(2, { score: 0.9 }), conv(3, { score: 0.85 })])
+    expect(out).toContain('conversation 2 ')
+    expect(out).toContain('conversation 3 ')
+    expect(rows(out)).toHaveLength(2)
+  })
+
+  it('puts this project\'s own results ahead of a legacy hit promoted into the project, whatever the promoted one scored', async () => {
+    // The project search is the better evidence that a memory belongs here; a hit only the unscoped search found, and
+    // that merely says the project's name, comes after it even when it scored higher.
+    const out = await build([conv(1, { score: 0.8 })], {}, [conv(2, { score: 0.95, project: undefined, content: `conversation 2 about ${proj} alpha2 beta2 gamma2 delta2` })])
+    inOrder(out, ['conversation 1 ', 'conversation 2 about'])
   })
 
   it('treats a kept lesson of either type as one: a fact filed as semantic leads, and so does a rule filed as procedural', async () => {
@@ -960,6 +1028,109 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
       const empty = await buildContextPrimer(vi.fn(async () => [chunk('head', HEAD, { score: 0.9 })]), { query: 'q', recent: vi.fn().mockResolvedValue([]), now: NOW })
       expect(rows(empty)).toHaveLength(1)
       expect(empty).toContain('how do I cut a release')
+    })
+  })
+
+  // The lists are joined and NOT sorted again, so a ranking is a position: the fuller chunk that replaces a head takes the
+  // head's place, not its own later one. Otherwise the passage the project search ranked first sits behind every other hit
+  // and a tight budget (the lane has spent three of the ten lines) cuts it.
+  it('keeps the rank of the head when only the unscoped search found the fuller chunk, so a tight budget does not lose the passage', async () => {
+    const names = ['alpha', 'beta', 'gamma', 'delta', 'omega', 'sigma', 'kappa', 'theta', 'iota']
+    const others = names.map((n, i) => chunk(`p${i}`, long(`unrelated conversation ${i} about ${n}`), { score: 0.7 - i * 0.02 }))
+    const projectList = [chunk('head', HEAD, { score: 0.95 }), ...others]
+    const globalList = [chunk('full', FULL, { score: 0.9 })]
+    const lane = vi.fn().mockResolvedValue([1, 2, 3].map((i) => chunk(`r${i}`, long(`fresh work number ${i} in the repo today`), { score: 0, ts: NOW - i * HOUR })))
+    const search = vi.fn(async (o: { project?: string }) => (o.project ? projectList : globalList))
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, recent: lane, now: NOW, limit: 10 })
+    const project = (out ?? '').split('This project')[1]
+    expect(project).toContain('how do I cut a release') // not lost to the seven-line relevance budget
+    expect(project.indexOf('how do I cut a release')).toBeLessThan(project.indexOf('unrelated conversation 0')) // and still first
+    expect(rows(out)).toHaveLength(10)
+  })
+
+  it('keeps the earliest place of the several heads a fuller chunk replaces, and the best score of them', async () => {
+    const MID = `${HEAD}\n\nuser: and the changelog?`
+    const search = asked([chunk('other-first', 'we keep the retry queue in memory and flush it on exit', { score: 0.95 }), chunk('mid', MID, { score: 0.8 }), chunk('head', HEAD, { score: 0.9 }), chunk('full', FULL, { score: 0.5 })])
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 })
+    expect(rows(out)).toHaveLength(2)
+    expect(rows(out)[0]).toContain('we keep the retry queue')
+    expect(rows(out)[1]).toContain('the release workflow writes it') // the fuller chunk, with the better score of its heads: 0.5 alone is under the 0.6 x 0.95 cliff
+  })
+
+  // The lane gives up a head only for a fuller chunk that the relevance block really shows. The block has `limit` minus the
+  // lane's lines to spend, and a fuller chunk ranked in the last places can be cut: the digest must not then lose the passage
+  // (it gave up the head for a twin that never appeared).
+  describe('when the relevance block has no room for the fuller chunk', () => {
+    const ranked = (n: number) => Array.from({ length: n }, (_, i) => chunk(`p${i}`, long(`unrelated conversation ${i} about ${['alpha', 'beta', 'gamma', 'delta', 'omega', 'sigma', 'kappa', 'theta', 'iota'][i]}`), { score: 0.9 - i * 0.02 }))
+    const headLane = () => vi.fn().mockResolvedValue([chunk('head', HEAD, { score: 0, ts: NOW - HOUR }), chunk('next', long('something else entirely from today'), { score: 0, ts: NOW - 2 * HOUR })])
+
+    it('keeps the head in the lane rather than lose the passage', async () => {
+      // limit 4: one lane slot, three relevance lines, and the fuller chunk ranks fourth.
+      const out = await buildContextPrimer(asked([...ranked(3), chunk('full', FULL, { score: 0.7 })]), { query: 'q', project: proj, recent: headLane(), now: NOW, limit: 4 })
+      expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(out).not.toContain('something else entirely from today') // the head took the lane's one slot
+      expect(rows(out)).toHaveLength(4)
+      expect(out!.indexOf('how do I cut a release')).toBeLessThan(out!.indexOf('unrelated conversation 0')) // newest first, as the lane always is
+    })
+
+    it('still gives the head up when the fuller chunk is sure to be shown, and the slot to the next entry', async () => {
+      const out = await buildContextPrimer(asked([...ranked(2), chunk('full', FULL, { score: 0.8 })]), { query: 'q', project: proj, recent: headLane(), now: NOW, limit: 4 })
+      expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(out).toContain('the release workflow writes it') // the fuller chunk, in the relevance block
+      expect(out).toContain('something else entirely from today')
+      expect(rows(out)).toHaveLength(4)
+    })
+
+    it('shows the passage once when the lane could not fill its slots and so left the relevance block more room', async () => {
+      // limit 10: three lane slots, but only the head to fill them, so the block has nine lines and shows the fuller chunk that
+      // ranks last. It must not show the head above it too.
+      const lane = vi.fn().mockResolvedValue([chunk('head', HEAD, { score: 0, ts: NOW - HOUR })])
+      const out = await buildContextPrimer(asked([...ranked(8), chunk('full', FULL, { score: 0.7 })]), { query: 'q', project: proj, recent: lane, now: NOW, limit: 10 })
+      expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(out).toContain('the release workflow writes it')
+      expect(out).not.toContain('Most recent activity') // the lane gave its only line up
+      expect(rows(out)).toHaveLength(9) // and the freed slot went to relevance, which had nothing more to show
+    })
+
+    it('keeps going while the room a given-up head frees shows the fuller chunk of the next one', async () => {
+      // Two heads, two fuller chunks ranked last: seven lines of relevance are certain, the lane (two entries, three slots)
+      // leaves eight, so the first fuller chunk shows and the first head goes; that leaves nine, so the second shows too.
+      const HEAD2 = long('user: where does the changelog go?\\n\\nassistant: into the release notes file')
+      const FULL2 = `${HEAD2}\\n\\nuser: and who writes it?\\n\\nassistant: the release workflow does`
+      const lane = vi.fn().mockResolvedValue([chunk('head', HEAD, { score: 0, ts: NOW - HOUR }), chunk('head2', HEAD2, { score: 0, ts: NOW - 2 * HOUR })])
+      const list = [...ranked(7), chunk('full', FULL, { score: 0.7 }), chunk('full2', FULL2, { score: 0.69 })]
+      const out = await buildContextPrimer(asked(list), { query: 'q', project: proj, recent: lane, now: NOW, limit: 10 })
+      expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(out!.match(/where does the changelog go/g)).toHaveLength(1)
+      expect(out).toContain('the release workflow writes it')
+      expect(out).toContain('and who writes it')
+      expect(out).not.toContain('Most recent activity')
+      expect(rows(out)).toHaveLength(9)
+    })
+
+    it('does the same in a digest with no project', async () => {
+      const search = vi.fn(async () => [...ranked(3), chunk('full', FULL, { score: 0.7 })].map((h) => ({ ...h, project: undefined })))
+      const out = await buildContextPrimer(search, { query: 'q', recent: headLane(), now: NOW, limit: 4 })
+      expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(rows(out)).toHaveLength(4)
+    })
+  })
+
+  // Hits the digest never shows must not take the passage that begins like them with them: a held-back lesson and another
+  // project's note are dropped before duplicates are collapsed, not after.
+  describe('when the longer text is one the digest does not show', () => {
+    it('keeps a chunk that a held-back lesson begins with', async () => {
+      const held = { id: 'held', content: `${HEAD} and then a lesson the gate held back said more`, source: 'claude', agentId: 'mneme', kind: 'fact', score: 0.9, project: proj, tags: ['candidate'] } as PrimerHit
+      const out = await buildContextPrimer(asked([chunk('head', HEAD, { score: 0.8 }), held]), { query: 'q', project: proj, now: NOW })
+      expect(out).toContain('how do I cut a release')
+      expect(out).not.toContain('a lesson the gate held back said more')
+    })
+
+    it('keeps a chunk that a note of another project begins with', async () => {
+      const foreign = { id: 'n9', content: `${HEAD} and then another project's note said more`, source: 'claude-notes', agentId: 'claude-notes', kind: 'fact', score: 0.9, project: 'other-app', tags: ['type:reference', 'note:x.md'] } as PrimerHit
+      const out = await buildContextPrimer(asked([chunk('head', HEAD, { score: 0.8 }), foreign]), { query: 'q', project: proj, now: NOW })
+      expect(out).toContain('how do I cut a release')
+      expect(out).not.toContain('note said more')
     })
   })
 })

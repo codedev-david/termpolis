@@ -265,8 +265,12 @@ export function isStrictPrefix(shorter: string, longer: string): boolean {
  * Survivors keep their order. Returns the SAME array when nothing is dropped, so the usual case costs one scan. A hit
  * that is the head of several fuller chunks is dropped once; the longest of them (the first of equals) takes its score.
  * Quadratic, which is fine for what reaches it: a search returns at most 100 hits and a lane lists a few dozen. Pure.
+ *
+ * `atFirst` is for a list that is a RANKING nobody sorts again: the fuller hit then takes the place of the earliest head
+ * it replaces, so a passage ranked first stays first. (A list that is sorted by score afterwards needs no such thing:
+ * the fuller hit already carries the best score.)
  */
-export function dropPrefixDuplicates<T extends { content: string; score?: number }>(hits: T[]): T[] {
+export function dropPrefixDuplicates<T extends { content: string; score?: number }>(hits: T[], atFirst = false): T[] {
   if (hits.length < 2) return hits
   const texts = hits.map((h) => norm(h.content))
   const fuller: number[] = new Array(hits.length).fill(-1) // the hit each one is the head of: the longest, the first of equals
@@ -285,12 +289,14 @@ export function dropPrefixDuplicates<T extends { content: string; score?: number
     const held = best[fuller[i]]
     if (typeof held !== 'number' || score > held) best[fuller[i]] = score
   }
-  const out: T[] = []
-  for (let i = 0; i < hits.length; i++) {
-    if (fuller[i] >= 0) continue
-    out.push(best[i] === hits[i].score ? hits[i] : { ...hits[i], score: best[i] })
+  const keep: number[] = []
+  for (let i = 0; i < hits.length; i++) if (fuller[i] < 0) keep.push(i)
+  if (atFirst) {
+    const place = hits.map((_, i) => i)
+    for (let i = 0; i < hits.length; i++) if (fuller[i] >= 0 && i < place[fuller[i]]) place[fuller[i]] = i
+    keep.sort((x, y) => place[x] - place[y] || x - y)
   }
-  return out
+  return keep.map((i) => (best[i] === hits[i].score ? hits[i] : { ...hits[i], score: best[i] }))
 }
 
 /** Cap a string to maxChars, marking truncation with a single ellipsis char. */

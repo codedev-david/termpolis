@@ -7,10 +7,12 @@
 // start acting on it or resume past work until the user actually asks.
 //
 // When a `project` slug is given, context for THAT project takes precedence: a
-// project-scoped search fills the slots first (past conversations ahead of
-// code/notes), and remaining global hits are appended under a "may NOT apply"
-// label so the agent weighs them correctly. Without `project` the legacy flat
-// behavior is unchanged.
+// project-scoped search fills the slots first (the project's saved notes, then
+// lessons the substance gate vouches for, then past conversations, then code),
+// and remaining global hits are appended under a "may NOT apply" label so the
+// agent weighs them correctly. Without `project` the legacy flat behavior is
+// unchanged. The order spends the same lines as before: where a digest holds no
+// saved note and no such lesson it is the text 1.54 built.
 //
 // Decoupled from the store (search is injected) so it unit-tests cleanly. The
 // formatting mirrors the cross-AI handoff prompt: no backticks (AI shells often
@@ -46,6 +48,10 @@ export interface PrimerHit {
   projectKey?: string
   /** The memory's cognitive type, when the caller has it. `semantic` and `procedural` are what the lesson writer stores. */
   memoryType?: string
+  /** How much the writer thought it mattered (0 to 1), when the caller has it. Carried for what reads a hit after the
+   *  builder; the builder itself does not use it, because a lesson stored before 1.55 carries 0.5-0.95 whatever it says
+   *  and is judged on its text (isGatedLesson). */
+  importance?: number
   /** Set by the correction overlay (memoryCorrectionStore) when someone has demoted, amended or retracted this memory. */
   correction?: { kind: string }
 }
@@ -190,7 +196,7 @@ function relativeAge(ts: number, now: number): string {
  */
 async function collectRecent(
   recent: PrimerRecent | undefined,
-  o: { slots: number; project?: string; ownProject: string; now: number; exclude: Set<string>; carried: PrimerHit[] },
+  o: { slots: number; project?: string; ownProject: string; now: number; exclude: Set<string>; carried: PrimerHit[]; foreign: (h: PrimerHit) => boolean },
 ): Promise<PrimerHit[]> {
   if (!recent || o.slots <= 0) return []
   let hits: PrimerHit[]
@@ -210,6 +216,9 @@ async function collectRecent(
     // Enforce the window here too — an injected lister may ignore `since`.
     if (typeof h.ts === 'number' && h.ts > 0 && h.ts < cutoff) return false
     if (isCandidate(h)) return false // a lesson the substance gate stores but holds back is never shown
+    // A saved note belongs to the project it was written in. A lane that names no project lists the newest rows of every
+    // project, a note edited this week among them: it is as foreign here as in a search (see foreignNote).
+    if (o.foreign(h)) return false
     // A newest-first lane has no score to lower a correction with: what someone demoted or amended is not "where things
     // stand", and the same memory still reaches the digest through relevance, where the overlay already ranked it.
     if (h.correction) return false
@@ -291,61 +300,39 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     if (projectHits.length === 0) return null
   }
 
-  // Freshness lane: reserved slots filled newest-first, excluding whatever relevance
-  // already picked. Scored ranking alone kept answering "most similar to the query" when
-  // the question a session-start digest has to answer is "where did we leave off".
-  const excludeFromRecent = new Set<string>([...projectHits, ...globalHits].map(hitKey))
-  const recentHits = await collectRecent(opts.recent, {
-    slots: recentSlotCount(limit),
-    project: searchScope || undefined,
-    ownProject: project,
-    now,
-    exclude: excludeFromRecent,
-    carried: [...projectHits, ...globalHits],
-  })
-  // The other direction: a relevance hit that is only the head of a chunk the lane shows is that chunk again, and
-  // gives its slot to the next hit.
-  if (recentHits.length > 0) {
-    const headOfLane = (h: PrimerHit): boolean => recentHits.some((r) => isStrictPrefix(h.content, r.content))
-    projectHits = projectHits.filter((h) => !headOfLane(h))
-    globalHits = globalHits.filter((h) => !headOfLane(h))
+  // A line is rendered once however often it is asked for: the relevance block is worked out more than once below.
+  const lines = new Map<PrimerHit, string | null>()
+  const lineOf = (h: PrimerHit): string | null => {
+    if (!lines.has(h)) lines.set(h, renderLine(h, maxSnip, fileExists, now))
+    return lines.get(h) ?? null
   }
-  const recentLines: string[] = []
-  for (const h of recentHits) {
-    const line = renderLine(h, maxSnip, fileExists, now)
-    if (line) recentLines.push(line)
-  }
-  // The lane spends from the SAME budget — the digest gets fresher, not bigger.
-  const relevanceBudget = Math.max(0, limit - recentLines.length)
 
-  const body: string[] = []
-  // Blank-line separator only between sections that actually have content.
-  const section = (title: string, lines: string[]): void => {
-    if (lines.length === 0) return
-    if (body.length > 0) body.push('')
-    body.push(title, ...lines)
-  }
-  // "here" only when the lane is actually scoped to a project — an unscoped lane spans
-  // every repo and must not claim otherwise.
-  section(
-    project
-      ? `Most recent activity here (${project}, newest first) — where things actually stand:`
-      : 'Most recent activity (newest first) — where things actually stand:',
-    recentLines,
-  )
-  if (!project) {
-    const globalLines: string[] = []
-    for (const h of globalHits) {
-      if (globalLines.length >= relevanceBudget) break
-      const line = renderLine(h, maxSnip, fileExists, now)
-      if (line) globalLines.push(line)
+  // The relevance half of the digest: what it shows when the lane has taken `lane` and `room` lines are left. A part with
+  // no title is the flat digest, byte for byte what it was before there was a lane.
+  interface Part { title: string | null; lines: string[] }
+  const relevance = (lane: PrimerHit[], room: number): { parts: Part[]; shown: PrimerHit[] } => {
+    const shown: PrimerHit[] = []
+    const parts: Part[] = []
+    // The other direction: a relevance hit that is only the head of a chunk the lane shows is that chunk again, and
+    // gives its slot to the next hit.
+    const headOfLane = (h: PrimerHit): boolean => lane.some((r) => isStrictPrefix(h.content, r.content))
+    const fromProject = lane.length > 0 ? projectHits.filter((h) => !headOfLane(h)) : projectHits
+    const fromAnywhere = lane.length > 0 ? globalHits.filter((h) => !headOfLane(h)) : globalHits
+    if (!project) {
+      const globalLines: string[] = []
+      for (const h of fromAnywhere) {
+        if (globalLines.length >= room) break
+        const line = lineOf(h)
+        if (!line) continue
+        globalLines.push(line)
+        shown.push(h)
+      }
+      // Without a freshness lane the flat digest is byte-identical to before: bare lines,
+      // no sub-header. With one, the relevance block needs a label to stay legible.
+      parts.push({ title: lane.length > 0 ? 'Other relevant context:' : null, lines: globalLines })
+      return { parts, shown }
     }
-    // Without a freshness lane the flat digest is byte-identical to before: bare lines,
-    // no sub-header. With one, the relevance block needs a label to stay legible.
-    if (recentLines.length > 0) section('Other relevant context:', globalLines)
-    else body.push(...globalLines)
-  } else {
-    const seen = new Set(projectHits.map(hitKey))
+    const seen = new Set(fromProject.map(hitKey))
     // Legacy entries carry no project metadata — promote global hits that are
     // tagged for, or literally mention, this project into the project bucket.
     const promoted: PrimerHit[] = []
@@ -354,7 +341,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // WORD-BOUNDARY mention of a slug that is at least 4 chars — never a bare substring
     // (which made short slugs like 'app'/'api'/'go' match 'mapping'/'category'/'logo').
     const slugRe = project.length >= 4 ? new RegExp(`\\b${escapeRegExp(project)}\\b`, 'i') : null
-    for (const h of globalHits) {
+    for (const h of fromAnywhere) {
       if (seen.has(hitKey(h))) continue
       seen.add(hitKey(h))
       if (h.project === project || (slugRe && slugRe.test(h.content || ''))) promoted.push(h)
@@ -366,7 +353,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // score order the search already returned within each class, and the budget is the same one: this reorders, never adds.
     // The two searches rank the same corpus on different candidate sets, so a head can reach one list and the fuller chunk the
     // other: say it once here too, now that the lists are one.
-    const pool = dropPrefixDuplicates([...projectHits, ...promoted])
+    const pool = dropPrefixDuplicates([...fromProject, ...promoted], true)
     let leadingNotes = 0
     let leadingLessons = 0
     const tier = pool.map((h): number => {
@@ -383,23 +370,78 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     let notesShown = 0
     let lessonsShown = 0
     for (const h of bucket) {
-      if (projLines.length >= relevanceBudget) break
-      const line = renderLine(h, maxSnip, fileExists, now)
+      if (projLines.length >= room) break
+      const line = lineOf(h)
       if (!line) continue
       projLines.push(line)
+      shown.push(h)
       if (isClaudeNote(h)) notesShown++
       else if (isGatedLesson(h)) lessonsShown++
     }
     const otherLines: string[] = []
     for (const h of others) {
-      if (projLines.length + otherLines.length >= relevanceBudget) break
-      const line = renderLine(h, maxSnip, fileExists, now)
-      if (line) otherLines.push(line)
+      if (projLines.length + otherLines.length >= room) break
+      const line = lineOf(h)
+      if (!line) continue
+      otherLines.push(line)
+      shown.push(h)
     }
     // The title says what leads the block, and only what is really there to lead it.
     const led = [notesShown > 0 ? 'saved notes' : '', lessonsShown > 0 ? 'lessons learned' : ''].filter(Boolean)
-    section(`This project (${project}) — ${led.length > 0 ? `${led.join(', ')}, then past conversations` : 'past conversations first'}:`, projLines)
-    section('Other saved context (may NOT apply to this project):', otherLines)
+    parts.push({ title: `This project (${project}) — ${led.length > 0 ? `${led.join(', ')}, then past conversations` : 'past conversations first'}:`, lines: projLines })
+    parts.push({ title: 'Other saved context (may NOT apply to this project):', lines: otherLines })
+    return { parts, shown }
+  }
+
+  // Freshness lane: reserved slots filled newest-first, excluding whatever relevance
+  // already picked. Scored ranking alone kept answering "most similar to the query" when
+  // the question a session-start digest has to answer is "where did we leave off".
+  const slots = recentSlotCount(limit)
+  const excludeFromRecent = new Set<string>([...projectHits, ...globalHits].map(hitKey))
+  // The lane spends from the SAME budget — the digest gets fresher, not bigger — so the relevance block has `limit` less the
+  // lane's lines. A lane hit gives way to the fuller chunk that begins with it only if that chunk is certain to be shown,
+  // which is what the block shows when the lane takes every slot it may: left out for a twin the budget then cuts, the
+  // passage would be in the digest nowhere.
+  const certain = opts.recent && slots > 0 ? relevance([], Math.max(0, limit - slots)).shown : []
+  let recentHits = await collectRecent(opts.recent, {
+    slots,
+    project: searchScope || undefined,
+    ownProject: project,
+    now,
+    exclude: excludeFromRecent,
+    carried: certain,
+    foreign: foreignNote,
+  })
+  const roomFor = (lane: PrimerHit[]): number => Math.max(0, limit - lane.length)
+  let block = relevance(recentHits, roomFor(recentHits))
+  // The lane may have had fewer entries than slots, and the block then had more room than "certain" allowed for: it can show
+  // the fuller chunk of a head the lane kept. Say the passage once, and give the line back to relevance.
+  for (;;) {
+    const doubled = recentHits.filter((h) => block.shown.some((s) => isStrictPrefix(h.content, s.content)))
+    if (doubled.length === 0) break
+    recentHits = recentHits.filter((h) => !doubled.includes(h))
+    block = relevance(recentHits, roomFor(recentHits))
+  }
+  const recentLines = recentHits.map(lineOf).filter((l): l is string => l !== null)
+
+  const body: string[] = []
+  // Blank-line separator only between sections that actually have content.
+  const section = (title: string, lines: string[]): void => {
+    if (lines.length === 0) return
+    if (body.length > 0) body.push('')
+    body.push(title, ...lines)
+  }
+  // "here" only when the lane is actually scoped to a project — an unscoped lane spans
+  // every repo and must not claim otherwise.
+  section(
+    project
+      ? `Most recent activity here (${project}, newest first) — where things actually stand:`
+      : 'Most recent activity (newest first) — where things actually stand:',
+    recentLines,
+  )
+  for (const part of block.parts) {
+    if (part.title === null) body.push(...part.lines)
+    else section(part.title, part.lines)
   }
   if (body.length === 0) return null
 

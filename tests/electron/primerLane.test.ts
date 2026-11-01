@@ -42,7 +42,7 @@ describe('createPrimerRecent', () => {
     const out = await createPrimerRecent({ list: async () => [full], correct: nothingCorrected })({ limit: 5 })
     expect(out).toEqual([{
       id: 'm7', content: full.content, source: 'claude', kind: 'fact', score: 0, project: 'termpolis', projectKey: 'abc123abc123abcd',
-      ts: 1_700_000_100_000, tags: ['x'], agentId: 'mneme', memoryType: 'procedural', correction: undefined,
+      ts: 1_700_000_100_000, tags: ['x'], agentId: 'mneme', memoryType: 'procedural', importance: 0.8, correction: undefined,
     }])
     expect(Object.keys(out[0])).not.toContain('embedding') // a vector never travels into a digest
   })

@@ -43,6 +43,7 @@ export function createPrimerRecent(deps: PrimerLaneDeps): PrimerRecent {
       tags: e.tags, // the primer drops a lesson the substance gate holds back (`candidate`),
       agentId: e.agentId, // ...but only one the lesson writer stored, not a note that merely carries the tag
       memoryType: e.memoryType, // and tells a lesson from a chunk
+      importance: e.importance, // (carried along; the builder judges a lesson on its text)
       correction: e.correction, // and drops what someone has demoted or amended
     }))
 }

@@ -1371,6 +1371,7 @@ describe('MCP tool table — operator verbs', () => {
       expect(opts.projectPath).toBe('/work/termpolis')
       expect(opts.limit).toBe(12)
       expect(opts.maxSnippetChars).toBe(400)
+      expect(typeof opts.recent).toBe('function') // the freshness lane, as in every other digest
       expect(r).toEqual({ primer: 'PRIMER TEXT' })
     })
 
