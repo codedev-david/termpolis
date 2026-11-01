@@ -110,7 +110,7 @@ describe('Elision health card — what it says', () => {
   })
 
   it('labels every kind in words', async () => {
-    const kinds: Array<[ElisionClassView['kind'], string]> = [['compact', 'Window at first sight'], ['dedup', 'Repeat collapsed'], ['diff', 'Sent as a patch'], ['decay', 'Aged out']]
+    const kinds: Array<[ElisionClassView['kind'], string]> = [['compact', 'Compacted at first sight'], ['dedup', 'Repeat collapsed'], ['diff', 'Sent as a patch'], ['decay', 'Aged out']]
     serve(view({ classes: kinds.map(([kind], i) => cls({ key: `${kind}|Read|4-10k`, kind, elided: 100 - i })) }))
     render(<ElisionHealthCard />)
     for (const [kind, label] of kinds) expect(await screen.findByTestId(`hr-elision-row-${kind}|Read|4-10k`)).toHaveTextContent(label)
@@ -199,11 +199,15 @@ describe('Elision health card — regime, turns and notes', () => {
     expect(t).not.toHaveTextContent('of responses')
   })
 
-  it('notes the redemptions of text elided before the ledger could class them, only when there are some', async () => {
+  it('notes the redemptions of text the ledger could not class (older versions, earlier launches), only when there are some', async () => {
     serve(view({ legacyRedeemed: 1234 }))
     const { unmount } = render(<ElisionHealthCard />)
-    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1,234')
+    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1,234 retrievals were of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes them')
     unmount()
+    serve(view({ legacyRedeemed: 1 }))
+    const one = render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1 retrieval was of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes it')
+    one.unmount()
     serve(view({ legacyRedeemed: 0 }))
     render(<ElisionHealthCard />)
     await screen.findByTestId('hr-elision-verdict')

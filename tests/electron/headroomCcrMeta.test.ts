@@ -64,17 +64,6 @@ describe('stash metadata', () => {
     expect('meta' in (ccrRetrieveRecord('hr_manual') as object)).toBe(false) // its first meta is on disk and unread
   })
 
-  it('does not read or rewrite the file of a hash token that is already on disk', () => {
-    setCcrDir(dir)
-    ccrPut(tok(1), 'x', 'proxy', meta())
-    const f = join(dir, `${tok(1)}.json`)
-    resetCcr(); setCcrDir(dir)
-    writeFileSync(f, JSON.stringify({ value: 'SENTINEL', origin: 'proxy', meta: meta() }), 'utf8')
-    ccrPut(tok(1), 'x', 'proxy', meta({ kind: 'decay' }))
-    expect(JSON.parse(readFileSync(f, 'utf8')).value).toBe('SENTINEL')
-    expect(ccrRetrieveRecord(tok(1))?.meta?.kind).toBe('compact')
-  })
-
   it('a record with no meta stays meta-less: the MCP layer and old callers never had one', () => {
     ccrPut(tok(1), 'x', 'proxy')
     const mcp = ccrStash({ big: 'y' })
@@ -103,6 +92,30 @@ describe('stash metadata', () => {
   })
 })
 
+describe('retrieval is no less reliable than before the ledger', () => {
+  it('a stash file a hard kill truncated still resolves once the proxy sends the original again', () => {
+    setCcrDir(dir)
+    ccrPut(tok(1), 'the original', 'proxy', meta())
+    const f = join(dir, `${tok(1)}.json`)
+    resetCcr(); setCcrDir(dir) // a new process: on disk, not resident
+    writeFileSync(f, '{"value":"the orig', 'utf8') // killed in the middle of the write
+    ccrPut(tok(1), 'the original', 'proxy', meta()) // the request that carries the stub sends the original again
+    // v1.54.4 held the original in memory after any put, so this resolved; it must still.
+    expect(ccrRetrieveRecord(tok(1))?.value).toBe('the original')
+  })
+
+  it('holds the original in memory after a put of a token that is on disk, without writing the file', () => {
+    setCcrDir(dir)
+    ccrPut(tok(1), 'x', 'proxy', meta())
+    const f = join(dir, `${tok(1)}.json`)
+    resetCcr(); setCcrDir(dir)
+    writeFileSync(f, JSON.stringify({ value: 'SENTINEL', origin: 'proxy', meta: meta() }), 'utf8')
+    ccrPut(tok(1), 'x', 'proxy', meta({ kind: 'decay' }))
+    expect(JSON.parse(readFileSync(f, 'utf8')).value).toBe('SENTINEL') // a hash token on disk is never rewritten
+    expect(ccrRetrieveRecord(tok(1))?.value).toBe('x') //                  but the put populated memory, as before
+  })
+})
+
 describe('elided counts once per token', () => {
   it('100 re-puts of one token count one elision, in memory', () => {
     for (let i = 0; i < 100; i++) ccrPut(tok(1), 'x', 'proxy', meta())
@@ -121,7 +134,27 @@ describe('elided counts once per token', () => {
     resetCcr(); setCcrDir(dir)
     ccrPut(tok(1), 'x', 'proxy', meta()) // a resumed session sends the same history again
     expect(elisionState().classes[KEY].elided).toBe(1)
-    expect(ccrRetrieveRecord(tok(1))?.meta).toEqual(meta()) // and it is still classified
+    expect(ccrRetrieveRecord(tok(1))?.value).toBe('x') // and it still resolves, from memory now
+  })
+
+  it('a redemption of a token an earlier run stored is counted apart from every class: its class stays on disk', async () => {
+    setCcrDir(dir)
+    ccrPut(tok(1), 'x', 'proxy', meta())
+    resetCcr(); setCcrDir(dir); resetElisionLedger() // a new run: the file is there, the window is empty
+    ccrPut(tok(1), 'x', 'proxy', meta()) //              the resumed session sends the same history again
+    expect(await retrieveFull(tok(1))).toBe('x')
+    expect(elisionState()).toEqual({ classes: {}, legacyRedeemed: 1 })
+    expect(summarizeProxySavings().session.retrieves).toBe(1)
+  })
+
+  it('a redemption of a token the memory dropped but this run elided is still counted in its class', async () => {
+    setCcrDir(dir)
+    ccrPut(tok(1), 'x', 'proxy', meta())
+    resetCcr(); setCcrDir(dir) // memory gone, the file and the ledger's window are not
+    ccrPut(tok(1), 'x', 'proxy', meta({ kind: 'decay' })) // put again, now meta-less in memory
+    expect(await retrieveFull(tok(1))).toBe('x')
+    expect(elisionState().classes[KEY]).toMatchObject({ elided: 1, redeemed: 1 })
+    expect(recentByClass().get(KEY)).toMatchObject({ elided: 1, redeemed: 1 })
   })
 
   it('a token whose stash the disk cap aged out is a new elision when it comes back', () => {

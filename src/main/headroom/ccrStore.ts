@@ -259,10 +259,9 @@ function diskGet(token: string): CcrRecord | undefined {
     if (!rec || typeof rec !== 'object' || !('value' in rec)) throw new Error('not a record')
     // A file from before v1.55 has no meta, and a damaged one reads as none: the value is what
     // retrieve_full promises, and it must never fail to resolve over its bookkeeping.
+    const origin: CcrOrigin = rec.origin === 'proxy' ? 'proxy' : 'mcp'
     const meta = sanitizeMeta(rec.meta)
-    return meta
-      ? { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp', meta }
-      : { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp' }
+    return meta ? { value: rec.value, origin, meta } : { value: rec.value, origin }
   } catch {
     // Indexed but unreadable — truncated by a hard kill mid-write, or corrupted underneath us.
     // Leaving it indexed makes the damage PERMANENT: diskPut short-circuits on `diskIndex.has` for
@@ -329,17 +328,21 @@ export function ccrStash(value: unknown, origin: CcrOrigin = 'mcp'): string {
  * and again, from the request path and from the result. Only the FIRST put of a token counts as an
  * elision and only its `meta` is kept: a token the store already holds keeps the class it was
  * first stored with, and one the disk tier holds from an earlier run counts as nothing now.
+ *
+ * What is STORED is exactly what it was before the ledger existed: the value goes to memory on every
+ * put, and the file is written only when there is none. That memory copy is what keeps a token
+ * resolving when its file was truncated by a hard kill, so the ledger must never skip it.
  */
 export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy', meta?: ElisionMeta): void {
   const resident = store.get(token)
-  const onDisk = diskIndex.has(token)
-  // A hash token IS the sha1 of its content, so an indexed one names a file already holding this
-  // value (see diskPut): nothing to write, and no reason to read it back just to cache it again.
-  // Its record on disk may carry a meta, and caching it here without one would misfile it.
-  if (!resident && onDisk && HASH_TOKEN_RE.test(token)) return
   let m: ElisionMeta | undefined
-  if (resident !== undefined || onDisk) m = resident?.meta
-  else {
+  if (resident !== undefined || diskIndex.has(token)) {
+    // Already stored, here or in an earlier run: not an elision now, and the class it was stored
+    // with is the one that counts. A record read back from the file keeps its meta on disk only (a
+    // read here would be a synchronous one per token per request); a redemption of it is then
+    // counted as one whose class this run never saw, unless the window remembers it.
+    m = resident?.meta
+  } else {
     m = sanitizeMeta(meta)
     if (m) recordElision(token, m)
   }

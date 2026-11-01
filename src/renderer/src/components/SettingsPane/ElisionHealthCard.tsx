@@ -12,7 +12,7 @@ const MIN_SAMPLES = 30
 const UNITS_PER_KEPT_TOKEN = 11
 
 const KIND_LABEL: Record<ElisionClassView['kind'], string> = {
-  compact: 'Window at first sight',
+  compact: 'Compacted at first sight',
   dedup: 'Repeat collapsed',
   diff: 'Sent as a patch',
   decay: 'Aged out of a long conversation',
@@ -162,7 +162,7 @@ export function ElisionHealthCard() {
           <Turns t={view.turns} />
           {view.legacyRedeemed > 0 && (
             <div data-testid="hr-elision-legacy" style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-              {fmt(view.legacyRedeemed)} {view.legacyRedeemed === 1 ? 'retrieval was' : 'retrievals were'} of text elided before this version counted by kind, so no row above includes {view.legacyRedeemed === 1 ? 'it' : 'them'}.
+              {fmt(view.legacyRedeemed)} {view.legacyRedeemed === 1 ? 'retrieval was' : 'retrievals were'} of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes {view.legacyRedeemed === 1 ? 'it' : 'them'}.
             </div>
           )}
           <div data-testid="hr-elision-estimate" style={{ marginTop: 8, fontSize: 12, opacity: 0.65 }}>

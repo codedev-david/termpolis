@@ -65,7 +65,8 @@ export interface ElisionHealthView {
   classes: ElisionClassView[]
   elided: number
   redeemed: number
-  /** Redemptions of results elided before the ledger existed, which no class can claim. */
+  /** Redemptions of results elided before the ledger existed, or in an earlier launch of the app,
+   *  which no class can claim. */
   legacyRedeemed: number
   recentElided: number
   recentRedeemed: number
