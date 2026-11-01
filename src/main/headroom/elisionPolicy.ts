@@ -88,7 +88,8 @@ export function effectiveFloor(tierFloorChars: number, policy: ElisionPolicy, to
  *    of the body that is identical on every turn.
  *  - Only the TEXT is read. Claude Code writes the same first message as a plain string on one turn
  *    and as a block carrying a cache breakpoint on another, may cut it into more blocks, and may add
- *    an image, so the characters of its text blocks are hashed end to end and nothing else is.
+ *    an image, so the text blocks are laid end to end and only that text is read: its length, its
+ *    first and its last kilobyte (see HASH_HEAD), however the blocks happen to be cut.
  *  - It is not read from the system prompt or the steering mark. That is how the output-steering
  *    experiment came to hold out 82.5% of requests against a design rate of 10% (section 9 of the
  *    research): most subagent requests do not carry the mark.
@@ -131,12 +132,46 @@ function firstUserText(body: unknown): string[] | null {
   return null
 }
 
+/**
+ * How much of a first message the arm reads: its length, its first HASH_HEAD characters and its last
+ * HASH_TAIL. The arm is chosen on EVERY request in the one proxy child that serves every Claude
+ * session, and a first message is not small: Claude Code puts the project instructions, the memory
+ * index and the skill listing in it, easily 50 to 100 KB, and a pasted file can make it megabytes.
+ * Hashing all of it cost 16 ns a character, 1.6 ms a request at 100 KB and 31 ms at 2 MB, for a
+ * decision that needs a few kilobytes. The ends carry what tells conversations apart: the shared
+ * reminders sit at the front and the task at the back. Two first messages that agree in length, head
+ * and tail share an arm, which costs nothing, since the arm only has to be a stable function of the
+ * message. Up to HASH_HEAD + HASH_TAIL characters the two ends together are the whole text.
+ */
+const HASH_HEAD = 1024
+const HASH_TAIL = 1024
+
+/** The first `n` characters of the blocks laid end to end, without laying them end to end. */
+function headOf(texts: string[], n: number): string {
+  let out = ''
+  for (let i = 0; i < texts.length && out.length < n; i++) out += texts[i].slice(0, n - out.length)
+  return out
+}
+
+/** The last `n` characters of the blocks laid end to end. */
+function tailOf(texts: string[], n: number): string {
+  let out = ''
+  for (let i = texts.length - 1; i >= 0 && out.length < n; i--) {
+    const t = texts[i]
+    out = t.slice(Math.max(0, t.length - (n - out.length))) + out
+  }
+  return out
+}
+
 /** Where the first user message falls in [0, 1), or null when it has no text to hash. */
 function armPosition(body: unknown): number | null {
   let texts: string[] | null
   try { texts = firstUserText(body) } catch { return null }
   if (!texts) return null
-  // FNV-1a over the salt and then the characters, with no separator between blocks.
+  let total = 0
+  for (const t of texts) total += t.length
+  if (total === 0) return null
+  // FNV-1a over the salt, the length and the two ends, with a separator between the parts.
   let h = 0x811c9dc5
   const feed = (s: string): void => {
     for (let i = 0; i < s.length; i++) {
@@ -145,9 +180,10 @@ function armPosition(body: unknown): number | null {
     }
   }
   feed(ARM_SALT)
-  let hashed = 0
-  for (const t of texts) { feed(t); hashed += t.length }
-  if (hashed === 0) return null
+  feed(`\u0000${total}\u0000`)
+  feed(headOf(texts, HASH_HEAD))
+  feed('\u0000')
+  feed(tailOf(texts, HASH_TAIL))
   // FNV-1a alone leaves keys that share a long prefix and differ in a counter slightly uneven in
   // the top bits, which is where the bucket is read. The murmur3 finalizer spreads them.
   h ^= h >>> 16

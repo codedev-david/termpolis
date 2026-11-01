@@ -180,6 +180,98 @@ describe('armForBody', () => {
     for (const body of cases) expect(['late', 'holdout']).toContain(armForBody(body))
   })
 
+  describe('the arm reads a bounded sample of the first message, so its cost does not grow with it', () => {
+    const SAMPLE = 1_024
+    /** A first message of `total` characters whose first and last SAMPLE characters are fixed and whose middle is `middle`. */
+    const withMiddle = (total: number, middle: string): string => {
+      const head = 'H'.repeat(SAMPLE), tail = 'T'.repeat(SAMPLE)
+      return head + (middle + 'm'.repeat(total)).slice(0, total - 2 * SAMPLE) + tail
+    }
+
+    it('does not look at the middle of a long first message: same length, head and tail, same arm and group', () => {
+      let different = 0
+      for (let i = 0; i < 300; i++) {
+        const a = armOf(userText(withMiddle(5_000, `variant ${i} `)))
+        const b = armOf(userText(withMiddle(5_000, `another ${i * 7 + 1} `)))
+        if (a.arm !== b.arm || a.cluster !== b.cluster) different++
+      }
+      expect(different).toBe(0)
+    })
+
+    it('does look at the ends and the length: change the last character, the first, or the length, and the arm moves for some', () => {
+      const moved = (make: (i: number) => [string, string]): number => {
+        let n = 0
+        for (let i = 0; i < 400; i++) {
+          const [x, y] = make(i)
+          const a = armOf(userText(x)), b = armOf(userText(y))
+          if (a.arm !== b.arm || a.cluster !== b.cluster) n++
+        }
+        return n
+      }
+      const body = (i: number): string => `Task ${i}: ` + 'p'.repeat(6_000)
+      expect(moved((i) => [body(i), body(i).slice(0, -1) + 'Z'])).toBeGreaterThan(300) // the last character
+      expect(moved((i) => [body(i), 'Q' + body(i).slice(1)])).toBeGreaterThan(300) // the first
+      // The length alone: the same first and last 1,024 characters, a middle one character longer.
+      expect(moved((i) => [withMiddle(5_000 + i, 'same '), withMiddle(5_001 + i, 'same ')])).toBeGreaterThan(300)
+    })
+
+    it('keeps the distribution when a long shared reminder comes first and the task last, however long the reminder is', () => {
+      const reminder = `<system-reminder>\n${'Contents of the project instructions file. '.repeat(5_000)}\n</system-reminder>\n\n` // about 215,000 characters
+      expect(reminder.length).toBeGreaterThan(200_000)
+      let held = 0
+      const N = 4_000
+      for (let i = 0; i < N; i++) if (armForBody(userText(`${reminder}Task ${String(i).padStart(5, '0')}: tidy up the build script.`)) === 'holdout') held++
+      expect((held / N) * 100).toBeGreaterThan(8)
+      expect((held / N) * 100).toBeLessThan(12)
+    })
+
+    it('hashes the whole of a first message short enough to be covered: every character counts up to 2,048', () => {
+      for (const total of [10, 1_024, 1_500, 2_048]) {
+        let moved = 0
+        for (let i = 0; i < 300; i++) {
+          const s = `${i}`.padStart(8, '0') + 'a'.repeat(total - 8)
+          const mid = Math.floor(total / 2)
+          const t = s.slice(0, mid) + (s[mid] === 'a' ? 'b' : 'a') + s.slice(mid + 1) // change one character in the middle
+          const a = armOf(userText(s)), b = armOf(userText(t))
+          if (a.arm !== b.arm || a.cluster !== b.cluster) moved++
+        }
+        expect(moved, `${total} characters`).toBeGreaterThan(200)
+      }
+    })
+
+    it('is the same however the text is cut into blocks, including blocks that straddle the sample edges', () => {
+      const text = 'x'.repeat(700) + 'MIDDLE-' + 'y'.repeat(3_000) + '-END'
+      const whole = armOf({ messages: [{ role: 'user', content: text }] })
+      for (const cuts of [[1], [1_023], [1_024], [1_025], [700, 2_000], [10, 1_030, 3_000], [text.length - 1], [text.length - 1_025, text.length - 1_023]]) {
+        const blocks: Array<{ type: string; text: string }> = []
+        let at = 0
+        for (const c of [...cuts, text.length]) { blocks.push({ type: 'text', text: text.slice(at, c) }); at = c }
+        expect(armOf({ messages: [{ role: 'user', content: blocks }] }), JSON.stringify(cuts)).toEqual(whole)
+      }
+    })
+
+    it('costs the same on a first message of two million characters as on one of twenty thousand', () => {
+      const small = { messages: [{ role: 'user', content: 'x'.repeat(20_000) }] }
+      const huge = { messages: [{ role: 'user', content: 'x'.repeat(2_000_000) }] }
+      for (let i = 0; i < 30; i++) { armOf(small); armOf(huge) } // warm both
+      const best = (obj: unknown): number => {
+        let b = Infinity
+        for (let r = 0; r < 12; r++) {
+          const t = process.hrtime.bigint()
+          for (let i = 0; i < 20; i++) armOf(obj)
+          const d = Number(process.hrtime.bigint() - t)
+          if (d < b) b = d
+        }
+        return b
+      }
+      // Alternate so both see the same machine state. Hashing every character would make the second
+      // about a hundred times the first (measured 3 ms against 0.3 ms per call at a tenth the size);
+      // reading a bounded sample makes them equal. Five times is far past any noise and far short of that.
+      const a1 = best(small), b1 = best(huge), a2 = best(small), b2 = best(huge)
+      expect(Math.min(b1, b2)).toBeLessThanOrEqual(Math.min(a1, a2) * 5)
+    })
+  })
+
   describe('armOf: the arm and the group of conversations it falls in', () => {
     it('agrees with armForBody and puts every conversation in one of ARM_CLUSTERS groups', () => {
       expect(ARM_CLUSTERS).toBe(20)
