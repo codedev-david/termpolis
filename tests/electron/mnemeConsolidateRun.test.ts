@@ -320,3 +320,40 @@ describe('mnemeConsolidateRun — a lesson the substance gate holds back stays o
     expect(res.mergedDuplicates).toBe(1)
   })
 })
+
+// 1.55: a note imported from Claude Code's memory folder (its `note:<file>` tag, claudeNotesParse.ts) belongs to one
+// project and is curated. The same "how I like to work" note often exists in several projects; a near-duplicate merge
+// would archive one project's copy, and a summary would copy its words into a memory that has no project at all.
+describe('mnemeConsolidateRun — an imported note stays out of the background passes', () => {
+  const NOTE_TEXT = 'a saved note about how the retry queue is flushed'
+  const saved = (over: Partial<ConsolEntry> = {}): ConsolEntry =>
+    entry({ id: 'saved', content: NOTE_TEXT, memoryType: 'summary', importance: 0.9, tags: ['type:feedback', 'note:feedback_queue.md'], ts: 50, ...over })
+
+  it('keeps its text out of a summary and does not link it', async () => {
+    const links: Array<[string, string, string]> = []
+    const write = vi.fn().mockResolvedValue({ id: 'sum-1' })
+    const res = await runSummarization({
+      candidates: () => [...CLUSTER, saved()], simOf: allSimilar, write, link: (from, to, relation) => { links.push([from, to, relation]) }, now: 100,
+    })
+    expect(res).toEqual({ summarized: 1 })
+    expect(write.mock.calls[0][0].content).not.toContain(NOTE_TEXT)
+    expect(links.map((l) => l[0]).sort()).toEqual(['d1', 'd2', 'd3', 'k'])
+  })
+
+  it('is not archived in favour of a near-duplicate, nor does it archive one', () => {
+    const copy = saved({ id: 'copy-in-another-project', content: `${NOTE_TEXT} (the other project)`, importance: 0.8 })
+    const chunk = entry({ id: 'chunk', content: 'raw chunk about the retry queue', importance: 0.2, ts: 40 })
+    const forgotten: string[] = []
+    const res = runConsolidation({ candidates: () => [saved(), copy, chunk], simOf: allSimilar, forget: (id) => forgotten.push(id), now: 100 })
+    expect(forgotten).toEqual([])
+    expect(res).toEqual({ mergedDuplicates: 0, decayedCold: 0 })
+  })
+
+  it('does not stop the memories around it from merging', () => {
+    const a = entry({ id: 'a', content: 'the widget fix', importance: 0.3, ts: 40 })
+    const b = entry({ id: 'b', content: 'the widget fix again (longer)', importance: 0.3, ts: 41 })
+    const forgotten: string[] = []
+    runConsolidation({ candidates: () => [a, saved(), b], simOf: allSimilar, forget: (id) => forgotten.push(id), now: 100 })
+    expect(forgotten).toEqual(['a'])
+  })
+})

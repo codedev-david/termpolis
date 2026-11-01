@@ -19,6 +19,8 @@
 import { existsSync } from 'fs'
 import { adaptiveGate, dedupeHits, diversifyHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 import { isCandidate, withoutCandidates } from './lessonSubstance'
+import { isClaudeNote } from './claudeNotesParse'
+import { projectKeyOf } from './projectKey'
 
 // Default number of memories injected into a primer when the caller passes no
 // explicit limit. User-tunable via the Memory panel (persisted in
@@ -39,6 +41,9 @@ export interface PrimerHit {
   tags?: string[]
   /** Who wrote it, when the caller has it. The `candidate` tag only hides what the lesson writer stored. */
   agentId?: string
+  /** The stable key of the project's full path, when the caller has it. Two repos can share a folder name; a saved
+   *  note (claudeNotesIngest.ts) is shown only to the one whose key it carries. */
+  projectKey?: string
 }
 
 export type PrimerSearch = (opts: { query: string; limit?: number; project?: string }) => Promise<PrimerHit[]>
@@ -199,7 +204,7 @@ function renderLine(h: PrimerHit, maxSnip: number, fileExists: (p: string) => bo
   const path = codeFilePath(h)
   const base = path !== null && !fileExists(path)
     ? `${h.source || 'code'} ⚠ STALE — file removed, verify before use`
-    : (h.source || h.kind || 'note')
+    : isClaudeNote(h) ? 'note' : (h.source || h.kind || 'note') // a saved note says so; its age is its last edit
   // F24: stamp a relative age so recency is legible in the primer (the leading line
   // is what the agent 'holds' about the project).
   const label = typeof h.ts === 'number' && h.ts > 0 ? `${base} · ${relativeAge(h.ts, now)}` : base
@@ -222,9 +227,16 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // Order matters: drop exact dupes, then near-duplicate paraphrases over the FULL
   // over-fetched pool (so a freed slot backfills with a distinct hit), THEN apply
   // the relevance cut + cap to `limit`.
+  // Claude Code's saved notes belong to the project they were written in. Another project's never enters a
+  // primer, whatever the "share notes" switch says (that switch governs memory_search only): this digest is
+  // injected without anyone asking. With no project there is none for a note to belong to.
+  const projectKey = opts.projectPath && opts.projectPath.trim() ? projectKeyOf(opts.projectPath.trim()) : undefined
+  const foreignNote = (h: PrimerHit): boolean =>
+    isClaudeNote(h) && ((h.project || '').toLowerCase() !== project || (projectKey !== undefined && h.projectKey !== undefined && h.projectKey !== projectKey))
+  const withoutForeignNotes = (hits: PrimerHit[]): PrimerHit[] => (hits.some(foreignNote) ? hits.filter((h) => !foreignNote(h)) : hits)
   const gate = (hits: PrimerHit[]): PrimerHit[] =>
     adaptiveGate(
-      diversifyHits(dedupeHits(withoutCandidates(hits)), { threshold: DIVERSITY_THRESHOLD }),
+      diversifyHits(dedupeHits(withoutForeignNotes(withoutCandidates(hits))), { threshold: DIVERSITY_THRESHOLD }),
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
@@ -302,18 +314,22 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       if (h.project === project || (slugRe && slugRe.test(h.content || ''))) promoted.push(h)
       else others.push(h)
     }
-    // Past conversations lead the project bucket; the stable sort preserves the
-    // score order the search already returned within each class.
+    // Saved notes lead the project bucket (curated and verified by their author), then past conversations;
+    // the stable sort preserves the score order the search already returned within each class.
+    const rank = (h: PrimerHit): number => (isClaudeNote(h) ? 0 : isConversation(h) ? 1 : 2)
     const bucket = [...projectHits, ...promoted]
       .map((h, i) => ({ h, i }))
-      .sort((a, b) => (isConversation(b.h) ? 1 : 0) - (isConversation(a.h) ? 1 : 0) || a.i - b.i)
+      .sort((a, b) => rank(a.h) - rank(b.h) || a.i - b.i)
       .map((x) => x.h)
 
     const projLines: string[] = []
+    let notesShown = 0
     for (const h of bucket) {
       if (projLines.length >= relevanceBudget) break
       const line = renderLine(h, maxSnip, fileExists, now)
-      if (line) projLines.push(line)
+      if (!line) continue
+      projLines.push(line)
+      if (isClaudeNote(h)) notesShown++
     }
     const otherLines: string[] = []
     for (const h of others) {
@@ -321,7 +337,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       const line = renderLine(h, maxSnip, fileExists, now)
       if (line) otherLines.push(line)
     }
-    section(`This project (${project}) — past conversations first:`, projLines)
+    section(`This project (${project}) — ${notesShown > 0 ? 'saved notes, then past conversations' : 'past conversations first'}:`, projLines)
     section('Other saved context (may NOT apply to this project):', otherLines)
   }
   if (body.length === 0) return null

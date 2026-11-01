@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
+import { projectKeyOf } from '../../src/main/projectKey'
 
 const hits: PrimerHit[] = [
   { content: 'auth uses JWT middleware\nvalidated per request', source: 'claude', kind: 'message', score: 0.9 },
@@ -490,6 +491,113 @@ describe('buildContextPrimer — lessons the substance gate holds back', () => {
   it('returns no digest at all when everything it found is held back', async () => {
     const search = vi.fn(async () => [mk('h', HELD, { tags: ['candidate'] })])
     expect(await buildContextPrimer(search, { query: 'q', now: NOW })).toBeNull()
+  })
+})
+
+// Claude Code's saved notes (claudeNotesIngest.ts) are stored with source and author `claude-notes`, under the
+// project of the folder they came from. They lead their own project's block, read as "note", and never reach
+// another project's primer: this digest is injected without anyone asking for it.
+describe('buildContextPrimer — Claude Code\'s saved notes', () => {
+  const proj = 'termpolis'
+  const NOW = 1_700_000_000_000
+  const DAY = 86_400_000
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+
+  const note = (id: string, content: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id, content, source: 'claude-notes', agentId: 'claude-notes', kind: 'fact', score: 0.7, project: proj, ts: NOW - 52 * DAY, tags: ['type:reference', 'note:x.md'], ...over })
+  const chunk = (id: string, content: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id, content, source: 'claude', agentId: 'claude-history', kind: 'message', score: 0.9, project: proj, ts: NOW - 3_600_000, ...over })
+  const build = (list: PrimerHit[], extra: Record<string, unknown> = {}) =>
+    buildContextPrimer(vi.fn(async () => list), { query: 'q', project: proj, now: NOW, ...extra })
+
+  it('leads the project block, ahead of past conversations that scored higher', async () => {
+    const out = (await build([chunk('c1', 'a conversation about the cache'), chunk('c2', 'another conversation'), note('n1', 'Invalidate the cache on write, never on a timer')]))!
+    const lines = out.split('\n').filter((l) => l.startsWith('- ['))
+    expect(lines[0]).toContain('Invalidate the cache on write')
+    expect(lines[0]).toMatch(/^- \[note · 1mo ago\]/) // the note's last edit, labelled as a note
+    expect(out.indexOf('Invalidate the cache')).toBeLessThan(out.indexOf('a conversation about the cache'))
+  })
+
+  it('says so in the block\'s title only when a note is shown', async () => {
+    const withNote = (await build([chunk('c1', 'a conversation'), note('n1', 'a saved note')]))!
+    expect(withNote).toContain(`This project (${proj}) — saved notes, then past conversations:`)
+    const without = (await build([chunk('c1', 'a conversation')]))!
+    expect(without).toContain(`This project (${proj}) — past conversations first:`)
+  })
+
+  it('keeps a score-ordered run of notes in the order the search gave them', async () => {
+    const out = (await build([chunk('c1', 'conversation one'), note('n1', 'first note'), note('n2', 'second note')]))!
+    expect(out.indexOf('first note')).toBeLessThan(out.indexOf('second note'))
+    expect(out.indexOf('second note')).toBeLessThan(out.indexOf('conversation one'))
+  })
+
+  it('never shows another project\'s note, from the project search or the global one', async () => {
+    const mine = note('n1', 'a note about this project')
+    const theirs = note('n2', 'a note about the billing project', { project: 'billing' })
+    const search = vi.fn(async (opts: { project?: string }) => (opts.project === proj ? [mine, theirs] : [theirs, chunk('c1', 'some other conversation', { project: 'billing' })]))
+    const out = (await buildContextPrimer(search, { query: 'q', project: proj, now: NOW }))!
+    expect(out).toContain('a note about this project')
+    expect(out).not.toContain('billing project')
+    expect(out).toContain('some other conversation') // other projects\' conversations still appear, labelled as before
+  })
+
+  it('shows no note at all to a primer that names no project', async () => {
+    const out = await buildContextPrimer(vi.fn(async () => [note('n1', 'a note about this project'), chunk('c1', 'a conversation', { project: undefined })]), { query: 'q', now: NOW })
+    expect(out).toContain('a conversation')
+    expect(out).not.toContain('a note about this project')
+    expect(await buildContextPrimer(vi.fn(async () => [note('n1', 'only a note')]), { query: 'q', now: NOW })).toBeNull()
+  })
+
+  it('compares projects without regard to case', async () => {
+    const out = (await build([note('n1', 'a note', { project: 'Termpolis' })]))!
+    expect(out).toContain('a note')
+  })
+
+  // Two repos can share a folder name ("api", "app"): the slug cannot tell an employer's from a personal one,
+  // the key of the full path can. A note carrying a different key than the cwd's is another project's.
+  describe('two projects with the same folder name', () => {
+    const MINE = 'C:\\work\\termpolis'
+    const mineKey = projectKeyOf(MINE)
+    const otherKey = projectKeyOf('D:\\personal\\termpolis')
+
+    it('the note whose key is this folder\'s is shown, the other\'s is not', async () => {
+      const list = [note('n1', 'a note about my termpolis', { projectKey: mineKey }), note('n2', 'a note about the other termpolis', { projectKey: otherKey })]
+      const out = (await build(list, { projectPath: MINE }))!
+      expect(out).toContain('a note about my termpolis')
+      expect(out).not.toContain('the other termpolis')
+    })
+
+    it('falls back to the folder name when either side has no key (an older entry, or a primer with no full path)', async () => {
+      const keyless = note('n1', 'a note with no key')
+      expect((await build([keyless], { projectPath: MINE }))!).toContain('a note with no key')
+      const keyed = note('n2', 'a note with a key', { projectKey: otherKey })
+      expect((await build([keyed]))!).toContain('a note with a key') // no projectPath: nothing to compare the key with
+      expect((await build([note('n3', 'a note for the wrong folder name', { project: 'billing', projectKey: mineKey })], { projectPath: MINE }))).toBeNull()
+    })
+
+    it('ignores a blank full path', async () => {
+      expect((await build([note('n1', 'a note', { projectKey: otherKey })], { projectPath: '   ' }))!).toContain('a note')
+    })
+  })
+
+  it('does not take something that merely carries the note source for a note: the author has to be the importer', async () => {
+    const spoof = note('s1', 'a memory an agent filed under the notes source', { agentId: 'claude', project: 'billing' })
+    const out = (await build([spoof, chunk('c1', 'a conversation')]))!
+    expect(out).toContain('a memory an agent filed') // not a note: treated like any other hit
+    expect(out).toContain('[claude-notes ·') // and labelled as the source it claims
+  })
+
+  it('shows a recently edited note in the freshness lane as a note', async () => {
+    const recent = vi.fn().mockResolvedValue([note('n9', long('a note edited an hour ago'), { score: 0, ts: NOW - 3_600_000 })])
+    const out = (await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW }))!
+    expect(out).toMatch(/- \[note · 1h ago\] a note edited an hour ago/)
+  })
+
+  it('keeps the old title and the old order when there are no notes (the older tests above pin the rest, byte for byte)', async () => {
+    const list = [chunk('c1', 'we decided to use HNSW'), chunk('c2', 'a code chunk', { source: 'code', kind: 'note', score: 0.5 })]
+    const out = (await build(list))!
+    expect(out).toContain(`This project (${proj}) — past conversations first:`)
+    expect(out.indexOf('we decided to use HNSW')).toBeLessThan(out.indexOf('a code chunk'))
   })
 })
 
