@@ -1,5 +1,5 @@
 import { summarizeSavings, type SavingsTotals } from './savingsLedger'
-import { summarizeProxySavings, type ProxyTotals } from '../headroomProxy/proxyLedger'
+import { summarizeProxySavings, stubKindsOf, type ProxyTotals, type StubKinds } from '../headroomProxy/proxyLedger'
 import { billBreakdown, type BillBreakdown } from './effectiveUnits'
 import { depthAdvice, type DepthAdvice } from './sessionDepth'
 import { ccrStats } from './ccrStore'
@@ -16,16 +16,6 @@ import { ccrStats } from './ccrStore'
  *
  * This module is the single place that adds them up, with reversal cost subtracted exactly once.
  */
-export interface StubKinds {
-  plain: number
-  compact: number
-  dedup: number
-  diff: number
-  aged: number
-  agedEarly: number
-  agedEarlyRequests: number
-}
-
 export interface UnifiedTotals {
   /** Inbound wire compression (the dominant term). */
   requests: number
@@ -158,10 +148,7 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     givebackTokens,
     retrievalTurns: proxy.retrievalTurns,
     retrievalTurnUnits: proxy.retrievalTurnUnits,
-    stubKinds: {
-      plain: proxy.stubPlain, compact: proxy.stubCompact, dedup: proxy.stubDedup, diff: proxy.stubDiff,
-      aged: proxy.stubAged, agedEarly: proxy.stubAgedEarly, agedEarlyRequests: proxy.stubAgedEarlyRequests,
-    },
+    stubKinds: stubKindsOf(proxy),
     grossSavedTokens,
     netSavedTokens,
     savedPct: denom > 0 ? Math.round((netSavedTokens / denom) * 100) : 0,

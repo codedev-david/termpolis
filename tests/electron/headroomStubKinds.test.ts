@@ -11,7 +11,7 @@ const { classifyForwardedResults, emptyKinds } = await import('../../src/main/he
 const { rewriteMessagesBody } = await import('../../src/main/headroomProxy/wireCompress')
 const {
   recordProxyResult, summarizeProxySavings, resetProxyLedger, resetProxyCounters, loadProxyBase,
-  saveProxyTotalsToDisk, loadProxyBaseFromDisk, currentProxyTotals,
+  saveProxyTotalsToDisk, loadProxyBaseFromDisk, currentProxyTotals, stubKindsOf,
 } = await import('../../src/main/headroomProxy/proxyLedger')
 const { summarizeUnifiedSavings } = await import('../../src/main/headroom/unifiedReceipt')
 
@@ -133,6 +133,15 @@ describe('the proxy ledger keeps the tally', () => {
     recordProxyResult(result({ plain: 1 }))
     resetProxyCounters()
     expect(summarizeProxySavings().cumulative.stubPlain).toBe(0)
+  })
+
+  it('exposes the tally as stubKinds, the name the receipt and the card use', () => {
+    expect(stubKindsOf(currentProxyTotals())).toEqual({ plain: 0, compact: 0, dedup: 0, diff: 0, aged: 0, agedEarly: 0, agedEarlyRequests: 0 })
+    loadProxyBase({ stubPlain: 10, stubCompact: 5, stubDedup: 2, stubDiff: 1, stubAged: 4, stubAgedEarly: 3, stubAgedEarlyRequests: 2 })
+    recordProxyResult(result({ plain: 1, compact: 2, aged: 1, agedEarly: 1 }))
+    const r = summarizeProxySavings()
+    expect(stubKindsOf(r.session)).toEqual({ plain: 1, compact: 2, dedup: 0, diff: 0, aged: 1, agedEarly: 1, agedEarlyRequests: 1 })
+    expect(stubKindsOf(r.cumulative)).toEqual({ plain: 11, compact: 7, dedup: 2, diff: 1, aged: 5, agedEarly: 4, agedEarlyRequests: 3 })
   })
 })
 

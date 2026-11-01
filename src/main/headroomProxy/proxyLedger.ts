@@ -92,6 +92,26 @@ export interface ProxyTotals {
   stubAgedEarlyRequests: number
 }
 
+/** The ledger's tally of what the forwarded requests' tool results were, named for the receipt and
+ *  the card (`agedEarlyRequests` is the requests that carried at least one early aged-out stub). */
+export interface StubKinds {
+  plain: number
+  compact: number
+  dedup: number
+  diff: number
+  aged: number
+  agedEarly: number
+  agedEarlyRequests: number
+}
+
+/** The `stubKinds` of a set of totals, session or cumulative. */
+export function stubKindsOf(t: ProxyTotals): StubKinds {
+  return {
+    plain: t.stubPlain, compact: t.stubCompact, dedup: t.stubDedup, diff: t.stubDiff,
+    aged: t.stubAged, agedEarly: t.stubAgedEarly, agedEarlyRequests: t.stubAgedEarlyRequests,
+  }
+}
+
 /** The floor this release is held to, as a percentage of compressible wire text. */
 export const FLOOR_PCT = 50
 /** Requests carrying less than this much compressible text are excluded from floor stats: a turn

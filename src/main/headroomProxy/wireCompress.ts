@@ -12,6 +12,10 @@ import { STEERING_MARK } from '../headroom/outputSteering'
 import { makeMeta, stampModel, type ElisionKind, type StashEntry } from '../headroom/elisionMeta'
 import { classifyMessages, emptyKinds, type StubKindCounts } from './forwardedKinds'
 
+// The same tally for a caller holding a body as a string. The rewriter never uses this entry: it
+// reads the messages it has already parsed (classifyMessages), so the tally adds no second parse.
+export { classifyForwardedResults } from './forwardedKinds'
+
 export interface WireStats {
   trBlocks: number
   trOrigChars: number

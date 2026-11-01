@@ -81,24 +81,28 @@ function tally(text: string, k: StubKindCounts, early: boolean): void {
 /** The tally for a request's messages. Total: anything that is not a tool_result with text is skipped. */
 export function classifyMessages(messages: readonly unknown[]): StubKindCounts {
   const k = emptyKinds()
-  // Below the decay threshold the decay pass cannot run, so an aged-out stub here came from elsewhere.
-  const early = messages.length < DECAY_FIRST_THRESHOLD
-  for (const m of messages) {
-    const content = (m as { content?: unknown } | null)?.content
-    if (!Array.isArray(content)) continue
-    for (const b of content as unknown[]) {
-      const block = b as { type?: unknown; content?: unknown } | null
-      if (!block || block.type !== 'tool_result') continue
-      const c = block.content
-      if (typeof c === 'string') tally(c, k, early)
-      else if (Array.isArray(c)) {
-        for (const item of c as unknown[]) {
-          const it = item as { type?: unknown; text?: unknown } | null
-          if (it && it.type === 'text' && typeof it.text === 'string') tally(it.text, k, early)
+  // A tally is never worth a request: whatever the walk cannot read stops it, and what it had
+  // counted by then stands. A parsed body cannot throw here; a caller's own object could.
+  try {
+    // Below the decay threshold the decay pass cannot run, so an aged-out stub here came from elsewhere.
+    const early = messages.length < DECAY_FIRST_THRESHOLD
+    for (const m of messages) {
+      const content = (m as { content?: unknown } | null)?.content
+      if (!Array.isArray(content)) continue
+      for (const b of content as unknown[]) {
+        const block = b as { type?: unknown; content?: unknown } | null
+        if (!block || block.type !== 'tool_result') continue
+        const c = block.content
+        if (typeof c === 'string') tally(c, k, early)
+        else if (Array.isArray(c)) {
+          for (const item of c as unknown[]) {
+            const it = item as { type?: unknown; text?: unknown } | null
+            if (it && it.type === 'text' && typeof it.text === 'string') tally(it.text, k, early)
+          }
         }
       }
     }
-  }
+  } catch { /* keep the tally so far */ }
   return k
 }
 

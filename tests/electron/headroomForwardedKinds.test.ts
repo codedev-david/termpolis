@@ -28,6 +28,19 @@ function bodyOf(texts: string[], tool = 'Read'): string {
 }
 const kinds = (over: Partial<ReturnType<typeof emptyKinds>>) => ({ ...emptyKinds(), ...over })
 
+describe('classifyForwardedResults — where it is found', () => {
+  it('is reachable from wireCompress, which the design names, and is the same function', async () => {
+    const viaWire = await import('../../src/main/headroomProxy/wireCompress')
+    expect(viaWire.classifyForwardedResults).toBe(classifyForwardedResults)
+  })
+
+  it('agrees with the tally the rewriter keeps on its stats, for the body it forwards', () => {
+    const raw = bodyOf([lines(80), 'ok', lines(80)])
+    const r = rewriteMessagesBody(raw)
+    expect(classifyForwardedResults(r.body)).toEqual(r.stats.kinds)
+  })
+})
+
 describe('classifyForwardedResults — one golden body per kind', () => {
   it('a short result is plain', () => {
     expect(classifyForwardedResults(rewriteMessagesBody(bodyOf(['ok'])).body)).toEqual(kinds({ plain: 1 }))
@@ -249,6 +262,18 @@ describe('classifyForwardedResults — total and read-only', () => {
     vi.resetModules()
     const fresh = await import('../../src/main/headroomProxy/forwardedKinds')
     expect(fresh.classifyForwardedResults(body)).toEqual(a)
+  })
+
+  it('is total on an object that throws when read: it keeps what it had counted and never throws', () => {
+    const fine = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'plain text' }] }
+    const hostile = { role: 'user', get content(): unknown { throw new Error('unreadable') } }
+    const never = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b', content: 'not reached' }] }
+    let k = emptyKinds()
+    expect(() => { k = classifyMessages([fine, hostile, never] as never) }).not.toThrow()
+    expect(k).toEqual(kinds({ plain: 1 }))
+    // A list whose length cannot be read at all counts as nothing.
+    const noLength = new Proxy([], { get(t, p, r) { if (p === 'length') throw new Error('unreadable'); return Reflect.get(t, p, r) } })
+    expect(classifyMessages(noLength as never)).toEqual(kinds())
   })
 
   it('survives 1,000 seeded random bodies with the right total', () => {
