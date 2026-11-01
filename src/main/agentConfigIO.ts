@@ -29,6 +29,17 @@ export function errorText(e: unknown): string {
   return (e as Error)?.message || String(e)
 }
 
+/** Why JSON didn't parse, with none of the file in it. V8 quotes the source around an unexpected token
+ *  (`Unexpected token 'b', ..."89", "z": bareword01"... is not valid JSON`, and the whole source when it
+ *  is short), and a profile's .claude.json can hold a key: only a message that quotes nothing of the
+ *  file is kept (the position, the kind of mistake), and the one source character an older engine names
+ *  is left out too. */
+export function parseFailure(e: unknown): string {
+  const text = errorText(e)
+  if (/["`]|is not valid JSON/.test(text)) return "it can't be parsed"
+  return text.replace(/Unexpected token \S+ in JSON/, 'Unexpected token in JSON')
+}
+
 /** Read a JSON file whose top level must be an object. An empty file reads as `{}`. */
 export function readJsonObject(path: string, cap = MAX_CONFIG_BYTES): JsonObjectRead {
   let text: string
@@ -45,7 +56,7 @@ export function readJsonObject(path: string, cap = MAX_CONFIG_BYTES): JsonObject
   try {
     value = JSON.parse(body)
   } catch (e) {
-    return { kind: 'error', error: `not valid JSON (${errorText(e)})` }
+    return { kind: 'error', error: `not valid JSON (${parseFailure(e)})` }
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { kind: 'error', error: 'top level is not a JSON object' }

@@ -311,6 +311,16 @@ describe('AccountsSettings: a card', () => {
     expect(screen.getByTestId(`account-row-${B.id}`).querySelector('[aria-hidden="true"]')).toHaveTextContent('?')
   })
 
+  it("says the main profile stays connected through Agent Integration when it is forgotten (it has no entries of Termpolis's to take out)", async () => {
+    bridge()
+    await renderLoaded()
+    fireEvent.click(screen.getByTestId(`account-remove-${MAIN.id}`))
+    const said = screen.getByTestId(`account-remove-confirm-${MAIN.id}`).textContent ?? ''
+    expect(said).toContain('Termpolis forgets personal')
+    expect(said).toContain('Your main profile stays connected through Agent Integration')
+    expect(said).not.toContain('takes its entries out')
+  })
+
   it('removes an account after saying what stays, and keeps it on "Keep it"', async () => {
     const { accounts } = bridge()
     await renderLoaded()

@@ -106,6 +106,8 @@ describe('step 1, name and colour: a Claude Code account in a new folder', () =>
     expect(box('add-account-auto-offer').checked).toBe(true)
     expect(box('add-account-connect-box').checked).toBe(true)
     expect(screen.getByTestId('add-account-connect')).toHaveTextContent(CONNECT_DATA_LINE)
+    // Learning is not gated by the tick (design 10, PRIVACY.md): the line says so rather than imply it is.
+    expect(CONNECT_DATA_LINE).toContain('Learning reads the conversations of every registered account, connected or not.')
     expect(screen.getByTestId('add-account-writes')).toHaveTextContent('.claude.json')
     // Not offered automatically: Connect follows, until ticked by hand.
     fireEvent.click(box('add-account-auto-offer'))

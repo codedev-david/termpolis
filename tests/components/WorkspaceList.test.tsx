@@ -325,6 +325,38 @@ describe('WorkspaceList', () => {
       expect(targets[0]).toMatchObject({ agentAccountId: 'acc_b', shellType: 'powershell' })
     })
 
+    it("creates each agent terminal for the account it will launch on, so the proxy's step-aside and the folder trust are that account's", async () => {
+      mockStoreState = {
+        ...mockStoreState,
+        workspaces: [
+          {
+            id: 'w1',
+            name: 'Accounts WS',
+            terminals: [
+              { name: 'Claude on b', color: '#fff', shellType: 'powershell', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'claude', agentAccountId: 'acc_b' },
+              { name: 'Codex', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace', agentCommand: 'codex' },
+              { name: 'Shell', color: '#fff', shellType: 'bash', cwd: '/work', fontSize: 14, theme: 'dark', fontFamily: 'monospace' },
+            ],
+          },
+        ],
+      }
+      ;(window as any).accounts = {
+        launchLine: vi.fn(),
+        launchAccount: vi.fn(async (agent: string, requested: string | null) => ({ success: true, data: { accountId: agent === 'claude' ? (requested ?? 'acc_pref') : null } })),
+      }
+      ;(useTerminalStore.getState as any).mockReturnValue({ terminals: [] })
+      render(<WorkspaceList />)
+      fireEvent.click(screen.getByText('Accounts WS'))
+      await waitFor(() => expect(mockLaunchAgents).toHaveBeenCalled())
+      const calls = (window as any).termpolis.createTerminal.mock.calls
+      // The saved account, for the terminal that ran on one.
+      expect(calls[0].slice(5)).toEqual(['acc_b', 'claude'])
+      // An agent with no account (Codex still names its agent), and a plain shell: as before accounts.
+      expect(calls[1].slice(5)).toEqual([undefined, 'codex'])
+      expect(calls[2].slice(5)).toEqual([])
+      delete (window as any).accounts
+    })
+
     it('re-launches the saved agent and shows the launching overlay', async () => {
       mockStoreState = {
         ...mockStoreState,

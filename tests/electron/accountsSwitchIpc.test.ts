@@ -484,3 +484,36 @@ describe('accounts:switch, what the agent was started with comes back with it (c
     expect(term.ran[term.ran.length - 1]).toMatch(/&& claude(?: --resume \S+)?$/)
   })
 })
+
+describe('accounts:switch, a profile that routes Anthropic traffic itself (design 5.2)', () => {
+  const typedLine = (): string => term.ran[term.ran.length - 1]
+
+  async function profileWith(env: Record<string, string> | null): Promise<{ main: string; b: string }> {
+    const { main, b, bDir } = await twoClaude()
+    if (env) writeJson(join(bDir, 'settings.json'), { env })
+    noteTerminalAccount('t1', main)
+    return { main, b }
+  }
+
+  it('takes the compression proxy\'s variables out of the line, so the profile\'s own base URL is the one in force', async () => {
+    const { b } = await profileWith({ ANTHROPIC_BASE_URL: 'https://gateway.example.test/v1' })
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).toMatch(/unset ANTHROPIC_BASE_URL TERMPOLIS_HEADROOM_PROXY && claude/)
+  })
+
+  it.each([
+    ['an outbound proxy', { HTTPS_PROXY: 'http://proxy.example.test:3128' }],
+    ['a cloud provider', { CLAUDE_CODE_USE_BEDROCK: '1' }],
+  ])('also when the profile routes by %s', async (_name, env) => {
+    const { b } = await profileWith(env)
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).toMatch(/unset ANTHROPIC_BASE_URL TERMPOLIS_HEADROOM_PROXY && claude/)
+  })
+
+  it('leaves the line alone for a profile that routes nothing itself', async () => {
+    const { b } = await profileWith(null)
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).not.toContain('ANTHROPIC_BASE_URL')
+    expect(typedLine()).not.toContain('TERMPOLIS_HEADROOM_PROXY')
+  })
+})

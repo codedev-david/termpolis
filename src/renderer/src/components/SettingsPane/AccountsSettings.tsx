@@ -250,9 +250,12 @@ export function AccountsSettings() {
     return (
       <div className="flex flex-wrap items-center gap-2 pt-1 text-xs" data-testid={`account-remove-confirm-${r.id}`}>
         <span className="text-[#d4d4d4]">
-          {isProfileAgent(r.agent)
-            ? `Termpolis forgets ${r.label} and takes its entries out of the profile. The folder, its sign-in and its links stay.`
-            : `Termpolis forgets ${r.label}. agy's own sign-in stays as it is.`}
+          {!isProfileAgent(r.agent)
+            ? `Termpolis forgets ${r.label}. agy's own sign-in stays as it is.`
+            : r.isDefault
+              // The main profile holds no entries of its own to take out: Agent Integration connects it.
+              ? `Termpolis forgets ${r.label}. Your main profile stays connected through Agent Integration, and its folder, its sign-in and its links stay.`
+              : `Termpolis forgets ${r.label} and takes its entries out of the profile. The folder, its sign-in and its links stay.`}
         </span>
         <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { const c = must(await api.remove(r.id)).changes; setRowAction(null); return c }) }} data-testid={`account-remove-yes-${r.id}`}>Remove</button>
         <button className={BUTTON} onClick={() => setRowAction(null)}>Keep it</button>

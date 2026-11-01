@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, utimesSync
 import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount,
-  isTerminalAccountConnected, noteTerminalAccount, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget,
+  isAccountChangedByHand, isTerminalAccountConnected, noteTerminalAccount, noteTypedInput, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget,
   terminalAccountId, terminalsOnAccount,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
@@ -784,6 +784,30 @@ describe('the lookups index.ts uses', () => {
     expect(terminalsOnAccount(ids.on)).toBe(1)
     forgetTerminalAccount('t-on')
     expect(terminalsOnAccount(ids.on)).toBe(0)
+  })
+
+  it('fails closed for a terminal still on an account the user then removed (R9)', async () => {
+    const ids = await accountsFixture()
+    noteTerminalAccount('t-live', ids.on)
+    expect(isTerminalAccountConnected(sb.paths, 't-live')).toBe(true)
+    await ok(ACCOUNTS_IPC.remove, { id: ids.on })
+    // The registry no longer has the account: Termpolis answers nothing in a profile it let go of, and
+    // Disconnect would never take such an answer back.
+    expect(isTerminalAccountConnected(sb.paths, 't-live')).toBe(false)
+    // A terminal that never had an account, and one on the default profile, are as before.
+    expect(isTerminalAccountConnected(sb.paths, 't-never')).toBe(true)
+    noteTerminalAccount('t-default', null)
+    expect(isTerminalAccountConnected(sb.paths, 't-default')).toBe(true)
+  })
+
+  it('applies the by-hand rule only once an account is registered (D13: a user who added none sees no change)', async () => {
+    // No account registered at all: a variable typed by hand changes nothing about v1.54.0's trust answers.
+    noteTypedInput('t-hand', 'export CLAUDE_CONFIG_DIR=/x/.claude-z\r', 1)
+    expect(isAccountChangedByHand('t-hand')).toBe(true)
+    expect(isTerminalAccountConnected(sb.paths, 't-hand')).toBe(true)
+    // With accounts, an account Termpolis doesn't know is one it answers nothing in.
+    await accountsFixture()
+    expect(isTerminalAccountConnected(sb.paths, 't-hand')).toBe(false)
   })
 
   it('lists the connected profiles for agent integration\'s runtime', async () => {

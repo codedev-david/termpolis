@@ -20,7 +20,7 @@ import { SignInFlow } from './SignInFlow'
 import { SHEET_INPUT, SHEET_PRIMARY, SHEET_SECONDARY, SMALL_BUTTON } from './ui'
 
 /** What connecting means for the data: shown above every Connect tick (R17). */
-export const CONNECT_DATA_LINE = 'Termpolis\'s memory is shared by every connected account: what you work on in this account is recalled in your others, and theirs in this one.'
+export const CONNECT_DATA_LINE = 'Termpolis\'s memory is shared by every connected account: what you work on in this account is recalled in your others, and theirs in this one. Learning reads the conversations of every registered account, connected or not.'
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 

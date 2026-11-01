@@ -77,7 +77,10 @@ upload it.
   (`userData/agent-accounts.json`). For each one: its name and colour, the email
   you gave it, its profile folder and the links Termpolis made in it, its place
   in the order, whether it is offered automatically when another account runs
-  out of usage, and whether you connected it. Also the account new terminals
+  out of usage, and whether you connected it. Also how it came to be (made by
+  Termpolis, adopted, imported from `accounts.sh` under its key there, or a
+  label), and when its settings were last copied from your main profile. Also
+  the account new terminals
   start on; what each agent last said when Termpolis asked who is signed in
   (signed in or not, and the email and plan it reported); and the last usage
   limit each account hit: the agent's own words, when it resets, and the email
@@ -461,7 +464,8 @@ profile. The profile folders, and the sign-ins in them, stay.
   forgets the account, and takes Termpolis's entries out of its profile
   folder. The folder and the sign-in in it stay: Termpolis never deletes a
   profile folder, because some of its subfolders are links into your main
-  profile.
+  profile. Your main profile has no entries of this kind: it stays connected
+  through Agent Integration, and Disconnect there removes them.
 - **Delete local data** — quit Termpolis and delete the `userData` directory
   listed above.
 - **Uninstall** — remove Termpolis through your OS's normal application

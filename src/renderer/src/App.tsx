@@ -63,7 +63,7 @@ import { requestSettingsTab } from './lib/settingsNav'
 import { watchAccounts } from './lib/accountsState'
 import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
 import { agentOfName } from './lib/accountsView'
-import { launchTerminalArgs } from './lib/accountLaunch'
+import { launchAccountFor, launchTerminalArgs } from './lib/accountLaunch'
 import { SignInSheet } from './components/Accounts/SignInSheet'
 import { AddAccountSheet } from './components/Accounts/AddAccountSheet'
 import { AccountMenu } from './components/Accounts/AccountMenu'
@@ -960,7 +960,10 @@ export default function App() {
         const pCwd = dirRes.data
         const pId = uuid()
         const pShellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-        const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command), ...launchTerminalArgs(undefined, prof.command))
+        // The account it will launch on (launchAgents resolves the same one): the proxy's step-aside and the
+        // folder trust are that account's profile's.
+        const pAccount = await launchAccountFor(prof.command)
+        const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command), ...launchTerminalArgs(pAccount, prof.command))
         if (pRes.success) {
           addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
           launchAgents([{ id: pId, agentCommand: prof.command, cwd: pCwd, shellType: pShellType }])
@@ -993,7 +996,8 @@ export default function App() {
     setLaunchingAgent(config.name)
     const id = uuid()
     const shellType = navigator.platform.startsWith('Win') ? 'powershell' as const : 'bash' as const
-    const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command), ...launchTerminalArgs(undefined, config.command))
+    const account = await launchAccountFor(config.command)
+    const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command), ...launchTerminalArgs(account, config.command))
     if (res.success) {
       addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
       launchAgents([{ id, agentCommand: config.command, cwd, shellType }], { onSettled: () => setLaunchingAgent(null) })

@@ -48,6 +48,8 @@ import {
   connectAccountProfile, disconnectAccountProfile, profileConnection, stripCopiedEntries,
 } from './agentIntegrationManager'
 import { err, ok } from './ipcResult'
+import { userRoutingVar } from './headroomProxy/proxySupervisor'
+import { getExtendedPath } from './agentPaths'
 
 export interface AccountsIpcLike {
   handle(channel: string, listener: (event: unknown, input?: unknown) => unknown): void
@@ -503,9 +505,15 @@ export function codexHomeFor(paths: Pick<AgentIntegrationPaths, 'home' | 'userDa
 /** Is the terminal on an account the user connected? A terminal Termpolis never put on an account
  *  runs on the default profile (D13). */
 export function isTerminalAccountConnected(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, terminalId: unknown): boolean {
+  const loaded = loadAccounts(paths.userData)
+  // A user who added no account sees no change (D13): the by-hand rule is for a registry with accounts.
+  const registered = loaded.ok && loaded.doc.file.accounts.length > 0
   // An account changed by hand is one Termpolis doesn't know: it answers nothing there.
-  if (typeof terminalId === 'string' && byHand.has(terminalId)) return false
+  if (registered && typeof terminalId === 'string' && byHand.has(terminalId)) return false
   const id = typeof terminalId === 'string' ? terminalAccountId(terminalId) : undefined
+  // A terminal still on an account the user then removed (R9): the profile is one Termpolis let go of,
+  // and an answer written there would never be taken back by Disconnect.
+  if (typeof id === 'string' && !(loaded.ok && findAccount(loaded.doc, id))) return false
   return resolveAccountTarget(paths, id ?? undefined).connected
 }
 
@@ -742,6 +750,11 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   const fsx = deps.fsx ?? accountFs
   const now = deps.now ?? Date.now
   const env = deps.env ?? process.env
+  // The CLIs are looked for, and started, on the PATH a terminal would give them: a GUI launch (a macOS
+  // Finder or Dock launch, Linux under nvm, volta or ~/.local/bin) hands Electron's main a minimal one
+  // (agentPaths.ts), where Check and Sign in would find no claude, codex or agy at all. An environment a
+  // test injects is used as it is.
+  const cliEnv = (): Readonly<Record<string, string | undefined>> => (deps.env ? env : { ...env, PATH: getExtendedPath() })
   const signedInNow = deps.signedInNow ?? ((agent, profile, d) => (agent === 'claude' ? claudeSignedInNow(profile, d) : codexSignedInNow(profile, d)))
   const startTimer = deps.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms))
   const stopTimer = deps.clearInterval ?? ((h: unknown) => clearInterval(h as ReturnType<typeof setInterval>))
@@ -1090,7 +1103,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (!fresh && CHECK_SKIPS_LIVE_PROFILES && terminalsOnAccount(a.id) > 0) {
       throw new Error(`A Termpolis terminal is running on ${a.label}, so Termpolis doesn't ask ${ACCOUNT_AGENT_LABEL[a.agent]} now: a check could refresh the sign-in that terminal uses. Close it, or read "last signed in as".`)
     }
-    const r = await signedInNow(a.agent, a.profile, { cwd: deps.checkCwd(), env })
+    const r = await signedInNow(a.agent, a.profile, { cwd: deps.checkCwd(), env: cliEnv() })
     if ('error' in r) throw new Error(r.error)
     const identity: AccountIdentity = r.identity
     return { identity, doc: update((d) => { d.file.identity[a.id] = identity }).doc }
@@ -1146,13 +1159,13 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       const args = isProfileAgent(a.agent)
         ? signInArgs(a.agent, SIGN_IN_METHODS[a.agent].find((m) => m === input.method) ?? SIGN_IN_METHODS[a.agent][0], a.email)
         : []
-      const cliEnv = signInEnv(a.agent, a.profile, env)
-      const cli = (deps.signInCli ?? signInCli)(a.agent, args, cliEnv)
+      const childEnv = signInEnv(a.agent, a.profile, cliEnv())
+      const cli = (deps.signInCli ?? signInCli)(a.agent, args, childEnv)
       if ('error' in cli) throw new Error(cli.error)
       const owner = (e as { sender?: { once?: (event: string, fn: () => void) => void } } | null)?.sender
       const started = startSignInSession({
         accountId: a.id, agent: a.agent, key: a.agent === 'agy' ? 'agy' : `${a.agent}:${a.profile ?? ''}`,
-        file: cli.file, args: cli.args, env: cliEnv, cwd: deps.checkCwd(), mode, label: a.label, owner,
+        file: cli.file, args: cli.args, env: childEnv, cwd: deps.checkCwd(), mode, label: a.label, owner,
         confirm: async () => {
           try {
             const { identity } = await checkNow(a, true)
@@ -1301,6 +1314,11 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       },
       // A swarm worker's restart says so to the conductor, while it holds the worker (§9, R7).
       ...(workers.has(terminalId) ? { lockKind: 'worker' as const } : {}),
+      // A profile that routes Anthropic traffic itself (a base URL, an outbound proxy or a cloud
+      // provider in its settings) takes the compression proxy's variables out of the line: the terminal's
+      // spawn env set them for the profile it started on (design 5.2).
+      ...(agent === 'claude' && userRoutingVar(env, accountSettingsEnv(deps.paths(), target.id, fsx)) !== null
+        ? { extraUnset: ['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY'] } : {}),
       newSessionId: () => randomUUID(),
       record: (r) => {
         noteTerminalAccount(terminalId, r.accountId)
