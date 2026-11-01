@@ -32,6 +32,11 @@ to keep your data local.
 - Termpolis changes Claude Code, Codex and Gemini CLI settings **only if you
   connect them**, and Disconnect removes everything it wrote — see [Your
   coding agents' settings](#your-coding-agents-settings).
+- While your agents are connected, Termpolis also **reads Claude Code's saved
+  notes** and keeps a copy in its own memory, so your other agents can find
+  them. It never writes into Claude's folders and nothing leaves your machine.
+  You can switch it off and remove the copies — see [Claude Code's saved
+  notes](#claude-codes-saved-notes).
 
 ## Data Stored Locally
 
@@ -90,6 +95,13 @@ upload it.
   stored lowers the rank of those it would now refuse (recorded in
   `userData/memory-corrections.jsonl`; nothing is deleted) and leaves a marker,
   `userData/mneme-lesson-recheck-v2.json`, so it runs once.
+- Claude Code's saved notes, once imported (see [Claude Code's saved
+  notes](#claude-codes-saved-notes)): copies of their text in swarm memory like
+  any other memory, and a record of what was copied
+  (`userData/claude-notes-manifest.json`): each note's file name, size and
+  modified time and a hash of its content, the ids and hashes of the memory
+  entries made from it, the working directory each project folder was matched
+  to, when the last pass ran and how many secrets it redacted.
 
 The `userData` directory lives at:
 
@@ -362,8 +374,52 @@ into `AGENTS.md` in project folders; Termpolis removes that note (and the file,
 if the note was all it held) the next time you launch Codex from Termpolis in
 that folder.
 
+## Claude Code's saved notes
+
+Claude Code keeps what it learns about a project as small markdown notes in its
+own folder, `~/.claude/projects/<project folder>/memory/*.md`. Only Claude can
+see them, and only in that project. Since 1.55.0, while your coding agents are
+connected (Settings → Agent Integration) and **Include Claude Code's saved
+notes in memory** is on (Settings → Memory & Learning; on by default), the
+indexer that already reads your agents' session history every 30 minutes reads
+these notes too.
+
+- **What it reads.** The project folders under `~/.claude/projects`; in each,
+  the names, sizes and modified times of the `.md` files in its `memory`
+  folder, and the text of the ones that are new or changed. It skips
+  `MEMORY.md` (an index of the others), files over 64 KB, binary files, links
+  that lead outside the projects folder, and anything past 2,000 files. To find
+  out which project a folder belongs to it also reads the first 256 KB of that
+  folder's three newest session files and keeps only the working directory they
+  record; the rest of a session is not used for this.
+- **What it writes.** A copy of each note's text in Termpolis's memory, in
+  pieces of at most 1,800 characters, under the project the folder belongs to,
+  after the same secret redaction every memory gets, and the record listed
+  under Data Stored Locally. Nothing is written into Claude Code's folders. An
+  edited note updates its copy and a deleted one removes it.
+- **Who sees the copies.** Every agent you connected can find them through the
+  memory tools (`memory_search`, `memory_list`, `memory_primer`) in that same
+  project, so Codex and the Antigravity CLI get what Claude knew. One project's
+  notes never go into another project's launch summary. Whether a search in one
+  project may also return up to two general notes (the kinds `reference`,
+  `feedback` and `user`, never notes about one project's own state) from
+  another project is a separate choice, **Let general notes help in other
+  projects**, and it is off until you turn it on. A search that names no
+  project already covers all of memory, as it did before.
+- **Where it goes.** Nowhere. Nothing leaves your machine. The copies are part
+  of your memory like any other, so they go where your memory goes only if you
+  move it yourself, with a brain export, say.
+- **Undo.** *Remove imported notes* (Settings → Memory & Learning) takes every
+  copy out of memory and turns the import off; Claude's own notes are not
+  touched. Turning the switch off stops the reading and leaves the existing
+  copies until you remove them. Disconnecting your agents stops it too, and a
+  locked memory pauses it.
+
 ## Your Choices
 
+- **Stop Termpolis reading Claude Code's saved notes** — turn off *Include
+  Claude Code's saved notes in memory* in Settings → Memory & Learning, and use
+  *Remove imported notes* there to take out the copies already made.
 - **Turn crash reports or usage statistics on or off** — Settings → General →
   Privacy has a switch for each. Both are off unless you turn them on, and a
   change applies at once.
