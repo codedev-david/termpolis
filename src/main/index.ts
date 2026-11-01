@@ -236,7 +236,7 @@ import { registerMcpIpc } from './mcpIpc'
 import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
-import { recheckMarker, recheckStoredLessons } from './mnemeLessonRecheck'
+import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -4249,6 +4249,16 @@ async function semanticPoolOptions(
             isCorrected: (id) => correctionForMemory(id) !== null,
             demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
             ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join),
+          })
+        } catch { /* the store wasn't readable: the next pass tries again */ }
+        // 1.55.0: and once more, now also judged by the substance gate groundEpisode applies at write time.
+        // Its own marker, so a store that already ran the pass above runs this one too.
+        try {
+          await recheckStoredLessonsV2({
+            list: (opts) => memoryList(opts),
+            isCorrected: (id) => correctionForMemory(id) !== null,
+            demote: (id, reason) => correctMemory({ id, kind: 'demote', reason, by: 'termpolis' }),
+            ...recheckMarker(app.getPath('userData'), { exists: existsSync, write: (f, t) => writeFileSync(f, t) }, join, RECHECK_V2_MARKER, 2),
           })
         } catch { /* the store wasn't readable: the next pass tries again */ }
 

@@ -319,7 +319,12 @@ vi.mock('../../src/main/codeWatch', () => ({
 vi.mock('../../src/main/brainIpc', () => ({
   buildBrainArchive: mneme.buildBrainArchive, mergeBrainArchive: mneme.mergeBrainArchive, realBrainFs: mneme.realBrainFs,
 }))
-vi.mock('../../src/main/mnemeReflect', () => ({ distillEpisode: mneme.distillEpisode, isHighValueEpisode: mneme.isHighValueEpisode }))
+// The sentence rules stay REAL: the lesson rechecks in the indexer pass judge stored lessons with them, and a
+// stubbed splitSentences would make every one of those throw (into a catch that hides it).
+vi.mock('../../src/main/mnemeReflect', async () => ({
+  ...(await vi.importActual<typeof import('../../src/main/mnemeReflect')>('../../src/main/mnemeReflect')),
+  distillEpisode: mneme.distillEpisode, isHighValueEpisode: mneme.isHighValueEpisode,
+}))
 vi.mock('../../src/main/mnemeDistiller', () => ({ makeHeadlessDistiller: mneme.makeHeadlessDistiller }))
 vi.mock('../../src/main/mnemeReflex', () => ({ onTaskComplete: mneme.onTaskComplete, onSessionEpisode: mneme.onSessionEpisode }))
 vi.mock('../../src/main/mnemeSession', () => ({ reflectSoloSession: mneme.reflectSoloSession }))
@@ -1895,6 +1900,62 @@ describe('memory indexer passes', () => {
     expect(correctionForMemory('own-0')).toBeNull()
     expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, LINKED_RECHECK_MARKER), JSON.stringify({ version: 1 }))
     resetMemoryCorrections()
+    mem.memoryList.mockReset()
+    mem.memoryList.mockReturnValue([{ id: 'l1' }])
+  })
+
+  // 1.55.0: the second lesson recheck, judged by the substance gate. Same page of mneme lessons, its own marker.
+  it('the full pass re-judges the stored lessons by the substance gate, demoting what it would refuse and marking the pass', async () => {
+    const { RECHECK_V2_MARKER, RECHECK_V2_REASON } = await import('../../src/main/mnemeLessonRecheck')
+    const { correctionForMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+    const keeper = 'Never call `app.quit()` from the `will-quit` handler because it re-enters the quit sequence.'
+    mem.memoryList.mockImplementation(async (opts: { agentId?: string }) =>
+      opts.agentId === 'mneme'
+        ? [
+            { id: 'junk-1', ts: 9, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Root cause found.' },
+            { id: 'junk-2', ts: 8, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: "I'll start with the failing spec and then look through the logs." },
+            { id: 'good-1', ts: 7, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: keeper },
+            { id: 'stub-1', ts: 6, agentId: 'mneme', kind: 'note', memoryType: 'entity', content: 'EACCES' },
+          ]
+        : [],
+    )
+    await indexerOpts().run()
+    for (const id of ['junk-1', 'junk-2']) {
+      expect(correctionForMemory(id)).toMatchObject({ kind: 'demote', by: 'termpolis', reason: RECHECK_V2_REASON })
+    }
+    expect(correctionForMemory('good-1')).toBeNull()
+    expect(correctionForMemory('stub-1')).toBeNull()
+    expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, RECHECK_V2_MARKER), JSON.stringify({ version: 2 }))
+    resetMemoryCorrections()
+    mem.memoryList.mockReset()
+    mem.memoryList.mockReturnValue([{ id: 'l1' }])
+  })
+
+  it('runs the second lesson recheck even when the first is already marked done, and skips it once its own marker exists', async () => {
+    const { RECHECK_V2_MARKER } = await import('../../src/main/mnemeLessonRecheck')
+    const lessonPages = () => mem.memoryList.mock.calls.filter(([o]) => (o as { agentId?: string })?.agentId === 'mneme')
+    const marker = require('path').join(USER_DATA, RECHECK_V2_MARKER)
+    const first = require('path').join(USER_DATA, 'mneme-lesson-recheck.json')
+
+    mem.memoryList.mockClear()
+    fsMock.existsSync.mockImplementation((p: string) => p === first) // the 1.50.1 pass has run; the new one has not
+    await indexerOpts().run()
+    expect(lessonPages()).toHaveLength(1) // only the new pass listed the lessons
+
+    mem.memoryList.mockClear()
+    fsMock.existsSync.mockImplementation((p: string) => p === first || p === marker) // both marked
+    await indexerOpts().run()
+    expect(lessonPages()).toHaveLength(0)
+    fsMock.existsSync.mockReturnValue(false)
+  })
+
+  it('leaves the second lesson recheck for a later pass when the store cannot be listed, and the pass carries on', async () => {
+    const { RECHECK_V2_MARKER } = await import('../../src/main/mnemeLessonRecheck')
+    const marked = () => fsMock.writeFileSync.mock.calls.filter(([f]) => String(f).endsWith(RECHECK_V2_MARKER))
+    mem.memoryList.mockRejectedValue(new Error('host down'))
+    await expect(indexerOpts().run()).resolves.toEqual({ written: 4, more: false })
+    expect(marked()).toHaveLength(0)
     mem.memoryList.mockReset()
     mem.memoryList.mockReturnValue([{ id: 'l1' }])
   })

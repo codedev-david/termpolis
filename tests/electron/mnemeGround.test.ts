@@ -255,6 +255,69 @@ describe('mnemeGround — connections (entity nodes + typed edges)', () => {
   })
 })
 
+// A distilled lesson comes from a heuristic extractor, an optional LLM and (in tests) stubs: none of them is
+// trusted to have filled every field, and one malformed lesson never costs the batch.
+describe('mnemeGround — lessons with missing or malformed parts', () => {
+  it('falls back to "mneme" as the source when the episode names no authoring agent', () => {
+    expect(lessonToWriteInput(lesson(), episode({ source: undefined })).source).toBe('mneme')
+    expect(lessonToWriteInput(lesson(), episode({ source: '' })).source).toBe('mneme')
+  })
+
+  it('writes a lesson that has no links or entities at all, with the graph deps present', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const link = vi.fn()
+    const ensureEntity = vi.fn().mockResolvedValue('ent')
+    const bare = lesson({ entities: undefined as unknown as string[], links: undefined as unknown as Lesson['links'] })
+    const res = await groundEpisode(episode(), { distill: vi.fn().mockResolvedValue([bare]), write, link, ensureEntity })
+    expect(res).toEqual({ written: ['mem-1'], lessons: 1, skipped: 0 })
+    expect(link).not.toHaveBeenCalled()
+    expect(ensureEntity).not.toHaveBeenCalled()
+  })
+
+  it('skips a null link and a link with a target but no relation, and still mints the good one', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const link = vi.fn()
+    const links = [null, { to: 'mem-x' }, { to: 'mem-y', relation: 'solves' }] as unknown as Lesson['links']
+    await groundEpisode(episode(), { distill: vi.fn().mockResolvedValue([lesson({ links })]), write, link })
+    expect(link).toHaveBeenCalledTimes(1)
+    expect(link).toHaveBeenCalledWith('mem-1', 'mem-y', 'solves')
+  })
+
+  it('does not look for a solves edge on a lesson that names a link but no problem, or whose only link is null', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'mem-1' })
+    const ensureEntity = vi.fn().mockResolvedValue('ent')
+    const link = vi.fn()
+    await groundEpisode(episode(), {
+      distill: vi.fn().mockResolvedValue([
+        lesson({ links: [{ relation: 'solves' }] }), // a solves link but no problem text
+        lesson({ links: [null] as unknown as Lesson['links'], problem: 'ENOENT in `x.ts`' }), // a problem but no real solves link
+      ]),
+      write, link, ensureEntity,
+    })
+    expect(link).not.toHaveBeenCalled()
+  })
+
+  it('mints no refers-to edge for an entity the ensurer could not resolve', async () => {
+    const link = vi.fn()
+    await groundEpisode(episode(), {
+      distill: vi.fn().mockResolvedValue([lesson({ entities: ['gone.ts'] })]),
+      write: vi.fn().mockResolvedValue({ id: 'mem-1' }), link, ensureEntity: vi.fn().mockResolvedValue(null),
+    })
+    expect(link).not.toHaveBeenCalled()
+  })
+
+  it('treats a write that resolves to nothing as not written, and does not try to connect it', async () => {
+    const link = vi.fn()
+    const ensureEntity = vi.fn()
+    const res = await groundEpisode(episode(), {
+      distill: vi.fn().mockResolvedValue([lesson({ entities: ['a.ts'] })]),
+      write: vi.fn().mockResolvedValue(null), link, ensureEntity,
+    })
+    expect(res).toEqual({ written: [], lessons: 1, skipped: 0 })
+    expect(ensureEntity).not.toHaveBeenCalled()
+  })
+})
+
 // v1.23 C3 — the automatic causal layer. A procedural fix lesson emits a targetless
 // {relation:'solves'} (the distiller can't resolve the target); connectLesson now resolves
 // it to `solves` edges pointing at the PROBLEM's entities, so bug→fix is traversable.

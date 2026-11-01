@@ -11,6 +11,10 @@
 // A lesson the current rules would not write is DEMOTED, never deleted: recall still finds it when
 // nothing better matches, and memory_correct can revoke the demotion. It is recorded in the same
 // correction log as an agent's or the user's corrections, so the reason travels with it.
+//
+// 1.55.0 adds a second pass over the same store (recheckStoredLessonsV2): the same rules plus the
+// substance gate (lessonSubstance.ts) that groundEpisode now applies at write time, for the lessons
+// written before it existed. It keeps its own marker, so a store that already ran the first pass runs it.
 
 import {
   isDecisionSentence,
@@ -20,6 +24,7 @@ import {
   matchesGotchaRule,
   splitSentences,
 } from './mnemeReflect'
+import { lessonSubstance, substanceBand } from './lessonSubstance'
 
 export interface StoredLesson {
   id: string
@@ -63,6 +68,28 @@ export function wouldStillWrite(lesson: StoredLesson): boolean {
   return true
 }
 
+export const RECHECK_V2_MARKER = 'mneme-lesson-recheck-v2.json'
+
+export const RECHECK_V2_REASON =
+  'Re-checked by Termpolis 1.55.0: this lesson says nothing a later reader could act on (an announcement, ' +
+  'a progress note or a fragment), so it was demoted, not deleted: still found, ranked lower.'
+
+/** Would today's pipeline still store this lesson: the extractor's rules, and the substance gate that
+ *  groundEpisode applies before it writes? A lesson the gate holds back as a candidate IS still stored, so it
+ *  passes; only one it would refuse outright fails. A stored lesson cannot be re-tagged as a candidate
+ *  afterwards, so the middle band of lessons written before 1.55.0 is left as it is.
+ *
+ *  Only the distiller's lessons are judged (semantic and procedural), as groundEpisode judges them: an entity
+ *  stub is a bare name, a summary is a rollup, and neither is something the gate was ever meant to score. */
+export function wouldStillWriteV2(lesson: StoredLesson): boolean {
+  if (lesson.memoryType !== 'semantic' && lesson.memoryType !== 'procedural') return true
+  // A row that is not text is not a lesson to judge. The pass sits on a loop that only marks itself done at
+  // the end, so one row that threw would stop it at that row on every launch.
+  if (typeof lesson.content !== 'string') return true
+  if (!wouldStillWrite(lesson)) return false
+  return substanceBand(lessonSubstance(lesson.content).score) !== 'drop'
+}
+
 export interface RecheckDeps {
   /** Pages of the store's own lessons, newest first, older than `before` when given. */
   list: (opts: { agentId: 'mneme'; limit: number; before?: number }) => Promise<StoredLesson[]>
@@ -76,6 +103,10 @@ export interface RecheckDeps {
    *  synchronously, on the main thread, so a store with thousands of junk lessons must not do them
    *  in one unbroken run. Default: a setImmediate macrotask, which lets IPC and the PTYs through. */
   yield?: () => Promise<void>
+  /** Whether a lesson stays as it is. Defaults to the 1.50.1 extractor rules (wouldStillWrite). */
+  judge?: (lesson: StoredLesson) => boolean
+  /** What the correction log says about a demotion. Defaults to RECHECK_REASON. */
+  reason?: string
 }
 
 export interface RecheckResult {
@@ -93,6 +124,8 @@ const macrotask = (): Promise<void> => new Promise<void>((resolve) => setImmedia
  *  not counted. */
 export async function recheckStoredLessons(deps: RecheckDeps): Promise<RecheckResult> {
   if (deps.done()) return { checked: 0, demoted: 0, skipped: 'already-run' }
+  const judge = deps.judge ?? wouldStillWrite
+  const reason = deps.reason ?? RECHECK_REASON
   let checked = 0
   let demoted = 0
   let attempts = 0
@@ -106,9 +139,9 @@ export async function recheckStoredLessons(deps: RecheckDeps): Promise<RecheckRe
       seen.add(lesson.id)
       fresh++
       checked++
-      if (deps.isCorrected(lesson.id) || wouldStillWrite(lesson)) continue
+      if (deps.isCorrected(lesson.id) || judge(lesson)) continue
       try {
-        if (deps.demote(lesson.id, RECHECK_REASON).ok) demoted++
+        if (deps.demote(lesson.id, reason).ok) demoted++
       } catch { /* left as it is; counted as checked */ }
       if (++attempts % YIELD_EVERY === 0) await (deps.yield ?? macrotask)()
     }
@@ -121,20 +154,27 @@ export async function recheckStoredLessons(deps: RecheckDeps): Promise<RecheckRe
   return { checked, demoted }
 }
 
+/** The 1.55.0 pass: every stored lesson the substance gate would refuse today, demoted with its own reason.
+ *  Run it with a marker of its own (RECHECK_V2_MARKER), once per device: corrections are not synced, so each
+ *  computer demotes for itself. A lesson someone already corrected, the first pass included, is skipped. */
+export function recheckStoredLessonsV2(deps: Omit<RecheckDeps, 'judge' | 'reason'>): Promise<RecheckResult> {
+  return recheckStoredLessons({ ...deps, judge: wouldStillWriteV2, reason: RECHECK_V2_REASON })
+}
+
 /** Whether the pass has run, kept in userData under `name`. Unreadable counts as not run: running
  *  a pass twice only re-judges what it judged, and an already-demoted entry is skipped as corrected.
  *  The linked-history pass keeps its own marker the same way (linkedHistoryRecheck). */
 export function recheckMarker(userDataPath: string, fs: {
   exists: (p: string) => boolean
   write: (p: string, text: string) => void
-}, join: (...parts: string[]) => string, name = 'mneme-lesson-recheck.json'): Pick<RecheckDeps, 'done' | 'markDone'> {
+}, join: (...parts: string[]) => string, name = 'mneme-lesson-recheck.json', version = 1): Pick<RecheckDeps, 'done' | 'markDone'> {
   const file = join(userDataPath, name)
   return {
     done: () => {
       try { return fs.exists(file) } catch { return false }
     },
     markDone: () => {
-      try { fs.write(file, JSON.stringify({ version: 1 })) } catch { /* runs again next launch */ }
+      try { fs.write(file, JSON.stringify({ version })) } catch { /* runs again next launch */ }
     },
   }
 }
