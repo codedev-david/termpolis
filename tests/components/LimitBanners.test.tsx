@@ -93,15 +93,39 @@ describe('LimitBanners', () => {
     expect(useTerminalStore.getState().activeTerminalId).toBe('t1')
   })
 
-  it('leaves a chooser already open as it is, and only shows the banner\'s terminal', () => {
+  it("leaves a chooser open for another account's stop as it is, shows that card's pane, and keeps this banner waiting", () => {
     render(<LimitBanners />)
     const open = { terminalId: 't2', limit: ctx({ terminals: ['t2'], accountId: 'acc_b' }) }
     show([{ id: 'b1', kind: 'choose', ctx: ctx() }])
-    act(() => { useTerminalStore.setState({ accountSwitch: open, activeTerminalId: 't2' }) })
+    act(() => { useTerminalStore.setState({ accountSwitch: open, activeTerminalId: 't1', showSettings: true }) })
     fireEvent.click(screen.getByTestId('limit-banner-choose'))
     expect(useTerminalStore.getState().accountSwitch).toBe(open)
-    expect(useTerminalStore.getState().activeTerminalId).toBe('t1')
+    expect(useTerminalStore.getState().activeTerminalId).toBe('t2')
+    expect(useTerminalStore.getState().showSettings).toBe(false)
+    // A stop is offered once: its banner stays until its card can open.
+    expect(useTerminalStore.getState().limitBanners.map((x) => x.id)).toEqual(['b1'])
+    // When that card is answered, the banner opens this one.
+    act(() => { useTerminalStore.setState({ accountSwitch: null }) })
+    fireEvent.click(screen.getByTestId('limit-banner-choose'))
+    expect(useTerminalStore.getState().accountSwitch).toEqual({ terminalId: 't1', limit: ctx() })
     expect(useTerminalStore.getState().limitBanners).toEqual([])
+  })
+
+  it('joins the chooser already open for the same account: each terminal gets its card, and the banner goes', () => {
+    render(<LimitBanners />)
+    const open = { terminalId: 't1', limit: ctx({ terminals: ['t1'] }) }
+    show([{ id: 'b1', kind: 'choose', ctx: ctx({ terminals: ['t2'] }) }])
+    act(() => { useTerminalStore.setState({ accountSwitch: open, activeTerminalId: 't1' }) })
+    fireEvent.click(screen.getByTestId('limit-banner-choose'))
+    expect(useTerminalStore.getState().accountSwitch).toEqual({ terminalId: 't1', limit: ctx({ terminals: ['t1', 't2'] }) })
+    expect(useTerminalStore.getState().limitBanners).toEqual([])
+    expect(useTerminalStore.getState().activeTerminalId).toBe('t2')
+  })
+
+  it('is announced to assistive technology without taking the focus (a polite status)', () => {
+    render(<LimitBanners />)
+    show([{ id: 'b1', kind: 'single', ctx: ctx() }, { id: 'm1', kind: 'menu', ctx: ctx({ agent: 'codex', terminals: ['t2'] }) }])
+    for (const b of screen.getAllByTestId('limit-banner')) expect(b).toHaveAttribute('role', 'status')
   })
 
   it("shows a menu's terminal, and closes any banner on ×", () => {

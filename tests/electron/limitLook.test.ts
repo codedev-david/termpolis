@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import { FOREGROUND_GRACE_MS, agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
+import type { SwitchIO } from '../../src/main/accountSwitch'
 import { stopKind } from '../../src/shared/agentStatusDetector'
 import { FakeTerminal, ID, RULE } from './_switchTerminal'
 import type { TermScript } from './_switchTerminal'
@@ -172,5 +173,121 @@ describe('noteEnteredLine', () => {
     expect(noteEnteredLine(other.t.io(), 't', other.start, 'git status', 900, 5)).toBeNull()
     expect(other.start).toMatchObject({ ended: true })
     expect(other.start.turned).toBeUndefined()
+  })
+})
+
+// ── round 1 ────────────────────────────────────────────────────────────────────────────────
+
+/** A terminal showing Claude Code at rest (a real frame: input box, no exit hint, no prompt report), on a
+ *  platform that cannot tell the foreground process (Windows): atShell answers null. */
+function windowsLike(): SwitchIO {
+  const t = new FakeTerminal({ agent: 'claude', family: 'posix', start: 'idle', exit: 'hint' })
+  return { ...t.io(), atShell: () => null }
+}
+
+describe('a live agent on a platform that cannot tell the foreground process', () => {
+  it('is not read as exited once past the start grace (Windows reports no foreground)', () => {
+    const io = windowsLike()
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0, turned: true }
+    const now = FOREGROUND_GRACE_MS + 7000
+    expect(agentGone(io, 't1', start, now)).toBe(false)
+    const seen = lookForLimit(io, 't1', start, now)
+    expect(seen.live).toBe(true)
+    expect(start.ended).toBeUndefined()
+  })
+
+  it('stays gone once an exit was seen, after its evidence has scrolled away: the next launch typed by hand starts a record', () => {
+    const io = windowsLike()
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0, turned: true, ended: true }
+    expect(agentGone(io, 't1', start, 10_000)).toBe(true)
+    const next = noteEnteredLine(io, 't1', start, 'claude', 500, 10_000)
+    expect(next).toMatchObject({ at: 500, agent: 'claude', commands: ['claude'] })
+  })
+})
+
+describe('where a turn began (R4): an old limit is not the answer to it', () => {
+  const OLD = "You've hit your session limit · resets 3pm (America/New_York)"
+  const screen = (words: string): string => paint(['❯ Build the login page.', `  ⎿ \u00a0${words}`, '', RULE, '❯ ', RULE, '  ⏵⏵ bypass permissions on (shift+tab to cycle)'])
+
+  /** The terminal's output is `out`; its end is where output stands now. */
+  function ioOver(out: { text: string }): SwitchIO {
+    const t = new FakeTerminal({ agent: 'claude', family: 'posix', start: 'idle', exit: 'hint' })
+    const base = t.io()
+    return {
+      ...base,
+      output: () => ({ raw: out.text, end: out.text.length }),
+      outputFrom: (_id, from) => out.text.slice(Math.max(0, from)),
+      end: () => out.text.length,
+      atShell: () => false,
+    }
+  }
+
+  it('counts a limit printed after the turn began, and not one printed before it', () => {
+    const out = { text: screen(OLD) }
+    const io = ioOver(out)
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0 }
+    // The Enter that submits a prompt lands now; the CLI has not redrawn.
+    expect(noteEnteredLine(io, 't1', start, 'continue', out.text.length, 1)).toBeNull()
+    expect(start).toMatchObject({ turned: true, turnedAt: out.text.length })
+    expect(lookForLimit(io, 't1', start, 1)).toMatchObject({ turned: false, words: OLD })
+    out.text += screen(OLD)
+    expect(lookForLimit(io, 't1', start, 2)).toMatchObject({ turned: true, words: OLD })
+  })
+
+  it('keeps a turn with no limit on screen a turn', () => {
+    const io = ioOver({ text: '' })
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0, turned: true, turnedAt: 0 }
+    expect(lookForLimit(io, 't1', start, 1).turned).toBe(true)
+  })
+
+  it('takes a turn seen at work from the look that saw it', () => {
+    const out = { text: paint(['❯ go on', '✻ Thinking… (3s · esc to interrupt)', '', RULE, '❯ ', RULE]) }
+    const io = ioOver(out)
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0 }
+    expect(lookForLimit(io, 't1', start, 1)).toMatchObject({ turned: true })
+    expect(start.turnedAt).toBe(out.text.length)
+    // A turn already begun keeps its place when it is seen at work again.
+    const earlier = out.text.length
+    out.text += paint(['❯ go on', '✻ Thinking… (9s · esc to interrupt)', '', RULE, '❯ ', RULE])
+    lookForLimit(io, 't1', start, 2)
+    expect(start.turnedAt).toBe(earlier)
+  })
+
+  it('has no turn in a start with none: a limit on screen is not counted, with or without words', () => {
+    const out = { text: screen(OLD) }
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0 }
+    expect(lookForLimit(ioOver(out), 't1', start, 1)).toMatchObject({ turned: false, words: OLD })
+  })
+
+  it('matches the words in raw output by their letters and digits, through colour and cursor moves', () => {
+    const out = { text: '' }
+    const io = ioOver(out)
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0, turned: true, turnedAt: 0 }
+    out.text = `${E}[1;31m  ⎿ ${E}[0m${E}[2;5HYou've hit your ${E}[5;9Hsession limit · resets 3pm (America/New_York)${E}[H`
+    out.text += screen(OLD)
+    expect(lookForLimit(io, 't1', start, 1)).toMatchObject({ turned: true })
+  })
+
+  it('treats /resume and /continue typed in a live agent like a relaunch, and no other slash command', () => {
+    const io = ioOver({ text: 'x'.repeat(50) })
+    for (const line of ['/resume', '/continue', '/resume 3f2a']) {
+      const start: LiveStart = { at: 5, commands: ['claude'], agent: 'claude', time: 1, turned: true, turnedAt: 9 }
+      expect(noteEnteredLine(io, 't1', start, line, 77, 1234)).toBeNull()
+      expect(start).toMatchObject({ turned: false, at: 77, time: 1234 })
+      expect(start.turnedAt).toBeUndefined()
+    }
+    for (const line of ['/model', '/clear', '/resumed', '/exit']) {
+      const start: LiveStart = { at: 5, commands: ['claude'], agent: 'claude', time: 1, turned: true, turnedAt: 9 }
+      expect(noteEnteredLine(io, 't1', start, line, 77, 1234)).toBeNull()
+      expect(start).toMatchObject({ turned: true, turnedAt: 9, at: 5 })
+    }
+  })
+
+  it('leaves an agent that has exited, and a terminal with none, alone for /resume', () => {
+    const io = ioOver({ text: '' })
+    const gone: LiveStart = { at: 5, commands: ['claude'], agent: 'claude', time: 1, turned: true, ended: true }
+    expect(noteEnteredLine(io, 't1', gone, '/resume', 77, 1234)).toBeNull()
+    expect(gone).toMatchObject({ turned: true, at: 5 })
+    expect(noteEnteredLine(io, 't1', undefined, '/resume', 77, 1234)).toBeNull()
   })
 })

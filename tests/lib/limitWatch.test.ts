@@ -6,12 +6,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   _resetLimitWatchForTest, bannerText, decideLimit, isTerminalVisible, noteLook,
-  noteSwarmStop, osNotify, pruneChooser, pruneStops, sameGroup, setSwarmStopOffer, showLimit, watchTerminal,
+  noteSwarmStop, osNotify, pruneBanners, pruneChooser, pruneStops, sameGroup, setSwarmStopOffer, showLimit, watchTerminal,
 } from '../../src/renderer/src/lib/limitWatch'
 import type { DecideEnv, LimitBanner, LimitContext, LimitNote, ShowStore } from '../../src/renderer/src/lib/limitWatch'
 import type { LimitLook } from '../../src/shared/accountLimits'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { TerminalSession } from '../../src/renderer/src/types'
+import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 const LIMIT = { status: 'blocked' as const, summary: 'usage limit reached (resets 3pm (America/New_York))' }
 const LIMIT_LATER = { status: 'blocked' as const, summary: 'usage limit reached (resets 2:59pm (America/New_York))' }
@@ -402,5 +403,124 @@ describe('watchTerminal', () => {
     await watchTerminal('t1', 'claude', null, { accounts: { limitLook: vi.fn(async () => { throw new Error('gone') }), noteLimit: vi.fn() }, now: () => 1, onLimit })
     await watchTerminal('t1', 'claude', null, { accounts: api({ success: true, data: look({ status: IDLE }) }), now: () => 1, onLimit })
     expect(onLimit).not.toHaveBeenCalled()
+  })
+})
+
+describe('watchTerminal: the view the next chooser reads (round 1)', () => {
+  const api = (res: unknown, over: Record<string, unknown> = {}) => ({
+    limitLook: vi.fn(async () => res as any),
+    noteLimit: vi.fn(async () => ({ success: true })),
+    list: vi.fn(async () => ({ success: true as const, data: view([{ ...A, limit: { seenAt: 1, resetsAt: 2, text: WORDS, scope: 'account' as const } }, B]) })),
+    ...over,
+  })
+
+  it('reads main\'s accounts after a limit is recorded, so the next card does not offer the account that just ran out', async () => {
+    useTerminalStore.setState({ accountsView: view([A, B]) })
+    const accounts = api({ success: true, data: look() })
+    await watchTerminal('t1', 'claude', view([A, B]), { accounts, now: () => Date.parse('2026-10-23T18:00:00Z'), onLimit: vi.fn() })
+    expect(accounts.noteLimit).toHaveBeenCalledTimes(1)
+    expect(accounts.list).toHaveBeenCalledTimes(1)
+    expect(useTerminalStore.getState().accountsView!.accounts.find((r) => r.id === 'acc_a')!.limit).toBeDefined()
+  })
+
+  it('does not read them for a look that records nothing, and still hands the stop on when it cannot', async () => {
+    const quiet = api({ success: true, data: look({ status: IDLE }) })
+    await watchTerminal('t1', 'claude', view([A, B]), { accounts: quiet, now: () => 1, onLimit: vi.fn() })
+    expect(quiet.list).not.toHaveBeenCalled()
+    const onLimit = vi.fn()
+    const failing = api({ success: true, data: look() }, { list: vi.fn(async () => { throw new Error('gone') }) })
+    await watchTerminal('t1', 'claude', view([A, B]), { accounts: failing, now: () => Date.parse('2026-10-23T18:00:00Z'), onLimit })
+    expect(onLimit).toHaveBeenCalledTimes(1)
+  })
+
+  it('works with a bridge that has no list (a pane\'s tests mock one)', async () => {
+    const onLimit = vi.fn()
+    const noList = { limitLook: vi.fn(async () => ({ success: true, data: look() }) as any), noteLimit: vi.fn(async () => ({ success: true })) }
+    await watchTerminal('t1', 'claude', view([A, B]), { accounts: noList, now: () => Date.parse('2026-10-23T18:00:00Z'), onLimit })
+    expect(onLimit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('watchTerminal: whether the look was answered (round 1)', () => {
+  const lookApi = (limitLook: () => Promise<unknown>) => ({ limitLook: vi.fn(limitLook as never), noteLimit: vi.fn(async () => ({ success: true })) })
+
+  it('says true for a look main answered, whatever it saw, and false for one that failed', async () => {
+    const idle = lookApi(async () => ({ success: true, data: look({ status: IDLE }) }))
+    expect(await watchTerminal('t1', 'claude', null, { accounts: idle, now: () => 1, onLimit: vi.fn() })).toBe(true)
+    const stop = lookApi(async () => ({ success: true, data: look() }))
+    expect(await watchTerminal('t1', 'claude', view([A, B]), { accounts: stop, now: () => Date.parse('2026-10-23T18:00:00Z'), onLimit: vi.fn() })).toBe(true)
+    expect(await watchTerminal('t1', 'claude', null, { accounts: lookApi(async () => ({ success: false, error: 'busy' })), now: () => 1, onLimit: vi.fn() })).toBe(false)
+    expect(await watchTerminal('t1', 'claude', null, { accounts: lookApi(async () => { throw new Error('gone') }), now: () => 1, onLimit: vi.fn() })).toBe(false)
+  })
+})
+
+describe('the one-line banners (round 1)', () => {
+  const env = (over: Partial<DecideEnv> = {}): DecideEnv => ({ view: view([A]), dialog: null, banners: [], mayOpen: true, newId: () => 'b9', ...over })
+  const limit = (c: LimitContext): Exclude<LimitNote, { kind: 'none' }> => ({ kind: 'limit', ctx: c })
+
+  it('is one line for an agent with one account, however many terminals ran out on it, or ran out again', () => {
+    const first = decideLimit(limit(ctx({ terminals: ['t1'] })), env({ newId: () => 'b1' }))
+    expect(first).toMatchObject({ kind: 'banner', banner: { id: 'b1', kind: 'single' } })
+    const banner = (first as { banner: LimitBanner }).banner
+    const second = decideLimit(limit(ctx({ terminals: ['t2'], words: 'newer words', resetsAt: 99 })), env({ banners: [banner] }))
+    expect(second).toEqual({ kind: 'banner', banner: { id: 'b1', kind: 'single', ctx: ctx({ terminals: ['t1', 't2'], words: 'newer words', resetsAt: 99 }) } })
+    // The same terminal answering again with a limit is no new terminal.
+    const again = decideLimit(limit(ctx({ terminals: ['t1'] })), env({ banners: [(second as { banner: LimitBanner }).banner] }))
+    expect((again as { banner: LimitBanner }).banner.ctx.terminals).toEqual(['t1', 't2'])
+    expect((again as { banner: LimitBanner }).banner.id).toBe('b1')
+  })
+
+  it('keeps one line for each account that ran out, and each agent', () => {
+    const banner: LimitBanner = { id: 'b1', kind: 'single', ctx: ctx({ accountId: 'acc_x' }) }
+    expect(decideLimit(limit(ctx({ accountId: 'acc_y' })), env({ banners: [banner], newId: () => 'b2' }))).toMatchObject({ banner: { id: 'b2' } })
+    expect(decideLimit(limit(ctx({ agent: 'codex', accountId: 'acc_x' })), env({ view: view([A, row({ id: 'cx', agent: 'codex' })]), banners: [banner], newId: () => 'b3' }))).toMatchObject({ banner: { id: 'b3' } })
+  })
+
+  it('joins a terminal to the choose banner once', () => {
+    const waiting: LimitBanner = { id: 'w1', kind: 'choose', ctx: ctx({ terminals: ['t1'] }) }
+    const action = decideLimit(limit(ctx({ terminals: ['t1', 't2'] })), env({ view: view([A, B]), banners: [waiting] }))
+    expect((action as { banner: LimitBanner }).banner.ctx.terminals).toEqual(['t1', 't2'])
+  })
+})
+
+describe('pruneBanners: a banner goes when what it is about is over', () => {
+  const lookOf = (over: Partial<LimitLook> = {}): LimitLook => look(over)
+  const store = (banners: LimitBanner[]) => {
+    const calls: string[] = []
+    return {
+      calls,
+      limitBanners: banners,
+      showLimitBanner: (b: LimitBanner) => { calls.push(`show ${b.id} ${b.ctx.terminals.join(',')}`) },
+      dismissLimitBanner: (id: string) => { calls.push(`dismiss ${id}`) },
+    }
+  }
+
+  it('leaves a banner whose terminals still show their stop', () => {
+    noteLook('t1', 'claude', lookOf(), 1)
+    const s = store([{ id: 'b1', kind: 'single', ctx: ctx({ terminals: ['t1'] }) }])
+    pruneBanners(s)
+    expect(s.calls).toEqual([])
+  })
+
+  it('takes a terminal out of a banner once the agent there is at work again, and the banner when none is left', () => {
+    noteLook('t1', 'claude', lookOf(), 1)
+    noteLook('t2', 'claude', lookOf(), 1)
+    const s = store([{ id: 'b1', kind: 'single', ctx: ctx({ terminals: ['t1', 't2'] }) }])
+    noteLook('t1', 'claude', lookOf({ status: WORKING }), 2)
+    pruneBanners(s)
+    expect(s.calls).toEqual(['show b1 t2'])
+    const s2 = store([{ id: 'b1', kind: 'single', ctx: ctx({ terminals: ['t1'] }) }])
+    pruneBanners(s2)
+    expect(s2.calls).toEqual(['dismiss b1'])
+  })
+
+  it('takes a menu banner away when the menu is answered, and a closed terminal\'s stop with it', () => {
+    noteLook('t5', 'claude', lookOf({ status: MENU }), 1)
+    const s = store([{ id: 'm1', kind: 'menu', ctx: ctx({ terminals: ['t5'] }) }])
+    pruneBanners(s)
+    expect(s.calls).toEqual([])
+    pruneStops(new Set())
+    pruneBanners(s)
+    expect(s.calls).toEqual(['dismiss m1'])
   })
 })

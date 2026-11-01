@@ -852,8 +852,9 @@ describe('Settings ▸ Accounts wiring', () => {
     mockWriteToTerminal.mockImplementationOnce(() => { order.push('pty') })
     H.noteTypedInput.mockImplementationOnce(() => { order.push('watch'); return null })
     write('\x1b[200~unset CLAUDE_CONFIG_DIR\x1b[201~')
-    // The paste's markers come off, as for the launch audit.
-    expect(H.noteTypedInput).toHaveBeenCalledWith('t-typed', 'unset CLAUDE_CONFIG_DIR', expect.any(Number), undefined)
+    // The paste's markers stay on what the account watch is shown (they say a paste's line breaks are
+    // text, not Enters: accountsIpc.ts gatherLines); the launch audit reads it with them off.
+    expect(H.noteTypedInput).toHaveBeenCalledWith('t-typed', '\x1b[200~unset CLAUDE_CONFIG_DIR\x1b[201~', expect.any(Number), undefined)
     expect(order).toEqual(['pty', 'watch'])
     // A watch that throws never breaks the terminal.
     H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })

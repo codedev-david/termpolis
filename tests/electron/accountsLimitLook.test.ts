@@ -321,3 +321,206 @@ describe('withLimitChooser', () => {
     expect(withLimitChooser(undefined, 'claude')).toBeUndefined()
   })
 })
+
+describe('R4: an old limit the CLI redraws is no new stop (round 1)', () => {
+  const OLD = "You've hit your session limit · resets 3pm (America/New_York)"
+  const NEWER = "You've hit your weekly limit · resets Nov 3, 9am (America/New_York)"
+  const limitScreen = (words: string, prompt = 'Build the login page.') => paint([`❯ ${prompt}`, `  ⎿  ${words}`, '', RULE, '❯ ', RULE])
+  const lookNow = (): Promise<LimitLook> => ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+
+  /** A relaunch or a resume: the conversation's last message, an old limit, is on screen and no prompt was entered. */
+  async function resumed(): Promise<void> {
+    await launch('claude')
+    term.mode = 'agent'
+    term.out += term.frame()
+    term.out += limitScreen(OLD)
+  }
+
+  it('a pasted block of lines (bracketed paste) is text in the box, not Enters: no turn', async () => {
+    await resumed()
+    noteTypedInput('t1', `${E}[200~first line of a note\rsecond line of a note${E}[201~`, clock)
+    const l = await lookNow()
+    expect(l).toMatchObject({ live: true, turned: false, words: OLD })
+    expect(terminalAgentStart('t1')!.turned).toBeUndefined()
+  })
+
+  it("a pasted line is held for the Enter the user sends, and its line breaks read as ';' like a shell takes them", async () => {
+    await launch('claude')
+    noteTypedInput('t1', `${E}[200~export CLAUDE_CONFIG_DIR=/x/.claude-b\r${E}[201~`, clock)
+    // Nothing was entered by the paste: the line waits, whole, for the Enter.
+    expect(isAccountChangedByHand('t1')).toBe(false)
+    noteTypedInput('t1', '\r', clock)
+    expect(isAccountChangedByHand('t1')).toBe(true)
+  })
+
+  it('an unfinished paste (its end marker never came) is text to the end of what was written', async () => {
+    await launch('claude')
+    noteTypedInput('t1', `${E}[200~export CLAUDE_CONFIG_DIR=/x/.claude-c\r`, clock)
+    expect(isAccountChangedByHand('t1')).toBe(false)
+    noteTypedInput('t1', '\r', clock)
+    expect(isAccountChangedByHand('t1')).toBe(true)
+  })
+
+  it('Shift+Enter (Esc then Enter) is a new line in the box, not a submit', async () => {
+    await resumed()
+    noteTypedInput('t1', 'the first line of a two line prompt', clock)
+    noteTypedInput('t1', `${E}\r`, clock)
+    expect((await lookNow()).turned).toBe(false)
+    expect(terminalAgentStart('t1')!.turned).toBeUndefined()
+  })
+
+  it('the Enter that then sends it is the turn, but the old limit above the box is not this turn\'s answer', async () => {
+    await resumed()
+    noteTypedInput('t1', 'the first line of a two line prompt', clock)
+    noteTypedInput('t1', `${E}\r`, clock)
+    noteTypedInput('t1', 'and the second\r', clock)
+    expect(terminalAgentStart('t1')!.turned).toBe(true)
+    // The CLI has not redrawn yet: the old limit is still above the box, printed before the Enter.
+    const before = await lookNow()
+    expect(before).toMatchObject({ live: true, turned: false, words: OLD })
+    // Its answer is a limit, printed after: that one is a stop.
+    term.out += limitScreen(NEWER, 'and the second')
+    expect(await lookNow()).toMatchObject({ turned: true, words: NEWER })
+  })
+
+  it('the same words printed again after the turn are a stop: the account ran out here too', async () => {
+    await resumed()
+    noteTypedInput('t1', 'continue\r', clock)
+    expect((await lookNow()).turned).toBe(false)
+    term.out += limitScreen(OLD, 'continue')
+    expect(await lookNow()).toMatchObject({ turned: true, words: OLD })
+  })
+
+  it('a turn seen at work (not typed here) counts from the look that saw it', async () => {
+    await resumed()
+    term.out += paint(['❯ continue', '✻ Thinking… (3s · esc to interrupt)', '', RULE, '❯ ', RULE])
+    const working = await lookNow()
+    expect(working.turned).toBe(true)
+    expect(terminalAgentStart('t1')!.turnedAt).toBe(term.out.length)
+    // The old limit redrawn above the box after that is not printed since the turn began: ... unless it is.
+    term.out += limitScreen(NEWER, 'continue')
+    expect(await lookNow()).toMatchObject({ turned: true, words: NEWER })
+  })
+
+  it('/resume typed inside the agent starts over: no turn until a prompt is entered on the conversation it shows', async () => {
+    await launch('claude')
+    term.mode = 'agent'
+    term.out += term.frame()
+    noteTypedInput('t1', 'an earlier prompt\r', clock)
+    expect(terminalAgentStart('t1')!.turned).toBe(true)
+    // /resume picks a conversation whose last message is an old limit, and the CLI draws it.
+    noteTypedInput('t1', '/resume\r', clock)
+    term.out += limitScreen(OLD)
+    const l = await lookNow()
+    expect(l).toMatchObject({ live: true, turned: false, words: OLD })
+    expect(terminalAgentStart('t1')!.turned).toBe(false)
+    // A prompt entered on it is a turn again.
+    noteTypedInput('t1', 'go on\r', clock)
+    expect(terminalAgentStart('t1')!.turned).toBe(true)
+    term.out += limitScreen(NEWER, 'go on')
+    expect(await lookNow()).toMatchObject({ turned: true, words: NEWER })
+  })
+
+  it('/continue does the same, and any other slash command leaves the turn alone', async () => {
+    await launch('claude')
+    term.mode = 'agent'
+    term.out += term.frame()
+    noteTypedInput('t1', 'an earlier prompt\r', clock)
+    noteTypedInput('t1', '/model\r', clock)
+    expect(terminalAgentStart('t1')!.turned).toBe(true)
+    noteTypedInput('t1', '/continue\r', clock)
+    expect(terminalAgentStart('t1')!.turned).toBe(false)
+  })
+
+  it('/resume typed at an agent that has exited changes nothing', async () => {
+    await launch('claude')
+    terminalAgentStart('t1')!.ended = true
+    noteTypedInput('t1', '/resume\r', clock)
+    expect(terminalAgentStart('t1')!.turned).toBeUndefined()
+  })
+})
+
+describe('R15: an account benched before an agent started on it, whose agent then answers a prompt, is not out of usage (round 1)', () => {
+  const WORDS = "You've hit your session limit · resets 3pm (America/New_York)"
+  const WORKING = ['❯ continue', '✻ Thinking… (3s · esc to interrupt)', '', RULE, '❯ ', RULE]
+
+  /** A registered account, the terminal's agent started on it at `clock`, and a prompt entered. */
+  async function onAccount(): Promise<string> {
+    const added = await ok<{ account: { id: string } }>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', email: 'g@example.test' })
+    return added.account.id
+  }
+  const limitOf = async (id: string): Promise<unknown> => (await ok<{ accounts: Array<{ id: string; limit?: unknown }> }>(ACCOUNTS_IPC.list)).accounts.find((a) => a.id === id)?.limit
+  const lookNow = (): Promise<LimitLook> => ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+
+  async function started(id: string): Promise<void> {
+    await launch('claude')
+    noteTerminalAccount('t1', id)
+    term.mode = 'agent'
+    term.out += term.frame()
+    noteTypedInput('t1', 'continue\r', clock)
+  }
+
+  it('lifts the limit that was recorded before the agent started, once the agent is seen at work on a turn', async () => {
+    const id = await onAccount()
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    expect(await limitOf(id)).toBeDefined()
+    clock += 60_000
+    await started(id)
+    term.out += paint(WORKING)
+    expect((await lookNow()).turned).toBe(true)
+    expect(await limitOf(id)).toBeUndefined()
+  })
+
+  it('keeps a limit recorded after the agent started, and one while the agent is not at work', async () => {
+    const id = await onAccount()
+    clock += 60_000
+    await started(id)
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    clock += 1000
+    term.out += paint(WORKING)
+    await lookNow()
+    expect(await limitOf(id)).toBeDefined()
+    // Not at work: a screen that shows only the box.
+    const other = await ok<{ account: { id: string } }>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'h', email: 'h@example.test' })
+    await ok(ACCOUNTS_IPC.noteLimit, { id: other.account.id, text: WORDS, window: 'weekly' })
+    clock += 60_000
+    noteTerminalAccount('t1', other.account.id)
+    noteAgentStart('t1', { at: term.out.length, commands: ['claude'], agent: 'claude' }, clock)
+    noteTypedInput('t1', 'continue\r', clock)
+    term.out += paint(['❯ ', RULE, '❯ ', RULE])
+    await lookNow()
+    expect(await limitOf(other.account.id)).toBeDefined()
+  })
+
+  it('lifts it once per start, and leaves a limit of another account alone', async () => {
+    const id = await onAccount()
+    const other = await ok<{ account: { id: string } }>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'h', email: 'h@example.test' })
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    await ok(ACCOUNTS_IPC.noteLimit, { id: other.account.id, text: WORDS, window: 'weekly' })
+    clock += 60_000
+    await started(id)
+    term.out += paint(WORKING)
+    await lookNow()
+    expect(await limitOf(id)).toBeUndefined()
+    expect(await limitOf(other.account.id)).toBeDefined()
+    // Recorded again meanwhile (another terminal hit it): this start does not lift it a second time.
+    clock += 1000
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    term.out += paint(WORKING)
+    await lookNow()
+    expect(await limitOf(id)).toBeDefined()
+  })
+
+  it('does nothing for a terminal on no account, or an agent that is not live', async () => {
+    const id = await onAccount()
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    clock += 60_000
+    await launch('claude')
+    term.mode = 'agent'
+    term.out += term.frame()
+    noteTypedInput('t1', 'continue\r', clock)
+    term.out += paint(WORKING)
+    await lookNow()
+    expect(await limitOf(id)).toBeDefined()
+  })
+})

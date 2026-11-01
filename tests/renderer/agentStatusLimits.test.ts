@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { detectAgentStatus, isLimitOrMenu, menuAnswer } from '../../src/shared/agentStatusDetector'
+import { detectAgentStatus, isLimitOrMenu, menuAnswer, stopKind } from '../../src/shared/agentStatusDetector'
 import { screenOf } from '../../src/shared/terminalScreen'
 import { buildConductorPrompt } from '../../src/renderer/src/lib/conductorPrompt'
 import { noteWorkerStatus } from '../../src/renderer/src/lib/swarmStopReports'
@@ -695,5 +695,32 @@ describe('what is no usage limit or menu', () => {
   it('is no quota dialog: a box at the bottom with other words in it, as Codex draws its header before its composer', () => {
     const header = ['╭──────────────────────────────────────────────────╮', '│ >_ OpenAI Codex (v0.153.4)                       │', '│ model:     loading   /model to change            │', '╰──────────────────────────────────────────────────╯']
     expect(isLimitOrMenu(onScreen(header))).toBe(false)
+  })
+})
+
+// Stops an admin or a workspace puts on a seat: the program text of Claude Code 2.1.316 and Codex 0.164 has
+// them (read-only scan of the installed programs; no capture of them drawn exists, so these screens are
+// synthetic, in the layout the same CLI draws its other limit messages in). Another account may have a
+// seat, so a switch is a way out of each.
+describe('a stop an admin or a workspace puts on a seat (round 1)', () => {
+  it.each([
+    ['Claude Code: no usage in this seat type', 'Claude', ['❯ Build the page', `${REPLY}Your seat type doesn't include usage`, ...CLAUDE_IDLE]],
+    ['Claude Code: no usage credits in this seat type', 'Claude', ['❯ Build the page', `${REPLY}Your seat type doesn't include usage credits`, ...CLAUDE_IDLE]],
+    ['Claude Code: the allocation turned off by an admin', 'Claude', ['❯ Build the page', `${REPLY}Your usage allocation has been disabled by your admin`, ...CLAUDE_IDLE]],
+    ['Claude Code: a group limit of nothing', 'Claude', ['❯ Build the page', `${REPLY}Your group's usage limit is set to $0`, ...CLAUDE_IDLE]],
+    ['Codex: the workspace is out of credits', 'Codex', ['› Fix the login test', '', '• I will fix the test.', '', '■ Your workspace is out of credits. Add credits to continue.', ...CODEX_IDLE]],
+    ['Codex: the workspace spend cap', 'Codex', ['› Fix the login test', '', '■ You hit your spend cap set in your workspace. Ask an admin to raise it.', ...CODEX_IDLE]],
+  ])('%s: a limit, so a way out is offered', (_name, agent, rows) => {
+    const result = onScreen(rows, agent)
+    expect(result.status).toBe('blocked')
+    expect(stopKind(result)).toBe('limit')
+  })
+
+  it.each([
+    ['a prompt quoting it', 'Claude', ['❯ Your seat type doesn\'t include usage, what now?', ...CLAUDE_IDLE]],
+    ['an answer that mentions it mid-sentence', 'Claude', ['❯ why?', '● It says that your seat type doesn\'t include usage today.', ...CLAUDE_IDLE]],
+    ['Codex quoting it in its answer', 'Codex', ['› why?', '', '• The message "Your workspace is out of credits" means an admin acts.', '', ...CODEX_IDLE]],
+  ])('%s is no stop', (_name, agent, rows) => {
+    expect(stopKind(onScreen(rows, agent))).not.toBe('limit')
   })
 })

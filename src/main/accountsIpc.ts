@@ -394,7 +394,18 @@ function gatherLines(terminalId: string, typed: string, onLine: (line: string) =
   let line = typedLines.get(terminalId) ?? ''
   for (let i = 0; i < typed.length; i++) {
     const c = typed[i]
-    if (c === '\r' || c === '\n') {
+    if (c === '\x1b' && typed.startsWith('\x1b[200~', i)) {
+      // A bracketed paste: its line breaks are text in the box (a shell takes them as `;`), not Enters;
+      // the user's own Enter sends it. An end marker that never came ends it with what was written.
+      const end = typed.indexOf('\x1b[201~', i + 6)
+      const body = typed.slice(i + 6, end < 0 ? typed.length : end)
+      line = (line + body.replace(/\r\n|\r|\n/g, '; ').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')).slice(0, TYPED_LINE_MAX)
+      i = end < 0 ? typed.length : end + 5
+    } else if (c === '\x1b' && (typed[i + 1] === '\r' || typed[i + 1] === '\n')) {
+      // Esc then Enter (Shift+Enter in an agent's box, TerminalPane): a new line in the box, not a submit.
+      line += ' '
+      i++
+    } else if (c === '\r' || c === '\n') {
       onLine(line)
       line = ''
     } else if (c === '\x7f' || c === '\b') line = line.slice(0, -1)
@@ -1231,8 +1242,19 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (!io) throw new Error('main has no terminals to look at')
     const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
     if (!terminalId) throw new Error('which terminal?')
-    const seen = lookForLimit(io, terminalId, agentStarts.get(terminalId), now())
-    return { ...seen, accountId: terminalAccounts.get(terminalId) ?? null, byHand: byHand.has(terminalId) }
+    const start = agentStarts.get(terminalId)
+    const seen = lookForLimit(io, terminalId, start, now())
+    const accountId = terminalAccounts.get(terminalId) ?? null
+    // R15: an account recorded as out of usage BEFORE this agent started on it, whose agent now answers a
+    // prompt (seen at work on a turn), is not out of usage: the record was wrong, or its reset came early.
+    // Once per start. A limit recorded after the start (another terminal's) is none of this agent's to lift.
+    if (start && accountId && !start.healed && seen.live && seen.turned && seen.status.status === 'working') {
+      start.healed = true
+      const benched = loadAccounts(userData(), fsx)
+      const limit = benched.ok ? benched.doc.file.limits[accountId] : undefined
+      if (limit && limit.seenAt < (start.time ?? 0)) update((d) => { delete d.file.limits[accountId] })
+    }
+    return { ...seen, accountId, byHand: byHand.has(terminalId) }
   })
 
   handle(ACCOUNTS_IPC.switchAccount, async (input): Promise<SwitchOutcome> => {

@@ -6,7 +6,7 @@
 // an agent waiting on a menu, which only the user answers. A banner never takes a key: it is a line,
 // not a dialog. One whose terminals all closed goes.
 import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
-import { bannerText } from '../../lib/limitWatch'
+import { bannerText, sameGroup } from '../../lib/limitWatch'
 import type { LimitBanner } from '../../lib/limitWatch'
 import { requestSettingsTab } from '../../lib/settingsNav'
 import { useTerminalStore } from '../../store/terminalStore'
@@ -29,9 +29,18 @@ export function LimitBanners() {
   /** The chooser's card is on the stopped terminal's pane: that pane, on screen, with its card. */
   const choose = (b: LimitBanner): void => {
     const s = store()
-    s.dismissLimitBanner(b.id)
-    if (!s.accountSwitch) s.openLimitChooser(b.ctx)
+    const open = s.accountSwitch
     if (s.showSettings) s.setShowSettings(false)
+    if (open && !(open.limit && sameGroup(open.limit, b.ctx))) {
+      // Another chooser is open, on another account's stop: this one waits behind it, its banner staying
+      // (a stop is offered once) until that card is answered. That card's pane shows, to be answered.
+      s.setActiveTerminal(open.terminalId)
+      return
+    }
+    s.dismissLimitBanner(b.id)
+    // The same account's chooser is open already: this stop's terminals join it, each with its own card.
+    if (open) for (const id of b.ctx.terminals) s.joinLimitChooser(id)
+    else s.openLimitChooser(b.ctx)
     s.setActiveTerminal(b.ctx.terminals[0])
   }
   const hideForGood = (b: LimitBanner): void => {
@@ -48,6 +57,7 @@ export function LimitBanners() {
       {shown.map((b) => (
         <div
           key={b.id}
+          role="status"
           data-testid="limit-banner"
           data-kind={b.kind}
           title={b.kind === 'menu' ? undefined : `${ACCOUNT_AGENT_LABEL[b.ctx.agent]}: ${b.ctx.words}`}

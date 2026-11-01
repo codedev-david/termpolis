@@ -199,6 +199,13 @@ function actualEmail(r: AccountRowView): string | null {
   return isProfileAgent(r.agent) ? r.lastEmail : r.email ?? null
 }
 
+/** A recorded limit whose reset time has passed has lifted, whatever the view was last read as: main
+ *  drops it when it next lists, and the view the renderer holds is only as new as its last read. A limit
+ *  with no time read stays until main drops it (it knows the cooldown). */
+function liftedLimit(limit: { resetsAt: number | null }, now: number): boolean {
+  return limit.resetsAt !== null && limit.resetsAt <= now
+}
+
 /**
  * The accounts the chooser lists when a terminal of `agent` ran out on `limited` (its account, and
  * the email its profile is signed in to: a limit belongs to the login, R23): the agent's accounts
@@ -218,7 +225,7 @@ export function limitTargets(
   const at = own.findIndex((r) => r.id === limited.accountId)
   const round = at < 0 ? own : [...own.slice(at + 1), ...own.slice(0, at)]
   // Sign-ins out of usage by Termpolis's records: an unexpired limit of the whole account.
-  const outEmails = own.filter((r) => r.limit && r.limit.scope === 'account' && r.limit.email).map((r) => r.limit!.email!)
+  const outEmails = own.filter((r) => r.limit && r.limit.scope === 'account' && r.limit.email && !liftedLimit(r.limit, now)).map((r) => r.limit!.email!)
   const targets: LimitTarget[] = []
   for (const r of round) {
     if (!r.autoOffer) continue
@@ -231,7 +238,7 @@ export function limitTargets(
 function targetOf(r: AccountRowView, limitedEmail: string | null, outEmails: readonly string[], now: number, check: TargetCheck | undefined): LimitTarget {
   if (isProfileAgent(r.agent) && !r.folderExists) return { row: r, state: 'folder-missing', text: 'its profile folder doesn\'t exist' }
   const email = check?.kind === 'signed-in' && check.email ? check.email : actualEmail(r)
-  if (r.limit && r.limit.scope === 'account') {
+  if (r.limit && r.limit.scope === 'account' && !liftedLimit(r.limit, now)) {
     const until = untilText(r.limit.resetsAt, now)
     return { row: r, state: 'limited', text: until ? `out of usage ${until}` : 'out of usage' }
   }

@@ -52,7 +52,7 @@ import type { ShellInfo } from './types'
 import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
-import { noteSwarmStop, osNotify, pruneChooser, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
+import { noteSwarmStop, osNotify, pruneBanners, pruneChooser, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
 import { detectAgentStatus, limitWords } from '../../shared/agentStatusDetector'
 import { screenOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
@@ -794,6 +794,7 @@ export default function App() {
       )
       pruneStops(new Set(store.terminals.map((t) => t.id)))
       pruneChooser(store)
+      pruneBanners(store)
       if (agentTerminals.length === 0) return
 
       for (const term of agentTerminals) {
@@ -818,13 +819,16 @@ export default function App() {
           // The usage-limit chooser (§8.1): main judges the changed screen, beside its buffer, with
           // what it knows of the agent there. Never the conductor's (terminalAgent).
           if (agent && window.accounts?.limitLook) {
-            await watchTerminal(term.id, agent, store.accountsView, {
+            const looked = await watchTerminal(term.id, agent, store.accountsView, {
               accounts: window.accounts,
               now: Date.now,
               onLimit: (note) => showLimit(note, {
                 store: useTerminalStore.getState, focused: () => document.hasFocus(), now: Date.now, newId: uuid, notify: osNotify,
               }),
             })
+            // A limit screen is still: a look that failed (main busy, an IPC error) must be tried again
+            // on the next tick, not passed by as a screen already judged.
+            if (!looked) lastDismissedPrompt.delete(term.id)
           }
         } catch {
           // Terminal gone — skip

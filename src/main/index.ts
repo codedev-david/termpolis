@@ -1121,7 +1121,8 @@ ipcMain.on('terminal:write', (_, { id, data, key }: { id: string; data: string; 
   writeToTerminal(id, data)
   // Which account the terminal's agents run on, as typed: Termpolis's own launch line, or a line
   // typed by hand that changes it (accountsIpc.ts).
-  try { if (typeof data === 'string') noteTypedInput(id, typed, Date.now(), typeof key === 'string' ? key : undefined) } catch {}
+  // The raw data, not `typed`: a paste's markers say its line breaks are text, not Enters (accountsIpc.ts gatherLines).
+  try { if (typeof data === 'string') noteTypedInput(id, data, Date.now(), typeof key === 'string' ? key : undefined) } catch {}
   try {
     if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
       const last = recentlyAuditedTerminals.get(id) || 0

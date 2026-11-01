@@ -33,6 +33,21 @@ export interface LiveStart {
   ended?: boolean
   /** Took a turn since: a prompt entered in its box, or seen at work. */
   turned?: boolean
+  /** Where in its output that turn began (the Enter, or the first look that saw it at work). */
+  turnedAt?: number
+  /** Its account's recorded limit was looked at once, for this start (R15). */
+  healed?: boolean
+}
+
+/** Letters and digits only: how the CLI's words are matched in raw output, which colours and wraps them. */
+const bareText = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '')
+
+/** Were the limit's words printed since `from`? Between the Enter that submits a prompt and the CLI's
+ *  redraw, the screen still shows the conversation that was resumed, ending at its old limit (R4):
+ *  that limit was printed before the turn began, and is no answer to it. */
+function printedSince(io: SwitchIO, id: string, from: number, words: string): boolean {
+  const head = bareText(words).slice(0, 40)
+  return head.length > 0 && bareText(plain(io.outputFrom(id, from))).includes(head)
 }
 
 /** How long after its start a shell still in the PTY's foreground is no sign of an exit: the moment
@@ -68,14 +83,22 @@ export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefi
   if (!start) return { agent: null, live: false, turned: false, startAt: null, status, words: null }
   if (agentGone(io, id, start, now, l)) start.ended = true
   const live = !start.ended
-  if (live && status.status === 'working') start.turned = true
+  if (live && status.status === 'working' && !start.turned) {
+    start.turned = true
+    start.turnedAt = io.end(id)
+  }
+  const words = stopKind(status) === 'limit' ? limitWords(l.lines.join('\n')) : null
+  // A limit on screen that the CLI did not print since the turn began is the old one of the conversation
+  // it resumed, drawn again: not this turn's answer. The Enter that submits a prompt lands before the
+  // CLI redraws, and a /resume or a pasted block flips nothing that tells the two apart.
+  const fresh = !words || start.turnedAt === undefined || printedSince(io, id, start.turnedAt, words)
   return {
     agent: start.agent ?? null,
     live,
-    turned: start.turned === true,
+    turned: start.turned === true && fresh,
     startAt: start.at,
     status,
-    words: stopKind(status) === 'limit' ? limitWords(l.lines.join('\n')) : null,
+    words,
   }
 }
 
@@ -91,11 +114,23 @@ export function noteEnteredLine(
   io: SwitchIO, id: string, start: LiveStart | undefined, line: string, at: number, now: number, lookNow: () => Look = () => look(io, id),
 ): LiveStart | null {
   const launched = agentOfLaunch(line)
+  // /resume and /continue put another conversation on screen: like a relaunch, it may end in an old
+  // limit, drawn again, and that is no stop of this agent until it takes a turn on it (R4).
+  if (!launched && start && !start.ended && /^\/(?:resume|continue)\b/.test(line)) {
+    start.turned = false
+    start.turnedAt = undefined
+    start.at = at
+    start.time = now
+    return null
+  }
   if (!launched && (!start || start.ended || start.turned || line.startsWith('/'))) return null
   const l = lookNow()
   const gone = !start || agentGone(io, id, start, now, l)
   if (start && gone) start.ended = true
   if (launched && gone) return { at, commands: [line], agent: launched, time: now }
-  if (start && !gone && l.box >= 0) start.turned = true
+  if (start && !gone && l.box >= 0) {
+    start.turned = true
+    start.turnedAt = at
+  }
   return null
 }

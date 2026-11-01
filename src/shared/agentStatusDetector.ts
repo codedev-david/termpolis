@@ -370,6 +370,10 @@ const CLAUDE_LIMIT_MESSAGES: readonly RegExp[] = [
   /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]ve reached your (?!workspace)[\w ]{1,20}? limit\./,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]re out of (?:usage credits|extra usage)\b/,
+  // What an admin puts on a seat (read from the program text of Claude Code 2.1.316): another account may have one.
+  /^\s*(?:⎿\s+)?Your seat type doesn['’]t include usage(?: credits)?\b/,
+  /^\s*(?:⎿\s+)?Your usage allocation has been disabled by your admin\b/,
+  /^\s*(?:⎿\s+)?Your group['’]s usage limit is set to \$0(?![\d.])/,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?Your org is out of usage\b/,
 ]
 /** Whether a row starts with one of Claude Code's limit messages (CLAUDE_LIMIT_MESSAGES): the run
@@ -482,7 +486,8 @@ function stopAroundBox(rows: readonly string[], box: number): string | null {
 // An answer or a tool's output indents what it quotes, or puts its own mark first; a prompt or an
 // answer after the message makes it history. Read only with the agent at rest: while it works, the
 // echo of the prompt it was just sent can end in anything.
-const CODEX_LIMIT_CELL = /^■ You['’]ve hit your usage limit\b/
+// Codex's, and the workspace stops a Business or Enterprise seat meets (read from Codex 0.164's program text).
+const CODEX_LIMIT_CELL = /^■ (?:You['’]ve hit your usage limit|Your workspace is out of credits|You hit your spend cap set in your workspace)\b/
 const AGY_LIMIT_CELL = /^✕ You have exhausted your quota on this model\./
 /** A row that starts a cell of its own in an agent's transcript: not the rest of a wrapped one. */
 const CELL_START = /^(?:[•■⚠✕›>❯●]|\s*⎿)/

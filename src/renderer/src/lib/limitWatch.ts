@@ -17,6 +17,7 @@ import { limitKindOf, parseResetsAt, resetTextOf, stopKey, untilText } from '../
 import type { LimitKind, LimitLook } from '../../../shared/accountLimits'
 import { ACCOUNT_AGENT_LABEL } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountsView } from '../../../shared/agentAccounts'
+import { refreshAccounts } from './accountsState'
 import type { AccountsAPI, PaneNode, TerminalSession } from '../types'
 import { READS_TO_CLEAR, noteWorkerStatus } from './swarmStopReports'
 import type { StopOffer, SwarmWorker } from './swarmStopReports'
@@ -93,6 +94,18 @@ export function pruneStops(open: ReadonlySet<string>): void {
   for (const id of stops.keys()) if (!open.has(id)) stops.delete(id)
 }
 
+/** A banner's terminals that no longer show the stop it is about (the agent is at work again, or the
+ *  limit lifted, or the terminal closed) leave it, and a banner with none left goes: it would still say
+ *  "out of usage" of an agent that is working. */
+export function pruneBanners(s: { limitBanners: readonly LimitBanner[]; showLimitBanner: (b: LimitBanner) => void; dismissLimitBanner: (id: string) => void }): void {
+  for (const b of s.limitBanners) {
+    const left = b.ctx.terminals.filter((id) => stops.has(id))
+    if (left.length === b.ctx.terminals.length) continue
+    if (left.length === 0) s.dismissLimitBanner(b.id)
+    else s.showLimitBanner({ ...b, ctx: { ...b.ctx, terminals: left } })
+  }
+}
+
 /** The chooser gives up a terminal that closed, or that runs another agent now: its card was on
  *  that pane, so the chooser moves on to the limit's next terminal, or closes. */
 export function pruneChooser(s: { accountSwitch: ShowStore['accountSwitch']; terminals: readonly TerminalSession[]; leaveLimitChooser: (terminalId: string) => void }): void {
@@ -110,6 +123,9 @@ export function _resetLimitWatchForTest(): void {
 }
 
 // ── What the user sees ────────────────────────────────────────────────────────────────
+
+/** `more` joined to `terminals`, each terminal once. */
+const withTerminals = (terminals: readonly string[], more: readonly string[]): string[] => [...terminals, ...more.filter((id) => !terminals.includes(id))]
 
 /** Two prompts about the same account of the same agent are one (R22): grouped by account. */
 export function sameGroup(a: LimitContext, b: LimitContext): boolean {
@@ -150,10 +166,15 @@ export function decideLimit(note: Exclude<LimitNote, { kind: 'none' }>, env: Dec
   if (note.kind === 'menu') return banner('menu', note.ctx)
   const ctx = note.ctx
   const accounts = env.view.accounts.filter((r) => r.agent === ctx.agent)
-  if (accounts.length <= 1) return env.view.hidden.limitBanner ? { kind: 'nothing' } : banner('single', ctx)
+  if (accounts.length <= 1) {
+    if (env.view.hidden.limitBanner) return { kind: 'nothing' }
+    // One line for the agent's account, however many terminals ran out on it, or ran out again.
+    const same = env.banners.find((b) => b.kind === 'single' && sameGroup(b.ctx, ctx))
+    return same ? { kind: 'banner', banner: { ...same, ctx: { ...ctx, terminals: withTerminals(same.ctx.terminals, ctx.terminals) } } } : banner('single', ctx)
+  }
   if (env.dialog?.limit && sameGroup(env.dialog.limit, ctx)) return { kind: 'join' }
   const waiting = env.banners.find((b) => b.kind === 'choose' && sameGroup(b.ctx, ctx))
-  if (waiting) return { kind: 'banner', banner: { ...waiting, ctx: { ...waiting.ctx, terminals: [...waiting.ctx.terminals, ...ctx.terminals] } } }
+  if (waiting) return { kind: 'banner', banner: { ...waiting, ctx: { ...waiting.ctx, terminals: withTerminals(waiting.ctx.terminals, ctx.terminals) } } }
   if (!env.view.chooser || !env.mayOpen || env.dialog) return banner('choose', ctx)
   return { kind: 'open', ctx }
 }
@@ -287,7 +308,7 @@ export async function noteSwarmStop(worker: SwarmWorker, result: AgentStatusResu
 // ── The look, and what follows it ─────────────────────────────────────────────────────
 
 export interface WatchDeps {
-  accounts: Pick<AccountsAPI, 'limitLook' | 'noteLimit'>
+  accounts: Pick<AccountsAPI, 'limitLook' | 'noteLimit'> & Partial<Pick<AccountsAPI, 'list'>>
   now: () => number
   /** What follows a new stop: its record against the account, and what the user sees. */
   onLimit: (note: Exclude<LimitNote, { kind: 'none' }>) => void
@@ -296,24 +317,31 @@ export interface WatchDeps {
 /**
  * Looks at one agent terminal whose screen changed, for the 2 s loop: main's judgement of it, then
  * a new stop recorded against the account it hit (with the sign-in's email, R23) and handed on.
- * A look that fails is the next tick's to try.
+ * Whether main answered: false for a look that failed, which is the next tick's to try (the loop
+ * then judges the unchanged screen again instead of passing it by).
  */
-export async function watchTerminal(terminalId: string, agent: AccountAgent, view: AccountsView | null, deps: WatchDeps): Promise<void> {
+export async function watchTerminal(terminalId: string, agent: AccountAgent, view: AccountsView | null, deps: WatchDeps): Promise<boolean> {
   let look: LimitLook
   try {
     const res = await deps.accounts.limitLook(terminalId)
-    if (!res.success) return
+    if (!res.success) return false
     look = res.data
   } catch {
-    return
+    return false
   }
   const note = noteLook(terminalId, agent, look, deps.now())
-  if (note.kind === 'none') return
+  if (note.kind === 'none') return true
   const row = note.ctx.accountId ? view?.accounts.find((r) => r.id === note.ctx.accountId) : undefined
   if (note.kind === 'limit' && row) {
     const email = row.lastEmail ?? (agent === 'agy' ? row.email : undefined)
     const limit = { text: note.ctx.words, resetsAt: note.ctx.resetsAt, scope: note.ctx.kind.scope, window: note.ctx.kind.window, ...(email ? { email } : {}) }
-    try { await deps.accounts.noteLimit(row.id, limit) } catch { /* the chooser still opens */ }
+    try {
+      await deps.accounts.noteLimit(row.id, limit)
+      // The view the next chooser reads now holds what main just recorded: the account that ran out is
+      // no way out of the next stop.
+      if (deps.accounts.list) await refreshAccounts({ list: deps.accounts.list })
+    } catch { /* the chooser still opens */ }
   }
   deps.onLimit(note)
+  return true
 }

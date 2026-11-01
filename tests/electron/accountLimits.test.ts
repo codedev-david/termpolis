@@ -99,6 +99,13 @@ describe('parseResetsAt', () => {
 })
 
 describe('limitKindOf (R15)', () => {
+  it('takes an admin or workspace stop on a seat for a limit of the whole account, with no window (round 1)', () => {
+    for (const words of [
+      "Your seat type doesn't include usage", 'Your usage allocation has been disabled by your admin', "Your group's usage limit is set to $0",
+      'Your workspace is out of credits. Add credits to continue.', 'You hit your spend cap set in your workspace.',
+    ]) expect(limitKindOf(words), words).toEqual({ scope: 'account', window: 'other' })
+  })
+
   it("classifies Claude Code's messages as Claude Code itself does (RP: session, weekly, model)", () => {
     expect(limitKindOf("You've hit your session limit · resets 3pm (America/New_York)")).toEqual({ scope: 'account', window: 'session' })
     expect(limitKindOf("You've hit your weekly limit · resets Aug 1, 4pm (America/New_York)")).toEqual({ scope: 'account', window: 'weekly' })
@@ -169,6 +176,18 @@ describe('limitTargets', () => {
   it('offers the other accounts of the agent in failover order, from the one after the limited account round', () => {
     const t = limitTargets([personal, codedev, work, spare], 'claude', { accountId: 'codedev', email: 'codedev@example.test' }, now)
     expect(t.map((x) => [x.row.id, x.state])).toEqual([['spare', 'available'], ['personal', 'available'], ['codedev', 'this']])
+  })
+
+  it('counts a limit whose reset has passed as lifted, whatever the view was last read as (round 1)', () => {
+    const lifted = row('a', { order: 1, limit: { seenAt: now - 7200_000, resetsAt: now - 3600_000, text: 'x', scope: 'account', email: 'a@example.test' }, lastEmail: 'a@example.test' })
+    const lasting = row('b', { order: 2, limit: { seenAt: now - 3600_000, resetsAt: now + 3600_000, text: 'x', scope: 'account', email: 'b@example.test' }, lastEmail: 'b@example.test' })
+    const unread = row('c', { order: 3, limit: { seenAt: now - 3600_000, resetsAt: null, text: 'x', scope: 'account' } })
+    const t = limitTargets([personal, lifted, lasting, unread], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now)
+    expect(t.map((x) => [x.row.id, x.state])).toEqual([['a', 'available'], ['b', 'limited'], ['c', 'limited'], ['personal', 'this']])
+    // And a sign-in whose limit lifted no longer marks another account on the same email as out of usage.
+    const same = row('d', { order: 4, lastEmail: 'a@example.test' })
+    expect(limitTargets([personal, lifted, same], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now).find((x) => x.row.id === 'd')!.state).toBe('available')
+    expect(limitTargets([personal, lasting, row('e', { order: 4, lastEmail: 'b@example.test' })], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now).find((x) => x.row.id === 'e')!.state).toBe('limited')
   })
 
   it('never offers an account not offered automatically, and lists none of another agent (D14)', () => {
