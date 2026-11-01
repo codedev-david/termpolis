@@ -23,7 +23,9 @@ export interface RecallEvent { t: 'recall'; ts: number; hits: number; topScore: 
 export interface InjectEvent { t: 'inject'; ts: number; tokens: number; agent?: string }
 export interface WriteEvent { t: 'write'; ts: number; ok: boolean; memoryType?: string }
 export interface FeedbackEvent { t: 'feedback'; ts: number; helpful: boolean }
-export interface ReflectEvent { t: 'reflect'; ts: number; lessons: number }
+// `lessons` is how many the distiller produced; `skipped` how many of them the substance gate refused to store
+// (lessonSubstance.ts). Absent on events recorded before 1.55.0, when nothing was refused.
+export interface ReflectEvent { t: 'reflect'; ts: number; lessons: number; skipped?: number }
 export interface CrossRecallEvent { t: 'cross_recall'; ts: number; author: string; reader: string }
 export interface EmbedEvent { t: 'embed'; ts: number; available: boolean }
 
@@ -71,7 +73,8 @@ export interface MetricsSummary {
   feedbackCount: number
   feedbackHelpfulRate: number
   // learning
-  lessonsLearned: number
+  lessonsLearned: number // distilled AND stored (the substance gate's keepers and its held-back candidates)
+  lessonsSkipped: number // distilled but refused by the substance gate, so never stored
   // society
   crossAgentRecalls: number // reuse where author != reader (real cross-agent teaching)
   teachingMatrix: Record<string, Record<string, number>> // author -> reader -> count
@@ -98,6 +101,7 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
   let injects = 0, tokensInjected = 0
   let feedbackCount = 0, feedbackHelpful = 0
   let lessonsLearned = 0
+  let lessonsSkipped = 0
   let crossAgentRecalls = 0
   const teachingMatrix: Record<string, Record<string, number>> = {}
 
@@ -129,9 +133,12 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
         feedbackCount++
         if (e.helpful) feedbackHelpful++
         break
-      case 'reflect':
-        lessonsLearned += e.lessons || 0
+      case 'reflect': {
+        const skipped = e.skipped || 0
+        lessonsLearned += Math.max(0, (e.lessons || 0) - skipped)
+        lessonsSkipped += skipped
         break
+      }
       case 'cross_recall': {
         const author = e.author || 'unknown'
         const reader = e.reader || 'unknown'
@@ -176,6 +183,7 @@ export function summarizeMetrics(events: MetricEvent[], now: number): MetricsSum
     feedbackCount,
     feedbackHelpfulRate: feedbackCount > 0 ? feedbackHelpful / feedbackCount : 0,
     lessonsLearned,
+    lessonsSkipped,
     crossAgentRecalls,
     teachingMatrix,
   }

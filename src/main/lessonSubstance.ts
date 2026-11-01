@@ -64,8 +64,10 @@ export function isCandidate(row: unknown): boolean {
 }
 
 /** `rows` without the held-back lessons: the same array when there are none, so a read path that has
- *  nothing to hide pays one scan and no allocation. */
+ *  nothing to hide pays one scan and no allocation. Anything that is not a list comes back as it came:
+ *  this sits on every agent-facing read path and must never be the thing that throws. */
 export function withoutCandidates<T>(rows: T[]): T[] {
+  if (!Array.isArray(rows)) return rows
   let held = false
   for (const r of rows) {
     if (isCandidate(r)) { held = true; break }

@@ -810,6 +810,9 @@ export interface MemoryMetrics {
     feedbackCount: number
     feedbackHelpfulRate: number
     lessonsLearned: number
+    /** Lessons the distiller produced that the substance gate refused to store (1.55.0). Optional so a
+     *  main process that predates the field still deserialises; absent is read as 0. */
+    lessonsSkipped?: number
     crossAgentRecalls: number
     teachingMatrix: Record<string, Record<string, number>>
   }

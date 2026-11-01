@@ -495,7 +495,7 @@ async function reflectOnTask(
     await edges.flush()
     try {
       if (res.fired && res.lessons > 0) {
-        recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons })
+        recordMetric({ t: 'reflect', ts: Date.now(), lessons: res.lessons, skipped: res.skipped })
         auditMemory({ event: 'learn', kind: 'reflect', detail: `${res.lessons} lesson(s) distilled from a task` }) // WP-E
       }
     } catch { /* best effort */ }
@@ -2450,6 +2450,7 @@ const primerRecent: PrimerRecent = async (o) =>
     id: e.id,
     project: e.project,
     ts: e.ts,
+    tags: e.tags, // the primer drops a lesson the substance gate holds back (`candidate`)
   }))
 
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
@@ -2647,7 +2648,7 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
             resolveCode: (names, project) => resolveCodeRefs(names, graphKeyForRoot(project ?? '')),
           }).then(async (r) => {
             await edges.flush()
-            try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons }) } catch { /* best effort */ }
+            try { if (r.fired && r.lessons > 0) recordMetric({ t: 'reflect', ts: Date.now(), lessons: r.lessons, skipped: r.skipped }) } catch { /* best effort */ }
             return { fired: r.fired, lessons: r.lessons }
           })
         },

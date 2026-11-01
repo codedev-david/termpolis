@@ -412,6 +412,72 @@ describe('buildContextPrimer — freshness lane', () => {
   })
 })
 
+// 1.55: a lesson the substance gate stores but holds back carries the `candidate` tag and is never shown
+// to an agent. The primer is the largest thing an agent is ever shown, and three of its four callers search
+// the store directly, so the primer keeps the promise itself rather than trusting its caller to.
+describe('buildContextPrimer — lessons the substance gate holds back', () => {
+  const proj = 'termpolis'
+  const NOW = 1_700_000_000_000
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+  const KEPT = 'we decided to keep the retry queue in memory'
+  const HELD = 'timing issue between the watcher and the writer under load'
+
+  const mk = (id: string, content: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id, content, source: 'claude', kind: 'message', score: 0.8, project: proj, ts: NOW - 3_600_000, ...over })
+
+  it('never shows a held-back hit from the project search', async () => {
+    const search = vi.fn(async (opts: { project?: string }) =>
+      opts.project === proj ? [mk('k', KEPT), mk('h', HELD, { tags: ['candidate'] })] : [])
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, now: NOW })
+    expect(out).toContain(KEPT)
+    expect(out).not.toContain(HELD)
+  })
+
+  it('never shows one from the global search, flat or scoped', async () => {
+    const search = vi.fn(async () => [mk('k', KEPT, { project: undefined }), mk('h', HELD, { project: undefined, tags: ['candidate'] })])
+    const flat = await buildContextPrimer(search, { query: 'q', now: NOW })
+    expect(flat).toContain(KEPT)
+    expect(flat).not.toContain(HELD)
+    const scoped = await buildContextPrimer(search, { query: 'q', project: proj, now: NOW })
+    expect(scoped).toContain(KEPT)
+    expect(scoped).not.toContain(HELD)
+  })
+
+  it('never shows one in the freshness lane', async () => {
+    const recent = vi.fn().mockResolvedValue([
+      mk('h', long(HELD), { tags: ['candidate'], score: 0 }),
+      mk('r', long('the substantive recent one'), { score: 0 }),
+    ])
+    const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('the substantive recent one')
+    expect(out).not.toContain(HELD)
+  })
+
+  it('gives the lane slot to the next real entry instead of leaving it empty', async () => {
+    const recent = vi.fn().mockResolvedValue([
+      mk('h1', long('held back one'), { tags: ['candidate'], score: 0 }),
+      mk('h2', long('held back two'), { tags: ['candidate'], score: 0 }),
+      mk('r1', long('real recent one'), { score: 0 }),
+    ])
+    const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('real recent one')
+    expect(out).not.toContain('held back')
+  })
+
+  it('is the old digest, byte for byte, when nothing is held back', async () => {
+    const plain = [mk('a', KEPT), mk('b', 'we decided to keep the cache small', { tags: ['note:x'] })]
+    const withTags = await buildContextPrimer(vi.fn(async () => plain), { query: 'q', project: proj, now: NOW })
+    const withoutTags = await buildContextPrimer(vi.fn(async () => plain.map(({ tags: _t, ...h }) => h)), { query: 'q', project: proj, now: NOW })
+    expect(withTags).toBe(withoutTags)
+    expect(withTags).toContain('keep the cache small')
+  })
+
+  it('returns no digest at all when everything it found is held back', async () => {
+    const search = vi.fn(async () => [mk('h', HELD, { tags: ['candidate'] })])
+    expect(await buildContextPrimer(search, { query: 'q', now: NOW })).toBeNull()
+  })
+})
+
 describe('recentSlotCount', () => {
   it('reserves ~30% of the digest, floored at 1 and capped at 3', () => {
     expect(recentSlotCount(10)).toBe(3)

@@ -1388,6 +1388,26 @@ describe('memory:reflect-session', () => {
     expect(metricsOfType('reflect')).toEqual([]) // didn't fire → nothing learned
   })
 
+  // 1.55: the substance gate refuses some lessons outright; the ledger has to say so, or "N distilled"
+  // reads as "N learned" and a gate that drops 70% of them looks like a reflection that found nothing.
+  it('records how many distilled lessons the substance gate refused, and still returns the same shape', async () => {
+    await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    const deps = mneme.reflectSoloSession.mock.calls[0][1]
+    ledger.recordMetric.mockClear()
+    mneme.onSessionEpisode.mockResolvedValueOnce({ fired: true, lessons: 5, written: ['w1', 'w2'], skipped: 3 })
+    expect(await deps.reflect({ id: 'ep4' })).toEqual({ fired: true, lessons: 5 })
+    expect(metricsOfType('reflect')).toEqual([expect.objectContaining({ t: 'reflect', lessons: 5, skipped: 3 })])
+  })
+
+  it('records a reflection whose every lesson the gate refused: lessons found, none learned', async () => {
+    await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+    const deps = mneme.reflectSoloSession.mock.calls[0][1]
+    ledger.recordMetric.mockClear()
+    mneme.onSessionEpisode.mockResolvedValueOnce({ fired: true, lessons: 2, written: [], skipped: 2 })
+    await deps.reflect({ id: 'ep5' })
+    expect(metricsOfType('reflect')).toEqual([expect.objectContaining({ lessons: 2, skipped: 2 })])
+  })
+
   it('wires the reflex deps to the real store, graph and code resolver', async () => {
     // v1.26: `link` is a SYNC void dep and memoryLink is a Promise now, so the reflector's edges are
     // COLLECTED during the pass and minted — awaited — after it returns. Calling link() in isolation
@@ -2268,6 +2288,74 @@ describe('MCP read paths honour in-flow corrections', () => {
     correctMemory({ id: 'm', kind: 'amend', reason: 'moved', by: 'david', replacement: 'the key is in the keychain' })
     mem.memoryList.mockReturnValueOnce([{ id: 'm', content: 'the key is in .env' }])
     expect((await mcp.memoryList({ limit: 5 }))[0].content).toBe('the key is in the keychain')
+  })
+})
+
+// 1.55: a lesson the substance gate stores but holds back (the `candidate` tag) must not reach an agent
+// through ANY tool, with no correction on file for it. One test per tool, because the bug this prevents is
+// "hidden in the tool the author thought of, quoted back through the one they did not".
+describe('MCP read paths never serve a lesson the substance gate holds back', () => {
+  const held = { id: 'held', content: 'held back lesson', tags: ['candidate'], score: 1, memoryType: 'procedural', source: 'claude' }
+  const kept = { id: 'kept', content: 'a kept lesson', tags: ['note:x'], score: 0.9, memoryType: 'procedural', source: 'claude' }
+
+  it('memory_search', async () => {
+    mem.memorySearch.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memorySearch({ query: 'q' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_list', async () => {
+    mem.memoryList.mockReturnValueOnce([held, kept])
+    expect((await mcp.memoryList({ limit: 5 })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_related', async () => {
+    mem.memoryRelated.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memoryRelated({ id: 'seed' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_graph', async () => {
+    mem.memoryGraphQuery.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memoryGraph({ id: 'seed' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_anticipate', async () => {
+    mem.memorySearch.mockResolvedValueOnce([held, kept])
+    expect((await mcp.memoryAnticipate({ task: 'the deploy fails with ENOENT' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_primer searches through it', async () => {
+    mem.memorySearch.mockResolvedValueOnce([held, kept])
+    primer.buildContextPrimer.mockResolvedValueOnce('- digest')
+    mneme.competenceSummary.mockReturnValueOnce('')
+    mneme.curiosityPrompts.mockReturnValueOnce([])
+    await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
+    const search = primer.buildContextPrimer.mock.calls.at(-1)![0] as (o: any) => Promise<any[]>
+    expect((await search({ query: 'q' })).map((r: any) => r.id)).toEqual(['kept'])
+  })
+
+  it('memory_pool never pools one', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([held, kept])
+    await mcp.memoryPool({})
+    const pooled = mneme.poolLessons.mock.calls.at(-1)![0] as Array<{ content: string }>
+    expect(pooled.map((l) => l.content)).toEqual(['a kept lesson'])
+  })
+
+  it('memory_conflicts never compares one', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([held, kept])
+    await mcp.memoryConflicts({})
+    const compared = mneme.detectConflictsNli.mock.calls.at(-1)![0] as Array<{ content: string }>
+    expect(compared.map((l) => l.content)).toEqual(['a kept lesson'])
+  })
+
+  it('the primer\'s freshness lane lister hands the primer each entry\'s tags, so it can drop the held-back ones', async () => {
+    mem.memoryList.mockResolvedValueOnce([
+      { id: 'h', content: 'x', kind: 'note', tags: ['candidate'], ts: 5 },
+      { id: 'k', content: 'y', kind: 'note', ts: 4 },
+    ])
+    await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
+    const opts = primer.buildContextPrimer.mock.calls.at(-1)![1] as { recent: (o: any) => Promise<any[]> }
+    const lane = await opts.recent({ limit: 8, project: 'C:/repos/termpolis', since: 0 })
+    expect(lane.map((h) => [h.id, h.tags])).toEqual([['h', ['candidate']], ['k', undefined]])
   })
 })
 

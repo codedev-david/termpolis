@@ -19,10 +19,12 @@ import {
   correctMemory,
   revokeMemoryCorrection,
   applyCorrections,
+  applyEntryCorrections,
   correctionForMemory,
   memoryCorrectionStats,
   resetMemoryCorrections,
 } from '../../src/main/memoryCorrectionStore'
+import { CANDIDATE_TAG } from '../../src/main/lessonSubstance'
 
 const cand = (id: string, score: number, content = `content ${id}`) => ({ id, content, score })
 
@@ -308,5 +310,45 @@ describe('memoryCorrectionStore', () => {
     expect(() => initMemoryCorrections(blocked)).not.toThrow()
     expect(correctMemory({ id: 'a', kind: 'retract', reason: 'r' }).ok).toBe(true)
     expect(applyCorrections([cand('a', 1)])).toHaveLength(0)
+  })
+})
+
+// 1.55: the substance gate (lessonSubstance.ts) stores a borderline lesson under the `candidate` tag and
+// promises it is never shown to an agent. Every read path that hands memories to an agent already runs
+// through this store's two filters, so that is where the promise is kept: with NO correction on file at all.
+describe('memoryCorrectionStore: lessons the substance gate holds back never reach an agent', () => {
+  beforeEach(() => resetMemoryCorrections())
+  afterEach(() => resetMemoryCorrections())
+
+  const held = (id: string) => ({ ...cand(id, 0.9), tags: [CANDIDATE_TAG] })
+
+  it('drops a held-back lesson from a ranked recall, with an empty overlay', () => {
+    const out = applyCorrections([cand('a', 0.9), held('c'), cand('b', 0.5)])
+    expect(out.map((r) => r.id)).toEqual(['a', 'b'])
+  })
+
+  it('drops it from an unranked listing too', () => {
+    const rows = [{ id: 'a', content: 'x' }, { id: 'c', content: 'y', tags: [CANDIDATE_TAG] }, { id: 'b', content: 'z', tags: ['note:x'] }]
+    expect(applyEntryCorrections(rows).map((r) => r.id)).toEqual(['a', 'b'])
+  })
+
+  it('still applies a real correction to the rows that remain', () => {
+    correctMemory({ id: 'a', kind: 'retract', reason: 'wrong' })
+    correctMemory({ id: 'b', kind: 'demote', reason: 'shaky' })
+    const out = applyCorrections([cand('a', 0.9), held('c'), cand('b', 1)])
+    expect(out.map((r) => r.id)).toEqual(['b'])
+    expect(out[0].score).toBeCloseTo(DEMOTE_FACTOR)
+    const rows = applyEntryCorrections([{ id: 'a', content: 'x' }, { id: 'c', content: 'y', tags: [CANDIDATE_TAG] }, { id: 'b', content: 'z' }])
+    expect(rows.map((r) => r.id)).toEqual(['b'])
+  })
+
+  it('hands back the very same rows when nothing is held back, as before', () => {
+    const rows = [{ id: 'a', content: 'x' }, { id: 'b', content: 'y', tags: ['note:x'] }]
+    expect(applyEntryCorrections(rows)).toBe(rows)
+  })
+
+  it('does not hide a memory that merely mentions the word in its text', () => {
+    const rows = [{ id: 'a', content: 'the candidate tag marks a held-back lesson', tags: ['docs'] }]
+    expect(applyEntryCorrections(rows)).toHaveLength(1)
   })
 })

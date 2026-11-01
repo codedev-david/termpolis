@@ -2,10 +2,15 @@ import { describe, it, expect, vi } from 'vitest'
 import { onTaskComplete, onSessionEpisode, taskToTurns, type CompletedTask, type ReflexDeps } from '../../src/main/mnemeReflex'
 import type { Lesson, Episode } from '../../src/main/mnemeReflect'
 
+// The substance gate (lessonSubstance.ts) refuses a lesson that says nothing, so the stubbed lessons here say
+// something: a rule with two identifiers scores 4. NARRATION scores below 1 and is never stored.
+const SUBSTANCE = 'Never call `app.quit()` from the `will-quit` handler because it re-enters the quit sequence.'
+const NARRATION = "I'll start with the failing spec and then look through the logs."
+
 const lesson = (o: Partial<Lesson> = {}): Lesson => ({
   memoryType: 'procedural',
   kind: 'fact',
-  content: 'x',
+  content: SUBSTANCE,
   entities: [],
   importance: 0.8,
   links: [],
@@ -41,7 +46,7 @@ describe('mnemeReflex — task-completion reflex', () => {
       result: 'Error: cannot find module foo. Fixed by adding it to package.json. Tests pass now.',
     }
     const res = await onTaskComplete(task, d)
-    expect(res).toEqual({ fired: true, lessons: 1, written: ['mem-1'] })
+    expect(res).toEqual({ fired: true, lessons: 1, written: ['mem-1'], skipped: 0 })
     expect(d.recordOutcome).toHaveBeenCalledWith('termpolis', true, 1000)
     expect(d.distill).toHaveBeenCalledTimes(1)
     const ep = (d.distill as ReturnType<typeof vi.fn>).mock.calls[0][0]
@@ -65,8 +70,23 @@ describe('mnemeReflex — task-completion reflex', () => {
     const res = await onTaskComplete({ id: 't3', status: 'completed', title: 'ok' }, d)
     expect(res.fired).toBe(true)
     expect(res.lessons).toBe(0)
+    expect(res.skipped).toBe(0)
     expect(d.recordOutcome).toHaveBeenCalledTimes(1)
     expect(d.distill).not.toHaveBeenCalled()
+  })
+
+  it('reports how many distilled lessons the substance gate refused, and stores none of them', async () => {
+    const d = deps({ distill: vi.fn().mockResolvedValue([lesson(), lesson({ content: NARRATION }), lesson({ content: 'Fixed it.' })]) })
+    const res = await onTaskComplete(
+      { id: 't7', status: 'completed', project: 'p', title: 'x', result: 'Fixed a long enough thing to reflect on here now.' },
+      d,
+    )
+    expect(res).toEqual({ fired: true, lessons: 3, written: ['mem-1'], skipped: 2 })
+    expect(d.write).toHaveBeenCalledTimes(1)
+  })
+
+  it('has nothing skipped when it does not fire', async () => {
+    expect(await onTaskComplete({ id: 't', status: 'in_progress' }, deps())).toEqual({ fired: false, lessons: 0, written: [], skipped: 0 })
   })
 
   it('falls back to the "general" domain when no project', async () => {
@@ -92,7 +112,7 @@ describe('mnemeReflex — task-completion reflex', () => {
     const link = vi.fn()
     const ensureEntity = vi.fn().mockImplementation(async (name: string) => `ent-${name}`)
     const d = deps({
-      distill: vi.fn().mockResolvedValue([lesson({ content: 'fix', entities: ['foo.ts'] })]),
+      distill: vi.fn().mockResolvedValue([lesson({ entities: ['foo.ts'] })]),
       link,
       ensureEntity,
     })
@@ -127,9 +147,16 @@ describe('mnemeReflex — solo-session reflex (onSessionEpisode)', () => {
   it('records competence AND reflects when the episode has a confident outcome', async () => {
     const d = deps()
     const res = await onSessionEpisode(episode({ project: 'termpolis', outcome: { kind: 'test', success: true } }), d)
-    expect(res).toEqual({ fired: true, lessons: 1, written: ['mem-1'] })
+    expect(res).toEqual({ fired: true, lessons: 1, written: ['mem-1'], skipped: 0 })
     expect(d.recordOutcome).toHaveBeenCalledWith('termpolis', true, 1000)
     expect(d.distill).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports how many distilled lessons the substance gate refused', async () => {
+    const d = deps({ distill: vi.fn().mockResolvedValue([lesson({ content: NARRATION }), lesson({ content: 'Next:' })]) })
+    const res = await onSessionEpisode(episode({ project: 'p', outcome: { kind: 'test', success: true } }), d)
+    expect(res).toEqual({ fired: true, lessons: 2, written: [], skipped: 2 })
+    expect(d.write).not.toHaveBeenCalled()
   })
 
   it('reflects but records NO competence when the outcome is unknown (neutral session)', async () => {
@@ -144,7 +171,7 @@ describe('mnemeReflex — solo-session reflex (onSessionEpisode)', () => {
   it('does nothing for a thin, non-reflectable episode', async () => {
     const d = deps()
     const res = await onSessionEpisode({ id: 's', turns: [{ role: 'user', text: 'hi' }] }, d)
-    expect(res).toEqual({ fired: false, lessons: 0, written: [] })
+    expect(res).toEqual({ fired: false, lessons: 0, written: [], skipped: 0 })
     expect(d.recordOutcome).not.toHaveBeenCalled()
     expect(d.distill).not.toHaveBeenCalled()
   })
@@ -170,7 +197,7 @@ describe('mnemeReflex — solo-session reflex (onSessionEpisode)', () => {
     const link = vi.fn()
     const ensureEntity = vi.fn().mockImplementation(async (name: string) => `ent-${name}`)
     const d = deps({
-      distill: vi.fn().mockResolvedValue([lesson({ content: 'fix', entities: ['bar.ts'] })]),
+      distill: vi.fn().mockResolvedValue([lesson({ entities: ['bar.ts'] })]),
       link,
       ensureEntity,
     })

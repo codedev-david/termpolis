@@ -20,6 +20,7 @@ describe('metricsLedger — summarizeMetrics (pure aggregation)', () => {
     expect(s.avgHits).toBe(0)
     expect(s.tokensInjected).toBe(0)
     expect(s.lessonsLearned).toBe(0)
+    expect(s.lessonsSkipped).toBe(0)
     expect(s.crossAgentRecalls).toBe(0)
     // no failures observed => healthy
     expect(s.embedAvailability).toBe(1)
@@ -112,6 +113,25 @@ describe('metricsLedger — summarizeMetrics (pure aggregation)', () => {
     expect(s.lessonsLearned).toBe(5)
   })
 
+  it('counts a lesson the substance gate refused as skipped, not as learned', () => {
+    const s = summarizeMetrics(
+      [
+        { t: 'reflect', ts: 1, lessons: 4, skipped: 3 },
+        { t: 'reflect', ts: 2, lessons: 2 }, // written before the gate existed: nothing was skipped
+        { t: 'reflect', ts: 3, lessons: 1, skipped: 1 },
+      ],
+      100,
+    )
+    expect(s.lessonsLearned).toBe(3)
+    expect(s.lessonsSkipped).toBe(4)
+  })
+
+  it('never lets a malformed reflect event push the learned count below zero', () => {
+    const s = summarizeMetrics([{ t: 'reflect', ts: 1, lessons: 1, skipped: 5 }], 100)
+    expect(s.lessonsLearned).toBe(0)
+    expect(s.lessonsSkipped).toBe(5)
+  })
+
   it('builds the cross-agent teaching matrix and counts only cross-agent reuse', () => {
     const s = summarizeMetrics(
       [
@@ -155,6 +175,16 @@ describe('metricsLedger — persistence (device-local JSONL)', () => {
     const s = metricsSummary(100)
     expect(s.recalls).toBe(1)
     expect(s.lessonsLearned).toBe(4)
+  })
+
+  it('persists how many lessons a reflection skipped, and replays it', () => {
+    recordMetric({ t: 'reflect', ts: 3, lessons: 5, skipped: 2 })
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'memory-metrics.jsonl'), 'utf8').trim())).toEqual({ t: 'reflect', ts: 3, lessons: 5, skipped: 2 })
+    _resetMetricsForTests()
+    initMetrics(dir)
+    const s = metricsSummary(100)
+    expect(s.lessonsLearned).toBe(3)
+    expect(s.lessonsSkipped).toBe(2)
   })
 
   it('tolerates corrupt / blank lines on load', () => {

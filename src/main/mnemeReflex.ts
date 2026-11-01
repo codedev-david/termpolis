@@ -43,8 +43,11 @@ export interface ReflexDeps {
 
 export interface ReflexResult {
   fired: boolean
+  /** How many lessons the distiller produced (the substance gate may have refused some: see `skipped`). */
   lessons: number
   written: string[]
+  /** How many of them the substance gate refused to store. */
+  skipped: number
 }
 
 /** Best-effort episode turns from a task's text fields. */
@@ -62,7 +65,7 @@ export function taskToTurns(task: CompletedTask): RawTurn[] {
  * recorded on a boundary; reflection only runs when the episode is substantive.
  */
 export async function onTaskComplete(task: CompletedTask, deps: ReflexDeps): Promise<ReflexResult> {
-  if (!task || !boundaryFromTaskStatus(task.status)) return { fired: false, lessons: 0, written: [] }
+  if (!task || !boundaryFromTaskStatus(task.status)) return { fired: false, lessons: 0, written: [], skipped: 0 }
 
   const domain = (task.project || 'general').trim() || 'general'
   const success = task.status === 'completed'
@@ -79,10 +82,10 @@ export async function onTaskComplete(task: CompletedTask, deps: ReflexDeps): Pro
     turns: taskToTurns(task),
     outcome: outcomeFromTaskStatus(task.status, task.result),
   })
-  if (!isReflectable(episode)) return { fired: true, lessons: 0, written: [] }
+  if (!isReflectable(episode)) return { fired: true, lessons: 0, written: [], skipped: 0 }
 
-  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity, resolveCode: deps.resolveCode })
-  return { fired: true, lessons, written }
+  const { written, lessons, skipped } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity, resolveCode: deps.resolveCode })
+  return { fired: true, lessons, written, skipped }
 }
 
 /**
@@ -94,7 +97,7 @@ export async function onTaskComplete(task: CompletedTask, deps: ReflexDeps): Pro
  * trivial exchanges never distil noise or skew self-competence.
  */
 export async function onSessionEpisode(episode: Episode, deps: ReflexDeps): Promise<ReflexResult> {
-  if (!episode || !isReflectable(episode)) return { fired: false, lessons: 0, written: [] }
+  if (!episode || !isReflectable(episode)) return { fired: false, lessons: 0, written: [], skipped: 0 }
 
   if (episode.outcome) {
     const domain = (episode.project || 'general').trim() || 'general'
@@ -105,6 +108,6 @@ export async function onSessionEpisode(episode: Episode, deps: ReflexDeps): Prom
     }
   }
 
-  const { written, lessons } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity, resolveCode: deps.resolveCode })
-  return { fired: true, lessons, written }
+  const { written, lessons, skipped } = await groundEpisode(episode, { distill: deps.distill, write: deps.write, link: deps.link, ensureEntity: deps.ensureEntity, resolveCode: deps.resolveCode })
+  return { fired: true, lessons, written, skipped }
 }

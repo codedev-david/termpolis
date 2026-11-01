@@ -55,6 +55,13 @@ describe('isCandidate / withoutCandidates', () => {
     expect(isCandidate(undefined as unknown as object)).toBe(false)
   })
 
+  it('hands back anything that is not a list exactly as it came, rather than throw on a read path', () => {
+    const notAList = { nodes: [], edges: [] }
+    expect(withoutCandidates(notAList as unknown as unknown[])).toBe(notAList)
+    expect(withoutCandidates(null as unknown as unknown[])).toBeNull()
+    expect(withoutCandidates(undefined as unknown as unknown[])).toBeUndefined()
+  })
+
   it('drops candidates and hands back the same array when there are none', () => {
     const plain = [{ id: 'a', tags: ['x'] }, { id: 'b' }]
     expect(withoutCandidates(plain)).toBe(plain)

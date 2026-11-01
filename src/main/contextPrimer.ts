@@ -18,6 +18,7 @@
 
 import { existsSync } from 'fs'
 import { adaptiveGate, dedupeHits, diversifyHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
+import { isCandidate, withoutCandidates } from './lessonSubstance'
 
 // Default number of memories injected into a primer when the caller passes no
 // explicit limit. User-tunable via the Memory panel (persisted in
@@ -33,6 +34,9 @@ export interface PrimerHit {
   id?: string
   project?: string
   ts?: number // conversation/write time — powers the F24 relative-age marker
+  /** The stored memory's tags, when the caller has them. A lesson the substance gate holds back carries
+   *  `candidate` (lessonSubstance.ts) and is never shown. */
+  tags?: string[]
 }
 
 export type PrimerSearch = (opts: { query: string; limit?: number; project?: string }) => Promise<PrimerHit[]>
@@ -174,6 +178,7 @@ async function collectRecent(
     if (out.length >= o.slots) break
     // Enforce the window here too — an injected lister may ignore `since`.
     if (typeof h.ts === 'number' && h.ts > 0 && h.ts < cutoff) continue
+    if (isCandidate(h)) continue // a lesson the substance gate stores but holds back is never shown
     if ((h.content || '').replace(/\s+/g, ' ').trim().length < MIN_RECENT_CHARS) continue
     const key = hitKey(h)
     if (o.exclude.has(key)) continue
@@ -217,7 +222,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // the relevance cut + cap to `limit`.
   const gate = (hits: PrimerHit[]): PrimerHit[] =>
     adaptiveGate(
-      diversifyHits(dedupeHits(hits), { threshold: DIVERSITY_THRESHOLD }),
+      diversifyHits(dedupeHits(withoutCandidates(hits)), { threshold: DIVERSITY_THRESHOLD }),
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
