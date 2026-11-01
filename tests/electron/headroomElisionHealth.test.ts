@@ -85,6 +85,17 @@ describe('the model', () => {
     expect(big).toBeGreaterThan(85)
   })
 
+  it('has no break-even to compute when there is nothing to save and nothing to pay', () => {
+    // Zero-length results and a ledger whose retrieval turns cost nothing: B, E and V are all 0.
+    const c = buildElisionHealth(input({
+      classes: { [KEY]: cls(100, 10, 0, 0) },
+      turns: { retrievalTurns: MIN_TURNS_MEASURED, retrievalTurnUnits: 0, turnRequests: 50 },
+    })).classes[0]
+    expect(c.breakEvenPct).toBe(0)
+    expect(c.netUnitsPer1000).toBe(0)
+    expect(c.verdict).toBe('costs')
+  })
+
   it('never lets a view larger than the original earn a saving', () => {
     const c = buildElisionHealth(input({ classes: { [KEY]: cls(100, 0, 6000, 7000) } })).classes[0]
     expect(c.breakEvenPct).toBe(0)
@@ -191,6 +202,15 @@ describe('totals and shape', () => {
     expect(v.recentRedeemed).toBe(30)
     expect(v.windowSize).toBe(ELISION_WINDOW)
     expect(v.classes.map((c) => c.key)).toEqual(['decay|Grep|10-40k', 'dedup|Bash|<1.6k', KEY]) // 500, 500 (key order), 100
+  })
+
+  it('breaks a tie in volume by class key, whatever order the ledger holds them in', () => {
+    const keys = ['diff|Read|4-10k', 'compact|Read|4-10k', 'decay|Read|4-10k', 'dedup|Read|4-10k']
+    const forward = buildElisionHealth(input({ classes: Object.fromEntries(keys.map((k) => [k, cls(50, 5)])) }))
+    const backward = buildElisionHealth(input({ classes: Object.fromEntries([...keys].reverse().map((k) => [k, cls(50, 5)])) }))
+    const sorted = [...keys].sort()
+    expect(forward.classes.map((c) => c.key)).toEqual(sorted)
+    expect(backward.classes.map((c) => c.key)).toEqual(sorted)
   })
 
   it('passes the legacy redemption count through', () => {

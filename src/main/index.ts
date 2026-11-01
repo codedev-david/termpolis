@@ -4024,7 +4024,7 @@ async function semanticPoolOptions(
       // How often the model asks for elided text back, by class, and whether eliding it pays.
       ipcMain.handle('tokenSavings:get-elision-health', () => {
         try { return ok(summarizeElisionHealth()) }
-        catch (e: any) { return err(e.message) }
+        catch (e) { return err((e as Error).message) }
       })
       // The output side of the bill. Separate from the unified receipt on purpose: the
       // receipt reports what was saved, this reports whether the thing believed to be saving

@@ -54,4 +54,15 @@ describe('compression path is clock/RNG-free (deterministic → cache-safe)', ()
       expect(EXEMPT.has(f)).toBe(false)
     }
   })
+
+  it('sweeps the elision ledger, the stash metadata, the turn-shape parse and the stub-kind tally too', () => {
+    // v1.55: these write or decide nothing on the wire, but the metadata rides every stash and the
+    // tally reads the forwarded body, so a clock in any of them would be a clock in the transform's
+    // neighbourhood. They must stay in the swept set and out of the exempt one.
+    const scanned = new Set(ROOTS.flatMap((r) => tsFiles(r)).map((f) => f.split(/[\\/]/).pop() as string))
+    for (const f of ['elisionLedger.ts', 'elisionMeta.ts', 'elisionStore.ts', 'elisionHealth.ts', 'wireTier.ts', 'forwardedKinds.ts', 'usageParse.ts', 'proxyLedger.ts']) {
+      expect(scanned.has(f)).toBe(true)
+      expect(EXEMPT.has(f)).toBe(false)
+    }
+  })
 })
