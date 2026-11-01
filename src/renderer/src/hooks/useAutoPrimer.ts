@@ -4,6 +4,7 @@ import { createReprimeController, type ReprimeController } from '../lib/compacti
 import { createSessionReflectionController, type SessionReflectionController } from '../lib/sessionReflection'
 import { useTerminalStore } from '../store/terminalStore'
 import { isAwaitingAnswer, tailSlice } from '../lib/promptAutoDismiss'
+import { psQuote } from '../../../shared/shellQuote'
 
 // Auto context-primer: point a freshly-launched agent at this project's memory digest via the
 // memory_primer MCP tool, so every invocation starts already knowing prior decisions and context
@@ -47,13 +48,33 @@ const BP_END = '\x1b[201~'
  *  as a keystroke. Mirrors SUBMIT_SETTLE_MS in src/main/remoteBridge/dispatcher. */
 export const PRIMER_SUBMIT_SETTLE_MS = 150
 
+// What a folder's name may be made of for the pointer to name it: letters, marks and digits of
+// any script, a space, and  _.,:/\+@~=#()[]{}-  Each is inert in every shell the pointer could
+// reach (POSIX shells, fish, PowerShell, cmd.exe) and in the paste itself, which no control
+// character may be part of: an Escape in a name could end the bracketed paste early and type the
+// rest. A name is data somebody else chose (a cloned repository's directory), so it is checked
+// against what is allowed, not against what is known to be bad.
+const NAMEABLE_FOLDER = /^[\p{L}\p{M}\p{N} _.,:/\\+@~=#()[\]{}-]+$/u
+
+/**
+ * The folder as the pointer names it: a single-quoted literal (shellQuote.ts), in which nothing is
+ * special to a POSIX shell, fish or PowerShell, and which holds nothing cmd.exe (it has no single
+ * quotes) would read as code. Between double quotes a shell expands $(...) and backticks in the name
+ * and runs them. null for a name outside NAMEABLE_FOLDER and for one ending in a backslash (fish
+ * reads it as an escaped closing quote): the pointer then names no folder at all.
+ */
+function pointerFolder(cwd: string): string | null {
+  return NAMEABLE_FOLDER.test(cwd) && !cwd.endsWith('\\') ? psQuote(cwd) : null
+}
+
 // The behavioral contract pasted into the agent's input. Single line, paste-safe
 // (no backticks/newlines). It must (1) route the agent to the MCP tool so the
 // digest loads behind the scenes, (2) frame the memory as background only — the
 // agent must NOT start acting on it or resuming past work, and (3) pin a minimal
 // ack so an Enter on the bare pointer doesn't turn into spontaneous work.
 export function buildPrimerPointer(cwd: string, selfRecord = false): string {
-  const target = cwd ? `with cwd set to "${cwd}"` : 'with no arguments'
+  const folder = cwd ? pointerFolder(cwd) : null
+  const target = folder ? `with cwd set to ${folder}` : 'with no arguments'
   let pointer =
     `Termpolis memory: call the termpolis MCP tool memory_primer ${target} and read it as background only — ` +
     'do NOT act on it, resume past work, or summarize it. Reply exactly "Memory loaded." then wait. ' +

@@ -18,6 +18,7 @@ import {
   type PrimerGate,
 } from '../../src/renderer/src/hooks/useAutoPrimer'
 import { setAutoReprimeOnCompactionEnabled } from '../../src/renderer/src/lib/compactionReprime'
+import { psQuote } from '../../src/shared/shellQuote'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
 const KEY = 'termpolis.memory.autoPrimerOnLaunch'
@@ -85,7 +86,9 @@ describe('injectAutoPrimer', () => {
     // The digest content is NOT pasted — the agent loads it via MCP behind the scenes.
     expect(payload).not.toContain('RECALLED CONTEXT')
     expect(payload).toContain('memory_primer')
-    expect(payload).toContain('"/home/me/myproject"')
+    // The folder is named in single quotes: between double quotes a shell would expand it.
+    expect(payload).toContain("'/home/me/myproject'")
+    expect(payload).not.toContain('"/home/me/myproject"')
   })
 
   it('pastes a background-only contract: no acting on memory, minimal ack, single paste-safe line', async () => {
@@ -1157,6 +1160,170 @@ describe('the pointer is never typed at a shell prompt', () => {
       result.current('✻ Compacting conversation… (2m 30s)')
       await vi.advanceTimersByTimeAsync(6000)
       expect(writes()).toHaveLength(2)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// The pointer is one line of text, and it can still land at a SHELL's prompt: the OS answers null
+// for shells it can't read, and an agent can die between the last question and the Enter. A
+// folder's name is data somebody else chose (a cloned repository's directory), and inside double
+// quotes a $(...) or a backtick in it ran in bash, zsh and PowerShell. So the folder is named only
+// when every character of it is inert in every shell, and then as a single-quoted literal
+// (shellQuote.ts); otherwise it is left out and the agent calls memory_primer with no arguments.
+// ---------------------------------------------------------------------------------------------
+describe('the pointer names the folder safely', () => {
+  const NO_FOLDER = buildPrimerPointer('')
+
+  /** Names that are ordinary on somebody's machine, and so must still reach the agent. */
+  const ORDINARY: Array<[string, string]> = [
+    ['a POSIX path', '/home/me/myproject'],
+    ['a Windows path', 'C:\\code\\acme'],
+    ['spaces and parentheses', 'C:\\Program Files (x86)\\Acme Tools'],
+    ['tildes, as in iCloud Drive', '/Users/me/Library/Mobile Documents/com~apple~CloudDocs/proj'],
+    ['square brackets, as in a dynamic route', '/srv/app/[id]'],
+    ['a hash, as in C#', '/home/me/C#/app'],
+    ['an npm scope, a plus, an equals sign and a comma', '/home/me/@scope/pkg+x=1,2'],
+    ['curly braces', '/home/me/{template}'],
+    ['accented letters', '/home/zoë/projets/café'],
+    ['a letter and a combining mark, as macOS stores é', '/home/me/proje\u0301t'],
+    ['other scripts', '/home/用户/项目'],
+    ['a UNC share', '\\\\server\\share\\proj'],
+    ['dots, dashes and digits', 'D:/work/app-2.0_final'],
+    ['the root', '/'],
+    ['a relative folder', '.'],
+  ]
+
+  /** Names a shell would read as code, or that break out of the literal or the paste. */
+  const HOSTILE: Array<[string, string]> = [
+    ['a command substitution', '/tmp/$(touch pwned)'],
+    ['backticks', '/tmp/`touch pwned`'],
+    ['a parameter expansion', '/tmp/${IFS}touch pwned'],
+    ['a PowerShell variable', 'C:\\Users\\$env:USERNAME\\proj'],
+    ['a statement separator', '/tmp/a; touch pwned; #'],
+    ['an and-list', '/tmp/a && touch pwned'],
+    ['a pipe', '/tmp/a | tee pwned'],
+    ['an output redirect', '/tmp/a > pwned'],
+    ['an input redirect', '/tmp/a < pwned'],
+    ['a lone dollar sign', '/tmp/$HOME'],
+    ['a lone double quote', '/tmp/say"hi'],
+    ['a lone semicolon', '/tmp/a;b'],
+    ['an ampersand, which cmd.exe chains on', 'C:\\Users\\Tom & Jerry\\proj'],
+    ['a percent sign, which cmd.exe expands', 'C:\\x\\%USERPROFILE%\\y'],
+    ['a caret, cmd.exe\'s escape', 'C:\\x^&y'],
+    ['an exclamation mark, which a shell expands from its history', '/tmp/wow!'],
+    ['an apostrophe', '/home/o\'brien/proj'],
+    ['an apostrophe that closes the literal', '/tmp/a\'; touch pwned; \''],
+    ['a double quote', '/tmp/a"; touch pwned; "'],
+    ['a typographic single quote, which PowerShell reads as a quote', '/tmp/\u2018x\u2019; touch pwned'],
+    ['a typographic double quote, which PowerShell reads as a quote', '/tmp/\u201cx\u201d; touch pwned'],
+    ['a newline', '/tmp/a\ntouch pwned'],
+    ['a carriage return', '/tmp/a\rtouch pwned'],
+    ['a tab', '/tmp/a\tb'],
+    ['a NUL', '/tmp/a\0b'],
+    ['the escape that ends a bracketed paste early', '/tmp/\x1b[201~\rtouch pwned\r'],
+    ['a line separator', '/tmp/a\u2028touch pwned'],
+    ['a bidirectional override', '/tmp/\u202eevil'],
+    ['a non-breaking space', '/tmp/a\u00a0b'],
+    ['a glob', '/tmp/*'],
+    ['a question mark, as in an extended-length prefix', '\\\\?\\C:\\x'],
+    ['an emoji', '/home/me/📁 projects'],
+    ['a trailing backslash, which fish reads as an escaped closing quote', 'C:\\code\\acme\\'],
+  ]
+
+  describe('an ordinary name', () => {
+    it.each(ORDINARY)('is named in single quotes: %s', (_what, cwd) => {
+      const pointer = buildPrimerPointer(cwd)
+      expect(pointer).toContain(`with cwd set to '${cwd}' and read it as background only`)
+      // The raw folder is never between double quotes, where a shell expands what is inside.
+      expect(pointer).not.toContain(`"${cwd}"`)
+    })
+
+    it('is quoted the way shellQuote.ts quotes a PowerShell literal', () => {
+      for (const [, cwd] of ORDINARY) expect(buildPrimerPointer(cwd)).toContain(`with cwd set to ${psQuote(cwd)} and`)
+    })
+
+    it('puts nothing of the folder anywhere but inside its quotes', () => {
+      const slot = '@@FOLDER@@'
+      const template = buildPrimerPointer('/x').replace("'/x'", slot)
+      expect(template).toContain(slot)
+      for (const [, cwd] of ORDINARY) expect(buildPrimerPointer(cwd).replace(`'${cwd}'`, slot)).toBe(template)
+    })
+  })
+
+  describe('a name no shell could take for plain text', () => {
+    it.each(HOSTILE)('is left out: %s', (_what, cwd) => {
+      const pointer = buildPrimerPointer(cwd)
+      // Exactly the pointer for no folder at all: nothing of the name is written anywhere.
+      expect(pointer).toBe(NO_FOLDER)
+      expect(pointer).toContain('memory_primer with no arguments')
+      expect(pointer).not.toContain('touch pwned')
+    })
+
+    it('keeps the pointer one line of paste-safe text whatever the folder is called', () => {
+      for (const [, cwd] of [...ORDINARY, ...HOSTILE]) {
+        const pointer = buildPrimerPointer(cwd, true)
+        expect(pointer).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/)
+        expect(pointer).not.toContain('`')
+        expect(pointer).toContain('memory_write') // the self-record clause is still appended
+      }
+    })
+  })
+
+  describe('which characters a folder name may carry', () => {
+    it('accepts exactly these ASCII characters, and not one control character', () => {
+      let accepted = ''
+      for (let code = 0; code < 0x80; code++) {
+        const ch = String.fromCharCode(code)
+        if (buildPrimerPointer(`/a${ch}b`).includes(`'/a${ch}b'`)) accepted += ch
+      }
+      expect(accepted).toBe(' #()+,-./0123456789:=@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]_abcdefghijklmnopqrstuvwxyz{}~')
+    })
+
+    it('refuses the C1 controls and the no-break space too', () => {
+      for (let code = 0x80; code <= 0xa0; code++) {
+        const cwd = `/a${String.fromCharCode(code)}b`
+        expect(buildPrimerPointer(cwd)).toBe(NO_FOLDER)
+      }
+    })
+
+    it('does not name a folder that ends in a backslash, but names the same one without it', () => {
+      expect(buildPrimerPointer('C:\\code\\acme\\')).toBe(NO_FOLDER)
+      expect(buildPrimerPointer('C:\\code\\acme')).toContain("with cwd set to 'C:\\code\\acme' and")
+    })
+  })
+
+  describe('injectAutoPrimer', () => {
+    it('pastes a pointer without the name of a hostile folder, and still recalls for the real one', async () => {
+      const cwd = '/tmp/$(touch pwned)'
+      expect(await injectAutoPrimer('t1', cwd, false, false, async () => {})).toBe(true)
+      const api = (window as any).termpolis
+      // The recall check is not a shell: it keeps the real folder, so the digest is as relevant as ever.
+      expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.stringContaining('$(touch pwned)'), undefined, cwd)
+      const [, paste] = api.writeToTerminal.mock.calls[0]
+      expect(paste).toBe('\x1b[200~' + NO_FOLDER + '\x1b[201~')
+      expect(paste).not.toContain('$(')
+    })
+
+    it('cannot be talked out of its bracketed paste by an escape in the folder name', async () => {
+      await injectAutoPrimer('t1', '/tmp/\x1b[201~\rtouch pwned\r', false, false, async () => {})
+      const [, paste] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+      expect(paste.split('\x1b[201~')).toHaveLength(2) // the one end marker, and it is the last thing in it
+      expect(paste.endsWith('\x1b[201~')).toBe(true)
+      expect(paste).not.toContain('\r')
+    })
+
+    it('names an ordinary folder in single quotes in what it pastes', async () => {
+      await injectAutoPrimer('t1', '/home/me/myproject', false, false, async () => {})
+      const [, paste] = (window as any).termpolis.writeToTerminal.mock.calls[0]
+      expect(paste).toContain("with cwd set to '/home/me/myproject' and read it")
+    })
+
+    it('asks for the generic recall, and names the root, when the folder has no name of its own', async () => {
+      await injectAutoPrimer('t1', '/', false, false, async () => {})
+      const api = (window as any).termpolis
+      expect(api.memoryBuildPrimer).toHaveBeenCalledWith(expect.not.stringContaining('context for'), undefined, '/')
+      expect(api.writeToTerminal.mock.calls[0][1]).toContain("with cwd set to '/' and read it")
     })
   })
 })
