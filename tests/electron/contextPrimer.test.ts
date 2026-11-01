@@ -691,6 +691,18 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
     expect(neither).toContain(`This project (${proj}) — past conversations first:`)
   })
 
+  it('fills as many lines as the same hits do when nothing marks a note or a lesson, so the order spends nothing', async () => {
+    const hits = crowd()
+    // The same hits with nothing to tell a note or a lesson from a conversation chunk: what a digest holds without the new order.
+    const plain = hits.map((h) => ({ ...h, source: 'claude', agentId: 'claude-history', kind: 'message', memoryType: undefined, tags: undefined }) as PrimerHit)
+    const out = await build(hits)
+    const base = await build(plain)
+    expect(rows(out)).toHaveLength(rows(base).length)
+    expect(rows(out).length).toBeLessThanOrEqual(10)
+    const widest = (o: string | null): number => Math.max(...rows(o).map((r) => r.length))
+    expect(widest(out)).toBeLessThanOrEqual(widest(base) + 'lesson'.length - 'claude'.length)
+  })
+
   it('keeps every line to the same snippet length: a note or a lesson is not given more room than a conversation', async () => {
     const wide = 'x'.repeat(900)
     const out = await build([note('n1', `note ${wide}`), lesson('g1', `${G1} ${wide}`), conv(1, { content: `conversation ${wide}` })], { maxSnippetChars: 100 })

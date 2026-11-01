@@ -344,6 +344,16 @@ describe('memoryEconomy', () => {
       expect(isStrictPrefix(undefined as unknown as string, 'anything')).toBe(false)
     })
 
+    it('is false for equal text that ends on punctuation, and for an empty text before text that starts with punctuation', () => {
+      // The word-boundary rule alone would call these heads (a non-word character on either side of the cut is a boundary):
+      // only the length and emptiness guards say they are not.
+      expect(isStrictPrefix('it works.', 'IT  works.')).toBe(false)
+      expect(isStrictPrefix('(done)', '(done)')).toBe(false)
+      expect(isStrictPrefix('', '- a list item')).toBe(false)
+      expect(isStrictPrefix('  ', '"quoted" start')).toBe(false)
+      expect(isStrictPrefix('', '[x] todo')).toBe(false)
+    })
+
     it('does not cut a word in two: "content 1" is not the head of "content 10"', () => {
       expect(isStrictPrefix('content 1', 'content 10')).toBe(false)
       expect(isStrictPrefix('see v1', 'see v10 for the fix')).toBe(false)
@@ -447,6 +457,15 @@ describe('memoryEconomy', () => {
     it('leaves exact duplicates to dedupeHits', () => {
       const same = [mk('a', FIRST, 0.9), mk('b', FIRST, 0.8)]
       expect(dropPrefixDuplicates(same)).toBe(same)
+    })
+
+    it('leaves equal text that ends on punctuation, and an empty text beside one that starts with punctuation, alone', () => {
+      // Two sessions can hold the same line (the store keys a chunk on its session too), and the freshness lane has no
+      // dedupe of its own: neither may be taken for the head of the other, nor an empty one for the head of a list item.
+      const same = [mk('a', 'It works.', 0.9), mk('b', 'it  works.', 0.8)]
+      expect(dropPrefixDuplicates(same)).toBe(same)
+      const blank = [mk('a', '', 0.9), mk('b', '- a list item', 0.8)]
+      expect(dropPrefixDuplicates(blank)).toBe(blank)
     })
   })
 })
