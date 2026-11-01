@@ -135,9 +135,10 @@ describe('the env a Claude launch gets', () => {
     expect(await claudeLaunchEnv('/w', sources({ settings: boom }))).toEqual(PROXY)
     // A proxy that throws: launch direct, the window is unaffected.
     expect(await claudeLaunchEnv('/w', sources({ proxyEnv: boom }))).toEqual({ [VAR]: '300000' })
-    // A settings read that rejects or throws: counts as not set.
-    expect(await claudeLaunchEnv('/w', sources({ readSettings: async () => { throw new Error('EACCES') } }))).toEqual({ ...PROXY, [VAR]: '300000' })
-    expect(await claudeLaunchEnv('/w', sources({ readSettings: (() => { throw new Error('sync') }) as never }))).toEqual({ ...PROXY, [VAR]: '300000' })
+    // A settings read that rejects or throws was not made, so what the files hold is not known: the route is
+    // unaffected and the window is left unset, rather than set over one the files may hold.
+    expect(await claudeLaunchEnv('/w', sources({ readSettings: async () => { throw new Error('EACCES') } }))).toEqual(PROXY)
+    expect(await claudeLaunchEnv('/w', sources({ readSettings: (() => { throw new Error('sync') }) as never }))).toEqual(PROXY)
     // Everything throws: a launch with nothing extra.
     expect(await claudeLaunchEnv('/w', sources({ settings: boom, proxyEnv: boom }))).toBeUndefined()
   })
@@ -146,7 +147,8 @@ describe('the env a Claude launch gets', () => {
     vi.useFakeTimers()
     const pending = claudeLaunchEnv('/w', sources({ readSettings: () => new Promise<ClaudeWindowSettings>(() => { /* never */ }) }))
     await vi.advanceTimersByTimeAsync(2_000)
-    expect(await pending).toEqual({ ...PROXY, [VAR]: '300000' })
+    // The terminal opens, with the route and without the window: it could not be told whether the user has one.
+    expect(await pending).toEqual(PROXY)
     expect(vi.getTimerCount()).toBe(0)
   })
 

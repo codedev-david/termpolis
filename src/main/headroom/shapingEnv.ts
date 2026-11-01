@@ -96,21 +96,35 @@ export function buildShapingEnv(
 
 /** What a Claude Code settings file says about the window, reduced to what the decision above needs. */
 export interface ClaudeWindowSettings {
-  /** The file's `env` block. */
+  /** The window variable's entry in the file's `env` block, and nothing else of that block. */
   env: Record<string, unknown> | null
   /** Whether it saves a window of its own: autoCompactWindow, or one per model from /autocompact. */
   savedWindow: boolean
+  /** Present, and true, when a file is there but could not be read (another program has it locked, or
+   *  permission was refused) or the read took too long: Termpolis cannot tell whether it holds a window,
+   *  so it counts as one rather than risk setting the variable over it. */
+  unreadable?: true
 }
+
+/** What stands in for a settings read that could not be made. */
+export const UNREADABLE: ClaudeWindowSettings = Object.freeze({ env: null, savedWindow: false, unreadable: true as const })
 
 /**
  * Reduce a parsed settings file to the two things that matter. Everything else in it (permissions, hooks,
- * helpers, the model) is looked at by nothing and not kept.
+ * helpers, the model) is looked at by nothing and not kept, and of the `env` block, which can hold keys of
+ * the user's own, only the entry for the window variable is (under whatever case it is spelled in, because
+ * Windows reads the name in any).
  */
 export function pickWindowSettings(parsed: unknown): ClaudeWindowSettings {
   if (!isRecord(parsed)) return { env: null, savedWindow: false }
   const perModel = isRecord(parsed.modelSettings) ? Object.values(parsed.modelSettings) : []
+  let env: Record<string, unknown> | null = null
+  if (isRecord(parsed.env)) {
+    env = {}
+    for (const key of Object.keys(parsed.env)) if (key.toUpperCase() === CONTEXT_WINDOW_VAR) env[key] = parsed.env[key]
+  }
   return {
-    env: isRecord(parsed.env) ? parsed.env : null,
+    env,
     savedWindow: isHeld(parsed.autoCompactWindow) || perModel.some((m) => isRecord(m) && isHeld(m.autoCompactWindow)),
   }
 }
@@ -119,21 +133,28 @@ export function pickWindowSettings(parsed: unknown): ClaudeWindowSettings {
 export function mergeWindowSettings(parts: readonly ClaudeWindowSettings[]): ClaudeWindowSettings {
   let env: Record<string, unknown> | null = null
   let savedWindow = false
+  let unreadable = false
   for (const part of parts) {
     if (part.env) env = { ...(env ?? {}), ...part.env }
     if (part.savedWindow) savedWindow = true
+    if (part.unreadable) unreadable = true
   }
-  return { env, savedWindow }
+  return unreadable ? { env, savedWindow, unreadable: true } : { env, savedWindow }
 }
 
-/** Run a read, but not past the deadline: a settings file on a share that has gone away must not stop a terminal opening. */
+/**
+ * Run a read, but not past the deadline: a settings file on a share that has gone away must not stop a
+ * terminal opening. A read that was not made (it took too long, or it threw) says nothing about what the
+ * files hold, and is reported as UNREADABLE so the variable is left unset, not set over a window that may
+ * be there. A read that finished and found nothing is null.
+ */
 async function settle(read: () => Promise<ClaudeWindowSettings | null | undefined>, deadlineMs: number): Promise<ClaudeWindowSettings | null> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), deadlineMs) })
+    const late = new Promise<ClaudeWindowSettings>((resolve) => { timer = setTimeout(() => resolve(UNREADABLE), deadlineMs) })
     return (await Promise.race([read(), late])) ?? null
   } catch {
-    return null
+    return UNREADABLE
   } finally {
     clearTimeout(timer)
   }
@@ -153,7 +174,7 @@ export async function resolveShapingEnv(
   const first = buildShapingEnv(settings, env)
   if (!read || !(CONTEXT_WINDOW_VAR in first)) return first
   const seen = await settle(read, deadlineMs)
-  return buildShapingEnv(settings, env, () => seen?.env ?? null, () => seen?.savedWindow === true)
+  return buildShapingEnv(settings, env, () => seen?.env ?? null, () => seen?.savedWindow === true || seen?.unreadable === true)
 }
 
 /**

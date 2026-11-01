@@ -53,9 +53,11 @@ describe('reading the Claude Code settings files that can hold a window', () => 
     expect(await readClaudeWindowSettings('', undefined)).toEqual(NOTHING)
   })
 
-  it('reads the env block of the user file', async () => {
-    put(userFile(), { env: { [VAR]: '250000', OTHER: 'x' } })
-    expect(await readClaudeWindowSettings(userDir, project)).toEqual({ env: { [VAR]: '250000', OTHER: 'x' }, savedWindow: false })
+  it('reads the window variable out of the env block of the user file, and keeps no other entry of it', async () => {
+    put(userFile(), { env: { [VAR]: '250000', OTHER: 'SENTINEL-KEY-NOT-KEPT' } })
+    const got = await readClaudeWindowSettings(userDir, project)
+    expect(got).toEqual({ env: { [VAR]: '250000' }, savedWindow: false })
+    expect(JSON.stringify(got)).not.toContain('SENTINEL')
   })
 
   it('reads the env block of the launch folder\'s project file and of its local file', async () => {
@@ -67,10 +69,12 @@ describe('reading the Claude Code settings files that can hold a window', () => 
   })
 
   it('puts the three together, a later file over an earlier one', async () => {
-    put(userFile(), { env: { A: 'user', B: 'user' } })
-    put(projectFile(), { env: { B: 'project', C: 'project' } })
-    put(localFile(), { env: { C: 'local' } })
-    expect((await readClaudeWindowSettings(userDir, project)).env).toEqual({ A: 'user', B: 'project', C: 'local' })
+    // The same variable in three spellings: the later file's entry replaces the earlier one's under the same
+    // spelling, and the spellings that differ are all kept (Windows reads the name in any case).
+    put(userFile(), { env: { [VAR]: 'user', other: 'dropped' } })
+    put(projectFile(), { env: { [VAR]: 'project' } })
+    put(localFile(), { env: { [VAR.toLowerCase()]: 'local', A: 'dropped' } })
+    expect((await readClaudeWindowSettings(userDir, project)).env).toEqual({ [VAR]: 'project', [VAR.toLowerCase()]: 'local' })
   })
 
   it('sees a saved window at the top level, or one saved for a model by /autocompact', async () => {

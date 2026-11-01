@@ -4,7 +4,7 @@ import { join } from 'path'
 import {
   CONTEXT_WINDOW_VAR, CONTEXT_CAP_MIN, CONTEXT_CAP_MAX, CONTEXT_CAP_CHOICES,
   isContextCap, isContextCapSetting, buildShapingEnv, pickWindowSettings, mergeWindowSettings,
-  windowOwner, resolveShapingEnv, composeLaunchEnv,
+  windowOwner, resolveShapingEnv, composeLaunchEnv, UNREADABLE,
   type ClaudeWindowSettings,
 } from '../../src/main/headroom/shapingEnv'
 
@@ -176,7 +176,10 @@ describe('what is kept of a Claude Code settings file', () => {
     }
     const kept = pickWindowSettings(parsed)
     expect(Object.keys(kept).sort()).toEqual(['env', 'savedWindow'])
-    expect(kept).toEqual({ env: { A: '1' }, savedWindow: true })
+    // The env block can hold keys of the user's own: only the window variable's entry is kept.
+    expect(kept).toEqual({ env: {}, savedWindow: true })
+    expect(pickWindowSettings({ env: { A: '1', [VAR]: '250000', [VAR.toLowerCase()]: '1', B: '2' } }).env).toEqual({ [VAR]: '250000', [VAR.toLowerCase()]: '1' })
+    expect(pickWindowSettings({ env: { [VAR]: null } }).env).toEqual({ [VAR]: null }) // kept as it is: a later null still replaces an earlier value
   })
 
   it('sees a window saved at the top level, in any form but nothing', () => {
@@ -255,11 +258,24 @@ describe('resolving it for a launch', () => {
     expect(await resolveShapingEnv({ contextCap: 300000 }, {}, read({ env: null, savedWindow: true }))).toEqual({})
   })
 
-  it('counts settings it could not read as not set: nothing, a rejection, a throw', async () => {
+  it('counts settings that were read and held nothing as not set: nothing at all, or null', async () => {
     expect(await resolveShapingEnv({ contextCap: 300000 }, {}, read(null))).toEqual({ [VAR]: '300000' })
     expect(await resolveShapingEnv({ contextCap: 300000 }, {}, read(undefined))).toEqual({ [VAR]: '300000' })
-    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, async () => { throw new Error('EACCES') })).toEqual({ [VAR]: '300000' })
-    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, (() => { throw new Error('sync') }) as never)).toEqual({ [VAR]: '300000' })
+  })
+
+  it('counts a read that was not made as a window it cannot see, and leaves the variable unset: a rejection, a throw, a file marked unreadable', async () => {
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, async () => { throw new Error('EACCES') })).toEqual({})
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, (() => { throw new Error('sync') }) as never)).toEqual({})
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, read({ env: null, savedWindow: false, unreadable: true }))).toEqual({})
+    // and an unreadable flag that is anything but true is not one
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, read({ env: null, savedWindow: false, unreadable: false } as never))).toEqual({ [VAR]: '300000' })
+  })
+
+  it('puts the unreadable flag through a merge of files: one unreadable file among readable ones', () => {
+    const merged = mergeWindowSettings([{ env: null, savedWindow: false }, UNREADABLE, { env: { [VAR]: '1' }, savedWindow: false }])
+    expect(merged).toEqual({ env: { [VAR]: '1' }, savedWindow: false, unreadable: true })
+    expect(mergeWindowSettings([{ env: null, savedWindow: false }])).toEqual({ env: null, savedWindow: false }) // no flag key when nothing was unreadable
+    expect(Object.isFrozen(UNREADABLE)).toBe(true)
   })
 
   it('does not wait forever for a read that hangs, and leaves no timer behind', async () => {
@@ -271,7 +287,8 @@ describe('resolving it for a launch', () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(settled).toBe(false)
     await vi.advanceTimersByTimeAsync(1000)
-    expect(await pending).toEqual({ [VAR]: '300000' })
+    // A read that never answered says nothing about the files: the variable is left unset, not set over a window that may be there.
+    expect(await pending).toEqual({})
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -287,7 +304,7 @@ describe('resolving it for a launch', () => {
     const hung = () => new Promise<ClaudeWindowSettings>(() => { /* never */ })
     const pending = resolveShapingEnv({ contextCap: 300000 }, {}, hung, 50)
     await vi.advanceTimersByTimeAsync(50)
-    expect(await pending).toEqual({ [VAR]: '300000' })
+    expect(await pending).toEqual({})
   })
 })
 

@@ -51,13 +51,77 @@ describe('the file calls the settings reader makes', () => {
     expect(M.readFile).not.toHaveBeenCalled()
   })
 
-  it('counts a file it cannot stat or read as holding nothing', async () => {
-    M.stat.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
-    expect(await readClaudeWindowSettings(USER)).toEqual(NOTHING)
-    expect(M.readFile).not.toHaveBeenCalled()
+  it('counts a file that is not there as holding nothing, whichever way the system says so', async () => {
+    for (const code of ['ENOENT', 'ENOTDIR']) {
+      M.stat.mockReset(); M.readFile.mockReset()
+      M.stat.mockRejectedValue(Object.assign(new Error(code), { code }))
+      expect(await readClaudeWindowSettings(USER), code).toEqual(NOTHING)
+      expect(M.readFile).not.toHaveBeenCalled()
+      expect(M.stat).toHaveBeenCalledTimes(1) // nothing there to wait for or try again
+    }
+    M.stat.mockReset(); M.readFile.mockReset()
     M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
-    M.readFile.mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+    M.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })) // gone between the two calls
     expect(await readClaudeWindowSettings(USER)).toEqual(NOTHING)
+    expect(M.readFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('counts a file that is there but is not valid JSON as holding nothing, as Claude Code does', async () => {
+    M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
+    for (const text of ['{ not json', '', '   ', '\u0000\u0001']) {
+      M.readFile.mockResolvedValue(text)
+      expect(await readClaudeWindowSettings(USER), JSON.stringify(text)).toEqual(NOTHING)
+    }
+    expect(M.stat).toHaveBeenCalledTimes(4) // one look each: a broken file is not retried
+  })
+
+  it('tries a file that is there but cannot be read once more, and uses it when the second try works', async () => {
+    for (const code of ['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'EIO']) {
+      M.stat.mockReset(); M.readFile.mockReset()
+      M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
+      M.readFile.mockRejectedValueOnce(Object.assign(new Error(code), { code })).mockResolvedValueOnce(BODY)
+      expect(await readClaudeWindowSettings(USER), code).toEqual({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '250000' }, savedWindow: false })
+      expect(M.readFile).toHaveBeenCalledTimes(2)
+    }
+  })
+
+  it('and when the stat itself is what fails the first time', async () => {
+    M.stat.mockRejectedValueOnce(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })).mockResolvedValue({ isFile: () => true, size: 10 })
+    M.readFile.mockResolvedValue(BODY)
+    expect(await readClaudeWindowSettings(USER)).toEqual({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '250000' }, savedWindow: false })
+  })
+
+  it('counts a file that still cannot be read on the second try as holding a window it cannot see', async () => {
+    M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
+    M.readFile.mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }))
+    expect(await readClaudeWindowSettings(USER)).toEqual({ env: null, savedWindow: false, unreadable: true })
+    expect(M.readFile).toHaveBeenCalledTimes(2) // once, and once more: not a loop
+    // An error with no code at all is also not a missing file.
+    M.readFile.mockReset(); M.readFile.mockRejectedValue(new Error('something odd'))
+    expect((await readClaudeWindowSettings(USER)).unreadable).toBe(true)
+    M.stat.mockReset(); M.stat.mockRejectedValue(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+    expect((await readClaudeWindowSettings(USER)).unreadable).toBe(true)
+  })
+
+  it('and that makes the variable stay unset, which is the whole point', async () => {
+    const { resolveShapingEnv } = await import('../../src/main/headroom/shapingEnv')
+    M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
+    M.readFile.mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }))
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(USER))).toEqual({})
+    // The same cap with a readable file that holds nothing is set.
+    M.readFile.mockReset(); M.readFile.mockResolvedValue('{}')
+    expect(await resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(USER))).toEqual({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' })
+  })
+
+  it('an unreadable file does not stop the others being read, and a window in a readable one still counts', async () => {
+    M.stat.mockImplementation(async () => ({ isFile: () => true, size: 10 }))
+    M.readFile.mockImplementation(async (file: string) => {
+      if (String(file).includes('someone')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }) // the user file
+      return BODY
+    })
+    const got = await readClaudeWindowSettings(USER, process.platform === 'win32' ? 'C:/proj' : '/proj')
+    expect(got.unreadable).toBe(true)
+    expect(got.env).toEqual({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '250000' })
   })
 
   it('asks about the three files together, not one after another', async () => {
