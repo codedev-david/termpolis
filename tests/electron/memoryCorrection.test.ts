@@ -292,6 +292,15 @@ describe('memoryCorrectionStore', () => {
     expect(memoryCorrectionStats().live).toBe(1)
   })
 
+  it('starts with no corrections when the log cannot be read, instead of failing to start', () => {
+    resetMemoryCorrections()
+    const unreadable = fs.mkdtempSync(path.join(tmp, 'unreadable-'))
+    fs.mkdirSync(path.join(unreadable, 'memory-corrections.jsonl')) // exists, but reading it throws
+    expect(() => initMemoryCorrections(unreadable)).not.toThrow()
+    expect(memoryCorrectionStats().live).toBe(0)
+    expect(applyCorrections([cand('a', 1)])).toHaveLength(1)
+  })
+
   it('starts clean when no log exists yet', () => {
     expect(memoryCorrectionStats().live).toBe(0)
     expect(correctionForMemory('anything')).toBeNull()

@@ -85,6 +85,12 @@ describe('mnemeReflex — task-completion reflex', () => {
     expect(d.write).toHaveBeenCalledTimes(1)
   })
 
+  it('files a task whose project is only whitespace under the "general" domain', async () => {
+    const d = deps()
+    await onTaskComplete({ id: 't8', status: 'completed', project: '   ', title: 'x', result: 'Fixed a long enough thing to reflect on here now.' }, d)
+    expect(d.recordOutcome).toHaveBeenCalledWith('general', true, 1000)
+  })
+
   it('has nothing skipped when it does not fire', async () => {
     expect(await onTaskComplete({ id: 't', status: 'in_progress' }, deps())).toEqual({ fired: false, lessons: 0, written: [], skipped: 0 })
   })
@@ -150,6 +156,12 @@ describe('mnemeReflex — solo-session reflex (onSessionEpisode)', () => {
     expect(res).toEqual({ fired: true, lessons: 1, written: ['mem-1'], skipped: 0 })
     expect(d.recordOutcome).toHaveBeenCalledWith('termpolis', true, 1000)
     expect(d.distill).toHaveBeenCalledTimes(1)
+  })
+
+  it('files a session whose project is only whitespace under the "general" domain', async () => {
+    const d = deps()
+    await onSessionEpisode(episode({ project: '  ', outcome: { kind: 'test', success: true } }), d)
+    expect(d.recordOutcome).toHaveBeenCalledWith('general', true, 1000)
   })
 
   it('reports how many distilled lessons the substance gate refused', async () => {

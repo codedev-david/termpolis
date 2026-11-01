@@ -197,6 +197,26 @@ describe('memory/learning audit written from the main process', () => {
     expect(fs.readFileSync(mainFile(), 'utf8')).not.toContain(secret)
   })
 
+  it('reads a file it cannot open as empty, and carries on with the other', () => {
+    fs.mkdirSync(hostFile()) // a directory where the host's file should be: it exists, and reading it throws
+    initMemoryAudit(tmp, 'main')
+    auditMemory({ event: 'learn', kind: 'reflect', detail: 'm' }, 4)
+    expect(readMemoryAudit().map((e) => e.ts)).toEqual([4])
+  })
+
+  it('rotates without a live file to move aside, and keeps writing', () => {
+    initMemoryAudit(tmp, 'main')
+    _setMaxBytesForTests(10) // smaller than one line, so the very first append rotates
+    auditMemory({ event: 'inject', target: 'primer', memoryIds: [], approxTokens: 1 }, 1)
+    expect(fs.existsSync(path.join(tmp, 'memory-audit-main.prev.jsonl'))).toBe(false) // nothing to keep
+    expect(readMemoryAudit().map((e) => e.ts)).toEqual([1])
+  })
+
+  it('redacts a preview that is not text as nothing', () => {
+    expect(redactPreview(undefined as unknown as string)).toBe('')
+    expect(redactPreview(42 as unknown as string)).toBe('')
+  })
+
   it('does not persist the query of a recall, whatever the caller passes (a prompt must not be stored)', () => {
     initMemoryAudit(tmp, 'main')
     const prompt = 'please refactor the billing module so the invoice totals match the ledger'
