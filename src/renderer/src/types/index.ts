@@ -338,6 +338,55 @@ export interface BillBreakdownView {
   totalBillSavedPct: number
 }
 
+/** One class of elided result: how it was replaced, which tool, how big, and how often the model asked
+ *  for the text back. Mirrors the main-process `ElisionClassView`. */
+export interface ElisionClassView {
+  key: string
+  kind: 'compact' | 'dedup' | 'diff' | 'decay'
+  tool: 'Read' | 'Bash' | 'Grep' | 'Glob' | 'PowerShell' | 'WebFetch' | 'WebSearch' | 'mcp' | 'other'
+  band: '<1.6k' | '1.6-4k' | '4-10k' | '10-40k' | '40k+'
+  elided: number
+  redeemed: number
+  ratePct: number | null
+  recentElided: number
+  recentRedeemed: number
+  recentRatePct: number | null
+  /** The redemption rate above which eliding this class at first sight loses; first-sight classes only. */
+  breakEvenPct: number | null
+  netUnitsPer1000: number | null
+  verdict: 'pays' | 'costs' | 'unknown'
+  basis: 'recent' | 'all-time' | null
+}
+
+/** The Elision health card's data: redemption by class, the break-even verdict and the retrieval
+ *  turns. Mirrors the main-process `ElisionHealthView`. */
+export interface ElisionHealthView {
+  windowSize: number
+  classes: ElisionClassView[]
+  elided: number
+  redeemed: number
+  legacyRedeemed: number
+  recentElided: number
+  recentRedeemed: number
+  firstSight: {
+    verdict: 'pays' | 'costs' | 'unknown'
+    basis: 'recent' | 'all-time' | null
+    elided: number
+    ratePct: number | null
+    breakEvenPct: number | null
+    netUnits: number
+  }
+  regime: 'rising' | 'falling' | 'steady' | 'unknown'
+  turns: {
+    count: number
+    units: number
+    unitsPerTurn: number
+    costBasis: 'measured' | 'assumed'
+    observed: number
+    sharePct: number | null
+  }
+}
+
 export interface TermpolisAPI {
   createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
@@ -536,6 +585,7 @@ export interface TermpolisAPI {
   tokenSavingsGetProxyStatus: () => Promise<IpcResponse<ProxyStatusView>>
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
   tokenSavingsGetUnifiedReceipt: () => Promise<IpcResponse<{ session: UnifiedTotalsView; cumulative: UnifiedTotalsView; depth?: DepthAdviceView | null }>>
+  tokenSavingsGetElisionHealth: () => Promise<IpcResponse<ElisionHealthView>>
   /** Where the memory store is running. Two in-memory reads in main — no work, no disk. Read on tab
    *  open and on Refresh; the ONLY timer allowed against it is the bounded re-probe that leaves the
    *  transitional 'starting' state, which stops itself as soon as the mode settles. */

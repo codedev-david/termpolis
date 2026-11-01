@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { ProxyTotalsView, UnifiedTotalsView, HeadroomSettingsView, DepthAdviceView, ProxyStatusView } from '../../types'
+import { ElisionHealthCard } from './ElisionHealthCard'
 
 /** Mirrors CCR_MAX_BYTES in src/main/headroom/ccrStore.ts — the pane names the real limit. */
 const CCR_CAP_MB = 200
@@ -272,6 +273,8 @@ export function TokenSavingsSettings() {
           </div>
         )}
       </div>
+
+      <ElisionHealthCard />
 
       <div className="hr-proxy-receipt" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
         <h4 style={{ margin: '0 0 6px' }}>Claude Code compression proxy</h4>

@@ -109,6 +109,54 @@ describe('retrieval-turn charge', () => {
   })
 })
 
+describe('turn requests, the denominator of the retrieval-turn share', () => {
+  it('counts every response whose shape was read, pure or not', () => {
+    recordProxyResult(msg(usage(100_000, 140), PURE))
+    recordProxyResult(msg(usage(120_000, 300), MIXED))
+    recordProxyResult(msg(usage(90_000, 800), TEXT_ONLY))
+    const s = summarizeProxySavings().session
+    expect(s.turnRequests).toBe(3)
+    expect(s.retrievalTurns).toBe(1)
+    expect(s.requests).toBe(3)
+  })
+
+  it('does not count a response from before the shape existed, or a malformed one', () => {
+    recordProxyResult(msg(usage(100_000, 140))) // no turn field at all
+    for (const bad of [null, 7, 'pure', { pure: 'yes' }, { pure: 1 }, []]) {
+      const m = msg(usage(100_000, 100)) as unknown as Record<string, unknown>
+      m.turn = bad
+      recordProxyResult(m as unknown as ProxyResultMsg)
+    }
+    const s = summarizeProxySavings().session
+    expect(s.requests).toBe(7) // every one is a request...
+    expect(s.turnRequests).toBe(0) // ...and none of them is a shape that was read
+  })
+
+  it('differs from requests on a ledger that predates the shape, which is why it is its own counter', () => {
+    loadProxyBase({ requests: 400_000, retrievalTurns: 0, turnRequests: 0 })
+    recordProxyResult(msg(usage(100_000, 140), PURE))
+    recordProxyResult(msg(usage(100_000, 140), TEXT_ONLY))
+    const c = summarizeProxySavings().cumulative
+    expect(c.requests).toBe(400_002)
+    expect(c.turnRequests).toBe(2)
+    expect(c.retrievalTurns / c.turnRequests).toBe(0.5) // not 1 / 400,002
+  })
+
+  it('round-trips, loads as zero from an old file, and is zeroed with the lifetime meter', () => {
+    recordProxyResult(msg(usage(100_000, 140), PURE))
+    saveProxyTotalsToDisk(dir)
+    resetProxyLedger()
+    loadProxyBaseFromDisk(dir)
+    expect(currentProxyTotals().turnRequests).toBe(1)
+    writeFileSync(join(dir, 'proxy-totals.json'), JSON.stringify({ requests: 5 }), 'utf8')
+    loadProxyBaseFromDisk(dir)
+    expect(currentProxyTotals().turnRequests).toBe(0)
+    recordProxyResult(msg(usage(100_000, 140), PURE))
+    resetProxyCounters()
+    expect(summarizeProxySavings().cumulative.turnRequests).toBe(0)
+  })
+})
+
 describe('retrieval-turn persistence', () => {
   it('round-trips through proxy-totals.json', () => {
     recordProxyResult(msg(usage(100_000, 140), PURE))

@@ -196,6 +196,7 @@ import { resolveWireMode } from './headroom/savingsFloor'
 import { describeWireTier } from './headroom/wireTier'
 import { setCcrDir, ccrPut } from './headroom/ccrStore'
 import { summarizeUnifiedSavings } from './headroom/unifiedReceipt'
+import { summarizeElisionHealth } from './headroom/elisionHealth'
 import { getProxyEnv, startProxy, stopProxy, onProxyResult, onProxyStash, setProxySpawner, createProxyTransport, pickFreePort, setProxyMode, setProxyThinkingCap, setProxyDecay, setProxyEnabled, isProxyEnabled, isProxyStarted, isProxyHealthy, userRoutingVar, getProxyMode, setAgentEnvReader } from './headroomProxy/proxySupervisor'
 import { readJsonObject } from './agentConfigIO'
 import { recordProxyResult, summarizeProxySavings, loadProxyBaseFromDisk, saveProxyTotalsToDisk, setProxyLedgerFlush, resetProxyCounters } from './headroomProxy/proxyLedger'
@@ -4020,6 +4021,11 @@ async function semanticPoolOptions(
       // The one honest number: wire proxy + MCP tool compressor, minus retrieve_full give-backs,
       // counted once. The two legacy per-layer handlers stay for back-compat.
       ipcMain.handle('tokenSavings:get-unified-receipt', () => ok(summarizeUnifiedSavings()))
+      // How often the model asks for elided text back, by class, and whether eliding it pays.
+      ipcMain.handle('tokenSavings:get-elision-health', () => {
+        try { return ok(summarizeElisionHealth()) }
+        catch (e: any) { return err(e.message) }
+      })
       // The output side of the bill. Separate from the unified receipt on purpose: the
       // receipt reports what was saved, this reports whether the thing believed to be saving
       // it actually is — including the verdict that it is not.

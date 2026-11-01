@@ -1100,6 +1100,19 @@ describe('tokenSavings IPC', () => {
       .toEqual({ success: true, data: { cumulative: { outputTokens: 1000, requests: 10, savedTokens: 7 } } })
   })
 
+  it('get-elision-health reports the live elision view, reading a proxy ledger with no turn counters as zero', async () => {
+    const r = await invoke('tokenSavings:get-elision-health')
+    expect(r.success).toBe(true)
+    expect(r.data).toMatchObject({ windowSize: 2000, classes: [], firstSight: { verdict: 'unknown' }, regime: 'unknown' })
+    // The proxy ledger is mocked here without retrievalTurns, so the view must not need them.
+    expect(r.data.turns).toMatchObject({ count: 0, units: 0, costBasis: 'assumed', sharePct: null })
+  })
+
+  it('get-elision-health returns err() rather than throwing into the IPC bridge', async () => {
+    M.summarizeProxySavings.mockImplementationOnce(() => { throw new Error('ledger unreadable') })
+    expect(await invoke('tokenSavings:get-elision-health')).toEqual({ success: false, error: 'ledger unreadable' })
+  })
+
   it('get-output-economy passes a set thinking cap through', async () => {
     M.getHeadroomSettings.mockReturnValue({ ...BASE_HR, thinkingCap: 8192 })
     expect(await invoke('tokenSavings:get-output-economy')).toEqual({ success: true, data: { verdict: 'no-effect' } })

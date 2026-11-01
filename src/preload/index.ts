@@ -258,6 +258,7 @@ const api: TermpolisAPI = {
   tokenSavingsGetProxyStatus: () => ipcRenderer.invoke('tokenSavings:get-proxy-status'),
   /** Both compression layers summed, give-backs subtracted once — the number the UI shows. */
   tokenSavingsGetUnifiedReceipt: () => ipcRenderer.invoke('tokenSavings:get-unified-receipt'),
+  tokenSavingsGetElisionHealth: () => ipcRenderer.invoke('tokenSavings:get-elision-health'),
   /** Vector count + what they cost as float32 vs int8. A one-shot read (tab open / Refresh) —
    *  it carries no process health and must never be put on a timer. */
   memoryHostStatus: () => ipcRenderer.invoke('memory:host-status'),
