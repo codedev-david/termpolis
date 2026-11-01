@@ -12,6 +12,8 @@ import {
   selfRecordsLessons,
   promptShowing,
   shellAloneNow,
+  ALONE_ASKS,
+  ALONE_RECHECK_MS,
   PRIMER_GATE_POLL_MS,
   PRIMER_GATE_MAX_WAIT_MS,
   PRIMER_SUBMIT_SETTLE_MS,
@@ -975,7 +977,7 @@ describe('the pointer is never typed at a shell prompt', () => {
       mockApi({ terminalShellAlone })
       expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
       expect(writes()).toEqual([]) // no paste and no Enter
-      expect(terminalShellAlone).toHaveBeenCalledTimes(1)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS) // it is asked until it has been sure
       // A launch prime that never happened must not announce "Loaded N memories".
       expect(useTerminalStore.getState().memoryNotice).toBeNull()
       // The recall check ran first: it is what says there is anything to point at.
@@ -1040,6 +1042,67 @@ describe('the pointer is never typed at a shell prompt', () => {
       expect(read).not.toHaveBeenCalled()
     })
 
+    // On Windows an agent's process is not on the console the moment the launch command echoes, and
+    // that early answer is the one for an agent that has gone: the prime was dropped for good (it is
+    // never retried). So before the paste "only the shell runs" has to be said again, a little
+    // later, and a dead agent is still a dead one.
+    describe('an agent that is still starting', () => {
+      it('is asked about again before it is taken for one that has gone', async () => {
+        const terminalShellAlone = asking(alone(true))
+        const read = vi.fn(async () => ({ success: true, data: { output: IDLE_SCREEN } }))
+        mockApi({ terminalShellAlone, readTerminalBuffer: read })
+        const sleep = vi.fn(async (_ms: number) => {})
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, sleep)).toBe(false)
+        expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+        expect(sleep.mock.calls).toEqual(Array.from({ length: ALONE_ASKS - 1 }, () => [ALONE_RECHECK_MS]))
+        expect(read).not.toHaveBeenCalled()
+        expect(writes()).toEqual([])
+        expect(useTerminalStore.getState().memoryNotice).toBeNull()
+      })
+
+      it('is primed when the second answer finds it', async () => {
+        const terminalShellAlone = asking(alone(true), alone(false))
+        mockApi({ terminalShellAlone })
+        const sleep = vi.fn(async (_ms: number) => {})
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, sleep)).toBe(true)
+        expect(writes()).toHaveLength(2)
+        expect(terminalShellAlone).toHaveBeenCalledTimes(3) // two before the paste, one before the Enter
+        expect(sleep.mock.calls).toEqual([[ALONE_RECHECK_MS], [PRIMER_SUBMIT_SETTLE_MS]])
+      })
+
+      it('is primed when the last answer finds it', async () => {
+        mockApi({ terminalShellAlone: asking(alone(true), alone(true), alone(false)) })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+        expect(writes()).toHaveLength(2)
+      })
+
+      it('is typed at as before when a later answer cannot tell', async () => {
+        const terminalShellAlone = asking(alone(true), alone(null))
+        mockApi({ terminalShellAlone })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+        expect(writes()).toHaveLength(2)
+        expect(terminalShellAlone).toHaveBeenCalledTimes(3)
+      })
+
+      it('is asked about once, not again, before the Enter', async () => {
+        const terminalShellAlone = asking(alone(false), alone(true))
+        mockApi({ terminalShellAlone })
+        const sleep = vi.fn(async (_ms: number) => {})
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, sleep)).toBe(false)
+        expect(terminalShellAlone).toHaveBeenCalledTimes(2)
+        expect(sleep.mock.calls).toEqual([[PRIMER_SUBMIT_SETTLE_MS]]) // no second chance for an agent that was there
+        expect(writes()).toHaveLength(1)
+      })
+
+      it('still waits out a prompt and a draft once it has been found', async () => {
+        mockApi({ terminalShellAlone: asking(alone(true), alone(false)), readTerminalBuffer: vi.fn(async () => ({ success: true, data: { output: TRUST_SCREEN } })) })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(false)
+        mockApi({ terminalShellAlone: asking(alone(true), alone(false)) })
+        expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, () => false)).toBe(false)
+        expect(writes()).toEqual([])
+      })
+    })
+
     // Anything short of a definite "only the shell runs" is today's behaviour: the pointer is typed.
     it.each([
       ['the OS cannot tell', alone(null)],
@@ -1079,9 +1142,13 @@ describe('the pointer is never typed at a shell prompt', () => {
 
   describe('on every path that types the pointer', () => {
     it('the launch prime types nothing at the prompt of an agent that exited', async () => {
-      mockApi({ terminalShellAlone: asking(alone(true)) })
-      const ok = await primeOnLaunch('t1', '/home/me/proj', openGate(), { sleep: quick, awaiting: async () => false, delayMs: 0 })
-      expect(ok).toBe(false)
+      vi.useFakeTimers() // the OS is asked again a little later before it is believed
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
+      const done = primeOnLaunch('t1', '/home/me/proj', openGate(), { sleep: quick, awaiting: async () => false, delayMs: 0 })
+      await vi.advanceTimersByTimeAsync(ALONE_RECHECK_MS * ALONE_ASKS)
+      expect(await done).toBe(false)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
       expect(writes()).toEqual([])
       expect(useTerminalStore.getState().memoryNotice).toBeNull()
     })
@@ -1094,11 +1161,15 @@ describe('the pointer is never typed at a shell prompt', () => {
     })
 
     it('the compaction re-prime types nothing at the prompt of an agent that exited', async () => {
-      mockApi({ terminalShellAlone: asking(alone(true)) })
-      const ok = await reprimeAfterCompaction('t1', '/home/me/proj', {
+      vi.useFakeTimers()
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
+      const done = reprimeAfterCompaction('t1', '/home/me/proj', {
         isLaunchPrimed: () => false, pending: async () => false, awaiting: async () => false, sleep: quick,
       })
-      expect(ok).toBe(false)
+      await vi.advanceTimersByTimeAsync(ALONE_RECHECK_MS * ALONE_ASKS)
+      expect(await done).toBe(false)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
       expect(writes()).toEqual([])
     })
 
@@ -1113,12 +1184,23 @@ describe('the pointer is never typed at a shell prompt', () => {
 
     it('useAutoPrimer: an agent that died while it started gets nothing typed', async () => {
       vi.useFakeTimers()
-      mockApi({ terminalShellAlone: asking(alone(true)) })
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
       renderHook(() => useAutoPrimer('term-dead', agent, '/home/me/proj', openGate()))
-      await vi.advanceTimersByTimeAsync(5000)
+      await vi.advanceTimersByTimeAsync(10_000) // the boot delay, then the OS asked until it is sure
       expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
       expect(writes()).toEqual([])
       expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('useAutoPrimer: an agent that takes its time to start is primed once it shows', async () => {
+      vi.useFakeTimers()
+      mockApi({ terminalShellAlone: asking(alone(true), alone(false)) })
+      renderHook(() => useAutoPrimer('term-slow', agent, '/home/me/proj', openGate()))
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(writes()).toHaveLength(2)
+      expect(writes()[1]).toBe('\r')
     })
 
     it('useAutoPrimer: a change of folder after the prime does not type a second pointer', async () => {
@@ -1145,11 +1227,13 @@ describe('the pointer is never typed at a shell prompt', () => {
 
     it('useCompactionReprimer: an agent that exited gets no re-prime typed', async () => {
       vi.useFakeTimers()
-      mockApi({ terminalShellAlone: asking(alone(true)) })
+      const terminalShellAlone = asking(alone(true))
+      mockApi({ terminalShellAlone })
       const { result } = renderHook(() => useCompactionReprimer('term-dead', agent, '/home/me/proj'))
       result.current('✻ Compacting conversation… (2m 30s)')
-      await vi.advanceTimersByTimeAsync(6000)
+      await vi.advanceTimersByTimeAsync(12_000) // the quiet window, then the OS asked until it is sure
       expect((window as any).termpolis.memoryBuildPrimer).toHaveBeenCalledTimes(1)
+      expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
       expect(writes()).toEqual([])
     })
 
