@@ -46,6 +46,9 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   const [installed, setInstalled] = useState<Record<string, boolean> | null>(null)
   const [more, setMore] = useState(false)
   const [carry, setCarry] = useState<AccountRowView | null>(null)
+  /** The carry question was asked on the way to a sign-in (a signed-out row): its yes opens the
+   *  sign-in sheet, and the switch goes on when that finishes. */
+  const [carrySignsIn, setCarrySignsIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const name = ACCOUNT_AGENT_LABEL[agent]
   const now = Date.now()
@@ -79,16 +82,21 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   /** This terminal's part of the prompt is over: on to its next terminal, if any. */
   const leave = (): void => store().leaveLimitChooser(terminal.id)
 
-  const switchTo = (to: AccountRowView): void => {
+  /** `confirmed`: the user said yes to carrying a work conversation off its account (R17). Main
+   *  refuses that switch without it. */
+  const switchTo = (to: AccountRowView, confirmed = false): void => {
     leave()
     if (agent === 'agy') return store().openAgySwitchSheet(to.id)
     const known = checks[to.id]
-    void startSwitch(terminal.id, to.id, { reason: 'usage limit', ...(known?.kind === 'signed-in' ? { known } : {}) })
+    void startSwitch(terminal.id, to.id, { reason: 'usage limit', ...(known?.kind === 'signed-in' ? { known } : {}), ...(confirmed ? { confirmed } : {}) })
   }
 
   const go = (to: AccountRowView): void => {
     // Carrying a work conversation onto another account asks once more (R17).
-    if (fromWork) return setCarry(to)
+    if (fromWork) {
+      setCarrySignsIn(false)
+      return setCarry(to)
+    }
     switchTo(to)
   }
 
@@ -97,9 +105,19 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
     void newTerminalOn(terminal, to)
   }
 
-  const signIn = (to: AccountRowView): void => {
+  const openSignIn = (to: AccountRowView, confirmed: boolean): void => {
     leave()
-    store().openSignInSheet(to.id, () => { void startSwitch(terminal.id, to.id, { reason: 'usage limit', known: { kind: 'signed-in', email: null } }) })
+    store().openSignInSheet(to.id, () => { void startSwitch(terminal.id, to.id, { reason: 'usage limit', known: { kind: 'signed-in', email: null }, ...(confirmed ? { confirmed } : {}) }) })
+  }
+
+  const signIn = (to: AccountRowView): void => {
+    // The same question as a switch's, before the sheet: a work conversation isn't carried off its
+    // account by a sign-in finishing (R17).
+    if (fromWork) {
+      setCarrySignsIn(true)
+      return setCarry(to)
+    }
+    openSignIn(to, false)
   }
 
   const addAccount = (): void => {
@@ -173,9 +191,10 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
         {carry ? (
           <div className="flex flex-wrap items-center gap-2" data-testid="limit-card-carry">
             <span>This conversation is on {current!.label}, which isn&apos;t offered automatically. Carry it to {carry.label}?</span>
-            <button type="button" className={SMALL_PRIMARY} onClick={() => fresh(carry)} data-testid="limit-card-carry-new">New terminal on {carry.label}</button>
-            <button type="button" className={SMALL_BUTTON} onClick={() => switchTo(carry)} data-testid="limit-card-carry-yes">Carry it to {carry.label}</button>
-            <button type="button" className={SMALL_BUTTON} onClick={() => setCarry(null)} data-testid="limit-card-carry-no">Cancel</button>
+            {/* A signed-out account has no session to start in a new terminal: the sign-in comes first. */}
+            {!carrySignsIn && <button type="button" className={SMALL_PRIMARY} onClick={() => fresh(carry)} data-testid="limit-card-carry-new">New terminal on {carry.label}</button>}
+            <button type="button" className={carrySignsIn ? SMALL_PRIMARY : SMALL_BUTTON} onClick={() => (carrySignsIn ? openSignIn(carry, true) : switchTo(carry, true))} data-testid="limit-card-carry-yes">{carrySignsIn ? `Sign in and carry it to ${carry.label}` : `Carry it to ${carry.label}`}</button>
+            <button type="button" className={SMALL_BUTTON} onClick={() => { setCarry(null); setCarrySignsIn(false) }} data-testid="limit-card-carry-no">Cancel</button>
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">

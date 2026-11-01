@@ -29,12 +29,12 @@ import { limitKindOf, limitTargets, parseResetsAt, resetTextOf } from '../../../
 import type { LimitKind, LimitTarget, TargetCheck } from '../../../shared/accountLimits'
 import type { AgentStatusResult } from '../../../shared/agentStatusDetector'
 import type { SwitchOutcome } from '../../../shared/accountSwitch'
-import { checkSignIn, outcomeView, runSwitch } from './accountSwitchFlow'
+import { checkSignIn, runSwitch } from './accountSwitchFlow'
 import { workerBlocker } from './accountsView'
 import type { SwitchDeps } from './accountSwitchFlow'
 import { recentCheck } from './limitChooser'
 import { osNotify, setSwarmStopOffer } from './limitWatch'
-import { carryIfStopped, carryWorkerStop, reportWorkerStop } from './swarmStopReports'
+import { carryIfStopped, carryWorkerStop, reportWorkerStop, setSwarmWorkingAgain } from './swarmStopReports'
 import type { SwarmWorker } from './swarmStopReports'
 import type { AccountsAPI, SwarmAPI, TerminalSession } from '../types'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
@@ -87,6 +87,7 @@ export interface RestartStore {
   swarmAgents: readonly SwarmWorker[]
   relaunching: Record<string, 'account' | 'model' | 'sign-in'>
   swarmRestarts: SwarmRestartGroup[]
+  setAccountsView: (view: AccountsView) => void
   putSwarmRestart: (g: SwarmRestartGroup) => void
   dropSwarmRestart: (id: string) => void
   beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
@@ -96,7 +97,7 @@ export interface RestartStore {
 export interface RestartDeps extends SwitchDeps {
   store: () => RestartStore
   swarm: Pick<SwarmAPI, 'getTasks' | 'sendMessage'>
-  accounts: Pick<AccountsAPI, 'switchAccount' | 'check' | 'noteLimit' | 'limitLook'>
+  accounts: Pick<AccountsAPI, 'switchAccount' | 'check' | 'noteLimit' | 'limitLook' | 'list'>
   now: () => number
   newId: () => string
   /** The window has the focus. */
@@ -165,14 +166,29 @@ export function freshMessage(w: SwarmWorker): string {
   return `${who(w)} restarted on another account without its conversation. Send it its task again with submit=true and the same taskId (STEP 5).`
 }
 
+/** When a worker on offer is at work again by itself: its limit lifted. */
+export function withdrawnMessage(w: SwarmWorker): string {
+  return `${who(w)} is working again by itself, so Termpolis withdrew its restart offer. Its task carries on: there is nothing to close or reassign.`
+}
+
 async function tell(deps: RestartDeps, content: string): Promise<void> {
   try {
     await deps.swarm.sendMessage('system', 'conductor', 'info', content)
   } catch { /* the bus is the conductor's only ear: nothing else to tell it by */ }
 }
 
-/** v1.54.0's close-and-reassign, for a worker whose offer ended without a restart. */
-const reassign = (w: RestartWorker): Promise<void> => reportWorkerStop(w, { status: 'blocked', summary: w.summary })
+/** v1.54.0's close-and-reassign, for a worker whose offer ended without a restart. Never while a
+ *  relaunch holds the worker (R16): it looks again when the lock lets go. And not at all for a
+ *  worker the conductor closed meanwhile: there is nothing left to close. */
+async function reassign(w: RestartWorker, deps: RestartDeps): Promise<void> {
+  const s = deps.store()
+  if (!s.terminals.some((t) => t.id === w.terminalId)) return
+  if (s.relaunching[w.terminalId]) {
+    deps.setTimer(() => { void reassign(w, deps) }, LOCK_RECHECK_MS)
+    return
+  }
+  await reportWorkerStop(w, { status: 'blocked', summary: w.summary })
+}
 
 // ── The offer ──────────────────────────────────────────────────────────────────────────
 
@@ -200,7 +216,7 @@ function startClock(terminalId: string, ms: number, deps: RestartDeps): void {
 async function timeUp(terminalId: string, deps: RestartDeps): Promise<void> {
   clocks.delete(terminalId)
   const s = deps.store()
-  const g = s.swarmRestarts.find((x) => x.phase.kind === 'offered' && x.workers.some((w) => w.terminalId === terminalId))
+  const g = s.swarmRestarts.find((x) => (x.phase.kind === 'offered' || x.phase.kind === 'confirm') && x.workers.some((w) => w.terminalId === terminalId))
   if (!g) return
   if (s.relaunching[terminalId]) {
     startClock(terminalId, LOCK_RECHECK_MS, deps)
@@ -210,7 +226,21 @@ async function timeUp(terminalId: string, deps: RestartDeps): Promise<void> {
   const rest = g.workers.filter((x) => x.terminalId !== terminalId)
   if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
   else s.dropSwarmRestart(g.id)
-  await reassign(w)
+  await reassign(w, deps)
+}
+
+/** A worker on an open offer is at work again by itself (its limit lifted, or the stop was never one):
+ *  it leaves the offer and its clock, and the conductor, told to wait for Termpolis's next word, is told
+ *  there is nothing to wait for. An offer already restarting it is that restart's. */
+export async function withdrawFromOffer(worker: SwarmWorker, deps: RestartDeps): Promise<void> {
+  const s = deps.store()
+  const g = s.swarmRestarts.find((x) => (x.phase.kind === 'offered' || x.phase.kind === 'confirm') && x.workers.some((w) => w.terminalId === worker.terminalId))
+  if (!g) return
+  stopClock(worker.terminalId, deps)
+  const rest = g.workers.filter((w) => w.terminalId !== worker.terminalId)
+  if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
+  else s.dropSwarmRestart(g.id)
+  await tell(deps, withdrawnMessage(worker))
 }
 
 /** The open task the conductor assigned to the worker, if any. */
@@ -226,7 +256,7 @@ async function taskOf(terminalId: string, deps: RestartDeps): Promise<string | u
 
 /** The offer still open for an agent's account, if any. */
 const openOffer = (s: RestartStore, agent: ProfileAgent, accountId: string): SwarmRestartGroup | undefined =>
-  s.swarmRestarts.find((x) => x.phase.kind === 'offered' && x.agent === agent && x.accountId === accountId)
+  s.swarmRestarts.find((x) => !x.conductor && x.phase.kind === 'offered' && x.agent === agent && x.accountId === accountId)
 
 /** The worker joins the offer open for its account: false when none is open by the time its task
  *  is known (`known`, or asked for here). Nothing waits between the look and the change. */
@@ -249,20 +279,29 @@ async function joinOffer(worker: SwarmWorker, summary: string, agent: ProfileAge
  * sign-in it hit (§8.2, R23), whatever is offered.
  */
 export async function offerRestart(worker: SwarmWorker, result: AgentStatusResult, words: (() => string | null) | undefined, deps: RestartDeps): Promise<boolean> {
-  const s = deps.store()
-  const view = s.accountsView
-  const term = s.terminals.find((t) => t.id === worker.terminalId)
+  const s0 = deps.store()
+  const term = s0.terminals.find((t) => t.id === worker.terminalId)
+  const view0 = s0.accountsView
   const agent = term?.swarmAgent
-  if (!view || !term || term.isConductor || !agent || !isProfileAgent(agent) || !term.agentAccountId || s.accountsByHand[term.id]) return false
-  const own = view.accounts.find((r) => r.id === term.agentAccountId && r.agent === agent)
+  if (!view0 || !term || term.isConductor || !agent || !isProfileAgent(agent) || !term.agentAccountId || s0.accountsByHand[term.id]) return false
+  const own = view0.accounts.find((r) => r.id === term.agentAccountId && r.agent === agent)
   if (!own) return false
   const now = deps.now()
   const said = words?.() ?? result.summary
   const reset = resetTextOf(result.summary)
   const resetsAt = reset === null ? null : parseResetsAt(reset, now)
   const kind = limitKindOf(said)
-  void deps.accounts.noteLimit(own.id, { text: said, resetsAt, scope: kind.scope, window: kind.window, ...(own.lastEmail ? { email: own.lastEmail } : {}) })
-    .catch(() => { /* the offer goes on without the record */ })
+  // Recorded first, and the view re-read after it: the record changes which accounts are a way out
+  // (§8.3 rule 7), and the view the rules read is the renderer's copy of main's, as old as its last read.
+  try {
+    await deps.accounts.noteLimit(own.id, { text: said, resetsAt, scope: kind.scope, window: kind.window, ...(own.lastEmail ? { email: own.lastEmail } : {}) })
+  } catch { /* the offer goes on without the record */ }
+  try {
+    const fresh = await deps.accounts.list()
+    if (fresh.success) deps.store().setAccountsView(fresh.data)
+  } catch { /* the view it had stands */ }
+  const s = deps.store()
+  const view = s.accountsView ?? view0
   if (openOffer(s, agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps)
   const limited = { accountId: own.id, email: own.lastEmail }
   // Asked only of the accounts that are a way out by what Termpolis knows already: none, no process.
@@ -349,7 +388,7 @@ export async function declineRestart(groupId: string, deps: RestartDeps): Promis
   s.dropSwarmRestart(g.id)
   for (const w of g.workers) stopClock(w.terminalId, deps)
   if (g.phase.kind !== 'offered' && g.phase.kind !== 'confirm') return
-  for (const w of g.workers) await reassign(w)
+  for (const w of g.workers) await reassign(w, deps)
 }
 
 /**
@@ -369,42 +408,74 @@ export async function restartOn(groupId: string, targetId: string, deps: Restart
   if (!confirmed && target && from && !from.autoOffer) {
     const question = `${from.label} isn't offered automatically. Carry ${g.workers.length === 1 ? 'this worker\'s conversation' : 'these workers\' conversations'} to ${target.label}?`
     s.putSwarmRestart({ ...g, phase: { kind: 'confirm', targetId, question } })
+    // An unanswered question ends like an unanswered offer: the conductor is waiting on it too.
+    for (const w of g.workers) startClock(w.terminalId, RESTART_WAIT_MS, deps)
     return
   }
   s.putSwarmRestart({ ...g, phase: { kind: 'restarting', targetId } })
-  const lines = await Promise.all(g.workers.map((w) => restartWorker(w, g.agent, target, deps)))
+  const results = await Promise.all(g.workers.map((w) => restartWorker(w, g.agent, target, deps, confirmed)))
   const now = deps.store().swarmRestarts.find((x) => x.id === g.id)
-  if (now) deps.store().putSwarmRestart({ ...now, phase: { kind: 'done', lines } })
+  if (now) deps.store().putSwarmRestart({ ...now, phase: { kind: 'done', lines: results.map((r) => r.line) } })
+  // A worker something else was relaunching stays on offer, its clock running again (R16): the
+  // conductor is never told to close it while that lasts, and whatever relaunches it tells the
+  // conductor how it went.
+  const again = results.flatMap((r) => (r.again ? [r.again] : []))
+  if (again.length > 0 && now) {
+    deps.store().putSwarmRestart({ ...g, id: deps.newId(), workers: again, phase: { kind: 'offered' } })
+    for (const w of again) startClock(w.terminalId, RESTART_WAIT_MS, deps)
+  }
 }
 
-/** One worker's restart, and what the conductor is told; the line the offer shows for it. */
-async function restartWorker(w: RestartWorker, agent: ProfileAgent, target: AccountRowView | undefined, deps: RestartDeps): Promise<string> {
+/** What a restart that didn't happen says of a worker, for the offer's line. A worker has no pane of
+ *  its own (it is hidden) and the offer has no buttons for it: so this is a statement of what happened
+ *  and where the worker is now, never a question or something for the user to do in a terminal. */
+export function failureText(o: SwitchOutcome, agent: ProfileAgent, target: AccountRowView): string {
+  const name = ACCOUNT_AGENT_LABEL[agent]
+  switch (o.kind) {
+    case 'busy': return `${name} was working, so Termpolis typed nothing and left it as it was.`
+    case 'unknown-exit': return `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`
+    case 'exit-unconfirmed': return `${name} didn't confirm it exited, so Termpolis typed nothing more.`
+    case 'agent-alive': return `${name} didn't exit: the account line showed in its own input, so Termpolis took it back out and entered nothing.`
+    case 'didnt-start': return 'The account line never showed, so nothing was entered.'
+    case 'resume-not-found': return `${target.label} can't see that conversation.`
+    case 'sign-in': return `${target.label}'s sign-in has expired, so ${name} stopped at its sign-in screen. Sign it in again from its card in Settings ▸ Accounts.`
+    case 'asks-user': return `${target.label} is asking something only a person can answer.`
+    case 'no-outcome': return `Nothing showed within 30 seconds, so Termpolis can't say whether ${name} started.`
+    case 'refused': return `Termpolis didn't switch: ${o.why}.`
+    default: return `${name} did not come back on ${target.label}.`
+  }
+}
+
+/** One worker's restart, and what the conductor is told; the line the offer shows for it. `again`:
+ *  the worker stays on offer, because something else holds it now. */
+interface Restarted { line: string; again?: RestartWorker }
+
+async function restartWorker(w: RestartWorker, agent: ProfileAgent, target: AccountRowView | undefined, deps: RestartDeps, confirmed = false): Promise<Restarted> {
   const name = `${w.agentName} (${w.role})`
   const s = deps.store()
   const term = s.terminals.find((t) => t.id === w.terminalId)
   // The conductor moved on without it: it closed the worker, or gave its task to another (R16).
-  if (!term) return `${name}: the conductor closed it, so it wasn't restarted.`
+  if (!term) return { line: `${name}: the conductor closed it, so it wasn't restarted.` }
   if (w.taskId) {
     let moved = false
     try {
       const res = await deps.swarm.getTasks()
       moved = res.success && !!res.data && res.data.find((t) => t.id === w.taskId)?.assignedTo !== w.terminalId
     } catch { /* not known to have moved */ }
-    if (moved) return `${name}: its task went to another agent, so it wasn't restarted.`
+    if (moved) return { line: `${name}: its task went to another agent, so it wasn't restarted.` }
   }
   if (!target) {
-    await reassign(w)
-    return `${name}: that account isn't registered any more, so it wasn't restarted: the conductor reassigns its task.`
+    await reassign(w, deps)
+    return { line: `${name}: that account isn't registered any more, so it wasn't restarted: the conductor reassigns its task.` }
   }
   if (!s.beginRelaunch(w.terminalId, 'account')) {
-    await reassign(w)
-    return `${name}: something else is relaunching it, so it wasn't restarted: the conductor reassigns its task.`
+    return { line: `${name}: something else is relaunching it, so it wasn't restarted. It is offered again once that is done.`, again: w }
   }
   let outcome: SwitchOutcome
   try {
-    outcome = await runSwitch(term, agent, target, {}, deps, 'usage limit, swarm worker')
+    outcome = await runSwitch(term, agent, target, confirmed ? { confirmedCarry: true } : {}, deps, 'usage limit, swarm worker')
     // The target can't see the conversation: a new session in place, as Codex's path (c).
-    if (outcome.kind === 'resume-not-found') outcome = await runSwitch(term, agent, target, { assumeExited: true, fresh: true }, deps, 'usage limit, swarm worker')
+    if (outcome.kind === 'resume-not-found') outcome = await runSwitch(term, agent, target, { assumeExited: true, fresh: true, ...(confirmed ? { confirmedCarry: true } : {}) }, deps, 'usage limit, swarm worker')
   } finally {
     deps.store().endRelaunch(w.terminalId)
   }
@@ -412,12 +483,14 @@ async function restartWorker(w: RestartWorker, agent: ProfileAgent, target: Acco
     // The resumed session can draw the same limit again: no new stop until it took a turn (R4).
     carryWorkerStop(w.terminalId, w.summary, () => tookTurn(w.terminalId, deps))
     await tell(deps, outcome.kind === 'switched' ? restartedMessage(w) : freshMessage(w))
-    return outcome.kind === 'switched'
-      ? `${name}: on ${target.label}, its conversation resumed.`
-      : `${name}: on ${target.label}, with a new session: the conductor sends its task again.`
+    return {
+      line: outcome.kind === 'switched'
+        ? `${name}: on ${target.label}, its conversation resumed.`
+        : `${name}: on ${target.label}, with a new session: the conductor sends its task again.`,
+    }
   }
-  await reassign(w)
-  return `${name}: ${outcomeView(outcome, agent, target).text} The conductor reassigns its task.`
+  await reassign(w, deps)
+  return { line: `${name}: ${failureText(outcome, agent, target)} The conductor reassigns its task.` }
 }
 
 /** Main's word that the worker took a turn since its restart (a prompt entered in its box, or work
@@ -473,5 +546,9 @@ export function liveRestartDeps(): RestartDeps {
 /** The offer, in the swarm's 5 s loop (limitWatch.ts noteSwarmStop). Returns its removal. */
 export function installSwarmRestart(deps: () => RestartDeps): () => void {
   setSwarmStopOffer((worker, result, words) => offerRestart(worker, result, words, deps()))
-  return () => setSwarmStopOffer(null)
+  setSwarmWorkingAgain((worker) => withdrawFromOffer(worker, deps()))
+  return () => {
+    setSwarmStopOffer(null)
+    setSwarmWorkingAgain(null)
+  }
 }

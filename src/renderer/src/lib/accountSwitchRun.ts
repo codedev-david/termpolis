@@ -52,6 +52,9 @@ export interface SwitchRun {
   steps: [StepState, StepState, StepState]
   /** The answers it ran with, for Try again. */
   answers: SwitchAnswers
+  /** The user confirmed carrying a conversation to or from an account that isn't offered
+   *  automatically (D14, R17): a retry, a sign-in and a queued wait go on with it. */
+  confirmed?: boolean
   /** A new session was asked for (the steps' last one says so). */
   fresh?: boolean
   card?: ErrorCard
@@ -65,6 +68,8 @@ export interface SwitchRun {
 export interface QueuedSwitch {
   targetId: string
   reason: string
+  /** The second confirmation (D14, R17), asked when the switch was queued. */
+  confirmed?: boolean
 }
 
 /** How long the toast and its Switch back stay. */
@@ -165,6 +170,9 @@ export interface StartOptions {
   answers?: SwitchAnswers
   /** The target's sign-in, already known: no check is run for it. */
   known?: SignInCheck
+  /** The user said yes to the second question (D14, R17): this switch goes onto, or off, an account
+   *  that isn't offered automatically. Main refuses it without that. */
+  confirmed?: boolean
 }
 
 function put(run: SwitchRun): void {
@@ -190,6 +198,7 @@ export async function startSwitch(terminalId: string, targetId: string, opts: St
   const base: SwitchRun = {
     terminalId, agent, from: fromRow ? endpoint(fromRow) : null, to: endpoint(target), reason: opts.reason ?? 'by hand',
     status: 'checking', steps: ['pending', 'pending', 'pending'], answers, ...(answers.fresh ? { fresh: true } : {}),
+    ...(opts.confirmed ? { confirmed: true } : {}),
   }
   s.dropQueuedSwitch(terminalId)
   put(base)
@@ -216,7 +225,7 @@ export async function startSwitch(terminalId: string, targetId: string, opts: St
   })
   let outcome: SwitchOutcome
   try {
-    outcome = await runSwitch(terminal, agent, target, answers, deps, base.reason)
+    outcome = await runSwitch(terminal, agent, target, opts.confirmed ? { ...answers, confirmedCarry: true } : answers, deps, base.reason)
   } finally {
     off()
     store().endRelaunch(terminalId)
@@ -227,12 +236,15 @@ export async function startSwitch(terminalId: string, targetId: string, opts: St
   if (outcome.kind === 'busy') {
     // It got to work meanwhile: the switch waits for the turn to end.
     store().dropSwitchRun(terminalId)
-    store().queueSwitch(terminalId, { targetId, reason: base.reason })
+    store().queueSwitch(terminalId, { targetId, reason: base.reason, ...(opts.confirmed ? { confirmed: true } : {}) })
     return
   }
   if (outcome.kind === 'switched' || outcome.kind === 'fresh') {
     const until = deps.now() + TOAST_MS
-    put({ ...run, status: 'done', steps: ['done', 'done', 'done'], toast: { text: toastFor(outcome, run), until, back: run.from?.id ?? null } })
+    // Switch back is a switch like any other: onto, or off, an account that isn't offered
+    // automatically it would need the second question (D14, R17), which a toast can't ask. The menu does.
+    const back = fromRow && fromRow.autoOffer && target.autoOffer ? fromRow.id : null
+    put({ ...run, status: 'done', steps: ['done', 'done', 'done'], toast: { text: toastFor(outcome, run), until, back } })
     // The toast goes at its time, wherever it shows (a pane, or a worker's line in the swarm
     // dashboard), unless another switch took its place meanwhile.
     setTimeout(() => {
@@ -250,7 +262,7 @@ export async function actOnRun(terminalId: string, kind: CardActionKind | 'back'
   if (!run) return
   const again = (opts: StartOptions): Promise<void> => {
     store().dropSwitchRun(terminalId)
-    return startSwitch(terminalId, run.to.id, { reason: run.reason, ...opts }, deps)
+    return startSwitch(terminalId, run.to.id, { reason: run.reason, ...(run.confirmed ? { confirmed: true } : {}), ...opts }, deps)
   }
   const signedIn: SignInCheck = { kind: 'signed-in', email: null }
   switch (kind) {
@@ -267,7 +279,7 @@ export async function actOnRun(terminalId: string, kind: CardActionKind | 'back'
       return s.openSignInSheet(run.to.id)
     case 'sign-in-and-switch':
       s.dropSwitchRun(terminalId)
-      return s.openSignInSheet(run.to.id, () => { void startSwitch(terminalId, run.to.id, { reason: run.reason, known: signedIn }, deps) })
+      return s.openSignInSheet(run.to.id, () => { void startSwitch(terminalId, run.to.id, { reason: run.reason, known: signedIn, ...(run.confirmed ? { confirmed: true } : {}) }, deps) })
     case 'new-terminal': {
       const terminal = s.terminals.find((t) => t.id === terminalId)
       const target = s.accountsView?.accounts.find((r) => r.id === run.to.id)
@@ -295,8 +307,8 @@ export async function newTerminalOn(source: TerminalSession, target: AccountRowV
 }
 
 /** Queues a switch for a busy agent: it runs once the agent is done with its turn. */
-export function queueSwitch(terminalId: string, targetId: string, reason = 'by hand'): void {
-  store().queueSwitch(terminalId, { targetId, reason })
+export function queueSwitch(terminalId: string, targetId: string, reason = 'by hand', confirmed = false): void {
+  store().queueSwitch(terminalId, { targetId, reason, ...(confirmed ? { confirmed: true } : {}) })
 }
 
 /** One look at each queued switch: its terminal gone, it goes; its agent done, it runs. */
@@ -313,7 +325,7 @@ export async function processQueue(deps: RunDeps = liveRunDeps()): Promise<void>
     } catch {
       continue
     }
-    await startSwitch(terminalId, q.targetId, { reason: q.reason }, deps)
+    await startSwitch(terminalId, q.targetId, { reason: q.reason, ...(q.confirmed ? { confirmed: true } : {}) }, deps)
   }
 }
 

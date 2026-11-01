@@ -482,8 +482,52 @@ describe('a terminal on the work account (R17)', () => {
     expect(screen.queryByTestId('limit-card-carry')).toBeNull()
     click('limit-card-continue')
     click('limit-card-carry-yes')
-    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_a', expect.objectContaining({ reason: 'usage limit' }))
+    // Main refuses a switch off work that doesn't carry the user's yes (D14, R17).
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_a', expect.objectContaining({ reason: 'usage limit', confirmed: true }))
     expect(st().accountSwitch).toBeNull()
+  })
+
+  it('asks the same question before signing a signed-out account in, and opens the sheet only on yes', async () => {
+    useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_w' })] })
+    accounts.check.mockImplementation(async (id: string) => (id === 'acc_c' ? identity(C, false) : identity(B, true)))
+    card()
+    openLimit(ctx({ accountId: 'acc_w' }))
+    await waitFor(() => expect(accounts.check).toHaveBeenCalledTimes(3))
+    await act(async () => undefined)
+    click('limit-card-more')
+    click('limit-card-sign-in')
+    // The question comes first: no sheet, no switch, and no new terminal on an account with no session.
+    expect(screen.getByTestId('limit-card-carry')).toHaveTextContent('This conversation is on work, which isn\'t offered automatically. Carry it to spare?')
+    expect(screen.queryByTestId('limit-card-carry-new')).toBeNull()
+    expect(st().signInSheet).toBeNull()
+    expect(startSwitch).not.toHaveBeenCalled()
+    // No: nothing opens, nothing is carried, and the card is still there for another way out.
+    click('limit-card-carry-no')
+    expect(screen.queryByTestId('limit-card-carry')).toBeNull()
+    expect(st().signInSheet).toBeNull()
+    expect(st().accountSwitch).not.toBeNull()
+    // Yes: the sheet opens; the sign-in finishing carries the conversation, with the yes main insists on.
+    click('limit-card-sign-in')
+    expect(screen.getByTestId('limit-card-carry-yes')).toHaveTextContent('Sign in and carry it to spare')
+    click('limit-card-carry-yes')
+    expect(st().signInSheet?.accountId).toBe('acc_c')
+    expect(startSwitch).not.toHaveBeenCalled()
+    st().signInSheet!.then!()
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_c', { reason: 'usage limit', known: { kind: 'signed-in', email: null }, confirmed: true })
+  })
+
+  it('asks nothing before a sign-in for a terminal on an account that is offered automatically', async () => {
+    accounts.check.mockImplementation(async (id: string) => (id === 'acc_c' ? identity(C, false) : identity(B, true)))
+    card()
+    openLimit()
+    await waitFor(() => expect(accounts.check).toHaveBeenCalledTimes(2))
+    await act(async () => undefined)
+    click('limit-card-more')
+    click('limit-card-sign-in')
+    expect(screen.queryByTestId('limit-card-carry')).toBeNull()
+    expect(st().signInSheet?.accountId).toBe('acc_c')
+    st().signInSheet!.then!()
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_c', { reason: 'usage limit', known: { kind: 'signed-in', email: null } })
   })
 
   it('opens the fresh session from its first button, or from the question', async () => {

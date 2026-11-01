@@ -4,7 +4,7 @@
 // says, and "New terminal on <account>" (§7.4).
 import { describe, it, expect, vi } from 'vitest'
 import {
-  checkSignIn, hasManyAccounts, openOnAccount, openOtherAgent, outcomeView, runSwitch, terminalAgent,
+  checkSignIn, hasManyAccounts, openOnAccount, openOtherAgent, runSwitch, terminalAgent,
 } from '../../src/renderer/src/lib/accountSwitchFlow'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { SwitchOutcome } from '../../src/shared/accountSwitch'
@@ -127,34 +127,6 @@ describe('runSwitch', () => {
     const odd = deps()
     odd.accounts.switchAccount.mockRejectedValue('odd')
     expect(await runSwitch(term, 'agy', B, {}, odd)).toEqual({ kind: 'refused', why: 'odd' })
-  })
-})
-
-describe('outcomeView: what each outcome says', () => {
-  const cases: Array<[SwitchOutcome, Partial<ReturnType<typeof outcomeView>>]> = [
-    [{ kind: 'switched', resumed: true }, { tone: 'good', done: true, text: 'Now on codedev. Your conversation continues. Its first answer re-reads the whole conversation (no shared prompt cache).' }],
-    [{ kind: 'switched', resumed: true, kept: 'x.jsonl.bak-1' }, { text: 'Now on codedev. Your conversation continues. Its first answer re-reads the whole conversation (no shared prompt cache). codedev had a newer copy of it, kept beside it as x.jsonl.bak-1.' }],
-    [{ kind: 'fresh', why: 'not-found' }, { tone: 'warn', done: true, text: 'Claude Code can\'t carry this conversation to codedev, so a new session started there. Termpolis\'s memory still has what it learned.' }],
-    [{ kind: 'fresh', why: 'no-session' }, { text: 'Claude Code named no conversation to resume, so a new session started on codedev.' }],
-    [{ kind: 'fresh', why: 'asked' }, { text: 'A new session started on codedev.' }],
-    [{ kind: 'busy' }, { text: 'Claude Code is working. Stop it and switch?', retry: { label: 'Stop it and switch', answers: { stopBusy: true } }, done: false }],
-    [{ kind: 'unknown-exit' }, { retry: { label: 'It has exited, switch now', answers: { assumeExited: true } } }],
-    [{ kind: 'exit-unconfirmed' }, { text: 'Termpolis couldn\'t confirm Claude Code exited, so it typed nothing more. Exit it yourself with /exit, then switch again.' }],
-    [{ kind: 'agent-alive' }, { tone: 'bad', done: false }],
-    [{ kind: 'didnt-start', line: 'L' }, { line: 'L', retry: { label: 'Try again', answers: { assumeExited: true } } }],
-    [{ kind: 'resume-not-found' }, { text: 'codedev can\'t see that conversation.', retry: { label: 'Start a new session on codedev', answers: { assumeExited: true, fresh: true } } }],
-    // Its sign-in is the sign-in sheet's, from the account's card: never one typed in a terminal.
-    [{ kind: 'sign-in' }, { tone: 'bad', done: true, text: 'codedev\'s sign-in has expired: sign it in again from its card in Settings ▸ Accounts. Termpolis answers nothing on its sign-in screen.' }],
-    [{ kind: 'asks-user', what: 'x' }, { tone: 'warn', done: true, text: 'codedev is asking something only you can answer: answer it in the terminal.' }],
-    [{ kind: 'no-outcome' }, { done: true }],
-    [{ kind: 'refused', why: 'no' }, { tone: 'bad', done: false, text: 'Termpolis didn\'t switch: no.' }],
-  ]
-  it.each(cases)('%j', (o, expected) => {
-    expect(outcomeView(o, 'claude', B)).toEqual(expect.objectContaining(expected))
-  })
-
-  it('names Codex\'s own exit command', () => {
-    expect(outcomeView({ kind: 'exit-unconfirmed' }, 'codex', B).text).toContain('Exit it yourself with /quit')
   })
 })
 

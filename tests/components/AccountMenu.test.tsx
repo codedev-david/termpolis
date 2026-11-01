@@ -224,7 +224,19 @@ describe('the rows', () => {
     expect(st().accountMenu).toEqual({ terminalId: 't1' })
     fireEvent.click(rowOf('work'))
     fireEvent.click(screen.getByTestId('account-menu-confirm-yes'))
-    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_w')
+    // Main refuses the switch without the user's yes (D14, R17): it travels with the call.
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_w', { confirmed: true })
+  })
+
+  it('carries the yes through a queued switch (D14, R17)', async () => {
+    // A busy agent: the work row becomes "Switch when it finishes", and its yes rides in the queue.
+    limitLook.mockResolvedValueOnce({ success: true, data: { live: true, status: { status: 'working' } } })
+    openMenu()
+    await waitFor(() => expect(rowOf('work')).toHaveTextContent('Switch when it finishes'))
+    fireEvent.click(rowOf('work'))
+    fireEvent.click(screen.getByTestId('account-menu-confirm-yes'))
+    expect(queueSwitch).toHaveBeenCalledWith('t1', 'acc_w', 'by hand', true)
+    expect(startSwitch).not.toHaveBeenCalled()
   })
 
   it('asks it carrying a conversation off work, offering a new terminal instead (D14, R17)', async () => {

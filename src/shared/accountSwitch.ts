@@ -281,6 +281,10 @@ export interface SwitchRequest {
   stopBusy?: boolean
   /** Start a new session on the target instead of resuming this one. */
   fresh?: boolean
+  /** The user's second confirmation (D14, R17), asked wherever the switch was asked for: main
+   *  refuses a switch onto an account that isn't offered automatically, or carrying a conversation
+   *  off one, that doesn't hold it. */
+  confirmedCarry?: boolean
   /** For the app log: why ("usage limit", "by hand"). */
   reason?: string
 }

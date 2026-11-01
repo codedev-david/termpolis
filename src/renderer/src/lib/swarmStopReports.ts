@@ -46,13 +46,26 @@ export type StopOffer = (worker: SwarmWorker, result: AgentStatusResult, words?:
  *  reads every 5 seconds; on real Claude Code screens such a moment lasted under a second. */
 export const READS_TO_CLEAR = 2
 
+/** Who is told when a worker with a stop on record is read at work again (its limit lifted, or the stop
+ *  was never one): the swarm restart offer, which then takes the worker off its offer (§9). */
+export type WorkingAgain = (worker: SwarmWorker) => void | Promise<void>
+let workingAgain: WorkingAgain | null = null
+
+export function setSwarmWorkingAgain(hook: WorkingAgain | null): void {
+  workingAgain = hook
+}
+
 export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusResult, offer?: StopOffer, words?: () => string | null): Promise<void> {
   const kind = stopKind(result)
   const last = stopped.get(worker.terminalId)
   if (kind === null) {
     // It got going, or showed no stop for long enough: a stop after this is another one. A stop
     // carried across a restart ends only once the worker is at work.
-    if (last && (result.status === 'working' || (!last.carried && ++last.clear >= READS_TO_CLEAR))) stopped.delete(worker.terminalId)
+    if (last && result.status === 'working') {
+      stopped.delete(worker.terminalId)
+      // An addition to v1.54.0's report: whatever goes wrong inside it, the stop has ended all the same.
+      try { await workingAgain?.(worker) } catch { /* nothing waits on it */ }
+    } else if (last && !last.carried && ++last.clear >= READS_TO_CLEAR) stopped.delete(worker.terminalId)
     return
   }
   const key = stopKey(result.summary)
@@ -61,12 +74,18 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
     return
   }
   stopped.set(worker.terminalId, { key, clear: 0 })
-  if (kind === 'limit' && offer && (await offer(worker, result, words))) return
+  // The offer is an addition: whatever goes wrong inside it, the conductor is told as v1.54.0 told it.
+  if (kind === 'limit' && offer) {
+    try {
+      if (await offer(worker, result, words)) return
+    } catch { /* told below */ }
+  }
   await reportWorkerStop(worker, result)
 }
 
 export function _resetStopReportsForTest(): void {
   stopped.clear()
+  workingAgain = null
 }
 
 /** A worker Termpolis restarted on another account (§9): the stop it showed is carried, so the same

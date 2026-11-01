@@ -127,15 +127,16 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const go = (row: MenuRow): void => {
+  /** `confirmed`: the user said yes to the second question (D14, R17), which main insists on. */
+  const go = (row: MenuRow, confirmed = false): void => {
     close()
     const id = terminal.id
     const to = row.account.id
     if (row.action === 'sign-in-and-switch') {
-      return store().openSignInSheet(to, () => { void startSwitch(id, to, { known: { kind: 'signed-in', email: null } }) })
+      return store().openSignInSheet(to, () => { void startSwitch(id, to, { known: { kind: 'signed-in', email: null }, ...(confirmed ? { confirmed } : {}) }) })
     }
-    if (row.action === 'queue') return queueSwitch(id, to)
-    void startSwitch(id, to)
+    if (row.action === 'queue') return confirmed ? queueSwitch(id, to, 'by hand', true) : queueSwitch(id, to)
+    void (confirmed ? startSwitch(id, to, { confirmed }) : startSwitch(id, to))
   }
 
   const pick = (row: MenuRow): void => {
@@ -233,7 +234,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
     <div role="group" aria-label="Confirm the switch" className="p-3 flex flex-col gap-2 text-xs" data-testid="account-menu-confirm">
       <p className="text-[#d4d4d4]">{confirm.question}</p>
       <div className="flex flex-wrap gap-2">
-        <button type="button" className={SMALL_PRIMARY} autoFocus onClick={() => go(confirm.row)} data-testid="account-menu-confirm-yes">
+        <button type="button" className={SMALL_PRIMARY} autoFocus onClick={() => go(confirm.row, true)} data-testid="account-menu-confirm-yes">
           {confirm.newTerminal ? `Carry it to ${confirm.row.account.label}` : `Switch to ${confirm.row.account.label}`}
         </button>
         {confirm.newTerminal && <button type="button" className={SMALL_BUTTON} onClick={() => openOn(confirm.row)} data-testid="account-menu-confirm-new">New terminal on {confirm.row.account.label}</button>}

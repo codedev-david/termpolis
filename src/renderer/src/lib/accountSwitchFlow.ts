@@ -58,6 +58,9 @@ export interface SwitchAnswers {
   assumeExited?: boolean
   stopBusy?: boolean
   fresh?: boolean
+  /** The user's second confirmation (D14, R17): a switch onto an account that isn't offered
+   *  automatically, or off one, is refused in main without it. */
+  confirmedCarry?: boolean
 }
 
 /**
@@ -89,58 +92,6 @@ export async function runSwitch(
     return res.success ? res.data : { kind: 'refused', why: res.error }
   } catch (e) {
     return { kind: 'refused', why: e instanceof Error ? e.message : String(e) }
-  }
-}
-
-/** What the dialog shows after a switch: its words, how they read, and what the user can do next. */
-export interface OutcomeView {
-  tone: 'good' | 'warn' | 'bad'
-  text: string
-  /** The answer that runs the switch again, and its button's words. */
-  retry?: { label: string; answers: SwitchAnswers }
-  /** The line to copy, when nothing was entered. */
-  line?: string
-  /** It is done: the dialog can close. */
-  done: boolean
-}
-
-export function outcomeView(o: SwitchOutcome, agent: AccountAgent, target: AccountRowView): OutcomeView {
-  const name = ACCOUNT_AGENT_LABEL[agent]
-  const exit = agent === 'codex' ? '/quit' : '/exit'
-  switch (o.kind) {
-    case 'switched': {
-      const parts = [`Now on ${target.label}. Your conversation continues. Its first answer re-reads the whole conversation (no shared prompt cache).`]
-      if (o.kept) parts.push(`${target.label} had a newer copy of it, kept beside it as ${o.kept}.`)
-      return { tone: 'good', text: parts.join(' '), done: true }
-    }
-    case 'fresh': {
-      const why = o.why === 'not-found'
-        ? `${name} can't carry this conversation to ${target.label}, so a new session started there. Termpolis's memory still has what it learned.`
-        : o.why === 'no-session'
-          ? `${name} named no conversation to resume, so a new session started on ${target.label}.`
-          : `A new session started on ${target.label}.`
-      return { tone: 'warn', text: why, done: true }
-    }
-    case 'busy':
-      return { tone: 'warn', text: `${name} is working. Stop it and switch?`, retry: { label: 'Stop it and switch', answers: { stopBusy: true } }, done: false }
-    case 'unknown-exit':
-      return { tone: 'warn', text: `Termpolis can't tell whether ${name} is still running here, so it typed nothing. Has ${name} exited?`, retry: { label: 'It has exited, switch now', answers: { assumeExited: true } }, done: false }
-    case 'exit-unconfirmed':
-      return { tone: 'warn', text: `Termpolis couldn't confirm ${name} exited, so it typed nothing more. Exit it yourself with ${exit}, then switch again.`, retry: { label: 'It has exited, switch now', answers: { assumeExited: true } }, done: false }
-    case 'agent-alive':
-      return { tone: 'bad', text: `${name} didn't exit: the account line showed in its own input, so Termpolis took it back out and entered nothing.`, done: false }
-    case 'didnt-start':
-      return { tone: 'bad', text: 'The switch didn\'t start: the line never showed in the terminal, so nothing was entered.', retry: { label: 'Try again', answers: { assumeExited: true } }, line: o.line, done: false }
-    case 'resume-not-found':
-      return { tone: 'bad', text: `${target.label} can't see that conversation.`, retry: { label: `Start a new session on ${target.label}`, answers: { assumeExited: true, fresh: true } }, done: false }
-    case 'sign-in':
-      return { tone: 'bad', text: `${target.label}'s sign-in has expired: sign it in again from its card in Settings ▸ Accounts. Termpolis answers nothing on its sign-in screen.`, done: true }
-    case 'asks-user':
-      return { tone: 'warn', text: `${target.label} is asking something only you can answer: answer it in the terminal.`, done: true }
-    case 'no-outcome':
-      return { tone: 'warn', text: 'The switch didn\'t finish: nothing showed in the terminal within 30 seconds. Look at the terminal.', done: true }
-    default:
-      return { tone: 'bad', text: `Termpolis didn't switch: ${o.why}.`, done: false }
   }
 }
 

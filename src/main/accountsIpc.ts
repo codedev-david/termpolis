@@ -1252,6 +1252,11 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const source = currentId ? findAccount(doc, currentId) : undefined
     if (source && source.agent !== target.agent) throw new Error(`this terminal runs ${ACCOUNT_AGENT_LABEL[source.agent]}, not ${ACCOUNT_AGENT_LABEL[target.agent]}`)
     if (source && source.id === target.id && !isAccountChangedByHand(terminalId)) throw new Error(`this terminal already runs on ${target.label}`)
+    // D14, R17: onto an account that isn't offered automatically (work), or carrying a conversation
+    // off one, is the user's second confirmation. The UI asks it where it asks for the switch; a
+    // request without it is refused here, so no path can skip the question.
+    const unoffered = !target.autoOffer ? target : source && !source.autoOffer ? source : null
+    if (unoffered && input.confirmedCarry !== true) throw new Error(`${unoffered.label} isn't offered automatically, so switching a conversation to or from it needs your confirmation`)
     if (target.profile !== null && !liveProfileDir(target, home, fsx)) throw new Error(`${target.label}'s profile folder doesn't exist`)
     const agent = target.agent
     // Claude Code: where this conversation's transcript can be, and where the target looks for it.

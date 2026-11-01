@@ -380,3 +380,63 @@ describe('accounts:model-hold and accounts:model-release (§7.5)', () => {
     expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount)).toHaveLength(1)
   })
 })
+
+describe('accounts:switch, an account that isn\'t offered automatically (D14, R17)', () => {
+  /** The default account and a second one the user marked "Offer automatically" off, as work is. */
+  async function withWork(): Promise<{ main: string; work: string; workDir: string }> {
+    const { main, b, bDir } = await twoClaude()
+    await ok(ACCOUNTS_IPC.update, { id: b, autoOffer: false })
+    return { main, work: b, workDir: bDir }
+  }
+  function aConversation(): void {
+    noteAgentStart('t1', { at: term.launchedAt, commands: [term.launchLine()] })
+    noteTerminalSession('t1', ID)
+    mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+    writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+  }
+
+  it('refuses a switch onto it that holds no second confirmation, and types nothing', async () => {
+    const { main, work } = await withWork()
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: work, shellType: 'gitbash' }))
+      .toBe('b isn\'t offered automatically, so switching a conversation to or from it needs your confirmation')
+    // Anything but a true is no confirmation.
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: work, shellType: 'gitbash', confirmedCarry: 'yes' })).toMatch(/isn't offered automatically/)
+    expect(term.writes).toEqual([])
+    expect(terminalAccountId('t1')).toBe(main)
+  })
+
+  it('refuses a switch carrying a conversation off it that holds no second confirmation, and types nothing', async () => {
+    const { main, work } = await withWork()
+    noteTerminalAccount('t1', work)
+    aConversation()
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: main, shellType: 'gitbash' }))
+      .toBe('b isn\'t offered automatically, so switching a conversation to or from it needs your confirmation')
+    expect(term.writes).toEqual([])
+    expect(terminalAccountId('t1')).toBe(work)
+  })
+
+  it('goes ahead when the request carries the confirmation, onto it and off it', async () => {
+    const { main, work } = await withWork()
+    noteTerminalAccount('t1', main)
+    aConversation()
+    const onto = await switchTo(work, { confirmedCarry: true })
+    expect(onto.kind).toBe('switched')
+    expect(terminalAccountId('t1')).toBe(work)
+    term = new FakeTerminal(claude())
+    register()
+    noteTerminalAccount('t1', work)
+    aConversation()
+    const off = await switchTo(main, { confirmedCarry: true })
+    expect(off.kind).toBe('switched')
+    expect(terminalAccountId('t1')).toBe(main)
+  })
+
+  it('asks nothing of a switch between accounts that are offered automatically', async () => {
+    const { main, b } = await twoClaude()
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect((await switchTo(b)).kind).toBe('switched')
+  })
+})

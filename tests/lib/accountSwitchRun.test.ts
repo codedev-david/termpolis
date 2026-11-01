@@ -483,3 +483,67 @@ describe('liveRunDeps', () => {
     expect(d.newId()).toMatch(/^[0-9a-f-]{36}$/)
   })
 })
+
+describe("the second confirmation (D14, R17): an account that isn't offered automatically", () => {
+  const WK = row({ id: 'acc_w', label: 'work', profile: '/h/.claude-w', folder: '/h/.claude-w', isDefault: false, order: 2, autoOffer: false })
+  beforeEach(() => {
+    useTerminalStore.setState({ accountsView: view([A, B, WK]), terminals: [T] })
+  })
+
+  it("sends the user's yes with the switch, and never sends one the user didn't give", async () => {
+    const { d, raw } = deps()
+    await startSwitch('t1', 'acc_w', { confirmed: true }, d)
+    expect(raw.accounts.switchAccount).toHaveBeenLastCalledWith(expect.objectContaining({ targetId: 'acc_w', confirmedCarry: true }))
+    st().dropSwitchRun('t1')
+    useTerminalStore.setState({ terminals: [T] })
+    await startSwitch('t1', 'acc_b', {}, d)
+    expect(raw.accounts.switchAccount.mock.calls[1][0]).not.toHaveProperty('confirmedCarry')
+  })
+
+  it('keeps the yes through Try again, a sign-in first, and a wait for a busy agent', async () => {
+    const { d, raw } = deps({ outcome: { kind: 'no-outcome' } })
+    await startSwitch('t1', 'acc_w', { confirmed: true }, d)
+    expect(st().switchRuns.t1.confirmed).toBe(true)
+    await actOnRun('t1', 'retry', d)
+    expect(raw.accounts.switchAccount).toHaveBeenLastCalledWith(expect.objectContaining({ targetId: 'acc_w', confirmedCarry: true }))
+    // A sign-in first: the sheet continuation carries the yes too.
+    useTerminalStore.setState({ switchRuns: { t1: { ...st().switchRuns.t1, status: 'failed', card: { what: 'w', now: 'n', actions: [] } } } })
+    await actOnRun('t1', 'sign-in-and-switch', d)
+    st().signInSheet!.then!()
+    await vi.waitFor(() => expect(raw.accounts.switchAccount).toHaveBeenCalledTimes(3))
+    expect(raw.accounts.switchAccount).toHaveBeenLastCalledWith(expect.objectContaining({ targetId: 'acc_w', confirmedCarry: true }))
+    // A busy agent: it waits in the queue with the yes, and the queue runs it with the yes.
+    const busy = deps({ outcome: { kind: 'busy' } })
+    st().dropSwitchRun('t1')
+    await startSwitch('t1', 'acc_w', { confirmed: true }, busy.d)
+    expect(st().queuedSwitches.t1).toEqual({ targetId: 'acc_w', reason: 'by hand', confirmed: true })
+    const next = deps()
+    next.raw.accounts.limitLook.mockResolvedValue({ success: true, data: { live: true, status: { status: 'idle' } } } as never)
+    await processQueue(next.d)
+    expect(next.raw.accounts.switchAccount).toHaveBeenLastCalledWith(expect.objectContaining({ targetId: 'acc_w', confirmedCarry: true }))
+  })
+
+  it('queues a switch with the yes, or without one', () => {
+    queueSwitch('t1', 'acc_w', 'by hand', true)
+    expect(st().queuedSwitches.t1).toEqual({ targetId: 'acc_w', reason: 'by hand', confirmed: true })
+    queueSwitch('t1', 'acc_b')
+    expect(st().queuedSwitches.t1).toEqual({ targetId: 'acc_b', reason: 'by hand' })
+  })
+
+  it("offers Switch back only between accounts that are offered automatically", async () => {
+    const { d } = deps()
+    // personal -> codedev: both are, so back goes to personal.
+    await startSwitch('t1', 'acc_b', {}, d)
+    expect(st().switchRuns.t1.toast?.back).toBe('acc_a')
+    st().dropSwitchRun('t1')
+    // personal -> work: back would carry a conversation off work, which a toast cannot ask.
+    useTerminalStore.setState({ terminals: [T] })
+    await startSwitch('t1', 'acc_w', { confirmed: true }, d)
+    expect(st().switchRuns.t1.toast?.back).toBeNull()
+    st().dropSwitchRun('t1')
+    // work -> personal: the same, the other way.
+    useTerminalStore.setState({ terminals: [{ ...T, agentAccountId: 'acc_w' }] })
+    await startSwitch('t1', 'acc_a', { confirmed: true }, d)
+    expect(st().switchRuns.t1.toast?.back).toBeNull()
+  })
+})
