@@ -97,6 +97,22 @@ describe('memoryCorrection/revokeCorrection', () => {
     expect(applyOverlayToRecall(o, [cand('m1', 1)])).toHaveLength(1)
   })
 
+  // revokeCorrection has no caller in the app: no tool, panel or IPC reaches it. What a person (or an agent for them) can do with a
+  // demotion that was a mistake, such as one the lesson recheck made, is correct the memory again, and the newer correction replaces the
+  // live one. Said in the docs and in mnemeLessonRecheck.ts, so it is pinned here.
+  it('lets an amendment replace a demotion: the memory is back at full rank, under the words it was amended to', () => {
+    const o = emptyOverlay()
+    applyCorrection(o, { id: 'm1', kind: 'demote', reason: 'recheck', by: 'termpolis', ts: 1 })
+    const [low] = applyOverlayToRecall(o, [cand('m1', 0.8)])
+    expect(low.score).toBeLessThan(0.8)
+    applyCorrection(o, { id: 'm1', kind: 'amend', replacement: 'The stale lock file was the cause.', reason: 'it was a real lesson', by: 'david', ts: 2 })
+    const [back] = applyOverlayToRecall(o, [cand('m1', 0.8)])
+    expect(back.score).toBe(0.8)
+    expect(back.content).toBe('The stale lock file was the cause.')
+    expect(back.correction?.kind).toBe('amend')
+    expect(correctionFor(o, 'm1')).toMatchObject({ kind: 'amend', by: 'david' })
+  })
+
   it('defaults the revoke timestamp to now', () => {
     const o = emptyOverlay()
     applyCorrection(o, { id: 'm1', kind: 'retract', ts: 1 })

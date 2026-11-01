@@ -9,8 +9,10 @@
 // it led recall. Fixing the rules stops new junk; this pass deals with what is already stored.
 //
 // A lesson the current rules would not write is DEMOTED, never deleted: recall still finds it when
-// nothing better matches, and memory_correct can revoke the demotion. It is recorded in the same
-// correction log as an agent's or the user's corrections, so the reason travels with it.
+// nothing better matches, and a later correction through memory_correct replaces the demotion (amend it,
+// even to the same words, and it is back at full rank). It is recorded in the same correction log as an
+// agent's or the user's corrections, so the reason travels with it. Nothing in the app revokes a
+// correction outright; the marker file below is what keeps a demotion from being made twice.
 //
 // 1.55.0 adds a second pass over the same store (recheckStoredLessonsV2): the same rules plus the
 // substance gate (lessonSubstance.ts) that groundEpisode now applies at write time, for the lessons

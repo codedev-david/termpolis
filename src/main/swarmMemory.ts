@@ -13,7 +13,7 @@ import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
 import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
-import { isCandidate } from './lessonSubstance'
+import { CANDIDATE_TAG, isCandidate } from './lessonSubstance'
 import { isClaudeNote } from './claudeNotesParse'
 import { mmrRerank } from './mmrRerank'
 import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
@@ -1490,8 +1490,12 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       // agent believes it filed the note under THIS project/tags/task. Backfill what's missing.
       let changed = false
       if (!existing.project && projectSlug) { existing.project = projectSlug; changed = true }
-      if (input.tags && input.tags.length > 0) {
-        const merged = Array.from(new Set([...(existing.tags || []), ...input.tags])).slice(0, 20)
+      // The substance gate's hold-back mark is the one tag that is not scoping metadata: added to a row that did not have it, it would
+      // take away a lesson that was being shown (a resumed session derives the same sentence again). A row is held back when it
+      // is WRITTEN so, never by a later write of the same words.
+      const incoming = existing.tags?.includes(CANDIDATE_TAG) ? input.tags : input.tags?.filter((t) => t !== CANDIDATE_TAG)
+      if (incoming && incoming.length > 0) {
+        const merged = Array.from(new Set([...(existing.tags || []), ...incoming])).slice(0, 20)
         if (merged.length !== (existing.tags?.length ?? 0)) { existing.tags = merged; changed = true }
       }
       if (!existing.taskId && input.taskId) { existing.taskId = input.taskId; changed = true }

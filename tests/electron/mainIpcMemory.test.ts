@@ -1554,6 +1554,36 @@ describe('memory:reflect-session', () => {
     expect(metricsOfType('reflect')).toEqual([expect.objectContaining({ t: 'reflect', lessons: 5, skipped: 3 })])
   })
 
+  // The other producer of the same metric: a swarm task that finishes, whether an agent finishes it (MCP) or the user (IPC).
+  // The acceptance criterion is that the ledger carries `skipped` from BOTH, or "N distilled" overstates what was learned.
+  describe('a finished swarm task', () => {
+    const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 25))
+
+    it.each([
+      ['an agent finishes it (swarm_update_task)', async () => { await mcp.swarmUpdateTask('t1', 'completed', 'done') }],
+      ['the user finishes it (swarm:update-task)', async () => { await invoke('swarm:update-task', { taskId: 't1', status: 'failed', result: 'no' }) }],
+    ])('records how many lessons the gate refused when %s', async (_who, finish) => {
+      ledger.recordMetric.mockClear()
+      // The IPC route answers "Task not found" (and learns nothing) unless the swarm has the task; the same registry index.ts loaded.
+      const { updateTask } = await import('../../src/main/swarmManager')
+      vi.mocked(updateTask).mockReturnValueOnce({ id: 't1', title: 'tidy the retry helper' } as never)
+      mneme.onTaskComplete.mockResolvedValueOnce({ fired: true, lessons: 3, written: [], skipped: 2 })
+      await finish()
+      await settle()
+      expect(metricsOfType('reflect')).toEqual([expect.objectContaining({ t: 'reflect', lessons: 3, skipped: 2 })])
+    })
+
+    it('records nothing when no lesson was distilled, and nothing when the reflex did not fire', async () => {
+      ledger.recordMetric.mockClear()
+      mneme.onTaskComplete.mockResolvedValueOnce({ fired: true, lessons: 0, written: [], skipped: 0 })
+      mneme.onTaskComplete.mockResolvedValueOnce({ fired: false, lessons: 4, written: [], skipped: 4 })
+      await mcp.swarmUpdateTask('t2', 'completed', 'done')
+      await mcp.swarmUpdateTask('t3', 'completed', 'done')
+      await settle()
+      expect(metricsOfType('reflect')).toEqual([])
+    })
+  })
+
   it('records a reflection whose every lesson the gate refused: lessons found, none learned', async () => {
     await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
     const deps = mneme.reflectSoloSession.mock.calls[0][1]
@@ -2096,6 +2126,39 @@ describe('memory indexer passes', () => {
     expect(correctionForMemory('good-1')).toBeNull()
     expect(correctionForMemory('stub-1')).toBeNull()
     expect(fsMock.writeFileSync).toHaveBeenCalledWith(require('path').join(USER_DATA, RECHECK_V2_MARKER), JSON.stringify({ version: 2 }))
+    resetMemoryCorrections()
+    mem.memoryList.mockReset()
+    mem.memoryList.mockReturnValue([{ id: 'l1' }])
+  })
+
+  // A correction is the user's (or an agent's) word on a memory. The recheck sees every lesson, including ones someone amended or
+  // retracted, and a demotion REPLACES the live correction, so skipping them is what keeps the recheck from overwriting a person.
+  it('the second recheck lists whole pages of lessons and leaves alone one that somebody has already corrected', async () => {
+    const { correctMemory, correctionForMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+    correctMemory({ id: 'mine-1', kind: 'amend', replacement: 'The root cause was the stale lock file.', reason: 'rewritten by hand', by: 'david' })
+    correctMemory({ id: 'mine-2', kind: 'retract', reason: 'wrong', by: 'david' })
+    correctMemory({ id: 'mine-3', kind: 'amend', replacement: 'Decide on the retry budget before the release.', reason: 'rewritten by hand', by: 'david' })
+    mem.memoryList.mockClear()
+    mem.memoryList.mockImplementation(async (opts: { agentId?: string }) =>
+      opts.agentId === 'mneme'
+        ? [
+            { id: 'mine-1', ts: 9, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Root cause found.' },
+            { id: 'mine-2', ts: 8, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Next:' },
+            { id: 'junk-1', ts: 7, agentId: 'mneme', kind: 'fact', memoryType: 'semantic', content: 'Root cause found.' },
+            // what the 1.50.1 pass refuses too (a to-do read as a decision), so that pass's own skip of a corrected lesson shows
+            { id: 'mine-3', ts: 6, agentId: 'mneme', kind: 'decision', memoryType: 'semantic', content: '- decide later.' },
+          ]
+        : [],
+    )
+    await indexerOpts().run()
+    expect(correctionForMemory('mine-1')).toMatchObject({ kind: 'amend', by: 'david' }) // not turned into a demotion
+    expect(correctionForMemory('mine-2')).toMatchObject({ kind: 'retract', by: 'david' })
+    expect(correctionForMemory('mine-3')).toMatchObject({ kind: 'amend', by: 'david' }) // by neither pass
+    expect(correctionForMemory('junk-1')).toMatchObject({ kind: 'demote', by: 'termpolis' })
+    // Both passes list the whole page the module pages by, not a few rows (one call each: the two markers are absent).
+    const pages = mem.memoryList.mock.calls.map(([o]) => o as { agentId?: string; limit?: number }).filter((o) => o?.agentId === 'mneme')
+    expect(pages).toEqual([{ agentId: 'mneme', limit: 500 }, { agentId: 'mneme', limit: 500 }])
     resetMemoryCorrections()
     mem.memoryList.mockReset()
     mem.memoryList.mockReturnValue([{ id: 'l1' }])

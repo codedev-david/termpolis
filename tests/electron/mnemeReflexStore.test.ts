@@ -112,6 +112,51 @@ describe('Mneme reflex — real-store end-to-end', () => {
     expect(stored.some((m) => m.content.includes('tomorrow'))).toBe(false) // narration: not in the store at all
   })
 
+  // A lesson stored before 1.55 sits in the store with no tag and is shown. Re-deriving the same sentence (a resumed session reads
+  // the same turns again) finds it by content hash, and the store merges the new call's tags into the old row so that scoping
+  // metadata is not lost. The hold-back mark is not scoping metadata: it must not turn a lesson that was being shown into one
+  // that is not. ("Borderline lessons stored earlier are left as they are.")
+  it('re-deriving a borderline lesson stored before 1.55 leaves that lesson shown', async () => {
+    const task = {
+      id: 'task-9',
+      status: 'completed' as const,
+      project: 'termpolis',
+      title: 'tidy the retry helper',
+      result: 'We decided to rename the retry helper in `retryHelper.ts` after the release is out.',
+    }
+    const derived: Array<Parameters<typeof memoryWrite>[0]> = []
+    await onTaskComplete(task, { ...realDeps(), write: async (i) => { derived.push(i); return { id: 'dry-run' } } })
+    expect(derived).toHaveLength(1)
+    expect(derived[0].tags).toEqual([CANDIDATE_TAG]) // today's gate holds this one back
+    // The same lesson as 1.54 stored it: no tag, and shown.
+    const before = await memoryWrite({ ...derived[0], tags: undefined, importance: 0.8 })
+    expect(memoryList({ limit: 50 }).find((m) => m.id === before.id)!.tags).toBeUndefined()
+
+    const res = await onTaskComplete(task, realDeps())
+    expect(res.written).toEqual([before.id]) // the store answered with the row it already had
+    const row = memoryList({ limit: 50 }).find((m) => m.id === before.id)!
+    expect(row.tags).toBeUndefined()
+    expect(row.importance).toBe(0.8)
+    expect(applyEntryCorrections(memoryList({ limit: 50 })).map((m) => m.id)).toContain(before.id)
+    expect(applyCorrections(await memorySearch({ query: 'retry helper retryHelper.ts', limit: 10 })).map((m) => m.id)).toContain(before.id)
+  })
+
+  it('still merges every other tag of a re-written memory into the row it already has', async () => {
+    const first = await memoryWrite({ agentId: 'codex', kind: 'note', content: 'the deploy needs the staging flag', tags: ['deploy'] })
+    const again = await memoryWrite({ agentId: 'codex', kind: 'note', content: 'the deploy needs the staging flag', tags: ['deploy', 'staging'] })
+    expect(again.id).toBe(first.id)
+    expect(memoryList({ limit: 10 }).find((m) => m.id === first.id)!.tags).toEqual(['deploy', 'staging'])
+  })
+
+  it('keeps the hold-back mark on a row that already has it, and does not add it to a row someone tagged by hand', async () => {
+    const held = await memoryWrite({ agentId: 'mneme', kind: 'decision', content: 'a borderline lesson about the retry helper', tags: [CANDIDATE_TAG], importance: 0.45 })
+    await memoryWrite({ agentId: 'mneme', kind: 'decision', content: 'a borderline lesson about the retry helper', tags: [CANDIDATE_TAG, 'extra'] })
+    expect(memoryList({ limit: 10 }).find((m) => m.id === held.id)!.tags).toEqual([CANDIDATE_TAG, 'extra'])
+    const mine = await memoryWrite({ agentId: 'claude', kind: 'note', content: 'my own note about the release', tags: ['release'] })
+    await memoryWrite({ agentId: 'mneme', kind: 'note', content: 'my own note about the release', tags: [CANDIDATE_TAG] })
+    expect(memoryList({ limit: 10 }).find((m) => m.id === mine.id)!.tags).toEqual(['release'])
+  })
+
   // The unit tests for each read door use rows they built themselves. This one uses the real store, the real
   // distiller and the real read functions, so it also proves what they cannot: that a stored lesson's `tags`
   // survive every real producer (search, list, related, graph) all the way to the door that drops it.

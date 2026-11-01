@@ -133,6 +133,16 @@ describe('recheckStoredLessons', () => {
     expect(yieldFn).toHaveBeenCalledTimes(2) // after the 25th and the 50th
   })
 
+  // Any interval from 21 to 30 gives two yields over 60 demotions, so the count alone does not say the interval is 25.
+  it('yields after exactly the 25th and the 50th demotion', async () => {
+    const many = Array.from({ length: 51 }, (_, i) => ({ id: `w${i}`, ts: 100 - i, agentId: 'mneme', kind: 'decision', content: '- decide later.', memoryType: 'semantic' }))
+    const d = deps(many)
+    const at: number[] = []
+    d.yield = async () => { at.push(d.demoted.length) }
+    await recheckStoredLessons(d)
+    expect(at).toEqual([25, 50])
+  })
+
   it('yields with a real macrotask by default', async () => {
     const many = Array.from({ length: 26 }, (_, i) => ({ id: `z${i}`, ts: 100 - i, agentId: 'mneme', kind: 'decision', content: '- decide later.', memoryType: 'semantic' }))
     let ticks = 0
@@ -281,6 +291,15 @@ describe('recheckStoredLessonsV2', () => {
     const yieldFn = vi.fn(async () => {})
     expect(await recheckStoredLessonsV2(deps(many, { yield: yieldFn }))).toEqual({ checked: 60, demoted: 60 })
     expect(yieldFn).toHaveBeenCalledTimes(2) // after the 25th and the 50th
+  })
+
+  it('yields after exactly the 25th and the 50th demotion', async () => {
+    const many = Array.from({ length: 51 }, (_, i) => ({ id: `h${i}`, ts: 100 - i, agentId: 'mneme', kind: 'fact', content: 'Root cause found.', memoryType: 'semantic' }))
+    const d = deps(many)
+    const at: number[] = []
+    d.yield = async () => { at.push(d.demoted.length) }
+    await recheckStoredLessonsV2(d)
+    expect(at).toEqual([25, 50])
   })
 
   it('pages through more lessons than one listing returns', async () => {
