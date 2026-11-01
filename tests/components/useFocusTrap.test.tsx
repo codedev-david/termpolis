@@ -51,6 +51,18 @@ function Form({ open = false }: { open?: boolean }) {
   )
 }
 
+describe('Tab with the focus on the sheet itself, no control in it having it', () => {
+  it('goes to the first control, and Shift+Tab to the last', () => {
+    render(<Form />)
+    const sheet = screen.getByTestId('sheet')
+    sheet.focus()
+    expect(document.activeElement).toBe(sheet)
+    expect(tab()).toBe('sheet-close')
+    sheet.focus()
+    expect(tab(true)).toBe('submit')
+  })
+})
+
 describe('focusables: the controls a keyboard can reach', () => {
   it('includes a <summary>, and leaves out what a closed <details> hides', () => {
     const { container } = render(<Form />)

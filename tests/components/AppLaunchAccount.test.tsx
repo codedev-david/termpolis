@@ -114,6 +114,20 @@ describe('the account an agent launched from the Welcome screen or the palette i
     expect(created[0].slice(5)).toEqual(['acc_pref', 'claude'])
   })
 
+  it('takes the launching mark down when the agent launch settles', async () => {
+    accountsBridge(() => null)
+    render(<App />)
+    await settle()
+    fireEvent.click(await screen.findByTestId('welcome-claude'))
+    await settle()
+    const { launchAgents } = await import('../../src/renderer/src/lib/agentLaunch')
+    const calls = (launchAgents as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const options = calls[calls.length - 1][1] as { onSettled: () => void }
+    act(() => { useTerminalStore.setState({ launchingAgent: 'Claude Code' }) })
+    act(() => options.onSettled())
+    expect(useTerminalStore.getState().launchingAgent).toBeNull()
+  })
+
   it('is the one the agent will launch on, from the palette', async () => {
     accountsBridge((agent) => (agent === 'claude' ? 'acc_pref' : null))
     render(<App />)

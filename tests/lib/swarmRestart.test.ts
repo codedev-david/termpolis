@@ -603,6 +603,19 @@ describe('installSwarmRestart', () => {
 })
 
 // P2: the conductor's own limit ends its `claude -p`, which its run script reports.
+describe('offerRestart: when the renderer\'s copy of the view is gone while the limit is recorded', () => {
+  it('goes on with the view it started from: the offer is made all the same', async () => {
+    ;(deps.accounts.noteLimit as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      useTerminalStore.setState({ accountsView: null })
+      return { success: true as const, data: undefined }
+    })
+    ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ success: false as const, error: 'busy' })
+    expect(await offerRestart(W1, LIMIT, () => WORDS, deps)).toBe(true)
+    expect(groups()).toHaveLength(1)
+    expect(groups()[0].accountId).toBe('acc_m')
+  })
+})
+
 describe('offerConductorRun', () => {
   const SESSION_WORDS = "You've hit your session limit · resets 3pm (America/New_York)"
 

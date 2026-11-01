@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 import {
-  ACCOUNT_COLORS, AGENT_COLOR, accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, freeColor, hasAccounts,
+  ACCOUNT_COLORS, ACCOUNT_COLOR_NAMES, AGENT_COLOR, accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, freeColor, hasAccounts,
 } from '../../src/renderer/src/lib/accountsView'
 import type { AccountsView } from '../../src/shared/agentAccounts'
 
@@ -77,6 +77,13 @@ describe('accountBadge: the row\'s state, worst first', () => {
       .toEqual({ text: 'g@example.test', tone: 'muted' })
     expect(accountBadge(row({ agent: 'agy', profile: null, folder: null, folderExists: false }), now))
       .toEqual({ text: 'no email given', tone: 'muted' })
+  })
+})
+
+describe('ACCOUNT_COLOR_NAMES: what the colour picker reads out', () => {
+  it('names every colour of the palette, so the picker never has a hex code to read', () => {
+    for (const c of ACCOUNT_COLORS) expect(ACCOUNT_COLOR_NAMES[c], c).toMatch(/^[a-z]+$/)
+    expect(new Set(ACCOUNT_COLORS.map((c) => ACCOUNT_COLOR_NAMES[c])).size).toBe(ACCOUNT_COLORS.length)
   })
 })
 

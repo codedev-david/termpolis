@@ -876,4 +876,22 @@ describe('what on the screen is not this switch\'s own evidence', () => {
     }
     expect((await typeAtPrompt(io, 't1', 'powershell', long, raw.length)).outcome).toBe('entered')
   })
+
+  it('reads a pane whose size nobody knows as 80 columns wide, and still sees a long line whole', async () => {
+    const line = `& { $env:CODEX_HOME = 'C:\\Users\\me\\.codex-b'; codex -m gpt-5.6-sol resume ${ID2} }`
+    expect(line.length).toBeGreaterThan(80)
+    let raw = 'PS C:\\repo> '
+    let clock = 0
+    const io: SwitchIO = {
+      output: () => ({ raw, end: raw.length }),
+      outputFrom: (_id, from) => raw.slice(Math.max(0, from)),
+      end: () => raw.length,
+      size: () => null,
+      write: (_id, data) => { if (data !== '\x1b' && data !== '\r') raw += data },
+      sleep: async (ms: number) => { clock += ms },
+      now: () => clock,
+    }
+    expect(look(io, 't1').cols).toBeUndefined()
+    expect((await typeAtPrompt(io, 't1', 'powershell', line, raw.length)).outcome).toBe('entered')
+  })
 })

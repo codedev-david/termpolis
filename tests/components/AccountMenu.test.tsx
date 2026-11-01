@@ -267,6 +267,18 @@ describe('the rows', () => {
     expect(startSwitch).not.toHaveBeenCalled()
   })
 
+  it('signs a signed-out work account in only after the second question, and the switch that follows carries the yes (D14, R17)', async () => {
+    openMenu({ accounts: [A, B, row({ ...W, lastEmail: null })] })
+    await settle()
+    fireEvent.click(rowOf('work'))
+    expect(st().signInSheet).toBeNull()
+    fireEvent.click(screen.getByTestId('account-menu-confirm-yes'))
+    expect(st().signInSheet?.accountId).toBe('acc_w')
+    expect(startSwitch).not.toHaveBeenCalled()
+    st().signInSheet!.then!()
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_w', { known: { kind: 'signed-in', email: null }, confirmed: true })
+  })
+
   it('asks it carrying a conversation off work, offering a new terminal instead (D14, R17)', async () => {
     openMenu({ terminals: [{ ...T, agentAccountId: 'acc_w' }] })
     await settle()

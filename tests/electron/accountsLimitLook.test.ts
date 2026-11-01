@@ -6,7 +6,7 @@
 // the scripted one of _switchTerminal.ts, in the sandbox of accountsIpc.test.ts: a scratch home
 // under TERMPOLIS_TEST_AGENT_HOME, never a real profile.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, isAccountChangedByHand, noteAgentStart, noteTerminalAccount, noteTypedInput, registerAccountsIpc,
@@ -521,6 +521,32 @@ describe('R15: an account benched before an agent started on it, whose agent the
     noteTypedInput('t1', 'continue\r', clock)
     term.out += paint(WORKING)
     await lookNow()
+    expect(await limitOf(id)).toBeDefined()
+  })
+
+  it('lifts nothing it cannot read: an unreadable registry is left as it is, and the look still answers', async () => {
+    const id = await onAccount()
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    const file = join(sb.paths.userData, 'agent-accounts.json')
+    const good = readFileSync(file, 'utf8')
+    clock += 60_000
+    await started(id)
+    term.out += paint(WORKING)
+    writeFileSync(file, '{ not json')
+    expect((await lookNow()).turned).toBe(true)
+    expect(readFileSync(file, 'utf8')).toBe('{ not json')
+    writeFileSync(file, good)
+    expect(await limitOf(id)).toBeDefined()
+  })
+
+  it("lifts nothing when it doesn't know when the agent started: a limit is no older than a start nobody dated", async () => {
+    const id = await onAccount()
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    clock += 60_000
+    await started(id)
+    delete terminalAgentStart('t1')!.time
+    term.out += paint(WORKING)
+    expect((await lookNow()).turned).toBe(true)
     expect(await limitOf(id)).toBeDefined()
   })
 })

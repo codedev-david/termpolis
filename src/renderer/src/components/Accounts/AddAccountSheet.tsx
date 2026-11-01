@@ -199,7 +199,7 @@ function Wizard({ agent, view, title, close }: { agent: AccountAgent; view: Acco
                 type="button"
                 role="radio"
                 aria-checked={color === c}
-                aria-label={ACCOUNT_COLOR_NAMES[c] ?? c}
+                aria-label={ACCOUNT_COLOR_NAMES[c]}
                 tabIndex={color === c ? 0 : -1}
                 data-color={c}
                 onClick={() => setColor(c)}

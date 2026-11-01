@@ -135,6 +135,18 @@ describe('App: the account switch', () => {
     expect(useTerminalStore.getState().memoryNotice).toBe('Open an agent terminal whose agent has an account to switch it.')
   })
 
+  it("opens the account menu from the palette's Switch account… when the active terminal's agent has an account to switch", async () => {
+    bridge('')
+    render(<App />)
+    await settle()
+    act(() => { useTerminalStore.setState({ terminals: [T], activeTerminalId: 't1', accountsView: view(2), accountMenu: null, memoryNotice: null }) })
+    await act(async () => { (window as any).__openCommandPalette(true) })
+    fireEvent.change(await screen.findByPlaceholderText('Type a command...'), { target: { value: 'switch account' } })
+    fireEvent.click(await screen.findByText('Switch account…'))
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+    expect(useTerminalStore.getState().memoryNotice).toBeNull()
+  })
+
   it.each([
     ['answers the login picker for an agent with one account, as before accounts', 1, {}, '\r'],
     ['leaves the login picker to the user once the agent has two accounts (R10)', 2, {}, null],

@@ -73,11 +73,11 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup(); vi.useRealTimers()
-  delete (window as any).termpolis; delete (window as any).mcpEvents; delete (window as any).swarmAPI
+  delete (window as any).termpolis; delete (window as any).mcpEvents; delete (window as any).swarmAPI; delete (window as any).accounts
   useTerminalStore.setState(RESET as never)
 })
 
-async function runWorkerLoop(output: string, relaunching: Record<string, 'account' | 'model' | 'sign-in'>) {
+async function runWorkerLoop(output: string, relaunching: Record<string, 'account' | 'model' | 'sign-in'>, worker: typeof WORKER & { agentAccountId?: string } = WORKER) {
   const api = bridge(output)
   const sendMessage = vi.fn(async () => ({ success: true }))
   ;(window as any).swarmAPI = { getTasks: vi.fn(async () => ({ success: true, data: [] })), sendMessage }
@@ -85,7 +85,7 @@ async function runWorkerLoop(output: string, relaunching: Record<string, 'accoun
   await settle()
   act(() => {
     useTerminalStore.setState({
-      terminals: [WORKER], accountsView: view(1) as never, relaunching,
+      terminals: [worker], accountsView: view(1) as never, relaunching,
       swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'working' }],
     } as never)
   })
@@ -110,5 +110,19 @@ describe('App: the swarm loop leaves a worker a relaunch holds alone (R7)', () =
   it('reads no stop from a worker a relaunch holds (the screen is the switch\'s)', async () => {
     const { sendMessage } = await runWorkerLoop(LIMIT_SCREEN, { w1: 'account' })
     expect(sendMessage).not.toHaveBeenCalled()
+  })
+  it('gives the restart offer the words of a stop on a worker with an account, and reports it all the same when no other account is a way out', async () => {
+    const api: Record<string, any> = { switchAccount: vi.fn(), noteLimit: vi.fn(async () => ({ success: true })) }
+    ;(window as any).accounts = new Proxy(api, {
+      get(target, prop) {
+        if (typeof prop !== 'string' || prop === 'then') return undefined
+        if (!(prop in target)) target[prop] = prop.startsWith('on') ? vi.fn(() => () => {}) : vi.fn(async () => ({ success: false, error: 'not part of this test' }))
+        return target[prop]
+      },
+    })
+    const { sendMessage } = await runWorkerLoop(LIMIT_SCREEN, {}, { ...WORKER, agentAccountId: 'acc_0' })
+    // The offer read the words off the screen to record the limit, found no way out, and left the report to the conductor.
+    expect(api.noteLimit).toHaveBeenCalledWith('acc_0', expect.objectContaining({ text: expect.stringContaining('hit your') }))
+    expect(sendMessage).toHaveBeenCalledTimes(1)
   })
 })

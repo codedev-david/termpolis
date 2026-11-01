@@ -129,7 +129,7 @@ async function launchAgent(w: World, agent: Agent): Promise<string> {
     // A preferred account that ran out of usage is asked about before the terminal opens (the launch ask).
     // These cases launch on the default account whatever its state, so the answer is "anyway".
     const anyway = w.page.locator('[data-testid="launch-ask-anyway"]')
-    if (await anyway.count() > 0) await anyway.first().click()
+    if (await anyway.count() > 0) await anyway.first().click({ timeout: 5_000 }).catch(() => undefined)
     id = (await terminalsOf(w.page)).find((t) => !before.has(t.id) && t.agentCommand !== '')?.id ?? ''
     return id
   }, { timeout: 60_000, message: `a new ${agent} terminal` }).not.toBe('')

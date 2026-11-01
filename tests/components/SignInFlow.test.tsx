@@ -381,6 +381,21 @@ describe('SignInFlow: round 1', () => {
     expect(accounts.signInInput).toHaveBeenCalledTimes(1)
   })
 
+  it('ends a late session all the same when main refuses the cancel: the refusal is no unhandled error', async () => {
+    let answer: (v: unknown) => void = () => undefined
+    accounts.signInStart.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+    // A plain function, not a spy: a spy records how its promise settles, and that counts as handling it.
+    const sent: unknown[][] = []
+    accounts.signInInput = ((...args: unknown[]) => { sent.push(args); return Promise.reject(new Error('the session is gone')) }) as never
+    flow({ account: row({ agent: 'agy', profile: null }), mode: 'agy-switch' })
+    await waitFor(() => expect(accounts.signInStart).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByTestId('sign-in-cancel'))
+    await act(async () => { answer({ success: true, data: { sessionId: 'late' } }) })
+    // Let a rejection nobody handled reach the runner, which fails the run on one.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sent).toEqual([['late', { kind: 'cancel' }]])
+  })
+
   it('ends a session that main answered for after the flow went away (closed before the answer)', async () => {
     let answer: (v: unknown) => void = () => undefined
     accounts.signInStart.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
