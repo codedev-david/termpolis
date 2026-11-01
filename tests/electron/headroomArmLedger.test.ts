@@ -220,6 +220,17 @@ describe('the proxy ledger and the arms', () => {
     expect(summarizeProxySavings().session.floorSavedPct).toBe(50)
   })
 
+  it('counts a late request whose stats carry no text figures as no text, never as NaN', () => {
+    const r = result({ arm: 'late' })
+    r.stats = { arm: 'late', armCluster: 3 } as never
+    expect(() => recordProxyResult(r)).not.toThrow()
+    const c = summarizeProxySavings().cumulative
+    expect(c.lateTextOrigTokens).toBe(0)
+    expect(c.lateTextSavedTokens).toBe(0)
+    expect(c.floorSavedPct).toBe(0)
+    expect(armState().late[3].requests).toBe(1)
+  })
+
   it('reads the floor share as zero for a ledger with nothing in it, not as a division by zero', () => {
     expect(summarizeProxySavings().cumulative.floorSavedPct).toBe(0)
   })

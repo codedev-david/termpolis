@@ -927,3 +927,68 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(f).toHaveTextContent('of 400 substantial requests')
   })
 })
+
+describe('TokenSavingsSettings — the first-sight policy when the proxy is not acting', () => {
+  const tp = () => (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+  const settings = (over: Record<string, unknown> = {}) => ({
+    success: true,
+    data: { enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late', ...over },
+  })
+  const status = (over: Record<string, unknown> = {}) => ({
+    success: true,
+    data: { enabled: true, running: true, healthy: true, bypassVar: null, selectedMode: 'aggressive', effectiveMode: 'aggressive', selectedFirstSight: 'late', effectiveFirstSight: 'late', ...over },
+  })
+  const serve = (s: ReturnType<typeof settings>, st: ReturnType<typeof status>): void => {
+    tp().tokenSavingsGetSettings = vi.fn().mockResolvedValue(s)
+    tp().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(st)
+  }
+
+  it.each([
+    ['the proxy is switched off', { enabled: false }],
+    ['it has stepped aside for the user\u2019s own route', { bypassVar: 'ANTHROPIC_BASE_URL' }],
+    ['it is not running', { running: false }],
+    ['it is not healthy', { healthy: false }],
+  ])('does not say Late is running when %s: there is nothing for it to act on', async (_why, over) => {
+    serve(settings(), status(over))
+    render(<TokenSavingsSettings />)
+    const s = await screen.findByTestId('hr-first-sight-status')
+    expect(s).toHaveTextContent('Not in effect right now')
+    expect(s).toHaveTextContent('off, stepping aside or not running')
+    expect(s).not.toHaveTextContent('Running:')
+    expect(s.getAttribute('data-live')).toBe('false')
+    expect(s.getAttribute('data-pending')).toBe('false')
+  })
+
+  it('still says a change is waiting for the next start while the proxy is not acting', async () => {
+    serve(settings({ firstSightElision: 'legacy' }), status({ enabled: false, selectedFirstSight: 'legacy', effectiveFirstSight: 'late' }))
+    render(<TokenSavingsSettings />)
+    const s = await screen.findByTestId('hr-first-sight-status')
+    expect(s).toHaveTextContent('Not in effect right now')
+    expect(s).toHaveTextContent('Legacy applies the next time Termpolis starts')
+    expect(s.getAttribute('data-pending')).toBe('true')
+  })
+
+  it('says Running when it is acting, and marks it live', async () => {
+    serve(settings(), status())
+    render(<TokenSavingsSettings />)
+    const s = await screen.findByTestId('hr-first-sight-status')
+    expect(s).toHaveTextContent('Running: Late.')
+    expect(s.getAttribute('data-live')).toBe('true')
+  })
+})
+
+describe('TokenSavingsSettings — the retrieval notices in the singular', () => {
+  it('says "call" and "original was" when there is exactly one of each', async () => {
+    ;(window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis.tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: {
+        session: unifiedTotals({ unbackedEvictions: 1 }),
+        cumulative: unifiedTotals({ retrieveMisses: 1, retrieveExpired: 1, retrieveUnknownTokens: 0, retrieveBadTokens: 0 }),
+      },
+    })
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-retrieve-misses')).toHaveTextContent('1 retrieve_full call asked')
+    expect(screen.getByTestId('hr-unbacked-evictions')).toHaveTextContent('1 cached original was dropped')
+    expect(screen.getByTestId('hr-retrieve-expired')).toHaveTextContent('1 retrieve_full call asked')
+  })
+})

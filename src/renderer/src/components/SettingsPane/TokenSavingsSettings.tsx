@@ -82,11 +82,15 @@ const FIRST_SIGHT_LABEL: Record<FirstSight, string> = { late: 'Late', legacy: 'L
  */
 function FirstSightStatus({ selected, status }: { selected: FirstSight; status: ProxyStatusView | null }) {
   const running = status?.effectiveFirstSight
-  if (!running) return null
+  if (!status || !running) return null
   const pending = running !== selected
+  // The policy is frozen into the proxy at launch, but while the proxy is off, stepping aside for the
+  // user's own route or down, there is nothing for it to act on, and "Running" would not be true.
+  const live = status.enabled && !status.bypassVar && status.running && status.healthy
   return (
-    <div data-testid="hr-first-sight-status" data-pending={pending ? 'true' : 'false'} style={{ fontSize: 13, opacity: 0.85, margin: '4px 0 4px' }}>
-      Running: <b>{FIRST_SIGHT_LABEL[running]}</b>.{pending && <> {FIRST_SIGHT_LABEL[selected]} applies the next time Termpolis starts.</>}
+    <div data-testid="hr-first-sight-status" data-pending={pending ? 'true' : 'false'} data-live={live ? 'true' : 'false'} style={{ fontSize: 13, opacity: 0.85, margin: '4px 0 4px' }}>
+      {live ? <>Running: <b>{FIRST_SIGHT_LABEL[running]}</b>.</> : <>Not in effect right now: the proxy is off, stepping aside or not running.</>}
+      {pending && <> {FIRST_SIGHT_LABEL[selected]} applies the next time Termpolis starts.</>}
     </div>
   )
 }
