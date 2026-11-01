@@ -15,7 +15,7 @@ export const LAUNCH_BIN: Record<LaunchProvider, string> = {
 
 /** Which agent a launch command starts: its first word, minus a path and `.exe`/`.cmd`. Pure. */
 export function providerForCommand(command: string | null | undefined): LaunchProvider | null {
-  const first = (command ?? '').trim().split(/\s+/)[0] ?? ''
+  const first = (command ?? '').trim().replace(/\s[\s\S]*$/, '')
   const name = first.replace(/^.*[\\/]/, '').replace(/\.(exe|cmd)$/i, '').toLowerCase()
   for (const provider of Object.keys(LAUNCH_BIN) as LaunchProvider[]) {
     if (LAUNCH_BIN[provider] === name) return provider
@@ -132,7 +132,9 @@ function splitSimpleWords(text: string): string[] | null {
   let word = ''
   let open = false // inside a word, quoted or not
   let quote: '"' | "'" | null = null
-  for (const ch of text) {
+  // A space after the text closes its last word through the same branch as any other, and inside an
+  // unclosed quote it is just more of the quote, which the check below refuses.
+  for (const ch of `${text} `) {
     if (quote) {
       if (ch === quote) quote = null
       else if (quote === '"' && (ch === '\\' || ch === '`' || ch === '$')) return null
@@ -153,7 +155,6 @@ function splitSimpleWords(text: string): string[] | null {
     }
   }
   if (quote) return null
-  if (open) words.push(word)
   return words
 }
 
@@ -179,8 +180,8 @@ function splitSimpleWords(text: string): string[] | null {
  * Pure.
  */
 export function carryLaunchArgs(provider: LaunchProvider, launchCommand: string | null | undefined): LaunchCarry {
-  if (providerForCommand(launchCommand) !== provider) return { args: [], complete: true }
-  const text = (launchCommand ?? '').trim()
+  if (!launchCommand || providerForCommand(launchCommand) !== provider) return { args: [], complete: true }
+  const text = launchCommand.trim()
   const hadOptions = text.split(/\s+/).filter(Boolean).length > 1
   const bare: LaunchCarry = { args: [], complete: !hadOptions }
   // A line break is whitespace to split() but a command separator to a shell: two commands are not

@@ -154,6 +154,21 @@ describe('Claude Code: claude auth login', () => {
     expect(JSON.stringify(sent)).not.toMatch(/x{20}/)
   })
 
+  it("masks the code and any key-shaped string in the error sentence itself, the sheet's main line, not only in the screen under it", async () => {
+    deps.spawn = login({ MOCK_LOGIN_MODE: 'echo' })
+    const { sessionId } = startSignInSession(spec(), deps)
+    await advance(TICK_MS)
+    await signInInput(sessionId, { kind: 'code', value: 'wrong-code-1234' })
+    await advance(TICK_MS)
+    const e = last() as Extract<SignInPhase, { kind: 'error' }>
+    expect(e.kind).toBe('error')
+    // The CLI's words stay, with the code hidden and the key redacted.
+    expect(e.message).toBe(`the code ${'•'.repeat('wrong-code-1234'.length)} was refused (<redacted-key>)`)
+    expect(JSON.stringify(sent)).not.toContain('wrong-code-1234')
+    expect(JSON.stringify(sent)).not.toContain('sk-ant-oat01-')
+    expect(e.details.join('\n')).toContain('<redacted-key>')
+  })
+
   it('signs in when the browser hands it back by itself', async () => {
     deps.spawn = login({ MOCK_LOGIN_MODE: 'callback', MOCK_CALLBACK_MS: '2000' })
     startSignInSession(spec(), deps)

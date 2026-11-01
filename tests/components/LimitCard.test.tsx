@@ -188,6 +188,34 @@ describe('its ways out', () => {
     expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', { reason: 'usage limit' })
   })
 
+  it('offers an account the Check could not answer for as a way out all the same: Continue on it, and the switch finds out', async () => {
+    // The agent could not say who is signed in (offline, a slow CLI) and its profile names no sign-in either. "No way out" would be a dead end, so the account stays on offer.
+    useTerminalStore.setState({ accountsView: view([A, row({ ...B, lastEmail: null }), C, W]) })
+    accounts.check.mockImplementation(async (id: string) => (id === 'acc_b' ? { success: false, error: 'the CLI did not answer' } : identity(C, true)))
+    card()
+    openLimit()
+    await waitFor(() => expect(accounts.check).toHaveBeenCalledTimes(2))
+    await act(async () => undefined)
+    expect(screen.getByTestId('limit-card-continue')).toHaveTextContent('Continue on codedev')
+    expect(screen.queryByTestId('limit-card-none')).toBeNull()
+    click('limit-card-continue')
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', { reason: 'usage limit' })
+  })
+
+  it('lists an account the Check could not answer for under Other account with a Switch too, saying why it is not sure', async () => {
+    useTerminalStore.setState({ accountsView: view([A, B, row({ ...C, lastEmail: null }), W]) })
+    accounts.check.mockImplementation(async (id: string) => (id === 'acc_c' ? { success: false, error: 'the CLI did not answer' } : identity(B, true)))
+    card()
+    openLimit()
+    await waitFor(() => expect(accounts.check).toHaveBeenCalledTimes(2))
+    await act(async () => undefined)
+    click('limit-card-more')
+    const spare = screen.getAllByTestId('limit-card-other').find((o) => o.getAttribute('data-state') === 'unknown')!
+    expect(spare.textContent).toContain("couldn't tell whether it is signed in: the CLI did not answer")
+    fireEvent.click(spare.querySelector('[data-testid="limit-card-switch"]')!)
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_c', { reason: 'usage limit' })
+  })
+
   it('drops an answer that comes after the card closed', async () => {
     let answer!: (v: unknown) => void
     accounts.check.mockImplementation(() => new Promise((resolve) => { answer = resolve }))

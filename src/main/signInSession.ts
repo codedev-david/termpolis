@@ -175,16 +175,20 @@ function current(s: Session): SignInScreen {
 
 const escapeRe = (c: string): string => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-/** The screen as the user may see it: what they typed for the CLI masked (where the screen wraps it
- *  over rows too), and secrets redacted. */
+/** `text` with what the user typed for the CLI masked (where the screen wraps it over rows too). */
+function maskTyped(s: Session, text: string): string {
+  let out = text
+  for (const t of typedBy.get(s.id) ?? []) {
+    out = out.replace(new RegExp(t.split('').map(escapeRe).join('\\n?'), 'g'), (m) => m.replace(/[^\n]/g, '•'))
+  }
+  return out
+}
+
+/** The screen as the user may see it: what they typed for the CLI masked, and secrets redacted. */
 function masked(s: Session): string[] {
   const rows = s.screen.lines()
   while (rows.length > 0 && rows[rows.length - 1].trim() === '') rows.pop()
-  let text = rows.join('\n')
-  for (const t of typedBy.get(s.id) ?? []) {
-    text = text.replace(new RegExp(t.split('').map(escapeRe).join('\\n?'), 'g'), (m) => m.replace(/[^\n]/g, '•'))
-  }
-  return text.split('\n').map(redactSecrets)
+  return maskTyped(s, rows.join('\n')).split('\n').map(redactSecrets)
 }
 
 /** A code or a value went in, and its field is still what the screen shows: the CLI is at work on
@@ -239,7 +243,8 @@ function end(s: Session, deps: SessionDeps): void {
 }
 
 function fail(s: Session, deps: SessionDeps, message: string, timeout = false): void {
-  show(s, deps, { kind: 'error', message, details: masked(s), ...(timeout ? { timeout: true } : {}) })
+  // The CLI's sentence is the sheet's main line: it is masked like the screen under it, in case the CLI repeats the code or a key.
+  show(s, deps, { kind: 'error', message: redactSecrets(maskTyped(s, message)), details: masked(s), ...(timeout ? { timeout: true } : {}) })
   console.log(`[accounts] sign-in for ${s.spec.label}: error${timeout ? ' (timed out)' : ''}`)
   end(s, deps)
 }

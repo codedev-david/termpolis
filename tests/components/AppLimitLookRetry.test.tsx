@@ -143,3 +143,80 @@ describe('App: the usage-limit look is tried again when it failed', () => {
     expect(useTerminalStore.getState().limitBanners).toEqual([])
   })
 })
+
+describe('App: what the 2 s loop wires around the look', () => {
+  const STOP = { ...NONE, status: { status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' }, words: "You've hit your session limit · resets 3pm (America/New_York)" }
+
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+  /** A terminal shows a stop and the loop ticks once; the same bridges stay for the ticks after. */
+  async function stopped(accountsN: number, output = LIMIT_SCREEN) {
+    const api = bridge(output)
+    const limitLook = vi.fn(async () => ({ success: true, data: STOP }))
+    accountsBridge(limitLook)
+    render(<App />)
+    await settle()
+    // The terminal is the one on screen, so a chooser's card opens on its pane.
+    act(() => { useTerminalStore.setState({ terminals: [TERM], activeTerminalId: 't1', accountsView: view(accountsN) } as never) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
+    await settle()
+    return { api, limitLook }
+  }
+  const tick = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(2100) }); await settle() }
+
+  it('tells the OS only when the window does not have the focus (the card opens on the pane either way, and never takes a key)', async () => {
+    const made: string[] = []
+    vi.stubGlobal('Notification', function (this: unknown, title: string) { made.push(title) } as never)
+    const focus = vi.spyOn(document, 'hasFocus')
+    focus.mockReturnValue(true)
+    await stopped(2)
+    expect(useTerminalStore.getState().accountSwitch?.limit?.terminals).toEqual(['t1'])
+    expect(made).toEqual([])
+    cleanup()
+    useTerminalStore.setState(RESET as never)
+    _resetLimitWatchForTest()
+    focus.mockReturnValue(false)
+    await stopped(2)
+    expect(useTerminalStore.getState().accountSwitch?.limit?.terminals).toEqual(['t1'])
+    expect(made).toEqual(['Claude Code ran out of usage'])
+  })
+
+  it('forgets the stop of a terminal that closed, banner and all, so a terminal that comes back under its id with the screen moved is looked at afresh', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const { api } = await stopped(1)
+    expect(useTerminalStore.getState().limitBanners.map((b) => b.kind)).toEqual(['single'])
+    // It closes: the loop drops what it remembered of its stop, and the banner that spoke of it.
+    act(() => { useTerminalStore.setState({ terminals: [] } as never) })
+    await tick()
+    expect(useTerminalStore.getState().limitBanners).toEqual([])
+    // A terminal of the same id shows the same stop on a screen that has moved: a new stop, not the old one seen again.
+    api.readTerminalBuffer.mockImplementation(async () => ({ success: true, data: { output: `${LIMIT_SCREEN} ` } }))
+    act(() => { useTerminalStore.setState({ terminals: [TERM] } as never) })
+    await tick()
+    expect(useTerminalStore.getState().limitBanners.map((b) => b.kind)).toEqual(['single'])
+  })
+
+  it("lets the chooser go of a terminal that closed: its card was on that pane, and it moves on or closes", async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    await stopped(2)
+    expect(useTerminalStore.getState().accountSwitch?.limit?.terminals).toEqual(['t1'])
+    act(() => { useTerminalStore.setState({ terminals: [] } as never) })
+    await tick()
+    expect(useTerminalStore.getState().accountSwitch).toBeNull()
+  })
+
+  it('leaves a terminal alone while a relaunch holds it', async () => {
+    const limitLook = vi.fn(async () => ({ success: true, data: NONE }))
+    bridge(LIMIT_SCREEN)
+    accountsBridge(limitLook)
+    render(<App />)
+    await settle()
+    act(() => { useTerminalStore.setState({ terminals: [TERM], accountsView: view(2), relaunching: { t1: 'account' } } as never) })
+    await tick()
+    await tick()
+    expect(limitLook).not.toHaveBeenCalled()
+    act(() => { useTerminalStore.setState({ relaunching: {} } as never) })
+    await tick()
+    expect(limitLook).toHaveBeenCalledTimes(1)
+  })
+})

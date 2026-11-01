@@ -8,6 +8,7 @@
 //   fail        the CLI's failure words, exit 1
 //   silent      prints nothing, until it is ended
 //   garbage     prints something no CLI prints
+//   echo        a wrong code fails with an error line that repeats the code and holds a key-shaped string
 // A sign-in that succeeds leaves `.mock-signed-in` in the profile folder (CLAUDE_CONFIG_DIR or
 // CODEX_HOME) with the email, for a mock status command to read.
 'use strict'
@@ -82,6 +83,10 @@ function createMockLogin(io) {
       for (const c of data) {
         if (c === '\r') {
           if (line === (env.MOCK_GOOD_CODE || 'good-code')) return signIn()
+          if (mode === 'echo') {
+            io.write('\r\nOAuth login failed: the code ' + line + ' was refused (sk-ant-oat01-' + 'a'.repeat(40) + ')\r\n')
+            return io.exit(1)
+          }
           io.write('\r\nOAuth login failed: Invalid code. Please make sure the full code was copied. Run with --debug for the underlying error\r\n')
           return io.exit(1)
         }

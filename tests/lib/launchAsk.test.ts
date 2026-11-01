@@ -62,6 +62,7 @@ describe('launchAccountAsked', () => {
     const ctx = ask.mock.calls[0][0]
     expect(ctx).toMatchObject({ agent: 'claude', limited: { id: 'acc_a', label: 'personal' }, options: [{ id: 'acc_b', label: 'codedev' }, { id: 'acc_c', label: 'spare' }] })
     expect(ctx.until).toMatch(/^until /)
+    expect(launchAskHeadline(ctx)).toBe(`Claude Code: personal is out of usage ${ctx.until}. Launch on codedev?`)
     // The work account is never a way out (D14).
     expect(ctx.options.map((o) => o.id)).not.toContain('acc_w')
   })
@@ -101,6 +102,20 @@ describe('launchAccountAsked', () => {
     useTerminalStore.setState({ accountsView: view([CODEDEV]) })
     expect(await launchAccountAsked('claude', undefined, bridge('acc_gone'), ask, NOW)).toEqual({ cancelled: false, accountId: 'acc_gone' })
     expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('asks for an account Termpolis never checked too: no email known is still an account out of usage', async () => {
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, lastEmail: null, limit: limit() }, CODEDEV]) })
+    const ask = asks({ kind: 'on', accountId: 'acc_b' })
+    expect(await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)).toEqual({ cancelled: false, accountId: 'acc_b' })
+    expect(ask.mock.calls[0][0].limited).toEqual({ id: 'acc_a', label: 'personal' })
+  })
+
+  it('asks for an account only the failover hook saw out of usage, with no time to name', async () => {
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limit: undefined, limitedOutside: NOW - 5000 }, CODEDEV]) })
+    const ask = asks({ kind: 'on', accountId: 'acc_b' })
+    expect(await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)).toEqual({ cancelled: false, accountId: 'acc_b' })
+    expect(ask.mock.calls[0][0].until).toBe('')
   })
 
   it('says the time when the CLI named none as nothing, not as a made-up one', async () => {
