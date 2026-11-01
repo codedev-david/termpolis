@@ -139,8 +139,9 @@ function runsIn(text: string, s: number, e: number, min = MIN_RUN): Run[] {
 }
 
 /** The next base64 run at or after i, stepping over escaped line breaks (so the n of a \n never
- *  glues onto the run after it). */
-function nextRun(text: string, i: number, stop: number): Run | null {
+ *  glues onto the run after it); or, when there is none before `stop`, the position the search reached
+ *  (`stop` or after it: an escaped line break that began before `stop` ends after it). */
+function nextRun(text: string, i: number, stop: number): Run | number {
   while (i < stop) {
     const c = text.charCodeAt(i)
     if (c === 92 || c === 37 || c === 38 || c === 60 || c === 96) {
@@ -156,7 +157,7 @@ function nextRun(text: string, i: number, stop: number): Run | null {
     if (isB64(c)) break
     i++
   }
-  if (i >= stop) return null
+  if (i >= stop) return i
   const a = i
   while (i < stop && isB64(text.charCodeAt(i))) i++
   return [a, i]
@@ -1492,9 +1493,6 @@ export function encodedKeys(text: string, start = 0, cutText = false): KeySpan[]
     const runs: Run[] = [[a, i]]
     let width = i - a
     let frame: string | null = null
-    // (the first line's own frame: a second line with a label of its own is another value, not a wrapped
-    // line, as `tls.key` is under `tls.crt` in a Secret)
-    const first = frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)
     let j = i
     // (base64 padding ends a value: a padded line has none after it)
     for (let n = 0; n < 65536 && text.charCodeAt(j - 1) !== 61; n++) {
@@ -1511,7 +1509,10 @@ export function encodedKeys(text: string, start = 0, cutText = false): KeySpan[]
       if (runs.length === 1 && w > width) width = w
       if (w > width || (frame !== null && f !== frame)) break
       if (frame === null) {
-        if (f !== first && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break
+        // (a second line with a label of its own is another value, not a wrapped line, as `tls.key` is under `tls.crt` in a
+        // Secret: it is compared with the first line's own frame, which is worked out here and no sooner, as most runs, a long
+        // base64 string in a document, have no second line to compare it with)
+        if (/[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1) && f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)) break
         frame = f
       }
       runs.push(last)
@@ -1586,6 +1587,11 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
   // serves all the anchors, which move forward)
   const wordsEnd = proseEnds(text, start)
   const nextLineBreak = breakCursor(text)
+  // The stretch from `emptyFrom` to `emptyTo` that a search found no base64 run in. An anchor whose search starts at `emptyFrom` again
+  // (they do, when a long stretch of blanks follows a first one: each starts where the last stopped) looks on from `emptyTo`. (Read
+  // again by each of 8,000 anchors, 65,536 blanks took 3 seconds.)
+  let emptyFrom = -1
+  let emptyTo = -1
   while ((m = re.exec(text)) !== null) {
     const n = Number(m[1])
     // The private lines are the next n base64 runs of a line's width (64, with up to 4 characters
@@ -1595,11 +1601,18 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
     let i = Math.max(m.index + m[0].length, prevStop)
     const stop = Math.min(text.length, i + 65536)
     let prevEnd = i
+    // (where the search goes on; `i` is where the stretch it may find empty begins)
+    let at = i === emptyFrom ? emptyTo : i
     while (runs.length < n) {
-      const r = nextRun(text, i, stop)
-      if (!r) break
+      const r = nextRun(text, at, stop)
+      if (typeof r === 'number') {
+        emptyFrom = i
+        emptyTo = r
+        break
+      }
       const [a, e] = r
       i = e
+      at = e
       const len = e - a
       if (len <= 12) {
         if (text.startsWith('Private', a) && text.startsWith('-MAC', e)) break

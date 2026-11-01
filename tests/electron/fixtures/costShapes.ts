@@ -3,27 +3,51 @@
 // twice per job) at 1,000 to 100,000 characters, and takes milliseconds now. keyMaterial.test.ts and
 // linkedScreenCost.test.ts both screen them. Keys are fresh random base64 and never printed.
 import { generateKeyPairSync, randomBytes } from 'crypto'
-import { headless, keySpans } from '../../../src/main/keyMaterial'
 
-const QUIET_MS = 14
-let sample = ''
-let measured = { at: 0, factor: 1 }
-/** How much slower than a quiet laptop this process runs the detectors right now. Coverage's instrumentation (four to five
- *  times) and a loaded runner slow every screen alike, and a bound that fits a quiet machine fails a busy one. A fixed piece of
- *  detector work (about `QUIET_MS` ms there) is timed, best of five, and its ratio to that is the factor a bound is multiplied
- *  by (never under 1); redone at most every 5 s. A text that makes a detector quadratic costs a hundred times a bound, not five. */
+const QUIET_MS = 4
+let calibRows: string[] | null = null
+let measured = { at: 0, factor: 1, work: 0 }
+const B64_CHARS = new Uint8Array(128)
+for (const c of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=') B64_CHARS[c.charCodeAt(0)] = 1
+/** A fixed piece of plain work that calls none of the detectors, and is written as they are (a loop over the characters of each
+ *  line with a table lookup, then a regex and a replace per line): the end of a 4,000-line log has the length of its base64 runs
+ *  added up and its BEGIN lines read. Measured, it slows down under coverage and under load as the detectors do (5 to 8 times,
+ *  as the detectors' screen of the same lines does), which is what a bound needs to follow. */
+function calibrationWork(rows: string[]): number {
+  let n = 0
+  for (const line of rows) {
+    let run = 0
+    for (let i = 0; i < line.length; i++) {
+      const c = line.charCodeAt(i)
+      if (c < 128 && B64_CHARS[c] === 1) run++
+      else {
+        if (run >= 16) n += run
+        run = 0
+      }
+    }
+    if (/-----BEGIN [A-Z ]+-----/.test(line)) n += line.replace(/\d+/g, '0').trim().length
+  }
+  return n
+}
+/** How much slower than a quiet laptop this process runs the detectors right now. Coverage's instrumentation (six to eight times
+ *  for loops over characters) and a loaded runner slow every screen alike, and a bound that fits a quiet machine fails a busy one.
+ *  The detectors are not what is timed (a regression of their own, all of them five times slower, would then widen the bounds that
+ *  should catch it): a fixed piece of plain work like theirs (`calibrationWork`, about `QUIET_MS` ms on a quiet laptop) is, best of
+ *  five, and its ratio to that is the factor a bound is multiplied by (never under 1); redone at most every 5 s. A text that makes
+ *  a detector quadratic costs a hundred times a bound, not five. */
 export function slowdown(): number {
   if (Date.now() - measured.at < 5_000) return measured.factor
-  if (!sample) {
-    sample = Array.from({ length: 4_000 }, (_, i) => `line ${i}: the quick brown fox ${i % 7 === 0 ? "ghp_" + "x".repeat(30) : "jumps over"} the lazy dog ${"AbCdEfGhIj".repeat(i % 5)} -----BEGIN CERTIFICATE----- ${"QUJDREVGR0hJSktM".repeat(i % 4)}`).join('\n')
+  if (calibRows === null) {
+    calibRows = Array.from({ length: 4_000 }, (_, i) => `line ${i}: the quick brown fox jumps over the lazy dog ${'AbCdEfGhIj'.repeat(i % 5)} -----BEGIN CERTIFICATE----- ${'QUJDREVGR0hJSktM'.repeat(i % 4)}`)
   }
   let best = Infinity
+  let work = 0
   for (let i = 0; i < 5; i++) {
     const t = performance.now()
-    headless(sample, keySpans(sample).blocks, { start: 0 })
+    work += calibrationWork(calibRows)
     best = Math.min(best, performance.now() - t)
   }
-  measured = { at: Date.now(), factor: Math.max(1, best / QUIET_MS) }
+  measured = { at: Date.now(), factor: Math.max(1, best / QUIET_MS), work }
   return measured.factor
 }
 /** A bound in milliseconds, for this process right now. */
@@ -61,6 +85,13 @@ export const COST_SHAPES: Record<string, [string, CostAsk, number]> = {
   'a line of plus signs and spaces above an END line': [`${lines(3)}\n${'+ '.repeat(50_000)}x\n${END}\n`, ANSWER, 500],
   'Private-Lines anchors with no line after them': [fill('Private-Lines: 9999//', 100_000), ANSWER, 1_000],
   'Private-Lines anchors, then a long run of letters': ['Private-Lines: 9999'.repeat(1_315) + 'a'.repeat(75_000), ANSWER, 500],
+  // (an anchor line repeated, then a long stretch with no base64 in it: each anchor's search for its first private line began
+  // where the last one ended and read the whole stretch again, so 8,000 anchors read 65,536 blanks 8,000 times: 3.2 seconds, and
+  // 3.7 for line breaks, 4.1 for CRLF and 0.6 for ten thousand written-out line feeds)
+  'Private-Lines anchors, then a long run of blanks': ['Private-Lines: 9999\n'.repeat(8_000) + ' '.repeat(65_536), ANSWER, 500],
+  'Private-Lines anchors, then a long run of line breaks': ['Private-Lines: 9999\n'.repeat(8_000) + '\n'.repeat(65_536), ANSWER, 500],
+  'Private-Lines anchors, then a long run of CRLF': ['Private-Lines: 9999\n'.repeat(8_000) + '\r\n'.repeat(32_768), ANSWER, 500],
+  'Private-Lines anchors, then written-out line feeds': ['Private-Lines: 9999\n'.repeat(8_000) + (BS + 'u000a').repeat(10_000), ANSWER, 500],
   // (the first line of a text an older computer cut, above the blank line and key lines of a legacy encrypted key: the rule that reads
   // what its cut left of the headers took the joiners off the line's end with `[…]+$`, which cost n * n; 60,000 took 8 and 13 seconds)
   'a line of quotes at the start of a text an older computer cut, above key lines': [`${'"'.repeat(60_000)}x\n\n${lines(3)}\n-----END RSA PRIVATE KEY-----\n`, { keep: 200_000, cutStart: true }, 500],

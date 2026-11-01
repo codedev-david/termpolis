@@ -3,7 +3,7 @@
 // only looks like a key is left byte for byte (T2), and the recall bugs the prototype's probes found
 // stay fixed (T5). Every key is made fresh in memory (fixtures/freshKeys.ts) and never printed; a
 // synthetic body ('Ab'.repeat, 'Q'.repeat) only ever shows what is NOT removed.
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import * as crypto from 'crypto'
 import { createHash, generateKeyPairSync, randomBytes } from 'crypto'
 import {
@@ -35,6 +35,12 @@ import {
 } from '../../src/main/keyMaterial'
 import { COST_SHAPES, within } from './fixtures/costShapes'
 import { JOIN, T1_JOININGS, der, leakedWindows, makeKeys, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
+
+// Several tests here screen a key in every joining at every cut offset, or 200 trials of 22 kinds of text: 10 to 15 s each on a quiet
+// laptop, 3 to 5 times that under coverage, and 30 to 60 s beside the rest of the suite (two of them failed on the default 30 s). A
+// test's own timeout is only a guard against a hang, and a synchronous loop cannot be interrupted by it anyway: the bounds are the
+// assertions.
+vi.setConfig({ testTimeout: 600_000 })
 
 /** What a screen makes of `text` with the detectors alone (screenText adds the token rules): the
  *  removed spans merged and replaced by their markers, a JWK's or an RSAKeyValue's members counted
@@ -315,6 +321,7 @@ describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => 
     expect(r.removed).toEqual({ private_key: 2 })
     expect(leakedWindows(r.text, [...a.slice(1, 10), ...secretLinesOf(b)])).toBe(0)
   })
+
 })
 
 describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and nothing else is', () => {
@@ -2375,6 +2382,7 @@ describe('looksRandom and placeholderWhy', () => {
     }
     expect(placeholderWhy(randomBytes(16).toString('hex'), 'b62')).toBeNull() // hex in a base62 slot: not one case
   })
+
 })
 
 describe('detectorStart: each detector looks back for its own opener', () => {
@@ -2650,6 +2658,23 @@ describe('the detectors cost in step with the text, whatever the other computer 
   it.each(Object.keys(COST_SHAPES))('%s is screened in step with its length', (shape) => {
     const [text, opts, bound] = COST_SHAPES[shape]
     expect(bestOf3(() => screenKeys(text, opts), within(bound) * 4), shape).toBeLessThan(within(bound))
+  })
+
+  it('PuTTY: an anchor that starts where a search found nothing goes on from where that search ended, after a written-out line feed that began before its window did', () => {
+    // Two anchors stacked, 21,838 short words (frame), then a written-out line feed that begins 3 characters before the first search's
+    // 65,536th character and ends after it, and then the private lines. The second anchor starts where the first stopped and goes on
+    // from the end of the line feed (as its own search would reach it): from the window's end, inside the line feed, the last three
+    // characters of it would glue onto the first private line and make it 71 long, a key written with no line breaks.
+    const word = (n: number): string => randomBytes(Math.ceil(n * 0.75) + 3).toString('base64').replace(/[+/=]/g, 'a').slice(0, n)
+    const private3 = [word(68), word(64), word(64)]
+    const text = 'Private-Lines: 3\nPrivate-Lines: 3\n' + 'ab\n'.repeat(21_838) + '\n' + '\\' + 'u000a' + private3.join('\n') + '\n'
+    expect(text.indexOf('\\' + 'u000a')).toBe(16 + 65_536 - 3)
+    const spans = puttyKeys(text)
+    expect(spans.map((s) => [s.cls, s.why])).toEqual([
+      ['flag', 'ppk 0/3'],
+      ['remove', 'ppk 3/3'],
+    ])
+    expect(text.slice(spans[1].from, spans[1].to)).toContain(private3[2])
   })
 })
 

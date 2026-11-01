@@ -10,6 +10,10 @@ import { readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
+// These tests screen megabytes, several times over. Their timing bounds are the assertions; a test's own timeout is only a guard
+// against a hang, and a synchronous loop cannot be interrupted by it anyway: it fails the test afterwards, whatever the bounds
+// say, and a slower runner than a laptop (the same file took 142 s of 120 s in a coverage run beside other work) failed on it.
+vi.setConfig({ testTimeout: 600_000 })
 
 import { maskForDisplay, screenText } from '../../src/main/aiSecurity'
 import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS } from '../../src/main/linkedJobs'
@@ -94,7 +98,24 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     }
   })
 
-  const r64 = (): string => randomBytes(48).toString('base64')
+  // The random bytes of the shapes below come from a fixed seed that each growth test starts again for each size, so a shape's
+  // 1 MB text and its 4 MB text are made of the same units and differ in length alone. (With fresh units, a 43-character value
+  // that held a run of 40 letters and digits made the screen of its 1 MB text 5.9 times dearer under coverage than another
+  // value's, and a ratio of 4 times the text came out at 26 against a bound of 12 once in about five runs.) This seed gives the
+  // kty shapes a value of letters and digits only (no - or _ to split it), the dearer kind to screen: the bound is judged on that.
+  let seeded = 3
+  const reseed = (): void => {
+    seeded = 3
+  }
+  const rb = (n: number): Buffer => {
+    const b = Buffer.alloc(n)
+    for (let i = 0; i < n; i++) {
+      seeded = (Math.imul(seeded, 1664525) + 1013904223) | 0
+      b[i] = (seeded >>> 24) & 0xff
+    }
+    return b
+  }
+  const r64 = (): string => rb(48).toString('base64')
   /** Inputs that once cost more than their length (fix-r1 cost findings): BEGIN lines with no line
    *  break between them, each of whose blocks searched the rest of the line for its end, and an
    *  RSAKeyValue member left open over whitespace, whose regex tried every way of sharing it. */
@@ -150,16 +171,16 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     'BEGIN lines only': (n) => fill('-----BEGIN PRIVATE KEY-----\n', n),
     'END lines only, one line': (n) => fill('-----END PRIVATE KEY-----', n),
     'random key lines + END, repeated': (n) => fill(Array.from({ length: 64 }, () => `${r64()}\n${r64()}\n-----END PRIVATE KEY-----\n`).join(''), n),
-    'one base64 line': (n) => randomBytes(Math.ceil(n * 0.75)).toString('base64').slice(0, n),
-    'wrapped base64 with a base64 BEGIN line in it': (n) => fill(`${Buffer.from('-----BEGIN PRIVATE KEY-----').toString('base64')}\n${wrap(randomBytes(3_000).toString('base64'), 76).join('\n')}\n`, n),
-    'kty members, repeated': (n) => fill(`{"kty":"EC","crv":"P-256","d":"${randomBytes(32).toString('base64url')}"},`, n),
-    'kty with no braces': (n) => fill(`kty: EC d: ${randomBytes(32).toString('base64url')}\n`, n),
+    'one base64 line': (n) => rb(Math.ceil(n * 0.75)).toString('base64').slice(0, n),
+    'wrapped base64 with a base64 BEGIN line in it': (n) => fill(`${Buffer.from('-----BEGIN PRIVATE KEY-----').toString('base64')}\n${wrap(rb(3_000).toString('base64'), 76).join('\n')}\n`, n),
+    'kty members, repeated': (n) => fill(`{"kty":"EC","crv":"P-256","d":"${rb(32).toString('base64url')}"},`, n),
+    'kty with no braces': (n) => fill(`kty: EC d: ${rb(32).toString('base64url')}\n`, n),
     'open braces then kty': (n) => fill(`${'{'.repeat(5_000)}"kty":"oct"`, n),
     'Private-Lines, repeated': (n) => fill(`Private-Lines: 9999\n${r64()}\n`, n),
-    'RSAKeyValue tags, repeated': (n) => fill(`<RSAKeyValue><D>${randomBytes(128).toString('base64')}</D>`, n),
+    'RSAKeyValue tags, repeated': (n) => fill(`<RSAKeyValue><D>${rb(128).toString('base64')}</D>`, n),
     'URL-encoded BEGIN, repeated': (n) => fill(`-----BEGIN%20PRIVATE%20KEY-----%0A${encodeURIComponent(r64())}%0A`, n),
     'escaped line breaks between runs': (n) => fill(`${r64()}\\n`, n),
-    'tokens, repeated': (n) => fill(`ghp_${randomBytes(30).toString('base64').replace(/[+/=]/g, 'x').slice(0, 36)} `, n),
+    'tokens, repeated': (n) => fill(`ghp_${rb(30).toString('base64').replace(/[+/=]/g, 'x').slice(0, 36)} `, n),
     'BEGIN blocks, then END lines with no BEGIN': (n) =>
       fill(
         Array.from({ length: 32 }, () => `-----BEGIN RSA PRIVATE KEY-----\n${r64()}\n${r64()}\n`).join('') + Array.from({ length: 32 }, () => `${r64()}\n${r64()}\n-----END PRIVATE KEY-----\n`).join(''),
@@ -189,13 +210,37 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     expect(maskForDisplay(one)).toBe('[REDACTED:private_key]\nnext line')
     const [t1, t4] = pair(() => maskForDisplay(one), () => maskForDisplay(four))
     expect(t4, `1 MB ${t1.toFixed(0)} ms, 4 MB ${t4.toFixed(0)} ms`).toBeLessThan(12 * t1)
-  }, 120_000)
+  })
 
   it.each(Object.keys(HOSTILE))('grows in step with %s: 4 MB of it takes under 12 times as long as 1 MB', (shape) => {
+    reseed()
     const one = HOSTILE[shape](MB)
+    reseed()
     const four = HOSTILE[shape](4 * MB)
     // Linear is 4 times; measured at most 4.9 (judge's p6b) and 7 on a loaded laptop; a quadratic is 16.
     const [t1, t4] = pair(() => screenText(one), () => screenText(four))
     expect(t4, `${shape}: 1 MB ${t1.toFixed(0)} ms, 4 MB ${t4.toFixed(0)} ms`).toBeLessThan(12 * t1)
-  }, 120_000)
+  })
+
+  // The worst the 256 KB reach of a BEGIN line can make a screen read: a mention of a private key about 256 KB before the cut and a
+  // base64 line within 4 KB of it (that is what makes the key detectors search back), over the slowest text per character.
+  // Measured at 0.4-0.6 s for an answer on a loaded laptop (main 0.04-0.12) and 0.19 s for an error's end.
+  it.each([
+    'RSAKeyValue tags, repeated',
+    'URL-encoded BEGIN, repeated',
+    'random key lines + END, repeated',
+    'a block that stops early, then key lines and an END line, repeated',
+    'BEGIN lines and base64 runs on one line',
+    'kty members, repeated',
+  ])('screens the end of an answer with a key mentioned 256 KB before the cut, over %s, in a second, and its error in 300 ms', (shape) => {
+    const REACH = 262_144
+    const head = '-----BEGIN PRIVATE KEY----- mentioned in prose\n'
+    reseed()
+    const body = HOSTILE[shape](REACH - 8 + 1 + MAX_OUTPUT_CHARS - head.length - 200)
+    const at = REACH - 8 - head.length
+    const text = `${head}${body.slice(0, at)}\n${rb(90).toString('base64')}\n${body.slice(at, at + MAX_OUTPUT_CHARS + 400)}`
+    expect(text.length - MAX_OUTPUT_CHARS - text.indexOf('PRIVATE KEY'), 'the mention is about 256 KB before the cut').toBeGreaterThan(REACH - 1_000)
+    expect(bestOf3(() => screenText(text, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS), within(1_000) * 4), shape).toBeLessThan(within(1_000))
+    expect(bestOf3(() => screenText(text, MAX_ERROR_CHARS - 1, SCREEN_LOOKBACK_CHARS), within(300) * 4), `${shape}, error`).toBeLessThan(within(300))
+  })
 })

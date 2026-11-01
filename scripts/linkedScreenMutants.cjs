@@ -137,8 +137,8 @@ const REVIEW = {
   'short last line: no dot in the last run of a line (PHP)': [KEY, ')\\1[\\s"\'`,;+&_.)\\]}|\\\\]*$/', ')\\1[\\s"\'`,;+&_)\\]}|\\\\]*$/'],
   // the final round's K5 findings: a Secret's tls.crt above tls.key, the lines around a value, NAME=<base64>
   "b64: a name and its = part of the first run (NAME=base64)": [KEY, '    const a = valueStart(text, a0, i)\n    // (at the start of a text', '    const a = a0\n    // (at the start of a text'],
-  'b64: a second line with a label of its own joins the value': [KEY, 'if (f !== first && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break', 'if (f.length < 0) break'],
-  'b64: a cut text\'s second line under a label of its own not joined': [KEY, 'if (f !== first && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break', 'if (f !== first && /[A-Za-z]/.test(f)) break'],
+  'b64: a second line with a label of its own joins the value': [KEY, 'if (/[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1) && f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)) break', 'if (f.length < 0) break'],
+  'b64: a cut text\'s second line under a label of its own not joined': [KEY, 'if (/[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1) && f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)) break', 'if (/[A-Za-z]/.test(f) && f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)) break'],
   'b64: padding does not end a value': [KEY, 'for (let n = 0; n < 65536 && text.charCodeAt(j - 1) !== 61; n++) {', 'for (let n = 0; n < 65536; n++) {'],
   // the final round's tail findings: the BEGIN line's reach from the cut, a PGP checksum behind a path, a legacy key cut in its headers
   "tail: a BEGIN line's reach measured from the window start (F1)": [KEY, 'headInReach(text, at, opts.cutAt ?? start, runs)', 'headInReach(text, at, start, runs)'],
@@ -172,6 +172,14 @@ const REVIEW = {
   'K3: a file name after the digits (md5sums)': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''", "return v"],
   'K3: a key written on one line, the next value after a space': [KEY, "return /^[\\s\"'`,;+]{1,8}\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''", "return KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''"],
   'K3: a colour code after the digits': [KEY, "const rest = blankNl(text.slice(e, stop)).replace(/\\x1b\\[[0-9;]*m/g, ' ')", 'const rest = blankNl(text.slice(e, stop))'],
+  // the cost findings of the final round 2: PuTTY anchors before a long stretch with no base64 in it, the first frame of a base64 run
+  'cost: Private-Lines anchors search a stretch found empty again': [KEY, 'let at = i === emptyFrom ? emptyTo : i', 'let at = i'],
+  "putty: a stretch found empty is taken to end at the search's window, not where the search ended": [KEY, '        emptyTo = r\n', '        emptyTo = stop\n'],
+  'cost: the first line of a base64 run has its frame worked out for every run': [
+    KEY,
+    "        if (/[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1) && f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a)) break",
+    "        if (f !== frameAt(text, logicalLineStart(text, a, Math.max(0, a - 512)), a) && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break",
+  ],
   // the recall findings of the final round 2: a key with no line breaks, an OpenVPN key a script echoes line by line
   'valueStart: a name of any length (the = before a glued checksum)': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p + 1'],
   'valueStart: a 64-character key line and its checksum read as a name': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p - a > MAX_NAME ? a : p + 1'],
@@ -255,6 +263,10 @@ const EQUIVALENT = new Set([
   // The starts shortAbove tries before the last 9 characters before the joiners cannot match (a token is 7 at most,
   // with two = after it): the bound only bounds the work, and the cost shapes (a 64,000 character line) time it.
   'cost: shortAbove tries every start',
+  // The first line's frame is worked out when a second line has letters in its frame, not for every run of 40 characters: the same
+  // result, and the work it saves is a constant factor of a dense document (x6 main for a line of sha256 sums, x1.6 now) that no
+  // bound on a 200,000-character answer can tell from the frame's: the cost of the old order is measured by the verifier's dense-text probe.
+  'cost: the first line of a base64 run has its frame worked out for every run',
 ])
 
 const group = process.argv[2] ?? 'judge'
