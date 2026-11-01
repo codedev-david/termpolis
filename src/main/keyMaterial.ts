@@ -670,8 +670,20 @@ function scanBlock(
   })
 
   if (rule === 'openvpn_static_key') {
-    // (a frame glued on: a diff's +, a coloured diff's `32m+`)
-    const hex = runs.map(([s, e]) => text.slice(s, e).replace(/^(?:\d{1,3}m)?[^0-9a-fA-F]{0,3}(?=[0-9a-fA-F]{32}$)/, '')).filter((r) => /^[0-9a-f]+$/i.test(r)).join('')
+    // The file's own shape: lines of exactly 32 hex digits, a frame in front and joiners after (a key written
+    // on one line: the next value after a space). A list of digests (sha256sums: 64 digits; md5sums: 32 and
+    // a file name) is not one, however random its digits look.
+    const hex = runs
+      .map(([s, e]) => {
+        // (a frame glued on: a diff's +, a coloured diff's `32m+`)
+        const v = text.slice(s, e).replace(/^(?:\d{1,3}m)?[^0-9a-fA-F]{0,3}(?=[0-9a-fA-F]{32}$)/, '')
+        if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''
+        const br = nextBreak(text, e, Math.min(text.length, e + 1024))
+        const stop = Math.min(br ? br[0] : text.length, nextMark(e) ?? text.length, e + 1024)
+        const rest = blankNl(text.slice(e, stop)).replace(/\x1b\[[0-9;]*m/g, ' ').replace(/(?<![A-Za-z0-9+/=])\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/g, ' ')
+        return KEY_LINE_TAIL.test(rest) ? v : ''
+      })
+      .join('')
     return hex.length >= 256 && looksRandom(hex) ? span('remove', 'openvpn-hex') : span('flag', 'openvpn-header')
   }
   if (runs.length === 0) return span('flag', 'header-only')
@@ -1742,13 +1754,18 @@ export function rsaKeyValues(text: string, start = 0): KeySpan[] {
 // ---------------------------------------------------------------------------------------------
 // A placeholder word, in one case form: all lower, all upper, or capitalised. Random base62 hits
 // a 5-letter word in one of 3 forms about 3 x 32 / 62^5 = 1e-7 of the time.
-const WORDS = ['example', 'sample', 'dummy', 'placeholder', 'changeme', 'redacted', 'insert', 'replace', 'yourkey', 'your_key', 'yourtoken', 'your_token', 'yoursecret', 'your_secret']
+const WORDS = ['example', 'sample', 'dummy', 'placeholder', 'changeme', 'redacted', 'truncated', 'elided', 'omitted', 'insert', 'replace', 'yourkey', 'your_key', 'yourtoken', 'your_token', 'yoursecret', 'your_secret']
+// The words a key is spoken of in. A value holding two of them is a description or an identifier
+// (PrivateExponentBase64UrlEncodedValueGoesHere, mySuperSecretKeyForSigning2026); one is not enough: a
+// random 43-character value holds one of these about once in 10^4 (two about once in 10^9).
+const NAME_WORDS = /private|public|exponent|secret|signing|base64|encoded|value|goes|here|material|config/g
 const PLACEHOLDER_WORDS = new RegExp(WORDS.flatMap((w) => [w, w.toUpperCase(), w[0].toUpperCase() + w.slice(1)]).join('|'))
 
 /** Why a value is a placeholder and not key material, or null. Each check is set so a random value
  *  of its alphabet trips it less than once in a million: case-sensitive repeats of 6 (hex 8), an
  *  ascending run of 8 (`12345678`, `abcdefgh`), under a quarter distinct characters, a short unit
- *  repeated, a placeholder word, one case only over 32 characters, or a name made of words. */
+ *  repeated, a placeholder word, an environment variable's name, two of the words a key is spoken of in,
+ *  one case only over 32 characters, or a name made of words. */
 export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = false): string | null {
   const core = body.replace(/[^A-Za-z0-9]/g, '')
   if (core.length < 8) return 'short'
@@ -1767,6 +1784,9 @@ export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = fals
     if (seq >= 8) return 'sequence'
   }
   if (PLACEHOLDER_WORDS.test(body)) return 'word'
+  // An environment variable's name (JWT_SIGNING_SECRET_BASE64URL), or a description made of the words a key is spoken of in.
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(body)) return 'env-name'
+  if (new Set(body.toLowerCase().match(NAME_WORDS) ?? []).size >= 2) return 'named'
   if (!hex && core.length >= 32 && (!/[A-Z]/.test(core) || !/[a-z]/.test(core)) && !/^[0-9a-f]+$/.test(core)) return 'one-case'
   // A lower-case slug: `your-256-bit-secret-goes-here`, `my_dev_signing_key_2026`. The two name
   // checks only on 24 characters or more: shorter, they misfire on random base64url.

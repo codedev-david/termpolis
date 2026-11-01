@@ -40,7 +40,8 @@ const TESTS = [
   'tests/electron/linkedEndToEnd.test.ts',
 ]
 
-/** [file, the exact text, its replacement]. The text must be in the file exactly once. */
+/** [file, the exact text, its replacement, and optionally more test files to run besides TESTS]. The text must be
+ *  in the file exactly once. */
 const JUDGE = {
   'pgp: tag + version only': [KEY, 'const ao = v === 3 ? o + 7 : o + 5', 'if (v > 0) return { tag, v, algo: 0 }\n  const ao = v === 3 ? o + 7 : o + 5'],
   'pgp: random required (J9 reverted)': [KEY, "if ((st.type === 'openssh' || st.type === 'pgp') && payload >= LONG_PAYLOAD)", "if (st.type === 'openssh' && payload >= LONG_PAYLOAD)"],
@@ -80,7 +81,7 @@ const WIRING = {
   'mask: no detector spans': [SCREEN, '  for (const span of keys.spans) spans.push(span)\n  for (const span of headless(input, keys.blocks)) spans.push(span)', '  for (const span of headless(input, keys.blocks)) spans.push(span)'],
   'mask: no key tails': [SCREEN, '  for (const span of headless(input, keys.blocks)) spans.push(span)\n', ''],
   'mask: a BEGIN line only to its own end': [SCREEN, "spans.push({ rule: 'private_key', from: m.index, to: eol === -1 ? input.length : eol })", "spans.push({ rule: 'private_key', from: m.index, to: m.index + m[0].length })"],
-  'mask: the line end looked for again for every BEGIN marker': [SCREEN, "if (eol !== -1 && eol < m.index) eol = input.indexOf('\\n', m.index)", "if (eol !== -1) eol = input.indexOf('\\n', m.index)"],
+  'mask: the line end looked for again for every BEGIN marker': [SCREEN, "if (eol !== -1 && eol < m.index) eol = input.indexOf('\\n', m.index)", "if (eol !== -1) eol = input.indexOf('\\n', m.index)", ['tests/electron/linkedScreenCost.test.ts']],
   'lookback: 65,536 again': [JOBS, 'export const SCREEN_LOOKBACK_CHARS = 4_096', 'export const SCREEN_LOOKBACK_CHARS = 65_536'],
   'check: a truncated output not told cut': [TOOL, 'screenTail(view.output, MAX_OUTPUT_CHARS, view.truncated === true && cutBy(job))', 'screenTail(view.output, MAX_OUTPUT_CHARS, false)'],
   'check: an error behind the ellipsis not told cut': [TOOL, "MAX_ERROR_CHARS, view.error.startsWith('…') && cutBy(job))", 'MAX_ERROR_CHARS, false)'],
@@ -155,6 +156,15 @@ const REVIEW = {
   'tail: a flagged block leads (blockLead)': [KEY, "if (!bk || bk.cls === 'flag' || !sameKind(bk, end)) return null", 'if (!bk || !sameKind(bk, end)) return null'],
   'tail: words among the lines under a block (keyShapedLines)': [KEY, ' || /[A-Za-z]{3,}[ \\t]+[A-Za-z]{3,}/.test(line)) return false', ') return false'],
   'tail: any last word above an END line is its short last line': [KEY, 'const SHORT_JOINER = /[\\s"\'`,;+&_)\\]}|\\\\$]/', 'const SHORT_JOINER = /\\W/'],
+  // the final false-removal round: an OpenVPN key is lines of exactly 32 hex digits; a value that names a key is no key
+  'K3: lines of any hex length (a list of sha256sums)': [KEY, "if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''", "if (!/^[0-9a-f]+$/i.test(v)) return ''"],
+  'K3: a file name after the digits (md5sums)': [KEY, "return KEY_LINE_TAIL.test(rest) ? v : ''", 'return v'],
+  "K3: a key written on one line, the next value after a space": [KEY, ".replace(/(?<![A-Za-z0-9+/=])\\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/g, ' ')", ''],
+  'K3: a colour code after the digits': [KEY, ".replace(/\\x1b\\[[0-9;]*m/g, ' ')", ''],
+  "jwk: an environment variable's name is a key": [KEY, "  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(body)) return 'env-name'\n", ''],
+  "jwk: two words of a key's name are a name": [KEY, "  if (new Set(body.toLowerCase().match(NAME_WORDS) ?? []).size >= 2) return 'named'\n", ''],
+  "jwk: one word of a key's name is a name": [KEY, 'match(NAME_WORDS) ?? []).size >= 2', 'match(NAME_WORDS) ?? []).size >= 1'],
+  'jwk: a truncated key is a key': [KEY, "'redacted', 'truncated', 'elided', 'omitted', ", "'redacted', "],
   // FR-3: an end a 1.55 machine cut is one it screened; a made-up body is no key's tail
   'cut: every machine taken for one that cut first': [TOOL, "const cutBy = (job: Followed): CutStart => (screensBeforeCut(versions.get(refOf(job.target))) ? 'screened' : true)", 'const cutBy = (job: Followed): CutStart => (job ? true : true)'],
   'cut: a screened end anchored at its start': [KEY, '(floor === start && !(opts.screenedStart === true && floor === 0))', '(floor === start)'],
@@ -246,7 +256,7 @@ const json = path.join(tmp, 'run.json')
 const vitest = path.join(path.dirname(require.resolve('vitest/package.json', { paths: [ROOT] })), 'vitest.mjs')
 let bad = 0
 try {
-  for (const [name, [file, from, to]] of Object.entries(mutants)) {
+  for (const [name, [file, from, to, more]] of Object.entries(mutants)) {
     if (only && !name.includes(only)) continue
     const src = originals.get(file)
     const n = src.split(from).length - 1
@@ -257,7 +267,7 @@ try {
     }
     fs.writeFileSync(path.join(ROOT, file), src.replace(from, to))
     fs.rmSync(json, { force: true })
-    const run = spawnSync(process.execPath, [vitest, 'run', ...TESTS, '--reporter=json', `--outputFile=${json}`], { cwd: ROOT, encoding: 'utf8' })
+    const run = spawnSync(process.execPath, [vitest, 'run', ...TESTS, ...(more ?? []), '--reporter=json', `--outputFile=${json}`], { cwd: ROOT, encoding: 'utf8' })
     restore()
     let failed = []
     let ran = 0

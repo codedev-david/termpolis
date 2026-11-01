@@ -287,6 +287,40 @@ describe('T1 K1-K3: a key block, recognised by what its bytes decode to', () => 
   })
 })
 
+describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and nothing else is', () => {
+  // The header named in a README, a table or a listing, over a list of digests (sha256sums: 64 hex digits, md5sums:
+  // 32 and a file name): 256 random-looking hex digits in 2 KB were enough, and the sentence's tail and the first
+  // lines of the list went with the header.
+  const sha = (name: string): string => `${createHash("sha256").update(name + randomBytes(8).toString("hex")).digest("hex")}`
+  const md5 = (name: string): string => `${createHash("md5").update(name + randomBytes(8).toString("hex")).digest("hex")}`
+  const FILES = ['openvpn-2.6.12-I001-x86.msi', 'openvpn-2.6.12-I001-amd64.msi', 'openvpn-2.6.12-I001-arm64.msi', 'openvpn-2.6.12.tar.gz', 'openvpn-2.6.12.tar.xz', 'openvpn-2.6.12.zip', 'openvpn-gui.exe', 'tap-windows.exe', 'easy-rsa-3.1.7.tgz']
+  const HEADER = '-----BEGIN OpenVPN Static key V1-----'
+  const documents: Record<string, string> = {
+    'a README sentence, then sha256sums': `The ta.key file starts with the line ${HEADER} and has 16 lines.\n\n${FILES.map((f) => `${sha(f)}  ${f}`).join("\n")}\n`,
+    'a markdown table of digests': `Static keys begin with ${HEADER}.\n\n| file | sha256 |\n|---|---|\n${FILES.map((f) => `| ${f} | ${sha(f)} |`).join("\n")}\n`,
+    'an rg listing of digests': `${HEADER}\n${FILES.map((f, i) => `docs/checksums.txt:${i + 1}:${sha(f)}  ${f}`).join("\n")}\n`,
+    'md5sums': `The header is ${HEADER}\n${FILES.map((f) => `${md5(f)}  ${f}`).join("\n")}\n`,
+    'digests in a table of 32': `${HEADER}\n\n${FILES.map((f) => `${md5(f)} | ${f}`).join("\n")}\n`,
+  }
+  it('are left byte for byte, and reported', () => {
+    for (const [name, text] of Object.entries(documents)) {
+      const r = screenKeys(text)
+      expect(r.text, name).toBe(text)
+      expect(r.removed, name).toEqual({})
+      expect(r.flagged, name).toEqual({ openvpn_static_key: 1 })
+    }
+  })
+  it('and a key is removed from the same header whatever lines come after it', () => {
+    const key = K.F.openvpn
+    const text = `${documents["md5sums"]}\n${key.join("\n")}\n`
+    const r = screenKeys(text)
+    expect(r.removed).toEqual({ openvpn_static_key: 1 })
+    expect(leakedWindows(r.text, key.filter((l) => /^[0-9a-f]{32}$/.test(l)))).toBe(0)
+    // ...and the documents above it stay
+    expect(r.text.startsWith(documents['md5sums'])).toBe(true)
+  })
+})
+
 describe('T1 K4: a key tail with its END line, its BEGIN line out of view', () => {
   it('at the top of what is screened: the text starts inside the key', () => {
     const p8 = K.F.pkcs8_rsa
@@ -691,6 +725,44 @@ describe('T1 K7: a JWK private member', () => {
       expect(() => jwkKeys(JSON.stringify({ kty: 'OKP', crv, d: randomBytes(32).toString('base64url') })), crv).not.toThrow()
     }
   })
+})
+
+describe('T2 K7 and K8: a value that describes or names a key is left, and reported', () => {
+  const names = [
+    'PrivateExponentBase64UrlEncodedValueGoesHere',
+    'privateExponentEncodedAsBase64UrlGoesHere',
+    'mySuperSecretKeyForSigning2026',
+    'JWT_SIGNING_SECRET_BASE64URL',
+    'PRIVATE_KEY_D_VALUE_FROM_ENV_VARS_HERE',
+    'mysupersecretsigningkey',
+    'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC-truncated-here',
+  ]
+  it('in an oct JWK, in JSON, in YAML and in code', () => {
+    for (const name of names) {
+      for (const text of [
+        JSON.stringify({ kty: 'oct', k: name, alg: 'HS256' }),
+        `jwk:\n  kty: oct\n  k: ${name}\n`,
+        `const jwk = { kty: "oct", k: ${name} }\n`,
+        `jwk = {"kty": "oct", "k": "${name}"}\n`,
+      ]) {
+        const r = screenKeys(text)
+        expect(r.text, text).toBe(text)
+        expect(r.removed, text).toEqual({})
+      }
+    }
+  })
+  it('in an RSAKeyValue, as a sentence of 86 characters or more in a private member', () => {
+    const sentence = 'PrivateExponentValueGoesHereBase64EncodedSecretMaterialConfigFromTheEnvironmentVariablesOfTheDeploymentPipeline'
+    expect(sentence.length).toBeGreaterThanOrEqual(86)
+    const xml = `<RSAKeyValue><Modulus>${hash(172)}</Modulus><Exponent>AQAB</Exponent><D>${sentence}</D><P>${sentence}</P><Q>${sentence}</Q></RSAKeyValue>`
+    const r = screenKeys(xml)
+    expect(r.text).toBe(xml)
+    expect(r.removed).toEqual({})
+  })
+  /** Random base64 of n characters with no '+' or '/' that the placeholder checks would not read as a word. */
+  function hash(n: number): string {
+    return randomBytes(Math.ceil((n * 3) / 4)).toString('base64').replace(/[+/=]/g, 'x').slice(0, n)
+  }
 })
 
 describe('T1 K8: an RSAKeyValue private member', () => {
@@ -2048,6 +2120,22 @@ describe('looksRandom and placeholderWhy', () => {
     expect(placeholderWhy('my-dev-signing-key-for-2026-q4', 'b62')).toBe('slug')
     expect(placeholderWhy('ExperimentalPrototypeProjects2026', 'b62')).toBe('wordy')
     expect(placeholderWhy('ExperimentalPrototypeProjects', 'b62')).toBe('wordy')
+    // a description or an identifier made of the words a key is spoken of in: two of them, in any case form
+    expect(placeholderWhy('PrivateExponentBase64UrlEncodedValueGoesHere', 'b62')).toBe('named')
+    expect(placeholderWhy('privateExponentEncodedAsBase64UrlGoesHere', 'b62')).toBe('named')
+    expect(placeholderWhy('mySuperSecretKeyForSigning2026', 'b62')).toBe('named')
+    expect(placeholderWhy('mysupersecretsigningkey', 'b62')).toBe('named')
+    // an environment variable's name
+    expect(placeholderWhy('JWT_SIGNING_SECRET_BASE64URL', 'b62')).toBe('env-name')
+    expect(placeholderWhy('PRIVATE_KEY_D_VALUE_FROM_ENV_VARS_HERE', 'b62')).toBe('env-name')
+    // a truncated key
+    expect(placeholderWhy('MIIEvQIBADANBgkqhkiG9w0BAQEFAASC-truncated-here', 'b62')).toBe('word')
+    // one word of the list is not enough (a random value holds three letters of one about 1 in 700), and
+    // neither is a random one: 20,000 values of the sizes a JWK holds, none a placeholder
+    expect(placeholderWhy('X9fQ2mPrivateLk7vNd3RzT8wYb5HcJ4aE', 'b62')).toBeNull()
+    for (let i = 0; i < 20_000; i++) {
+      expect(placeholderWhy(randomBytes(i % 2 ? 32 : 48).toString('base64url'), 'b62'), String(i)).toBeNull()
+    }
     expect(placeholderWhy(randomBytes(16).toString('hex'), 'b62')).toBeNull() // hex in a base62 slot: not one case
   })
 })
