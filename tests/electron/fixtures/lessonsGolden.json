@@ -12,7 +12,7 @@
     { "id": "u08", "label": "usable", "content": "The installer must not list running processes to close the app, because endpoint security reads that as discovery; ask the window to close itself instead." },
     { "id": "u09", "label": "usable", "content": "Set `NODE_OPTIONS=--max-old-space-size=4096` for the renderer build: vite runs out of heap on the editor bundle otherwise." },
     { "id": "u10", "label": "usable", "content": "Problem: `git worktree remove --force` deleted the real node_modules folder. → Fix: remove the junction with `cmd /c rmdir` first, because the recursive delete follows junctions." },
-    { "id": "u11", "label": "usable", "content": "Gemini rows for the project are stored under `words-game`, but Codex rows use `words_game`, so a search scoped to one spelling never sees the other." },
+    { "id": "u11", "label": "usable", "content": "Gemini rows for the project are stored under `todo-app`, but Codex rows use `todo_app`, so a search scoped to one spelling never sees the other." },
     { "id": "u12", "label": "usable", "content": "The metrics ledger is append-only and never rotated, so read it with `forEachBufferLine` instead of decoding the whole file as one string." },
     { "id": "u13", "label": "usable", "content": "Checking `isWritable()` before `memoryWrite` is not enough: locked memory throws from `assertWritable`, so catch that error and pause the pass." },
     { "id": "u14", "label": "usable", "content": "Pin `electron-builder` at 24.13.3 because version 25 changes the publish flags and CI uploaded every artifact twice." },

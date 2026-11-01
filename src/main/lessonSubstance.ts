@@ -42,7 +42,7 @@ export const LESSON_AGENT_ID = 'mneme'
 export const CANDIDATE_IMPORTANCE = 0.45
 
 const ANALYZE_MAX = 1200 // characters read; the distiller itself cuts a lesson at 600
-const SHORT_BELOW = 60 // a lesson under this cannot hold a cause and a fix
+const SHORT_BELOW = 60 // a lesson under this cannot hold a cause and a fix (a Chinese, Japanese or Korean character counts as two)
 const LONG_FROM = 580 // the distiller cuts at 600: a lesson this long is usually a truncated blob
 const PROGRESS_CAP = 4
 const IDENTIFIER_CAP = 3
@@ -167,13 +167,22 @@ const ANNOUNCE_REST_WORDS = 4 // this many words after the opener and it was the
 
 // First-person progress ("I'll", "let me", "we're") and time-bound status ("today", "in progress", "so far"):
 // what someone was doing, not what is true. 1 each, to PROGRESS_CAP.
+//
+// Left OUT on purpose, because they are as common in a lesson that holds as in one that does not: "we'll" and "let's" (and
+// "we will", "let us"), which are the very phrases the distiller turns a decision into a lesson on ("we'll use X because Y");
+// and the engineering vocabulary "pending" (a promise, a queue, a test), "waiting for/on" (a lock, an event), "ongoing" (a
+// rebase), "going to" ("the handler is going to receive a buffer") and "still open" ("the handle was still open, which is why
+// rename failed"). On 51 lessons invented to be usable, penalising them kept 35 of them at the bar and not penalising them keeps
+// 37, with the same 9 of 54 invented narrations over it (tests/electron/lessonSubstance.test.ts, "progress vocabulary"). What
+// stays is what is time-bound, which is what this penalty is for: "currently", "upcoming", "to-do", and a status of the work
+// ("still running/failing/broken").
 const PROGRESS_RE = new RegExp(
   '\\b(?:i[\'’]ll|i will|i[\'’]m|i am|i[\'’]ve|i have|i[\'’]d|i can|i could|i should|i need to|i want to|let me|' +
-    'let[\'’]s|let us|we[\'’]ll|we will|we[\'’]re|we are|we[\'’]ve|now i|next i|then i|going to|gonna|' +
+    'we[\'’]re|we are|we[\'’]ve|now i|next i|then i|gonna|' +
     'today|yesterday|tomorrow|tonight|this (?:morning|afternoon|evening|week|session|sprint)|just now|right now|' +
-    'at the moment|currently|for now|so far|later today|earlier today|last night|in progress|pending|awaiting|' +
-    'waiting (?:for|on)|to-?do|ongoing|upcoming|next (?:week|sprint|release|steps?)|' +
-    'still (?:open|running|failing|broken|pending))\\b',
+    'at the moment|currently|for now|so far|later today|earlier today|last night|in progress|awaiting|' +
+    'to-?do|upcoming|next (?:week|sprint|release|steps?)|' +
+    'still (?:running|failing|broken))\\b',
   'gi',
 )
 
@@ -206,6 +215,15 @@ function wordsUpTo(s: string, stopAt: number): number {
   return words
 }
 
+// Characters that carry about a word each: Han, kana, Hangul and the full-width forms. A lesson of 36 of them says as much as 70
+// Latin letters, and must not be called too short to hold a cause and a fix for being written in a denser script.
+const WIDE_RE = /[\u1100-\u11ff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/g
+
+/** Under SHORT_BELOW once a wide character counts twice. Only short text is looked at, so this costs nothing on a long lesson. */
+function isShort(text: string): boolean {
+  return text.length < SHORT_BELOW && text.length + count(text, WIDE_RE) < SHORT_BELOW
+}
+
 function isBareAnnouncement(head: string): boolean {
   const lead = head.replace(LEAD_MARKUP_RE, '')
   const m = ANNOUNCE_RE.exec(lead)
@@ -229,7 +247,7 @@ export function lessonSubstance(content: string): Substance {
   if (isBareAnnouncement(head)) add(-3, 'announcement')
   const progress = Math.min(PROGRESS_CAP, count(head, PROGRESS_RE))
   if (progress > 0) add(-progress, 'progress')
-  if (text.length < SHORT_BELOW) add(-2, 'short')
+  if (isShort(text)) add(-2, 'short')
   else if (text.length >= LONG_FROM) add(-1, 'long')
   if (count(head, HASH_RE) >= HASHES_FOR_PENALTY) add(-2, 'hashes')
   if (JSON_OPEN_RE.test(head) || count(head, JSON_PAIR_RE) >= 3 || count(head, JSON_ESCAPE_RE) >= 2) add(-2, 'json')

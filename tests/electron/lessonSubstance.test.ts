@@ -99,7 +99,7 @@ const JUNK: Array<[shape: string, text: string, reason: string | null]> = [
   ['next marker', 'Next:', 'announcement -3'],
   ['memory updated', 'Memory updated.', 'announcement -3'],
   ['first-person plan', "I'll now run the full suite, then push the branch and tell the team tomorrow.", 'progress -2'],
-  ['time-bound status', 'Still in progress today; waiting on the reviewer, will pick it up this afternoon.', 'progress -4'],
+  ['time-bound status', 'Still in progress today; waiting on the reviewer, will pick it up this afternoon.', 'progress -3'],
   ['table row', '| **Owner** | Not decided yet, revisit next sprint |', 'progress -1'],
   ['commit-hash dump', 'Commits so far: 3fa9c21, b81d0e4, 9c7e5a2 and e04b6d8, all pushed.', 'hashes -2'],
   ['json residue', '{"status":"ok","count":3,"items":[{"id":"a1"}]}', 'json -2'],
@@ -240,14 +240,41 @@ describe('lessonSubstance: progress and time-bound markers', () => {
 
   it.each([
     'today', 'yesterday', 'tomorrow', 'tonight', 'this morning', 'this week', 'just now', 'right now', 'at the moment',
-    'currently', 'for now', 'so far', 'in progress', 'pending', 'waiting for', 'waiting on', 'todo', 'to-do', 'next sprint', 'still open',
-    "I'll", "I’ll", "I'm", 'I am', "I've", 'I have', 'I can', 'let me', "let's", "we'll", 'we are', 'going to', 'now I',
+    'currently', 'for now', 'so far', 'in progress', 'awaiting', 'todo', 'to-do', 'upcoming', 'next sprint', 'still running', 'still failing',
+    'still broken', "I'll", "I’ll", "I'm", 'I am', "I've", 'I have', 'I can', 'let me', 'we are', "we're", 'gonna', 'now I',
   ])('counts "%s"', (marker) => {
     expect(progress(`The queue is ${marker} the queue is` + pad)).toBe('progress -1')
   })
 
   it('leaves a plain third-person statement alone', () => {
     expect(progress('The queue drains in order and never reorders items that share a key' + pad)).toBeUndefined()
+  })
+
+  // These are as common in a lesson that holds as in one that does not, so they are not counted: the phrases the distiller turns a
+  // decision into a lesson on, and engineering words whose meaning is not about the passage of time. Every sentence is invented.
+  describe('what is not progress: the decision triggers of the distiller, and engineering vocabulary', () => {
+    it.each([
+      ["we'll", "We'll use `execFile` for git calls instead of `exec` because it never goes through a shell.", 'keep'],
+      ["let's", "Let's use the `before` timestamp for paging because `memoryList` has no offset parameter.", 'keep'],
+      ['we will', 'We will use `execFile` for git calls instead of `exec` because it never goes through a shell.', 'keep'],
+      ['let us', 'Let us use the `before` timestamp for paging because `memoryList` has no offset parameter.', 'keep'],
+      ['pending', 'A promise stays pending until `resolve` is called, so await it before reading `result` or you will see undefined.', 'keep'],
+      // one identifier and no reason: held back, where counting "pending" against it had dropped it
+      ['pending (a test)', 'Tests that are pending in `vitest` still count toward the total, so a skipped suite hides a failing import.', 'candidate'],
+      ['waiting on', 'The worker is waiting on the `index.lock` file; remove the stale lock only when no git process is running.', 'keep'],
+      ['waiting for', 'Waiting for the `will-quit` event is wrong here because the memory host exits first and the final flush never runs.', 'keep'],
+      ['ongoing', 'An ongoing `git rebase` leaves `.git/rebase-merge` in place, so `git status` reports the branch as detached until it finishes.', 'keep'],
+      ['going to', 'The handler is going to receive the raw buffer, not a string, when `encoding` is omitted from `readFile`.', 'keep'],
+      ['still open', 'The old handle was still open, which is why `fs.rename` failed with EPERM on Windows.', 'keep'],
+    ])('does not count %s', (_marker, lesson, band) => {
+      expect(progress(lesson)).toBeUndefined()
+      expect(substanceBand(lessonSubstance(lesson).score)).toBe(band)
+    })
+
+    it('still counts the first-person and the time-bound ones next to them', () => {
+      expect(progress("We'll use `execFile` today because it never goes through a shell." + pad)).toBe('progress -1') // today, not we'll
+      expect(progress('The build is currently pending, still running, and we are waiting on it' + pad)).toBe('progress -3') // currently, still running, we are
+    })
   })
 })
 
@@ -268,6 +295,42 @@ describe('lessonSubstance: length', () => {
     expect(reasons(579)).not.toContain('long -1')
     expect(reasons(580)).toContain('long -1')
     expect(reasons(2000)).toContain('long -1')
+  })
+
+  // One Han, kana or Hangul character carries about a word, so 30 of them are as long as 60 Latin letters. A lesson written in them
+  // is not too short to hold a cause and a fix for that reason.
+  describe('in a script where one character is a word', () => {
+    const short = (t: string): boolean => lessonSubstance(t).reasons.includes('short -2')
+
+    it('counts each Chinese, Japanese or Korean character as two against the 60-character floor', () => {
+      expect(short('字'.repeat(29))).toBe(true) // 58
+      expect(short('字'.repeat(30))).toBe(false) // 60
+      expect(short('あ'.repeat(30))).toBe(false) // kana
+      expect(short('한'.repeat(30))).toBe(false) // Hangul
+      expect(short('ア'.repeat(29))).toBe(true)
+      expect(short('ᄀ'.repeat(30))).toBe(false) // Hangul Jamo (U+1100)
+      expect(short('㐀'.repeat(30))).toBe(false) // Han, extension A (U+3400)
+      expect(short('\uF900'.repeat(30))).toBe(false) // Han compatibility ideograph; an escape, because typed it is normalised to U+8C48, a different range
+    })
+
+    it('counts the full-width forms, and mixed text by what each character is', () => {
+      expect(short('Ａ'.repeat(30))).toBe(false) // full-width Latin
+      expect(short('ab' + '字'.repeat(29))).toBe(false) // 31 characters, 2 + 58 = 60
+      expect(short('abc' + '字'.repeat(28))).toBe(true) // 31 characters, 3 + 56 = 59
+    })
+
+    it('leaves Latin text exactly as it was, and never makes a long text short', () => {
+      expect(short('a'.repeat(59))).toBe(true)
+      expect(short('a'.repeat(60))).toBe(false)
+      expect(short('字'.repeat(500))).toBe(false)
+    })
+
+    it('lets a dense lesson that names something be kept, which the old count called too short', () => {
+      const lesson = '在 Windows 上使用 `fs.rename` 替换被占用的文件会因 EPERM 失败，应先关闭句柄。'
+      expect(lesson.length).toBeLessThan(60)
+      expect(lessonSubstance(lesson).reasons).not.toContain('short -2')
+      expect(substanceBand(lessonSubstance(lesson).score)).toBe('keep')
+    })
   })
 })
 
