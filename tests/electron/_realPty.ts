@@ -67,7 +67,9 @@ export function cleanEnv(extra: Record<string, string>): Record<string, string> 
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === 'string' && !/^(CLAUDE|CODEX|ANTHROPIC|OPENAI|GEMINI|AGY|TERMPOLIS_LIMIT)/i.test(k)) env[k] = v
   }
-  return { ...env, ...extra }
+  // macOS's bash 3.2 says the default shell is zsh now, before its first prompt, unless told not to
+  // (the app sets this for its own terminals too).
+  return { ...env, BASH_SILENCE_DEPRECATION_WARNING: '1', ...extra }
 }
 
 export function prependPath(dir: string, env: Record<string, string>): Record<string, string> {
