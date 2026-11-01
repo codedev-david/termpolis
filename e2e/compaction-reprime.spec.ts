@@ -212,10 +212,11 @@ test.describe.serial('Compaction re-primer (real app, full flow)', () => {
     await createTerminal('Reprime2')
     const termId = await lastTerminalId()
     expect(termId).toBeTruthy()
-    const alone = await askShellAlone(termId, 'alone', 45_000)
-    // Windows reads the console through node-pty's own helper, which no hosted runner has
-    // exercised yet. Where it cannot tell, the guard has nothing to act on and the pointer is typed.
-    test.skip(alone === null && process.platform === 'win32', 'the OS cannot tell what runs in a terminal on this runner')
+    const alone = await askShellAlone(termId, 'alone', 30_000)
+    // The OS reads a terminal's processes only for the shells it knows (bash, zsh, fish, sh, ksh,
+    // and PowerShell, cmd and Git Bash on Windows). For any other shell it answers null, and the
+    // guard has nothing to act on: the pointer is typed, as it always was.
+    test.skip(alone === null, "the OS cannot tell what runs in this terminal's shell, so the guard has nothing to act on")
     expect(alone, 'expected the OS to say only the shell runs in the idle terminal').toBe(true)
 
     await page.evaluate((id) => (window as any).termpolis.__testTerminalData(id, 'claude code v1.0 starting\r\n'),
