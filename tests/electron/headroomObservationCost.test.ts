@@ -182,16 +182,29 @@ function sse(deltas: number, retrieves: number): string {
 }
 
 describe('speed: the second pass over a response', () => {
-  it('is a fraction of the usage pass that was already there, on a long answer', () => {
+  it('parses only the lines that start a block, where the usage pass parses every line', () => {
+    const stream = sse(4_000, 2)
+    const spy = vi.spyOn(JSON, 'parse')
+    try {
+      parseUsageFromSse(stream)
+      const usageParses = spy.mock.calls.length
+      spy.mockClear()
+      expect(parseTurnShapeFromSse(stream)).toEqual({ toolCalls: 2, retrieveCalls: 2, pure: true })
+      // The thinking block and the two retrieve_full calls, each announced once; the 4,000 deltas
+      // between them are skipped on a substring test before any parse.
+      expect(spy.mock.calls.length).toBe(3)
+      expect(usageParses).toBeGreaterThan(4_000)
+    } finally { spy.mockRestore() }
+  })
+
+  it('takes no longer than the usage pass that was already there, on a long answer', () => {
     const stream = sse(4_000, 2)
     expect(stream.length).toBeGreaterThan(500_000)
-    expect(parseTurnShapeFromSse(stream)).toEqual({ toolCalls: 2, retrieveCalls: 2, pure: true })
     for (let i = 0; i < 3; i++) { parseUsageFromSse(stream); parseTurnShapeFromSse(stream) } // warm both
     const [usage, turn] = bestOf(() => parseUsageFromSse(stream), () => parseTurnShapeFromSse(stream), 9)
-    // It parses only the lines that start a block, where the usage pass parses every line:
-    // measured at a quarter to a half of it (about 1 ms against 3 ms on 600 KB of thinking), and a
-    // version that parsed every line too lands at about 1.0 and fails this.
-    expect(turn).toBeLessThanOrEqual(usage * 0.8)
+    // Measured at a quarter to a half of it (about 1 ms against 3 ms on 600 KB of thinking). The
+    // bound is as wide as a relative bound can be; the test above is what pins the mechanism.
+    expect(turn).toBeLessThanOrEqual(usage)
   })
 })
 
