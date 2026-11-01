@@ -35,12 +35,16 @@ import { psQuote } from '../../../shared/shellQuote'
 // can't always tell from an agent at its input. So before the paste, and again before the Enter,
 // the OS is asked whether anything but the shell runs in the terminal (shellAloneNow). An answer
 // of "only the shell" before the paste is put to the OS again, a little later, before it is
-// believed (ALONE_ASKS): an agent that is still starting is not on the console yet either.
+// believed (ALONE_ASKS): an agent that is still starting is not on the console yet either. Once
+// the OS has said so, a later answer that cannot tell counts the same (agentGone); an OS that
+// cannot tell from the start is no reason to hold anything back.
 //
-// That question takes a second or two on Windows, and a person starts typing into a fresh agent in
-// that time. So the idle check is not made once, ahead of it: it is made LAST, after the OS and the
-// screen, right before the paste and again right before the Enter (canTypePointer). A draft that
-// shows up in between holds the paste back, or, when the pointer is already pasted, the Enter.
+// That question takes a second or two on Windows, and a person starts typing or pasting into a
+// fresh agent in that time. So the idle check is not made once, ahead of it: it is made LAST,
+// after the OS and the screen, right before the paste and again right before the Enter
+// (lineReady). A draft that shows up in between holds the paste back, or, when the pointer is
+// already pasted, the Enter. The OS is asked about the Enter as soon as the pointer is pasted, so
+// the pointer does not wait in the input line for the pause and the answer one after the other.
 
 const SETTING_KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const INJECT_DELAY_MS = 1500 // let the agent CLI finish booting before we paste
@@ -153,19 +157,20 @@ export async function promptShowing(terminalId: string): Promise<boolean> {
 }
 
 /**
- * True only when the OS says nothing runs in the terminal but its shell (terminalShellAlone,
- * shellAlone.ts, the question the model switcher asks): the agent started in it has exited, and the
- * pointer would land at the shell's prompt. Anything less sure is false and the pointer goes in as
- * it always did: null (a shell the OS can't read, WSL, a query that failed), a failed or missing
- * call (an older preload, a test double) and a throw. Holding every pointer back whenever the OS is
- * silent would turn recall off for those shells.
+ * What the OS says about the terminal (terminalShellAlone, shellAlone.ts, the question the model
+ * switcher asks): true when nothing runs in it but its shell, so the agent started in it has
+ * exited and the pointer would land at the shell's prompt; false when something else runs; null
+ * when it cannot tell: a shell the OS can't read, WSL, a query that failed, a failed or missing
+ * call (an older preload, a test double) and a throw. What is done with null is up to the caller
+ * (agentGone): holding every pointer back whenever the OS is silent would turn recall off for
+ * those shells.
  */
-export async function shellAloneNow(terminalId: string): Promise<boolean> {
+export async function shellAloneNow(terminalId: string): Promise<boolean | null> {
   try {
     const res = await window.termpolis?.terminalShellAlone?.(terminalId)
-    return res?.success === true && res.data === true
+    return res?.success === true && typeof res.data === 'boolean' ? res.data : null
   } catch {
-    return false
+    return null
   }
 }
 
@@ -177,37 +182,39 @@ export async function shellAloneNow(terminalId: string): Promise<boolean> {
 export const ALONE_RECHECK_MS = 2000
 export const ALONE_ASKS = 3
 
-/** True when the OS has said `asks` times, `ALONE_RECHECK_MS` apart, that only the shell runs. */
+/**
+ * Whether the OS has said `asks` times, `ALONE_RECHECK_MS` apart, that only the shell runs. It
+ * stops at the first answer that something else runs, and at a FIRST answer that cannot tell (the
+ * OS does not read this shell: the pointer goes in as it always did). An answer that cannot tell
+ * after one that said "only the shell" (the helper timed out under load, the shell was on its way
+ * out) is no better news than that one, and counts the same: a dead agent is not typed at because
+ * the next question failed.
+ */
 async function agentGone(terminalId: string, asks: number, sleep: (ms: number) => Promise<void>): Promise<boolean> {
   for (let answered = 1; ; answered++) {
-    if (!(await shellAloneNow(terminalId))) return false
-    if (answered >= asks) return true
+    const alone = await shellAloneNow(terminalId)
+    if (alone === false || (alone === null && answered === 1)) return false
+    if (alone === null || answered >= asks) return true
     await sleep(ALONE_RECHECK_MS)
   }
 }
 
 /**
- * Whether the pointer may be typed into this terminal right now: an agent runs in it (the OS does
- * not say that only the shell does), its screen shows nothing waiting for an answer, and the line
- * is still idle (`stillIdle`, the caller's own look at the user's draft). The OS is asked FIRST,
- * the screen next and the draft LAST. The OS takes a second or two on Windows, and a person starts
- * typing into a fresh agent in that time, so the draft look has to come after the slowest question
- * and right before the write; so does the screen look, which is what keeps an Enter from answering
- * a trust or approval prompt that came up while the OS was answering.
- *
- * `asks` is how many times a "only the shell runs" answer is put to the OS before it is believed:
- * several before the paste, where the agent may simply not be up yet, one before the Enter, where
- * the agent was there a moment ago.
+ * Whether the agent's input line is ready for a write once the OS has answered: its screen shows
+ * nothing waiting for an answer, and the line is still idle (`stillIdle`, the caller's own look at
+ * the user's draft). The OS is asked FIRST, the screen next and the draft LAST. The OS takes a
+ * second or two on Windows, and a person starts typing into a fresh agent in that time, so the
+ * draft look has to come after the slowest question and right before the write; so does the screen
+ * look, which is what keeps an Enter from answering a trust or approval prompt that came up while
+ * the OS was answering. `pasted` says whether the pointer is already in the input line.
  */
-async function canTypePointer(
+async function lineReady(
   terminalId: string,
-  sleep: (ms: number) => Promise<void>,
-  asks: number,
-  stillIdle?: () => boolean | Promise<boolean>,
+  pasted: boolean,
+  stillIdle?: (pasted: boolean) => boolean | Promise<boolean>,
 ): Promise<boolean> {
-  if (await agentGone(terminalId, asks, sleep)) return false
   if (await promptShowing(terminalId)) return false
-  return stillIdle ? await stillIdle() : true
+  return stillIdle ? await stillIdle(pasted) : true
 }
 
 // Check that relevant memory exists for this project and, if so, paste a short
@@ -215,15 +222,15 @@ async function canTypePointer(
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
 // Best-effort and silent: a no-op if the API is unavailable or there is no
 // relevant memory yet. Returns whether it injected. `stillIdle` is the caller's look at the user's
-// draft, asked last before the paste and again before the Enter (canTypePointer): false means the
-// user is typing, and nothing more is written.
+// draft, asked last before the paste and again before the Enter (lineReady), and told whether the
+// pointer is already pasted: false means the user is typing, and nothing more is written.
 export async function injectAutoPrimer(
   terminalId: string,
   cwd: string,
   selfRecord = false,
   notify = false,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise<void>((r) => setTimeout(r, ms)),
-  stillIdle?: () => boolean | Promise<boolean>,
+  stillIdle?: (pasted: boolean) => boolean | Promise<boolean>,
 ): Promise<boolean> {
   try {
     const api = window.termpolis
@@ -240,8 +247,9 @@ export async function injectAutoPrimer(
     // it — which is how a paste 1.5 s into a Codex launch used to accept its folder-trust
     // prompt. At a SHELL's prompt the same Enter runs the pointer as a command, and that is where
     // an agent that died while it started has left the terminal. Checked after the recall, right
-    // before typing, and again before the Enter (canTypePointer).
-    if (!(await canTypePointer(terminalId, sleep, ALONE_ASKS, stillIdle))) return false
+    // before typing (the OS up to ALONE_ASKS times, where the agent may simply not be up yet), and
+    // again before the Enter.
+    if ((await agentGone(terminalId, ALONE_ASKS, sleep)) || !(await lineReady(terminalId, false, stillIdle))) return false
     const wrapped = BP_START + buildPrimerPointer(cwd, selfRecord) + BP_END
     api.writeToTerminal(terminalId, wrapped)
     // Then submit it. Pasting alone left the pointer sitting in the agent's
@@ -256,11 +264,16 @@ export async function injectAutoPrimer(
     // separated by ~150 ms read as a human pressing Return. Same reasoning, and
     // the same constant, as SUBMIT_SETTLE_MS in the remote dispatcher, which
     // fixed the identical symptom for messages sent from the phone.
-    await sleep(PRIMER_SUBMIT_SETTLE_MS)
+    //
+    // The OS is asked about the Enter while that pause runs, not after it. The pointer sits in the
+    // agent's input line until the Enter, which is the time a person can start typing in front of
+    // it, and the question takes a second or two on Windows: the line waits for the longer of the
+    // two, not for both.
+    const [gone] = await Promise.all([agentGone(terminalId, 1, sleep), sleep(PRIMER_SUBMIT_SETTLE_MS)])
     // A prompt can have come up since the paste, the agent can have exited, or the user can have
     // started typing. What was pasted then stays where it is and is never submitted: an Enter now
     // would send their draft together with it.
-    if (!(await canTypePointer(terminalId, sleep, 1, stillIdle))) return false
+    if (gone || !(await lineReady(terminalId, true, stillIdle))) return false
     api.writeToTerminal(terminalId, '\r')
     // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
     // memories" banner Claude gets — so Codex/Gemini recall doesn't look like
@@ -426,10 +439,15 @@ export async function primeOnLaunch(
   // where Termpolis doesn't read them, so it is asked to record its own lesson (selfRecordsLessons).
   // notify=true → this launch prime shows the 🧠 Loaded-N banner (parity with Claude).
   // The gate is looked at once more inside the inject, after the OS question and right before each
-  // write: the person keeps typing while it answers. A pane that has gone is not looked at either,
-  // since the gate then reads a draft that nothing feeds any more.
+  // write: the person keeps typing while it answers. Before the paste a pane that has gone is not
+  // trusted, since the gate then reads a draft that nothing feeds any more, and nothing is typed.
+  // Once the pointer IS pasted it is finished: left in the agent's input line it would be sent
+  // with whatever the person types next, so the Enter goes unless the draft, the screen or the OS
+  // says otherwise (a draft the pane saw before it went still counts).
   const inject =
-    opts.inject ?? ((id, c, selfRecord) => injectAutoPrimer(id, c, selfRecord, true, undefined, () => !stopped() && open()))
+    opts.inject ??
+    ((id, c, selfRecord) =>
+      injectAutoPrimer(id, c, selfRecord, true, undefined, (pasted) => (pasted || !stopped()) && open()))
   let waited = 0
   while (!open()) {
     if (waited >= maxWaitMs) return false

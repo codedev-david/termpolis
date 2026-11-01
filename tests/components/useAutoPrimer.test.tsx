@@ -928,38 +928,44 @@ describe('the pointer is never typed at a shell prompt', () => {
     useTerminalStore.setState({ memoryNotice: null, terminals: [] })
   })
 
+  // The OS's answer as the primer reads it: true (only the shell runs), false (something else
+  // does) or null (it cannot tell). Only a definite answer is anything but "cannot tell".
   describe('shellAloneNow', () => {
-    it('is true only when the OS says nothing runs in the terminal but its shell', async () => {
+    it('is true when the OS says nothing runs in the terminal but its shell', async () => {
       mockApi({ terminalShellAlone: asking(alone(true)) })
       expect(await shellAloneNow('t1')).toBe(true)
       expect((window as any).termpolis.terminalShellAlone).toHaveBeenCalledWith('t1')
     })
 
+    it('is false when the OS says something else runs there', async () => {
+      mockApi({ terminalShellAlone: asking(alone(false)) })
+      expect(await shellAloneNow('t1')).toBe(false)
+    })
+
     it.each([
-      ['something else runs', alone(false)],
       ['the OS cannot tell', alone(null)],
       ['the call failed', { success: false, error: 'Invalid terminal id' }],
       ['the call answers nothing', undefined],
       ['a data that is not a boolean', alone('true')],
       ['a count', alone(1)],
       ['a success that is not a boolean', { success: 'yes', data: true }],
-    ])('is false when %s', async (_why, answer) => {
+    ])('is null when %s', async (_why, answer) => {
       mockApi({ terminalShellAlone: asking(answer) })
-      expect(await shellAloneNow('t1')).toBe(false)
+      expect(await shellAloneNow('t1')).toBeNull()
     })
 
-    it('is false when the call throws or rejects', async () => {
+    it('is null when the call throws or rejects', async () => {
       mockApi({ terminalShellAlone: asking(new Error('ipc gone')) })
-      expect(await shellAloneNow('t1')).toBe(false)
+      expect(await shellAloneNow('t1')).toBeNull()
       mockApi({ terminalShellAlone: vi.fn(() => { throw new Error('thrown at once') }) })
-      expect(await shellAloneNow('t1')).toBe(false)
+      expect(await shellAloneNow('t1')).toBeNull()
     })
 
-    it('is false on a bridge without the call (an older preload) and with no bridge at all', async () => {
+    it('is null on a bridge without the call (an older preload) and with no bridge at all', async () => {
       mockApi() // the default test bridge has no terminalShellAlone
-      expect(await shellAloneNow('t1')).toBe(false)
+      expect(await shellAloneNow('t1')).toBeNull()
       ;(window as any).termpolis = undefined
-      expect(await shellAloneNow('t1')).toBe(false)
+      expect(await shellAloneNow('t1')).toBeNull()
     })
   })
 
@@ -1049,6 +1055,14 @@ describe('the pointer is never typed at a shell prompt', () => {
     // never retried). So before the paste "only the shell runs" has to be said again, a little
     // later, and a dead agent is still a dead one.
     describe('an agent that is still starting', () => {
+      // The tests below compare with these constants, so they would follow a change of either.
+      // docs/DOCUMENTATION.md tells the reader "up to three times, two seconds apart", and that is
+      // also how often Termpolis asks the OS about a terminal by itself.
+      it('is asked about up to three times, two seconds apart', () => {
+        expect(ALONE_ASKS).toBe(3)
+        expect(ALONE_RECHECK_MS).toBe(2000)
+      })
+
       it('is asked about again before it is taken for one that has gone', async () => {
         const terminalShellAlone = asking(alone(true))
         const read = vi.fn(async () => ({ success: true, data: { output: IDLE_SCREEN } }))
@@ -1078,11 +1092,46 @@ describe('the pointer is never typed at a shell prompt', () => {
         expect(writes()).toHaveLength(2)
       })
 
-      it('is typed at as before when a later answer cannot tell', async () => {
-        const terminalShellAlone = asking(alone(true), alone(null))
+      // Once the OS has said that only the shell runs, a later answer that cannot tell (the helper
+      // timed out under load, the shell was going away, the call failed) is no better news, and is
+      // not taken for an agent that runs. A FIRST answer that cannot tell is the OS not reading this
+      // shell at all, and the pointer goes in as it always did (the cases further down).
+      describe('after the OS has said that only the shell runs', () => {
+        it.each([
+          ['the OS cannot tell', alone(null)],
+          ['the call failed', { success: false, error: 'Invalid terminal id' }],
+          ['the call answers nothing', undefined],
+          ['the call rejects', new Error('ipc gone')],
+        ])('a later answer, when %s, is not taken for an agent that runs', async (_why, later) => {
+          const terminalShellAlone = asking(alone(true), later)
+          mockApi({ terminalShellAlone })
+          useTerminalStore.setState({ memoryNotice: null })
+          expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
+          expect(writes()).toEqual([]) // no paste and no Enter
+          expect(terminalShellAlone).toHaveBeenCalledTimes(2) // and it is not asked a third time
+          expect(useTerminalStore.getState().memoryNotice).toBeNull()
+        })
+
+        it('holds for the last of the answers as well', async () => {
+          const terminalShellAlone = asking(alone(true), alone(true), alone(null))
+          mockApi({ terminalShellAlone })
+          expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
+          expect(writes()).toEqual([])
+          expect(terminalShellAlone).toHaveBeenCalledTimes(ALONE_ASKS)
+        })
+
+        it('is no reason to hold back a pointer the OS then finds an agent for', async () => {
+          mockApi({ terminalShellAlone: asking(alone(true), alone(true), alone(false)) })
+          expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
+          expect(writes()).toHaveLength(2)
+        })
+      })
+
+      it('is not held back before the Enter by an answer that cannot tell, after one that found the agent', async () => {
+        const terminalShellAlone = asking(alone(true), alone(false), alone(null))
         mockApi({ terminalShellAlone })
         expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
-        expect(writes()).toHaveLength(2)
+        expect(writes()).toHaveLength(2) // the sequence before the Enter is a new one
         expect(terminalShellAlone).toHaveBeenCalledTimes(3)
       })
 
@@ -1401,13 +1450,56 @@ describe('the pointer is never typed over what the user is typing', () => {
       expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick)).toBe(true)
       expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(2)
     })
+
+    it('tells the look whether the pointer is already in the input line', async () => {
+      // The caller may weigh the two differently: a pointer that is pasted is better finished than left.
+      mockApi()
+      const idle = vi.fn((_pasted: boolean) => true)
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, false, quick, idle)).toBe(true)
+      expect(idle.mock.calls).toEqual([[false], [true]])
+    })
+
+    // The pointer waits in the agent's input line from the paste to the Enter, and a person can
+    // start typing in front of it in that time. So the OS is asked about the Enter at the moment of
+    // the paste, while the pause runs, and the line waits for the longer of the two, not both.
+    it('asks the OS about the Enter while the pause runs, so the pointer waits for the longer of the two', async () => {
+      vi.useFakeTimers()
+      const at: Record<string, number> = {}
+      const osTakes = (ms: number) => vi.fn(async () => { await new Promise<void>((r) => setTimeout(r, ms)); return alone(false) })
+      const write = vi.fn((_id: string, data: string) => { at[data === '\r' ? 'enter' : 'paste'] = Date.now() })
+
+      mockApi({ terminalShellAlone: osTakes(1000), writeToTerminal: write })
+      const slow = injectAutoPrimer('t1', '/home/me/proj')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await slow).toBe(true)
+      expect(at.enter - at.paste).toBe(1000) // not 1000 + the pause
+
+      mockApi({ terminalShellAlone: osTakes(10), writeToTerminal: write })
+      const quickOs = injectAutoPrimer('t1', '/home/me/proj')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await quickOs).toBe(true)
+      expect(at.enter - at.paste).toBe(PRIMER_SUBMIT_SETTLE_MS) // and never less than the pause
+    })
+
+    it('holds the Enter back when the OS then says only the shell runs, however long the pause was', async () => {
+      vi.useFakeTimers()
+      const answers = [alone(false), alone(true)]
+      mockApi({ terminalShellAlone: vi.fn(async () => answers.shift()) })
+      const done = injectAutoPrimer('t1', '/home/me/proj')
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await done).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).toHaveBeenCalledTimes(1) // the paste, not the Enter
+    })
   })
 
   describe('the launch prime', () => {
     /** Starts the hook the way TerminalPane does, with a gate whose draft is the terminal's. */
-    const launch = async (t: Term, afterMount: (view: { unmount: () => void }) => void = () => {}) => {
+    const launch = async (
+      t: Term,
+      afterMount: (view: { unmount: () => void }) => void = () => {},
+      gate: PrimerGate = { launchedAgent: () => agent, draft: () => t.draft },
+    ) => {
       vi.useFakeTimers()
-      const gate: PrimerGate = { launchedAgent: () => agent, draft: () => t.draft }
       const view = renderHook(() => useAutoPrimer('t-launch', agent, '/home/me/proj', gate))
       afterMount(view)
       await vi.advanceTimersByTimeAsync(8000)
@@ -1437,6 +1529,45 @@ describe('the pointer is never typed over what the user is typing', () => {
       const t = terminal((n) => { if (n === 1) leave() })
       await launch(t, (view) => { leave = view.unmount })
       expect(t.writes).toEqual([])
+    })
+
+    it('presses the Enter all the same when the pane goes away once the pointer is pasted', async () => {
+      // By then the pointer is in the agent's input line. Left there it is sent with whatever the
+      // person types next: the "paragraph keeps getting repeated in the input area" bug. A pane
+      // that has gone can no longer see a draft, but a draft it saw before it went still counts.
+      let leave = (): void => {}
+      const t = terminal((n) => { if (n === 2) leave() })
+      await launch(t, (view) => { leave = view.unmount })
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+      expect(t.submitted).toHaveLength(1)
+      expect(useTerminalStore.getState().memoryNotice).toMatch(/Loaded \d+ memor/)
+    })
+
+    it.each([
+      ['the folder changes', 1, []],
+      ['the folder changes', 2, ['PASTE', 'ENTER']],
+    ])('goes the same way when %s while the OS answers question %i', async (_what, nth, expected) => {
+      vi.useFakeTimers()
+      let change = (): void => {}
+      const t = terminal((n) => { if (n === nth) change() })
+      const gate: PrimerGate = { launchedAgent: () => agent, draft: () => t.draft }
+      const view = renderHook(({ cwd }) => useAutoPrimer('t-launch', agent, cwd, gate), { initialProps: { cwd: '/home/me/proj' } })
+      change = () => view.rerender({ cwd: '/home/me/other' })
+      await vi.advanceTimersByTimeAsync(8000)
+      expect(t.writes).toEqual(expected)
+    })
+
+    it.each([
+      [1, []],
+      [2, ['PASTE']],
+    ])('types nothing more once the launch is no longer the last command, as the OS answers question %i', async (nth, expected) => {
+      // A launch the person typed by hand is proven only by the last command they submitted. If they
+      // send something else meanwhile, to the agent or to the shell, it is no longer the launch to prime.
+      const launched = { now: agent as unknown }
+      const t = terminal((n) => { if (n === nth) launched.now = null })
+      await launch(t, undefined, { launchedAgent: () => launched.now as any, draft: () => t.draft })
+      expect(t.writes).toEqual(expected)
+      expect(t.submitted).toEqual([])
     })
 
     it('control: nobody typing, the pointer is pasted and submitted', async () => {
@@ -1523,6 +1654,34 @@ describe('the pointer is never typed over what the user is typing', () => {
       const t = terminal()
       expect(await reprimeAfterCompaction('t1', '/home/me/proj', opts(t))).toBe(true)
       expect(t.writes).toEqual(['PASTE', 'ENTER'])
+    })
+  })
+
+  describe('primeOnLaunch', () => {
+    const run = (t: Term, stopped: () => boolean) =>
+      primeOnLaunch('t1', '/home/me/proj', { launchedAgent: () => agent, draft: () => t.draft }, {
+        sleep: quick, awaiting: async () => false, delayMs: 0, stopped,
+      })
+
+    it('lets a pane that has gone paste nothing', async () => {
+      let gone = false
+      const t = terminal(() => { gone = true })
+      expect(await run(t, () => gone)).toBe(false)
+      expect(t.writes).toEqual([])
+    })
+
+    it('lets a pane that has gone finish the Enter for a pointer that is already pasted', async () => {
+      let gone = false
+      const t = terminal((n) => { if (n === 2) gone = true })
+      expect(await run(t, () => gone)).toBe(true)
+      expect(t.writes).toEqual(['PASTE', 'ENTER'])
+    })
+
+    it('holds that Enter back all the same for a draft the pane had seen', async () => {
+      let gone = false
+      const t = terminal((n, x) => { if (n === 2) { x.type('fix the'); gone = true } })
+      expect(await run(t, () => gone)).toBe(false)
+      expect(t.writes).toEqual(['PASTE'])
     })
   })
 })
