@@ -332,9 +332,9 @@ export async function reprimeAfterCompaction(
     /**
      * The un-submitted draft on the pane's input line, '' when it is idle. Looked at again right
      * before the paste and before the Enter, after the OS question has had its time. It is the
-     * pane's own record of the user's keystrokes, not `pending`: main stages what is written to an
-     * AI-flagged terminal, the pointer's own paste included, so `pending` would hold back the Enter
-     * for the paste just made.
+     * pane's own record of what the user typed and pasted, not `pending`: main stages what is
+     * written to an AI-flagged terminal, the pointer's own paste included, so `pending` would hold
+     * back the Enter for the paste just made (and it clears its staging for a multi-line paste).
      */
     draft?: () => string
     /** A prompt is on screen (promptShowing). Waited out like a draft. */
