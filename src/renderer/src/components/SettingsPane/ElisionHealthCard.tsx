@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { ElisionClassView, ElisionHealthView } from '../../types'
+import type { ArmComparisonView, ArmSummaryView, ElisionClassView, ElisionHealthView } from '../../types'
 
 const fmt = (n: number): string => n.toLocaleString('en-US')
 const pctText = (n: number | null): string => (n === null ? '—' : `${Math.round(n)}%`)
@@ -56,6 +56,110 @@ function Turns({ t }: { t: ElisionHealthView['turns'] }) {
       Retrieval turns: <b>{fmt(t.count)}</b> {t.count === 1 ? 'turn' : 'turns'} that only fetched elided text
       {t.sharePct !== null && <> ({t.sharePct}% of responses)</>} cost <b>{fmt(Math.round(t.units))} billed units</b>,
       about {fmt(t.unitsPerTurn)} each ({t.costBasis}). Each re-reads the whole cached prefix, which is why one costs far more than the text it brings back.
+    </div>
+  )
+}
+
+/** Mirrors MIN_ARM_GROUPS in src/main/headroom/armCompare.ts — the card names the real floor. */
+const MIN_ARM_GROUPS = 5
+const RED = '#f87171'
+const num1 = (n: number | null): string => (n === null ? '—' : fmt(n))
+const groupsText = (n: number): string => `${n} ${n === 1 ? 'group' : 'groups'}`
+
+function ArmVerdictLine({ a }: { a: ArmComparisonView }) {
+  const delta = a.costDeltaPct ?? 0
+  const margin = a.costMarginPct ?? 0
+  let text: string
+  let color = 'inherit'
+  if (a.verdict === 'not-enough-data') {
+    const onlyLegacy = a.late.requests === 0 && a.holdout.requests === 0 && a.legacy.requests > 0
+    text = onlyLegacy
+      ? `This run is on the Legacy setting, so every request ran the old behaviour and there is nothing to compare (${fmt(a.legacy.requests)} requests so far).`
+      : `Not enough data yet to compare. It needs at least ${fmt(a.minRequests)} requests in each arm, from at least ${MIN_ARM_GROUPS} different groups of conversations. So far: late ${fmt(a.late.requests)} requests in ${groupsText(a.late.groups)}, the holdout ${fmt(a.holdout.requests)} in ${groupsText(a.holdout.groups)}.`
+  } else if (a.verdict === 'late-cheaper') {
+    color = '#4ade80'
+    text = `Late is cheaper. It used about ${Math.abs(delta)}% fewer billed units per unit of work than the holdout (give or take ${margin} points).`
+  } else if (a.verdict === 'late-costlier') {
+    color = RED
+    text = `Late is costing more. It used about ${delta}% more billed units per unit of work than the holdout (give or take ${margin} points), which is more than chance explains. You can switch to Legacy above; it applies the next time Termpolis starts.`
+  } else {
+    const gap = delta === 0 ? 'running level with the holdout' : `running ${Math.abs(delta)}% ${delta < 0 ? 'cheaper than' : 'dearer than'} the holdout`
+    text = `No clear difference yet. Late is ${gap}, give or take ${margin} points, so this could be chance. A gap this small takes more conversations to settle.`
+  }
+  return (
+    <div data-testid="hr-arms-verdict" data-verdict={a.verdict} style={{ marginTop: 6, fontSize: 14, fontWeight: 600, color }}>
+      {text}
+    </div>
+  )
+}
+
+function ArmTurnsLine({ a }: { a: ArmComparisonView }) {
+  const shares = `${a.late.sharePct === null ? '—' : `${a.late.sharePct}%`} of late’s requests against ${a.holdout.sharePct === null ? '—' : `${a.holdout.sharePct}%`} of the holdout’s`
+  let text: string
+  let color = 'inherit'
+  if (a.turnVerdict === 'fewer') text = `Retrieval turns: ${shares} — clearly fewer round trips.`
+  else if (a.turnVerdict === 'more') { color = RED; text = `Retrieval turns: ${shares} — MORE round trips under late, the opposite of what it is for.` }
+  else if (a.turnVerdict === 'no-clear-difference') text = `Retrieval turns: ${shares} — no clear difference yet.`
+  else text = 'Retrieval turns: not enough data yet.'
+  return (
+    <div data-testid="hr-arms-turns" data-verdict={a.turnVerdict ?? 'none'} style={{ marginTop: 6, fontSize: 13, color: color === 'inherit' ? undefined : color, opacity: color === 'inherit' ? 0.85 : 1 }}>
+      {text}
+    </div>
+  )
+}
+
+function ArmRow({ id, label, s, note }: { id: string; label: string; s: ArmSummaryView; note?: string }) {
+  return (
+    <tr data-testid={id}>
+      <td style={{ padding: '3px 8px 3px 0' }}>{label}{note && <span style={{ opacity: 0.6 }}> ({note})</span>}</td>
+      <td style={{ padding: '3px 8px', textAlign: 'right' }}>{fmt(s.requests)}</td>
+      <td style={{ padding: '3px 8px', textAlign: 'right' }}>{fmt(s.turns)}{s.sharePct !== null && <> ({s.sharePct}%)</>}</td>
+      <td style={{ padding: '3px 8px', textAlign: 'right' }} data-testid="hr-arm-per-request">{num1(s.unitsPerRequest)}</td>
+      <td style={{ padding: '3px 0 3px 8px', textAlign: 'right' }} data-testid="hr-arm-per-working">{num1(s.unitsPerWorking)}</td>
+    </tr>
+  )
+}
+
+/**
+ * Late against the holdout. About one conversation in ten keeps running the old behaviour whichever
+ * setting is on, so the saving the research modelled from one history can be checked on this
+ * person's own work, and so can the thing that matters more: that it did not cost anything. This is
+ * the card's answer, with the margin stated and a plain "not enough data yet" until there is some.
+ */
+function Arms({ a }: { a: ArmComparisonView }) {
+  return (
+    <div data-testid="hr-arms" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid #8883' }}>
+      <div style={{ fontWeight: 600 }}>Late compared with the holdout <span style={{ fontWeight: 400, opacity: 0.65 }}>— the same work, run both ways</span></div>
+      <ArmVerdictLine a={a} />
+      <ArmTurnsLine a={a} />
+      <table data-testid="hr-arms-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
+        <thead>
+          <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+            <th style={{ padding: '3px 8px 3px 0', fontWeight: 600 }}>Arm</th>
+            <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }}>Requests</th>
+            <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Turns that only fetched elided text, and their share of the requests">Retrieval turns</th>
+            <th style={{ padding: '3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request, retrieval turns counted as requests">Units per request</th>
+            <th style={{ padding: '3px 0 3px 8px', fontWeight: 600, textAlign: 'right' }} title="Billed units per request that was not a retrieval turn, the retrieval turns counted as cost">Units per working request</th>
+          </tr>
+        </thead>
+        <tbody>
+          <ArmRow id="hr-arm-late" label="Late" s={a.late} />
+          <ArmRow id="hr-arm-holdout" label="Holdout" note="old behaviour" s={a.holdout} />
+          {a.legacy.requests > 0 && <ArmRow id="hr-arm-legacy" label="Legacy setting" note="not compared" s={a.legacy} />}
+        </tbody>
+      </table>
+      <div data-testid="hr-arms-note" style={{ marginTop: 8, fontSize: 12, opacity: 0.65 }}>
+        A working request is one that was not a turn spent only on fetching elided text. A retrieval turn costs less than an average request,
+        so cost per request would make late look dearer even while it lowers the bill; cost per working request counts those turns as cost
+        without counting them as work, and is the figure the verdict uses. The margin is measured between groups of conversations, not between
+        requests, because the requests of one conversation cost alike; nothing is claimed before there are at least {fmt(a.minRequests)} requests
+        and {MIN_ARM_GROUPS} groups on each side. This compares cost and round trips. It cannot see the quality of an answer; under late the
+        model is shown the whole of a result where the holdout is shown a window of it.
+      </div>
+      <div data-testid="hr-arms-holdout-note" style={{ marginTop: 4, fontSize: 12, opacity: 0.65 }}>
+        The holdout is about one conversation in ten, chosen by a hash of the conversation’s first message and kept for its whole length.
+        It runs the old behaviour whichever setting is on.
+      </div>
     </div>
   )
 }
@@ -160,6 +264,7 @@ export function ElisionHealthCard() {
           )}
 
           <Turns t={view.turns} />
+          <Arms a={view.arms} />
           {view.legacyRedeemed > 0 && (
             <div data-testid="hr-elision-legacy" style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
               {fmt(view.legacyRedeemed)} {view.legacyRedeemed === 1 ? 'retrieval was' : 'retrievals were'} of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes {view.legacyRedeemed === 1 ? 'it' : 'them'}.

@@ -251,7 +251,7 @@ const api: TermpolisAPI = {
     ipcRenderer.invoke('agents:folder-trust-allowed', { terminalId, fallbackCwd }),
   agentRemoveCodexHomeTrust: () => ipcRenderer.invoke('agents:remove-codex-home-trust'),
   tokenSavingsGetSettings: () => ipcRenderer.invoke('tokenSavings:get-settings'),
-  tokenSavingsSetSettings: (p: { enabled?: boolean; wireProxy?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean; floorControl?: boolean; prefixDecay?: boolean }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
+  tokenSavingsSetSettings: (p: { enabled?: boolean; wireProxy?: boolean; mode?: string; steering?: boolean; thinkingCap?: number; adaptiveSteering?: boolean; floorControl?: boolean; prefixDecay?: boolean; firstSightElision?: 'late' | 'legacy' }) => ipcRenderer.invoke('tokenSavings:set-settings', p),
   tokenSavingsGetReceipt: () => ipcRenderer.invoke('tokenSavings:get-receipt'),
   tokenSavingsGetProxyReceipt: () => ipcRenderer.invoke('tokenSavings:get-proxy-receipt'),
   /** Whether the wire proxy is on, running, stepped aside for the user's own routing, and at which tier. */

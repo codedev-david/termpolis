@@ -4,6 +4,9 @@ import {
   REGIME_GAP_POINTS, type ElisionHealthInput,
 } from '../../src/main/headroom/elisionHealth'
 import { recordElision, recordRedemption, resetElisionLedger, ELISION_WINDOW } from '../../src/main/headroom/elisionLedger'
+import { recordArmRequest, resetArmLedger, type ArmCounts, type ArmState } from '../../src/main/headroom/armLedger'
+import { compareArms } from '../../src/main/headroom/armCompare'
+import { ARM_CLUSTERS } from '../../src/main/headroom/elisionPolicy'
 import { resetProxyLedger, recordProxyResult } from '../../src/main/headroomProxy/proxyLedger'
 import { resetCcr } from '../../src/main/headroom/ccrStore'
 import { resetDepthCurveAll } from '../../src/main/headroom/sessionDepth'
@@ -260,8 +263,41 @@ describe('retrieval turns', () => {
   })
 })
 
+describe('the arms in the view', () => {
+  const zeroArm = (): ArmCounts => ({ requests: 0, work: 0, units: 0, turns: 0, turnUnits: 0 })
+  const armsWith = (late: ArmCounts, holdout: ArmCounts): ArmState => ({
+    late: Array.from({ length: ARM_CLUSTERS }, (_, i) => (i < 10 ? late : zeroArm())),
+    holdout: Array.from({ length: ARM_CLUSTERS }, (_, i) => (i < 10 ? holdout : zeroArm())),
+    legacy: zeroArm(),
+  })
+
+  it('carry the comparison of the two arms, whatever else the view holds', () => {
+    const arms = armsWith({ requests: 100, work: 100, units: 900_000, turns: 5, turnUnits: 30_000 }, { requests: 100, work: 90, units: 1_000_000, turns: 20, turnUnits: 120_000 })
+    const v = buildElisionHealth({ ...input(), arms })
+    expect(v.arms).toEqual(compareArms(arms))
+    expect(v.arms.late.requests).toBe(1000)
+    expect(v.arms.holdout.requests).toBe(1000)
+    expect(v.arms.verdict).not.toBe('not-enough-data')
+  })
+
+  it('say there is not enough data when the ledger holds none, or was not given', () => {
+    expect(buildElisionHealth(input()).arms.verdict).toBe('not-enough-data')
+    expect(buildElisionHealth({ ...input(), arms: undefined }).arms).toEqual(compareArms(undefined))
+    expect(buildElisionHealth(input()).arms.minRequests).toBe(500)
+  })
+})
+
 describe('the live view', () => {
-  beforeEach(() => { resetProxyLedger(); resetElisionLedger(); resetCcr(); resetDepthCurveAll() })
+  beforeEach(() => { resetProxyLedger(); resetElisionLedger(); resetCcr(); resetDepthCurveAll(); resetArmLedger() })
+
+  it('reads the arm ledger the proxy fills', () => {
+    recordArmRequest('late', 4, { units: 900, pureTurn: false, turnUnits: 0 })
+    recordArmRequest('holdout', 4, { units: 700, pureTurn: true, turnUnits: 400 })
+    const v = summarizeElisionHealth()
+    expect(v.arms.late).toMatchObject({ requests: 1, working: 1, groups: 1, unitsPerWorking: 900 })
+    expect(v.arms.holdout).toMatchObject({ requests: 1, working: 0, turns: 1, sharePct: 100 })
+    expect(v.arms.verdict).toBe('not-enough-data')
+  })
 
   const meta = { kind: 'compact' as const, tool: 'Read', chars: 6000, view: 1100 }
   const tok = (n: number): string => 'hr_' + n.toString(16).padStart(16, '0')

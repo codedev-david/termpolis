@@ -211,6 +211,10 @@ export interface ProxyStatusView {
   selectedMode: HeadroomSettingsView['mode']
   /** The tier actually in force — floor control can raise it above selectedMode. */
   effectiveMode: HeadroomSettingsView['mode']
+  /** The first-sight policy Settings holds now, and the one the proxy froze at launch and runs. They
+   *  differ between a change in Settings and the next start. Absent from a main process that predates it. */
+  selectedFirstSight?: HeadroomSettingsView['firstSightElision']
+  effectiveFirstSight?: HeadroomSettingsView['firstSightElision']
 }
 export interface HeadroomSettingsView {
   enabled: boolean
@@ -226,6 +230,10 @@ export interface HeadroomSettingsView {
   floorControl: boolean
   /** Age the oldest half of a long conversation down to retrievable stubs. On by default since v1.36.0. */
   prefixDecay: boolean
+  /** When a tool result may be shortened the first time the model sees it: `late` leaves it whole
+   *  until 40,000 characters (the default since v1.55), `legacy` shortens from the tier's own size.
+   *  Takes effect when Termpolis next starts. */
+  firstSightElision: 'late' | 'legacy'
 }
 
 /** What a conversation costs per turn at its current depth, against what the same user's own
@@ -358,6 +366,33 @@ export interface ElisionClassView {
   basis: 'recent' | 'all-time' | null
 }
 
+/** One arm of the late-against-holdout comparison. Mirrors the main-process `ArmSummary`. */
+export interface ArmSummaryView {
+  requests: number
+  working: number
+  turns: number
+  groups: number
+  sharePct: number | null
+  unitsPerRequest: number | null
+  unitsPerWorking: number | null
+  turnUnitsPerWorking: number | null
+}
+
+/** Late against the conversations held out on the old behaviour, with a plain verdict. Mirrors the
+ *  main-process `ArmComparison`. */
+export interface ArmComparisonView {
+  minRequests: number
+  late: ArmSummaryView
+  holdout: ArmSummaryView
+  legacy: ArmSummaryView
+  verdict: 'not-enough-data' | 'late-cheaper' | 'late-costlier' | 'no-clear-difference'
+  costDeltaPct: number | null
+  costMarginPct: number | null
+  turnVerdict: 'fewer' | 'more' | 'no-clear-difference' | null
+  shareDeltaPts: number | null
+  shareMarginPts: number | null
+}
+
 /** The Elision health card's data: redemption by class, the break-even verdict and the retrieval
  *  turns. Mirrors the main-process `ElisionHealthView`. */
 export interface ElisionHealthView {
@@ -385,6 +420,7 @@ export interface ElisionHealthView {
     observed: number
     sharePct: number | null
   }
+  arms: ArmComparisonView
 }
 
 export interface TermpolisAPI {

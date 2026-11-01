@@ -1,5 +1,7 @@
 import { elisionState, recentByClass, ELISION_WINDOW, type ClassCounts, type ElisionState } from './elisionLedger'
 import { parseClassKey, type ElisionKind, type SizeBand, type ToolClass } from './elisionMeta'
+import { armState, type ArmState } from './armLedger'
+import { compareArms, type ArmComparison } from './armCompare'
 import { summarizeProxySavings } from '../headroomProxy/proxyLedger'
 
 /**
@@ -94,12 +96,21 @@ export interface ElisionHealthView {
     observed: number
     sharePct: number | null
   }
+  /**
+   * The late policy against the conversations held out on the old behaviour: did leaving results
+   * whole cost less, and did it need fewer retrieval turns? See armCompare.ts. This is the check
+   * that the saving the research modelled is real on this person's own work and did not cost the
+   * model anything: a plain verdict, "not enough data yet" until there is some.
+   */
+  arms: ArmComparison
 }
 
 export interface ElisionHealthInput {
   state: ElisionState
   recent: Map<string, ClassCounts>
   turns: { retrievalTurns?: number; retrievalTurnUnits?: number; turnRequests?: number }
+  /** The arm ledger; absent reads as empty. */
+  arms?: ArmState
 }
 
 const num = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0)
@@ -209,11 +220,12 @@ export function buildElisionHealth(input: ElisionHealthInput): ElisionHealthView
       observed,
       sharePct: pct1(turnCount, observed),
     },
+    arms: compareArms(input.arms),
   }
 }
 
 /** The live view: the elision ledger's counts and window, with the proxy ledger's retrieval turns. */
 export function summarizeElisionHealth(): ElisionHealthView {
   const c = summarizeProxySavings().cumulative
-  return buildElisionHealth({ state: elisionState(), recent: recentByClass(), turns: c })
+  return buildElisionHealth({ state: elisionState(), recent: recentByClass(), turns: c, arms: armState() })
 }
