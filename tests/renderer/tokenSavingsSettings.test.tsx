@@ -780,3 +780,150 @@ describe('TokenSavingsSettings - billed units avoided, net of retrieval turns', 
     expect(screen.getByTestId('hr-bill-parts')).toHaveTextContent('0 kept off the bill')
   })
 })
+
+describe('TokenSavingsSettings — when to shorten a tool result (the first-sight policy)', () => {
+  const tp = () => (window as unknown as { termpolis: Record<string, ReturnType<typeof vi.fn>> }).termpolis
+  const settingsWith = (over: Record<string, unknown> = {}) => ({
+    success: true,
+    data: { enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, ...over },
+  })
+  const statusWith = (over: Record<string, unknown> = {}) => ({
+    success: true,
+    data: { enabled: true, running: true, healthy: true, bypassVar: null, selectedMode: 'aggressive', effectiveMode: 'aggressive', selectedFirstSight: 'late', effectiveFirstSight: 'late', ...over },
+  })
+  const serve = (settings = settingsWith(), status = statusWith()): void => {
+    tp().tokenSavingsGetSettings = vi.fn().mockResolvedValue(settings)
+    tp().tokenSavingsGetProxyStatus = vi.fn().mockResolvedValue(status)
+  }
+
+  it('offers Late, recommended, and Legacy, in that order', async () => {
+    serve(settingsWith({ firstSightElision: 'late' }))
+    render(<TokenSavingsSettings />)
+    const sel = (await screen.findByTestId('hr-first-sight-select')) as HTMLSelectElement
+    expect([...sel.querySelectorAll('option')].map((o) => o.getAttribute('value'))).toEqual(['late', 'legacy'])
+    expect(sel.querySelector('option[value="late"]')).toHaveTextContent('recommended')
+    expect(sel.querySelector('option[value="late"]')).toHaveTextContent('40,000')
+    expect(sel.querySelector('option[value="legacy"]')).toHaveTextContent('Legacy')
+  })
+
+  it('shows Late for settings that do not carry the field, which is what the app does for them', async () => {
+    serve(settingsWith())
+    render(<TokenSavingsSettings />)
+    expect(((await screen.findByTestId('hr-first-sight-select')) as HTMLSelectElement).value).toBe('late')
+  })
+
+  it('shows what the settings hold', async () => {
+    serve(settingsWith({ firstSightElision: 'legacy' }), statusWith({ selectedFirstSight: 'legacy', effectiveFirstSight: 'legacy' }))
+    render(<TokenSavingsSettings />)
+    expect(((await screen.findByTestId('hr-first-sight-select')) as HTMLSelectElement).value).toBe('legacy')
+  })
+
+  it('sends the choice alone, as a one-key patch', async () => {
+    serve(settingsWith({ firstSightElision: 'late' }))
+    tp().tokenSavingsSetSettings = vi.fn().mockResolvedValue(settingsWith({ firstSightElision: 'legacy' }))
+    render(<TokenSavingsSettings />)
+    fireEvent.change(await screen.findByTestId('hr-first-sight-select'), { target: { value: 'legacy' } })
+    await waitFor(() => expect(tp().tokenSavingsSetSettings).toHaveBeenCalledWith({ firstSightElision: 'legacy' }))
+    expect(tp().tokenSavingsSetSettings).toHaveBeenCalledTimes(1)
+    expect(((await screen.findByTestId('hr-first-sight-select')) as HTMLSelectElement).value).toBe('legacy')
+  })
+
+  it('says honestly what it does, what is modelled, and what it cannot see', async () => {
+    serve(settingsWith({ firstSightElision: 'late' }))
+    render(<TokenSavingsSettings />)
+    const n = await screen.findByTestId('hr-first-sight-note')
+    expect(n).toHaveTextContent('about two thirds')
+    expect(n).toHaveTextContent('whole extra turn')
+    expect(n).toHaveTextContent('40,000 characters')
+    expect(n).toHaveTextContent('11.7%')
+    expect(n).toHaveTextContent('from one person’s history; that is a modelled figure, not a promise for your work')
+    expect(n).toHaveTextContent('repeats are still collapsed')
+    expect(n).toHaveTextContent('retrieve_full')
+    expect(n).toHaveTextContent('cannot measure')
+    expect(n).toHaveTextContent('quality')
+    expect(n).toHaveTextContent('never less')
+    expect(n).toHaveTextContent('one conversation in ten')
+    expect(n).toHaveTextContent('Elision health')
+    expect(n).toHaveTextContent('next time Termpolis starts')
+  })
+
+  it('says what is running when it matches what is chosen', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const s = await screen.findByTestId('hr-first-sight-status')
+    expect(s).toHaveTextContent('Running: Late.')
+    expect(s).not.toHaveTextContent('next time')
+  })
+
+  it('says what is running and what will run when a change is waiting for the next start', async () => {
+    serve(settingsWith({ firstSightElision: 'legacy' }), statusWith({ selectedFirstSight: 'legacy', effectiveFirstSight: 'late' }))
+    render(<TokenSavingsSettings />)
+    const s = await screen.findByTestId('hr-first-sight-status')
+    expect(s).toHaveTextContent('Running: Late.')
+    expect(s).toHaveTextContent('Legacy applies the next time Termpolis starts')
+    expect(s.getAttribute('data-pending')).toBe('true')
+  })
+
+  it('says it the other way round too', async () => {
+    serve(settingsWith({ firstSightElision: 'late' }), statusWith({ selectedFirstSight: 'late', effectiveFirstSight: 'legacy' }))
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-first-sight-status')).toHaveTextContent('Late applies the next time Termpolis starts')
+  })
+
+  it('shows no status for a main process that does not report one, or for a failed read', async () => {
+    serve(settingsWith(), { success: true, data: { enabled: true, running: true, healthy: true, bypassVar: null, selectedMode: 'aggressive', effectiveMode: 'aggressive' } } as never)
+    const { unmount } = render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-first-sight-select')
+    expect(screen.queryByTestId('hr-first-sight-status')).toBeNull()
+    unmount()
+    serve(settingsWith(), { success: false, error: 'nope' } as never)
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-first-sight-select')
+    expect(screen.queryByTestId('hr-first-sight-status')).toBeNull()
+  })
+
+  it('says on the proxy card which sizes of result are shortened', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const card = (await screen.findByTestId('hr-toggle-proxy')).closest('.hr-proxy-receipt') as HTMLElement
+    expect(card).toHaveTextContent('from 40,000 characters')
+    expect(card).not.toHaveTextContent('shrinks tool-result text (large')
+  })
+
+  it('says on the status line that tool results are left whole until the floor, when Late is what runs', async () => {
+    serve(settingsWith(), statusWith())
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Running at the Aggressive tier'))
+    expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('left whole until 40,000 characters (Late)')
+  })
+
+  it('says it differently when Legacy is what runs', async () => {
+    serve(settingsWith({ firstSightElision: 'legacy' }), statusWith({ selectedFirstSight: 'legacy', effectiveFirstSight: 'legacy' }))
+    render(<TokenSavingsSettings />)
+    await waitFor(() => expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('Running at the Aggressive tier'))
+    expect(screen.getByTestId('hr-proxy-status')).toHaveTextContent('shortened from the size of the tier (Legacy)')
+  })
+
+  it('no longer promises a 50% savings floor without saying it is Legacy only', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const box = (await screen.findByTestId('hr-toggle-floor')).closest('label') as HTMLElement
+    expect(box).toHaveTextContent('Legacy')
+    expect(box).toHaveTextContent('Late removes less tool text on purpose')
+    expect(box.textContent).not.toMatch(/^\s*Hold a 50% savings floor —/)
+  })
+
+  it('says the floor check counts only the requests that ran the old behaviour', async () => {
+    tp().tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
+      success: true,
+      data: { session: unifiedTotals(), cumulative: unifiedTotals({ worstSavedPct: 18, belowFloorRequests: 7, floorEligibleRequests: 400 }) },
+    })
+    serve()
+    render(<TokenSavingsSettings />)
+    const f = await screen.findByTestId('hr-floor-evidence')
+    expect(f).toHaveTextContent('Legacy')
+    expect(f).toHaveTextContent('holdout')
+    expect(f).toHaveTextContent('Late is not held to a floor')
+    expect(f).toHaveTextContent('of 400 substantial requests')
+  })
+})

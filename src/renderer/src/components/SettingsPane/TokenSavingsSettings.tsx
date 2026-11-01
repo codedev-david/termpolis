@@ -70,6 +70,27 @@ const outputCostShare = (t?: UnifiedTotalsView): number | null =>
 
 const MODE_LABEL: Record<Mode, string> = { conservative: 'Conservative', balanced: 'Balanced', aggressive: 'Aggressive', max: 'Maximum' }
 
+/** Mirrors LATE_FLOOR_CHARS in src/main/headroom/elisionPolicy.ts — the pane names the real size. */
+const LATE_FLOOR = '40,000'
+type FirstSight = HeadroomSettingsView['firstSightElision']
+const FIRST_SIGHT_LABEL: Record<FirstSight, string> = { late: 'Late', legacy: 'Legacy' }
+
+/**
+ * Which first-sight policy is running, and which will after the next start. The proxy freezes its
+ * policy at launch (changing it under a live session would rewrite every cached prefix), so a change
+ * made here is not what runs until Termpolis restarts, and the pane says so rather than implying it.
+ */
+function FirstSightStatus({ selected, status }: { selected: FirstSight; status: ProxyStatusView | null }) {
+  const running = status?.effectiveFirstSight
+  if (!running) return null
+  const pending = running !== selected
+  return (
+    <div data-testid="hr-first-sight-status" data-pending={pending ? 'true' : 'false'} style={{ fontSize: 13, opacity: 0.85, margin: '4px 0 4px' }}>
+      Running: <b>{FIRST_SIGHT_LABEL[running]}</b>.{pending && <> {FIRST_SIGHT_LABEL[selected]} applies the next time Termpolis starts.</>}
+    </div>
+  )
+}
+
 /** One line on what the proxy is actually doing — the switch alone can't say it stepped aside. */
 function ProxyStatusLine({ status }: { status: ProxyStatusView | null }) {
   if (!status) return null
@@ -80,7 +101,13 @@ function ProxyStatusLine({ status }: { status: ProxyStatusView | null }) {
   } else if (!status.running || !status.healthy) text = 'Not running right now — Claude Code sessions launch direct until it recovers.'
   else {
     const raised = status.effectiveMode !== status.selectedMode
-    text = <>Running at the <b>{MODE_LABEL[status.effectiveMode] ?? status.effectiveMode}</b> tier{raised ? <> (raised from {MODE_LABEL[status.selectedMode] ?? status.selectedMode} by the savings floor)</> : null}.</>
+    // Which results the tier applies to depends on the first-sight policy the proxy froze at launch.
+    const policy = status.effectiveFirstSight === 'late'
+      ? <> Tool results are left whole until {LATE_FLOOR} characters (Late).</>
+      : status.effectiveFirstSight === 'legacy'
+        ? <> Tool results are shortened from the size of the tier (Legacy).</>
+        : null
+    text = <>Running at the <b>{MODE_LABEL[status.effectiveMode] ?? status.effectiveMode}</b> tier{raised ? <> (raised from {MODE_LABEL[status.selectedMode] ?? status.selectedMode} by the savings floor)</> : null}.{policy}</>
   }
   return <div data-testid="hr-proxy-status" style={{ fontSize: 13, opacity: 0.8, margin: '0 0 8px' }}>{text}</div>
 }
@@ -178,10 +205,12 @@ export function TokenSavingsSettings() {
         </div>
 
         {/* Floor evidence. A lifetime average of 50% is compatible with half of all requests
-            sitting under it; only the worst single request can settle whether a floor holds. */}
+            sitting under it; only the worst single request can settle whether a floor holds.
+            Counted over the requests that ran the old behaviour only: the Late policy removes less
+            tool text on purpose and is not held to a floor, so its requests are not in these numbers. */}
         {(unified?.cumulative.floorEligibleRequests ?? 0) > 0 && (
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-floor-evidence">
-            Floor check: worst single request kept <b data-testid="hr-floor-worst">{unified?.cumulative.worstSavedPct ?? 0}%</b>
+            Floor check, Legacy and holdout requests only (Late is not held to a floor): worst single request kept <b data-testid="hr-floor-worst">{unified?.cumulative.worstSavedPct ?? 0}%</b>
             {' '}· <span data-testid="hr-floor-below">{fmt(unified?.cumulative.belowFloorRequests ?? 0)}</span> of{' '}
             {fmt(unified?.cumulative.floorEligibleRequests ?? 0)} substantial requests came in under 50%.
           </div>
@@ -293,7 +322,8 @@ export function TokenSavingsSettings() {
         <ProxyStatusLine status={status} />
         <p style={{ opacity: 0.8, marginTop: 0 }}>
           When on, each Claude Code session Termpolis launches sends its API requests to a small proxy on 127.0.0.1, which
-          shrinks tool-result text (large Read/Bash output, search dumps, MCP results) and pasted images, then forwards the
+          shortens the largest tool results (from {LATE_FLOOR} characters under Late, the default; from the size of the tier under
+          Legacy: large Read/Bash output, search dumps, MCP results) and pasted images, then forwards the
           request to api.anthropic.com and nowhere else. Repeat results collapse to a reference and near-identical ones (a
           re-read edited file) are sent as a patch, so the model sees a shorter version; <code>retrieve_full</code> brings
           any compressed block back in full. Whatever the agent writes to disk or runs — file bodies, commands, both sides of
@@ -381,10 +411,37 @@ export function TokenSavingsSettings() {
               <option value="max" className="bg-[#2d2d2d] text-[#d4d4d4]">Maximum</option>
             </select>
           </label>
+          <div data-testid="hr-first-sight" style={{ margin: '12px 0' }}>
+            <label style={{ display: 'block', margin: '8px 0 4px' }}>
+              Shorten tool results:{' '}
+              <select
+                data-testid="hr-first-sight-select"
+                value={settings.firstSightElision ?? 'late'}
+                onChange={(e) => update({ firstSightElision: e.target.value as FirstSight })}
+                className="bg-[#2d2d2d] text-[#d4d4d4] border border-[#3c3c3c] rounded px-2 py-1 text-sm focus:outline-hidden"
+              >
+                <option value="late" className="bg-[#2d2d2d] text-[#d4d4d4]">Late — only from {LATE_FLOOR} characters (recommended)</option>
+                <option value="legacy" className="bg-[#2d2d2d] text-[#d4d4d4]">Legacy — from the size of the tier, as in v1.54</option>
+              </select>
+            </label>
+            <FirstSightStatus selected={settings.firstSightElision ?? 'late'} status={status} />
+            <div data-testid="hr-first-sight-note" style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+              Since late August the model has asked for about two thirds of the results Termpolis shortens, and each ask is a whole extra
+              turn that reads the entire cached prefix again. Late leaves a result whole until it reaches {LATE_FLOOR} characters. The
+              research behind this release modelled that at about 11.7% of the bill saved, from one person’s history; that is a
+              modelled figure, not a promise for your work, and the Elision health card below compares Late with Legacy on yours. It
+              changes only which results are shortened: repeats are still collapsed, old history still ages out in a long
+              conversation, and anything shortened can still be brought back with <code>retrieve_full</code>. Termpolis cannot measure
+              the effect on the quality of answers on your work; under Late the model is shown more of every result, never less.
+              About one conversation in ten always runs Legacy so the two can be compared. A change takes effect the next time
+              Termpolis starts, because one proxy serves every Claude session of a run and a change in the middle would rewrite each
+              session’s prompt cache.
+            </div>
+          </div>
           <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-floor" type="checkbox" checked={settings.floorControl} onChange={() => update({ floorControl: !settings.floorControl })} />
-            {' '}Hold a 50% savings floor — raise the tier automatically if the ledger shows it slipping{' '}
-            <span style={{ opacity: 0.6 }}>— only ever compresses harder than the setting above, never softer, and is decided at launch and frozen for the session (re-tiering mid-conversation would break the prompt cache)</span>
+            {' '}Under Legacy, hold a 50% savings floor — raise the tier automatically if the ledger shows it slipping{' '}
+            <span style={{ opacity: 0.6 }}>— only used when Legacy is what runs: Late removes less tool text on purpose, so it leaves the tier as selected. Only ever compresses harder than the setting above, never softer, and is decided at launch and frozen for the session (re-tiering mid-conversation would break the prompt cache)</span>
           </label>
           <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-decay" type="checkbox" checked={settings.prefixDecay} onChange={() => update({ prefixDecay: !settings.prefixDecay })} />
