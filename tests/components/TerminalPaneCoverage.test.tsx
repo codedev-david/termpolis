@@ -1930,7 +1930,7 @@ describe('TerminalPane — error paths, fallbacks and disposal races', () => {
       const writes = primerWrites()
       expect(writes).toHaveLength(1)
       expect(String(writes[0][1]).startsWith('\x1b[200~')).toBe(true)
-      expect(String(writes[0][1])).not.toContain('\r') // never auto-submitted
+      expect(String(writes[0][1])).not.toContain('\r') // the Enter is a separate write, after a pause
     })
 
     it('never pastes when the name only appeared in output (a filename, a grep hit, an MOTD)', async () => {

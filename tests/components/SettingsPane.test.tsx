@@ -554,6 +554,17 @@ describe('SettingsPane', () => {
     localStorage.removeItem('termpolis.memory.autoReprimeOnCompaction')
   })
 
+  it('auto-reprime says the note is sent for you, and when it is not typed at all', () => {
+    // It used to say "(not sent automatically)": the pointer is typed AND submitted, so the copy is
+    // the only place that says when it will not be.
+    render(<SettingsPane />)
+    const copy = screen.getByTestId('settings-auto-reprime-toggle').parentElement?.textContent ?? ''
+    expect(copy).toContain('types the one-line memory_primer note and sends it for you')
+    expect(copy).toContain('never while the agent is waiting for an answer, only its shell is left, or you are typing')
+    expect(copy).toContain('nothing is typed for it')
+    expect(copy).not.toContain('not sent automatically')
+  })
+
   it('auto-reprime toggle reflects a stored opt-out on mount', () => {
     localStorage.setItem('termpolis.memory.autoReprimeOnCompaction', '0')
     render(<SettingsPane />)

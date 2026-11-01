@@ -509,9 +509,11 @@ export function SettingsPane() {
               <span className="text-xs text-[#9ca3af] leading-relaxed">
                 When Claude compacts its conversation to fit the context window, it summarizes detail
                 away — but that detail still lives in the memory brain. Once the compaction settles,
-                Termpolis re-adds the one-line memory_primer note (not sent automatically) so the
-                agent can reload what it lost behind the scenes. Your durable memory is the large
-                working set; the model&rsquo;s window only holds the active task.
+                Termpolis types the one-line memory_primer note and sends it for you (never while the
+                agent is waiting for an answer, only its shell is left, or you are typing) so the
+                agent can reload what it lost behind the scenes. A Claude that Termpolis started does
+                this itself from its system prompt, so nothing is typed for it. Your durable memory
+                is the large working set; the model&rsquo;s window only holds the active task.
               </span>
             </div>
           </div>
