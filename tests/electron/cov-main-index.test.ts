@@ -703,7 +703,7 @@ async function withPlatform(platform: NodeJS.Platform, fn: () => Promise<void> |
 
 const BASE_HR = {
   enabled: true, wireProxy: true, steering: true, mode: 'balanced', adaptiveSteering: false,
-  thinkingCap: 0, prefixDecay: false, floorControl: true, firstSightElision: 'late',
+  thinkingCap: 0, prefixDecay: false, floorControl: true, firstSightElision: 'late', contextCap: 0,
 }
 
 let exitSpy: ReturnType<typeof vi.spyOn>
@@ -1062,6 +1062,43 @@ describe('tokenSavings IPC', () => {
     expect(M.setProxyFirstSight).not.toHaveBeenCalled()
     expect(M.setProxyMode).not.toHaveBeenCalled()
     expect(M.resolveWireMode).not.toHaveBeenCalled()
+  })
+
+  it('set-settings takes the context cap through the real validator, saves it, and pushes nothing to the proxy: it is read at launch', async () => {
+    // The mocked setter is routed to the real settings module here, so the channel is proved end to end:
+    // what Settings sends is what the validator accepts, and nothing about the cap reaches the proxy child.
+    const real = await vi.importActual<typeof import('../../src/main/headroom/config')>('../../src/main/headroom/config')
+    real.resetSettings()
+    try {
+      const send = async (payload: unknown) => {
+        M.setHeadroomSettings.mockImplementationOnce(((p: Record<string, unknown>) => real.setSettings(p as never)) as never)
+        return invoke('tokenSavings:set-settings', payload)
+      }
+      M.setProxyMode.mockClear(); M.setProxyDecay.mockClear(); M.setProxyThinkingCap.mockClear()
+      M.setProxyFirstSight.mockClear(); M.setProxyEnabled.mockClear(); M.saveSettingsToDisk.mockClear(); M.resolveWireMode.mockClear()
+
+      expect((await send({})).data.contextCap).toBe(0)
+      expect((await send({ contextCap: 300_000 })).data.contextCap).toBe(300_000)
+      expect(M.saveSettingsToDisk).toHaveBeenCalled()
+      // A value the validator refuses leaves the choice where it was, whatever shape it arrives in.
+      for (const bad of [12, 50_000, 5_000_000, 250_000.5, '400000', null, true, {}, []]) {
+        expect((await send({ contextCap: bad })).data.contextCap, JSON.stringify(bad)).toBe(300_000)
+      }
+      // A payload about something else, or none, leaves it too.
+      expect((await send({ steering: false })).data.contextCap).toBe(300_000)
+      expect((await send(null)).data.contextCap).toBe(300_000)
+      expect((await send({ contextCap: 200_000 })).data.contextCap).toBe(200_000)
+      expect((await send({ contextCap: 0 })).data.contextCap).toBe(0)
+
+      // Nothing about a window reaches the proxy: not the tier, not the policy, not as any argument.
+      expect(M.setProxyMode).not.toHaveBeenCalled()
+      expect(M.setProxyFirstSight).not.toHaveBeenCalled()
+      expect(M.resolveWireMode).not.toHaveBeenCalled()
+      const pushed = JSON.stringify([...M.setProxyDecay.mock.calls, ...M.setProxyThinkingCap.mock.calls, ...M.setProxyEnabled.mock.calls])
+      expect(pushed).not.toMatch(/300000|200000|400000/)
+    } finally {
+      real.resetSettings()
+    }
   })
 
   it('set-settings leaves a floor-raised tier alone when an unrelated box changes', async () => {

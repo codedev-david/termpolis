@@ -235,6 +235,10 @@ export interface HeadroomSettingsView {
    *  until 40,000 characters (the default since v1.55), `legacy` shortens from the tier's own size.
    *  Takes effect when Termpolis next starts. */
   firstSightElision: 'late' | 'legacy'
+  /** A smaller window for Claude Code's own auto-compaction, in tokens (100,000 to 1,000,000); 0 = Off, the
+   *  default. Opt-in: a long conversation then compacts sooner. Reaches new Claude terminals only. Absent
+   *  from a main process that predates it, which is Off. */
+  contextCap?: number
 }
 
 /** What a conversation costs per turn at its current depth, against what the same user's own

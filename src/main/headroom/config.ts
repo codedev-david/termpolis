@@ -1,4 +1,5 @@
 import { isFirstSightPolicy, type FirstSightPolicy } from './elisionPolicy'
+import { isContextCapSetting } from './shapingEnv'
 
 export type Mode = 'conservative' | 'balanced' | 'aggressive' | 'max'
 export interface HeadroomSettings {
@@ -56,6 +57,20 @@ export interface HeadroomSettings {
    */
   firstSightElision: FirstSightPolicy
   /**
+   * A smaller window for Claude Code's own auto-compaction, in tokens. 0 = Off, which is the default.
+   *
+   * Opt-in on purpose. A smaller window makes a long conversation compact sooner, so the model
+   * remembers less of it in full and relies on a summary; whether that is neutral for the work cannot
+   * be proved from token counts, and the saving (modelled from one person's history) is not worth
+   * changing anyone's sessions unasked. Everything else here shortens what the model is shown and can
+   * be brought back with retrieve_full. This cannot.
+   *
+   * Unlike the settings above it is not pushed to the proxy and not frozen for a run: it is read when a
+   * Claude terminal is created (see shapingEnv.ts), so it reaches new terminals only, at once, whether or
+   * not the proxy is on. A value outside Anthropic's documented 100,000..1,000,000 is ignored.
+   */
+  contextCap: number
+  /**
    * Prefix decay: age the oldest half of a long conversation down to retrievable stubs.
    *
    * ON by default since v1.36.0 — and it is the one control here that is a BET, so the reasoning
@@ -83,7 +98,7 @@ const MODES: Mode[] = ['conservative', 'balanced', 'aggressive', 'max']
 // compresses the tool-output slice as hard as the profile allows (keeps the head + tail an
 // agent needs; the rest is recoverable via retrieve_full). Users who want more inline context
 // can dial to balanced/conservative — the selector now drives the live wire (see proxySupervisor).
-const DEFAULTS: HeadroomSettings = { enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late' }
+const DEFAULTS: HeadroomSettings = { enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late', contextCap: 0 }
 
 let current: HeadroomSettings = { ...DEFAULTS }
 
@@ -102,6 +117,10 @@ export function setSettings(p: Partial<HeadroomSettings>): HeadroomSettings {
   // A word that is not a policy is ignored, so a settings file written before this release (which has
   // none) and a damaged one both read as the default instead of as a choice.
   if (isFirstSightPolicy(p.firstSightElision)) next.firstSightElision = p.firstSightElision
+  // 0 (Off) or a whole number of tokens inside Anthropic's documented range; anything else keeps what is
+  // there, so a v1.54 file (which has none) and a damaged one both read as Off, and a garbled value
+  // can never become a window.
+  if (isContextCapSetting(p.contextCap)) next.contextCap = p.contextCap
   // Negative / NaN / non-numeric are rejected outright rather than coerced: a garbled cap must
   // never become a real ceiling on someone's reasoning budget.
   if (typeof p.thinkingCap === 'number' && Number.isFinite(p.thinkingCap) && p.thinkingCap >= 0) next.thinkingCap = Math.floor(p.thinkingCap)

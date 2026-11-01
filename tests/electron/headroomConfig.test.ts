@@ -8,7 +8,7 @@ describe('headroom config', () => {
   it('defaults to enabled + aggressive + steering on, thinking cap OFF', () => {
     // thinkingCap defaults to 0 on purpose: it is the one control that trades reasoning depth
     // rather than recoverable inline context, so it never turns itself on.
-    expect(getSettings()).toEqual({ enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late' })
+    expect(getSettings()).toEqual({ enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late', contextCap: 0 })
   })
 
   it('accepts a thinking cap and adaptive-steering toggle, rejecting garbage caps', () => {
@@ -22,8 +22,8 @@ describe('headroom config', () => {
   })
 
   it('setSettings merges partials and returns the new state', () => {
-    expect(setSettings({ enabled: false })).toEqual({ enabled: false, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late' })
-    expect(setSettings({ mode: 'conservative' })).toEqual({ enabled: false, wireProxy: true, mode: 'conservative', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late' })
+    expect(setSettings({ enabled: false })).toEqual({ enabled: false, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late', contextCap: 0 })
+    expect(setSettings({ mode: 'conservative' })).toEqual({ enabled: false, wireProxy: true, mode: 'conservative', steering: true, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true, firstSightElision: 'late', contextCap: 0 })
     expect(getSettings().mode).toBe('conservative')
   })
 
