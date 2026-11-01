@@ -96,7 +96,8 @@ upload it.
   like any other memory. Since 1.55.0 a lesson that says nothing a later reader
   could use, such as "Root cause found." or a progress note, is not stored. One
   on the borderline is stored marked as a candidate: the Memory panel shows it
-  and no agent is ever given it. How many were not stored is counted in
+  and no agent is ever given its words (the activity record above notes only
+  that it was stored). How many were not stored is counted in
   `userData/memory-metrics.jsonl`. A one-time re-check of the lessons already
   stored lowers the rank of those it would now refuse (recorded in
   `userData/memory-corrections.jsonl`; nothing is deleted) and leaves a marker,

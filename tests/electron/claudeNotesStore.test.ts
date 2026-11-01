@@ -475,6 +475,45 @@ describe('Remove imported notes against the real store', () => {
   })
 })
 
+// Wiping a project's notes means deleting its memory folder; the project folder and its sessions stay. Checked against the real
+// store, because the copies leaving it is the point, and because a deleted memory also retires its content hash for good: the same
+// words saved again afterwards must still be there after a restart.
+describe('A project whose whole notes folder was deleted, against the real store', () => {
+  it('takes its copies out, keeps them out across a restart, and takes the same words in again when the folder comes back', async () => {
+    note(FOLDER, 'a.md', '---\nname: a\ntype: reference\n---\nAlpha words.')
+    note(FOLDER, 'b.md', '---\nname: b\ntype: feedback\n---\nBeta words.')
+    session(FOLDER, CWD)
+    await runClaudeNotesIngest(deps(realStore))
+    expect(stored()).toHaveLength(2)
+    fs.rmSync(path.join(root, FOLDER, 'memory'), { recursive: true })
+    expect(await runClaudeNotesIngest(deps(realStore))).toMatchObject({ filesRemoved: 2, chunksDeleted: 2 })
+    expect(stored()).toHaveLength(0)
+    expect(manifestJson().files).toEqual({})
+    restart()
+    expect(stored()).toHaveLength(0)
+    note(FOLDER, 'a.md', '---\nname: a\ntype: reference\n---\nAlpha words.') // the very same note, written again
+    await runClaudeNotesIngest(deps(realStore))
+    expect(stored()).toHaveLength(1)
+    restart()
+    expect(stored()).toHaveLength(1)
+    expect(stored()[0].content).toContain('Alpha words.')
+  })
+
+  it('leaves another project\'s copies alone', async () => {
+    const OTHER = encodeProjectFolder('C:\\work\\other')
+    note(FOLDER, 'a.md', '---\nname: a\ntype: reference\n---\nAlpha words.')
+    note(OTHER, 'z.md', '---\nname: z\ntype: reference\n---\nZulu words.')
+    session(FOLDER, CWD)
+    session(OTHER, 'C:\\work\\other')
+    await runClaudeNotesIngest(deps(realStore))
+    expect(stored()).toHaveLength(2)
+    fs.rmSync(path.join(root, FOLDER, 'memory'), { recursive: true })
+    await runClaudeNotesIngest(deps(realStore))
+    expect(stored().map((r) => r.content).join('\n')).toContain('Zulu words.')
+    expect(stored().map((r) => r.content).join('\n')).not.toContain('Alpha words.')
+  })
+})
+
 // A note's words are all this store sees; this guards the assumption the pass is built on.
 describe('the store\'s own behaviour the pass relies on', () => {
   it('drops, on reload, an entry whose content hash was retired by a delete', async () => {

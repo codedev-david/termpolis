@@ -294,7 +294,9 @@ export function dropPrefixDuplicates<T extends { content: string; score?: number
   if (atFirst) {
     const place = hits.map((_, i) => i)
     for (let i = 0; i < hits.length; i++) if (fuller[i] >= 0 && i < place[fuller[i]]) place[fuller[i]] = i
-    keep.sort((x, y) => place[x] - place[y] || x - y)
+    // Two kept hits never share a place: a head belongs to one fuller chunk, so only that chunk takes its index, and the head
+    // itself is not kept. (And the sort is stable, so equal places could not reorder anything anyway.)
+    keep.sort((x, y) => place[x] - place[y])
   }
   return keep.map((i) => (best[i] === hits[i].score ? hits[i] : { ...hits[i], score: best[i] }))
 }
