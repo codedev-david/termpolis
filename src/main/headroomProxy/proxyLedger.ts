@@ -4,7 +4,8 @@ import { ccrPut } from '../headroom/ccrStore'
 import { recordDepthSample } from '../headroom/sessionDepth'
 import type { ProxyResultMsg } from './proxySupervisor'
 import { recordProxyOutput } from '../headroom/outputEconomyStore'
-import { W_CACHE_READ, W_OUTPUT } from '../headroom/effectiveUnits'
+import { W_CACHE_READ, W_CACHE_WRITE, W_INPUT, W_OUTPUT } from '../headroom/effectiveUnits'
+import { recordArmRequest, armState, loadArmState, resetArmLedger } from '../headroom/armLedger'
 import { recordRedemption, resetElisionLedger } from '../headroom/elisionLedger'
 import { loadElisionFromDisk, saveElisionToDisk } from '../headroom/elisionStore'
 import type { ElisionMeta } from '../headroom/elisionMeta'
@@ -90,6 +91,14 @@ export interface ProxyTotals {
   stubAged: number
   stubAgedEarly: number
   stubAgedEarlyRequests: number
+  /**
+   * The tool-result text of the requests that ran the `late` first-sight policy, counted as the
+   * lifetime figures above count it (a subset of `textOrigTokens` and `textSavedTokens`). `late`
+   * removes less tool text by design, and the savings-floor controller reads the share removed, so it
+   * has to be able to leave these requests out: see `floorSavedPct`.
+   */
+  lateTextOrigTokens: number
+  lateTextSavedTokens: number
 }
 
 /** The ledger's tally of what the forwarded requests' tool results were, named for the receipt and
@@ -117,15 +126,18 @@ export const FLOOR_PCT = 50
 /** Requests carrying less than this much compressible text are excluded from floor stats: a turn
  *  with one 200-char tool result can't reach 50% and would smear the evidence without informing it. */
 const FLOOR_MIN_ORIG_TOKENS = 250
+/** The totals with their saved share. `floorSavedPct` is that share over the requests that did NOT run
+ *  the `late` first-sight policy: the evidence the savings-floor controller reads. */
+export type ProxyTotalsWithPct = ProxyTotals & { savedPct: number; floorSavedPct: number }
 export interface ProxyReceipt {
-  session: ProxyTotals & { savedPct: number }
-  cumulative: ProxyTotals & { savedPct: number }
+  session: ProxyTotalsWithPct
+  cumulative: ProxyTotalsWithPct
 }
 
 function empty(): ProxyTotals {
   // worstSavedPct starts at 100 and only ever ratchets DOWN, so an untouched ledger never claims
   // a floor breach it never saw.
-  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0, turnRequests: 0, stubPlain: 0, stubCompact: 0, stubDedup: 0, stubDiff: 0, stubAged: 0, stubAgedEarly: 0, stubAgedEarlyRequests: 0 }
+  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0, turnRequests: 0, stubPlain: 0, stubCompact: 0, stubDedup: 0, stubDiff: 0, stubAged: 0, stubAgedEarly: 0, stubAgedEarlyRequests: 0, lateTextOrigTokens: 0, lateTextSavedTokens: 0 }
 }
 
 let session = empty()
@@ -141,6 +153,7 @@ function counter(n: unknown): number { return typeof n === 'number' && Number.is
 const NEWER_COUNTERS = [
   'retrievalTurns', 'retrievalTurnUnits', 'turnRequests',
   'stubPlain', 'stubCompact', 'stubDedup', 'stubDiff', 'stubAged', 'stubAgedEarly', 'stubAgedEarlyRequests',
+  'lateTextOrigTokens', 'lateTextSavedTokens',
 ] as const
 
 export function loadProxyBase(b: Partial<ProxyTotals>): void {
@@ -173,10 +186,19 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   session.textSavedTokens += Math.max(0, Math.ceil(((s.trOrigChars || 0) - (s.trCompChars || 0)) / 4))
   session.toolUseOrigTokens += Math.ceil((s.tuOrigChars || 0) / 4)
   session.toolUseSavedTokens += Math.max(0, Math.ceil(((s.tuOrigChars || 0) - (s.tuCompChars || 0)) / 4))
-  recordFloorSample(
-    Math.ceil(((s.trOrigChars || 0) + (s.tuOrigChars || 0)) / 4),
-    Math.max(0, Math.ceil((((s.trOrigChars || 0) - (s.trCompChars || 0)) + ((s.tuOrigChars || 0) - (s.tuCompChars || 0))) / 4)),
-  )
+  if (s.arm === 'late') {
+    // A request on the late policy removes less tool text on purpose. It is not evidence about the
+    // 50% floor, and counting it as one would make the controller chase a shortfall it designed in,
+    // here or in a later run switched back to legacy. Its text is kept apart so that the share the
+    // controller reads (floorSavedPct) can leave it out.
+    session.lateTextOrigTokens += Math.ceil((s.trOrigChars || 0) / 4)
+    session.lateTextSavedTokens += Math.max(0, Math.ceil(((s.trOrigChars || 0) - (s.trCompChars || 0)) / 4))
+  } else {
+    recordFloorSample(
+      Math.ceil(((s.trOrigChars || 0) + (s.tuOrigChars || 0)) / 4),
+      Math.max(0, Math.ceil((((s.trOrigChars || 0) - (s.trCompChars || 0)) + ((s.tuOrigChars || 0) - (s.tuCompChars || 0))) / 4)),
+    )
+  }
   session.images += s.images || 0
   session.imageOrigBytes += s.imgOrigBytes || 0
   session.imageSavedBytes += Math.max(0, (s.imgOrigBytes || 0) - (s.imgCompBytes || 0))
@@ -191,6 +213,18 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   if (r.turn && r.turn.pure === true) {
     session.retrievalTurns += 1
     session.retrievalTurnUnits += W_CACHE_READ * (u.cache_read_input_tokens || 0) + W_OUTPUT * (u.output_tokens || 0)
+  }
+  // What this request cost, by the first-sight arm it ran under: the comparison of the two policies
+  // reads these. A result from a child that predates the arm, or one the API refused, adds nothing.
+  if ((s.arm === 'late' || s.arm === 'holdout' || s.arm === 'legacy') && r.status >= 200 && r.status < 300) {
+    const read = u.cache_read_input_tokens || 0
+    const out = u.output_tokens || 0
+    const pure = !!r.turn && r.turn.pure === true
+    recordArmRequest(s.arm, s.armCluster, {
+      units: W_INPUT * (u.input_tokens || 0) + W_CACHE_READ * read + W_CACHE_WRITE * (u.cache_creation_input_tokens || 0) + W_OUTPUT * out,
+      pureTurn: pure,
+      turnUnits: pure ? W_CACHE_READ * read + W_OUTPUT * out : 0,
+    })
   }
   // What the forwarded body's tool results were. A tally from a child that predates it, or a damaged
   // one, adds nothing.
@@ -239,13 +273,17 @@ export function recordProxyGiveback(tokens: number, redeemed?: { token: string; 
   try { flush?.() } catch { /* best effort */ }
 }
 
-function withPct(t: ProxyTotals): ProxyTotals & { savedPct: number } {
+function withPct(t: ProxyTotals): ProxyTotalsWithPct {
   // Both compressible surfaces share one denominator: quoting tool_result alone was accurate
   // about a slice while implying it described the wire.
   const orig = t.textOrigTokens + t.toolUseOrigTokens
   const saved = t.textSavedTokens + t.toolUseSavedTokens
   const pct = orig > 0 ? Math.round((saved / orig) * 100) : 0
-  return { ...t, savedPct: pct }
+  // The same share without the requests that ran the late policy, which remove less on purpose.
+  const floorOrig = orig - t.lateTextOrigTokens
+  const floorSaved = saved - t.lateTextSavedTokens
+  const floorPct = floorOrig > 0 ? Math.round((floorSaved / floorOrig) * 100) : 0
+  return { ...t, savedPct: pct, floorSavedPct: floorPct }
 }
 function sumWithBase(): ProxyTotals {
   const cum = empty()
@@ -265,15 +303,21 @@ export function currentProxyTotals(): ProxyTotals { return sumWithBase() }
 // The elision ledger's counts (redemptions especially) are the proxy ledger's `retrieves` told by
 // class, so they live and die with it: loaded with the totals, saved with them, zeroed with them.
 export function loadProxyBaseFromDisk(dir: string): void {
-  try { loadProxyBase(JSON.parse(readFileSync(join(dir, 'proxy-totals.json'), 'utf8'))) } catch { /* start at zero */ }
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, 'proxy-totals.json'), 'utf8'))
+    loadProxyBase(raw)
+    // The first-sight arms ride in the same file: they change as often as the totals do, so they
+    // cost no write of their own. A file without them (v1.54) reads as empty.
+    loadArmState(raw?.arms)
+  } catch { /* start at zero */ }
   loadElisionFromDisk(dir)
 }
 export function saveProxyTotalsToDisk(dir: string): void {
-  try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'proxy-totals.json'), JSON.stringify(currentProxyTotals()), 'utf8') } catch { /* best effort */ }
+  try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'proxy-totals.json'), JSON.stringify({ ...currentProxyTotals(), arms: armState() }), 'utf8') } catch { /* best effort */ }
   saveElisionToDisk(dir)
 }
 /** Zero the lifetime meter (session + on-disk base) WITHOUT dropping the flush wiring, so the
  *  ledger keeps persisting afterward. Used for a live "reset lifetime savings" (e.g. after a
  *  compression-methodology change) — unlike resetProxyLedger(), which also nulls flush for tests. */
-export function resetProxyCounters(): void { session = empty(); base = empty(); resetElisionLedger() }
-export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null; resetElisionLedger() }
+export function resetProxyCounters(): void { session = empty(); base = empty(); resetElisionLedger(); resetArmLedger() }
+export function resetProxyLedger(): void { session = empty(); base = empty(); flush = null; resetElisionLedger(); resetArmLedger() }
