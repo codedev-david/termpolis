@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: October 14, 2026 (Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers)
+Last updated: November 1, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers)
 
 ## Overview
 
@@ -32,6 +32,12 @@ to keep your data local.
 - Termpolis changes Claude Code, Codex and Gemini CLI settings **only if you
   connect them**, and Disconnect removes everything it wrote — see [Your
   coding agents' settings](#your-coding-agents-settings).
+- **Optional, off by default:** a smaller context window for Claude Code
+  (Settings → Token Savings → Long conversations). Only if you choose one,
+  Termpolis reads two kinds of key in your Claude Code settings files when it
+  opens a Claude terminal, to leave a window you set yourself alone. It writes
+  nothing to them — see [A smaller Claude Code context
+  window](#a-smaller-claude-code-context-window-opt-in).
 
 ## Data Stored Locally
 
@@ -343,6 +349,33 @@ for your home folder or a drive root. Older versions also wrote a memory note
 into `AGENTS.md` in project folders; Termpolis removes that note (and the file,
 if the note was all it held) the next time you launch Codex from Termpolis in
 that folder.
+
+### A smaller Claude Code context window (opt-in)
+
+Off by default. In Settings → Token Savings → Long conversations you can pick a
+smaller window (500,000, 400,000, 300,000 or 200,000 tokens) at which Claude
+Code compacts a long conversation into a summary. If you do, Termpolis adds
+Claude Code's own `CLAUDE_CODE_AUTO_COMPACT_WINDOW` variable to the environment
+of the Claude Code terminals it opens, and nowhere else: not to Codex, not to
+Gemini CLI, not to your own shells, and not to a terminal that is already open.
+The variable is read by Claude Code on your machine. Nothing about it is sent
+to Termpolis or to anyone else, and it does not use the compression proxy.
+
+To leave a window you set yourself alone, Termpolis checks whether you already
+have one, and only while this choice is on and only when it opens a Claude
+terminal. It looks in your environment, then reads three files if they exist:
+`settings.json` in Claude Code's config folder (`~/.claude`, or the folder
+`CLAUDE_CONFIG_DIR` names) and `.claude/settings.json` and
+`.claude/settings.local.json` in the folder the terminal opens in. From each it
+keeps two things and drops the rest on the spot: the `env` block and whether a
+window is saved (`autoCompactWindow`, or the one `/autocompact` saves per
+model). Your permissions, hooks, helpers and the rest of those files are not
+kept, not logged and not sent anywhere, and Termpolis writes nothing to them.
+If a window is already set in any of those places, Termpolis sets none. A file
+it cannot read counts as holding nothing.
+
+It is yours to turn off: choose Off, and new terminals go back to Claude Code's
+own behaviour. Nothing is read while it is Off.
 
 ## Your Choices
 
