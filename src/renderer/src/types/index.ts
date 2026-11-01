@@ -226,7 +226,8 @@ export interface HeadroomSettingsView {
   thinkingCap: number
   /** Let launch-time steering strength follow measured output volume. */
   adaptiveSteering: boolean
-  /** Let the launch-time wire tier escalate when the measured 50% savings floor isn't holding. */
+  /** Under the Legacy first-sight policy only: let the launch-time wire tier escalate when the measured
+   *  50% savings floor isn't holding. The default Late policy removes less tool text on purpose and ignores it. */
   floorControl: boolean
   /** Age the oldest half of a long conversation down to retrievable stubs. On by default since v1.36.0. */
   prefixDecay: boolean
@@ -290,7 +291,8 @@ export interface UnifiedTotalsView {
   /** The tool_use (agent's own output, re-read from the prefix) half of the wire figures. */
   toolUseOrigTokens: number
   toolUseSavedTokens: number
-  /** Per-request floor evidence: the worst single request, and how many missed the 50% floor. */
+  /** Per-request floor evidence: the worst single request, and how many missed the 50% floor. Counted over
+   *  the requests that ran the Legacy behaviour (the Settings kill switch and the holdout); Late is not held to a floor. */
   worstSavedPct: number
   belowFloorRequests: number
   floorEligibleRequests: number

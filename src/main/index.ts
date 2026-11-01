@@ -4101,8 +4101,8 @@ async function semanticPoolOptions(
       setProxySpawner(() => createProxyTransport(hrProxyEntry))
       // Carry the user's mode + thinking cap into the proxy child from its very first init
       // (defaults: mode 'aggressive', cap 0 = off). When floor control is on, the ledger — not
-      // the selector alone — decides the tier: it escalates if the measured 50% floor isn't
-      // holding. Resolved HERE, before the first request, and frozen for the session, because a
+      // the selector alone — decides the tier under the Legacy policy (Late leaves it as selected):
+      // it escalates if the measured 50% floor isn't holding. Resolved HERE, before the first request, and frozen for the session, because a
       // mid-conversation re-tier would rewrite already-cached history and bust the prompt cache.
       try {
         const hs = getHeadroomSettings()

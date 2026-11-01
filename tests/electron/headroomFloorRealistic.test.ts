@@ -105,7 +105,7 @@ describe('the 50% savings floor holds on realistic traffic (legacy policy)', () 
     expect(getFirstSightPolicy()).toBe('legacy')
   })
 
-  it('clears 50% at the shipped default tier', () => {
+  it('clears 50% at the Aggressive tier, the default tier (under Legacy, not under the default Late policy)', () => {
     setWireWindow(windowForMode('aggressive'))
     expect(measure(realisticBody()).combined).toBeGreaterThanOrEqual(50)
   })

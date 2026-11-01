@@ -37,6 +37,8 @@ export interface ProxyTotals {
    * turn held 50% — roughly half the mass sits below the mean. These two make the claim falsifiable:
    * `worstSavedPct` is the least-compressed request that carried real content, and
    * `belowFloorRequests` counts how many of `floorEligibleRequests` came in under FLOOR_PCT.
+   * Requests that ran the `late` first-sight policy are left out of all three: it removes less tool
+   * text on purpose and makes no such promise (see lateTextOrigTokens).
    */
   worstSavedPct: number
   belowFloorRequests: number

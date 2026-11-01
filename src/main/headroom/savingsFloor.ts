@@ -5,9 +5,16 @@ import type { FirstSightPolicy } from './elisionPolicy'
 /**
  * The savings-floor controller.
  *
+ * Under the `legacy` first-sight policy (v1.34 to v1.54, and the Settings kill switch since)
  * Token Headroom's promise is a FLOOR — "at least half the compressible text goes away" — and a
  * fixed compression tier cannot make that promise, because how much a tier removes depends
- * entirely on what the traffic looks like. A session of small tool results simply has less to
+ * entirely on what the traffic looks like.
+ *
+ * The `late` policy (the default since v1.55) makes no such promise and this controller plays no
+ * part in it: the model asks for about two thirds of the results that are shortened at first sight,
+ * each ask is a whole extra turn, and the policy therefore removes less tool text on purpose (see
+ * elisionPolicy.ts). The share of text removed is the wrong measure for it; the bill is the right
+ * one, and the Elision health card reports that. A session of small tool results simply has less to
  * give than a session of 3,000-line file reads. So the tier is not fixed: this module reads the
  * measured ledger and escalates when the floor is not actually being held.
  *
