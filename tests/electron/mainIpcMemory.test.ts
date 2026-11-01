@@ -297,10 +297,10 @@ const mneme = vi.hoisted(() => ({
   runConsolidation: vi.fn(), runSummarization: vi.fn(async () => {}),
   runWeave: vi.fn(),
   poolLessons: vi.fn(() => [{ content: 'pooled', corroboration: 2 }]),
-  toAgentLesson: vi.fn((m: any) => ({ source: m.source, content: m.content })),
+  toAgentLesson: vi.fn((m: any) => ({ ...(m.id ? { id: m.id } : {}), source: m.source, content: m.content })),
   detectConflictsNli: vi.fn(async () => [{
-    a: { source: 'claude', content: 'always X', extra: 'dropped' },
-    b: { source: 'codex', content: 'never X', extra: 'dropped' },
+    a: { id: 'ca', source: 'claude', content: 'always X', extra: 'dropped' },
+    b: { id: 'cb', source: 'codex', content: 'never X', extra: 'dropped' },
   }]),
   auditMemory: vi.fn(),
   proactiveQuery: vi.fn((t: string) => (t ? `signals:${t}` : '')),
@@ -464,10 +464,10 @@ beforeEach(() => {
   mneme.findGaps.mockReturnValue([{ domain: 'gap' }])
   mneme.curiosityPrompts.mockReturnValue(['what breaks CI?'])
   mneme.poolLessons.mockReturnValue([{ content: 'pooled', corroboration: 2 }])
-  mneme.toAgentLesson.mockImplementation((m: any) => ({ source: m.source, content: m.content }))
+  mneme.toAgentLesson.mockImplementation((m: any) => ({ ...(m.id ? { id: m.id } : {}), source: m.source, content: m.content }))
   mneme.detectConflictsNli.mockResolvedValue([{
-    a: { source: 'claude', content: 'always X', extra: 'dropped' },
-    b: { source: 'codex', content: 'never X', extra: 'dropped' },
+    a: { id: 'ca', source: 'claude', content: 'always X', extra: 'dropped' },
+    b: { id: 'cb', source: 'codex', content: 'never X', extra: 'dropped' },
   }])
   mneme.proactiveQuery.mockImplementation((t: string) => (t ? `signals:${t}` : ''))
   mneme.proactiveSignals.mockImplementation((t: string) => (t ? [t] : []))
@@ -1708,11 +1708,20 @@ describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
     mem.entrySimMatrix.mockResolvedValueOnce([1, 0, 0, 0, 1, 0, 0, 0, 1])
     await expect(mcp.memoryPool({})).resolves.toEqual([{ content: 'pooled', corroboration: 2 }])
     expect(mem.memoryLessons).toHaveBeenCalledWith(200)
+    // Each lesson carries its memory id, so the pooled answer can name the lessons it fused (and an agent
+    // can say one of them `supersedes` another with memory_link).
     expect(mneme.poolLessons).toHaveBeenCalledWith([
-      { source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
-      { source: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
-      { source: 'unknown', content: 'c', memoryType: undefined, importance: undefined },
+      { id: 'L1', source: 'claude', content: 'a', memoryType: 'procedural', importance: 0.9 },
+      { id: 'L2', source: 'codex', content: 'b', memoryType: 'semantic', importance: 0.5 },
+      { id: 'L3', source: 'unknown', content: 'c', memoryType: undefined, importance: undefined },
     ], expect.objectContaining({ similar: expect.any(Function), threshold: expect.any(Number) }))
+  })
+
+  it('pool returns what poolLessons made of them, ids included, untouched', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([{ id: 'L1', source: 'claude', content: 'a' }])
+    const pooled = [{ content: 'a', sources: ['claude', 'codex'], corroboration: 2, importance: 0.8, id: 'L1', ids: ['L1', 'L2'] }]
+    mneme.poolLessons.mockReturnValueOnce(pooled)
+    expect(await mcp.memoryPool({})).toBe(pooled)
   })
 
   // Cross-agent corroboration only pays off if two agents SAYING the same thing pool together.
@@ -1774,12 +1783,22 @@ describe('MCP memory_selfcheck / memory_pool / memory_conflicts', () => {
     expect(mem.memoryLessons).toHaveBeenCalledWith(25)
   })
 
-  it('conflicts returns only the two contradicting sides — read-only, nothing else leaks', async () => {
-    mem.memoryLessons.mockResolvedValueOnce([{ source: 'claude', content: 'always X' }])
+  it('conflicts returns only the two contradicting sides, each with its id — read-only, nothing else leaks', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([{ id: 'ca', source: 'claude', content: 'always X' }])
     const out = await mcp.memoryConflicts({})
-    expect(out).toEqual([{ a: { source: 'claude', content: 'always X' }, b: { source: 'codex', content: 'never X' } }])
+    // The ids are what the advised `supersedes` memory_link needs; memoryType, importance and the rest stay out.
+    expect(out).toEqual([{ a: { id: 'ca', source: 'claude', content: 'always X' }, b: { id: 'cb', source: 'codex', content: 'never X' } }])
     expect(mem.memoryLessons).toHaveBeenCalledWith(200)
-    expect(mneme.detectConflictsNli).toHaveBeenCalledWith([{ source: 'claude', content: 'always X' }])
+    expect(mneme.detectConflictsNli).toHaveBeenCalledWith([{ id: 'ca', source: 'claude', content: 'always X' }])
+  })
+
+  it('conflicts says nothing about an id a side does not have, rather than inventing one', async () => {
+    mem.memoryLessons.mockResolvedValueOnce([{ source: 'claude', content: 'always X' }])
+    mneme.detectConflictsNli.mockResolvedValueOnce([{ a: { source: 'claude', content: 'always X' }, b: { source: 'codex', content: 'never X' } }])
+    const [pair] = await mcp.memoryConflicts({})
+    expect(pair.a.id).toBeUndefined()
+    expect(pair.b.id).toBeUndefined()
+    expect(Object.keys(JSON.parse(JSON.stringify(pair.a)))).toEqual(['source', 'content']) // as it goes over the wire
   })
 })
 

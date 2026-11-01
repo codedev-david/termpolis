@@ -3,13 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { executeTool, type McpToolHandlers } from '../../src/main/mcpServer'
-import { poolLessons, detectConflicts, heuristicContradicts } from '../../src/main/mnemeSociety'
+import { poolLessons, detectConflicts, heuristicContradicts, toAgentLesson } from '../../src/main/mnemeSociety'
 import { proactiveQuery } from '../../src/main/mnemeRetrieval'
 import {
   initSwarmMemory,
   memoryWrite,
   memorySearch,
   memoryList,
+  memoryLink,
   memoryLessons,
   _resetForTests,
   _setEmbeddingsAvailable,
@@ -72,6 +73,36 @@ describe('society pooling + proactive recall over the real store', () => {
     const conflicts = detectConflicts(lessons, heuristicContradicts)
     expect(conflicts).toHaveLength(1)
     expect([conflicts[0].a.source, conflicts[0].b.source].sort()).toEqual(['claude', 'codex'])
+  })
+
+  // 1.55.0: memory_conflicts advises "record the winner and mark the loser with a `supersedes` memory_link", and
+  // memory_link takes ids, which neither memory_pool nor memory_conflicts used to return. This walks the whole
+  // loop on the real store: find the conflict, take the ids from it, link, and the loser stops being served.
+  it('hands back the ids that let an agent resolve a conflict, and the supersedes link then retires the loser', async () => {
+    const a = await memoryWrite({ agentId: 'claude', source: 'claude', kind: 'decision', content: 'Always run migrations before seeding', memoryType: 'semantic', importance: 0.7 })
+    const b = await memoryWrite({ agentId: 'codex', source: 'codex', kind: 'decision', content: 'Never run migrations before seeding', memoryType: 'semantic', importance: 0.7 })
+    // Exactly what the index.ts handler does: the stored rows, projected with their ids.
+    const lessons = memoryLessons(200).map(toAgentLesson)
+    const [conflict] = detectConflicts(lessons, heuristicContradicts)
+    expect([conflict.a.id, conflict.b.id].sort()).toEqual([a.id, b.id].sort())
+
+    const loser = conflict.a.source === 'codex' ? conflict.a : conflict.b
+    const winner = loser === conflict.a ? conflict.b : conflict.a
+    expect(memoryLink({ from: winner.id!, to: loser.id!, relation: 'supersedes', createdBy: 'agent' })).not.toBeNull()
+
+    const served = (await memorySearch({ query: 'run migrations before seeding', limit: 10 })).map((h) => h.id)
+    expect(served).toContain(winner.id)
+    expect(served).not.toContain(loser.id)
+  })
+
+  it('names the lessons a pooled one fused, so any of them can be the target of a link', async () => {
+    const a = await memoryWrite({ agentId: 'claude', source: 'claude', kind: 'fact', content: 'Always guard nulls in store.ts', memoryType: 'procedural', importance: 0.7 })
+    const b = await memoryWrite({ agentId: 'codex', source: 'codex', kind: 'fact', content: 'always guard nulls in store.ts.', memoryType: 'procedural', importance: 0.6 })
+    const pooled = poolLessons(memoryLessons(200).map(toAgentLesson))
+    const fused = pooled.find((p) => p.corroboration >= 2)!
+    expect([...fused.ids!].sort()).toEqual([a.id, b.id].sort())
+    expect([a.id, b.id]).toContain(fused.id) // the id of the lesson whose wording it is
+    expect(memoryList({ limit: 200 }).find((m) => m.id === fused.id)!.content).toBe(fused.content)
   })
 
   it('anticipates a past solution from a new, differently-worded task', async () => {

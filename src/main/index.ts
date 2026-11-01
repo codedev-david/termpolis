@@ -3820,7 +3820,7 @@ async function semanticPoolOptions(
         // actively-ingesting brain floods with non-lesson message chunks, hiding real corroboration).
         // poolLessons takes an ARRAY — .map() on the un-awaited Promise would throw.
         const rows = applyEntryCorrections(await memoryLessons(opts.limit ?? 200))
-        const lessons = rows.map((m) => ({ source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }))
+        const lessons = rows.map((m) => ({ id: m.id, source: m.source || m.agentId || 'unknown', content: m.content, memoryType: m.memoryType, importance: m.importance }))
         return poolLessons(lessons, await semanticPoolOptions(rows))
       },
       memoryAnticipate: async (opts) => {
@@ -3838,9 +3838,10 @@ async function semanticPoolOptions(
         // it's been explicitly enabled + bundled (opt-in, per the learning-soundness rule).
         const lessons = applyEntryCorrections(await memoryLessons(opts.limit ?? 200)).map(toAgentLesson)
         const conflicts = await detectConflictsNli(lessons)
+        // Each side carries its memory id: memory_link needs it for the `supersedes` this tool advises.
         return conflicts.map((c) => ({
-          a: { source: c.a.source, content: c.a.content },
-          b: { source: c.b.source, content: c.b.content },
+          a: { id: c.a.id, source: c.a.source, content: c.a.content },
+          b: { id: c.b.id, source: c.b.source, content: c.b.content },
         }))
       },
       // Native code graph — structural "what/where" over the repo (complements the semantic
