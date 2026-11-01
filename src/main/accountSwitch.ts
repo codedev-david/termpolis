@@ -16,6 +16,11 @@
 //   R8  The session is resumed by its exact id: the one in the exit hint, or the one Termpolis
 //       started a Claude Code session with. Never --continue or resume --last.
 //   R25 A Claude Code transcript the target can't see is carried there first (accountCarry.ts).
+//   OS  Where the OS can say whether only the shell is left in the terminal (shellAlone.ts), it has
+//       the last word on the agent being gone, as it has in the model switch (modelRelaunch.ts), whose
+//       live runs found Claude Code takes 4 to 11 s to hand the terminal back and that what is typed
+//       meanwhile is lost. Both wait with the same clock (shared/agentExit.ts). Where it cannot say
+//       (WSL, a shell it doesn't know), the screen's word stands, as it always did.
 //
 // Anything it can't confirm ends the switch with nothing more typed, and its outcome says so; the
 // dialog asks the user, and runs it again with their answer (assumeExited, stopBusy, fresh).
@@ -27,15 +32,21 @@ import {
   otherShellReported, relaunchCommand,
 } from '../shared/accountSwitch'
 import type { ExitHint, RelaunchHold, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
+import { PROMPT_SETTLE_MS, aloneNow, waitForExit } from '../shared/agentExit'
+import type { ExitWatch } from '../shared/agentExit'
 import { ACCOUNT_AGENT_LABEL, accountEnv, accountLine, familyOf } from '../shared/agentAccounts'
 import type { AccountAgent, AgentAccount, ShellFamily } from '../shared/agentAccounts'
 import { PROMPT_REPORT, drawn, sinceStarted } from './mcpServer'
 
-/** A switch holds its terminal at most this long, whatever happens. */
-export const LOCK_MS = 60_000
-/** The model picker's hold, at most: its keys take about 2 s, and a renderer that stops halfway
- *  through them leaves the terminal held no longer than this. */
-export const MODEL_HOLD_MS = 10_000
+/** A switch holds its terminal at most this long, whatever happens. A slow teardown of the agent
+ *  (up to EXIT_CEILING_MS), the exit, the line and the 30 s the relaunch gets to come up add up to
+ *  more than a minute in the worst case. */
+export const LOCK_MS = 120_000
+/** The model picker's hold, at most. Its relaunch (modelRelaunch.ts) waits for the agent to hand the
+ *  terminal back for up to 30 s (Claude Code took 4 to 11 s to), settles, and may give a resume of "the
+ *  latest" 8 s to fail before it starts a new session: about 45 s at the very most. A renderer that
+ *  stops halfway leaves the terminal held no longer than this; one that finishes lets it go itself. */
+export const MODEL_HOLD_MS = 60_000
 /** How often the screen is looked at while waiting. */
 export const POLL_MS = 250
 /** How long an exit gets to show (§7.2 step 4). */
@@ -70,8 +81,14 @@ export interface SwitchIO {
   now(): number
   progress?(p: SwitchProgress): void
   /** macOS and Linux: whether the terminal's own shell is its PTY's foreground process again
-   *  (terminalManager.ts); null, or absent, where that can't be told (Windows). */
+   *  (terminalManager.ts); null, or absent, where that can't be told (Windows). The cheap read the
+   *  usage-limit look polls (limitLook.ts); the OS's full answer below is asked only at the moments
+   *  that need it, never on a timer (endpoint security reads a process query on a loop as discovery). */
   atShell?(terminalId: string): boolean | null
+  /** Whether nothing runs in the terminal but its shell, as the OS tells (shellAlone.ts): true once
+   *  the agent's process is gone, false while it runs, null where main can't tell. Absent: the
+   *  screen alone decides. */
+  shellAlone?(terminalId: string): Promise<boolean | null>
 }
 
 /** Where a terminal's agent was started, and the line that started it (accountsIpc.ts). */
@@ -141,6 +158,13 @@ export function holdForModel(terminalId: string, now: number = Date.now()): stri
 /** Lets the model picker's hold go: its own, and no other. */
 export function releaseModelHold(terminalId: string, key: string): void {
   if (locks.get(terminalId)?.key === key) locks.delete(terminalId)
+}
+
+/** Does `key` open the model picker's live hold on this terminal? What is typed under it is the
+ *  picker's own relaunch (the writes of anything else are dropped meanwhile). */
+export function holdsModelKey(terminalId: string, key: string | undefined, now: number = Date.now()): boolean {
+  const hold = locks.get(terminalId)
+  return !!key && hold !== undefined && hold.kind === 'model' && hold.until > now && hold.key === key
 }
 
 export function _resetSwitchLocksForTest(): void {
@@ -219,6 +243,52 @@ export function liveness(io: SwitchIO, id: string, agent: AccountAgent, start: A
   return { state: 'unknown' }
 }
 
+/** What the shared exit wait (agentExit.ts) asks the OS with, for this terminal. */
+function osOf(io: SwitchIO, id: string): ExitWatch {
+  return { sleep: (ms) => io.sleep(ms), now: () => io.now(), ...(io.shellAlone ? { shellAlone: () => io.shellAlone!(id) } : {}) }
+}
+
+/** What the OS has said during one switch. Once it has said "still running" it can tell for this
+ *  terminal, so a later "cannot tell" is a hiccup to ask again about, not a reason to go on while
+ *  the agent may still be tearing down (agentExit.ts waitForExit). */
+export interface OsMemo {
+  known: boolean
+}
+
+/** The OS's word now, with what it said before in this switch taken into account. */
+async function askOs(io: SwitchIO, id: string, memo?: OsMemo): Promise<boolean | null> {
+  const alone = await aloneNow(osOf(io, id))
+  if (alone === false && memo) memo.known = true
+  return alone === null && memo?.known ? false : alone
+}
+
+/**
+ * Waits for the agent's process to go, when the OS says it is still running: 	rue once it has
+ * (the shell then needs a moment to draw its prompt), alse if it is still there at the ceiling.
+ * The screen's word, where there is any, is what a caller falls back on then: an exit it showed
+ * stands, and the line is entered only once it shows at the shell (R3), so a program that really is
+ * still running (a background job in the same terminal) costs the wait, not a wrong action.
+ */
+async function processGone(io: SwitchIO, id: string): Promise<boolean> {
+  const gone = await waitForExit(osOf(io, id), true, 0)
+  if (gone) await io.sleep(PROMPT_SETTLE_MS)
+  return gone
+}
+
+/**
+ * liveness (the screen's word) with the OS's (step 0). An agent the OS says is gone is gone, though
+ * its last frame, input box and all, is still on the screen: on Windows nothing else shows it, and no
+ * exit key is sent to a shell. An agent the screen shows gone while a program still runs in the
+ * terminal (quit by hand a moment ago, its hooks still going) is waited for before anything is typed.
+ */
+export async function livenessNow(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined, memo?: OsMemo): Promise<Liveness> {
+  const alone = await askOs(io, id, memo)
+  const alive = liveness(io, id, agent, start)
+  if (alone === true && alive.state !== 'gone') return { state: 'gone', hint: hintAtFoot(look(io, id), agent) }
+  if (alone === false && alive.state === 'gone') await processGone(io, id)
+  return alive
+}
+
 // ── The steps ──────────────────────────────────────────────────────────────────────────
 
 /** Polls `test` every POLL_MS for up to `ms`; its first truthy answer, or null. */
@@ -285,7 +355,7 @@ export const HINT_GRACE_MS = 1000
 
 /** Waits up to EXIT_CONFIRM_MS for the exit to show (step 4): exitShown, or on macOS and Linux
  *  the shell back in the PTY's foreground (R3), once that held HINT_GRACE_MS with no hint. */
-export function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mark: number): Promise<{ hint: ExitHint | null } | null> {
+function exitOnScreen(io: SwitchIO, id: string, agent: AccountAgent, mark: number): Promise<{ hint: ExitHint | null } | null> {
   let foregroundAt: number | null = null
   return waitFor(io, EXIT_CONFIRM_MS, () => {
     const shown = exitShown(io, id, agent, mark)
@@ -297,6 +367,24 @@ export function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mar
     if (foregroundAt === null) foregroundAt = io.now()
     return io.now() - foregroundAt >= HINT_GRACE_MS ? { hint: null } : null
   })
+}
+
+/**
+ * Step 4: the exit, confirmed. The screen's evidence (exitOnScreen) and then the OS's word, which
+ * has the last say where it can speak. It says the agent is gone: that is an exit even where the
+ * screen showed nothing (Windows shows no foreground, and a session with no turns prints no hint).
+ * It says a program still runs: Claude Code's teardown took 4 to 11 s, and the screen shows its
+ * goodbye at the start of it or only at the end, so the wait goes on past the screen's 8 s, up to the
+ * ceiling; what the screen proved stands if the process never goes, and with nothing proved the exit
+ * is not confirmed. It cannot tell: the screen's word, as ever.
+ */
+export async function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgent, mark: number, memo?: OsMemo): Promise<{ hint: ExitHint | null } | null> {
+  const screen = await exitOnScreen(io, id, agent, mark)
+  const alone = await askOs(io, id, memo)
+  if (alone === null) return screen
+  if (alone === false && !(await processGone(io, id))) return screen
+  // Gone by the OS's word: what the screen shows now names the session, if it names one.
+  return screen ?? exitShown(io, id, agent, mark) ?? { hint: null }
 }
 
 /** Where a typed line shows: inside the agent's box (it is live), on the screen's last rows outside
@@ -424,13 +512,14 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   const id = req.terminalId
   const until = io.now() + LOCK_MS - 1000
   const mark = io.end(id)
+  const os: OsMemo = { known: false }
   let hint: ExitHint | null = null
 
   if (req.assumeExited) {
     // The user's word that it exited: an exit hint on screen still names the session.
     hint = hintAtFoot(look(io, id), agent)
   } else {
-    const alive = liveness(io, id, agent, ctx.start)
+    const alive = await livenessNow(io, id, agent, ctx.start, os)
     if (alive.state === 'unknown') return { kind: 'unknown-exit' }
     if (alive.state === 'gone') hint = alive.hint
     else {
@@ -459,7 +548,7 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
       if (typed === 'not-shown') return { kind: 'exit-unconfirmed' }
       // Step 4: the exit, shown.
       io.progress?.({ terminalId: id, step: 'confirming' })
-      const shown = await exitConfirmed(io, id, agent, exitMark)
+      const shown = await exitConfirmed(io, id, agent, exitMark, os)
       if (!shown) return { kind: 'exit-unconfirmed' }
       hint = shown.hint
     }

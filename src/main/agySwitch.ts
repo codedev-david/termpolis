@@ -18,9 +18,9 @@ import { EXIT_COMMAND, relaunchCommand } from '../shared/accountSwitch'
 import type { AgyStepOutcome, AgyStepRequest } from '../shared/accountSwitch'
 import { familyOf } from '../shared/agentAccounts'
 import {
-  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, liveness, locks, look, relaunchLockReason, typeAtPrompt, typeIntoBox, watchOutcome,
+  LOCK_MS, OUTCOME_MS, atIdleBox, exitConfirmed, liveness, livenessNow, locks, look, relaunchLockReason, typeAtPrompt, typeIntoBox, watchOutcome,
 } from './accountSwitch'
-import type { AgentStartRecord, SwitchIO } from './accountSwitch'
+import type { AgentStartRecord, OsMemo, SwitchIO } from './accountSwitch'
 
 /** Variables that make agy sign in without its own Google sign-in: /logout signs nothing out then
  *  (agy's changelog). Names only; their values are never read. */
@@ -70,7 +70,8 @@ async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undef
     const hint = liveness(io, id, 'agy', undefined)
     return { kind: 'exited', conversationId: hint.state === 'gone' && hint.hint ? hint.hint.id : null }
   }
-  const alive = liveness(io, id, 'agy', start)
+  const os: OsMemo = { known: false }
+  const alive = await livenessNow(io, id, 'agy', start, os)
   if (alive.state === 'unknown') return { kind: 'unknown-exit' }
   if (alive.state === 'gone') return { kind: 'exited', conversationId: alive.hint?.id ?? null }
   // At work, or asking something: its turn is waited for, never stopped.
@@ -79,7 +80,7 @@ async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undef
   const mark = io.end(id)
   const typed = await typeIntoBox(io, id, EXIT_COMMAND.agy, idle)
   if (typed !== 'entered') return { kind: 'not-exited', why: 'Termpolis couldn\'t type /exit into agy\'s input, so it typed nothing more' }
-  const shown = await exitConfirmed(io, id, 'agy', mark)
+  const shown = await exitConfirmed(io, id, 'agy', mark, os)
   if (!shown) return { kind: 'not-exited', why: 'agy didn\'t confirm it exited, so Termpolis typed nothing more' }
   return { kind: 'exited', conversationId: shown.hint?.id ?? null }
 }

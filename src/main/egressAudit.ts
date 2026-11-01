@@ -1,7 +1,9 @@
-// Egress audit — periodically asks the OS what remote endpoints each AI agent
-// has open TCP connections to, and records the unique hosts to the AI Security
-// audit log so a security-conscious user can see "Claude talked to api.anthropic.com
-// and console.anthropic.com today, nothing else".
+// Egress audit — asks the OS what remote endpoints an AI agent has open TCP
+// connections to, and records the unique hosts to the AI Security audit log so
+// a security-conscious user can see "Claude talked to api.anthropic.com and
+// console.anthropic.com today, nothing else". Nothing in the app calls the poll
+// today (see the 'ai-security:egress' handler in index.ts); the notes on polling
+// below describe the design, not a running timer.
 //
 // Why this layer exists despite agents already shipping their own logs:
 //   - Provider SDKs can change endpoints silently (e.g., a new region, a new

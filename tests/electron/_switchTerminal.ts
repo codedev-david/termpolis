@@ -66,6 +66,17 @@ export interface TermScript {
   /** The line that started the agent, when not the one a launch types: a swarm worker's, as
    *  run_command typed it. */
   launch?: string
+  /** The agent's process outlives its goodbye by this long (Claude Code took 4 to 11 s to hand the
+   *  terminal back on a machine with SessionEnd hooks): its exit hint shows at once, its shell's
+   *  prompt only when the process is gone, and keys typed to the terminal meanwhile are lost, the
+   *  shell not reading yet. An agent gone at the start (gone-*) is still going this long. */
+  teardownMs?: number
+  /** With 	eardownMs, the hint is printed only when the process is gone (after the hooks). */
+  hintAfterTeardown?: boolean
+  /** What the OS says about the terminal (shellAlone.ts): 	ells (true once only the shell is
+   *  left), lind (it cannot tell), laky (cannot tell once in a while). Absent: the switch has
+   *  no such read. */
+  os?: 'tells' | 'blind' | 'flaky'
 }
 
 /** The conversation id a later exit of agy names: a new, empty one, never the first. */
@@ -97,6 +108,11 @@ export class FakeTerminal {
   signedOut = false
   /** How many times the agent exited. */
   exits = 0
+  /** When the agent's process is gone (the clock), and how often the OS was asked. */
+  goneAt = 0
+  osAsked = 0
+  /** The clock at each write, in step with writes. */
+  writeClocks: number[] = []
   /** Output on its way (exitOutputLateMs): it reaches `out` once the clock passes `at`. */
   late: { at: number; text: string } | null = null
   /** The account agy's header shows. */
@@ -107,6 +123,7 @@ export class FakeTerminal {
     this.agentState = s.start
     this.out = this.prompt() + this.launchLine() + '\r\n'
     this.launchedAt = this.prompt().length
+    if (this.mode === 'shell') this.goneAt = s.teardownMs ?? 0
     if (s.start === 'gone-hint' || s.start === 'gone-quiet') {
       this.out += this.frame()
       this.agentState = 'idle'
@@ -183,8 +200,18 @@ export class FakeTerminal {
   private exitAgent(): void {
     this.exits++
     this.mode = 'shell'
-    let said = this.s.exit === 'no-hint' ? '\r\n' : this.hint()
-    said += this.s.nestedReport ? this.prompt(this.s.nestedReport) : this.prompt()
+    const hint = this.s.exit === 'no-hint' ? '\r\n' : this.hint()
+    const prompt = this.s.nestedReport ? this.prompt(this.s.nestedReport) : this.prompt()
+    if (this.s.teardownMs) {
+      this.goneAt = this.clock + this.s.teardownMs
+      if (this.s.hintAfterTeardown) this.late = { at: this.goneAt, text: hint + prompt }
+      else {
+        this.out += hint
+        this.late = { at: this.goneAt, text: prompt }
+      }
+      return
+    }
+    const said = hint + prompt
     if (this.s.exitOutputLateMs) this.late = { at: this.clock + this.s.exitOutputLateMs, text: said }
     else this.out += said
   }
@@ -235,10 +262,12 @@ export class FakeTerminal {
   /** What the switch typed, as each program takes it. */
   type(data: string): void {
     this.writes.push(data)
+    this.writeClocks.push(this.clock)
     for (let i = 0; i < data.length; i++) {
       const c = data[i]
       if (this.mode === 'shell') {
-        if (this.s.shellDead) continue
+        // The shell isn't reading while the agent's process is still going: the keys are lost.
+        if (this.s.shellDead || this.clock < this.goneAt) continue
         if (c === '\r') {
           const line = this.line
           this.line = ''
@@ -298,6 +327,14 @@ export class FakeTerminal {
     this.redraw()
   }
 
+  /** What the OS says: only the shell is left in the terminal, once the agent's process is gone. */
+  private alone(): boolean | null {
+    this.osAsked++
+    if (this.s.os === 'blind') return null
+    if (this.s.os === 'flaky' && this.osAsked % 2 === 0) return null
+    return this.mode === 'shell' && this.clock >= this.goneAt
+  }
+
   io(): SwitchIO {
     return {
       output: () => (this.out ? { raw: this.out, end: this.out.length } : null),
@@ -314,6 +351,7 @@ export class FakeTerminal {
       },
       now: () => this.clock,
       ...(this.s.foreground ? { atShell: () => this.mode === 'shell' } : {}),
+      ...(this.s.os ? { shellAlone: async () => this.alone() } : {}),
     }
   }
 }

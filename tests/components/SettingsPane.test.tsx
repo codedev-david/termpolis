@@ -193,6 +193,17 @@ describe('SettingsPane', () => {
     localStorage.removeItem('termpolis.terminal.agentNameFromFolder')
   })
 
+  it('renders the Default Models section, under Terminal Defaults, with one menu per agent', () => {
+    render(<SettingsPane />)
+    const terminalDefaults = screen.getByTestId('settings-terminal-defaults')
+    const models = screen.getByTestId('settings-default-models')
+    // Right after the Terminal Defaults box, on the General tab.
+    expect(terminalDefaults.compareDocumentPosition(models) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    for (const p of ['claude', 'codex', 'gemini']) {
+      expect(screen.getByTestId(`settings-default-model-${p}`)).toBeInTheDocument()
+    }
+  })
+
   it('renders the Check for updates button', () => {
     render(<SettingsPane />)
     expect(screen.getByTestId('settings-check-updates')).toBeInTheDocument()

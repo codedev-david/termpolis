@@ -19,7 +19,9 @@ import { checkSignIn, openOtherAgent, terminalAgent } from '../../lib/accountSwi
 import type { LimitContext } from '../../lib/limitWatch'
 import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgents, recentCheck } from '../../lib/limitChooser'
 import { newTerminalOn, startSwitch } from '../../lib/accountSwitchRun'
-import { modelHoldBridge, relaunchHeld } from '../../lib/modelRelaunch'
+import { modelHoldBridge, relaunchHeld, terminalRelaunchIo } from '../../lib/modelRelaunch'
+import { relaunchNotice } from '../../lib/modelRelaunchNotice'
+import { PROVIDER_LABEL, providerForCommand } from '../../lib/modelCatalog'
 import { launchAgents } from '../../lib/agentLaunch'
 import { SMALL_BUTTON, SMALL_PRIMARY, STOP_CARD } from './ui'
 
@@ -114,19 +116,28 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
     else setError(r.error)
   }
 
-  /** A model's limit (R15): the model Claude Code itself advises, resuming this terminal's session
-   *  by its id. No account changes. */
-  const toModel = async (alias: string, sessionId: string): Promise<void> => {
-    const why = await relaunchHeld({
-      terminalId: terminal.id, provider: 'claude', modelId: alias, catalog: null, sessionId,
-      begin: () => store().beginRelaunch(terminal.id, 'model'),
-      end: () => store().endRelaunch(terminal.id),
-      main: modelHoldBridge(),
-      write: window.termpolis.writeToTerminal,
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    })
-    if (why) return setError(`Termpolis didn't change the model: ${why}.`)
-    leave()
+  /** A model's limit (R15): the model Claude Code itself advises, through the header picker's own
+   *  relaunch (modelRelaunch.ts): the conversation Claude Code names as it exits is resumed by its id.
+   *  No account changes: the shell keeps the account's variable. */
+  const toModel = async (alias: string): Promise<void> => {
+    const target = alias.charAt(0).toUpperCase() + alias.slice(1)
+    try {
+      const result = await relaunchHeld({
+        terminalId: terminal.id, provider: 'claude', modelId: alias, catalog: null, launchCommand: terminal.agentCommand,
+        begin: () => store().beginRelaunch(terminal.id, 'model'),
+        end: () => store().endRelaunch(terminal.id),
+        main: modelHoldBridge(),
+        write: window.termpolis.writeToTerminal,
+        io: terminalRelaunchIo(terminal.id),
+      })
+      if ('refused' in result) return setError(`Termpolis didn't change the model: ${result.refused}.`)
+      const { text, reverted } = relaunchNotice(result.outcome, { provider: 'claude', label: PROVIDER_LABEL.claude, target, agentCommand: terminal.agentCommand })
+      if (reverted) return setError(text ?? `Termpolis didn't change the model: ${target} isn't one Claude Code offers.`)
+      if (text) store().setMemoryNotice(text)
+      leave()
+    } catch {
+      setError(`Switching ${PROVIDER_LABEL.claude} to ${target} failed, so nothing more was typed. The terminal is as the failure left it.`)
+    }
   }
 
   const until = untilText(limit.resetsAt, now)
@@ -134,6 +145,9 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   const first = ways[0]
   const others = targets.filter((t) => t.state !== 'this' && t !== first)
   const modelLabel = model ? model.charAt(0).toUpperCase() + model.slice(1) : ''
+  // The picker's own relaunch reads the conversation off Claude Code's exit, so any terminal that runs
+  // plain `claude` can take the one click; a wrapper (`claude-sandbox`) is told to use the picker.
+  const canSwitchModel = !!model && providerForCommand(terminal.agentCommand) === 'claude'
   const agents = otherAgents(installed, agent)
   const note = groupNote(limit, view)
 
@@ -157,18 +171,18 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
-            {model && terminal.agentSessionId && (
-              <button type="button" className={SMALL_PRIMARY} onClick={() => { void toModel(model, terminal.agentSessionId!) }} data-testid="limit-card-model">Switch this terminal to {modelLabel}</button>
+            {canSwitchModel && (
+              <button type="button" className={SMALL_PRIMARY} onClick={() => { void toModel(model!) }} data-testid="limit-card-model">Switch this terminal to {modelLabel}</button>
             )}
             {first && (fromWork
               ? <button type="button" className={SMALL_PRIMARY} onClick={() => fresh(first.row)} data-testid="limit-card-new">New terminal on {first.row.label}</button>
-              : <button type="button" className={model && terminal.agentSessionId ? SMALL_BUTTON : SMALL_PRIMARY} onClick={() => go(first.row)} data-testid="limit-card-continue">Continue on {first.row.label}</button>)}
+              : <button type="button" className={canSwitchModel ? SMALL_BUTTON : SMALL_PRIMARY} onClick={() => go(first.row)} data-testid="limit-card-continue">Continue on {first.row.label}</button>)}
             {first && fromWork && <button type="button" className={SMALL_BUTTON} onClick={() => go(first.row)} data-testid="limit-card-continue">Continue on {first.row.label}</button>}
             <button type="button" className={SMALL_BUTTON} aria-expanded={more} onClick={() => setMore(!more)} data-testid="limit-card-more">Other account <i className="fa-solid fa-caret-down" aria-hidden="true"></i></button>
             <button type="button" className={SMALL_BUTTON} onClick={leave} data-testid="limit-card-not-now">Not now</button>
           </div>
         )}
-        {model && !terminal.agentSessionId && <p className="text-[11px] text-[#9ca3af]" data-testid="limit-card-model-advice">{name} ran out on this model only: pick {modelLabel} in this terminal&apos;s model picker to go on here.</p>}
+        {model && !canSwitchModel && <p className="text-[11px] text-[#9ca3af]" data-testid="limit-card-model-advice">{name} ran out on this model only: pick {modelLabel} in this terminal&apos;s model picker to go on here.</p>}
         {!first && <p className="text-[11px] text-[#e5c07b]" data-testid="limit-card-none">{noWayOut(agent, targets, now)}</p>}
         {more && (
           <ul className="flex flex-col gap-1 border-t border-[#3c3c3c] pt-1.5" data-testid="limit-card-others">

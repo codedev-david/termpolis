@@ -49,6 +49,10 @@ jobs:
       SUBJECT_TAG: ${{ inputs.tag }}
       CLOUD_BLOCK_LEVEL: ${{ inputs.cloud_block_level }}
     steps:
+      # Only for scripts/test-installer-update.ps1, which the update step below runs.
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts
       # Defender is still off here, so nothing is quarantined on the way in, and each file is
       # judged by the explicit scan below.
       - name: Gather the files
@@ -202,6 +206,17 @@ jobs:
           $install | ConvertTo-Json | Set-Content (Join-Path $env:SCAN 'install.json')
           exit 0
 
+      # The in-app updater's path, on the signed installer with real-time protection on: update over
+      # the running app. It must close the app and a Node-mode helper, finish, and start no
+      # PowerShell, tasklist or wmic (build/installer.nsh; the Tests workflow runs the same check on
+      # an unsigned build of every commit). Judged in the Verdict step.
+      - name: Update over the running app
+        if: env.SUBJECT_INSTALLER != ''
+        shell: pwsh
+        run: |
+          ./scripts/test-installer-update.ps1 -Installer $env:SUBJECT_INSTALLER -UserDataDir (Join-Path $env:RUNNER_TEMP 'termpolis-profile-update') -Out (Join-Path $env:SCAN 'update.json')
+          exit 0
+
       - name: Verdict
         if: ${{ !cancelled() }}
         shell: pwsh
@@ -225,6 +240,14 @@ jobs:
           foreach ($r in ($results | Where-Object { $_.name -like 'subject:*' -and $_.verdict -ne 'clean' })) { $failures += "$($r.name): $($r.verdict) $($r.threats)" }
           if ($install -and (-not $install.presentAfter -or $install.detections)) { $failures += "the installed app was flagged or removed: $($install.detections)" }
           if ($install -and -not $install.ran) { $failures += 'the installed app did not stay running for 45s' }
+          $updateFile = Join-Path $env:SCAN 'update.json'
+          if (Test-Path $updateFile) {
+            $update = Get-Content $updateFile | ConvertFrom-Json
+            $summary += '', "Update over the running app: exit $($update.updateExit) in $($update.updateSeconds)s; app closed: $($update.appClosed); Node-mode helper closed: $($update.helperClosed); started by the installer: $(if ($update.startedByInstaller) { $update.startedByInstaller -join '; ' } else { 'nothing' })"
+            foreach ($f in @($update.failures)) { if ($f) { $failures += "update: $f" } }
+          } elseif ($env:SUBJECT_INSTALLER) {
+            $failures += 'the update over the running app reported nothing'
+          }
           if ($failures) { $summary += '', '### Failed', ''; $summary += ($failures | ForEach-Object { "- $_" }) }
           $summary -join "`n" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           $summary -join "`n"

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 
 // --- Mocks ---
 
@@ -12,7 +12,13 @@ const mockPty = {
 }
 
 vi.mock('node-pty', () => ({ spawn: vi.fn(() => mockPty) }))
-vi.mock('electron', () => ({ app: { isPackaged: false } }))
+// A real folder: the fs mock below does not reach terminalManager's own fs import, so the
+// integration script is really written (and removed again in afterAll).
+const { USER_DATA } = vi.hoisted(() => {
+  const base = process.env.RUNNER_TEMP || process.env.TEMP || process.env.TMPDIR || '/tmp'
+  return { USER_DATA: `${base}${base.includes('\\') ? '\\' : '/'}termpolis-test-userdata-${process.pid}` }
+})
+vi.mock('electron', () => ({ app: { isPackaged: false, getPath: (name: string) => (name === 'userData' ? USER_DATA : '') } }))
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal() as any
   // writeFileSync is stubbed so spawning a PowerShell terminal in a unit test does
@@ -27,6 +33,8 @@ vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal() as any
   return { ...actual, execSync: vi.fn() }
 })
+// What the OS says runs in a terminal is shellAlone.test.ts's; here, only whose question it gets.
+vi.mock('../../src/main/shellAlone', async (importOriginal) => ({ ...(await importOriginal<typeof import('../../src/main/shellAlone')>()), shellAlone: vi.fn(async () => true) }))
 
 const { existsSync, writeFileSync } = await import('fs')
 const { execSync } = await import('child_process')
@@ -44,9 +52,16 @@ const {
   getTerminalPid,
   getTerminalCwd,
   getTerminalSize,
+  terminalShellAlone,
   computeWindowsPty,
   isShellInForeground,
 } = await import('../../src/main/terminalManager')
+const { shellAlone } = await import('../../src/main/shellAlone')
+
+afterAll(async () => {
+  const { rmSync } = await vi.importActual<typeof import('fs')>('fs')
+  rmSync(USER_DATA, { recursive: true, force: true })
+})
 
 describe('terminalManager', () => {
   beforeEach(() => {
@@ -126,6 +141,16 @@ describe('terminalManager', () => {
     expect(args[0]).toBe('-NoExit')
     expect(args[1]).toBe('-Command')
     expect(args[2]).toContain('termpolis-shell-integration.ps1')
+  })
+
+  it('keeps the integration script in Termpolis\'s data folder, never the temp dir', async () => {
+    // PowerShell dot-sourcing a script from %TEMP% is a pattern endpoint security flags.
+    const { tmpdir } = await vi.importActual<typeof import('os')>('os')
+    const { join } = await vi.importActual<typeof import('path')>('path')
+    spawnTerminal('si-dir', 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', '/tmp', vi.fn())
+    const args = vi.mocked(pty.spawn).mock.calls[0][1] as string[]
+    expect(args[2]).toBe(`. '${join(USER_DATA, 'termpolis-shell-integration.ps1')}'`)
+    expect(args[2]).not.toContain(join(tmpdir(), 'termpolis-shell-integration.ps1'))
   })
 
   it('spawnTerminal gives bash a prompt hook without touching its argv', () => {
@@ -259,6 +284,17 @@ describe('terminalManager', () => {
     processKillSpy.mockRestore()
   })
 
+  it('asks what runs in a terminal of the shell it started there, by its pid', async () => {
+    spawnTerminal('alone-1', '/bin/zsh', '/tmp', vi.fn())
+    expect(await terminalShellAlone('alone-1')).toBe(true)
+    expect(shellAlone).toHaveBeenCalledWith(12345, '/bin/zsh')
+  })
+
+  it('has no answer for a terminal it has no process for', async () => {
+    expect(await terminalShellAlone('no-such-terminal')).toBeNull()
+    expect(shellAlone).not.toHaveBeenCalled()
+  })
+
   // 6. killTerminal handles non-existent terminal gracefully
   it('killTerminal does not throw for a non-existent terminal', () => {
     expect(() => killTerminal('nonexistent')).not.toThrow()
@@ -339,6 +375,34 @@ describe('terminalManager', () => {
       Object.defineProperty(fake, 'process', { value: 'zsh', writable: true, configurable: true })
       Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
       expect(isShellInForeground('fg1')).toBeNull()
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+      delete fake.process
+    }
+  })
+
+  // A shell that keeps what it runs in its own process group (PowerShell and Nushell on Unix) is the
+  // PTY's foreground process while an agent runs in it, so "the shell is in the foreground" would
+  // read as an agent that exited, and a usage limit or a switch would act on the screen of one that
+  // is still there. Only a shell with job control (shellAlone.ts) has a foreground that means it.
+  it('isShellInForeground: says nothing for a shell that keeps what it runs in its own process group, or a program that is not a shell', () => {
+    const originalPlatform = process.platform
+    const fake = mockPty as any
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+      for (const [id, exe] of [['fgp', '/usr/bin/pwsh'], ['fgn', '/usr/bin/nu'], ['fga', '/usr/local/bin/claude']] as const) {
+        spawnTerminal(id, exe, '/tmp', vi.fn())
+        fake.process = exe.slice(exe.lastIndexOf('/') + 1)
+        expect(isShellInForeground(id)).toBeNull()
+      }
+      // ...while every shell with job control answers, whatever its path.
+      for (const [id, exe] of [['fgb', '/bin/bash'], ['fgs', '/bin/sh'], ['fgd', '/usr/bin/dash'], ['fgf', '/usr/bin/fish'], ['fgk', '/bin/ksh']] as const) {
+        spawnTerminal(id, exe, '/tmp', vi.fn())
+        fake.process = exe.slice(exe.lastIndexOf('/') + 1)
+        expect(isShellInForeground(id)).toBe(true)
+        fake.process = 'claude'
+        expect(isShellInForeground(id)).toBe(false)
+      }
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
       delete fake.process

@@ -143,3 +143,37 @@ describe('App: a Linked machines job notification, clicked', () => {
     expect(() => unmount()).not.toThrow()
   })
 })
+
+// The session is saved a second after the last change (a debounce). That timer used to outlive App: an
+// unmounted App left it pending, and a second later it called saveSession on a window whose bridge was
+// already gone. In a full test run that surfaced as an "unhandled error" that made the whole run exit 1
+// although every test had passed, depending on how long the worker lingered.
+describe('App: the debounced session save', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('does not fire after App is gone', async () => {
+    vi.useFakeTimers()
+    const { unmount } = render(<App />)
+    // Let the session load and the first change schedule its save.
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    const saveSession = (win.termpolis as { saveSession: ReturnType<typeof vi.fn> }).saveSession
+    unmount()
+    delete win.termpolis // the window the save would have written to
+    expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
+    expect(saveSession).not.toHaveBeenCalled()
+  })
+
+  it('still saves a second after a change while App is mounted', async () => {
+    vi.useFakeTimers()
+    const { unmount } = render(<App />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    const saveSession = (win.termpolis as { saveSession: ReturnType<typeof vi.fn> }).saveSession
+    saveSession.mockClear()
+    act(() => { useTerminalStore.setState({ viewMode: 'tab' }); useTerminalStore.setState({ allowAppMouseControl: true }) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(999) })
+    expect(saveSession).not.toHaveBeenCalled() // debounced: not before the second is up
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    expect(saveSession).toHaveBeenCalledTimes(1) // once, however many changes there were
+    unmount()
+  })
+})

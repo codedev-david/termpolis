@@ -144,6 +144,37 @@ describe('resume: the conversation by its exact id', () => {
   })
 })
 
+// The OS's word on whether agy's process is gone (shellAlone.ts) has the last say here as in the
+// account switch: the box it leaves on the screen proves nothing, and its goodbye can come at the
+// start of its teardown or only at the end.
+describe('exit: the OS has the last word on whether agy is gone', () => {
+  it('waits out agy\'s teardown before it calls the exit done, and still reads the conversation', async () => {
+    const t = new FakeTerminal(agy({ reports: false, os: 'tells', teardownMs: 7000 }))
+    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: ID })
+    expect(t.clock).toBeGreaterThanOrEqual(7000)
+    expect(t.writes).toEqual(['/exit', '\r'])
+  })
+
+  it('waits on past the screen\'s 8 s for a goodbye that comes only at the end of a slow teardown', async () => {
+    const t = new FakeTerminal(agy({ reports: false, os: 'tells', teardownMs: 12_000, hintAfterTeardown: true }))
+    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: ID })
+    // ...where without the OS the same screen confirms nothing.
+    const blind = new FakeTerminal(agy({ reports: false, teardownMs: 12_000, hintAfterTeardown: true }))
+    expect(await step(blind, {}).p).toMatchObject({ kind: 'not-exited' })
+  })
+
+  it('types no /exit to an agy the OS says is gone, though its last frame is still on the screen', async () => {
+    const t = new FakeTerminal(agy({ start: 'gone-quiet', reports: false, os: 'tells' }))
+    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: null })
+    expect(t.writes).toEqual([])
+  })
+
+  it('does not take the user\'s word to the OS: assumeExited asks nothing', async () => {
+    const t = new FakeTerminal(agy({ start: 'gone-hint', os: 'tells' }))
+    expect(await step(t, { assumeExited: true }).p).toEqual({ kind: 'exited', conversationId: ID })
+    expect(t.osAsked).toBe(0)
+  })
+})
 describe('shownEmail: what agy\'s header shows, for display only', () => {
   it('reads an address in the first rows, and nothing below them', () => {
     expect(shownEmail(['  Antigravity CLI', '  someone@example.co.uk (Google AI Pro)'])).toBe('someone@example.co.uk')

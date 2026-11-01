@@ -313,6 +313,6 @@ export function conductorLaunchCommand(isWindows: boolean, scriptFile: string): 
   return (
     `$p='${PS51_PATH}'; ` +
     `if (-not (Test-Path $p)) { $p=(Get-Process -Id $PID).Path }; ` +
-    `& $p -ExecutionPolicy Bypass -File ${psQuote(scriptFile)}`
+    `& $p -ExecutionPolicy RemoteSigned -File ${psQuote(scriptFile)}`
   )
 }

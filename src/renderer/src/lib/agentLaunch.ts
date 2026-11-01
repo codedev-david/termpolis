@@ -1,7 +1,9 @@
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { accountLaunchLine, accountsBridge, launchAccountFor } from './accountLaunch'
 import type { AccountsBridge, LaunchLine } from './accountLaunch'
+import { catalogForLaunch, defaultModelFor, droppedDefaultNotice } from './agentModelDefaults'
 import { useTerminalStore } from '../store/terminalStore'
+import { providerForCommand, type ModelCatalog } from './modelCatalog'
 
 /**
  * Launching an agent in a terminal is a timed sequence, not a single write: the
@@ -52,6 +54,8 @@ export interface AgentLaunchOptions {
   onLaunched?: (id: string, launched: { agentAccountId: string; agentSessionId?: string }) => void
   /** A target's line was refused, and nothing typed: the sentence why. Defaults to a notice. */
   onRefused?: (id: string, why: string) => void
+  /** Shows a one-line notice. Defaults to the app's notice bar. */
+  notify?: (message: string) => void
 }
 
 /** The subset of `targets` that actually carries an agent command. */
@@ -100,9 +104,23 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
     void account.then((id) => trust(t, id))
   }
 
+  // The agent's own list, for checking a saved Codex or Antigravity default against. Asked for now
+  // and used when the command is typed seconds later; if it has not arrived by then the default is
+  // checked on its shape alone, which is all a launch can do without it. A launch with no such
+  // default saved makes no call at all.
+  let catalog: ModelCatalog | null = null
+  void catalogForLaunch().then((c) => { catalog = c })
+  const notify = options.notify ?? ((message: string) => useTerminalStore.getState().setMemoryNotice(message))
+
   /** Types a target's agent: its command as is, or main's line on its account. */
   const type = (t: AgentLaunchTarget): void => {
-    const command = resolveAgentCommand(t.agentCommand!)
+    // Settings › General › Default Models: a new terminal starts on the model chosen for its
+    // agent, unless its command already picks one or resumes a session. It is part of the command
+    // the account line wraps, so the agent comes up on that account and that model.
+    const base = resolveAgentCommand(t.agentCommand!)
+    const model = defaultModelFor(base, catalog)
+    if (model.dropped) notify(droppedDefaultNotice(base, model.dropped))
+    const command = base + model.arg
     const account = accountOf.get(t.id)
     if (!account) {
       write(t.id, command + '\r')
@@ -135,6 +153,7 @@ export function launchAgents(targets: AgentLaunchTarget[], options: AgentLaunchO
   // agents does App.tsx's poller answer a trust prompt, on the row that is actually
   // highlighted, and never for the home folder or a drive root.
 
-  const hasSlowAgent = agents.some(t => t.agentCommand === 'gemini')
+  // Gemini is the Antigravity CLI (`agy`) now; `gemini` is the retired command, kept for old sessions.
+  const hasSlowAgent = agents.some(t => t.agentCommand === 'gemini' || providerForCommand(t.agentCommand) === 'gemini')
   setTimeout(() => options.onSettled?.(), testDelay(hasSlowAgent ? SLOW_DISMISS_MS : DISMISS_MS))
 }

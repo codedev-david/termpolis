@@ -113,6 +113,7 @@ const H = vi.hoisted(() => {
     relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
     getTerminalSize: vi.fn((_id: string): { cols: number; rows: number } | null => null),
     isShellInForeground: vi.fn((_id: string): boolean | null => null),
+    terminalShellAlone: vi.fn(async (_id: string): Promise<boolean | null> => null),
     mcpHandlers: null as null | Record<string, (...a: any[]) => any>,
     getProxyEnv: vi.fn((_env: unknown, _settingsEnv?: unknown): Record<string, string> | null => null),
     mkdirSync: vi.fn(),
@@ -274,6 +275,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   computeWindowsPty: mockComputeWindowsPty,
   getTerminalSize: H.getTerminalSize,
   isShellInForeground: H.isShellInForeground,
+  terminalShellAlone: H.terminalShellAlone,
 }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: mockDetectAvailableShells }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: mockLoadSession, loadRestoreSession: mockLoadRestoreSession, saveSession: mockSaveSession }))
@@ -851,7 +853,7 @@ describe('Settings ▸ Accounts wiring', () => {
     H.noteTypedInput.mockImplementationOnce(() => { order.push('watch'); return null })
     write('\x1b[200~unset CLAUDE_CONFIG_DIR\x1b[201~')
     // The paste's markers come off, as for the launch audit.
-    expect(H.noteTypedInput).toHaveBeenCalledWith('t-typed', 'unset CLAUDE_CONFIG_DIR')
+    expect(H.noteTypedInput).toHaveBeenCalledWith('t-typed', 'unset CLAUDE_CONFIG_DIR', expect.any(Number), undefined)
     expect(order).toEqual(['pty', 'watch'])
     // A watch that throws never breaks the terminal.
     H.noteTypedInput.mockImplementationOnce(() => { throw new Error('boom') })
@@ -890,7 +892,12 @@ describe('Settings ▸ Accounts wiring', () => {
     // The key goes to the lock, never to the PTY.
     expect(H.relaunchLockReason).toHaveBeenLastCalledWith('t-model', expect.any(Number), 'k-picker')
     expect(mockWriteToTerminal.mock.calls).toEqual([['t-model', '/quit']])
+    // ...and to the watch of what is typed, which counts the picker's relaunch line as the agent's start
+    // (accountsIpc.ts noteTypedInput): a key that is no string is none there too.
+    expect(H.noteTypedInput).toHaveBeenLastCalledWith('t-model', '/quit', expect.any(Number), 'k-picker')
     H.relaunchLockReason.mockImplementation(() => null)
+    write({ data: 'x', key: 7 })
+    expect(H.noteTypedInput).toHaveBeenLastCalledWith('t-model', 'x', expect.any(Number), undefined)
   })
 
   it('reads and types for a switch through the terminals\' buffers and PTYs', async () => {
@@ -912,6 +919,13 @@ describe('Settings ▸ Accounts wiring', () => {
     H.isShellInForeground.mockReturnValueOnce(true)
     expect(io.atShell!('t-sw')).toBe(true)
     expect(H.isShellInForeground).toHaveBeenLastCalledWith('t-sw')
+    // The OS's full answer on whether only the shell is left (shellAlone.ts), which the switch asks at
+    // its exit and the model switch and submit ask at theirs; main hands it the terminal's own.
+    H.terminalShellAlone.mockResolvedValueOnce(true)
+    expect(await io.shellAlone!('t-sw')).toBe(true)
+    expect(H.terminalShellAlone).toHaveBeenLastCalledWith('t-sw')
+    H.terminalShellAlone.mockResolvedValueOnce(null)
+    expect(await io.shellAlone!('t-sw')).toBeNull()
     vi.useFakeTimers()
     const slept = io.sleep(250)
     vi.advanceTimersByTime(250)

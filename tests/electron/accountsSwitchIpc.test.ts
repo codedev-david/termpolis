@@ -294,50 +294,89 @@ describe('accounts:agy-switch', () => {
 })
 
 describe('accounts:model-hold and accounts:model-release (§7.5)', () => {
-  it('needs a terminal and a line, and never holds for a line that changes the account', async () => {
-    expect(await fails(ACCOUNTS_IPC.modelHold, { line: 'claude --model opus --continue' })).toBe('which terminal?')
-    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: '  ' })).toBe('there is no command to run')
-    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 7 })).toBe('there is no command to run')
-    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'export CLAUDE_CONFIG_DIR=/x && claude --model opus --continue' }))
-      .toBe('a model change doesn\'t change the account')
-    // Nothing was held by any of them.
-    expect((await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model opus --continue' })).key).toBeTruthy()
+  const HELD = 'an account switch or another model change is running in this terminal'
+  const SID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d'
+
+  it('needs a terminal, and asks for nothing else: what the picker types is only known once the agent has exited', async () => {
+    expect(await fails(ACCOUNTS_IPC.modelHold, {})).toBe('which terminal?')
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 7 })).toBe('which terminal?')
+    // Nothing was held by either; a line sent along is not asked for and not looked at.
+    expect((await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'export CLAUDE_CONFIG_DIR=/x && claude' })).key).toBeTruthy()
   })
 
-  it('holds the terminal once, counts its line as the agent\'s start once typed, and lets go only for its key', async () => {
+  it('holds the terminal once, counts what is typed under the hold as the agent\'s start, and lets go only for its key', async () => {
     register({ outputEnd: () => 99 })
     const { main, b } = await twoClaude()
     noteTerminalAccount('t1', main)
     noteAgentStart('t1', { at: 3, commands: ['claude --model haiku'] })
-    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: ' claude --model opus --continue ' })
-    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' }))
-      .toBe('an account switch or another model change is running in this terminal')
+    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })).toBe(HELD)
     // A switch waits for it too, typing nothing.
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     expect(await switchTo(b)).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
     expect(term.writes).toEqual([])
     log.mockRestore()
-    // The picker's line, as typed: the agent's start is now there, and it reads as Termpolis's own.
-    expect(noteTypedInput('t1', 'claude --model opus --continue\r', 43)).toBe('own')
-    expect(terminalAgentStart('t1')).toEqual({ at: 99, commands: ['claude --model opus --continue'], agent: 'claude', time: 43 })
+    // The picker's line, as typed under its key: the agent's start is now there, and it reads as
+    // Termpolis's own, though nothing registered it beforehand (the exit chose it).
+    expect(noteTypedInput('t1', `claude --model opus --resume ${SID}\r`, 43, key)).toBe('own')
+    expect(terminalAgentStart('t1')).toEqual({ at: 99, commands: [`claude --model opus --resume ${SID}`], agent: 'claude', time: 43 })
     expect(terminalAccountId('t1')).toBe(main)
     expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key: 'not-its-key' })).toBe(true)
-    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' })).toBe('an account switch or another model change is running in this terminal')
+    expect(await fails(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })).toBe(HELD)
     expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key })).toBe(true)
     // Again, or with half a request: nothing to let go, and no error.
     expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key })).toBe(true)
     expect(await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1' })).toBe(true)
     expect(await ok(ACCOUNTS_IPC.modelRelease, { key })).toBe(true)
-    expect((await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' })).key).not.toBe(key)
+    expect((await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })).key).not.toBe(key)
+  })
+
+  it('takes a line typed without the hold\'s key, or after it was let go, for any other typed line', async () => {
+    register({ outputEnd: () => 99 })
+    noteAgentStart('t1', { at: 3, commands: ['claude --model haiku'] })
+    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })
+    expect(noteTypedInput('t1', `claude --model opus --resume ${SID}\r`, 43, 'not-its-key')).toBeNull()
+    expect(noteTypedInput('t1', `claude --model opus --resume ${SID}\r`, 43)).toBeNull()
+    // A line that is not an agent's start is not the agent's start, key or not.
+    expect(noteTypedInput('t1', 'ls -la\r', 43, key)).toBeNull()
+    expect(terminalAgentStart('t1')?.commands).toEqual(['claude --model haiku'])
+    await ok(ACCOUNTS_IPC.modelRelease, { terminalId: 't1', key })
+    expect(noteTypedInput('t1', `claude --model opus --resume ${SID}\r`, 44, key)).toBeNull()
+  })
+
+  it('follows the Claude Code session through what the picker types: the one it resumed, none for a new or an unnamed one', async () => {
+    register({ outputEnd: () => 99 })
+    noteTerminalSession('t1', 'launch-session')
+    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })
+    expect(noteTypedInput('t1', `claude --dangerously-skip-permissions --model opus --resume ${SID}\r`, 43, key)).toBe('own')
+    expect(terminalSessionId('t1')).toBe(SID)
+    // A new session (the exit named none), or "the latest": the launch's id no longer names it.
+    expect(noteTypedInput('t1', 'claude --model opus\r', 44, key)).toBe('own')
+    expect(terminalSessionId('t1')).toBeUndefined()
+    noteTerminalSession('t1', SID)
+    expect(noteTypedInput('t1', 'claude --model opus --continue\r', 45, key)).toBe('own')
+    expect(terminalSessionId('t1')).toBeUndefined()
+    // Codex and agy keep no session id of Termpolis's: whatever it was is left alone.
+    noteTerminalSession('t1', SID)
+    expect(noteTypedInput('t1', `codex --model gpt-5.6-sol resume ${SID}\r`, 46, key)).toBe('own')
+    expect(noteTypedInput('t1', `agy --model gemini-3.8-flash-high --conversation=${SID}\r`, 47, key)).toBe('own')
+    expect(terminalSessionId('t1')).toBe(SID)
   })
 
   it('keeps the launch\'s own line beside the picker\'s: either one, typed, is Termpolis\'s own', async () => {
     const { b } = await twoClaude()
     const launch = await ok<{ line: string }>(ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', command: 'claude', shellType: 'gitbash', accountId: b })
-    await ok(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model opus --continue' })
+    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })
     // The launch's line sets CLAUDE_CONFIG_DIR: were it forgotten, typing it would read as a change by hand.
     expect(noteTypedInput('t1', `${launch.line}\r`, 43)).toBe('own')
-    expect(noteTypedInput('t1', 'claude --model opus --continue\r', 44)).toBe('own')
+    expect(noteTypedInput('t1', `claude --model opus --resume ${SID}\r`, 44, key)).toBe('own')
     expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount)).toEqual([])
+  })
+
+  it('still marks a line typed under the hold that changes the account for what it is: a change by hand', async () => {
+    // The picker never types one (its flags are plain words), but a hold's key opens no door for it.
+    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })
+    expect(noteTypedInput('t1', 'export CLAUDE_CONFIG_DIR=/x && claude --model opus\r', 43, key)).toBe('by-hand')
+    expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount)).toHaveLength(1)
   })
 })

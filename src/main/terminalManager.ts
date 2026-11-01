@@ -1,13 +1,14 @@
 import * as pty from 'node-pty'
-import { homedir, tmpdir } from 'os'
-import { existsSync, writeFileSync } from 'fs'
-import { basename, join } from 'path'
+import { homedir } from 'os'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { basename, dirname, join } from 'path'
 import { execSync } from 'child_process'
 import { app } from 'electron'
 import { execShellCaptureOffThread } from './procClient'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { sudoAskpassEnv } from './sudoAskpass'
+import { hasJobControl, shellAlone } from './shellAlone'
 import {
   detectShellKind,
   integrationArgs,
@@ -30,8 +31,8 @@ interface PtyProcess {
    *  CURRENT size, so it is recorded on the way through instead. */
   cols: number
   rows: number
-  /** The program the terminal started: its shell. */
-  shell: string
+  /** What was started in the PTY: the shell, or the agent itself for a workflow's agent step. */
+  executable: string
 }
 
 /** A terminal's current geometry, or null when there is no such terminal.
@@ -246,20 +247,23 @@ export function spawnTerminal(
     try { coalescer.dispose() } catch {}
     try { onExit?.(e.exitCode) } finally { processes.delete(id) }
   })
-  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, shell: executable })
+  processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable })
 }
 
 /** Whether the terminal's own shell is its PTY's foreground process (macOS and Linux): an agent
  *  started in it has exited. node-pty reads the name through the PTY's own master fd, the same
- *  kind of read as the live cwd below, never a process listing. null where that can't be told:
- *  on Windows, where node-pty only ever names the program it started, or for no such terminal. */
+ *  kind of read as the live cwd below, never a process listing. The cheap, synchronous read the
+ *  screen-polling parts use (limitLook.ts, accountSwitch.ts); shellAlone.ts is the OS's full answer,
+ *  asked once at the moments that need it. null where that can't be told: on Windows, where
+ *  node-pty only ever names the program it started, for a shell that gives what it runs no
+ *  foreground group of its own (shellAlone.ts: PowerShell on Unix), or for no such terminal. */
 export function isShellInForeground(id: string): boolean | null {
   const proc = processes.get(id)
-  if (process.platform === 'win32' || !proc) return null
+  if (process.platform === 'win32' || !proc || !hasJobControl(proc.executable)) return null
   // A login shell's name can carry a leading '-'.
   const name = (s: string): string => basename(s).replace(/^-/, '')
   try {
-    return name(proc.pty.process) === name(proc.shell)
+    return name(proc.pty.process) === name(proc.executable)
   } catch {
     return null
   }
@@ -343,6 +347,13 @@ export function getTerminalPid(id: string): number | null {
   return proc?.pty.pid ?? null
 }
 
+/** Whether nothing runs in terminal `id` but its shell (shellAlone.ts); null for no such terminal,
+ *  or where that can't be told. */
+export function terminalShellAlone(id: string): Promise<boolean | null> {
+  const proc = processes.get(id)
+  return proc?.pty.pid ? shellAlone(proc.pty.pid, proc.executable) : Promise.resolve(null)
+}
+
 /** The shell pipeline that reads a pid's cwd: fast /proc on Linux, lsof on macOS. */
 function cwdProbeCommand(pid: number): string {
   return `readlink /proc/${pid}/cwd 2>/dev/null || lsof -p ${pid} -Fn 2>/dev/null | grep '^n/' | head -1 | cut -c2-`
@@ -396,16 +407,18 @@ export async function getTerminalCwdAsync(id: string): Promise<string | null> {
  *
  * PowerShell is the only shell whose integration cannot travel in the environment — it
  * has no PROMPT_COMMAND equivalent — so the wrapper needs a real file to dot-source.
- * It goes in the temp dir, never anywhere the user owns, and is rewritten if something
- * cleaned it up mid-session.
+ * It goes in Termpolis's own data folder, never anywhere the user owns, and is rewritten
+ * if something cleaned it up mid-session. Not the temp dir: PowerShell running a script
+ * from %TEMP% is a pattern endpoint security flags (malware stages scripts there).
  *
  * Returns null on any failure, which the caller reads as "spawn exactly as before".
  */
 let integrationScriptPath: string | null = null
 function ensureIntegrationScript(): string | null {
   try {
-    const p = integrationScriptPath ?? join(tmpdir(), 'termpolis-shell-integration.ps1')
+    const p = integrationScriptPath ?? join(app.getPath('userData'), 'termpolis-shell-integration.ps1')
     if (integrationScriptPath === null || !existsSync(p)) {
+      mkdirSync(dirname(p), { recursive: true })
       writeFileSync(p, POWERSHELL_INTEGRATION_SCRIPT, 'utf8')
     }
     integrationScriptPath = p

@@ -85,6 +85,24 @@ async function launch(command: string): Promise<string> {
   return line
 }
 
+// Endpoint security reads a process query on a timer as discovery (v1.54.3: endpointActivityGuard). The
+// chooser's look runs for every changed screen of every agent terminal, every 2 s: it reads the
+// terminal's own foreground (isShellInForeground, no process listing), and never the OS's full answer
+// (shellAlone.ts), which a switch asks only at the moments that need it.
+describe('accounts:limit-look never asks the OS who runs in the terminal', () => {
+  it('reads the screen and the cheap foreground, however often it looks', async () => {
+    const shellAlone = vi.fn(async () => true as boolean | null)
+    const atShell = vi.fn(() => false as boolean | null)
+    register({ switchIO: { output: (id) => term.io().output(id), outputFrom: (id, from) => term.io().outputFrom(id, from), end: (id) => term.io().end(id), size: () => ({ cols: 80, rows: 24 }), write: (id, data) => term.io().write(id, data), sleep: (ms) => term.io().sleep(ms), now: () => clock, atShell, shellAlone } })
+    await launch('claude')
+    for (let i = 0; i < 6; i++) {
+      clock += 2000
+      await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    }
+    expect(atShell).toHaveBeenCalled()
+    expect(shellAlone).not.toHaveBeenCalled()
+  })
+})
 describe('accounts:limit-look', () => {
   it('needs main\'s terminals and a terminal', async () => {
     expect((await call(ACCOUNTS_IPC.limitLook, {})).error).toBe('which terminal?')
@@ -222,9 +240,9 @@ describe("the agent's lifecycle, from what is typed", () => {
 
   it("records the model picker's relaunch line as the agent's start once typed", async () => {
     term = new FakeTerminal({ agent: 'claude', family: 'posix', start: 'idle', exit: 'hint' })
-    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1', line: 'claude --model sonnet --continue' })
+    const { key } = await ok<{ key: string }>(ACCOUNTS_IPC.modelHold, { terminalId: 't1' })
     expect(typeof key).toBe('string')
-    noteTypedInput('t1', 'claude --model sonnet --continue\r', clock)
+    noteTypedInput('t1', 'claude --model sonnet --continue\r', clock, key)
     expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', commands: ['claude --model sonnet --continue'] })
   })
 })

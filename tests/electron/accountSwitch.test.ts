@@ -12,10 +12,11 @@
 //       --continue or resume --last.
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  ECHO_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, _resetSwitchLocksForTest, holdForModel, relaunchLockReason, releaseModelHold,
+  ECHO_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason, releaseModelHold,
   runAccountSwitch,
 } from '../../src/main/accountSwitch'
 import type { SwitchContext } from '../../src/main/accountSwitch'
+import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
 import type { SwitchOutcome, SwitchRequest } from '../../src/shared/accountSwitch'
 import type { AgentAccount } from '../../src/shared/agentAccounts'
 import { FakeTerminal, ID, ID2, keys } from './_switchTerminal'
@@ -515,6 +516,38 @@ describe('R7: the lock', () => {
     expect(holdForModel('tM', 2000 + MODEL_HOLD_MS)).not.toBe(again)
   })
 
+  it('tells the key of the picker\'s live hold from every other: no hold, another key, a lapsed hold, a switch\'s hold', async () => {
+    expect(holdsModelKey('tK', 'any', 1000)).toBe(false)
+    const key = holdForModel('tK', 1000) as string
+    expect(holdsModelKey('tK', key, 1000)).toBe(true)
+    expect(holdsModelKey('tK', key)).toBe(false) // the real clock is long past a hold taken at 1000
+    expect(holdsModelKey('tK', 'k-other', 1000)).toBe(false)
+    expect(holdsModelKey('tK', undefined, 1000)).toBe(false)
+    expect(holdsModelKey('tK', '', 1000)).toBe(false)
+    expect(holdsModelKey('tK', key, 1000 + MODEL_HOLD_MS - 1)).toBe(true)
+    expect(holdsModelKey('tK', key, 1000 + MODEL_HOLD_MS)).toBe(false)
+    expect(holdsModelKey('tOther', key, 1000)).toBe(false)
+    releaseModelHold('tK', key)
+    expect(holdsModelKey('tK', key, 1000)).toBe(false)
+    // A switch's hold has no key anyone could hold.
+    const t = new FakeTerminal(claude({ relaunch: ['nothing'] }))
+    const io = t.io()
+    let during: boolean | null = null
+    await runAccountSwitch({ terminalId: 'tK', targetId: 'acc_b', shellType: 'bash' }, {
+      io: { ...io, write: (id, d) => { during = holdsModelKey('tK', 'any', t.clock); io.write(id, d) } },
+      target: B, agent: 'claude', start: { at: t.launchedAt, commands: ['claude'] }, newSessionId: () => NEW_ID, record: () => undefined,
+    })
+    expect(during).toBe(false)
+  })
+
+  it('holds the picker\'s terminal for longer than the longest relaunch the picker can make (modelRelaunch.ts)', () => {
+    // The picker's relaunch waits up to EXIT_CEILING_MS for the agent to hand the prompt back (after
+    // a first answer and a settle), reads, types, and gives a resume of "the latest" RESUME_PROBE_MS
+    // to fail; the hold has to outlast all of it, or main would drop the picker's own last keys.
+    expect(MODEL_HOLD_MS).toBeGreaterThan(EXIT_CEILING_MS + BLIND_EXIT_WAIT_MS + PROMPT_SETTLE_MS + RESUME_PROBE_MS)
+    expect(MODEL_HOLD_MS).toBeLessThanOrEqual(LOCK_MS)
+  })
+
   it('refuses the picker a terminal a switch holds, and a switch one the picker holds; no key opens a switch\'s', async () => {
     const t = new FakeTerminal(claude({ relaunch: ['nothing'] }))
     let pickerKey: string | null = 'unset'
@@ -533,5 +566,99 @@ describe('R7: the lock', () => {
     })
     expect(refused).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
     releaseModelHold('tS', key)
+  })
+})
+
+// The OS's word (shellAlone.ts) on whether only the shell is left in the terminal has the last say,
+// as it has in the model switch (modelRelaunch.ts), whose live runs found: Claude Code takes 4 to 11 s
+// to hand the terminal back on a machine with SessionEnd hooks, and what is typed meanwhile is lost
+// without a sound. The screen shows the goodbye at once, and on Windows nothing else shows the end.
+describe('the OS has the last word on whether the agent is gone', () => {
+  const LINE = (id: string) => `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${id}`
+
+  it('types nothing until the process is gone, though its exit hint shows at once', async () => {
+    const r = await run(claude({ reports: false, os: 'tells', teardownMs: 6000 }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(r.t.ran).toEqual(['', LINE(ID)])
+    // The sacrificial Enter and the line itself came after the process was gone, not while it was going.
+    const exitAt = r.t.writeClocks[r.t.writes.indexOf('\r', r.t.writes.indexOf('/exit') + 1)]
+    expect(r.t.writeClocks[r.t.writes.length - 1]).toBeGreaterThanOrEqual(exitAt + 6000)
+    cleanRun(r)
+  })
+
+  it('loses the line typed during the teardown, and says the switch did not start, where the OS cannot be asked', async () => {
+    // The contrast: without the OS's word the screen says "gone" at once, the line goes to a shell
+    // that is not reading yet, and nothing is entered.
+    const r = await run(claude({ reports: false, teardownMs: 6000 }))
+    expect(r.outcome).toMatchObject({ kind: 'didnt-start' })
+    expect(r.t.ran).toEqual([])
+  })
+
+  it('waits on past the screen\'s 8 s for an exit that only shows at the end of a slow teardown', async () => {
+    const r = await run(claude({ reports: false, os: 'tells', teardownMs: 12_000, hintAfterTeardown: true }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(r.t.clock).toBeGreaterThanOrEqual(12_000)
+    // ...where without the OS the same 8 s window ends with nothing confirmed and nothing more typed.
+    const blind = await run(claude({ reports: false, teardownMs: 12_000, hintAfterTeardown: true }))
+    expect(blind.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(blind.t.ran).toEqual([])
+  })
+
+  it('confirms an exit that printed no hint at all (a session with no turns), on Windows too', async () => {
+    const r = await run(claude({ exit: 'no-hint', reports: false, os: 'tells' }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'no-session' })
+    expect(r.t.ran).toEqual(['', `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --session-id ${NEW_ID}`])
+  })
+
+  it('sends no exit key to an agent the OS says is gone, though its last frame is still on the screen', async () => {
+    const r = await run(claude({ start: 'gone-quiet', reports: false, os: 'tells' }), { sessionId: ID2, hasTranscript: (id) => id === ID2 })
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID2 })
+    expect(keys(r.t)).not.toContain('/exit')
+    expect(r.t.ran).toEqual(['', LINE(ID2)])
+    // ...where the same screen with no OS to ask is an agent live on screen, and gets its exit command.
+    const blind = await run(claude({ start: 'gone-quiet', reports: false }), { sessionId: ID2, hasTranscript: (id) => id === ID2 })
+    expect(keys(blind.t)).toContain('/exit')
+  })
+
+  it('waits for an agent the user quit by hand a moment ago, whose process is still going', async () => {
+    const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells', teardownMs: 5000 }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(keys(r.t)).not.toContain('/exit')
+    expect(r.t.ran).toEqual(['', LINE(ID)])
+    expect(r.t.writeClocks[0]).toBeGreaterThanOrEqual(5000)
+  })
+
+  it('types nothing but its exit command, and says it could not confirm, when the process outlives the ceiling', async () => {
+    const r = await run(claude({ exit: 'ignore', reports: false, os: 'tells' }))
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.t.writes).toEqual(['/exit', '\r'])
+    expect(r.t.clock).toBeGreaterThanOrEqual(EXIT_CONFIRM_MS + EXIT_CEILING_MS)
+    expect(r.t.ran).toEqual([])
+  })
+
+  it('goes on the screen\'s word where the OS cannot tell, as before it was asked', async () => {
+    const blind = await run(claude({ os: 'blind' }))
+    expect(blind.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    const none = await run(claude({ exit: 'ignore', reports: false, os: 'blind' }))
+    expect(none.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(none.t.writes).toEqual(['/exit', '\r'])
+  })
+
+  it('treats a question it cannot answer after "still running" as a hiccup, and goes on waiting', async () => {
+    const r = await run(claude({ reports: false, os: 'flaky', teardownMs: 6000 }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(r.t.ran).toEqual(['', LINE(ID)])
+  })
+
+  it('asks the OS nothing when the user said the agent exited: their word replaces the check', async () => {
+    const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells' }), {}, { assumeExited: true })
+    expect(r.t.osAsked).toBe(0)
+    expect(r.outcome).toMatchObject({ kind: 'switched' })
+  })
+
+  it('keeps the terminal\'s lock through a long teardown, and still has time to watch the relaunch come up', async () => {
+    const r = await run(claude({ reports: false, os: 'tells', teardownMs: 28_000, hintAfterTeardown: true }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(relaunchLockReason('t1', r.t.clock)).toBeNull()
   })
 })

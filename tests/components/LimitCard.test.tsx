@@ -19,8 +19,8 @@ vi.mock('../../src/renderer/src/lib/accountSwitchRun', () => ({
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { newTerminalOn, startSwitch } from '../../src/renderer/src/lib/accountSwitchRun'
 import { LimitCard } from '../../src/renderer/src/components/Accounts/LimitCard'
+import { CLAUDE_EXIT_AFTER_A_TURN, CLAUDE_SESSION_ID } from '../fixtures/agentExitOutput'
 
-const SID = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
 
 function row(over: Partial<AccountRowView>): AccountRowView {
   return {
@@ -69,7 +69,7 @@ beforeEach(() => {
   ;(window as never as Record<string, unknown>).termpolis = termpolis
   useTerminalStore.setState({
     terminals: [T('t1'), T('t2')], activeTerminalId: 't1', accountsView: view([A, B, C, W]), accountsByHand: {}, accountSwitch: null,
-    relaunching: {}, showSettings: false, signInSheet: null, agySwitchSheet: null, addAccountSheet: null,
+    relaunching: {}, memoryNotice: null, showSettings: false, signInSheet: null, agySwitchSheet: null, addAccountSheet: null,
   })
 })
 afterEach(() => {
@@ -321,41 +321,112 @@ describe('the other ways', () => {
     }
   })
 
-  it('moves the terminal to the model Claude Code advises for one model\'s limit, by its own session (R15)', async () => {
+  /** What the OS says about the terminal, in order, the last repeating (false: the agent runs; true:
+   *  only the shell is left), and what the quit prints: the engine reads both off the preload. */
+  function agentQuits(answers: boolean[], output: string): void {
+    let i = 0
+    termpolis.terminalShellAlone = vi.fn(async () => ({ success: true, data: answers[Math.min(i++, answers.length - 1)] }))
+    termpolis.readTerminalBuffer = vi.fn(async (_id: string, from?: number) => (from === undefined
+      ? { success: true, data: { output: '', nextOffset: 10, length: 0, missed: 0 } }
+      : { success: true, data: { output, nextOffset: 99, length: output.length, missed: 0 } }))
+  }
+  const OPUS = (over: Partial<LimitContext> = {}): LimitContext =>
+    ctx({ words: "You've hit your Opus limit · resets Oct 24, 4pm (UTC)", kind: { scope: 'model', window: 'weekly', model: 'Opus' }, ...over })
+
+  it('moves the terminal to the model Claude Code advises for one model\'s limit, resuming the session Claude Code names as it exits (R15)', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    useTerminalStore.setState({ terminals: [T('t1', { agentSessionId: SID })] })
+    agentQuits([false, false, true], CLAUDE_EXIT_AFTER_A_TURN)
     card()
-    openLimit(ctx({ words: "You've hit your Opus limit · resets Oct 24, 4pm (UTC)", kind: { scope: 'model', window: 'weekly', model: 'Opus' } }))
+    openLimit(OPUS())
     expect(screen.getByTestId('limit-card-model')).toHaveTextContent('Switch this terminal to Sonnet')
     // The model is the first way out; the account switch is still there.
     expect(screen.getByTestId('limit-card-model').className).toContain('bg-')
     expect(screen.getByTestId('limit-card-continue')).toBeInTheDocument()
     await act(async () => { click('limit-card-model') })
+    // Held at once, on the store's side: the pane takes no keys, an account switch waits.
     expect(st().relaunching).toEqual({ t1: 'model' })
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-    expect(accounts.modelHold).toHaveBeenCalledWith({ terminalId: 't1', line: `claude --model sonnet --resume ${SID}` })
-    expect(termpolis.writeToTerminal).toHaveBeenLastCalledWith('t1', `claude --model sonnet --resume ${SID}\r`, 'k')
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    // main's side: asked for with no line (what is typed is only known once Claude Code has exited), and every key carries its key.
+    expect(accounts.modelHold).toHaveBeenCalledWith({ terminalId: 't1' })
+    expect(termpolis.writeToTerminal.mock.calls).toEqual([
+      ['t1', '\x03', 'k'], ['t1', '\x03', 'k'], ['t1', '\x03', 'k'],
+      ['t1', `claude --model sonnet --resume ${CLAUDE_SESSION_ID}\r`, 'k'],
+    ])
+    expect(accounts.modelRelease).toHaveBeenCalledWith('t1', 'k')
     expect(st().accountSwitch).toBeNull()
     expect(st().relaunching).toEqual({})
   })
 
-  it('says why the model didn\'t change, and only advises it where the terminal\'s session isn\'t known', async () => {
+  it('carries what the terminal was started with into the relaunch, and says when it had to leave an option out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    agentQuits([false, true], CLAUDE_EXIT_AFTER_A_TURN)
+    useTerminalStore.setState({ terminals: [T('t1', { agentCommand: 'claude --dangerously-skip-permissions --append-system-prompt "be brief"' })] })
+    card()
+    openLimit(OPUS())
+    await act(async () => { click('limit-card-model') })
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    // A quoted prompt can't be repeated safely: the bare agent comes back, and the user is told.
+    expect(termpolis.writeToTerminal).toHaveBeenLastCalledWith('t1', `claude --model sonnet --resume ${CLAUDE_SESSION_ID}\r`, 'k')
+    expect(st().memoryNotice).toMatch(/^⚠️ Claude restarted on Sonnet\..*cannot repeat safely.*came back with its defaults/)
+    expect(st().accountSwitch).toBeNull()
+  })
+
+  it('says why the model didn\'t change when something else holds the terminal, and types nothing', async () => {
     accounts.modelHold.mockResolvedValueOnce({ success: false, error: 'an account switch or another model change is running in this terminal' })
-    useTerminalStore.setState({ terminals: [T('t1', { agentSessionId: SID }), T('t2')] })
-    const opus = ctx({ kind: { scope: 'model', window: 'weekly', model: 'Opus' } })
-    const { unmount } = card()
-    openLimit(opus)
+    card()
+    openLimit(OPUS())
     await act(async () => { click('limit-card-model') })
     expect(screen.getByTestId('limit-card-error')).toHaveTextContent('Termpolis didn\'t change the model: an account switch or another model change is running in this terminal.')
+    expect(termpolis.writeToTerminal).not.toHaveBeenCalled()
+    expect(st().relaunching).toEqual({})
+    // The card stays, for another try or another way out.
+    expect(st().accountSwitch).not.toBeNull()
+  })
+
+  it('says why the model didn\'t change when the store says another relaunch holds the terminal', async () => {
+    useTerminalStore.setState({ relaunching: { t1: 'account' } })
+    card()
+    openLimit(OPUS())
+    await act(async () => { click('limit-card-model') })
+    expect(screen.getByTestId('limit-card-error')).toHaveTextContent('Termpolis didn\'t change the model: an account switch or another model change is running in this terminal.')
+    expect(accounts.modelHold).not.toHaveBeenCalled()
+    expect(termpolis.writeToTerminal).not.toHaveBeenCalled()
+    expect(st().relaunching).toEqual({ t1: 'account' })
+  })
+
+  it('leaves the card up with the reason when the agent would not quit, and when the relaunch fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    agentQuits([false], CLAUDE_EXIT_AFTER_A_TURN) // never goes
+    card()
+    openLimit(OPUS())
+    await act(async () => { click('limit-card-model') })
+    await act(async () => { await vi.advanceTimersByTimeAsync(40_000) })
+    expect(screen.getByTestId('limit-card-error')).toHaveTextContent(/Claude had not quit after 30 s.*left it alone.*typed nothing else/)
+    expect(termpolis.writeToTerminal.mock.calls.map((c) => c[1])).toEqual(['\x03', '\x03', '\x03'])
+    expect(st().relaunching).toEqual({})
+    expect(accounts.modelRelease).toHaveBeenCalledWith('t1', 'k')
+
+    termpolis.writeToTerminal = vi.fn(() => { throw new Error('pty closed') })
+    await act(async () => { click('limit-card-model') })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByTestId('limit-card-error')).toHaveTextContent('Switching Claude to Sonnet failed, so nothing more was typed. The terminal is as the failure left it.')
+    expect(st().relaunching).toEqual({})
+  })
+
+  it('offers the one click for any terminal that runs plain claude, its .exe included, and only advises for a wrapper', async () => {
+    useTerminalStore.setState({ terminals: [T('t1', { agentCommand: 'claude.exe --dangerously-skip-permissions' }), T('t2', { agentCommand: 'claude-sandbox' })] })
+    const { unmount } = card()
+    openLimit(OPUS())
+    expect(screen.getByTestId('limit-card-model')).toHaveTextContent('Switch this terminal to Sonnet')
+    expect(screen.queryByTestId('limit-card-model-advice')).toBeNull()
     unmount()
     act(() => st().closeAccountSwitch())
     card('t2')
-    openLimit({ ...opus, terminals: ['t2'] })
+    openLimit(OPUS({ terminals: ['t2'] }))
     expect(screen.getByTestId('limit-card-model-advice')).toHaveTextContent('Claude Code ran out on this model only: pick Sonnet in this terminal\'s model picker to go on here.')
     expect(screen.queryByTestId('limit-card-model')).toBeNull()
     await act(async () => undefined)
   })
-
   it('offers no model for a model Claude Code gives no advice for', async () => {
     card()
     openLimit(ctx({ kind: { scope: 'model', window: 'other', model: 'Haiku' } }))

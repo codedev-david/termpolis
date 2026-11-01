@@ -15,7 +15,7 @@ import type { SessionDeps } from './signInSession'
 import { killProcessTree } from './processTree'
 import type { SignInInput, SignInState } from '../shared/signInScreens'
 import { carryTranscript, findTranscript } from './accountCarry'
-import { holdForModel, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
+import { holdForModel, holdsModelKey, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 import { agentOfLaunch, lookForLimit, noteEnteredLine } from './limitLook'
 import { setExtraTranscriptRoots } from './conversationIngest'
@@ -338,10 +338,19 @@ function noteLife(terminalId: string, typed: string, now: number, lookNow: () =>
 
 /** A whole line was typed into a terminal: Termpolis's own (one main built), or one that changes
  *  the account by hand, which marks the terminal so (§6.1) and tells the renderer. */
-function noteLine(terminalId: string, line: string, now: number, lookNow: () => Look): 'own' | 'by-hand' | null {
+function noteLine(terminalId: string, line: string, now: number, lookNow: () => Look, held = false): 'own' | 'by-hand' | null {
   const typed = line.trim()
   if (!typed) return null
   const mine = (ownLines.get(terminalId) ?? []).filter((l) => l.until > now)
+  // Typed under the model picker's hold: the agent's start again, as the picker's relaunch chose it
+  // once the agent had exited (so main could not be told beforehand). Never a line that sets or
+  // unsets the account, which stays a change by hand whoever types it.
+  const launched = held && !changesAccountByHand(typed) ? agentOfLaunch(typed) : null
+  if (launched) {
+    mine.push({ line: typed, until: now + OWN_LINE_MS, agent: launched })
+    // The conversation it resumes is the terminal's session now; a new or an unnamed one has no id Termpolis knows.
+    if (launched === 'claude') noteTerminalSession(terminalId, claudeSessionOf(typed).id)
+  }
   const at = mine.findIndex((l) => l.line === typed)
   if (at >= 0) {
     const [own] = mine.splice(at, 1)
@@ -363,10 +372,12 @@ function noteLine(terminalId: string, line: string, now: number, lookNow: () => 
  * and escape sequences (arrow keys) left out, and a write that holds whole lines (a paste,
  * Termpolis's own launch) is read line by line. Returns what the last whole line was.
  */
-export function noteTypedInput(terminalId: string, typed: string, now: number = Date.now()): 'own' | 'by-hand' | null {
+export function noteTypedInput(terminalId: string, typed: string, now: number = Date.now(), key?: string): 'own' | 'by-hand' | null {
   let result: 'own' | 'by-hand' | null = null
   const lookNow = oneLook(terminalId)
-  gatherLines(terminalId, typed, (line) => { result = noteLine(terminalId, line, now, lookNow) })
+  // `key`: the one the write carried, which opens the model picker's hold only while that is live.
+  const held = holdsModelKey(terminalId, key, now)
+  gatherLines(terminalId, typed, (line) => { result = noteLine(terminalId, line, now, lookNow, held) })
   return result
 }
 
@@ -1307,19 +1318,14 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
   })
 
   // The model picker's half of the relaunch lock (§7.5, R7): while it types, MCP clients and the
-  // phone are refused and every write but the picker's own is dropped. Its line counts as the
-  // agent's start once typed, so a later switch relaunches the model it picked.
+  // phone are refused and every write but the picker's own is dropped. What the picker types to
+  // start the agent again counts as the agent's start (noteTypedInput, by the hold's key), so a later
+  // switch relaunches the model it picked. The line isn't known yet: the exit names the conversation.
   handle(ACCOUNTS_IPC.modelHold, (input): ModelHold => {
     const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
     if (!terminalId) throw new Error('which terminal?')
-    const line = typeof input.line === 'string' ? input.line.trim() : ''
-    if (!line) throw new Error('there is no command to run')
-    // A model change keeps the account: its line is never one that changes it.
-    if (changesAccountByHand(line)) throw new Error('a model change doesn\'t change the account')
-    const t = now()
-    const key = holdForModel(terminalId, t)
+    const key = holdForModel(terminalId, now())
     if (!key) throw new Error(MODEL_HELD)
-    noteOwnLine(terminalId, line, t)
     return { key }
   })
 

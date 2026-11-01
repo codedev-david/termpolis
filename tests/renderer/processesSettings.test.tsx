@@ -132,6 +132,11 @@ function mockApi(over: Record<string, unknown> = {}) {
 }
 
 const text = (testId: string) => screen.getByTestId(testId).textContent
+/** Opens the tab and presses Scan: opening it lists nothing until someone asks. */
+function openTab(): void {
+  render(<ProcessesSettings />)
+  fireEvent.click(screen.getByTestId('processes-scan'))
+}
 /** The question the confirmation asks — its first paragraph. */
 const confirmQuestion = () => screen.getByTestId('processes-confirm').querySelector('p')?.textContent
 /** What the confirmation warns will happen — its second paragraph. */
@@ -170,9 +175,10 @@ describe('ProcessesSettings', () => {
     it('shows Scanning… until the first scan lands', async () => {
       const first = deferred<unknown>()
       mockApi({ processesScanStuck: vi.fn().mockReturnValue(first.promise) })
-      render(<ProcessesSettings />)
+      openTab()
 
       expect(text('processes-loading')).toBe('Scanning…')
+      expect(screen.queryByTestId('processes-scan')).toBeNull()
       // Nothing to refresh or kill until there is a list.
       expect(screen.queryByTestId('processes-refresh')).toBeNull()
       expect(screen.queryByTestId('processes-kill-stuck')).toBeNull()
@@ -184,14 +190,33 @@ describe('ProcessesSettings', () => {
       expect(screen.getByTestId('processes-summary')).toBeInTheDocument()
     })
 
-    it('scans when the tab opens and on Refresh — never on a timer', async () => {
+    it('lists nothing when the tab opens: it says what a scan reads and waits for Scan', async () => {
       vi.useFakeTimers()
       const api = mockApi()
       render(<ProcessesSettings />)
       await act(async () => {})
+      act(() => {
+        vi.advanceTimersByTime(60 * 60_000)
+      })
+      expect(api.processesScanStuck).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('processes-loading')).toBeNull()
+      expect(screen.queryByTestId('processes-summary')).toBeNull()
+      expect(text('processes-intro')).toContain('Nothing is scanned until you press Scan, and never in the background.')
+      expect(text('processes-intro')).toContain('endpoint security software may log the scan')
+      expect(text('processes-scan')).toBe('Scan')
+    })
+
+    it('scans on Scan and on Refresh — never on open or on a timer', async () => {
+      vi.useFakeTimers()
+      const api = mockApi()
+      openTab()
+      await act(async () => {})
       expect(screen.getByTestId('processes-summary')).toBeInTheDocument()
       expect(api.processesScanStuck).toHaveBeenCalledTimes(1)
       expect(api.processesScanStuck).toHaveBeenCalledWith()
+      expect(screen.getByTestId('processes-settings').textContent).toContain(
+        'Nothing is scanned in the background — only when you press Scan or Refresh.',
+      )
 
       act(() => {
         vi.advanceTimersByTime(60 * 60_000)
@@ -213,7 +238,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(fail('Could not list processes: PowerShell returned nothing'))
           .mockResolvedValueOnce(ok(scan())),
       })
-      render(<ProcessesSettings />)
+      openTab()
 
       expect((await screen.findByTestId('processes-error')).textContent).toBe(
         'Could not list processes: PowerShell returned nothing',
@@ -246,14 +271,14 @@ describe('ProcessesSettings', () => {
       ['an empty string', '', 'Unknown error'],
     ])('shows a scan that throws %s', async (_kind, thrown, shown) => {
       mockApi({ processesScanStuck: vi.fn().mockRejectedValue(thrown) })
-      render(<ProcessesSettings />)
+      openTab()
       expect((await screen.findByTestId('processes-error')).textContent).toBe(shown)
       expect(screen.queryByTestId('processes-summary')).toBeNull()
     })
 
     it('never shows a blank error line: a refusal with no reason still says the scan failed', async () => {
       mockApi({ processesScanStuck: vi.fn().mockResolvedValue(fail('')) })
-      render(<ProcessesSettings />)
+      openTab()
       const error = await screen.findByRole('alert')
       expect(error).toBe(screen.getByTestId('processes-error'))
       expect(error.textContent).toBe('Scan failed.')
@@ -263,7 +288,7 @@ describe('ProcessesSettings', () => {
       mockApi({
         processesScanStuck: vi.fn().mockResolvedValueOnce(ok(scan())).mockResolvedValueOnce(fail('scan timed out')),
       })
-      render(<ProcessesSettings />)
+      openTab()
       await screen.findByTestId('processes-row-4242')
 
       fireEvent.click(screen.getByTestId('processes-refresh'))
@@ -281,7 +306,7 @@ describe('ProcessesSettings', () => {
         'Termpolis could not find itself in the process list, so nothing was flagged.',
       ]
       mockApi({ processesScanStuck: vi.fn().mockResolvedValue(ok(scan({ warnings, totalProcesses: 412 }))) })
-      render(<ProcessesSettings />)
+      openTab()
 
       expect((await screen.findByTestId('processes-summary')).textContent).toBe(
         `412 processes scanned at ${new Date(SCANNED_AT).toLocaleTimeString()}`,
@@ -292,7 +317,7 @@ describe('ProcessesSettings', () => {
 
     it('says nothing is stuck when the scan comes back clean', async () => {
       mockApi({ processesScanStuck: vi.fn().mockResolvedValue(ok(scan({ processes: [] }))) })
-      render(<ProcessesSettings />)
+      openTab()
 
       expect((await screen.findByTestId('processes-empty')).textContent).toBe(
         'Nothing stuck. No headless agents, frozen git or orphaned leftovers were found.',
@@ -307,7 +332,7 @@ describe('ProcessesSettings', () => {
 
     it('files rows under their group, in a fixed order, each titled with a count', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
 
       const agents = await screen.findByTestId('processes-group-agent')
       const git = screen.getByTestId('processes-group-git')
@@ -344,7 +369,7 @@ describe('ProcessesSettings', () => {
 
     it('leaves out a group with nothing in it', async () => {
       mockApi({ processesScanStuck: vi.fn().mockResolvedValue(ok(scan({ processes: [GIT] }))) })
-      render(<ProcessesSettings />)
+      openTab()
 
       await screen.findByTestId('processes-group-git')
       expect(screen.queryByTestId('processes-group-agent')).toBeNull()
@@ -354,7 +379,7 @@ describe('ProcessesSettings', () => {
 
     it('shows everything a row knows about a stuck agent', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const row = await screen.findByTestId('processes-row-4242')
       const r = within(row)
 
@@ -380,7 +405,7 @@ describe('ProcessesSettings', () => {
 
     it('opens the whole command line on click, never in a tooltip', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const command = await screen.findByTestId('processes-command-4242')
       const detail = screen.getByTestId('processes-detail-4242')
 
@@ -415,7 +440,7 @@ describe('ProcessesSettings', () => {
 
     it('shows an MCP server that is listed but not stuck, with its one child and its ports', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const row = await screen.findByTestId('processes-row-5151')
       const r = within(row)
 
@@ -433,7 +458,7 @@ describe('ProcessesSettings', () => {
 
     it('names a process that is not an agent by its executable, and says who owns it', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const row = await screen.findByTestId('processes-row-777')
       const r = within(row)
 
@@ -448,7 +473,7 @@ describe('ProcessesSettings', () => {
 
     it.each(['linux', 'darwin'])('on %s, explains "suspended" as a stopped job, not a frozen one', async (platform) => {
       mockApi({ processesScanStuck: vi.fn().mockResolvedValue(ok(scan({ platform }))) })
-      render(<ProcessesSettings />)
+      openTab()
       const r = within(await screen.findByTestId('processes-row-777'))
 
       expect(r.getByText('suspended')).toHaveAttribute(
@@ -463,7 +488,7 @@ describe('ProcessesSettings', () => {
     it('renders a row that carries only the required fields', async () => {
       const bare = proc({ pid: 31337 })
       mockApi({ processesScanStuck: vi.fn().mockResolvedValue(ok(scan({ processes: [bare] }))) })
-      render(<ProcessesSettings />)
+      openTab()
       const row = await screen.findByTestId('processes-row-31337')
       const r = within(row)
 
@@ -482,7 +507,7 @@ describe('ProcessesSettings', () => {
 
     it('explains what counts as stuck behind the info tip', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const tip = await screen.findByRole('button', { name: 'What counts as stuck' })
       expect(tip).toBe(screen.getByTestId('processes-info'))
 
@@ -525,7 +550,7 @@ describe('ProcessesSettings', () => {
 
     it('explains each group in a line under its title', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       await screen.findByTestId('processes-group-leftover')
 
       expect(screen.getByTestId('processes-group-git').textContent).toContain(
@@ -540,7 +565,7 @@ describe('ProcessesSettings', () => {
   describe('selecting', () => {
     it('selects rows one at a time and counts them on Kill selected', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const claude = await screen.findByTestId('processes-check-4242')
       const git = screen.getByTestId('processes-check-777')
 
@@ -565,7 +590,7 @@ describe('ProcessesSettings', () => {
 
     it('ticks the group box once every row in the group is ticked by hand', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const all = await screen.findByTestId('processes-select-all-agent')
 
       fireEvent.click(screen.getByTestId('processes-check-4242'))
@@ -576,7 +601,7 @@ describe('ProcessesSettings', () => {
 
     it('shows the group box as partly ticked while only some of its rows are', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const all = (await screen.findByTestId('processes-select-all-agent')) as HTMLInputElement
       const git = screen.getByTestId('processes-select-all-git') as HTMLInputElement
       expect(all.indeterminate).toBe(false)
@@ -597,7 +622,7 @@ describe('ProcessesSettings', () => {
 
     it('selects a whole group at once — only that group — and unselects it again', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const all = await screen.findByTestId('processes-select-all-agent')
       const claude = screen.getByTestId('processes-check-4242')
       const codex = screen.getByTestId('processes-check-5151')
@@ -622,7 +647,7 @@ describe('ProcessesSettings', () => {
 
     it('keeps a selection across a rescan while the same process is still there', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
 
       fireEvent.click(screen.getByTestId('processes-refresh'))
@@ -640,7 +665,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok(scan()))
           .mockResolvedValueOnce(ok(scan({ processes: [CLAUDE, CODEX, reborn, BASH] }))),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       expect(text('processes-kill-selected')).toBe('Kill selected (1)')
 
@@ -669,7 +694,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok(scan({ platform })))
           .mockResolvedValueOnce(ok(scan({ platform, processes: [CLAUDE, CODEX, drifted, BASH] }))),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
 
       fireEvent.click(screen.getByTestId('processes-refresh'))
@@ -687,7 +712,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok(scan({ platform: 'linux', processes: [CLAUDE, CODEX, drifted, BASH] })))
           .mockResolvedValueOnce(ok(scan({ platform: 'linux', processes: [CLAUDE, CODEX, BASH] }))),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       fireEvent.click(screen.getByTestId('processes-refresh'))
       await waitFor(() => expect(text('processes-refresh')).toBe('Refresh'))
@@ -708,7 +733,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok(scan({ platform: 'linux' })))
           .mockResolvedValueOnce(ok(scan({ platform: 'linux', processes: [CLAUDE, CODEX, drifted, BASH] }))),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-command-777'))
       expect(screen.getByTestId('processes-command-777')).toHaveAttribute('aria-expanded', 'true')
 
@@ -727,7 +752,7 @@ describe('ProcessesSettings', () => {
           // ...and is back on the next scan, same pid and same start time.
           .mockResolvedValueOnce(ok(scan())),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
 
       fireEvent.click(screen.getByTestId('processes-refresh'))
@@ -746,7 +771,7 @@ describe('ProcessesSettings', () => {
   describe('confirming', () => {
     it('asks before killing, and Cancel backs out without killing anything', async () => {
       const api = mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       expect(screen.queryByTestId('processes-confirm')).toBeNull()
 
@@ -769,7 +794,7 @@ describe('ProcessesSettings', () => {
 
     it('counts the processes, and the children that go with them, in the right number', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       await screen.findByTestId('processes-row-4242')
       const tick = (pid: number) => fireEvent.click(screen.getByTestId(`processes-check-${pid}`))
       const ask = (button: string) => {
@@ -800,7 +825,7 @@ describe('ProcessesSettings', () => {
 
     it('warns what a kill costs, of one row in the singular, and that Kill all stuck also skips whatever is no longer stuck', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
 
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
@@ -824,7 +849,7 @@ describe('ProcessesSettings', () => {
 
     it('is described to a screen reader by its question and its warning', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-kill-stuck'))
 
       const dialog = screen.getByRole('alertdialog', { name: 'Confirm kill' })
@@ -839,7 +864,7 @@ describe('ProcessesSettings', () => {
 
     it('puts focus on Cancel, and Escape backs out to the button that asked', async () => {
       const api = mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       const opener = screen.getByTestId('processes-kill-selected')
       fireEvent.click(opener)
@@ -867,7 +892,7 @@ describe('ProcessesSettings', () => {
 
     it('Cancel hands focus back to the button that asked', async () => {
       mockApi()
-      render(<ProcessesSettings />)
+      openTab()
       const opener = await screen.findByTestId('processes-kill-stuck')
       fireEvent.click(opener)
       fireEvent.click(screen.getByTestId('processes-confirm-cancel'))
@@ -886,7 +911,7 @@ describe('ProcessesSettings', () => {
           // ...and a fresh one froze.
           .mockResolvedValueOnce(ok(scan())),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-kill-stuck'))
       expect(confirmQuestion()).toBe('Kill 3 processes, plus 2 child processes under them?')
 
@@ -915,7 +940,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok(scan({ processes: [CODEX, GIT] })))
           .mockResolvedValueOnce(ok(scan({ processes: [CODEX] }))),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-kill-stuck'))
       fireEvent.click(screen.getByTestId('processes-refresh'))
       await waitFor(() => expect(confirmQuestion()).toBe('Kill 1 process?'))
@@ -940,7 +965,7 @@ describe('ProcessesSettings', () => {
         processesScanStuck: vi.fn().mockResolvedValueOnce(ok(scan())).mockReturnValueOnce(rescan.promise),
         processesKillStuck: vi.fn().mockResolvedValue(ok(outcome)),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-4242'))
       fireEvent.click(screen.getByTestId('processes-check-777'))
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
@@ -994,7 +1019,7 @@ describe('ProcessesSettings', () => {
       mockApi({
         processesKillStuck: vi.fn().mockResolvedValue(ok({ killed: [GIT.pid], failed: [], skipped: [] })),
       })
-      render(<ProcessesSettings />)
+      openTab()
       const status = await screen.findByRole('status')
       expect(status).toBe(screen.getByTestId('processes-status'))
       expect(status).toHaveAttribute('aria-live', 'polite')
@@ -1022,7 +1047,7 @@ describe('ProcessesSettings', () => {
           }),
         ),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       fireEvent.click(screen.getByTestId('processes-check-888'))
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
@@ -1046,7 +1071,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok(scan({ processes: [CODEX] }))),
         processesKillStuck: vi.fn().mockReturnValue(killing.promise),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-kill-stuck'))
       fireEvent.click(screen.getByTestId('processes-confirm-kill'))
 
@@ -1083,7 +1108,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok(scan({ processes: [CODEX] }))),
         processesKillStuck: vi.fn().mockResolvedValue(ok(outcome)),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-kill-stuck'))
       fireEvent.click(screen.getByTestId('processes-confirm-kill'))
 
@@ -1106,7 +1131,7 @@ describe('ProcessesSettings', () => {
       const api = mockApi({
         processesKillStuck: vi.fn().mockResolvedValue(fail('Each process to end needs a pid and a start time')),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-kill-stuck'))
       fireEvent.click(screen.getByTestId('processes-confirm-kill'))
 
@@ -1120,7 +1145,7 @@ describe('ProcessesSettings', () => {
 
     it('shows a kill that throws, after rescanning anyway', async () => {
       const api = mockApi({ processesKillStuck: vi.fn().mockRejectedValue(new Error('IPC channel closed')) })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-888'))
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
       fireEvent.click(screen.getByTestId('processes-confirm-kill'))
@@ -1136,7 +1161,7 @@ describe('ProcessesSettings', () => {
       ['thrown with no message', () => Promise.reject(new Error('')), 'Unknown error'],
     ])('never shows a blank error line for a kill %s', async (_kind, killing, shown) => {
       mockApi({ processesKillStuck: vi.fn(killing) })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-kill-stuck'))
       fireEvent.click(screen.getByTestId('processes-confirm-kill'))
 
@@ -1155,7 +1180,7 @@ describe('ProcessesSettings', () => {
         processesScanStuck: vi.fn().mockResolvedValueOnce(ok(scan())).mockResolvedValueOnce(fail('scan timed out')),
         processesKillStuck: vi.fn().mockResolvedValue(ok(outcome)),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-888'))
       fireEvent.click(screen.getByTestId('processes-check-777'))
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
@@ -1169,7 +1194,7 @@ describe('ProcessesSettings', () => {
       const api = mockApi({
         processesKillStuck: vi.fn().mockResolvedValue(ok({ killed: [GIT.pid], failed: [], skipped: [] })),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
       fireEvent.click(screen.getByTestId('processes-confirm-kill'))
@@ -1196,7 +1221,7 @@ describe('ProcessesSettings', () => {
           .mockResolvedValueOnce(ok({ killed: [GIT.pid], failed: [], skipped: [] }))
           .mockResolvedValueOnce(ok({ killed: [], failed: [], skipped: [{ pid: BASH.pid, reason: 'exited' }] })),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
       fireEvent.click(screen.getByTestId('processes-confirm-kill'))
@@ -1220,7 +1245,7 @@ describe('ProcessesSettings', () => {
       mockApi({
         processesScanStuck: vi.fn().mockResolvedValueOnce(ok(scan())).mockReturnValueOnce(rescan.promise),
       })
-      render(<ProcessesSettings />)
+      openTab()
       fireEvent.click(await screen.findByTestId('processes-check-777'))
       fireEvent.click(screen.getByTestId('processes-kill-selected'))
       const refresh = screen.getByTestId('processes-refresh')

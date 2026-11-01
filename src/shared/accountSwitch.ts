@@ -347,11 +347,11 @@ export type AgyStepOutcome =
   | { kind: 'not-resumed'; why: string }
   | { kind: 'refused'; why: string }
 
-/** The model picker asks main for its half of the terminal's relaunch lock (§7.5), with the line
- *  it relaunches the agent with, which main counts as the agent's start once it is typed. */
+/** The model picker asks main for its half of the terminal's relaunch lock (§7.5). The line it then
+ *  types to start the agent again (it comes from what the agent prints as it exits, so it isn't known
+ *  yet) carries the hold's key, and main counts it as the agent's start. */
 export interface ModelHoldRequest {
   terminalId: string
-  line: string
 }
 
 /** The hold: the key the picker's writes carry while main holds the terminal for it. */

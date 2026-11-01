@@ -342,6 +342,10 @@ export interface TermpolisAPI {
    *  agent, or true for one not known yet): main marks it so for its whole life (§8.6, R6). */
   createTerminal: (id: string, shellType: ShellType, cwd: string, extraPaths?: string[], claudeHeadroom?: boolean, accountId?: string, limitWatch?: AccountAgent | true) => Promise<IpcResponse>
   killTerminal: (id: string) => Promise<IpcResponse>
+  /** Whether nothing runs in the terminal but its shell, as the OS tells: true once an agent that
+   *  was running there has exited, false while something still runs, null where main cannot tell
+   *  (WSL, a shell it does not know, a failed query). The model switcher polls it. */
+  terminalShellAlone: (id: string) => Promise<IpcResponse<boolean | null>>
   /** Both stores in one call — global workflows first, then this project's. */
   listWorkflows: (cwd: string) => Promise<IpcResponse<WorkflowListItem[]>>
   readWorkflow: (cwd: string, id: string, scope?: WorkflowScope) => Promise<IpcResponse<Workflow>>

@@ -120,7 +120,7 @@ import {
   replayPreamble,
   type OutputBuffers,
 } from './terminalOutputBuffer'
-import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, computeWindowsPty, primeBundledToolsCheck, isShellInForeground } from './terminalManager'
+import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground } from './terminalManager'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -871,6 +871,15 @@ const aiInputStaging = new Map<string, string>()
 const PASTE_THRESHOLD = 32
 const STAGE_CAP = 64 * 1024 // 64 KB per terminal — safety bound on staging
 
+// Whether nothing runs in a terminal but its shell, as the OS tells (shellAlone.ts). The model
+// switcher polls this after it quits an agent: the agent is gone when this turns true, and typing
+// the relaunch any earlier lands in a process that is still shutting down and is lost. Only that
+// terminal's own console or process group is read, never a process listing. null = cannot tell.
+ipcMain.handle('terminal:shell-alone', async (_, { id }: { id?: unknown } = {}) => {
+  if (typeof id !== 'string' || !id) return err('Invalid terminal id')
+  return ok(await terminalShellAlone(id).catch(() => null))
+})
+
 ipcMain.handle('terminal:kill', async (_, { id }) => {
   try {
     killTerminal(id)
@@ -895,14 +904,13 @@ ipcMain.handle('terminal:kill', async (_, { id }) => {
   } catch (e: any) { return err(e.message) }
 })
 
-// Renderer-facing read of the per-terminal egress cache. The Security panel
-// queries this to render "this agent talked to X hosts". We poll on-demand
-// here rather than running a background interval per AI terminal — the
-// every-60s `netstat -ano` triad (process-enum + subprocess-spawn + signed-exe
-// from a fresh-reputation OV cert) was load-bearing in Defender's cloud-ML
-// false-positive against v1.11.55. Cost of moving to on-demand is one extra
-// shell-out the first time the user opens the Security panel; benefit is no
-// continuous behavioral signature.
+// Per-terminal egress poll + cache. Nothing calls it: the renderer never invokes
+// window.aiSecurity.egress (tests/electron/endpointActivityGuard.test.ts), so no
+// connection table is read. The every-60s `netstat -ano` triad it replaced
+// (process-enum + subprocess-spawn + signed-exe from a fresh-reputation OV cert)
+// was load-bearing in Defender's cloud-ML false-positive against v1.11.55, and
+// on a monitored work laptop repeated connection listing reads as network
+// discovery. Wiring a caller back in has to stay an explicit user action.
 // Egress Guard — turn the egress RECORD into a POLICY.
 //
 // The poller only ever hands us IP literals (netstat/ss/lsof do not reverse-DNS), while the
@@ -1113,7 +1121,7 @@ ipcMain.on('terminal:write', (_, { id, data, key }: { id: string; data: string; 
   writeToTerminal(id, data)
   // Which account the terminal's agents run on, as typed: Termpolis's own launch line, or a line
   // typed by hand that changes it (accountsIpc.ts).
-  try { if (typeof data === 'string') noteTypedInput(id, typed) } catch {}
+  try { if (typeof data === 'string') noteTypedInput(id, typed, Date.now(), typeof key === 'string' ? key : undefined) } catch {}
   try {
     if (typeof data === 'string' && auditLaunchPattern.test(typed)) {
       const last = recentlyAuditedTerminals.get(id) || 0
@@ -2927,6 +2935,9 @@ registerAccountsIpc(ipcMain, {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),
     atShell: (terminalId) => isShellInForeground(terminalId),
+    // The OS's full word on whether the agent is gone, asked at the moments that need it (a switch's
+    // exit), never polled: the same read as the model switch's and write_to_terminal's submit's.
+    shellAlone: (terminalId) => terminalShellAlone(terminalId),
   },
   checkCwd: () => {
     const dir = join(app.getPath('userData'), 'account-checks')
@@ -3109,6 +3120,7 @@ ipcMain.handle('agents:detect', async () => ok(await detectInstalledAgents()))
 // userData so a launch with no network, or with Codex never yet run, still gets
 // the last-known list instead of an empty dropdown. Claude's entry is a builtin
 // and never expires: its aliases self-resolve to the newest model in each family.
+// Gemini's list comes from `agy models`, which only an explicit refresh runs.
 // ---------------------------------------------------------------------------
 let modelCatalog: ModelCatalog = builtinCatalog()
 
@@ -3132,15 +3144,17 @@ async function runForCatalog(bin: string, args: string[], timeoutMs: number): Pr
   }
 }
 
-async function installedForCatalog(): Promise<Record<string, boolean>> {
-  const [codex, agy] = await Promise.all([findAgentInstalled('codex'), findAgentInstalled('agy')])
-  // `agy models` is the only discovery step that leaves the machine — and it is the
-  // user's own already-authenticated CLI asking its own vendor, not Termpolis phoning
-  // home. Still, the project's posture is that a network call gets an off switch:
+async function installedForCatalog(explicit: boolean): Promise<Record<string, boolean>> {
+  // `agy models` is the only discovery step that leaves the machine — the user's own
+  // already-signed-in CLI asking its own vendor. It runs only when someone asks for a
+  // refresh: Termpolis starts no agent CLI on its own, since an agent CLI it launched in
+  // the background, reading its saved sign-in, is attributed to Termpolis.exe by
+  // endpoint security. A network call also gets an off switch:
   // TERMPOLIS_SKIP_MODEL_CATALOG=1 suppresses it (naming follows TERMPOLIS_SKIP_UPDATER).
   // Codex discovery is a plain local file read and keeps working air-gapped either way.
-  const offline = process.env.TERMPOLIS_SKIP_MODEL_CATALOG === '1'
-  return { claude: true, codex, agy: agy && !offline }
+  const probeAgy = explicit && process.env.TERMPOLIS_SKIP_MODEL_CATALOG !== '1'
+  const [codex, agy] = await Promise.all([findAgentInstalled('codex'), probeAgy ? findAgentInstalled('agy') : false])
+  return { claude: true, codex, agy }
 }
 
 /** Read disk → re-probe if stale → persist. `force` skips the TTL check, which is what
@@ -3159,7 +3173,7 @@ async function primeModelCatalog(force = false): Promise<void> {
         readFile: async (p) => { try { return readFileSync(p, 'utf-8') } catch { return null } },
         run: runForCatalog,
         codexCachePath: join(app.getPath('home'), '.codex', 'models_cache.json'),
-        installed: await installedForCatalog(),
+        installed: await installedForCatalog(force),
         now: () => Date.now(),
       },
       stored,
@@ -3461,8 +3475,9 @@ if (!gotTheLock) {
     void primeBundledToolsCheck()
     // Refresh what each installed agent says its own models are, so the pickers offer
     // today's list rather than whatever was hardcoded at release. Fire-and-forget and
-    // fully guarded: it reads a file and (for Gemini) runs one bounded off-thread probe,
-    // and every failure path leaves the previous cached list in place.
+    // fully guarded: it reads Codex's own cache file and starts no agent CLI (Gemini's
+    // `agy models` waits for an explicit refresh), and every failure path leaves the
+    // previous cached list in place.
     void primeModelCatalog()
 
     // null on Windows/Linux (custom title bar, no menu bar); a minimal app/edit/window role menu on
@@ -3650,6 +3665,7 @@ async function semanticPoolOptions(
       terminalSize: (terminalId) => getTerminalSize(terminalId),
       outputOffset: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
       relaunchLock: (terminalId) => relaunchLockReason(terminalId),
+      shellAlone: (terminalId) => terminalShellAlone(terminalId),
       runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
         if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }
         // stepId only keys the runner's in-flight map, so per-call uniqueness is all it needs.

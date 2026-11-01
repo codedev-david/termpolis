@@ -265,6 +265,58 @@ jobs:
           path: dist-electron-builder/linux-unpacked/
           retention-days: 3
 
+  # The Windows installer, updating over a running Termpolis the way the in-app updater does.
+  # build/installer.nsh replaces electron-builder's "is the app running" check, which ran
+  # PowerShell's Get-CimInstance Win32_Process on every update: on a monitored work computer that
+  # process query, started under Termpolis.exe, reads as discovery to endpoint security. This
+  # builds an unsigned installer (a runner's Defender is off, so nothing quarantines it), installs
+  # it, starts the app and a Node-mode helper from its exe, updates with /S --updated, and fails
+  # unless the update closed both, finished, and started no PowerShell, tasklist or wmic
+  # (scripts/test-installer-update.ps1). release.yml runs this workflow, so it gates every release.
+  installer-update:
+    needs: static
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npm install && break
+            echo "npm install failed (attempt $i), cleaning cache and retrying..."
+            npm cache clean --force || true
+            sleep 10
+          done
+      - name: Download bundled embedding model
+        shell: bash
+        run: bash scripts/download-embedding-model.sh
+      - name: Build app
+        run: npm run build
+      - name: Package an unsigned installer
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win nsis --publish never
+      - name: Install, then update over the running app
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem dist-electron-builder -Filter 'Termpolis*Setup*.exe' | Select-Object -First 1).FullName
+          if (-not $installer) { throw 'no installer was built' }
+          ./scripts/test-installer-update.ps1 -Installer $installer -UserDataDir (Join-Path $env:RUNNER_TEMP 'termpolis-profile') -Out (Join-Path $env:RUNNER_TEMP 'installer-update.json')
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-update
+          path: ${{ runner.temp }}/installer-update.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   # THE Linux e2e gate: the WHOLE e2e directory, blocking, sharded 4 ways.
   #
   # Until v1.32.5 CI ran 18 named specs and 34 of the 52 on disk had never been
