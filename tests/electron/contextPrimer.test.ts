@@ -601,6 +601,89 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
   })
 })
 
+// 1.55: the ingest pass stores the trailing partial chunk of a live session, and a later pass stores the fuller chunk
+// that begins with the same turns. One search returns both, and so does the freshness lane (the newest chunks are
+// where they pile up). The digest says it once, in the fuller chunk, whichever block each one landed in.
+describe('buildContextPrimer — a chunk and the fuller chunk that begins with it', () => {
+  const proj = 'termpolis'
+  const NOW = 1_700_000_000_000
+  const HOUR = 3_600_000
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+  const HEAD = long('user: how do I cut a release?\n\nassistant: bump the version and push a tag')
+  const FULL = `${HEAD}\n\nuser: and the changelog?\n\nassistant: the release workflow writes it`
+  const chunk = (id: string, content: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id, content, source: 'claude', kind: 'message', score: 0.8, project: proj, ts: NOW - 3 * HOUR, ...over })
+  const OTHER = chunk('other', 'we keep the retry queue in memory and flush it on exit', { score: 0.8 })
+  const rows = (out: string | null): string[] => (out ?? '').split('\n').filter((l) => l.startsWith('- ['))
+  const asked = (list: PrimerHit[]) => vi.fn(async (o: { project?: string }) => (o.project ? list : []))
+
+  it('shows the fuller chunk once and not the head of it', async () => {
+    const out = await buildContextPrimer(asked([chunk('head', HEAD, { score: 0.9 }), chunk('full', FULL, { score: 0.7 }), OTHER]), { query: 'q', project: proj, now: NOW })
+    expect(rows(out)).toHaveLength(2)
+    expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+    expect(out).toContain('the release workflow writes it')
+  })
+
+  it('lets the fuller chunk keep the head\'s better score, so the relevance cliff does not take the passage away', async () => {
+    const top = chunk('top', 'something else entirely about caching and invalidation rules', { score: 0.95 })
+    const out = await buildContextPrimer(asked([top, chunk('head', HEAD, { score: 0.9 }), chunk('full', FULL, { score: 0.4 })]), { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 })
+    expect(out).toContain('the release workflow writes it') // 0.4 alone is under 0.6 x 0.95 and would have been cut
+    expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+  })
+
+  it('does the same in a digest with no project', async () => {
+    const out = await buildContextPrimer(vi.fn(async () => [chunk('head', HEAD, { score: 0.9 }), chunk('full', FULL, { score: 0.7 }), OTHER]), { query: 'q', now: NOW })
+    expect(rows(out)).toHaveLength(2)
+    expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+  })
+
+  describe('in the freshness lane', () => {
+    const lane = (list: PrimerHit[], extra: Record<string, unknown> = {}) =>
+      buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent: vi.fn().mockResolvedValue(list), now: NOW, ...extra })
+
+    it('lists the fuller chunk once, whichever the lister gave first', async () => {
+      for (const list of [[chunk('head', HEAD, { score: 0 }), chunk('full', FULL, { score: 0 })], [chunk('full', FULL, { score: 0 }), chunk('head', HEAD, { score: 0 })]]) {
+        const out = await lane(list)
+        expect(rows(out)).toHaveLength(1)
+        expect(out).toContain('the release workflow writes it')
+      }
+    })
+
+    it('gives the slot the head would have taken to the next entry', async () => {
+      const next = chunk('next', long('shipped the installer check an hour ago'), { score: 0, ts: NOW - 5 * HOUR })
+      const out = await lane([chunk('head', HEAD, { score: 0 }), chunk('full', FULL, { score: 0 }), next])
+      expect(rows(out)).toHaveLength(2)
+      expect(out).toContain('shipped the installer check')
+    })
+
+    it('shows no head the relevance block already carries the fuller chunk of', async () => {
+      const search = asked([chunk('full', FULL, { score: 0.9 })])
+      const out = await buildContextPrimer(search, { query: 'q', project: proj, recent: vi.fn().mockResolvedValue([chunk('head', HEAD, { score: 0, ts: NOW - HOUR })]), now: NOW })
+      expect(rows(out)).toHaveLength(1)
+      expect(out).not.toContain('Most recent activity')
+      expect(out).toContain('the release workflow writes it')
+    })
+
+    it('drops a head from the relevance block when the lane shows the fuller chunk, and gives its slot to the next hit', async () => {
+      const search = asked([chunk('head', HEAD, { score: 0.9 }), OTHER])
+      const out = await buildContextPrimer(search, { query: 'q', project: proj, recent: vi.fn().mockResolvedValue([chunk('full', FULL, { score: 0, ts: NOW - HOUR })]), now: NOW })
+      expect(rows(out)).toHaveLength(2)
+      expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(out).toContain('Most recent activity here')
+      expect(out).toContain('we keep the retry queue in memory')
+    })
+
+    it('does the same in a digest with no project, and leaves a lane that finds nothing alone', async () => {
+      const flat = await buildContextPrimer(vi.fn(async () => [chunk('head', HEAD, { score: 0.9 })]), { query: 'q', recent: vi.fn().mockResolvedValue([chunk('full', FULL, { score: 0, ts: NOW - HOUR })]), now: NOW })
+      expect(rows(flat)).toHaveLength(1)
+      expect(flat).toContain('the release workflow writes it')
+      const empty = await buildContextPrimer(vi.fn(async () => [chunk('head', HEAD, { score: 0.9 })]), { query: 'q', recent: vi.fn().mockResolvedValue([]), now: NOW })
+      expect(rows(empty)).toHaveLength(1)
+      expect(empty).toContain('how do I cut a release')
+    })
+  })
+})
+
 describe('recentSlotCount', () => {
   it('reserves ~30% of the digest, floored at 1 and capped at 3', () => {
     expect(recentSlotCount(10)).toBe(3)

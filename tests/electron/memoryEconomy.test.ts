@@ -12,6 +12,9 @@ import {
   mergeRelated,
   diversifyHits,
   fuseImportance,
+  normText,
+  isStrictPrefix,
+  dropPrefixDuplicates,
 } from '../../src/main/memoryEconomy'
 
 const DAY = 86_400_000
@@ -312,6 +315,138 @@ describe('memoryEconomy', () => {
     it('no-ops on empty / single-element input', () => {
       expect(diversifyHits([], { threshold: 0.7 })).toEqual([])
       expect(diversifyHits([mk('solo')], { threshold: 0.7 })).toHaveLength(1)
+    })
+  })
+
+  // The ingest pass stores the trailing partial chunk of an active session, and a later pass stores the fuller
+  // chunk that begins with the same turns: both come back from one search, saying the same thing twice.
+  describe('normText and isStrictPrefix — the head of another hit, at a word boundary', () => {
+    it('folds case and every run of whitespace, and trims', () => {
+      expect(normText('  Fix  the\n\nBUILD \t now ')).toBe('fix the build now')
+      expect(normText('')).toBe('')
+      expect(normText(undefined as unknown as string)).toBe('')
+    })
+
+    it('is true when the longer text begins with the shorter and carries on after a space', () => {
+      expect(isStrictPrefix('user: fix the build', 'user: fix the build\n\nassistant: done')).toBe(true)
+    })
+
+    it('ignores case and whitespace differences between the two', () => {
+      expect(isStrictPrefix('Fix  The BUILD', 'fix the build now')).toBe(true)
+    })
+
+    it('is false for equal text, for a text that is not a head, and for an empty one', () => {
+      expect(isStrictPrefix('fix the build', 'fix the  BUILD')).toBe(false) // equal once folded: dedupeHits owns that
+      expect(isStrictPrefix('fix the build', 'then fix the build')).toBe(false)
+      expect(isStrictPrefix('fix the build now', 'fix the build')).toBe(false) // the longer one is not a head of the shorter
+      expect(isStrictPrefix('', 'anything at all')).toBe(false)
+      expect(isStrictPrefix('   ', 'anything at all')).toBe(false)
+      expect(isStrictPrefix(undefined as unknown as string, 'anything')).toBe(false)
+    })
+
+    it('does not cut a word in two: "content 1" is not the head of "content 10"', () => {
+      expect(isStrictPrefix('content 1', 'content 10')).toBe(false)
+      expect(isStrictPrefix('see v1', 'see v10 for the fix')).toBe(false)
+      expect(isStrictPrefix('see the café', 'see the cafés nearby')).toBe(false) // letters beyond ASCII are letters
+      expect(isStrictPrefix('snake_case', 'snake_cased value')).toBe(false) // an underscore is part of a word
+    })
+
+    it('does when the shorter ends on punctuation, or the longer goes on with punctuation or a new line', () => {
+      expect(isStrictPrefix('it works.', 'it works.then it broke')).toBe(true)
+      expect(isStrictPrefix('it works', 'it works, then it broke')).toBe(true)
+      expect(isStrictPrefix('it works', 'it works\n(see below)')).toBe(true)
+    })
+  })
+
+  describe('dropPrefixDuplicates — keep the fuller chunk, lose the head of it', () => {
+    const FIRST = 'user: how do I cut a release?\n\nassistant: bump the version and push a tag'
+    const FULL = `${FIRST}\n\nuser: done, thanks\n\nassistant: glad it worked`
+    const mk = (id: string, content: string, score?: number) => (score === undefined ? { id, content } : { id, content, score })
+
+    it('returns the very same array when there is nothing to drop (no copy, nothing for a quiet digest to pay)', () => {
+      const none = [mk('a', 'alpha beta gamma', 0.9), mk('b', 'delta epsilon zeta', 0.8)]
+      expect(dropPrefixDuplicates(none)).toBe(none)
+      const one = [mk('a', FIRST, 0.9)]
+      expect(dropPrefixDuplicates(one)).toBe(one)
+      const empty: Array<{ id: string; content: string }> = []
+      expect(dropPrefixDuplicates(empty)).toBe(empty)
+    })
+
+    it('drops the head and keeps the fuller chunk, whichever came first', () => {
+      expect(dropPrefixDuplicates([mk('head', FIRST, 0.5), mk('full', FULL, 0.9)]).map((h) => h.id)).toEqual(['full'])
+      expect(dropPrefixDuplicates([mk('full', FULL, 0.9), mk('head', FIRST, 0.5)]).map((h) => h.id)).toEqual(['full'])
+    })
+
+    it('keeps everything else in its order', () => {
+      const out = dropPrefixDuplicates([mk('x', 'one unrelated thing', 0.9), mk('head', FIRST, 0.8), mk('y', 'another unrelated thing', 0.7), mk('full', FULL, 0.6)])
+      expect(out.map((h) => h.id)).toEqual(['x', 'y', 'full'])
+    })
+
+    it('lets the fuller chunk take the better score, so the passage is not lost to the relevance cut', () => {
+      const head = mk('head', FIRST, 0.9)
+      const full = mk('full', FULL, 0.4)
+      const [kept] = dropPrefixDuplicates([head, full])
+      expect(kept.id).toBe('full')
+      expect(kept.score).toBe(0.9)
+      expect(full.score).toBe(0.4) // the caller's object is not changed
+    })
+
+    it('keeps the fuller chunk\'s own score, and the very object, when it already scores higher', () => {
+      const full = mk('full', FULL, 0.9)
+      const [kept] = dropPrefixDuplicates([mk('head', FIRST, 0.4), full])
+      expect(kept).toBe(full)
+    })
+
+    it('follows a chain to its end: a head of a head of the fuller chunk, which takes the best score of the three', () => {
+      const MID = `${FIRST}\n\nuser: done, thanks`
+      const out = dropPrefixDuplicates([mk('head', FIRST, 0.95), mk('mid', MID, 0.5), mk('full', FULL, 0.3)])
+      expect(out.map((h) => h.id)).toEqual(['full'])
+      expect(out[0].score).toBe(0.95)
+    })
+
+    it('drops one head that begins two different fuller chunks, and keeps both of them', () => {
+      const A = `${FIRST}\n\nuser: and the changelog?`
+      const B = `${FIRST}\n\nuser: and the notes?\n\nassistant: written`
+      const out = dropPrefixDuplicates([mk('head', FIRST, 0.9), mk('a', A, 0.5), mk('b', B, 0.6)])
+      expect(out.map((h) => h.id)).toEqual(['a', 'b'])
+      expect(out.find((h) => h.id === 'b')?.score).toBe(0.9) // the longer of the two took it
+      expect(out.find((h) => h.id === 'a')?.score).toBe(0.5)
+    })
+
+    it('hands the score to the first of two equally long fuller chunks', () => {
+      const A = `${FIRST}\n\nuser: aaaa`
+      const B = `${FIRST}\n\nuser: bbbb`
+      const out = dropPrefixDuplicates([mk('head', FIRST, 0.9), mk('a', A, 0.2), mk('b', B, 0.2)])
+      expect(out.find((h) => h.id === 'a')?.score).toBe(0.9)
+      expect(out.find((h) => h.id === 'b')?.score).toBe(0.2)
+    })
+
+    it('works on hits that carry no score at all', () => {
+      const out = dropPrefixDuplicates([mk('head', FIRST), mk('full', FULL)])
+      expect(out).toEqual([{ id: 'full', content: FULL }])
+      expect('score' in out[0]).toBe(false)
+    })
+
+    it('hands a score to a fuller chunk that had none', () => {
+      const out = dropPrefixDuplicates([mk('head', FIRST, 0.7), mk('full', FULL)])
+      expect(out).toEqual([{ id: 'full', content: FULL, score: 0.7 }])
+    })
+
+    it('leaves a head that stops in the middle of a word, and numbered contents, alone', () => {
+      const numbered = Array.from({ length: 12 }, (_, i) => mk(`n${i}`, `content ${i + 1}`, 0.9 - i * 0.01))
+      expect(dropPrefixDuplicates(numbered)).toBe(numbered)
+      const cut = [mk('cut', 'we decided to keep the retry queue in mem', 0.9), mk('full', 'we decided to keep the retry queue in memory', 0.5)]
+      expect(dropPrefixDuplicates(cut)).toBe(cut)
+    })
+
+    it('never drops or hosts a hit with no text', () => {
+      const blanks = [mk('a', '', 0.9), mk('b', '   ', 0.8), mk('c', 'some text here', 0.7)]
+      expect(dropPrefixDuplicates(blanks)).toBe(blanks)
+    })
+
+    it('leaves exact duplicates to dedupeHits', () => {
+      const same = [mk('a', FIRST, 0.9), mk('b', FIRST, 0.8)]
+      expect(dropPrefixDuplicates(same)).toBe(same)
     })
   })
 })

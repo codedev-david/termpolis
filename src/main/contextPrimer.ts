@@ -17,7 +17,7 @@
 // treat them as command substitution), simple dividers, single-line snippets.
 
 import { existsSync } from 'fs'
-import { adaptiveGate, dedupeHits, diversifyHits, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
+import { adaptiveGate, dedupeHits, diversifyHits, dropPrefixDuplicates, isStrictPrefix, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 import { isCandidate, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote } from './claudeNotesParse'
 import { projectKeyOf } from './projectKey'
@@ -164,7 +164,7 @@ function relativeAge(ts: number, now: number): string {
  */
 async function collectRecent(
   recent: PrimerRecent | undefined,
-  o: { slots: number; project?: string; now: number; exclude: Set<string> },
+  o: { slots: number; project?: string; now: number; exclude: Set<string>; carried: PrimerHit[] },
 ): Promise<PrimerHit[]> {
   if (!recent || o.slots <= 0) return []
   let hits: PrimerHit[]
@@ -180,15 +180,20 @@ async function collectRecent(
   if (!Array.isArray(hits)) return []
 
   const cutoff = o.now - RECENT_WINDOW_MS
-  const out: PrimerHit[] = []
-  for (const h of hits) {
-    if (out.length >= o.slots) break
+  const viable = hits.filter((h) => {
     // Enforce the window here too — an injected lister may ignore `since`.
-    if (typeof h.ts === 'number' && h.ts > 0 && h.ts < cutoff) continue
-    if (isCandidate(h)) continue // a lesson the substance gate stores but holds back is never shown
-    if ((h.content || '').replace(/\s+/g, ' ').trim().length < MIN_RECENT_CHARS) continue
+    if (typeof h.ts === 'number' && h.ts > 0 && h.ts < cutoff) return false
+    if (isCandidate(h)) return false // a lesson the substance gate stores but holds back is never shown
+    return (h.content || '').replace(/\s+/g, ' ').trim().length >= MIN_RECENT_CHARS
+  })
+  const out: PrimerHit[] = []
+  // The newest chunks are where a live session's partial chunk and the fuller one that begins with it pile up: the
+  // lane counts them once, whichever the lister gave first, and not at all when relevance already carries the fuller one.
+  for (const h of dropPrefixDuplicates(viable)) {
+    if (out.length >= o.slots) break
     const key = hitKey(h)
     if (o.exclude.has(key)) continue
+    if (o.carried.some((c) => isStrictPrefix(h.content, c.content))) continue
     o.exclude.add(key)
     out.push(h)
   }
@@ -236,7 +241,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const withoutForeignNotes = (hits: PrimerHit[]): PrimerHit[] => (hits.some(foreignNote) ? hits.filter((h) => !foreignNote(h)) : hits)
   const gate = (hits: PrimerHit[]): PrimerHit[] =>
     adaptiveGate(
-      diversifyHits(dedupeHits(withoutForeignNotes(withoutCandidates(hits))), { threshold: DIVERSITY_THRESHOLD }),
+      diversifyHits(dropPrefixDuplicates(dedupeHits(withoutForeignNotes(withoutCandidates(hits)))), { threshold: DIVERSITY_THRESHOLD }),
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
@@ -263,7 +268,15 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     project: searchScope || undefined,
     now,
     exclude: excludeFromRecent,
+    carried: [...projectHits, ...globalHits],
   })
+  // The other direction: a relevance hit that is only the head of a chunk the lane shows is that chunk again, and
+  // gives its slot to the next hit.
+  if (recentHits.length > 0) {
+    const headOfLane = (h: PrimerHit): boolean => recentHits.some((r) => isStrictPrefix(h.content, r.content))
+    projectHits = projectHits.filter((h) => !headOfLane(h))
+    globalHits = globalHits.filter((h) => !headOfLane(h))
+  }
   const recentLines: string[] = []
   for (const h of recentHits) {
     const line = renderLine(h, maxSnip, fileExists, now)
