@@ -228,14 +228,6 @@ export async function injectAutoPrimer(
     // an agent that died while it started has left the terminal. Checked after the recall, right
     // before typing, and again before the Enter (canTypePointer).
     if (!(await canTypePointer(terminalId, sleep, ALONE_ASKS, stillIdle))) return false
-    // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
-    // memories" banner Claude gets — so Codex/Gemini recall doesn't look like
-    // nothing happened. Compaction re-primes pass notify=false and stay silent.
-    if (notify) {
-      const n = countPrimerMemories(String(res.data))
-      const label = project || 'this project'
-      useTerminalStore.getState().setMemoryNotice(`🧠 Loaded ${n} ${n === 1 ? 'memory' : 'memories'} for "${label}"`)
-    }
     const wrapped = BP_START + buildPrimerPointer(cwd, selfRecord) + BP_END
     api.writeToTerminal(terminalId, wrapped)
     // Then submit it. Pasting alone left the pointer sitting in the agent's
@@ -256,6 +248,15 @@ export async function injectAutoPrimer(
     // would send their draft together with it.
     if (!(await canTypePointer(terminalId, sleep, 1, stillIdle))) return false
     api.writeToTerminal(terminalId, '\r')
+    // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
+    // memories" banner Claude gets — so Codex/Gemini recall doesn't look like
+    // nothing happened. Compaction re-primes pass notify=false and stay silent. Said only once
+    // the Enter is in: a pointer left unsent at a skip above has loaded nothing.
+    if (notify) {
+      const n = countPrimerMemories(String(res.data))
+      const label = project || 'this project'
+      useTerminalStore.getState().setMemoryNotice(`🧠 Loaded ${n} ${n === 1 ? 'memory' : 'memories'} for "${label}"`)
+    }
     return true
   } catch {
     return false

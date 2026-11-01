@@ -483,6 +483,8 @@ describe('memories-loaded banner (Codex / Gemini typed-pointer path)', () => {
     vi.useFakeTimers()
     renderHook(() => useAutoPrimer('term-codex', { name: 'OpenAI Codex' } as any, '/home/me/proj', openGate()))
     await vi.advanceTimersByTimeAsync(1500)
+    expect(useTerminalStore.getState().memoryNotice).toBeNull() // the pointer is pasted, not yet submitted
+    await vi.advanceTimersByTimeAsync(PRIMER_SUBMIT_SETTLE_MS)  // the Enter goes in, and then the banner
     expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 4 memories for "proj"')
   })
 
@@ -1128,15 +1130,46 @@ describe('the pointer is never typed at a shell prompt', () => {
       expect(writes()).toHaveLength(2)
     })
 
-    it('announces the load only after the OS has cleared the paste', async () => {
+    it('announces the load once the Enter is in, not before', async () => {
       const log: string[] = []
       mockApi({
         terminalShellAlone: vi.fn(async () => { log.push(`ask, banner ${useTerminalStore.getState().memoryNotice}`); return alone(false) }),
         writeToTerminal: vi.fn((_id: string, data: string) => { log.push(`${data === '\r' ? 'enter' : 'paste'}, banner ${useTerminalStore.getState().memoryNotice}`) }),
       })
       expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(true)
-      const up = 'banner 🧠 Loaded 0 memories for "proj"'
-      expect(log).toEqual(['ask, banner null', `paste, ${up}`, `ask, ${up}`, `enter, ${up}`])
+      expect(log).toEqual(['ask, banner null', 'paste, banner null', 'ask, banner null', 'enter, banner null'])
+      expect(useTerminalStore.getState().memoryNotice).toBe('🧠 Loaded 0 memories for "proj"')
+    })
+
+    // A banner for a recall that did not happen: the pasted line is left unsent, so nothing was loaded.
+    it.each([
+      ['the agent exits after the paste', { terminalShellAlone: asking(alone(false), alone(true)) }, undefined],
+      [
+        'a prompt comes up after the paste',
+        {
+          terminalShellAlone: asking(alone(false)),
+          readTerminalBuffer: vi.fn()
+            .mockResolvedValueOnce({ success: true, data: { output: IDLE_SCREEN } })
+            .mockResolvedValue({ success: true, data: { output: TRUST_SCREEN } }),
+        },
+        undefined,
+      ],
+      ['the user starts typing after the paste', {}, vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false)],
+    ])('does not announce the load when %s', async (_why, api, idle) => {
+      mockApi(api)
+      useTerminalStore.setState({ memoryNotice: null })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick, idle)).toBe(false)
+      expect(writes()).toHaveLength(1) // the paste went in; the Enter did not
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('does not announce the load when the Enter cannot be written', async () => {
+      mockApi({
+        writeToTerminal: vi.fn((_id: string, data: string) => { if (data === '\r') throw new Error('terminal closed') }),
+      })
+      useTerminalStore.setState({ memoryNotice: null })
+      expect(await injectAutoPrimer('t1', '/home/me/proj', false, true, quick)).toBe(false)
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
     })
   })
 
@@ -1394,6 +1427,7 @@ describe('the pointer is never typed over what the user is typing', () => {
       await launch(t)
       expect(t.writes).toEqual(['PASTE'])
       expect(t.submitted).toEqual([]) // the draft was not submitted, with the pointer or on its own
+      expect(useTerminalStore.getState().memoryNotice).toBeNull() // and no recall is announced for it
     })
 
     it('types nothing when the pane goes away while the OS answers', async () => {
