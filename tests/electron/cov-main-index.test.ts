@@ -1374,6 +1374,17 @@ describe('MCP tool table — operator verbs', () => {
       expect(r).toEqual({ primer: 'PRIMER TEXT' })
     })
 
+    it('searches through the correction overlay, like every other path that reaches an agent', async () => {
+      // A memory someone retracted must not reach a headless run's digest: a correction binds to the memory, not to the tool.
+      M.runHeadless.mockImplementationOnce(async (_req: any, deps: any) => ({ primer: await deps.primer('/work/termpolis') }))
+      await mcp().agentExec({ prompt: 'p' })
+      const [search] = M.buildContextPrimer.mock.calls.at(-1)!
+      const { applyCorrections } = await import('../../src/main/memoryCorrectionStore')
+      vi.mocked(applyCorrections).mockImplementationOnce(((rows: Array<{ id: string }>) => rows.filter((r) => r.id !== 'gone')) as never)
+      MEMC.memorySearch.mockResolvedValueOnce([{ id: 'gone' }, { id: 'kept' }] as never)
+      expect(await search({ query: 'q' })).toEqual([{ id: 'kept' }])
+    })
+
     it('falls back to a generic primer query when there is no cwd', async () => {
       M.runHeadless.mockImplementationOnce(async (_req: any, deps: any) => ({ primer: await deps.primer('') }))
       await mcp().agentExec({ prompt: 'p' })

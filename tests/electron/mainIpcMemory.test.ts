@@ -1158,7 +1158,7 @@ describe('memory:build-primer', () => {
     primer.buildContextPrimer.mockResolvedValueOnce('- [claude] did a thing')
     const r = await invoke('memory:build-primer', { query: 'what were we doing', cwd: 'C:/repos/Termpolis' })
     expect(r).toEqual({ success: true, data: '- [claude] did a thing' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       // projectPath carries the FULL cwd so the digest scopes by projectKey, not just the
       // basename slug; `recent` is the newest-first lane that guarantees a session-start
       // digest can answer "where did we leave off" and not only "what is most similar".
@@ -1169,14 +1169,14 @@ describe('memory:build-primer', () => {
 
   it('passes project: undefined (not "") when there is no cwd', async () => {
     await invoke('memory:build-primer', { query: 'q' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       query: 'q', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
     })
   })
 
   it('coerces a missing query to "" rather than passing undefined to the builder', async () => {
     await invoke('memory:build-primer', {})
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ query: '' }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ query: '' }))
   })
 
   it('returns null and injects NOTHING when there is no relevant memory', async () => {
@@ -1194,7 +1194,7 @@ describe('memory:build-primer', () => {
 
   it('honours an explicit limit over the persisted primer size', async () => {
     await invoke('memory:build-primer', { query: 'q', limit: 3 })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ limit: 3 }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ limit: 3 }))
   })
 
   it('degrades to {success:false,error} when the builder throws', async () => {
@@ -1260,6 +1260,54 @@ describe('the freshness lane behind every primer', () => {
   })
 })
 
+// 1.55.0: a correction binds to the memory, not to the tool that served it (correctedSearch in index.ts). The MCP primer
+// always searched through the overlay; the Memory panel's preview, the launch check and the headless run's primer used
+// the raw search, so a memory someone had retracted still led their digest and a demoted lesson still led the project
+// block (the builder reads the overlay's demote marker to decide that).
+describe('the search behind every primer applies corrections', () => {
+  afterEach(async () => {
+    const { resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+  })
+
+  type Served = Array<{ id: string; score: number; correction?: { kind: string } }>
+  const searchOf = async (channel: string, args: unknown): Promise<(o: { query: string }) => Promise<Served>> => {
+    await invoke(channel, args)
+    const calls = primer.buildContextPrimer.mock.calls as unknown as Array<[(o: { query: string }) => Promise<Served>, unknown]>
+    return calls[calls.length - 1][0]
+  }
+
+  it.each([
+    ['the Memory panel preview', 'memory:build-primer', { query: 'q', cwd: 'C:/repos/Termpolis' }],
+    ['the launch check', 'memory:prepare-primer-file', { query: 'q', cwd: '/repos/x' }],
+  ])('drops a retracted memory and marks a demoted one: %s', async (_name, channel, args) => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id: 'gone', kind: 'retract', reason: 'wrong', by: 'david' })
+    correctMemory({ id: 'weak', kind: 'demote', reason: 'unreliable', by: 'david' })
+    const search = await searchOf(channel, args)
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'live', score: 0.9 }, { id: 'gone', score: 0.8 }, { id: 'weak', score: 0.7 }])
+    const hits = await search({ query: 'q' })
+    expect(hits.map((h) => h.id).sort()).toEqual(['live', 'weak'])
+    expect(hits.find((h) => h.id === 'weak')?.correction?.kind).toBe('demote')
+    expect(hits.find((h) => h.id === 'live')?.correction).toBeUndefined()
+  })
+
+  it('hands the builder the same overlay-applied search the MCP primer uses', async () => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id: 'gone', kind: 'retract', reason: 'wrong', by: 'david' })
+    await invoke('memory:build-primer', { query: 'q' })
+    mneme.competenceSummary.mockReturnValueOnce('')
+    mneme.curiosityPrompts.mockReturnValueOnce([])
+    mneme.identitySummary.mockReturnValueOnce('')
+    await mcp.memoryPrimer({ query: 'q', cwd: '/repos/x' })
+    const calls = primer.buildContextPrimer.mock.calls as unknown as Array<[(o: { query: string }) => Promise<Served>]>
+    for (const [search] of calls.slice(-2)) {
+      mem.memorySearch.mockResolvedValueOnce([{ id: 'gone', score: 0.9 }, { id: 'live', score: 0.5 }])
+      expect((await search({ query: 'q' })).map((h) => h.id)).toEqual(['live'])
+    }
+  })
+})
+
 describe('memory:get-primer-limit / memory:set-primer-limit', () => {
   // The real memorySettings module backs these (fs is stubbed, so it stays in-memory).
   // Restore the default afterwards — memory:build-primer reads the same setting.
@@ -1292,7 +1340,7 @@ describe('memory:get-primer-limit / memory:set-primer-limit', () => {
     await invoke('memory:set-primer-limit', { value: 4 })
     expect((await invoke('memory:get-primer-limit')).data).toBe(4)
     await invoke('memory:build-primer', { query: 'q' })
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ limit: 4 }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ limit: 4 }))
   })
 })
 
@@ -1319,7 +1367,7 @@ describe('memory:prepare-primer-file', () => {
 
   it('coerces a missing query to "" rather than passing undefined to the builder', async () => {
     const r = await invoke('memory:prepare-primer-file', {})
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, {
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), {
       query: '', limit: 10, project: undefined, projectPath: undefined, recent: expect.any(Function),
     })
     expect(r.data).toEqual({ file: null, count: 0 })
@@ -1367,7 +1415,7 @@ describe('memory:prepare-primer-file', () => {
     primer.buildContextPrimer.mockResolvedValueOnce('- [claude] one')
     await invoke('memory:prepare-primer-file', { query: 'q' })
     expect(writtenInstruction()).not.toContain('(cwd')
-    expect(primer.buildContextPrimer).toHaveBeenCalledWith(mem.memorySearch, expect.objectContaining({ project: undefined }))
+    expect(primer.buildContextPrimer).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ project: undefined }))
   })
 
   it('sweeps STALE primer files and leaves fresh ones alone', async () => {

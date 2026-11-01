@@ -2477,6 +2477,16 @@ ipcMain.handle('brain:import', async () => {
 // 1.55.0: the listing leaves out what a search would (superseded, suppressed, retracted) — see primerLane.ts.
 const primerRecent: PrimerRecent = createPrimerRecent({ list: (o) => memoryList(o), correct: (rows) => applyEntryCorrections(rows) })
 
+/** `memorySearch` with the in-flow correction overlay already applied.
+ *
+ *  A correction binds to the MEMORY, not to the one tool the user noticed the bad fact in,
+ *  so every path that reaches agents goes through this rather than the raw search — every
+ *  primer (the Memory panel's preview, the launch check, a headless run's, the MCP one) and
+ *  `memory_anticipate` included. Through v1.46 only `memory_search` applied the overlay, so a
+ *  retracted fact still reached agents through the other five tools; through v1.54 three of
+ *  the four primers still searched raw. */
+const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(await memorySearch(opts))
+
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
 // user's first ask or the active project) so it can be injected as an agent's
 // first input — the agent starts already knowing the context instead of the
@@ -2486,7 +2496,7 @@ ipcMain.handle('memory:build-primer', async (_, opts: { query: string; limit?: n
     // Current-directory precedence: context for the cwd's project leads the
     // primer; unrelated global hits are labeled "may NOT apply".
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const primer = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
+    const primer = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: opts?.limit ?? getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     // Economics SLI: a built primer that gets returned is context injected on the
     // agent's behalf — record the (estimated) tokens so "tokens injected" is real.
     try { if (primer) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primer.length / 4) }) } catch { /* best effort */ }
@@ -2563,7 +2573,7 @@ ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean })
 ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string }) => {
   try {
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
-    const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
+    const digest = await buildContextPrimer(correctedSearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding
     try { recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(digest.length / 4) }) } catch { /* best effort */ }
     const dir = join(app.getPath('userData'), 'primers')
@@ -3251,7 +3261,7 @@ const linkedNoPersist = createNoPersistProbe({ deliver: deliverSecondOpinion })
  *  for `termpolis exec` and for jobs a linked computer starts here, so both start equally warm. */
 async function headlessPrimer(cwd: string): Promise<string | null> {
   const project = cwd ? normalizeProjectSlug(cwd) : ''
-  return await buildContextPrimer(memorySearch, {
+  return await buildContextPrimer(correctedSearch, {
     query: project
       ? `recent work, decisions, conventions, and context for ${project}`
       : 'recent work, key decisions, and conventions',
@@ -3512,13 +3522,6 @@ if (!gotTheLock) {
     // Check GitHub releases for updates, auto-download in background,
     // notify renderer when ready to install.
     initAutoUpdater(() => mainWindow, { onBeforeQuitAndInstall: (armed?: boolean) => { quittingForUpdate = armed !== false } })
-/** `memorySearch` with the in-flow correction overlay already applied.
- *
- *  A correction binds to the MEMORY, not to the one tool the user noticed the bad fact in,
- *  so every path that reaches agents goes through this rather than the raw search — the
- *  primer and `memory_anticipate` included. Through v1.46 only `memory_search` applied the
- *  overlay, so a retracted fact still reached agents through the other five tools. */
-const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(await memorySearch(opts))
 
 /**
  * Embedding-backed grouping for memory_pool.
