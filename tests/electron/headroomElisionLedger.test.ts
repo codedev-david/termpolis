@@ -71,6 +71,21 @@ describe('redemptions', () => {
     expect(s.legacyRedeemed).toBe(0)
   })
 
+  it('a token elided again moves to the newest place in the window, so it is the last to be forgotten', () => {
+    // Two tokens in a window of ELISION_WINDOW; the older is elided again, then the window overflows by one.
+    // Whichever is dropped is the one that is now oldest: the token that was only seen once, not the one just re-elided.
+    const full = Array.from({ length: ELISION_WINDOW }, (_, i) => tok(i))
+    for (const t of full) recordElision(t, compactRead())
+    recordElision(full[0], compactRead()) // the oldest comes back: now the newest
+    recordElision(tok(ELISION_WINDOW), compactRead()) // one more than fits: the oldest goes
+    recordRedemption(full[0], undefined) // still in the window: counted in its class, not as one nothing remembers
+    expect(elisionState().legacyRedeemed).toBe(0)
+    expect(elisionState().classes['compact|Read|4-10k'].redeemed).toBe(1)
+    recordRedemption(full[1], undefined) // the one that was dropped: nothing remembers its class
+    expect(elisionState().legacyRedeemed).toBe(1)
+    expect(elisionState().classes['compact|Read|4-10k'].redeemed).toBe(1)
+  })
+
   it('a token with no meta falls back to the class it was elided in, when this run saw it', () => {
     recordElision(tok(1), compactRead())
     recordRedemption(tok(1))

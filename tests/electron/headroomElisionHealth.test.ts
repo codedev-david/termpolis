@@ -176,6 +176,15 @@ describe('regime', () => {
   const life = (rate: number) => ({ [KEY]: cls(1000, rate * 10) })
   const lately = (rate: number, n = 200) => ({ [KEY]: cls(n, Math.round((n * rate) / 100)) })
 
+  it('puts the line at ten points, in numbers that do not move with the constant', () => {
+    // The tests below take their boundary from REGIME_GAP_POINTS, so a changed constant would move them with it.
+    expect(REGIME_GAP_POINTS).toBe(10)
+    expect(buildElisionHealth(input({ classes: life(40), recent: lately(49) })).regime).toBe('steady') // 9 points up
+    expect(buildElisionHealth(input({ classes: life(40), recent: lately(50) })).regime).toBe('rising') // 10 points up
+    expect(buildElisionHealth(input({ classes: life(40), recent: lately(31) })).regime).toBe('steady') // 9 points down
+    expect(buildElisionHealth(input({ classes: life(40), recent: lately(30) })).regime).toBe('falling') // 10 points down
+  })
+
   it('flags a rise from the all-time rate, the way the move from 13% to 66% should have shown', () => {
     expect(buildElisionHealth(input({ classes: life(21), recent: lately(66) })).regime).toBe('rising')
   })

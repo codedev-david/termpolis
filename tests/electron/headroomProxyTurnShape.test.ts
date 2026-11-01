@@ -9,7 +9,7 @@ const { parseTurnShapeFromSse, parseUsageFromSse, decodeBody } = await import('.
  * so the parser is held to the wire format, not to a convenient subset of it.
  */
 
-type Block = { type: 'thinking' } | { type: 'text'; text: string } | { type: 'tool_use'; name: string } | { type: 'server_tool_use'; name: string }
+type Block = { type: 'thinking' } | { type: 'text'; text: string } | { type: 'tool_use'; name: string } | { type: 'server_tool_use'; name: string } | { type: 'mcp_tool_use'; name: string }
 
 function startEvent(index: number, b: Block): string {
   const content_block =
@@ -93,6 +93,13 @@ describe('parseTurnShapeFromSse — golden streams', () => {
   it('a server-side tool call next to retrieve_full makes the turn mixed', () => {
     const s = stream([{ type: 'server_tool_use', name: 'web_search' }, retrieve()])
     expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 2, retrieveCalls: 1, pure: false })
+  })
+
+  it('an MCP tool call made by the server is a tool call too, and never a retrieve_full whatever it is named', () => {
+    // Only a client-side tool_use can be the retrieve_full this app answers; a server-run MCP call with the
+    // same name is somebody else's tool, and a turn that also made one is not a turn that only fetched.
+    expect(parseTurnShapeFromSse(stream([{ type: 'mcp_tool_use', name: 'retrieve_full' }]))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+    expect(parseTurnShapeFromSse(stream([retrieve(), { type: 'mcp_tool_use', name: 'search' }]))).toEqual({ toolCalls: 2, retrieveCalls: 1, pure: false })
   })
 
   it('reads a gzip-decoded body exactly like the plain one', () => {

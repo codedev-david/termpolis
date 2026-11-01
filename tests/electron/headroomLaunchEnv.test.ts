@@ -222,21 +222,31 @@ describe('every spawn site that carries the proxy env also carries the window (R
     for (const file of candidates('getProxyEnv')) {
       if (file.endsWith(`${sep}proxySupervisor.ts`)) continue
       const sf = parse(file)
+      const at = (n: ts.Node): string => `${relative(MAIN, file)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`
       walk(sf, (n) => {
-        if (ts.isCallExpression(n) && calleeName(n) === 'getProxyEnv') {
-          offenders.push(`${relative(MAIN, file)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`)
-        }
+        // A call by its name...
+        if (ts.isCallExpression(n) && calleeName(n) === 'getProxyEnv') offenders.push(at(n))
+        // ...by an alias, which only an import or a re-export can make (index.ts imports it once, checked below)...
+        if ((ts.isImportSpecifier(n) || ts.isExportSpecifier(n)) && (n.propertyName ?? n.name).text === 'getProxyEnv' && !file.endsWith(`${sep}index.ts`)) offenders.push(at(n))
+        // ...or reached as a member of a module: `mod.getProxyEnv` or `mod['getProxyEnv']`.
+        if (ts.isPropertyAccessExpression(n) && n.name.text === 'getProxyEnv') offenders.push(at(n))
+        if (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === 'getProxyEnv') offenders.push(at(n))
       })
     }
-    expect(offenders, 'getProxyEnv() called directly: route it through claudeLaunchEnv so the window rides with the route').toEqual([])
+    expect(offenders, 'getProxyEnv() taken outside claudeLaunchEnv: route it through the helper so the window rides with the route').toEqual([])
   })
 
-  it('index.ts hands getProxyEnv to the helper as a function and uses it nowhere else', () => {
+  it('index.ts hands getProxyEnv to the helper as a function and uses it nowhere else, under its own name', () => {
     const refs: string[] = []
+    const imports: ts.ImportSpecifier[] = []
     walk(index, (n) => {
+      if (ts.isImportSpecifier(n) && (n.propertyName ?? n.name).text === 'getProxyEnv') imports.push(n)
       if (ts.isIdentifier(n) && n.text === 'getProxyEnv' && !ts.isImportSpecifier(n.parent)) refs.push(n.parent.getText(index))
     })
     expect(refs).toEqual(['proxyEnv: getProxyEnv'])
+    // Imported once and not renamed: an `as gpe` would make every other reference invisible to this test.
+    expect(imports).toHaveLength(1)
+    expect(imports[0].propertyName).toBeUndefined()
   })
 
   it('has exactly one helper, which composes the route, the settings and the files', () => {
@@ -295,7 +305,10 @@ describe('every spawn site that carries the proxy env also carries the window (R
       if (file.endsWith(`${sep}shapingEnv.ts`)) continue
       const sf = parse(file)
       walk(sf, (n) => {
-        if ((ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && n.text.toUpperCase().includes('AUTO_COMPACT_WINDOW')) {
+        // Spelled in a string, a template, or as a name: `{ CLAUDE_CODE_AUTO_COMPACT_WINDOW: x }` and
+        // `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = x` set it as surely as `env['...']` does.
+        const spelled = ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n) || ts.isIdentifier(n)
+        if (spelled && n.text.toUpperCase().includes('AUTO_COMPACT_WINDOW')) {
           named.push(`${relative(MAIN, file)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`)
         }
       })

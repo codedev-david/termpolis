@@ -10,14 +10,24 @@ import { join } from 'path'
 // source so a future edit can't quietly reintroduce it (small stores never catch it).
 //
 // proxySupervisor.ts is exempt: its Date.now drives restart/backoff timing, not a content
-// transform. Nothing else in these two dirs may read a clock or randomness.
+// transform. receiptStore.ts is exempt: it makes the key and salt that sign an exported receipt, which is
+// the one place randomness is the point, and nothing the proxy child imports reaches it (the child-imports
+// test holds that). Nothing else in these two dirs may read a clock or randomness.
 
 const ROOTS = [
   join(__dirname, '..', '..', 'src', 'main', 'headroom'),
   join(__dirname, '..', '..', 'src', 'main', 'headroomProxy'),
 ]
-const EXEMPT = new Set(['proxySupervisor.ts'])
-const FORBIDDEN = /\bDate\.now\s*\(|\bMath\.random\s*\(|\bperformance\.now\s*\(|\bprocess\.hrtime\b|\bnew Date\s*\(/
+const EXEMPT = new Set(['proxySupervisor.ts', 'receiptStore.ts'])
+// Every way a clock or a random number gets into a module: the usual calls, a bare Date() call, a computed
+// member (Date['now'], performance['now']), the random calls of node's and the web's crypto, and the uptime.
+const FORBIDDEN = new RegExp([
+  String.raw`\bDate\.now\s*\(`, String.raw`\bnew Date\s*\(`, String.raw`\bDate\s*\(`, String.raw`\bDate\s*\[`,
+  String.raw`\bMath\.random\s*\(`, String.raw`\bperformance\.now\s*\(`, String.raw`\bperformance\s*\[`, String.raw`\bprocess\.hrtime\b`,
+  String.raw`\brandomUUID\b`, String.raw`\brandomBytes\b`, String.raw`\brandomInt\b`, String.raw`\brandomFill(?:Sync)?\b`,
+  String.raw`\bgetRandomValues\b`, String.raw`\bcrypto\.random`, String.raw`\buptime\s*\(`,
+  String.raw`\[\s*['"\x60]now['"\x60]\s*\]`,
+].join('|'))
 
 function tsFiles(dir: string): string[] {
   const out: string[] = []
@@ -65,4 +75,26 @@ describe('compression path is clock/RNG-free (deterministic → cache-safe)', ()
       expect(EXEMPT.has(f)).toBe(false)
     }
   })
+})
+
+/**
+ * The sweep above is only worth what its pattern catches. These are the forms a clock or a random number
+ * could take, each of which an earlier, narrower pattern let through: it has to flag every one, and none
+ * of the ordinary code that sits beside them.
+ */
+describe('the sweep pattern itself', () => {
+  const FLAGGED = [
+    'const t = Date.now()', 'const d = new Date()', 'const d = Date()', "const t = Date['now']()", 'const t = Date  [k]()',
+    'const r = Math.random()', 'const t = performance.now()', "const t = performance['now']()", 'const t = process.hrtime()',
+    'const t = process.hrtime.bigint()', 'const id = crypto.randomUUID()', "const b = randomBytes(8)", 'const n = randomInt(5)',
+    'crypto.getRandomValues(new Uint8Array(4))', 'webcrypto.getRandomValues(a)', 'randomFillSync(buf)', 'const u = process.uptime()',
+    'const u = os.uptime()', 'const k = globalThis[`now`]',
+  ]
+  const FINE = [
+    'const hash = crypto.createHash(\'sha1\').update(s).digest(\'hex\')', 'const isoDate = format(x)', 'type DateLike = string',
+    'const candidate = makeCandidate(text)', 'export function updateDate(x) {}', 'const knowledge = 1', 'const nowhere = 2',
+    'const now = elisionRevision()', 'revision++',
+  ]
+  it.each(FLAGGED)('flags %s', (line) => { expect(FORBIDDEN.test(line)).toBe(true) })
+  it.each(FINE)('lets %s through', (line) => { expect(FORBIDDEN.test(line)).toBe(false) })
 })

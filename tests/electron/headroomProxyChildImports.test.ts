@@ -13,7 +13,14 @@ import { dirname, join, resolve } from 'path'
 
 const SRC = join(__dirname, '..', '..', 'src', 'main')
 const ENTRY = join(SRC, 'headroomProxy', 'proxyMain.ts')
-const FORBIDDEN = new Set(['electron', 'fs', 'node:fs', 'fs/promises', 'node:fs/promises', 'child_process', 'node:child_process', 'worker_threads', 'os', 'node:os'])
+// The child talks to the API through the server that proxyMain builds and through nothing else: a module in
+// its closure that opens a socket of its own (net, tls, dgram, a second http client) would be a way out the
+// request path does not know about. proxyMain itself is the one place that names http and https.
+const FORBIDDEN = new Set([
+  'electron', 'fs', 'node:fs', 'fs/promises', 'node:fs/promises', 'child_process', 'node:child_process', 'worker_threads', 'node:worker_threads',
+  'os', 'node:os', 'net', 'node:net', 'tls', 'node:tls', 'dgram', 'node:dgram', 'dns', 'node:dns', 'cluster', 'node:cluster', 'vm', 'node:vm',
+])
+const ONLY_IN_ENTRY = new Set(['http', 'node:http', 'https', 'node:https'])
 
 /** Value imports and re-exports in a source file: `import x from`, `import 'x'`, `export ... from`,
  *  `require('x')` and `await import('x')`, but not `import type` or `export type`. */
@@ -72,9 +79,15 @@ describe('the proxy child import closure', () => {
     expect(offenders).toEqual([])
   })
 
+  it('names the http and https clients in the entry alone: nothing else in the closure opens a connection', () => {
+    const users = [...bare.entries()].filter(([spec]) => ONLY_IN_ENTRY.has(spec)).flatMap(([spec, from]) => from.map((f) => `${spec} <- ${short(f)}`))
+    expect(users.length).toBeGreaterThan(0) // the entry does name them: the walk is really reading its imports
+    for (const u of users) expect(u, u).toContain('src/main/headroomProxy/proxyMain.ts')
+  })
+
   it('does not reach the ledger, the stash, the app log or any other main-process state', () => {
     const state = [...files.keys()].map(short).filter((f) =>
-      /\/(proxyLedger|proxySupervisor|ccrStore|elisionLedger|elisionStore|appLog|savingsLedger|outputEconomyStore|sessionDepth|persist|wireTier|compressToolResult|unifiedReceipt)\.ts$/.test(f))
+      /\/(proxyLedger|proxySupervisor|ccrStore|elisionLedger|elisionStore|appLog|savingsLedger|outputEconomyStore|sessionDepth|persist|wireTier|compressToolResult|unifiedReceipt|receiptStore|receiptArtifact)\.ts$/.test(f))
     expect(state).toEqual([])
   })
 

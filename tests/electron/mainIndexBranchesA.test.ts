@@ -607,15 +607,22 @@ describe('terminal:create and the swarm worker — the context window is the use
     await rm(userClaudeDir, { recursive: true, force: true })
   })
 
+  // What the spawn was handed, and that it is a plain object and not a promise. An async helper that returns a
+  // promise waits for it, so a site that lost its `await` would be unwrapped here and pass, while the PTY it
+  // spawned was handed a promise for its environment and no proxy route or window at all.
+  const handedOver = (env: unknown): Record<string, string> | undefined => {
+    expect(typeof (env as { then?: unknown } | null | undefined)?.then).toBe('undefined')
+    return env as Record<string, string> | undefined
+  }
   const createClaude = async (id: string, cwd = '/repo'): Promise<Record<string, string> | undefined> => {
     M.spawnTerminal.mockClear()
     expect((await invoke('terminal:create', { id, shellType: 'powershell', cwd, claudeHeadroom: true })).success).toBe(true)
-    return M.spawnTerminal.mock.calls[0][5]
+    return handedOver(M.spawnTerminal.mock.calls[0][5])
   }
   const createWorker = async (name: string, cwd = '/repo'): Promise<Record<string, string> | undefined> => {
     M.spawnTerminal.mockClear()
     const id = await mcp().createTerminal(name, 'powershell', cwd)
-    const env = M.spawnTerminal.mock.calls[0][5]
+    const env = handedOver(M.spawnTerminal.mock.calls[0][5])
     mcp().closeTerminal(id)
     return env
   }
