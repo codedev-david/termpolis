@@ -374,7 +374,7 @@ export interface PrimerGate {
    * are still typing it — and null forever if the keyword only ever appeared in output.
    */
   launchedAgent: () => AgentInfo | null
-  /** The user's un-submitted draft on this terminal's input line; '' when the line is idle. */
+  /** The user's un-submitted draft on this terminal's input line, typed or pasted; '' when the line is idle. */
   draft: () => string
   /** The command the agent was launched with, when known. */
   launchCommand?: () => string | null | undefined

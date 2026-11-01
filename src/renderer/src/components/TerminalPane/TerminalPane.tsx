@@ -318,6 +318,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   const fitRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const inputBufferRef = useRef('')
+  // A PASTE into an agent reaches onData as one chunk wrapped in bracketed-paste markers, which the
+  // keystroke record above skips (it ignores whatever starts with Escape). It is un-submitted text on
+  // the input line all the same, so it is noted here, out of inputBufferRef (command history and the
+  // completion dropdown read that), until the next Enter.
+  const pastedDraftRef = useRef(false)
+  // The un-submitted input line as the memory primer reads it: typed, or pasted.
+  const unsubmittedLine = (): string => inputBufferRef.current + (pastedDraftRef.current ? '[pasted text]' : '')
   // Selection-drop fix: pause streamed output into xterm while the user is
   // selecting (a drag is in progress, or a selection exists), so agent output
   // can't scroll/trim the buffer out from under the selection. selectingRef
@@ -483,13 +490,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // `draft` is the un-submitted input line, which must be empty before we append at the cursor.
   useAutoPrimer(terminalId, agent.detectedAgent, cwd, {
     launchedAgent: () => agentFromCommand(agentCommand) ?? agentFromCommand(lastCommandRef.current),
-    draft: () => inputBufferRef.current,
+    draft: unsubmittedLine,
     launchCommand: () => (agentFromCommand(agentCommand) ? agentCommand : lastCommandRef.current),
   })
   // Re-seed it after Claude compacts its conversation, restoring the detail it
   // summarized away from the durable memory brain (opt-out in Settings). The draft is the same
   // un-submitted input line the launch gate reads: the pointer is held back while it is not empty.
-  const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd, () => inputBufferRef.current)
+  const onCompactionOutput = useCompactionReprimer(terminalId, agent.detectedAgent, parsedCwd || cwd, unsubmittedLine)
   // Learn from this solo agent session: reflect the transcript delta into the brain on a
   // task pause / terminal close. Uses the authoritative launched-agent identity so Codex/
   // Gemini/Claude are all covered (opt-out in Settings).
@@ -824,6 +831,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     outputBufferRef.current = ''
     pendingWriteRef.current = ''
     inputBufferRef.current = ''
+    pastedDraftRef.current = false
     copySnapshotRef.current = null
     mouseDownSnapRef.current = null
     lastGoodSnapRef.current = null
@@ -1434,6 +1442,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
           lastCommandRef.current = cmd
         }
         inputBufferRef.current = ''
+        pastedDraftRef.current = false
         outputBufferRef.current = ''
         diffDetectedRef.current = false
         setDiffDetected(false)
@@ -1442,6 +1451,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         submitLine()
       } else if (data === '\u007f') {
         inputBufferRef.current = inputBufferRef.current.slice(0, -1)
+      } else if (data.startsWith('\x1b[200~')) {
+        // A paste into a program that asked for bracketed paste (an agent's TUI): even with a line
+        // break inside, it stays on the agent's input line, unsent, until an Enter.
+        pastedDraftRef.current = true
       } else if (!data.startsWith('\x1b')) {
         // A paste into a program that never asked for bracketed paste (PowerShell, cmd) arrives
         // here as ONE chunk whose \r are Enters: the shell runs each line as it lands. So each

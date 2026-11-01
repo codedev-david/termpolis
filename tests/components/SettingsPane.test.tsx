@@ -560,7 +560,7 @@ describe('SettingsPane', () => {
     render(<SettingsPane />)
     const copy = screen.getByTestId('settings-auto-reprime-toggle').parentElement?.textContent ?? ''
     expect(copy).toContain('types the one-line memory_primer note and sends it for you')
-    expect(copy).toContain('never while the agent is waiting for an answer, only its shell is left, or you are typing')
+    expect(copy).toContain('never while the agent is waiting for an answer, only its shell is left, or you are typing or pasting')
     expect(copy).toContain('nothing is typed for it')
     expect(copy).not.toContain('not sent automatically')
   })
