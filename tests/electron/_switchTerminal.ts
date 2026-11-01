@@ -77,6 +77,11 @@ export interface TermScript {
    *  left), `blind` (it cannot tell), `flaky` (cannot tell once in a while). Absent: the switch has
    *  no such read. */
   os?: 'tells' | 'blind' | 'flaky'
+  /** The shell reads what is typed this slowly, a character at a time, and draws the line only once
+   *  it has read all of it: Git Bash on a ConPTY took 39 ms a character on David's laptop (measured
+   *  with a real one, tests/electron/accountsRealCli.test.ts), so a 140-character account line shows
+   *  after 5.5 s. PowerShell took 5 ms a character, cmd none. */
+  shellCharMs?: number
 }
 
 /** The conversation id a later exit of agy names: a new, empty one, never the first. */
@@ -115,6 +120,10 @@ export class FakeTerminal {
   writeClocks: number[] = []
   /** Output on its way (exitOutputLateMs): it reaches `out` once the clock passes `at`. */
   late: { at: number; text: string } | null = null
+  /** shellCharMs: what the shell has read of the typed line and not drawn yet, and when it will
+   *  have read it all. */
+  slowEcho: { at: number; text: string } | null = null
+  shellFreeAt = 0
   /** The account agy's header shows. */
   email: string
   constructor(public s: TermScript) {
@@ -269,18 +278,24 @@ export class FakeTerminal {
         // The shell isn't reading while the agent's process is still going: the keys are lost.
         if (this.s.shellDead || this.clock < this.goneAt) continue
         if (c === '\r') {
+          this.flushSlowEcho()
           const line = this.line
           this.line = ''
           this.out += '\r\n'
           this.runLine(line)
         } else if (c === '\u0015' || c === E) {
+          // The slow shell reads the Ctrl+U after what came before it: nothing of that was drawn.
+          this.slowEcho = null
           this.line = ''
           this.out += `\r${E}[K${this.prompt().split('\r\n').pop()}`
         } else if (c === '\u0004') {
           if (this.s.family === 'posix' && this.line === '') this.closed = true
         } else if (c >= ' ') {
           this.line += c
-          this.out += c
+          if (this.s.shellCharMs) {
+            this.shellFreeAt = Math.max(this.shellFreeAt, this.clock) + this.s.shellCharMs
+            this.slowEcho = { at: this.shellFreeAt, text: (this.slowEcho?.text ?? '') + c }
+          } else this.out += c
         }
         continue
       }
@@ -318,6 +333,12 @@ export class FakeTerminal {
     }
   }
 
+  /** The slow shell has read the typed line: it draws it. */
+  private flushSlowEcho(): void {
+    if (this.slowEcho) this.out += this.slowEcho.text
+    this.slowEcho = null
+  }
+
   /** The user signs in, in agy's sign-in screen: agy says so and shows its box, under the account. */
   completeSignIn(email = this.email): void {
     this.signedOut = false
@@ -348,6 +369,7 @@ export class FakeTerminal {
           this.out += this.late.text
           this.late = null
         }
+        if (this.slowEcho && this.slowEcho.at <= this.clock) this.flushSlowEcho()
       },
       now: () => this.clock,
       ...(this.s.foreground ? { atShell: () => this.mode === 'shell' } : {}),

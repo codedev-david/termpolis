@@ -12,8 +12,8 @@
 //       --continue or resume --last.
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  ECHO_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason, releaseModelHold,
-  runAccountSwitch,
+  ECHO_MS, ECHO_PER_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
+  releaseModelHold, runAccountSwitch,
 } from '../../src/main/accountSwitch'
 import type { SwitchContext } from '../../src/main/accountSwitch'
 import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
@@ -288,6 +288,28 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
     expect(r.outcome).toEqual({ kind: 'didnt-start', line: `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}` })
     expect(r.t.writes.slice(-1)).toEqual(['\u0015'])
     expect(r.recorded).toEqual([])
+  })
+
+  // Measured with a real Git Bash on a ConPTY (accountsRealCli.test.ts): it reads typed text at
+  // 39 ms a character and draws the line only once it has read all of it, so the 100-character
+  // account line below shows after 4 s, and a real profile path makes it 5 s and more. The wait for
+  // it to show was a flat 2 s, so the switch typed the line, cleared it and said it never started.
+  it('gives a slow shell the time it needs to read a long line before it says the line never showed', async () => {
+    const r = await run(claude({ shellCharMs: 39 }))
+    expect(r.outcome).toMatchObject({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(r.t.ran.filter(Boolean)).toEqual([`export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`])
+  })
+
+  it('still gives up on a line that never shows, after a wait that grows with the line and has an end', async () => {
+    const r = await run(claude({ shellCharMs: 5000 }))
+    expect(r.outcome).toMatchObject({ kind: 'didnt-start' })
+    const line = `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`
+    // The wait: ECHO_MS plus ECHO_PER_CHAR_MS for each character of the line, and no more than that
+    // from the last write (the clock also holds the exit's own waits, well under a minute).
+    const typedAt = r.t.writeClocks[r.t.writes.findIndex((w) => w === line)]
+    expect(r.t.clock - typedAt).toBeGreaterThanOrEqual(ECHO_MS + line.length * ECHO_PER_CHAR_MS)
+    expect(r.t.clock - typedAt).toBeLessThanOrEqual(ECHO_MS + line.length * ECHO_PER_CHAR_MS + 2 * POLL_MS + 1000)
+    expect(r.t.ran.filter(Boolean)).toEqual([])
   })
 
   it('refuses when a shell of another family reported since: one started inside this one', async () => {

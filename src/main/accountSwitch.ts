@@ -1,4 +1,4 @@
-// Moving a running agent to another account in place (§7.2), main's side: it runs beside the
+// Moving a running agent to another account in place (Â§7.2), main's side: it runs beside the
 // terminals' buffers and types through the PTY itself. The design's rules, in the order they act:
 //
 //   R2  Exit keys go only to an agent live on screen, and none at all: the agent is exited with its
@@ -49,7 +49,7 @@ export const LOCK_MS = 120_000
 export const MODEL_HOLD_MS = 60_000
 /** How often the screen is looked at while waiting. */
 export const POLL_MS = 250
-/** How long an exit gets to show (§7.2 step 4). */
+/** How long an exit gets to show (Â§7.2 step 4). */
 export const EXIT_CONFIRM_MS = 8000
 /** How long a menu or a dialog gets to close after Esc (step 2). */
 export const ESC_WAIT_MS = 2000
@@ -59,6 +59,13 @@ export const STOP_WAIT_MS = 5000
 export const CLEAR_WAIT_MS = 3000
 /** How long a typed command or line gets to show (steps 3 and 8). */
 export const ECHO_MS = 2000
+/** What a line typed at a shell gets on top of ECHO_MS for each character of it. Git Bash on a
+ *  ConPTY reads typed text at 39 ms a character and draws the line only once it has read all of it
+ *  (measured on a real one, tests/electron/accountsRealCli.test.ts; PowerShell takes 5 ms, cmd
+ *  none), so a 140-character account line shows after 5.5 s: a flat 2 s typed it, took it back out
+ *  and said it never started. A line that shows ends the wait at once; only one that never does
+ *  costs the whole of it. */
+export const ECHO_PER_CHAR_MS = 60
 /** How long the shell gets to answer the sacrificial Enter: its prompt report, or quiet. */
 export const PROMPT_WAIT_MS = 1500
 /** How long after the Enter the relaunch gets to show what it did (step 10). */
@@ -112,22 +119,22 @@ export interface SwitchContext {
   hasTranscript?: (id: string) => boolean
   /** Claude Code: makes the session resumable on the target (accountCarry.ts). */
   carry?: (id: string) => { carried: boolean; kept?: string }
-  /** Variables the account line unsets besides the profile's (the proxy's, §5.2). */
+  /** Variables the account line unsets besides the profile's (the proxy's, Â§5.2). */
   extraUnset?: string[]
-  /** What the lock says to the conductor meanwhile: a swarm worker's restart is said as one (§9). */
+  /** What the lock says to the conductor meanwhile: a swarm worker's restart is said as one (Â§9). */
   lockKind?: 'account' | 'worker'
   newSessionId: () => string
   /** What main records once the line ran: the terminal's account, start and session. */
   record: (r: { accountId: string; start: AgentStartRecord; sessionId: string | null }) => void
 }
 
-// ── The lock ───────────────────────────────────────────────────────────────────────────
+// â”€â”€ The lock â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** The terminals held, by a switch (LOCK_MS at most) or the model picker (MODEL_HOLD_MS). */
 export const locks = new Map<string, Hold>()
 
 /** What holds a terminal, until when: an account switch (a swarm worker's restart among them), which
- *  main types itself, or the model picker, whose own writes carry the key it was given (§7.5). */
+ *  main types itself, or the model picker, whose own writes carry the key it was given (Â§7.5). */
 export interface Hold {
   until: number
   kind: RelaunchHold
@@ -146,7 +153,7 @@ export function relaunchLockReason(terminalId: string, now: number = Date.now(),
   return key && key === hold.key ? null : RELAUNCH_HELD[hold.kind]
 }
 
-/** The model picker's hold on a terminal while it relaunches the agent there (§7.5): the key its
+/** The model picker's hold on a terminal while it relaunches the agent there (Â§7.5): the key its
  *  writes carry, or null while anything holds the terminal. */
 export function holdForModel(terminalId: string, now: number = Date.now()): string | null {
   if (relaunchLockReason(terminalId, now)) return null
@@ -171,7 +178,7 @@ export function _resetSwitchLocksForTest(): void {
   locks.clear()
 }
 
-// ── Reading the screen ─────────────────────────────────────────────────────────────────
+// â”€â”€ Reading the screen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface Look {
   lines: string[]
@@ -289,7 +296,7 @@ export async function livenessNow(io: SwitchIO, id: string, agent: AccountAgent,
   return alive
 }
 
-// ── The steps ──────────────────────────────────────────────────────────────────────────
+// â”€â”€ The steps â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** Polls `test` every POLL_MS for up to `ms`; its first truthy answer, or null. */
 export async function waitFor<T>(io: SwitchIO, ms: number, test: () => T | null | false): Promise<T | null> {
@@ -311,7 +318,7 @@ export function atIdleBox(io: SwitchIO, id: string): Look | null {
  *  its commands under the row, so only the first row is read. */
 function boxShows(l: Look, text: string): boolean {
   const rows = inputBoxRows(l.lines)
-  return !!rows && bare(rows[0].replace(/^\s*(?:│\s)?[❯>›]?\s*/, '')) === bare(text)
+  return !!rows && bare(rows[0].replace(/^\s*(?:â”‚\s)?[â¯>â€º]?\s*/, '')) === bare(text)
 }
 
 /** Types `text` into the agent's own box, at its idle box `l`, and presses Enter only once its box
@@ -422,7 +429,7 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   if (otherShellReported(io.outputFrom(id, mark), family)) return { outcome: 'mismatch' }
   const typedAt = io.end(id)
   io.write(id, line)
-  const where = await waitFor(io, ECHO_MS, () => landed(look(io, id), line, io.outputFrom(id, typedAt)))
+  const where = await waitFor(io, ECHO_MS + line.length * ECHO_PER_CHAR_MS, () => landed(look(io, id), line, io.outputFrom(id, typedAt)))
   if (where === 'box') {
     io.write(id, CLEAR_BOX_KEYS)
     return { outcome: 'agent-alive' }
@@ -474,7 +481,7 @@ async function shellBack(io: SwitchIO, id: string, mark: number): Promise<void> 
   })
 }
 
-// ── The switch ─────────────────────────────────────────────────────────────────────────
+// â”€â”€ The switch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Moves the agent in `req.terminalId` to `ctx.target`, in place: Claude Code and Codex (agy
