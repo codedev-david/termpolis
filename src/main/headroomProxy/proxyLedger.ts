@@ -81,6 +81,14 @@ export interface ProxyTotals {
    * `retrievalTurnUnits` hold both turns; this is how many of them held a ToolSearch turn too.
    */
   retrievalHops: number
+  /**
+   * Tokens a request kept off the wire whose stub its own conversation had already fetched back with
+   * retrieve_full. The fetched text is on the wire again, so for as long as the request carries both the
+   * stub saves nothing; `textSavedTokens` still counts it (it is what the compressor removed), and the
+   * receipt takes this out of the net. Only the share of a request's credit it can be: never more than
+   * that request was credited with.
+   */
+  askedBackTokens: number
   /** Responses whose shape was read, the denominator of the retrieval-turn share. `requests` has
    *  counted every response since v1.29 and `retrievalTurns` only those since v1.55, so dividing one
    *  by the other would be the category error unifiedReceipt's prefix-head note describes. */
@@ -155,7 +163,7 @@ export interface ProxyReceipt {
 function empty(): ProxyTotals {
   // worstSavedPct starts at 100 and only ever ratchets DOWN, so an untouched ledger never claims
   // a floor breach it never saw.
-  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0, retrievalHops: 0, turnRequests: 0, offerDirect: 0, offerDeferred: 0, offerAbsent: 0, stubPlain: 0, stubCompact: 0, stubDedup: 0, stubDiff: 0, stubAged: 0, stubAgedEarly: 0, stubAgedEarlyRequests: 0, lateTextOrigTokens: 0, lateTextSavedTokens: 0 }
+  return { requests: 0, textOrigTokens: 0, textSavedTokens: 0, images: 0, imageOrigBytes: 0, imageSavedBytes: 0, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokens: 0, outputTokens: 0, retrieves: 0, givebackTokens: 0, toolUseOrigTokens: 0, toolUseSavedTokens: 0, worstSavedPct: 100, belowFloorRequests: 0, floorEligibleRequests: 0, sysChars: 0, toolsChars: 0, tpToolsChars: 0, maxToolCount: 0, steeredRequests: 0, steeredOutputTokens: 0, unsteeredRequests: 0, unsteeredOutputTokens: 0, retrievalTurns: 0, retrievalTurnUnits: 0, retrievalHops: 0, askedBackTokens: 0, turnRequests: 0, offerDirect: 0, offerDeferred: 0, offerAbsent: 0, stubPlain: 0, stubCompact: 0, stubDedup: 0, stubDiff: 0, stubAged: 0, stubAgedEarly: 0, stubAgedEarlyRequests: 0, lateTextOrigTokens: 0, lateTextSavedTokens: 0 }
 }
 
 let session = empty()
@@ -199,7 +207,7 @@ function counter(n: unknown): number { return typeof n === 'number' && Number.is
 
 /** The counters added after v1.54. */
 const NEWER_COUNTERS = [
-  'retrievalTurns', 'retrievalTurnUnits', 'retrievalHops', 'turnRequests', 'offerDirect', 'offerDeferred', 'offerAbsent',
+  'retrievalTurns', 'retrievalTurnUnits', 'retrievalHops', 'askedBackTokens', 'turnRequests', 'offerDirect', 'offerDeferred', 'offerAbsent',
   'stubPlain', 'stubCompact', 'stubDedup', 'stubDiff', 'stubAged', 'stubAgedEarly', 'stubAgedEarlyRequests',
   'lateTextOrigTokens', 'lateTextSavedTokens',
 ] as const
@@ -231,7 +239,10 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   const u = r.usage || ({} as ProxyResultMsg['usage'])
   session.requests += 1
   session.textOrigTokens += Math.ceil((s.trOrigChars || 0) / 4)
-  session.textSavedTokens += Math.max(0, Math.ceil(((s.trOrigChars || 0) - (s.trCompChars || 0)) / 4))
+  const credited = Math.max(0, Math.ceil(((s.trOrigChars || 0) - (s.trCompChars || 0)) / 4))
+  session.textSavedTokens += credited
+  // The part of that credit whose text the conversation had already fetched back: withdrawn at the receipt.
+  if (typeof s.askedBackChars === 'number' && s.askedBackChars > 0) session.askedBackTokens += Math.min(credited, Math.ceil(s.askedBackChars / 4))
   session.toolUseOrigTokens += Math.ceil((s.tuOrigChars || 0) / 4)
   session.toolUseSavedTokens += Math.max(0, Math.ceil(((s.tuOrigChars || 0) - (s.tuCompChars || 0)) / 4))
   if (s.arm === 'late') {

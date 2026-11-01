@@ -68,6 +68,10 @@ export interface WireStats {
    *  the same on every turn of it. It lets the ledger pair a ToolSearch turn with the retrieve_full
    *  turn after it. 0 when there was nothing to hash or the request was not read. */
   convKey: number
+  /** Characters this request's stubs kept off the wire that the conversation had already fetched back
+   *  with retrieve_full: the text is on the wire again (in that call's result), so the saving is not one.
+   *  Each distinct token counts once. Measurement only: nothing about the forwarded bytes depends on it. */
+  askedBackChars: number
   /** Whether the model could ask for elided text back on this request: `direct` when retrieve_full is
    *  in its `tools` list under any of its names, `deferred` when it is not but a ToolSearch tool is
    *  (the client loads tools through it), `absent` when neither. `unknown` for a body not read as a
@@ -87,7 +91,7 @@ function emptyStats(): WireStats {
     trBlocks: 0, trOrigChars: 0, trCompChars: 0, tuBlocks: 0, tuOrigChars: 0, tuCompChars: 0,
     images: 0, imgOrigBytes: 0, imgCompBytes: 0,
     sysChars: 0, toolsChars: 0, toolCount: 0, tpToolsChars: 0, msgCount: 0, thinkBudget: 0, steered: false,
-    kinds: emptyKinds(), arm: 'none', armCluster: 0, convKey: 0, retrieveOffer: 'unknown',
+    kinds: emptyKinds(), arm: 'none', armCluster: 0, convKey: 0, askedBackChars: 0, retrieveOffer: 'unknown',
   }
 }
 function detToken(s: string): string { return 'hr_' + crypto.createHash('sha1').update(s).digest('hex').slice(0, 16) }
@@ -232,16 +236,42 @@ export function hintFromInput(input: unknown, name?: unknown): ContentHint {
  * Index tool_use blocks by id so a tool_result can be told which file it came from. Built in one
  * pass over the whole body before any rewriting, so it is complete regardless of block order.
  */
-export function collectToolUseHints(messages: Array<{ content?: unknown }>): Map<string, ContentHint> {
+export function collectToolUseHints(messages: Array<{ content?: unknown }>, retrieved?: Set<string>): Map<string, ContentHint> {
   const map = new Map<string, ContentHint>()
   for (const m of messages) {
     if (!m || !Array.isArray(m.content)) continue
     for (const b of m.content as Array<Record<string, unknown>>) {
       if (!b || typeof b !== 'object' || b.type !== 'tool_use' || typeof b.id !== 'string') continue
       map.set(b.id, hintFromInput(b.input, b.name))
+      // The text this conversation has already fetched back, noted in the same pass: the token each
+      // retrieve_full call was given. Only read, for the ledger (askedBackChars); it changes no byte.
+      if (retrieved && typeof b.name === 'string' && bareToolName(b.name) === 'retrieve_full') {
+        const token = (b.input as { token?: unknown } | null | undefined)?.token
+        if (typeof token === 'string') retrieved.add(token)
+      }
     }
   }
   return map
+}
+
+/**
+ * The characters this request's stubs removed that the conversation has since asked for back. A fetched
+ * result rides in the history in full (retrieve_full is exempt from compression), so for as long as the
+ * request carries both the stub and the fetch, the stub saves nothing. The headline withdraws that credit
+ * instead of crediting every request that re-sends the stub, which is what let a result the model asked
+ * straight back keep earning (research 5.5). Each distinct token counts once however many stubs name it:
+ * the text came back once. Pure, and it reads the stashes the walk has already made.
+ */
+export function charsAskedBack(stashes: readonly StashEntry[], retrieved: ReadonlySet<string>): number {
+  if (retrieved.size === 0) return 0
+  let n = 0
+  const counted = new Set<string>()
+  for (const s of stashes) {
+    if (!s.meta || !retrieved.has(s.token) || counted.has(s.token)) continue
+    counted.add(s.token)
+    n += Math.max(0, s.meta.chars - s.meta.view)
+  }
+  return n
 }
 
 /**
@@ -593,7 +623,8 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   let changed = clampThinkingBudget(obj)
   // Built once, up front: a tool_result's file hint lives in the tool_use it answers, which sits
   // in an EARLIER message, and the lookup must not depend on how far the walk has got.
-  const hints = collectToolUseHints(obj.messages as Array<{ content?: unknown }>)
+  const retrieved = new Set<string>()
+  const hints = collectToolUseHints(obj.messages as Array<{ content?: unknown }>, retrieved)
   try {
     // Decay runs BEFORE the main walk so aged-out blocks never enter the dedup/diff index — a
     // later block must not be encoded as a patch against something no longer on the wire.
@@ -657,6 +688,7 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
     // And the policy the request ran under, so the ledger can tell a compaction the policy in force
     // made from one the holdout made on the old behaviour.
     stampPolicy(stashes, policy.kind)
+    stats.askedBackChars = charsAskedBack(stashes, retrieved)
     // Read off the REWRITTEN messages, which are what `out` serializes; classifyMessages only reads.
     stats.kinds = classifyMessages(obj.messages as unknown[])
   } catch { /* the rewrite stands; only its bookkeeping is lost */ }

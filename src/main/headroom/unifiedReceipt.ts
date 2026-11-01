@@ -36,6 +36,12 @@ export interface UnifiedTotals {
    *  `givebackTokens`: that prices the text that came back, this prices the turn that asked. */
   retrievalTurns: number
   retrievalTurnUnits: number
+  /** Responses whose shape was read for retrieval turns, counted from v1.55 while `requests` counts every
+   *  response since v1.29: the share of the history the turns above have been netted from. */
+  turnRequests: number
+  /** Tokens credited as kept off the wire whose text the conversation had fetched back, taken out of
+   *  `netSavedTokens`. The give-back above prices the fetch once; this stops the stub earning after it. */
+  askedBackTokens: number
   /** What the tool results in forwarded requests were, summed over requests (see ProxyTotals). */
   stubKinds: StubKinds
   /** The bottom line. */
@@ -131,7 +137,7 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
   const retrieves = proxy.retrieves + tool.retrieves
   const givebackTokens = proxy.givebackTokens + tool.givebackTokens
   const grossSavedTokens = wireSavedTokens + toolSavedTokens
-  const netSavedTokens = grossSavedTokens - givebackTokens
+  const netSavedTokens = grossSavedTokens - givebackTokens - proxy.askedBackTokens
   const denom = wireOrigTokens + toolOrigTokens
   return {
     requests: proxy.requests,
@@ -148,6 +154,8 @@ function merge(proxy: ProxyTotals, tool: SavingsTotals): UnifiedTotals {
     givebackTokens,
     retrievalTurns: proxy.retrievalTurns,
     retrievalTurnUnits: proxy.retrievalTurnUnits,
+    turnRequests: proxy.turnRequests,
+    askedBackTokens: proxy.askedBackTokens,
     stubKinds: stubKindsOf(proxy),
     grossSavedTokens,
     netSavedTokens,
