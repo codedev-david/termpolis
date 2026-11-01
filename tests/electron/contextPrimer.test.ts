@@ -766,6 +766,69 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
   })
 })
 
+// 1.55: the freshness lane is a newest-first LISTING, the one read that skipped every filter a search applies. The
+// listing (primerLane.ts) takes out what a person retracted and what a later memory supersedes; what is left for the
+// builder is what it can judge from the hit itself: a memory the overlay marked as corrected, and one that belongs to no
+// project at all, only to an automated run.
+describe('buildContextPrimer — what the freshness lane leaves out', () => {
+  const proj = 'termpolis'
+  const NOW = 1_700_000_000_000
+  const HOUR = 3_600_000
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+  const fresh = (id: string, text: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+    ({ id, content: long(text), source: 'claude', kind: 'message', score: 0, project: proj, ts: NOW - HOUR, ...over })
+  const lane = (list: PrimerHit[], extra: Record<string, unknown> = {}) =>
+    buildContextPrimer(vi.fn(async () => []), { query: 'q', recent: vi.fn().mockResolvedValue(list), now: NOW, ...extra })
+  const rows = (out: string | null): string[] => (out ?? '').split('\n').filter((l) => l.startsWith('- ['))
+
+  describe('a memory someone has corrected', () => {
+    it('is not shown, whatever the correction, and the slot goes to the next entry', async () => {
+      const out = await lane([
+        fresh('r', 'was retracted but the lister still gave it', { correction: { kind: 'retract' } }),
+        fresh('d', 'was demoted as unreliable', { correction: { kind: 'demote' } }),
+        fresh('a', 'was amended to something else', { correction: { kind: 'amend' } }),
+        fresh('ok', 'is fine and recent', { ts: NOW - 2 * HOUR }),
+      ], { project: proj })
+      expect(rows(out)).toHaveLength(1)
+      expect(out).toContain('is fine and recent')
+    })
+
+    it('does not stop the same memory from being shown by relevance, where the overlay already ranked it', async () => {
+      const demoted = { id: 'd', content: long('was demoted as unreliable'), source: 'claude', kind: 'message', score: 0.9, project: proj, ts: NOW - HOUR, correction: { kind: 'demote' } } as PrimerHit
+      const out = await buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? [demoted] : [])), { query: 'q', project: proj, now: NOW, recent: vi.fn().mockResolvedValue([]) })
+      expect(out).toContain('was demoted as unreliable')
+    })
+  })
+
+  describe('an automated run\'s memory', () => {
+    it('is not shown in a digest that spans every project: the literal `cwd` a smoke test left behind, and scratch folders', async () => {
+      const out = await lane([
+        fresh('s1', 'reply with the word pong and nothing else, from a smoke run', { project: 'cwd' }),
+        fresh('s2', 'a one-off run in a scratch folder', { project: 'tmp' }),
+        fresh('s3', 'another one-off in a temp folder', { project: 'Temp' }),
+        fresh('real', 'work in an actual repository', { project: 'billing', ts: NOW - 2 * HOUR }),
+        fresh('none', 'a memory that names no project', { project: undefined, ts: NOW - 3 * HOUR }),
+      ])
+      expect(rows(out)).toHaveLength(2)
+      expect(out).toContain('work in an actual repository')
+      expect(out).toContain('a memory that names no project')
+      expect(out).not.toContain('smoke run')
+      expect(out).not.toContain('scratch folder')
+      expect(out).not.toContain('temp folder')
+    })
+
+    it('is still shown when it is the project the digest is about: a repo really called temp', async () => {
+      const out = await lane([fresh('own', 'work in the repo that happens to be called temp', { project: 'temp' })], { project: 'temp' })
+      expect(out).toContain('work in the repo that happens to be called temp')
+    })
+
+    it('is not mistaken for a project that merely starts the same way', async () => {
+      const out = await lane([fresh('w', 'work in a repo called cwd-tools', { project: 'cwd-tools' }), fresh('x', 'work in a repo called template', { project: 'template' })])
+      expect(rows(out)).toHaveLength(2)
+    })
+  })
+})
+
 // 1.55: the ingest pass stores the trailing partial chunk of a live session, and a later pass stores the fuller chunk
 // that begins with the same turns. One search returns both, and so does the freshness lane (the newest chunks are
 // where they pile up). The digest says it once, in the fuller chunk, whichever block each one landed in.

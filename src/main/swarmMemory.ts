@@ -2631,6 +2631,9 @@ export interface ListOptions {
   projectKey?: string
   /** Only entries strictly OLDER than this ts: a cursor for paging back past the 500 cap. */
   before?: number
+  /** Leave out what a search would not return: a memory a later one supersedes, and one whose net feedback has fallen
+   *  to the suppression bar. Off by default (the Memory panel lists everything); the primer's freshness lane asks. */
+  active?: boolean
 }
 
 export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
@@ -2653,6 +2656,8 @@ export function memoryList(opts: ListOptions = {}): MemoryEntry[] {
     const key = opts.projectKey ?? projectKeyOf(opts.project)
     pool = pool.filter(e => matchesProject(e, { query: '', project: slug, projectKey: key }))
   }
+  // The same two exclusions memorySearch applies to its results, applied to the (by now narrow) pool before it is cut.
+  if (opts.active && pool.length > 0) pool = filterSuperseded(pool, getAllEdges()).filter(e => (usageMap.get(e.id) ?? 0) > SUPPRESS_THRESHOLD)
   return pool.slice(0, limit)
 }
 

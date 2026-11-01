@@ -1203,6 +1203,63 @@ describe('memory:build-primer', () => {
   })
 })
 
+// 1.55.0: every primer carries the same freshness lane (primerRecent), a newest-first LISTING. It used to skip every
+// filter a search applies; now it asks the store for what a search would return and runs the rows through the
+// correction overlay (primerLane.ts), and the builder drops what is left marked as corrected.
+describe('the freshness lane behind every primer', () => {
+  afterEach(async () => {
+    const { resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+    resetMemoryCorrections()
+  })
+
+  const laneOf = async (channel: string, ...args: unknown[]) => {
+    await invoke(channel, ...args)
+    const calls = primer.buildContextPrimer.mock.calls as unknown as Array<[unknown, { recent: (o: unknown) => Promise<Array<{ id: string; content: string }>> }]>
+    return calls[calls.length - 1][1].recent
+  }
+
+  it('asks the store for what a search would return, in the window and scope the primer asked for', async () => {
+    const recent = await laneOf('memory:build-primer', { query: 'q', cwd: 'C:/repos/Termpolis' })
+    mem.memoryList.mockClear()
+    mem.memoryList.mockResolvedValueOnce([])
+    await recent({ limit: 24, project: 'C:/repos/Termpolis', since: 99 })
+    expect(mem.memoryList).toHaveBeenCalledWith({ limit: 24, project: 'C:/repos/Termpolis', since: 99, active: true })
+  })
+
+  it('hands the builder the fields it reads, including what tells a lesson from a chunk', async () => {
+    const recent = await laneOf('memory:build-primer', { query: 'q' })
+    mem.memoryList.mockResolvedValueOnce([
+      { id: 'a', content: 'Never call app.quit() because it re-enters.', source: 'claude', kind: 'fact', project: 'termpolis', projectKey: 'k', ts: 5, tags: ['t'], agentId: 'mneme', memoryType: 'procedural' },
+    ])
+    expect(await recent({ limit: 3 })).toEqual([
+      { id: 'a', content: 'Never call app.quit() because it re-enters.', source: 'claude', kind: 'fact', score: 0, project: 'termpolis', projectKey: 'k', ts: 5, tags: ['t'], agentId: 'mneme', memoryType: 'procedural', correction: undefined },
+    ])
+  })
+
+  it('lets a retraction take a row out of the lane, and marks a demoted one for the builder', async () => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    correctMemory({ id: 'gone', kind: 'retract', reason: 'wrong', by: 'david' })
+    correctMemory({ id: 'weak', kind: 'demote', reason: 'unreliable', by: 'david' })
+    const recent = await laneOf('memory:build-primer', { query: 'q' })
+    mem.memoryList.mockResolvedValueOnce([{ id: 'live', content: 'a' }, { id: 'gone', content: 'b' }, { id: 'weak', content: 'c' }])
+    const out = (await recent({ limit: 5 })) as Array<{ id: string; correction?: { kind: string } }>
+    expect(out.map((h) => h.id)).toEqual(['live', 'weak'])
+    expect(out[1].correction?.kind).toBe('demote')
+  })
+
+  it('is the one lane every primer path hands the builder', async () => {
+    const lanes = [
+      await laneOf('memory:build-primer', { query: 'q' }),
+      await laneOf('memory:prepare-primer-file', { query: 'q', cwd: '/repos/x' }),
+    ]
+    mem.memoryList.mockClear()
+    mem.memoryList.mockResolvedValue([])
+    for (const recent of lanes) await recent({ limit: 4 })
+    expect((mem.memoryList.mock.calls as unknown[][]).every(([o]) => (o as { active?: boolean }).active === true)).toBe(true)
+    expect(mem.memoryList).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('memory:get-primer-limit / memory:set-primer-limit', () => {
   // The real memorySettings module backs these (fs is stubbed, so it stays in-memory).
   // Restore the default afterwards — memory:build-primer reads the same setting.
@@ -2467,15 +2524,18 @@ describe('MCP read paths never serve a lesson the substance gate holds back', ()
     expect(compared.map((l) => l.content)).toEqual(['a kept lesson'])
   })
 
-  it('the primer\'s freshness lane lister hands the primer each entry\'s tags, so it can drop the held-back ones', async () => {
+  // The freshness lane lister is a read like the others: since 1.55.0 it goes through the same door (the correction
+  // overlay), so a held-back lesson never leaves it, and the tags of what does are still handed to the primer.
+  it('the primer\'s freshness lane goes through the same door: a held-back lesson never leaves it, and the tags of the rest are handed along', async () => {
     mem.memoryList.mockResolvedValueOnce([
       { id: 'h', content: 'x', kind: 'note', tags: ['candidate'], ts: 5 },
       { id: 'k', content: 'y', kind: 'note', ts: 4 },
+      { id: 't', content: 'z', kind: 'note', tags: ['note:x'], ts: 3 },
     ])
     await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
     const opts = primer.buildContextPrimer.mock.calls.at(-1)![1] as { recent: (o: any) => Promise<any[]> }
     const lane = await opts.recent({ limit: 8, project: 'C:/repos/termpolis', since: 0 })
-    expect(lane.map((h) => [h.id, h.tags])).toEqual([['h', ['candidate']], ['k', undefined]])
+    expect(lane.map((h) => [h.id, h.tags])).toEqual([['k', undefined], ['t', ['note:x']]])
   })
 
   it('...and who wrote each, because only a lesson Termpolis itself held back is dropped, not any note carrying the word', async () => {
@@ -2486,7 +2546,7 @@ describe('MCP read paths never serve a lesson the substance gate holds back', ()
     await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
     const opts = primer.buildContextPrimer.mock.calls.at(-1)![1] as { recent: (o: any) => Promise<any[]> }
     const lane = await opts.recent({ limit: 8, project: 'C:/repos/termpolis', since: 0 })
-    expect(lane.map((h) => [h.id, h.agentId])).toEqual([['h', 'mneme'], ['own', 'claude']])
+    expect(lane.map((h) => [h.id, h.agentId])).toEqual([['own', 'claude']])
   })
 
   it('an agent\'s own note that carries the word as a tag still comes back from every read', async () => {

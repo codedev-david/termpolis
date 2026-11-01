@@ -598,6 +598,75 @@ describe('memoryList', () => {
     expect(memoryList({ limit: 99999 }).length).toBe(1)
   })
 
+  // 1.55: `active` asks for what a search would return: no memory a later one supersedes, none whose net feedback has
+  // fallen to the suppression bar. The primer's freshness lane reads this way, and a plain listing used to be the one
+  // read that skipped both.
+  describe('active: what a search would still return', () => {
+    const T0 = 1_700_000_000_000
+    const put = (content: string, over: Partial<Parameters<typeof memoryWrite>[0]> = {}) =>
+      memoryWrite({ agentId: 'a', kind: 'message', content, ts: T0, ...over })
+    const ids = (list: Array<{ id: string }>) => list.map((e) => e.id)
+
+    it('leaves out a memory a later one supersedes, whichever way the link was written', async () => {
+      const oldOne = await put('the dev port is 9314', { ts: T0 + 1 })
+      const newOne = await put('the dev port moved to 9315', { ts: T0 + 2 })
+      const oldTwo = await put('the release is cut on a branch', { ts: T0 + 3 })
+      const newTwo = await put('the release is cut from main', { ts: T0 + 4 })
+      const bystander = await put('an unrelated note about lint', { ts: T0 + 5 })
+      memoryLink({ from: newOne.id, to: oldOne.id, relation: 'supersedes' })
+      memoryLink({ from: oldTwo.id, to: newTwo.id, relation: 'superseded-by' })
+      expect(ids(memoryList({ active: true }))).toEqual([bystander.id, newTwo.id, newOne.id])
+      expect(ids(memoryList()).sort()).toEqual([oldOne.id, newOne.id, oldTwo.id, newTwo.id, bystander.id].sort()) // the panel still lists all
+      expect(ids(memoryList({ active: false })).length).toBe(5)
+    })
+
+    it('leaves out a memory whose net feedback has fallen to the suppression bar, and brings it back when it recovers', async () => {
+      const bad = await put('a fix that did not hold', { ts: T0 + 1 })
+      const fine = await put('a fix that did', { ts: T0 + 2 })
+      memoryFeedback({ id: bad.id, helpful: false })
+      memoryFeedback({ id: bad.id, helpful: false })
+      expect(ids(memoryList({ active: true }))).toEqual([fine.id, bad.id]) // net -2: still served
+      memoryFeedback({ id: bad.id, helpful: false })
+      expect(ids(memoryList({ active: true }))).toEqual([fine.id]) // net -3: suppressed
+      expect(ids(memoryList()).length).toBe(2)
+      memoryFeedback({ id: bad.id, helpful: true })
+      expect(ids(memoryList({ active: true }))).toEqual([fine.id, bad.id]) // net -2 again
+    })
+
+    it('filters before it takes `limit`, so a skipped memory does not cost a slot', async () => {
+      const a = await put('first', { ts: T0 + 1 })
+      const b = await put('second', { ts: T0 + 2 })
+      const c = await put('third, since replaced', { ts: T0 + 3 })
+      const d = await put('fourth replaces the third', { ts: T0 + 4 })
+      memoryLink({ from: d.id, to: c.id, relation: 'supersedes' })
+      expect(ids(memoryList({ active: true, limit: 2 }))).toEqual([d.id, b.id])
+      expect(ids(memoryList({ limit: 2 }))).toEqual([d.id, c.id])
+      expect(a.id).toBeTruthy()
+    })
+
+    it('still applies the scope and the window of the listing it narrows', async () => {
+      const mine = await put('in this repo, recent', { ts: T0 + 5, project: 'C:/repos/alpha' })
+      await put('in this repo, old', { ts: T0 - 5_000_000, project: 'C:/repos/alpha' })
+      await put('in another repo', { ts: T0 + 6, project: 'C:/repos/beta' })
+      expect(ids(memoryList({ active: true, project: 'C:/repos/alpha', since: T0 }))).toEqual([mine.id])
+    })
+
+    it('answers an empty store, and a store with nothing to skip, like the plain listing', async () => {
+      expect(memoryList({ active: true })).toEqual([])
+      const only = await put('alone')
+      expect(ids(memoryList({ active: true }))).toEqual([only.id])
+    })
+
+    it('agrees with search: what active drops, a search does not return either', async () => {
+      const oldOne = await put('the installer check needs winget on the path', { ts: T0 + 1 })
+      const newOne = await put('the installer check needs winget on the path, resolved by its full path', { ts: T0 + 2 })
+      memoryLink({ from: newOne.id, to: oldOne.id, relation: 'supersedes' })
+      const found = await memorySearch({ query: 'installer check winget path', limit: 10 })
+      expect(ids(found)).not.toContain(oldOne.id)
+      expect(ids(memoryList({ active: true }))).not.toContain(oldOne.id)
+    })
+  })
+
   it('returns empty list when no entries', () => {
     expect(memoryList()).toEqual([])
   })

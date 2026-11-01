@@ -138,6 +138,10 @@ export const RECENT_MAX_SLOTS = 3
 export const RECENT_WINDOW_MS = 7 * 86_400_000
 /** Skip trivially short chunks ("assistant: Now tests 8 and 9:") — they'd waste a slot. */
 export const MIN_RECENT_CHARS = 120
+/** Project slugs that are not projects. `cwd` is the literal a smoke test left behind (13 rows, every one opening with the
+ *  same one-line "reply with" prompt); `tmp` and `temp` are the scratch folders an automated run starts in. An unscoped lane
+ *  lists the newest chunks of every project, and these are always among the newest. */
+const AUTOMATION_SLUGS = new Set(['cwd', 'tmp', 'temp'])
 /** Over-fetch factor: most recent chunks are too short to be worth a slot. */
 const RECENT_CANDIDATE_FACTOR = 8
 
@@ -186,7 +190,7 @@ function relativeAge(ts: number, now: number): string {
  */
 async function collectRecent(
   recent: PrimerRecent | undefined,
-  o: { slots: number; project?: string; now: number; exclude: Set<string>; carried: PrimerHit[] },
+  o: { slots: number; project?: string; ownProject: string; now: number; exclude: Set<string>; carried: PrimerHit[] },
 ): Promise<PrimerHit[]> {
   if (!recent || o.slots <= 0) return []
   let hits: PrimerHit[]
@@ -206,6 +210,12 @@ async function collectRecent(
     // Enforce the window here too — an injected lister may ignore `since`.
     if (typeof h.ts === 'number' && h.ts > 0 && h.ts < cutoff) return false
     if (isCandidate(h)) return false // a lesson the substance gate stores but holds back is never shown
+    // A newest-first lane has no score to lower a correction with: what someone demoted or amended is not "where things
+    // stand", and the same memory still reaches the digest through relevance, where the overlay already ranked it.
+    if (h.correction) return false
+    // An automated run's memory is the newest there is and says nothing about any project, unless the digest is about it.
+    const slug = (h.project || '').toLowerCase()
+    if (AUTOMATION_SLUGS.has(slug) && slug !== o.ownProject) return false
     return (h.content || '').replace(/\s+/g, ' ').trim().length >= MIN_RECENT_CHARS
   })
   const out: PrimerHit[] = []
@@ -288,6 +298,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const recentHits = await collectRecent(opts.recent, {
     slots: recentSlotCount(limit),
     project: searchScope || undefined,
+    ownProject: project,
     now,
     exclude: excludeFromRecent,
     carried: [...projectHits, ...globalHits],

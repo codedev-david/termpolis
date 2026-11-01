@@ -540,6 +540,7 @@ async function reflectOnTask(
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
+import { createPrimerRecent } from './primerLane'
 import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, getIndexClaudeNotes, setIndexClaudeNotes, getShareNotesAcrossProjects, setShareNotesAcrossProjects } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import { scheduleNoNewPrivsNotice } from './noNewPrivs'
@@ -2473,19 +2474,8 @@ ipcMain.handle('brain:import', async () => {
 // digest also has to answer "where did we leave off", and only a time-ordered read can.
 // Measured before this existed: a live primer for the termpolis repo returned hits aged
 // 12 days to 1 month and nothing from that same day, while the store held that day's work.
-const primerRecent: PrimerRecent = async (o) =>
-  (await memoryList({ limit: o.limit, project: o.project, since: o.since })).map(e => ({
-    content: e.content,
-    source: e.source,
-    kind: e.kind,
-    score: 0, // not a scored hit — the lane is ordered by time, on purpose
-    id: e.id,
-    project: e.project,
-    projectKey: e.projectKey, // a saved note is shown only to the project it came from, told apart by key (contextPrimer)
-    ts: e.ts,
-    tags: e.tags, // the primer drops a lesson the substance gate holds back (`candidate`),
-    agentId: e.agentId, // ...but only one the lesson writer stored, not a note that merely carries the tag
-  }))
+// 1.55.0: the listing leaves out what a search would (superseded, suppressed, retracted) — see primerLane.ts.
+const primerRecent: PrimerRecent = createPrimerRecent({ list: (o) => memoryList(o), correct: (rows) => applyEntryCorrections(rows) })
 
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
 // user's first ask or the active project) so it can be injected as an agent's
