@@ -7,7 +7,11 @@
  * does, because a retrieval is a whole extra turn: the entire cached prefix is read again, about
  * 16,800 billed units on measured traffic. Until late August 2026 the model asked for about 13% of
  * shortened results; since Claude Code 2.1.247 it asks for about 66% (the compression research,
- * section 5). At that rate no class of result under roughly 40,000 characters pays for itself.
+ * section 5). At that rate almost no class of result under roughly 40,000 characters pays for itself (Grep
+ * and PowerShell between 10,000 and 40,000 characters came close, and a retrieval cheaper than the average
+ * one would have tipped them; the value given up is about 0.05% of the bill). The rate is the author's, on
+ * Opus: about 44% on Sonnet 5.5, where the research puts Late's gain near nothing at this floor, which is
+ * what the holdout and the Elision health card are there to check on the person's own work.
  *
  * `late` therefore leaves a tool result whole until it reaches 40,000 characters and shortens it
  * from there exactly as before. Everything else Token Headroom does (collapsing a repeat or a
@@ -78,7 +82,8 @@ export function effectiveFloor(tierFloorChars: number, policy: ElisionPolicy, to
 /**
  * THE HOLDOUT. About one conversation in ten keeps running `legacy` while the rest run `late`, so
  * the two can be compared on the same person's own work afterwards (the Elision health card does
- * this). Without it the research's +11.7% would stay a model fitted to one history and could never
+ * this). Without it the research's modeled gain (about 10% of the bill where the model asks that often)
+ * would stay a model fitted to one history and could never
  * be checked on another.
  *
  * The arm is a function of the conversation's FIRST USER MESSAGE and of nothing else:

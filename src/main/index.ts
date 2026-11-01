@@ -799,6 +799,16 @@ ipcMain.handle('clipboard:write-rich', (_e, { text, html }: { text?: string; htm
 // The extra environment of a Claude terminal: the proxy route, when the proxy is up, and the user's opt-in
 // context window, which has nothing to do with the proxy (headroom/shapingEnv.ts). The only place the proxy
 // route is taken, so a spawn site cannot carry one and miss the other.
+//
+// INTEGRATION HAZARD (the account switcher, fix/accounts154): this decides ONCE, when the PTY is created, and
+// reads the user's settings from Termpolis's own Claude folder (agentIntegrationPaths().claudeDir). The switcher
+// moves a terminal to another sign-in by TYPING `export CLAUDE_CONFIG_DIR=<profile> && claude` into the shell,
+// so the spawn environment never names the profile, and Claude Code lets this variable beat every window the
+// profile's own settings hold. When that branch is merged, this helper must take the account
+// (claudeLaunchEnv(cwd, accountId): readSettings from that account's profile folder, and proxyEnv through
+// accountSettingsEnv), and the switcher's typed line must unset our variable when the target profile holds a
+// window of its own. The pins in tests/electron/headroomLaunchEnv.test.ts will fail on that merge by design:
+// edit them to the new shape, do not delete them. docs/DOCUMENTATION.md names the limit until then.
 const claudeLaunchEnv = (cwd: string) => buildClaudeLaunchEnv(cwd, {
   settings: getHeadroomSettings,
   proxyEnv: getProxyEnv,

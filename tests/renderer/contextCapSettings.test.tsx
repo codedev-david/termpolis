@@ -233,6 +233,12 @@ describe('what the control says', () => {
     expect(note).not.toHaveTextContent('reads the env and window keys')
   })
 
+  it('says a smaller window and Late overlap, so the two savings are not added', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    expect(await screen.findByTestId('hr-context-cap-note')).toHaveTextContent('Late and a smaller window overlap, so together they save less than the two figures added')
+  })
+
   it('names the places a window lives that this variable also beats and Termpolis cannot read', async () => {
     serve()
     render(<TokenSavingsSettings />)

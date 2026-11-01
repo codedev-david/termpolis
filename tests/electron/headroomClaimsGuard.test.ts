@@ -85,6 +85,12 @@ describe('the README on Token Headroom', () => {
     expect(late).toContain('next time Termpolis starts')
   })
 
+  it('says the first start after the upgrade rebuilds the prompt cache once for a conversation that is resumed', () => {
+    const late = headroomBullets().find((b) => b.startsWith('- **Late, not early (v1.55).**')) as string
+    expect(late).toContain('The first start after upgrading to v1.55 rebuilds the prompt cache once for a conversation you resume')
+    expect(late).toContain('because Late leaves whole the results v1.54 had shortened')
+  })
+
   it('does not say the proxy does less work by construction: speed is measured, with the numbers that were', () => {
     const late = headroomBullets().find((b) => b.startsWith('- **Late, not early (v1.55).**')) as string
     expect(late).not.toContain('does less work per request, not more')

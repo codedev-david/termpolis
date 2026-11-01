@@ -209,6 +209,12 @@ export function renderReceiptMarkdown(receipt: SignedReceipt): string {
     `| Cost of reversing compression | ${fmt(p.givebackTokens)} across ${fmt(p.retrieves)} retrievals |`,
     `| Retrieval rate | ${pct(p.retrieveRate * 100)} of requests |`,
     '',
+    // The signed payload is in tokens of text. Since v1.55 the app's headline is in billed units and is net of
+    // two things this payload does not carry (the turns that fetched shortened text, and the credit for text
+    // already asked back); changing the signed payload needs a new version and a new verifier, so until then
+    // the receipt says what it leaves out rather than let two numbers disagree without a word.
+    'These are tokens of text, before two costs the in-app headline subtracts: the turns that fetched shortened text, and the credit for text already asked back. Settings → Token Savings shows the billed-unit figure net of both.',
+    '',
     '## Where the remaining bill is',
     '',
     'Effective units, using Anthropic\'s published multipliers (cache read 0.1x, cache write 1.25x, output 5x input).',

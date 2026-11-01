@@ -530,6 +530,12 @@ vi.mock('../../src/main/headroomProxy/proxyLedger', () => ({
   recordProxyResult: M.recordProxyResult, summarizeProxySavings: M.summarizeProxySavings,
   loadProxyBaseFromDisk: M.loadProxyBaseFromDisk, saveProxyTotalsToDisk: M.saveProxyTotalsToDisk,
   setProxyLedgerFlush: M.setProxyLedgerFlush, resetProxyCounters: M.resetProxyCounters,
+  // The Elision health view reads the stub-kind counters off the totals through this; a ledger mocked without
+  // them reads as zero, as a ledger file from before them does.
+  stubKindsOf: (t: Record<string, number | undefined>) => ({
+    plain: t.stubPlain ?? 0, compact: t.stubCompact ?? 0, dedup: t.stubDedup ?? 0, diff: t.stubDiff ?? 0,
+    aged: t.stubAged ?? 0, agedEarly: t.stubAgedEarly ?? 0, agedEarlyRequests: t.stubAgedEarlyRequests ?? 0,
+  }),
 }))
 vi.mock('../../src/main/headroomProxy/proxySupervisor', () => ({
   getProxyEnv: M.getProxyEnv, startProxy: M.startProxy, stopProxy: M.stopProxy,

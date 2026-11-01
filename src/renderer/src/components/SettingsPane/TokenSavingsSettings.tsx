@@ -566,7 +566,7 @@ export function TokenSavingsSettings() {
                 that window and 15,000 to 80,000 tokens lost to each one, as a share of the bill. It is not a promise for your work. Anthropic does
                 not say how close to the window a conversation compacts, so the real saving may differ. It is zero on a model whose own window is
                 already this size or smaller, because Claude Code never uses a window larger than the model’s. The 500,000 figure is estimated
-                between two modeled windows. Context meters, in Claude Code’s status line and in Termpolis, keep measuring against the model’s
+                between two modeled windows. Late and a smaller window overlap, so together they save less than the two figures added. Context meters, in Claude Code’s status line and in Termpolis, keep measuring against the model’s
                 full window, so they do not show how near the smaller one is.
               </p>
               <p style={{ margin: 0 }}>

@@ -209,6 +209,19 @@ describe('receiptArtifact rendering', () => {
     expect(md).toContain('450,000')
   })
 
+  it('says what its figure leaves out, since the headline in the app is net of two costs the signed payload does not carry', () => {
+    const md = renderReceiptMarkdown(r)
+    expect(md).toContain('These are tokens of text, before two costs the in-app headline subtracts')
+    expect(md).toContain('the turns that fetched shortened text, and the credit for text already asked back')
+    expect(md).toContain('Settings → Token Savings shows the billed-unit figure net of both')
+    // It sits beside the table it qualifies, ahead of the section on the remaining bill.
+    expect(md.indexOf('These are tokens of text')).toBeGreaterThan(md.indexOf('Retrieval rate'))
+    expect(md.indexOf('These are tokens of text')).toBeLessThan(md.indexOf('## Where the remaining bill is'))
+    // The signed payload and its verification are untouched: the note is not part of what is signed.
+    expect(renderReceiptJson(r)).not.toContain('These are tokens of text')
+    expect(JSON.parse(renderReceiptJson(r)).payload.version).toBe(r.payload.version)
+  })
+
   it('states the failure in the document rather than rendering a clean-looking lie', () => {
     const bad = signReceipt({ ...r.payload, savedPct: 99 }, 'k')
     expect(renderReceiptMarkdown(bad)).toContain('Arithmetic self-consistent: **NO —')

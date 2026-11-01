@@ -142,6 +142,10 @@ describe('the context window is disclosed, and the disclosure matches what is re
     }
   })
 
+  it('says a smaller window and Late overlap, so the two savings are not added', () => {
+    expect(docsSection).toContain('Late and a smaller window overlap, so together they save less than the two figures added')
+  })
+
   it('says the figures are modeled, and that Termpolis cannot measure the effect on answers', () => {
     expect(docsSection).toContain('modeled, not measured')
     expect(docsSection).toContain('a model, not a promise')
@@ -217,6 +221,7 @@ describe('the first-sight policy, the holdout and what is kept about them are di
   })
 
   it('describes the Elision health card and the headline as the code computes them', () => {
+    expect(docsProxy).toContain('The first start after upgrading to v1.55 rebuilds the prompt cache once for a conversation you resume')
     expect(docsProxy).toContain('**Elision health.**')
     expect(docsProxy).toContain('billed units avoided, net of the turns that fetched elided text and of text asked back')
     expect(docsProxy).toContain('Retrieval turns are counted from v1.55 on')
