@@ -11,6 +11,11 @@ export const AGENT_COLOR: Readonly<Record<AccountAgent, string>> = { claude: '#D
 /** The colours an account can take in the Add wizard, the agents' own first. */
 export const ACCOUNT_COLORS: readonly string[] = ['#D97706', '#10B981', '#4285F4', '#22D3EE', '#c678dd', '#e06c75', '#e5c07b', '#7ee2a3']
 
+/** What each account colour is called, for a screen reader (a hex code says nothing). */
+export const ACCOUNT_COLOR_NAMES: Readonly<Record<string, string>> = {
+  '#D97706': 'amber', '#10B981': 'green', '#4285F4': 'blue', '#22D3EE': 'cyan', '#c678dd': 'purple', '#e06c75': 'red', '#e5c07b': 'yellow', '#7ee2a3': 'mint',
+}
+
 /** The first colour none of the agent's accounts has yet (its own first), else its own. */
 export function freeColor(view: AccountsView | null, agent: AccountAgent): string {
   const taken = new Set((view?.accounts ?? []).filter((r) => r.agent === agent).map((r) => (r.color ?? AGENT_COLOR[agent]).toLowerCase()))
@@ -77,6 +82,17 @@ export function agentOfTerminal(t: { agentCommand?: string; isConductor?: boolea
   if (!t || t.isConductor) return null
   const worker = t.isSwarm && t.swarmAgent && isProfileAgent(t.swarmAgent) ? t.swarmAgent : null
   return agentOfCommand(t.agentCommand) ?? worker
+}
+
+/** Can this terminal's account be switched at all: it runs an account agent (never the conductor, a
+ *  wrapper or a plain shell), and that agent has an account registered. The account menu, its keys and
+ *  its Settings line mean nothing otherwise, so none of them is offered, and no key is taken for it (D13). */
+export function canSwitchAccount(
+  t: { agentCommand?: string; isConductor?: boolean; isSwarm?: boolean; swarmAgent?: AccountAgent } | undefined,
+  view: { accounts: readonly { agent: AccountAgent }[] } | null | undefined,
+): boolean {
+  const agent = agentOfTerminal(t)
+  return !!agent && !!view?.accounts.some((r) => r.agent === agent)
 }
 
 /** Why an account can't take a swarm worker over, or null when it can: it must be connected, its

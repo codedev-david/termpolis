@@ -13,7 +13,7 @@ import {
 import type { AccountAgent, AccountsView, AddAccountResult, PickFolderResult, ProfileAgent } from '../../../../shared/agentAccounts'
 import { AGENT_INTEGRATION_WRITES, PRIMER_HOOK_DESCRIPTION } from '../../../../shared/agentIntegration'
 import { useTerminalStore } from '../../store/terminalStore'
-import { ACCOUNT_COLORS, freeColor } from '../../lib/accountsView'
+import { ACCOUNT_COLORS, ACCOUNT_COLOR_NAMES, freeColor } from '../../lib/accountsView'
 import { refreshAccounts } from '../../lib/accountsState'
 import { Sheet } from './Sheet'
 import { SignInFlow } from './SignInFlow'
@@ -177,14 +177,31 @@ function Wizard({ agent, view, title, close }: { agent: AccountAgent; view: Acco
         </label>
         <div className="flex flex-col gap-1 text-xs">
           <span id="add-account-color-label">Colour</span>
-          <div role="radiogroup" aria-labelledby="add-account-color-label" className="flex flex-wrap gap-1.5" data-testid="add-account-colors">
+          <div
+            role="radiogroup"
+            aria-labelledby="add-account-color-label"
+            className="flex flex-wrap gap-1.5"
+            data-testid="add-account-colors"
+            onKeyDown={(e) => {
+              // A radio group is one stop for Tab, and the arrows move the choice (and the focus) within it.
+              const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+              if (step === 0) return
+              e.preventDefault()
+              const at = Math.max(0, ACCOUNT_COLORS.indexOf(color))
+              const next = ACCOUNT_COLORS[(at + step + ACCOUNT_COLORS.length) % ACCOUNT_COLORS.length]
+              setColor(next)
+              e.currentTarget.querySelector<HTMLElement>(`[data-color="${next}"]`)?.focus()
+            }}
+          >
             {ACCOUNT_COLORS.map((c) => (
               <button
                 key={c}
                 type="button"
                 role="radio"
                 aria-checked={color === c}
-                aria-label={c}
+                aria-label={ACCOUNT_COLOR_NAMES[c] ?? c}
+                tabIndex={color === c ? 0 : -1}
+                data-color={c}
                 onClick={() => setColor(c)}
                 className={`w-6 h-6 rounded-full border-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#22D3EE] ${color === c ? 'border-white' : 'border-transparent'}`}
                 style={{ backgroundColor: c }}

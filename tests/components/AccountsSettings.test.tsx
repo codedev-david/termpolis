@@ -311,6 +311,24 @@ describe('AccountsSettings: a card', () => {
     expect(screen.getByTestId(`account-row-${B.id}`).querySelector('[aria-hidden="true"]')).toHaveTextContent('?')
   })
 
+  it("names its account on every control of a card, so a screen reader hears which one when there are several", async () => {
+    bridge(view({ accounts: [MAIN, B, row({ id: 'acc_000000000003', label: 'contoso', email: null, lastEmail: null, limit: { seenAt: 1, resetsAt: null, text: 'x', scope: 'account' }, recopyAvailable: true, connect: false })] }))
+    await renderLoaded()
+    const named = (testid: string, name: string): void => expect(screen.getByTestId(testid), testid).toHaveAccessibleName(name)
+    named(`account-sign-in-${MAIN.id}`, 'Sign in again, personal')
+    named(`account-sign-in-${B.id}`, 'Sign in again, codedev')
+    named('account-sign-in-acc_000000000003', 'Sign in, contoso')
+    named(`account-check-${B.id}`, 'Check codedev')
+    named(`account-disconnect-${B.id}`, 'Disconnect codedev')
+    named('account-connect-acc_000000000003', 'Connect contoso')
+    named('account-mark-available-acc_000000000003', 'Mark contoso available')
+    named('account-recopy-acc_000000000003', 'Re-copy contoso from the main profile')
+    named(`account-remove-${B.id}`, 'Remove codedev')
+    named(`account-auto-offer-${B.id}`, 'Offer codedev automatically when another account runs out')
+    fireEvent.click(screen.getByTestId(`account-remove-${B.id}`))
+    expect(screen.getByTestId(`account-remove-${B.id}`)).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it("says the main profile stays connected through Agent Integration when it is forgotten (it has no entries of Termpolis's to take out)", async () => {
     bridge()
     await renderLoaded()

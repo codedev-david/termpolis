@@ -268,3 +268,36 @@ describe('openOnAccount never carries the source\'s conversation to the new term
     expect(d.launch).not.toHaveBeenCalled()
   })
 })
+
+describe('openOnAccount resuming the conversation a switch left at the sign-in screen (round 1)', () => {
+  const SID = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+  const deps = () => ({ createTerminal: vi.fn(async () => ({ success: true as const })), addTerminal: vi.fn(), launch: vi.fn(), newId: () => 't2' })
+
+  it.each([
+    ['claude --model opus --dangerously-skip-permissions', `claude --model opus --dangerously-skip-permissions --resume ${SID}`],
+    ['claude', `claude --resume ${SID}`],
+    ['codex -m gpt-5.6-sol -a never', `codex -m gpt-5.6-sol -a never resume ${SID}`],
+    [`claude --session-id ${SID} --effort max`, `claude --effort max --resume ${SID}`],
+  ])('%s -> %s', async (from, to) => {
+    const d = deps()
+    expect(await openOnAccount({ ...term, agentCommand: from }, B, d as never, SID)).toEqual({ ok: true, id: 't2' })
+    expect(d.launch).toHaveBeenCalledWith([expect.objectContaining({ id: 't2', agentCommand: to, agentAccountId: 'acc_b' })])
+    expect(d.addTerminal).toHaveBeenCalledWith(expect.objectContaining({ agentCommand: to }))
+  })
+
+  it('starts a fresh session instead for an id that is no session id', async () => {
+    const d = deps()
+    await openOnAccount({ ...term, agentCommand: 'claude --resume zzz' }, B, d as never, 'not-an-id')
+    expect(d.launch).toHaveBeenCalledWith([expect.objectContaining({ agentCommand: 'claude' })])
+  })
+
+  it("says why when the terminal's command can't be repeated word for word, and opens nothing", async () => {
+    const d = deps()
+    const r = await openOnAccount({ ...term, agentCommand: 'claude "fix it"' }, B, d as never, SID)
+    expect(r).toEqual({ ok: false, error: expect.stringContaining("can't continue the conversation in a new terminal") })
+    expect(d.createTerminal).not.toHaveBeenCalled()
+    // A swarm worker's or an unknown agent's command has no account agent to resume on.
+    const w = await openOnAccount({ ...term, agentCommand: 'node mock.cjs' }, B, d as never, SID)
+    expect(w.ok).toBe(false)
+  })
+})

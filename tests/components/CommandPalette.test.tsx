@@ -78,6 +78,23 @@ describe('CommandPalette', () => {
     accountsView = null
   })
 
+  it('does not hijack a command that merely mentions an account: "run az account show" still runs the command on Enter', () => {
+    const onAction = vi.fn()
+    accountsView = { accounts: [{ id: 'acc_a' }] }
+    render(<CommandPalette onAction={onAction} onClose={vi.fn()} />)
+    const box = screen.getByPlaceholderText('Type a command...')
+    fireEvent.change(box, { target: { value: 'run az account show' } })
+    expect(screen.queryByText('Switch account…')).toBeNull()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onAction).toHaveBeenCalledWith('run_command', 'az account show')
+    expect(onAction).not.toHaveBeenCalledWith('switch_account', expect.anything())
+    // Typing just "account" still finds it, by its label, when nothing else does.
+    onAction.mockClear()
+    fireEvent.change(box, { target: { value: 'account' } })
+    expect(screen.getByText('Switch account…')).toBeInTheDocument()
+    accountsView = null
+  })
+
   it('offers no Switch account… with no account registered, typed or listed (D13)', () => {
     for (const view of [null, { accounts: [] }]) {
       accountsView = view

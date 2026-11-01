@@ -374,9 +374,10 @@ describe('step 10: what the relaunch did', () => {
   })
 
   it('never answers the target\'s sign-in screen, or a question only the user answers', async () => {
-    expect((await run(claude({ relaunch: ['sign-in'] }))).outcome).toEqual({ kind: 'sign-in' })
+    // It names the conversation that was being relaunched, for a new terminal to pick up once signed in.
+    expect((await run(claude({ relaunch: ['sign-in'] }))).outcome).toEqual({ kind: 'sign-in', sessionId: ID })
     expect((await run(claude({ relaunch: ['asks'] }))).outcome).toEqual({ kind: 'asks-user', what: 'Bypass Permissions mode' })
-    expect((await run(codex({ relaunch: ['sign-in'] }))).outcome).toEqual({ kind: 'sign-in' })
+    expect((await run(codex({ relaunch: ['sign-in'] }))).outcome).toEqual({ kind: 'sign-in', sessionId: expect.any(String) })
   })
 
   it('gives up after 30 s with nothing shown', async () => {
@@ -418,6 +419,7 @@ describe('Codex', () => {
   })
 
   it('reports what the new session showed when it didn\'t come up either', async () => {
+    // Its second try is a new session: no conversation to name.
     expect((await run(codex({ relaunch: ['not-found', 'sign-in'] }))).outcome).toEqual({ kind: 'sign-in' })
     const dead = await run(codex({ relaunch: ['not-found'] }), {}, {})
     expect(dead.outcome).toEqual({ kind: 'resume-not-found' })

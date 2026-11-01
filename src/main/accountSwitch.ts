@@ -621,6 +621,8 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   // Step 10: what the relaunch did.
   io.progress?.({ terminalId: id, step: 'waiting' })
   let watched = await watchOutcome(io, id, agent, enterAt, typed.line, until)
+  // The conversation the line resumed; none once Codex's path (c) starts a new session instead.
+  let relaunched = sessionId
   if (watched.seen === 'not-found' && agent === 'codex') {
     // Codex's path (c): the target can't see the session. A new session in place, and said so.
     await shellBack(io, id, enterAt)
@@ -628,11 +630,12 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
     typed = await run(freshSpec)
     if (typed.outcome !== 'entered') return notEntered(typed)
     ctx.record({ accountId: target.id, start: { at: typed.at, commands: [typed.line] }, sessionId: null })
+    relaunched = null
     watched = await watchOutcome(io, id, agent, typed.enterAt, typed.line, until)
     if (watched.seen === 'switched') return { kind: 'fresh', why: 'not-found' }
   }
   if (watched.seen === 'not-found') return { kind: 'resume-not-found' }
-  if (watched.seen === 'sign-in') return { kind: 'sign-in' }
+  if (watched.seen === 'sign-in') return { kind: 'sign-in', ...(relaunched ? { sessionId: relaunched } : {}) }
   if (watched.seen === 'no-outcome') return { kind: 'no-outcome' }
   if (typeof watched.seen === 'object') return { kind: 'asks-user', what: watched.seen.asks }
   if (watched.notFound) return { kind: 'fresh', why: 'not-found' }

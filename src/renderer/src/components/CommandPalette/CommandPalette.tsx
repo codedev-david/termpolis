@@ -39,7 +39,7 @@ const COMMAND_PATTERNS: CommandAction[] = [
   { pattern: /launch\s*claude/i, action: 'launch_claude', label: 'Launch Claude', description: 'Launch Claude Code AI agent', icon: 'fa-solid fa-robot' },
   { pattern: /launch\s*codex/i, action: 'launch_codex', label: 'Launch Codex', description: 'Launch OpenAI Codex agent', icon: 'fa-solid fa-microchip' },
   { pattern: /launch\s*gemini/i, action: 'launch_gemini', label: 'Launch Gemini', description: 'Launch Gemini CLI agent', icon: 'fa-brands fa-google' },
-  { pattern: /switch\s*account|account/i, action: 'switch_account', label: 'Switch account…', description: 'Move the active agent terminal to another account', icon: 'fa-solid fa-user-group' },
+  { pattern: /switch\s*account/i, action: 'switch_account', label: 'Switch account…', description: 'Move the active agent terminal to another account', icon: 'fa-solid fa-user-group' },
   { pattern: /run\s+(.+)/i, action: 'run_command', capture: true, label: 'Run Command', description: 'Execute a command in active terminal', icon: 'fa-solid fa-terminal' },
 ]
 

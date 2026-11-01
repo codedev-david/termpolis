@@ -100,9 +100,12 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
     switchTo(to)
   }
 
-  const fresh = (to: AccountRowView): void => {
-    leave()
-    void newTerminalOn(terminal, to)
+  /** A new terminal beside this one. The card goes once the terminal exists; if it could not be opened, the
+   *  card stays, with why, and its other ways out. */
+  const fresh = async (to: AccountRowView): Promise<void> => {
+    const r = await newTerminalOn(terminal, to)
+    if (r.ok) leave()
+    else setError(r.error)
   }
 
   const openSignIn = (to: AccountRowView, confirmed: boolean): void => {
@@ -192,7 +195,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
           <div className="flex flex-wrap items-center gap-2" data-testid="limit-card-carry">
             <span>This conversation is on {current!.label}, which isn&apos;t offered automatically. Carry it to {carry.label}?</span>
             {/* A signed-out account has no session to start in a new terminal: the sign-in comes first. */}
-            {!carrySignsIn && <button type="button" className={SMALL_PRIMARY} onClick={() => fresh(carry)} data-testid="limit-card-carry-new">New terminal on {carry.label}</button>}
+            {!carrySignsIn && <button type="button" className={SMALL_PRIMARY} onClick={() => { void fresh(carry) }} data-testid="limit-card-carry-new">New terminal on {carry.label}</button>}
             <button type="button" className={carrySignsIn ? SMALL_PRIMARY : SMALL_BUTTON} onClick={() => (carrySignsIn ? openSignIn(carry, true) : switchTo(carry, true))} data-testid="limit-card-carry-yes">{carrySignsIn ? `Sign in and carry it to ${carry.label}` : `Carry it to ${carry.label}`}</button>
             <button type="button" className={SMALL_BUTTON} onClick={() => { setCarry(null); setCarrySignsIn(false) }} data-testid="limit-card-carry-no">Cancel</button>
           </div>
@@ -202,7 +205,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
               <button type="button" className={SMALL_PRIMARY} onClick={() => { void toModel(model!) }} data-testid="limit-card-model">Switch this terminal to {modelLabel}</button>
             )}
             {first && (fromWork
-              ? <button type="button" className={SMALL_PRIMARY} onClick={() => fresh(first.row)} data-testid="limit-card-new">New terminal on {first.row.label}</button>
+              ? <button type="button" className={SMALL_PRIMARY} onClick={() => { void fresh(first.row) }} data-testid="limit-card-new">New terminal on {first.row.label}</button>
               : <button type="button" className={canSwitchModel ? SMALL_BUTTON : SMALL_PRIMARY} onClick={() => go(first.row)} data-testid="limit-card-continue">Continue on {first.row.label}</button>)}
             {first && fromWork && <button type="button" className={SMALL_BUTTON} onClick={() => go(first.row)} data-testid="limit-card-continue">Continue on {first.row.label}</button>}
             <button type="button" className={SMALL_BUTTON} aria-expanded={more} onClick={() => setMore(!more)} data-testid="limit-card-more">Other account <i className="fa-solid fa-caret-down" aria-hidden="true"></i></button>
@@ -222,12 +225,12 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
                   <span className="flex-1 text-[11px] text-[#9ca3af] truncate">{t.text}</span>
                   {way && <button type="button" className={SMALL_BUTTON} onClick={() => go(t.row)} data-testid="limit-card-switch">Switch</button>}
                   {t.state === 'signed-out' && <button type="button" className={SMALL_BUTTON} onClick={() => signIn(t.row)} data-testid="limit-card-sign-in">Sign in and switch</button>}
-                  {way && agent !== 'agy' && <button type="button" className={SMALL_BUTTON} onClick={() => fresh(t.row)} data-testid="limit-card-fresh">New terminal</button>}
+                  {way && agent !== 'agy' && <button type="button" className={SMALL_BUTTON} onClick={() => { void fresh(t.row) }} data-testid="limit-card-fresh">New terminal</button>}
                 </li>
               )
             })}
             {first && agent !== 'agy' && (
-              <li><button type="button" className={SMALL_BUTTON} onClick={() => fresh(first.row)} data-testid="limit-card-fresh-first">New terminal on {first.row.label}, beside this one</button></li>
+              <li><button type="button" className={SMALL_BUTTON} onClick={() => { void fresh(first.row) }} data-testid="limit-card-fresh-first">New terminal on {first.row.label}, beside this one</button></li>
             )}
             <li className="flex flex-wrap gap-2 pt-1">
               <button type="button" className={SMALL_BUTTON} onClick={addAccount} data-testid="limit-card-add">Add an account</button>

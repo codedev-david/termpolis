@@ -115,6 +115,7 @@ export function forgetTerminalAccount(terminalId: string): void {
   ownLines.delete(terminalId)
   typedLines.delete(terminalId)
   byHand.delete(terminalId)
+  unsettled.delete(terminalId)
   agentStarts.delete(terminalId)
   workers.delete(terminalId)
   shellAccounts.delete(terminalId)
@@ -150,6 +151,10 @@ function noteOwnLine(terminalId: string, line: string, now: number, agent: Accou
 const typedLines = new Map<string, string>()
 /** Terminals whose account a line typed by hand changed: Termpolis no longer knows it. */
 const byHand = new Set<string>()
+/** Terminals a switch put on an account but whose agent did not come up on it (nothing showed, a
+ *  question to answer, a sign-in screen): they run on the target by Termpolis's record, and the same
+ *  switch asked again is the user's retry, not a switch to where it already is. */
+const unsettled = new Set<string>()
 
 /** Where each terminal's agent was started in its output, and the line that started it: what the
  *  switch reads its exit and its relaunch from (accountSwitch.ts), as submit does run_command's,
@@ -452,6 +457,7 @@ export function _resetTerminalAccountsForTest(): void {
   ownLines.clear()
   typedLines.clear()
   byHand.clear()
+  unsettled.clear()
   agentStarts.clear()
   workers.clear()
   shellAccounts.clear()
@@ -1286,7 +1292,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const currentId = terminalAccountId(terminalId)
     const source = currentId ? findAccount(doc, currentId) : undefined
     if (source && source.agent !== target.agent) throw new Error(`this terminal runs ${ACCOUNT_AGENT_LABEL[source.agent]}, not ${ACCOUNT_AGENT_LABEL[target.agent]}`)
-    if (source && source.id === target.id && !isAccountChangedByHand(terminalId)) throw new Error(`this terminal already runs on ${target.label}`)
+    if (source && source.id === target.id && !isAccountChangedByHand(terminalId) && !unsettled.has(terminalId)) throw new Error(`this terminal already runs on ${target.label}`)
     // D14, R17: onto an account that isn't offered automatically (work), or carrying a conversation
     // off one, is the user's second confirmation. The UI asks it where it asks for the switch; a
     // request without it is refused here, so no path can skip the question.
@@ -1328,6 +1334,11 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
         deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: r.accountId, byHand: false })
       },
     })
+    // Where the terminal stands: on the target and settled when the agent came up there; on the target
+    // by Termpolis's record but not settled when the line was typed and the agent did not (a retry is the
+    // user's to ask); as it was when nothing was typed.
+    if (outcome.kind === 'switched' || outcome.kind === 'fresh') unsettled.delete(terminalId)
+    else if (terminalAccountId(terminalId) === target.id) unsettled.add(terminalId)
     // The relaunch landed on the target's sign-in screen: its stored sign-in no longer works, which
     // its status command can't tell (it reads that one exists). Its badge says so until a check.
     if (outcome.kind === 'sign-in') update((d) => { d.file.identity[target.id] = { email: null, signedIn: false, checkedAt: now(), source: 'sign-in-screen' } })

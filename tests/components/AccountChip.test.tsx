@@ -7,6 +7,7 @@ import { AccountChip } from '../../src/renderer/src/components/Accounts/AccountC
 import { ActiveTerminalAccount } from '../../src/renderer/src/components/Accounts/ActiveTerminalAccount'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { noteTerminalAccount, refreshAccounts, watchAccounts } from '../../src/renderer/src/lib/accountsState'
+import { canSwitchAccount } from '../../src/renderer/src/lib/accountsView'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { TerminalSession } from '../../src/renderer/src/types'
 
@@ -43,6 +44,19 @@ describe('AccountChip', () => {
     expect(chip.getAttribute('title')).toMatch(/^Claude Code on codedev/)
     fireEvent.click(chip)
     expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+  })
+
+  it('names itself and says whether its menu is open, for assistive technology', () => {
+    render(<AccountChip terminalId="t1" />)
+    const chip = screen.getByTestId('account-chip')
+    expect(chip).toHaveAccessibleName('Claude Code account: codedev. Switch account')
+    expect(chip).toHaveAttribute('aria-haspopup', 'menu')
+    expect(chip).toHaveAttribute('aria-expanded', 'false')
+    act(() => { useTerminalStore.setState({ accountMenu: { terminalId: 't1' } }) })
+    expect(chip).toHaveAttribute('aria-expanded', 'true')
+    // A menu open for another terminal is no state of this chip.
+    act(() => { useTerminalStore.setState({ accountMenu: { terminalId: 'other' } }) })
+    expect(chip).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('turns red with "?" once main says the account was changed by hand', () => {
@@ -175,5 +189,49 @@ describe('AccountChip: a switch waiting for the agent\'s turn to end', () => {
     act(() => { useTerminalStore.setState({ queuedSwitches: { t1: { targetId: 'gone', reason: 'by hand' } } }) })
     expect(screen.getByTestId('account-chip').getAttribute('title')).toContain('Switching to another account when it finishes.')
     expect(screen.getByTestId('account-chip-cancel')).toHaveAttribute('aria-label', 'Cancel the switch to another account')
+  })
+})
+
+describe('canSwitchAccount: an account menu, its keys and its line mean something only for an agent that has an account', () => {
+  const claude = { agentCommand: 'claude --model opus' }
+  it('is true for an account agent whose agent has an account', () => {
+    expect(canSwitchAccount(claude, VIEW)).toBe(true)
+    expect(canSwitchAccount({ agentCommand: 'codex' }, { accounts: [...VIEW.accounts, row({ id: 'cx', agent: 'codex' })] })).toBe(true)
+  })
+
+  it('is false for a plain shell, a wrapper, the conductor, no terminal, and an agent with no account of its own', () => {
+    expect(canSwitchAccount({ agentCommand: 'bash' }, VIEW)).toBe(false)
+    expect(canSwitchAccount({}, VIEW)).toBe(false)
+    expect(canSwitchAccount({ agentCommand: 'claude-sandbox' }, VIEW)).toBe(false)
+    expect(canSwitchAccount({ ...claude, isConductor: true }, VIEW)).toBe(false)
+    expect(canSwitchAccount(undefined, VIEW)).toBe(false)
+    expect(canSwitchAccount({ agentCommand: 'codex' }, VIEW)).toBe(false)
+  })
+
+  it('is false with no accounts at all (D13), or before they were read', () => {
+    expect(canSwitchAccount(claude, null)).toBe(false)
+    expect(canSwitchAccount(claude, undefined)).toBe(false)
+    expect(canSwitchAccount(claude, { accounts: [] })).toBe(false)
+  })
+
+  it('counts a swarm worker by the agent run_command started in it', () => {
+    expect(canSwitchAccount({ isSwarm: true, swarmAgent: 'claude' }, VIEW)).toBe(true)
+    expect(canSwitchAccount({ isSwarm: true, swarmAgent: 'codex' }, VIEW)).toBe(false)
+  })
+})
+
+describe('the Settings line about the active terminal, for an agent with no account', () => {
+  it('offers no Switch account… that would do nothing, and says why', () => {
+    useTerminalStore.setState({ terminals: [term({ agentCommand: 'codex' })], activeTerminalId: 't1' })
+    render(<ActiveTerminalAccount view={VIEW} />)
+    expect(screen.queryByTestId('accounts-switch-active')).toBeNull()
+    expect(screen.getByTestId('accounts-active-terminal')).toHaveTextContent('Active terminal: Claude Code — repo — Codex has no account of its own yet: add one to switch it.')
+    expect(useTerminalStore.getState().accountMenu).toBeNull()
+  })
+
+  it('keeps the button for an agent that has one', () => {
+    useTerminalStore.setState({ terminals: [term({})], activeTerminalId: 't1' })
+    render(<ActiveTerminalAccount view={VIEW} />)
+    expect(screen.getByTestId('accounts-switch-active')).toBeInTheDocument()
   })
 })

@@ -26,7 +26,7 @@ export interface Endpoint {
   color: string
 }
 
-export type CardActionKind = 'exited' | 'retry' | 'fresh' | 'new-terminal' | 'sign-in' | 'sign-in-and-switch' | 'anyway' | 'close'
+export type CardActionKind = 'exited' | 'retry' | 'fresh' | 'new-terminal' | 'sign-in' | 'sign-in-and-switch' | 'sign-in-and-continue' | 'anyway' | 'close'
 
 export interface CardAction {
   kind: CardActionKind
@@ -55,6 +55,9 @@ export interface SwitchRun {
   /** The user confirmed carrying a conversation to or from an account that isn't offered
    *  automatically (D14, R17): a retry, a sign-in and a queued wait go on with it. */
   confirmed?: boolean
+  /** The conversation a relaunch that landed on the sign-in screen was resuming: a new terminal on the
+   *  account can pick it up once it is signed in (the terminal itself sits at the CLI's sign-in screen). */
+  resumeId?: string
   /** A new session was asked for (the steps' last one says so). */
   fresh?: boolean
   card?: ErrorCard
@@ -112,6 +115,9 @@ function failedAt(steps: SwitchRun['steps']): SwitchRun['steps'] {
 }
 
 const CLOSE: CardAction = { kind: 'close', label: 'Close' }
+/** First on a card that asks whether the agent exited: the card's default focus is the safe one, never the
+ *  answer that says it has (a stray Enter must not assert something nobody checked). */
+const TRY_AGAIN: CardAction = { kind: 'retry', label: 'Try again' }
 
 /** The card a switch that didn't finish shows, or null for one that did (or that waits, busy). */
 export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 'from'>, worker: boolean): ErrorCard | null {
@@ -125,9 +131,9 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
     case 'busy':
       return null
     case 'unknown-exit':
-      return { what: `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`, now: `${name} is as you left it, on ${from}.`, actions: [{ kind: 'exited', label: 'It has exited, switch now' }, { kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
+      return { what: `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`, now: `${name} is as you left it, on ${from}.`, actions: [TRY_AGAIN, { kind: 'exited', label: 'It has exited, switch now' }, ...newTerminal, CLOSE] }
     case 'exit-unconfirmed':
-      return { what: `${name} didn't confirm it exited, so Termpolis typed nothing more.`, now: `${name} may still be running here, on ${from}.`, actions: [{ kind: 'exited', label: 'It has exited, switch now' }, { kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
+      return { what: `${name} didn't confirm it exited, so Termpolis typed nothing more.`, now: `${name} may still be running here, on ${from}.`, actions: [TRY_AGAIN, { kind: 'exited', label: 'It has exited, switch now' }, ...newTerminal, CLOSE] }
     case 'agent-alive':
       return { what: `${name} didn't exit: the account line showed in its own input, so Termpolis took it back out.`, now: `${name} is still running here, on ${from}.`, actions: [{ kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
     case 'didnt-start':
@@ -135,7 +141,13 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
     case 'resume-not-found':
       return { what: `${to} can't see this conversation.`, now: `The shell is at its prompt, and the conversation is still on ${from}.`, actions: [{ kind: 'fresh', label: `Start a new session on ${to}` }, ...newTerminal, CLOSE] }
     case 'sign-in':
-      return { what: `${to}'s sign-in has expired.`, now: `${name} shows its sign-in screen in the terminal, and Termpolis answers none of it.`, actions: [{ kind: 'sign-in', label: `Sign in to ${to}` }, CLOSE] }
+      return {
+        what: `${to}'s sign-in has expired.`,
+        now: `${name} shows its sign-in screen in the terminal, and Termpolis answers none of it.`,
+        // Once it is signed in, the conversation goes on in a new terminal beside this one, which holds no
+        // conversation while it sits at the sign-in screen (so no two agents write one transcript).
+        actions: [...(worker ? [] : [{ kind: 'sign-in-and-continue' as const, label: o.sessionId ? `Sign in to ${to} and continue the conversation in a new terminal` : `Sign in to ${to} and open a new terminal` }]), { kind: 'sign-in', label: `Sign in to ${to}` }, CLOSE],
+      }
     case 'asks-user':
       return { what: `${to} is asking something only you can answer.`, now: 'Answer it in the terminal.', actions: [CLOSE] }
     case 'no-outcome':
@@ -252,7 +264,10 @@ export async function startSwitch(terminalId: string, targetId: string, opts: St
     }, TOAST_MS)
     return
   }
-  put({ ...run, status: 'failed', steps: failedAt(run.steps), card: cardFor(outcome, run, !!terminal.isSwarm) as ErrorCard })
+  put({
+    ...run, status: 'failed', steps: failedAt(run.steps), card: cardFor(outcome, run, !!terminal.isSwarm) as ErrorCard,
+    ...(outcome.kind === 'sign-in' && outcome.sessionId ? { resumeId: outcome.sessionId } : {}),
+  })
 }
 
 /** A card's or a toast's button, for the terminal's last switch. */
@@ -277,6 +292,15 @@ export async function actOnRun(terminalId: string, kind: CardActionKind | 'back'
     case 'sign-in':
       s.dropSwitchRun(terminalId)
       return s.openSignInSheet(run.to.id)
+    case 'sign-in-and-continue': {
+      const terminal = s.terminals.find((t) => t.id === terminalId)
+      s.dropSwitchRun(terminalId)
+      // Signed in from the sheet, the conversation goes on in a new terminal on the account.
+      return s.openSignInSheet(run.to.id, () => {
+        const target = store().accountsView?.accounts.find((r) => r.id === run.to.id)
+        if (terminal && target) void newTerminalOn(terminal, target, deps, run.resumeId)
+      })
+    }
     case 'sign-in-and-switch':
       s.dropSwitchRun(terminalId)
       return s.openSignInSheet(run.to.id, () => { void startSwitch(terminalId, run.to.id, { reason: run.reason, known: signedIn, ...(run.confirmed ? { confirmed: true } : {}) }, deps) })
@@ -294,13 +318,13 @@ export async function actOnRun(terminalId: string, kind: CardActionKind | 'back'
 
 /** "New terminal on <account>" (§7.4): the same agent in the same folder, on the account, with a
  *  fresh session. Its own launch shows its own progress. */
-export async function newTerminalOn(source: TerminalSession, target: AccountRowView, deps: RunDeps = liveRunDeps()): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+export async function newTerminalOn(source: TerminalSession, target: AccountRowView, deps: RunDeps = liveRunDeps(), resume?: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const r = await openOnAccount(source, target, {
     createTerminal: deps.termpolis.createTerminal,
     addTerminal: store().addTerminal,
     launch: (targets) => launchAgents(targets),
     newId: deps.newId,
-  })
+  }, resume)
   if (r.ok) store().setActiveTerminal(r.id)
   else store().setMemoryNotice(r.error)
   return r

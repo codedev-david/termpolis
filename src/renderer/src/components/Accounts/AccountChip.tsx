@@ -3,6 +3,7 @@
 // the agent has two accounts or something is wrong (D13). Clicking it opens the account menu. A
 // switch waiting for the agent's turn to end shows on it, with Cancel.
 import { useTerminalStore } from '../../store/terminalStore'
+import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
 import { accountChipFor } from '../../lib/accountChip'
 
 export function AccountChip({ terminalId }: { terminalId: string }) {
@@ -12,6 +13,7 @@ export function AccountChip({ terminalId }: { terminalId: string }) {
   const byHand = useTerminalStore((s) => !!s.accountsByHand?.[terminalId])
   const openAccountSwitch = useTerminalStore((s) => s.openAccountSwitch)
   const queued = useTerminalStore((s) => s.queuedSwitches?.[terminalId])
+  const menuOpen = useTerminalStore((s) => s.accountMenu?.terminalId === terminalId)
   const queuedTo = queued ? view?.accounts.find((r) => r.id === queued.targetId)?.label : undefined
   const chip = accountChipFor(terminal, view, byHand)
   if (!chip) return null
@@ -22,6 +24,8 @@ export function AccountChip({ terminalId }: { terminalId: string }) {
       data-account-chip={terminalId}
       data-alert={chip.alert ? 'true' : 'false'}
       aria-haspopup="menu"
+      aria-expanded={menuOpen}
+      aria-label={`${ACCOUNT_AGENT_LABEL[chip.agent]} account: ${chip.label}. Switch account`}
       onClick={(e) => { e.stopPropagation(); openAccountSwitch(terminalId) }}
       title={queued ? `${chip.title} Switching to ${queuedTo ?? 'another account'} when it finishes.` : chip.title}
       className={`flex items-center gap-1.5 text-[10px] font-medium bg-[#2d2d2d]/90 border rounded px-2 py-1 transition-colors hover:bg-[#0e639c] ${

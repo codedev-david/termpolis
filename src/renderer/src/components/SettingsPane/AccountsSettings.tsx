@@ -205,24 +205,24 @@ export function AccountsSettings() {
       <div className="flex flex-wrap items-center gap-1.5">
         {profile && r.folderExists && (
           <>
-            <button className={BUTTON} disabled={busy} onClick={() => useTerminalStore.getState().openSignInSheet(r.id)} data-testid={`account-sign-in-${r.id}`}>{signedInEmail(r) ? 'Sign in again' : 'Sign in'}</button>
-            <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.check(r.id)) }) }} data-testid={`account-check-${r.id}`}>Check</button>
+            <button className={BUTTON} disabled={busy} aria-label={`${signedInEmail(r) ? 'Sign in again' : 'Sign in'}, ${r.label}`} onClick={() => useTerminalStore.getState().openSignInSheet(r.id)} data-testid={`account-sign-in-${r.id}`}>{signedInEmail(r) ? 'Sign in again' : 'Sign in'}</button>
+            <button className={BUTTON} disabled={busy} aria-label={`Check ${r.label}`} onClick={() => { void act(async () => { must(await api.check(r.id)) }) }} data-testid={`account-check-${r.id}`}>Check</button>
           </>
         )}
         {profile && r.folderExists && !r.isDefault && (
           r.connect
-            ? <button className={BUTTON} disabled={busy} title="Take Termpolis's tools and memory out of this profile" onClick={() => { void act(async () => must(await api.setConnect(r.id, false)).changes) }} data-testid={`account-disconnect-${r.id}`}>Disconnect</button>
-            : <button className={BUTTON} disabled={busy || !view.integrationConnected} title={view.integrationConnected ? CONNECT_DATA_LINE : 'Turn on Agent Integration first'} onClick={() => { void act(async () => must(await api.setConnect(r.id, true)).changes) }} data-testid={`account-connect-${r.id}`}>Connect</button>
+            ? <button className={BUTTON} disabled={busy} aria-label={`Disconnect ${r.label}`} title="Take Termpolis's tools and memory out of this profile" onClick={() => { void act(async () => must(await api.setConnect(r.id, false)).changes) }} data-testid={`account-disconnect-${r.id}`}>Disconnect</button>
+            : <button className={BUTTON} disabled={busy || !view.integrationConnected} aria-label={`Connect ${r.label}`} title={view.integrationConnected ? CONNECT_DATA_LINE : 'Turn on Agent Integration first'} onClick={() => { void act(async () => must(await api.setConnect(r.id, true)).changes) }} data-testid={`account-connect-${r.id}`}>Connect</button>
         )}
-        {r.limit && <button className={BUTTON} disabled={busy} onClick={() => { void act(async () => { must(await api.clearLimit(r.id)) }) }} data-testid={`account-mark-available-${r.id}`}>Mark available</button>}
-        {r.recopyAvailable && <button className={BUTTON} disabled={busy} onClick={() => setRowAction({ id: r.id, kind: 'recopy' })} data-testid={`account-recopy-${r.id}`}>Re-copy from main profile</button>}
+        {r.limit && <button className={BUTTON} disabled={busy} aria-label={`Mark ${r.label} available`} onClick={() => { void act(async () => { must(await api.clearLimit(r.id)) }) }} data-testid={`account-mark-available-${r.id}`}>Mark available</button>}
+        {r.recopyAvailable && <button className={BUTTON} disabled={busy} aria-label={`Re-copy ${r.label} from the main profile`} onClick={() => setRowAction({ id: r.id, kind: 'recopy' })} data-testid={`account-recopy-${r.id}`}>Re-copy from main profile</button>}
         <label className="flex items-center gap-1 text-[11px] text-[#d4d4d4]">
-          <input type="checkbox" checked={r.autoOffer} disabled={busy} onChange={(e) => { const on = e.target.checked; void act(async () => { must(await api.update(r.id, { autoOffer: on })) }) }} data-testid={`account-auto-offer-${r.id}`} />
+          <input type="checkbox" checked={r.autoOffer} disabled={busy} aria-label={`Offer ${r.label} automatically when another account runs out`} onChange={(e) => { const on = e.target.checked; void act(async () => { must(await api.update(r.id, { autoOffer: on })) }) }} data-testid={`account-auto-offer-${r.id}`} />
           Offer automatically
         </label>
         <button className={BUTTON} disabled={busy || i === 0} aria-label={`Move ${r.label} up`} onClick={() => { void act(async () => { must(await api.move(r.id, -1)) }) }} data-testid={`account-up-${r.id}`}>↑</button>
         <button className={BUTTON} disabled={busy || i === list.length - 1} aria-label={`Move ${r.label} down`} onClick={() => { void act(async () => { must(await api.move(r.id, 1)) }) }} data-testid={`account-down-${r.id}`}>↓</button>
-        <button className={BUTTON} disabled={busy} onClick={() => setRowAction(removing ? null : { id: r.id, kind: 'remove' })} data-testid={`account-remove-${r.id}`}>Remove…</button>
+        <button className={BUTTON} disabled={busy} aria-label={`Remove ${r.label}`} aria-expanded={removing} onClick={() => setRowAction(removing ? null : { id: r.id, kind: 'remove' })} data-testid={`account-remove-${r.id}`}>Remove…</button>
       </div>
     )
   }

@@ -3,7 +3,7 @@
 // leaves the login-method picker to the user once the agent has more than one account. Same
 // harness as AppMcpTerminals.test.tsx: every child that isn't under test is a stub.
 import React from 'react'
-import { render, act, fireEvent, cleanup } from '@testing-library/react'
+import { render, act, fireEvent, cleanup, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('@sentry/react', () => ({
@@ -110,6 +110,29 @@ describe('App: the account switch', () => {
     act(() => { useTerminalStore.setState({ terminals: [T], activeTerminalId: 't1' }) })
     fireEvent.keyDown(window, { key: 'N', ctrlKey: true, shiftKey: true })
     expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+  })
+
+  it('leaves Ctrl+Shift+N to a terminal that runs no agent with an account, though accounts are registered', async () => {
+    bridge('')
+    render(<App />)
+    await settle()
+    for (const terminal of [{ ...T, id: 'p1', agentCommand: undefined }, { ...T, id: 'c1', agentCommand: 'codex' }, { ...T, id: 'w1', agentCommand: 'claude-sandbox' }]) {
+      act(() => { useTerminalStore.setState({ terminals: [terminal], activeTerminalId: terminal.id, accountsView: view(2), accountMenu: null }) })
+      fireEvent.keyDown(window, { key: 'N', ctrlKey: true, shiftKey: true })
+      expect(useTerminalStore.getState().accountMenu, terminal.id).toBeNull()
+    }
+  })
+
+  it('answers the palette\'s Switch account… with a notice, not silence, when the active terminal has no account to switch', async () => {
+    bridge('')
+    render(<App />)
+    await settle()
+    act(() => { useTerminalStore.setState({ terminals: [{ ...T, agentCommand: undefined }], activeTerminalId: 't1', accountsView: view(2), accountMenu: null, memoryNotice: null }) })
+    await act(async () => { (window as any).__openCommandPalette(true) })
+    fireEvent.change(await screen.findByPlaceholderText('Type a command...'), { target: { value: 'switch account' } })
+    fireEvent.click(await screen.findByText('Switch account…'))
+    expect(useTerminalStore.getState().accountMenu).toBeNull()
+    expect(useTerminalStore.getState().memoryNotice).toBe('Open an agent terminal whose agent has an account to switch it.')
   })
 
   it.each([

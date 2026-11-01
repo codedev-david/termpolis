@@ -81,6 +81,34 @@ afterEach(() => {
 })
 
 describe('when there is a menu', () => {
+  it('drops a request it cannot show, so it does not pop up by itself when an account is added later', async () => {
+    for (const setup of [
+      () => openMenu({ accounts: [] }),
+      () => openMenu({ terminals: [{ ...T, agentCommand: undefined }] }),
+      () => openMenu({ terminals: [{ ...T, agentCommand: 'codex' }], accounts: [A] }),
+    ]) {
+      const { unmount } = setup()
+      await settle()
+      expect(useTerminalStore.getState().accountMenu).toBeNull()
+      unmount()
+    }
+    // Accounts arrive afterwards: no menu appears that nobody asked for now.
+    useTerminalStore.setState({ terminals: [T], accountsView: view([A, B]) })
+    render(<AccountMenu />)
+    await settle()
+    expect(screen.queryByTestId('account-menu')).toBeNull()
+  })
+
+  it('keeps a request for a terminal or a view that may yet arrive: only one that can never show is dropped', async () => {
+    const first = openMenu({ id: 'nope' })
+    await settle()
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 'nope' })
+    first.unmount()
+    openMenu({ accounts: null })
+    await settle()
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+  })
+
   it('is none with no account registered, or for a terminal, agent or view it doesn\'t know (D13)', async () => {
     for (const setup of [
       () => openMenu({ accounts: [] }),

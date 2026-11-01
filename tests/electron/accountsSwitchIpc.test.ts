@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, mkdirSync, renameSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
-  _resetTerminalAccountsForTest, noteAgentStart, noteTerminalAccount, noteTerminalSession, noteTypedInput, registerAccountsIpc,
+  _resetTerminalAccountsForTest, forgetTerminalAccount, noteAgentStart, noteTerminalAccount, noteTerminalSession, noteTypedInput, registerAccountsIpc,
   terminalAccountId, terminalAgentStart, terminalSessionId,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
@@ -202,7 +202,7 @@ describe('accounts:switch, the run', () => {
     noteTerminalAccount('t1', main)
     term = new FakeTerminal(claude({ relaunch: ['sign-in'] }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
-    expect(await switchTo(b)).toEqual({ kind: 'sign-in' })
+    expect((await switchTo(b)).kind).toBe('sign-in')
     const doc = loadAccounts(sb.paths.userData)
     expect(doc.ok && doc.doc.file.identity[b]).toEqual({ email: null, signedIn: false, checkedAt: 42, source: 'sign-in-screen' })
     expect(doc.ok && doc.doc.file.identity[main]).toBeUndefined()
@@ -515,5 +515,50 @@ describe('accounts:switch, a profile that routes Anthropic traffic itself (desig
     expect((await switchTo(b)).kind).toBe('switched')
     expect(typedLine()).not.toContain('ANTHROPIC_BASE_URL')
     expect(typedLine()).not.toContain('TERMPOLIS_HEADROOM_PROXY')
+  })
+})
+
+describe('accounts:switch, after a relaunch that did not settle (round 1)', () => {
+  async function ready(relaunch: Array<'box' | 'sign-in' | 'nothing' | 'asks'>): Promise<{ main: string; b: string }> {
+    term = new FakeTerminal(claude({ relaunch }))
+    register()
+    const { main, b } = await twoClaude()
+    noteTerminalAccount('t1', main)
+    noteAgentStart('t1', { at: term.launchedAt, commands: [term.launchLine()] })
+    noteTerminalSession('t1', ID)
+    mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+    writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+    return { main, b }
+  }
+
+  it('names the conversation in the sign-in outcome, so a new terminal can pick it up once the account is signed in', async () => {
+    const { b } = await ready(['sign-in'])
+    expect(await switchTo(b)).toEqual({ kind: 'sign-in', sessionId: ID })
+    // The terminal is on the target from here, whatever its screen shows.
+    expect(terminalAccountId('t1')).toBe(b)
+  })
+
+  it('lets the same switch be tried again when nothing showed: the card\'s Try again is not refused as "already runs on"', async () => {
+    const { b } = await ready(['nothing', 'box'])
+    const first = await switchTo(b)
+    expect(first.kind).toBe('no-outcome')
+    expect(terminalAccountId('t1')).toBe(b)
+    // Tried again, with the user's word that the agent is gone.
+    const again = await switchTo(b, { assumeExited: true })
+    expect(again.kind).toBe('switched')
+  })
+
+  it('refuses a switch to the account it already runs on once the last one settled', async () => {
+    const { b } = await ready(['box'])
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: b, shellType: 'gitbash' })).toBe('this terminal already runs on b')
+  })
+
+  it('forgets an unsettled switch when the terminal goes', async () => {
+    const { b } = await ready(['nothing'])
+    expect((await switchTo(b)).kind).toBe('no-outcome')
+    forgetTerminalAccount('t1')
+    noteTerminalAccount('t1', b)
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: b, shellType: 'gitbash' })).toBe('this terminal already runs on b')
   })
 })

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { v4 as uuid } from 'uuid'
 import { InstallHint } from '../InstallHint/InstallHint'
@@ -120,6 +120,13 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
   const [installHint, setInstallHint] = useState<{ id: string; name: string } | null>(null)
   /** The profile whose Launch on ▸ menu (right-click) is open. */
   const [launchOn, setLaunchOn] = useState<string | null>(null)
+  // The Launch on ▸ list's items and the button that opened it, for the keyboard: the first account takes
+  // the focus when the list opens, the arrows go round it, and Esc gives the focus back.
+  const launchItems = useRef<Array<HTMLButtonElement | null>>([])
+  const launchOpeners = useRef<Record<string, HTMLButtonElement | null>>({})
+  useEffect(() => {
+    if (launchOn !== null) launchItems.current[0]?.focus()
+  }, [launchOn])
 
   useEffect(() => {
     window.termpolis.detectAgents().then(res => {
@@ -216,6 +223,20 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                       </span>
                     )
                   )}
+                  {accounts.length > 1 && (
+                    <button
+                      className="text-[#9ca3af] hover:text-[#d4d4d4] text-[10px] px-1 shrink-0"
+                      aria-label={`Launch ${profile.name} on an account`}
+                      aria-haspopup="menu"
+                      aria-expanded={launchOn === profile.id}
+                      title={`Launch ${profile.name} on one of its accounts`}
+                      data-testid="launch-on-open"
+                      ref={(el) => { launchOpeners.current[profile.id] = el }}
+                      onClick={() => setLaunchOn(launchOn === profile.id ? null : profile.id)}
+                    >
+                      <i className="fa-solid fa-caret-down" aria-hidden="true"></i>
+                    </button>
+                  )}
                   {isCustom && (
                     <button
                       className="text-[#9ca3af] hover:text-red-400 text-[10px] px-1 opacity-0 group-hover:opacity-100"
@@ -227,11 +248,32 @@ export function AIProfiles({ availableShells }: AIProfilesProps) {
                   )}
                 </div>
                 {launchOn === profile.id && accounts.length > 1 && (
-                  <div className="ml-6 mb-1 flex flex-col" data-testid="launch-on-menu">
+                  <div
+                    className="ml-6 mb-1 flex flex-col"
+                    data-testid="launch-on-menu"
+                    role="menu"
+                    aria-label={`Launch ${profile.name} on`}
+                    onKeyDown={(e) => {
+                      const items = launchItems.current.filter((x): x is HTMLButtonElement => !!x)
+                      const at = items.indexOf(document.activeElement as HTMLButtonElement)
+                      const go = (i: number): void => { e.preventDefault(); items[(i + items.length) % items.length]?.focus() }
+                      if (e.key === 'ArrowDown') go(at + 1)
+                      else if (e.key === 'ArrowUp') go(at < 0 ? items.length - 1 : at - 1)
+                      else if (e.key === 'Home') go(0)
+                      else if (e.key === 'End') go(items.length - 1)
+                      else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setLaunchOn(null)
+                        launchOpeners.current[profile.id]?.focus()
+                      }
+                    }}
+                  >
                     <span className="text-[10px] text-[#9ca3af] px-2">Launch on</span>
-                    {accounts.map((r) => (
+                    {accounts.map((r, k) => (
                       <button
                         key={r.id}
+                        role="menuitem"
+                        ref={(el) => { launchItems.current[k] = el }}
                         data-testid="launch-on-account"
                         className="flex items-center gap-2 px-2 py-1 rounded text-xs text-[#d4d4d4] hover:bg-[#37373d] text-left"
                         onClick={() => {

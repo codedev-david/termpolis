@@ -3,7 +3,7 @@
 import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
 import type { AccountsView } from '../../../../shared/agentAccounts'
 import { useTerminalStore } from '../../store/terminalStore'
-import { agentOfCommand } from '../../lib/accountsView'
+import { agentOfCommand, canSwitchAccount } from '../../lib/accountsView'
 
 export function ActiveTerminalAccount({ view }: { view: AccountsView }) {
   const terminal = useTerminalStore((s) => s.terminals.find((t) => t.id === s.activeTerminalId))
@@ -12,6 +12,14 @@ export function ActiveTerminalAccount({ view }: { view: AccountsView }) {
   const agent = terminal && !terminal.isConductor ? agentOfCommand(terminal.agentCommand) : null
   if (!terminal || !agent) {
     return <p className="text-xs text-[#9ca3af]" data-testid="accounts-active-terminal">Open an agent terminal to switch its account.</p>
+  }
+  // An agent with no account of its own has nothing to switch to: no button that would do nothing.
+  if (!canSwitchAccount(terminal, view)) {
+    return (
+      <p className="text-xs text-[#9ca3af]" data-testid="accounts-active-terminal">
+        Active terminal: <em>{terminal.name}</em> — {ACCOUNT_AGENT_LABEL[agent]} has no account of its own yet: add one to switch it.
+      </p>
+    )
   }
   const row = terminal.agentAccountId ? view.accounts.find((r) => r.id === terminal.agentAccountId) : undefined
   const on = byHand ? 'an account changed by hand' : row ? row.label : terminal.agentAccountId ? 'a removed account' : 'probably its default profile'

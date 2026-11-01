@@ -37,10 +37,17 @@ export function AccountMenu() {
   const open = useTerminalStore((s) => s.accountMenu)
   const terminal = useTerminalStore((s) => s.terminals.find((t) => t.id === s.accountMenu?.terminalId))
   const view = useTerminalStore((s) => s.accountsView)
-  if (!open || !terminal || !view) return null
-  const agent = terminalAgent(terminal)
+  const agent = terminal ? terminalAgent(terminal) : null
   // D13: with no account registered, there is no menu.
-  if (!agent || !hasAccounts(view.accounts)) return null
+  const showable = !!open && !!terminal && !!view && !!agent && hasAccounts(view.accounts)
+  // A request that can never show with what the store holds (a terminal that runs no agent, an agent with no
+  // account) is dropped, or it would pop a menu up by itself when an account is added later. One for a
+  // terminal or a view not read yet is kept: those may still arrive.
+  const never = !!open && !!terminal && !!view && (!agent || !view.accounts.some((r) => r.agent === agent))
+  useEffect(() => {
+    if (never) useTerminalStore.getState().closeAccountMenu()
+  }, [never])
+  if (!showable) return null
   return <MenuBody key={terminal.id} terminal={terminal} agent={agent} view={view} />
 }
 

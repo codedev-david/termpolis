@@ -62,7 +62,7 @@ import * as efficiencyLib from './lib/efficiencyAnalyzer'
 import { requestSettingsTab } from './lib/settingsNav'
 import { watchAccounts } from './lib/accountsState'
 import { hasManyAccounts, terminalAgent } from './lib/accountSwitchFlow'
-import { agentOfName } from './lib/accountsView'
+import { agentOfName, canSwitchAccount } from './lib/accountsView'
 import { launchAccountFor, launchTerminalArgs } from './lib/accountLaunch'
 import { SignInSheet } from './components/Accounts/SignInSheet'
 import { AddAccountSheet } from './components/Accounts/AddAccountSheet'
@@ -397,10 +397,13 @@ export default function App() {
       // itself, so its shell gets no stray Ctrl+N.
       // D13: with no account registered, the key is the terminal's, as before accounts.
       if (useTerminalStore.getState().accountsView?.accounts.length && matchesKeybinding(e, kb.switchAccount)) {
-        e.preventDefault()
-        const { activeTerminalId: switchId } = useTerminalStore.getState()
-        if (switchId) useTerminalStore.getState().openAccountSwitch(switchId)
-        return
+        const s = useTerminalStore.getState()
+        // A terminal whose agent has no account is the shell's, and the key goes to it.
+        if (canSwitchAccount(s.terminals.find((t) => t.id === s.activeTerminalId), s.accountsView)) {
+          e.preventDefault()
+          s.openAccountSwitch(s.activeTerminalId as string)
+          return
+        }
       }
 
       // Wipe the active terminal the way `clear` does -- scrollback included. The
@@ -948,7 +951,8 @@ export default function App() {
         setShowMemory(v => !v)
         break
       case 'switch_account':
-        if (state.activeTerminalId && state.accountsView?.accounts.length) useTerminalStore.getState().openAccountSwitch(state.activeTerminalId)
+        if (canSwitchAccount(state.terminals.find((t) => t.id === state.activeTerminalId), state.accountsView)) useTerminalStore.getState().openAccountSwitch(state.activeTerminalId as string)
+        else useTerminalStore.getState().setMemoryNotice('Open an agent terminal whose agent has an account to switch it.')
         break
       case 'launch_claude':
       case 'launch_codex':

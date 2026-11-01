@@ -5,6 +5,7 @@
 // terminal.
 import { ACCOUNT_AGENT_LABEL } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
+import { carryForSwitch, isSessionId, relaunchCommand } from '../../../shared/accountSwitch'
 import type { SwitchOutcome, SwitchRequest } from '../../../shared/accountSwitch'
 import { isShellSafeInstruction } from '../../../shared/agentIntegration'
 import type { AccountsAPI, TermpolisAPI, TerminalSession } from '../types'
@@ -96,6 +97,17 @@ export async function runSwitch(
   }
 }
 
+/** The command that resumes `id` in a new terminal beside `source`: its agent, model and other options as the
+ *  switch relaunches them (carryForSwitch), then the conversation. Null when the source's command holds what
+ *  can't be repeated word for word, or the source is no account agent. */
+function resumeCommand(source: TerminalSession, id: string): string | null {
+  const agent = terminalAgent(source)
+  if (agent !== 'claude' && agent !== 'codex') return null
+  const carry = carryForSwitch(agent, source.agentCommand)
+  if (!carry.ok) return null
+  return relaunchCommand({ agent, id, ...(carry.model ? { model: carry.model } : {}), extra: carry.extra })
+}
+
 export interface NewTerminalDeps {
   createTerminal: TermpolisAPI['createTerminal']
   addTerminal: (t: TerminalSession) => void
@@ -106,11 +118,20 @@ export interface NewTerminalDeps {
 
 /** "New terminal on <account>" (§7.4): the same agent in a new terminal in the same folder, on the
  *  account, with a fresh session, for parallel work while this one waits out its reset. */
-export async function openOnAccount(source: TerminalSession, target: AccountRowView, deps: NewTerminalDeps): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+export async function openOnAccount(source: TerminalSession, target: AccountRowView, deps: NewTerminalDeps, resume?: string): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const id = deps.newId()
   // A new session beside the source, never its conversation: two agents on one transcript is the R8 harm.
-  const command = freshCommand(source.agentCommand as string)
-  if (command === null) return { ok: false, error: "Termpolis can't start a new session from this terminal's command: it picks a conversation and holds options Termpolis can't take apart. Start the agent from the sidebar on that account instead." }
+  // The one exception is a conversation the source holds no longer: its agent sits at the target's sign-in
+  // screen (a switch landed there), and `resume` names the conversation that relaunch was resuming.
+  const command = resume !== undefined && isSessionId(resume) ? resumeCommand(source, resume) : freshCommand(source.agentCommand as string)
+  if (command === null) {
+    return {
+      ok: false,
+      error: resume !== undefined && isSessionId(resume)
+        ? "Termpolis can't continue the conversation in a new terminal: this terminal's command holds options Termpolis can't take apart. Start the agent from the sidebar on that account, and resume the conversation from Past AI Sessions."
+        : "Termpolis can't start a new session from this terminal's command: it picks a conversation and holds options Termpolis can't take apart. Start the agent from the sidebar on that account instead.",
+    }
+  }
   try {
     const res = await deps.createTerminal(id, source.shellType, source.cwd, undefined, isClaudeCommand(command), ...launchTerminalArgs(target.id, command))
     if (!res.success) return { ok: false, error: `Termpolis couldn't open the terminal: ${res.error}` }

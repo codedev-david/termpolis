@@ -30,7 +30,7 @@ import { AccountChip } from '../Accounts/AccountChip'
 import { SwitchOverlay } from '../Accounts/SwitchOverlay'
 import { LimitCard } from '../Accounts/LimitCard'
 import { SwarmRestartPaneCard } from '../Accounts/SwarmRestartOffers'
-import { agentOfCommand } from '../../lib/accountsView'
+import { agentOfCommand, canSwitchAccount } from '../../lib/accountsView'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
@@ -1247,10 +1247,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // The account switch dialog for this terminal (default Ctrl+Shift+N), so its shell gets no
       // stray Ctrl+N.
       // D13: with no account registered, the key is the shell's, as before accounts.
-      if (e.type === 'keydown' && useTerminalStore.getState().accountsView?.accounts.length && matchesKeybinding(e, useTerminalStore.getState().keybindings.switchAccount)) {
-        e.preventDefault()
-        useTerminalStore.getState().openAccountSwitch(terminalId)
-        return false
+      // And a terminal whose agent has no account is the shell's too: no menu could open, so the key is not taken.
+      if (e.type === 'keydown' && matchesKeybinding(e, useTerminalStore.getState().keybindings.switchAccount)) {
+        const s = useTerminalStore.getState()
+        if (canSwitchAccount(s.terminals.find((t) => t.id === terminalId), s.accountsView)) {
+          e.preventDefault()
+          s.openAccountSwitch(terminalId)
+          return false
+        }
       }
 
       // Open the in-terminal find bar (default Ctrl+Shift+F). Keydown only — steal

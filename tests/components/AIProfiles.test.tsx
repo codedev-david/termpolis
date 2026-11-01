@@ -1,5 +1,5 @@
 import React from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock dependencies before importing component
@@ -133,6 +133,65 @@ describe('AIProfiles', () => {
       fireEvent.click(screen.getAllByTestId('launch-on-account')[0])
       expect(screen.getByTestId('install-hint-id')).toHaveTextContent('gemini')
       expect((window as any).accounts.launchAccount).not.toHaveBeenCalled()
+    })
+
+    it('is reachable without a mouse: a button on the profile opens the same list, with menu semantics and arrow keys', async () => {
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
+      const claude = screen.getByText('Claude Code').closest('.group') as HTMLElement
+      const opener = within(claude).getByTestId('launch-on-open')
+      expect(opener).toHaveAccessibleName('Launch Claude Code on an account')
+      expect(opener).toHaveAttribute('aria-haspopup', 'menu')
+      expect(opener).toHaveAttribute('aria-expanded', 'false')
+      fireEvent.click(opener)
+      expect(opener).toHaveAttribute('aria-expanded', 'true')
+      const menu = screen.getByTestId('launch-on-menu')
+      expect(menu).toHaveAttribute('role', 'menu')
+      const items = screen.getAllByTestId('launch-on-account')
+      expect(items.map((b) => b.getAttribute('role'))).toEqual(['menuitem', 'menuitem'])
+      // The first account takes the focus; the arrows go round; Esc closes it and gives the focus back.
+      expect(document.activeElement).toBe(items[0])
+      fireEvent.keyDown(menu, { key: 'ArrowDown' })
+      expect(document.activeElement).toBe(items[1])
+      fireEvent.keyDown(menu, { key: 'ArrowDown' })
+      expect(document.activeElement).toBe(items[0])
+      fireEvent.keyDown(menu, { key: 'ArrowUp' })
+      expect(document.activeElement).toBe(items[1])
+      fireEvent.keyDown(menu, { key: 'Home' })
+      expect(document.activeElement).toBe(items[0])
+      fireEvent.keyDown(menu, { key: 'End' })
+      expect(document.activeElement).toBe(items[1])
+      fireEvent.keyDown(menu, { key: 'x' })
+      expect(document.activeElement).toBe(items[1])
+      fireEvent.keyDown(menu, { key: 'Escape' })
+      expect(screen.queryByTestId('launch-on-menu')).toBeNull()
+      expect(document.activeElement).toBe(opener)
+      // Pressing it again opens, and again closes.
+      fireEvent.click(opener)
+      expect(screen.getByTestId('launch-on-menu')).toBeInTheDocument()
+      fireEvent.click(opener)
+      expect(screen.queryByTestId('launch-on-menu')).toBeNull()
+    })
+
+    it('has the button only for an agent with more than one account (D13), and none before the accounts are read', async () => {
+      render(<AIProfiles availableShells={defaultShells} />)
+      const codex = screen.getByText('OpenAI Codex').closest('.group') as HTMLElement
+      expect(within(codex).queryByTestId('launch-on-open')).toBeNull()
+      cleanup()
+      mockAccountsView = null
+      render(<AIProfiles availableShells={defaultShells} />)
+      expect(screen.queryByTestId('launch-on-open')).toBeNull()
+    })
+
+    it('launches on the account picked with Enter from the keyboard', async () => {
+      render(<AIProfiles availableShells={defaultShells} />)
+      await waitFor(() => expect((window as any).termpolis.detectAgents).toHaveBeenCalled())
+      fireEvent.click(within(screen.getByText('Claude Code').closest('.group') as HTMLElement).getByTestId('launch-on-open'))
+      const items = screen.getAllByTestId('launch-on-account')
+      fireEvent.keyDown(screen.getByTestId('launch-on-menu'), { key: 'ArrowDown' })
+      // A button takes Enter as a click.
+      fireEvent.click(document.activeElement as HTMLElement)
+      await waitFor(() => expect((window as any).accounts.launchAccount).toHaveBeenCalledWith('claude', items[1] ? 'acc_b' : ''))
     })
 
     it('opens no menu before the accounts are read', () => {

@@ -7,7 +7,7 @@
 // TERMPOLIS_TEST_AGENT_HOME, never a real profile.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRequire } from 'module'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -22,6 +22,15 @@ import type { SignInPhase, SignInState } from '../../src/shared/signInScreens'
 import { loadAccounts } from '../../src/main/agentAccounts'
 import { createSandbox } from './_agentIntegrationManagerFixture'
 import type { Sandbox } from './_agentIntegrationManagerFixture'
+
+// The terminal manager is spied on for the whole file: a sign-in session must never reach it.
+const terminalManagerCalls: string[] = []
+vi.mock('../../src/main/terminalManager', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/terminalManager')>()
+  const spy = <T extends (...a: never[]) => unknown>(name: string, fn: T): T =>
+    ((...a: never[]) => { terminalManagerCalls.push(name); return fn(...a) }) as T
+  return { ...real, spawnTerminal: spy('spawnTerminal', real.spawnTerminal), writeToTerminal: spy('writeToTerminal', real.writeToTerminal), killTerminal: spy('killTerminal', real.killTerminal), resizeTerminal: spy('resizeTerminal', real.resizeTerminal) }
+})
 
 const require = createRequire(import.meta.url)
 const { createMockLogin } = require('./mocks/mockLogin.cjs') as { createMockLogin: (io: unknown) => { input: (d: string) => void } }
@@ -378,5 +387,55 @@ describe('accounts:sign-in-start and sign-in-input', () => {
     expect(signInSessionCount()).toBe(1)
     endAccountSignIns()
     expect(signInSessionCount()).toBe(0)
+  })
+})
+
+// The hidden sign-in session is not a Termpolis terminal (the in-app UI addendum, section 3 and 5): nothing
+// lists it, polls it, writes to it through the terminal tools, or tells a renderer terminal about it. It
+// is one PTY, spawned by main's own seam, whose only outward word is the sign-in state channel. These guard
+// that: a source scan of the modules that run it, a mutation of the scan itself, and a run of a real session
+// with the terminal manager's spawn, write and kill spied on.
+describe('the hidden sign-in session is invisible to terminal tools and pollers (UI addendum section 5)', () => {
+  const ROOT = join(__dirname, '..', '..')
+  const read = (f: string): string => readFileSync(join(ROOT, f), 'utf8')
+  // What makes a PTY a "Termpolis terminal": the terminal manager's spawn/registry/write functions, the MCP
+  // server's terminal tools, and the renderer-visible terminal events.
+  const TERMINAL_REACH = /from ['"]\.\/(terminalManager|terminalBuffers?|terminalRegistry|mcpServer)['"]|\b(spawnTerminal|createTerminalSession|writeToTerminal|killTerminal|registerTerminal)\b|['"]terminal:(data|exit|created)['"]|webContents\.send\(['"]terminal/
+
+  it.each(['src/main/signInSession.ts', 'src/shared/signInScreens.ts'])('%s has no reach into terminals', (f) => {
+    expect(read(f).match(TERMINAL_REACH)).toBeNull()
+  })
+
+  it('accountsIpc.ts spawns the sign-in PTY through node-pty itself, and imports no terminal manager', () => {
+    const t = read('src/main/accountsIpc.ts')
+    expect(t.match(/from ['"]\.\/(terminalManager|terminalBuffers?|terminalRegistry)['"]/)).toBeNull()
+    expect(t).toMatch(/require\('node-pty'\)\s+as\s+\{\s*spawn: SessionDeps\['spawn'\]\s*\}\)\.spawn\(file, args, opts\)/)
+  })
+
+  it('tells the renderer about a session in one way only: the sign-in state channel', () => {
+    const sends = [...read('src/main/signInSession.ts').matchAll(/deps\.send\(([^)]*)\)/g)].map((m) => m[1].trim())
+    expect(sends).toEqual(['{ sessionId: s.id, accountId: s.spec.accountId, agent: s.spec.agent, phase }'])
+  })
+
+  it('sees a regression: the scan flags a sign-in module that imported the terminal manager, or sent a terminal event', () => {
+    expect(("import { writeToTerminal } from './terminalManager'\n" + read('src/main/signInSession.ts')).match(TERMINAL_REACH)).not.toBeNull()
+    expect((read('src/main/signInSession.ts') + "\nwin.webContents.send('terminal:data', 1)").match(TERMINAL_REACH)).not.toBeNull()
+    expect((read('src/main/signInSession.ts') + "\nspawnTerminal('x')").match(TERMINAL_REACH)).not.toBeNull()
+  })
+
+  it('runs a whole session (start, a pasted code, success, cancel of another) without the terminal manager being touched', async () => {
+    const r = await addClaude('codedev', 'me@example.test')
+    const { sessionId } = await ok<{ sessionId: string }>(ACCOUNTS_IPC.signInStart, { accountId: r.account.id, method: 'console' })
+    await until('browser')
+    await ok(ACCOUNTS_IPC.signInInput, { sessionId, kind: 'code', value: 'good-code' })
+    await until('success')
+    const second = await addClaude('spare', 'spare@example.test')
+    const other = await ok<{ sessionId: string }>(ACCOUNTS_IPC.signInStart, { accountId: second.account.id })
+    await ok(ACCOUNTS_IPC.signInInput, { sessionId: other.sessionId, kind: 'cancel' })
+    endAccountSignIns()
+    const channels = [...new Set(sent.map((s) => s.channel))]
+    // Main said nothing about a terminal: only the sign-in state (and the account events a sign-in causes).
+    expect(channels.filter((c) => /terminal/i.test(c) && c !== ACCOUNTS_IPC.terminalAccount)).toEqual([])
+    expect(terminalManagerCalls).toEqual([])
   })
 })

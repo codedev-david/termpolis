@@ -140,17 +140,17 @@ describe('cardFor: what a switch that didn\'t finish says, and what comes next',
   })
 
   it('offers a way on for each, New terminal on the account except to a swarm worker', () => {
-    expect(kinds({ kind: 'unknown-exit' })).toEqual(['exited', 'retry', 'new-terminal', 'close'])
-    expect(kinds({ kind: 'exit-unconfirmed' })).toEqual(['exited', 'retry', 'new-terminal', 'close'])
+    expect(kinds({ kind: 'unknown-exit' })).toEqual(['retry', 'exited', 'new-terminal', 'close'])
+    expect(kinds({ kind: 'exit-unconfirmed' })).toEqual(['retry', 'exited', 'new-terminal', 'close'])
     expect(kinds({ kind: 'agent-alive' })).toEqual(['retry', 'new-terminal', 'close'])
     expect(kinds({ kind: 'didnt-start', line: 'x' })).toEqual(['exited', 'new-terminal', 'close'])
     expect(kinds({ kind: 'resume-not-found' })).toEqual(['fresh', 'new-terminal', 'close'])
-    expect(kinds({ kind: 'sign-in' })).toEqual(['sign-in', 'close'])
+    expect(kinds({ kind: 'sign-in' })).toEqual(['sign-in-and-continue', 'sign-in', 'close'])
     expect(kinds({ kind: 'asks-user', what: 'q' })).toEqual(['close'])
     expect(kinds({ kind: 'no-outcome' })).toEqual(['retry', 'close'])
     expect(kinds({ kind: 'refused', why: 'x' })).toEqual(['retry', 'new-terminal', 'close'])
     expect(kinds({ kind: 'refused', why: 'x' }, true)).toEqual(['retry', 'close'])
-    expect(kinds({ kind: 'unknown-exit' }, true)).toEqual(['exited', 'retry', 'close'])
+    expect(kinds({ kind: 'unknown-exit' }, true)).toEqual(['retry', 'exited', 'close'])
     expect(cardFor({ kind: 'resume-not-found' }, run, false)?.actions[0].label).toBe('Start a new session on codedev')
     expect(cardFor({ kind: 'agent-alive' }, run, false)?.actions[1].label).toBe('New terminal on codedev')
   })
@@ -290,7 +290,7 @@ describe('startSwitch', () => {
     await startSwitch('w1', 'acc_b', {}, d)
     expect(noteWorkerSwitched).toHaveBeenCalledWith('w1', { kind: 'unknown-exit' }, { live: true })
     expect(liveRestartDeps).toHaveBeenCalled()
-    expect(st().switchRuns.w1.card?.actions.map((a) => a.kind)).toEqual(['exited', 'retry', 'close'])
+    expect(st().switchRuns.w1.card?.actions.map((a) => a.kind)).toEqual(['retry', 'exited', 'close'])
   })
 })
 
@@ -546,5 +546,78 @@ describe("the second confirmation (D14, R17): an account that isn't offered auto
     useTerminalStore.setState({ terminals: [{ ...T, agentAccountId: 'acc_w' }] })
     await startSwitch('t1', 'acc_a', { confirmed: true }, d)
     expect(st().switchRuns.t1.toast?.back).toBeNull()
+  })
+})
+
+describe('a switch that landed on an expired sign-in has a way on (round 1)', () => {
+  const SID = '3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+  const run = { agent: 'claude' as const, to: endpoint(B), from: endpoint(A) }
+  const kindsOf = (o: SwitchOutcome, worker = false): string[] => cardFor(o, run, worker)!.actions.map((a) => a.kind)
+
+  it('offers to sign in and carry on in a new terminal, naming the conversation when it is known', () => {
+    const withId = cardFor({ kind: 'sign-in', sessionId: SID }, run, false)!
+    expect(withId.actions.map((a) => [a.kind, a.label])).toEqual([
+      ['sign-in-and-continue', 'Sign in to codedev and continue the conversation in a new terminal'],
+      ['sign-in', 'Sign in to codedev'],
+      ['close', 'Close'],
+    ])
+    const without = cardFor({ kind: 'sign-in' }, run, false)!
+    expect(without.actions[0]).toEqual({ kind: 'sign-in-and-continue', label: 'Sign in to codedev and open a new terminal' })
+    // A swarm worker has no pane to continue in: it signs in and the conductor reassigns.
+    expect(kindsOf({ kind: 'sign-in', sessionId: SID }, true)).toEqual(['sign-in', 'close'])
+  })
+
+  it('puts the safe answer first where the card asks whether the agent exited', () => {
+    expect(kindsOf({ kind: 'unknown-exit' })).toEqual(['retry', 'exited', 'new-terminal', 'close'])
+    expect(kindsOf({ kind: 'exit-unconfirmed' })).toEqual(['retry', 'exited', 'new-terminal', 'close'])
+    // The shell is at its prompt there, so its "Try again" is the same asserted answer and stays first.
+    expect(cardFor({ kind: 'didnt-start', line: 'x' }, run, false)!.actions[0]).toEqual({ kind: 'exited', label: 'Try again' })
+  })
+
+  async function signedOutRun() {
+    useTerminalStore.setState({ accountsView: view([A, B]), terminals: [{ ...T, agentCommand: 'claude --model opus --dangerously-skip-permissions' }] })
+    const { d, raw } = deps({ outcome: { kind: 'sign-in', sessionId: SID } })
+    await startSwitch('t1', 'acc_b', {}, d)
+    return { d, raw }
+  }
+
+  it('remembers the conversation the relaunch was resuming', async () => {
+    await signedOutRun()
+    expect(st().switchRuns.t1).toMatchObject({ status: 'failed', resumeId: SID })
+    expect(st().switchRuns.t1.card!.actions[0].kind).toBe('sign-in-and-continue')
+  })
+
+  it('signs the account in from the sheet, then continues the conversation in a new terminal on it, its flags as they were', async () => {
+    const { d, raw } = await signedOutRun()
+    await actOnRun('t1', 'sign-in-and-continue', d)
+    expect(st().switchRuns.t1).toBeUndefined()
+    expect(st().signInSheet?.accountId).toBe('acc_b')
+    expect(raw.termpolis.createTerminal).not.toHaveBeenCalled()
+    st().signInSheet!.then!()
+    await vi.waitFor(() => expect(raw.termpolis.createTerminal).toHaveBeenCalledTimes(1))
+    const command = vi.mocked(launchAgents).mock.calls[0][0][0].agentCommand
+    expect(command).toBe(`claude --model opus --dangerously-skip-permissions --resume ${SID}`)
+    expect(raw.termpolis.createTerminal.mock.calls[0].slice(5)).toEqual(['acc_b', 'claude'])
+    expect(st().terminals.find((t) => t.agentCommand === command)).toMatchObject({ agentAccountId: 'acc_b' })
+  })
+
+  it('opens a fresh session when no conversation was named', async () => {
+    useTerminalStore.setState({ accountsView: view([A, B]), terminals: [T] })
+    const { d, raw } = deps({ outcome: { kind: 'sign-in' } })
+    await startSwitch('t1', 'acc_b', {}, d)
+    expect(st().switchRuns.t1.resumeId).toBeUndefined()
+    await actOnRun('t1', 'sign-in-and-continue', d)
+    st().signInSheet!.then!()
+    await vi.waitFor(() => expect(raw.termpolis.createTerminal).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(launchAgents).mock.calls[0][0][0].agentCommand).toBe('claude')
+  })
+
+  it('does nothing once the terminal or the account is gone when the sign-in ends', async () => {
+    const { d, raw } = await signedOutRun()
+    await actOnRun('t1', 'sign-in-and-continue', d)
+    useTerminalStore.setState({ accountsView: view([A]) })
+    st().signInSheet!.then!()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(raw.termpolis.createTerminal).not.toHaveBeenCalled()
   })
 })

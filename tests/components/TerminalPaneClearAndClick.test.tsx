@@ -1126,6 +1126,26 @@ describe('TerminalPane — the account switch', () => {
     expect(openAccountSwitch).not.toHaveBeenCalled()
   })
 
+  it("leaves Ctrl+Shift+N to the shell in a terminal that runs no agent with an account, though accounts are registered", async () => {
+    const view = { accounts: [{ id: 'acc_a', agent: 'claude', label: 'personal', order: 0 }], home: '/h' }
+    for (const terminals of [
+      [{ id: 'term-1', isSwarm: false }],
+      [{ id: 'term-1', isSwarm: false, agentCommand: 'codex' }],
+      [{ id: 'term-1', isSwarm: false, agentCommand: 'claude-sandbox' }],
+      [{ id: 'term-1', isSwarm: true, isConductor: true, agentCommand: 'claude' }],
+    ]) {
+      mocks.mockGetState.mockImplementation(() => state({ accountsView: view, terminals }))
+      const { unmount } = await renderPane()
+      const e = switchKey()
+      let handled!: boolean
+      await act(async () => { handled = mockKeyHandlerCb!(e) })
+      expect(handled).not.toBe(false)
+      expect(e.preventDefault).not.toHaveBeenCalled()
+      expect(openAccountSwitch).not.toHaveBeenCalled()
+      unmount()
+    }
+  })
+
   it('leaves Ctrl+Shift+N to the shell with no account registered (D13)', async () => {
     for (const accountsView of [null, { accounts: [], home: '/h' }]) {
       mocks.mockGetState.mockImplementation(() => state({ accountsView }))

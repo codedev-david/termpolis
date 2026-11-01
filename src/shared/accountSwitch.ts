@@ -325,7 +325,9 @@ export type SwitchOutcome =
   /** Claude Code couldn't find the conversation on the target. */
   | { kind: 'resume-not-found' }
   /** The target shows its sign-in screen, which Termpolis never answers. */
-  | { kind: 'sign-in' }
+  /** `sessionId`: the conversation that was being relaunched, which a new terminal on the account can
+   *  pick up once it is signed in (the terminal itself sits at the CLI's sign-in screen). */
+  | { kind: 'sign-in'; sessionId?: string }
   /** The target asks something only the user answers. */
   | { kind: 'asks-user'; what: string }
   /** Nothing showed within 30 s of the Enter. */

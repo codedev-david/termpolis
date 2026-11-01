@@ -247,11 +247,26 @@ describe('its ways out', () => {
     click('limit-card-more')
     fireEvent.click(screen.getAllByTestId('limit-card-fresh')[0])
     expect(newTerminalOn).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 'acc_c' }))
-    expect(st().accountSwitch).toBeNull()
+    await waitFor(() => expect(st().accountSwitch).toBeNull())
     openLimit()
     click('limit-card-more')
     click('limit-card-fresh-first')
     expect(newTerminalOn).toHaveBeenLastCalledWith(expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 'acc_b' }))
+  })
+
+  it('stays, with why, when the new terminal could not be opened: the stop keeps its card and its other ways out', async () => {
+    vi.mocked(newTerminalOn).mockResolvedValueOnce({ ok: false, error: "Termpolis couldn't open the terminal: no shell" })
+    card()
+    openLimit()
+    await waitFor(() => expect(accounts.check).toHaveBeenCalledTimes(2))
+    click('limit-card-more')
+    click('limit-card-fresh-first')
+    expect(await screen.findByTestId('limit-card-error')).toHaveTextContent("Termpolis couldn't open the terminal: no shell")
+    expect(st().accountSwitch).not.toBeNull()
+    expect(screen.getByTestId('limit-card')).toBeInTheDocument()
+    // The way out is still there to try again.
+    click('limit-card-fresh-first')
+    await waitFor(() => expect(st().accountSwitch).toBeNull())
   })
 
   it('waits for the reset on Not now, for this terminal only', async () => {
