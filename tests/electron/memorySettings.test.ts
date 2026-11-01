@@ -206,4 +206,27 @@ describe('indexClaudeNotes and shareNotesAcrossProjects', () => {
     expect(m.getIndexClaudeNotes()).toBe(true)
     expect(m.getShareNotesAcrossProjects()).toBe(false)
   })
+
+  it('a second call on the same module answers from what it already loaded', async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ vectorQuantize: true, indexClaudeNotes: false, shareNotesAcrossProjects: true }))
+    const m = await freshModule()
+    expect([m.getVectorQuantize(), m.getVectorQuantize()]).toEqual([true, true])
+    expect([m.getIndexClaudeNotes(), m.getIndexClaudeNotes()]).toEqual([false, false])
+    expect([m.getShareNotesAcrossProjects(), m.getShareNotesAcrossProjects()]).toEqual([true, true])
+    // The file is read once: changing it behind the module's back changes nothing until the next start.
+    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: true, shareNotesAcrossProjects: false }))
+    expect(m.getIndexClaudeNotes()).toBe(false)
+    expect(m.getShareNotesAcrossProjects()).toBe(true)
+  })
+
+  it('every accessor loads the saved file by itself when it is the first call on the module', async () => {
+    // Each line is a fresh module, as after a restart: whichever accessor runs first has to read the file.
+    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: false, shareNotesAcrossProjects: true, primerLimit: 17 }))
+    expect((await freshModule()).getShareNotesAcrossProjects()).toBe(true)
+    expect((await freshModule()).getIndexClaudeNotes()).toBe(false)
+    expect((await freshModule()).getMemorySettings()).toMatchObject({ indexClaudeNotes: false, shareNotesAcrossProjects: true, primerLimit: 17 })
+    expect((await freshModule()).setShareNotesAcrossProjects(false)).toMatchObject({ shareNotesAcrossProjects: false, indexClaudeNotes: false, primerLimit: 17 })
+    expect((await freshModule()).setIndexClaudeNotes(true)).toMatchObject({ indexClaudeNotes: true, shareNotesAcrossProjects: false, primerLimit: 17 })
+    expect(JSON.parse(readFileSync(settingsFile(), 'utf8'))).toMatchObject({ indexClaudeNotes: true, shareNotesAcrossProjects: false, primerLimit: 17 })
+  })
 })

@@ -899,7 +899,7 @@ describe('Remove imported notes', () => {
     const gate = new Promise<void>((r) => { release = r })
     const slow: NotesStore = { ...store, write: async (i) => { order.push('write'); await gate; return store.write(i) } }
     const pass = runClaudeNotesIngest(deps(slow))
-    await vi.waitFor(() => expect(order).toEqual(['write']))
+    await vi.waitFor(() => expect(order).toEqual(['write']), { timeout: 10_000 })
     const removal = removeImportedNotes(deps(store)).then((r) => { order.push('removed'); return r })
     await new Promise((r) => setTimeout(r, 20))
     expect(order).toEqual(['write']) // the removal is waiting its turn

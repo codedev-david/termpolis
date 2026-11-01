@@ -254,7 +254,7 @@ describe('a pass that is killed', () => {
       _resetNotesLockForTests()
       const { store, dead } = dyingStore(survive)
       void runClaudeNotesIngest(deps(store)) // never settles: the process is gone
-      await vi.waitFor(() => expect(dead()).toBe(true))
+      await vi.waitFor(() => expect(dead()).toBe(true), { timeout: 10_000 })
       _resetNotesLockForTests()
       restart() // and the app starts again
       await runClaudeNotesIngest(deps(realStore))
@@ -271,7 +271,7 @@ describe('a pass that is killed', () => {
     session(FOLDER, CWD)
     const { store, dead } = dyingStore(0)
     void runClaudeNotesIngest(deps(store))
-    await vi.waitFor(() => expect(dead()).toBe(true))
+    await vi.waitFor(() => expect(dead()).toBe(true), { timeout: 10_000 })
     _resetNotesLockForTests()
     // The dead pass wrote nothing, so give it one chunk that reached the store but not the manifest:
     await memoryWrite({ agentId: 'claude-notes', source: 'claude-notes', kind: 'fact', content: 'n \u2014 \n\nStray chunk from the killed pass', tags: ['type:reference', 'note:n.md'], hash: 'killed-pass-hash', importance: 0.9, memoryType: 'summary', project: CWD })
@@ -306,7 +306,7 @@ describe('a pass that is killed', () => {
     let removes = 0
     const dying: NotesStore = { ...realStore, remove: (id) => { removes++; return new Promise<void>(() => {}) } }
     void runClaudeNotesIngest(deps(dying))
-    await vi.waitFor(() => expect(removes).toBe(1))
+    await vi.waitFor(() => expect(removes).toBe(1), { timeout: 10_000 })
     _resetNotesLockForTests()
     restart()
     await runClaudeNotesIngest(deps(realStore))

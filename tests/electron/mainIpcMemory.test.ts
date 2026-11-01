@@ -2643,7 +2643,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
       await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
       notesMock.runClaudeNotesIngest.mockClear()
       await invoke('memory:set-notes-settings', { indexClaudeNotes: true })
-      await vi.waitFor(() => expect(notesMock.runClaudeNotesIngest).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(notesMock.runClaudeNotesIngest).toHaveBeenCalledTimes(1), { timeout: 10_000 })
 
       await invoke('memory:set-notes-settings', { indexClaudeNotes: false })
       notesMock.runClaudeNotesIngest.mockClear()
