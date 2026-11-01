@@ -27,6 +27,12 @@ import { isAwaitingAnswer, tailSlice } from '../lib/promptAutoDismiss'
 // lands while the user is mid-sentence is concatenated onto their draft. (Exactly the fact that
 // made pre-send prompt redaction impossible in v1.25.2.) So an unprompted write must first check
 // that the input is idle — see reprimeAfterCompaction and, for the launch prime, PrimerGate.
+//
+// The same rule from the other side: the pointer is only safe at an AGENT's input. Pasted with its
+// Enter at a shell's prompt it is a command line, and an agent that died while it started (a
+// missing binary, a failed sign-in, a crash on boot) leaves exactly that prompt, which the screen
+// can't always tell from an agent at its input. So before the paste, and again before the Enter,
+// the OS is asked whether anything but the shell runs in the terminal (shellAloneNow).
 
 const SETTING_KEY = 'termpolis.memory.autoPrimerOnLaunch'
 const INJECT_DELAY_MS = 1500 // let the agent CLI finish booting before we paste
@@ -102,6 +108,35 @@ export async function promptShowing(terminalId: string): Promise<boolean> {
   }
 }
 
+/**
+ * True only when the OS says nothing runs in the terminal but its shell (terminalShellAlone,
+ * shellAlone.ts, the question the model switcher asks): the agent started in it has exited, and the
+ * pointer would land at the shell's prompt. Anything less sure is false and the pointer goes in as
+ * it always did: null (a shell the OS can't read, WSL, a query that failed), a failed or missing
+ * call (an older preload, a test double) and a throw. Holding every pointer back whenever the OS is
+ * silent would turn recall off for those shells.
+ */
+export async function shellAloneNow(terminalId: string): Promise<boolean> {
+  try {
+    const res = await window.termpolis?.terminalShellAlone?.(terminalId)
+    return res?.success === true && res.data === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the pointer may be typed into this terminal right now: an agent runs in it (the OS does
+ * not say that only the shell does) and its screen shows nothing waiting for an answer. The OS is
+ * asked FIRST and the screen LAST. The OS takes a second or two on Windows, and the screen look is
+ * what keeps an Enter from answering a trust or approval prompt, so it has to be the last look
+ * before the write, not one that a prompt coming up meanwhile slips in behind.
+ */
+async function canTypePointer(terminalId: string): Promise<boolean> {
+  if (await shellAloneNow(terminalId)) return false
+  return !(await promptShowing(terminalId))
+}
+
 // Check that relevant memory exists for this project and, if so, paste a short
 // pointer into the freshly-launched agent terminal directing it to load the
 // digest via the memory_primer MCP tool (behind the scenes — no on-screen dump).
@@ -127,8 +162,10 @@ export async function injectAutoPrimer(
     if (!res?.success || !res.data) return false
     // The pointer goes in with an Enter, and an Enter on a trust or approval prompt answers
     // it — which is how a paste 1.5 s into a Codex launch used to accept its folder-trust
-    // prompt. Checked after the recall, right before typing, and again before the Enter.
-    if (await promptShowing(terminalId)) return false
+    // prompt. At a SHELL's prompt the same Enter runs the pointer as a command, and that is where
+    // an agent that died while it started has left the terminal. Checked after the recall, right
+    // before typing, and again before the Enter (canTypePointer).
+    if (!(await canTypePointer(terminalId))) return false
     // Observable recall (#1): on a LAUNCH prime (notify), show the same 🧠 "Loaded N
     // memories" banner Claude gets — so Codex/Gemini recall doesn't look like
     // nothing happened. Compaction re-primes pass notify=false and stay silent.
@@ -152,7 +189,9 @@ export async function injectAutoPrimer(
     // the same constant, as SUBMIT_SETTLE_MS in the remote dispatcher, which
     // fixed the identical symptom for messages sent from the phone.
     await sleep(PRIMER_SUBMIT_SETTLE_MS)
-    if (await promptShowing(terminalId)) return false
+    // A prompt can have come up since the paste, or the agent can have exited. What was pasted
+    // then stays where it is and is never submitted.
+    if (!(await canTypePointer(terminalId))) return false
     api.writeToTerminal(terminalId, '\r')
     return true
   } catch {
