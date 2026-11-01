@@ -3772,7 +3772,8 @@ async function semanticPoolOptions(
         // 1.55.0: with "let general notes help in other projects" on, a project-scoped search is also handed up to two
         // reference / feedback / user notes from another project, after its own results (claudeNotesShare.ts).
         const served = await withBorrowedNotes(applyCorrections(res), {
-          enabled: getShareNotesAcrossProjects(),
+          // Not to a caller that asked for something narrower than notes: one agent's memories, one kind, one task's.
+          enabled: getShareNotesAcrossProjects() && !opts.agentId && !opts.kind && !opts.taskId,
           project: opts.project ? normalizeProjectSlug(opts.project) : '',
           query: opts.query,
           limit: opts.limit,

@@ -157,6 +157,41 @@ describe('withBorrowedNotes: the extra search', () => {
     expect(await withBorrowedNotes(served, ctx({ search: vi.fn(async () => { throw new Error('host down') }) }))).toBe(served)
     expect(await withBorrowedNotes(served, ctx({ search: vi.fn(async () => [hit({ id: 'p', tags: ['type:project'] })]) }))).toBe(served)
   })
+
+  // The limit arrives from a model, as JSON. The store clamps it with Math.min(Math.max(limit ?? 10, 1), 100), which turns a
+  // value it cannot read into NaN and answers with nothing; the lender must not read the same value as "no limit at all".
+  it('lends nothing to a search whose limit is not a number: the store answered it with nothing', async () => {
+    for (const limit of ['abc', Number.NaN, {}, [1, 2]] as unknown as number[]) {
+      const c = ctx({ limit })
+      const served = own(0)
+      expect(await withBorrowedNotes(served, c), String(limit)).toBe(served)
+      expect(c.search).not.toHaveBeenCalled()
+    }
+  })
+
+  it('reads a limit given as a numeric string or a fraction the way the store does', async () => {
+    expect((await withBorrowedNotes(own(2), ctx({ limit: '3' as unknown as number }))).map((h) => h.id)).toEqual(['own0', 'own1', 'x1']) // slice(0, '3')
+    expect((await withBorrowedNotes(own(2), ctx({ limit: 3.9 }))).map((h) => h.id)).toEqual(['own0', 'own1', 'x1']) // slice(0, 3.9) is three
+    expect(await withBorrowedNotes(own(3), ctx({ limit: 3.9 }))).toHaveLength(3) // and three is full
+  })
+
+  // Only the notes' best BORROW_FETCH matches are looked at, and the first of them is as likely as not to be this project's own
+  // note or a note about a project's own state, which cannot be lent. A look at one candidate would leave a lender blind.
+  it('looks past a first match it may not lend', async () => {
+    const search = vi.fn(async () => [
+      hit({ id: 'mine', project: 'app' }), // this project's own note
+      hit({ id: 'about', project: 'billing', tags: ['type:project', 'note:p.md'] }), // a project note
+      hit({ id: 'weak', project: 'billing', score: 0.2 }), // a poor match
+      hit({ id: 'good', project: 'billing' }),
+    ])
+    const res = await withBorrowedNotes(own(1), ctx({ search }))
+    expect(res.map((h) => h.id)).toEqual(['own0', 'good'])
+    expect(search).toHaveBeenCalledWith({ query: 'cache', limit: BORROW_FETCH, agentId: 'claude-notes' })
+  })
+
+  it('looks at six matches: the number the privacy notes and the research design name', () => {
+    expect(BORROW_FETCH).toBe(6)
+  })
 })
 
 // ---------------------------------------------------------------------------------------------

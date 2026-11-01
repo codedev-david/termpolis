@@ -70,7 +70,12 @@ export interface LendContext<T extends LendableHit> {
 /** `served` with the notes lent to it appended after its own results, never above the search's limit. */
 export async function withBorrowedNotes<T extends LendableHit>(served: T[], ctx: LendContext<T>): Promise<T[]> {
   if (!ctx.enabled || !ctx.project || !ctx.query) return served
-  const limit = Math.min(Math.max(ctx.limit ?? SEARCH_DEFAULT_LIMIT, 1), 100)
+  // The limit comes from a model, as JSON. The store clamps it with Math.min(Math.max(limit ?? 10, 1), 100) and slices to it, so
+  // a value it cannot read is NaN and gets nothing back, and a fraction is cut down: read it the same way, or a limit of
+  // "abc" would count as no limit at all and a note would be lent to a search that was answered with nothing.
+  const asked = Number(ctx.limit ?? SEARCH_DEFAULT_LIMIT)
+  if (Number.isNaN(asked)) return served
+  const limit = Math.min(Math.max(Math.floor(asked), 1), 100)
   const room = limit - served.length
   if (room <= 0) return served
   let found: T[]

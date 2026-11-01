@@ -2858,6 +2858,36 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
       expect((await ask({ project: undefined })).map((r: any) => r.id)).toEqual(['own1'])
     })
 
+    // A caller that asked for one agent's memories, one kind, or one task's, asked for something narrower than the notes it
+    // would be handed: the extra notes would be more than it asked for.
+    it.each([['an agent', { agentId: 'codex' }], ['a kind', { kind: 'result' }], ['a task', { taskId: 'T-123' }]])(
+      'lends nothing to a search that is filtered to %s',
+      async (_name, filter) => {
+        backend()
+        await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+        expect((await ask(filter)).map((r: any) => r.id)).toEqual(['own1'])
+        expect(mem.memorySearch).toHaveBeenCalledTimes(1) // and no extra search was even made
+      },
+    )
+
+    it('never lends beyond the limit the search was given', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask({ limit: 1 })).map((r: any) => r.id)).toEqual(['own1']) // the project's own result fills it
+      expect((await ask({ limit: 2 })).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+      expect((await ask({ limit: 'abc' })).map((r: any) => r.id)).toEqual(['own1']) // a limit the store cannot read gets nothing lent
+    })
+
+    // The project the model passes is usually its working directory, a path. Notes are told apart by slug, so the lender has to
+    // compare THIS project's slug and not the path it was given: a path never equals a slug, and a note of the project's own
+    // name would be lent back to it as if it came from another project.
+    it('compares the project by its slug when the model passes a path', async () => {
+      const sameName = { ...lendable, id: 'note3', project: 'billing', tags: ['type:reference', 'note:c.md'] }
+      mem.memorySearch.mockImplementation(async (o: any) => (o.agentId === 'claude-notes' ? [sameName, lendable] : [own]) as never)
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      expect((await ask({ project: 'C:\\work\\billing' })).map((r: any) => r.id)).toEqual(['own1', 'note1'])
+    })
+
     // memory_anticipate names no project and keeps anything with importance >= 0.6, which a note (0.9) is.
     describe('memory_anticipate, which cannot tell which project is asking', () => {
       const lesson = { id: 'les1', content: 'a procedural lesson', score: 0.9, memoryType: 'procedural', importance: 0.5, tags: [] as string[], source: 'claude', agentId: 'mneme' }
