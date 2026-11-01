@@ -54,6 +54,23 @@ describe('redemptions', () => {
     expect(s.classes['compact|Bash|1.6-4k'].redeemed).toBe(0)
   })
 
+  it('the class this run saw a token elided in wins over what a later request says about the same content', () => {
+    // Compacted the first time; the request that sends it again describes it as aged out. The redemption
+    // belongs to the elision that made the token.
+    recordElision(tok(1), compactRead())
+    recordRedemption(tok(1), { kind: 'decay', tool: 'Read', chars: 6000, view: 140 })
+    const s = elisionState()
+    expect(s.classes['compact|Read|4-10k'].redeemed).toBe(1)
+    expect(s.classes['decay|Read|4-10k']).toBeUndefined()
+  })
+
+  it('a token this run never saw elided takes the class the stash recorded', () => {
+    recordRedemption(tok(1), compactRead())
+    const s = elisionState()
+    expect(s.classes['compact|Read|4-10k']).toMatchObject({ elided: 0, redeemed: 1 })
+    expect(s.legacyRedeemed).toBe(0)
+  })
+
   it('a token with no meta falls back to the class it was elided in, when this run saw it', () => {
     recordElision(tok(1), compactRead())
     recordRedemption(tok(1))

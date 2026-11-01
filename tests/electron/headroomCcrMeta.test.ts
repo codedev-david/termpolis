@@ -55,13 +55,15 @@ describe('stash metadata', () => {
     expect(elisionState().classes[KEY].elided).toBe(1)
   })
 
-  it('counts nothing and records no meta for a non-hash token that is only on disk', () => {
+  it('counts nothing new for a non-hash token that is only on disk, and takes its class from the put that sends it again', () => {
     setCcrDir(dir)
     ccrPut('hr_manual', { v: 1 }, 'proxy', meta())
     resetCcr(); setCcrDir(dir) // a new process: on disk, not resident
     ccrPut('hr_manual', { v: 2 }, 'proxy', meta())
-    expect(elisionState().classes[KEY].elided).toBe(1)
-    expect('meta' in (ccrRetrieveRecord('hr_manual') as object)).toBe(false) // its first meta is on disk and unread
+    expect(elisionState().classes[KEY].elided).toBe(1) // not a second elision
+    // The first meta is on disk and is not read here (a read would be a synchronous one per token per
+    // request). The memory record takes the class from the request that has just sent the token again.
+    expect((ccrRetrieveRecord('hr_manual') as { meta?: unknown }).meta).toEqual(meta())
   })
 
   it('a record with no meta stays meta-less: the MCP layer and old callers never had one', () => {
@@ -137,14 +139,26 @@ describe('elided counts once per token', () => {
     expect(ccrRetrieveRecord(tok(1))?.value).toBe('x') // and it still resolves, from memory now
   })
 
-  it('a redemption of a token an earlier run stored is counted apart from every class: its class stays on disk', async () => {
+  it('a redemption of a token an earlier run stored is counted in its class: the resumed session sent the metadata again', async () => {
     setCcrDir(dir)
     ccrPut(tok(1), 'x', 'proxy', meta())
     resetCcr(); setCcrDir(dir); resetElisionLedger() // a new run: the file is there, the window is empty
     ccrPut(tok(1), 'x', 'proxy', meta()) //              the resumed session sends the same history again
     expect(await retrieveFull(tok(1))).toBe('x')
-    expect(elisionState()).toEqual({ classes: {}, legacyRedeemed: 1 })
+    // In its class, and not in "legacy": before the proxy re-sent the metadata the class stayed unread on
+    // disk, and every redemption of a token that outlived a launch was counted in no class at all. (The
+    // elision count is from the ledger's own file in a real run, which this test emptied.)
+    expect(elisionState()).toEqual({ classes: { [KEY]: { elided: 0, redeemed: 1, chars: 0, view: 0 } }, legacyRedeemed: 0 })
     expect(summarizeProxySavings().session.retrieves).toBe(1)
+  })
+
+  it('and with no metadata to go on, a redemption of such a token is still counted apart from every class', async () => {
+    setCcrDir(dir)
+    ccrPut(tok(1), 'x', 'proxy') // stored by an earlier launch before the ledger existed: no meta
+    resetCcr(); setCcrDir(dir); resetElisionLedger()
+    ccrPut(tok(1), 'x', 'proxy')
+    expect(await retrieveFull(tok(1))).toBe('x')
+    expect(elisionState()).toEqual({ classes: {}, legacyRedeemed: 1 })
   })
 
   it('a redemption of a token the memory dropped but this run elided is still counted in its class', async () => {

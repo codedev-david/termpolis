@@ -336,17 +336,28 @@ export function ccrStash(value: unknown, origin: CcrOrigin = 'mcp'): string {
 export function ccrPut(token: string, value: unknown, origin: CcrOrigin = 'proxy', meta?: ElisionMeta): void {
   const resident = store.get(token)
   let m: ElisionMeta | undefined
-  if (resident !== undefined || diskIndex.has(token)) {
-    // Already stored, here or in an earlier run: not an elision now, and the class it was stored
-    // with is the one that counts. A record read back from the file keeps its meta on disk only (a
-    // read here would be a synchronous one per token per request); a redemption of it is then
-    // counted as one whose class this run never saw, unless the window remembers it.
-    m = resident?.meta
-  } else {
-    m = sanitizeMeta(meta)
-    if (m) recordElision(token, m)
+  let fresh = false
+  try {
+    if (resident !== undefined || diskIndex.has(token)) {
+      // Already stored, here or in an earlier run: not an elision now, and the class it was stored
+      // with is the one that counts. A record read back from the file keeps its meta on disk only (a
+      // read here would be a synchronous one per token per request), so one from an earlier run takes
+      // the class from the request that has just sent it again, with the same content and so the same
+      // class: the memory record then knows it and a redemption lands in it, not in "legacy".
+      m = resident?.meta ?? sanitizeMeta(meta)
+    } else {
+      m = sanitizeMeta(meta)
+      fresh = m !== undefined
+    }
+  } catch {
+    m = undefined // bookkeeping about the promise must never break the promise
+    fresh = false
   }
   put(token, m ? { value, origin, meta: m } : { value, origin })
+  // After the store, so the stash is kept whatever the ledger does: this token is already on the wire.
+  if (fresh && m) {
+    try { recordElision(token, m) } catch { /* stored; only the count is lost */ }
+  }
 }
 
 /**

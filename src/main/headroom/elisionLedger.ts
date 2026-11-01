@@ -63,15 +63,19 @@ export function recordElision(token: string, meta: ElisionMeta): void {
 }
 
 /**
- * Count one redemption, in the class the stash recorded or else the class this run saw the token
- * elided in. The caller gates this on the token's FIRST redemption (ccrMarkRedeemed). A redemption
- * may predate the ledger or the window: it still counts for life, and the class then shows more
- * asked than elided, which is the honest reading of a ledger that started late.
+ * Count one redemption, in the class this run saw the token elided in, or else the class the stash
+ * recorded. The window's class comes first because a request that sends the same content again can
+ * describe it differently (compacted the first time, aged out the next), and the redemption belongs to
+ * the elision that made the token. The stash's class is the fallback for a token this run never saw
+ * elided, one stored by an earlier launch that the proxy has just sent again with its metadata. The
+ * caller gates this on the token's FIRST redemption (ccrMarkRedeemed). A redemption may predate the
+ * ledger or the window: it still counts for life, and the class then shows more asked than elided,
+ * which is the honest reading of a ledger that started late.
  */
 export function recordRedemption(token: string | undefined, meta?: ElisionMeta): void {
   revision++
   const live = token === undefined ? undefined : recent.get(token)
-  const key = meta ? classKey(meta) : live?.key
+  const key = live?.key ?? (meta ? classKey(meta) : undefined)
   if (key === undefined) { legacyRedeemed += 1; return }
   const c = classes.get(key) ?? zero()
   c.redeemed += 1
