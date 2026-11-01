@@ -64,32 +64,54 @@ function init(): void {
   try {
     if (existsSync(settingsPath())) {
       const parsed = JSON.parse(readFileSync(settingsPath(), 'utf8'))
-      if (parsed && typeof parsed === 'object') {
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         settings = {
           primerLimit: clampPrimerLimit(parsed.primerLimit),
           // Absent key => false. A memory system defaults to EXACT; you opt in to the approximation.
           vectorQuantize: parsed.vectorQuantize === true,
-          // Absent key => ON (the notes are a default, disclosed); only a literal false turns them off.
-          indexClaudeNotes: parsed.indexClaudeNotes !== false,
+          // Absent key => ON (never asked: the notes are a default, disclosed). A key that is there is somebody's answer, and
+          // only a literal true is a yes: a hand-edited or damaged value must not agree for the user.
+          indexClaudeNotes: 'indexClaudeNotes' in parsed ? parsed.indexClaudeNotes === true : true,
           // Absent key => OFF: nothing crosses between projects until the user says so.
           shareNotesAcrossProjects: parsed.shareNotesAcrossProjects === true,
         }
+      } else {
+        throw new Error('not a settings object')
       }
     }
   } catch {
-    /* keep defaults on any read/parse error */
+    // Keep the defaults on any read/parse error, EXCEPT the notes import. Nothing throws here for a file that is not there, so
+    // this is a file that is there and cannot be read (a write cut short by a crash, an antivirus lock): the user's answer is
+    // lost, which is not the same as never having given one. The import stays off until they turn it on in Settings, where the
+    // switch shows what is held.
+    settings.indexClaudeNotes = false
   }
   initialized = true
 }
 
-function persist(): void {
+/** Write the settings. False when they could not be written, so a caller that must not claim a choice was kept can say so. */
+function persist(): boolean {
   try {
     const dir = app.getPath('userData')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
     writeFileSync(settingsPath(), JSON.stringify(settings, null, 2))
+    return true
   } catch {
-    /* best effort — a failed write just means the setting won't survive restart */
+    return false /* best effort for the tuning settings: a failed write just means the setting won't survive restart */
   }
+}
+
+/** A switch that is a privacy choice: kept, or not changed and said so. The panel shows what main holds, so a choice that could
+ *  not be written must not be held either, or it would show OFF while the file says ON and the next start would import again. */
+function saveSwitch(key: 'indexClaudeNotes' | 'shareNotesAcrossProjects', value: boolean): MemorySettings {
+  if (!initialized) init()
+  const before = settings[key]
+  settings[key] = value
+  if (!persist()) {
+    settings[key] = before
+    throw new Error('The setting could not be saved (the settings file could not be written)')
+  }
+  return getMemorySettings()
 }
 
 export function getMemorySettings(): MemorySettings {
@@ -128,12 +150,10 @@ export function getIndexClaudeNotes(): boolean {
   return settings.indexClaudeNotes
 }
 
-/** Persist the switch. Only a literal true turns it on: anything else is the user not having agreed. */
+/** Persist the switch. Only a literal true turns it on: anything else is the user not having agreed. Throws, and changes nothing,
+ *  when the choice could not be written. */
 export function setIndexClaudeNotes(value: unknown): MemorySettings {
-  if (!initialized) init()
-  settings.indexClaudeNotes = value === true
-  persist()
-  return getMemorySettings()
+  return saveSwitch('indexClaudeNotes', value === true)
 }
 
 export function getShareNotesAcrossProjects(): boolean {
@@ -141,10 +161,8 @@ export function getShareNotesAcrossProjects(): boolean {
   return settings.shareNotesAcrossProjects
 }
 
-/** Persist the switch. Only a literal true lets a note cross from one project to another. */
+/** Persist the switch. Only a literal true lets a note cross from one project to another. Throws, and changes nothing, when the
+ *  choice could not be written. */
 export function setShareNotesAcrossProjects(value: unknown): MemorySettings {
-  if (!initialized) init()
-  settings.shareNotesAcrossProjects = value === true
-  persist()
-  return getMemorySettings()
+  return saveSwitch('shareNotesAcrossProjects', value === true)
 }

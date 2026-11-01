@@ -93,6 +93,22 @@ describe('Claude Code\'s saved notes: the settings IPC', () => {
     expect(state.index).toBe(false)
   })
 
+  // The settings module refuses to say a switch was changed when it could not save it (it throws). Both channels have to
+  // pass that on as an error, or the panel would show a choice that was never kept.
+  it('set answers a switch that could not be saved with the error, and the panel is left with the state main holds', async () => {
+    d.index.set = () => { throw new Error('The setting could not be saved') }
+    const res = await call(NOTES_IPC.set, { indexClaudeNotes: false })
+    expect(res).toEqual({ success: false, error: 'The setting could not be saved' })
+    expect(d.passSoon).not.toHaveBeenCalled()
+  })
+
+  it('remove stops before it removes anything when the switch cannot be turned off and kept off', async () => {
+    d.index.set = () => { throw new Error('The setting could not be saved') }
+    const res = await call(NOTES_IPC.remove)
+    expect(res).toEqual({ success: false, error: 'The setting could not be saved' })
+    expect(d.remove).not.toHaveBeenCalled() // the import would only bring them back at the next start
+  })
+
   it('every channel answers a failure with the error envelope, never by throwing', async () => {
     d.status = () => { throw new Error('manifest unreadable') }
     registerClaudeNotesIpc({ handle: (c, fn) => { handlers.set(c, fn) } }, d)

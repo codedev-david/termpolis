@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -189,22 +189,105 @@ describe('indexClaudeNotes and shareNotesAcrossProjects', () => {
     expect(m.setShareNotesAcrossProjects(true).shareNotesAcrossProjects).toBe(true)
   })
 
-  it('in a saved file, only a literal false turns the notes off and only a literal true turns sharing on', async () => {
-    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: 'no', shareNotesAcrossProjects: 'yes' }))
-    const a = await freshModule()
-    expect(a.getIndexClaudeNotes()).toBe(true)
-    expect(a.getShareNotesAcrossProjects()).toBe(false)
+  // The import is on by default because nobody has been asked yet. A saved file is somebody's answer: an absent key is "never asked",
+  // and anything present has to be a literal true to be a yes, or a damaged or hand-edited file would agree for the user.
+  it('in a saved file, an absent key is the default (on), and a key that is there must be a literal true to turn the import on', async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ primerLimit: 12 }))
+    expect((await freshModule()).getIndexClaudeNotes()).toBe(true)
+    writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: true }))
+    expect((await freshModule()).getIndexClaudeNotes()).toBe(true)
+    for (const junk of ['no', 'false', 'true', 0, 1, null, [], {}, false]) {
+      writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: junk }))
+      expect((await freshModule()).getIndexClaudeNotes(), JSON.stringify(junk)).toBe(false)
+    }
+  })
+
+  it('in a saved file, only a literal true turns sharing on', async () => {
+    for (const [junk, want] of [['yes', false], [1, false], [null, false], [false, false], [true, true]] as const) {
+      writeFileSync(settingsFile(), JSON.stringify({ shareNotesAcrossProjects: junk }))
+      expect((await freshModule()).getShareNotesAcrossProjects(), JSON.stringify(junk)).toBe(want)
+    }
     writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: false, shareNotesAcrossProjects: true }))
     const b = await freshModule()
     expect(b.getIndexClaudeNotes()).toBe(false)
     expect(b.getShareNotesAcrossProjects()).toBe(true)
   })
 
-  it('an unreadable settings file leaves the defaults', async () => {
-    writeFileSync(settingsFile(), '{ nope')
+  // A truncated file (a crash or an antivirus lock in the middle of a write) is not an answer either way. The panel shows what
+  // is held, so the import stays OFF and the user turns it back on, rather than the file's damage agreeing for them.
+  it('a settings file that is there and cannot be read leaves the notes OFF, and sharing off', async () => {
+    for (const bad of ['{ nope', '', '{"indexClaudeNotes": tru', 'null', '42', '"on"', '[]', '[true]']) {
+      writeFileSync(settingsFile(), bad)
+      const m = await freshModule()
+      expect(m.getIndexClaudeNotes(), JSON.stringify(bad)).toBe(false)
+      expect(m.getShareNotesAcrossProjects(), JSON.stringify(bad)).toBe(false)
+      expect(m.getPrimerLimit()).toBe(10) // everything else is the default
+    }
+  })
+
+  it('a settings file that is not there is a first run: the import is on, as it is by default', async () => {
+    expect(existsSync(settingsFile())).toBe(false)
+    expect((await freshModule()).getIndexClaudeNotes()).toBe(true)
+  })
+
+  it('when the settings folder cannot even be resolved, the answer is unknown and the import stays off', async () => {
+    vi.resetModules()
+    vi.doMock('electron', () => ({ app: { getPath: () => { throw new Error('not ready') } } }))
+    try {
+      const m = await import('../../src/main/memorySettings')
+      expect(m.getIndexClaudeNotes()).toBe(false)
+      expect(m.getShareNotesAcrossProjects()).toBe(false)
+    } finally {
+      vi.doMock('electron', () => ({ app: { getPath: () => tmpDir } })) // the mock every other test in this file runs against
+      vi.resetModules()
+    }
+  })
+
+  it('a folder where the settings file should be reads as unreadable too, and the user can still turn the import on', async () => {
+    mkdirSync(settingsFile())
     const m = await freshModule()
-    expect(m.getIndexClaudeNotes()).toBe(true)
-    expect(m.getShareNotesAcrossProjects()).toBe(false)
+    expect(m.getIndexClaudeNotes()).toBe(false)
+    expect(() => m.setIndexClaudeNotes(true)).toThrow() // and nothing can be saved there: said below
+  })
+
+  // A choice the panel shows has to be a choice that is kept. persist() used to swallow a failed write, so the panel answered ok
+  // with OFF while the file still said ON, and the next start imported again.
+  describe('a switch that could not be saved', () => {
+    const breakTheFile = (m: { getPrimerLimit(): number }): void => {
+      m.getPrimerLimit() // loaded first, so the module holds the good file
+      rmSync(settingsFile(), { force: true })
+      mkdirSync(settingsFile()) // from here on, writing the settings file fails
+    }
+
+    it('turning the import off throws, says why, and leaves the module holding what is on disk', async () => {
+      writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: true, primerLimit: 14 }))
+      const m = await freshModule()
+      breakTheFile(m)
+      expect(() => m.setIndexClaudeNotes(false)).toThrow(/could not be saved/i)
+      expect(m.getIndexClaudeNotes()).toBe(true) // not the unsaved choice
+      expect(m.getMemorySettings()).toMatchObject({ indexClaudeNotes: true, primerLimit: 14 })
+    })
+
+    it('turning sharing on throws too, and sharing stays off', async () => {
+      const m = await freshModule()
+      breakTheFile(m)
+      expect(() => m.setShareNotesAcrossProjects(true)).toThrow(/could not be saved/i)
+      expect(m.getShareNotesAcrossProjects()).toBe(false)
+    })
+
+    it('a switch that is saved is kept in memory and on disk, as before', async () => {
+      const m = await freshModule()
+      expect(m.setIndexClaudeNotes(false).indexClaudeNotes).toBe(false)
+      expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).indexClaudeNotes).toBe(false)
+    })
+
+    it('the other settings stay best effort: a failed write does not throw, as it never did', async () => {
+      const m = await freshModule()
+      breakTheFile(m)
+      expect(() => m.setPrimerLimit(20)).not.toThrow()
+      expect(() => m.setVectorQuantize(true)).not.toThrow()
+      expect(m.getPrimerLimit()).toBe(20)
+    })
   })
 
   it('a second call on the same module answers from what it already loaded', async () => {

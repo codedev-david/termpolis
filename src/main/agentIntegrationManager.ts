@@ -835,8 +835,10 @@ export function getAgentIntegrationStatus(paths: AgentIntegrationPaths): AgentIn
 }
 
 /** Has the user connected their agents (granted, or an older install not yet asked)? The consent the rest
- *  of Termpolis gates what it does with their agents' data on (the saved-notes import is one). Reads the
- *  ledger alone and opens no agent config, so a background pass can ask on every tick. False when unreadable. */
+ *  of Termpolis gates what it does with their agents' data on (the saved-notes import is one). Once the ledger
+ *  exists this reads it alone, so a background pass can ask on every tick. The first ever call makes the ledger
+ *  (loadLedger), which looks once at the agents' configs to see whether an older Termpolis connected them: an
+ *  install that did, and was never asked since, counts as connected. False when unreadable. */
 export function isAgentIntegrationConnected(paths: AgentIntegrationPaths): boolean {
   try {
     return isConnected(loadLedger(paths))

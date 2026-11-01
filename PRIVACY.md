@@ -428,13 +428,19 @@ these notes too.
   touched. Turning the switch off stops the reading and leaves the existing
   copies until you remove them. Disconnecting your agents stops it too, and a
   locked memory pauses it; copies that could not be removed because memory was
-  locked are removed by the next indexer pass once it opens.
+  locked are removed by the next indexer pass once it opens. If Termpolis
+  cannot read its settings file (a write cut short by a crash, say), it leaves
+  the import off until you turn it on again, and a switch it could not save is
+  reported as an error, not shown as changed.
 
 ## Your Choices
 
 - **Stop Termpolis reading Claude Code's saved notes** — turn off *Include
   Claude Code's saved notes in memory* in Settings → Memory & Learning, and use
   *Remove imported notes* there to take out the copies already made.
+- **Clear the record of what memory did** — it has no switch. Quit Termpolis and
+  delete `memory-audit.jsonl`, `memory-audit-main.jsonl` and their `.prev.jsonl`
+  copies from the data folder; they are made again from then on.
 - **Turn crash reports or usage statistics on or off** — Settings → General →
   Privacy has a switch for each. Both are off unless you turn them on, and a
   change applies at once.

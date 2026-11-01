@@ -6,7 +6,8 @@
 //
 // Distinct from the AI Security audit (aiSecurity.ts), which is DEFAULT-OFF and about cloud egress.
 // This is:
-//   - DEFAULT ON (it's the brain auditing itself), with a privacy opt-out (setMemoryAuditEnabled).
+//   - DEFAULT ON (it's the brain auditing itself). setMemoryAuditEnabled is an internal switch with no setting in the app: the
+//     user's way to clear it is to delete the files (PRIVACY.md, Your Choices).
 //   - LOCAL-ONLY — the file never leaves the machine (same trust boundary as the memory store).
 //   - SECRET-SAFE — every free-text preview is run through the secret scanner, so a stored or queried
 //     secret is masked before it is written.

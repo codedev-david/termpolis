@@ -38,6 +38,29 @@ function group(id: AgentId) {
 }
 
 describe('AgentWritesList', () => {
+  // The list is what onboarding, the one-time review and Settings show of what connecting does. Since 1.55.0 it also lets Termpolis
+  // READ Claude Code's saved notes, for an install that was connected before and is never asked again as well as a new one, so the
+  // place the user is told what connecting does has to say so.
+  it('says that connected agents also let Termpolis read the notes Claude Code saves, where, and where to turn it off', () => {
+    render(<AgentWritesList />)
+    const note = screen.getByTestId('agent-reads-note')
+    expect(note.textContent).toContain('also lets Termpolis read Claude Code’s saved notes')
+    expect(note.textContent).toContain('~/.claude/projects/')
+    expect(note.textContent).toContain('Nothing is written back into Claude’s folders')
+    expect(note.textContent).toContain('Settings')
+    expect(note.textContent).toContain('Memory & Learning')
+  })
+
+  it('says it once, after the agents, with or without a status', () => {
+    const { container, rerender } = render(<AgentWritesList />)
+    expect(screen.getAllByTestId('agent-reads-note')).toHaveLength(1)
+    rerender(<AgentWritesList status={status()} />)
+    expect(screen.getAllByTestId('agent-reads-note')).toHaveLength(1)
+    const list = screen.getByTestId('agent-writes-list')
+    expect(list.lastElementChild).toBe(screen.getByTestId('agent-reads-note'))
+    expect(container).toBeTruthy()
+  })
+
   it('lists every write main makes, word for word, grouped per agent in a fixed order', () => {
     render(<AgentWritesList />)
     const groups = within(screen.getByTestId('agent-writes-list')).getAllByTestId(/^agent-writes-(claude|codex|gemini)$/)
