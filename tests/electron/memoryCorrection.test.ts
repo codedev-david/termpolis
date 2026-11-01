@@ -347,6 +347,14 @@ describe('memoryCorrectionStore: lessons the substance gate holds back never rea
     expect(applyEntryCorrections(rows)).toBe(rows)
   })
 
+  it('does not hide a note an agent or the user tagged "candidate" themselves', () => {
+    const own = { id: 'own', content: 'interview candidate shortlist', tags: [CANDIDATE_TAG, 'hiring'], agentId: 'claude' }
+    const panel = { id: 'panel', content: 'a candidate fix to try', tags: [CANDIDATE_TAG], agentId: 'user' }
+    const held = { id: 'held', content: 'a held-back lesson', tags: [CANDIDATE_TAG], agentId: 'mneme' }
+    expect(applyEntryCorrections([own, panel, held]).map((r) => r.id)).toEqual(['own', 'panel'])
+    expect(applyCorrections([{ ...own, score: 0.9 }, { ...held, score: 0.8 }]).map((r) => r.id)).toEqual(['own'])
+  })
+
   it('does not hide a memory that merely mentions the word in its text', () => {
     const rows = [{ id: 'a', content: 'the candidate tag marks a held-back lesson', tags: ['docs'] }]
     expect(applyEntryCorrections(rows)).toHaveLength(1)

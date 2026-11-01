@@ -12,7 +12,7 @@
 
 import { extractEntities, type Episode, type Lesson } from './mnemeReflect'
 import type { CodeRef } from './codeGraph'
-import { CANDIDATE_IMPORTANCE, CANDIDATE_TAG, importanceForScore, lessonSubstance, substanceBand } from './lessonSubstance'
+import { CANDIDATE_IMPORTANCE, CANDIDATE_TAG, LESSON_AGENT_ID, importanceForScore, lessonSubstance, substanceBand } from './lessonSubstance'
 
 /** Minimal write contract — satisfied structurally by swarmMemory.memoryWrite. */
 export interface LessonWriteInput {
@@ -43,7 +43,7 @@ export interface GroundResult {
 /** Map one distilled Lesson to a store write input, grounded to its episode. */
 export function lessonToWriteInput(lesson: Lesson, episode: Episode): LessonWriteInput {
   return {
-    agentId: 'mneme',
+    agentId: LESSON_AGENT_ID,
     kind: lesson.kind,
     content: lesson.content,
     memoryType: lesson.memoryType,

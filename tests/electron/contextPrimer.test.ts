@@ -464,6 +464,21 @@ describe('buildContextPrimer — lessons the substance gate holds back', () => {
     expect(out).not.toContain('held back')
   })
 
+  it('still shows a note an agent tagged "candidate" itself, in a search and in the lane', async () => {
+    const OWN = 'interview notes: the candidate shortlist for the platform team'
+    const search = vi.fn(async (opts: { project?: string }) =>
+      opts.project === proj ? [mk('own', OWN, { agentId: 'claude', tags: ['candidate'] }), mk('h', HELD, { agentId: 'mneme', tags: ['candidate'] })] : [])
+    const recent = vi.fn().mockResolvedValue([
+      mk('own2', long('a second note an agent tagged candidate'), { agentId: 'codex', tags: ['candidate'], score: 0 }),
+      mk('h2', long('held back one'), { agentId: 'mneme', tags: ['candidate'], score: 0 }),
+    ])
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain(OWN)
+    expect(out).toContain('a second note an agent tagged candidate')
+    expect(out).not.toContain(HELD)
+    expect(out).not.toContain('held back one')
+  })
+
   it('is the old digest, byte for byte, when nothing is held back', async () => {
     const plain = [mk('a', KEPT), mk('b', 'we decided to keep the cache small', { tags: ['note:x'] })]
     const withTags = await buildContextPrimer(vi.fn(async () => plain), { query: 'q', project: proj, now: NOW })

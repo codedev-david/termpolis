@@ -122,7 +122,7 @@ function readOne(p: string, limit: number): MemoryAuditRecord[] {
 /** The most recent `limit` audit records, newest first, from the host's file and the main process's together. */
 export function readMemoryAudit(limit = 100): MemoryAuditRecord[] {
   if (!dir) return []
-  const n = Math.max(1, limit)
+  const n = Math.max(1, Number.isFinite(limit) ? Math.floor(limit) : 100)
   const host = readOne(join(dir, FILES.host.live), n)
   const main = readOne(join(dir, FILES.main.live), n)
   if (main.length === 0) return host

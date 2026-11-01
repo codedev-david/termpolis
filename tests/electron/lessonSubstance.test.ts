@@ -7,6 +7,7 @@ import {
   CANDIDATE_SCORE,
   CANDIDATE_TAG,
   KEEP_SCORE,
+  LESSON_AGENT_ID,
   importanceForScore,
   isCandidate,
   lessonSubstance,
@@ -53,6 +54,27 @@ describe('isCandidate / withoutCandidates', () => {
     expect(isCandidate({ tags: 'candidate' as unknown as string[] })).toBe(false)
     expect(isCandidate(null as unknown as object)).toBe(false)
     expect(isCandidate(undefined as unknown as object)).toBe(false)
+  })
+
+  // `candidate` is an ordinary word. An agent that tags a note of its own with it (a hiring note, a candidate fix)
+  // must not find that note gone from every recall: only what groundEpisode wrote, under its own agent id, is held
+  // back. A row that does not say who wrote it (a primer hit, a consolidation entry) is judged by its tag alone.
+  it('holds back only what the lesson writer stored: an agent\'s own note carrying the word is shown as usual', () => {
+    expect(LESSON_AGENT_ID).toBe('mneme')
+    expect(isCandidate({ tags: ['candidate'], agentId: 'mneme' })).toBe(true)
+    expect(isCandidate({ tags: ['candidate'], agentId: undefined })).toBe(true)
+    expect(isCandidate({ tags: ['candidate'] })).toBe(true)
+    expect(isCandidate({ tags: ['candidate'], agentId: 'claude' })).toBe(false)
+    expect(isCandidate({ tags: ['candidate'], agentId: 'user' })).toBe(false)
+    expect(isCandidate({ tags: ['candidate'], agentId: '' })).toBe(false)
+    expect(isCandidate({ tags: ['candidate'], agentId: null })).toBe(false)
+    const own = { id: 'own', agentId: 'codex', tags: ['candidate', 'hiring'] }
+    const held = { id: 'held', agentId: 'mneme', tags: ['candidate'] }
+    expect(withoutCandidates([own, held]).map((r) => r.id)).toEqual(['own'])
+  })
+
+  it('takes anything that is not an object for an ordinary row', () => {
+    for (const row of ['candidate', 7, true, Symbol.iterator]) expect(isCandidate(row)).toBe(false)
   })
 
   it('hands back anything that is not a list exactly as it came, rather than throw on a read path', () => {

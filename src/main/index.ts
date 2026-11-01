@@ -2453,7 +2453,8 @@ const primerRecent: PrimerRecent = async (o) =>
     id: e.id,
     project: e.project,
     ts: e.ts,
-    tags: e.tags, // the primer drops a lesson the substance gate holds back (`candidate`)
+    tags: e.tags, // the primer drops a lesson the substance gate holds back (`candidate`),
+    agentId: e.agentId, // ...but only one the lesson writer stored, not a note that merely carries the tag
   }))
 
 // Pre-context primer: pull the most relevant memories for a query (e.g. the

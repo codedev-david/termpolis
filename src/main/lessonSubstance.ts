@@ -36,6 +36,8 @@ export const KEEP_SCORE = 2
 export const CANDIDATE_SCORE = 1
 /** The tag a held-back lesson carries. Read paths that hand memories to agents drop anything carrying it. */
 export const CANDIDATE_TAG = 'candidate'
+/** The agent id groundEpisode writes every lesson under. Only a row written under it can be a held-back lesson. */
+export const LESSON_AGENT_ID = 'mneme'
 /** Below the 0.6 bar memory_anticipate keeps lessons at, so a held-back lesson can never qualify on it. */
 export const CANDIDATE_IMPORTANCE = 0.45
 
@@ -57,10 +59,17 @@ export function importanceForScore(score: number): number {
   return Math.round(Math.min(0.9, Math.max(0.6, raw)) * 1000) / 1000
 }
 
-/** Whether a stored row is a held-back lesson. Takes any row shape: search hits, list rows, primer hits. */
+/** Whether a stored row is a held-back lesson. Takes any row shape: search hits, list rows, primer hits.
+ *
+ *  `candidate` is an ordinary word that any agent or person may put on a note of their own, and hiding that note
+ *  from every recall would be a silent loss. So the tag alone is not enough when the row says who wrote it: it must
+ *  have been written under the lesson writer's agent id. A row that does not say (a primer hit, a consolidation
+ *  entry) is judged by its tag. */
 export function isCandidate(row: unknown): boolean {
-  const tags = (row as { tags?: unknown } | null | undefined)?.tags
-  return Array.isArray(tags) && tags.includes(CANDIDATE_TAG)
+  if (!row || typeof row !== 'object') return false
+  const { tags, agentId } = row as { tags?: unknown; agentId?: unknown }
+  if (!Array.isArray(tags) || !tags.includes(CANDIDATE_TAG)) return false
+  return agentId === undefined || agentId === LESSON_AGENT_ID
 }
 
 /** `rows` without the held-back lessons: the same array when there are none, so a read path that has

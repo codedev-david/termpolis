@@ -77,10 +77,10 @@ upload it.
   passes 2 MB; the memory process writes the first and the main process the
   second): a line for each memory stored (a clipped preview of its text, with
   anything that might be a credential taken out), each recall (which agent asked,
-  how many memories it found and their ids), each context digest handed to an
-  agent (its size and the ids) and each learning pass (which kind and how
-  many). Never what an agent asked for: the text of a search or a request is not
-  kept. The `memory_audit` tool reads it back to an agent that asks.
+  how many memories it found and the ids of the top few), each context digest
+  handed to an agent (its approximate size) and each learning pass (which kind
+  and how many). Never what an agent asked for: the text of a search or a request
+  is not kept. The `memory_audit` tool reads it back to an agent that asks.
 - The lessons Termpolis writes down after a finished session, in swarm memory
   like any other memory. Since 1.55.0 a lesson that says nothing a later reader
   could use, such as "Root cause found." or a progress note, is not stored. One

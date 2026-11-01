@@ -37,6 +37,8 @@ export interface PrimerHit {
   /** The stored memory's tags, when the caller has them. A lesson the substance gate holds back carries
    *  `candidate` (lessonSubstance.ts) and is never shown. */
   tags?: string[]
+  /** Who wrote it, when the caller has it. The `candidate` tag only hides what the lesson writer stored. */
+  agentId?: string
 }
 
 export type PrimerSearch = (opts: { query: string; limit?: number; project?: string }) => Promise<PrimerHit[]>

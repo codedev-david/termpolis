@@ -134,6 +134,17 @@ describe('memory/learning audit written from the main process', () => {
     expect(readMemoryAudit(0).map((e) => e.ts)).toEqual([6]) // the floor of one, as before
   })
 
+  it('treats a limit that is not a usable number as the default, not as "nothing"', () => {
+    fs.writeFileSync(hostFile(), [1, 3].map((ts) => JSON.stringify({ ts, event: 'write', id: `h${ts}`, kind: 'fact', preview: '' })).join('\n') + '\n')
+    initMemoryAudit(tmp, 'main')
+    auditMemory({ event: 'learn', kind: 'reflect', detail: 'm' }, 2)
+    for (const odd of [Number.NaN, Number.POSITIVE_INFINITY, -5]) {
+      expect(readMemoryAudit(odd).length).toBeGreaterThanOrEqual(1)
+    }
+    expect(readMemoryAudit(Number.NaN).map((e) => e.ts)).toEqual([3, 2, 1])
+    expect(readMemoryAudit(2.9).map((e) => e.ts)).toEqual([3, 2])
+  })
+
   it('reads either file alone in the order it always did, and nothing when there is none', () => {
     initMemoryAudit(tmp, 'main')
     expect(readMemoryAudit()).toEqual([])

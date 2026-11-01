@@ -2463,6 +2463,25 @@ describe('MCP read paths never serve a lesson the substance gate holds back', ()
     const lane = await opts.recent({ limit: 8, project: 'C:/repos/termpolis', since: 0 })
     expect(lane.map((h) => [h.id, h.tags])).toEqual([['h', ['candidate']], ['k', undefined]])
   })
+
+  it('...and who wrote each, because only a lesson Termpolis itself held back is dropped, not any note carrying the word', async () => {
+    mem.memoryList.mockResolvedValueOnce([
+      { id: 'h', content: 'x', kind: 'note', agentId: 'mneme', tags: ['candidate'], ts: 5 },
+      { id: 'own', content: 'y', kind: 'note', agentId: 'claude', tags: ['candidate'], ts: 4 },
+    ])
+    await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
+    const opts = primer.buildContextPrimer.mock.calls.at(-1)![1] as { recent: (o: any) => Promise<any[]> }
+    const lane = await opts.recent({ limit: 8, project: 'C:/repos/termpolis', since: 0 })
+    expect(lane.map((h) => [h.id, h.agentId])).toEqual([['h', 'mneme'], ['own', 'claude']])
+  })
+
+  it('an agent\'s own note that carries the word as a tag still comes back from every read', async () => {
+    const own = { id: 'own', content: 'interview candidate shortlist', tags: ['candidate'], agentId: 'claude', score: 0.8, memoryType: 'procedural' }
+    mem.memorySearch.mockResolvedValueOnce([own])
+    expect((await mcp.memorySearch({ query: 'q' })).map((r: any) => r.id)).toEqual(['own'])
+    mem.memoryList.mockReturnValueOnce([own])
+    expect((await mcp.memoryList({ limit: 5 })).map((r: any) => r.id)).toEqual(['own'])
+  })
 })
 
 // =========================================================================
