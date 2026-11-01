@@ -819,6 +819,25 @@ describe('buildContextPrimer — what the freshness lane leaves out', () => {
     })
   })
 
+  describe('the lane and the budget', () => {
+    it('takes its slots from the same budget when no project is given: the relevance block yields them', async () => {
+      const hits = [0.9, 0.88, 0.86, 0.84].map((score, i) =>
+        ({ id: `r${i}`, content: `relevant ${i} alpha${i} beta${i} gamma${i} delta${i}`, source: 'claude', kind: 'message', score, ts: NOW - 5 * HOUR }) as PrimerHit)
+      const out = await buildContextPrimer(vi.fn(async () => hits), { query: 'q', limit: 4, now: NOW, recent: vi.fn().mockResolvedValue([fresh('f1', 'the newest thing')]) })
+      expect(rows(out)).toHaveLength(4) // one lane line and three relevance lines: the fourth hit does not fit
+      expect(out).toContain('Other relevant context:')
+      expect(out).toContain('the newest thing')
+      expect(out).not.toContain('relevant 3 ')
+    })
+
+    it('gives a listed row that has no text at all no slot, so the row after it still gets the only one', async () => {
+      const textless = { id: 'x', source: 'claude', kind: 'message', score: 0, project: proj, ts: NOW - HOUR } as unknown as PrimerHit
+      const out = await lane([textless, fresh('ok', 'has text', { ts: NOW - 2 * HOUR })], { project: proj, limit: 4 }) // a digest of four has one lane slot
+      expect(rows(out)).toHaveLength(1)
+      expect(out).toContain('has text')
+    })
+  })
+
   describe('an automated run\'s memory', () => {
     it('is not shown in a digest that spans every project: the literal `cwd` a smoke test left behind, and scratch folders', async () => {
       const out = await lane([
