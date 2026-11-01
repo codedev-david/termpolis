@@ -89,6 +89,14 @@ describe('the context window is disclosed, and the disclosure matches what is re
     expect(docsSection).toContain('**new** terminals only')
   })
 
+  it('lists the limits of what it can check, one of them the config folder a script picks inside the terminal', () => {
+    expect(docsSection).toContain('**Four limits.**')
+    expect(docsSection).toContain('the repository\'s root, which is not read')
+    expect(docsSection).toContain('a `CLAUDE_CONFIG_DIR` that a script sets inside the terminal (to switch accounts, say) names a folder that is not the one checked')
+    expect(docsSection).toContain('A `--autocompact` flag typed on a command line cannot be seen')
+    expect(docsSection).toContain('a plain shell terminal in which you type `claude` by hand')
+  })
+
   it('says what it cannot see and what it does not change: a flag on a command line, and the meters', () => {
     expect(docsSection).toContain('A `--autocompact` flag typed on a command line cannot be seen when the terminal opens')
     expect(docsSection).toContain('Claude Code lets the variable win over the flag')
