@@ -6,8 +6,9 @@ import { execCaptureOffThread } from './procClient'
 /**
  * Whether nothing runs in a terminal but its shell: whatever was typed at its prompt, an agent
  * among them, has exited. write_to_terminal's submit (mcpServer.ts), the model switcher and the
- * auto-recall pointer (useAutoPrimer.ts, which asks by itself, once per prime) ask it before
- * typing into an agent, since the screen can't always tell an agent that exited from one at its input:
+ * auto-recall pointer (useAutoPrimer.ts, which asks by itself, twice per prime, up to four times
+ * when only the shell seems to run) ask it before typing into an agent, since the screen can't
+ * always tell an agent that exited from one at its input:
  *
  * - zsh and fish report no prompts (shellIntegration.ts), nor does a bash whose own PROMPT_COMMAND
  *   replaced Termpolis's;

@@ -12,8 +12,9 @@
  *  2. Listing processes with their command lines, or the network-connection table, happens only in
  *     the modules allowed below, each reached only from an explicit action. The exception is
  *     shellAlone, which names the processes of ONE terminal (never a command line, never anyone
- *     else's): it is also asked before Termpolis types the memory pointer into an agent, once per
- *     launch or compaction re-prime, with nobody pressing anything (test 2b pins who asks).
+ *     else's): it is also asked before Termpolis types the memory pointer into an agent, twice per
+ *     launch or compaction re-prime (before the paste and before the Enter), up to four times when
+ *     only the shell seems to run, with nobody pressing anything (test 2b pins who asks).
  *  3. Termpolis's own PowerShell never bypasses the execution policy or hides what it runs.
  *
  * Related guards: the Processes panel scans only on Scan or Refresh
@@ -163,7 +164,8 @@ describe('endpoint activity guard', () => {
 
   it('2b. only two renderer files ask the OS what runs in a terminal: the model switcher and the memory pointer', () => {
     // shellAlone names the processes of one terminal. The model switcher asks on a click. The memory
-    // pointer asks on its own, once per agent launch or compaction re-prime, so a third caller
+    // pointer asks on its own, twice per agent launch or compaction re-prime (before the paste and
+    // before the Enter) and up to four times when only the shell seems to run, so a third caller
     // changes what the fact sheet given to IT may say: add it here on purpose, and update the sheet.
     const callers = FILES.filter((f) => f.path.includes(join('src', 'renderer')))
       .filter((f) => /\bterminalShellAlone\s*(\?\.)?\(/.test(readFileSync(f.path, 'utf8')))
@@ -171,7 +173,7 @@ describe('endpoint activity guard', () => {
       .sort()
     expect(callers).toEqual([
       'src/renderer/src/components/TerminalPane/TerminalPane.tsx', // the model switcher (a click)
-      'src/renderer/src/hooks/useAutoPrimer.ts', // the memory pointer (unprompted, once per prime)
+      'src/renderer/src/hooks/useAutoPrimer.ts', // the memory pointer (unprompted, 2 to 4 times per prime)
     ])
   })
 
