@@ -1,0 +1,378 @@
+// Claude Code's saved notes, parsed into memory chunks. Everything here is PURE (text in, chunks
+// out), so it needs no filesystem and no store. All note text below is synthetic.
+import { describe, it, expect } from 'vitest'
+import {
+  MAX_CHUNK_CHARS,
+  chunkNote,
+  cwdsFromTranscript,
+  encodeProjectFolder,
+  hasNoteTags,
+  isClaudeNote,
+  isPortableType,
+  noteFields,
+  noteTags,
+  noteTypeOfTags,
+  parseNote,
+  projectCwdFor,
+  withoutNotes,
+  type ParsedNote,
+} from '../../src/main/claudeNotesParse'
+
+const NESTED = [
+  '---',
+  'name: widget_cache_rules',
+  'description: "How the widget cache is invalidated: never by timer"',
+  'metadata:',
+  '  node_type: memory',
+  '  type: feedback',
+  '  originSessionId: 11111111-2222-3333-4444-555555555555',
+  '---',
+  '',
+  'Invalidate on write, not on a timer.',
+  '',
+  '**Why:** a timer hides stale reads.',
+].join('\n')
+
+describe('parseNote: frontmatter', () => {
+  it('reads the nested metadata form: name and description at the top, type under metadata', () => {
+    expect(parseNote(NESTED, 'feedback_widget.md')).toEqual({
+      name: 'widget_cache_rules',
+      description: 'How the widget cache is invalidated: never by timer',
+      type: 'feedback',
+      body: 'Invalidate on write, not on a timer.\n\n**Why:** a timer hides stale reads.',
+    })
+  })
+
+  it('reads the flat form: name, description and type all at the top', () => {
+    const note = parseNote('---\nname: flat note\ndescription: one line\ntype: reference\n---\nBody text here.\n', 'x.md')
+    expect(note).toEqual({ name: 'flat note', description: 'one line', type: 'reference', body: 'Body text here.' })
+  })
+
+  it('a top-level value beats the same key under metadata', () => {
+    const note = parseNote('---\ntype: user\nmetadata:\n  type: project\n---\nSomething to say.', 'x.md')
+    expect(note?.type).toBe('user')
+  })
+
+  it('strips matching quotes, unescapes a quoted double quote, and keeps colons inside the value', () => {
+    const note = parseNote('---\nname: \'it\'\'s fine\'\ndescription: "say \\"hi\\": then go"\ntype: project\n---\nBody.', 'x.md')
+    expect(note?.name).toBe("it's fine")
+    expect(note?.description).toBe('say "hi": then go')
+  })
+
+  it('leaves an unquoted value with a hash in it alone (it is not a YAML comment here)', () => {
+    const note = parseNote('---\nname: n\ndescription: fixes #123 for good\ntype: project\n---\nBody.', 'x.md')
+    expect(note?.description).toBe('fixes #123 for good')
+  })
+
+  it('joins a folded or literal block description onto one line', () => {
+    const note = parseNote('---\nname: n\ndescription: >\n  first part\n  second part\n\n  third part\ntype: project\n---\nBody.', 'x.md')
+    expect(note?.description).toBe('first part second part third part')
+    const lit = parseNote('---\nname: n\ndescription: |-\n  one\n  two\ntype: user\n---\nBody.', 'x.md')
+    expect(lit?.description).toBe('one two')
+    expect(lit?.type).toBe('user')
+  })
+
+  it('ignores comment lines, blank lines, lines that are not key: value, and nested keys outside metadata', () => {
+    const note = parseNote([
+      '---',
+      '# a comment',
+      '',
+      'not a pair',
+      'name: kept',
+      'other:',
+      '  type: user',
+      'metadata:',
+      '  type: reference',
+      '---',
+      'Body.',
+    ].join('\n'), 'x.md')
+    expect(note?.name).toBe('kept')
+    expect(note?.type).toBe('reference') // the `type` under `other:` did not count
+  })
+
+  it('a `metadata:` key that carries a value on its own line does not open a block', () => {
+    const note = parseNote('---\nname: n\nmetadata: inline\n  type: user\n---\nBody.', 'x.md')
+    expect(note?.type).toBe('untyped')
+  })
+
+  it('a type it does not know, or none at all, is untyped; case is ignored', () => {
+    expect(parseNote('---\nname: n\ntype: gossip\n---\nBody.', 'x.md')?.type).toBe('untyped')
+    expect(parseNote('---\nname: n\n---\nBody.', 'x.md')?.type).toBe('untyped')
+    expect(parseNote('---\nname: n\ntype: " Feedback "\n---\nBody.', 'x.md')?.type).toBe('feedback')
+  })
+
+  it('treats an unterminated frontmatter block as plain body text', () => {
+    const note = parseNote('---\nname: n\nBody never closed', 'half.md')
+    expect(note?.name).toBe('half')
+    expect(note?.body).toContain('Body never closed')
+  })
+})
+
+describe('parseNote: shapes of file', () => {
+  it('reads a note with no frontmatter: the name is its first heading, the type is untyped', () => {
+    const note = parseNote('# Deploy checklist\n\nRun the smoke test first.', 'deploy.md')
+    expect(note).toEqual({ name: 'Deploy checklist', description: '', type: 'untyped', body: '# Deploy checklist\n\nRun the smoke test first.' })
+  })
+
+  it('falls back to the file name when there is no name and no heading', () => {
+    expect(parseNote('Just a line.', 'plain_note.md')?.name).toBe('plain_note')
+  })
+
+  it('survives a byte order mark and CRLF line endings', () => {
+    const crlf = '﻿' + NESTED.replace(/\n/g, '\r\n')
+    expect(parseNote(crlf, 'x.md')).toEqual(parseNote(NESTED, 'x.md'))
+    expect(parseNote('---\r\nname: n\r\n---\r\nOne\r\rTwo', 'x.md')?.body).toBe('One\n\nTwo')
+  })
+
+  it('a note with only a description still has something to say; one with nothing does not', () => {
+    expect(parseNote('---\nname: n\ndescription: only this\ntype: user\n---\n', 'x.md')).toMatchObject({ description: 'only this', body: '' })
+    expect(parseNote('---\nname: n\ntype: user\n---\n  \n', 'x.md')).toBeNull()
+    expect(parseNote('', 'x.md')).toBeNull()
+    expect(parseNote('﻿   \r\n', 'x.md')).toBeNull()
+  })
+})
+
+// Deterministic text with no repeats and no spaces, so chunks cut from it are all different.
+const noise = (n: number): string => {
+  let x = 12345
+  return Array.from({ length: n }, () => { x = (x * 1103515245 + 12345) & 0x7fffffff; return 'abcdefghijklmnopqrstuvwxyz'[x % 26] }).join('')
+}
+
+const note = (over: Partial<ParsedNote> = {}): ParsedNote => ({ name: 'cache rules', description: 'when to invalidate', type: 'reference', body: 'Invalidate on write.', ...over })
+
+describe('chunkNote', () => {
+  it('a short note is one chunk, prefixed with its name and description so it stands alone', () => {
+    expect(chunkNote(note())).toEqual(['cache rules — when to invalidate\n\nInvalidate on write.'])
+  })
+
+  it('without a description the prefix is the name alone', () => {
+    expect(chunkNote(note({ description: '' }))).toEqual(['cache rules\n\nInvalidate on write.'])
+  })
+
+  it('a note that is only a description is one chunk made of the prefix', () => {
+    expect(chunkNote(note({ body: '' }))).toEqual(['cache rules — when to invalidate'])
+  })
+
+  it('a note with nothing at all gives no chunks', () => {
+    expect(chunkNote(note({ name: '', description: '', body: '' }))).toEqual([])
+  })
+
+  it('splits a long note at paragraph boundaries, every chunk within the limit and prefixed', () => {
+    const paras = Array.from({ length: 12 }, (_, i) => `Paragraph ${i} ` + 'word '.repeat(60).trim())
+    const chunks = chunkNote(note({ body: paras.join('\n\n') }))
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const c of chunks) {
+      expect(c.length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+      expect(c.startsWith('cache rules — when to invalidate\n\n')).toBe(true)
+    }
+    // Nothing is lost and nothing is cut mid-paragraph: every paragraph appears whole in exactly one chunk.
+    for (const p of paras) expect(chunks.filter((c) => c.includes(p))).toHaveLength(1)
+  })
+
+  it('keeps a heading with the paragraph that follows it, even stacked headings', () => {
+    // The two headings would fit after the filler; the paragraph under them would not. Without the glue the
+    // first chunk would end on a bare heading.
+    const filler = 'x'.repeat(1740)
+    const chunks = chunkNote(note({ body: `${filler}\n\n# Title\n\n## Sub\n\nAfter the headings.` }))
+    expect(chunks).toHaveLength(2)
+    expect(chunks[1]).toContain('# Title\n\n## Sub\n\nAfter the headings.')
+    expect(chunks[0]).not.toContain('# Title')
+  })
+
+  it('a heading with no paragraph after it stays where it is', () => {
+    const chunks = chunkNote(note({ body: 'Intro.\n\n## Last heading' }))
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0].endsWith('## Last heading')).toBe(true)
+  })
+
+  it('splits one oversized paragraph at its line breaks', () => {
+    const lines = Array.from({ length: 40 }, (_, i) => `line ${i} ` + 'y'.repeat(60))
+    const chunks = chunkNote(note({ body: lines.join('\n') }))
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+    for (const l of lines) expect(chunks.some((c) => c.includes(l))).toBe(true)
+  })
+
+  it('cuts one oversized line at a space when it has one, else hard, and never splits an emoji', () => {
+    const spaced = chunkNote(note({ body: 'alpha '.repeat(500).trim() }))
+    expect(spaced.length).toBeGreaterThan(1)
+    for (const c of spaced) {
+      expect(c.length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+      // No word cut in half: everything after the prefix is whole 'alpha' words.
+      expect(c.split('\n\n').slice(1).join(' ').split(/\s+/).every((w) => w === 'alpha')).toBe(true)
+    }
+    const text = noise(5000)
+    const solid = chunkNote(note({ body: text }))
+    expect(solid.length).toBeGreaterThan(2)
+    for (const c of solid) expect(c.length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+    expect(solid.map((c) => c.split('\n\n')[1]).join('')).toBe(text) // a hard cut loses nothing
+    // A space too early in the line to be worth cutting at (here, one after 10 characters) is not used.
+    const early = chunkNote(note({ body: `${'a'.repeat(10)} ${noise(4000)}` }))
+    expect(early.length).toBeGreaterThan(2)
+    for (const c of early) expect(c.length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+  })
+
+  it('never splits an emoji at a cut, however the room falls', () => {
+    // The prefix is 33 characters, so the room is odd and a naive cut lands between the two halves of an emoji.
+    const body = Array.from({ length: 1500 }, (_, i) => String.fromCodePoint(0x1f600 + ((i * 7 + (i >> 3)) % 80))).join('')
+    const emoji = chunkNote(note({ description: 'when to invalidate!', body }))
+    expect(emoji.length).toBeGreaterThan(1)
+    for (const c of emoji) {
+      expect(c.length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+      const last = c.charCodeAt(c.length - 1)
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
+    }
+    // Every emoji survives whole and in order: putting the pieces back together gives the body.
+    expect(emoji.map((c) => c.split('\n\n')[1]).join('')).toBe(body)
+  })
+
+  it('a long name and description are clipped so the body keeps most of the room', () => {
+    const chunks = chunkNote(note({ name: 'n'.repeat(500), description: 'd'.repeat(900), body: 'b'.repeat(4000) }))
+    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+    expect(chunks[0].split('\n\n')[0].length).toBeLessThanOrEqual(400)
+  })
+
+  it('clipping a name never leaves half an emoji before the ellipsis', () => {
+    // 100 characters of name room: the cut at 99 falls between the halves of the 50th emoji.
+    const head = chunkNote(note({ name: '\u{1F600}'.repeat(200), description: '', body: 'x' }))[0].split('\n\n')[0]
+    expect(head.endsWith('…')).toBe(true)
+    const beforeEllipsis = head.charCodeAt(head.length - 2)
+    expect(beforeEllipsis >= 0xd800 && beforeEllipsis <= 0xdbff).toBe(false)
+  })
+
+  it('a note with no name and no description is its body alone, with no prefix', () => {
+    expect(chunkNote(note({ name: '', description: '', body: 'Only the body.' }))).toEqual(['Only the body.'])
+  })
+
+  it('a run of spaces longer than a chunk is dropped, not stored', () => {
+    // Line one is a word and then 2,000 spaces; line two is 2,000 spaces and then a word.
+    const block = `x${' '.repeat(2000)}\n${' '.repeat(2000)}tail`
+    const chunks = chunkNote(note({ body: block }))
+    expect(chunks.every((c) => c.length <= MAX_CHUNK_CHARS)).toBe(true)
+    const body = chunks.map((c) => c.split('\n\n')[1]).join('\n')
+    expect(body).toContain('x')
+    expect(body).toContain('tail')
+    expect(body.trim().length).toBeLessThan(40)
+  })
+
+  it('keeps a text two chunks would share once', () => {
+    // The same paragraph twice, far enough apart to land in two chunks.
+    const para = 'same words '.repeat(100).trim()
+    const filler = 'f'.repeat(1700)
+    expect(chunkNote(note({ body: `${para}\n\n${filler}\n\n${para}` }))).toHaveLength(2)
+  })
+
+  it('is deterministic', () => {
+    const n = note({ body: 'a\n\nb\n\n' + 'c '.repeat(1200) })
+    expect(chunkNote(n)).toEqual(chunkNote(n))
+  })
+})
+
+describe('noteFields, noteTags, isPortableType', () => {
+  it('maps a type to the kind and importance the memory store gets, never `message`', () => {
+    expect(noteFields('reference')).toEqual({ kind: 'fact', importance: 0.9 })
+    expect(noteFields('user')).toEqual({ kind: 'fact', importance: 0.9 })
+    expect(noteFields('feedback')).toEqual({ kind: 'decision', importance: 0.9 })
+    expect(noteFields('project')).toEqual({ kind: 'note', importance: 0.8 })
+    expect(noteFields('untyped')).toEqual({ kind: 'note', importance: 0.8 })
+  })
+
+  it('tags carry the type and the file, which is how a search tells a note from a chunk', () => {
+    expect(noteTags('feedback', 'feedback_cache.md')).toEqual(['type:feedback', 'note:feedback_cache.md'])
+    expect(noteTags('untyped', 'n'.repeat(300) + '.md')[1].length).toBeLessThanOrEqual(105)
+  })
+
+  it('only reference, feedback and user notes may travel to another project', () => {
+    expect(isPortableType('reference')).toBe(true)
+    expect(isPortableType('feedback')).toBe(true)
+    expect(isPortableType('user')).toBe(true)
+    expect(isPortableType('project')).toBe(false)
+    expect(isPortableType('untyped')).toBe(false)
+    expect(isPortableType(null)).toBe(false)
+  })
+
+  it('reads the note type back from a stored row\'s tags', () => {
+    expect(noteTypeOfTags(['note:a.md', 'type:feedback'])).toBe('feedback')
+    expect(noteTypeOfTags(['type:untyped'])).toBe('untyped')
+    expect(noteTypeOfTags(['type:gossip', 'type:user'])).toBe('user') // an unknown type is passed over
+    expect(noteTypeOfTags(['type:gossip'])).toBeNull()
+    expect(noteTypeOfTags(['note:a.md', 42, 'other'])).toBeNull()
+    expect(noteTypeOfTags(undefined)).toBeNull()
+    expect(noteTypeOfTags('type:user')).toBeNull()
+  })
+})
+
+describe('what is an imported note', () => {
+  it('a row is a note by its source, and by its author when it names one', () => {
+    expect(isClaudeNote({ source: 'claude-notes', agentId: 'claude-notes' })).toBe(true)
+    expect(isClaudeNote({ source: 'claude-notes' })).toBe(true)
+    expect(isClaudeNote({ source: 'claude-notes', agentId: 'claude' })).toBe(false) // an agent cannot pass itself off as one
+    expect(isClaudeNote({ source: 'claude', agentId: 'claude-notes' })).toBe(false)
+    expect(isClaudeNote({})).toBe(false)
+    expect(isClaudeNote(null)).toBe(false)
+    expect(isClaudeNote('claude-notes')).toBe(false)
+  })
+
+  it('a row carries note tags when one of its tags names a file', () => {
+    expect(hasNoteTags({ tags: ['type:user', 'note:a.md'] })).toBe(true)
+    expect(hasNoteTags({ tags: ['type:user'] })).toBe(false)
+    expect(hasNoteTags({ tags: [7] })).toBe(false)
+    expect(hasNoteTags({ tags: 'note:a.md' })).toBe(false)
+    expect(hasNoteTags({})).toBe(false)
+    expect(hasNoteTags(null)).toBe(false)
+  })
+
+  it('withoutNotes drops tagged rows and hands back the same array when there are none', () => {
+    const a = { id: 'a', tags: ['x'] }
+    const b = { id: 'b', tags: ['note:b.md'] }
+    const none = [a, { id: 'c' }]
+    expect(withoutNotes(none)).toBe(none)
+    expect(withoutNotes([a, b])).toEqual([a])
+    expect(withoutNotes('nope' as never)).toBe('nope')
+  })
+})
+
+describe('which project a folder belongs to', () => {
+  it('encodes a path the way Claude Code names its folder: everything but letters and digits is a dash', () => {
+    expect(encodeProjectFolder('C:\\Users\\Dev\\repos\\app')).toBe('C--Users-Dev-repos-app')
+    expect(encodeProjectFolder('/home/dev/my.app')).toBe('-home-dev-my-app')
+    expect(encodeProjectFolder('C:\\r\\.worktrees\\x')).toBe('C--r--worktrees-x')
+  })
+
+  it('finds the working directory the folder was named for', () => {
+    expect(projectCwdFor('C--Users-Dev-repos-app', ['C:\\Users\\Dev\\repos\\app'])).toBe('C:\\Users\\Dev\\repos\\app')
+    expect(projectCwdFor('-home-dev-app', ['/home/dev/app/'])).toBe('/home/dev/app') // a trailing slash is dropped
+  })
+
+  it('finds it through a parent when the session moved into a subfolder or a worktree', () => {
+    expect(projectCwdFor('C--r-app', ['C:\\r\\app\\.worktrees\\feat\\src'])).toBe('C:\\r\\app')
+    expect(projectCwdFor('-home-dev-app', ['/home/dev/app/packages/ui'])).toBe('/home/dev/app')
+  })
+
+  it('takes the first working directory that fits, and ignores case', () => {
+    expect(projectCwdFor('c--r-app', ['D:\\other', 'C:\\R\\App'])).toBe('C:\\R\\App')
+  })
+
+  it('is null when no working directory encodes to the folder, or there is none', () => {
+    expect(projectCwdFor('C--r-app', ['C:\\r\\other', '/'])).toBeNull()
+    expect(projectCwdFor('C--r-app', [])).toBeNull()
+    expect(projectCwdFor('-x', ['/x'])).toBe('/x') // one segment under the root
+    expect(projectCwdFor('-y', ['/x'])).toBeNull() // and the root itself is never a project
+  })
+
+  it('reads the distinct working directories out of the start of a transcript', () => {
+    const text = [
+      '{"type":"summary"}',
+      '{"cwd":"C:\\\\r\\\\app","type":"user"}',
+      'not json but "cwd" is in it',
+      '{"cwd":"C:\\\\r\\\\app"}',
+      '{"cwd":"C:\\\\r\\\\app\\\\src"}',
+      '{"cwd":42}',
+      'null "cwd"',
+      '{"cwd":"","x":1}',
+      '{"cwd":"C:\\\\r\\\\cut off',
+    ].join('\n')
+    expect(cwdsFromTranscript(text)).toEqual(['C:\\r\\app', 'C:\\r\\app\\src'])
+    expect(cwdsFromTranscript('')).toEqual([])
+  })
+})
