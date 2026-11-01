@@ -425,6 +425,26 @@ describe('the Linked screen finds a private key by what its bytes decode to', ()
     }
   })
 
+  it('takes a key whose BEGIN line is 256 to 320 KB before the end kept: past where a BEGIN line is looked for, short of where the window starts', () => {
+    // The window of the key detectors starts 64 KB before the cut when the cut falls in a run of base64:
+    // a tail that stopped at that start was taken for a key whose BEGIN line is in reach, when K1's
+    // reach (256 KB from the cut) had not seen it, and crossed with a note only.
+    for (const distance of [264_000, 290_000, 315_000]) {
+      for (const keep of [MAX_ERROR_CHARS - 1, MAX_OUTPUT_CHARS]) {
+        const label = `BEGIN ${distance} before the end kept, keep ${keep}`
+        const lines = pgpPhotoExport(Math.round((distance + keep - 3_000) / 1.354))
+        const text = `${lines.join("\n")}\nDone.\n`
+        // (the premise: the end kept starts between the BEGIN line's reach and the window's start)
+        expect(text.length - keep, label).toBeGreaterThan(262_144 + 500)
+        expect(text.length - keep, label).toBeLessThan(327_680 - 500)
+        const r = screenText(text, keep, SCREEN_LOOKBACK_CHARS)
+        expect(leakedWindows(r.text, secretLinesOf(lines)), label).toBe(0)
+        expect(r.removed, label).toEqual({ gpg_block: 1 })
+        expect(r.text.startsWith('[REDACTED:gpg_block]'), label).toBe(true)
+      }
+    }
+  })
+
   it("looks for a key block's BEGIN line 256 KB back where the cut falls among its lines, and for a token 4,096 back", () => {
     expect(SCREEN_LOOKBACK_CHARS).toBe(4_096)
     // A keyring export cut short, with no END line: the end kept starts in its last lines, its

@@ -311,6 +311,8 @@ describe.runIf(process.platform === 'win32')('the Linked screen takes no key out
     return docs
   }
 
+  // (The two long tests below take 43 s together on a 22-thread laptop, 79 s under coverage; the repository grows, and a CI
+  // runner is slower: their timeouts are a limit for what hangs, not a measure.)
   it('takes nothing out where a cut falls just above an END line in this repository, or in reports and dumps above one', () => {
     const files = repositoryFiles()
     expect(files.length).toBeGreaterThan(1_000)
@@ -324,7 +326,7 @@ describe.runIf(process.platform === 'win32')('the Linked screen takes no key out
     expect(found).toEqual([])
     // Not a pass by default: the repository has END lines named in its tests and docs, swept.
     expect(cutsSwept).toBeGreaterThan(1_000)
-  }, 180_000)
+  }, 600_000)
 
   it('finds none in this repository, in listings of it, or in 30 documents dense with base64', () => {
     const files = repositoryFiles()
@@ -340,7 +342,7 @@ describe.runIf(process.platform === 'win32')('the Linked screen takes no key out
     expect(found).toEqual([])
     // ...and ends were screened, each as the doing side keeps it and as the asking side gets it.
     expect(endsScreened).toBeGreaterThan(40)
-  }, 180_000)
+  }, 600_000)
 
   it('takes a real key out of the same kinds of document, the ways it screens them above', () => {
     // The screen above is not blind: a fresh key printed after a notebook's output, or after a

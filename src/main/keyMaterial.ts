@@ -446,6 +446,9 @@ const frameOf = (s: string): string => s.replace(/\d+/g, '0').replace(/\s+/g, ' 
  *  by one where the line number gained a digit (line 9 to line 10), the frames differed, and the
  *  key's block ended there. */
 const frameAt = (text: string, lineStart: number, r0: number): string => frameOf(text.slice(Math.max(lineStart, r0 - 512), r0)).slice(-64)
+/** Frames compared with ':' and '-' alike: frameOf's `:N:`/`-N-` rule depends on where a cut fell in a
+ *  timestamp (or a listing's number). */
+const loose = (x: string): string => x.replace(/-/g, ':')
 
 // With no END line, a key's last line can be shorter than a payload run, so the block's last run
 // leaves it behind. These take it (see scanBlock).
@@ -946,9 +949,11 @@ function tailAbove(text: string, at: number, floor: number, last?: { short: numb
       // fragment `" +`, PHP's `" .`): at most one in a row, of 16 characters at most.
       const seg = text.slice(s, e)
       const joinerOnly = FRAGMENT_LINE.test(blankNl(seg))
-      // (the checksum line keeps its listing frame: `deploy.asc:41:=AbCd`, `    41\t=AbCd`)
+      // (the checksum line keeps its listing frame: `deploy.asc:41:=AbCd`, `    41\t=AbCd`, whatever the
+      // path in it holds: a run of 16 characters right before the `=` is a key line that has one glued on,
+      // not a frame)
       // (in any of the key lines' joinings: a literal's `" + System.lineSeparator()`, cat -A's `$`)
-      const checksum = runs.length === 0 && /=[A-Za-z0-9+/]{4}[\s"'`,;+&_.)\]}|\\$]*$/.test(blankNl(seg)) && !/[A-Za-z0-9+/]{16}/.test(seg.slice(0, seg.lastIndexOf('=')))
+      const checksum = runs.length === 0 && /=[A-Za-z0-9+/]{4}[\s"'`,;+&_.)\]}|\\$]*$/.test(blankNl(seg)) && !/[A-Za-z0-9+/]{16}$/.test(seg.slice(0, seg.lastIndexOf('=')))
       if ((runs.length === 0 && (joinerOnly || checksum)) || (runs.length > 0 && joinerOnly && seg.length <= 16 && !skipped)) {
         if (runs.length > 0) skipped = true
         e = stepBack(text, s, floor)
@@ -975,7 +980,6 @@ function tailAbove(text: string, at: number, floor: number, last?: { short: numb
         const sf = frameOf(shortFrame.slice(-512)).slice(-64)
         // (':' and '-' alike, as at the top of a cut text: frameOf's `:N:`/`-N-` rule depends on
         // where the cut fell in a timestamp)
-        const loose = (x: string): string => x.replace(/-/g, ':')
         if (sf !== f && !(s <= floor + 1 && loose(sf).endsWith(loose(f.replace(/^…/, '')))) && !JOINER_FRAME.test(shortFrame)) return []
       }
       runs.push(last) // the last key line, which may be short
@@ -1036,7 +1040,6 @@ function headAnchor(text: string, runs: Run[], floor: number, atTop: boolean, bl
   const m = partialLine(blankNl(above))
   if (!m) return null
   // (':' and '-' alike: frameOf's `:N:`/`-N-` rule depends on where the cut fell in a timestamp)
-  const loose = (x: string): string => x.replace(/-/g, ':')
   const fr = frameOf(m.frame)
   if (fr !== '' && !loose(frame).endsWith(loose(fr)) && !JOINER_FRAME.test(m.frame) && !escTail(m.frame) && !nlTail(above.replace(/^…/, '').trimEnd())) return null
   return m.run ? floor + (above.startsWith('…') ? 1 : 0) + m.frame.length : runs[0][0]
@@ -1076,17 +1079,18 @@ function endFramed(text: string, at: number, floor: number, runs: Run[]): boolea
   const endFrame = frameAt(text, s, at)
   if (runs.length > 1 || ls > floor) return endFrame === keyFrame
   // (':' and '-' alike: frameOf's `:N:`/`-N-` rule depends on where the cut fell in a timestamp)
-  const loose = (x: string): string => x.replace(/-/g, ':')
   if (!loose(endFrame).endsWith(loose(keyFrame.replace(/^…/, '')))) return false
   return TOOL_FRAME.some((re) => re.test(prefix))
 }
 
 /** Whether the key lines that end at the END line at `at` stop in view, below a BEGIN line's reach
- *  past `floor`, the doing side's own window start: their head is then in the answer, so they are
- *  no key the window cut off (a dump or a list of hashes whose first line the window's start fell
- *  under, or under which the token lookback's start fell). False when the walk runs to that reach,
- *  or stops at the partial line it starts with: the head is out of reach there, as a key longer
- *  than the reach has it. At the text's start, a line is whole. */
+ *  past `floor`, the doing side's own cut (where the end it keeps starts, from which a BEGIN line is
+ *  looked for REACH_BEGIN back: not from the window start, which a base64 run the cut fell in can
+ *  pull 64 KB further back): their head is then in the answer, so they are no key the cut ran
+ *  through (a dump or a list of hashes whose first line the window's start fell under, or under which
+ *  the token lookback's start fell). False when the walk runs to that reach, or stops at the partial
+ *  line it starts with: the head is out of reach there, as a key longer than the reach has it. At
+ *  the text's start, a line is whole. */
 function headInReach(text: string, at: number, floor: number, runs: Run[]): boolean {
   const lower = Math.max(0, floor - REACH_BEGIN)
   // (walked from the same END line with a lower floor, the lines are the same ones and more: its
@@ -1203,9 +1207,19 @@ function decodedHead(text: string, runs: Run[], end: string): boolean {
   return (Math.floor(((all.length - st.offset) * 3) / 4) >= st.declared * 0.9 && all.length >= 64) || (runs.length >= 2 && all.length >= 80)
 }
 
+/** The line breaks nextBreak reads, to split a stretch of text on. A written-out one starts at the
+ *  first backslash of its run: tried at each of a run of n that no `n` or `r` follows, `\\+[nr]` read the
+ *  rest of the run from every one, n * n. */
+const BREAKS = /\r\n|\r|\n|(?<!\\)\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]/
+/** What a cut leaves of a DEK-Info line's rest: a header name's end, a cipher's end, an IV's end, and
+ *  what a listing, a log or a literal adds after it (joiners). */
+const DEK_REMNANT = /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?[\s"'`,;+.&_)\]}|\\]*$/
+
 /** Whether a legacy encrypted PEM key's DEK-Info line is in the 4 lines above the key lines
  *  `runs`, or, at the start of a text another computer cut (`cutText`), what its cut left of one
- *  (its cipher and IV, or the IV's end) over the blank line under it. */
+ *  (its cipher and IV, or the IV's end) over the blank line under it. That line is blank in the key
+ *  lines' own frame (a listing's `path:N:`, a log's clock time, a diff's `+`, a literal's opening
+ *  quote), and a literal's `" +` or a newline constant stands between the lines. */
 function legacyAbove(text: string, runs: Run[], floor: number, cutText: boolean): boolean {
   const ls = logicalLineStart(text, runs[0][0], floor)
   let a = ls
@@ -1213,11 +1227,17 @@ function legacyAbove(text: string, runs: Run[], floor: number, cutText: boolean)
   const above = text.slice(a, ls)
   if (DEK_RE.test(above)) return true
   if (!cutText || a !== floor) return false
-  // (a written-out break starts at the first backslash of its run: tried at each of a run of n that no
-  // `n` or `r` follows, `\\+[nr]` read the rest of the run from every one, n * n)
-  const lines = above.replace(/^…/, '').split(/\r\n|\r|\n|(?<!\\)\\+[nr]/)
-  // (a blank line keeps a listing's number: `     4\t`; a cut at the DEK-Info line's end left none of it)
-  return lines.length >= 2 && /^\s*(?:(?:[A-Za-z-]*: ?)?(?:[A-Z0-9-]*,)?[0-9A-Fa-f]{1,32})?\s*$/.test(lines[0]) && lines.slice(1).every((l) => /^[\s\d:|>#*-]*$/.test(l))
+  const lines = blankNl(above.replace(/^…/, '')).split(BREAKS)
+  // (a blank line keeps its frame: a listing's number `     4\t`, a path `deploy.pem:4:`; a cut at the
+  // DEK-Info line's end left none of it)
+  const frame = frameAt(text, ls, runs[0][0])
+  const own = (l: string): string => frameOf(l.slice(-512)).slice(-64)
+  const blank = (l: string): boolean => /^[\s\d:|>#*+-]*$/.test(l) || FRAGMENT.test(l) || (frame !== '' && own(l) === frame)
+  // (the first line: the rest of the DEK-Info line, or of the line break or newline constant that ended
+  // it, or, the cut having taken it whole, the rest of the frame of the blank line under it)
+  const head = (l: string): boolean =>
+    DEK_REMNANT.test(l) || blank(l) || escTail(l.replace(/[\s"'`,;+.&_]+$/, '')) || nlTail(l) || (frame !== '' && own(l) !== '' && loose(frame).endsWith(loose(own(l))))
+  return lines.length >= 2 && head(lines[0]) && lines.slice(1).every(blank)
 }
 
 /** Whether the key lines `runs` a cut left are a made-up body, not a key's: every line as wide as a
@@ -1294,8 +1314,9 @@ export function headless(text: string, blocks: readonly KeyBlock[], opts: { star
       } else if (isKeyRun(text, runs)) {
         // An END line named in prose or code ends no key: what looks like one above it is reported
         // as anywhere else. So is a run whose head the doing side's own window start fell under
-        // while it is still in the answer: only a key longer than the BEGIN line's reach is cut off.
-        const ownFloor = framed && floor === start && start > 0 && opts.cutAt !== 0 && headInReach(text, at, start, runs)
+        // while it is still in the answer: only a key longer than the BEGIN line's reach (from the
+        // cut) is cut off.
+        const ownFloor = framed && floor === start && start > 0 && opts.cutAt !== 0 && headInReach(text, at, opts.cutAt ?? start, runs)
         const atTop = (floor === start && !(opts.screenedStart === true && floor === 0)) || floor === at - MAX_BLOCK
         // (a legacy encrypted PEM key's body decodes to nothing: its DEK-Info line above is its head)
         const legacy = framed && /-----END (?:RSA|DSA|EC) PRIVATE KEY-----/.test(m[0]) && legacyAbove(text, runs, floor, cutText)

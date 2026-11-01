@@ -165,10 +165,11 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
   })
 
   it('masks BEGIN lines on one line in step with their number: 4 MB of them take under 12 times as long as 1 MB', () => {
-    // Each BEGIN line is masked to the end of its line, which was looked for once per BEGIN.
-    const one = fill('-----BEGIN PRIVATE KEY----- ', MB)
-    const four = fill('-----BEGIN PRIVATE KEY----- ', 4 * MB)
-    expect(maskForDisplay(`${one}\nnext line`)).toBe('[REDACTED:private_key]\nnext line')
+    // Each BEGIN line is masked to the end of its line, which was looked for once per BEGIN. The line ends in a line
+    // break, as a log's do: with none, the search never found one and was never repeated.
+    const one = fill('-----BEGIN PRIVATE KEY----- ', MB) + '\nnext line'
+    const four = fill('-----BEGIN PRIVATE KEY----- ', 4 * MB) + '\nnext line'
+    expect(maskForDisplay(one)).toBe('[REDACTED:private_key]\nnext line')
     expect(bestOf3(() => maskForDisplay(four))).toBeLessThan(12 * bestOf3(() => maskForDisplay(one)))
   }, 120_000)
 

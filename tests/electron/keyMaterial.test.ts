@@ -388,6 +388,66 @@ describe('T1 K4: a key tail with its END line, its BEGIN line out of view', () =
   })
 })
 
+describe('T1 K4: a PGP export whose checksum line sits behind a listing path with a long directory name', () => {
+  // The guard that keeps '<key line><checksum>' glued together from being read as a checksum line looked
+  // for a run of 16 base64 characters anywhere before the '=', and a path (/etc/ssl/private/server.key:12:,
+  // ./deployment/keys/production/deploy.asc:12:) holds one: the export's tail crossed with no note.
+  const LISTINGS: Record<string, (ls: string[]) => string> = {
+    'rg, a deep POSIX path': (ls) => ls.map((l, i) => `/etc/ssl/private/server.key:${i + 1}:${l}`).join('\n'),
+    'rg, a relative path': (ls) => ls.map((l, i) => `./deployment/keys/production/deploy.asc:${i + 1}:${l}`).join('\n'),
+    'rg with -C context lines': (ls) => ls.map((l, i) => `/home/dev/projects/infrastructure/deployment/keys/production/deploy.key${i === 0 ? ":" : "-"}${i + 1}${i === 0 ? ":" : "-"}${l}`).join('\n'),
+    'rg, no line numbers': (ls) => ls.map((l) => `/home/dev/projects/infrastructure/deployment/keys/production/deploy.key:${l}`).join('\n'),
+    'grep -rn, a path of one long name': (ls) => ls.map((l, i) => `./abcdefghijklmnopqrstuvwxyz0123456789/deploy.asc:${i + 1}:${l}`).join('\n'),
+  }
+
+  it('is removed from its END line when the text an older computer cut starts inside it, in each listing', () => {
+    for (const format of ['pgp_rsa_hdr', 'pgp_ed_hdr', 'pgp_rsa_nohdr'] as Format[]) {
+      const lines = K.F[format]
+      const secret = secretLinesOf(lines)
+      for (const [name, list] of Object.entries(LISTINGS)) {
+        const text = list(lines) + '\nThe export finished.\n'
+        const first = text.indexOf(secret[0].slice(0, 16))
+        const lastBody = text.indexOf(secret[secret.length - 1])
+        // a cut at every 29th character from the first body line to the last: what arrived holds the
+        // END line and the lines under the cut
+        for (let cut = first; cut < lastBody; cut += 29) {
+          const r = screenKeys(text.slice(cut), { cutStart: true })
+          const arrived = secret.filter((l) => text.slice(cut).includes(l.slice(0, 12)))
+          // (a line the cut left under 16 characters of cannot be told from other text: the rest must go)
+          expect(leakedWindows(r.text, arrived.slice(1)), `${format}/${name}/cut ${cut - first}`).toBe(0)
+        }
+      }
+    }
+  })
+
+  it('is removed from its END line when the doing side keeps only an end that starts inside it, past where a BEGIN line is looked for', () => {
+    const lines = pgpPhotoExport(450_000)
+    const secret = secretLinesOf(lines)
+    for (const [name, list] of Object.entries(LISTINGS)) {
+      const text = 'Listing:\n' + list(lines) + '\nDone.\n'
+      for (const keep of [3_999, 200_000]) {
+        const r = screenKeys(text, { keep })
+        expect(leakedWindows(r.text, secret), `${name}/keep ${keep}`).toBe(0)
+        expect(r.removed, `${name}/keep ${keep}`).toEqual({ gpg_block: 1 })
+      }
+    }
+  })
+
+  it('is told from a key line with a checksum glued on, which is no checksum line', () => {
+    // three random lines, then 20 base64 characters and "=ab12" on one line, then a bare PGP END line at
+    // the start of the text an older computer cut: no key's tail (a checksum line holds nothing else)
+    for (let n = 0; n < 10; n++) {
+      const glued = randomBytes(15).toString('base64') + 'Qx' + '=ab12'
+      for (const dot of ['', '.', ' +']) {
+        const text = [randomBytes(48).toString('base64'), randomBytes(48).toString('base64'), randomBytes(48).toString('base64'), glued + dot, '-----END PGP PRIVATE KEY BLOCK-----', ''].join('\n')
+        const r = screenKeys(text, { cutStart: true })
+        expect(r.text, `${n}/${JSON.stringify(dot)}`).toBe(text)
+        expect(r.removed, `${n}/${JSON.stringify(dot)}`).toEqual({})
+      }
+    }
+  })
+})
+
 describe('T1 K5: a key file stored base64 encoded', () => {
   it('removes the 9 forms: a Kubernetes tls.key in YAML and JSON, wrapped, listed, escaped, and SSH2 and PuTTY files', () => {
     const forms: Array<[string, string, string[]]> = [
@@ -1265,6 +1325,29 @@ describe("what the round-0 leaks review found crossing: a short last line, a cut
     }
   })
 
+  it('F-B: a legacy encrypted key an older computer cut inside its DEK-Info line, or the line break after it, or the frame of the blank line under it, goes in every joining: listings, logs, diffs, code literals', () => {
+    // The headers are the only proof of such a key (its body is encrypted, so it decodes to nothing):
+    // what the cut left of them, and of the lines between them and the key lines, was read in a bare
+    // frame only, so 847 of 4,618 cuts left the key's lines in view in 14 of the joinings.
+    const lines = K.F.rsa_legacy_enc
+    const secret = secretLinesOf(lines)
+    const joinings = Object.keys(JOIN).filter((j) => j !== 'space_one_line')
+    expect(joinings.length).toBeGreaterThanOrEqual(24)
+    let cuts = 0
+    for (const joining of joinings) {
+      const text = JOIN[joining](lines) + '\nThe deploy finished.\n'
+      const firstBody = text.indexOf(secret[0].slice(0, 16))
+      for (let at = Math.max(1, firstBody - 260); at < firstBody; at += 2) {
+        for (const lead of ['', '…']) {
+          const r = screenKeys(lead + text.slice(at), { cutStart: true })
+          cuts++
+          expect(leakedWindows(r.text, secret), `${joining} cut ${firstBody - at} before the first key line${lead ? ", after an ellipsis" : ""}`).toBe(0)
+        }
+      }
+    }
+    expect(cuts).toBeGreaterThan(4_000)
+  })
+
   it('FR-4: an older computer cut through a key joined by escapes, newline constants or a per-line suffix: taken from its END line', () => {
     const joinings: Record<string, (ls: string[]) => string> = {
       json_rn: (ls) => `{"key": "${ls.join(`${BS}r${BS}n`)}${BS}r${BS}n"}`,
@@ -1727,6 +1810,64 @@ describe("the round-1 rules at their edges", () => {
         expect(r.flagged, `cut ${at - p}`).toEqual(p + magic.length - at >= 16 ? { private_key: 1 } : {})
       }
     }
+  })
+})
+
+describe('what stays next to a key tail and its END line: the guards against taking ordinary text for a key', () => {
+  // Found by the final round's false-removal review: five guards no test failed without. Each input below is
+  // kept by the code and was removed by a build without that guard (scripts/linkedScreenMutants.cjs).
+  const hash = (n: number): string => randomBytes(Math.ceil((n * 3) / 4)).toString('base64').replace(/[+/=]/g, 'x').slice(0, n)
+  const END = '-----END PRIVATE KEY-----'
+  /** Kept byte for byte as the end an older computer cut, and as an error behind an ellipsis. */
+  function kept(text: string, label: string): void {
+    for (const view of [text, '…' + text]) {
+      const r = screenKeys(view, { cutStart: true })
+      expect(r.text, label).toBe(view)
+      expect(r.removed, label).toEqual({})
+    }
+  }
+
+  it("a lone partial line above an END line is a key's only when the END line carries the same frame: a hash line and a path:13: are not one", () => {
+    kept(`> ${hash(76)}\nx.pem:13:-----END EC PRIVATE KEY-----\n`, 'a quoted hash line, then a listing path')
+    kept(`ck.json:123:      "integrity": "sha512-${hash(86)}==",\nkeys/a.pem:28:${END}\n`, 'a lockfile hash line, then another file')
+  })
+
+  it("a number is no clock time: 'Step 3:', 'see 4.2' and 'release 1.55 footer' before an END line frame no key", () => {
+    for (const lead of ['Step 3: ', 'see 4.2 ', 'release 1.55 footer ']) kept(`${hash(40)}\n${lead}${END}\n`, lead)
+    // a clock time is a frame: a log line's
+    const log = screenKeys(`${hash(76)}\n${hash(76)}\n12:00:03 ${END}\n`, { cutStart: true })
+    expect(log.text).not.toContain('12:00:03')
+  })
+
+  it('a block that was only flagged leads nothing: key-shaped lines after it and an END line are reported, not taken', () => {
+    const empty = ['-----BEGIN PRIVATE KEY-----', hash(64), 'x'.repeat(16), hash(64), END].join('\n')
+    const flagged = keyBlocks(empty)
+    expect(flagged.map((b) => b.cls)).toEqual(['flag'])
+    // ...then a comment line and an indented END line; and key lines of one width and an END line
+    for (const [text, label] of [
+      [`${empty}\n// ${hash(25)}\n  ${END}\n`, 'a comment line and an indented END line'],
+      [`-----BEGIN PRIVATE KEY-----\n${hash(64)}\n${"x".repeat(16)}\n${hash(64)}\n// ${hash(25)}\n${hash(64)}\n${hash(64)}\n${END}\n`, 'three key lines and an END line'],
+    ]) {
+      const r = screenKeys(text)
+      expect(r.text, label).toBe(text)
+      expect(r.removed, label).toEqual({})
+    }
+  })
+
+  it('lines between a key taken and the key lines above an END line lead nothing when one holds words', () => {
+    const head = K.F.pkcs8_rsa.slice(0, 12).join('\n')
+    // a key cut short, a line of another width (it ends the key), a sentence with a hash in it, then
+    // three key-shaped lines and an END line: the sentence ends what could go with the key
+    const text = `${head}\n${hash(70)}\nthe hash of the next lines is ${hash(24)} as logged\n${hash(64)}\n${hash(64)}\n${hash(64)}\n${END}\n`
+    const r = screenKeys(text)
+    expect(r.removed).toEqual({ private_key: 1 })
+    expect(r.text.endsWith(`as logged\n${text.split("as logged\n")[1]}`)).toBe(true)
+    // without the sentence the lines are the key's: both go
+    expect(screenKeys(`${head}\n${hash(70)}\n${hash(64)}\n${hash(64)}\n${hash(64)}\n${END}\n`).removed).toEqual({ private_key: 2 })
+  })
+
+  it("a sentence that ends in a word and a full stop is no key's last line: 'the log output.' above an END line", () => {
+    kept(`${hash(17)}\nThis is the next part of the log output.\n${END}\n`, 'a short hash line and a sentence')
   })
 })
 

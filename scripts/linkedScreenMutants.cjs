@@ -80,6 +80,7 @@ const WIRING = {
   'mask: no detector spans': [SCREEN, '  for (const span of keys.spans) spans.push(span)\n  for (const span of headless(input, keys.blocks)) spans.push(span)', '  for (const span of headless(input, keys.blocks)) spans.push(span)'],
   'mask: no key tails': [SCREEN, '  for (const span of headless(input, keys.blocks)) spans.push(span)\n', ''],
   'mask: a BEGIN line only to its own end': [SCREEN, "spans.push({ rule: 'private_key', from: m.index, to: eol === -1 ? input.length : eol })", "spans.push({ rule: 'private_key', from: m.index, to: m.index + m[0].length })"],
+  'mask: the line end looked for again for every BEGIN marker': [SCREEN, "if (eol !== -1 && eol < m.index) eol = input.indexOf('\\n', m.index)", "if (eol !== -1) eol = input.indexOf('\\n', m.index)"],
   'lookback: 65,536 again': [JOBS, 'export const SCREEN_LOOKBACK_CHARS = 4_096', 'export const SCREEN_LOOKBACK_CHARS = 65_536'],
   'check: a truncated output not told cut': [TOOL, 'screenTail(view.output, MAX_OUTPUT_CHARS, view.truncated === true && cutBy(job))', 'screenTail(view.output, MAX_OUTPUT_CHARS, false)'],
   'check: an error behind the ellipsis not told cut': [TOOL, "MAX_ERROR_CHARS, view.error.startsWith('…') && cutBy(job))", 'MAX_ERROR_CHARS, false)'],
@@ -106,7 +107,7 @@ const REVIEW = {
   'tail: a cut\'s partial line under any frame': [KEY, 'return TOOL_FRAME.some((re) => re.test(prefix))', 'return prefix.length >= 0'],
   'tail: an unframed END line not reported': [KEY, "else out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed'", "else if (framed) out.push({ rule, cls: 'flag', why: framed ? 'tail-unanchored' : 'tail-unframed'"],
   // FR-2: a run whose head the doing side's window start fell under, still in the answer
-  'tail: a head in the answer anchored at the window\'s start': [KEY, '&& opts.cutAt !== 0 && headInReach(text, at, start, runs)', '&& opts.cutAt !== 0 && headInReach(text, at, start, runs) && runs.length < 0'],
+  'tail: a head in the answer anchored at the window\'s start': [KEY, '&& opts.cutAt !== 0 && headInReach(text, at, opts.cutAt ?? start, runs)', '&& opts.cutAt !== 0 && headInReach(text, at, opts.cutAt ?? start, runs) && runs.length < 0'],
   'tail: the reach\'s partial line read as a head in view': [KEY, 'return logicalLineStart(text, stepBack(text, ls0, lower), lower) > lower', 'return ls0 >= 0'],
   'tail: the text\'s first line read as a partial one': [KEY, '  if (lower === 0) return true\n', ''],
   // cost: one break search per line, one way to match an RSAKeyValue member
@@ -116,7 +117,7 @@ const REVIEW = {
   // the final round's cost findings: a run of backslashes or plus signs, repeated anchors
   'cost: nextBreak reads every backslash of a run': [KEY, '      if (c === 92) while (i + 1 < limit && text.charCodeAt(i + 1) === 92) i++\n', ''],
   'cost: nextRun reads every backslash of a run': [KEY, '      if (c === 92) while (i + 1 < stop && text.charCodeAt(i + 1) === 92) i++\n', ''],
-  'cost: the legacy header split reads every backslash of a run': [KEY, "split(/\\r\\n|\\r|\\n|(?<!\\\\)\\\\+[nr]/)", "split(/\\r\\n|\\r|\\n|\\\\+[nr]/)"],
+  'cost: the legacy header split reads every backslash of a run': [KEY, 'const BREAKS = /\\r\\n|\\r|\\n|(?<!\\\\)\\\\+(?:', 'const BREAKS = /\\r\\n|\\r|\\n|\\\\+(?:'],
   'cost: LINE_END_RUN may start inside a run of base64': [KEY, 'LINE_END_RUN = /(?<![A-Za-z0-9+/=])(?=([A-Za-z0-9+/=]+))\\1[', 'LINE_END_RUN = /[A-Za-z0-9+/=]+['],
   'cost: shortAbove tries every start': [KEY, 'for (let at = Math.max(0, joined - 9); at < s.length; at++) {', 'for (let at = 0; at < s.length; at++) {'],
   'cost: the prose test read afresh for each anchor': [KEY, '  const wordsEnd = proseEnds(text, start)\n', '  const wordsEnd = (from: number): number => proseEnds(text, start)(from)\n'],
@@ -138,6 +139,22 @@ const REVIEW = {
   'b64: a second line with a label of its own joins the value': [KEY, 'if (f !== first && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break', 'if (f.length < 0) break'],
   'b64: a cut text\'s second line under a label of its own not joined': [KEY, 'if (f !== first && /[A-Za-z]/.test(f) && !(cutText && a0 <= start + 1)) break', 'if (f !== first && /[A-Za-z]/.test(f)) break'],
   'b64: padding does not end a value': [KEY, 'for (let n = 0; n < 65536 && text.charCodeAt(j - 1) !== 61; n++) {', 'for (let n = 0; n < 65536; n++) {'],
+  // the final round's tail findings: the BEGIN line's reach from the cut, a PGP checksum behind a path, a legacy key cut in its headers
+  "tail: a BEGIN line's reach measured from the window start (F1)": [KEY, 'headInReach(text, at, opts.cutAt ?? start, runs)', 'headInReach(text, at, start, runs)'],
+  'tail: a run of 16 anywhere before the checksum line\'s = is a key line': [KEY, "!/[A-Za-z0-9+/]{16}$/.test(seg.slice(0, seg.lastIndexOf('=')))", "!/[A-Za-z0-9+/]{16}/.test(seg.slice(0, seg.lastIndexOf('=')))"],
+  'tail: a key line with a checksum glued on is a checksum line': [KEY, " && !/[A-Za-z0-9+/]{16}$/.test(seg.slice(0, seg.lastIndexOf('=')))", ''],
+  "legacy cut: a blank line in the key lines' own frame not read": [KEY, " || (frame !== '' && own(l) === frame)\n", '\n'],
+  "legacy cut: a literal's joiner-only line under the remnant not read": [KEY, '/^[\\s\\d:|>#*+-]*$/.test(l) || FRAGMENT.test(l) ||', '/^[\\s\\d:|>#*+-]*$/.test(l) ||'],
+  'legacy cut: the rest of a frame the cut fell in not read': [KEY, " || nlTail(l) || (frame !== '' && own(l) !== '' && loose(frame).endsWith(loose(own(l))))", ' || nlTail(l)'],
+  'legacy cut: the rest of a line break or newline constant not read': [KEY, " || escTail(l.replace(/[\\s\"'`,;+.&_]+$/, '')) || nlTail(l)", ''],
+  'legacy cut: only \\n and \\r split the lines': [KEY, 'const BREAKS = /\\r\\n|\\r|\\n|(?<!\\\\)\\\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\\s*\\/?>|`[nr]/', 'const BREAKS = /\\r\\n|\\r|\\n|(?<!\\\\)\\\\+[nr]/'],
+  'legacy cut: newline constants not blanked': [KEY, "blankNl(above.replace(/^…/, '')).split(BREAKS)", "above.replace(/^…/, '').split(BREAKS)"],
+  // guards no test pinned (the final false-removal review)
+  'tail: a lone partial line need not end the END frame': [KEY, "  if (!loose(endFrame).endsWith(loose(keyFrame.replace(/^…/, '')))) return false\n", ''],
+  'tail: a number is a clock time': [KEY, '  /\\d{1,2}:\\d\\d:\\d\\d/,', '  /\\d/,'],
+  'tail: a flagged block leads (blockLead)': [KEY, "if (!bk || bk.cls === 'flag' || !sameKind(bk, end)) return null", 'if (!bk || !sameKind(bk, end)) return null'],
+  'tail: words among the lines under a block (keyShapedLines)': [KEY, ' || /[A-Za-z]{3,}[ \\t]+[A-Za-z]{3,}/.test(line)) return false', ') return false'],
+  'tail: any last word above an END line is its short last line': [KEY, 'const SHORT_JOINER = /[\\s"\'`,;+&_)\\]}|\\\\$]/', 'const SHORT_JOINER = /\\W/'],
   // FR-3: an end a 1.55 machine cut is one it screened; a made-up body is no key's tail
   'cut: every machine taken for one that cut first': [TOOL, "const cutBy = (job: Followed): CutStart => (screensBeforeCut(versions.get(refOf(job.target))) ? 'screened' : true)", 'const cutBy = (job: Followed): CutStart => (job ? true : true)'],
   'cut: a screened end anchored at its start': [KEY, '(floor === start && !(opts.screenedStart === true && floor === 0))', '(floor === start)'],
@@ -201,6 +218,9 @@ const EQUIVALENT = new Set([
   'screen: a straddled cut not checked',
   // The doing side's jobs are its own, never an end another computer cut: nothing passes cutStart.
   "host: the doing side's binding drops cutStart",
+  // The starts shortAbove tries before the last 9 characters before the joiners cannot match (a token is 7 at most,
+  // with two = after it): the bound only bounds the work, and the cost shapes (a 64,000 character line) time it.
+  'cost: shortAbove tries every start',
 ])
 
 const group = process.argv[2] ?? 'judge'
