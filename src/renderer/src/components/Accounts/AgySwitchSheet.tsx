@@ -159,6 +159,8 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
         return finishStopped(done, why ? `${l.terminal.name}: ${why}.` : `${l.terminal.name} couldn't be switched.`)
       }
     }
+    // Stop pressed in the last terminal's own step lands here, with no look left before the sign-out.
+    if (stopped.current) return finishStopped(done, 'you asked it to.')
     setPhase({ kind: 'signing-in' })
   }
 
@@ -178,6 +180,18 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
     stopped.current = true
     answer.current?.(false)
     close()
+  }
+
+  /** The sheet's X and Esc. Never a way out that leaves a terminal this switch ended without its
+   *  conversation: mid sign-in it is the flow's own Cancel (the unmount ends the hidden session), and
+   *  with terminals still ended it resumes them before it lets go. */
+  const leave = (): void => {
+    if (phase.kind === 'signing-in') return setPhase({ kind: 'interrupted' })
+    if (phase.kind === 'interrupted' && exitedLines().length > 0) {
+      void resumeAll(exitedLines()).then(() => setPhase({ kind: 'done', email: null }))
+      return
+    }
+    cancel()
   }
 
   const exitedLines = (): Line[] => lines.filter((l) => l.mark === 'exited')
@@ -213,6 +227,7 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
             {n > 0 ? `; ${n === 1 ? 'it resumes its' : 'each one resumes its'} conversation.` : '.'}
           </p>
           <p className="text-xs text-[#9ca3af]">A Gemini terminal that is working is left to finish its turn first. Termpolis signs agy out and in for you here, in its own hidden agy.</p>
+          <p className="text-xs text-[#9ca3af]">An agy running anywhere else on this computer (a swarm worker, another window) moves to the new sign-in too, and Termpolis does not resume it.</p>
           {list}
           <div className="flex gap-2">
             <button type="button" className={SHEET_PRIMARY} data-autofocus="" onClick={go} data-testid="agy-switch-go">{n > 1 ? 'Switch all Gemini terminals' : 'Switch Gemini CLI'}</button>
@@ -285,10 +300,11 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
       body = (
         <div className="flex flex-col gap-2" data-testid="agy-switch-interrupted">
           <p>The sign-in didn&apos;t finish.{n > 0 ? ` ${n === 1 ? 'Your Gemini terminal is' : `Your ${n} Gemini terminals are`} waiting.` : ''}</p>
-          {n > 0 && <p className="text-xs text-[#9ca3af]">Resuming now goes back on the sign-in agy has: if agy is signed out, each one shows agy&apos;s sign-in.</p>}
+          {n > 0 && <p className="text-xs text-[#9ca3af]">Resuming now goes back on the sign-in agy has: if agy is signed out, each one shows agy&apos;s sign-in. Closing this resumes them now.</p>}
           <div className="flex gap-2">
             <button type="button" className={SHEET_PRIMARY} data-autofocus="" onClick={() => setPhase({ kind: 'signing-in' })} data-testid="agy-switch-retry">Try the sign-in again</button>
             {n > 0 && <button type="button" className={SHEET_SECONDARY} onClick={() => { void resumeAll(exitedLines()).then(() => setPhase({ kind: 'done', email: null })) }} data-testid="agy-switch-resume-now">Resume them now</button>}
+            {n === 0 && <button type="button" className={SHEET_SECONDARY} onClick={close} data-testid="agy-switch-interrupted-close">Close</button>}
           </div>
         </div>
       )
@@ -313,7 +329,7 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
 
   const busyPhase = phase.kind === 'exiting' || phase.kind === 'resuming'
   return (
-    <Sheet title={`Switch Gemini CLI to ${target.label}`} subtitle={target.email} icon="fa-user-group" testId="agy-switch" {...(busyPhase ? {} : { onClose: cancel })}>
+    <Sheet title={`Switch Gemini CLI to ${target.label}`} subtitle={target.email} icon="fa-user-group" testId="agy-switch" {...(busyPhase ? {} : { onClose: leave })}>
       {body}
       <p className="sr-only" role="status" aria-live="polite" data-testid="agy-switch-live">{ANNOUNCE[phase.kind]}</p>
     </Sheet>

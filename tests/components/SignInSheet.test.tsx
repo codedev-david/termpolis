@@ -123,7 +123,7 @@ describe('SignInSheet', () => {
     expect(screen.getByTestId('sign-in-done')).toHaveTextContent('Switch to codedev')
   })
 
-  it('cancels with Cancel before main gave the sign-in a session, sending nothing', async () => {
+  it('cancels with Cancel before main gave the sign-in a session, and ends the session main then gives it', async () => {
     let release: (v: unknown) => void = () => undefined
     accounts.signInStart.mockReturnValueOnce(new Promise((r) => { release = r }))
     useTerminalStore.getState().openSignInSheet('acc_b')
@@ -131,8 +131,12 @@ describe('SignInSheet', () => {
     fireEvent.click(screen.getByTestId('sign-in-method-claudeai'))
     fireEvent.click(screen.getByTestId('sign-in-cancel'))
     expect(useTerminalStore.getState().signInSheet).toBeNull()
-    await act(async () => { release({ success: true, data: { sessionId: 's1' } }) })
+    // Nothing to cancel yet ...
     expect(accounts.signInInput).not.toHaveBeenCalled()
+    // ... and the session main starts after all is ended at once, not left to its timeout.
+    await act(async () => { release({ success: true, data: { sessionId: 's1' } }) })
+    expect(accounts.signInInput).toHaveBeenCalledTimes(1)
+    expect(accounts.signInInput).toHaveBeenCalledWith('s1', { kind: 'cancel' })
   })
 })
 

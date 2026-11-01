@@ -443,7 +443,7 @@ describe('the other ways', () => {
     endModelSwitch('t1')
   })
 
-  it('offers the one click for any terminal that runs plain claude, its .exe included, and only advises for a wrapper', async () => {
+  it('offers the one click for any terminal that runs plain claude, its .exe included, and no card at all for a wrapper (it has no account)', async () => {
     useTerminalStore.setState({ terminals: [T('t1', { agentCommand: 'claude.exe --dangerously-skip-permissions' }), T('t2', { agentCommand: 'claude-sandbox' })] })
     const { unmount } = card()
     openLimit(OPUS())
@@ -451,9 +451,19 @@ describe('the other ways', () => {
     expect(screen.queryByTestId('limit-card-model-advice')).toBeNull()
     unmount()
     act(() => st().closeAccountSwitch())
+    // A wrapper adds what a relaunch of the bare agent would drop (a sandbox): it is none of the account
+    // agents, so nothing offers to move it.
     card('t2')
     openLimit(OPUS({ terminals: ['t2'] }))
-    expect(screen.getByTestId('limit-card-model-advice')).toHaveTextContent('Claude Code ran out on this model only: pick Sonnet in this terminal\'s model picker to go on here.')
+    expect(screen.queryByTestId('limit-card')).toBeNull()
+    await act(async () => undefined)
+  })
+
+  it('only advises for a terminal it cannot relaunch itself: a swarm worker has no command of its own to repeat', async () => {
+    useTerminalStore.setState({ terminals: [T('t2', { agentCommand: undefined, isSwarm: true, swarmAgent: 'claude' })] })
+    card('t2')
+    openLimit(OPUS({ terminals: ['t2'] }))
+    expect(screen.getByTestId('limit-card-model-advice')).toHaveTextContent("Claude Code ran out on this model only: pick Sonnet in this terminal's model picker to go on here.")
     expect(screen.queryByTestId('limit-card-model')).toBeNull()
     await act(async () => undefined)
   })

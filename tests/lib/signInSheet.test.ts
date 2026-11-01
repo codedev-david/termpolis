@@ -80,7 +80,9 @@ describe('announce', () => {
       [{ kind: 'confirming' }, 'Checking the sign-in.'],
       [{ kind: 'success', email: 'b@example.test' }, 'Signed in as b@example.test.'],
       [{ kind: 'success', email: null }, 'Signed in.'],
-      [{ kind: 'error', message: 'nope', details: [] }, 'Claude Code didn\'t sign in: nope'],
+      [{ kind: 'error', message: 'nope', details: [] }, 'Claude Code didn\'t sign in: nope.'],
+      [{ kind: 'error', message: 'nope.', details: [] }, 'Claude Code didn\'t sign in: nope.'],
+      [{ kind: 'error', message: 'nope?', details: [] }, 'Claude Code didn\'t sign in: nope?'],
       [{ kind: 'unknown', screen: [], typing: false }, 'Termpolis can\'t read Claude Code\'s screen, so it shows it as it is.'],
       [{ kind: 'cancelled' }, 'The sign-in was cancelled.'],
     ]

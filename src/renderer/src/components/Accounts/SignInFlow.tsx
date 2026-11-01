@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../../shared/agentAccounts'
 import type { AccountRowView, AccountsView, SignInMethod } from '../../../../shared/agentAccounts'
 import type { SignInInput, SignInPhase } from '../../../../shared/signInScreens'
-import { SIGN_IN_METHODS, announce, keysFor, resignWarning, successWarnings } from '../../lib/signInSheet'
+import { SIGN_IN_METHODS, announce, keysFor, resignWarning, sentence, successWarnings } from '../../lib/signInSheet'
 import { SHEET_CHOICE, SHEET_INPUT, SHEET_PRIMARY, SHEET_SECONDARY, SMALL_BUTTON, SPINNER } from './ui'
 
 export interface SignInFlowProps {
@@ -51,6 +51,8 @@ export function SignInFlow({ account, view, mode = 'sign-in', method, onDone, do
   const [details, setDetails] = useState(false)
   const session = useRef<string | null>(null)
   const ended = useRef(false)
+  /** The flow was cancelled or went away: a session main answers for after that is ended at once. */
+  const closed = useRef(false)
   // A state that came before its session's id did (main sends the first one as it starts).
   const early = useRef(new Map<string, SignInPhase>())
   const field = useRef<HTMLInputElement>(null)
@@ -66,12 +68,19 @@ export function SignInFlow({ account, view, mode = 'sign-in', method, onDone, do
   }), [api])
 
   const start = async (m?: SignInMethod): Promise<void> => {
+    closed.current = false
     setStage({ kind: 'session', phase: { kind: 'starting' } })
     setInputError(null)
     setDetails(false)
     try {
       const r = await api.signInStart({ accountId: account.id, ...(m ? { method: m } : {}), ...(mode === 'agy-switch' ? { mode } : {}) })
       if (!r.success) return setStage({ kind: 'failed-start', message: r.error })
+      // Cancelled, or gone, before main gave the session its id: it would live on in its hidden
+      // process (and could still sign the profile in) until its timeout. It ends now.
+      if (closed.current) {
+        void api.signInInput(r.data.sessionId, { kind: 'cancel' }).catch(() => undefined)
+        return
+      }
       session.current = r.data.sessionId
       ended.current = false
       const first = early.current.get(r.data.sessionId)
@@ -93,9 +102,14 @@ export function SignInFlow({ account, view, mode = 'sign-in', method, onDone, do
   }, [])
 
   // A session still running when the flow goes away is ended, its process with it.
-  useEffect(() => () => {
-    const id = session.current
-    if (id && !ended.current) void api.signInInput(id, { kind: 'cancel' }).catch(() => undefined)
+  useEffect(() => {
+    // Set again as it mounts: the dev build mounts, unmounts and mounts a component once more.
+    closed.current = false
+    return () => {
+      closed.current = true
+      const id = session.current
+      if (id && !ended.current) void api.signInInput(id, { kind: 'cancel' }).catch(() => undefined)
+    }
   }, [api])
 
   const send = async (input: SignInInput): Promise<string | null> => {
@@ -110,6 +124,7 @@ export function SignInFlow({ account, view, mode = 'sign-in', method, onDone, do
   }
 
   const cancel = (): void => {
+    closed.current = true
     const id = session.current
     if (id && !ended.current) {
       ended.current = true
@@ -291,7 +306,7 @@ export function SignInFlow({ account, view, mode = 'sign-in', method, onDone, do
       case 'error':
         body = (
           <div className="flex flex-col gap-2" data-testid="sign-in-error">
-            <p className="text-[#e06c75]">{p.timeout ? p.message : `${name} didn't sign in: ${p.message}.`}</p>
+            <p className="text-[#e06c75]" data-testid="sign-in-error-text">{p.timeout ? p.message : `${name} didn't sign in: ${sentence(p.message)}`}</p>
             {details && (
               <pre className="text-[11px] text-[#bbb] bg-[#1e1e1e] border border-[#3c3c3c] rounded p-2 max-h-48 overflow-auto whitespace-pre-wrap" data-testid="sign-in-details">{p.details.join('\n')}</pre>
             )}
@@ -318,6 +333,8 @@ export function SignInFlow({ account, view, mode = 'sign-in', method, onDone, do
                   const data = keysFor(e)
                   if (data === null) return
                   e.preventDefault()
+                  // The CLI's key (Esc among them) is not the sheet's: it must not also close it.
+                  e.stopPropagation()
                   void send({ kind: 'keys', data })
                 },
               } : {})}

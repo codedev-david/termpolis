@@ -290,7 +290,7 @@ describe('SignInFlow: how it ends', () => {
   it('says a failure in the CLI\'s words, with its details on request, Try again and Close', async () => {
     const { onCancel } = await started()
     emit({ kind: 'error', message: 'Invalid code. Please make sure the full code was copied.', details: ['Paste code here > ••••'] })
-    expect(screen.getByTestId('sign-in-error')).toHaveTextContent('Claude Code didn\'t sign in: Invalid code. Please make sure the full code was copied..')
+    expect(screen.getByTestId('sign-in-error-text').textContent).toBe('Claude Code didn\'t sign in: Invalid code. Please make sure the full code was copied.')
     expect(screen.queryByTestId('sign-in-details')).toBeNull()
     fireEvent.click(screen.getByTestId('sign-in-show-details'))
     expect(screen.getByTestId('sign-in-details')).toHaveTextContent('Paste code here > ••••')
@@ -362,5 +362,75 @@ describe('SignInFlow: how it ends', () => {
     unmount()
     expect(accounts.signInInput).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
+  })
+})
+
+describe('SignInFlow: round 1', () => {
+  it('ends a session that main answered for after the flow was cancelled (Cancel before the answer)', async () => {
+    let answer: (v: unknown) => void = () => undefined
+    accounts.signInStart.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+    const { onCancel } = flow({ account: row({ agent: 'agy', profile: null }), mode: 'agy-switch' })
+    await waitFor(() => expect(accounts.signInStart).toHaveBeenCalledTimes(1))
+    // The user cancels before main has given the session an id: there is nothing to cancel yet.
+    fireEvent.click(screen.getByTestId('sign-in-cancel'))
+    expect(onCancel).toHaveBeenCalled()
+    expect(accounts.signInInput).not.toHaveBeenCalled()
+    // Main's answer lands: the session it started is ended at once, and the flow does not take it up.
+    await act(async () => { answer({ success: true, data: { sessionId: 'late' } }) })
+    expect(accounts.signInInput).toHaveBeenCalledWith('late', { kind: 'cancel' })
+    expect(accounts.signInInput).toHaveBeenCalledTimes(1)
+  })
+
+  it('ends a session that main answered for after the flow went away (closed before the answer)', async () => {
+    let answer: (v: unknown) => void = () => undefined
+    accounts.signInStart.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+    const { unmount } = flow({ account: row({ agent: 'agy', profile: null }), mode: 'agy-switch' })
+    await waitFor(() => expect(accounts.signInStart).toHaveBeenCalledTimes(1))
+    unmount()
+    expect(accounts.signInInput).not.toHaveBeenCalled()
+    await act(async () => { answer({ success: true, data: { sessionId: 'late' } }) })
+    expect(accounts.signInInput).toHaveBeenCalledWith('late', { kind: 'cancel' })
+  })
+
+  it('still takes up a session that main answers for while the flow is open, after a cancelled try', async () => {
+    flow({ account: row({ agent: 'agy', profile: null }), mode: 'agy-switch' })
+    await waitFor(() => expect(accounts.signInStart).toHaveBeenCalledTimes(1))
+    emit({ kind: 'error', message: 'Error: authentication interrupted.', details: [] })
+    await act(async () => { fireEvent.click(screen.getByTestId('sign-in-retry')) })
+    expect(accounts.signInStart).toHaveBeenCalledTimes(2)
+    emit({ kind: 'browser', url: URL_ })
+    expect(screen.getByTestId('sign-in-browser')).toBeInTheDocument()
+    expect(accounts.signInInput).not.toHaveBeenCalledWith('s1', { kind: 'cancel' })
+  })
+
+  it('says an error once, with one full stop, whether or not the CLI ended its sentence with one', async () => {
+    await started()
+    emit({ kind: 'error', message: 'Invalid code. Please make sure the full code was copied.', details: [] })
+    expect(screen.getByTestId('sign-in-error-text')).toHaveTextContent("Claude Code didn't sign in: Invalid code. Please make sure the full code was copied.")
+    expect(screen.getByTestId('sign-in-error-text').textContent).not.toMatch(/\.\./)
+    emit({ kind: 'error', message: 'It stopped', details: [] })
+    expect(screen.getByTestId('sign-in-error-text').textContent).toBe("Claude Code didn't sign in: It stopped.")
+    emit({ kind: 'error', message: 'Was that so?', details: [] })
+    expect(screen.getByTestId('sign-in-error-text').textContent).toBe("Claude Code didn't sign in: Was that so?")
+    expect(screen.getByTestId('sign-in-live')).toHaveTextContent("Claude Code didn't sign in: Was that so?")
+    emit({ kind: 'error', message: 'Invalid code. Please make sure it was copied.', details: [] })
+    expect(screen.getByTestId('sign-in-live').textContent).toBe("Claude Code didn't sign in: Invalid code. Please make sure it was copied.")
+  })
+
+  it('keeps a key it sends to the CLI from reaching the sheet: Esc goes to the CLI and does not close the sheet', async () => {
+    await started()
+    emit({ kind: 'unknown', screen: ['some screen'], typing: true })
+    const closeKeys: string[] = []
+    const onKey = (e: KeyboardEvent): void => { closeKeys.push(e.key) }
+    document.addEventListener('keydown', onKey)
+    fireEvent.keyDown(screen.getByTestId('sign-in-screen'), { key: 'Escape' })
+    fireEvent.keyDown(screen.getByTestId('sign-in-screen'), { key: 'a' })
+    expect(accounts.signInInput).toHaveBeenCalledWith('s1', { kind: 'keys', data: '\x1b' })
+    expect(accounts.signInInput).toHaveBeenCalledWith('s1', { kind: 'keys', data: 'a' })
+    expect(closeKeys).toEqual([])
+    // A key it does not send (Tab leaves the view) still travels.
+    fireEvent.keyDown(screen.getByTestId('sign-in-screen'), { key: 'Tab' })
+    expect(closeKeys).toEqual(['Tab'])
+    document.removeEventListener('keydown', onKey)
   })
 })

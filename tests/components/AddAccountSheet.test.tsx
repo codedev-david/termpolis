@@ -390,3 +390,40 @@ describe('step 2, sign in, and step 3, done', () => {
     expect(screen.queryByText('Copied')).toBeNull()
   })
 })
+
+describe('the wizard by keyboard alone', () => {
+  /** What a browser does: nothing inside a closed <details> but its summary takes the focus. */
+  function browserFocus(): () => void {
+    const original = HTMLElement.prototype.focus
+    HTMLElement.prototype.focus = function (this: HTMLElement, ...args: []) {
+      const details = this.closest('details')
+      if (details && !details.open && !(this.tagName === 'SUMMARY' && this.parentElement === details)) return
+      return original.apply(this, args)
+    }
+    return () => { HTMLElement.prototype.focus = original }
+  }
+  const nameOf = (el: Element | null): string => (el ? (el as HTMLElement).getAttribute('data-testid') ?? el.tagName.toLowerCase() : 'null')
+
+  it('reaches the Advanced toggle, Add and Cancel with Tab, though the closed Advanced hides its controls', () => {
+    const restore = browserFocus()
+    try {
+      bridge()
+      open('claude')
+      type('add-account-label', 'codedev')
+      const seen: string[] = []
+      const stops: Array<Element | null> = []
+      for (let i = 0; i < 40; i++) {
+        fireEvent.keyDown(document.activeElement ?? screen.getByRole('dialog'), { key: 'Tab' })
+        seen.push(nameOf(document.activeElement))
+        stops.push(document.activeElement)
+      }
+      expect(seen).toContain('summary')
+      expect(seen).toContain('add-account-submit')
+      expect(seen).toContain('add-account-cancel')
+      // Not one stop is stuck: the same control never takes Tab twice in a row.
+      expect(stops.some((el, i) => i > 0 && el === stops[i - 1])).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+})

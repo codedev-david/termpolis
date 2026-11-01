@@ -67,7 +67,7 @@ export function announce(phase: SignInPhase, agent: AccountAgent): string {
     case 'working': return 'Working on it.'
     case 'confirming': return 'Checking the sign-in.'
     case 'success': return phase.email ? `Signed in as ${phase.email}.` : 'Signed in.'
-    case 'error': return `${name} didn't sign in: ${phase.message}`
+    case 'error': return `${name} didn't sign in: ${sentence(phase.message)}`
     case 'unknown': return `Termpolis can't read ${name}'s screen, so it shows it as it is.`
     default: return 'The sign-in was cancelled.'
   }
@@ -76,6 +76,13 @@ export function announce(phase: SignInPhase, agent: AccountAgent): string {
 const NAMED_KEYS: Readonly<Record<string, string>> = {
   Enter: '\r', Backspace: '\x7f', Escape: '\x1b', Delete: '\x1b[3~',
   ArrowUp: '\x1b[A', ArrowDown: '\x1b[B', ArrowRight: '\x1b[C', ArrowLeft: '\x1b[D', Home: '\x1b[H', End: '\x1b[F',
+}
+
+/** `text` as one sentence with one full stop: the CLI's own messages mostly end with one, and a line
+ *  built from them is not to end with two. A question or exclamation mark stands as it is. */
+export function sentence(text: string): string {
+  const t = text.trim().replace(/\.+$/, '')
+  return /[?!]$/.test(t) ? t : `${t}.`
 }
 
 /** The bytes a key sends to the CLI from the fallback's live view, or null for none. Tab is left to

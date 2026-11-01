@@ -376,3 +376,85 @@ describe('AgySwitchSheet', () => {
     expect(agySwitch).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('AgySwitchSheet: leaving mid-switch never strands a terminal (round 1)', () => {
+  /** One Gemini terminal, exited, with the sign-in step showing. */
+  async function signingIn(terminals: TerminalSession[] = [T1]): Promise<void> {
+    answers = {
+      't1:exit': [{ kind: 'exited', conversationId: 'conv-1' }],
+      't2:exit': [{ kind: 'exited', conversationId: 'conv-2' }],
+      't1:resume': [{ kind: 'resumed', fresh: false, conversationId: 'conv-1' }],
+      't2:resume': [{ kind: 'resumed', fresh: false, conversationId: 'conv-2' }],
+    }
+    open('g2', terminals)
+    click('agy-switch-go')
+    await screen.findByTestId('flow')
+  }
+  const resumes = (): string[] => agySwitch.mock.calls.filter((c) => c[0].step === 'resume').map((c) => c[0].terminalId)
+
+  it('Stop pressed while the last terminal is being ended stops before agy is signed out', async () => {
+    let release: (v: unknown) => void = () => undefined
+    agySwitch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve }) as never)
+    answers = { 't1:resume': [{ kind: 'resumed', fresh: false, conversationId: 'conv-1' }] }
+    open('g2', [T1])
+    click('agy-switch-go')
+    await screen.findByTestId('agy-switch-exiting')
+    // The only terminal is the one being ended: Stop is pressed in that very step.
+    fireEvent.click(screen.getByTestId('agy-switch-stop-exiting'))
+    await act(async () => { release({ success: true, data: { kind: 'exited', conversationId: 'conv-1' } }) })
+    expect(await screen.findByTestId('agy-switch-stopped')).toHaveTextContent('you asked it to')
+    expect(screen.queryByTestId('flow')).toBeNull()
+    // Nothing signed agy out; the terminal it had ended goes back to its conversation.
+    await waitFor(() => expect(resumes()).toEqual(['t1']))
+  })
+
+  it('Esc mid sign-in does what the flow\'s own Cancel does: the choices to try again or resume, nothing stranded', async () => {
+    await signingIn()
+    fireEvent.keyDown(screen.getByTestId('agy-switch'), { key: 'Escape' })
+    expect(await screen.findByTestId('agy-switch-interrupted')).toBeInTheDocument()
+    expect(screen.queryByTestId('flow')).toBeNull()
+    expect(st().agySwitchSheet).not.toBeNull()
+    expect(resumes()).toEqual([])
+    // Its X is the same.
+    click('agy-switch-retry')
+    await screen.findByTestId('flow')
+    click('agy-switch-close')
+    expect(await screen.findByTestId('agy-switch-interrupted')).toBeInTheDocument()
+  })
+
+  it('Esc or the X in the interrupted choices resumes what was ended before it closes', async () => {
+    await signingIn([T1, T2])
+    click('agy-switch-close')
+    await screen.findByTestId('agy-switch-interrupted')
+    expect(screen.getByTestId('agy-switch-interrupted')).toHaveTextContent('Closing this resumes them now')
+    fireEvent.keyDown(screen.getByTestId('agy-switch'), { key: 'Escape' })
+    expect(await screen.findByTestId('agy-switch-done')).toBeInTheDocument()
+    expect(resumes()).toEqual(['t1', 't2'])
+    expect(mark('Gemini 1')).toBe('resumed')
+    expect(mark('Gemini 2')).toBe('resumed')
+    click('agy-switch-done-close')
+    expect(st().agySwitchSheet).toBeNull()
+  })
+
+  it('with nothing ended, Esc mid sign-in shows the interrupted view, which has a Close and no resume', async () => {
+    answers = {}
+    open('g2', [])
+    click('agy-switch-go')
+    await screen.findByTestId('flow')
+    fireEvent.keyDown(screen.getByTestId('agy-switch'), { key: 'Escape' })
+    expect(await screen.findByTestId('agy-switch-interrupted')).toHaveTextContent("The sign-in didn't finish.")
+    expect(screen.queryByTestId('agy-switch-resume-now')).toBeNull()
+    click('agy-switch-interrupted-close')
+    expect(st().agySwitchSheet).toBeNull()
+    expect(resumes()).toEqual([])
+  })
+})
+
+describe('AgySwitchSheet: the confirmation says what else a sign-out moves (round 1)', () => {
+  it('names the agy that Termpolis does not resume: a swarm worker, another window', () => {
+    open('g2', [T1])
+    expect(screen.getByTestId('agy-switch-confirm')).toHaveTextContent(
+      'An agy running anywhere else on this computer (a swarm worker, another window) moves to the new sign-in too, and Termpolis does not resume it.',
+    )
+  })
+})
