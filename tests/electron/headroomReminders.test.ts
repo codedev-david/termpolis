@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mapOutsideReminders } from '../../src/main/headroomProxy/reminders'
+import { mapOutsideReminders, eachOutsideReminder } from '../../src/main/headroomProxy/reminders'
 const { rewriteMessagesBody } = await import('../../src/main/headroomProxy/wireCompress')
 
 const upper = (s: string) => ({ text: s.toUpperCase(), changed: s.toUpperCase() !== s })
@@ -67,5 +67,58 @@ describe('live compressor keeps harness reminders out of the window', () => {
     })
     const tr = JSON.parse(rewriteMessagesBody(body).body).messages[1].content[0].content
     expect(tr).toBe(content)
+  })
+})
+
+/**
+ * The stub-kind tally only reads. Giving it the splitter that rebuilds every string it is handed cost
+ * a body of reminder-dense results about a tenth more than v1.54.4 took to rewrite, for text the tally
+ * threw away. eachOutsideReminder visits the same stretches without building anything, and has to agree
+ * with mapOutsideReminders about which they are: a disagreement would count text the compressor never saw.
+ */
+describe('eachOutsideReminder', () => {
+  const seen = (text: string): string[] => { const out: string[] = []; eachOutsideReminder(text, (g) => { out.push(g) }); return out }
+  const mapped = (text: string): string[] => { const out: string[] = []; mapOutsideReminders(text, (g) => { out.push(g); return { text: g, changed: false } }); return out }
+
+  it('hands text with no reminder to the visitor whole, and nothing for an empty text', () => {
+    expect(seen('plain output')).toEqual(['plain output'])
+    expect(seen('')).toEqual([''])
+    expect(mapped('')).toEqual([''])
+  })
+
+  it('visits only the stretches between reminders, none for a reminder at either end or two side by side', () => {
+    expect(seen('head <system-reminder>a</system-reminder> mid <system-reminder>b</system-reminder> tail')).toEqual(['head ', ' mid ', ' tail'])
+    expect(seen('<system-reminder>a</system-reminder>mid<system-reminder>b</system-reminder>')).toEqual(['mid'])
+    expect(seen('x<system-reminder>a</system-reminder><system-reminder>b</system-reminder>y')).toEqual(['x', 'y'])
+  })
+
+  it('treats an opening tag with no closing tag as protecting everything after it', () => {
+    expect(seen('keep <system-reminder>never closed, and more text')).toEqual(['keep '])
+    expect(seen('<system-reminder>never closed')).toEqual([])
+  })
+
+  it('agrees with mapOutsideReminders, stretch for stretch, on 2,000 random texts', () => {
+    let a = 0x5eed
+    const next = (): number => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+    const pieces = ['<system-reminder>', '</system-reminder>', 'text ', '\n', '<system-', 'reminder>', ' ', 'x'.repeat(30), '<system-reminder>a</system-reminder>', '</system-reminder></system-reminder>', '<system-reminder><system-reminder>']
+    for (let n = 0; n < 2000; n++) {
+      let t = ''
+      const k = Math.floor(next() * 14)
+      for (let i = 0; i < k; i++) t += pieces[Math.floor(next() * pieces.length)]
+      expect(seen(t), JSON.stringify(t)).toEqual(mapped(t))
+    }
+  })
+
+  it('does not build the text back: its work is the visits and nothing else', () => {
+    // Relative, in one process, best of several alternating rounds, with a bound a factor away from the
+    // measured ratio: a reminder-dense text costs the rebuilding splitter about twice what the visitor does.
+    const text = Array.from({ length: 3000 }, (_, i) => `result line ${i} <system-reminder>keep this block of instructions ${i}</system-reminder>`).join('\n')
+    const visitor = (): void => { eachOutsideReminder(text, () => undefined) }
+    const rebuild = (): void => { mapOutsideReminders(text, (g) => ({ text: g, changed: false })) }
+    const time = (fn: () => void): number => { const t0 = process.hrtime.bigint(); for (let i = 0; i < 20; i++) fn(); return Number(process.hrtime.bigint() - t0) }
+    visitor(); rebuild()
+    let v = Infinity, r = Infinity
+    for (let round = 0; round < 9; round++) { v = Math.min(v, time(visitor)); r = Math.min(r, time(rebuild)) }
+    expect(v).toBeLessThanOrEqual(r * 1.25)
   })
 })

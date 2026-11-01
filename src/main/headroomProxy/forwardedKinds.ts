@@ -12,7 +12,7 @@
  * assigns into them. Pure, so it adds nothing to what compression depends on, and the child
  * imports it, so it stays free of electron and fs.
  */
-import { mapOutsideReminders } from './reminders'
+import { eachOutsideReminder } from './reminders'
 import { DECAY_FIRST_THRESHOLD } from './prefixDecay'
 
 export interface StubKindCounts {
@@ -67,14 +67,14 @@ function classify(seg: string): Kind {
 
 function tally(text: string, k: StubKindCounts, early: boolean): void {
   // Each stretch outside a harness reminder is what the compressor saw, so it is what is counted;
-  // the reminders themselves are instructions to the model and ride through untouched.
-  mapOutsideReminders(text, (seg) => {
+  // the reminders themselves are instructions to the model and ride through untouched. Only read, so
+  // nothing is rebuilt (reminders.ts).
+  eachOutsideReminder(text, (seg) => {
     if (!BLANK.test(seg)) {
       const kind = classify(seg)
       k[kind]++
       if (kind === 'aged' && early) k.agedEarly++
     }
-    return { text: seg, changed: false }
   })
 }
 

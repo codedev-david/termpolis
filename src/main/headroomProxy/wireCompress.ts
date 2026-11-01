@@ -647,14 +647,19 @@ export function rewriteMessagesBody(raw: string, opts: { compressImage?: ImageCo
   } catch {
     return { body: raw, changed: false, stats: emptyStats(), stashes: [] } // fail-open
   }
-  // The model is one field of the body, so naming it on each stash keeps the metadata a function
-  // of the body alone. It rides beside the stash and never enters the forwarded bytes.
-  stampModel(stashes, obj.model)
-  // And the policy the request ran under, so the ledger can tell a compaction the policy in force made
-  // from one the holdout made on the old behaviour.
-  stampPolicy(stashes, policy.kind)
-  // Read off the REWRITTEN messages, which are what `out` serializes; classifyMessages only reads.
-  stats.kinds = classifyMessages(obj.messages as unknown[])
+  // What is recorded about the request after the rewrite is observation, and an observation that
+  // fails must not undo the compression it describes: the tokens in the shortened body are promises
+  // the stashes keep, and a body already rewritten is only worth sending whole.
+  try {
+    // The model is one field of the body, so naming it on each stash keeps the metadata a function
+    // of the body alone. It rides beside the stash and never enters the forwarded bytes.
+    stampModel(stashes, obj.model)
+    // And the policy the request ran under, so the ledger can tell a compaction the policy in force
+    // made from one the holdout made on the old behaviour.
+    stampPolicy(stashes, policy.kind)
+    // Read off the REWRITTEN messages, which are what `out` serializes; classifyMessages only reads.
+    stats.kinds = classifyMessages(obj.messages as unknown[])
+  } catch { /* the rewrite stands; only its bookkeeping is lost */ }
   if (!changed) return { body: raw, changed: false, stats, stashes }
   let out: string
   try { out = JSON.stringify(obj) } catch { return { body: raw, changed: false, stats: emptyStats(), stashes: [] } }

@@ -17,6 +17,8 @@
  */
 
 const REMINDER = /<system-reminder>[\s\S]*?(?:<\/system-reminder>|$)/g
+const OPEN = '<system-reminder>'
+const CLOSE = '</system-reminder>'
 
 export interface SegmentResult { text: string; changed: boolean }
 
@@ -45,4 +47,26 @@ export function mapOutsideReminders(text: string, fn: (segment: string) => Segme
     changed = changed || r.changed
   }
   return { text: out, changed }
+}
+
+/**
+ * Visit every stretch of `text` outside a `<system-reminder>` block, in order, without building
+ * anything: no copy of the text, no match objects. It is for a caller that only reads (the stub-kind
+ * tally), which would otherwise pay mapOutsideReminders for rebuilding strings it throws away. It
+ * agrees with mapOutsideReminders about which stretches there are (the tests hold them to it): the same
+ * delimiters, an unclosed block protecting the rest of the text, and no visit for an empty stretch
+ * between reminders. Text with no reminder is visited whole, even when it is empty.
+ */
+export function eachOutsideReminder(text: string, fn: (segment: string) => void): void {
+  let at = text.indexOf(OPEN)
+  if (at === -1) { fn(text); return }
+  let last = 0
+  while (at !== -1) {
+    if (at > last) fn(text.slice(last, at))
+    const close = text.indexOf(CLOSE, at + OPEN.length)
+    if (close === -1) return // an opening tag with no closing tag protects everything after it
+    last = close + CLOSE.length
+    at = text.indexOf(OPEN, last)
+  }
+  if (last < text.length) fn(text.slice(last))
 }

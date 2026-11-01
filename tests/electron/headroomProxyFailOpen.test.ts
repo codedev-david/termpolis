@@ -1,0 +1,153 @@
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
+import * as http from 'http'
+
+/**
+ * Every failure forwards the original bytes untouched: one proxy child serves every Claude session of an
+ * app run, and a request it cannot handle must reach the API exactly as the client wrote it. Two lines of
+ * defence hold this. The rewriter fails open on its own (returns the body it was given), and the server
+ * fails open around the rewriter in case something outside the rewriter's own guard throws. The first was
+ * tested; the second, the one that decides whether a thrown error becomes a 502 for the user, was not.
+ * Faults are injected through the modules the rewriter and the server call.
+ */
+
+const fault = vi.hoisted(() => ({ rewrite: false, classify: false, stamp: false }))
+
+vi.mock('../../src/main/headroomProxy/wireCompress', async () => {
+  const real = await vi.importActual<typeof import('../../src/main/headroomProxy/wireCompress')>('../../src/main/headroomProxy/wireCompress')
+  return {
+    ...real,
+    rewriteMessagesBody: (...a: Parameters<typeof real.rewriteMessagesBody>): ReturnType<typeof real.rewriteMessagesBody> => {
+      if (fault.rewrite) throw new Error('the rewriter blew up')
+      return real.rewriteMessagesBody(...a)
+    },
+  }
+})
+vi.mock('../../src/main/headroomProxy/forwardedKinds', async () => {
+  const real = await vi.importActual<typeof import('../../src/main/headroomProxy/forwardedKinds')>('../../src/main/headroomProxy/forwardedKinds')
+  return {
+    ...real,
+    classifyMessages: (...a: Parameters<typeof real.classifyMessages>): ReturnType<typeof real.classifyMessages> => {
+      if (fault.classify) throw new Error('the tally blew up')
+      return real.classifyMessages(...a)
+    },
+  }
+})
+vi.mock('../../src/main/headroom/elisionMeta', async () => {
+  const real = await vi.importActual<typeof import('../../src/main/headroom/elisionMeta')>('../../src/main/headroom/elisionMeta')
+  return {
+    ...real,
+    stampModel: (...a: Parameters<typeof real.stampModel>): void => {
+      if (fault.stamp) throw new Error('naming the model blew up')
+      real.stampModel(...a)
+    },
+    stampPolicy: (...a: Parameters<typeof real.stampPolicy>): void => {
+      if (fault.stamp) throw new Error('naming the policy blew up')
+      real.stampPolicy(...a)
+    },
+  }
+})
+
+const { createProxyServer } = await import('../../src/main/headroomProxy/proxyMain')
+const { rewriteMessagesBody } = await import('../../src/main/headroomProxy/wireCompress')
+
+const BIG = Array.from({ length: 90 }, (_, i) => `build step ${i}: compiled module ${i * 7} in ${i * 13} ms with 0 errors`).join('\n')
+const body = JSON.stringify({
+  model: 'claude-opus-5-5',
+  messages: [
+    { role: 'user', content: 'Please look into the failing build and tell me what you find in the log.' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_0', name: 'Bash', input: { command: 'cat build.log' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_0', content: BIG }] },
+  ],
+})
+
+beforeEach(() => { fault.rewrite = false; fault.classify = false; fault.stamp = false })
+
+describe('the server fails open around the rewriter', () => {
+  let stub: http.Server, proxy: http.Server, port: number
+  let upstreamBody = ''
+  let results = 0
+  const SSE = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":9,"cache_creation_input_tokens":0}}}\n\n'
+
+  beforeAll(async () => {
+    stub = http.createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (c) => chunks.push(c))
+      req.on('end', () => { upstreamBody = Buffer.concat(chunks).toString('utf8'); res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(SSE) })
+    })
+    await new Promise<void>((r) => stub.listen(0, '127.0.0.1', () => r()))
+    proxy = createProxyServer({ upstreamHost: '127.0.0.1', upstreamPort: (stub.address() as { port: number }).port, useHttps: false, onResult: () => { results++ } })
+    await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', () => r()))
+    port = (proxy.address() as { port: number }).port
+  })
+  afterAll(() => { stub.close(); proxy.close() })
+  beforeEach(() => { upstreamBody = ''; results = 0 })
+
+  const send = (b: string): Promise<{ status: number; text: string }> => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(b) } }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }))
+    })
+    req.on('error', reject); req.write(b); req.end()
+  })
+
+  it('when the rewriter throws, the API receives the exact bytes the client sent and the client gets its answer', async () => {
+    fault.rewrite = true
+    const r = await send(body)
+    expect(r.status).toBe(200)
+    expect(r.text).toBe(SSE)
+    expect(upstreamBody).toBe(body)
+    // Nothing was rewritten, so there is nothing to count: the request is not in any ledger.
+    expect(results).toBe(0)
+  })
+
+  it('and with nothing wrong the same request is shortened, so the test above is about the throw and not about the body', async () => {
+    const r = await send(body)
+    expect(r.status).toBe(200)
+    expect(upstreamBody).not.toBe(body)
+    expect(upstreamBody.length).toBeLessThan(body.length)
+    expect(results).toBe(1)
+  })
+
+  it('a body that is not JSON at all is forwarded as it came', async () => {
+    const junk = '{"messages": [not json'
+    const r = await send(junk)
+    expect(r.status).toBe(200)
+    expect(upstreamBody).toBe(junk)
+  })
+})
+
+describe('the rewriter keeps its compression when only the bookkeeping fails', () => {
+  it('a fault in the stub tally leaves the shortened body, and an empty tally', () => {
+    const clean = rewriteMessagesBody(body)
+    expect(clean.changed).toBe(true)
+    expect(clean.stats.kinds.compact).toBe(1)
+    fault.classify = true
+    const r = rewriteMessagesBody(body)
+    expect(r.changed).toBe(true)
+    expect(r.body).toBe(clean.body)
+    expect(r.stashes).toEqual(clean.stashes)
+    expect(r.stats.kinds).toEqual({ plain: 0, compact: 0, dedup: 0, diff: 0, aged: 0, agedEarly: 0 })
+  })
+
+  it('a fault in naming the model or the policy leaves the shortened body, and the stash it must be able to redeem', () => {
+    const clean = rewriteMessagesBody(body)
+    fault.stamp = true
+    const r = rewriteMessagesBody(body)
+    expect(r.changed).toBe(true)
+    expect(r.body).toBe(clean.body)
+    expect(r.stashes).toHaveLength(1)
+    expect(r.stashes[0].token).toBe(clean.stashes[0].token)
+    expect(r.stashes[0].original).toBe(BIG)
+    // The footer of the shortened result names a token the stash can answer for.
+    expect(r.body).toContain(r.stashes[0].token)
+  })
+
+  it('an unchanged body stays unchanged when the tally throws: the original bytes, not a re-serialisation', () => {
+    const small = JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hello there' }] })
+    fault.classify = true
+    const r = rewriteMessagesBody(small)
+    expect(r.changed).toBe(false)
+    expect(r.body).toBe(small)
+  })
+})
