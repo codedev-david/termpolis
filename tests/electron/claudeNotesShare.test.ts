@@ -105,6 +105,24 @@ describe('withoutUnshareableNotes: a door that cannot tell which project is aski
     expect(withoutUnshareableNotes([], true)).toEqual([])
     expect(withoutUnshareableNotes([], false)).toEqual([])
   })
+
+  // A listing and a walk of the graph return rows with no score, and some with no tags or agent at all.
+  it('takes rows that carry no score, no tags or no agent the same way', () => {
+    const listed = [
+      { id: 'a', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:reference', 'note:a.md'] },
+      { id: 'b', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:project', 'note:b.md'] },
+      { id: 'c', source: 'claude-notes', agentId: 'claude-notes' }, // a note with no tags at all is untyped: it does not travel
+      { id: 'd' },
+      { id: 'e', source: 'claude' },
+    ]
+    expect(withoutUnshareableNotes(listed, false).map((r) => r.id)).toEqual(['d', 'e'])
+    expect(withoutUnshareableNotes(listed, true).map((r) => r.id)).toEqual(['a', 'd', 'e'])
+  })
+
+  it('hands back whatever is not a list as it came, because it sits on every agent-facing read', () => {
+    const graph = { nodes: [], edges: [] }
+    for (const v of [graph, null, undefined, 'x', 7]) expect(withoutUnshareableNotes(v as never, false)).toBe(v)
+  })
 })
 
 describe('withBorrowedNotes: the extra search', () => {

@@ -21,6 +21,7 @@ const BUTTON = 'text-xs px-2 py-1 rounded bg-[#2d2d2d] text-[#d4d4d4] hover:bg-[
 function Switch({ on, label, testId, disabled, onClick }: { on: boolean; label: string; testId: string; disabled: boolean; onClick: () => void }) {
   return (
     <button
+      id={testId}
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
@@ -48,6 +49,15 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
   const [busy, setBusy] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const mounted = useRef(true)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const removeRef = useRef<HTMLButtonElement>(null)
+  // Focus follows the confirm step: onto the SAFE choice when it opens (a held Enter must not confirm a removal), and back onto
+  // the button that opened it once it closes and nothing is in flight (a button that is disabled cannot take focus).
+  const refocus = useRef(false)
+  useEffect(() => {
+    if (confirming) { cancelRef.current?.focus(); return }
+    if (!busy && refocus.current) { refocus.current = false; removeRef.current?.focus() }
+  }, [confirming, busy])
 
   const load = useCallback(async () => {
     try {
@@ -86,6 +96,7 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
   }
 
   const remove = async () => {
+    refocus.current = true
     setConfirming(false)
     setBusy(true)
     setActionErr('')
@@ -109,7 +120,7 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
     }
   }
 
-  if (err && !s) return <div data-testid="claude-notes-error" className="text-xs text-[#EF5350]">{err}</div>
+  if (err && !s) return <div data-testid="claude-notes-error" role="alert" className="text-xs text-[#EF5350]">{err}</div>
   if (!s) return <div data-testid="claude-notes-loading" className="text-xs text-[#9ca3af]">Reading the saved-notes settings&hellip;</div>
 
   const waiting = s.indexClaudeNotes && !s.connected
@@ -127,7 +138,8 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
           (<code className="bg-[#3c3c3c] px-1 rounded">~/.claude/projects/&hellip;/memory/*.md</code>), visible only to Claude and
           only in that project. With this on, Termpolis <strong>reads</strong> those notes and keeps a copy in its memory, under the
           project they belong to, so Codex and the Antigravity CLI can find them too. Nothing is ever written back into
-          Claude&rsquo;s folder, and nothing leaves this computer. An edited note updates its copy; a deleted one removes it.
+          Claude&rsquo;s folder. Termpolis sends nothing off this computer, but an agent that finds a note passes its text on to
+          its own provider, as it does any memory it reads. An edited note updates its copy; a deleted one removes it.
           Secrets in a note are redacted before the copy is stored.
         </p>
       </div>
@@ -141,7 +153,7 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
           onClick={() => { void change({ indexClaudeNotes: !s.indexClaudeNotes }) }}
         />
         <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium">Include Claude Code&rsquo;s saved notes in memory</span>
+          <label htmlFor="claude-notes-index-toggle" className="text-sm font-medium cursor-pointer">Include Claude Code&rsquo;s saved notes in memory</label>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             On by default. Runs with the background indexer (about every 30 minutes), only while your agents are connected.
             Turning it off stops the reading; the copies already made stay until you remove them below.
@@ -150,7 +162,7 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
       </div>
 
       {waiting ? (
-        <div data-testid="claude-notes-waiting" className="text-xs text-[#e2c08d] p-3 border border-[#e2c08d]/40 rounded bg-[#e2c08d]/10 leading-relaxed">
+        <div data-testid="claude-notes-waiting" role="status" className="text-xs text-[#e2c08d] p-3 border border-[#e2c08d]/40 rounded bg-[#e2c08d]/10 leading-relaxed">
           Your agents are not connected, so no note is read. The switch above is on and takes effect as soon as you connect
           them in Settings &rsaquo; Agent Integration.
         </div>
@@ -165,12 +177,13 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
           onClick={() => { void change({ shareNotesAcrossProjects: !s.shareNotesAcrossProjects }) }}
         />
         <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium">Let general notes help in other projects</span>
+          <label htmlFor="claude-notes-share-toggle" className="text-sm font-medium cursor-pointer">Let general notes help in other projects</label>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Off by default. When on, a memory search in one project may also return up to two notes of the kinds
             <em> reference</em>, <em>feedback</em> and <em>user</em> from another project, after that project&rsquo;s own results and marked with
-            the project they came from. Notes about one project&rsquo;s own state never leave it. Leave it off if your projects are
-            not meant to see each other (employer and personal, say).
+            the project they came from. Notes about one project&rsquo;s own state never leave it. A search that names no project
+            returns no saved note (with this on, only those kinds). Leave it off if your projects are not meant to see each other
+            (employer and personal, say).
           </span>
         </div>
       </div>
@@ -178,7 +191,7 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
       <div data-testid="claude-notes-status" className="text-xs text-[#9ca3af] leading-relaxed">
         {nothingYet
           ? 'Nothing imported yet.'
-          : `${plural(status.notes, 'note', 'notes')} from ${plural(status.projects, 'project', 'projects')} are in memory (${plural(status.chunks, 'chunk', 'chunks')}). Last checked: ${when(status.lastAt)}.`}
+          : `${plural(status.notes, 'note', 'notes')} from ${plural(status.projects, 'project', 'projects')} ${status.notes === 1 ? 'is' : 'are'} in memory (${plural(status.chunks, 'chunk', 'chunks')}). Last checked: ${when(status.lastAt)}.`}
         {status.noProject > 0 ? (
           <span data-testid="claude-notes-noproject">
             {' '}{plural(status.noProject, 'note was', 'notes were')} left out because Claude Code has no session recorded for its project folder yet.
@@ -201,17 +214,17 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
           <>
             <span className="text-xs text-[#e5e5e5]">Remove every imported note from memory and turn the import off?</span>
             <button className={BUTTON} data-testid="claude-notes-remove-confirm" disabled={busy} onClick={() => { void remove() }}>Remove</button>
-            <button className={BUTTON} data-testid="claude-notes-remove-cancel" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
+            <button ref={cancelRef} className={BUTTON} data-testid="claude-notes-remove-cancel" disabled={busy} onClick={() => { refocus.current = true; setConfirming(false) }}>Cancel</button>
           </>
         ) : (
-          <button className={BUTTON} data-testid="claude-notes-remove" disabled={busy} onClick={() => setConfirming(true)}>Remove imported notes</button>
+          <button ref={removeRef} className={BUTTON} data-testid="claude-notes-remove" disabled={busy} onClick={() => setConfirming(true)}>Remove imported notes</button>
         )}
         <span className="text-[10px] text-[#6b7280]">Claude&rsquo;s own notes are not touched.</span>
       </div>
 
-      {notice ? <div data-testid="claude-notes-notice" className="text-xs text-[#7ee2a3]">{notice}</div> : null}
-      {actionErr ? <div data-testid="claude-notes-action-error" className="text-xs text-[#EF5350]">{actionErr}</div> : null}
-      {err ? <div data-testid="claude-notes-error" className="text-xs text-[#EF5350]">{err}</div> : null}
+      {notice ? <div data-testid="claude-notes-notice" role="status" className="text-xs text-[#7ee2a3]">{notice}</div> : null}
+      {actionErr ? <div data-testid="claude-notes-action-error" role="alert" className="text-xs text-[#EF5350]">{actionErr}</div> : null}
+      {err ? <div data-testid="claude-notes-error" role="alert" className="text-xs text-[#EF5350]">{err}</div> : null}
     </section>
   )
 }

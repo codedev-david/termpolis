@@ -52,15 +52,31 @@ const open = async (props: { refreshToken?: number } = {}) => {
 const pressed = (id: string) => screen.getByTestId(id).getAttribute('aria-pressed')
 
 describe('ClaudeNotesPanel: what is shown', () => {
-  it('says what it reads, what it writes (nothing back), and that nothing leaves the computer', async () => {
+  it('says what it reads, what it writes (nothing back), and where a note can go', async () => {
     await open()
     const text = screen.getByTestId('claude-notes-panel').textContent!
     expect(text).toContain("Claude Code’s saved notes")
     expect(text).toContain('~/.claude/projects/')
     expect(text).toContain('reads')
     expect(text).toContain('Nothing is ever written back')
-    expect(text).toContain('nothing leaves this computer')
     expect(text).toContain('Secrets in a note are redacted')
+  })
+
+  // Termpolis itself sends nothing anywhere, but the point of the feature is that Codex and the Antigravity CLI read what Claude
+  // kept private to Claude, and an agent passes what it reads to its own provider. "Nothing leaves this computer" was not true of that.
+  it('does not say the notes stay on this computer: an agent that finds one passes it to its own provider', async () => {
+    await open()
+    const text = screen.getByTestId('claude-notes-panel').textContent!
+    expect(text).not.toMatch(/nothing leaves this computer/i)
+    expect(text).toContain('Termpolis sends nothing off this computer')
+    expect(text).toContain('passes its text on to its own provider')
+  })
+
+  it('says what the sharing switch covers, and that a search that names no project is given no note', async () => {
+    await open()
+    const text = screen.getByTestId('claude-notes-panel').textContent!
+    expect(text).toContain('Notes about one project’s own state never leave it')
+    expect(text).toContain('A search that names no project returns no saved note')
   })
 
   it('shows the notes switch on and the sharing switch off, as they are by default', async () => {
@@ -80,7 +96,7 @@ describe('ClaudeNotesPanel: what is shown', () => {
     mockApi(view({}, { notes: 1, chunks: 1, projects: 1, lastAt: Date.UTC(2026, 9, 31, 12, 0, 0) }))
     await open()
     const t = screen.getByTestId('claude-notes-status').textContent!
-    expect(t).toContain('1 note from 1 project are in memory (1 chunk)')
+    expect(t).toContain('1 note from 1 project is in memory (1 chunk)')
     expect(t).toContain('Last checked:')
     expect(t).not.toContain('not yet')
     cleanup()
@@ -394,5 +410,84 @@ describe('ClaudeNotesPanel: Remove imported notes', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     await act(async () => { fail(new Error('late')) })
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+
+// The panel is operated from the keyboard and read by a screen reader as well as by a mouse. The switches are buttons (so Space and
+// Enter work); what is left is that a click on the words beside a switch flips it, that focus is never dropped on the floor when
+// the confirm step opens and closes, and that what the panel says after an action is announced.
+describe('ClaudeNotesPanel: keyboard and screen reader', () => {
+  it('flips a switch from a click on the words beside it, and tells the switch apart by its label', async () => {
+    await open()
+    for (const [id, text] of [
+      ['claude-notes-index-toggle', 'Include Claude Code’s saved notes in memory'],
+      ['claude-notes-share-toggle', 'Let general notes help in other projects'],
+    ] as const) {
+      const label = screen.getByText(text, { selector: 'label' })
+      expect(label.getAttribute('for')).toBe(screen.getByTestId(id).id)
+      expect(screen.getByTestId(id).id).not.toBe('')
+    }
+    const before = pressed('claude-notes-share-toggle')
+    fireEvent.click(screen.getByText('Let general notes help in other projects', { selector: 'label' }))
+    await flush()
+    expect(setSettings).toHaveBeenCalledWith({ shareNotesAcrossProjects: before !== 'true' })
+  })
+
+  it('puts focus on the safe choice when the confirm step opens, and back on the button that opened it', async () => {
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    expect(document.activeElement).toBe(screen.getByTestId('claude-notes-remove-cancel')) // not on Remove: a held key must not confirm
+    fireEvent.click(screen.getByTestId('claude-notes-remove-cancel'))
+    await flush()
+    expect(document.activeElement).toBe(screen.getByTestId('claude-notes-remove'))
+  })
+
+  it('puts focus back on the button once a removal has finished, not before: a button in flight is disabled', async () => {
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    fireEvent.click(screen.getByTestId('claude-notes-remove-confirm'))
+    await flush(); await flush()
+    expect(removeNotes).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(screen.getByTestId('claude-notes-remove'))
+  })
+
+  it('does not take focus on first render or while nothing is being confirmed', async () => {
+    await open()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('announces the result of a removal politely, and a failure at once', async () => {
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    fireEvent.click(screen.getByTestId('claude-notes-remove-confirm'))
+    await flush(); await flush()
+    expect(screen.getByTestId('claude-notes-notice').getAttribute('role')).toBe('status')
+
+    removeNotes.mockImplementationOnce(async () => ({ success: false, error: 'memory is locked' }))
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    fireEvent.click(screen.getByTestId('claude-notes-remove-confirm'))
+    await flush(); await flush()
+    expect(screen.getByTestId('claude-notes-action-error').getAttribute('role')).toBe('alert')
+  })
+
+  it('announces that the agents are not connected, and a failed read', async () => {
+    mockApi(view({ connected: false }))
+    await open()
+    expect(screen.getByTestId('claude-notes-waiting').getAttribute('role')).toBe('status')
+    cleanup()
+    getSettings = vi.fn(async () => ({ success: false, error: 'no host' }))
+    ;(window as any).termpolis.memoryGetNotesSettings = getSettings
+    render(<ClaudeNotesPanel />) // there is no panel to wait for when the read fails
+    expect((await screen.findByTestId('claude-notes-error')).getAttribute('role')).toBe('alert')
+  })
+
+  it('says it with the right verb for one note and for many', async () => {
+    mockApi(view({}, { notes: 1, chunks: 2, projects: 1 }))
+    await open()
+    expect(screen.getByTestId('claude-notes-status').textContent).toContain('1 note from 1 project is in memory')
+    cleanup()
+    mockApi(view({}, { notes: 2, chunks: 3, projects: 1 }))
+    await open()
+    expect(screen.getByTestId('claude-notes-status').textContent).toContain('2 notes from 1 project are in memory')
   })
 })

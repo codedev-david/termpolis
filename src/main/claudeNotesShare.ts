@@ -21,13 +21,17 @@ export const BORROW_MIN_SCORE = 0.5
 /** What the store returns when a search names no limit. */
 const SEARCH_DEFAULT_LIMIT = 10
 
-export interface LendableHit {
-  id: string
-  score: number
-  project?: string
+/** What tells an imported note from any other stored row. Search hits, list rows and graph neighbours all carry it. */
+export interface NoteRow {
   tags?: string[]
   source?: string
   agentId?: string
+}
+
+export interface LendableHit extends NoteRow {
+  id: string
+  score: number
+  project?: string
 }
 
 /** The candidates that may be lent to a search scoped to `project`: notes of a portable type, from another
@@ -48,12 +52,15 @@ export function pickBorrowed<T extends LendableHit>(
 }
 
 /**
- * For a door that cannot tell which project is asking (memory_anticipate searches all of memory for a task): the
- * hits with every imported note taken out unless the user allows notes to travel, and then only the general kinds.
- * Without it a note (importance 0.9, above the bar that door keeps) would be handed to every project.
+ * For a door that cannot tell which project is asking: the rows with every imported note taken out unless the user allows
+ * notes to travel, and then only the general kinds. memory_anticipate searches all of memory for a task; a search or a listing
+ * that names no project, and a walk of the graph (which starts from a memory and not from a project, and whose edges the store
+ * draws between projects), are the same. Without it a note (importance 0.9, above the bar anticipate keeps) would be handed to
+ * every project. Anything that is not a list comes back as it came: this sits on every agent-facing read and must never throw.
  */
-export function withoutUnshareableNotes<T extends LendableHit>(hits: readonly T[], sharing: boolean): T[] {
-  return hits.filter((h) => !isClaudeNote(h) || (sharing && isPortableType(noteTypeOfTags(h.tags))))
+export function withoutUnshareableNotes<T extends NoteRow>(rows: readonly T[], sharing: boolean): T[] {
+  if (!Array.isArray(rows)) return rows as T[]
+  return rows.filter((h) => !isClaudeNote(h) || (sharing && isPortableType(noteTypeOfTags(h.tags))))
 }
 
 export interface LendContext<T extends LendableHit> {

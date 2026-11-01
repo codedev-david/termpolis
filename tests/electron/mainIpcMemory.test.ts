@@ -2888,6 +2888,71 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
       expect((await ask({ project: 'C:\\work\\billing' })).map((r: any) => r.id)).toEqual(['own1', 'note1'])
     })
 
+    // The wall is at every door an agent reads through, not only the two that know which project is asking. A read that names no
+    // project (memory_search and memory_list without `project`, and the graph walks, which start from a memory and not a
+    // project) cannot say whose notes it may have: it gets none while the switch is off, and the general kinds once it is on.
+    // What the store itself scopes to a project (a search or a listing that names one) is left as the store gave it.
+    describe('the doors that name no project', () => {
+      const mine = { id: 'mine', content: 'billing own result', ts: 5, score: 0.9, project: 'billing', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:project', 'note:own.md'] }
+      const ref = { ...lendable, id: 'ref1' }
+      const chunk = { ...own, id: 'chunk1' }
+      const everything = (): any[] => [chunk, ref, projectNote, { ...ref, id: 'user1', tags: ['type:user', 'note:u.md'] }, { ...ref, id: 'untyped1', tags: ['type:untyped', 'note:x.md'] }]
+      const ids = (rows: any[]): string[] => rows.map((r) => r.id)
+      const sharing = (on: boolean) => invoke('memory:set-notes-settings', { shareNotesAcrossProjects: on })
+
+      afterEach(async () => {
+        const { resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+        resetMemoryCorrections()
+        mem.memoryList.mockReset(); mem.memoryList.mockImplementation(async () => [{ id: 'l1' }] as any[])
+        mem.memoryRelated.mockReset(); mem.memoryRelated.mockImplementation(async () => [{ id: 'r1' }] as any[])
+        mem.memoryGraphQuery.mockReset(); mem.memoryGraphQuery.mockImplementation(async () => ({ nodes: [], edges: [] }) as any)
+      })
+
+      describe.each([
+        ['memory_search', (over: Record<string, unknown>) => mcp.memorySearch({ query: 'cache', limit: 20, ...over }), (rows: any[]) => mem.memorySearch.mockImplementation(async () => rows as never)],
+        ['memory_list', (over: Record<string, unknown>) => mcp.memoryList({ limit: 20, ...over }), (rows: any[]) => mem.memoryList.mockImplementation(async () => rows as never)],
+      ])('%s', (_name, call, backend) => {
+        it('returns no saved note by default, and everything else', async () => {
+          backend(everything())
+          expect(ids(await call({}))).toEqual(['chunk1'])
+        })
+
+        it('returns the general kinds once notes may help in other projects, never a project note or an untyped one', async () => {
+          backend(everything())
+          await sharing(true)
+          expect(ids(await call({}))).toEqual(['chunk1', 'ref1', 'user1'])
+        })
+
+        it('leaves what the store scoped to the named project alone, this project\'s own notes included', async () => {
+          backend([chunk, mine])
+          expect(ids(await call({ project: 'C:\\w\\billing' }))).toEqual(['chunk1', 'mine'])
+        })
+      })
+
+      describe.each([
+        ['memory_related', (over: Record<string, unknown> = {}) => mcp.memoryRelated({ id: 'seed', ...over }), (rows: any[]) => mem.memoryRelated.mockImplementation(async () => rows as never)],
+        ['memory_graph', (over: Record<string, unknown> = {}) => mcp.memoryGraph({ id: 'seed', ...over }), (rows: any[]) => mem.memoryGraphQuery.mockImplementation(async () => rows as never)],
+      ])('%s, a walk the store auto-links across projects', (_name, call, backend) => {
+        it('reaches no saved note by default, and every other memory', async () => {
+          backend(everything())
+          expect(ids(await call())).toEqual(['chunk1'])
+        })
+
+        it('reaches the general kinds once notes may help in other projects', async () => {
+          backend(everything())
+          await sharing(true)
+          expect(ids(await call())).toEqual(['chunk1', 'ref1', 'user1'])
+        })
+
+        it('still hides what was retracted, whatever the notes switch says', async () => {
+          const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+          correctMemory({ id: 'chunk1', kind: 'retract', reason: 'wrong', by: 'david' })
+          backend([chunk, { ...chunk, id: 'chunk2' }])
+          expect(ids(await call())).toEqual(['chunk2'])
+        })
+      })
+    })
+
     // memory_anticipate names no project and keeps anything with importance >= 0.6, which a note (0.9) is.
     describe('memory_anticipate, which cannot tell which project is asking', () => {
       const lesson = { id: 'les1', content: 'a procedural lesson', score: 0.9, memoryType: 'procedural', importance: 0.5, tags: [] as string[], source: 'claude', agentId: 'mneme' }

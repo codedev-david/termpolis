@@ -240,7 +240,7 @@ import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2
 import { withoutCandidates } from './lessonSubstance'
 import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
 import { registerClaudeNotesIpc } from './claudeNotesIpc'
-import { withBorrowedNotes, withoutUnshareableNotes } from './claudeNotesShare'
+import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './claudeNotesShare'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -373,6 +373,16 @@ function ingestMemoryDeps() {
       void memoryLink({ from, to, relation, weight, ts, createdBy: 'ingest' }).catch(() => {})
     },
   }
+}
+
+/**
+ * The saved notes (claudeNotesIngest.ts) a read may hand an agent. A search or a listing that names a project is scoped by the
+ * store and left as it gave it. One that names none, and a walk of the graph (which starts from a memory, not a project), cannot
+ * say whose notes it may have: it gets none while "let general notes help in other projects" is off, and only the general kinds
+ * once it is on, which is what memory_anticipate does too (claudeNotesShare.ts).
+ */
+function visibleNotes<T extends NoteRow>(rows: T[], project?: string): T[] {
+  return project ? rows : withoutUnshareableNotes(rows, getShareNotesAcrossProjects())
 }
 
 /**
@@ -3741,7 +3751,7 @@ async function semanticPoolOptions(
       },
       memorySearch: async (opts) => {
         const started = Date.now()
-        const res = await memorySearch({
+        const res = visibleNotes(await memorySearch({
           query: opts.query,
           limit: opts.limit,
           agentId: opts.agentId,
@@ -3750,7 +3760,7 @@ async function semanticPoolOptions(
           project: opts.project,
           diversify: opts.diversify, // agent-facing recall is gated + diversified (executeTool defaults it on)
           fuseGraph: opts.fuseGraph, // …and fuses graph-connected neighbours one hop out
-        })
+        }), opts.project)
         // Capture latency BEFORE the readiness probe (a second memory-process RPC) so the probe's
         // round-trip does not inflate the recall-latency SLI.
         const ms = Date.now() - started
@@ -3784,13 +3794,13 @@ async function semanticPoolOptions(
         noteServed(opts.project, served)
         return served
       },
-      memoryList: async (opts) => applyEntryCorrections(await memoryList({
+      memoryList: async (opts) => applyEntryCorrections(visibleNotes(await memoryList({
         limit: opts.limit,
         agentId: opts.agentId,
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         since: opts.since,
         project: opts.project,
-      })),
+      }), opts.project)),
       // Behind-the-scenes memory load: agents call this (prompted by the one-line
       // launch pointer) instead of having the digest pasted into the terminal.
       // Current-directory context leads; cross-project hits follow, labeled.
@@ -3828,19 +3838,19 @@ async function semanticPoolOptions(
         try { if (primerOut) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primerOut.length / 4) }) } catch { /* best effort */ }
         return { project: project || null, primer: primerOut }
       },
-      memoryRelated: async (opts) => applyEntryCorrections(await memoryRelated({
+      memoryRelated: async (opts) => applyEntryCorrections(visibleNotes(await memoryRelated({
         id: opts.id,
         query: opts.query,
         limit: opts.limit,
-      })),
+      }))),
       memoryLink: (opts) => memoryLink({ from: opts.from, to: opts.to, relation: opts.relation, createdBy: 'agent' }),
-      memoryGraph: async (opts) => applyEntryCorrections(await memoryGraphQuery({
+      memoryGraph: async (opts) => applyEntryCorrections(visibleNotes(await memoryGraphQuery({
         id: opts.id,
         query: opts.query,
         relation: opts.relation,
         depth: opts.depth,
         limit: opts.limit,
-      })),
+      }))),
       memoryFeedback: async (opts) => {
         const helpful = opts.helpful !== false
         try {

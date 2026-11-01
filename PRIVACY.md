@@ -34,7 +34,8 @@ to keep your data local.
   coding agents' settings](#your-coding-agents-settings).
 - While your agents are connected, Termpolis also **reads Claude Code's saved
   notes** and keeps a copy in its own memory, so your other agents can find
-  them. It never writes into Claude's folders and nothing leaves your machine.
+  them. It never writes into Claude's folders and Termpolis sends nothing off
+  your machine, but an agent that finds a note passes it to its own provider.
   You can switch it off and remove the copies — see [Claude Code's saved
   notes](#claude-codes-saved-notes).
 
@@ -410,11 +411,18 @@ these notes too.
   project may also return up to two general notes (the kinds `reference`,
   `feedback` and `user`, never notes about one project's own state) from
   another project is a separate choice, **Let general notes help in other
-  projects**, and it is off until you turn it on. A search that names no
-  project already covers all of memory, as it did before.
-- **Where it goes.** Nowhere. Nothing leaves your machine. The copies are part
-  of your memory like any other, so they go where your memory goes only if you
-  move it yourself, with a brain export, say.
+  projects**, and it is off until you turn it on. A search or a listing that
+  names no project, and a walk of the knowledge graph, returns no saved note
+  unless you turn that choice on, and then only those kinds; the rest of memory
+  it covers as it did before.
+- **Where it goes.** Termpolis sends nothing off your machine. But an agent that
+  finds a note receives its text like any other memory and passes it to its own
+  provider (Anthropic for Claude Code, OpenAI for Codex, Google for the
+  Antigravity CLI), under that provider's policy. That is the point of the
+  feature, and also why it is a choice: if you do not want another vendor's agent
+  to see what Claude kept, turn the import off and remove the copies. The copies
+  are part of your memory like any other, so they go anywhere else only if you
+  move your memory yourself, with a brain export, say.
 - **Undo.** *Remove imported notes* (Settings → Memory & Learning) takes every
   copy out of memory and turns the import off; Claude's own notes are not
   touched. Turning the switch off stops the reading and leaves the existing
