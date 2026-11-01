@@ -84,8 +84,9 @@ export interface GroundDeps {
  *
  * Every lesson first passes the substance gate (lessonSubstance.ts): a keeper is written with an importance
  * that follows its score; one just under the bar is written at CANDIDATE_IMPORTANCE under the `candidate` tag,
- * which every read path that hands memories to an agent hides, and gets no graph edges and no code anchors, so
- * nothing else can lead to it; one below that is not written, and counted.
+ * which every read path that hands memories to an agent hides. It is given no code anchors and none of the
+ * entity or typed edges below, so nothing is built on it (the store's own automatic relates-to links still
+ * form, and are harmless: a graph read drops the tagged row). One below that is not written, and counted.
  * Returns the ids written, how many lessons the distiller produced and how many the gate refused.
  */
 export async function groundEpisode(episode: Episode, deps: GroundDeps): Promise<GroundResult> {

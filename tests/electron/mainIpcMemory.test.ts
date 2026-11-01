@@ -1031,6 +1031,22 @@ describe('code-graph:locate', () => {
     mneme.codeLocate.mockImplementationOnce(() => { throw new Error('locator exploded') })
     expect(await invoke('code-graph:locate', { issue: 'x' })).toEqual({ success: true, data: [] })
   })
+
+  // 1.55: the locator's `why` is lesson TEXT, read straight from the store through symbolHistory, a path none of
+  // the correction filters sit on. A lesson the substance gate holds back must not come out of it either.
+  it('history() leaves out a lesson the substance gate holds back, for the panel and for an agent alike', async () => {
+    const rows = [
+      { id: 'held', content: 'held back lesson', importance: 0.45, ts: 3, memoryType: 'semantic', tags: ['candidate'] },
+      { id: 'h1', content: 'hist', importance: 0.5, ts: 1, memoryType: 'procedural', tags: ['note:x'] },
+    ]
+    mem.symbolHistory.mockReturnValue(rows)
+    await invoke('code-graph:locate', { issue: 'boom', projectKey: 'pk1' })
+    expect(mneme.codeLocate.mock.calls[0][1].history('foo').map((m: any) => m.id)).toEqual(['h1'])
+
+    mneme.codeLocate.mockClear()
+    await mcp.codeLocate({ issue: 'crash' })
+    expect(mneme.codeLocate.mock.calls[0][1].history('foo').map((m: any) => m.id)).toEqual(['h1'])
+  })
 })
 
 // ===========================================================================

@@ -242,3 +242,81 @@ describe('mnemeConsolidateRun — the additive summarization pass', () => {
     expect(line).toBe(`- ${'y'.repeat(140)}`)
   })
 })
+
+// 1.55: a lesson the substance gate holds back (the `candidate` tag, lessonSubstance.ts) is stored but never shown
+// to an agent, and the background passes have to leave it alone for that to stay true. The summary pass copies the
+// first 140 characters of every member into a NEW memory that carries no tag, which agents can search; and a merge
+// keeps the highest-importance member of a group and archives the rest, so a hidden lesson could win against a
+// memory an agent can see and take its place.
+describe('mnemeConsolidateRun — a lesson the substance gate holds back stays out of the background passes', () => {
+  const HELD_TEXT = 'a held back lesson about the retry queue'
+  const held = (over: Partial<ConsolEntry> = {}): ConsolEntry =>
+    entry({ id: 'held', content: HELD_TEXT, memoryType: 'semantic', importance: 0.45, tags: ['candidate'], ts: 50, ...over })
+
+  it('keeps its text out of a summary and does not link it', async () => {
+    const links: Array<[string, string, string]> = []
+    const write = vi.fn().mockResolvedValue({ id: 'sum-1' })
+    const res = await runSummarization({
+      candidates: () => [...CLUSTER, held()],
+      simOf: allSimilar,
+      write,
+      link: (from, to, relation) => { links.push([from, to, relation]) },
+      now: 100,
+    })
+    expect(res).toEqual({ summarized: 1 })
+    const digest = write.mock.calls[0][0].content as string
+    expect(digest).toContain('Summary of 4 related memories:')
+    expect(digest).not.toContain(HELD_TEXT)
+    expect(links.map((l) => l[0]).sort()).toEqual(['d1', 'd2', 'd3', 'k'])
+  })
+
+  it('does not let it complete a cluster that is otherwise too small to summarize', async () => {
+    const write = vi.fn()
+    const res = await runSummarization({
+      candidates: () => [...CLUSTER.slice(0, 3), held()], simOf: allSimilar, write, link: () => {}, now: 100,
+    })
+    expect(res).toEqual({ summarized: 0 })
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it('never hands one to an injected summarizer', async () => {
+    const summarize = vi.fn(() => 'a digest')
+    await runSummarization(
+      { candidates: () => [...CLUSTER.slice(0, 2), held()], simOf: allSimilar, write: vi.fn().mockResolvedValue({ id: 's' }), link: () => {}, summarize, now: 100 },
+      { minSize: 2 },
+    )
+    expect(summarize.mock.calls[0][0].map((m: ConsolEntry) => m.id)).toEqual(['k', 'd1'])
+  })
+
+  it('summarizes exactly as before when none is held back', async () => {
+    const write = vi.fn().mockResolvedValue({ id: 'sum-1' })
+    expect(await runSummarization({ candidates: () => CLUSTER, simOf: allSimilar, write, link: () => {}, now: 100 })).toEqual({ summarized: 1 })
+    expect(write.mock.calls[0][0].content).toContain('Summary of 4 related memories:')
+  })
+
+  it('does not win a merge against a memory an agent can see, so the visible one is not archived', () => {
+    // Raw chunks decay-score as noise (importance 0.2 in the store's consolidation view); the held-back lesson
+    // sits at 0.45. As a group of two the lesson would be KEPT and the chunk forgotten.
+    const visible = entry({ id: 'chunk', content: 'raw chunk about the retry queue', importance: 0.2, ts: 40 })
+    const forgotten: string[] = []
+    const res = runConsolidation({ candidates: () => [held(), visible], simOf: allSimilar, forget: (id) => forgotten.push(id), now: 100 })
+    expect(forgotten).toEqual([])
+    expect(res).toEqual({ mergedDuplicates: 0, decayedCold: 0 })
+  })
+
+  it('is not itself merged away either, whatever it resembles', () => {
+    const better = entry({ id: 'better', content: 'a kept lesson about the retry queue, in more detail than the other', memoryType: 'semantic', importance: 0.9, ts: 40 })
+    const forgotten: string[] = []
+    runConsolidation({ candidates: () => [held(), better], simOf: allSimilar, forget: (id) => forgotten.push(id), now: 100 })
+    expect(forgotten).toEqual([])
+  })
+
+  it('still merges the memories that are not held back', () => {
+    const a = entry({ id: 'a', content: 'the widget fix', importance: 0.3, ts: 40 })
+    const b = entry({ id: 'b', content: 'the widget fix again (longer)', importance: 0.3, ts: 41 })
+    const forgotten: string[] = []
+    const res = runConsolidation({ candidates: () => [a, held(), b], simOf: allSimilar, forget: (id) => forgotten.push(id), now: 100 })
+    expect(forgotten).toEqual(['a'])
+    expect(res.mergedDuplicates).toBe(1)
+  })
+})

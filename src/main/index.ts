@@ -237,6 +237,7 @@ import { registerStuckProcessIpc } from './stuckProcessIpc'
 import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
 import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
+import { withoutCandidates } from './lessonSubstance'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -427,7 +428,9 @@ async function locateIssueSites(issue: string, projectKey?: string, limit?: numb
     const histories = new Map<string, LocatorMemory[]>()
     await Promise.all([...queries].map(async (q) => {
       try {
-        const rows = await symbolHistory(q, projectKey)
+        // The locator's `why` is lesson text read straight from the store, past every correction filter, so a
+        // lesson the substance gate holds back (the `candidate` tag) is dropped here.
+        const rows = withoutCandidates(await symbolHistory(q, projectKey))
         histories.set(q, rows.map((e) => ({ id: e.id, content: e.content, importance: e.importance, ts: e.ts, memoryType: e.memoryType })))
       } catch { histories.set(q, []) }
     }))
