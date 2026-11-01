@@ -19,7 +19,8 @@ import { RealTerminal, cleanEnv, loadPty, prependPath, shellsHere, sleep } from 
 import type { PtyModule, ShellSpec } from './_realPty'
 import { accountEnv, accountLine } from '../../src/shared/agentAccounts'
 import type { AgentAccount } from '../../src/shared/agentAccounts'
-import { atIdleBox, runAccountSwitch } from '../../src/main/accountSwitch'
+import { atIdleBox, relaunchLockReason, runAccountSwitch } from '../../src/main/accountSwitch'
+import { RELAUNCH_HELD } from '../../src/shared/accountSwitch'
 import type { AgentStartRecord } from '../../src/main/accountSwitch'
 import { lookForLimit, noteEnteredLine } from '../../src/main/limitLook'
 import type { LiveStart } from '../../src/main/limitLook'
@@ -259,6 +260,42 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         const log = eventsOf(h, 'claude').filter((e) => e.event === 'key' || e.event === 'line')
         expect(log.map((e) => (e.event === 'key' ? `key ${e.key}` : `line ${e.text}`))).toEqual(['line please hit the limit', 'key Esc', 'line /exit'])
         expect(writes.join('')).not.toMatch(/[\u0003\u0004]/)
+      }, 120_000)
+
+      it('a swarm worker\'s restart: the flags run_command started it with come back, the exact session resumes, and the lock says it is a worker\'s', async () => {
+        const { h, accounts } = world()
+        const t = await openShell(shell, h)
+        // The worker as the conductor starts it (run_command's line): bypass mode, no session id of its own.
+        const built = accountLine(shell.family, accountEnv(accounts.claudeMain, 'claude'), 'claude --dangerously-skip-permissions')
+        if ('refused' in built) throw new Error(built.refused)
+        const start = launch(t, built.line, 'claude')
+        await untilBox(t, 'the mock Claude Code box')
+        prompt(t, start, 'a task from the conductor')
+        await sleep(2500)
+        const projectsA = join(h.home, '.claude', 'projects')
+        const projectsB = join(h.claudeSide, 'projects')
+        // The lock, sampled while the switch runs: a conductor's write is refused in a worker's words.
+        const seen = new Set<string>()
+        const sampler = setInterval(() => { const why = relaunchLockReason(ID); if (why) seen.add(why) }, 50)
+        let outcome
+        try {
+          outcome = await runAccountSwitch({ terminalId: ID, targetId: accounts.claudeSide.id, shellType: shell.shellType }, {
+            io: t.io(), target: accounts.claudeSide, agent: 'claude', source: accounts.claudeMain, start, lockKind: 'worker', newSessionId: () => randomUUID(), record: () => undefined,
+            hasTranscript: (id) => findTranscript([projectsA, projectsB], id) !== null,
+            carry: (id) => ({ carried: carryTranscript([projectsA], projectsB, id, Date.now()).kind === 'carried' }),
+          })
+        } finally {
+          clearInterval(sampler)
+        }
+        expect(outcome, debug(t)).toMatchObject({ kind: 'switched', resumed: true })
+        expect([...seen]).toEqual([RELAUNCH_HELD.worker])
+        const starts = eventsOf(h, 'claude').filter((e) => e.event === 'start')
+        const second = starts[1]
+        expect(second).toMatchObject({ profile: '.claude-b' })
+        expect(second.args).toEqual(['--dangerously-skip-permissions', '--resume', second.resume])
+        expect(second.resume).toBe(starts[0].session)
+        // Released at the end: the conductor can write again.
+        expect(relaunchLockReason(ID)).toBeNull()
       }, 120_000)
 
       it('Claude Code: an agent that ignores its exit command stays up, and nothing more is typed', async () => {

@@ -77,11 +77,15 @@ export interface TermScript {
    *  left), `blind` (it cannot tell), `flaky` (cannot tell once in a while). Absent: the switch has
    *  no such read. */
   os?: 'tells' | 'blind' | 'flaky'
-  /** The shell reads what is typed this slowly, a character at a time, and draws the line only once
-   *  it has read all of it: Git Bash on a ConPTY took 39 ms a character on David's laptop (measured
-   *  with a real one, tests/electron/accountsRealCli.test.ts), so a 140-character account line shows
-   *  after 5.5 s. PowerShell took 5 ms a character, cmd none. */
+  /** The shell reads what is typed this slowly, a character at a time, and draws what it has read
+   *  only once its input is empty: Git Bash on a ConPTY took 39 ms a character on David's laptop
+   *  when it was idle and over 100 ms when it was busy (measured with a real one), so a
+   *  140-character account line shows after 5.5 s and more. PowerShell took 5 ms a character, cmd
+   *  none. */
   shellCharMs?: number
+  /** With `shellCharMs`: the shell stops reading after this many characters, and draws nothing of
+   *  what it read since. */
+  shellStallsAfter?: number
 }
 
 /** The conversation id a later exit of agy names: a new, empty one, never the first. */
@@ -124,6 +128,8 @@ export class FakeTerminal {
    *  have read it all. */
   slowEcho: { at: number; text: string } | null = null
   shellFreeAt = 0
+  /** How many characters the slow shell has been given. */
+  read = 0
   /** The account agy's header shows. */
   email: string
   constructor(public s: TermScript) {
@@ -293,8 +299,12 @@ export class FakeTerminal {
         } else if (c >= ' ') {
           this.line += c
           if (this.s.shellCharMs) {
-            this.shellFreeAt = Math.max(this.shellFreeAt, this.clock) + this.s.shellCharMs
-            this.slowEcho = { at: this.shellFreeAt, text: (this.slowEcho?.text ?? '') + c }
+            this.read++
+            // A stalled shell reads on and draws none of it.
+            if (this.s.shellStallsAfter === undefined || this.read <= this.s.shellStallsAfter) {
+              this.shellFreeAt = Math.max(this.shellFreeAt, this.clock) + this.s.shellCharMs
+              this.slowEcho = { at: this.shellFreeAt, text: (this.slowEcho?.text ?? '') + c }
+            }
           } else this.out += c
         }
         continue

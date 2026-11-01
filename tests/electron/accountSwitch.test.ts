@@ -12,7 +12,7 @@
 //       --continue or resume --last.
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  ECHO_MS, ECHO_PER_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
+  ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
   releaseModelHold, runAccountSwitch,
 } from '../../src/main/accountSwitch'
 import type { SwitchContext } from '../../src/main/accountSwitch'
@@ -72,9 +72,10 @@ describe('Claude Code: the whole switch (§7.2)', () => {
     const r = await run(claude())
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     // The exact order: the empty box gets /exit, then Enter; the shell's line is cleared, a
-    // sacrificial Enter, then the line, then its Enter.
+    // sacrificial Enter, then the line in two parts (its first characters, then the rest once those
+    // showed), then its Enter.
     const line = `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`
-    expect(r.t.writes).toEqual(['/exit', '\r', '\u0015', '\r', line, '\r'])
+    expect(r.t.writes).toEqual(['/exit', '\r', '\u0015', '\r', line.slice(0, ECHO_PROBE_CHARS), line.slice(ECHO_PROBE_CHARS), '\r'])
     expect(r.t.ran).toEqual(['', line])
     expect(r.recorded).toEqual([{ accountId: 'acc_b', start: { at: expect.any(Number), commands: [line] }, sessionId: ID }])
     expect(r.progress).toEqual(['exiting', 'confirming', 'typing', 'waiting'])
@@ -84,7 +85,8 @@ describe('Claude Code: the whole switch (§7.2)', () => {
 
   it('in PowerShell and cmd, clears the line with Esc and types the line in their own form', async () => {
     const ps = await run(claude({ family: 'powershell' }))
-    expect(ps.t.writes.slice(2, 5)).toEqual(['\u001b', '\r', `& { $env:CLAUDE_CONFIG_DIR = 'C:\\Users\\me\\.claude-b'; claude --model opus --resume ${ID} }`])
+    const psLine = `& { $env:CLAUDE_CONFIG_DIR = 'C:\\Users\\me\\.claude-b'; claude --model opus --resume ${ID} }`
+    expect(ps.t.writes.slice(2, 6)).toEqual(['\u001b', '\r', psLine.slice(0, ECHO_PROBE_CHARS), psLine.slice(ECHO_PROBE_CHARS)])
     expect(ps.outcome.kind).toBe('switched')
     const cmd = await run(claude({ family: 'cmd' }))
     expect(cmd.t.ran[1]).toBe(`set "CLAUDE_CONFIG_DIR=C:\\Users\\me\\.claude-b" && call claude --model opus --resume ${ID}`)
@@ -290,26 +292,63 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
     expect(r.recorded).toEqual([])
   })
 
-  // Measured with a real Git Bash on a ConPTY (accountsRealCli.test.ts): it reads typed text at
-  // 39 ms a character and draws the line only once it has read all of it, so the 100-character
-  // account line below shows after 4 s, and a real profile path makes it 5 s and more. The wait for
-  // it to show was a flat 2 s, so the switch typed the line, cleared it and said it never started.
-  it('gives a slow shell the time it needs to read a long line before it says the line never showed', async () => {
-    const r = await run(claude({ shellCharMs: 39 }))
+  // Measured with a real Git Bash on a ConPTY: it reads typed text one character at a time, 39 ms
+  // each when the laptop is idle and over 100 ms when it is busy, and draws the line only once it has
+  // read all of it. The 100-character account line below shows after 4 s idle and 10 s busy, and a
+  // real profile path makes it more. The wait for it to show was a flat 2 s, so the switch typed the
+  // line, took it back out and said it never started.
+  const LINE = `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`
+
+  it('types a long line in two parts, the first few characters, then the rest once those showed', async () => {
+    const r = await run(claude({ shellCharMs: 5 }))
     expect(r.outcome).toMatchObject({ kind: 'switched', resumed: true, sessionId: ID })
-    expect(r.t.ran.filter(Boolean)).toEqual([`export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`])
+    const at = r.t.writes.indexOf(LINE.slice(0, ECHO_PROBE_CHARS))
+    expect(r.t.writes[at + 1]).toBe(LINE.slice(ECHO_PROBE_CHARS))
+    expect(r.t.ran.filter(Boolean)).toEqual([LINE])
   })
 
-  it('still gives up on a line that never shows, after a wait that grows with the line and has an end', async () => {
+  it.each([39, 100, 250])('gives a shell that reads %i ms a character the time it needs, and enters the whole line', async (ms) => {
+    const r = await run(claude({ shellCharMs: ms }))
+    expect(r.outcome).toMatchObject({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(r.t.ran.filter(Boolean)).toEqual([LINE])
+  })
+
+  it('does not type the rest of the line into an agent\'s box, and takes the first part back out', async () => {
+    // The user said it exited, but the agent is up: the first part lands in its box, and that is all
+    // the box is given before it is cleared.
+    const r = await run(claude(), { start: undefined }, { assumeExited: true })
+    expect(r.outcome).toEqual({ kind: 'agent-alive' })
+    expect(r.t.writes).toContain(LINE.slice(0, ECHO_PROBE_CHARS))
+    expect(r.t.writes).not.toContain(LINE.slice(ECHO_PROBE_CHARS))
+    expect(r.t.writes.slice(-1)).toEqual(['\u0015'.repeat(20)])
+    expect(r.t.sentPrompts).toEqual([])
+  })
+
+  it('gives up on a shell that echoes nothing of the first part after one wait, and types no more', async () => {
     const r = await run(claude({ shellCharMs: 5000 }))
     expect(r.outcome).toMatchObject({ kind: 'didnt-start' })
-    const line = `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`
-    // The wait: ECHO_MS plus ECHO_PER_CHAR_MS for each character of the line, and no more than that
-    // from the last write (the clock also holds the exit's own waits, well under a minute).
-    const typedAt = r.t.writeClocks[r.t.writes.findIndex((w) => w === line)]
-    expect(r.t.clock - typedAt).toBeGreaterThanOrEqual(ECHO_MS + line.length * ECHO_PER_CHAR_MS)
-    expect(r.t.clock - typedAt).toBeLessThanOrEqual(ECHO_MS + line.length * ECHO_PER_CHAR_MS + 2 * POLL_MS + 1000)
+    expect(r.t.writes).not.toContain(LINE.slice(ECHO_PROBE_CHARS))
+    const typedAt = r.t.writeClocks[r.t.writes.indexOf(LINE.slice(0, ECHO_PROBE_CHARS))]
+    const wait = r.t.clock - typedAt
+    expect(wait).toBeGreaterThanOrEqual(ECHO_MS + ECHO_PROBE_CHARS * ECHO_SLOW_CHAR_MS)
+    expect(wait).toBeLessThanOrEqual(ECHO_MS + ECHO_PROBE_CHARS * ECHO_SLOW_CHAR_MS + 2 * POLL_MS)
     expect(r.t.ran.filter(Boolean)).toEqual([])
+  })
+
+  it('gives up on a shell that read the first part and stopped, after a wait that follows how long that took', async () => {
+    const r = await run(claude({ shellCharMs: 40, shellStallsAfter: ECHO_PROBE_CHARS }))
+    expect(r.outcome).toMatchObject({ kind: 'didnt-start' })
+    // The rest was typed, never shown, and taken back out with the line's clear: nothing ran.
+    expect(r.t.writes).toContain(LINE.slice(ECHO_PROBE_CHARS))
+    expect(r.t.ran.filter(Boolean)).toEqual([])
+    const typedAt = r.t.writeClocks[r.t.writes.indexOf(LINE.slice(ECHO_PROBE_CHARS))]
+    // ECHO_MS, and for each of the rest twice the time the first part took a character (as the
+    // 250 ms polling saw it: 40 ms a character, and up to one poll more for all of them).
+    const rest = LINE.length - ECHO_PROBE_CHARS
+    const perChar = Math.ceil((ECHO_PROBE_CHARS * 40 + POLL_MS) / ECHO_PROBE_CHARS)
+    const wait = r.t.clock - typedAt
+    expect(wait).toBeGreaterThanOrEqual(ECHO_MS + rest * 2 * 40)
+    expect(wait).toBeLessThanOrEqual(ECHO_MS + rest * 2 * perChar + 2 * POLL_MS)
   })
 
   it('refuses when a shell of another family reported since: one started inside this one', async () => {
