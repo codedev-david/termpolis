@@ -35,16 +35,23 @@ const ownEnv = process.env as Record<string, string | undefined>
 // defect fails twice).
 const RETRY = { retry: 1 } as const
 
-/** The binary that will run, found the way the app finds it, and the words it answers --version with. */
+/** The binary that will run, found the way the app finds it, and the words it answers --version with.
+ *  Even that runs in a temp home (the same environment every other call here gets), never the real one. */
 function installed(name: 'claude' | 'codex' | 'agy', word: RegExp): string | null {
   const file = findOnPath(name, ownEnv, process.platform)
   if (!file) return null
   const cli = name === 'agy' ? { kind: 'exe' as const, file } : resolveCli(name, { env: ownEnv })
   if (!cli) return null
-  const r = cli.kind === 'shim' && process.platform === 'win32'
-    ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${cli.file}" --version"`], { encoding: 'utf8', timeout: 60_000, windowsHide: true, windowsVerbatimArguments: true })
-    : spawnSync(cli.file, ['--version'], { encoding: 'utf8', timeout: 60_000, windowsHide: true })
-  return word.test(`${r.stdout}${r.stderr}`) ? file : null
+  const home = mkdtempSync(join(tmpdir(), 'tp-real-version-'))
+  try {
+    const env = realEnv(home) as NodeJS.ProcessEnv
+    const r = cli.kind === 'shim' && process.platform === 'win32'
+      ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${cli.file}" --version"`], { env, cwd: home, encoding: 'utf8', timeout: 60_000, windowsHide: true, windowsVerbatimArguments: true })
+      : spawnSync(cli.file, ['--version'], { env, cwd: home, encoding: 'utf8', timeout: 60_000, windowsHide: true })
+    return word.test(`${r.stdout}${r.stderr}`) ? file : null
+  } finally {
+    try { rmSync(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }) } catch { /* left in the temp folder */ }
+  }
 }
 
 const claudePath = installed('claude', /Claude Code/)
