@@ -13,6 +13,16 @@
 //   - BOUNDED — the log is capped and rotated (one previous generation kept), so it can't grow
 //     without limit.
 //   - BEST-EFFORT — auditing never throws into the caller; a failed append must not break a memory op.
+//
+// TWO PROCESSES write this audit. The store lives in a utility process (memoryHost.ts) that records what it
+// stores and learns; the events about what agents recalled, were injected and were credited are raised in the
+// MAIN process, which has its own copy of this module. Each keeps a file of its own, so neither rotates a file
+// the other is appending to, and a read merges them. The main process's copy was never initialised until
+// 1.55.0, which is why memory_audit used to show only the host's writes.
+//
+// WHAT MAY BE PERSISTED is counts, ids, kinds, the agent and the project, plus the redacted preview of a
+// STORED memory (the host has always kept that). The text of a QUERY is never persisted: a recall's query is
+// the beginning of whatever an agent, or with the prompt-time recall hook the user, just typed.
 import { appendFileSync, existsSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
@@ -20,34 +30,50 @@ import { scanText } from './aiSecurity'
 
 export type MemoryAuditEvent =
   | { event: 'write'; id: string; kind: string; agentId?: string; preview: string }
+  // `query` is accepted from callers that have one but is never written (see persistable below).
   | { event: 'recall'; agentId?: string; query: string; results: number; topIds: string[] }
   | { event: 'learn'; kind: 'feedback' | 'reflect' | 'consolidate' | 'decay' | 'link'; detail: string }
   | { event: 'inject'; target: string; memoryIds: string[]; approxTokens: number }
 
 export type MemoryAuditRecord = { ts: number } & MemoryAuditEvent
 
-const FILE = 'memory-audit.jsonl'
-const PREV = 'memory-audit.prev.jsonl'
+/** Which process this copy of the module runs in: the memory host (the default) or the main process. */
+export type MemoryAuditRole = 'host' | 'main'
+
+const FILES: Record<MemoryAuditRole, { live: string; prev: string }> = {
+  host: { live: 'memory-audit.jsonl', prev: 'memory-audit.prev.jsonl' },
+  main: { live: 'memory-audit-main.jsonl', prev: 'memory-audit-main.prev.jsonl' },
+}
 const MAX_BYTES = 2_000_000 // ~2 MB live file, then rotate (one previous generation kept)
 let maxBytes = MAX_BYTES
 const PREVIEW_MAX = 160
 const SCAN_MAX = 4096 // cap the bytes we redaction-scan per field so a huge memory can't stall a write
 
 let dir: string | null = null
+let role: MemoryAuditRole = 'host'
 let enabled = true // WP-E: default ON
 let liveBytes = -1 // in-process size of the live file; -1 = stat lazily on first append (O(1) per write)
 
-export function initMemoryAudit(d: string): void {
+export function initMemoryAudit(d: string, as: MemoryAuditRole = 'host'): void {
   // Point at the memory data dir (which the app/store already creates). We deliberately do NOT
   // create it here — the audit is best-effort, and creating it would mask a genuine store-init
   // failure (e.g. a missing parent dir). If the dir is absent, appendFileSync simply no-ops.
   dir = d
+  role = as
   liveBytes = -1
 }
 export function setMemoryAuditEnabled(v: boolean): void { enabled = v !== false }
 export function memoryAuditEnabled(): boolean { return enabled }
 
-function auditPath(): string | null { return dir ? join(dir, FILE) : null }
+function auditPath(): string | null { return dir ? join(dir, FILES[role].live) : null }
+
+/** What goes to disk for an event: the event itself, minus the one field that is the beginning of someone's
+ *  words. A recall keeps who asked, how many it found and which ids; the query stays with the caller. */
+function persistable(ev: MemoryAuditEvent): Omit<MemoryAuditEvent, 'query'> {
+  if (ev.event !== 'recall') return ev
+  const { query: _query, ...rest } = ev
+  return rest
+}
 
 /** Redact secrets from and clip a free-text field, so no secret is ever written to the audit. */
 export function redactPreview(s: string, max = PREVIEW_MAX): string {
@@ -63,11 +89,11 @@ export function auditMemory(ev: MemoryAuditEvent, now: number = Date.now()): voi
   if (!enabled) return
   const p = auditPath()
   if (!p) return
-  const line = JSON.stringify({ ts: now, ...ev }) + '\n'
+  const line = JSON.stringify({ ts: now, ...persistable(ev) }) + '\n'
   try {
     if (liveBytes < 0) { try { liveBytes = existsSync(p) ? statSync(p).size : 0 } catch { liveBytes = 0 } }
     if (liveBytes + line.length >= maxBytes) {
-      const prev = join(dirname(p), PREV)
+      const prev = join(dirname(p), FILES[role].prev)
       if (existsSync(prev)) { try { unlinkSync(prev) } catch { /* ignore */ } }
       if (existsSync(p)) renameSync(p, prev) // keep one previous generation
       liveBytes = 0
@@ -77,21 +103,32 @@ export function auditMemory(ev: MemoryAuditEvent, now: number = Date.now()): voi
   } catch { /* best-effort — auditing must never break a memory operation */ }
 }
 
-/** The most recent `limit` audit records, newest first. */
-export function readMemoryAudit(limit = 100): MemoryAuditRecord[] {
-  const p = auditPath()
-  if (!p || !existsSync(p)) return []
+/** The newest `limit` records of one process's live file, newest first. */
+function readOne(p: string, limit: number): MemoryAuditRecord[] {
+  if (!existsSync(p)) return []
   try {
     // Stream from bytes — the audit log is append-only and can grow; never decode the whole file as
     // one 'utf8' string (fatals V8 uncatchably past ~512 MiB; see fileLines.ts).
     const lines: string[] = []
     forEachBufferLine(readFileSync(p), (l) => { if (l.trim()) lines.push(l) })
     const out: MemoryAuditRecord[] = []
-    for (const l of lines.slice(-Math.max(1, limit))) {
+    for (const l of lines.slice(-limit)) {
       try { out.push(JSON.parse(l) as MemoryAuditRecord) } catch { /* skip corrupt line */ }
     }
     return out.reverse()
   } catch { return [] }
+}
+
+/** The most recent `limit` audit records, newest first, from the host's file and the main process's together. */
+export function readMemoryAudit(limit = 100): MemoryAuditRecord[] {
+  if (!dir) return []
+  const n = Math.max(1, limit)
+  const host = readOne(join(dir, FILES.host.live), n)
+  const main = readOne(join(dir, FILES.main.live), n)
+  if (main.length === 0) return host
+  if (host.length === 0) return main
+  // Each list is already newest-first; the sort is stable, so equal timestamps keep their file order.
+  return [...host, ...main].sort((a, b) => b.ts - a.ts).slice(0, n)
 }
 
 /** Count of audited events by type over the recent window — a cheap "what has my memory been doing?" */
@@ -102,6 +139,6 @@ export function memoryAuditSummary(): Record<string, number> {
 }
 
 /** @internal test-only */
-export function _resetMemoryAuditForTests(): void { dir = null; enabled = true; maxBytes = MAX_BYTES; liveBytes = -1 }
+export function _resetMemoryAuditForTests(): void { dir = null; role = 'host'; enabled = true; maxBytes = MAX_BYTES; liveBytes = -1 }
 /** @internal test-only — lower the rotation cap so rotation can be exercised cheaply. */
 export function _setMaxBytesForTests(n: number): void { maxBytes = n }

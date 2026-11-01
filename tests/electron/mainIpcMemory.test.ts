@@ -303,6 +303,7 @@ const mneme = vi.hoisted(() => ({
     b: { id: 'cb', source: 'codex', content: 'never X', extra: 'dropped' },
   }]),
   auditMemory: vi.fn(),
+  initMemoryAudit: vi.fn(),
   proactiveQuery: vi.fn((t: string) => (t ? `signals:${t}` : '')),
   proactiveSignals: vi.fn((t: string) => (t ? [t] : [])),
   codeLocate: vi.fn(() => [{ file: 'a.ts', score: 1, why: [] }]),
@@ -349,7 +350,7 @@ vi.mock('../../src/main/mnemeSociety', async () => {
   return { ...real, poolLessons: mneme.poolLessons, toAgentLesson: mneme.toAgentLesson }
 })
 vi.mock('../../src/main/nliContradict', () => ({ detectConflictsNli: mneme.detectConflictsNli }))
-vi.mock('../../src/main/memoryAudit', () => ({ auditMemory: mneme.auditMemory }))
+vi.mock('../../src/main/memoryAudit', () => ({ auditMemory: mneme.auditMemory, initMemoryAudit: mneme.initMemoryAudit }))
 vi.mock('../../src/main/mnemeRetrieval', () => ({ proactiveQuery: mneme.proactiveQuery, proactiveSignals: mneme.proactiveSignals }))
 vi.mock('../../src/main/codeLocate', () => ({ codeLocate: mneme.codeLocate }))
 
@@ -372,10 +373,13 @@ let eventFeed: Function
 // index.ts registers these ONCE at startup, so they are captured here rather than
 // read from mock.calls (which every test's clearAllMocks() wipes).
 let recalls: typeof import('../../src/main/recallLedger')
+/** What index.ts told the audit at startup, captured for the same reason. */
+let auditInit: unknown[] | undefined
 
 beforeAll(async () => {
   vi.resetModules()
   await import('../../src/main/index')
+  auditInit = mneme.initMemoryAudit.mock.calls[0]
   // Same post-reset registry index.ts loaded from — a statically imported ledger would be a
   // different module object holding a different Map.
   recalls = await import('../../src/main/recallLedger')
@@ -400,6 +404,12 @@ it('registers the memory brain with the MCP server, the indexer and the event bu
   expect(mcp).toBeTruthy()
   expect(indexer).toBeTruthy()
   expect(typeof eventFeed).toBe('function')
+})
+
+// The events about what agents recalled and were injected are raised in main, so main's copy of the audit has
+// to be pointed at the data folder, as its own writer (the memory host keeps the other file).
+it('starts the main process\'s side of the memory audit at launch, in the user-data folder, as the main writer', () => {
+  expect(auditInit).toEqual([USER_DATA, 'main'])
 })
 
 beforeEach(() => {

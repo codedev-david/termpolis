@@ -28,14 +28,19 @@ describe('MCP recall/inject audit (WP-E)', () => {
     try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  it('audits an agent-facing recall with a redacted query, count, and top ids', async () => {
+  it('audits an agent-facing recall with who asked, how many it found and the top ids, but not what it asked', async () => {
+    // 1.55.0: the query is the beginning of whatever the agent (or, with the prompt-time hook, the user) just
+    // typed. It used to be kept, redacted; the audit now keeps no query text at all, so there is nothing to redact.
     const secret = 'sk-' + 'a'.repeat(40)
-    await executeTool('memory_search', { query: 'find ' + secret, agentId: 'agentZ' }, handlers)
+    await executeTool('memory_search', { query: 'find ' + secret + ' in the billing module', agentId: 'agentZ' }, handlers)
     const rec = readMemoryAudit().find((e) => e.event === 'recall') as
-      | { event: 'recall'; agentId?: string; query: string; results: number; topIds: string[] } | undefined
+      | { event: 'recall'; agentId?: string; results: number; topIds: string[] } | undefined
     expect(rec).toMatchObject({ event: 'recall', agentId: 'agentZ', results: 3 })
     expect(rec!.topIds).toEqual(['m1', 'm2', 'm3'])
-    expect(rec!.query).not.toContain(secret) // redacted
+    expect(rec).not.toHaveProperty('query')
+    const onDisk = fs.readFileSync(path.join(tmp, 'memory-audit.jsonl'), 'utf8')
+    expect(onDisk).not.toContain(secret)
+    expect(onDisk).not.toContain('billing')
   })
 
   it('audits primer injection with an approximate token count', async () => {
@@ -44,6 +49,25 @@ describe('MCP recall/inject audit (WP-E)', () => {
       | { event: 'inject'; target: string; approxTokens: number } | undefined
     expect(inj).toMatchObject({ event: 'inject', target: 'primer' })
     expect(inj!.approxTokens).toBe(100) // 400 chars / 4
+  })
+
+  // The bug 1.55.0 fixes: the store's process wrote its audit file, but the events an agent causes (a recall, an
+  // injected primer) are raised in the main process, whose copy of the audit was never started, so memory_audit
+  // listed the host's writes and nothing an agent did. Here main starts its own side, the host's file is one
+  // written by "another process", and the tool shows both.
+  it('shows what agents did in main beside what the memory host wrote, through memory_audit', async () => {
+    _resetMemoryAuditForTests()
+    fs.writeFileSync(path.join(tmp, 'memory-audit.jsonl'), JSON.stringify({ ts: 1, event: 'write', id: 'w1', kind: 'fact', preview: 'stored by the host' }) + '\n')
+    initMemoryAudit(tmp, 'main')
+    await executeTool('memory_search', { query: 'where is the billing code', agentId: 'codex' }, handlers)
+    await executeTool('memory_primer', { cwd: '/x' }, handlers)
+    const out = (await executeTool('memory_audit', { limit: 10 }, handlers)) as
+      { events: Array<{ event: string; agentId?: string }>; summary: Record<string, number> }
+    expect(out.summary).toEqual({ write: 1, recall: 1, inject: 1 })
+    expect(out.events.map((e) => e.event).sort()).toEqual(['inject', 'recall', 'write'])
+    expect(out.events.find((e) => e.event === 'recall')).toMatchObject({ agentId: 'codex' })
+    expect(JSON.stringify(out)).not.toContain('billing') // and no query text came back out of it
+    expect(fs.existsSync(path.join(tmp, 'memory-audit-main.jsonl'))).toBe(true)
   })
 
   it('exposes the audit for inspection via the memory_audit tool (events + summary)', async () => {

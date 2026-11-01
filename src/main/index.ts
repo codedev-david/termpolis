@@ -280,7 +280,7 @@ import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
 import { startIndexer, stopIndexer } from './memoryIndexer'
 import { runWeave, WEAVE_NEIGHBOUR_K, type WeaveStats } from './mnemeWeave'
-import { auditMemory } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
+import { auditMemory, initMemoryAudit } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
 // Mneme — the learning layer (see docs/learning-architecture.md).
 import { distillEpisode } from './mnemeReflect'
 import { onTaskComplete, onSessionEpisode } from './mnemeReflex'
@@ -4173,6 +4173,10 @@ async function semanticPoolOptions(
     setInterval(() => { compactSelfShard().catch(() => { /* best effort */ }) }, 30 * 60 * 1000)
     initCompetence(app.getPath('userData')) // Mneme: load the persistent self-competence store
     initMetrics(app.getPath('userData')) // Memory & Learning dashboard: device-local metrics ledger
+    // The audit's other half. What agents recalled and were injected is raised HERE, in main, whose copy of the
+    // module was never initialised (the memory host initialises its own), so memory_audit showed only the host's
+    // writes. Its own file, merged with the host's on read; counts, ids and kinds only, never a query.
+    try { initMemoryAudit(app.getPath('userData'), 'main') } catch { /* best effort: the audit never blocks launch */ }
     initIdentity(app.getPath('userData')) // Mneme: load the continuous-identity store
     // A native fatal (V8 abort, OOM kill) never becomes a JS exception, so the Sentry→GitHub alert —
     // which matches catchable JS errors — files NOTHING: v1.27.4's 3-second crash-loop made the app

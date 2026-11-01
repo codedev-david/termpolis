@@ -1300,10 +1300,14 @@ describe('Mneme reflex on task completion', () => {
   it('reflects a task with no id and no explicit result, falling back to the task\'s own fields', async () => {
     // The MCP client may update a task without echoing the result back; the stored task still has
     // it. Losing the result here would mean reflecting on an empty episode.
+    //
+    // The result says WHY, and names the file, because since 1.55.0 a lesson has to carry some substance to
+    // be stored at all (lessonSubstance.ts): the bare "Root cause was the cold model load." this test used
+    // to rely on is a fragment that refers to something outside itself, and is now refused (next test).
     M.updateTask.mockReturnValue({
       title: 'Investigate the ENOENT on startup',
       description: 'the app throws ENOENT reading the model file and refuses to boot',
-      result: FIXED,
+      result: 'Root cause was the cold model load in `globalSetup.ts`, because the embedder is only warmed when the first query arrives.',
       // deliberately: no id, no project
     })
 
@@ -1312,6 +1316,38 @@ describe('Mneme reflex on task completion', () => {
     await vi.waitFor(() => expect(M.memoryWrite).toHaveBeenCalled())
     const written = M.memoryWrite.mock.calls.map((c) => c[0] as Record<string, unknown>)
     expect(written.some((w) => /globalSetup|cold model/i.test(String(w.content)))).toBe(true)
+  })
+
+  it('stores nothing from a task whose only lesson is a fragment that says nothing on its own', async () => {
+    // The distiller does produce "Root cause was the cold model load." from FIXED for a failed task. It names
+    // nothing a later reader could search for and cannot be acted on without the conversation, so the
+    // substance gate refuses it and the reflection stores nothing, rather than a lesson that ranks as one.
+    M.updateTask.mockReturnValueOnce({
+      id: 'task-8',
+      title: 'Investigate the slow boot',
+      description: 'the app boots slowly',
+      result: FIXED,
+      project: '/repos/termpolis',
+    })
+    mcp().swarmUpdateTask('task-8', 'failed', FIXED)
+
+    // Reflection is fire-and-forget, so prove the fragment's one had its chance: a second, substantive task
+    // goes through the same path, and once ITS lesson is written the first has long since been decided.
+    M.updateTask.mockReturnValueOnce({
+      id: 'task-9',
+      title: 'Fix the flaky vector test',
+      description: 'memoryEmbeddings kept timing out in CI and failing the run',
+      result: FIXED,
+      project: '/repos/termpolis',
+    })
+    mcp().swarmUpdateTask('task-9', 'completed', FIXED)
+    await vi.waitFor(() => expect(M.memoryWrite).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const written = M.memoryWrite.mock.calls.map((c) => c[0] as { content: string; originEpisode?: string })
+    expect(written.some((w) => w.originEpisode === 'task-9')).toBe(true)
+    expect(written.filter((w) => w.originEpisode === 'task-8')).toEqual([])
+    expect(written.map((w) => w.content)).not.toContain('Root cause was the cold model load.')
   })
 
   it('does NOT reflect on an in-flight status — only a finished task is an episode', async () => {
