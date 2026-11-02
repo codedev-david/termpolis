@@ -357,3 +357,15 @@ describe('the documents attribute the rate to the author\'s machine and spell mo
     }
   })
 })
+
+/** The way to check the window is in the app: the Activity Feed's compaction event carries the size (claudeCodeWatcher). */
+describe('the guide says where to see the size at which Claude Code compacted', () => {
+  it('names the Activity Feed, the form of the line, that it is read from a line the feed already reads, and what it is for', () => {
+    expect(docsSection).toContain('**Checking where it compacts.**')
+    expect(docsSection).toContain('The Activity Feed\'s compaction event shows the size of the conversation when Claude Code compacted and whether it chose to')
+    expect(docsSection).toContain('`context compacted at 246,000 tokens (auto)`')
+    expect(docsSection).toContain('read from the same transcript line the feed already reads and nothing else on it')
+    expect(docsSection).toContain('Anthropic does not say how close to the window it does')
+  })
+
+})

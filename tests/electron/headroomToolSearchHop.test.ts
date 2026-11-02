@@ -164,6 +164,14 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     expect(parseTurnShapeFromSse(straggler)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false })
   })
 
+  it('ignores a stop that names no block, or names it by something that is not a number, and keeps reading the open one', () => {
+    const ev = (type: string, data: object): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n`
+    const start = ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 't0', name: 'ToolSearch', input: {} } })
+    const delta = (piece: string): string => ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: piece } })
+    const s = [start, delta('{"query":"select:retr'), ev('content_block_stop', {}), ev('content_block_stop', { index: '0' }), delta('ieve_full"}'), ev('content_block_stop', { index: 0 })].join('\n')
+    expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false, hop: true })
+  })
+
   it('reads every ToolSearch call of an answer, with thinking and text between them', () => {
     const s = stream([search('select:Read'), 'think', { text: 'Loading it now.' }, search('select:retrieve_full')])
     expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false, hop: true })

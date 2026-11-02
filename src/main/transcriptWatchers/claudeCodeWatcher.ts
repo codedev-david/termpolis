@@ -140,6 +140,8 @@ export function listSessionFiles(cwd: string): string[] {
 interface ClaudeEntry {
   type?: string
   subtype?: string
+  /** On a compact_boundary line: the size of the conversation when Claude Code compacted, and who chose to. */
+  compactMetadata?: unknown
   message?: {
     role?: string
     content?: unknown
@@ -152,6 +154,16 @@ interface ClaudeEntry {
   }
   timestamp?: string
   sessionId?: string
+}
+
+/** The size (tokens) and the trigger on a compact_boundary line, each only if it is what it should be. */
+function compactionSize(meta: unknown): { preTokens?: number; trigger?: 'auto' | 'manual' } {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {}
+  const m = meta as { preTokens?: unknown; trigger?: unknown }
+  const out: { preTokens?: number; trigger?: 'auto' | 'manual' } = {}
+  if (typeof m.preTokens === 'number' && Number.isSafeInteger(m.preTokens) && m.preTokens >= 0) out.preTokens = m.preTokens
+  if (m.trigger === 'auto' || m.trigger === 'manual') out.trigger = m.trigger
+  return out
 }
 
 function parseTimestamp(ts: unknown): number {
@@ -270,14 +282,18 @@ export function processClaudeLine(line: string, terminalId: string): void {
   // System events
   if (entry.type === 'system') {
     if (entry.subtype === 'compact_boundary') {
+      // Where it compacted is how a person who chose a smaller context window checks that it did what the
+      // pane says. Only a whole number of tokens and one of two known words are taken from the line.
+      const { preTokens, trigger } = compactionSize(entry.compactMetadata)
+      const at = preTokens === undefined ? '' : ` at ${preTokens.toLocaleString('en-US')} tokens${trigger ? ` (${trigger})` : ''}`
       publish({
         ts,
         terminalId,
         agentType: 'claude',
         kind: 'compaction',
         taskId: sessionId,
-        summary: 'context compacted',
-        payload: { subtype: entry.subtype },
+        summary: `context compacted${at}`,
+        payload: { subtype: entry.subtype, ...(preTokens === undefined ? {} : { preTokens }), ...(trigger ? { trigger } : {}) },
       })
     }
     return
