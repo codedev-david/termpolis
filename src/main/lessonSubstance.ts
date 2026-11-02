@@ -135,12 +135,33 @@ function identifierPoints(head: string): number {
 
 // ---- a rule or a mechanism ----------------------------------------------------------------------------
 
-// Words that turn a statement into a reason or a rule. Deliberately NOT a bare "so" or "since": both are as
-// common in narration ("so I can put them back", "since this morning") as in explanation.
+// Words that turn a statement into a reason or a rule. "turns out" is not one of them: it reports what someone found, and it is
+// a trigger of the extractor's own gotcha rule, so crediting it only had the gate agree with the extractor about a sentence that
+// says nothing more ("It turns out the file was already there, so I skipped that step."). "caused by" is: it names a mechanism.
+// The words are English: a lesson in another language that names nothing searchable scores as if it said nothing.
 const CONNECTIVE_RE = new RegExp(
   '\\b(?:because|so that|in order to|only (?:when|if|after|before|once)|never|always|must|instead of|rather than|' +
     'means|which is why|that(?:\'s| is) why|otherwise|unless|requires?|required|due to|caused by|as a result|' +
-    'therefore|whenever|as long as|turns out|the reason|don[\'’]?t|do not|avoid)\\b',
+    'therefore|whenever|as long as|the reason|don[\'’]?t|do not|avoid)\\b',
+  'i',
+)
+
+// A bare "so" or "since" is as common in narration ("so I can put them back", "since this morning", "The deploy finished, so the
+// new version is live.") as in explanation, so each counts only where it joins a cause to what follows, and only in a lesson that
+// also names something a reader can search for (a lesson with one identifier and a "so" is what the extractor's own templates
+// end on: "Watch out: `fs.watch` fires twice, so debounce the handler"). A "so" counts after a comma, semicolon or colon and white
+// space (a space, or a line break in wrapped text), and not when the clause goes on about the speaker or the story so far (", so I", ", so we", ", so let's", ", so my", ", so our",
+// ", so far"); a "since" counts when it is not about when (this, last, then, yesterday, today, tonight, tomorrow, a number or
+// a version, the morning, a day, a month, "ever since"). The whitespace is asked for and then looked past, not matched before the
+// lookahead, so two spaces after "so" cannot slip by it; and neither word is inside the group above, so what follows it may start
+// with a backtick or a bracket. On scratch sets kept out of the repo (about 200 lessons invented to be usable or not, and 35 the
+// extractor wrote from invented turns) this kept up to 2 more of every 20 usable lessons at the bar (the most on the 35 the
+// extractor wrote) and no more of the others, and let through none of 28 invented status lines; with no identifier needed it let
+// through 13 of those 28 ("The tests passed, so the PR is ready for review.").
+const WEAK_CONNECTIVE_RE = new RegExp(
+  '(?<=[,;:]\\s+)so(?=\\s)(?!\\s+(?:i|we|let|my|our|far)\\b)' +
+    '|(?<!ever )\\bsince(?=\\s)(?!\\s+(?:(?:this|last|then|yesterday|today|tonight|tomorrow|the (?:morning|afternoon|evening|start|beginning)|' +
+    '(?:mon|tues|wednes|thurs|fri|satur|sun)day|january|february|march|april|may|june|july|august|september|october|november|december)\\b|v?\\d))',
   'i',
 )
 
@@ -248,7 +269,7 @@ export function lessonSubstance(content: string): Substance {
 
   const ids = identifierPoints(head)
   if (ids > 0) add(ids, 'identifiers')
-  if (CONNECTIVE_RE.test(head)) add(2, 'connective')
+  if (CONNECTIVE_RE.test(head) || (ids > 0 && WEAK_CONNECTIVE_RE.test(head))) add(2, 'connective')
   if (isBareAnnouncement(head)) add(-3, 'announcement')
   const progress = Math.min(PROGRESS_CAP, count(head, PROGRESS_RE))
   if (progress > 0) add(-progress, 'progress')

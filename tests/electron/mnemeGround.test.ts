@@ -7,7 +7,7 @@ import { CANDIDATE_IMPORTANCE, CANDIDATE_TAG, importanceForScore, lessonSubstanc
 // does with a lesson depends on it: >= 2 is written as a keeper, 1 is written held back, < 1 is not written.
 const KEEP_A = 'Never call `app.quit()` from the `will-quit` handler because it re-enters the quit sequence.' // 4
 const KEEP_B = 'Problem: npm install dies with EACCES on the global prefix. → Fix: set a user-level prefix with `npm config set prefix`.' // 2
-const KEEP_C = '`memoryList` caps at 500 rows and has no offset, so page with the `before` cursor.' // 2
+const KEEP_C = '`memoryList` caps at 500 rows and has no offset; page with the `before` cursor.' // 2 (a "so" there would add the reason: 4)
 const KEEP_D = 'The coverage gate runs only when the Windows job runs, so a branch left uncovered passes in `vitest` locally.' // 3
 const HOLD_A = 'Check the defaults in `memorySettings.ts` before changing the primer size.' // 1
 const HOLD_B = 'There is a timing issue between the watcher and the writer in `fileWatcher.ts` under load.' // 1

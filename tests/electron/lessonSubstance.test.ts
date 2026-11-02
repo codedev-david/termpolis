@@ -188,7 +188,7 @@ describe('lessonSubstance: a rule or a mechanism', () => {
   it.each([
     'because', 'so that', 'in order to', 'only when', 'only if', 'never', 'always', 'must', 'instead of',
     'rather than', 'unless', 'otherwise', 'which means', 'due to', 'caused by', 'therefore', 'whenever',
-    'as long as', 'turns out', 'the reason', "don't", 'do not', 'avoid', 'requires',
+    'as long as', 'the reason', "don't", 'do not', 'avoid', 'requires',
   ])('recognises "%s"', (word) => {
     expect(connective(`The cache holds ${word} the key changes` + pad)).toBe(true)
   })
@@ -198,8 +198,141 @@ describe('lessonSubstance: a rule or a mechanism', () => {
     expect(r.reasons.filter((x) => x.startsWith('connective'))).toEqual(['connective +2'])
   })
 
-  it('does not take a bare "so" or "since" for a rule', () => {
-    expect(connective('The old values are saved, so some of them come back since the last run' + pad)).toBe(false)
+  // "turns out" reports what someone found, and it is the extractor's own gotcha trigger: a sentence on it that says nothing more
+  // used to be kept on that alone ("It turns out the file was already there, so I skipped that step." scored 2).
+  it('does not take "turns out" for a rule or a mechanism', () => {
+    expect(connective('It turns out the file was already there' + pad)).toBe(false)
+    expect(connective('It turns out the file was already there, so I skipped that step' + pad)).toBe(false)
+    expect(lessonSubstance('It turns out the file was already there, so I skipped that step.').score).toBeLessThan(KEEP_SCORE)
+  })
+
+  // A bare "so" or "since" is as common in narration as in explanation. Each counts where it joins a cause to what follows, and
+  // only next to something a reader can search for: every lesson below names `ready`, so the word is all that differs.
+  describe('a bare "so" or "since"', () => {
+    const named = (clause: string): boolean => connective(`In \`ready\` ${clause}` + pad)
+
+    it.each([
+      'the watcher fires twice, so debounce the handler',
+      'the watcher fires twice; so debounce the handler',
+      'the watcher fires twice: so debounce the handler',
+      'the watcher fires twice, so `debounce` the handler', // what follows may start with a backtick
+      'the watcher fires twice, so (debounce it)',
+      'the watcher fires twice, so  debounce the handler', // two spaces after "so"
+      'the watcher fires twice,  so debounce the handler', // and before it
+      'the watcher fires twice,\nso debounce the handler', // a wrapped line
+      'the watcher fires twice, So debounce the handler',
+      'the Tray is destroyed, since Electron destroys it on relaunch',
+      'cap it at 200 MB since the viewer cannot open more', // a "since" needs no comma
+      'Since the cache is cold, the first call is slow',
+      'it is slow, since `v8` is cold', // a name in ticks is not a version
+      'it is slow, since versions differ',
+      // the words that make a clause "about the speaker" or "about when" are whole words
+      'it fires twice, so it needs a debounce',
+      'it fires twice, so weak refs are dropped',
+      'it fires twice, so letters are doubled',
+      'it fires twice, so farther listeners miss it',
+      'it is slow, since lasting caches miss',
+    ])('counts: %s', (clause) => {
+      expect(named(clause)).toBe(true)
+    })
+
+    it.each([
+      'we kept it, so I can put it back',
+      'we kept it, so we can put it back',
+      "we kept it, so let's put it back",
+      'we kept it, so my notes are there',
+      'we kept it, so our notes are there',
+      'we kept it, so  I can put it back', // two spaces do not get a first-person clause past the check
+      'we kept it, so\tI can put it back',
+      'it works, so far',
+      'it works, so  far',
+      'we kept it, so I',
+      'So the handler runs', // not after a comma, a semicolon or a colon
+      'it works so the handler runs',
+      'we kept it - so the handler runs',
+      'the watcher fires twice,so debounce the handler', // nothing between the comma and "so"
+      'we kept it, some of them come back', // not the word
+      'we kept it, soon after',
+      'we kept it, so-called notes',
+      'a sincere apology',
+      'it is slow, nonsince caches miss', // a word that only ends in "since"
+      'it broke since this morning',
+      'it broke since last week',
+      'it broke since yesterday',
+      'it broke since today',
+      'it broke since tonight',
+      'it broke since tomorrow',
+      'it works since then',
+      'it broke since the morning',
+      'it broke since the afternoon',
+      'it broke since the evening',
+      'it broke since the start of the run',
+      'it broke since the beginning of the run',
+      'it broke since Monday',
+      'it broke since tuesday',
+      'it broke since Wednesday',
+      'it broke since thursday',
+      'it broke since FRIDAY',
+      'it broke since Saturday',
+      'it broke since sunday',
+      'it broke since January',
+      'it broke since february',
+      'it broke since March',
+      'it broke since April',
+      'it broke since May',
+      'it broke since June',
+      'it broke since July',
+      'it broke since August',
+      'it broke since September',
+      'it broke since October',
+      'it broke since November',
+      'it broke since December',
+      'it broke since 2025',
+      'it broke since 3 days',
+      'it broke since v1.54',
+      'it broke ever since the update',
+    ])('does not count: %s', (clause) => {
+      expect(named(clause)).toBe(false)
+    })
+
+    it('does not count a "so" or "since" that ends the lesson (nothing follows it to join)', () => {
+      expect(connective('In `ready` it broke, so')).toBe(false)
+      expect(connective('In `ready` it broke since')).toBe(false)
+    })
+
+    it('does not count without something searchable in the lesson, which is what keeps status lines out', () => {
+      for (const text of [
+        'The deploy finished, so the new version is live.',
+        'The tests passed, so the PR is ready for review.',
+        'The reviewer has not answered yet, so the merge is pending.',
+        'The branch is up to date, so no rebase is needed.',
+        'The watcher fires twice, so debounce the handler by 50 ms' + pad,
+        'Cap reports at 200 MB since the viewer cannot open more' + pad,
+      ]) {
+        expect(connective(text)).toBe(false)
+        expect(lessonSubstance(text).score).toBeLessThan(KEEP_SCORE)
+      }
+    })
+
+    it('lifts a lesson with one name in it from held back to kept, and a strong word needs no name', () => {
+      const withName = 'Watch out: `fs.watch` fires twice on Windows for a single save, so debounce the handler by 50 ms.'
+      expect(lessonSubstance(withName)).toEqual({ score: 3, reasons: ['identifiers +1', 'connective +2'] })
+      const without = withName.replace('`fs.watch`', 'the file watcher')
+      expect(lessonSubstance(without).score).toBe(0)
+      expect(connective('The file watcher fires twice because a save writes twice' + pad)).toBe(true)
+    })
+
+    it('counts one "so" or "since" once, and a strong word with it still adds +2 once', () => {
+      const r = lessonSubstance('Never skip `ready`, since Electron destroys the tray, so re-create it, because the user sees it' + pad)
+      expect(r.reasons.filter((x) => x.startsWith('connective'))).toEqual(['connective +2'])
+    })
+
+    it('reads a long lesson in the time it reads a short one', () => {
+      const long = 'x, so '.repeat(150) + 'since '.repeat(150) + ' '.repeat(600)
+      const t0 = Date.now()
+      lessonSubstance('`ready` ' + long)
+      expect(Date.now() - t0).toBeLessThan(500)
+    })
   })
 })
 
@@ -263,7 +396,7 @@ describe('lessonSubstance: progress and time-bound markers', () => {
       ['let us', 'Let us use the `before` timestamp for paging because `memoryList` has no offset parameter.', 'keep'],
       ['pending', 'A promise stays pending until `resolve` is called, so await it before reading `result` or you will see undefined.', 'keep'],
       // one identifier and no reason: held back, where counting "pending" against it had dropped it
-      ['pending (a test)', 'Tests that are pending in `vitest` still count toward the total, so a skipped suite hides a failing import.', 'candidate'],
+      ['pending (a test)', 'Tests that are pending in `vitest` still count toward the total and a skipped suite hides a failing import.', 'candidate'],
       ['waiting on', 'The worker is waiting on the `index.lock` file; remove the stale lock only when no git process is running.', 'keep'],
       ['waiting for', 'Waiting for the `will-quit` event is wrong here because the memory host exits first and the final flush never runs.', 'keep'],
       ['ongoing', 'An ongoing `git rebase` leaves `.git/rebase-merge` in place, so `git status` reports the branch as detached until it finishes.', 'keep'],
@@ -577,6 +710,12 @@ describe('lessonSubstance: the score adds up and the call is safe', () => {
   })
 })
 
+// What this file is, and is not. The 60 lessons were written, and labelled, by the author of the gate, who then tuned the gate
+// until the bars below held: it is a REGRESSION PIN for the gate's own behaviour, and 95% / 5% on it is not a measured precision.
+// Sets nobody tuned against (about 200 lessons invented afterwards and labelled before they were scored, and 35 lessons the
+// extractor wrote from invented turns, labelled blind) keep about 80 to 85 percent of the usable lessons and 0 to 20 percent of
+// the not usable ones, which is inside what research doc 6.3 allows of a single rater's thresholds (in-sample recall 0.67,
+// weighted precision 0.45). Real labels (decision D4: David labelling 100 lessons) would replace these numbers, and are still open.
 describe('the golden file: 60 invented lessons, 20 per class', () => {
   const golden = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'lessonsGolden.json'), 'utf8')) as {
     synthetic: boolean
