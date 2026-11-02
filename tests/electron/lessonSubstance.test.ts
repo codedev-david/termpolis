@@ -322,6 +322,36 @@ describe('lessonSubstance: length', () => {
       expect(short('abc' + '字'.repeat(28))).toBe(true) // 31 characters, 3 + 56 = 59
     })
 
+    // Every range is held at both of its ends, and by the character just outside each: a range that gave up its first or last
+    // character, or took one more, would change which lessons are short with no other test noticing. The characters are made from
+    // their code points: typed, a compatibility ideograph is normalised to a different range (see above).
+    describe.each([
+      ['Hangul Jamo', 0x1100, 0x11ff],
+      ['Hiragana and Katakana', 0x3040, 0x30ff],
+      ['Han, extension A', 0x3400, 0x4dbf],
+      ['Han', 0x4e00, 0x9fff],
+      ['Hangul syllables', 0xac00, 0xd7af],
+      ['Han compatibility ideographs', 0xf900, 0xfaff],
+      ['half-width and full-width forms', 0xff00, 0xffef],
+    ])('the range of %s', (_name, lo, hi) => {
+      const thirty = (code: number): string => String.fromCharCode(code).repeat(30)
+      it('counts its first and its last character as wide', () => {
+        expect(short(thirty(lo))).toBe(false)
+        expect(short(thirty(hi))).toBe(false)
+        expect(short(thirty(Math.floor((lo + hi) / 2)))).toBe(false)
+      })
+      it('counts the character before it and the one after it as one', () => {
+        // U+FEFF, the character before the last range, is a space to trim(): the one before that stands in for it.
+        expect(short(thirty(lo === 0xff00 ? 0xfefe : lo - 1))).toBe(true)
+        expect(short(thirty(hi + 1))).toBe(true)
+      })
+    })
+
+    it('counts U+4E00, the commonest Han character, as wide', () => {
+      expect(short('一'.repeat(30))).toBe(false)
+      expect(short('一'.repeat(29))).toBe(true)
+    })
+
     it('leaves Latin text exactly as it was, and never makes a long text short', () => {
       expect(short('a'.repeat(59))).toBe(true)
       expect(short('a'.repeat(60))).toBe(false)
@@ -433,6 +463,16 @@ describe('lessonSubstance: the edges of each rule', () => {
     expect(has('{"a": 1}' + pad, 'json -2')).toBe(true)
     expect(has('[{"a"' + pad, 'json -2')).toBe(true)
     expect(has('The list [1, 2, 3] is sorted before it is stored' + pad, 'json -2')).toBe(false)
+  })
+
+  // A lesson that opens with a bracket or a brace is not residue unless what follows it is the start of a key, a string or a
+  // nested object: a tag in square brackets or a placeholder in braces is how a sentence opens.
+  it('does not take a lesson for residue because it opens with a tag in brackets or a placeholder in braces', () => {
+    expect(has('[Windows only] Never close a handle you do not own because EPERM follows' + pad, 'json -2')).toBe(false)
+    expect(has('{note} Never close a handle you do not own because EPERM follows' + pad, 'json -2')).toBe(false)
+    expect(has('  [Windows only] Never close a handle you do not own because EPERM follows' + pad, 'json -2')).toBe(false)
+    expect(has('  { "a": 1 }' + pad, 'json -2')).toBe(true) // and the opener may be indented, with space inside it
+    expect(has('[ [1, 2], [3] ]' + pad, 'json -2')).toBe(true)
   })
 
   // The distiller cuts a lesson at 600 characters; the gate reads the first 1,200 of whatever it is given.
