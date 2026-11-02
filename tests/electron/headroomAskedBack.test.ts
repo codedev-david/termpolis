@@ -9,6 +9,7 @@ const {
 } = await import('../../src/main/headroomProxy/proxyLedger')
 const { summarizeUnifiedSavings } = await import('../../src/main/headroom/unifiedReceipt')
 const { billBreakdown } = await import('../../src/main/headroom/effectiveUnits')
+const { buildPayload, signReceipt, renderReceiptMarkdown, verifyReceipt } = await import('../../src/main/headroom/receiptArtifact')
 const { resetCcr } = await import('../../src/main/headroom/ccrStore')
 const { resetDepthCurveAll } = await import('../../src/main/headroom/sessionDepth')
 const { resetLedger } = await import('../../src/main/headroom/savingsLedger')
@@ -254,5 +255,23 @@ describe('the receipt nets it out of the headline', () => {
     const u = summarizeUnifiedSavings().cumulative
     expect(u.askedBackTokens).toBe(0)
     expect(u.netSavedTokens).toBe(8_000)
+  })
+
+  // The exported receipt prints the same net figure, from the same ledger. Its payload carries the gross and the
+  // give-back but not the credit, so gross less give-back is NOT the figure when text was asked back, and the
+  // receipt says what its figure is net of. Run here from a real ledger, not from totals written by hand.
+  it('carries the same net figure into the exported receipt, which is net of the asked-back credit the payload does not itemise', () => {
+    recordProxyResult(result({ trOrigChars: 40_000, trCompChars: 8_000, askedBackChars: 16_000 })) // 8,000 saved, 4,000 asked back
+    const u = summarizeUnifiedSavings().cumulative
+    expect(u.askedBackTokens).toBe(4_000)
+    const receipt = signReceipt(buildPayload(u, { installHash: 'abcdef0123456789', now: 1_700_000_000_000 }), 'k')
+    const p = receipt.payload
+    expect(p.grossSavedTokens - p.givebackTokens).toBe(8_000) // what the payload itemises
+    expect(p.netSavedTokens).toBe(4_000) // what it signs: the credit is out of it
+    expect(p.netSavedTokens).toBe(p.grossSavedTokens - p.givebackTokens - u.askedBackTokens)
+    expect(verifyReceipt(receipt).consistent).toBe(true)
+    const md = renderReceiptMarkdown(receipt)
+    expect(md).toContain('| Saved (net of give-back and text asked back) | **4,000** (')
+    expect(md).toContain('The saved figure already has the give-back and the credit for text already asked back taken out')
   })
 })
