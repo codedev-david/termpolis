@@ -34,7 +34,7 @@ import { workerBlocker } from './accountsView'
 import type { SwitchDeps } from './accountSwitchFlow'
 import { recentCheck } from './limitChooser'
 import { osNotify, setSwarmStopOffer } from './limitWatch'
-import { carryIfStopped, carryWorkerStop, reportWorkerStop, setSwarmWorkingAgain } from './swarmStopReports'
+import { carryIfStopped, carryWorkerStop, reportWorkerStop, setSwarmWorkingAgain, stopMark } from './swarmStopReports'
 import type { SwarmWorker } from './swarmStopReports'
 import type { AccountsAPI, SwarmAPI, TerminalSession } from '../types'
 import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
@@ -320,6 +320,12 @@ export function clearSwarmRestarts(deps: RestartDeps): void {
     for (const w of g.workers) stopClock(w.terminalId, deps)
     s.dropSwarmRestart(g.id)
   }
+  // Every timer, not only those of workers still on an offer: a close-and-reassign waiting for a relaunch to let go of a
+  // worker whose offer was declined has no offer, and would otherwise tell the next swarm's conductor about this one's.
+  for (const timers of [clocks, deferred]) {
+    for (const h of timers.values()) deps.clearTimer(h)
+    timers.clear()
+  }
 }
 
 /** The open task the conductor assigned to the worker, if any. */
@@ -338,9 +344,11 @@ const openOffer = (s: RestartStore, agent: ProfileAgent, accountId: string): Swa
   s.swarmRestarts.find((x) => !x.conductor && x.phase.kind === 'offered' && x.agent === agent && x.accountId === accountId)
 
 /** The worker joins the offer open for its account: false when none is open by the time its task
- *  is known (`known`, or asked for here). Nothing waits between the look and the change. */
-async function joinOffer(worker: SwarmWorker, summary: string, agent: ProfileAgent, accountId: string, deps: RestartDeps, known?: { taskId?: string }): Promise<boolean> {
+ *  is known (`known`, or asked for here); true, and nothing joined or said, when its stop ended meanwhile
+ *  (`stillOn`, F3). Nothing waits between the look and the change. */
+async function joinOffer(worker: SwarmWorker, summary: string, agent: ProfileAgent, accountId: string, deps: RestartDeps, stillOn: () => boolean, known?: { taskId?: string }): Promise<boolean> {
   const taskId = known ? known.taskId : await taskOf(worker.terminalId, deps)
+  if (!stillOn()) return true
   const g = openOffer(deps.store(), agent, accountId)
   if (!g) return false
   if (g.workers.some((w) => w.terminalId === worker.terminalId)) return true
@@ -370,6 +378,11 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
   const reset = resetTextOf(result.summary)
   const resetsAt = reset === null ? null : parseResetsAt(reset, now)
   const kind = limitKindOf(said)
+  // The stop this offer is for. The checks below can take seconds; if the worker is read at work meanwhile, the stop
+  // has ended, and nothing is offered, held on a clock or told to the conductor, who would otherwise be asked to
+  // wait about a worker that works and told five minutes on to close it (F3).
+  const mark = stopMark(worker.terminalId)
+  const stillOn = (): boolean => stopMark(worker.terminalId) === mark
   // Recorded first, and the view re-read after it: the record changes which accounts are a way out
   // (§8.3 rule 7), and the view the rules read is the renderer's copy of main's, as old as its last read.
   try {
@@ -381,17 +394,22 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
   } catch { /* the view it had stands */ }
   const s = deps.store()
   const view = s.accountsView ?? view0
-  if (openOffer(s, agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps)
+  if (openOffer(s, agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps, stillOn)
   const limited = { accountId: own.id, email: own.lastEmail }
   // Asked only of the accounts that are a way out by what Termpolis knows already: none, no process.
   const candidates = restartTargets(view, agent, limited, now, {}, kind)
   const checks = await signedInNow(candidates, now, deps)
   const targets = restartTargets(view, agent, limited, now, checks, kind)
   const signIn = signInTargets(view, agent, limited, now, checks, kind)
-  if (targets.length === 0 && signIn.length === 0) return false
+  // A worker's offer exists only when something can take it over NOW. An account that is signed out is not a way out
+  // until a sign-in is done, so with only that, nothing is offered: no card, no clock, and the conductor hears v1.54.0's
+  // message at the stop instead of being told to wait for a restart that cannot happen (design 8.3 rule 5, D13). The
+  // sign-in route stays on the worker's chip menu and in Settings; the card lists it beside real targets.
+  if (targets.length === 0) return false
   const taskId = await taskOf(worker.terminalId, deps)
+  if (!stillOn()) return true
   // Another worker on the account may have opened an offer meanwhile; nothing waits from here on.
-  if (openOffer(deps.store(), agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps, { taskId })
+  if (openOffer(deps.store(), agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps, stillOn, { taskId })
   const group: SwarmRestartGroup = {
     id: deps.newId(), agent, accountId: own.id, words: said, resetsAt,
     workers: [{ ...worker, summary: result.summary, ...(taskId ? { taskId } : {}) }],

@@ -88,6 +88,15 @@ export function _resetStopReportsForTest(): void {
   workingAgain = null
 }
 
+/** The record of the stop a worker is on now, as an opaque mark (undefined: no stop on record). The same mark read
+ *  later means the same stop is still on; the worker read at work meanwhile, or stopped again, gives another. The
+ *  swarm restart offer awaits a sign-in check, a task lookup and the main process before it opens anything, and
+ *  asks this once they are done: a limit that lifted meanwhile is offered to no one and no conductor is told to
+ *  wait about a worker at work (SWARM-R2 F3). */
+export function stopMark(terminalId: string): object | undefined {
+  return stopped.get(terminalId)
+}
+
 /** A worker Termpolis restarted on another account (§9): the stop it showed is carried, so the same
  *  stop drawn again by the resumed session tells the conductor nothing, until the worker took a
  *  turn there (R4): read at work, or `turned` says so. */

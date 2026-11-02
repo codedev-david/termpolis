@@ -53,6 +53,7 @@ import {
   CONDUCTOR_RESUMED,
 } from '../../src/renderer/src/lib/conductorManager'
 import { startBridgeForAgent, stopAllBridges } from '../../src/renderer/src/lib/swarmBridgeManager'
+import { RESTART_WAIT_MS, liveRestartDeps, offerRestart } from '../../src/renderer/src/lib/swarmRestart'
 import { v4 as uuidV4 } from 'uuid'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 
@@ -1179,6 +1180,9 @@ describe('conductorManager', () => {
         await vi.advanceTimersByTimeAsync(15000)
         expect(last(bus).content).toBe("Conductor exited (code 1): error: unknown option '-NoProfile'")
         expect(useTerminalStore.getState().swarmRestarts).toEqual([])
+        // SWARM-R2 F4b: no limit, so no limit is recorded against the account it ran on either.
+        expect((window as any).accounts.noteLimit).not.toHaveBeenCalled()
+        expect((window as any).accounts.check).not.toHaveBeenCalled()
         stopConductor()
         await atLimit([MAIN])
         expect(useTerminalStore.getState().swarmRestarts).toEqual([])
@@ -1187,6 +1191,40 @@ describe('conductorManager', () => {
         ;(window as any).accounts.noteLimit = undefined
         await atLimit()
         expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+      })
+
+      // SWARM-R2 F2: a restart offer belongs to the swarm whose worker ran out. The dashboard offers Start New Swarm once the
+      // last one is done and not yet Cleared, and Clear is the only thing that took its offers down: five minutes on, the NEW
+      // conductor would have been told to close a worker of the old swarm, and the old card stayed clickable.
+      const oldWorkerStops = async (): Promise<void> => {
+        useTerminalStore.setState({
+          accountsView: viewOf([MAIN, SHARED]),
+          terminals: [{ id: 'old-w1', name: 'Claude (Docs)', isSwarm: true, hidden: true, swarmAgent: 'claude', agentAccountId: 'acc_m' } as never],
+          swarmAgents: [{ terminalId: 'old-w1', agentName: 'Claude', role: 'Docs', status: 'blocked', summary: '' }],
+        })
+        const offered = await offerRestart({ terminalId: 'old-w1', agentName: 'Claude', role: 'Docs' }, { status: 'blocked', summary: 'usage limit reached (resets 3pm)' }, () => WORDS, liveRestartDeps())
+        expect(offered).toBe(true)
+        expect(useTerminalStore.getState().swarmRestarts).toHaveLength(1)
+      }
+      const noCloseOrderFor = (bus: ReturnType<typeof fakeBus>) => bus.messages.filter((m) => m.content.includes('old-w1') && m.content.includes('close its terminal'))
+
+      it("takes the last swarm's restart offers and their clocks down when the next swarm's conductor starts", async () => {
+        const bus = fakeBus()
+        await oldWorkerStops()
+        await readyConductor()
+        expect(useTerminalStore.getState().swarmRestarts).toEqual([])
+        await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS * 2)
+        expect(noCloseOrderFor(bus)).toEqual([])
+      })
+
+      it('takes down the offers an old worker opened while the new swarm\'s wizard was open, when the task is sent', async () => {
+        const bus = fakeBus()
+        await readyConductor()
+        await oldWorkerStops()
+        await sendTask('Build the next thing', '/tmp/project')
+        expect(useTerminalStore.getState().swarmRestarts).toEqual([])
+        await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS * 2)
+        expect(noCloseOrderFor(bus)).toEqual([])
       })
 
       it('runs it again on the account picked, resuming its own session where both profiles share projects/', async () => {

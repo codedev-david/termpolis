@@ -249,12 +249,21 @@ describe('offerRestart: when it takes a worker\'s limit over', () => {
     expect(messages()).toEqual([])
   })
 
-  it('offers the sign-in when the only way out turns out signed out, and survives a record that fails', async () => {
+  // D13: with no second account to restart on NOW, the conductor hears v1.54.0's message at the stop and nothing else. An
+  // account that is signed out can't take a worker over before a sign-in, so offering it would tell the conductor to
+  // wait (and hold it five minutes) for a restart that cannot happen (SWARM-R2 F1). Its sign-in stays on the
+  // worker's chip menu and in Settings.
+  it('is no offer when the only other account is signed out, and survives a record that fails', async () => {
     deps = makeDeps()
     ;(deps.accounts.check as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: { ...CODEDEV, identity: { email: null, signedIn: false, checkedAt: NOW, source: 'auth-status' } } })
     ;(deps.accounts.noteLimit as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('registry locked'))
-    expect(await offerRestart(W1, LIMIT, () => WORDS, deps)).toBe(true)
-    expect(groups()[0]).toMatchObject({ targets: [], signIn: ['acc_c'] })
+    expect(await offerRestart(W1, LIMIT, () => WORDS, deps)).toBe(false)
+    expect(groups()).toEqual([])
+    expect(messages()).toEqual([])
+    // Nothing waits: no clock, so five minutes later nobody has been told to wait or to reassign.
+    await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS * 2)
+    expect(messages()).toEqual([])
+    expect(useTerminalStore.getState().signInSheet).toBeNull()
   })
 
   it('leaves it to the report when the only account signed out could not take the worker over once signed in', async () => {
@@ -710,6 +719,19 @@ describe('offerConductorRun', () => {
     expect(groups()[0]).toMatchObject({ conductor: true, targets: [], signIn: ['acc_c'] })
   })
 
+  // SWARM-R2 F4c: offerRestart hands the limit's kind to restartTargets (restartTargets alone is tested above), so an
+  // account out of usage on the model the worker hit is no way out for it, and the worker keeps v1.54.0's report.
+  it('leaves out, for a worker, an account out of usage on the very model it ran out on', async () => {
+    const modelOut = { ...CODEDEV, limit: { seenAt: NOW - 1000, resetsAt: NOW + 3_600_000, text: "You've hit your Opus limit", scope: 'model' as const, model: 'Opus' } }
+    useTerminalStore.setState({ accountsView: view([MAIN, modelOut, WORK]) })
+    ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: view([MAIN, modelOut, WORK]) })
+    expect(await offerRestart(W1, { status: 'blocked', summary: "You've hit your Opus limit" }, () => "You've hit your Opus limit", deps)).toBe(false)
+    expect(groups()).toEqual([])
+    // The same account is a way out for a session limit: only the model's limit was the obstacle.
+    expect(await offerRestart(W1, LIMIT, () => WORDS, deps)).toBe(true)
+    expect(groups()[0].targets).toEqual(['acc_c'])
+  })
+
   it('skips an account out of usage on the very model the conductor ran out on', async () => {
     useTerminalStore.setState({ accountsView: view([MAIN, { ...CODEDEV, limit: { seenAt: NOW, resetsAt: NOW + 3_600_000, text: "You've hit your Opus limit", scope: 'model' } }]) })
     expect(await offerConductorRun("You've hit your Opus limit · resets 3pm", 'acc_m', deps)).toBe(false)
@@ -933,6 +955,57 @@ describe('a worker whose limit lifted while its offer was open (R16)', () => {
     off()
   })
 
+  // SWARM-R2 F3: the offer awaits a sign-in check (up to 15 s) before it opens. A worker read at work meanwhile has no
+  // offer to leave yet, so the offer, finishing after it, would tell the conductor to wait about a worker that works and,
+  // five minutes on, to close it.
+  it('opens no offer, and tells the conductor nothing, when the limit lifts while the offer is still being made', async () => {
+    const off = installSwarmRestart(() => deps)
+    let answer!: () => void
+    ;(deps.accounts.check as ReturnType<typeof vi.fn>).mockImplementation((id: string) => new Promise((resolve) => {
+      answer = () => resolve({ success: true, data: { ...MAIN, id, identity: { email: `${id}@example.test`, signedIn: true, checkedAt: NOW, source: 'auth-status' } } })
+    }))
+    const stopping = noteSwarmStop(W1, LIMIT, () => WORDS)
+    await vi.advanceTimersByTimeAsync(10)
+    await noteSwarmStop(W1, WORKING)
+    answer()
+    await stopping
+    expect(groups()).toEqual([])
+    expect(messages()).toEqual([])
+    await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS * 2)
+    expect(messages()).toEqual([])
+    off()
+  })
+
+  it('opens no offer when the limit lifts while the worker\'s task is looked up, after the check has answered', async () => {
+    const off = installSwarmRestart(() => deps)
+    let answer!: () => void
+    ;(deps.swarm.getTasks as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ success: true, data: [] }) }))
+    const stopping = noteSwarmStop(W1, LIMIT, () => WORDS)
+    await vi.advanceTimersByTimeAsync(10)
+    await noteSwarmStop(W1, WORKING)
+    answer()
+    await stopping
+    expect(groups()).toEqual([])
+    expect(messages()).toEqual([])
+    off()
+  })
+
+  it('joins no open offer when the limit lifts while its task is looked up', async () => {
+    const off = installSwarmRestart(() => deps)
+    await noteSwarmStop(W1, LIMIT, () => WORDS)
+    expect(groups()).toHaveLength(1)
+    let answer!: () => void
+    ;(deps.swarm.getTasks as ReturnType<typeof vi.fn>).mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ success: true, data: [] }) }))
+    const stopping = noteSwarmStop(W2, LIMIT, () => WORDS)
+    await vi.advanceTimersByTimeAsync(10)
+    await noteSwarmStop(W2, WORKING)
+    answer()
+    await stopping
+    expect(groups()[0].workers.map((x) => x.terminalId)).toEqual(['w1'])
+    expect(messages()).toEqual([offeredMessage(W1, LIMIT.summary)])
+    off()
+  })
+
   it('leaves an offer that is restarting its worker alone', async () => {
     const off = installSwarmRestart(() => deps)
     await noteSwarmStop(W1, LIMIT)
@@ -999,6 +1072,34 @@ describe('a close-and-reassign that waits for a relaunch to let go of its worker
     useTerminalStore.getState().beginRelaunch('w1', 'account')
     await declineRestart(groups()[0].id, deps)
     await withdrawFromOffer(W1, deps)
+    useTerminalStore.getState().endRelaunch('w1')
+    await vi.advanceTimersByTimeAsync(LOCK_RECHECK_MS * 4)
+    expect(closeAndReassign()).toEqual([])
+  })
+
+  // SWARM-R2 F4a: the lock is checked when the five minutes run out, not only when the close is made. The conductor is
+  // told nothing either way (reassign waits too), so the card is what shows it: it stays on screen with its worker while
+  // a hand switch holds the worker, and goes only after the lock lets go.
+  it('keeps the worker on its card while a hand switch holds it when the five minutes run out, and ends the offer after', async () => {
+    useTerminalStore.getState().beginRelaunch('w1', 'account')
+    await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS + LOCK_RECHECK_MS * 3)
+    expect(groups()).toHaveLength(1)
+    expect(groups()[0].workers.map((w) => w.terminalId)).toEqual(['w1'])
+    expect(groups()[0].phase).toEqual({ kind: 'offered' })
+    expect(closeAndReassign()).toEqual([])
+    useTerminalStore.getState().endRelaunch('w1')
+    await vi.advanceTimersByTimeAsync(LOCK_RECHECK_MS * 2)
+    expect(groups()).toEqual([])
+    expect(closeAndReassign()).toHaveLength(1)
+  })
+
+  // SWARM-R2 F2: the clear that a new swarm makes takes a waiting close down too: it belongs to the last swarm's worker, and
+  // would tell the next conductor about it once the lock let go.
+  it('is cancelled by a clear of the swarm\'s offers, and tells no one when the lock lets go', async () => {
+    useTerminalStore.getState().beginRelaunch('w1', 'account')
+    await declineRestart(groups()[0].id, deps)
+    await vi.advanceTimersByTimeAsync(LOCK_RECHECK_MS * 2)
+    clearSwarmRestarts(deps)
     useTerminalStore.getState().endRelaunch('w1')
     await vi.advanceTimersByTimeAsync(LOCK_RECHECK_MS * 4)
     expect(closeAndReassign()).toEqual([])
@@ -1200,17 +1301,26 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
     return offerRestart(W1, LIMIT, () => WORDS, deps)
   }
 
-  it('is offered when the only other account is signed out: nothing to restart on yet, one to sign in to', async () => {
+  // A signed-out account is listed beside a real target, never alone (SWARM-R2 F1): a worker's offer exists only when
+  // something can take it over now, so the conductor is never held for a restart that waits on a sign-in.
+  const third = row({ id: 'acc_t', label: 'third', profile: '/h/.claude-third', isDefault: false, order: 3, lastEmail: 't@example.test' })
+  const withSignedOutThird = (): void => {
+    useTerminalStore.setState({ accountsView: view([MAIN, CODEDEV, third, WORK]) })
+    signedOut('acc_t')
+  }
+
+  it('is no offer when the only other account is signed out: no card, no clock, the conductor is told as in v1.54.0', async () => {
     signedOut('acc_c')
-    expect(await stopped()).toBe(true)
-    expect(groups()[0]).toMatchObject({ targets: [], signIn: ['acc_c'], phase: { kind: 'offered' } })
-    expect(messages()).toEqual([offeredMessage(W1, LIMIT.summary)])
+    expect(await stopped()).toBe(false)
+    expect(groups()).toEqual([])
+    expect(messages()).toEqual([])
+    await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS * 2)
+    expect(messages()).toEqual([])
+    expect(useTerminalStore.getState().signInSheet).toBeNull()
   })
 
   it('lists the signed-in accounts to restart on and the signed-out ones to sign in to, each apart', async () => {
-    const third = row({ id: 'acc_t', label: 'third', profile: '/h/.claude-third', isDefault: false, order: 3, lastEmail: 't@example.test' })
-    useTerminalStore.setState({ accountsView: view([MAIN, CODEDEV, third, WORK]) })
-    signedOut('acc_t')
+    withSignedOutThird()
     expect(await stopped()).toBe(true)
     expect(groups()[0]).toMatchObject({ targets: ['acc_c'], signIn: ['acc_t'] })
   })
@@ -1231,11 +1341,22 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
     expect(await stopped()).toBe(false)
   })
 
+  it('leaves a signed-out account out of the sign-in list when it is out of usage on the model the worker ran out on', async () => {
+    const opusOut = { ...third, limit: { seenAt: NOW - 1000, resetsAt: NOW + 3_600_000, text: "You've hit your Opus limit", scope: 'model' as const, model: 'Opus' } }
+    useTerminalStore.setState({ accountsView: view([MAIN, CODEDEV, opusOut, WORK]) })
+    ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: view([MAIN, CODEDEV, opusOut, WORK]) })
+    signedOut('acc_t')
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }] })
+    expect(await offerRestart(W1, { status: 'blocked', summary: "You've hit your Opus limit" }, () => "You've hit your Opus limit", deps)).toBe(true)
+    expect(groups()[0].targets).toEqual(['acc_c'])
+    expect(groups()[0].signIn).toBeUndefined()
+  })
+
   it('stops the clock while the user signs in, opens the sheet for that account, and restarts the worker when it finished', async () => {
-    signedOut('acc_c')
+    withSignedOutThird()
     await stopped()
-    signInThenRestart(groups()[0].id, 'acc_c', deps)
-    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_c', then: expect.any(Function), doneLabel: 'Restart it on codedev', cancelled: expect.any(Function) })
+    signInThenRestart(groups()[0].id, 'acc_t', deps)
+    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_t', then: expect.any(Function), doneLabel: 'Restart it on third', cancelled: expect.any(Function) })
     // The 5 minutes pass with the sheet open: the conductor is not told to reassign.
     await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS * 2)
     expect(messages()).toEqual([offeredMessage(W1, LIMIT.summary)])
@@ -1247,21 +1368,21 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
   })
 
   it('names an account the view no longer holds as "that account" on the sheet\'s button', async () => {
-    signedOut('acc_c')
+    withSignedOutThird()
     await stopped()
     useTerminalStore.setState({ accountsView: view([MAIN, WORK]) })
-    signInThenRestart(groups()[0].id, 'acc_c', deps)
-    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_c', doneLabel: 'Restart it on that account' })
+    signInThenRestart(groups()[0].id, 'acc_t', deps)
+    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_t', doneLabel: 'Restart it on that account' })
   })
 
   it('starts no clock when the sheet is closed after the offer went away or moved on', async () => {
-    signedOut('acc_c')
+    withSignedOutThird()
     await stopped()
     const id = groups()[0].id
-    signInThenRestart(id, 'acc_c', deps)
+    signInThenRestart(id, 'acc_t', deps)
     const cancelled = useTerminalStore.getState().signInSheet!.cancelled!
     // The offer is restarting its workers now (something else began it), or is gone: nothing waits any more.
-    useTerminalStore.getState().putSwarmRestart({ ...groups()[0], phase: { kind: 'restarting', targetId: 'acc_c' } })
+    useTerminalStore.getState().putSwarmRestart({ ...groups()[0], phase: { kind: 'restarting', targetId: 'acc_t' } })
     cancelled()
     useTerminalStore.getState().dropSwarmRestart(id)
     cancelled()
@@ -1270,9 +1391,9 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
   })
 
   it('runs the clock again when the sheet is closed without signing in', async () => {
-    signedOut('acc_c')
+    withSignedOutThird()
     await stopped()
-    signInThenRestart(groups()[0].id, 'acc_c', deps)
+    signInThenRestart(groups()[0].id, 'acc_t', deps)
     useTerminalStore.getState().signInSheet!.cancelled!()
     await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS - 10)
     expect(messages()).toHaveLength(1)
@@ -1281,18 +1402,18 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
   })
 
   it('names all of the workers when it restarts several, and does nothing for an offer that is gone or past asking', async () => {
-    signedOut('acc_c')
+    withSignedOutThird()
     useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }, { terminalId: 'w2', agentName: 'Claude', role: 'Tests', status: 'blocked' }] })
     await offerRestart(W1, LIMIT, () => WORDS, deps)
     await offerRestart(W2, LIMIT, () => WORDS, deps)
     const id = groups()[0].id
-    signInThenRestart(id, 'acc_c', deps)
-    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_c', doneLabel: 'Restart all on codedev' })
+    signInThenRestart(id, 'acc_t', deps)
+    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_t', doneLabel: 'Restart all on third' })
     useTerminalStore.getState().closeSignInSheet()
-    signInThenRestart('nope', 'acc_c', deps)
+    signInThenRestart('nope', 'acc_t', deps)
     expect(useTerminalStore.getState().signInSheet).toBeNull()
-    useTerminalStore.getState().putSwarmRestart({ ...groups()[0], phase: { kind: 'restarting', targetId: 'acc_c' } })
-    signInThenRestart(id, 'acc_c', deps)
+    useTerminalStore.getState().putSwarmRestart({ ...groups()[0], phase: { kind: 'restarting', targetId: 'acc_t' } })
+    signInThenRestart(id, 'acc_t', deps)
     expect(useTerminalStore.getState().signInSheet).toBeNull()
   })
 

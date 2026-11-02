@@ -3,7 +3,7 @@ import { useTerminalStore } from '../store/terminalStore'
 import { resolveAgentCommand, testDelay } from './testAgents'
 import { buildConductorPrompt } from './conductorPrompt'
 import { conductorRunScript, conductorLaunchCommand, conductorLimitOf, findConductorExit, type ConductorExit } from './conductorLaunch'
-import { liveRestartDeps, offerConductorRun } from './swarmRestart'
+import { clearSwarmRestarts, liveRestartDeps, offerConductorRun } from './swarmRestart'
 import { getTerminalDefaults } from './terminalDefaults'
 import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../../shared/conductorFiles'
 import { recordSwarmError } from './sentry'
@@ -74,6 +74,9 @@ export async function startConductor(cwd: string): Promise<{ success: boolean; e
   if (conductorState.terminalId) {
     stopConductor()
   }
+  // A new swarm is under way: the last one's restart offers and their clocks go (F2, and again in sendTask, for those
+  // opened while the wizard was).
+  clearSwarmRestarts(liveRestartDeps())
 
   // Mark starting synchronously so the UI can update immediately; SHA capture
   // below happens async and is merged in once resolved.
@@ -208,6 +211,9 @@ export async function sendTask(taskDescription: string, cwd: string): Promise<vo
   // would post to the new conductor under their agents' names, and their stops be reported to it.
   stopAllBridges()
   useTerminalStore.getState().setSwarmAgents([])
+  // Nor are their restart offers (F2): an offer's clock would, five minutes on, tell the new conductor to close a worker
+  // of the old swarm, and its card stay clickable. Nobody is told: the old conductor has nothing to wait for any more.
+  clearSwarmRestarts(liveRestartDeps())
   // Before the baseline, so that whatever is posted after it was posted while its workers were noted.
   noteWorkers()
   // Read before the line is typed, so nothing the new conductor does can land in the baseline.

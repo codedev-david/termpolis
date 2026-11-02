@@ -3,7 +3,7 @@
 // restart, which only work ends (R4). The swarm bus is a stub: messages are what the conductor would read.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
-  READS_TO_CLEAR, _resetStopReportsForTest, carryIfStopped, carryWorkerStop, isStopCarried, noteWorkerStatus, reportWorkerStop, setSwarmWorkingAgain,
+  READS_TO_CLEAR, _resetStopReportsForTest, carryIfStopped, carryWorkerStop, isStopCarried, noteWorkerStatus, reportWorkerStop, setSwarmWorkingAgain, stopMark,
 } from '../../src/renderer/src/lib/swarmStopReports'
 
 const W = { terminalId: 'w1', agentName: 'Claude', role: 'Build UI' }
@@ -130,5 +130,23 @@ describe('reportWorkerStop: what the conductor reads', () => {
   it('does not reject when the bus is gone', async () => {
     sendMessage.mockRejectedValue(new Error('bus down'))
     await expect(reportWorkerStop(W, LIMIT)).resolves.toBeUndefined()
+  })
+})
+
+// SWARM-R2 F3: the offer asks whether the stop it began for is still on record once its awaits are done.
+describe('stopMark: the stop a worker is on, as a mark that changes when it ends or is replaced', () => {
+  it('is none for a worker with no stop, the same while the same stop stays on, and another once it ended and a new one began', async () => {
+    expect(stopMark('w1')).toBeUndefined()
+    await noteWorkerStatus(W, LIMIT)
+    const first = stopMark('w1')
+    expect(first).toBeDefined()
+    await noteWorkerStatus(W, LIMIT)
+    expect(stopMark('w1')).toBe(first)
+    await noteWorkerStatus(W, WORKING)
+    expect(stopMark('w1')).toBeUndefined()
+    await noteWorkerStatus(W, LIMIT)
+    expect(stopMark('w1')).toBeDefined()
+    expect(stopMark('w1')).not.toBe(first)
+    expect(stopMark('w2')).toBeUndefined()
   })
 })
