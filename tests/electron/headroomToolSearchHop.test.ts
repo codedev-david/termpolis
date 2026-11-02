@@ -156,7 +156,7 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     const at = afterBlockStart(lines)
     lines.splice(at, 0,
       'data: {"type":"content_block_delta","index":"0","delta":{"type":"input_json_delta","partial_json":"zzz"}}', // index is not a number
-      'data: {"type":"content_block_delta","index":0,"delta":null}',
+      'data: {"type":"content_block_delta","index":0,"delta":null,"note":"input_json_delta"}', // no delta to read: the words alone get it past the prefilter
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","note":"input_json_delta"}}', // not an input delta
       'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":7}}', // not text
       'data: {"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"retrieve_full"}}', // a block that is not a ToolSearch call
@@ -167,7 +167,19 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
   it('attributes each delta to the block it belongs to: a stray delta for another index is no evidence', () => {
     const lines = stream([search('select:Read')]).split('\n')
     const at = afterBlockStart(lines)
-    lines.splice(at, 0,'data: {"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"retrieve_full"}}')
+    lines.splice(at, 0, 'data: {"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"retrieve_full"}}')
+    expect(parseTurnShapeFromSse(lines.join('\n'))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+  })
+
+  it('takes the query from input deltas only, and only from text: other deltas that carry the words are no evidence', () => {
+    const lines = stream([search('select:Read')]).split('\n')
+    const at = afterBlockStart(lines)
+    lines.splice(at, 0,
+      // the right block, the wrong kind of delta (the words in "note" are only what get the line past the prefilter)
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","partial_json":"retrieve_full"},"note":"input_json_delta"}',
+      // the right kind of delta, but what it carries is not text (an array would join into the words if it were read)
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":["retrieve_full"]}}',
+    )
     expect(parseTurnShapeFromSse(lines.join('\n'))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
   })
 
