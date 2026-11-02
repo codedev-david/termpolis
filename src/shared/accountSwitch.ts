@@ -253,9 +253,16 @@ export const AGY_SIGNED_IN = /Authentication successful!|Successfully authentica
 
 /** A question after a relaunch that only the user can answer, which Termpolis never answers:
  *  Claude Code's bypass-permissions warning, a new MCP server to approve, the folder-trust
- *  question (answered by the prompt pollers where the user allows it, once the switch is over), and
- *  the one-time "Try the new fullscreen renderer?" offer a profile never used before opens on. */
-export const ASKS_USER = /Bypass Permissions mode|New MCP servers? found|Do you trust the (?:files|contents)|trust this folder|Try the new fullscreen renderer/i
+ *  question (answered by the prompt pollers where the user allows it, once the switch is over), the
+ *  one-time "Try the new fullscreen renderer?" offer a profile never used before opens on, and the
+ *  Windows sandbox set-up menu Codex opens on in a home it never ran in (its option rows draw a ›,
+ *  so it reads as an input box, and no prompt poller answers it). */
+export const ASKS_USER = /Bypass Permissions mode|New MCP servers? found|Do you trust the (?:files|contents)|trust this folder|Try the new fullscreen renderer|Set up default sandbox/i
+
+/** Codex's "still starting" rows: the header line it draws while it looks for the session to resume,
+ *  and Codex 0.153's "model: loading". Its composer is already on screen under them, and the lookup
+ *  can still end in "No saved session found" (SWITCH-R1 C2), so the relaunch has not come up yet. */
+export const CODEX_STARTING = /Resuming session|\bmodel:\s+loading\b/
 
 /** The variables that move an agent's profile, as a typed line could set or unset them. */
 const PROFILE_VARS = '(?:CLAUDE_CONFIG_DIR|CODEX_HOME|GEMINI_CLI_HOME)'
@@ -320,8 +327,10 @@ export type SwitchOutcome =
   | { kind: 'exit-unconfirmed' }
   /** The line landed in the agent's own box (it never exited): it was cleared, and not entered. */
   | { kind: 'agent-alive' }
-  /** The line never showed: nothing was entered. `line` is what to type by hand. */
-  | { kind: 'didnt-start'; line: string }
+  /** The line never showed: nothing was entered. `line` is what to type by hand. `otherShell`: the
+   *  terminal's shell is of another kind than the one the line was built for (one was started inside
+   *  it), so there is no line to type; the agent has exited. */
+  | { kind: 'didnt-start'; line: string; otherShell?: true }
   /** Claude Code couldn't find the conversation on the target. */
   | { kind: 'resume-not-found' }
   /** The target shows its sign-in screen, which Termpolis never answers. */
@@ -412,12 +421,16 @@ export function otherShellReported(output: string, family: ShellFamily): boolean
   return family === 'posix' ? WINDOWS_REPORT.test(output) : POSIX_REPORT.test(output)
 }
 
+const ownReport = (output: string, family: ShellFamily): boolean => (family === 'posix' ? POSIX_REPORT : WINDOWS_REPORT).test(output)
+
 /** Whether a shell of another kind runs here now: another family reported, and the terminal's own did
  *  not. A prompt can write both (oh-my-posh's pwd=osc99 in Git Bash adds Windows Terminal's cwd marker to
  *  the bash prompt's own OSC 7; a PowerShell prompt can write OSC 7), and then no shell is nested: a line
  *  of the wrong family is harmless anyway (it fails to parse and runs nothing, verified for all nine
- *  pairs), so only this clear case, a family heard from and the own one silent, refuses. */
-export function nestedShellReported(output: string, family: ShellFamily): boolean {
-  const own = family === 'posix' ? POSIX_REPORT.test(output) : WINDOWS_REPORT.test(output)
-  return !own && otherShellReported(output, family)
+ *  pairs), so only this clear case, a family heard from and the own one silent, refuses. `earlier` is
+ *  the terminal's output from before this: a shell that never wrote its own family's report there
+ *  (oh-my-posh in Git Bash writes only OSC 9;9) is not shown nested by writing the other's. */
+export function nestedShellReported(output: string, family: ShellFamily, earlier?: string): boolean {
+  if (ownReport(output, family) || !otherShellReported(output, family)) return false
+  return earlier === undefined || ownReport(earlier, family)
 }

@@ -147,12 +147,28 @@ describe('cardFor: what a switch that didn\'t finish says, and what comes next',
     expect(kinds({ kind: 'resume-not-found' })).toEqual(['fresh', 'new-terminal', 'close'])
     expect(kinds({ kind: 'sign-in' })).toEqual(['sign-in-and-continue', 'sign-in', 'close'])
     expect(kinds({ kind: 'asks-user', what: 'q' })).toEqual(['close'])
-    expect(kinds({ kind: 'no-outcome' })).toEqual(['retry', 'close'])
+    expect(kinds({ kind: 'no-outcome' })).toEqual(['retry', 'new-terminal', 'close'])
     expect(kinds({ kind: 'refused', why: 'x' })).toEqual(['retry', 'new-terminal', 'close'])
     expect(kinds({ kind: 'refused', why: 'x' }, true)).toEqual(['retry', 'close'])
     expect(kinds({ kind: 'unknown-exit' }, true)).toEqual(['retry', 'exited', 'close'])
     expect(cardFor({ kind: 'resume-not-found' }, run, false)?.actions[0].label).toBe('Start a new session on codedev')
     expect(cardFor({ kind: 'agent-alive' }, run, false)?.actions[1].label).toBe('New terminal on codedev')
+  })
+
+  it('gives a switch that took no outcome a way on that does not repeat it: a New terminal on the account (SWITCH-R1 N1)', () => {
+    expect(kinds({ kind: 'no-outcome' })).toEqual(['retry', 'new-terminal', 'close'])
+    expect(kinds({ kind: 'no-outcome' }, true)).toEqual(['retry', 'close'])
+  })
+
+  it('says a shell of another kind took the line\'s place, with nothing to type and a New terminal first (UI-R1-H)', () => {
+    const card = cardFor({ kind: 'didnt-start', line: 'x', otherShell: true }, run, false)!
+    expect(card.what).toBe('This terminal\'s shell is of another kind than the one Termpolis types for (one was started inside it), so the account line was not entered.')
+    expect(card.now).toBe('Claude Code has exited: the terminal is at that shell\'s prompt.')
+    expect(card.actions.map((a) => a.kind)).toEqual(['new-terminal', 'close'])
+    // Nothing in it asks for a command typed in the terminal.
+    expect(`${card.what} ${card.now}`).not.toMatch(/exit it|switch again|type /i)
+    // A worker has no New terminal: it keeps Try again beside Close.
+    expect(cardFor({ kind: 'didnt-start', line: 'x', otherShell: true }, run, true)!.actions.map((a) => a.kind)).toEqual(['retry', 'close'])
   })
 })
 

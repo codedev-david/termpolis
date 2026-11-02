@@ -235,6 +235,20 @@ describe('nestedShellReported: another family heard from, and the own one silent
     expect(nestedShellReported(']9;9;C:\w]7;file://h/w', 'cmd')).toBe(false)
   })
 
+  it('reads a family that was heard before and has gone silent as nested, and one never heard as no sign of it (SWITCH-R1 F2)', () => {
+    const own = '\x1b]7;file://h/w\x07'
+    const other = '\x1b]9;9;C:\\w\x07'
+    // A shell that wrote its own family's report before, and now only the other's: another shell took its place.
+    expect(nestedShellReported(other, 'posix', `${own}me@host $ claude`)).toBe(true)
+    // One that never wrote its own (oh-my-posh in Git Bash writes only OSC 9;9) is not shown nested by writing the other's.
+    expect(nestedShellReported(other, 'posix', `${other}me@host $ claude`)).toBe(false)
+    expect(nestedShellReported(other, 'posix', '')).toBe(false)
+    // With no earlier output given, as before: the clear case refuses.
+    expect(nestedShellReported(other, 'posix')).toBe(true)
+    // The own family heard now settles it, whatever came before.
+    expect(nestedShellReported(`${own}${other}`, 'posix', own)).toBe(false)
+  })
+
   it('is none when nothing reported, or only the own family did', () => {
     expect(nestedShellReported('plain text', 'posix')).toBe(false)
     expect(nestedShellReported(']7;file://h/w', 'posix')).toBe(false)
@@ -259,6 +273,33 @@ describe('relaunchCommand: the flags a relaunch keeps', () => {
   })
 })
 
+
+describe('carryForSwitch: an agent typed with its path or its extension (MODELS-R1-1, SWITCH-R1 G3)', () => {
+  // The chip and the switch work for a terminal whose agent was started as claude.exe or by its path, so
+  // what that line carried must come back, the restrictions included.
+  it.each([
+    ['claude.exe --dangerously-skip-permissions --model opus --session-id 6b0f3c2a-9d14-4e27-8a31-2f5c7d9e1b44', { ok: true, model: 'opus', extra: ['--dangerously-skip-permissions'] }, 'claude'],
+    ['C:\\tools\\claude.exe --disallowedTools Bash', { ok: true, extra: ['--disallowedTools', 'Bash'] }, 'claude'],
+    ['/usr/local/bin/claude --permission-mode plan', { ok: true, extra: ['--permission-mode', 'plan'] }, 'claude'],
+    ['claude.cmd --verbose', { ok: true, extra: ['--verbose'] }, 'claude'],
+    ['codex.exe -m gpt-5.6-sol -s read-only', { ok: true, model: 'gpt-5.6-sol', extra: ['-s', 'read-only'] }, 'codex'],
+    ['cd proj && C:\\tools\\codex.CMD -a never', { ok: true, extra: ['-a', 'never'] }, 'codex'],
+    ["export CLAUDE_CONFIG_DIR='/h/.claude-b' && /opt/claude/bin/claude --verbose", { ok: true, extra: ['--verbose'] }, 'claude'],
+  ] as const)('%s', (line, expected, agent) => {
+    expect(carryForSwitch(agent, line)).toEqual(expected)
+  })
+
+  it('keeps the restrictions of a Codex started by path, and refuses what it cannot repeat there too', () => {
+    expect(carryForSwitch('codex', '/usr/bin/codex -s read-only -a never').ok).toBe(true)
+    expect(carryForSwitch('claude', 'C:\\tools\\claude.exe "do the thing"').ok).toBe(false)
+  })
+
+  it('reads a word that only ends like an agent as none', () => {
+    expect(carryForSwitch('claude', 'myclaude --verbose')).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', 'claude-code --verbose')).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', 'echo /usr/bin/claude-notes')).toEqual({ ok: true, extra: [] })
+  })
+})
 describe('carryForSwitch: what a switch repeats of the line the agent was started with', () => {
   it("carries Claude Code's model in any spelling, and its other flags word for word", () => {
     expect(carryForSwitch('claude', 'claude --model opus --dangerously-skip-permissions')).toEqual({ ok: true, model: 'opus', extra: ['--dangerously-skip-permissions'] })

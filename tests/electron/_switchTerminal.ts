@@ -19,7 +19,7 @@ export type Agent = 'claude' | 'codex' | 'agy'
 export type Start = 'idle' | 'busy' | 'menu' | 'waiting' | 'typed' | 'question' | 'gone-hint' | 'gone-quiet' | 'blank'
 
 /** What the shell's run of the relaunch line shows. */
-export type Relaunch = 'box' | 'not-found' | 'sign-in' | 'asks' | 'nothing'
+export type Relaunch = 'box' | 'not-found' | 'sign-in' | 'asks' | 'nothing' | 'loading-then-not-found' | 'box-then-not-found' | 'flicker-then-not-found' | 'sandbox-menu'
 
 export interface TermScript {
   agent: Agent
@@ -38,6 +38,26 @@ export interface TermScript {
   worktree?: string
   /** What each relaunch shows, in turn; the last one repeats. */
   relaunch?: Relaunch[]
+  /** Codex 0.164 draws a status line between its composer's blank row and its hint row, as the real one
+   *  does once it has settled (SWITCH-R1 C1); 0.153 and the default draw the hint row alone. */
+  codexStatus?: boolean
+  /** With the relaunch 'loading-then-not-found' (Codex draws its composer under "Resuming session…") or
+   *  'box-then-not-found' (its composer alone): the CLI prints that the session isn't there only this
+   *  long after the Enter (the real 0.164 took 2.3 s, 0.3 s after its composer showed). Default 2300. */
+  resumeErrorMs?: number
+  /** Claude Code draws its "No conversation found" line with a cursor-forward for every space, as the real
+   *  2.1.316 does (SWITCH-R1 N1), and so no space is in the bytes; 'absolute': each word at its column
+   *  (a cursor-horizontal-absolute), which only the rendered screen reads as words. */
+  cursorForward?: boolean | 'absolute'
+  /** Rows of the resumed conversation, drawn above the agent's box after a relaunch: the history a real
+   *  CLI shows, which can hold the CLI's own error words (SWITCH-R1 H). */
+  history?: string[]
+  /** The row under Claude Code's or agy's box, instead of its usual footer (Claude Code 2.1.316 draws
+   *  "Not logged in · Run /login" there in a profile that is signed out). */
+  footer?: string
+  /** The pane's size. Default 80 x 24. */
+  cols?: number
+  rows?: number
   /** A busy turn stops on Esc. */
   escStops?: boolean
   /** A menu or a wait closes on Esc. Default true. */
@@ -48,6 +68,9 @@ export interface TermScript {
   shellDead?: boolean
   /** A shell of another family reports at the exit (one started inside it). */
   nestedReport?: Family
+  /** The shell's prompt writes only this family's report and never its own (oh-my-posh's pwd=osc99 in
+   *  Git Bash writes only OSC 9;9): no shell of another kind is nested. */
+  reportsOnly?: Family
   /** The shell's own prompt also writes the other family's report (oh-my-posh's pwd=osc99 in Git Bash, a
    *  PowerShell prompt that writes OSC 7), beside its own: no shell of another kind is nested. */
   alsoReports?: Family
@@ -112,7 +135,7 @@ export class FakeTerminal {
   closed = false
   mode: 'agent' | 'shell'
   /** The agent's screen now: 'idle' with the box, or one of the states that hold it. */
-  agentState: Start | 'sign-in' | 'asks'
+  agentState: Start | 'sign-in' | 'asks' | 'loading' | 'sandbox'
   box = ''
   line = ''
   relaunches = 0
@@ -126,7 +149,9 @@ export class FakeTerminal {
   /** The clock at each write, in step with writes. */
   writeClocks: number[] = []
   /** Output on its way (exitOutputLateMs): it reaches `out` once the clock passes `at`. */
-  late: { at: number; text: string } | null = null
+  late: { at: number; text: string; mode?: 'agent' | 'shell' } | null = null
+  /** Redraws of the agent's screen on their way (the 'flicker' relaunch): at `at`, it shows `state`. */
+  redraws: Array<{ at: number; state: 'idle' | 'loading' }> = []
   /** shellCharMs: what the shell has read of the typed line and not drawn yet, and when it will
    *  have read it all. */
   slowEcho: { at: number; text: string } | null = null
@@ -161,9 +186,11 @@ export class FakeTerminal {
   prompt(asked?: Family): string {
     // A shell started inside the terminal's own answers every prompt after the agent's exit, not only the first.
     const family = asked ?? (this.s.nestedReport && this.mode === 'shell' ? this.s.nestedReport : this.s.family)
-    const reports = this.s.reports !== false
+    const only = this.s.reportsOnly && !asked && family === this.s.family ? this.s.reportsOnly : undefined
+    const reports = this.s.reports !== false && !only
     // A prompt that also writes the other family's report: Windows Terminal's cwd marker from a bash prompt, OSC 7 from PowerShell's.
-    const also = reports && this.s.alsoReports && !asked && family === this.s.family ? (this.s.alsoReports === 'posix' ? `${E}]7;file://host/c/repo\x07` : `${E}]9;9;C:\\repo\x07`) : ''
+    const alsoFamily = only ?? (reports && this.s.alsoReports && !asked && family === this.s.family ? this.s.alsoReports : undefined)
+    const also = alsoFamily ? (alsoFamily === 'posix' ? `${E}]7;file://host/c/repo\x07` : `${E}]9;9;C:\\repo\x07`) : ''
     if (family === 'posix') return `${reports ? `${E}]7;file://host/c/repo\x07` : ''}${also}me@host MINGW64 /c/repo\r\n$ `
     if (family === 'powershell') return `${reports ? `${E}]9;9;C:\\repo\x07` : ''}${also}PS C:\\repo> `
     return `${reports ? `${E}]9;9;C:\\repo\x07` : ''}${also}C:\\repo>`
@@ -182,18 +209,35 @@ export class FakeTerminal {
       if (a === 'codex') return ['  Approaching rate limits', '  Switch to gpt-5.6-luna for lower credit usage?', '', '› 1. Switch to gpt-5.6-luna   Uses fewer credits for upcoming turns.', '  2. Keep current model', '', '  Press enter to confirm or esc to go back']
       return ['❯ hi', '  ⎿ \u00a0You\'ve hit your session limit · resets 3pm (America/New_York)', '', '❯ /rate-limit-options', '', RULE, '  What do you want to do?', '', '  ❯ 1. Stop and wait for limit to reset', '    2. Add funds to continue with usage credits', '', '  Enter to confirm · Esc to cancel']
     }
-    const above = st === 'busy'
+    // Codex's Windows set-up question on a home it never ran in, as the real 0.164 drew it before its keys row.
+    if (st === 'sandbox') return ['  >_ OpenAI Codex (v0.164.0)', '     ~\\repo', '  Set up the Codex agent sandbox to protect your files and control network access. Learn more', '  <https://developers.openai.com/codex/windows>', '› 1. Set up default sandbox (requires Administrator permissions)', '  2. Use non-admin sandbox (higher risk if prompt injected)', '  3. Quit', '', '  enter select · esc back']
+    if (st === 'loading') return ['  >_ OpenAI Codex (v0.164.0)', '     ~\\repo', '  Resuming session…', '› Ask Codex to do anything']
+    const above = this.relaunches > 0 && this.s.history ? [...this.s.history, ''] : st === 'busy'
       ? (a === 'codex' ? ['• Working (12s • esc to interrupt)', ''] : a === 'agy' ? ['⡿ Generating... (esc to cancel)', ''] : ['✻ Thinking… (2s · esc to interrupt)', ''])
       : st === 'waiting' ? ['✻ Usage limit reached · continuing automatically at 3pm · esc to cancel', '']
       : this.s.quoteHint ? ['● When it exits it prints:', '', 'Resume this session with:', `claude --resume ${this.s.id ?? ID}`, ''] : ['● Done.', '']
     if (a === 'codex') {
       const composer = `› ${this.box || 'Ask Codex to do anything'}`
       const popup = this.box.startsWith('/') ? ['  /quit   exit Codex'] : []
-      return ['• Ready.', '', ...above, composer, ...popup, '', BOX_FOOTER.codex]
+      // 0.164 settled: the status line, then the hint row with a warning on its right. Before: the hint row alone.
+      const footer = this.s.codexStatus ? [BOX_FOOTER.codex, `  ? for shortcuts${' '.repeat(38)}⚠ 1 warning · f2 to view`] : [BOX_FOOTER.codex]
+      return ['• Ready.', '', ...above, composer, ...popup, '', ...footer]
     }
     const glyph = a === 'claude' ? '❯' : '>'
     const header = a === 'agy' ? ['      ▄▀▀▄        Antigravity CLI 1.4.3', `     ▀▀▀▀▀▀       ${this.email} (Google AI Pro)`, ''] : []
-    return [...header, ...above, RULE, `${glyph} ${this.box}`, RULE, BOX_FOOTER[a]]
+    // A rule is as wide as the pane (a narrow one would wrap an 80-column rule into rows of its own).
+    const rule = this.s.cols ? '─'.repeat(this.s.cols) : RULE
+    return [...header, ...above, rule, `${glyph} ${this.box}`, rule, this.s.footer ?? BOX_FOOTER[a]]
+  }
+
+  /** Claude Code's "No conversation found" line, drawn as the script says. */
+  private notFoundLine(id: string): string {
+    const words = ['No', 'conversation', 'found', 'with', 'session', 'ID:', id]
+    if (this.s.cursorForward === 'absolute') {
+      let col = 1
+      return words.map((w) => { const at = col; col += w.length + 1; return `${E}[${at}G${w}` }).join('')
+    }
+    return this.s.cursorForward ? words.join(`${E}[1C`) : words.join(' ')
   }
 
   /** The agent's screen, as ConPTY paints it: cleared, then each row at its place. */
@@ -263,8 +307,19 @@ export class FakeTerminal {
     if (this.s.deadAfterRelaunches !== undefined && this.relaunches >= this.s.deadAfterRelaunches) this.s.shellDead = true
     const id = this.s.id ?? ID
     if (what === 'nothing') return
+    if (what === 'loading-then-not-found' || what === 'box-then-not-found' || what === 'flicker-then-not-found') {
+      // The composer is up at once (under "Resuming session…", or alone); the CLI finds the session isn't there later.
+      this.mode = 'agent'
+      this.box = ''
+      this.agentState = what === 'loading-then-not-found' ? 'loading' : 'idle'
+      this.redraw()
+      // 'flicker': the loading row comes and goes while it looks (1 s in, gone again at 3 s).
+      if (what === 'flicker-then-not-found') this.redraws = [{ at: this.clock + 1000, state: 'loading' }, { at: this.clock + 3000, state: 'idle' }]
+      this.late = { at: this.clock + (this.s.resumeErrorMs ?? 2300), mode: 'shell', text: `\r\nERROR: No saved session found with ID ${id}. Run \`codex resume\` without an ID to choose from existing sessions.\r\n${this.prompt()}` }
+      return
+    }
     if (what === 'not-found') {
-      if (this.s.agent === 'claude') this.out += `No conversation found with session ID: ${id}\r\n${this.prompt()}`
+      if (this.s.agent === 'claude') this.out += `${this.notFoundLine(id)}\r\n${this.prompt()}`
       else if (this.s.agent === 'codex') this.out += `ERROR: No saved session found with ID ${id}. Run \`codex resume\` without an ID to choose from existing sessions.\r\n${this.prompt()}`
       else {
         this.out += `Conversation ${id} not found, ignoring --conversation flag\r\n`
@@ -277,7 +332,7 @@ export class FakeTerminal {
     }
     this.mode = 'agent'
     this.box = ''
-    this.agentState = what === 'sign-in' ? 'sign-in' : what === 'asks' ? 'asks' : 'idle'
+    this.agentState = what === 'sign-in' ? 'sign-in' : what === 'asks' ? 'asks' : what === 'sandbox-menu' ? 'sandbox' : 'idle'
     this.redraw()
   }
 
@@ -378,12 +433,18 @@ export class FakeTerminal {
       output: () => (this.out ? { raw: this.out, end: this.out.length } : null),
       outputFrom: (_id, from) => this.out.slice(from),
       end: () => this.out.length,
-      size: () => ({ cols: 80, rows: 24 }),
+      size: () => ({ cols: this.s.cols ?? 80, rows: this.s.rows ?? 24 }),
       write: (_id, data) => this.type(data),
       sleep: async (ms) => {
         this.clock += ms
+        for (const r of this.redraws.filter((x) => x.at <= this.clock)) {
+          this.agentState = r.state
+          this.redraw()
+        }
+        this.redraws = this.redraws.filter((x) => x.at > this.clock)
         if (this.late && this.late.at <= this.clock) {
           this.out += this.late.text
+          if (this.late.mode) this.mode = this.late.mode
           this.late = null
         }
         if (this.slowEcho && this.slowEcho.at <= this.clock) this.flushSlowEcho()

@@ -436,7 +436,7 @@ export function failureText(o: SwitchOutcome, agent: ProfileAgent, target: Accou
     case 'unknown-exit': return `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`
     case 'exit-unconfirmed': return `${name} didn't confirm it exited, so Termpolis typed nothing more.`
     case 'agent-alive': return `${name} didn't exit: the account line showed in its own input, so Termpolis took it back out and entered nothing.`
-    case 'didnt-start': return 'The account line never showed, so nothing was entered.'
+    case 'didnt-start': return o.otherShell ? 'This worker\'s shell is of another kind than the one Termpolis types for, so nothing was entered.' : 'The account line never showed, so nothing was entered.'
     case 'resume-not-found': return `${target.label} can't see that conversation.`
     case 'sign-in': return `${target.label}'s sign-in has expired, so ${name} stopped at its sign-in screen. Sign it in again from its card in Settings ▸ Accounts.`
     case 'asks-user': return `${target.label} is asking something only a person can answer.`

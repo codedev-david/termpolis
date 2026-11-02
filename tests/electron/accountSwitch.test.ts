@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
-  exitShown, hintAtFoot, look, releaseModelHold, runAccountSwitch, typeAtPrompt,
+  exitShown, hintAtFoot, look, ownScreen, releaseModelHold, runAccountSwitch, typeAtPrompt,
 } from '../../src/main/accountSwitch'
 import type { Look, SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
 import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
@@ -390,7 +390,7 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
 
   it('refuses when a shell of another family reported since: one started inside this one', async () => {
     const r = await run(claude({ nestedReport: 'powershell' }))
-    expect(r.outcome).toEqual({ kind: 'refused', why: 'a shell of another kind runs in this terminal now (one started inside it), so the account line wouldn\'t take: exit it, then switch again' })
+    expect(r.outcome).toEqual({ kind: 'didnt-start', line: expect.stringContaining('claude'), otherShell: true })
     expect(r.t.ran).toEqual([''])
   })
 
@@ -490,6 +490,266 @@ describe('Codex', () => {
     })
     expect(outcome.kind).toBe('switched')
     expect(t.ran[1]).toContain(`codex -m gpt-5.6-sol -a never -s workspace-write resume ${ID}`)
+  })
+})
+
+
+// What the REAL CLIs drew, run through the engine (SWITCH-R1): the scripted terminal's defaults were friendlier than
+// the real thing, and the suite stayed green while the real Codex switch was refused and the real Claude not-found
+// was missed. Each of these failed before its fix.
+describe('Codex 0.164 as it really draws (SWITCH-R1 C1, C2)', () => {
+  it('switches a settled composer, whose status line and hint row stand under its blank row (C1)', async () => {
+    const r = await run(codex({ codexStatus: true }))
+    // Its box is empty: the exit command goes in with no Ctrl+U before it (which a held box would have sent twenty of).
+    expect(r.t.writes.slice(0, 2)).toEqual(['/quit', '\r'])
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(keys(r.t)).not.toContain('\u0015'.repeat(20))
+    cleanRun(r)
+  })
+
+  it('still clears text it finds in a settled composer, and refuses when that stays (C1)', async () => {
+    const hold = async (script: TermScript): Promise<{ t: FakeTerminal; outcome: SwitchOutcome }> => {
+      const t = new FakeTerminal(script)
+      t.box = 'half a prompt'
+      t.out += t.frame()
+      const outcome = await runAccountSwitch({ terminalId: 't1', targetId: CODEX_B.id, shellType: 'powershell' }, {
+        io: t.io(), target: CODEX_B, agent: 'codex', start: { at: t.launchedAt, commands: [t.launchLine()] }, newSessionId: () => NEW_ID, record: () => undefined,
+      })
+      return { t, outcome }
+    }
+    const cleared = await hold(codex({ codexStatus: true }))
+    expect(cleared.t.writes.slice(0, 3)).toEqual(['\u0015'.repeat(20), '/quit', '\r'])
+    expect(cleared.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    const held = await hold(codex({ codexStatus: true, clearFails: true }))
+    expect(held.outcome).toEqual({ kind: 'refused', why: 'Codex\'s input held text that clearing it didn\'t remove, so nothing was typed' })
+    expect(held.t.writes).toEqual(['\u0015'.repeat(20)])
+  })
+
+  it('does not call a switch done on the composer it draws while still "Resuming session…" (C2)', async () => {
+    // The real 0.164: the composer shows under the loading row about 2 s after the Enter, and 0.3 s later it
+    // prints that the session isn't there and exits to the shell.
+    const r = await run(codex({ codexStatus: true, relaunch: ['loading-then-not-found', 'box'] }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'not-found' })
+    expect(r.t.ran[3]).toBe(`& { $env:CODEX_HOME = 'C:\\Users\\me\\.codex-b'; codex -m gpt-5.6-sol }`)
+    // The terminal is recorded on the target both times, and the second try names no conversation.
+    expect(r.recorded.map((x) => x.sessionId)).toEqual([ID, null])
+  })
+
+  it('waits as long as the loading row shows, however long the lookup takes (C2)', async () => {
+    const r = await run(codex({ relaunch: ['loading-then-not-found', 'box'], resumeErrorMs: 20_000 }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'not-found' })
+  })
+
+  it('gives a composer with no loading row a moment to turn into the error before calling it up (C2)', async () => {
+    const r = await run(codex({ relaunch: ['box-then-not-found', 'box'], resumeErrorMs: 1500 }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'not-found' })
+    // And a switch that does come up costs that moment and no more.
+    const up = await run(codex())
+    expect(up.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(up.t.clock).toBeLessThan(10_000)
+  })
+
+  it('starts the moment again whenever the loading row comes back, before calling it up (C2)', async () => {
+    // Up at once, the loading row back at 1 s and gone again at 3 s, the error at 4.5 s: the 0.5 s the composer
+    // stood up front is not the moment the last stretch has to stand.
+    const r = await run(codex({ relaunch: ['flicker-then-not-found', 'box'], resumeErrorMs: 4500 }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'not-found' })
+  })
+
+  it('says it took no outcome when Codex stays on its loading screen (C2)', async () => {
+    const r = await run(codex({ relaunch: ['loading-then-not-found'], resumeErrorMs: 10 * 60_000 }))
+    expect(r.outcome).toEqual({ kind: 'no-outcome' })
+  })
+
+  it('reports its Windows sandbox set-up menu as a question only the user answers (C2)', async () => {
+    const r = await run(codex({ relaunch: ['sandbox-menu'] }))
+    expect(r.outcome).toEqual({ kind: 'asks-user', what: 'Set up default sandbox' })
+  })
+})
+
+describe('Claude Code 2.1.316 as it really draws (SWITCH-R1 N1, H)', () => {
+  it('reads "No conversation found" drawn with a cursor-forward for each space (N1)', async () => {
+    const r = await run(claude({ relaunch: ['not-found'], cursorForward: true }))
+    expect(r.outcome).toEqual({ kind: 'resume-not-found' })
+  })
+
+  it('reads it from the bytes when a narrow pane wraps the line across rows (N1)', async () => {
+    const r = await run(claude({ relaunch: ['not-found'], cursorForward: true, cols: 30 }))
+    expect(r.outcome).toEqual({ kind: 'resume-not-found' })
+  })
+
+  it('reads it from the screen when each word is placed at its column (N1)', async () => {
+    const r = await run(claude({ relaunch: ['not-found'], cursorForward: 'absolute' }))
+    expect(r.outcome).toEqual({ kind: 'resume-not-found' })
+  })
+
+  it('is not taken in by a resumed conversation whose history holds the CLI\'s own error words (H)', async () => {
+    for (const history of [
+      ['● Invalid API key · Please run /login'],
+      ['  Select login method:', '  ❯ 1. Claude account with subscription'],
+      ['  New MCP servers found in .mcp.json'],
+      ['  Do you trust the files in this folder?'],
+    ]) {
+      const r = await run(claude({ history }))
+      expect(r.outcome, history.join(' / ')).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    }
+  })
+
+  it('still reads a sign-in expired in the target: its footer under the box, or its sign-in screen (H)', async () => {
+    const footer = await run(claude({ footer: '  ? for shortcuts      Not logged in · Run /login' }))
+    expect(footer.outcome).toEqual({ kind: 'sign-in', sessionId: ID })
+    const screen = await run(claude({ relaunch: ['sign-in'] }))
+    expect(screen.outcome).toEqual({ kind: 'sign-in', sessionId: ID })
+    const dialog = await run(claude({ relaunch: ['asks'] }))
+    expect(dialog.outcome.kind).toBe('asks-user')
+  })
+
+  it('reads a Codex sign-in menu whose options draw a › row as a sign-in, not a box (H)', async () => {
+    const r = await run(codex({ relaunch: ['sign-in'] }))
+    expect(r.outcome).toEqual({ kind: 'sign-in', sessionId: ID })
+  })
+})
+describe('ownScreen: where a sign-in screen\'s or a question\'s words are judged (SWITCH-R1 H)', () => {
+  const RULE = '─'.repeat(40)
+
+  it('is the whole screen when no box is drawn', () => {
+    const rows = ['  Select login method:', '', '  ❯ 1. Claude account with subscription']
+    expect(ownScreen(rows, 'claude')).toBe(rows.join('\n'))
+    expect(ownScreen([], 'codex')).toBe('')
+  })
+
+  it('is Claude Code\'s box row and what is under it, never the history above', () => {
+    const rows = ['● Invalid API key · Please run /login', '', RULE, '❯ ', RULE, '  ? for shortcuts      Not logged in · Run /login']
+    expect(ownScreen(rows, 'claude')).toBe(['❯ ', RULE, '  ? for shortcuts      Not logged in · Run /login'].join('\n'))
+    expect(ownScreen(rows, 'agy')).toBe(['❯ ', RULE, '  ? for shortcuts      Not logged in · Run /login'].join('\n'))
+  })
+
+  it('takes three rows over Codex\'s › row, which hold a menu\'s title, and stops at the top of the screen', () => {
+    const rows = ['old history', 'more history', '  Sign in with ChatGPT to use Codex', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~/repo']
+    expect(ownScreen(rows, 'codex')).toBe(rows.slice(1).join('\n'))
+    expect(ownScreen(['› Ask Codex to do anything', ''], 'codex')).toBe(['› Ask Codex to do anything', ''].join('\n'))
+  })
+})
+
+describe('B1 and MODELS-R1-3: the agent is gone on screen while a program still runs in the terminal', () => {
+  it.each([45_000, 90_000])('types nothing into it, and does not guess it has gone (teardown %i ms)', async (teardownMs) => {
+    // The agent was quit by hand a moment ago; the OS says a program has held the terminal ever since.
+    const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells', teardownMs }))
+    expect(r.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(r.t.writes).toEqual([])
+    expect(r.t.ran).toEqual([])
+    expect(r.t.clock).toBeGreaterThanOrEqual(EXIT_CEILING_MS)
+  })
+
+  it('goes on once that program is gone within the wait (a slow teardown)', async () => {
+    const r = await run(claude({ start: 'gone-hint', os: 'tells', teardownMs: 6000 }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+  })
+
+  it('does not ask the OS at all at the user\'s word that it has exited', async () => {
+    const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells', teardownMs: 90_000 }), {}, { assumeExited: true })
+    expect(r.t.osAsked).toBe(0)
+  })
+})
+
+describe('G1: a line longer than the pane can show', () => {
+  const line = `& { $env:CODEX_HOME = 'C:\\Users\\me\\.codex-b'; codex -c "developer_instructions='${'Termpolis memory for this folder; '.repeat(45)}'" resume ${ID} }`
+
+  it('is entered once both its ends show, though its start has scrolled off the top of a short pane', async () => {
+    const t = new FakeTerminal(codex({ start: 'gone-hint', cols: 60, rows: 10 }))
+    expect(line.length).toBeGreaterThan(1400)
+    const io = t.io()
+    const typed = await typeAtPrompt(io, 't1', 'powershell', line, io.end('t1'))
+    expect(typed.outcome).toBe('entered')
+  })
+
+  it('is still compared whole where the pane is tall enough to show it', async () => {
+    // A character dropped from the middle of a line a tall pane can show is caught.
+    const t = new FakeTerminal(codex({ start: 'gone-hint', cols: 80, rows: 40 }))
+    const io = t.io()
+    const typed = await typeAtPrompt(io, 't1', 'powershell', line.slice(0, 300), io.end('t1'))
+    expect(typed.outcome).toBe('entered')
+  })
+
+  it('gives up at the lock\'s end, not minutes later, on a shell that reads a line very slowly', async () => {
+    // 150 ms a character, a 1.5k line: twice that is nearly 8 minutes, far past the lock.
+    const t = new FakeTerminal(codex({ start: 'gone-hint', shellCharMs: 150 }))
+    const io = t.io()
+    const until = io.now() + LOCK_MS
+    const typed = await typeAtPrompt(io, 't1', 'powershell', line, io.end('t1'), until)
+    expect(typed.outcome).toBe('didnt-start')
+    expect(t.clock).toBeLessThanOrEqual(LOCK_MS + 2 * POLL_MS)
+  })
+
+  it('bounds the short waits before the line too: a shell that echoes nothing costs the deadline, not seconds past it', async () => {
+    const t = new FakeTerminal(claude({ start: 'gone-hint', family: 'powershell', shellDead: true }))
+    const io = t.io()
+    const typed = await typeAtPrompt(io, 't1', 'powershell', 'a short line', io.end('t1'), io.now() + 300)
+    expect(typed.outcome).toBe('didnt-start')
+    expect(t.clock).toBeLessThanOrEqual(300 + 2 * POLL_MS)
+    // Without a deadline the same shell costs the full waits.
+    const open = new FakeTerminal(claude({ start: 'gone-hint', family: 'powershell', shellDead: true }))
+    await typeAtPrompt(open.io(), 't1', 'powershell', 'a short line', open.io().end('t1'))
+    expect(open.clock).toBeGreaterThan(2000)
+  })
+
+  it('is given up on at the lock\'s end through the whole switch too, not minutes later (the engine hands its deadline on)', async () => {
+    const instructions = 'Termpolis memory for this folder; '.repeat(40).trim()
+    const r = await run(codex({ start: 'gone-hint', shellCharMs: 150 }), {}, { instructions })
+    expect(r.outcome.kind).toBe('didnt-start')
+    expect(r.t.clock).toBeLessThanOrEqual(LOCK_MS + 2 * POLL_MS)
+  })
+})
+
+describe('G2: a flag the shell cannot carry is refused before the agent is asked to exit', () => {
+  it('cmd would expand a % in a carried flag', async () => {
+    const r = await run({ agent: 'claude', family: 'cmd', start: 'idle', exit: 'hint', launch: 'claude --add-dir %USERPROFILE%\\docs' })
+    expect(r.outcome.kind).toBe('refused')
+    expect((r.outcome as { why: string }).why).toMatch(/cmd/)
+    expect(r.t.writes).toEqual([])
+  })
+
+  it('and so would a ! in the instructions Codex is given', async () => {
+    const r = await run(codex({ family: 'cmd', start: 'idle' }), {}, { instructions: 'Use the memory tools (ask!)' })
+    expect(r.outcome).toEqual({ kind: 'refused', why: 'not a shell-safe instruction' })
+    expect(r.t.writes).toEqual([])
+  })
+
+  it('a session id that is not one is refused as such, not thrown as a TypeError after the exit', async () => {
+    const r = await run(claude({ exit: 'no-hint' }), { sessionId: 'not-a-session-id', hasTranscript: () => true })
+    expect(r.outcome).toEqual({ kind: 'refused', why: 'not a session id' })
+  })
+
+  it('a % stays fine in PowerShell and Git Bash', async () => {
+    for (const family of ['powershell', 'posix'] as const) {
+      const r = await run(claude({ family, launch: 'claude --add-dir %USERPROFILE%\\docs' }))
+      expect(r.outcome.kind, family).toBe('switched')
+    }
+  })
+})
+
+describe('MODELS-R1-2: a worktree session, switched and switched back', () => {
+  it('carries the quoted --worktree the first switch typed through the second and the third', async () => {
+    let line = `claude --worktree "feat-x" --model opus --session-id ${ID}`
+    for (let hop = 1; hop <= 3; hop++) {
+      const r = await run(claude({ worktree: 'feat-x', launch: line }))
+      expect(r.outcome, `hop ${hop}`).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+      line = r.recorded[0].start.commands[0]
+      expect(line).toContain(`claude --worktree "feat-x" --model opus --resume ${ID}`)
+    }
+  })
+})
+
+describe('a shell of another kind (SWITCH-R1 F2, UI-R1-H)', () => {
+  it('is refused with a card of its own once the agent is gone, with nothing entered', async () => {
+    const r = await run(claude({ nestedReport: 'powershell' }))
+    expect(r.outcome).toEqual({ kind: 'didnt-start', line: expect.stringContaining('claude'), otherShell: true })
+    expect(r.t.ran).toEqual([''])
+  })
+
+  it('is not guessed at from a prompt that only ever writes the other family\'s marker (oh-my-posh in Git Bash)', async () => {
+    const r = await run(claude({ reportsOnly: 'powershell' }))
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
   })
 })
 

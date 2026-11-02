@@ -137,6 +137,15 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
     case 'agent-alive':
       return { what: `${name} didn't exit: the account line showed in its own input, so Termpolis took it back out.`, now: `${name} is still running here, on ${from}.`, actions: [{ kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
     case 'didnt-start':
+      // A shell of another kind took the line's place (one was started inside the terminal): there is no
+      // line to try again, and nothing to type; a New terminal on the account carries the conversation on.
+      if (o.otherShell) {
+        return {
+          what: 'This terminal\'s shell is of another kind than the one Termpolis types for (one was started inside it), so the account line was not entered.',
+          now: `${name} has exited: the terminal is at that shell's prompt.`,
+          actions: worker ? [{ kind: 'retry', label: 'Try again' }, CLOSE] : [...newTerminal, CLOSE],
+        }
+      }
       return { what: 'The account line never showed in the terminal, so nothing was entered.', now: `The shell is at its prompt: ${name} has exited.`, actions: [{ kind: 'exited', label: 'Try again' }, ...newTerminal, CLOSE] }
     case 'resume-not-found':
       return { what: `${to} can't see this conversation.`, now: `The shell is at its prompt, and the conversation is still on ${from}.`, actions: [{ kind: 'fresh', label: `Start a new session on ${to}` }, ...newTerminal, CLOSE] }
@@ -151,7 +160,7 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
     case 'asks-user':
       return { what: `${to} is asking something only you can answer.`, now: 'Answer it in the terminal.', actions: [CLOSE] }
     case 'no-outcome':
-      return { what: 'Nothing showed in the terminal within 30 seconds.', now: 'Look at the terminal.', actions: [{ kind: 'retry', label: 'Try again' }, CLOSE] }
+      return { what: 'Nothing showed in the terminal within 30 seconds.', now: 'Look at the terminal.', actions: [{ kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
     default:
       return { what: `Termpolis didn't switch: ${o.why}.`, now: 'Nothing was typed.', actions: [{ kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
   }

@@ -23,6 +23,23 @@ function setup(over: Partial<TermScript> = {}): { t: FakeTerminal; start: LiveSt
   return { t, start: { at: t.launchedAt, commands: [t.launchLine()], agent: t.s.agent, time: 0 } }
 }
 
+
+describe('agentOfLaunch: an agent typed with its path or extension (MODELS-R1-1)', () => {
+  it('reads claude.exe, codex.cmd and a full path as the agent they start', () => {
+    expect(agentOfLaunch('claude.exe --model opus')).toBe('claude')
+    expect(agentOfLaunch('C:\\tools\\codex.cmd -m gpt-5.6-sol')).toBe('codex')
+    expect(agentOfLaunch('/usr/local/bin/agy')).toBe('agy')
+    expect(agentOfLaunch('cd proj && C:\\Tools\\Claude.EXE --resume x')).toBe('claude')
+    expect(agentOfLaunch("& { $env:CLAUDE_CONFIG_DIR = 'C:\\h\\.claude-b'; claude.exe --resume x }")).toBe('claude')
+  })
+
+  it('still reads a word that only ends like an agent, or a path through one, as none', () => {
+    expect(agentOfLaunch('myclaude')).toBeNull()
+    expect(agentOfLaunch('claude-code --help')).toBeNull()
+    expect(agentOfLaunch('cat /usr/share/claude/notes.txt')).toBeNull()
+    expect(agentOfLaunch('echo claude.exe')).toBeNull()
+  })
+})
 describe('agentOfLaunch', () => {
   it('reads the agent a line starts, as Termpolis types it in each shell, or as typed by hand', () => {
     expect(agentOfLaunch('claude')).toBe('claude')
@@ -38,7 +55,7 @@ describe('agentOfLaunch', () => {
   })
 
   it('reads no launch in a prompt or another command', () => {
-    for (const line of ['ls', 'claude.exe', 'please run claude now', 'recall claude', 'claude, fix the test', 'codexes', '']) {
+    for (const line of ['ls', 'please run claude now', 'recall claude', 'claude, fix the test', 'codexes', '']) {
       expect(agentOfLaunch(line), line).toBeNull()
     }
   })

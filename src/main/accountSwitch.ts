@@ -28,7 +28,7 @@ import { randomUUID } from 'crypto'
 import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentStatus, stopKind } from '../shared/agentStatusDetector'
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
-  ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carryForSwitch, exitHintOf,
+  ASKS_USER, CLEAR_BOX_KEYS, CODEX_STARTING, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carryForSwitch, exitHintOf,
   nestedShellReported, relaunchCommand,
 } from '../shared/accountSwitch'
 import type { ExitHint, RelaunchHold, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
@@ -74,6 +74,10 @@ export const ECHO_SLOW_CHAR_MS = 150
 export const PROMPT_WAIT_MS = 1500
 /** How long after the Enter the relaunch gets to show what it did (step 10). */
 export const OUTCOME_MS = 30_000
+/** How long Codex's composer must stand on screen, with no "Resuming session…" row over it, before the
+ *  relaunch counts as up: the real 0.164 draws its composer while it still looks for the session, and
+ *  prints "No saved session found" and exits about 0.3 s later (SWITCH-R1 C2). */
+export const CODEX_DWELL_MS = 2500
 
 const ESC = '\u001b'
 
@@ -193,6 +197,8 @@ export interface Look {
   box: number
   /** The terminal's width in columns, when it is known: a row this wide may go on in the next. */
   cols?: number
+  /** Its height in rows, when known: a line longer than that has scrolled its start off the top. */
+  rows?: number
 }
 
 /** What a terminal with no output shows: nothing, and no box. */
@@ -203,7 +209,7 @@ export function look(io: SwitchIO, id: string): Look {
   if (!out) return BLANK
   const size = io.size(id)
   const { lines, title } = drawn(out.raw, size)
-  return { lines, title, raw: out.raw, end: out.end, box: inputBoxRow(lines), ...(size?.cols ? { cols: size.cols } : {}) }
+  return { lines, title, raw: out.raw, end: out.end, box: inputBoxRow(lines), ...(size?.cols ? { cols: size.cols } : {}), ...(size?.rows ? { rows: size.rows } : {}) }
 }
 
 /** Where the absolute offset `at` falls in a look's text. */
@@ -212,8 +218,14 @@ export const indexOf = (l: Look, at: number): number => Math.max(0, l.raw.length
 /** Letters and digits: how a typed text is matched on a screen, which wraps and colours it. */
 const bare = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, '')
 
-/** Escape sequences out, for the CLIs' own words in raw output. */
-export const plain = (s: string): string => s.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '').replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '').replace(/\x1b./g, '')
+/** Escape sequences out, for the CLIs' own words in raw output. A cursor-forward stands for the spaces
+ *  it moves over: Claude Code draws its "No conversation found with session ID" line with one for each
+ *  space, so no space is in its bytes (SWITCH-R1 N1). */
+export const plain = (s: string): string => s
+  .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+  .replace(/\x1b\[(\d*)C/g, (_m, n: string) => ' '.repeat(Math.min(Number(n) || 1, 8)))
+  .replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]/g, '')
+  .replace(/\x1b./g, '')
 
 /** The first words of each CLI's exit hint, as it prints them when it exits. */
 export const HINT_HEAD: Readonly<Record<AccountAgent, RegExp>> = {
@@ -313,13 +325,15 @@ async function processGone(io: SwitchIO, id: string): Promise<boolean> {
  * liveness (the screen's word) with the OS's (step 0). An agent the OS says is gone is gone, though
  * its last frame, input box and all, is still on the screen: on Windows nothing else shows it, and no
  * exit key is sent to a shell. An agent the screen shows gone while a program still runs in the
- * terminal (quit by hand a moment ago, its hooks still going) is waited for before anything is typed.
+ * terminal (quit by hand a moment ago, its hooks still going) is waited for before anything is typed;
+ * if that program is still there at the ceiling, Termpolis can't tell and types nothing: the user's
+ * word that it exited is the way on (SWITCH-R1 B1).
  */
 export async function livenessNow(io: SwitchIO, id: string, agent: AccountAgent, start: AgentStartRecord | undefined, memo: OsMemo): Promise<Liveness> {
   const alone = await askOs(io, id, memo)
   const alive = liveness(io, id, agent, start)
   if (alone === true && alive.state !== 'gone') return { state: 'gone', hint: hintAtFoot(look(io, id), agent) }
-  if (alone === false && alive.state === 'gone') await processGone(io, id)
+  if (alone === false && alive.state === 'gone' && !(await processGone(io, id))) return { state: 'unknown' }
   return alive
 }
 
@@ -444,22 +458,33 @@ function lineShown(l: Look, line: string, echo: string): boolean {
   // And the whole of it, not only its two ends: a character dropped in the middle (a path) would be caught
   // here and not by them. The rows it can take up on this width, and the prompt's, are the window read.
   const window = Math.ceil(line.length / (l.cols ?? 80)) + 3
+  // A pane too short to hold the line has scrolled its start off the top: its two ends are all there is
+  // to compare, and they showed (SWITCH-R1 G1).
+  if (l.rows !== undefined && window > l.rows) return true
   return bare(l.lines.slice(-window).join('')).includes(bare(line))
 }
 
 export type Typed = { outcome: 'entered'; enterAt: number } | { outcome: 'agent-alive' | 'didnt-start' | 'mismatch' }
 
+/** The terminal's output as far as main still holds it: what the shell wrote before the switch is in it. */
+function heardBefore(io: SwitchIO, id: string): string {
+  return io.output(id)?.raw ?? ''
+}
+
 /** Types an account line at the shell's prompt (step 8): the line cleared, a sacrificial Enter and
  *  the shell's answer to it, then the line without its Enter, which is pressed only once the line
  *  shows outside every agent box. `enterAt` is where the output ended before that Enter. */
-export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily, line: string, mark: number): Promise<Typed> {
+export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily, line: string, mark: number, until = Infinity): Promise<Typed> {
+  // No wait here outlasts the lock the switch holds the terminal under: a shell that reads a long line
+  // very slowly is given up on at its end, not minutes later (SWITCH-R1 G1).
+  const wait = (ms: number): number => Math.min(ms, until - io.now())
   io.write(id, LINE_CLEAR[family])
   const before = io.end(id)
   io.write(id, '\r')
   // The prompt's report, or the shell gone quiet: input is being read (ConPTY can drop the first
   // byte typed before that, aiProfiles.ts).
   let last = -1
-  await waitFor(io, PROMPT_WAIT_MS, () => {
+  await waitFor(io, wait(PROMPT_WAIT_MS), () => {
     const out = io.outputFrom(id, before)
     if (out.search(PROMPT_REPORT) >= 0) return true
     const quiet = out.length > 0 && out.length === last
@@ -468,18 +493,18 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   })
   // A shell of another family reported since: a shell started inside this one, which the line
   // built for this terminal's shell doesn't fit (R1: only such a positive mismatch refuses).
-  if (nestedShellReported(io.outputFrom(id, mark), family)) return { outcome: 'mismatch' }
+  if (nestedShellReported(io.outputFrom(id, mark), family, heardBefore(io, id))) return { outcome: 'mismatch' }
   const typedAt = io.end(id)
   const probe = line.slice(0, ECHO_PROBE_CHARS)
   const started = io.now()
   io.write(id, probe)
-  let where = await waitFor(io, ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS, () => landed(look(io, id), probe, io.outputFrom(id, typedAt)))
+  let where = await waitFor(io, wait(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS), () => landed(look(io, id), probe, io.outputFrom(id, typedAt)))
   if (where === 'shell' && line.length > probe.length) {
     // The shell reads what is typed (the first part is not in an agent's box): it took this long a
     // character, and the rest is given twice as long before it is given up on.
     const perChar = Math.max(1, Math.ceil((io.now() - started) / probe.length))
     io.write(id, line.slice(probe.length))
-    const whole = await waitFor(io, ECHO_MS + (line.length - probe.length) * perChar * 2, () => lineShown(look(io, id), line, io.outputFrom(id, typedAt)))
+    const whole = await waitFor(io, wait(ECHO_MS + (line.length - probe.length) * perChar * 2), () => lineShown(look(io, id), line, io.outputFrom(id, typedAt)))
     if (!whole) where = null
   }
   if (where === 'box') {
@@ -502,22 +527,43 @@ export type Watched = 'switched' | 'not-found' | 'sign-in' | 'no-outcome' | { as
  *  conversation and starts a new one: that is noted, and its box is waited for. */
 export async function watchOutcome(io: SwitchIO, id: string, agent: AccountAgent, mark: number, line: string, until: number): Promise<{ seen: Watched; notFound: boolean }> {
   let notFound = false
+  let upSince: number | null = null
   for (let t = 0; t < OUTCOME_MS && io.now() < until; t += POLL_MS * 2) {
     await io.sleep(POLL_MS * 2)
     const since = io.outputFrom(id, mark)
-    const words = plain(since)
-    if (RESUME_NOT_FOUND[agent].test(words)) {
+    const rows = drawn(since, io.size(id)).lines
+    const screen = rows.join('\n')
+    if (RESUME_NOT_FOUND[agent].test(plain(since)) || RESUME_NOT_FOUND[agent].test(screen)) {
       if (agent !== 'agy') return { seen: 'not-found', notFound: true }
       notFound = true
     }
-    const screen = drawn(since, io.size(id)).lines.join('\n')
-    if (SIGN_IN_SCREEN[agent].test(screen)) return { seen: 'sign-in', notFound }
-    const asks = ASKS_USER.exec(screen)
+    // The words of a sign-in screen or a question are read where the target's own screen is: below the
+    // box when one is drawn. A resumed conversation redraws its history above it, and that can hold the
+    // CLI's own error text ("Please run /login") on a target that is fine (SWITCH-R1 H).
+    const judged = ownScreen(rows, agent)
+    if (SIGN_IN_SCREEN[agent].test(judged)) return { seen: 'sign-in', notFound }
+    const asks = ASKS_USER.exec(judged)
     if (asks) return { seen: { asks: asks[0] }, notFound }
     const l = look(io, id)
-    if (l.box >= 0 && sinceStarted(l.raw, indexOf(l, mark), false, io.size(id), [line]).started) return { seen: 'switched', notFound }
+    const up = l.box >= 0 && sinceStarted(l.raw, indexOf(l, mark), false, io.size(id), [line]).started
+    // Codex draws its composer while it still looks for the session and then exits if it is not there:
+    // its composer under "Resuming session…" is not up, and one with no such row gets a moment too.
+    if (up && !(agent === 'codex' && CODEX_STARTING.test(screen))) {
+      if (agent !== 'codex') return { seen: 'switched', notFound }
+      upSince ??= io.now()
+      if (io.now() - upSince >= CODEX_DWELL_MS) return { seen: 'switched', notFound }
+    } else upSince = null
   }
   return { seen: 'no-outcome', notFound }
+}
+
+/** The rows of a screen that a sign-in screen's or a question's words are judged in: from the agent's
+ *  box row down (Claude Code's "Not logged in · Run /login" footer is under its box), with the three
+ *  rows over a Codex menu's › row, which holds its title; the whole screen when no box is drawn. */
+export function ownScreen(rows: readonly string[], agent: AccountAgent): string {
+  const box = inputBoxRow(rows)
+  if (box < 0) return rows.join('\n')
+  return rows.slice(agent === 'codex' ? Math.max(0, box - 3) : box).join('\n')
 }
 
 /** Waits for the shell after an agent quit by itself (Codex's "no such session"): its report, or
@@ -560,11 +606,26 @@ export async function runAccountSwitch(req: SwitchRequest, ctx: SwitchContext): 
   }
 }
 
-/** A line typed and never entered, as the switch's outcome. */
-function notEntered(typed: { outcome: 'agent-alive' | 'didnt-start' | 'mismatch'; line: string }): SwitchOutcome {
-  if (typed.outcome === 'mismatch') return { kind: 'refused', why: 'a shell of another kind runs in this terminal now (one started inside it), so the account line wouldn\'t take: exit it, then switch again' }
+/** A line typed and never entered (or never built), as the switch's outcome. A shell of another kind
+ *  (one started inside the terminal) has no line to type: the agent has exited and nothing was entered. */
+function notEntered(typed: { outcome: 'agent-alive' | 'didnt-start' | 'mismatch'; line: string } | { outcome: 'refused'; why: string }): SwitchOutcome {
+  if (typed.outcome === 'refused') return { kind: 'refused', why: typed.why }
+  if (typed.outcome === 'mismatch') return { kind: 'didnt-start', line: typed.line, otherShell: true }
   return typed.outcome === 'agent-alive' ? { kind: 'agent-alive' } : { kind: 'didnt-start', line: typed.line }
 }
+
+/** The account line for a relaunch: the shell's syntax around the agent's command, or why this shell
+ *  or this command can't take it (cmd would expand a % or ! in a carried flag). */
+function lineFor(ctx: SwitchContext, family: ShellFamily, spec: RelaunchSpec): { line: string } | { refused: string } {
+  try {
+    return accountLine(family, accountEnv(ctx.target, ctx.agent, ctx.extraUnset ?? []), relaunchCommand(spec))
+  } catch (e) {
+    return { refused: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** A session id of the right shape, for building a line to check before the real one is known. */
+const PROBE_ID = '00000000-0000-4000-8000-000000000000'
 
 async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: ShellFamily): Promise<SwitchOutcome> {
   const { io, target, agent } = ctx
@@ -578,6 +639,11 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   // repeat it would come back without it, and some of it is a restriction (carryForSwitch).
   const carry = carryForSwitch(agent, ctx.start?.commands[0])
   if (!carry.ok) return { kind: 'refused', why: carry.why }
+  // The same goes for the line itself: this shell must be able to take it with everything the relaunch
+  // adds (cmd would expand a % in a carried flag), or the agent would be exited for nothing (SWITCH-R1 G2).
+  const probeSpec: RelaunchSpec = { agent, id: PROBE_ID, ...(carry.model ? { model: carry.model } : {}), extra: carry.extra, ...(agent === 'codex' && req.instructions ? { instructions: req.instructions } : {}) }
+  const probe = lineFor(ctx, family, probeSpec)
+  if ('refused' in probe) return { kind: 'refused', why: probe.refused }
 
   if (req.assumeExited) {
     // The user's word that it exited: an exit hint on screen still names the session.
@@ -634,14 +700,14 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   const fresh = agent === 'claude' && !sessionId ? ctx.newSessionId() : undefined
   const spec: RelaunchSpec = { agent, id: sessionId, ...(carry.model ? { model: carry.model } : {}), extra: carry.extra, ...(worktree ? { worktree } : {}), ...(fresh ? { sessionId: fresh } : {}) }
   if (agent === 'codex' && req.instructions) spec.instructions = req.instructions
-  const run = async (s: RelaunchSpec): Promise<Typed & { line: string; at: number }> => {
-    // Never refused here: the same line, with the agent's name for its command, was built before
-    // anything was done, and the command is made of checked tokens only (relaunchCommand), none of
-    // them a control character, a % or a !.
-    const line = (accountLine(family, accountEnv(target, agent, ctx.extraUnset ?? []), relaunchCommand(s)) as { line: string }).line
+  const run = async (s: RelaunchSpec): Promise<(Typed & { line: string; at: number }) | { outcome: 'refused'; why: string }> => {
+    // Refused here only for what the probe could not know: a session id that is not one (Termpolis's own
+    // record), since the rest of the line was built and checked before the agent was touched.
+    const built = lineFor(ctx, family, s)
+    if ('refused' in built) return { outcome: 'refused', why: built.refused }
     io.progress?.({ terminalId: id, step: 'typing' })
     const at = io.end(id)
-    return { ...(await typeAtPrompt(io, id, family, line, mark)), line, at }
+    return { ...(await typeAtPrompt(io, id, family, built.line, mark, until)), line: built.line, at }
   }
   let typed = await run(spec)
   if (typed.outcome !== 'entered') return notEntered(typed)

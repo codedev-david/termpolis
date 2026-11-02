@@ -227,13 +227,15 @@ export function isPlainLaunchWord(word: unknown): word is string {
 // ── Reading the line an agent was started with, for a switch of its account ──────────────────
 
 /** Where a typed line starts an agent: at its start, after `;`, `&`, `|`, `{` or `call` (so after
- *  the account line Termpolis puts in front of it, in any shell), never in the middle of a word. */
-const AGENT_LAUNCH = /(?:^|[;&|{]|\bcall\b)\s*(claude|codex|agy)(?=[\s}]|$)/
+ *  the account line Termpolis puts in front of it, in any shell), never in the middle of a word. The
+ *  agent may be typed with its path or its extension (`C:\tools\claude.exe`, `/usr/local/bin/codex`,
+ *  `claude.cmd`), as providerForCommand and the chip read it. Group 1 is that whole word. */
+const AGENT_LAUNCH = /(?:^|[;&|{]|\bcall\b)\s*((?:[^\s;&|{}"']*[\\/])?(claude|codex|agy)(?:\.(?:exe|cmd))?)(?=[\s}]|$)/i
 
 /** The agent a typed line starts, or null. */
 export function agentOfLaunch(line: string): 'claude' | 'codex' | 'agy' | null {
   const m = AGENT_LAUNCH.exec(line)
-  return m ? (m[1] as 'claude' | 'codex' | 'agy') : null
+  return m ? (m[2].toLowerCase() as 'claude' | 'codex' | 'agy') : null
 }
 
 /** The agent's own command inside a typed line, from the agent's name to the end: the account line
@@ -249,10 +251,12 @@ export function agentCommandIn(line: string): string | null {
 
 /** What Termpolis itself adds to the line it types for an agent, and the relaunch supplies again by
  *  itself where it applies: Claude Code's primer file (the SessionStart hook replaces it on a resume),
- *  and Codex's `-c developer_instructions=` (the relaunch passes its own). They are quoted, so the
- *  rule for repeating a line would give up on them; they are not the user's options. */
+ *  Codex's `-c developer_instructions=` (the relaunch passes its own), and the quoted
+ *  `--worktree "name"` an earlier switch typed (the exit hint names the worktree again). They are
+ *  quoted, so the rule for repeating a line would give up on them; they are not the user's options. */
 const INJECTED: readonly RegExp[] = [
   /\s--append-system-prompt-file(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)/g,
+  /\s--worktree\s+"[A-Za-z0-9._-]{1,64}"/g,
   /\s-c\s+(?:"developer_instructions=[^"]*"|'developer_instructions=[^']*')/g,
 ]
 

@@ -784,7 +784,7 @@ describe('round 1: what the offer does about the conductor, a stale view, a thro
 
 describe('what a restart that did not happen says of a worker (UI addendum 1)', () => {
   const outcomes: SwitchOutcome[] = [
-    { kind: 'busy' }, { kind: 'unknown-exit' }, { kind: 'exit-unconfirmed' }, { kind: 'agent-alive' }, { kind: 'didnt-start', line: 'x' },
+    { kind: 'busy' }, { kind: 'unknown-exit' }, { kind: 'exit-unconfirmed' }, { kind: 'agent-alive' }, { kind: 'didnt-start', line: 'x' }, { kind: 'didnt-start', line: 'x', otherShell: true },
     { kind: 'resume-not-found' }, { kind: 'sign-in' }, { kind: 'asks-user', what: 'a menu' }, { kind: 'no-outcome' }, { kind: 'refused', why: 'no way' },
     { kind: 'switched', resumed: true }, { kind: 'fresh', why: 'asked' },
   ]

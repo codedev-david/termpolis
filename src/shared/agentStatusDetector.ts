@@ -294,6 +294,14 @@ const closingRule = (rows: readonly string[], top: number): number => rows.findI
 /** Whether the screen's last row is Codex's footer under a box with no closing rule: Codex draws it
  *  under a blank row. A last row right under the text is the text, wrapped. */
 const codexFooter = (rows: readonly string[], top: number): boolean => rows.length - 2 > top && rows[rows.length - 2].trim() === ''
+/** Where Codex's composer (no closing rule) ends and its footer begins: under a blank row, Codex 0.153
+ *  draws one hint row and Codex 0.164 a status line and the hint row. Only the last blank row before
+ *  them parts the footer, so a blank line the user typed into the composer stays in it. */
+function composerEnd(rows: readonly string[], top: number): number {
+  const n = rows.length
+  if (n - 3 > top && rows[n - 3].trim() === '') return n - 2
+  return codexFooter(rows, top) ? n - 1 : n
+}
 
 /** The rows an agent's input box takes: from its first row (the screen's top for one taller than
  *  the screen) to its closing rule (Claude Code, agy) or, for a box with none (Codex's composer), to
@@ -303,14 +311,14 @@ export function inputBoxRows(rows: readonly string[]): string[] | null {
   if (top < 0) return null
   const close = closingRule(rows, top)
   if (close > top) return rows.slice(top, close)
-  return rows.slice(top, codexFooter(rows, top) ? rows.length - 1 : rows.length)
+  return rows.slice(top, composerEnd(rows, top))
 }
 
 /** The rows under the input box at row `box`: its footer, under its closing rule, or Codex's. */
 function footerOf(rows: readonly string[], box: number): readonly string[] {
   const close = closingRule(rows, box)
   if (close > box) return rows.slice(close + 1)
-  return codexFooter(rows, box) ? rows.slice(-1) : []
+  return rows.slice(composerEnd(rows, box))
 }
 
 /** Whether the agent's input box is empty, ready for a prompt: its glyph alone, or with the
