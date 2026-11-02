@@ -3360,7 +3360,7 @@ describe('detectorStart: each detector looks back for its own opener', () => {
     ]
     const lookback = 100
     for (const [opener, needle, reach, margin] of openers) {
-      for (const [label, distance, found] of [['inside', reach - 150, true], ['outside', reach + 150, false]] as Array<[string, number, boolean]>) {
+      for (const [label, distance, found] of [['inside', reach - 150, true], ['at the limit', reach, true], ['one past it', reach + 1, false], ['outside', reach + 150, false]] as Array<[string, number, boolean]>) {
         // 70,000 dots in front (so no start is clamped to 0), the opener, dots, and a line of base64 the cut falls in, `distance` after the needle
         const pre = '.'.repeat(70_000)
         const at = pre.length + opener.indexOf(needle)

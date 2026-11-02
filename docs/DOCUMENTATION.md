@@ -1254,8 +1254,8 @@ Agents get one MCP tool, `linked_machines`, with three actions:
   clone URL can carry a token). A folder's name is not screened for
   credentials; where a refusal repeats one, anything in it that looks like a
   credential is taken out first, and a name with a control character in it
-  (one nobody types), or one that holds a credential once its spaces and
-  invisible characters are taken out, is not repeated at all.
+  (one nobody types), or one that holds a credential once everything but its
+  visible ASCII characters is taken out, is not repeated at all.
 - **`write: true`** works only if that machine lets this one edit.
 - **`model`** picks the agent's model there. By default the agent uses its own.
 
@@ -1426,7 +1426,11 @@ audit log.
     a `.env` file's `TLS_KEY_B64=`) is removed the same way. So are a PuTTY
     `.ppk`'s private lines, a JWK's private members (`d`, `k`, ...), a .NET
     `RSAKeyValue`'s private members (of those two only the values, so the JSON or
-    XML stays well formed) and a key file URL-encoded whole. A block runs from
+    XML stays well formed) and a key file URL-encoded whole. (A variable name of 22
+    characters or more after an `oct` key's `k` can be read as its value. A JWK
+    with no braces around it, in YAML, TOML or a properties file, is read up to
+    16 KB around its `kty` line: a member there named like a private member,
+    with a long random-looking value, is read as the key's.) A block runs from
     its BEGIN line to its END line, or with no END line in view to its last key
     line (in rg or Select-String output on Windows whose paths hold `\r` or `\n`
     after a backslash, as `\repos` and `\notes` do, the pair reads as an escaped
@@ -1458,8 +1462,10 @@ audit log.
     is not a key. That includes a BEGIN line with no key under it, or a BEGIN and
     an END line with none between them (as a PEM parser or a test writes them,
     empty pairs included); a public key, certificate or CSR under a private-key
-    BEGIN line; a test key whose body is made up; prose or code between a BEGIN
-    and an END line; a placeholder JWK value (such as `REPLACE_ME`, or a name or
+    BEGIN line; a test key whose body is made up (but with explicit curve
+    parameters an EC key's made-up private value can be taken for a real one);
+    prose or code between a BEGIN and an END line; a placeholder
+    JWK value (such as `REPLACE_ME`, or a name or
     description of a key such as `JWT_SIGNING_SECRET_BASE64URL`, or a sentence in
     an `RSAKeyValue` member, which the XML reader reads across its spaces; named
     in the note when it is written in a key's own characters), and a JWK or `RSAKeyValue`
@@ -1475,7 +1481,10 @@ audit log.
   credential you deliberately want on the other computer should live in a file
   there, not in the prompt.
   Not recognised: a private key in a format Termpolis can't decode, or whose
-  lines were re-wrapped to alternating widths (both reported, as above); a key
+  lines were re-wrapped to alternating widths (both reported, as above); the
+  first line alone of an RSA, DSA, encrypted or post-quantum private key, with
+  no END line and nothing of the key under that line (reported: only an EC or
+  Ed25519 key's first line is known to hold its private value); a key
   written on one line with a `NAME=` in front of each of its lines (reported);
   a key written one `NAME=<line>` to a line when the name is 63 characters or
   more (64 for all but an armored OpenPGP key); a key written on one line
@@ -1483,11 +1492,15 @@ audit log.
   URL-encoded twice, or with its base64 characters written as HTML
   entities (`&#43;`); key lines that a few other layouts alter or break apart (a
   word diff, a `git diff` that alternates context and changed lines, email
-  quoted-printable, `cat -A` of a tab-indented key); an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
-  private lines run together with no separator; a PKCS#12 (`.pfx`) file or a
+  quoted-printable, `cat -A` of a tab-indented key, `grep --color` with its
+  match highlighted inside every key line); an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
+  private lines run together with no separator, when the first of them starts
+  with a digit (which can read as part of the line count); a key shown by `hexdump -C`,
+  or with U+0085 between its lines; a JWK in upper-case environment variables
+  (`JWK_D=`); a PKCS#12 (`.pfx`) file or a
   binary OpenPGP export in base64; a key file base64 encoded twice, or from
   UTF-16 text (Windows PowerShell's `>`); a JWK or an `RSAKeyValue` stored
-  base64 encoded; a JWK nested inside another
+  base64 encoded or URL-encoded; a JWK nested inside another
   JWK, or one whose start (its `kty`) an older computer's cut took; the hex
   components `openssl rsa -text` prints; a key block longer than 256 KB with no
   END line, once the end that is kept starts more than 256 KB after its BEGIN
