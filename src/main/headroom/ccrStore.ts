@@ -129,6 +129,7 @@ function saveForgotten(): void {
 
 function loadForgotten(): void {
   forgotten.clear()
+  /* v8 ignore next -- setCcrDir is the only caller and has set dir by then */
   if (!dir) return
   try {
     const raw = JSON.parse(readFileSync(join(dir, FORGOTTEN_FILE), 'utf8')) as unknown
@@ -136,6 +137,7 @@ function loadForgotten(): void {
       for (const [t, cause] of Object.entries(raw as Record<string, unknown>)) {
         // An unrecognised cause is read as the milder one. Guessing "defect" from a file this
         // version does not understand would raise exactly the unfounded alarm all this is about.
+        /* v8 ignore next -- Object.entries keys are always strings; the test only narrows the type */
         if (typeof t === 'string') forgotten.set(t, cause === 'evicted' ? 'evicted' : 'expired')
       }
     }
@@ -150,6 +152,7 @@ function forgetOnly(token: string, cause: CcrLossCause): boolean {
   forgotten.set(token, cause)
   while (forgotten.size > FORGOTTEN_MAX) {
     const oldest = forgotten.keys().next().value
+    /* v8 ignore next -- the loop condition means forgotten is not empty */
     if (oldest === undefined) break
     forgotten.delete(oldest)
   }
@@ -179,6 +182,7 @@ function memPut(token: string, rec: CcrRecord): void {
     // Every resident is unbacked: the cap still wins (an unbounded map is its own outage), but this
     // is the one path that can actually lose content, so it is counted rather than left silent.
     if (victim === undefined) { victim = store.keys().next().value; if (victim !== undefined) { unbackedEvictions++; if (forgetOnly(victim, 'evicted')) dirty = true } }
+    /* v8 ignore next -- the loop condition means the store is not empty, so a victim exists */
     if (victim === undefined) break
     store.delete(victim)
     memoryOnly.delete(victim)
@@ -199,6 +203,7 @@ function evictDisk(): void {
   for (const [token, entry] of bySeq) {
     if (diskBytes <= diskCapBytes) break
     const f = fileFor(token)
+    /* v8 ignore next -- an indexed token passed TOKEN_RE and a dir was set when it was indexed */
     if (f) { try { unlinkSync(f) } catch { /* already gone */ } }
     diskIndex.delete(token)
     diskBytes -= entry.bytes
@@ -208,6 +213,7 @@ function evictDisk(): void {
     if (store.has(token)) memoryOnly.add(token)
     else if (forgetOnly(token, 'expired')) dirty = true
   }
+  /* v8 ignore next -- the sum of the indexed sizes never goes below zero; this is only a floor */
   if (diskBytes < 0) diskBytes = 0
   if (dirty) saveForgotten() // once, not once per evicted entry
 }

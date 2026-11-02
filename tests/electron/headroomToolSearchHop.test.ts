@@ -57,6 +57,15 @@ function stream(items: Item[], usage = { input: 6, read: 52_000, create: 300, ou
   return parts.join('\n')
 }
 
+/** Where a line can go to arrive after the first content block has started: just past the `data:` line
+ *  that starts it. The `event:` line before it names the same type, so matching on the name alone lands
+ *  between the two and the added line is read before any block exists (and ignored). */
+function afterBlockStart(lines: string[]): number {
+  const at = lines.findIndex((l) => l.startsWith('data:') && l.includes('content_block_start'))
+  expect(at).toBeGreaterThan(0)
+  return at + 1
+}
+
 describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
   it('a ToolSearch that selects retrieve_full is a hop, and not a retrieval turn itself', () => {
     expect(parseTurnShapeFromSse(stream([search('select:mcp__termpolis__retrieve_full')]))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false, hop: true })
@@ -132,7 +141,7 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
   it('skips what the prefilter lets through that is not a block start or a block delta, once a ToolSearch call has started', () => {
     // A line can carry the words without being the event: a ping that quotes them, a bare string, a null.
     const lines = stream([search('select:retrieve_full')]).split('\n')
-    const at = lines.findIndex((l) => l.includes('content_block_start')) + 1 // right after the ToolSearch block started
+    const at = afterBlockStart(lines)
     lines.splice(at, 0,
       'data: {"type":"ping","note":"input_json_delta"}',
       'data: "content_block_start"',
@@ -144,7 +153,7 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
 
   it('skips an input delta of the wrong shape once a ToolSearch call has started, and still reads the good ones', () => {
     const lines = stream([search('select:retrieve_full')]).split('\n')
-    const at = lines.findIndex((l) => l.includes('content_block_start')) + 1
+    const at = afterBlockStart(lines)
     lines.splice(at, 0,
       'data: {"type":"content_block_delta","index":"0","delta":{"type":"input_json_delta","partial_json":"zzz"}}', // index is not a number
       'data: {"type":"content_block_delta","index":0,"delta":null}',
@@ -157,8 +166,8 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
 
   it('attributes each delta to the block it belongs to: a stray delta for another index is no evidence', () => {
     const lines = stream([search('select:Read')]).split('\n')
-    const at = lines.findIndex((l) => l.includes('content_block_start')) + 1
-    lines.splice(at, 0, 'data: {"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"retrieve_full"}}')
+    const at = afterBlockStart(lines)
+    lines.splice(at, 0,'data: {"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"retrieve_full"}}')
     expect(parseTurnShapeFromSse(lines.join('\n'))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
   })
 

@@ -55,7 +55,9 @@ export function stampModel(stashes: StashEntry[], model: unknown): void {
  *  request alone, and it rides beside the stash without entering the forwarded bytes. */
 export function stampPolicy(stashes: StashEntry[], policy: FirstSightPolicy): void {
   if (!isFirstSightPolicy(policy)) return
-  for (const s of stashes) if (s.meta) s.meta.policy = policy
+  for (const s of stashes) {
+    if (s.meta) s.meta.policy = policy
+  }
 }
 
 /** The size bands of the research's redemption table (section 5.2). */

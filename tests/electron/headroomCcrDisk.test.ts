@@ -388,3 +388,64 @@ describe('ccr store — byte cap', () => {
     expect(ccrStats().expiredTokens).toBe(0)
   })
 })
+
+describe('ccr store — a stash file that is not a record, and a write that cannot happen', () => {
+  let dir: string
+
+  beforeEach(() => {
+    resetCcr()
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccr-bad-'))
+    setCcrDir(dir)
+  })
+  afterEach(() => {
+    resetCcr()
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+  })
+
+  it.each([['null', 'null'], ['an empty object', '{}'], ['a bare string', '"x"']])(
+    'drops a stash file holding %s, counts the token as destroyed, and lets the next stash heal it',
+    (_name, body) => {
+      const token = ccrStash({ ok: true })
+      const file = path.join(dir, `${token}.json`)
+      fs.writeFileSync(file, body, 'utf8')
+      resetCcr(); setCcrDir(dir) // memory tier cleared, so this must come off disk
+      expect(ccrRetrieve(token)).toBeUndefined()
+      expect(fs.existsSync(file)).toBe(false) // the damaged file is gone, so the index no longer vouches for it
+      expect(ccrNoteMiss(token)).toBe('forgotten')
+      expect(ccrStash({ ok: true })).toBe(token) // the same content mints the same token...
+      expect(ccrRetrieve(token)).toEqual({ ok: true }) // ...and resolves again
+    },
+  )
+
+  it('records a token as destroyed once, however many times its file is found damaged', () => {
+    const token = ccrStash({ ok: true })
+    const file = path.join(dir, `${token}.json`)
+    fs.writeFileSync(file, 'null', 'utf8')
+    resetCcr(); setCcrDir(dir)
+    expect(ccrRetrieve(token)).toBeUndefined()
+    const recorded = fs.readFileSync(path.join(dir, '_forgotten.json'), 'utf8')
+    expect(JSON.parse(recorded)[token]).toBe('evicted')
+
+    ccrStash({ ok: true }) // healed...
+    fs.writeFileSync(file, 'null', 'utf8') // ...and damaged again
+    fs.writeFileSync(path.join(dir, '_forgotten.json'), recorded + ' ', 'utf8') // a mark that would change if it were written again
+    resetCcr(); setCcrDir(dir) // the record of the first loss is read back from its file
+    expect(ccrRetrieve(token)).toBeUndefined()
+    expect(fs.readFileSync(path.join(dir, '_forgotten.json'), 'utf8')).toBe(recorded + ' ') // nothing new to record
+    expect(ccrStats().forgottenEntries).toBe(1)
+  })
+
+  it('keeps a stash in memory when its file cannot be written, and still resolves it', () => {
+    fs.rmSync(dir, { recursive: true, force: true }) // the folder goes away under a running store
+    const token = ccrStash({ kept: 'in memory' })
+    expect(ccrRetrieve(token)).toEqual({ kept: 'in memory' })
+    expect(ccrStats()).toMatchObject({ diskEntries: 0, memoryOnlyEntries: 1 })
+  })
+
+  it('mints a token for a value JSON cannot write, the same one every time and not the one for its name', () => {
+    const token = ccrStash(undefined)
+    expect(token).toMatch(/^hr_[0-9a-f]{16}$/)
+    expect(ccrStash(undefined)).toBe(token)
+    expect(ccrStash('undefined')).not.toBe(token)
+  })
+})
