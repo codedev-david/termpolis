@@ -69,6 +69,23 @@ const LONG_PAYLOAD = 128
 // ---------------------------------------------------------------------------------------------
 const ESC_RE = /\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]/y
 
+/** ESC_RE for replacing every written-out line break in a stretch of text. */
+const ESC_ALL_RE = new RegExp(ESC_RE.source, 'g')
+
+/** The written-out line break that starts at i, or null. PowerShell's `n and `r count only after the text they end: a base64
+ *  character, a quote or a dash (a BEGIN line's). An inline-code span opens with a backtick in front of a key line (after a space,
+ *  a comma or a line start), and about half of the key lines start with n or r. */
+function escapeAt(text: string, i: number): RegExpExecArray | null {
+  ESC_RE.lastIndex = i
+  const m = ESC_RE.exec(text)
+  if (m !== null && text.charCodeAt(i) === 96) {
+    // (at the start of the text there is no character before it: NaN, which none of these is)
+    const before = text.charCodeAt(i - 1)
+    if (!isB64(before) && before !== 34 && before !== 39 && before !== 45) return null
+  }
+  return m
+}
+
 /** [start, end) of the next line break at or after i and before limit, or null. */
 function nextBreak(text: string, i: number, limit: number): Run | null {
   for (; i < limit; i++) {
@@ -76,8 +93,7 @@ function nextBreak(text: string, i: number, limit: number): Run | null {
     if (c === 10) return [i, i + 1]
     if (c === 13) return [i, text.charCodeAt(i + 1) === 10 ? i + 2 : i + 1]
     if (c === 92 /* \ */ || c === 37 /* % */ || c === 38 /* & */ || c === 60 /* < */ || c === 96 /* ` */) {
-      ESC_RE.lastIndex = i
-      const m = ESC_RE.exec(text)
+      const m = escapeAt(text, i)
       if (m) return [i, i + m[0].length]
       // No escape starts at this backslash, so none starts at the others in its run: each reads on
       // to the same character. (Tried at each one, a run of n backslashes cost n * n.)
@@ -145,8 +161,7 @@ function nextRun(text: string, i: number, stop: number): Run | number {
   while (i < stop) {
     const c = text.charCodeAt(i)
     if (c === 92 || c === 37 || c === 38 || c === 60 || c === 96) {
-      ESC_RE.lastIndex = i
-      const m = ESC_RE.exec(text)
+      const m = escapeAt(text, i)
       if (m) {
         i += m[0].length
         continue
@@ -426,6 +441,17 @@ export function looksRandom(s: string): boolean {
   return tri.size / (sample.length - 2) >= 0.8
 }
 
+/** Whether the base64 body under a BEGIN line looks random. A standard curve's or Diffie-Hellman group's public parameters are
+ *  runs of 00 and FF bytes (`AAAA...` and `////...`), so an EC key with explicit curve parameters and a DH key fail the run test
+ *  of looksRandom over the whole body, though their structure is a private key's: judged again with each such run counted once,
+ *  and only while most of the body is something else (a real header over a page of `A` is no key). */
+function bodyLooksRandom(body: string): boolean {
+  if (looksRandom(body)) return true
+  const sample = body.length > 4096 ? body.slice(0, 4096) : body
+  const collapsed = sample.replace(/A{6,}|\/{6,}/g, (run) => run[0])
+  return collapsed.length >= sample.length / 2 && looksRandom(collapsed)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Key blocks with a BEGIN line (K1-K3).
 // ---------------------------------------------------------------------------------------------
@@ -442,6 +468,22 @@ const JOINERS = /^[\s"'`,;+)\]}|\\]*$/
 const JOINER_FRAME = /^[\s"'`,;&|()[\]{}\\_>#*-]*$/
 /** What follows a path in a listing: an optional extension, then `:N:`, `:N-`, `-N-` or `:`. */
 const LISTING_SEP = /^(?:\.[A-Za-z0-9_]{1,12})?(?::\d{1,9}[:-]|-\d{1,9}-|:)/
+/** The rest of a path (`_key.asc`, `/id_rsa`, `.d/backup.asc`: no space) and then `:N:`, `:N:M:` or `-N-`. */
+const PATH_REST_SEP = /^[A-Za-z0-9_.\-/\\]{0,96}?(?:(?::\d{1,9}){1,2}[:-]|-\d{1,9}-)/
+/** The rest of a path and a `:`, then the end of what the line holds (grep without -n: `path:` in front of a blank line or an END marker). */
+const PATH_REST_END = /^[A-Za-z0-9_.\-/\\]{1,96}:\s*$/
+/** The rest of a path (no space) and the `:` or `-` that ends it, right before the line's own text or a line number: a listing. (The last
+ *  line of a key is short, so one character is all it asks of that.) */
+const PATH_THEN_RUN = /^[A-Za-z0-9_.\-/\\]{0,96}?[:-](?=[A-Za-z0-9+/=])/
+/** Whether the run that ends at `e` is a listing's path, not a payload: a separator follows it at once, or only more of the path
+ *  does, up to the line's end `limit`. (A path longer than a key line has a long piece in front of its `_key.asc:4:`; on the
+ *  blank line of an armored key and in front of an END marker it is the only base64 there is, and taken as the key's last line it
+ *  tips a short key, an Ed25519 one of 64 characters, over the randomness test.) */
+function isPathRun(text: string, e: number, limit: number): boolean {
+  if (LISTING_SEP.test(text.slice(e, e + 24))) return true
+  const rest = text.slice(e, Math.min(limit, e + 112))
+  return PATH_REST_SEP.test(rest) || (limit - e <= 112 && PATH_REST_END.test(rest))
+}
 const DER_TYPES: readonly string[] = ['pkcs8', 'encrypted-pkcs8', 'pkcs1-or-dsa', 'sec1']
 
 function ruleFor(kind: string, marker: string): string {
@@ -628,7 +670,7 @@ function scanBlock(
     // A run that a listing separator follows at once (the path of `src/keys/deploy.key:4:`) is
     // part of the line's frame, never its payload: taken as key material, a frame-only line's
     // longest run (a blank or header line in a listing with a long path) set a wrong width.
-    lineRuns = lineRuns.filter(([, e]) => !LISTING_SEP.test(text.slice(e, e + 24)))
+    lineRuns = lineRuns.filter(([, e]) => !isPathRun(text, e, contentEnd))
     if (lineRuns.length) {
       // A key line's payload is the last run on its line when only joiners follow it (a listing's
       // prefix comes before, a literal's closing quote after), else the longest. Several runs on
@@ -729,19 +771,28 @@ function scanBlock(
     // whatever follows the last) or what follows the BEGIN line's marker (a script that echoes each line into a
     // file, a table row, a tag around each line writes the same after each). A list of digests (sha256sums: 64
     // digits; md5sums: 32 and a file name, another on every line) is not one, however random its digits look.
-    const beginBr = nextBreak(text, me, Math.min(text.length, me + 1024))
-    const beginTail = tailForm(text.slice(me, beginBr ? beginBr[0] : Math.min(text.length, me + 1024)))
+    // (what follows the BEGIN line's marker: worked out when a line of 32 digits first needs it, not for every header)
+    let beginTailMemo: string | null = null
+    const beginTailOf = (): string => {
+      if (beginTailMemo === null) {
+        const beginBr = nextBreak(text, me, Math.min(text.length, me + 1024))
+        beginTailMemo = tailForm(text.slice(me, beginBr ? beginBr[0] : Math.min(text.length, me + 1024)))
+      }
+      return beginTailMemo
+    }
     const hex = runs
       .map(([s, e]) => {
         const one = /^[^0-9a-fA-F]{0,16}([0-9a-fA-F]{512})$/.exec(text.slice(s, e))
-        if (one) return one[1]
+        // (only right under the BEGIN line, with a frame and written-out line breaks between and no word: a modulus, a signature or a digest a
+        // sentence later is a hex number in prose, not the key with its line breaks taken out)
+        if (one && !/[A-Za-z]/.test(blankNl(text.slice(me, s).replace(ESC_ALL_RE, ' ')))) return one[1]
         // (a frame glued on: a diff's +, a coloured diff's `32m+`)
         const v = text.slice(s, e).replace(/^(?:\d{1,3}m)?[^0-9a-fA-F]{0,3}(?=[0-9a-fA-F]{32}$)/, '')
         if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''
         const br = nextBreak(text, e, Math.min(text.length, e + 1024))
         const stop = Math.min(br ? br[0] : text.length, nextMark(e) ?? text.length, e + 1024)
         const rest = blankNl(text.slice(e, stop)).replace(/\x1b\[[0-9;]*m/g, ' ')
-        return /^[\s"'`,;+]{1,8}\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTail ? v : ''
+        return /^[\s"'`,;+]{1,8}\+?[0-9a-fA-F]{32}(?![A-Za-z0-9+/=])/.test(rest) || KEY_LINE_TAIL.test(rest) || tailForm(rest) === beginTailOf() ? v : ''
       })
       .join('')
     return hex.length >= 256 && looksRandom(hex) ? span('remove', 'openvpn-hex') : span('flag', 'openvpn-header')
@@ -752,9 +803,11 @@ function scanBlock(
   // of random bytes to a packet header under another kind's line does not make it verified. (A
   // public key, certificate or CSR under a private BEGIN line decodes to none of these.)
   const family: readonly string[] = marker.startsWith('---- BEGIN SSH2') ? ['ssh2'] : kind === 'PGP ' ? ['pgp'] : kind === 'OPENSSH ' ? ['openssh'] : DER_TYPES
-  const st0 = decodeHead(text, runs)
+  // (a first run narrower than the second, with a third behind them, may belong to a line that holds no payload: a listing's blank
+  // armor line shows only its path, `src/main/resources/keys/deploy:4:`, whose first piece is a run. The head is then read without it.)
+  const st0 = decodeHead(text, runs) ?? (runs.length >= 3 && runs[0][1] - runs[0][0] < runs[1][1] - runs[1][0] ? decodeHead(text, runs.slice(1)) : null)
   const st = st0 && family.includes(st0.type) ? st0 : null
-  const random = looksRandom(runs.map(([s, e]) => text.slice(s, e)).join(''))
+  const random = bodyLooksRandom(runs.map(([s, e]) => text.slice(s, e)).join(''))
   if (st) {
     if (st.declared > 0) {
       const decoded = Math.floor(((payload - st.offset) * 3) / 4)
@@ -887,7 +940,7 @@ function leadingRun(text: string, s: number, limit: number, partialHead = false)
     const br = nextBreak(text, lineStart, limit)
     const lineEnd = br ? br[0] : limit
     // (a run that a listing separator follows at once is a path's, as in scanBlock: a path longer than a key line is the longest run)
-    const lr = runsIn(text, lineStart, lineEnd, 8).filter(([, e]) => !LISTING_SEP.test(text.slice(e, e + 24)))
+    const lr = runsIn(text, lineStart, lineEnd, 8).filter(([, e]) => !isPathRun(text, e, lineEnd))
     if (lr.length) {
       const r = lr.reduce((x, y) => (y[1] - y[0] >= x[1] - x[0] ? y : x))
       const w = r[1] - r[0]
@@ -934,8 +987,7 @@ function breakEndingAt(text: string, s: number, floor: number): number {
     if (d !== 92 && d !== 37 && d !== 38 && d !== 60 && d !== 96) continue
     let a = b
     while (d === 92 && a - 1 >= floor && text.charCodeAt(a - 1) === 92) a--
-    ESC_RE.lastIndex = a
-    const m = ESC_RE.exec(text)
+    const m = escapeAt(text, a)
     if (m && a + m[0].length === s) return a
   }
   return -1
@@ -1619,7 +1671,9 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
         emptyTo = r
         break
       }
-      const [a, e] = r
+      const e = r[1]
+      // (a NAME= in front of the value, as journalctl's MESSAGE= or a properties file writes one on every line, is not part of it)
+      const a = valueStart(text, r[0], e)
       i = e
       at = e
       const len = e - a
@@ -1637,8 +1691,10 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
         const br = nextLineBreak(ae, a)
         if (wordsEnd(ae) <= (br ? br[0] : a)) break
       }
-      // A run followed at once by a listing separator (the `.` of `deploy.ppk:12:`) is a path.
-      if (len <= 68 && LISTING_SEP.test(text.slice(e, e + 24))) continue
+      // A run followed at once by a listing separator (the `.` of `deploy.ppk:12:`), or by only more of a path and then the `:` or `-`
+      // that ends it (`_key.asc:12:`, or `grep` without -n, `rg` piped), is a path: of any length (a long one is not a private line
+      // either, nor the key written with no line breaks).
+      if (LISTING_SEP.test(text.slice(e, e + 24)) || PATH_THEN_RUN.test(text.slice(e, e + 112))) continue
       // The last private line is short: it is the Nth line when the text between it and the line
       // before is what separates the lines before it (digits as 0), Private-MAC line or not.
       // (`lineSeparator` of `System.lineSeparator()` or a path's `infrastructure` are frame.)
@@ -1704,9 +1760,8 @@ const Q = String.raw`(?:\\{0,3}["']|\\u0022|&quot;)?`
 const KTY_RE = new RegExp(String.raw`(?<![A-Za-z0-9_])${Q}kty${Q}\s{0,8}[:=]\s{0,8}${Q}(EC|RSA|OKP|oct)\b`, 'g')
 const MEMBER_RE = new RegExp(String.raw`(?<![A-Za-z0-9_])${Q}(d|k|p|q|dp|dq|qi|r|t|crv)${Q}\s{0,8}[:=]\s{0,8}${Q}([A-Za-z0-9_-]{3,})`, 'g')
 
-/** The object around a kty member: its braces (nesting allowed), or for YAML and TOML the 1 KB
- *  around it. */
-function objectAround(text: string, at: number): Run {
+/** The object around a kty member: its braces (nesting allowed), or null when it has none (YAML, TOML). */
+function objectAround(text: string, at: number): Run | null {
   const lo = Math.max(0, at - 4096)
   let depth = 0
   let open = -1
@@ -1731,7 +1786,96 @@ function objectAround(text: string, at: number): Run {
     }
     return [open, hi]
   }
-  return [Math.max(0, at - 1024), Math.min(text.length, at + 1024)]
+  return null
+}
+
+/** How far from a kty that has no braces around it (YAML, TOML, properties) its members are looked for: an RSA-2048 JWK is 1.6 KB, an
+ *  RSA-4096 one 3.2 KB and an RSA-8192 one 6.4 KB, whatever order its members come in, and a YAML list holds several. */
+const BARE_REACH = 16384
+
+/** Whether a member named `name` is a private member of a JWK of this type, by its name alone. */
+const privateName = (kty: string, name: string): boolean => (kty === 'oct' ? name === 'k' : kty === 'RSA' ? RSA_MEMBERS.includes(name) : name === 'd')
+
+/** Whether `name` with this value has the size of a private member of a JWK of this type (and curve, when it says): EC and OKP `d` of the
+ *  curve's size, RSA's `d p q dp dq qi` and the `oth` members `r d t` of 32 bytes or more, oct `k` of 16 or more. */
+function privateSized(kty: string, crv: string | undefined, name: string, value: string): boolean {
+  if (kty === 'EC') return name === 'd' && (EC_SIZES.get(crv) ?? [32, 48, 65, 66]).includes(b64urlLen(value))
+  if (kty === 'OKP') return name === 'd' && (OKP_SIZES.get(crv) ?? [32, 56, 57]).includes(b64urlLen(value))
+  if (kty === 'RSA') return RSA_MEMBERS.includes(name) && b64urlLen(value) >= 32
+  return name === 'k' && b64urlLen(value) >= 16 // oct
+}
+
+interface BareKty {
+  at: number
+  end: number
+  kty: string
+  /** A private member of its type was taken. */
+  taken: boolean
+}
+interface BareMember {
+  name: string
+  value: string
+  at: number
+  cut: boolean
+  /** The kty above it and the one below it (those it can be a member of, by its name). */
+  cands: BareKty[]
+}
+
+/** The private members of the JWKs that have no braces around them. They run from a kty to the next one, so each member is read in the
+ *  stretch between two kty members, and belongs to the one above it or the one below it (a YAML object that lists kty last has its
+ *  members above it): taken if it has a private member's size under either, and as it is judged by its own neighbours, a list of keys
+ *  of different types is judged key by key. A stretch wider than twice BARE_REACH is read at its two ends. Members inside a braced
+ *  object (`skip`) are that object's. (The size of an EC or OKP `d` is judged against every curve's, not its `crv`'s: which `crv`
+ *  belongs to which key is as unclear as which member does.) */
+function bareJwks(text: string, ktys: BareKty[], skip: readonly Run[], out: KeySpan[]): void {
+  const n = ktys.length
+  const members: BareMember[] = []
+  let si = 0
+  for (let g = 0; g <= n; g++) {
+    const above = g > 0 ? ktys[g - 1] : null
+    const below = g < n ? ktys[g] : null
+    const lo = above ? above.end : Math.max(0, (below as BareKty).at - BARE_REACH)
+    const hi = below ? below.at : Math.min(text.length, (above as BareKty).end + BARE_REACH)
+    const stretches: Run[] = above && below && hi - lo > 2 * BARE_REACH ? [[lo, lo + BARE_REACH], [hi - BARE_REACH, hi]] : [[lo, hi]]
+    for (const [a, b] of stretches) {
+      // (one character before the stretch, for the member's lookbehind; its end, with room for a value that runs past it)
+      const from = Math.max(0, a - 1)
+      const mem = new RegExp(MEMBER_RE.source, 'g')
+      const win = text.slice(from, Math.min(text.length, b + 4096))
+      let mm: RegExpExecArray | null
+      while ((mm = mem.exec(win)) !== null) {
+        const at = from + mm.index + mm[0].length - mm[2].length
+        if (from + mm.index < a && a > 0) continue
+        if (at >= b) break
+        while (si < skip.length && skip[si][1] <= at) si++
+        if (si < skip.length && skip[si][0] <= at) continue
+        const name = mm[1]
+        const value = mm[2]
+        const cands: BareKty[] = []
+        if (above && privateName(above.kty, name)) cands.push(above)
+        if (below && privateName(below.kty, name)) cands.push(below)
+        if (cands.length) {
+          // (a quoted value the text ends inside is cut short: its length then says nothing)
+          const cut = at + value.length === text.length && /(?:["']|\\u0022|&quot;)$/.test(text.slice(Math.max(0, at - 6), at))
+          members.push({ name, value, at, cut, cands })
+        }
+      }
+    }
+  }
+  for (const p of members) {
+    for (const c of p.cands) {
+      if (!privateSized(c.kty, undefined, p.name, p.value) || !looksRandomToken(p.value, p.cut)) continue
+      out.push({ rule: 'jwk_private_key', cls: 'remove', why: `jwk ${c.kty} ${p.name}`, from: p.at, to: p.at + p.value.length, group: c.at })
+      for (const x of p.cands) x.taken = true
+      break
+    }
+  }
+  // A key none of whose members was taken: its first d or k, when it is a value and not a word.
+  for (const c of ktys) {
+    if (c.taken) continue
+    const p = members.find((x) => (x.name === 'd' || x.name === 'k') && x.value.length >= 8 && x.cands.includes(c))
+    if (p) out.push({ rule: 'jwk_private_key', cls: 'flag', why: `jwk ${c.kty} ${p.name} not a key`, from: p.at, to: p.at + p.value.length, group: c.at })
+  }
 }
 
 export function jwkKeys(text: string, start = 0): KeySpan[] {
@@ -1740,10 +1884,32 @@ export function jwkKeys(text: string, start = 0): KeySpan[] {
   re.lastIndex = start
   let m: RegExpExecArray | null
   let lastEnd = 0
+  const bare: BareKty[] = []
+  const braced: Run[] = []
+  // (the first `{` after the last brace-less kty: with none between, the next kty has no object around it either, and the 4 KB look back
+  // for one is not made again for every kty of a text that is all kty)
+  let nextOpen = -1
   while ((m = re.exec(text)) !== null) {
     if (m.index < lastEnd) continue
     const kty = m[1]
-    const [ws, we] = objectAround(text, m.index)
+    if (bare.length) {
+      const last = bare[bare.length - 1].at
+      if (nextOpen < last) {
+        const o = text.indexOf('{', last)
+        nextOpen = o === -1 ? text.length : o
+      }
+      if (nextOpen > m.index) {
+        bare.push({ at: m.index, end: m.index + m[0].length, kty, taken: false })
+        continue
+      }
+    }
+    const around = objectAround(text, m.index)
+    if (around === null) {
+      bare.push({ at: m.index, end: m.index + m[0].length, kty, taken: false })
+      continue
+    }
+    const [ws, we] = around
+    braced.push(around)
     lastEnd = Math.max(we, m.index + 1)
     const win = text.slice(ws, we)
     const mem = new RegExp(MEMBER_RE.source, 'g')
@@ -1759,13 +1925,8 @@ export function jwkKeys(text: string, start = 0): KeySpan[] {
         priv.push({ name: mm[1], value: mm[2], at, cut })
       }
     }
-    let ok: typeof priv
-    if (kty === 'EC') ok = priv.filter((p) => p.name === 'd' && (EC_SIZES.get(crv) ?? [32, 48, 65, 66]).includes(b64urlLen(p.value)))
-    else if (kty === 'OKP') ok = priv.filter((p) => p.name === 'd' && (OKP_SIZES.get(crv) ?? [32, 56, 57]).includes(b64urlLen(p.value)))
-    // RSA: d, the primes and CRT values, and a multi-prime key's `oth` members (r, d, t).
-    else if (kty === 'RSA') ok = priv.filter((p) => RSA_MEMBERS.includes(p.name) && b64urlLen(p.value) >= 32)
-    else ok = priv.filter((p) => p.name === 'k' && b64urlLen(p.value) >= 16) // oct
-    ok = ok.filter((p) => looksRandomToken(p.value, p.cut))
+    // (RSA: d, the primes and CRT values, and a multi-prime key's `oth` members r, d, t)
+    const ok = priv.filter((p) => privateSized(kty, crv, p.name, p.value) && looksRandomToken(p.value, p.cut))
     if (ok.length) {
       for (const p of ok) out.push({ rule: 'jwk_private_key', cls: 'remove', why: `jwk ${kty} ${p.name}`, from: p.at, to: p.at + p.value.length, group: ws })
     } else {
@@ -1773,6 +1934,7 @@ export function jwkKeys(text: string, start = 0): KeySpan[] {
       if (p) out.push({ rule: 'jwk_private_key', cls: 'flag', why: `jwk ${kty} ${p.name} not a key`, from: p.at, to: p.at + p.value.length, group: ws })
     }
   }
+  if (bare.length) bareJwks(text, bare, braced, out)
   return out
 }
 
@@ -1841,8 +2003,10 @@ const PLACEHOLDER_WORDS = new RegExp(WORDS.flatMap((w) => [w, w.toUpperCase(), w
  *  of its alphabet trips it less than once in a million: case-sensitive repeats of 6 (hex 8), an
  *  ascending run of 8 (`12345678`, `abcdefgh`), under a quarter distinct characters, a short unit
  *  repeated, a placeholder word, an environment variable's name, two of the words a key is spoken of in,
- *  one case only over 32 characters, or a name made of words. */
-export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = false): string | null {
+ *  one case only over 32 characters, or a name made of words. `decoded`: `body` is the text a base64 value decodes to, not an encoded
+ *  value, and is judged by the checks that name a phrase (the two that read a whole value's case or its dashes are the encoded
+ *  form's: a lower-case hex string or a UUID is a secret made by a machine). */
+export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = false, decoded = false): string | null {
   const core = body.replace(/[^A-Za-z0-9]/g, '')
   if (core.length < 8) return 'short'
   const hex = alphabet === 'hex'
@@ -1863,28 +2027,49 @@ export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = fals
   // An environment variable's name (JWT_SIGNING_SECRET_BASE64URL), or a description made of the words a key is spoken of in.
   if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(body)) return 'env-name'
   if (new Set(body.toLowerCase().match(NAME_WORDS) ?? []).size >= 2) return 'named'
-  if (!hex && core.length >= 32 && (!/[A-Z]/.test(core) || !/[a-z]/.test(core)) && !/^[0-9a-f]+$/.test(core)) return 'one-case'
+  if (!decoded && !hex && core.length >= 32 && (!/[A-Z]/.test(core) || !/[a-z]/.test(core)) && !/^[0-9a-f]+$/.test(core)) return 'one-case'
   // A lower-case slug: `your-256-bit-secret-goes-here`, `my_dev_signing_key_2026`. The two name
   // checks only on 24 characters or more: shorter, they misfire on random base64url.
   // A value the text's end cut short (`cut`) is judged by them at any length: what was cut off may
   // have made it long enough, and a placeholder cut so read as a random value. (Random values cut
   // to 12 or 16 characters trip them 7 and 2 times in 100,000.)
   const named = cut || core.length >= 24
-  if (named && (body.match(/[-_]/g) ?? []).length >= 3 && !/[A-Z]/.test(body) && body.split(/[-_]+/).every((x) => /^[a-z0-9]{0,12}$/.test(x))) return 'slug'
+  if (!decoded && named && (body.match(/[-_]/g) ?? []).length >= 3 && !/[A-Z]/.test(body) && body.split(/[-_]+/).every((x) => /^[a-z0-9]{0,12}$/.test(x))) return 'slug'
   if (!hex && named && wordy(body)) return 'wordy'
   // Every check above reads the encoded characters, and base64 of a phrase passes them all (`bXktc2VjcmV0LWtleQ`, a test
   // secret's "my-secret-key"). A key's bytes are random: 16 of them are all text about twice in 10^7.
-  if (!hex && printableText(body)) return 'text'
+  if (!decoded && !hex && printableText(body)) return 'text'
   return null
 }
 
-/** Whether `body`, read as base64 or base64url, decodes to 12 bytes or more (16 characters) that are all printable ASCII or a tab,
- *  line feed or carriage return (`echo my-secret | base64` encodes the line feed `echo` ends its text with). */
+/** Whether `body`, read as base64 or base64url, decodes to 12 bytes or more (16 characters) of printable ASCII or a tab, line feed or
+ *  carriage return (`echo my-secret | base64` encodes the line feed `echo` ends its text with) that a person typed: a phrase. A
+ *  secret kept as text is random too (the hex of `openssl rand -hex 32`, base64 text, generated alphanumerics, a UUID, and
+ *  base64url-encoded into an oct JWK's k is how an HS256 key made of one is written), and is not one. */
 function printableText(body: string): boolean {
   const core = body.replace(/[\s=]/g, '').replace(/-/g, '+').replace(/_/g, '/')
   if (core.length < 16 || /[^A-Za-z0-9+/]/.test(core)) return false
-  for (const x of Buffer.from(core, 'base64')) if ((x < 0x20 && x !== 9 && x !== 10 && x !== 13) || x > 0x7e) return false
-  return true
+  const bytes = Buffer.from(core, 'base64')
+  for (const x of bytes) if ((x < 0x20 && x !== 9 && x !== 10 && x !== 13) || x > 0x7e) return false
+  return phraseLike(bytes.toString('latin1'))
+}
+
+/** The words a person writes into a test secret. A random value of 32 characters holds one about once in 10^6 (`dummy`, 5 letters in
+ *  both cases) or less. */
+const SECRET_WORDS = /secret|password|passphrase|passwd|example|sample|dummy|placeholder|changeme|testkey|notreal|yourkey/i
+/** The reasons placeholderWhy gives for text that is a repeat, a sequence, a short unit repeated or a name made of words. */
+const TYPED_SHAPES = new Set(['repeat', 'few-distinct', 'periodic', 'sequence', 'word', 'env-name', 'named', 'wordy'])
+
+/** Whether printable text reads as what a person types for a test secret: a sentence (a space inside), a word that names a secret, a
+ *  lower-case slug of words (`my-dev-signing-key`), or a repeat, a sequence, a short unit repeated or a name made of words. A hex
+ *  string, base64 text, random alphanumerics and a UUID are none of these. */
+function phraseLike(text: string): boolean {
+  const body = text.replace(/[\r\n]+$/, '')
+  if (/\s/.test(body) || SECRET_WORDS.test(body)) return true
+  const segs = body.split(/[-_.]/)
+  if (segs.length >= 3 && segs.filter((s) => /^[a-z]{2,12}$/.test(s) && /[aeiouy]/.test(s)).length >= 3 && segs.every((s) => /^[a-z0-9]{1,12}$/.test(s))) return true
+  const why = placeholderWhy(body, /^[0-9a-f]+$/i.test(body) && body.length >= 16 ? 'hex' : 'b62', false, true)
+  return why !== null && TYPED_SHAPES.has(why)
 }
 
 /** A name made of words: `ExperimentalPrototypeProjects2026`, `hynix-firmware-tools`. Three or

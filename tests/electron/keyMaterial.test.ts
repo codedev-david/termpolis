@@ -505,6 +505,81 @@ describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and no
       expect(r.removed, name).toEqual({})
     }
   })
+
+  it('and a run of exactly 512 hex digits is the key with its line breaks taken out only right under its header, not further down in prose, a table or a listing', () => {
+    // The header named in a sentence or a table, and 512 hex digits later in the same 2 KB that are not a key: an RSA-2048 modulus
+    // (`openssl x509 -noout -modulus`), a signature, four SHA-512 digests glued, an `xxd -p -c 256` dump, a fingerprint.
+    const hex = (n: number): string => randomBytes(n).toString('hex')
+    const modulus = (generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ format: 'jwk' }) as { n: string }).n
+    const modHex = Buffer.from(modulus, 'base64url').toString('hex').toUpperCase()
+    expect(modHex.length).toBe(512)
+    const docs: Record<string, string> = {
+      'a modulus after a sentence naming the header': `ta.key starts with ${HEADER}\n\n$ openssl x509 -in server.crt -noout -modulus\nModulus=${modHex}\n`,
+      'the header in a table, then a modulus': `| file | first line |\n|---|---|\n| ta.key | ${HEADER} |\n\n$ openssl x509 -in server.crt -noout -modulus\nModulus=${modHex}\n`,
+      'a signature': `The static key (${HEADER}) is not signed.\nsignature: ${hex(256)}\n`,
+      'four SHA-512 digests glued': `${HEADER} is the ta.key header.\ncombined: ${hex(64) + hex(64) + hex(64) + hex(64)}\n`,
+      'an xxd -p -c 256 dump': `# head -1 ta.key\n${HEADER}\n$ xxd -p -c 256 blob.bin\n${hex(256)}\n`,
+      'a fingerprint in a YAML': `openvpn:\n  tls_auth_header: "${HEADER}"\n  fingerprint: ${hex(256)}\n`,
+      'a hash after a short frame under the header': `${HEADER}\n  hash = ${hex(256)}\n`,
+      'a run after the header and a word': `${HEADER} then ${hex(256)}\n`,
+    }
+    for (const [name, text] of Object.entries(docs)) {
+      const r = screenKeys(text)
+      expect(r.text, name).toBe(text)
+      expect(r.removed, name).toEqual({})
+    }
+    // right under the header, with nothing but a frame and written-out line breaks between: the key with its line breaks taken out
+    const digits = K.F.openvpn.filter((l) => /^[0-9a-f]{32}$/.test(l)).join('')
+    expect(digits).toHaveLength(512)
+    const END = '-----END OpenVPN Static key V1-----'
+    const keys: Record<string, string> = {
+      'a line': `${HEADER}\n${digits}\n${END}`,
+      'no END': `${HEADER}\n${digits}`,
+      'a space': `${HEADER} ${digits} ${END}`,
+      'written-out line breaks': `"${HEADER}\\n${digits}\\n${END}\\n"`,
+      'a quoted line': `${HEADER}\n"${digits}"\n${END}`,
+      'upper case': `${HEADER}\n${digits.toUpperCase()}\n${END}`,
+      'a diff': `${HEADER}\n+${digits}\n${END}`,
+    }
+    for (const [name, key] of Object.entries(keys)) {
+      const r = screenKeys(`Answer follows.\n${key}\nThat was the file.`)
+      expect(r.removed, name).toEqual({ openvpn_static_key: 1 })
+      expect(leakedWindows(r.text, [digits.slice(0, 64), digits.slice(200, 264), digits.slice(448)]), name).toBe(0)
+    }
+    // the length is the key's: 2,048 bits, no more or fewer
+    for (const n of [511, 513]) {
+      const text = `${HEADER}\n${(digits + hex(2)).slice(0, n)}\n${END}\n`
+      expect(screenKeys(text).text, String(n)).toBe(text)
+      expect(screenKeys(text).removed, String(n)).toEqual({})
+    }
+    // a newline constant between the header and the run is a line break, not a word
+    for (const nl of ['System.lineSeparator()', 'Environment.NewLine', 'os.linesep', 'PHP_EOL', 'vbCrLf']) {
+      const r = screenKeys(`String key = "${HEADER}" + ${nl} + "${digits}" + ${nl} + "${END}";`)
+      expect(r.removed, nl).toEqual({ openvpn_static_key: 1 })
+      expect(leakedWindows(r.text, [digits.slice(0, 64), digits.slice(448)]), nl).toBe(0)
+    }
+  })
+
+  it('and a line of 32 digits is a key line when what follows it is what follows the BEGIN line: the same text, blanks at an end aside', () => {
+    const lines = K.F.openvpn.filter((l) => /^[0-9a-f]{32}$/.test(l))
+    const END = '-----END OpenVPN Static key V1-----'
+    // a list whose BEGIN item has trailing blanks the others have not (a tail with letters in it: only the same text is the key lines')
+    const list = [`<li>${HEADER}</li>    `, ...lines.map((l) => `<li>${l}</li>`), `<li>${END}</li>`].join('\n')
+    expect(screenKeys(list).removed).toEqual({ openvpn_static_key: 1 })
+    expect(leakedWindows(screenKeys(list).text, lines)).toBe(0)
+    // a tail that every line repeats and is longer than 16 characters (an echo into a file, a tag): read whole from the BEGIN line, not its first 16 characters
+    const echo = [`echo '${HEADER}' > /etc/openvpn/ta.key.tmp`, ...lines.map((l) => `echo '${l}' >> /etc/openvpn/ta.key.tmp`), `echo '${END}' >> /etc/openvpn/ta.key.tmp`].join('\n')
+    const tags = [`<li>${HEADER}</span></li><!-- static key line -->`, ...lines.map((l) => `<li>${l}</span></li><!-- static key line -->`), `<li>${END}</span></li><!-- static key line -->`].join('\n')
+    for (const [name, doc] of [['an echo into a file', echo], ['tags and a comment', tags]]) {
+      const r = screenKeys(doc)
+      expect(r.removed, name).toEqual({ openvpn_static_key: 1 })
+      expect(leakedWindows(r.text, lines), name).toBe(0)
+    }
+    // the same length of tail, other text: a list of digests with a constant cell that is not the header's
+    const same = [`${HEADER} OK`, ...Array.from({ length: 20 }, () => `${randomBytes(16).toString('hex')} NO`)].join('\n')
+    expect(screenKeys(same).text).toBe(same)
+    expect(screenKeys(same).removed).toEqual({})
+  })
 })
 
 describe('T1 K4: a key tail with its END line, its BEGIN line out of view', () => {
@@ -2483,7 +2558,7 @@ describe('looksRandom and placeholderWhy', () => {
       expect(placeholderWhy(Buffer.from(phrase).toString('base64'), 'b62'), JSON.stringify(phrase)).toBe('text')
     }
     // a control character or a byte over 0x7e anywhere is no text: the bytes of a key
-    for (const bytes of [Buffer.from('my-super-secret\u0001key-for-tests'), Buffer.from('my-super-secret-key-for-tests\u007f'), Buffer.from('my-super-secret-key-for-testsé'), Buffer.concat([Buffer.from('my-super-secret-key-for-tests'), Buffer.from([0])])]) {
+    for (const bytes of [Buffer.from('my-super-secret\u0001key-for-tests'), Buffer.from('my-super-secret-key-for\u001f-tests'), Buffer.from('my-super-secret-key-for-tests\u007f'), Buffer.from('my-super-secret-key-for-testsé'), Buffer.concat([Buffer.from('my-super-secret-key-for-tests'), Buffer.from([0])])]) {
       expect(placeholderWhy(bytes.toString('base64url'), 'b62'), bytes.toString('hex')).not.toBe('text')
     }
     // a value with a character outside the base64 alphabets is no base64: Node's decoder skips such a character, and the phrase left
@@ -2508,7 +2583,69 @@ describe('looksRandom and placeholderWhy', () => {
     const hex = ['a0d1', 'b1c3', 'c2d9', 'd3de', 'e0d4', 'a2c5', 'b3dc', 'c0d6'].join('')
     expect(Buffer.from(hex, 'base64').every((x) => x >= 0x20 && x <= 0x7e)).toBe(true)
     expect(placeholderWhy(hex, 'hex')).toBeNull()
-    expect(placeholderWhy(hex, 'b62')).toBe('text')
+    // (and in a base62 slot, read as base64, it is 24 random printable characters: not a phrase either)
+    expect(placeholderWhy(hex, 'b62')).toBeNull()
+  })
+
+  it('takes an oct key whose k is a secret kept as text (hex, base64, alphanumerics, a UUID), and leaves one that is a phrase a person typed', () => {
+    // `openssl rand -hex 32`, `openssl rand -base64 32`, a generated password or a UUID, base64url-encoded into k (how an existing text secret is
+    // put into an HS256 JWK for jose, Istio or Envoy): real HMAC keys, as random as bytes. Only text a person types is a placeholder: a sentence, a
+    // word that names a secret, a slug of words, a repeat or a sequence. (A fixed stream of bytes, so what this asserts of a statistic is the same every run.)
+    const stream = (tag: string, i: number, size: number): Buffer => Buffer.concat(Array.from({ length: Math.ceil(size / 32) }, (_, k) => createHash('sha256').update(`${tag}/${i}/${k}`).digest())).subarray(0, size)
+    const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+    const pick = (alphabet: string, tag: string, i: number, n: number): string => {
+      const b = stream(tag, i, n * 2)
+      return Array.from({ length: n }, (_, j) => alphabet[b.readUInt16BE(j * 2) % alphabet.length]).join('')
+    }
+    const uuid = (tag: string, i: number): string => {
+      const h = stream(tag, i, 16).toString('hex')
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`
+    }
+    const kinds: Record<string, (i: number) => string> = {
+      'hex, 64 digits': (i) => stream('hex64', i, 32).toString('hex'),
+      'hex, 32 digits': (i) => stream('hex32', i, 16).toString('hex'),
+      'hex, upper case': (i) => stream('HEX64', i, 32).toString('hex').toUpperCase(),
+      'base64 text, 44 characters': (i) => stream('b64', i, 32).toString('base64'),
+      'base64url text, 43 characters': (i) => stream('b64u', i, 32).toString('base64url'),
+      'alphanumerics, 32': (i) => pick(ALNUM, 'al32', i, 32),
+      'alphanumerics, 16': (i) => pick(ALNUM, 'al16', i, 16),
+      'lower case and digits, 32': (i) => pick('abcdefghijklmnopqrstuvwxyz0123456789', 'ld32', i, 32),
+      'alphanumerics and symbols, 20': (i) => pick(ALNUM + '!@#$%^&*()-_=+[]{};:,.?', 'sy20', i, 20),
+      'a UUID': (i) => uuid('uuid', i),
+      'two UUIDs': (i) => uuid('uuidA', i) + uuid('uuidB', i),
+      'hex with the line feed echo adds': (i) => stream('hexnl', i, 32).toString('hex') + '\n',
+    }
+    for (const [label, make] of Object.entries(kinds)) {
+      for (let i = 0; i < 30; i++) {
+        // (k is base64url, RFC 7517's: a `/` or `+` of standard base64 ends the member's value, whatever it holds)
+        const k = Buffer.from(make(i)).toString('base64url')
+        const text = JSON.stringify({ kty: 'oct', k, alg: 'HS256', kid: 'test' })
+        const r = screenKeys(text)
+        expect(r.removed, `${label}/${i}`).toEqual({ jwk_private_key: 1 })
+        expect(r.text.includes(k.slice(0, 12)), `${label}/${i}`).toBe(false)
+        expect(JSON.parse(r.text.replace('[REDACTED:jwk_private_key]', 'x')).kid, label).toBe('test')
+        for (const enc of ['base64url', 'base64'] as const) expect(placeholderWhy(Buffer.from(make(i)).toString(enc), 'b62'), `${label}/${i}/${enc}`).toBeNull()
+      }
+    }
+    // what a person types for a test secret stays: flagged, byte for byte. (Not these two, which are no sentence, word or slug, and are
+    // taken for keys: a leetspeak phrase, `Th1sIsAT3stK3yF0rUn1tT3sts`, and a phrase repeated with another ending, `MyP@ssw0rdMyP@ssw0rd1234`.)
+    const phrases = [
+      'my-super-secret-key', 'super-secret-key-for-testing', 'this-is-a-test-secret-key', 'mysecretkey1234567890', 'change-me-in-production-please',
+      'supersecretsupersecretsupersecret', 'jwt-signing-secret-for-tests', 'a-string-secret-at-least-256-bits-long', 'your-256-bit-secret-your-256-bit-secret',
+      'test_secret_key_do_not_use_in_prod', 'development-only-signing-key', 'HS256 test key material 01', 'The quick brown fox jumps over',
+      'correct horse battery staple', 'hello world hello world hello world', '0123456789abcdef0123456789abcdef', 'password1234567890', 'secretsecretsecretsecret',
+      'secret-key-for-unit-tests-only-1234', 'abcdefghijklmnopqrstuvwxyz012345', 'ThisIsMySecretKey1234567890', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345',
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a-string-secret-at-least-256-bits-long\n',
+      // (a word that names a secret and nothing else that tells a phrase: no space, no dashes, no repeat or run)
+      'mySuperSecretKey!2026', 'MyDummyHmacKey#9', 'PasswordForTheDemoServer',
+    ]
+    for (const phrase of phrases) {
+      const text = JSON.stringify({ kty: 'oct', k: Buffer.from(phrase).toString('base64url'), alg: 'HS256' })
+      const r = screenKeys(text)
+      expect(r.text, JSON.stringify(phrase)).toBe(text)
+      expect(r.removed, JSON.stringify(phrase)).toEqual({})
+      for (const enc of ['base64url', 'base64'] as const) expect(placeholderWhy(Buffer.from(phrase).toString(enc), 'b62'), JSON.stringify(phrase)).not.toBeNull()
+    }
   })
 
   it('leaves a JWK or an RSAKeyValue whose private member is a phrase byte for byte, and takes the random ones', () => {
@@ -2524,6 +2661,92 @@ describe('looksRandom and placeholderWhy', () => {
     const r = screenKeys(real)
     expect(r.removed).toEqual({ jwk_private_key: 1 })
     expect(JSON.parse(r.text.replace('[REDACTED:jwk_private_key]', 'x')).kty).toBe('oct')
+  })
+})
+
+describe('T1 K1/K5/K6: a key file behind a NAME= on every line, and a PuTTY file in a listing with a long path', () => {
+  it('takes a base64-encoded key file written NAME=<line> per line, for every kind of name', () => {
+    // `KEY=<76 characters>` on each line: the name and its = are not part of the value, on the first line or any other
+    // (the first line's frame, measured from where the value starts, is the name's and equal to the next line's)
+    const lines = wrap(K.k8s.plain, 76)
+    expect(lines.length).toBeGreaterThan(3)
+    for (const name of ['KEY', 'TLS_KEY', 'tls.key', 'MESSAGE', 'data', 'k']) {
+      const r = screenKeys(`Answer follows.\n${lines.map((l) => `${name}=${l}`).join('\n')}\nThat was the file.`)
+      expect(r.removed, name).toEqual({ private_key_b64: 1 })
+      expect(leakedWindows(r.text, lines.slice(0, -1)), name).toBe(0)
+      expect(r.text.startsWith('Answer follows.') && r.text.endsWith('That was the file.'), name).toBe(true)
+    }
+  })
+
+  it('takes a PuTTY key behind a NAME= on every line and in a listing whose path has a long piece, with its MAC line and without', () => {
+    const ppk = K.ppk
+    const secret = secretLinesOf(ppk, true)
+    expect(secret.length).toBeGreaterThan(3)
+    const long = 'src/main/resources/keys/production/deployment_signing_key_for_the_release_pipeline_2026_q4'
+    const slashes = 'src/main/resources/keys/production/deployment/signing/keys/release/pipeline/q4'
+    expect(slashes.length).toBeGreaterThan(75)
+    const writers: Record<string, (ls: string[]) => string> = {
+      'MESSAGE= on each line': (ls) => ls.map((l) => `MESSAGE=${l}`).join('\n'),
+      'TLSKEY= on each line': (ls) => ls.map((l) => `TLSKEY=${l}`).join('\n'),
+      'a long path, rg -n': (ls) => ls.map((l, i) => `${long}/deploy.ppk:${i + 1}:${l}`).join('\n'),
+      'a long path, rg -C': (ls) => ls.map((l, i) => `${long}/deploy.ppk${i === 0 ? ':' : '-'}${i + 1}${i === 0 ? ':' : '-'}${l}`).join('\n'),
+      'a long path, grep with no line numbers': (ls) => ls.map((l) => `${long}/deploy.ppk:${l}`).join('\n'),
+      // (a piece of the path that is all letters and slashes runs on to the file's name: 57 and 80 characters in front of `.ppk:`)
+      'a path of 64 characters of slashes and letters, a space after the colon': (ls) => ls.map((l) => `${slashes.slice(0, 57)}/deploy.ppk: ${l}`).join('\n'),
+      'a path of 87 characters of slashes and letters, a space after the colon': (ls) => ls.map((l) => `${slashes}/deploy.ppk: ${l}`).join('\n'),
+    }
+    for (const [name, write] of Object.entries(writers)) {
+      for (const withMac of [true, false]) {
+        const ls = withMac ? ppk : ppk.filter((l) => !l.startsWith('Private-MAC'))
+        const r = screenKeys(`Answer follows.\n${write(ls)}\nThat was the file.`)
+        expect(leakedWindows(r.text, secret), `${name}/${withMac ? 'MAC' : 'no MAC'}`).toBe(0)
+        expect(r.removed, `${name}/${withMac ? 'MAC' : 'no MAC'}`).toEqual({ putty_private_key: 1 })
+      }
+    }
+  })
+})
+
+describe('T1 thresholds: the sizes that tell a key from an excerpt', () => {
+  // The first line of a PKCS#8, OpenSSH or OpenPGP key says what it is, and what is shown of the rest decides: 80 characters in two lines
+  // are an excerpt of a real key, a key cut short needs 128, and an OpenSSH or OpenPGP blob has no length of its own.
+  /** The characters of a key's body (its BEGIN and END lines, headers and checksum left out). */
+  const bodyOf = (ls: string[]): string => ls.filter((l) => /^[A-Za-z0-9+/]{16,}$/.test(l)).join('')
+  /** A BEGIN line, a key's first `n` characters in a first line of `first` and the rest in a second, then (with `end`) an elision and the END line. */
+  const excerpt = (ls: string[], n: number, first: number, end: boolean): string => {
+    const body = bodyOf(ls)
+    return [ls[0], body.slice(0, first), body.slice(first, n), ...(end ? ['...', ls[ls.length - 1]] : [])].join('\n')
+  }
+  const whyOf = (text: string): Array<[string, string]> => keyBlocks(text).map((b) => [b.cls, b.why])
+
+  it('a verified DER header over two lines: 80 characters are an excerpt of a real key and 79 are not', () => {
+    // (the second line is 16 characters in both, the least a line can be: only the total differs)
+    expect(whyOf(excerpt(K.F.pkcs8_rsa, 80, 64, true))).toEqual([['remove', 'pkcs8-incomplete']])
+    expect(whyOf(excerpt(K.F.pkcs8_rsa, 79, 63, true))).toEqual([['flag', 'pkcs8-example']])
+  })
+
+  it('a verified DER header cut short before its END line: 128 characters are a key cut short, 127 an excerpt of one', () => {
+    expect(whyOf(excerpt(K.F.pkcs8_rsa, 128, 64, false))).toEqual([['remove', 'pkcs8-prefix']])
+    expect(whyOf(excerpt(K.F.pkcs8_rsa, 127, 64, false))).toEqual([['remove', 'pkcs8-incomplete']])
+  })
+
+  it('an OpenSSH or OpenPGP blob has no length of its own: 128 characters are the key, 80 to 127 an excerpt in two lines, 79 an example', () => {
+    for (const [format, type] of [['openssh', 'openssh'], ['pgp_rsa_nohdr', 'pgp']] as Array<[Format, string]>) {
+      expect(whyOf(excerpt(K.F[format], 128, 64, false)), format).toEqual([['remove', type]])
+      expect(whyOf(excerpt(K.F[format], 127, 64, false)), format).toEqual([['remove', `${type}-short`]])
+      expect(whyOf(excerpt(K.F[format], 80, 64, false)), format).toEqual([['remove', `${type}-short`]])
+      expect(whyOf(excerpt(K.F[format], 79, 63, false)), format).toEqual([['flag', `${type}-example`]])
+    }
+  })
+
+  it('a block longer than 1 MB is removed whole (MAX_BLOCK is 4 MB)', () => {
+    // a PGP key's first body line, then 1.1 MB of base64: the packet header verifies the block, and every line of it goes
+    const ls = K.F.pgp_rsa_nohdr
+    const first = ls.find((l) => /^[A-Za-z0-9+/]{16,}$/.test(l)) as string
+    const text = ['Answer follows.', ls[0], first, ...wrap(randomBytes(1_100_000).toString('base64'), first.length), '=ab12', ls[ls.length - 1], 'That was the file.'].join('\n')
+    expect(text.length).toBeGreaterThan(1_400_000)
+    const r = screenKeys(text)
+    expect(r.removed).toEqual({ gpg_block: 1 })
+    expect(r.text).toBe('Answer follows.\n[REDACTED:gpg_block]\nThat was the file.')
   })
 })
 
@@ -2580,6 +2803,42 @@ describe('detectorStart: each detector looks back for its own opener', () => {
     expect(detectorStart(alone, alone.length - 100, 16)).toBe(prose(10).length)
     const ppk = `${prose(300)}\nPrivate-Lines: 14\n${wrap(randomBytes(3000).toString('base64')).join('\n')}\n`
     expect(detectorStart(ppk, ppk.length - 100, 16)).toBe(ppk.indexOf('Private-Lines:') - 16384)
+  })
+
+  it('reaches each opener as far as it should and no further: just inside its reach is found, just outside is not (the cost of a screen is bounded by these)', () => {
+    // An answer is uncapped (a job's stdout is read whole), and what the screen reads is bounded by where it looks for an opener. Take the
+    // floor off one and the whole answer from the far opener on is read; shorten it and a key longer than that is read from the middle.
+    // [what the opener is, where its needle starts in it, its reach, how far before the needle the screen starts reading]
+    const openers: Array<[string, string, number, number]> = [
+      ['-----BEGIN PRIVATE KEY----- is how it starts', 'PRIVATE KEY', 262_144, 64],
+      ['-----BEGIN OpenVPN Static key V1-----', 'OpenVPN Static key', 16_384, 16],
+      ['Private-Lines: 9999', 'Private-Lines:', 65_536, 16_384],
+      ['{"kty":"oct"}', 'kty', 8_192, 4_096],
+      ['<RSAKeyValue>', 'RSAKeyValue', 16_384, 0],
+    ]
+    const lookback = 100
+    for (const [opener, needle, reach, margin] of openers) {
+      for (const [label, distance, found] of [['inside', reach - 150, true], ['outside', reach + 150, false]] as Array<[string, number, boolean]>) {
+        // 70,000 dots in front (so no start is clamped to 0), the opener, dots, and a line of base64 the cut falls in, `distance` after the needle
+        const pre = '.'.repeat(70_000)
+        const at = pre.length + opener.indexOf(needle)
+        const line = randomBytes(90).toString('base64').replace(/kty/g, 'kTy')
+        const filler = '.'.repeat(opener.indexOf(needle) + distance - 21 - opener.length)
+        const text = `${pre}${opener}${filler}\n${line}\n${'.'.repeat(5_000)}`
+        const from = at + distance
+        expect(text[from - 21] === '\n' && /^[A-Za-z0-9+/=]{40}/.test(text.slice(from - 20)), `${needle}/${label}: the cut falls 20 characters into the line`).toBe(true)
+        const start = detectorStart(text, from, lookback)
+        if (found) expect(start, `${needle}/${label}`).toBe(at - margin)
+        else expect(start, `${needle}/${label}`).toBe(from - lookback)
+      }
+    }
+    // a base64 run the cut falls in is followed back to its start, or 64 KB and no further
+    const longRun = wrap(randomBytes(180_000).toString('base64'), 76).join('\n')
+    const longText = `${'.'.repeat(1_000)}\n${longRun}\n${'.'.repeat(1_000)}`
+    const longFrom = 1_001 + 150_000
+    expect(detectorStart(longText, longFrom, 16)).toBe(longFrom - 65_536)
+    const shortText = `${'.'.repeat(1_000)}\n${wrap(randomBytes(30_000).toString('base64'), 76).join('\n')}\n${'.'.repeat(1_000)}`
+    expect(detectorStart(shortText, 1_001 + 20_000, 16)).toBe(1_000)
   })
 })
 
@@ -2997,5 +3256,313 @@ describe('the linear replacements of the word-pair test and of the joiner strips
     expect(bad.slice(0, 5)).toEqual([])
     expect(DEK_REMNANT.test('EK-Info: AES-128-CBC,F0DFE2B3C0A1D2E3F4A5B6C7D8E9F0A1"')).toBe(true)
     expect(DEK_REMNANT.test(' '.repeat(60_000) + 'x')).toBe(false)
+  })
+})
+
+describe('T1 K1: a private key whose algorithm parameters are fixed text (an EC key with explicit curve parameters, a Diffie-Hellman key)', () => {
+  // A standard curve's or group's public parameters are long runs of 00 and FF bytes (base64 `AAAA...` and `////...`). They failed the
+  // run test of looksRandom over the whole body, so the key was verified by its structure and then only reported; main's private_key
+  // rule removed it. (openssl ecparam -param_enc explicit, openssl genpkey -algorithm DH, a Java keystore export.)
+  const pem = (key: crypto.KeyObject, type: 'sec1' | 'pkcs8'): string[] => (key.export({ type, format: 'pem' }) as string).trim().split('\n')
+  const dh = (group: string): crypto.KeyObject => (generateKeyPairSync as unknown as (t: string, o: { group: string }) => { privateKey: crypto.KeyObject })('dh', { group }).privateKey
+  const keys: Array<[string, string[]]> = []
+  for (const curve of ['prime256v1', 'secp384r1', 'secp521r1', 'secp256k1']) {
+    const key = generateKeyPairSync('ec', { namedCurve: curve, paramEncoding: 'explicit' }).privateKey
+    keys.push([`EC ${curve} explicit, SEC1`, pem(key, 'sec1')], [`EC ${curve} explicit, PKCS#8`, pem(key, 'pkcs8')])
+  }
+  for (const group of ['modp2', 'modp14', 'modp18']) keys.push([`DH ${group}, PKCS#8`, pem(dh(group), 'pkcs8')])
+
+  it('removes it whole, in four joinings, with its END line and without', () => {
+    for (const [name, ls] of keys) {
+      expect(keyBlocks(ls.join('\n')).map((b) => [b.cls, b.rule]), name).toEqual([['remove', 'private_key']])
+      for (const jn of ['lf', 'json_n', 'cat_n', 'rg_win']) {
+        for (const withEnd of [true, false]) {
+          const label = `${name}/${jn}/${withEnd ? 'END' : 'no END'}`
+          const r = screenKeys('Answer follows.\n' + JOIN[jn](withEnd ? ls : ls.slice(0, -1)) + '\nThat was the file.')
+          expect(leakedWindows(r.text, secretLinesOf(ls)), label).toBe(0)
+          expect(r.removed, label).toEqual({ private_key: 1 })
+          expect(r.text.startsWith('Answer follows.') && r.text.endsWith('That was the file.'), label).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('still reports the same header over a body that is mostly one repeated character, or whose runs are no public parameters', () => {
+    for (const [name, ls] of keys.filter(([n]) => n.includes('explicit'))) {
+      // the key's own first three lines, then padding: a made-up excerpt
+      const padded = [ls[0], ...ls.slice(1, 4), ...Array.from({ length: 10 }, () => 'A'.repeat(64)), ls[ls.length - 1]].join('\n')
+      expect(keyBlocks(padded).map((b) => [b.cls, b.rule]), name).toEqual([['flag', 'private_key']])
+      expect(screenKeys(padded).text, name).toBe(padded)
+      expect(screenKeys(padded).removed, name).toEqual({})
+      // a run of any other character is no public parameter: the key's own lines with two of them in the middle is a made-up body
+      for (const filler of ['x', 'Q', '+', '5']) {
+        const odd = [ls[0], ...ls.slice(1, 6), filler.repeat(64), filler.repeat(64), ...ls.slice(6)].join('\n')
+        expect(screenKeys(odd).text, `${name}/${filler}`).toBe(odd)
+        expect(screenKeys(odd).removed, `${name}/${filler}`).toEqual({})
+      }
+    }
+  })
+})
+
+describe('T1 K1: a key in a grep or rg listing whose path holds a long run of base64 characters', () => {
+  // `/keys/prod/private` in ./keys/prod/private_key.asc is 18 base64-alphabet characters (a slash is one), and an armored key's blank
+  // line shows only its path: that piece was taken for the key's first line, narrower than the real ones, and the key was only reported.
+  const paths = [
+    './keys/prod/private_key.asc',
+    '/etc/ssl/private/server-key.pem',
+    '/home/dev/.gnupg/private-keys-v1.d/backup.asc',
+    'src/main/resources/keys/prod/deploy_rsa_4096_2026.pem',
+    'C:\\Users\\dev\\OneDriveCommercialDocuments\\keys\\id_rsa',
+  ]
+  // A space right after the long piece ends it as a run, and the rest of the path is not read as one (a payload followed by a space and a
+  // timestamp must not be taken for a path). Likewise a path with no line number after it (`grep` without -n): the piece in front of a
+  // payload (`private_key.asc:=NRbN`) is not told from one. In both the END line's piece sets a second frame, the tail rule takes the END
+  // line, and the block counts twice. Nothing is left either way.
+  const spaced = '/var/lib/jenkins/workspace/My Project/keys/release.asc'
+  const twice = (mode: string, p: string): boolean => p === spaced || mode === 'grep, no -n' || mode === 'path: line'
+  const modes: Record<string, (p: string, ls: string[]) => string> = {
+    'rg -n': (p, ls) => ls.map((l, i) => `${p}:${i + 1}:${l}`).join('\n'),
+    'rg -C': (p, ls) => ls.map((l, i) => `${p}${i === 0 ? ':' : '-'}${i + 1}${i === 0 ? ':' : '-'}${l}`).join('\n'),
+    'grep -nb': (p, ls) => ls.map((l, i) => `${p}:${i + 1}:${i * 65}:${l}`).join('\n'),
+    'grep, no -n': (p, ls) => ls.map((l) => `${p}:${l}`).join('\n'),
+    'path: line': (p, ls) => ls.map((l) => `${p}: ${l}`).join('\n'),
+    'a tag after each line': (p, ls) => ls.map((l, i) => `${p}:${i + 1}:${l}</li>`).join('\n'),
+  }
+
+  it('removes every format, with its END line and without, in six listings', () => {
+    for (const format of FORMATS) {
+      const [rule] = EXPECT[format]
+      for (const [mode, write] of Object.entries(modes)) {
+        for (const p of paths) {
+          for (const withEnd of [true, false]) {
+            const label = `${format}/${mode}/${p}/${withEnd ? 'END' : 'no END'}`
+            const ls = withEnd ? K.F[format] : K.F[format].slice(0, -1)
+            const r = screenKeys('Answer follows.\n' + write(p, ls) + '\nThat was the file.')
+            expect(leakedWindows(r.text, secretLinesOf(K.F[format])), label).toBe(0)
+            if (twice(mode, p)) expect(Object.keys(r.removed), label).toEqual([rule])
+            else expect(r.removed, label).toEqual({ [rule]: 1 })
+          }
+        }
+        // (without END: the blank armor line's piece is the one a space leaves. And with no tag after the lines: a short last line with
+        // one after it is shorter than that piece, which is then taken for it)
+        if (mode.includes('tag')) continue
+        const ls = K.F[format].slice(0, -1)
+        const r = screenKeys('Answer follows.\n' + write(spaced, ls) + '\nThat was the file.')
+        expect(leakedWindows(r.text, secretLinesOf(K.F[format])), `${format}/${mode}/spaced`).toBe(0)
+        expect(Object.keys(r.removed), `${format}/${mode}/spaced`).toEqual([rule])
+      }
+    }
+  })
+
+  it('takes the text after a key line for a path only when it is all the line holds: a payload followed by path-like characters, a colon, and more is still a payload', () => {
+    // (96 path-like characters, a colon and 15 spaces make exactly the 112 the path test reads: a line that goes on past them is no listing's)
+    const pathLike = '_.'.repeat(48) + ':' + ' '.repeat(15)
+    for (const format of ['pkcs8_rsa', 'openssh', 'pgp_rsa_nohdr'] as Format[]) {
+      for (const more of ['x', 'xx yy zz']) {
+        const r = screenKeys(K.F[format].map((l, i) => (i === 0 || i === K.F[format].length - 1 || !/^[A-Za-z0-9+/=]{16,}$/.test(l) ? l : l + pathLike + more)).join('\n'))
+        expect(leakedWindows(r.text, secretLinesOf(K.F[format])), format).toBe(0)
+        expect(Object.keys(r.removed), format).toEqual([EXPECT[format][0]])
+      }
+    }
+  })
+
+  it('does not take the path in front of an END marker for the last line of a key of one line (an Ed25519 key, with grep and no line numbers)', () => {
+    // The END line's `/etc/ssl/private/server` is a run of 23 characters when nothing but `-key.pem:` follows it, and was added to the
+    // key's 64 as its last line: its letters tipped the randomness test of that short body about 1 key in 50.
+    const p = '/etc/ssl/private/server-key.pem'
+    for (let i = 0; i < 300; i++) {
+      const ls = (generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }) as string).trim().split('\n')
+      for (const write of [(l: string) => `${p}:${l}`, (l: string) => `${p}: ${l}`]) {
+        const r = screenKeys(ls.map(write).join('\n'))
+        expect(r.removed, ls[1]).toEqual({ private_key: 1 })
+        expect(r.text.includes(ls[1].slice(0, 20)), ls[1]).toBe(false)
+      }
+    }
+  })
+})
+
+describe('T1 K1: a key written one markdown inline-code span per line', () => {
+  // A backtick followed by n or r is PowerShell's line break (`n, `r) after the text it ends, but an inline-code span opens with one in
+  // front of a key line, and about half of the key lines start with n or r (base64 letters): the phantom line break shortened that line by
+  // one character and ended the key. It counts only after a base64 character, a quote or a dash.
+  const BT = '`'
+  const layouts: Record<string, (ls: string[]) => string> = {
+    'one span per line': (ls) => ls.map((l) => `${BT}${l}${BT}`).join('\n'),
+    'spans with a trailing comma': (ls) => ls.map((l) => `${BT}${l}${BT},`).join('\n'),
+    'a bullet list of spans': (ls) => ls.map((l) => `- ${BT}${l}${BT}`).join('\n'),
+    'spans on one line': (ls) => ls.map((l) => `${BT}${l}${BT}`).join(' '),
+    'spans joined by a comma': (ls) => ls.map((l) => `${BT}${l}${BT}`).join(','),
+  }
+  /** A key's lines with every body line after the first starting with n or r (the bytes in the middle of the key are not the key's, which
+   *  its header, length and randomness do not tell; the first line holds the header that does). */
+  const nr = (ls: string[]): string[] => {
+    const first = ls.findIndex((l) => /^[A-Za-z0-9+/]{16,}$/.test(l))
+    return ls.map((l, i) => (i > first && /^[A-Za-z0-9+/]{16,}$/.test(l) ? (i % 2 ? 'n' : 'r') + l.slice(1) : l))
+  }
+
+  it('removes every format, with its END line and without, whatever letter a line starts with', () => {
+    for (const format of FORMATS) {
+      const [rule] = EXPECT[format]
+      // (an OpenVPN key's lines are hex: no n or r among them)
+      for (const key of format === 'openvpn' ? [K.F[format]] : [K.F[format], nr(K.F[format])]) {
+        for (const [name, write] of Object.entries(layouts)) {
+          for (const withEnd of [true, false]) {
+            const label = `${format}/${name}/${withEnd ? 'END' : 'no END'}/${key === K.F[format] ? 'as made' : 'n and r'}`
+            const r = screenKeys('Answer follows.\n' + write(withEnd ? key : key.slice(0, -1)) + '\nThat was the file.')
+            expect(leakedWindows(r.text, secretLinesOf(key)), label).toBe(0)
+            expect(Object.keys(r.removed), label).toEqual([rule])
+          }
+        }
+      }
+    }
+  })
+
+  it('still reads PowerShell\'s escapes: after a base64 character, a quote and the dashes of a marker', () => {
+    // `n and `r after a line's end, after the dashes of a BEGIN line, `r`n (the n follows an r), a blank line, and the escape right after an
+    // opening quote (a string per line, joined with +)
+    const shapes: Record<string, (ls: string[]) => string> = {
+      'one string, `n': (ls) => '$key = "' + ls.join(BT + 'n') + '"',
+      'one string, `r`n': (ls) => '$key = "' + ls.join(BT + 'r' + BT + 'n') + '"',
+      'one string, a blank line': (ls) => '$key = "' + ls.join(BT + 'n' + BT + 'n') + '"',
+      'a string per line, `n at its end': (ls) => '$key = ' + ls.map((l) => `"${l}${BT}n"`).join(' +\n    '),
+      'a string per line, `n at its start': (ls) => '$key = ' + ls.map((l) => `"${BT}n${l}"`).join(' +\n    '),
+      // (one escape only, in a key of real line breaks: a run that took the n for its first character would be a character wider than the rest)
+      'the escape after the dashes of the BEGIN line only': (ls) => '$key = "' + ls[0] + BT + 'n' + ls.slice(1).join('\n') + '"',
+      // (the newline as a string of its own between the lines: the escape follows a quote, and the lines' strings have joiners and an n between them)
+      'a string for the newline': (ls) => '$key = ' + ls.map((l) => `"${l}"`).join(` + "${BT}n" + `),
+      'a single-quoted string per line, "`n" between': (ls) => '$key = ' + ls.map((l) => `'${l}'`).join(` + "${BT}n" + `),
+    }
+    for (const format of ['pkcs8_rsa', 'openssh', 'pgp_rsa_hdr'] as Format[]) {
+      const ls = nr(K.F[format])
+      for (const [name, write] of Object.entries(shapes)) {
+        const r = screenKeys(write(ls))
+        expect(leakedWindows(r.text, secretLinesOf(ls)), `${format}/${name}`).toBe(0)
+        expect(Object.keys(r.removed), `${format}/${name}`).toEqual([EXPECT[format][0]])
+        // (read whole, as the key it is: an escape taken for part of a line would leave it a character wider, and the block cut short)
+        expect(keyBlocks(write(ls)).map((b) => b.why), `${format}/${name}`).toEqual([EXPECT[format][1]])
+      }
+    }
+  })
+})
+
+describe('T1 K7: a JWK with no braces around it (YAML, TOML, properties) is read whatever its size and the order of its members', () => {
+  // An RSA-2048 JWK is 1.6 KB and an RSA-4096 one 3.2 KB: the private members past the 1 KB the reader used to look at stayed.
+  type Jwk = Record<string, string>
+  let rsa4096: Jwk
+  let ec384: Jwk
+  beforeAll(() => {
+    rsa4096 = generateKeyPairSync('rsa', { modulusLength: 4096 }).privateKey.export({ format: 'jwk' }) as Jwk
+    ec384 = generateKeyPairSync('ec', { namedCurve: 'P-384' }).privateKey.export({ format: 'jwk' }) as Jwk
+  })
+  const PRIV: Record<string, string[]> = { EC: ['d'], OKP: ['d'], RSA: ['d', 'p', 'q', 'dp', 'dq', 'qi'], oct: ['k'] }
+  const order = (jwk: Jwk, how: string): string[] => {
+    const keys = Object.keys(jwk)
+    if (how === 'kty last') return [...keys.filter((k) => k !== 'kty'), 'kty']
+    if (how === 'private first') return [...keys.filter((k) => PRIV[jwk.kty].includes(k)), ...keys.filter((k) => !PRIV[jwk.kty].includes(k))]
+    return keys // (node's: kty first)
+  }
+  const writers: Record<string, (jwk: Jwk, how: string) => string> = {
+    YAML: (j, how) => 'jwk:\n' + order(j, how).map((k) => `  ${k}: ${j[k]}`).join('\n') + '\n',
+    'quoted YAML': (j, how) => 'jwk:\n' + order(j, how).map((k) => `  ${k}: "${j[k]}"`).join('\n') + '\n',
+    TOML: (j, how) => '[jwk]\n' + order(j, how).map((k) => `${k} = "${j[k]}"`).join('\n') + '\n',
+    properties: (j, how) => order(j, how).map((k) => `jwk.${k}=${j[k]}`).join('\n') + '\n',
+    'YAML after empty flow mappings': (j, how) => 'metadata:\n  labels: {}\n  annotations: {}\nsigning:\n' + order(j, how).map((k) => `  ${k}: ${j[k]}`).join('\n') + '\n',
+  }
+  const gone = (text: string, j: Jwk, label: string): void => {
+    for (const m of PRIV[j.kty]) expect(leakedWindows(text, [j[m]]), `${label} ${j.kty} ${m}`).toBe(0)
+  }
+  const kept = (text: string, j: Jwk, label: string): void => {
+    const pub = j.kty === 'RSA' ? j.n : j.kty === 'oct' ? j.alg : j.x
+    expect(text.includes(pub), `${label} public part kept`).toBe(true)
+  }
+
+  it('takes every private member of an RSA-2048 and an RSA-4096 JWK, one key counted once', () => {
+    for (const [name, jwk] of [['RSA-2048', K.J.rsa as Jwk], ['RSA-4096', rsa4096]] as Array<[string, Jwk]>) {
+      for (const [form, write] of Object.entries(writers)) {
+        for (const how of ['kty first', 'kty last', 'private first']) {
+          const label = `${name}/${form}/${how}`
+          const r = screenKeys(write(jwk, how))
+          gone(r.text, jwk, label)
+          kept(r.text, jwk, label)
+          expect(r.removed, label).toEqual({ jwk_private_key: 1 })
+        }
+      }
+    }
+  })
+
+  it('takes the members of each key of a list that mixes types, whichever side of its kty they are', () => {
+    const oct: Jwk = { kty: 'oct', k: randomBytes(32).toString('base64url'), alg: 'HS256' }
+    const keys: Array<[string, Jwk[]]> = [
+      ['EC then oct', [K.J.ec as Jwk, oct]],
+      ['oct then EC', [oct, K.J.ec as Jwk]],
+      ['RSA, oct, EC', [K.J.rsa as Jwk, oct, K.J.ec as Jwk]],
+      ['oct, RSA, EC', [oct, K.J.rsa as Jwk, K.J.ec as Jwk]],
+      ['EC then RSA-4096', [K.J.ec as Jwk, rsa4096]],
+      ['RSA-4096 then EC P-384', [rsa4096, ec384]],
+      ['EC, EC P-384, oct', [K.J.ec as Jwk, ec384, oct]],
+    ]
+    for (const [name, list] of keys) {
+      for (const how of ['kty first', 'kty last', 'private first']) {
+        const yaml = 'keys:\n' + list.map((j) => '  -\n' + order(j, how).map((k) => `    ${k}: ${j[k]}`).join('\n')).join('\n') + '\n'
+        const toml = list.map((j) => '[[keys]]\n' + order(j, how).map((k) => `${k} = "${j[k]}"`).join('\n')).join('\n') + '\n'
+        for (const [form, text] of [['YAML', yaml], ['TOML', toml]]) {
+          const r = screenKeys(text)
+          for (const j of list) {
+            gone(r.text, j, `${name}/${how}/${form}`)
+            kept(r.text, j, `${name}/${how}/${form}`)
+          }
+          expect(Object.keys(r.removed), `${name}/${how}/${form}`).toEqual(['jwk_private_key'])
+        }
+      }
+    }
+  })
+
+  it('reads a member up to 16 KB from its kty and no further, and a stretch between two keys at its two ends only', () => {
+    const k = (): string => randomBytes(32).toString('base64url')
+    const prose = (n: number): string => Array.from({ length: n }, (_, i) => `# ${i}: the service restarted and the cache was warmed up again.`).join('\n')
+    const [near1, near2, before, middle, after] = [k(), k(), k(), k(), k()]
+    // 5 KB from a kty is taken; 20 KB from it is not: before the first, in a stretch of 45 KB between two (20 KB from both), after the last
+    const gap = (n: number): string => '\n' + prose(Math.ceil(n / 62)) + '\n'
+    const text = `k: ${before}${gap(20_000)}kty: oct${gap(5_000)}k: ${near1}${gap(20_000)}k: ${middle}${gap(20_000)}kty: oct${gap(5_000)}k: ${near2}${gap(20_000)}k: ${after}\n`
+    const r = screenKeys(text)
+    expect(r.text.includes(near1.slice(0, 20)) || r.text.includes(near2.slice(0, 20))).toBe(false)
+    for (const far of [before, middle, after]) expect(r.text.includes(far)).toBe(true)
+    expect(r.removed).toEqual({ jwk_private_key: 2 })
+  })
+
+  it('names a placeholder of each key of a list, and takes one span for a member two keys could own', () => {
+    const phrase = (s: string): string => Buffer.from(s).toString('base64url')
+    // placeholders of two types: each key's own value is named, not the neighbour's (a `k` above an EC key is no EC member)
+    const holders = `keys:\n  - kty: oct\n    k: ${phrase('my-super-secret-key-for-tests')}\n  - kty: EC\n    crv: P-256\n    d: ${phrase('your-private-key-goes-right-here')}\n`
+    expect(jwkKeys(holders).map((s) => [s.cls, s.why])).toEqual([['flag', 'jwk oct k not a key'], ['flag', 'jwk EC d not a key']])
+    expect(screenKeys(holders).text).toBe(holders)
+    // a private value between two kty members is one span, whichever of them takes it
+    const ec = K.J.ec as Record<string, string>
+    const between = `kty: EC\ncrv: P-256\nd: ${ec.d}\nkty: RSA\n`
+    expect(jwkKeys(between).map((s) => [s.cls, s.why])).toEqual([['remove', 'jwk EC d']])
+    // an RSA key's `d` is bigger than any curve's: taken under the RSA kty below it, whichever side the EC kty above it is on
+    const rsa = K.J.rsa as Record<string, string>
+    const mixed = `- kty: EC\n  crv: P-256\n  d: ${ec.d}\n- d: ${rsa.d}\n  kty: RSA\n`
+    expect(jwkKeys(mixed).map((s) => [s.cls, s.why])).toEqual([['remove', 'jwk EC d'], ['remove', 'jwk RSA d']])
+  })
+
+  it('does not read a JSON object beside a YAML key a second time', () => {
+    // the JSON object is one key: its members are its own, and the YAML key next to it counts for one more
+    const ec = K.J.ec as Record<string, string>
+    const other = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ format: 'jwk' }) as Record<string, string>
+    const text = `jwk:\n  kty: EC\n  crv: P-256\n  d: ${ec.d}\n${JSON.stringify(other)}\n`
+    expect(screenKeys(text).removed).toEqual({ jwk_private_key: 2 })
+    expect(jwkKeys(text).filter((s) => s.cls === 'remove')).toHaveLength(2)
+  })
+
+  it('judges a JSON object that follows a YAML one by its braces, whatever lies between its kty and its private member', () => {
+    // 20 KB of certificate chain between kty and d: past what a brace-less key reaches, inside what an object's braces hold
+    const rsa = K.J.rsa as Jwk
+    const chain = 'MII' + randomBytes(15_000).toString('base64').replace(/[+/=]/g, 'a')
+    const json = JSON.stringify({ kty: 'RSA', n: rsa.n, e: rsa.e, x5c: [chain], d: rsa.d, p: rsa.p, q: rsa.q })
+    const text = `jwk:\n  kty: oct\n  alg: HS256\n${json}\n`
+    const r = screenKeys(text)
+    expect(leakedWindows(r.text, [rsa.d as string, rsa.p as string, rsa.q as string])).toBe(0)
+    expect(r.text.includes(chain)).toBe(true)
   })
 })
