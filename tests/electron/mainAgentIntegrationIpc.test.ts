@@ -976,6 +976,15 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(H.prepareCodexLaunch).toHaveBeenLastCalledWith(H.agentPaths, '/repo', expect.objectContaining({ accountConnected: false }), undefined)
   })
 
+  it('seeds a Claude launch with the memory primer only on an account the user connected (R17)', async () => {
+    // The primer file points the session at the project's saved memory: an account the user didn't
+    // connect (a work account) gets neither the file nor the call that would build it.
+    H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })
+    expect(await invoke('memory:prepare-primer-file', { query: 'q', cwd: '/repo', accountId: 'acc_off' }))
+      .toEqual({ success: true, data: { file: null, count: 0 } })
+    expect(H.resolveLaunchTarget).toHaveBeenLastCalledWith(H.agentPaths, 'acc_off', 'claude')
+  })
+
   it('takes home-folder trust out of an account\'s CODEX_HOME, and never the default one instead of a missing one', async () => {
     H.codexHomeFor.mockReturnValueOnce({ home: '/scratch/home/.codex-b' })
     await invoke(IPC.removeCodexHomeTrust, { accountId: 'acc_c' })

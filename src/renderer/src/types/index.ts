@@ -518,7 +518,7 @@ export interface TermpolisAPI {
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => Promise<IpcResponse<string | null>>
   /** Claude launch primer: writes the recall instruction to a temp file (only
    *  when relevant memory exists) and returns its path for --append-system-prompt-file. */
-  memoryPreparePrimerFile: (query: string, cwd?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
+  memoryPreparePrimerFile: (query: string, cwd?: string, accountId?: string) => Promise<IpcResponse<{ file: string | null; count: number }>>
   /** Codex parity: the memory instruction Codex gets at launch via `-c developer_instructions=…`
    *  (never written into the repo), plus pre-approval of any memory tools not yet decided. */
   memoryPrepareCodexContext: (cwd: string, accountId?: string) => Promise<IpcResponse<CodexLaunchContext>>

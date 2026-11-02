@@ -128,7 +128,11 @@ export async function launchAgentProfile(profile: AIProfile, deps: LaunchAgentDe
           const query = project
             ? `recent work, decisions, conventions, and context for ${project}`
             : 'recent work, key decisions, and conventions'
-          const primerRes = await window.termpolis.memoryPreparePrimerFile(query, cwd)
+          // For the account the agent launches on: main seeds only one the user connected (R17). Nothing
+          // is added when there is no account, so a user who added none sees the same call as before.
+          const primerRes = accountId
+            ? await window.termpolis.memoryPreparePrimerFile(query, cwd, accountId)
+            : await window.termpolis.memoryPreparePrimerFile(query, cwd)
           if (primerRes?.success && primerRes.data?.file) {
             return { file: primerRes.data.file, count: primerRes.data.count }
           }

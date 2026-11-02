@@ -2540,8 +2540,11 @@ ipcMain.handle('memory:set-vector-quantize', async (_, opts: { value: boolean })
 // or null when there is no relevant memory to seed. The instruction routes the
 // agent to memory_primer/memory_search; the digest itself loads via the tool, not
 // inline, so it never bloats the system prompt.
-ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string }) => {
+ipcMain.handle('memory:prepare-primer-file', async (_, opts: { query: string; cwd?: string; accountId?: string }) => {
   try {
+    // The primer points the session at the project's saved memory, so an account the user didn't
+    // connect (a work account) gets none of it (R17), the same gate Codex's launch has.
+    if (!resolveLaunchTarget(agentIntegrationPaths(), opts?.accountId, 'claude').connected) return ok({ file: null, count: 0 })
     const project = opts?.cwd ? normalizeProjectSlug(opts.cwd) : ''
     const digest = await buildContextPrimer(memorySearch, { query: opts?.query ?? '', limit: getPrimerLimit(), project: project || undefined, projectPath: opts?.cwd || undefined, recent: primerRecent })
     if (!digest) return ok({ file: null, count: 0 }) // no relevant memory → launch bare, skip seeding

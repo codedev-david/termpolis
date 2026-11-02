@@ -243,7 +243,7 @@ const api: TermpolisAPI = {
   brainExport: () => ipcRenderer.invoke('brain:export'),
   brainImport: () => ipcRenderer.invoke('brain:import'),
   memoryBuildPrimer: (query: string, limit?: number, cwd?: string) => ipcRenderer.invoke('memory:build-primer', { query, limit, cwd }),
-  memoryPreparePrimerFile: (query: string, cwd?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd }),
+  memoryPreparePrimerFile: (query: string, cwd?: string, accountId?: string) => ipcRenderer.invoke('memory:prepare-primer-file', { query, cwd, accountId }),
   memoryPrepareCodexContext: (cwd: string, accountId?: string) =>
     ipcRenderer.invoke('memory:prepare-codex-context', { cwd, ...(accountId ? { accountId } : {}) }),
   // Agent integration: consent-gated writes into Claude Code / Codex / Gemini configs.

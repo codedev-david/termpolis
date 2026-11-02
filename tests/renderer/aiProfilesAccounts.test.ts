@@ -62,6 +62,8 @@ describe('launchAgentProfile on an account', () => {
     const id = createdId()
     expect(api().createTerminal).toHaveBeenCalledWith(id, 'powershell', '/repo', undefined, true, 'acc_b', 'claude')
     expect(api().claudeTrustWorkspace).toHaveBeenCalledWith('/repo', 'acc_b')
+    // The memory primer is prepared for that account too: main seeds only an account the user connected.
+    expect(api().memoryPreparePrimerFile).toHaveBeenCalledWith(expect.any(String), '/repo', 'acc_b')
     expect(addTerminal).toHaveBeenCalledWith(expect.objectContaining({ id, agentCommand: 'claude', agentAccountId: 'acc_b' }))
     expect(accounts.launchLine).toHaveBeenCalledWith({ terminalId: id, agent: 'claude', shellType: 'powershell', command: 'claude', accountId: 'acc_b' })
     expect(typed()).toEqual(['\r', "& { $env:X = 'b'; claude }\r"])
@@ -101,6 +103,7 @@ describe('launchAgentProfile on an account', () => {
     // No account; the agent Termpolis watches there, which main marks only once it has two (R6).
     expect(api().createTerminal.mock.calls[0].slice(3)).toEqual([undefined, true, undefined, 'claude'])
     expect(api().claudeTrustWorkspace.mock.calls).toEqual([['/repo']])
+    expect(api().memoryPreparePrimerFile.mock.calls[0]).toHaveLength(2)
     expect(addTerminal.mock.calls[0][0]).not.toHaveProperty('agentAccountId')
     expect(typed()).toEqual(['\r', 'claude\r'])
   })
