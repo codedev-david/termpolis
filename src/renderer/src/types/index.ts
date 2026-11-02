@@ -424,6 +424,10 @@ export interface TermpolisAPI {
        *  drawn for. A poller reading on from its own offset gets it too, to see a resize by. */
       cols?: number
       rows?: number
+      /** The screen main keeps for a terminal an agent runs in, as all its output has drawn it: the
+       *  window above holds only the last 32 KB, and an agent that paints its input box once has none
+       *  in it after a minute of work. Absent for any other terminal. */
+      screen?: { lines: string[]; title: string }
     }>
   >
   /** Drops the main-process copy of a terminal's output so a cleared terminal stays

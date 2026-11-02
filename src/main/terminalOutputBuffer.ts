@@ -24,6 +24,15 @@
 // PURE by construction: the Map is passed in rather than owned here, so the whole
 // module is testable with no Electron, no PTY and no globals — and `index.ts` keeps
 // owning the lifetime, which is where the spawn/kill pairing already lives.
+//
+// The window is the wrong thing to DRAW a screen from, for a terminal an agent runs in. Claude Code
+// 2.1.316 paints its input box, two rules and a footer, once, and updates the rows above it in place,
+// so after 32 KB of work a replay of the window has no box in it, though the user sees one: the usage
+// limit's chooser never opened and a switch typed nothing (F-R2-2). A terminal an agent runs in
+// therefore keeps its screen as well (watchScreen), fed by every chunk the window takes, and the
+// reads that judge what the agent shows use it (liveScreen). The window stays for the offset reads.
+import { screenOfReplay } from '../shared/terminalScreen'
+import type { ScreenSize, TerminalScreen } from '../shared/terminalScreen'
 
 /** Chars of scrollback retained per terminal. Not bytes: `.length` is UTF-16 code
  *  units, which is what the previous implementation counted, and changing the unit
@@ -43,6 +52,9 @@ export interface OutputWindow {
    *  replayPreamble. Created by the first evicted (or cleared) text that holds an ESC:
    *  a window that never lost an escape sequence has none, and keeps its old shape. */
   evicted?: ModeTracker
+  /** The screen this terminal's output draws, kept live for a terminal an agent runs in (watchScreen):
+   *  every chunk appended is written to it. Absent for any other terminal, which costs nothing. */
+  screen?: TerminalScreen
 }
 
 export type OutputBuffers = Map<string, OutputWindow>
@@ -71,6 +83,7 @@ export function appendOutput(
   win.chunks.push(data)
   win.bytes += data.length
   win.total += data.length
+  if (win.screen) drawOnScreen(win, data)
   if (win.bytes <= cap) return win.total
 
   // Whole-chunk eviction: stop as soon as dropping the head would take us under.
@@ -179,6 +192,61 @@ export function clearOutput(buffers: OutputBuffers, id: string): void {
   for (const chunk of win.chunks) noteEvicted(win, chunk, chunk.length)
   win.chunks = []
   win.bytes = 0
+}
+
+// ---------------------------------------------------------------------------
+// The screen kept live beside the window
+// ---------------------------------------------------------------------------
+
+/** Writes a chunk to the window's screen. A screen that cannot draw it is dropped, never the chunk: the
+ *  window has taken it already, and the reads go back to replaying the window. */
+function drawOnScreen(win: OutputWindow, data: string): void {
+  try {
+    win.screen!.write(data)
+    // Rows that scroll off the top are not read from here (the window has them); letting them pile up
+    // would keep a thousand rows for every agent's terminal.
+    win.screen!.takeScrolledOff()
+  } catch {
+    win.screen = undefined
+  }
+}
+
+/** The screen the window draws at `size`, as a pane rebuilds one on a mount: the modes the evicted
+ *  output left set (the alt screen an agent enters once), then what the window holds. */
+function replayedScreen(buffers: OutputBuffers, id: string, size: ScreenSize): TerminalScreen {
+  const replay = replayPreamble(buffers, id)
+  return screenOfReplay({ output: readOutput(buffers, id), ...(replay?.preamble ? { preamble: replay.preamble } : {}), ...(replay?.skip ? { skip: replay.skip } : {}), ...size })
+}
+
+/** Starts keeping the terminal's screen at `size`: the window as it stands is drawn into it, and every
+ *  chunk after that is written to it. Already kept at that size, nothing is redone. A terminal that has
+ *  printed nothing yet gets its (empty) window now, so the first chunk is drawn too: a swarm worker's
+ *  agent is started the moment its shell is made. False for a terminal of no known size (it is gone),
+ *  which keeps nothing. */
+export function watchScreen(buffers: OutputBuffers, id: string, size: ScreenSize | null): boolean {
+  if (!size) return false
+  let win = buffers.get(id)
+  if (!win) {
+    win = { chunks: [], bytes: 0, total: 0 }
+    buffers.set(id, win)
+  }
+  if (win.screen && win.screen.cols === size.cols && win.screen.rows === size.rows) return true
+  win.screen = replayedScreen(buffers, id, size)
+  return true
+}
+
+/** The terminal was resized: a screen kept for it is drawn again at the new size from the window, and
+ *  the CLI's repaint for that size (every agent sends one) is written to it as it arrives. A screen
+ *  cannot be resized in place: its rows were wrapped at the old width. */
+export function resizeScreen(buffers: OutputBuffers, id: string, size: ScreenSize | null): void {
+  const win = buffers.get(id)
+  if (win?.screen && size) watchScreen(buffers, id, size)
+}
+
+/** The rows and the title of the terminal's kept screen, as drawn now, or null when none is kept. */
+export function liveScreen(buffers: OutputBuffers, id: string): { lines: string[]; title: string } | null {
+  const screen = buffers.get(id)?.screen
+  return screen ? { lines: screen.lines(), title: screen.title } : null
 }
 
 // ---------------------------------------------------------------------------

@@ -118,6 +118,9 @@ import {
   readOutputTail,
   clearOutput,
   replayPreamble,
+  liveScreen,
+  resizeScreen,
+  watchScreen,
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck, isShellInForeground } from './terminalManager'
@@ -1135,7 +1138,11 @@ ipcMain.on('terminal:write', (_, { id, data, key }: { id: string; data: string; 
     }
   } catch {}
 })
-ipcMain.on('terminal:resize', (_, { id, cols, rows }) => resizeTerminal(id, cols, rows))
+ipcMain.on('terminal:resize', (_, { id, cols, rows }) => {
+  resizeTerminal(id, cols, rows)
+  // A screen kept for an agent's terminal is drawn again at the new size; the CLI's repaint fills it in.
+  resizeScreen(terminalOutputBuffers, id, getTerminalSize(id))
+})
 
 ipcMain.handle('shell:available', async () => {
   try { return ok(await detectAvailableShells()) }
@@ -2935,6 +2942,9 @@ registerAccountsIpc(ipcMain, {
     outputFrom: (terminalId, from) => readOutputFrom(terminalOutputBuffers, terminalId, from).output,
     end: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
     size: (terminalId) => getTerminalSize(terminalId),
+    // The screen kept for a terminal an agent runs in: the 32 KB window above loses its input box (F-R2-2).
+    screen: (terminalId) => liveScreen(terminalOutputBuffers, terminalId),
+    watch: (terminalId) => { watchScreen(terminalOutputBuffers, terminalId, getTerminalSize(terminalId)) },
     write: (terminalId, data) => writeToTerminal(terminalId, data),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),
@@ -3203,7 +3213,9 @@ ipcMain.handle('models:refresh-catalog', async () => {
 // evicted before the caller read it, so falling behind is visible instead of silent.
 ipcMain.handle('terminal:read-buffer', async (_, { terminalId, fromOffset }) => {
   const slice = readOutputFrom(terminalOutputBuffers, terminalId, fromOffset || 0)
-  return ok({ ...slice, length: slice.output.length, ...replayContext(terminalId, fromOffset || 0) })
+  // The screen kept for an agent's terminal comes with the replay: the swarm's loop reads a worker's stop off it.
+  const screen = liveScreen(terminalOutputBuffers, terminalId)
+  return ok({ ...slice, length: slice.output.length, ...replayContext(terminalId, fromOffset || 0), ...(screen ? { screen } : {}) })
 })
 
 // A pane rebuilding a terminal from the window (TerminalPane, on every mount) needs more than

@@ -91,6 +91,13 @@ export interface SwitchIO {
   /** Where its output ends now (0 for a terminal with none). */
   end(terminalId: string): number
   size(terminalId: string): ScreenSize | null
+  /** The screen main keeps for a terminal an agent runs in (terminalOutputBuffer.ts watchScreen), as its
+   *  output has drawn it: the window above holds only the last 32 KB, and Claude Code paints its input box
+   *  once, so a replay of the window has no box after a minute of work (F-R2-2). Null or absent where none
+   *  is kept (an unwatched terminal, a test): the window is replayed then. */
+  screen?(terminalId: string): { lines: string[]; title: string } | null
+  /** Starts keeping that screen: the terminal's agent was just started (accountsIpc.ts records it). */
+  watch?(terminalId: string): void
   write(terminalId: string, data: string): void
   sleep(ms: number): Promise<void>
   now(): number
@@ -204,11 +211,21 @@ export interface Look {
 /** What a terminal with no output shows: nothing, and no box. */
 const BLANK: Look = { lines: [], title: '', raw: '', end: 0, box: -1 }
 
+/** `rows` without the blank ones at the foot, as drawn() cuts a replay's. */
+function withoutBlankFoot(rows: readonly string[]): string[] {
+  let end = rows.length
+  while (end > 0 && rows[end - 1].trim() === '') end--
+  return rows.slice(0, end)
+}
+
 export function look(io: SwitchIO, id: string): Look {
   const out = io.output(id)
   if (!out) return BLANK
   const size = io.size(id)
-  const { lines, title } = drawn(out.raw, size)
+  // The kept screen is what the user sees; the window's replay is the same screen only while its box is
+  // still in the last 32 KB. Its rows are cut at the last one drawn, as a replay's are (drawn).
+  const live = io.screen?.(id)
+  const { lines, title } = live ? { lines: withoutBlankFoot(live.lines), title: live.title } : drawn(out.raw, size)
   return { lines, title, raw: out.raw, end: out.end, box: inputBoxRow(lines), ...(size?.cols ? { cols: size.cols } : {}), ...(size?.rows ? { rows: size.rows } : {}) }
 }
 

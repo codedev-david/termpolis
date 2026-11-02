@@ -6,6 +6,8 @@
 // keeps what reached whom: what the shell ran, what went to the agent as a prompt, and whether a
 // Ctrl+D closed the shell.
 import type { SwitchIO } from '../../src/main/accountSwitch'
+import { MAX_TERMINAL_BUFFER_CHARS } from '../../src/main/terminalOutputBuffer'
+import { screenOf } from '../../src/shared/terminalScreen'
 
 const E = '\x1b'
 export const RULE = '─'.repeat(80)
@@ -116,6 +118,14 @@ export interface TermScript {
   /** With `shellCharMs`: the shell stops reading after this many characters, and draws nothing of
    *  what it read since. */
   shellStallsAfter?: number
+  /** How the switch reads the terminal. Default: the whole output, as a test's. 'window': only the last 32 KB
+   *  main retains per terminal (terminalOutputBuffer.ts); 'kept': that window and the screen main keeps live
+   *  for a terminal an agent runs in, which is what index.ts hands the switch (F-R2-2). */
+  main?: 'window' | 'kept'
+  /** The agent has worked this many characters before the switch starts. Claude Code 2.1.316 paints its
+   *  box once, on its first frame, and every redraw after it changes only the rows that differ, so a replay
+   *  of the last 32 KB holds no box after a minute of work. */
+  worked?: number
 }
 
 /** The conversation id a later exit of agy names: a new, empty one, never the first. */
@@ -164,6 +174,8 @@ export class FakeTerminal {
   read = 0
   /** The account agy's header shows. */
   email: string
+  /** The rows last drawn once the agent paints in place ('worked'): a redraw sends the ones that changed. */
+  private drawnRows: string[] | null = null
   constructor(public s: TermScript) {
     this.email = s.email ?? 'home.user@example.test'
     this.mode = s.start === 'gone-hint' || s.start === 'gone-quiet' ? 'shell' : 'agent'
@@ -176,8 +188,20 @@ export class FakeTerminal {
       this.agentState = 'idle'
       this.out += s.start === 'gone-hint' ? this.hint() : '\r\n'
       this.out += this.prompt()
-    } else if (s.start !== 'blank') this.out += this.frame()
-    else this.out += 'loading…'
+    } else if (s.start !== 'blank') {
+      this.out += this.frame()
+      if (s.worked) {
+        this.drawnRows = this.rows()
+        this.out += this.work(s.worked)
+      }
+    } else this.out += 'loading…'
+  }
+
+  /** At least `chars` characters of a turn at work, in place: a spinner row updated, and cleared at the end. */
+  private work(chars: number): string {
+    let out = ''
+    for (let n = 1; out.length < chars; n++) out += `${E}[2;1H${E}[38;2;255;107;128m✻${E}[1CThinking…${E}[1C(${n}s${E}[1C·${E}[1Ctokens${E}[1C${n * 37})${E}[K`
+    return out + `${E}[2;1H${E}[K`
   }
 
   /** Where the launch line was typed, and the line: what main records as the agent's start. */
@@ -266,12 +290,26 @@ export class FakeTerminal {
   }
 
   private redraw(): void {
-    this.out += this.frame()
+    if (!this.drawnRows) {
+      this.out += this.frame()
+      return
+    }
+    // Painted in place: only the rows that differ are sent, each at its place.
+    const rows = this.rows()
+    for (let i = 0; i < Math.max(rows.length, this.drawnRows.length); i++) {
+      if (rows[i] !== this.drawnRows[i]) this.out += `${E}[${i + 1};1H${E}[2K${rows[i] ?? ''}`
+    }
+    // The cursor is parked after the last row, where a whole frame leaves it: what the agent prints as it
+    // exits goes under its box.
+    this.out += `${E}[${rows.length};${rows[rows.length - 1].length + 1}H`
+    this.drawnRows = rows
   }
 
   private exitAgent(): void {
     this.exits++
     this.mode = 'shell'
+    // The next agent paints a whole frame of its own.
+    this.drawnRows = null
     const hint = this.s.exit === 'no-hint' ? '\r\n' : this.hint()
     const prompt = this.prompt()
     if (this.s.teardownMs) {
@@ -436,11 +474,14 @@ export class FakeTerminal {
   }
 
   io(): SwitchIO {
+    const retained = (): string => (this.s.main ? this.out.slice(-MAX_TERMINAL_BUFFER_CHARS) : this.out)
+    const size = (): { cols: number; rows: number } => ({ cols: this.s.cols ?? 80, rows: this.s.rows ?? 24 })
     return {
-      output: () => (this.out ? { raw: this.out, end: this.out.length } : null),
-      outputFrom: (_id, from) => this.out.slice(from),
+      output: () => (this.out ? { raw: retained(), end: this.out.length } : null),
+      outputFrom: (_id, from) => (this.s.main ? this.out.slice(Math.max(from, this.out.length - MAX_TERMINAL_BUFFER_CHARS)) : this.out.slice(from)),
       end: () => this.out.length,
-      size: () => ({ cols: this.s.cols ?? 80, rows: this.s.rows ?? 24 }),
+      size,
+      ...(this.s.main === 'kept' ? { screen: () => { const screen = screenOf(this.out, size()); return { lines: screen.lines(), title: screen.title } } } : {}),
       write: (_id, data) => this.type(data),
       sleep: async (ms) => {
         this.clock += ms

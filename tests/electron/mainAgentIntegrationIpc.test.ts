@@ -947,6 +947,39 @@ describe('Settings ▸ Accounts wiring', () => {
     vi.useRealTimers()
   })
 
+  it('keeps the screen of a terminal an agent was started in, for the switch, the chooser and the swarm loop (F-R2-2)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-kept', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    const E = '\x1b'
+    const read = async (): Promise<any> => (await invoke('terminal:read-buffer', { terminalId: 't-kept', fromOffset: 0 })).data
+    onData(`${E}[2J${E}[H${E}[4;1H${'─'.repeat(30)}${E}[5;1H> ${E}[6;1H${'─'.repeat(30)}`)
+    // Nothing is kept for a terminal no agent was started in.
+    expect(io.screen!('t-kept')).toBeNull()
+    expect((await read()).screen).toBeUndefined()
+    // Started: the screen is drawn at the terminal's size from now on.
+    H.getTerminalSize.mockReturnValue({ cols: 30, rows: 6 })
+    io.watch!('t-kept')
+    onData(`${E}[1;1Hworking`)
+    const kept = io.screen!('t-kept')!
+    expect(kept.lines.slice(3)).toEqual(['─'.repeat(30), '>', '─'.repeat(30)])
+    expect(kept.lines[0]).toBe('working')
+    // The swarm loop's read carries it, beside the window and its geometry.
+    expect((await read()).screen).toEqual(kept)
+    // A resize draws it again at the new size.
+    H.getTerminalSize.mockReturnValue({ cols: 20, rows: 4 })
+    for (const h of ipcOnHandlers.get('terminal:resize') ?? []) h({}, { id: 't-kept', cols: 20, rows: 4 })
+    expect(mockResizeTerminal).toHaveBeenLastCalledWith('t-kept', 20, 4)
+    expect(io.screen!('t-kept')!.lines).toHaveLength(4)
+    // A terminal that is gone (no size) keeps nothing.
+    H.getTerminalSize.mockReturnValue(null)
+    io.watch!('t-gone')
+    expect(io.screen!('t-gone')).toBeNull()
+    H.getTerminalSize.mockReset()
+    H.getTerminalSize.mockImplementation(() => null)
+  })
+
   it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {
     const target = H.profiles[0]
     H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })

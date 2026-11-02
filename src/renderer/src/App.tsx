@@ -56,7 +56,7 @@ import { noteSwarmStop, osNotify, pruneBanners, pruneChooser, pruneStops, showLi
 import { isStopCarried } from './lib/swarmStopReports'
 import { liveRestartDeps, noteConductorClosed, pruneSwarmRestarts } from './lib/swarmRestart'
 import { detectAgentStatus, limitWords, stopKind } from '../../shared/agentStatusDetector'
-import { screenOfReplay } from '../../shared/terminalScreen'
+import { viewOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
 import * as redundancyLib from './lib/redundancyDetector'
@@ -735,12 +735,15 @@ export default function App() {
           // leave "esc to interrupt" and its other furniture in the raw tail after they are gone
           // (GitHub #36). The screen also shows a usage limit or a menu, which the conductor is
           // told about once per stop.
-          const screen = screenOfReplay(bufferRes.data)
-          let result = detectAgentStatus(screen.lines().join('\n'), agent.agentName, agent.status, { screen: true, title: screen.title })
+          // The screen main kept for it when it kept one: a replay of the window alone has lost the input box of
+          // an agent that worked a while (F-R2-2).
+          const screen = viewOfReplay(bufferRes.data)
+          const rows = screen.lines.join('\n')
+          let result = detectAgentStatus(rows, agent.agentName, agent.status, { screen: true, title: screen.title })
           // A worker Termpolis restarted on another account draws the limit it stopped at again above its empty
           // box: waiting, until it has taken a turn (N5; the conductor's follow-up is typed the same way).
           if (stopKind(result) === 'limit' && await isStopCarried(agent.terminalId)) result = { status: 'idle', summary: 'Waiting at prompt' }
-          void noteSwarmStop(agent, result, () => limitWords(screen.lines().join('\n')))
+          void noteSwarmStop(agent, result, () => limitWords(rows))
 
           // Only update if status or summary actually changed
           if (result.status !== agent.status || (result.summary && result.summary !== agent.summary)) {

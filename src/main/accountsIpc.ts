@@ -172,8 +172,16 @@ function startRecord(start: AgentStart, now: number): AgentStart {
   return { at: start.at, commands: start.commands, ...(agent ? { agent } : {}), time: start.time ?? now }
 }
 
+/** Records the agent started in a terminal, and has main keep that terminal's screen from now on: a replay
+ *  of the 32 KB window it retains loses the input box of an agent that has worked a while (F-R2-2). A
+ *  terminal that cannot keep one still has its start recorded, and its window is replayed. */
+function setStart(terminalId: string, start: AgentStart): void {
+  agentStarts.set(terminalId, start)
+  try { wiring.io?.watch?.(terminalId) } catch { /* replayed from the window then */ }
+}
+
 export function noteAgentStart(terminalId: string, start: AgentStart, now: number = Date.now()): void {
-  agentStarts.set(terminalId, startRecord(start, now))
+  setStart(terminalId, startRecord(start, now))
 }
 
 /** A line typed by hand changed the terminal's account (it set or unset a profile variable). */
@@ -297,7 +305,7 @@ export function noteWorkerCommand(terminalId: string, command: string, now: numb
       agentStarts.delete(terminalId)
       return
     }
-    agentStarts.set(terminalId, startRecord({ at: wiring.outputEnd?.(terminalId) ?? 0, commands: [typed], agent }, now))
+    setStart(terminalId, startRecord({ at: wiring.outputEnd?.(terminalId) ?? 0, commands: [typed], agent }, now))
     const handSet = byHand.has(terminalId)
     let accountId: string | null = null
     if (!handSet && isProfileAgent(agent)) {
@@ -339,7 +347,7 @@ function noteLife(terminalId: string, typed: string, now: number, lookNow: () =>
   if (!io || end === undefined) return
   try {
     const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now, lookNow)
-    if (started) agentStarts.set(terminalId, started)
+    if (started) setStart(terminalId, started)
   } catch { /* the next look reads it */ }
 }
 
@@ -363,7 +371,7 @@ function noteLine(terminalId: string, line: string, now: number, lookNow: () => 
     const [own] = mine.splice(at, 1)
     ownLines.set(terminalId, mine)
     const end = wiring.outputEnd?.(terminalId)
-    if (end !== undefined) agentStarts.set(terminalId, startRecord({ at: end, commands: [typed], agent: own.agent }, now))
+    if (end !== undefined) setStart(terminalId, startRecord({ at: end, commands: [typed], agent: own.agent }, now))
     return 'own'
   }
   noteLife(terminalId, typed, now, lookNow)

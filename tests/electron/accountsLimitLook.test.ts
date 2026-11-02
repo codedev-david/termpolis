@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
-  _gatherLinesForTest, _resetTerminalAccountsForTest, isAccountChangedByHand, noteAgentStart, noteTerminalAccount, noteTypedInput, registerAccountsIpc,
+  _gatherLinesForTest, _resetTerminalAccountsForTest, isAccountChangedByHand, noteAgentStart, noteSwarmWorker, noteTerminalAccount, noteTypedInput, noteWorkerCommand, registerAccountsIpc,
   terminalAccountId, terminalAgentStart, LIMIT_CHOOSER_VAR, withLimitChooser,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
@@ -603,5 +603,63 @@ describe('how the keys of one write are gathered into lines (CHOOSER-R1-5)', () 
     const lines: string[] = []
     _gatherLinesForTest('t9', written, (l) => lines.push(l))
     expect(lines).toEqual([expected])
+  })
+})
+
+// F-R2-2: main keeps the screen of a terminal an agent runs in (terminalOutputBuffer.ts watchScreen), since a
+// replay of its 32 KB window loses the input box Claude Code paints once. Every start it records asks for that.
+describe('a terminal an agent was started in has its screen kept (F-R2-2)', () => {
+  const baseIO = (): AccountsIpcDeps['switchIO'] => ({
+    output: (id) => term.io().output(id),
+    outputFrom: (id, from) => term.io().outputFrom(id, from),
+    end: (id) => term.io().end(id),
+    size: () => ({ cols: 80, rows: 24 }),
+    write: (id, data) => term.io().write(id, data),
+    sleep: (ms) => term.io().sleep(ms),
+    now: () => clock,
+  })
+  const watching = (watch: (id: string) => void): void => register({ switchIO: { ...baseIO()!, watch } })
+
+  it('on a launch line of Termpolis\'s own', async () => {
+    const watched: string[] = []
+    watching((id) => { watched.push(id) })
+    await launch('claude')
+    expect(watched).toEqual(['t1'])
+  })
+
+  it('on an agent typed by hand at a shell', () => {
+    const watched: string[] = []
+    watching((id) => { watched.push(id) })
+    noteTypedInput('t2', 'codex\r', clock)
+    expect(watched).toEqual(['t2'])
+  })
+
+  it('on a swarm worker\'s agent, as run_command typed it', () => {
+    const watched: string[] = []
+    watching((id) => { watched.push(id) })
+    noteSwarmWorker('w1')
+    noteWorkerCommand('w1', 'claude --dangerously-skip-permissions')
+    expect(watched).toEqual(['w1'])
+  })
+
+  it('on the relaunch of a switch', () => {
+    const watched: string[] = []
+    watching((id) => { watched.push(id) })
+    noteAgentStart('t1', { at: 0, commands: ['claude --resume x'], agent: 'claude' })
+    expect(watched).toEqual(['t1'])
+  })
+
+  it('and never because of a line that starts no agent', () => {
+    const watched: string[] = []
+    watching((id) => { watched.push(id) })
+    noteTypedInput('t1', 'npm test\r', clock)
+    expect(watched).toEqual([])
+    expect(terminalAgentStart('t1')).toBeUndefined()
+  })
+
+  it('and a terminal that cannot keep one still has its start recorded', () => {
+    watching(() => { throw new Error('no such terminal') })
+    expect(() => noteTypedInput('t1', 'claude\r', clock)).not.toThrow()
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude' })
   })
 })
