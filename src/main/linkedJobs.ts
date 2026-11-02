@@ -221,25 +221,26 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
 /** Absent, for an optional field: JSON writers emit `null` for "not set". */
 const absent = (v: unknown): v is null | undefined => v === undefined || v === null
 
-/** `text` without its control characters, which a refusal never shows. */
-const withoutControls = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+/** What a refusal shows in place of a folder name that holds a control character. */
+const FOLDER_WITH_CONTROLS = '[a folder name with control characters]'
 
 /** What goes back in place of output or an error that couldn't be checked for
  *  credentials: nothing leaves this computer unscreened. */
 export const WITHHELD = '[Termpolis could not check this for credentials, so it was withheld.]'
 
 /** A folder as a refusal repeats it, to the computer that asked and in the job history here: with
- *  anything in it that might be a credential taken out by `mask` (aiSecurity.maskForDisplay), then
- *  its control characters, then masked again, and only then cut to 200 characters. A folder that
- *  exists runs, and is shown as it is, whatever its name; one refused can be anything a computer
- *  sent, a clone URL with a token in it from one on 1.54 or older among them. Taking the control
- *  characters out can join a credential they split, which the second mask finds; cut before that,
- *  a credential the cut ran through would match no rule, and what was left of it would show.
- *  Withheld when it can't be masked. */
+ *  anything in it that might be a credential taken out by `mask` (aiSecurity.maskForDisplay),
+ *  then cut to 200 characters. A folder that exists runs, and is shown as it is, whatever its
+ *  name; one refused can be anything a computer sent, a clone URL with a token in it from one on
+ *  1.54 or older among them. A folder with a control character in it is no folder, and none of
+ *  it is repeated: a token the character splits matches no rule in its halves, or only one of
+ *  them (a key's first 20 characters after `sk-`), and taking the character out to join them up
+ *  again left the rest of the key to show. Withheld when it can't be masked. */
 function shownFolder(folder: string, mask: (text: string) => string): string {
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(folder)) return FOLDER_WITH_CONTROLS
   let shown: string
   try {
-    shown = mask(withoutControls(mask(folder)))
+    shown = mask(folder)
   } catch {
     return WITHHELD
   }

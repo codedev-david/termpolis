@@ -317,9 +317,9 @@ describe('peerRun working folder', () => {
     await expect(start(h, FROM, META, { cwd: 'repos/app' })).rejects.toThrow(
       'cwd must be an absolute folder path on linux, or start with ~: repos/app',
     )
-    // Control characters are never a path, and are not echoed back either.
+    // Control characters are never a path, and nothing of a folder with one is echoed back (not even the rest of it).
     await expect(start(h, FROM, META, { cwd: `${REPO}\u0000\u001b[2J` })).rejects.toThrow(
-      `cwd must be an absolute folder path on linux, or start with ~: ${REPO}[2J`,
+      'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control characters]',
     )
   })
 
@@ -384,7 +384,7 @@ describe('peerRun working folder', () => {
     }
   })
 
-  it('masks what it repeats of a folder, takes out its control characters, masks it again, and only then cuts it', async () => {
+  it('masks what it repeats of a folder, and repeats none of one that holds a control character', async () => {
     const token = `ghp_${'a'.repeat(36)}`
     /** Whether any 8 characters of the token show. */
     const shows = (text: string): boolean => Array.from({ length: token.length - 7 }, (_, i) => token.slice(i, i + 8)).some((w) => text.includes(w))
@@ -399,22 +399,42 @@ describe('peerRun working folder', () => {
     // One that doesn't exist, named by its token, and one with a network path's token.
     expect(shows(await refusal(path.join(HOME, token)))).toBe(false)
     expect(shows(await refusal(`//fileserver/${token}/repo`))).toBe(false)
-    // A token split by a control character, which taking the control characters out joins up
-    // again, where the cut to 200 characters runs through it: masked whole after that, before the
-    // cut. Cut first, what was left of it would match no rule and show (k7b).
-    for (let at = 170; at < 200; at++) {
-      for (const split of [2, 11, 20, 31]) {
-        const message = await refusal(`/srv/${'x'.repeat(at)}/${token.slice(0, split)}\u0001${token.slice(split)}/app`)
-        expect(message.length).toBeLessThanOrEqual('cwd must be an absolute folder path on linux, or start with ~: '.length + 200)
-        expect(shows(message), `${at}, ${split}`).toBe(false)
+    // A folder with a control character in it is no folder: none of it is repeated, so a token a control character splits
+    // can show nothing, wherever the cut to 200 characters would fall (k7b). Masking the two halves one after the other did not
+    // do it: a rule that takes the first half alone (`sk-` and 20 characters of an Anthropic key, an `xoxb-` token's first part)
+    // masked it, and the second half, rejoined, matched nothing and showed about half of the key.
+    const NOT_SHOWN = 'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control characters]'
+    const families: Record<string, string> = {
+      'a GitHub token': token,
+      'an Anthropic key': `sk-ant-api03-${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(3)}`.slice(0, 108),
+      'an OpenAI project key': `sk-proj-${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(3)}`.slice(0, 100),
+      'a Slack bot token': `xoxb-${'1'.repeat(10)}-${'1'.repeat(13)}-${'Ab1x'.repeat(6)}`,
+      'a fine-grained GitHub token': `github_pat_aB3dE6gH9jK2mN5pQ8sT1v_${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(2)}`,
+      'an AWS key id': `AKIA${'A'.repeat(16)}`,
+    }
+    for (const [label, key] of Object.entries(families)) {
+      const keyShows = (text: string): boolean => Array.from({ length: key.length - 7 }, (_, i) => key.slice(i, i + 8)).some((w) => text.includes(w))
+      for (const ctl of ['\u0001', '\n', '\u009b', '\u007f']) {
+        for (const at of [0, 20, 150, 170, 185, 199, 200, 250]) {
+          for (const split of [2, 5, 11, 20, 31, 47]) {
+            const cut = Math.min(split, key.length - 1)
+            const message = await refusal(`/srv/${'x'.repeat(at)}/${key.slice(0, cut)}${ctl}${key.slice(cut)}/app`)
+            expect(message, `${label}, at ${at}, split ${cut}`).toBe(NOT_SHOWN)
+            expect(keyShows(message), `${label}, at ${at}, split ${cut}`).toBe(false)
+          }
+        }
       }
     }
-    // A key of the one length its rule takes, a control character and then a letter after it: masked
-    // before the control character goes, which would leave it one letter too long to match.
+    // A control character and then a letter after a key of the one length its rule takes: no longer a reason to show it
     const aws = `AKIA${'A'.repeat(16)}`
     const joined = await refusal(`relative/${aws}\u0001B/app`)
     expect(joined).not.toContain(aws.slice(4, 12))
-    expect(joined).toBe('cwd must be an absolute folder path on linux, or start with ~: relative/[REDACTED:aws_access_key]B/app')
+    expect(joined).toBe(NOT_SHOWN)
+    // and a folder without one is masked and cut as before
+    expect(await refusal(`relative/${aws}/app`)).toBe('cwd must be an absolute folder path on linux, or start with ~: relative/[REDACTED:aws_access_key]/app')
+    const long = await refusal(`relative/${'x'.repeat(250)}`)
+    expect(long.length).toBe('cwd must be an absolute folder path on linux, or start with ~: '.length + 200)
+    expect(long.endsWith('\u2026')).toBe(true)
     // A folder that can't be masked is not repeated at all.
     const broken = await refusal(`relative/${token}`, { mask: () => { throw new Error('mask broke') } })
     expect(broken).toBe(`cwd must be an absolute folder path on linux, or start with ~: ${WITHHELD}`)
