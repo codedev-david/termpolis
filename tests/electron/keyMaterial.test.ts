@@ -11,6 +11,7 @@ import {
   DEK_REMNANT,
   detectorStart,
   encodedKeys,
+  ESC_ALL_RE,
   hasWords,
   headless,
   jwkKeys,
@@ -30,6 +31,7 @@ import {
   structureOf,
   TRAILING_BLANKS,
   TRAILING_HEAD_JOINERS,
+  TRAILING_LINE_BREAKS,
   TRAILING_NL_JOINERS,
   type KeySpan,
 } from '../../src/main/keyMaterial'
@@ -579,6 +581,28 @@ describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and no
     const same = [`${HEADER} OK`, ...Array.from({ length: 20 }, () => `${randomBytes(16).toString('hex')} NO`)].join('\n')
     expect(screenKeys(same).text).toBe(same)
     expect(screenKeys(same).removed).toEqual({})
+  })
+
+  it('and a run of 512 digits is the key when it starts within 4,096 characters of the BEGIN line, and is not after that', () => {
+    // The stretch between the header and the run is read for each run of 512 digits in a block, to see that no word is in it, so it is
+    // bounded (a block of such runs cost the square of its length, and a run of backslashes inside the stretch, too). A frame is a few
+    // characters, and a key is not sent 4 KB below its header.
+    const BS = '\\'
+    const digits = K.F.openvpn.filter((l) => /^[0-9a-f]{32}$/.test(l)).join('')
+    const END = '-----END OpenVPN Static key V1-----'
+    for (const [name, gap] of [['blanks', ' '], ['backslashes no escape ends', BS]] as const) {
+      const within = `${HEADER}${gap.repeat(4096)}${digits}\n${END}`
+      const r = screenKeys(within)
+      expect(r.removed, `${name}, 4,096`).toEqual({ openvpn_static_key: 1 })
+      expect(leakedWindows(r.text, [digits.slice(0, 64), digits.slice(448)]), `${name}, 4,096`).toBe(0)
+      const beyond = `${HEADER}${gap.repeat(4097)}${digits}\n${END}`
+      const b = screenKeys(beyond)
+      expect(b.removed, `${name}, 4,097`).toEqual({})
+      expect(b.flagged, `${name}, 4,097`).toEqual({ openvpn_static_key: 1 })
+    }
+    // (the distance is counted in characters: written-out line breaks under the header are 2 or 6 characters each)
+    const breaks = `${HEADER}${(BS + 'n').repeat(1000)}${digits}\n${END}`
+    expect(screenKeys(breaks).removed).toEqual({ openvpn_static_key: 1 })
   })
 })
 
@@ -3335,6 +3359,27 @@ describe('the linear replacements of the word-pair test and of the joiner strips
     // a long run of joiners before a character that is none: the case they exist for
     expect('"'.repeat(80_000) + 'x').toBe(('"'.repeat(80_000) + 'x').replace(TRAILING_NL_JOINERS, ''))
     expect(('x' + ' '.repeat(80_000)).replace(TRAILING_BLANKS, '')).toBe('x')
+  })
+
+  it('ESC_ALL_RE replaces the written-out line breaks that its pattern without the lookbehind replaced, and TRAILING_LINE_BREAKS the line feeds at the end that /[\\r\\n]+$/ took', () => {
+    const ESC_OLD = /\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]/g
+    const BREAKS_OLD = /[\r\n]+$/
+    const bad: string[] = []
+    const check = (s: string): void => {
+      if (s.replace(ESC_ALL_RE, '\u0001') !== s.replace(ESC_OLD, '\u0001')) bad.push(`esc ${JSON.stringify(s)}`)
+      if (s.replace(TRAILING_LINE_BREAKS, '') !== s.replace(BREAKS_OLD, '')) bad.push(`breaks ${JSON.stringify(s)}`)
+    }
+    // (runs of backslashes before and inside every escape, and the characters an escape is made of: a backslash run is where they differ in cost)
+    everyString([BS, 'n', 'r', 'u', 'x', '0', 'a', '\n'], 6, check)
+    random([BS, BS + BS, BS + 'n', BS + 'r', BS + 'u000a', BS + 'u000D', BS + 'x0a', BS + 'x0D', '%0A', '%0d', '&#xA;', '&#x0d;', '&#10;', '&#13;', '<br>', '<br/>', '<br />', '`n', '`r', 'a', 'n', 'u', '0', ' ', '\n', '\r', '\r\n'], 60_000, check)
+    expect(bad.slice(0, 5)).toEqual([])
+    // the cases they exist for: a run of backslashes that no escape ends (it took the pattern 2 s at 40,000), and one that an escape ends
+    expect(BS.repeat(60_000).replace(ESC_ALL_RE, ' ')).toBe(BS.repeat(60_000))
+    expect(`ab${BS.repeat(60_000)}n`.replace(ESC_ALL_RE, ' ')).toBe('ab ')
+    expect(`ab${BS.repeat(60_000)}cd${BS}n`.replace(ESC_ALL_RE, ' ')).toBe(`ab${BS.repeat(60_000)}cd `)
+    expect(`x${'\n'.repeat(80_000)}y`.replace(TRAILING_LINE_BREAKS, '')).toBe(`x${'\n'.repeat(80_000)}y`)
+    expect(`x${'\r\n'.repeat(80_000)}`.replace(TRAILING_LINE_BREAKS, '')).toBe('x')
+    expect('\n\n\n'.replace(TRAILING_LINE_BREAKS, '')).toBe('')
   })
 
   it('DEK_REMNANT accepts what the regex with the leading \\s* outside its group accepted', () => {

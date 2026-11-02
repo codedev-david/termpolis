@@ -54,6 +54,9 @@ const MIN_RUN = 16
 const MAX_GAP = 320
 /** How far after a BEGIN line its first payload may start. */
 const MAX_LEAD = 2048
+/** How far after an OpenVPN BEGIN line a key written in one run of 512 digits may start: a frame and written-out line breaks sit
+ *  between them, nothing else. (The stretch is read for each such run, so it is bounded, and a block of them costs its length.) */
+const MAX_ONE_RUN_LEAD = 4096
 /** The longest block followed: a PGP keyring export with a photo ID runs to hundreds of KB. */
 const MAX_BLOCK = 4 * 1024 * 1024
 /** A `NAME=` in front of a value is shorter than a key line is wide (64 characters, at the least). */
@@ -69,8 +72,9 @@ const LONG_PAYLOAD = 128
 // ---------------------------------------------------------------------------------------------
 const ESC_RE = /\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|<br\s*\/?>|`[nr]/y
 
-/** ESC_RE for replacing every written-out line break in a stretch of text. */
-const ESC_ALL_RE = new RegExp(ESC_RE.source, 'g')
+/** ESC_RE for replacing every written-out line break in a stretch of text. A run of backslashes is read once, from its first: the
+ *  same characters follow all of it, so an escape starts at no other. (Tried at each, a run of n of them cost n * n.) */
+export const ESC_ALL_RE = new RegExp('(?<!\\\\)' + ESC_RE.source, 'g')
 
 /** The written-out line break that starts at i, or null. PowerShell's `n and `r count only after the text they end: a base64
  *  character, a quote or a dash (a BEGIN line's). An inline-code span opens with a backtick in front of a key line (after a space,
@@ -586,6 +590,7 @@ const NL_NAMES = ['vbCrLf', 'vbNewLine', 'vbLf', 'Environment.NewLine', 'System.
 export const TRAILING_NL_JOINERS = /(?<![\s"'`,;+&_])[\s"'`,;+&_]+$/
 export const TRAILING_HEAD_JOINERS = /(?<![\s"'`,;+.&_\\$])[\s"'`,;+.&_\\$]+$/
 export const TRAILING_BLANKS = /(?<!\s)\s+$/
+export const TRAILING_LINE_BREAKS = /(?<![\r\n])[\r\n]+$/
 /** Whether `s` is what a cut left of a newline constant, and the joiners after it (`tor() +`). */
 const nlTail = (s: string): boolean => {
   const t = s.replace(TRAILING_NL_JOINERS, '')
@@ -808,7 +813,7 @@ function scanBlock(
         const one = /^[^0-9a-fA-F]{0,16}([0-9a-fA-F]{512})$/.exec(text.slice(s, e))
         // (only right under the BEGIN line, with a frame and written-out line breaks between and no word: a modulus, a signature or a digest a
         // sentence later is a hex number in prose, not the key with its line breaks taken out)
-        if (one && !/[A-Za-z]/.test(blankNl(text.slice(me, s).replace(ESC_ALL_RE, ' ')))) return one[1]
+        if (one && s - me <= MAX_ONE_RUN_LEAD && !/[A-Za-z]/.test(blankNl(text.slice(me, s).replace(ESC_ALL_RE, ' ')))) return one[1]
         // (a frame glued on: a diff's +, a coloured diff's `32m+`)
         const v = text.slice(s, e).replace(/^(?:\d{1,3}m)?[^0-9a-fA-F]{0,3}(?=[0-9a-fA-F]{32}$)/, '')
         if (v.length !== 32 || !/^[0-9a-f]+$/i.test(v)) return ''
@@ -2107,7 +2112,8 @@ const TYPED_SHAPES = new Set(['repeat', 'few-distinct', 'periodic', 'sequence', 
  *  lower-case slug of words (`my-dev-signing-key`), or a repeat, a sequence, a short unit repeated or a name made of words. A hex
  *  string, base64 text, random alphanumerics and a UUID are none of these. */
 function phraseLike(text: string): boolean {
-  const body = text.replace(/[\r\n]+$/, '')
+  // (the line feeds at the end, found from the first of a run of them: tried from each, a run of n inside the text cost n * n)
+  const body = text.replace(TRAILING_LINE_BREAKS, '')
   if (/\s/.test(body) || SECRET_WORDS.test(body)) return true
   const segs = body.split(/[-_.]/)
   if (segs.length >= 3 && segs.filter((s) => /^[a-z]{2,12}$/.test(s) && /[aeiouy]/.test(s)).length >= 3 && segs.every((s) => /^[a-z0-9]{1,12}$/.test(s))) return true

@@ -64,6 +64,10 @@ const END = '-----END PRIVATE KEY-----'
 const r64 = (): string => randomBytes(48).toString('base64')
 const lines = (n: number): string => Array.from({ length: n }, r64).join('\n')
 const fill = (unit: string, n: number): string => unit.repeat(Math.ceil(n / unit.length)).slice(0, n)
+const hex = (n: number): string => randomBytes(n >> 1).toString('hex')
+const alnum = (n: number): string => randomBytes(n * 2).toString('base64').replace(/[^A-Za-z0-9]/g, '').slice(0, n)
+const OVPN = '-----BEGIN OpenVPN Static key V1-----'
+const OVPN_END = '-----END OpenVPN Static key V1-----'
 const ANSWER: CostAsk = { keep: 200_000 }
 /** A real PKCS#8 key's lines (BEGIN, 12 body lines, END), made once: the paths that read a key's lines between its parts need a key that decodes. */
 const REAL = generateKeyPairSync('rsa', { modulusLength: 1024 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString().trim().split('\n')
@@ -106,4 +110,22 @@ export const COST_SHAPES: Record<string, [string, CostAsk, number]> = {
   'a text of kty members with no private member to find': [fill('kty: oct\n', 465_000), ANSWER, 400],
   'a text of kty members, each with a placeholder k': [fill('kty: oct\nk: REPLACE_ME_WITH_A_KEY\n', 465_000), ANSWER, 400],
   'a text of kty members on one line, no braces': [fill('"kty":"oct",', 465_000), ANSWER, 400],
+  // (an OpenVPN key written in one run of 512 digits is judged by what lies between its BEGIN line and the run, with the written-out
+  // line breaks in that stretch replaced. They were replaced once from each backslash of a run of them: 100,000 backslashes took
+  // 8.9 s. The stretch was also read again for each run of 512 digits in a block of them: that one is judged by growth, in
+  // linkedScreenCost.test.ts)
+  'a run of backslashes between an OpenVPN BEGIN line and a run of 512 digits': [`${OVPN}${BS.repeat(100_000)}${hex(512)}\n${OVPN_END}\n`, ANSWER, 300],
+  'the same in text an older computer cut': [`${OVPN}${BS.repeat(100_000)}${hex(512)}\n${OVPN_END}\n`, { keep: 200_000, cutStart: true }, 300],
+  // (each block's run of backslashes is short enough to be read, so what counts is what a run of them costs: 465,000 characters of
+  // blocks with 4,000 took 0.6 s to screen and 1.8 s to mask)
+  'blocks of an OpenVPN BEGIN line, 4,000 backslashes and a run of 512 digits': [fill(`${OVPN}${BS.repeat(4_000)}${hex(512)}\n`, 465_000), ANSWER, 300],
+  // (a prompt is cut at 20,000 characters, screened on both computers and masked again for the job's summary: 1.7 s each)
+  'a prompt of 20,000 characters: backslashes and runs of 512 digits under an OpenVPN BEGIN line': [
+    `${OVPN}\n${hex(512)}${BS.repeat(14_000)}\n${Array.from({ length: 10 }, () => hex(512)).join('\n')}`.slice(0, 20_000),
+    {},
+    150,
+  ],
+  // (a JWK's oct k that is text: the line feeds at its end were taken off with a pattern that cost n * n in a run of them inside
+  // the text; 45,000 took 1.7 s, for each value)
+  'an oct k whose text holds 45,000 line feeds': [`{"kty":"oct","k":"${Buffer.from(`${alnum(40)}${'\n'.repeat(45_000)}${alnum(10)}`, 'latin1').toString('base64url')}"}`, ANSWER, 300],
 }

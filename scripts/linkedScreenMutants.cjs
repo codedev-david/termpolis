@@ -397,6 +397,14 @@ const REVIEW = {
   "r3: prose: also for decoded text": [KEY, "  if (!decoded && !/^[0-9a-f]+$/.test(core)) {\n    const letters", "  if (!/^[0-9a-f]+$/.test(core)) {\n    const letters"],
   "r3: prose: lower-case hex is prose": [KEY, "  if (!decoded && !/^[0-9a-f]+$/.test(core)) {\n    const letters", "  if (!decoded) {\n    const letters"],
   "r3: prose: letters counted with digits": [KEY, "const letters = core.replace(/[^A-Za-z]/g, '')", "const letters = core"],
+  // (round 4) The three guards of the cost fixes: the written-out line breaks of a stretch are replaced from the first backslash of a run, an OpenVPN key
+  // in one run of 512 digits is looked for within 4,096 characters of its BEGIN line, and the line feeds at the end of a typed phrase are found from their first.
+  // (The cost test file is the one that fails on them: a quadratic is seconds, and a mutant of this kind runs it for several minutes.)
+  'r4: cost: written-out line breaks replaced from each backslash of a run': [KEY, "new RegExp('(?<!" + '\\'.repeat(4) + ")' + ESC_RE.source, 'g')", "new RegExp(ESC_RE.source, 'g')", ['tests/electron/linkedScreenCost.test.ts']],
+  'r4: cost: an OpenVPN key in one run of 512 digits at any distance from its BEGIN line': [KEY, 'if (one && s - me <= MAX_ONE_RUN_LEAD && !', 'if (one && !', ['tests/electron/linkedScreenCost.test.ts']],
+  'r4: cost: the line feeds at the end of a typed phrase found by the quadratic regex': [KEY, "text.replace(TRAILING_LINE_BREAKS, '')", "text.replace(/[" + '\\' + 'r' + '\\' + "n]+$/, '')", ['tests/electron/linkedScreenCost.test.ts']],
+  'r4: OpenVPN one run: 4,095 characters from the BEGIN line, not 4,096': [KEY, 'const MAX_ONE_RUN_LEAD = 4096', 'const MAX_ONE_RUN_LEAD = 4095'],
+  'r4: OpenVPN one run: 4,097 characters from the BEGIN line': [KEY, 'const MAX_ONE_RUN_LEAD = 4096', 'const MAX_ONE_RUN_LEAD = 4097'],
 }
 
 /** Mutants no test can kill, because they change nothing the screen returns. */

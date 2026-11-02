@@ -192,6 +192,10 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     'a run of backslashes after Private-Lines': (n) => `Private-Lines: 9999\n${BS.repeat(n)}\n`,
     'a line of plus signs above an END line': (n) => `${lines(3)}\n${'+'.repeat(n)}x\n-----END PRIVATE KEY-----\n`,
     'a line of plus signs and spaces above an END line': (n) => `${lines(3)}\n${'+ '.repeat(n >> 1)}x\n-----END PRIVATE KEY-----\n`,
+    // (an OpenVPN key in one run of 512 digits is judged by the stretch between its BEGIN line and the run: read for each run of
+    // 512 digits it cost n * n. The run of backslashes that once made the same stretch cost n * n is in COST_SHAPES, with a bound:
+    // at 1 MB, a regression there would take a quarter of an hour)
+    'lines of 512 digits under an OpenVPN BEGIN line': (n) => `-----BEGIN OpenVPN Static key V1-----\n${fill(`${rb(256).toString('hex')}\n`, n)}`,
   }
   const MB = 1 << 20
 
