@@ -254,26 +254,19 @@ export function isStrictPrefix(shorter: string, longer: string): boolean {
 }
 
 /**
- * How the passages in `rows` stand to those already `kept`, each text folded once (isStrictPrefix folds both on every call,
- * which a list of a few dozen against a few dozen should not pay):
- *   - `heads`: a strict head of a kept passage, which is carried in its fuller form already;
- *   - `fuller`: one a kept passage is a strict head of, which carries that passage in its fuller form;
- *   - `rest`: unrelated.
- * A row that is both goes to `heads`. Each keeps the order of `rows`. Pure.
+ * `rows` without the passages that overlap one already `kept`: a strict head of a kept passage (the kept one carries it in its
+ * fuller form) and one that a kept passage is a strict head of (the kept one stands for it). Each text is folded once, where
+ * isStrictPrefix folds both on every call, which a list of a few dozen against a few dozen should not pay. The rows that stay keep
+ * their order and are the same objects; the SAME array comes back when nothing overlaps. Pure.
  */
-export function splitByHeads<T extends { content: string }>(
-  kept: ReadonlyArray<{ content: string }>,
-  rows: readonly T[],
-): { heads: T[]; fuller: T[]; rest: T[] } {
-  const out: { heads: T[]; fuller: T[]; rest: T[] } = { heads: [], fuller: [], rest: [] }
+export function dropOverlapping<T extends { content: string }>(kept: ReadonlyArray<{ content: string }>, rows: T[]): T[] {
+  if (kept.length === 0 || rows.length === 0) return rows
   const folded = kept.map((k) => norm(k.content))
-  for (const row of rows) {
+  const out = rows.filter((row) => {
     const text = norm(row.content)
-    if (folded.some((k) => isHead(text, k))) out.heads.push(row)
-    else if (folded.some((k) => isHead(k, text))) out.fuller.push(row)
-    else out.rest.push(row)
-  }
-  return out
+    return !folded.some((k) => isHead(text, k) || isHead(k, text))
+  })
+  return out.length === rows.length ? rows : out
 }
 
 /**

@@ -913,6 +913,21 @@ describe('buildContextPrimer — a search page that rows it must not show have c
     expect(ids(await buildContextPrimer(withKept, { query: 'q', now: NOW, limit: 10 })).filter((l) => l.startsWith('conversation')).length).toBeGreaterThan(0)
   })
 
+  // A brain that cannot search is a failed primer, not a digest of the lane alone: the first read of each search stays the read it
+  // always was, and its failure still ends the digest when the other search found nothing either.
+  it('gives no digest at all when the first reads fail, even with a freshness lane to show', async () => {
+    const search = vi.fn(async () => { throw new Error('index busy') })
+    const recent = vi.fn().mockResolvedValue([{ id: 'r1', content: `shipped the first fix ${'detail '.repeat(30)}`, source: 'claude', kind: 'message', score: 0, project: proj, ts: NOW - 2 * HOUR }])
+    expect(await buildContextPrimer(search, { query: 'q', project: proj, now: NOW, recent })).toBeNull()
+    expect(recent).not.toHaveBeenCalled()
+  })
+
+  it('still builds the digest from what the project search found when only the unscoped search fails', async () => {
+    const search = vi.fn(async (o: { project?: string }) => { if (!o.project) throw new Error('index busy'); return convs(2) })
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, projectPath: 'C:/work/termpolis', now: NOW })
+    expect(ids(out).filter((l) => l.startsWith('conversation'))).toHaveLength(2)
+  })
+
   it('treats a first read that fails exactly as it always did', async () => {
     const search = vi.fn(async () => { throw new Error('index busy') })
     expect(await buildContextPrimer(search, { query: 'q', now: NOW })).toBeNull()
@@ -939,7 +954,7 @@ describe('buildContextPrimer — a lane row whose fields are not what the store 
     ['an array', ['a']],
     ['an object', { toLowerCase: 1 }],
     ['true', true],
-  ])('skips nothing it can read, and does not throw, when a row\'s project is %s', async (_name, project) => {
+  ])('does not throw, and still shows the good rows around it, when a row\'s project is %s', async (_name, project) => {
     const recent = vi.fn().mockResolvedValue([row('a', 'the first good line of the lane'), row('odd', 'a row with an odd project', { project }), row('b', 'the second good line of the lane', { ts: NOW - 3 * HOUR })])
     const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: 'termpolis', recent, now: NOW })
     expect(out).toContain('the first good line of the lane')
@@ -1331,31 +1346,40 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
   })
 
   // A row filed with no project (one the back-tagging has not reached yet) is listed under "Other saved context" while the row it
-  // pairs with sits in the project block. The passage is still said once, and where the project's own row was.
+  // pairs with sits in the project block. The passage is still said once, and by the project's row: a row that is not known to be
+  // this project's never takes the place of one that is, whatever it adds.
   describe('when the two rows are filed differently, one under the project and one under none', () => {
     const untagged = (id: string, content: string, over: Partial<PrimerHit> = {}) => chunk(id, content, { project: undefined, ...over })
     const ask = (projectList: PrimerHit[], globalList: PrimerHit[]) =>
       buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? projectList : globalList)), { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 })
 
-    it('carries the fuller one, in the project block, when only the head is filed under the project', async () => {
+    it('says the passage once, by the project\'s row, when only the head is filed under the project', async () => {
       const out = (await ask([chunk('head', HEAD, { score: 0.9 }), OTHER], [untagged('full', FULL, { score: 0.85 })]))!
       expect(out.match(/how do I cut a release/g)).toHaveLength(1)
-      expect(out).toContain('the release workflow writes it')
+      expect(out).not.toContain('the release workflow writes it') // the unfiled row's tail does not displace the project's own
       expect(out).not.toContain('Other saved context')
     })
 
-    it('puts the fuller one where the head was in the project block', async () => {
-      const top = chunk('top', 'something else entirely about caching and invalidation rules', { score: 0.95 })
-      const out = (await ask([top, chunk('head', HEAD, { score: 0.9 }), OTHER], [untagged('full', FULL, { score: 0.85 })]))!
-      expect(out.indexOf('something else entirely')).toBeLessThan(out.indexOf('the release workflow writes it'))
-      expect(out.indexOf('the release workflow writes it')).toBeLessThan(out.indexOf('we keep the retry queue'))
-    })
-
-    it('leaves out the head from "may NOT apply" when the project block carries the fuller one', async () => {
+    it('says it once, by the project\'s row, when only the fuller chunk is filed under the project', async () => {
       const out = (await ask([chunk('full', FULL, { score: 0.9 }), OTHER], [untagged('head', HEAD, { score: 0.85 })]))!
       expect(rows(out).filter((r) => r.includes('how do I cut a release'))).toHaveLength(1)
       expect(out).toContain('the release workflow writes it')
       expect(out).not.toContain('Other saved context')
+    })
+
+    it('never lets another project\'s longer passage stand in the project block for this project\'s own', async () => {
+      const theirs = chunk('theirs', `${HEAD}\n\nuser: and the secrets for the other client?\n\nassistant: they are in the vault named acme`, { project: 'other-app', score: 0.95 })
+      const out = (await ask([chunk('head', HEAD, { score: 0.9 }), OTHER], [theirs]))!
+      expect(out).toContain('how do I cut a release') // this project's own passage
+      expect(out).not.toContain('acme') // and nothing of the other project's tail, in the project block or under "may NOT apply"
+      expect(out).not.toContain('Other saved context')
+    })
+
+    it('leaves the project block as the project search gave it, in its order', async () => {
+      const top = chunk('top', 'something else entirely about caching and invalidation rules', { score: 0.95 })
+      const out = (await ask([top, chunk('head', HEAD, { score: 0.9 }), OTHER], [untagged('full', FULL, { score: 0.85 })]))!
+      expect(out.indexOf('something else entirely')).toBeLessThan(out.indexOf('how do I cut a release'))
+      expect(out.indexOf('how do I cut a release')).toBeLessThan(out.indexOf('we keep the retry queue'))
     })
 
     it('still lists an unrelated row filed under no project under "may NOT apply"', async () => {
@@ -1365,6 +1389,18 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
       expect(out.slice(out.indexOf('Other saved context'))).toContain('the build farm restarts every night')
       expect(out.slice(out.indexOf('Other saved context'))).not.toContain('how do I cut a release')
       expect(out.match(/how do I cut a release/g)).toHaveLength(1)
+    })
+
+    // Several fuller chunks of one head are all kept (dropPrefixDuplicates drops only the head), so a row of the other section that
+    // begins with that same head and then goes its own way is a passage of its own, not a restatement of what the block carries:
+    // two projects whose sessions open alike are not one passage. (The gate has already collapsed the head into its fuller chunk
+    // in each list, so the block is compared in the form it is shown in.)
+    it('still lists apart a passage that only begins like a head the project block replaced by its fuller chunk', async () => {
+      const diverges = untagged('diverges', `${HEAD}\n\nuser: and the keys for the other client?\n\nassistant: they are kept in the vault named acme`, { score: 0.88 })
+      const out = (await ask([chunk('head', HEAD, { score: 0.9 }), chunk('full', FULL, { score: 0.87 }), OTHER], [diverges]))!
+      expect(out).toContain('the release workflow writes it') // the project block carries the fuller chunk of the head
+      expect(out.slice(out.indexOf('Other saved context'))).toContain('named acme') // and the passage that only begins alike is listed apart
+      expect(out.slice(0, out.indexOf('Other saved context'))).not.toContain('named acme')
     })
 
     it('is not a pair when the cut falls inside a word', async () => {

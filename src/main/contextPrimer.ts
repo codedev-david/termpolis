@@ -22,7 +22,7 @@
 // treat them as command substitution), simple dividers, single-line snippets.
 
 import { existsSync } from 'fs'
-import { adaptiveGate, dedupeHits, diversifyHits, dropPrefixDuplicates, isStrictPrefix, splitByHeads, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
+import { adaptiveGate, dedupeHits, diversifyHits, dropOverlapping, dropPrefixDuplicates, isStrictPrefix, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 import { fillVisible } from './doorFill'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
@@ -119,7 +119,8 @@ const isGatedLesson = (h: PrimerHit): boolean =>
   lessonSubstance(h.content).score >= KEEP_SCORE
 
 /** A saved note that leads the project block. One someone has demoted does not, for the same reason a demoted lesson does not
- *  (isGatedLesson): it is unreliable, and keeps the place relevance gives it, still labelled as the note it is. */
+ *  (isGatedLesson): it is unreliable, so it falls in with the rest of the block, after the conversations, still labelled as the
+ *  note it is and still shown while there is room. */
 const leadsAsNote = (h: PrimerHit): boolean => isClaudeNote(h) && h.correction?.kind !== 'demote'
 
 // How many candidates to pull per inject slot before the relevance gate trims them.
@@ -326,16 +327,16 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // the page before it: this builder never throws.
   const readCandidates = (scope: string | undefined, scoped: boolean): Promise<PrimerHit[]> => {
     let page: PrimerHit[] = []
-    let deeper = false
+    let haveFirstPage = false
     return fillVisible(
       candidateLimit,
       async (asked) => {
         try {
           page = (await search(scope === undefined ? { query: opts.query, limit: asked } : { query: opts.query, limit: asked, project: scope })) || []
         } catch (e) {
-          if (!deeper) throw e
+          if (!haveFirstPage) throw e
         }
-        deeper = true
+        haveFirstPage = true
         return page
       },
       (rows) => withoutForeignNotes(withoutCandidates(rows), scoped),
@@ -410,11 +411,11 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // score order the search already returned within each class, and the budget is the same one: this reorders, never adds.
     // The two searches rank the same corpus on different candidate sets, so a head can reach one list and the fuller chunk the
     // other: say it once here too, now that the lists are one. That holds across the two blocks as well: a passage the project
-    // block carries is not repeated under "may NOT apply" (the pair differs in project metadata when one row was back-tagged
-    // and the other was not), and a project passage whose fuller form sits in the other list is carried in that form.
+    // block carries is not repeated under "may NOT apply" (the pair differs in project metadata when one row was back-tagged and
+    // the other was not). The project's row stands for the pair, whichever of the two it is: a row that is not known to be this
+    // project's never takes the place of one that is, whatever it adds.
     const own = [...fromProject, ...promoted]
-    const { fuller, rest } = splitByHeads(own, others)
-    const pool = dropPrefixDuplicates([...own, ...fuller], true)
+    const pool = dropPrefixDuplicates(own, true)
     let leadingNotes = 0
     let leadingLessons = 0
     const tier = pool.map((h): number => {
@@ -440,7 +441,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       else if (isGatedLesson(h)) lessonsShown++
     }
     const otherLines: string[] = []
-    for (const h of rest) {
+    for (const h of dropOverlapping(pool, others)) {
       if (projLines.length + otherLines.length >= room) break
       const line = lineOf(h)
       if (!line) continue
@@ -471,7 +472,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     now,
     exclude: excludeFromRecent,
     carried: certain,
-    foreign: (h) => foreignNote(h, project !== ''), // a lane that names a project is listed by the store, scoped to it
+    foreign: (h) => foreignNote(h, true), // the lane is listed by the store, scoped to the folder the digest names (with none named there is no key to compare)
   })
   const roomFor = (lane: PrimerHit[]): number => Math.max(0, limit - lane.length)
   let block = relevance(recentHits, roomFor(recentHits))

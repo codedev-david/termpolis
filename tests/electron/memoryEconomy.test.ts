@@ -15,7 +15,7 @@ import {
   normText,
   isStrictPrefix,
   dropPrefixDuplicates,
-  splitByHeads,
+  dropOverlapping,
 } from '../../src/main/memoryEconomy'
 
 const DAY = 86_400_000
@@ -500,55 +500,55 @@ describe('memoryEconomy', () => {
     })
   })
 
-  describe('splitByHeads — how rows stand to the passages already kept', () => {
+  describe('dropOverlapping — rows that restate a passage already kept', () => {
     const FIRST = 'user: how do I cut a release?\n\nassistant: bump the version and push a tag'
     const FULLER = `${FIRST}\n\nuser: and the changelog?\n\nassistant: the release workflow writes it`
     const row = (id: string, content: string) => ({ id, content })
 
-    it('sorts a row into the head of a kept passage, the fuller form of one, or neither', () => {
+    it('drops the head of a kept passage and the fuller form of one, and keeps the rest in order', () => {
       const kept = [row('kept', FIRST)]
       const head = row('head', 'user: how do I cut a release?')
       const fuller = row('fuller', FULLER)
       const other = row('other', 'we keep the retry queue in memory')
-      const out = splitByHeads(kept, [head, other, fuller])
-      expect(out.heads).toEqual([head])
-      expect(out.fuller).toEqual([fuller])
-      expect(out.rest).toEqual([other])
+      const another = row('another', 'the build farm restarts every night')
+      expect(dropOverlapping(kept, [head, other, fuller, another])).toEqual([other, another])
     })
 
-    it('keeps the order of the rows within each group, and the rows themselves (same objects)', () => {
+    it('keeps the rows themselves (same objects), and gives back the same array when nothing overlaps', () => {
       const kept = [row('kept', FIRST)]
-      const f1 = row('f1', `${FIRST} and then some`)
-      const f2 = row('f2', `${FIRST} and then more`)
-      const out = splitByHeads(kept, [f1, f2])
-      expect(out.fuller[0]).toBe(f1)
-      expect(out.fuller[1]).toBe(f2)
-    })
-
-    it('puts a row that is both a head of one kept passage and the fuller form of another with the heads', () => {
-      const kept = [row('short', FIRST), row('long', FULLER)]
-      const middle = row('middle', `${FIRST}\n\nuser: and the changelog?`)
-      expect(splitByHeads(kept, [middle])).toEqual({ heads: [middle], fuller: [], rest: [] })
+      const rows = [row('a', 'something else entirely'), row('b', 'and another thing')]
+      const out = dropOverlapping(kept, rows)
+      expect(out).toBe(rows)
+      const mixed = [rows[0], row('head', 'user: how do I cut a release?'), rows[1]]
+      const cut = dropOverlapping(kept, mixed)
+      expect(cut).not.toBe(mixed)
+      expect(cut[0]).toBe(rows[0])
+      expect(cut[1]).toBe(rows[1])
     })
 
     it('folds whitespace and case before it compares, as isStrictPrefix does', () => {
       const kept = [row('kept', 'The   Release script\ntags it')]
-      const fuller = row('fuller', 'the release SCRIPT tags it and pushes the tag')
-      expect(splitByHeads(kept, [fuller]).fuller).toEqual([fuller])
+      expect(dropOverlapping(kept, [row('fuller', 'the release SCRIPT tags it and pushes the tag')])).toEqual([])
+      expect(dropOverlapping(kept, [row('head', 'THE RELEASE   script')])).toEqual([])
+    })
+
+    it('compares each row with every kept passage', () => {
+      const kept = [row('one', 'first passage about the cache'), row('two', FIRST)]
+      expect(dropOverlapping(kept, [row('head', 'user: how do I cut a release?')])).toEqual([])
+      expect(dropOverlapping(kept, [row('fuller', 'first passage about the cache and its eviction')])).toEqual([])
     })
 
     it('does not take a text for the head of one that merely shares its letters, nor equal text for a head', () => {
       const kept = [row('kept', 'content 10')]
-      const out = splitByHeads(kept, [row('a', 'content 1'), row('b', 'content 10'), row('c', '')])
-      expect(out.heads).toEqual([])
-      expect(out.fuller).toEqual([])
-      expect(out.rest).toHaveLength(3)
+      const rows = [row('a', 'content 1'), row('b', 'content 10'), row('c', ''), row('d', 'content 100')]
+      expect(dropOverlapping(kept, rows)).toBe(rows)
     })
 
-    it('has nothing to sort against an empty kept list, or from an empty row list', () => {
+    it('has nothing to compare against an empty kept list, and nothing to drop from an empty row list', () => {
       const rows = [row('a', FIRST)]
-      expect(splitByHeads([], rows)).toEqual({ heads: [], fuller: [], rest: rows })
-      expect(splitByHeads([row('k', FIRST)], [])).toEqual({ heads: [], fuller: [], rest: [] })
+      expect(dropOverlapping([], rows)).toBe(rows)
+      const none: Array<{ id: string; content: string }> = []
+      expect(dropOverlapping([row('k', FIRST)], none)).toBe(none)
     })
   })
 })
