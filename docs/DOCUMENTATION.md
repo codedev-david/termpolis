@@ -1459,8 +1459,9 @@ audit log.
     empty pairs included); a public key, certificate or CSR under a private-key
     BEGIN line; a test key whose body is made up; prose or code between a BEGIN
     and an END line; a placeholder JWK value (such as `REPLACE_ME`, or a name or
-    description of a key such as `JWT_SIGNING_SECRET_BASE64URL`; named in the note
-    when it is written in a key's own characters), and a JWK or `RSAKeyValue`
+    description of a key such as `JWT_SIGNING_SECRET_BASE64URL`, or a sentence in
+    an `RSAKeyValue` member, which the XML reader reads across its spaces; named
+    in the note when it is written in a key's own characters), and a JWK or `RSAKeyValue`
     value that is base64 of a phrase a person typed (`my-super-secret-key`: a
     sentence, a word that names a secret, a slug of words, a repeat; an `oct`
     key's `k` that is a secret kept as text, such as the hex of `openssl rand
@@ -1475,10 +1476,10 @@ audit log.
   Not recognised: a private key in a format Termpolis can't decode, or whose
   lines were re-wrapped to alternating widths (both reported, as above); a key
   written on one line with a `NAME=` in front of each of its lines (reported);
-  a key written one `NAME=<line>` to a line when the name is 64 characters or
-  more; a key written on one line with a newline constant between its lines
-  (reported);
-  a key file URL-encoded twice, or with its base64 characters written as HTML
+  a key written one `NAME=<line>` to a line when the name is 63 characters or
+  more (64 for all but an armored OpenPGP key); a key written on one line
+  with a newline constant between its lines (reported); a key file
+  URL-encoded twice, or with its base64 characters written as HTML
   entities (`&#43;`); key lines that a few other layouts alter or break apart (a
   word diff, a `git diff` that alternates context and changed lines, email
   quoted-printable, `cat -A` of a tab-indented key); an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
