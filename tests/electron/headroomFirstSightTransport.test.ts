@@ -190,3 +190,22 @@ describe('the proxy child and the first-sight policy', () => {
     for (const bad of [null, undefined, 5, 'x', [], true]) expect(() => applyProxyConfig(bad)).not.toThrow()
   })
 })
+
+// Every test above starts from _resetProxyForTest(), which assigns the same literal the declaration
+// does, so none of them can see the declaration itself. The guarantee that a failure to read the
+// settings can never switch the model onto Late is that declaration: this loads the module the way the
+// app does, with nothing pushed and no reset.
+describe('the supervisor as it is loaded', () => {
+  it('holds legacy from the moment the module loads, so a boot that never pushed a policy starts the child on it', async () => {
+    vi.resetModules()
+    const fresh = await import('../../src/main/headroomProxy/proxySupervisor')
+    expect(fresh.getProxyFirstSight()).toBe('legacy')
+    children = []
+    failFirstPost = false
+    fresh.setProxySpawner(spawner)
+    try {
+      fresh.startProxy({ port: 7498 })
+      expect(initOf(children[0])).toMatchObject({ kind: 'init', firstSight: 'legacy' })
+    } finally { fresh.stopProxy() }
+  })
+})

@@ -141,6 +141,10 @@ describe('classifyForwardedResults — text that only looks like a stub', () => 
     expect(one('The stub reads ' + aged + ' and the next one ' + dedup + ' end')).toEqual(kinds({ plain: 1 }))
     expect(one('prefix ' + aged)).toEqual(kinds({ plain: 1 }))
     expect(one(aged + ' suffix')).toEqual(kinds({ plain: 1 }))
+    // A stub is the whole text, so a tool output that begins with one and goes on is not a stub.
+    expect(one(dedup + ' suffix')).toEqual(kinds({ plain: 1 }))
+    expect(one(dedup + '\nmore lines of the output')).toEqual(kinds({ plain: 1 }))
+    expect(one(aged + '\nmore lines of the output')).toEqual(kinds({ plain: 1 }))
   })
 
   it('needs a token of the shape the proxy mints', () => {

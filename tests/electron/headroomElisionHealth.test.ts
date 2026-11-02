@@ -60,6 +60,18 @@ describe('the model', () => {
     expect(pays.verdict).toBe('pays')
   })
 
+  it('reads a class asked back more often than it was elided as asked back every time, and no worse', () => {
+    // The two sides are counted in different places, so a class can show more redemptions than elisions
+    // (a stash from an earlier run redeemed in this one). The rate saturates at 1: nothing was kept
+    // (0 x 13,475) and every result cost its retrieval turn (1 x 20,025).
+    const all = buildElisionHealth(input({ classes: { [KEY]: cls(100, 100) } })).classes[0]
+    const over = buildElisionHealth(input({ classes: { [KEY]: cls(100, 140) } })).classes[0]
+    expect(all.netUnitsPer1000).toBe(-20_025_000)
+    expect(over.netUnitsPer1000).toBe(all.netUnitsPer1000)
+    expect(over.breakEvenPct).toBe(all.breakEvenPct)
+    expect(over.verdict).toBe('costs')
+  })
+
   it('flips from pays to costs at the break-even rate', () => {
     // r* = 13,475 / 33,500 = 0.402238...; a class of 100,000 results can sit either side of it.
     const at = buildElisionHealth(input({ classes: { [KEY]: cls(100_000, 40_224) } })).classes[0]

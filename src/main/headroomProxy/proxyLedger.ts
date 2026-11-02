@@ -270,7 +270,8 @@ export function recordProxyResult(r: ProxyResultMsg): void {
   // sends anyway, and the text it fetched is priced by givebackTokens when it re-enters the prefix.
   const ok = r.status >= 200 && r.status < 300
   const turnCost = W_CACHE_READ * (u.cache_read_input_tokens || 0) + W_OUTPUT * (u.output_tokens || 0)
-  const pure = !!r.turn && r.turn.pure === true
+  // Charged on an answer only: the arm ledger, the offer tallies and the hop pairing all wait for a 2xx too.
+  const pure = ok && !!r.turn && r.turn.pure === true
   // The ToolSearch turn this conversation left waiting, taken now whatever this request turns out to be:
   // either this is the ask it was the first half of, or it was no ask and is forgotten uncharged.
   const key = Number.isInteger(s.convKey) && s.convKey > 0 ? s.convKey : 0

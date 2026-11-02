@@ -154,6 +154,16 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     expect(parses(400)).toBeLessThan(10)
   })
 
+  it('reads a call\'s input from its start to its stop and no longer: a piece that follows the stop is no part of it', () => {
+    const ev = (type: string, data: object): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n`
+    const start = (i: number): string => ev('content_block_start', { index: i, content_block: { type: 'tool_use', id: `t${i}`, name: 'ToolSearch', input: {} } })
+    const delta = (i: number, piece: string): string => ev('content_block_delta', { index: i, delta: { type: 'input_json_delta', partial_json: piece } })
+    const stop = (i: number): string => ev('content_block_stop', { index: i })
+    // Block 1 is still open, so the stray piece for block 0 reaches the parser; it must not be added to a query that is complete.
+    const straggler = [start(0), start(1), delta(0, '{"query":"select:Read"}'), stop(0), delta(0, '{"query":"select:retrieve_full"}'), delta(1, '{"query":"select:Grep"}'), stop(1)].join('\n')
+    expect(parseTurnShapeFromSse(straggler)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false })
+  })
+
   it('reads every ToolSearch call of an answer, with thinking and text between them', () => {
     const s = stream([search('select:Read'), 'think', { text: 'Loading it now.' }, search('select:retrieve_full')])
     expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false, hop: true })
@@ -175,6 +185,15 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     expect(parseTurnShapeFromSse(stream([{ text: 'select:mcp__termpolis__retrieve_full' }, search('select:Read')])).hop).toBeUndefined()
     // The Read block (index 0) streams input naming retrieve_full; the ToolSearch (index 1) selects Read.
     expect(parseTurnShapeFromSse(stream([{ name: 'Read', fragments: ['{"x":"retrieve_full"}'] }, search('select:Read')])).hop).toBeUndefined()
+  })
+
+  // The call is a ToolSearch by its exact name. A WebSearch or a Grep whose query mentions retrieve_full
+  // is somebody else's search, and a turn made of it is not a turn that loaded the tool.
+  it('only a tool named ToolSearch is read as one: another search that mentions retrieve_full is not a hop', () => {
+    for (const name of ['WebSearch', 'ToolSearchX', 'XToolSearch', 'toolsearch', 'Search', 'mcp__x__WebSearch', 'Grep']) {
+      const call: Call = { name, fragments: ['{"query":"select:mcp__termpolis__retrieve_full"}'] }
+      expect(parseTurnShapeFromSse(stream([call])), name).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+    }
   })
 
   it('a stream cut before the query arrives shows no hop: the query is the only evidence', () => {
@@ -454,6 +473,38 @@ describe('the ledger charges the pair: ToolSearch hop then retrieve_full', () =>
     const s = summarizeProxySavings().session
     expect(s.retrievalHops).toBe(1)
     expect(s.retrievalTurnUnits).toBeCloseTo(charge(52_000, 90) + charge(52_500, 140), 6)
+  })
+
+  // The ledger's other gates on a refused request already hold (the arm ledger, the offer tallies, the hop
+  // pairing). The charge itself is held the same way, so the rule does not depend on the parser alone
+  // never reading a pure turn out of an error body, which is JSON and not a stream.
+  it('a refused request is never charged as a retrieval turn, even if its body read as one', () => {
+    for (const status of [400, 429, 500, 529, 0, 199, 300]) {
+      resetProxyLedger()
+      recordProxyResult(msg(usage(50_000, 100), PURE, 111, { status }))
+      const s = summarizeProxySavings().session
+      expect([status, s.retrievalTurns, s.retrievalTurnUnits]).toEqual([status, 0, 0])
+    }
+    recordProxyResult(msg(usage(50_000, 100), PURE, 111, { status: 200 }))
+    expect(summarizeProxySavings().session.retrievalTurns).toBe(1)
+  })
+
+  it('counts one ask however many retrieve_full calls its turn made', () => {
+    recordProxyResult(msg(usage(52_000, 90), { toolCalls: 2, retrieveCalls: 2, pure: true }, 111))
+    const s = summarizeProxySavings().session
+    expect(s.retrievalTurns).toBe(1)
+    expect(s.retrievalTurnUnits).toBeCloseTo(charge(52_000, 90), 6)
+  })
+
+  it('keeps at most 256 hops waiting, oldest out: conversations that hop and never ask cannot grow it', () => {
+    for (let k = 1; k <= 300; k++) recordProxyResult(msg(usage(52_000, 90), HOP, k))
+    for (let k = 1; k <= 300; k++) recordProxyResult(msg(usage(52_500, 140), PURE, k))
+    const s = summarizeProxySavings().session
+    expect(s.retrievalTurns).toBe(300)
+    // The 44 oldest hops were forgotten before their asks came, so those asks are charged alone; the
+    // 256 newest are paired.
+    expect(s.retrievalHops).toBe(256)
+    expect(s.retrievalTurnUnits).toBeCloseTo(300 * charge(52_500, 140) + 256 * charge(52_000, 90), 4)
   })
 
   it('a hop with a missing usage block is remembered at zero cost and still counts as the pair\'s first turn', () => {

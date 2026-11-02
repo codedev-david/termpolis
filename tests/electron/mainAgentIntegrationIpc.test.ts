@@ -799,16 +799,22 @@ describe('--disconnect-agents', () => {
 // saved setting to the proxy before anything is resolved from it, and says once which tier that makes. This
 // is the one suite that runs the boot block for real, on a real folder, so it is where the order can be seen.
 describe('the compression proxy at launch', () => {
-  /** A fresh index.ts, with the headroom settings file holding `saved` (null: no file, as on a first run). */
-  async function launch(saved: Record<string, unknown> | null) {
+  /**
+   * A fresh index.ts, with the headroom settings file holding `saved` (null: no file, as on a first run)
+   * and, when given, the proxy's totals file holding `ledger`.
+   */
+  async function launch(saved: Record<string, unknown> | null, ledger?: Record<string, unknown>) {
     PROXY.pushes.length = 0
     vi.resetModules()
     // A run resolves the policy once and keeps it, and this file has already booted: start from a run that has not.
     ;(await import('../../src/main/headroomProxy/proxySupervisor'))._resetProxyForTest()
     const fs = await import('fs')
-    vi.mocked(fs.readFileSync).mockImplementation(
-      ((p: unknown) => (saved && String(p).endsWith('headroom-settings.json') ? JSON.stringify(saved) : '{}')) as never,
-    )
+    vi.mocked(fs.readFileSync).mockImplementation(((p: unknown) => {
+      const s = String(p)
+      if (saved && s.endsWith('headroom-settings.json')) return JSON.stringify(saved)
+      if (ledger && s.endsWith('proxy-totals.json')) return JSON.stringify(ledger)
+      return '{}'
+    }) as never)
     await import('../../src/main/index')
     const log = await import('../../src/main/appLog')
     const tierLines = () => log.readAppLog(5000).map((e) => e.msg).filter((m) => m.startsWith('[headroom] wire tier at launch'))
@@ -841,5 +847,70 @@ describe('the compression proxy at launch', () => {
     const { sup, tierLines } = await launch({ firstSightElision: 'sometimes' })
     expect(sup.getProxyFirstSight()).toBe('late')
     expect(tierLines()).toHaveLength(1)
+  })
+
+  // The savings-floor controller raises the tier when a ledger shows too many requests under the floor.
+  // Under Late the floor is the policy's own, the evidence is about a floor that is not in force, and the
+  // controller is meant to stay out of it. The two call sites (here, and the Settings handler below) are
+  // also held by a source-text test, which cannot tell a call that drops the policy from one that keeps
+  // it; this can, because the same ledger raises the tier under Legacy and not under Late.
+  const ESCALATING = {
+    requests: 5000, textOrigTokens: 1_000_000, textSavedTokens: 300_000, toolUseOrigTokens: 0, toolUseSavedTokens: 0,
+    belowFloorRequests: 900, floorEligibleRequests: 1000, worstSavedPct: 5,
+  }
+
+  describe('at boot, on a ledger that would raise the tier', () => {
+    it('Late: the tier the user chose is the tier pushed, and the log says the controller was not used', async () => {
+      const { tierLines } = await launch({ firstSightElision: 'late', floorControl: true, mode: 'aggressive' }, ESCALATING)
+      expect(PROXY.pushes).toContain('mode:aggressive')
+      expect(PROXY.pushes).not.toContain('mode:max')
+      expect(tierLines()[0]).toContain('not used under late')
+    })
+
+    it('Legacy: the same ledger raises it to max, as in v1.54', async () => {
+      const { tierLines } = await launch({ firstSightElision: 'legacy', floorControl: true, mode: 'aggressive' }, ESCALATING)
+      expect(PROXY.pushes).toContain('mode:max')
+      expect(tierLines()[0]).toContain('raised from aggressive')
+    })
+
+    it('with the controller switched off, neither policy raises it', async () => {
+      for (const firstSightElision of ['late', 'legacy']) {
+        await launch({ firstSightElision, floorControl: false, mode: 'aggressive' }, ESCALATING)
+        expect(PROXY.pushes, firstSightElision).toContain('mode:aggressive')
+        expect(PROXY.pushes, firstSightElision).not.toContain('mode:max')
+      }
+    })
+
+    it('a settings file from v1.54.4, which has no policy field, boots on Late and is not raised either', async () => {
+      await launch({ enabled: true, wireProxy: true, mode: 'aggressive', steering: true, thinkingCap: 0, adaptiveSteering: false, floorControl: true, prefixDecay: true }, ESCALATING)
+      expect(PROXY.pushes[0]).toBe('firstSight:late')
+      expect(PROXY.pushes).not.toContain('mode:max')
+    })
+  })
+
+  describe('when the tier is changed in Settings, on a ledger that would raise it', () => {
+    it('Late: the tier chosen is the tier pushed', async () => {
+      await launch({ firstSightElision: 'late', floorControl: true, mode: 'aggressive' }, ESCALATING)
+      PROXY.pushes.length = 0 // only what the Settings change itself pushes
+      await invoke('tokenSavings:set-settings', { mode: 'balanced' })
+      expect(PROXY.pushes).toContain('mode:balanced')
+      expect(PROXY.pushes).not.toContain('mode:max')
+    })
+
+    it('Legacy: the same change is raised to max, as in v1.54', async () => {
+      await launch({ firstSightElision: 'legacy', floorControl: true, mode: 'aggressive' }, ESCALATING)
+      PROXY.pushes.length = 0
+      await invoke('tokenSavings:set-settings', { mode: 'balanced' })
+      expect(PROXY.pushes).toContain('mode:max')
+    })
+
+    it('a change of policy is not pushed to the running proxy, and the status says which one runs', async () => {
+      await launch({ firstSightElision: 'late', floorControl: true, mode: 'aggressive' }, ESCALATING)
+      PROXY.pushes.length = 0
+      await invoke('tokenSavings:set-settings', { firstSightElision: 'legacy' })
+      expect(PROXY.pushes.filter((p) => p.startsWith('firstSight:'))).toEqual([])
+      const st = await invoke('tokenSavings:get-proxy-status')
+      expect(st.data).toMatchObject({ selectedFirstSight: 'legacy', effectiveFirstSight: 'late' })
+    })
   })
 })
