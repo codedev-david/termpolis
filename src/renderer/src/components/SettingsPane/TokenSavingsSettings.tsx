@@ -492,9 +492,9 @@ export function TokenSavingsSettings() {
               the effect on the quality of answers on your work; under Late the model is shown at least as much of every result as under
               Legacy, and every result under {LATE_FLOOR} characters whole the first time it appears (a repeat of one already shown is a
               reference to it, a near-repeat a patch against it, and old history in a long conversation ages out, as under Legacy).
-              Under Late the Aggressiveness setting only changes how hard a result of {LATE_FLOOR} characters or more is cut. Claude Code
-              already trims long command output to about 30,000 characters itself, so in practice Late mostly shortens large file reads
-              and fetched pages.
+              Under Late the Aggressiveness setting still decides how hard a result of {LATE_FLOOR} characters or more is cut, and the
+              size from which a repeat becomes a reference and a near-repeat a patch. Claude Code already trims long command output to
+              about 30,000 characters itself, so in practice Late mostly shortens large file reads and fetched pages.
               About one distinct opening message in ten always runs Legacy so the two can be compared. A change takes effect the next time
               Termpolis starts, because one proxy serves every Claude session of a run and a change in the middle would rewrite each
               session’s prompt cache.

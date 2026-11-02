@@ -147,6 +147,86 @@ describe('late never shows the model less than v1.54.4 did', () => {
   })
 })
 
+/**
+ * What Settings says the Aggressiveness setting still does under Late: "it decides how hard a result of 40,000
+ * characters or more is cut, and the size from which a repeat becomes a reference and a near-repeat a patch".
+ * An earlier version of that sentence said "only" the first, and it was wrong: a repeat is judged against the
+ * tier's own floor, not Late's, so the note is held to the rewriter here and the pane test holds the note.
+ */
+describe('under Late the tier still sets where a repeat collapses and how hard a big result is cut', () => {
+  const MODES = ['conservative', 'balanced', 'aggressive', 'max'] as const
+  const floorOf = (m: Wire, mode: string): number => (m.windowForMode(mode) as { floorChars: number }).floorChars
+  // The edit keeps the length (and so the cut at `size`) the same, or the last line would differ and the patch would span the tail.
+  const lines = (size: number, edit = false): string => Array.from({ length: Math.ceil(size / 25) }, (_, i) => `${edit && (i === 40 || i === 41) ? 'EDITED-line' : 'repeat-line'} ${i}: payload ${(i * 7919) % 100003}`).join('\n').slice(0, size)
+  /** The same Bash result twice, in the order a model re-runs a command. */
+  const twice = (first: string, second: string): string => JSON.stringify({
+    model: 'claude-opus-4', max_tokens: 1024,
+    messages: [
+      { role: 'user', content: FIRST_MESSAGE },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'a1', name: 'Bash', input: { command: 'make' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a1', content: first }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'a2', name: 'Bash', input: { command: 'make' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a2', content: second }] },
+    ],
+  })
+
+  it('sends a repeat of 3,000 characters whole on a tier whose floor is above that and as a reference on one whose floor is below, first sight whole on both', async () => {
+    const text = lines(3_000)
+    const collapsed: boolean[] = []
+    for (const mode of MODES) {
+      const m = await launch('late', mode)
+      const out = resultTexts(m.rewriteMessagesBody(twice(text, text)).body)
+      expect(out, mode).toHaveLength(2)
+      expect(out[0], `${mode}: first sight`).toBe(text)
+      collapsed.push(isDedup(out[1]))
+      expect(isDedup(out[1]), `${mode}: floor ${floorOf(m, mode)}`).toBe(floorOf(m, mode) <= text.length)
+      if (!isDedup(out[1])) expect(out[1], mode).toBe(text)
+    }
+    // Both outcomes occur, or this says nothing about the tier.
+    expect(collapsed).toContain(true)
+    expect(collapsed).toContain(false)
+  })
+
+  it('collapses a repeat of 10,000 characters on every tier, which is above the highest floor', async () => {
+    const text = lines(10_000)
+    for (const mode of MODES) {
+      const m = await launch('late', mode)
+      expect(floorOf(m, mode), mode).toBeLessThan(text.length)
+      expect(isDedup(resultTexts(m.rewriteMessagesBody(twice(text, text)).body)[1]), mode).toBe(true)
+    }
+  })
+
+  it('sends a near-repeat of 3,000 characters as a patch on a tier whose floor is below that, and whole on one whose floor is above', async () => {
+    const first = lines(3_000)
+    const second = lines(3_000, true)
+    expect(second).not.toBe(first)
+    const patched: boolean[] = []
+    for (const mode of MODES) {
+      const m = await launch('late', mode)
+      const out = resultTexts(m.rewriteMessagesBody(twice(first, second)).body)
+      expect(out[0], `${mode}: first sight`).toBe(first)
+      patched.push(isDiff(out[1]))
+      expect(isDiff(out[1]), `${mode}: floor ${floorOf(m, mode)}`).toBe(floorOf(m, mode) <= first.length)
+      if (!isDiff(out[1])) expect(out[1], mode).toBe(second)
+    }
+    expect(patched).toContain(true)
+    expect(patched).toContain(false)
+  })
+
+  it('cuts a 80,000 character result harder on the Maximum tier than on the Conservative one', async () => {
+    const raw = caseBody('Read', 'code', 80_000)
+    const size: Record<string, number> = {}
+    for (const mode of MODES) {
+      const m = await launch('late', mode)
+      const [out] = resultTexts(m.rewriteMessagesBody(raw).body)
+      expect(isWindow(out), mode).toBe(true)
+      size[mode] = out.length
+    }
+    expect(new Set(Object.values(size)).size).toBeGreaterThan(1)
+    expect(size.max).toBeLessThan(size.conservative)
+  })
+})
+
 describe('late keeps the cached prefix still as a conversation grows', () => {
   const body = realistic(FIRST_MESSAGE)
   const long = longRun(FIRST_MESSAGE, 80)

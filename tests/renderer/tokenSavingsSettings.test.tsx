@@ -875,8 +875,12 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(n).toHaveTextContent('a repeat of one already shown is a reference to it, a near-repeat a patch against it, and old history in a long conversation ages out, as under Legacy')
     expect(n).not.toHaveTextContent('the whole of every result')
     expect(n).not.toHaveTextContent('never less')
-    // What the tier still does under Late, and the part of the result sizes it actually reaches.
-    expect(n).toHaveTextContent('Under Late the Aggressiveness setting only changes how hard a result of 40,000 characters or more is cut')
+    // What the tier still does under Late, and the part of the result sizes it actually reaches. It is NOT "only"
+    // the cut of the big results: the tier's floor also sets the size from which a repeat becomes a reference and a
+    // near-repeat a patch (tests/electron/headroomLatePolicy.test.ts holds that sentence to the rewriter).
+    expect(n).toHaveTextContent('Under Late the Aggressiveness setting still decides how hard a result of 40,000 characters or more is cut, and the size from which a repeat becomes a reference and a near-repeat a patch')
+    expect(n).not.toHaveTextContent('only changes how hard')
+    expect(n).not.toHaveTextContent('setting only')
     expect(n).toHaveTextContent('Claude Code already trims long command output to about 30,000 characters itself, so in practice Late mostly shortens large file reads and fetched pages')
     // The holdout, as it really is chosen, and where the card is.
     expect(n).toHaveTextContent('one distinct opening message in ten')
