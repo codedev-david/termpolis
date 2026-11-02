@@ -32,7 +32,7 @@ to keep your data local.
 - Termpolis changes Claude Code, Codex and Gemini CLI settings **only if you
   connect them**, and Disconnect removes everything it wrote — see [Your
   coding agents' settings](#your-coding-agents-settings).
-- While your agents are connected, Termpolis also **reads Claude Code's saved
+- Once you have connected your agents, Termpolis also **reads Claude Code's saved
   notes** and keeps a copy in its own memory, so your other agents can find
   them. It never writes into Claude's folders and Termpolis sends nothing off
   your machine, but an agent that finds a note passes it to its own provider.
@@ -385,20 +385,26 @@ that folder.
 
 Claude Code keeps what it learns about a project as small markdown notes in its
 own folder, `~/.claude/projects/<project folder>/memory/*.md`. Only Claude can
-see them, and only in that project. Since 1.55.0, while your coding agents are
-connected (Settings → Agent Integration) and **Include Claude Code's saved
+see them, and only in that project. Since 1.55.0, while you have connected your
+coding agents (Settings → Agent Integration) and **Include Claude Code's saved
 notes in memory** is on (Settings → Memory & Learning; on by default), the
 indexer that already reads your agents' session history every 30 minutes reads
-these notes too.
+these notes too. An install that an older version connected, and that you have
+not yet been asked about (the one-time review), does not count as connected for
+this: it starts when you answer yes.
 
 - **What it reads.** The project folders under `~/.claude/projects`; in each,
   the names, sizes and modified times of the `.md` files in its `memory`
   folder, and the text of the ones that are new or changed. It skips
   `MEMORY.md` (an index of the others), files over 64 KB, binary files, links
   that lead outside the projects folder, and anything past 2,000 files. To find
-  out which project a folder belongs to it also reads the first 256 KB of that
-  folder's three newest session files and keeps only the working directory they
-  record; the rest of a session is not used for this.
+  out which project a folder belongs to it also lists that folder's session
+  files with their modified times (at most 5,000 of them), reads the first
+  256 KB of the three newest and keeps only the working directory they record;
+  the rest of a session is not used for this. For a project folder it has
+  read notes from before, and for no other, a pass that finds its `memory`
+  folder gone also lists the names of the folder's other entries, to tell a
+  deleted notes folder from one it cannot read.
 - **What it writes.** A copy of each note's text in Termpolis's memory, in
   pieces of at most 1,800 characters, under the project the folder belongs to,
   after the same secret redaction every memory gets, and the record listed
@@ -412,7 +418,9 @@ these notes too.
   project may also return up to two general notes (the kinds `reference`,
   `feedback` and `user`, never notes about one project's own state) from
   another project is a separate choice, **Let general notes help in other
-  projects**, and it is off until you turn it on. A search or a listing that
+  projects**, and it is off until you turn it on. Notes from sessions you ran in
+  your home folder belong to no project, so a search that names a project is
+  never lent them. A search or a listing that
   names no project, and a walk of the knowledge graph, returns no saved note
   unless you turn that choice on, and then only those kinds; the rest of memory
   it covers as it did before.
@@ -432,7 +440,8 @@ these notes too.
   locked are removed by the next indexer pass once it opens. If Termpolis
   cannot read its settings file (a write cut short by a crash, say), it leaves
   the import off until you turn it on again, and a switch it could not save is
-  reported as an error, not shown as changed.
+  reported as an error, not shown as changed (*Remove imported notes* then
+  removes nothing, and says so).
 
 ## Your Choices
 
