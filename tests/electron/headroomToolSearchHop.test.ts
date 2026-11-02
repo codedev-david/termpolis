@@ -129,6 +129,52 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     expect(parseTurnShapeFromSse(stream(early)).hop).toBe(true)
   })
 
+  it('skips what the prefilter lets through that is not a block start or a block delta, once a ToolSearch call has started', () => {
+    // A line can carry the words without being the event: a ping that quotes them, a bare string, a null.
+    const lines = stream([search('select:retrieve_full')]).split('\n')
+    const at = lines.findIndex((l) => l.includes('content_block_start')) + 1 // right after the ToolSearch block started
+    lines.splice(at, 0,
+      'data: {"type":"ping","note":"input_json_delta"}',
+      'data: "content_block_start"',
+      'data: null',
+      'data: 42',
+    )
+    expect(parseTurnShapeFromSse(lines.join('\n'))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false, hop: true })
+  })
+
+  it('skips an input delta of the wrong shape once a ToolSearch call has started, and still reads the good ones', () => {
+    const lines = stream([search('select:retrieve_full')]).split('\n')
+    const at = lines.findIndex((l) => l.includes('content_block_start')) + 1
+    lines.splice(at, 0,
+      'data: {"type":"content_block_delta","index":"0","delta":{"type":"input_json_delta","partial_json":"zzz"}}', // index is not a number
+      'data: {"type":"content_block_delta","index":0,"delta":null}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","note":"input_json_delta"}}', // not an input delta
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":7}}', // not text
+      'data: {"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"retrieve_full"}}', // a block that is not a ToolSearch call
+    )
+    expect(parseTurnShapeFromSse(lines.join('\n')).hop).toBe(true)
+  })
+
+  it('attributes each delta to the block it belongs to: a stray delta for another index is no evidence', () => {
+    const lines = stream([search('select:Read')]).split('\n')
+    const at = lines.findIndex((l) => l.includes('content_block_start')) + 1
+    lines.splice(at, 0, 'data: {"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"retrieve_full"}}')
+    expect(parseTurnShapeFromSse(lines.join('\n'))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+  })
+
+  it('does not count a ToolSearch call whose block has no numeric index: the query cannot be attributed to it', () => {
+    const noIndex = stream([search('select:retrieve_full')]).replace(/"index":\d+,/g, '')
+    expect(parseTurnShapeFromSse(noIndex)).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+  })
+
+  it('reads a deflate-encoded body, as it reads gzip and brotli', () => {
+    const s = stream([search('select:retrieve_full')])
+    expect(parseTurnShapeFromSse(decodeBody(zlib.deflateSync(Buffer.from(s)), 'deflate')).hop).toBe(true)
+    expect(parseTurnShapeFromSse(decodeBody(zlib.brotliCompressSync(Buffer.from(s)), 'br')).hop).toBe(true)
+    // and a body that claims an encoding it does not have falls back to the text it is
+    expect(decodeBody(Buffer.from('plain'), 'gzip')).toBe('plain')
+  })
+
   it('reads a gzip-decoded body exactly like the plain one', () => {
     const s = stream([search('select:mcp__termpolis__retrieve_full')])
     const decoded = decodeBody(zlib.gzipSync(Buffer.from(s)), 'gzip')

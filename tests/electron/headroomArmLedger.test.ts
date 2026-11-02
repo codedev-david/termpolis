@@ -3,7 +3,7 @@ import * as os from 'os'
 import * as fs from 'fs'
 import * as path from 'path'
 import {
-  recordArmRequest, armState, loadArmState, resetArmLedger, ARM_NAMES,
+  recordArmRequest, settleArmHop, armState, loadArmState, resetArmLedger, ARM_NAMES,
 } from '../../src/main/headroom/armLedger'
 import { ARM_CLUSTERS } from '../../src/main/headroom/elisionPolicy'
 import {
@@ -308,5 +308,48 @@ describe('the arms in proxy-totals.json', () => {
     saveProxyTotalsToDisk(dir)
     const saved = JSON.parse(fs.readFileSync(file(), 'utf8'))
     for (const k of ['requests', 'textOrigTokens', 'textSavedTokens', 'cacheReadTokens', 'outputTokens', 'retrieves']) expect(typeof saved[k]).toBe('number')
+  })
+})
+
+describe('settling a hop in the arm ledger', () => {
+  beforeEach(() => resetArmLedger())
+
+  it('moves one request from the work column to the turns, with the part of its cost that was the turn', () => {
+    recordArmRequest('late', 3, sample(10_000))
+    recordArmRequest('late', 3, sample(10_000))
+    settleArmHop('late', 3, 4_000)
+    expect(armState().late[3]).toEqual({ requests: 2, work: 1, units: 20_000, turns: 1, turnUnits: 4_000 })
+    settleArmHop('late', 3, 1_000)
+    expect(armState().late[3]).toEqual({ requests: 2, work: 0, units: 20_000, turns: 2, turnUnits: 5_000 })
+  })
+
+  it('files it where the request was filed: the holdout, and the Legacy total', () => {
+    recordArmRequest('holdout', 7, sample(5_000))
+    recordArmRequest('legacy', 0, sample(5_000))
+    settleArmHop('holdout', 7, 500)
+    settleArmHop('legacy', 12, 500) // the Legacy total has no groups: the cluster means nothing
+    expect(armState().holdout[7]).toMatchObject({ work: 0, turns: 1, turnUnits: 500 })
+    expect(armState().legacy).toMatchObject({ work: 0, turns: 1, turnUnits: 500 })
+  })
+
+  it('does nothing when there is no work left to move: the ledger was zeroed between the hop and its ask', () => {
+    settleArmHop('late', 3, 4_000)
+    expect(armState().late[3]).toEqual({ requests: 0, work: 0, units: 0, turns: 0, turnUnits: 0 })
+    recordArmRequest('late', 3, sample(10_000, true, 4_000)) // a request that was already a turn has no work to give up
+    settleArmHop('late', 3, 4_000)
+    expect(armState().late[3]).toMatchObject({ requests: 1, work: 0, turns: 1, turnUnits: 4_000 })
+  })
+
+  it('does nothing for a group that does not exist, or an arm it does not know, and counts no NaN', () => {
+    recordArmRequest('late', 3, sample(10_000))
+    for (const [arm, cluster] of [['late', -1], ['late', ARM_CLUSTERS], ['late', 1.5], ['late', Number.NaN], ['nope', 3], ['holdout', 3]] as const) {
+      settleArmHop(arm as never, cluster, 4_000)
+    }
+    expect(armState().late[3]).toEqual({ requests: 1, work: 1, units: 10_000, turns: 0, turnUnits: 0 })
+    expect(armState().holdout[3].turns).toBe(0)
+    recordArmRequest('late', 4, sample(10_000))
+    settleArmHop('late', 4, Number.NaN)
+    settleArmHop('late', 4, -9)
+    expect(armState().late[4].turnUnits).toBe(0)
   })
 })

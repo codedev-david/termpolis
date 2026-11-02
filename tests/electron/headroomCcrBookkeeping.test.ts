@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import * as live from '../../src/main/headroom/ccrStore'
 
 /**
  * A stash is the promise behind a retrieve_full token that is already on the wire. The elision ledger is
@@ -46,9 +47,11 @@ beforeEach(() => {
 })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
+// The two fault tests below use the module imported at the top; the restart tests further down need a fresh
+// instance per launch (vi.resetModules), and coverage is only credited to the instance that is imported once.
 describe('ccrPut keeps the promise when its bookkeeping fails', () => {
   it('stores the value and resolves the token when the elision ledger throws', async () => {
-    const { ccrPut, ccrRetrieve, resetCcr, setCcrDir } = await import('../../src/main/headroom/ccrStore')
+    const { ccrPut, ccrRetrieve, resetCcr, setCcrDir } = live
     resetCcr(); setCcrDir(dir)
     state.throwOnRecord = true
     expect(() => ccrPut(TOKEN, 'the original text', 'proxy', meta)).not.toThrow()
@@ -56,7 +59,7 @@ describe('ccrPut keeps the promise when its bookkeeping fails', () => {
   })
 
   it('stores the value and resolves the token when reading the metadata throws, for a new token and for a stored one', async () => {
-    const { ccrPut, ccrRetrieve, resetCcr, setCcrDir } = await import('../../src/main/headroom/ccrStore')
+    const { ccrPut, ccrRetrieve, resetCcr, setCcrDir } = live
     resetCcr(); setCcrDir(dir)
     state.throwOnSanitize = true
     expect(() => ccrPut(TOKEN, 'the original text', 'proxy', meta)).not.toThrow()

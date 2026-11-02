@@ -147,14 +147,15 @@ interface Estimate { value: number; se: number }
  * part of the arm's cost and its whole numerator is its excess.
  *
  * Null when the arm has fewer than MIN_ARM_GROUPS groups, because the spread of one or two groups
- * says nothing about the margin, or when the denominator is nothing (an arm that did no work).
+ * says nothing about the margin. Used for the share of requests that were retrieval turns, whose
+ * denominator is the request count of the groups that have requests, so it cannot be nothing: the cost
+ * per working request, which can, has its own estimator (logRatio).
  */
 function ratio(groups: ArmCounts[], numer: (g: ArmCounts) => number, denom: (g: ArmCounts) => number): Estimate | null {
   const used = groups.filter((g) => num(g?.requests) > 0)
   if (used.length < MIN_ARM_GROUPS) return null
   let n = 0, d = 0
   for (const g of used) { n += numer(g); d += denom(g) }
-  if (!(d > 0)) return null
   const value = n / d
   let ss = 0
   for (const g of used) { const e = numer(g) - value * denom(g); ss += e * e }

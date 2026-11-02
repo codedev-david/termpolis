@@ -268,7 +268,7 @@ export function ElisionHealthCard() {
     <div data-testid="hr-elision-health" style={{ border: '1px solid #8884', borderRadius: 8, padding: 14, marginBottom: 18 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
         <h4 style={{ margin: '0 0 6px' }}>Elision health <span style={{ fontWeight: 400, opacity: 0.65 }}>— how often the model asks for elided text back</span></h4>
-        <button data-testid="hr-elision-refresh" type="button" disabled={busy} onClick={() => { if (!busy) void load() }}
+        <button data-testid="hr-elision-refresh" type="button" disabled={busy} onClick={() => { void load() }}
           className={BUTTON}>Refresh</button>
       </div>
 

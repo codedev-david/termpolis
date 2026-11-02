@@ -235,6 +235,14 @@ describe('Elision health card — regime, turns and notes', () => {
     expect(t).toHaveTextContent('that turn is in the cost')
   })
 
+  it('says the one response with no way to ask in the singular', async () => {
+    serve(view({ turns: { count: 230, units: 3_910_000, unitsPerTurn: 17_000, costBasis: 'measured', hops: 0, observed: 801, askable: 800, unaskable: 1, shareBasis: 'could-ask', sharePct: 28.8 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('1 response came from requests with no way to ask, and is left out of the rate.')
+    expect(t).not.toHaveTextContent('1 responses')
+  })
+
   it('says it in the singular for one', async () => {
     serve(view({ turns: { count: 3, units: 60_000, unitsPerTurn: 20_000, costBasis: 'assumed', hops: 1, observed: 10, askable: 10, unaskable: 0, shareBasis: 'could-ask', sharePct: 30 } }))
     render(<ElisionHealthCard />)
