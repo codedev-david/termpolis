@@ -229,7 +229,7 @@ async function collectRecent(
     // An automated run's memory is the newest there is and says nothing about any project, unless the digest is about it.
     const slug = (h.project || '').toLowerCase()
     if (AUTOMATION_SLUGS.has(slug) && slug !== o.ownProject) return false
-    return (h.content || '').replace(/\s+/g, ' ').trim().length >= MIN_RECENT_CHARS
+    return h.content.replace(/\s+/g, ' ').trim().length >= MIN_RECENT_CHARS // a string: the first line of this filter saw to it
   })
   const out: PrimerHit[] = []
   // A saved note is stored in chunks that share one date (its last edit) and each begin with the note's name and description,

@@ -569,7 +569,10 @@ async function sweepOwnNotes(deps: NotesDeps, ledger: Ledger, tried: Set<string>
     }
     if (fresh.length === 0) return clean
     for (const id of fresh) tried.add(id)
-    if (!(await ledger.retire(fresh, counter))) return false
+    if (!(await ledger.retire(fresh, counter))) {
+      ledger.stats.deleteFailed += fresh.length // the manifest could not be written ahead: they are still in the store, and said to be
+      return false
+    }
     if (fresh.some((id) => ledger.m.stale.includes(id))) clean = false // a removal failed; it waits on the manifest's list
   }
   return false // the rounds ran out with notes still turning up

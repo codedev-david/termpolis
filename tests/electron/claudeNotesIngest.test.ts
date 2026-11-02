@@ -1216,6 +1216,20 @@ describe('more notes than a listing can reach in one go', () => {
     expect(manifestJson().stale).toHaveLength(100)
   })
 
+  it('counts what a later round could not write ahead as failed: it is neither removed nor forgotten', async () => {
+    const store = fakeStore()
+    await stored(store, 600)
+    const manifest = flakyManifest(2) // the dirty flag and the queue of the first 500 are saved; the next round's queue is not
+    const res = await removeImportedNotes(deps(store, { manifest }))
+    expect(res).toEqual({ removed: 500, failed: 100 })
+    expect(store.rows.size).toBe(100)
+    expect(manifestJson().dirty).toBe(true) // so the next pass finishes the job
+    const again = await removeImportedNotes(deps(store))
+    expect(again.failed).toBe(0)
+    expect(store.rows.size).toBe(0)
+    expect(manifestJson().dirty).toBe(false)
+  })
+
   it('stops quietly when the store cannot be listed in a later round', async () => {
     const store = fakeStore()
     await stored(store, 600)
