@@ -2497,6 +2497,205 @@ describe('what stays next to a key tail and its END line: the guards against tak
   })
 })
 
+describe('T1 K1: a DER key whose last base64 line is shorter than a payload run (an ML-DSA seed-only PKCS#8: 54 bytes, 72 characters, 64 and 8 in a PEM file)', () => {
+  const stream = (tag: string, size: number): Buffer => Buffer.concat(Array.from({ length: Math.ceil(size / 32) }, (_, k) => createHash('sha256').update(`${tag}/${k}`).digest())).subarray(0, size)
+  /** A key's base64 body that passes the randomness test: a short body is judged by few characters, and about 3 in 100 of them fail it. */
+  const randomBody = (tag: string, make: (tag: string) => Buffer): string => {
+    for (let i = 0; ; i++) {
+      const b64 = make(`${tag}/${i}`).toString('base64')
+      if (looksRandom(b64)) return b64
+    }
+  }
+  /** OneAsymmetricKey of ML-DSA-44, -65 and -87 (FIPS 204, RFC 9881) with only the 32-byte seed, byte for byte: SEQUENCE(52) { INTEGER 0,
+   *  SEQUENCE { OID 2.16.840.1.101.3.4.3.17, .18 or .19 }, OCTET STRING(34) { [0] seed } }. */
+  const mlDsa =
+    (level: 0x11 | 0x12 | 0x13) =>
+    (tag: string): Buffer =>
+      Buffer.concat([Buffer.from('3034020100300b06096086480165030403', 'hex'), Buffer.from([level]), Buffer.from('04228020', 'hex'), stream(tag, 32)])
+  /** A PKCS#8 of `total` bytes under an algorithm OID no list knows (2.16.840.1.101.3.4.3.99): an SLH-DSA key, or any algorithm to come. */
+  const pkcs8Of =
+    (total: number) =>
+    (tag: string): Buffer => {
+      const version = der(0x02, Buffer.from([0]))
+      const alg = der(0x30, der(0x06, Buffer.from([0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x03, 0x63])))
+      for (let inner = 1; inner < total; inner++) {
+        const d = der(0x30, Buffer.concat([version, alg, der(0x04, stream(tag, inner))]))
+        if (d.length === total) return d
+      }
+      throw new Error(`no PKCS#8 of ${total} bytes`)
+    }
+  const pem = (b64: string, width: number): string[] => ['-----BEGIN PRIVATE KEY-----', ...wrap(b64, width), '-----END PRIVATE KEY-----']
+  /** A screen of `lines` joined as `join`: what it removed, how many 12-character windows of the body lines are left, and the text. */
+  const screened = (lines: string[], join: string): { removed: Record<string, number>; left: number; text: string } => {
+    const r = screenKeys(`Answer follows.\n${JOIN[join](lines)}\nThat was the file.`)
+    return { removed: r.removed, left: leakedWindows(r.text, lines.slice(1, -1).filter((l) => l.length >= 12)), text: r.text }
+  }
+
+  it('removes an ML-DSA seed-only key at 64 columns, where its second line is 8 characters, in every joining', () => {
+    for (const [name, level] of [['ML-DSA-44', 0x11], ['ML-DSA-65', 0x12], ['ML-DSA-87', 0x13]] as const) {
+      const b64 = randomBody(name, mlDsa(level))
+      expect(b64).toHaveLength(72)
+      const lines = pem(b64, 64)
+      expect(lines.map((l) => l.length)).toEqual([27, 64, 8, 25])
+      for (const join of ['lf', 'crlf', 'cr', 'json_n', 'json_nn', 'java_concat', 'yaml_block2', 'cat_n', 'rg_win', 'rg_long_posix', 'docker_t', 'compose', 'quote', 'diff_plus', 'u000a', 'js_template']) {
+        const r = screened(lines, join)
+        expect(r.removed, `${name}, ${join}`).toEqual({ private_key: 1 })
+        expect(r.left, `${name}, ${join}`).toBe(0)
+        expect(shownWhole(r.text, lines[2]), `${name}, ${join}: its short last line`).toBe(false)
+      }
+      // and the tail of one whose BEGIN line is out of view (an older computer's cut, or a diff that starts below it)
+      const tail = screenKeys(`${lines.slice(1).join('\n')}\nThat was the file.`, { cutStart: true })
+      expect(tail.removed, `${name}, no BEGIN line`).toEqual({ private_key: 1 })
+      expect(leakedWindows(tail.text, [lines[1]]), `${name}, no BEGIN line`).toBe(0)
+    }
+  })
+
+  it('removes an ML-DSA seed-only key at other widths: 70 (a last line of 2), 72 and 76 and 100 (one line)', () => {
+    const b64 = randomBody('widths', mlDsa(0x12))
+    for (const width of [64, 70, 72, 76, 100]) {
+      const lines = pem(b64, width)
+      for (const join of ['lf', 'json_n', 'cat_n']) {
+        const r = screened(lines, join)
+        expect(r.removed, `${width}, ${join}`).toEqual({ private_key: 1 })
+        expect(r.left, `${width}, ${join}`).toBe(0)
+      }
+    }
+  })
+
+  it('removes a key of one line with no END line together with the line under it that holds exactly the characters its declared length lacks (head -n 3 of a seed-only key)', () => {
+    // BEGIN, 64 characters and 8: one run, and what is under it is not a run. The DER says the key is 72 characters long, so 8 more are its last line.
+    const open = (lines: string[], join: string): { removed: Record<string, number>; left: number; short: boolean; text: string } => {
+      const r = screenKeys(`Answer follows.\n${JOIN[join](lines)}\nThat was the file.`)
+      return { removed: r.removed, left: leakedWindows(r.text, [lines[1]]), short: shownWhole(r.text, lines[2]), text: r.text }
+    }
+    for (const [name, level] of [['ML-DSA-44', 0x11], ['ML-DSA-65', 0x12], ['ML-DSA-87', 0x13]] as const) {
+      const lines = pem(randomBody(`open${name}`, mlDsa(level)), 64).slice(0, -1)
+      expect(lines.map((l) => l.length)).toEqual([27, 64, 8])
+      for (const join of ['lf', 'crlf', 'cr', 'json_n', 'json_nn', 'java_concat', 'yaml_block2', 'cat_n', 'rg_win', 'rg_long_posix', 'docker_t', 'compose', 'quote', 'diff_plus', 'u000a', 'js_template']) {
+        const r = open(lines, join)
+        expect(r.removed, `${name}, ${join}`).toEqual({ private_key: 1 })
+        expect(r.left, `${name}, ${join}`).toBe(0)
+        expect(r.short, `${name}, ${join}: its last line`).toBe(false)
+        expect(r.text, `${name}, ${join}: what follows it`).toContain('That was the file.')
+      }
+    }
+    // the same for an algorithm no list knows, at the other widths, wherever the declared length leaves under 16 characters for a second line (15 at 97 columns, 1 at 71)
+    for (const [bytes, width] of [[54, 64], [57, 64], [63, 70], [66, 76], [84, 100], [84, 97], [54, 71]] as const) {
+      const lines = pem(randomBody(`openunknown${bytes}`, pkcs8Of(bytes)), width).slice(0, -1)
+      expect(lines.length, `${bytes} bytes at ${width}`).toBe(3)
+      for (const join of ['lf', 'json_n', 'cat_n']) {
+        const r = open(lines, join)
+        expect(r.removed, `${bytes} bytes at ${width}, ${join}`).toEqual({ private_key: 1 })
+        expect(r.left, `${bytes} bytes at ${width}, ${join}`).toBe(0)
+        expect(r.short, `${bytes} bytes at ${width}, ${join}: its last line`).toBe(false)
+      }
+    }
+  })
+
+  it('takes the line under a key of one line with no END line as its last only when it holds the characters the key lacks, not a word of another length', () => {
+    const lines = pem(randomBody('openword', mlDsa(0x12)), 64).slice(0, -1)
+    expect(lines.map((l) => l.length)).toEqual([27, 64, 8])
+    const under = (word: string): ReturnType<typeof screenKeys> => screenKeys(`Answer follows.\n${[lines[0], lines[1], word].join('\n')}\nThat was the file.`)
+    // 8 characters is what is lacking: the line goes with the key (the cost of J13: a word of exactly that length is taken too)
+    expect(under('Thankyou').removed).toEqual({ private_key: 1 })
+    expect(under('Thankyou').text).not.toContain('Thankyou')
+    // a word of another length is not the key's last line, under or over what is lacking (4 to 7 characters, or 9 to 15, all of them base64
+    // characters too): 64 of 72 characters (88.9%) are not the whole of it, and the word stays
+    for (const word of ['Done', 'Cheers', 'Regards', 'Thanks!', 'Thankyou!', 'Regards,', 'Thankyou2', 'ThanksForTheKey']) {
+      const r = under(word)
+      expect(r.removed, word).toEqual({})
+      expect(r.flagged, word).toEqual({ private_key: 1 })
+      expect(r.text, word).toContain(word)
+    }
+    // under it, in the frame of its own lines: a word of the right length after other words on its line is not
+    expect(screenKeys(`Answer follows.\n${lines[0]}\n${lines[1]}\nNote: Thankyou\nThat was the file.`).removed).toEqual({})
+    // a key of one line that its END line follows has no need of the line: the END line is all it lacks
+    const withEnd = screenKeys(`Answer follows.\n${pem(randomBody('openword', mlDsa(0x12)), 64).join('\n')}\nThat was the file.`)
+    expect(withEnd.removed).toEqual({ private_key: 1 })
+    expect(withEnd.text).not.toContain('END PRIVATE KEY')
+  })
+
+  it('takes the last line of a key that cat -A or an echo per line adds the same suffix to, and of a diff, whose + is a base64 character', () => {
+    const lines = pem(randomBody('opensuffix', mlDsa(0x13)), 64).slice(0, -1)
+    const listed: Record<string, string[]> = {
+      'cat -A': lines.map((l) => `${l}$`),
+      'an echo per line': lines.map((l, i) => `echo '${l}' ${i ? '>>' : '>'} key.pem`),
+      'a diff': lines.map((l) => `+${l}`),
+      'a coloured diff': lines.map((l) => `\x1b[32m+${l}\x1b[m`),
+    }
+    for (const [name, ls] of Object.entries(listed)) {
+      const r = screenKeys(`Answer follows.\n${ls.join('\n')}\nThat was the file.`)
+      expect(r.removed, name).toEqual({ private_key: 1 })
+      expect(leakedWindows(r.text, [lines[1]]), name).toBe(0)
+      expect(shownWhole(r.text, lines[2]), name).toBe(false)
+    }
+  })
+
+  it('removes an unknown-algorithm PKCS#8 whose last line is under 16 characters: 54 bytes at 64 columns, 84 at 100, 57 at 64, 63 at 70', () => {
+    for (const [bytes, width] of [[54, 64], [84, 100], [57, 64], [63, 70]] as const) {
+      const lines = pem(randomBody(`unknown${bytes}`, pkcs8Of(bytes)), width)
+      expect(lines[lines.length - 2].length, `${bytes} bytes at ${width}`).toBeLessThan(16)
+      for (const join of ['lf', 'json_n', 'cat_n']) {
+        const r = screened(lines, join)
+        expect(r.removed, `${bytes} bytes at ${width}, ${join}`).toEqual({ private_key: 1 })
+        expect(r.left, `${bytes} bytes at ${width}, ${join}`).toBe(0)
+      }
+    }
+  })
+
+  it('takes a key as whole when 90% of its declared length is there, or when its END line follows and under 16 characters are lacking, and not before', () => {
+    // One line under the BEGIN line, so that the line count does not make it an excerpt of a real key (two lines of 80 characters are): only what
+    // the DER declares decides. A key of 100 bytes is 136 characters, and 90% of it is 90 bytes, 120 characters: 16 characters lacking is not under 16.
+    const b100 = randomBody('boundary100', pkcs8Of(100))
+    expect(b100).toHaveLength(136)
+    const text100 = (chars: number, end: boolean): string => ['-----BEGIN PRIVATE KEY-----', b100.slice(0, chars), ...(end ? ['-----END PRIVATE KEY-----'] : [])].join('\n')
+    for (const end of [true, false]) {
+      const label = end ? ', END' : ', no END'
+      expect(screenKeys(text100(120, end)).removed, `120 characters${label}`).toEqual({ private_key: 1 })
+      expect(screenKeys(text100(119, end)).removed, `119 characters${label}`).toEqual({})
+      expect(screenKeys(text100(119, end)).flagged, `119 characters${label}: reported`).toEqual({ private_key: 1 })
+    }
+    // A key of 84 bytes is 112 characters, and 90% of it 75.6 bytes, 102 characters. With its END line, 97 of them lack 15 and are the whole of it, 96
+    // lack 16 and are not. (Without one, a missing last line cannot be told from a cut: the 90% rule alone.)
+    const b84 = randomBody('boundary84', pkcs8Of(84))
+    expect(b84).toHaveLength(112)
+    const text84 = (chars: number, end: boolean): string => ['-----BEGIN PRIVATE KEY-----', b84.slice(0, chars), ...(end ? ['-----END PRIVATE KEY-----'] : [])].join('\n')
+    for (const chars of [112, 102, 101, 97]) expect(screenKeys(text84(chars, true)).removed, `${chars} and END`).toEqual({ private_key: 1 })
+    expect(screenKeys(text84(96, true)).removed, '96 and END').toEqual({})
+    expect(screenKeys(text84(102, false)).removed, '102, no END').toEqual({ private_key: 1 })
+    expect(screenKeys(text84(101, false)).removed, '101, no END').toEqual({})
+    expect(screenKeys(text84(97, false)).removed, '97, no END').toEqual({})
+  })
+
+  it('takes no key of under 64 characters of base64: a DER of 52 bytes is 72 characters, and 63 of them are not enough where 64 are', () => {
+    const b52 = randomBody('floor52', pkcs8Of(52))
+    expect(b52).toHaveLength(72)
+    const text = (chars: number): string => ['-----BEGIN PRIVATE KEY-----', b52.slice(0, chars), '-----END PRIVATE KEY-----'].join('\n')
+    expect(screenKeys(text(64)).removed, '64').toEqual({ private_key: 1 })
+    expect(screenKeys(text(63)).removed, '63').toEqual({})
+    expect(screenKeys(text(63)).flagged, '63: reported').toEqual({ private_key: 1 })
+  })
+})
+
+describe('T1 K4: the least a cut start must hold to be reported as a key', () => {
+  it('reports two lines of 80 characters in all, and not 79, as a key cut at its start with no END line', () => {
+    // (a fixed stream of bytes whose base64 passes the randomness test at both lengths: of an 80-character excerpt about 3 in 100 do not)
+    const stream = (i: number): string => Buffer.concat([createHash('sha256').update(`cut-start/${i}`).digest(), createHash('sha256').update(`cut-start/${i}/2`).digest(), createHash('sha256').update(`cut-start/${i}/3`).digest()]).toString('base64').replace(/[+/=]/g, 'A')
+    let b64 = ''
+    for (let i = 0; b64 === ''; i++) {
+      const s = stream(i)
+      if (looksRandom(s.slice(0, 80)) && looksRandom(s.slice(0, 79))) b64 = s
+    }
+    for (const [first, second] of [[64, 16], [16, 64], [40, 40], [20, 60], [8, 72]]) {
+      const rest = b64.slice(0, first + second)
+      const text = `${rest.slice(0, first)}\n${rest.slice(first)}\n`
+      expect(screenKeys(text, { cutStart: true }).flagged, `${first} and ${second}`).toEqual({ private_key: 1 })
+      const less = `${rest.slice(0, first)}\n${rest.slice(first, first + second - 1)}\n`
+      expect(screenKeys(less, { cutStart: true }).flagged, `${first} and ${second - 1}`).toEqual({})
+    }
+  })
+})
+
 describe('the structure checks, on decoded bytes', () => {
   const int = (v: number[]): Buffer => der(0x02, Buffer.from(v))
   const seq = (...parts: Buffer[]): Buffer => der(0x30, Buffer.concat(parts))

@@ -612,9 +612,11 @@ const CRC_RUN = /^=[A-Za-z0-9+/]{4}(?![A-Za-z0-9+/=])/
  *  stepped over once. `right`: what follows each key line's base64 when it is the same on the last
  *  two and is not joiners (cat -A's `$`, the `' >> key.pem` of an echo per line), which the short
  *  line ends with too. `full`: the last key line is as wide as the others; when it is shorter, it
- *  was the key's last, and only a checksum line can follow. `at` when there is none. */
-function shortLastLine(text: string, at: number, frame: string, right: string, full: boolean): number {
+ *  was the key's last, and only a checksum line can follow. `end`: where the last line ends, `at` when there is none; `chars`: how many
+ *  base64 characters the short line holds (0 when there is none). */
+function shortLastLine(text: string, at: number, frame: string, right: string, full: boolean): { end: number; chars: number } {
   let tailEnd = at
+  let chars = 0
   let took = false
   let skipped = 0
   for (let guard = 0; guard < 5; guard++) {
@@ -643,6 +645,7 @@ function shortLastLine(text: string, at: number, frame: string, right: string, f
     const short = took || !full || !framed(from) ? null : SHORT_TAIL.exec(line.slice(from))
     if (short) {
       tailEnd = ls + from + short[1].length
+      chars = short[1].length
       at = tailEnd
       took = true
       skipped = 0
@@ -651,7 +654,26 @@ function shortLastLine(text: string, at: number, frame: string, right: string, f
     if (framed(crc) && CRC_LINE.test(line.slice(crc))) tailEnd = ls + crc + 5
     break
   }
-  return tailEnd
+  return { end: tailEnd, chars }
+}
+
+/** The end of the line right under a DER key's last line (ending at `at`) that holds exactly the `lack` base64 characters the key's declared length
+ *  still lacks (under a payload run, so no run found it), as a key's short last line is taken (shortLastLine), or -1. With one line of the key in
+ *  view there is no width to tell its last line by, but the DER says how long that line is: a word of other length under it is not the key's.
+ *  `glue`: what a frame glues onto each line's base64 (a diff's `+`), which the key's lines start with and which is not the key's. */
+function lackedLine(text: string, at: number, frame: string, lack: number, glue: string): number {
+  const br = nextBreak(text, at, Math.min(text.length, at + 96))
+  const own = br ? text.slice(at, br[0]) : ''
+  const { end, chars } = shortLastLine(text, at, frame, FRAGMENT.test(blankNl(own)) ? '' : own, true)
+  return chars - (text.startsWith(glue, end - chars) ? glue.length : 0) === lack ? end : -1
+}
+
+/** Whether `payload` base64 characters (the first `st.offset` of them a frame glued on) are the whole of the DER key `st`: 90% of the
+ *  length it declares, or, with its END line under them (`closed`), all but a last line under a payload run, which no run counts
+ *  (an ML-DSA seed-only PKCS#8 is 54 bytes, 72 characters: 64 and 8 in a PEM file). */
+function wholeDer(st: Structure & { offset: number }, payload: number, closed: boolean): boolean {
+  const chars = payload - st.offset
+  return Math.floor((chars * 3) / 4) >= st.declared * 0.9 || (closed && Math.ceil(st.declared / 3) * 4 - chars < MIN_RUN)
 }
 
 /** The key block whose BEGIN marker is [b, me): its payload lines, END line, and class. */
@@ -782,17 +804,17 @@ function scanBlock(
         return br ? text.slice(e, br[0]) : null
       }
       const right = rest(runs[runs.length - 2][1])
-      tailEnd = shortLastLine(text, lastPayloadEnd, frames[frames.length - 1], right !== null && right === rest(lastPayloadEnd) && !FRAGMENT.test(blankNl(right)) ? right : '', !closed)
+      tailEnd = shortLastLine(text, lastPayloadEnd, frames[frames.length - 1], right !== null && right === rest(lastPayloadEnd) && !FRAGMENT.test(blankNl(right)) ? right : '', !closed).end
     }
   }
   const endOfKey = endAt !== -1 && runs.length ? endEnd : tailEnd
   const scanEnd = endAt !== -1 ? endEnd : Math.max(lastPayloadEnd, me)
-  const span = (cls: KeySpan['cls'], why: string): KeyBlock => ({
+  const span = (cls: KeySpan['cls'], why: string, end = endOfKey): KeyBlock => ({
     rule,
     cls,
     why,
     from: b,
-    to: cls === 'flag' ? me : endOfKey,
+    to: cls === 'flag' ? me : end,
     scanEnd,
     ...(endAt === -1 && stopped !== -1 ? { rest: stopped } : {}),
   })
@@ -842,8 +864,10 @@ function scanBlock(
   const random = bodyLooksRandom(runs.map(([s, e]) => text.slice(s, e)).join(''), st)
   if (st) {
     if (st.declared > 0) {
-      const decoded = Math.floor(((payload - st.offset) * 3) / 4)
-      if (decoded >= st.declared * 0.9 && payload >= 64 && random) return span('remove', `${st.type}-complete`)
+      // (no END line, and what the declared length lacks, under a payload run, is the line right under the key's last: that line is the key's)
+      const lack = Math.ceil(st.declared / 3) * 4 - (payload - st.offset)
+      const lacked = endAt === -1 && lack < MIN_RUN ? lackedLine(text, lastPayloadEnd, frames[frames.length - 1], lack, text.slice(runs[runs.length - 1][0], runs[runs.length - 1][0] + st.offset)) : -1
+      if ((lacked !== -1 || wholeDer(st, payload, endAt !== -1)) && payload >= 64 && random) return span('remove', `${st.type}-complete`, Math.max(lacked, endOfKey))
       if (endAt === -1 && payload >= LONG_PAYLOAD && random) return span('remove', `${st.type}-prefix`) // cut short
       // A verified private-key header over a random body of two lines or more: an excerpt of a
       // real key's own bytes.
