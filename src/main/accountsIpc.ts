@@ -1326,8 +1326,10 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       ...(workers.has(terminalId) ? { lockKind: 'worker' as const } : {}),
       // A profile that routes Anthropic traffic itself (a base URL, an outbound proxy or a cloud
       // provider in its settings) takes the compression proxy's variables out of the line: the terminal's
-      // spawn env set them for the profile it started on (design 5.2).
-      ...(agent === 'claude' && userRoutingVar(env, accountSettingsEnv(deps.paths(), target.id, fsx)) !== null
+      // spawn env set them for the profile it started on (design 5.2). Only where the proxy was Termpolis's:
+      // when its own environment routes (a company gateway) the terminal inherited that, and the proxy
+      // stepped aside, so there is nothing of Termpolis's to take out and the user's route must stay.
+      ...(agent === 'claude' && userRoutingVar(env, {}) === null && userRoutingVar(env, accountSettingsEnv(deps.paths(), target.id, fsx)) !== null
         ? { extraUnset: ['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY'] } : {}),
       newSessionId: () => randomUUID(),
       record: (r) => {

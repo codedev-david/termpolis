@@ -582,6 +582,23 @@ describe('accounts:switch, a profile that routes Anthropic traffic itself (desig
     expect(typedLine()).toMatch(/unset ANTHROPIC_BASE_URL TERMPOLIS_HEADROOM_PROXY && claude/)
   })
 
+  it('leaves a gateway the user routes Claude through themselves alone: Termpolis\'s proxy stepped aside for it (SAFETY-R1 S4)', async () => {
+    // ANTHROPIC_BASE_URL is in Termpolis's own environment (a company gateway), so the terminal inherited it, and
+    // taking it out of the shell would send every later launch there around the gateway.
+    register({ env: { ANTHROPIC_BASE_URL: 'https://gateway.corp.example.test/v1' } })
+    const { b } = await profileWith({ ANTHROPIC_BASE_URL: 'https://other.example.test/v1' })
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).not.toContain('unset')
+    expect(typedLine()).not.toContain('TERMPOLIS_HEADROOM_PROXY')
+  })
+
+  it('leaves it alone too when the target routes nothing of its own', async () => {
+    register({ env: { HTTPS_PROXY: 'http://proxy.corp.example.test:3128' } })
+    const { b } = await profileWith(null)
+    expect((await switchTo(b)).kind).toBe('switched')
+    expect(typedLine()).not.toContain('unset')
+  })
+
   it('leaves the line alone for a profile that routes nothing itself', async () => {
     const { b } = await profileWith(null)
     expect((await switchTo(b)).kind).toBe('switched')
