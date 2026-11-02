@@ -113,6 +113,12 @@ function ArmVerdictLine({ a, policy }: { a: ArmComparisonView; policy: 'late' | 
   const delta = a.costDeltaPct ?? 0
   const margin = a.costMarginPct ?? 0
   const give = `give or take ${margin} points at 99% confidence`
+  // The ledger outlives the setting. A person who follows the card's own advice and restarts on Legacy leaves
+  // a ledger that holds the period Late was in force, and from then on no request is recorded under Late or in
+  // the holdout, so the verdict can never change. Every sentence below is about that period, in the past, with no
+  // advice to switch to what is already in force and no promise of more data that cannot arrive.
+  const onLegacy = policy === 'legacy'
+  const aboutThatPeriod = ' You are on the Legacy setting now, so this compares the period Late was in force.'
   let text: string
   let color = 'inherit'
   if (a.verdict === 'not-enough-data') {
@@ -121,16 +127,24 @@ function ArmVerdictLine({ a, policy }: { a: ArmComparisonView; policy: 'late' | 
     // none of its own yet, and has to say so rather than say it is on Legacy.
     const onlyLegacy = a.late.requests === 0 && a.holdout.requests === 0 && a.legacy.requests > 0
     text = onlyLegacy
-      ? (policy === 'legacy'
+      ? (onLegacy
         ? `This run is on the Legacy setting, so every request ran the old behavior and there is nothing to compare (${fmt(a.legacy.requests)} requests so far).`
         : `No request has run under Late in this ledger yet; the ${fmt(a.legacy.requests)} ${a.legacy.requests === 1 ? 'request' : 'requests'} from the Legacy setting ${a.legacy.requests === 1 ? 'is' : 'are'} not compared.`)
-      : `Not enough data yet to compare. It needs at least ${fmt(a.minRequests)} requests in each arm, from at least ${MIN_ARM_GROUPS} different groups of conversations. So far: late ${fmt(a.late.requests)} requests in ${groupsText(a.late.groups)}, the holdout ${fmt(a.holdout.requests)} in ${groupsText(a.holdout.groups)}.`
+      : `Not enough data yet to compare. It needs at least ${fmt(a.minRequests)} requests in each arm, from at least ${MIN_ARM_GROUPS} different groups of conversations. So far: late ${fmt(a.late.requests)} requests in ${groupsText(a.late.groups)}, the holdout ${fmt(a.holdout.requests)} in ${groupsText(a.holdout.groups)}.${onLegacy ? ' You are on the Legacy setting now, so these only grow while Late is in force.' : ''}`
   } else if (a.verdict === 'late-cheaper') {
     color = '#4ade80'
-    text = `Late is cheaper. It used about ${Math.abs(delta)}% fewer billed units per unit of work than the holdout (${give}).`
+    text = onLegacy
+      ? `Late was cheaper while it was in force. It used about ${Math.abs(delta)}% fewer billed units per unit of work than the holdout (${give}).${aboutThatPeriod}`
+      : `Late is cheaper. It used about ${Math.abs(delta)}% fewer billed units per unit of work than the holdout (${give}).`
   } else if (a.verdict === 'late-costlier') {
+    // Still red when it is about the past: it is still a finding about Late, which a person weighing a return to it should see.
     color = RED
-    text = `Late is costing more. It used about ${delta}% more billed units per unit of work than the holdout (${give}), which is more than chance explains. You can switch to Legacy in Settings > Token Savings > Shorten tool results; it applies the next time Termpolis starts.`
+    text = onLegacy
+      ? `Late cost more while it was in force. It used about ${delta}% more billed units per unit of work than the holdout (${give}), which is more than chance explains.${aboutThatPeriod}`
+      : `Late is costing more. It used about ${delta}% more billed units per unit of work than the holdout (${give}), which is more than chance explains. You can switch to Legacy in Settings > Token Savings > Shorten tool results; it applies the next time Termpolis starts.`
+  } else if (onLegacy) {
+    const gap = delta === 0 ? 'level with the holdout' : `${Math.abs(delta)}% ${delta < 0 ? 'cheaper than' : 'dearer than'} the holdout`
+    text = `No clear difference. While Late was in force it ran ${gap}, ${give}, so this could be chance.${aboutThatPeriod}`
   } else {
     const gap = delta === 0 ? 'running level with the holdout' : `running ${Math.abs(delta)}% ${delta < 0 ? 'cheaper than' : 'dearer than'} the holdout`
     const more = a.moreDataFactor !== null
@@ -232,7 +246,10 @@ function Row({ c, inForce }: { c: ElisionClassView; inForce: 'late' | 'legacy' }
   const judged = c.kind === 'compact'
   // Under Late there are two sorts of compaction in the table and the reader has to be able to tell
   // them apart. A repeat, a patch and an aged-out result are made the same way under both.
-  const tag = judged && inForce === 'late' ? (c.policy === 'late' ? 'Late' : 'old behavior') : null
+  // The rows of Late's period stay in the ledger after a person returns to Legacy, so a compaction made by Late is
+  // tagged whichever policy is in force (or it would read the same as the row the Legacy setting made); the old
+  // behavior is tagged only beside Late, where it is the holdout's and not the setting's own.
+  const tag = judged ? (c.policy === 'late' ? 'Late' : inForce === 'late' ? 'old behavior' : null) : null
   return (
     <tr data-testid={`hr-elision-row-${c.key}`}>
       <td style={{ padding: '3px 8px 3px 0' }}>{KIND_LABEL[c.kind]}{tag && <span style={{ opacity: 0.6 }}> ({tag})</span>}</td>
