@@ -124,8 +124,13 @@ describe('Claude Code\'s saved notes: the settings IPC', () => {
   it('remove stops before it removes anything when the switch cannot be turned off and kept off', async () => {
     d.index.set = () => { throw new Error('The setting could not be saved') }
     const res = await call(NOTES_IPC.remove)
-    expect(res).toEqual({ success: false, error: 'The setting could not be saved' })
+    expect(res).toEqual({ success: false, error: 'The setting could not be saved. Nothing was removed.' }) // said, so it does not read as a half removal
     expect(d.remove).not.toHaveBeenCalled() // the import would only bring them back at the next start
+  })
+
+  it('remove does not double the full stop of an error that ends in one', async () => {
+    d.index.set = () => { throw new Error('The settings file is read-only.  ') }
+    expect(await call(NOTES_IPC.remove)).toEqual({ success: false, error: 'The settings file is read-only. Nothing was removed.' })
   })
 
   it('every channel answers a failure with the error envelope, never by throwing', async () => {
@@ -136,6 +141,6 @@ describe('Claude Code\'s saved notes: the settings IPC', () => {
 
     d.index = { get: () => true, set: () => { throw 'store gone' } }
     registerClaudeNotesIpc({ handle: (c, fn) => { handlers.set(c, fn) } }, d)
-    expect(await call(NOTES_IPC.remove)).toEqual({ success: false, error: 'store gone' })
+    expect(await call(NOTES_IPC.remove)).toEqual({ success: false, error: 'store gone. Nothing was removed.' })
   })
 })

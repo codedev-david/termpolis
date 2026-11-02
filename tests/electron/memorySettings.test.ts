@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -279,6 +279,45 @@ describe('indexClaudeNotes and shareNotesAcrossProjects', () => {
       const m = await freshModule()
       expect(m.setIndexClaudeNotes(false).indexClaudeNotes).toBe(false)
       expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).indexClaudeNotes).toBe(false)
+    })
+
+    // "Remove imported notes" turns the import off first. When it is already off there is nothing for the file to hold, so a file
+    // that cannot be written must not stand in the way of taking the notes out of memory.
+    it('a switch that is already what is asked for is not refused because the file cannot be written', async () => {
+      writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: false, shareNotesAcrossProjects: false, primerLimit: 14 }))
+      const m = await freshModule()
+      breakTheFile(m)
+      expect(m.setIndexClaudeNotes(false).indexClaudeNotes).toBe(false)
+      expect(m.setShareNotesAcrossProjects(false).shareNotesAcrossProjects).toBe(false)
+      expect(m.getMemorySettings()).toMatchObject({ indexClaudeNotes: false, shareNotesAcrossProjects: false, primerLimit: 14 })
+    })
+
+    it('...yet it still writes the file when it can, so a file changed behind the module\'s back is put right', async () => {
+      writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: false }))
+      const m = await freshModule()
+      expect(m.getIndexClaudeNotes()).toBe(false)
+      writeFileSync(settingsFile(), JSON.stringify({ indexClaudeNotes: true }))
+      m.setIndexClaudeNotes(false)
+      expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).indexClaudeNotes).toBe(false)
+    })
+
+    // A crash in the middle of a write is what leaves the unreadable file the import then fails closed on. The file is replaced
+    // whole, from a copy written beside it first (agentConfigIO.atomicWriteText), so it is never found cut short.
+    it('a write that fails leaves the settings file as it was', async () => {
+      const before = JSON.stringify({ indexClaudeNotes: true, primerLimit: 14 })
+      writeFileSync(settingsFile(), before)
+      const m = await freshModule()
+      m.getPrimerLimit()
+      mkdirSync(`${settingsFile()}.termpolis-${process.pid}.tmp`) // where the new copy goes first: the write cannot get that far
+      expect(() => m.setIndexClaudeNotes(false)).toThrow(/could not be saved/i)
+      expect(readFileSync(settingsFile(), 'utf8')).toBe(before)
+    })
+
+    it('leaves no copy of the file beside it after a save', async () => {
+      const m = await freshModule()
+      m.setIndexClaudeNotes(false)
+      m.setPrimerLimit(20)
+      expect(readdirSync(tmpDir)).toEqual(['memory-settings.json'])
     })
 
     it('the other settings stay best effort: a failed write does not throw, as it never did', async () => {

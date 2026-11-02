@@ -2906,7 +2906,10 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     it('changes a switch, and the change is the real setting, kept on disk', async () => {
       const res = await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
       expect(res.data).toMatchObject({ indexClaudeNotes: true, shareNotesAcrossProjects: true })
-      expect(fsMock.writeFileSync.mock.calls.some(([f, text]) => String(f).endsWith('memory-settings.json') && JSON.parse(String(text)).shareNotesAcrossProjects === true)).toBe(true)
+      // The settings file is replaced whole: the new text is written to a copy beside it, and the copy renamed over the file.
+      const copy = fsMock.writeFileSync.mock.calls.find(([f, text]) => /memory-settings\.json\.termpolis-\d+\.tmp$/.test(String(f)) && JSON.parse(String(text)).shareNotesAcrossProjects === true)
+      expect(copy).toBeDefined()
+      expect(fsMock.renameSync.mock.calls.some(([from, to]) => from === copy![0] && String(to).endsWith('memory-settings.json'))).toBe(true)
     })
 
     it('turning the notes on starts a pass at once, unless memory is locked', async () => {

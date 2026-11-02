@@ -43,6 +43,19 @@ describe('MCP recall/inject audit (WP-E)', () => {
     expect(onDisk).not.toContain('billing')
   })
 
+  // PRIVACY.md and the documentation say a recall records "the ids of the top few": five at most, however many it found.
+  it.each([
+    ['memory_search', { query: 'q', agentId: 'agentZ' }],
+    ['memory_related', { id: 'seed' }],
+  ])('%s records the ids of the top five it found and no more', async (tool, args) => {
+    const many = Array.from({ length: 8 }, (_, i) => ({ id: `r${i + 1}` }))
+    const wide = { memorySearch: async () => many, memoryRelated: async () => many } as unknown as Parameters<typeof executeTool>[2]
+    await executeTool(tool, args, wide)
+    const rec = readMemoryAudit().find((e) => e.event === 'recall') as { event: 'recall'; results: number; topIds: string[] } | undefined
+    expect(rec!.results).toBe(8)
+    expect(rec!.topIds).toEqual(['r1', 'r2', 'r3', 'r4', 'r5'])
+  })
+
   it('audits primer injection with an approximate token count', async () => {
     await executeTool('memory_primer', { cwd: '/x' }, handlers)
     const inj = readMemoryAudit().find((e) => e.event === 'inject') as

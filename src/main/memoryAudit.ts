@@ -46,7 +46,8 @@ const FILES: Record<MemoryAuditRole, { live: string; prev: string }> = {
   host: { live: 'memory-audit.jsonl', prev: 'memory-audit.prev.jsonl' },
   main: { live: 'memory-audit-main.jsonl', prev: 'memory-audit-main.prev.jsonl' },
 }
-const MAX_BYTES = 2_000_000 // ~2 MB live file, then rotate (one previous generation kept)
+/** The size a live audit file may reach before it rotates (one previous generation is kept): PRIVACY.md says "about 2 MB". */
+export const MAX_BYTES = 2_000_000
 let maxBytes = MAX_BYTES
 const PREVIEW_MAX = 160
 const SCAN_MAX = 4096 // cap the bytes we redaction-scan per field so a huge memory can't stall a write

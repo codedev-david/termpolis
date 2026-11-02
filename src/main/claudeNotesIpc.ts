@@ -71,7 +71,9 @@ export function registerClaudeNotesIpc(ipc: NotesIpcLike, d: NotesIpcDeps): void
   // removal is not undone at the next tick. Turning it on again re-imports from scratch.
   ipc.handle(NOTES_IPC.remove, async () => {
     try {
-      d.index.set(false)
+      // When the switch cannot be turned off and kept off, nothing is touched: say so, or the error reads as a removal that went
+      // part of the way.
+      try { d.index.set(false) } catch (e) { throw new Error(`${message(e).replace(/[.\s]+$/, '')}. Nothing was removed.`) }
       const result = await d.remove()
       return ok({ ...result, settings: await view() })
     } catch (e) {

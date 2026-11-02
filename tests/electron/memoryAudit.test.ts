@@ -16,6 +16,7 @@ import {
   redactPreview,
   _resetMemoryAuditForTests,
   _setMaxBytesForTests,
+  MAX_BYTES,
 } from '../../src/main/memoryAudit'
 
 describe('memory/learning audit (WP-E)', () => {
@@ -74,6 +75,26 @@ describe('memory/learning audit (WP-E)', () => {
     for (let i = 0; i < 80; i++) auditMemory({ event: 'write', id: 'm' + i, kind: 'fact', preview: 'padding padding padding padding padding' }, i)
     expect(fs.existsSync(path.join(tmp, 'memory-audit.prev.jsonl'))).toBe(true) // previous generation kept
     expect(fs.statSync(auditFile()).size).toBeLessThan(4000 + 500) // live file stays near the cap, not unbounded
+  })
+
+  // PRIVACY.md and the documentation say each file is "capped at about 2 MB". The tests above lower the cap to stay cheap, so this
+  // pins the one that ships: a live file just under it takes one more line, one that the next line would push to it moves aside.
+  it('keeps the live file to about 2 MB: the cap that ships', () => {
+    expect(MAX_BYTES).toBe(2_000_000)
+    const prev = path.join(tmp, 'memory-audit.prev.jsonl')
+    const line = (): void => auditMemory({ event: 'write', id: 'm', kind: 'fact', preview: 'x' }, 1)
+    const seed = (bytes: number): void => { _resetMemoryAuditForTests(); fs.rmSync(prev, { force: true }); initMemoryAudit(tmp); fs.writeFileSync(auditFile(), 'x'.repeat(bytes)) }
+    seed(1_900_000)
+    line()
+    expect(fs.existsSync(prev)).toBe(false) // 100 KB of room: appended, not rotated
+    expect(fs.statSync(auditFile()).size).toBeGreaterThan(1_900_000)
+    seed(1_999_900)
+    line()
+    expect(fs.existsSync(prev)).toBe(false) // the line fits under 2,000,000
+    seed(1_999_990)
+    line()
+    expect(fs.existsSync(prev)).toBe(true) // it would not
+    expect(fs.statSync(auditFile()).size).toBeLessThan(500) // and the live file starts again with it
   })
 })
 

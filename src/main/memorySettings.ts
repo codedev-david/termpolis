@@ -9,8 +9,9 @@
 
 import { app } from 'electron'
 import { join } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { DEFAULT_PRIMER_LIMIT } from './contextPrimer'
+import { atomicWriteText } from './agentConfigIO'
 
 export interface MemorySettings {
   /** Memories injected per primer (banner + MCP memory_primer load). */
@@ -94,7 +95,9 @@ function persist(): boolean {
   try {
     const dir = app.getPath('userData')
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-    writeFileSync(settingsPath(), JSON.stringify(settings, null, 2))
+    // Replaced whole, from a copy written beside it first: a crash cannot leave the file cut short, which is the one state the
+    // notes switch has to fail closed on (init).
+    atomicWriteText(settingsPath(), JSON.stringify(settings, null, 2))
     return true
   } catch {
     return false /* best effort for the tuning settings: a failed write just means the setting won't survive restart */
@@ -107,7 +110,10 @@ function saveSwitch(key: 'indexClaudeNotes' | 'shareNotesAcrossProjects', value:
   if (!initialized) init()
   const before = settings[key]
   settings[key] = value
-  if (!persist()) {
+  // The file is written whenever it can be, so a damaged one is put right. A switch that is already what was asked for has
+  // nothing in the file to keep, though: "Remove imported notes" turns the import off first, and an import that is off must not
+  // have that removal refused because the settings file cannot be written.
+  if (!persist() && value !== before) {
     settings[key] = before
     throw new Error('The setting could not be saved (the settings file could not be written)')
   }
