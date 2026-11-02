@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import {
+  DEFAULT_MAX_CHUNKS,
   fileManifest,
   findNotes,
   findProject,
@@ -187,6 +188,53 @@ describe('a pass that finds things in an odd state', () => {
     const res = await removeImportedNotes(deps(store))
     expect(res).toEqual({ removed: 1, failed: 0 })
     expect(store.rows.has('not-a-note')).toBe(true)
+  })
+})
+
+// The numbers a pass runs by when nobody overrides them. Each is a promise to the machine it runs on (how much one pass stores,
+// how often the record is saved, what counts as a binary file), so each is held to its value here, not only to being "some number".
+describe('the defaults a pass runs by', () => {
+  const many = (n: number): void => {
+    for (let i = 0; i < n; i++) note(FOLDER, `n${String(i).padStart(3, '0')}.md`, `---\nname: note ${i}\n---\nBody of note ${i}.`)
+    session(FOLDER, CWD)
+  }
+
+  it('stores at most 300 chunks in one pass and leaves the rest for the next', async () => {
+    expect(DEFAULT_MAX_CHUNKS).toBe(300)
+    many(303)
+    const store = fakeStore()
+    const first = await runClaudeNotesIngest(deps(store))
+    expect(first).toMatchObject({ chunksWritten: 300, truncated: true })
+    const second = await runClaudeNotesIngest(deps(store))
+    expect(second).toMatchObject({ chunksWritten: 3, truncated: false })
+    expect(store.rows.size).toBe(303)
+  })
+
+  it('saves its record after every 20 notes, and not after every 21st', async () => {
+    const savesFor = async (n: number): Promise<number> => {
+      teardownWorld(); setupWorld(); many(n)
+      const manifest = flakyManifest(Infinity)
+      await runClaudeNotesIngest(deps(fakeStore(), { manifest }))
+      return manifest.writes()
+    }
+    const base = await savesFor(19)
+    expect(await savesFor(20)).toBe(base + 1) // the 20th note triggers a save of its own
+    expect(await savesFor(39)).toBe(base + 1)
+    expect(await savesFor(40)).toBe(base + 2)
+  })
+
+  it('judges a file binary by a zero byte in its first 8 KB, and not further in', async () => {
+    const withNulAt = (at: number): string => {
+      const text = '---\nname: n\n---\n' + 'x'.repeat(at - 16) + '\0' + 'y'.repeat(100)
+      return text
+    }
+    note(FOLDER, 'early.md', withNulAt(5000)) // inside the first 8 KB: binary
+    note(FOLDER, 'edge.md', withNulAt(8191)) // the last byte of the first 8 KB (offset 8191): binary
+    note(FOLDER, 'late.md', withNulAt(8192)) // the first byte past it: read as text
+    session(FOLDER, CWD)
+    const stats = await runClaudeNotesIngest(deps(fakeStore()))
+    expect(stats.binary).toBe(2)
+    expect(notesStatus(fileManifest(data)).notes).toBe(1)
   })
 })
 

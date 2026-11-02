@@ -403,6 +403,7 @@ describe('lessonSubstance: the edges of each rule', () => {
   it('does not take a two-letter acronym for something to search for, and takes three letters', () => {
     expect(ids('The PR and the CI are green and ready' + pad)).toBeUndefined()
     expect(ids('It fails with ENOENT on that path' + pad)).toBe('identifiers +1')
+    expect(ids('It dies with EOF on that pipe' + pad)).toBe('identifiers +1') // exactly three: the shortest that counts
   })
 
   it('calls an opener an announcement only when fewer than four words follow it', () => {
@@ -419,6 +420,13 @@ describe('lessonSubstance: the edges of each rule', () => {
   it('takes two key/value pairs for an ordinary quoted setting and three for residue', () => {
     expect(has('Set "strict": true and "target": "es2020" in the config' + pad, 'json -2')).toBe(false)
     expect(has('Set "strict": true, "target": "es2020" and "lib": "dom" in the config' + pad, 'json -2')).toBe(true)
+  })
+
+  it('reads a key of up to 40 characters as a key, and a longer one as no key', () => {
+    const key = (n: number): string => 'k'.repeat(n)
+    const three = (n: number): string => `Set "${key(n)}": 1, "${key(n)}": 2 and "${key(n)}": 3 in the config` + pad
+    expect(has(three(40), 'json -2')).toBe(true)
+    expect(has(three(41), 'json -2')).toBe(false)
   })
 
   it('takes an object or array that opens the text for residue, and not one that opens a sentence', () => {
@@ -444,6 +452,16 @@ describe('lessonSubstance: the edges of each rule', () => {
       expect(ids(at(1150))).toBe('identifiers +1')
       expect(has(at(1250), 'connective +2')).toBe(false) // starts after the window
       expect(ids(at(1250))).toBeUndefined()
+    })
+
+    // The window is 1,200 characters, to the character: a word that ends at 1,200 is inside it, one that ends at 1,201 is cut.
+    it('takes a word that ends at character 1,200 and not one that ends a character later', () => {
+      const xs = (n: number): string => 'x '.repeat(Math.ceil(n / 2)).slice(0, n) // no identifier, connective or marker in it
+      const inside = xs(1192) + ' because' // 1,200 characters, the last of them the final letter of "because"
+      const cut = xs(1193) + ' because' // 1,201 characters: the window ends one letter short of the word
+      expect([inside.length, cut.length]).toEqual([1200, 1201])
+      expect(has(inside, 'connective +2')).toBe(true)
+      expect(has(cut, 'connective +2')).toBe(false)
     })
 
     it('still takes the length of the whole text for the long and the short penalty, not of the window', () => {
