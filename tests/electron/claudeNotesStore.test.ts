@@ -633,6 +633,21 @@ describe('the manifest and the store disagree', () => {
     expect(await stored()).toHaveLength(3) // edited, so imported afresh, and it stays
     expect(notesStatus(fileManifest(data)).chunks).toBe(3)
   })
+
+  // The documentation says a copy deleted by hand stays deleted only while this computer's record exists. A lost record knows nothing:
+  // the pass sweeps the copies it cannot account for and imports every note again, the one deleted by hand with the rest.
+  it('if the record is lost, a copy deleted by hand comes back with the rest, and nothing doubles', async () => {
+    seedSameTime(3)
+    await runClaudeNotesIngest(deps(realStore))
+    const [gone] = await stored()
+    await memoryDelete(gone.id)
+    expect(await stored()).toHaveLength(2)
+    fs.rmSync(path.join(data, NOTES_MANIFEST_FILE)) // the record is lost; the store is not
+    for (let pass = 0; pass < 3; pass++) await runClaudeNotesIngest(deps(realStore))
+    restart()
+    expect(await stored()).toHaveLength(3) // all three: not two, and not five
+    expect(manifestJson().dirty).toBe(false)
+  })
 })
 
 // Keeps the harness' unused exports honest.

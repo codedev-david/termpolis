@@ -437,7 +437,8 @@ this: it starts when you answer yes.
   asked. A computer that imports such a brain export does not take the copies
   as its own: while its own saved-notes import is on, its first pass (and any
   after an interrupted one) removes the copies it did not make and imports its
-  own from the notes on that computer. Turn the import off first to keep them.
+  own from the notes on that computer. Turning the import off first keeps them
+  for as long as it stays off.
 - **Undo.** *Remove imported notes* (Settings → Memory & Learning) takes every
   copy out of memory and turns the import off; Claude's own notes are not
   touched. Turning the switch off stops the reading and leaves the existing

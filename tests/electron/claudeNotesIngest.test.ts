@@ -1819,3 +1819,35 @@ describe('the sweep before an import, and a removal that has just failed', () =>
     expect(manifestJson().dirty).toBe(true) // so the record is not called settled
   })
 })
+
+// A brain export from another computer brings that computer's copies of its saved notes. They carry no mark of who made them and this
+// computer's record has never heard of them, so its first pass takes them for stale copies of its own and replaces them with copies
+// made from the notes on THIS computer. PRIVACY.md and the documentation say so, and say to turn the import off first to keep them.
+describe('copies that came in with a brain import from another computer', () => {
+  const imported = (): Array<StoredNote & { content: string }> => [1, 2, 3].map((n) => ({
+    id: `brain${n}`, ts: 5_000 + n, agentId: 'claude-notes', source: 'claude-notes', content: `a note of the other computer, number ${n}`,
+    tags: ['type:reference', `note:other${n}.md`],
+  } as unknown as StoredNote & { content: string }))
+
+  it('are removed by the first pass here, which imports its own notes in their place', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    for (const r of imported()) store.rows.set(r.id, r)
+    const stats = await runClaudeNotesIngest(deps(store)) // this computer has no record yet
+    expect(stats.swept).toBe(3)
+    expect(store.removed.sort()).toEqual(['brain1', 'brain2', 'brain3'])
+    expect(stats.chunksWritten).toBe(3)
+    expect([...store.rows.keys()].filter((id) => id.startsWith('brain'))).toEqual([])
+    expect(store.rows.size).toBe(3)
+  })
+
+  it('stay for as long as the import is off, which is what the documentation says to do first', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    for (const r of imported()) store.rows.set(r.id, r)
+    const stats = await runClaudeNotesIngest(deps(store, { enabled: () => false }))
+    expect(stats.idle).toBe('off')
+    expect(store.removed).toEqual([])
+    expect(store.rows.size).toBe(3)
+  })
+})
