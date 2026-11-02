@@ -6,7 +6,7 @@
 // the swarm and the terminals go on under it while the user decides. What each button does, and
 // what the conductor is told, is swarmRestart.ts's.
 import { useEffect } from 'react'
-import { declineRestart, installSwarmRestart, liveRestartDeps, offerTitle, restartOn, RESTART_WAIT_MS } from '../../lib/swarmRestart'
+import { declineRestart, installSwarmRestart, liveRestartDeps, offerTitle, restartOn, signInThenRestart, RESTART_WAIT_MS } from '../../lib/swarmRestart'
 import { runConductorOn } from '../../lib/conductorManager'
 import { isTerminalVisible } from '../../lib/limitWatch'
 import type { RestartDeps, SwarmRestartGroup } from '../../lib/swarmRestart'
@@ -26,6 +26,11 @@ function Offer({ g, view, deps }: { g: SwarmRestartGroup; view: AccountsView | n
   const run = (id: string, confirmed = false): void => {
     void (g.conductor ? runConductorOn(g.id, id, confirmed) : restartOn(g.id, id, deps(), confirmed))
   }
+  // A signed-out account is a way out once it is signed in: its sheet opens here, and the restart goes on after it.
+  const signIn = (id: string): void => {
+    if (!g.conductor) return signInThenRestart(g.id, id, deps())
+    useTerminalStore.getState().openSignInSheet(id, () => { void runConductorOn(g.id, id) }, { doneLabel: `Run the conductor again on ${label(id)}` })
+  }
   const done = g.phase.kind === 'done'
   let body: React.ReactNode
   switch (g.phase.kind) {
@@ -36,6 +41,11 @@ function Offer({ g, view, deps }: { g: SwarmRestartGroup; view: AccountsView | n
             {g.targets.map((id) => (
               <button key={id} type="button" className={PRIMARY} onClick={() => run(id)} data-testid="swarm-restart-on">
                 {g.conductor ? 'Run the conductor again' : one ? 'Restart it' : 'Restart all'} on {label(id)}
+              </button>
+            ))}
+            {(g.signIn ?? []).map((id) => (
+              <button key={`sign-in-${id}`} type="button" className={BUTTON} onClick={() => signIn(id)} data-testid="swarm-restart-sign-in">
+                Sign in to {label(id)} and {g.conductor ? 'run the conductor again' : one ? 'restart' : 'restart all'}
               </button>
             ))}
             {!g.conductor && <button type="button" className={BUTTON} onClick={decline} data-testid="swarm-restart-decline">Let the conductor reassign</button>}

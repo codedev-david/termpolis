@@ -11,6 +11,7 @@ import { HandoffAnimation } from '../HandoffAnimation/HandoffAnimation'
 import { SwarmReviewPanel } from '../SwarmReview/SwarmReviewPanel'
 import { SwarmWorkerAccounts } from '../Accounts/SwarmWorkerAccounts'
 import { SwarmRestartList } from '../Accounts/SwarmRestartOffers'
+import { clearSwarmRestarts, liveRestartDeps } from '../../lib/swarmRestart'
 
 interface SwarmDashboardProps {
   onClose: () => void
@@ -105,6 +106,8 @@ export function SwarmDashboard({ onClose, initialCwd }: SwarmDashboardProps) {
     stopAllBridges()
     stopConductor()
     await window.swarmAPI.clear()
+    // The restart offers of the workers about to be killed go with them, and tell no one: the swarm is over.
+    clearSwarmRestarts(liveRestartDeps())
     // Close and kill all swarm terminals
     const store = useTerminalStore.getState()
     const swarmTerminals = store.terminals.filter(t => t.isSwarm)

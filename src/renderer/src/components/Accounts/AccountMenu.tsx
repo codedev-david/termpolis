@@ -188,7 +188,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
 
   const openOn = (row: MenuRow): void => {
     close(false)
-    if (row.action === 'sign-in-and-switch') return store().openSignInSheet(row.account.id, () => { void newTerminalOn(terminal, row.account) })
+    if (row.action === 'sign-in-and-switch') return store().openSignInSheet(row.account.id, () => { void newTerminalOn(terminal, row.account) }, { doneLabel: `Open a new terminal on ${row.account.label}` })
     void newTerminalOn(terminal, row.account)
   }
 

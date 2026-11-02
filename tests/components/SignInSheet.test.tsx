@@ -123,6 +123,58 @@ describe('SignInSheet', () => {
     expect(screen.getByTestId('sign-in-done')).toHaveTextContent('Switch to codedev')
   })
 
+  it('says what the continuation does when the caller names it: a new terminal is not a switch (UI-R1-E)', async () => {
+    useTerminalStore.getState().openSignInSheet('acc_b', vi.fn(), { doneLabel: 'Open a new terminal on codedev' })
+    render(<SignInSheet />)
+    await act(async () => { fireEvent.click(screen.getByTestId('sign-in-method-claudeai')) })
+    emit({ kind: 'success', email: 'other@example.test' })
+    expect(screen.getByTestId('sign-in-done')).toHaveTextContent('Open a new terminal on codedev')
+  })
+
+  it('runs the caller\'s word when the sheet is closed without signing in: Cancel, the close button and Esc (swarm offer)', async () => {
+    for (const close of [
+      () => { fireEvent.click(screen.getByTestId('sign-in-method-claudeai')); fireEvent.click(screen.getByTestId('sign-in-cancel')) },
+      () => fireEvent.click(screen.getByTestId('sign-in-sheet-close')),
+      () => fireEvent.keyDown(screen.getByTestId('sign-in-sheet'), { key: 'Escape' }),
+    ]) {
+      const cancelled = vi.fn()
+      const then = vi.fn()
+      useTerminalStore.getState().openSignInSheet('acc_b', then, { cancelled })
+      const { unmount } = render(<SignInSheet />)
+      close()
+      expect(useTerminalStore.getState().signInSheet).toBeNull()
+      expect(cancelled).toHaveBeenCalledTimes(1)
+      expect(then).not.toHaveBeenCalled()
+      unmount()
+    }
+  })
+
+  it('does not run it when the sign-in finished', async () => {
+    const cancelled = vi.fn()
+    const then = vi.fn()
+    useTerminalStore.getState().openSignInSheet('acc_b', then, { cancelled })
+    render(<SignInSheet />)
+    await act(async () => { fireEvent.click(screen.getByTestId('sign-in-method-claudeai')) })
+    emit({ kind: 'success', email: 'other@example.test' })
+    fireEvent.click(screen.getByTestId('sign-in-done'))
+    expect(then).toHaveBeenCalledTimes(1)
+    expect(cancelled).not.toHaveBeenCalled()
+  })
+
+  it('runs it when the account is no longer registered and the sheet is closed, by its button or by Esc', () => {
+    for (const close of [
+      () => fireEvent.click(screen.getByText('Close')),
+      () => fireEvent.keyDown(screen.getByTestId('sign-in-sheet'), { key: 'Escape' }),
+    ]) {
+      const cancelled = vi.fn()
+      useTerminalStore.getState().openSignInSheet('acc_gone', undefined, { cancelled })
+      const { unmount } = render(<SignInSheet />)
+      close()
+      expect(cancelled).toHaveBeenCalledTimes(1)
+      unmount()
+    }
+  })
+
   it('cancels with Cancel before main gave the sign-in a session, and ends the session main then gives it', async () => {
     let release: (v: unknown) => void = () => undefined
     accounts.signInStart.mockReturnValueOnce(new Promise((r) => { release = r }))

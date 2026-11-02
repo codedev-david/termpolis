@@ -279,3 +279,51 @@ describe('liveRestartDeps', () => {
     expect(d.primerEnabled()).toBe(true)
   })
 })
+
+// WHOLE-R1-F2 / UI-R1-J: the offer's way to the sign-in sheet (account-switcher-ui.md 2.3).
+describe('SwarmRestartOffers: an account to sign in to', () => {
+  it('offers "Sign in to <it> and restart" beside the accounts it can restart on, and opens the sheet on a click', async () => {
+    useTerminalStore.setState({
+      accountsView: { ...VIEW, accounts: [...VIEW.accounts, row({ id: 'acc_w', label: 'work', profile: '/h/.claude-work', isDefault: false, order: 2 })] },
+      swarmRestarts: [group({ signIn: ['acc_w'] })],
+    })
+    render(<SwarmRestartOffers deps={() => deps} />)
+    const buttons = screen.getAllByTestId('swarm-restart-sign-in')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].textContent).toBe('Sign in to work and restart')
+    // The other ways are still there, and so is the decline.
+    expect(screen.getByText('Restart it on codedev')).toBeTruthy()
+    expect(screen.getByTestId('swarm-restart-decline')).toBeTruthy()
+    fireEvent.click(buttons[0])
+    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_w', doneLabel: 'Restart it on work' })
+  })
+
+  it('offers it alone when no account is signed in, with the decline beside it', () => {
+    useTerminalStore.setState({ swarmRestarts: [group({ targets: [], signIn: ['acc_c'] })] })
+    render(<SwarmRestartOffers deps={() => deps} />)
+    expect(screen.queryByTestId('swarm-restart-on')).toBeNull()
+    expect(screen.getByTestId('swarm-restart-sign-in').textContent).toBe('Sign in to codedev and restart')
+    expect(screen.getByTestId('swarm-restart-decline')).toBeTruthy()
+  })
+
+  it('says "restart all" for several workers, and shows nothing of it once the offer moved on', () => {
+    useTerminalStore.setState({ swarmRestarts: [group({ workers: [W1, W2], signIn: ['acc_c'] })] })
+    const { rerender } = render(<SwarmRestartOffers deps={() => deps} />)
+    expect(screen.getByTestId('swarm-restart-sign-in').textContent).toBe('Sign in to codedev and restart all')
+    act(() => { useTerminalStore.setState({ swarmRestarts: [group({ workers: [W1, W2], signIn: ['acc_c'], phase: { kind: 'restarting', targetId: 'acc_c' } })] }) })
+    rerender(<SwarmRestartOffers deps={() => deps} />)
+    expect(screen.queryByTestId('swarm-restart-sign-in')).toBeNull()
+  })
+
+  it('opens the sheet for the conductor\'s run-again card too, and runs the conductor when it is done', async () => {
+    useTerminalStore.setState({ swarmRestarts: [group({ conductor: true, workers: [], targets: [], signIn: ['acc_c'] })] })
+    render(<SwarmRestartOffers deps={() => deps} />)
+    const button = screen.getByTestId('swarm-restart-sign-in')
+    expect(button.textContent).toBe('Sign in to codedev and run the conductor again')
+    fireEvent.click(button)
+    const sheet = useTerminalStore.getState().signInSheet!
+    expect(sheet).toMatchObject({ accountId: 'acc_c', doneLabel: 'Run the conductor again on codedev' })
+    // No clock runs for the conductor, so closing the sheet unsigned leaves nothing to restart.
+    expect(sheet.cancelled).toBeUndefined()
+  })
+})

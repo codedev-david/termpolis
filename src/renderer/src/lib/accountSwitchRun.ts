@@ -310,7 +310,7 @@ export async function actOnRun(terminalId: string, kind: CardActionKind | 'back'
       return s.openSignInSheet(run.to.id, () => {
         const target = store().accountsView?.accounts.find((r) => r.id === run.to.id)
         if (terminal && target) void newTerminalOn(terminal, target, deps, run.resumeId)
-      })
+      }, { doneLabel: `Open a new terminal on ${run.to.label}` })
     }
     case 'sign-in-and-switch':
       s.dropSwitchRun(terminalId)

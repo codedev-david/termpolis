@@ -187,7 +187,9 @@ interface TerminalStore {
   relaunching: Record<string, 'account' | 'model' | 'sign-in'>
   /** The sign-in sheet, open for an account (the in-app account UI, §2.3). `then` runs once it
    *  signed in: a switch that needed the sign-in goes on. */
-  signInSheet: { accountId: string; then?: () => void } | null
+  /** `then`: what goes on once it signed in; `doneLabel` names it on the sheet's button; `cancelled` runs when the
+   *  sheet is closed without signing in (a swarm offer's clock runs again). */
+  signInSheet: { accountId: string; then?: () => void; doneLabel?: string; cancelled?: () => void } | null
 
   addTerminal: (t: TerminalSession) => void
   removeTerminal: (id: string) => void
@@ -263,7 +265,7 @@ interface TerminalStore {
   /** Takes the terminal's relaunch lock: false when a relaunch already holds it. */
   beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
   endRelaunch: (terminalId: string) => void
-  openSignInSheet: (accountId: string, then?: () => void) => void
+  openSignInSheet: (accountId: string, then?: () => void, opts?: { doneLabel?: string; cancelled?: () => void }) => void
   closeSignInSheet: () => void
 }
 
@@ -601,7 +603,9 @@ export const useTerminalStore = create<TerminalStore>((set) => ({
     set(s => ({ relaunching: { ...s.relaunching, [terminalId]: kind } }))
     return true
   },
-  openSignInSheet: (accountId, then) => set({ signInSheet: then ? { accountId, then } : { accountId } }),
+  openSignInSheet: (accountId, then, opts) => set({
+    signInSheet: { accountId, ...(then ? { then } : {}), ...(opts?.doneLabel ? { doneLabel: opts.doneLabel } : {}), ...(opts?.cancelled ? { cancelled: opts.cancelled } : {}) },
+  }),
   closeSignInSheet: () => set({ signInSheet: null }),
   endRelaunch: (terminalId) => set(s => {
     const next = { ...s.relaunching }

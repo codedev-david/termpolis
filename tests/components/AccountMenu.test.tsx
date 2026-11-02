@@ -225,6 +225,8 @@ describe('the rows', () => {
     await settle()
     fireEvent.click(rowOf('contoso'))
     expect(st().signInSheet?.accountId).toBe('acc_c')
+    // Its sheet's button says what comes next: a switch (the sheet's own word for it).
+    expect(st().signInSheet?.doneLabel).toBeUndefined()
     expect(startSwitch).not.toHaveBeenCalled()
     st().signInSheet!.then!()
     expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_c', { known: { kind: 'signed-in', email: null } })
@@ -233,6 +235,18 @@ describe('the rows', () => {
     fireEvent.click(screen.getByTestId('account-menu-sign-in'))
     expect(st().signInSheet).toEqual({ accountId: 'acc_c' })
     expect(st().accountMenu).toBeNull()
+  })
+
+  it('names the new terminal on the sign-in sheet\'s button when a signed-out account is opened in one (UI-R1-E)', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    const signedOut = screen.getAllByTestId('account-menu-new-on').find((b) => b.textContent?.startsWith('contoso'))!
+    fireEvent.click(signedOut)
+    expect(st().signInSheet).toMatchObject({ accountId: 'acc_c', doneLabel: 'Open a new terminal on contoso' })
+    expect(newTerminalOn).not.toHaveBeenCalled()
+    st().signInSheet!.then!()
+    expect(newTerminalOn).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 'acc_c' }))
   })
 
   it('asks the work account\'s second confirmation onto it (D14), and goes back on Cancel or Esc', async () => {

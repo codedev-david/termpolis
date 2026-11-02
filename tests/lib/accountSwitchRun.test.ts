@@ -608,6 +608,8 @@ describe('a switch that landed on an expired sign-in has a way on (round 1)', ()
     await actOnRun('t1', 'sign-in-and-continue', d)
     expect(st().switchRuns.t1).toBeUndefined()
     expect(st().signInSheet?.accountId).toBe('acc_b')
+    // The sheet's button says it opens a new terminal, not a switch (UI-R1-E).
+    expect(st().signInSheet?.doneLabel).toBe('Open a new terminal on codedev')
     expect(raw.termpolis.createTerminal).not.toHaveBeenCalled()
     st().signInSheet!.then!()
     await vi.waitFor(() => expect(raw.termpolis.createTerminal).toHaveBeenCalledTimes(1))

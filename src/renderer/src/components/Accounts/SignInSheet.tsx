@@ -15,12 +15,17 @@ export function SignInSheet() {
   if (!open) return null
   const store = useTerminalStore.getState
   const close = (): void => store().closeSignInSheet()
+  // Closed without signing in: Cancel, the close button and Esc. Whoever asked for the sheet may be waiting on it.
+  const cancel = (): void => {
+    close()
+    open.cancelled?.()
+  }
   const row = view?.accounts.find((r) => r.id === open.accountId)
   if (!view || !row) {
     return (
-      <Sheet title="Sign in" icon="fa-right-to-bracket" onClose={close} testId="sign-in-sheet">
+      <Sheet title="Sign in" icon="fa-right-to-bracket" onClose={cancel} testId="sign-in-sheet">
         <p data-testid="sign-in-gone">That account isn&apos;t registered any more.</p>
-        <div><button type="button" className={SHEET_SECONDARY} onClick={close} data-autofocus="">Close</button></div>
+        <div><button type="button" className={SHEET_SECONDARY} onClick={cancel} data-autofocus="">Close</button></div>
       </Sheet>
     )
   }
@@ -31,15 +36,15 @@ export function SignInSheet() {
     then?.()
   }
   return (
-    <Sheet title={`Sign in to ${row.label} · ${ACCOUNT_AGENT_LABEL[row.agent]}`} subtitle={row.email} icon="fa-right-to-bracket" onClose={close} testId="sign-in-sheet">
+    <Sheet title={`Sign in to ${row.label} · ${ACCOUNT_AGENT_LABEL[row.agent]}`} subtitle={row.email} icon="fa-right-to-bracket" onClose={cancel} testId="sign-in-sheet">
       <SignInFlow
         key={open.accountId}
         account={row}
         view={view}
         onDone={done}
-        doneLabel={then ? `Switch to ${row.label}` : 'Done'}
+        doneLabel={then ? open.doneLabel ?? `Switch to ${row.label}` : 'Done'}
         autoDone={!!then}
-        onCancel={close}
+        onCancel={cancel}
       />
     </Sheet>
   )

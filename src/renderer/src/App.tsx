@@ -54,6 +54,7 @@ import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { noteSwarmStop, osNotify, pruneBanners, pruneChooser, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
 import { isStopCarried } from './lib/swarmStopReports'
+import { liveRestartDeps, noteConductorClosed, pruneSwarmRestarts } from './lib/swarmRestart'
 import { detectAgentStatus, limitWords, stopKind } from '../../shared/agentStatusDetector'
 import { screenOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
@@ -665,6 +666,8 @@ export default function App() {
       // Status detection is handled by the agent status polling effect below
     })
     const unsubClosed = window.mcpEvents?.onTerminalClosed((terminalId) => {
+      // The conductor closed it: it knows, so a restart offer it was on says nothing of it (swarmRestart.ts).
+      noteConductorClosed(terminalId)
       stopBridgeForAgent(terminalId)
       // Remove from swarmAgents
       const store = useTerminalStore.getState()
@@ -802,6 +805,8 @@ export default function App() {
         (t) => t.agentCommand && !swarmIds.has(t.id) && !store.relaunching[t.id],
       )
       pruneStops(new Set(store.terminals.map((t) => t.id)))
+      // A worker closed while on a restart offer leaves it, and the conductor waiting on it is told.
+      if (store.swarmRestarts.length > 0) void pruneSwarmRestarts(new Set(store.terminals.map((t) => t.id)), liveRestartDeps())
       pruneChooser(store)
       pruneBanners(store)
       if (agentTerminals.length === 0) return

@@ -168,3 +168,54 @@ describe('App: the swarm loop and a stop carried across a worker\'s restart (N5)
     expect(sendMessage).toHaveBeenCalledTimes(1)
   })
 })
+
+// SWARM-R1 N7: a worker closed while it was on a restart offer. The conductor was told to wait for Termpolis's next
+// word, so when the user closes the pane it is told the worker is gone; one it closed itself, nothing.
+describe('App: a worker closed while it is on a restart offer (N7)', () => {
+  const GROUP = {
+    id: 'g1', agent: 'claude', accountId: 'acc_0', words: "You've hit your session limit", resetsAt: null,
+    workers: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', summary: 'usage limit reached' }], targets: ['acc_1'], phase: { kind: 'offered' },
+  }
+  const closedMessage = (): string[] => sendMessages().filter((m) => m.includes('was closed before Termpolis could restart it'))
+  let sendMessage: ReturnType<typeof vi.fn>
+  const sendMessages = (): string[] => sendMessage.mock.calls.map((c: unknown[]) => c[3] as string)
+
+  async function runLoop(emitClosed?: (id: string) => void) {
+    bridge('')
+    sendMessage = vi.fn(async () => ({ success: true }))
+    ;(window as any).swarmAPI = { getTasks: vi.fn(async () => ({ success: true, data: [] })), sendMessage }
+    if (emitClosed) (window as any).mcpEvents = { onTerminalCreated: vi.fn(() => () => {}), onTerminalClosed: vi.fn((cb: (id: string) => void) => { closedCb = cb; return () => {} }) }
+    render(<App />)
+    await settle()
+    act(() => {
+      useTerminalStore.setState({ terminals: [{ ...WORKER, agentAccountId: 'acc_0' }], accountsView: view(2) as never, swarmRestarts: [GROUP as never] } as never)
+    })
+  }
+  let closedCb: ((id: string) => void) | null = null
+
+  it('is told to the conductor, and the offer goes, when the user closed the worker\'s pane', async () => {
+    await runLoop()
+    act(() => { useTerminalStore.setState({ terminals: [] } as never) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
+    await settle()
+    expect(useTerminalStore.getState().swarmRestarts).toEqual([])
+    expect(closedMessage()).toHaveLength(1)
+  })
+
+  it('is told nothing when the conductor closed the worker itself (close_terminal)', async () => {
+    await runLoop(() => undefined)
+    act(() => { closedCb!('w1') })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
+    await settle()
+    expect(useTerminalStore.getState().swarmRestarts).toEqual([])
+    expect(closedMessage()).toEqual([])
+  })
+
+  it('leaves an offer whose worker is still there alone', async () => {
+    await runLoop()
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100) })
+    await settle()
+    expect(useTerminalStore.getState().swarmRestarts).toHaveLength(1)
+    expect(closedMessage()).toEqual([])
+  })
+})

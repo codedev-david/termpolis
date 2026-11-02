@@ -76,6 +76,8 @@ export interface SwarmRestartGroup {
   resetsAt: number | null
   workers: RestartWorker[]
   targets: string[]
+  /** Accounts that would be a way out once signed in: signed out now. Their sign-in sheet opens from the offer. */
+  signIn?: string[]
   phase: RestartPhase
 }
 
@@ -92,6 +94,7 @@ export interface RestartStore {
   dropSwarmRestart: (id: string) => void
   beginRelaunch: (terminalId: string, kind: 'account' | 'model' | 'sign-in') => boolean
   endRelaunch: (terminalId: string) => void
+  openSignInSheet: (accountId: string, then?: () => void, opts?: { doneLabel?: string; cancelled?: () => void }) => void
 }
 
 export interface RestartDeps extends SwitchDeps {
@@ -127,6 +130,20 @@ export function restartTargets(
     t.state === 'available' && workerBlocker(t.row, view) === null && !outOnModel(t.row, kind))
 }
 
+/** The accounts a worker could be restarted on once signed in: the ones the sign-in check found signed out,
+ *  and otherwise a way out as `restartTargets` has it. Their sign-in sheet opens from the offer. */
+export function signInTargets(
+  view: AccountsView,
+  agent: ProfileAgent,
+  limited: { accountId: string; email: string | null },
+  now: number,
+  checks: Readonly<Record<string, TargetCheck>>,
+  kind: LimitKind,
+): LimitTarget[] {
+  return limitTargets(view.accounts, agent, limited, now, checks).filter((t) =>
+    t.state === 'signed-out' && workerBlocker(t.row, view) === null && !outOnModel(t.row, kind))
+}
+
 /** The account is out of usage on the very model a model's limit names (R15). */
 const outOnModel = (row: AccountRowView, kind: LimitKind): boolean =>
   kind.scope === 'model' && row.limit?.scope === 'model' && limitKindOf(row.limit.text).model === kind.model
@@ -140,8 +157,9 @@ export function conductorTargets(
   now: number,
   checks: Readonly<Record<string, TargetCheck>>,
   kind: LimitKind,
+  state: 'available' | 'signed-out' = 'available',
 ): LimitTarget[] {
-  return limitTargets(view.accounts, 'claude', limited, now, checks).filter((t) => t.state === 'available' && t.row.bypassReady && !outOnModel(t.row, kind))
+  return limitTargets(view.accounts, 'claude', limited, now, checks).filter((t) => t.state === state && t.row.bypassReady && !outOnModel(t.row, kind))
 }
 
 // ── What the conductor is told (§9, R16) ─────────────────────────────────────────────────
@@ -171,6 +189,13 @@ export function withdrawnMessage(w: SwarmWorker): string {
   return `${who(w)} is working again by itself, so Termpolis withdrew its restart offer. Its task carries on: there is nothing to close or reassign.`
 }
 
+/** When a worker on an offer was closed before Termpolis could restart it, by the user (its pane, the
+ *  swarm cleared): the conductor was told to wait for Termpolis's next word, so this is it. */
+export function closedBeforeMessage(w: RestartWorker | SwarmWorker): string {
+  const taskId = 'taskId' in w && w.taskId ? ` Its task is taskId ${w.taskId}.` : ''
+  return `${who(w)} was closed before Termpolis could restart it.${taskId} If its task is still open, give it to another installed agent.`
+}
+
 async function tell(deps: RestartDeps, content: string): Promise<void> {
   try {
     await deps.swarm.sendMessage('system', 'conductor', 'info', content)
@@ -182,28 +207,53 @@ async function tell(deps: RestartDeps, content: string): Promise<void> {
  *  worker the conductor closed meanwhile: there is nothing left to close. */
 async function reassign(w: RestartWorker, deps: RestartDeps): Promise<void> {
   const s = deps.store()
-  if (!s.terminals.some((t) => t.id === w.terminalId)) return
+  if (!s.terminals.some((t) => t.id === w.terminalId)) {
+    await closedBefore(w, deps)
+    return
+  }
   if (s.relaunching[w.terminalId]) {
-    deps.setTimer(() => { void reassign(w, deps) }, LOCK_RECHECK_MS)
+    // Tracked with the worker's other timers: a relaunch that restarts it ends the wait (noteWorkerSwitched),
+    // and the conductor is not then told to close the worker that was just restarted.
+    deferred.set(w.terminalId, deps.setTimer(() => { deferred.delete(w.terminalId); void reassign(w, deps) }, LOCK_RECHECK_MS))
     return
   }
   await reportWorkerStop(w, { status: 'blocked', summary: w.summary })
+}
+
+/** Workers the conductor closed itself (close_terminal): it knows, so it is told nothing of them. */
+const conductorClosed = new Set<string>()
+
+export function noteConductorClosed(terminalId: string): void {
+  conductorClosed.add(terminalId)
+}
+
+/** A worker on an offer is gone: the conductor, waiting on Termpolis's word, is told it was closed, unless
+ *  it closed the worker itself. */
+async function closedBefore(w: RestartWorker, deps: RestartDeps): Promise<void> {
+  if (!conductorClosed.has(w.terminalId)) await tell(deps, closedBeforeMessage(w))
 }
 
 // ── The offer ──────────────────────────────────────────────────────────────────────────
 
 /** Each offered worker's clock: when it runs out, the conductor reassigns the worker's task. */
 const clocks = new Map<string, unknown>()
+/** A close-and-reassign waiting for a relaunch to let go of its worker (R16), by worker. */
+const deferred = new Map<string, unknown>()
 
 export function _resetSwarmRestartForTest(): void {
   clocks.clear()
+  deferred.clear()
+  conductorClosed.clear()
 }
 
+/** Everything that would still tell the conductor something of the worker: its clock and a waiting close. */
 function stopClock(terminalId: string, deps: RestartDeps): void {
-  const h = clocks.get(terminalId)
-  if (h === undefined) return
-  deps.clearTimer(h)
-  clocks.delete(terminalId)
+  for (const timers of [clocks, deferred]) {
+    const h = timers.get(terminalId)
+    if (h === undefined) continue
+    deps.clearTimer(h)
+    timers.delete(terminalId)
+  }
 }
 
 function startClock(terminalId: string, ms: number, deps: RestartDeps): void {
@@ -235,12 +285,41 @@ async function timeUp(terminalId: string, deps: RestartDeps): Promise<void> {
 export async function withdrawFromOffer(worker: SwarmWorker, deps: RestartDeps): Promise<void> {
   const s = deps.store()
   const g = s.swarmRestarts.find((x) => (x.phase.kind === 'offered' || x.phase.kind === 'confirm') && x.workers.some((w) => w.terminalId === worker.terminalId))
-  if (!g) return
+  // A worker declined while a relaunch held it has a close-and-reassign waiting, and no offer: it is withdrawn too.
+  if (!g && !deferred.has(worker.terminalId)) return
   stopClock(worker.terminalId, deps)
-  const rest = g.workers.filter((w) => w.terminalId !== worker.terminalId)
-  if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
-  else s.dropSwarmRestart(g.id)
+  if (g) {
+    const rest = g.workers.filter((w) => w.terminalId !== worker.terminalId)
+    if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
+    else s.dropSwarmRestart(g.id)
+  }
   await tell(deps, withdrawnMessage(worker))
+}
+
+/** Workers of open offers whose terminal is gone (the user closed its pane): off the offer and its clock,
+ *  and the conductor, told to wait for Termpolis's next word, is told it was closed. */
+export async function pruneSwarmRestarts(liveIds: ReadonlySet<string>, deps: RestartDeps): Promise<void> {
+  const s = deps.store()
+  for (const g of s.swarmRestarts) {
+    if (g.phase.kind !== 'offered' && g.phase.kind !== 'confirm') continue
+    const gone = g.workers.filter((w) => !liveIds.has(w.terminalId))
+    if (gone.length === 0) continue
+    for (const w of gone) stopClock(w.terminalId, deps)
+    const rest = g.workers.filter((w) => liveIds.has(w.terminalId))
+    if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
+    else s.dropSwarmRestart(g.id)
+    for (const w of gone) await closedBefore(w, deps)
+  }
+}
+
+/** The swarm was cleared (its terminals killed with it): every offer and timer goes, and no one is told. */
+export function clearSwarmRestarts(deps: RestartDeps): void {
+  const s = deps.store()
+  // A store that holds none (a dashboard's tests mock one) has none to clear.
+  for (const g of s.swarmRestarts ?? []) {
+    for (const w of g.workers) stopClock(w.terminalId, deps)
+    s.dropSwarmRestart(g.id)
+  }
 }
 
 /** The open task the conductor assigned to the worker, if any. */
@@ -308,7 +387,8 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
   const candidates = restartTargets(view, agent, limited, now, {}, kind)
   const checks = await signedInNow(candidates, now, deps)
   const targets = restartTargets(view, agent, limited, now, checks, kind)
-  if (targets.length === 0) return false
+  const signIn = signInTargets(view, agent, limited, now, checks, kind)
+  if (targets.length === 0 && signIn.length === 0) return false
   const taskId = await taskOf(worker.terminalId, deps)
   // Another worker on the account may have opened an offer meanwhile; nothing waits from here on.
   if (openOffer(deps.store(), agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps, { taskId })
@@ -316,6 +396,7 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
     id: deps.newId(), agent, accountId: own.id, words: said, resetsAt,
     workers: [{ ...worker, summary: result.summary, ...(taskId ? { taskId } : {}) }],
     targets: targets.map((t) => t.row.id),
+    ...(signIn.length > 0 ? { signIn: signIn.map((t) => t.row.id) } : {}),
     phase: { kind: 'offered' },
   }
   deps.store().putSwarmRestart(group)
@@ -348,20 +429,32 @@ function resetOfWords(words: string, now: number): number | null {
  * recorded against its account all the same (§8.2, R23).
  */
 export async function offerConductorRun(words: string, accountId: string | null, deps: RestartDeps): Promise<boolean> {
-  const view = deps.store().accountsView
-  const own = accountId ? view?.accounts.find((r) => r.id === accountId && r.agent === 'claude') : undefined
-  if (!view || !own) return false
+  const view0 = deps.store().accountsView
+  const own0 = accountId ? view0?.accounts.find((r) => r.id === accountId && r.agent === 'claude') : undefined
+  if (!view0 || !own0) return false
   const now = deps.now()
   const kind = limitKindOf(words)
   const resetsAt = resetOfWords(words, now)
-  void deps.accounts.noteLimit(own.id, { text: words, resetsAt, scope: kind.scope, window: kind.window, ...(own.lastEmail ? { email: own.lastEmail } : {}) })
-    .catch(() => { /* the offer goes on without the record */ })
+  // Recorded first and main's accounts read after it, as the worker offer does: the renderer's copy is as
+  // old as its last read, and an account main holds as out of usage is no way out.
+  try {
+    await deps.accounts.noteLimit(own0.id, { text: words, resetsAt, scope: kind.scope, window: kind.window, ...(own0.lastEmail ? { email: own0.lastEmail } : {}) })
+  } catch { /* the offer goes on without the record */ }
+  try {
+    const fresh = await deps.accounts.list()
+    if (fresh.success) deps.store().setAccountsView(fresh.data)
+  } catch { /* the view it had stands */ }
+  const view = deps.store().accountsView ?? view0
+  const own = view.accounts.find((r) => r.id === own0.id) ?? own0
   const limited = { accountId: own.id, email: own.lastEmail }
   const candidates = conductorTargets(view, limited, now, {}, kind)
-  const targets = conductorTargets(view, limited, now, await signedInNow(candidates, now, deps), kind)
-  if (targets.length === 0) return false
+  const checks = await signedInNow(candidates, now, deps)
+  const targets = conductorTargets(view, limited, now, checks, kind)
+  const signIn = conductorTargets(view, limited, now, checks, kind, 'signed-out')
+  if (targets.length === 0 && signIn.length === 0) return false
   const group: SwarmRestartGroup = {
-    id: deps.newId(), conductor: true, agent: 'claude', accountId: own.id, words, resetsAt, workers: [], targets: targets.map((t) => t.row.id), phase: { kind: 'offered' },
+    id: deps.newId(), conductor: true, agent: 'claude', accountId: own.id, words, resetsAt, workers: [], targets: targets.map((t) => t.row.id),
+    ...(signIn.length > 0 ? { signIn: signIn.map((t) => t.row.id) } : {}), phase: { kind: 'offered' },
   }
   deps.store().putSwarmRestart(group)
   if (!deps.focused()) deps.notify('The swarm\'s conductor ran out of usage', offerTitle(group, view), () => undefined)
@@ -389,6 +482,27 @@ export async function declineRestart(groupId: string, deps: RestartDeps): Promis
   for (const w of g.workers) stopClock(w.terminalId, deps)
   if (g.phase.kind !== 'offered' && g.phase.kind !== 'confirm') return
   for (const w of g.workers) await reassign(w, deps)
+}
+
+/**
+ * The user picked an account that is signed out: its sign-in sheet opens, and the restart goes on when it
+ * signed in. No clock runs out on them meanwhile (R16: it stops when the user acts), and one runs again if
+ * the sheet is closed without signing in.
+ */
+export function signInThenRestart(groupId: string, targetId: string, deps: RestartDeps): void {
+  const s = deps.store()
+  const g = s.swarmRestarts.find((x) => x.id === groupId)
+  if (!g || g.phase.kind !== 'offered') return
+  for (const w of g.workers) stopClock(w.terminalId, deps)
+  const label = s.accountsView?.accounts.find((r) => r.id === targetId)?.label ?? 'that account'
+  s.openSignInSheet(targetId, () => { void restartOn(groupId, targetId, deps) }, {
+    doneLabel: `Restart ${g.workers.length === 1 ? 'it' : 'all'} on ${label}`,
+    cancelled: () => {
+      const now = deps.store().swarmRestarts.find((x) => x.id === groupId)
+      if (!now || now.phase.kind !== 'offered') return
+      for (const w of now.workers) startClock(w.terminalId, RESTART_WAIT_MS, deps)
+    },
+  })
 }
 
 /**
@@ -454,8 +568,12 @@ async function restartWorker(w: RestartWorker, agent: ProfileAgent, target: Acco
   const name = `${w.agentName} (${w.role})`
   const s = deps.store()
   const term = s.terminals.find((t) => t.id === w.terminalId)
-  // The conductor moved on without it: it closed the worker, or gave its task to another (R16).
-  if (!term) return { line: `${name}: the conductor closed it, so it wasn't restarted.` }
+  // The conductor moved on without it (it closed the worker, or gave its task to another, R16), or the user
+  // closed it: the conductor, waiting on Termpolis's word, is told in that case.
+  if (!term) {
+    await closedBefore(w, deps)
+    return { line: `${name}: ${conductorClosed.has(w.terminalId) ? 'the conductor closed it' : 'it was closed'}, so it wasn't restarted.` }
+  }
   if (w.taskId) {
     let moved = false
     try {
@@ -514,7 +632,7 @@ export async function noteWorkerSwitched(terminalId: string, outcome: SwitchOutc
   if (!w) return
   stopClock(terminalId, deps)
   for (const g of s.swarmRestarts) {
-    if (g.phase.kind !== 'offered' || !g.workers.some((x) => x.terminalId === terminalId)) continue
+    if ((g.phase.kind !== 'offered' && g.phase.kind !== 'confirm') || !g.workers.some((x) => x.terminalId === terminalId)) continue
     const rest = g.workers.filter((x) => x.terminalId !== terminalId)
     if (rest.length > 0) s.putSwarmRestart({ ...g, workers: rest })
     else s.dropSwarmRestart(g.id)
