@@ -89,6 +89,13 @@ function accountsBridge(answer: (agent: string) => string | null) {
 
 const settle = () => act(async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0)) })
 
+/** What the last launchAgents call was given for the one agent: the account it was told to type the line for. */
+const launchedTarget = async (): Promise<Record<string, unknown>> => {
+  const { launchAgents } = await import('../../src/renderer/src/lib/agentLaunch')
+  const calls = (launchAgents as unknown as ReturnType<typeof vi.fn>).mock.calls
+  return (calls[calls.length - 1][0] as Array<Record<string, unknown>>)[0]
+}
+
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('termpolis.onboarding.seen.v1', '1')
@@ -112,6 +119,7 @@ describe('the account an agent launched from the Welcome screen or the palette i
     await settle()
     expect(created).toHaveLength(1)
     expect(created[0].slice(5)).toEqual(['acc_pref', 'claude'])
+    expect(await launchedTarget()).toMatchObject({ agentCommand: 'claude', agentAccountId: 'acc_pref' })
   })
 
   it('takes the launching mark down when the agent launch settles', async () => {
@@ -136,6 +144,7 @@ describe('the account an agent launched from the Welcome screen or the palette i
     fireEvent.click(await screen.findByTestId('palette-claude'))
     await settle()
     expect(created[0].slice(5)).toEqual(['acc_pref', 'claude'])
+    expect(await launchedTarget()).toMatchObject({ agentCommand: 'claude', agentAccountId: 'acc_pref' })
   })
 
   it('is none for an agent with no account, as before accounts', async () => {
@@ -146,6 +155,7 @@ describe('the account an agent launched from the Welcome screen or the palette i
     fireEvent.click(await screen.findByTestId('palette-codex'))
     await settle()
     expect(created[0].slice(5)).toEqual([undefined, 'codex'])
+    expect(await launchedTarget()).not.toHaveProperty('agentAccountId')
   })
 
   it('is none when the build has no accounts bridge at all', async () => {
@@ -154,6 +164,7 @@ describe('the account an agent launched from the Welcome screen or the palette i
     fireEvent.click(await screen.findByTestId('welcome-claude'))
     await settle()
     expect(created[0].slice(5)).toEqual([undefined, 'claude'])
+    expect(await launchedTarget()).not.toHaveProperty('agentAccountId')
   })
 })
 

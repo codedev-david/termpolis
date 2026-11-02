@@ -975,7 +975,9 @@ export default function App() {
         const pRes = await window.termpolis.createTerminal(pId, pShellType, pCwd, undefined, isClaudeCommand(prof.command), ...launchTerminalArgs(pAccount, prof.command))
         if (pRes.success) {
           addTerminal({ id: pId, name: agentTerminalName(prof.name, pCwd), color: prof.color, shellType: pShellType, cwd: pCwd, ...getTerminalDefaults(), agentCommand: prof.command })
-          launchAgents([{ id: pId, agentCommand: prof.command, cwd: pCwd, shellType: pShellType }])
+          // The account the user answered with goes to the typed line too, or launchAgents asks main for the
+          // preferred one: the account that is out of usage.
+          launchAgents([{ id: pId, agentCommand: prof.command, cwd: pCwd, shellType: pShellType, ...(pAccount ? { agentAccountId: pAccount } : {}) }])
         }
         break
       }
@@ -1014,7 +1016,7 @@ export default function App() {
     const res = await window.termpolis.createTerminal(id, shellType, cwd, undefined, isClaudeCommand(config.command), ...launchTerminalArgs(account, config.command))
     if (res.success) {
       addTerminal({ id, name: agentTerminalName(config.name, cwd), color: config.color, shellType, cwd, ...getTerminalDefaults(), agentCommand: config.command })
-      launchAgents([{ id, agentCommand: config.command, cwd, shellType }], { onSettled: () => setLaunchingAgent(null) })
+      launchAgents([{ id, agentCommand: config.command, cwd, shellType, ...(account ? { agentAccountId: account } : {}) }], { onSettled: () => setLaunchingAgent(null) })
     } else {
       setLaunchingAgent(null)
     }
