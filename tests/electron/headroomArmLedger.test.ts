@@ -109,6 +109,29 @@ describe('the arm ledger', () => {
     expect(s.legacy).toEqual({ requests: 2, work: 2, units: 0, turns: 0, turnUnits: 0 })
   })
 
+  // A hand-damaged file can hold any finite number. No count here is a real count above a quadrillion (the whole of a
+  // person's use is some billions of billed units), and one kept as it is prints as 1.7857142857142858e+21 in the card.
+  // A number past it is damaged and reads as zero, like every other number that is not a usable count.
+  it('reads a count past anything real as damaged, exactly at the ceiling and not above it', () => {
+    const at = { requests: 1e15, work: 1e15, units: 1e15, turns: 1e15, turnUnits: 1e15 }
+    loadArmState({ late: [at], holdout: [{ ...at, requests: 1_000_000_000_000_001 }], legacy: { ...at, units: 1e21, turns: 1.7857142857142858e21 } })
+    const s = armState()
+    expect(s.late[0]).toEqual(at)
+    expect(s.holdout[0]).toEqual({ ...at, requests: 0 })
+    expect(s.legacy).toEqual({ ...at, units: 0, turns: 0 })
+  })
+
+  it('never lets the card print an exponent: a damaged ledger compares as the same ledger without the damaged numbers', async () => {
+    const { compareArms } = await import('../../src/main/headroom/armCompare')
+    const group = { requests: 100, work: 100, units: 1e21, turns: 1.7857142857142858e21, turnUnits: 1e21 }
+    loadArmState({ late: Array.from({ length: 10 }, () => group), holdout: Array.from({ length: 10 }, () => group), legacy: group })
+    const damaged = compareArms(armState())
+    expect(JSON.stringify(damaged)).not.toMatch(/e[+-]\d/)
+    const clean = { ...group, units: 0, turns: 0, turnUnits: 0 }
+    loadArmState({ late: Array.from({ length: 10 }, () => clean), holdout: Array.from({ length: 10 }, () => clean), legacy: clean })
+    expect(damaged).toEqual(compareArms(armState()))
+  })
+
   it('is emptied by a reset', () => {
     recordArmRequest('holdout', 2, sample(10))
     resetArmLedger()

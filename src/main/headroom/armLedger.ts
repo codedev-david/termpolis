@@ -49,8 +49,12 @@ const empty = (): ArmState => ({
 
 let state: ArmState = empty()
 
-/** A finite number above zero, else zero. */
-const count = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0)
+/** No count here is a real count above this: the whole of a person's use is some billions of billed units at most.
+ *  A figure past it is damaged (a hand-edited file), and kept as it is it prints with an exponent in the card. */
+const COUNT_CEILING = 1e15
+
+/** A finite number above zero and no more than the ceiling, else zero. */
+const count = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= COUNT_CEILING ? n : 0)
 
 export interface ArmSample {
   /** Billed units of the request. */
