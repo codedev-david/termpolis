@@ -1496,9 +1496,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       if (!existing.project && projectSlug) { existing.project = projectSlug; changed = true }
       // The substance gate's hold-back mark is the one tag that is not scoping metadata: added to a row that did not have it, it would
       // take away a lesson that was being shown (a resumed session derives the same sentence again). A row is held back when it
-      // is WRITTEN so, never by a later write of the same words.
-      const given = Array.isArray(input.tags) ? input.tags : [] // memory_write hands `tags` over as the model sent it
-      const incoming = Array.isArray(existing.tags) && existing.tags.includes(CANDIDATE_TAG) ? given : given.filter((t) => t !== CANDIDATE_TAG)
+      // is WRITTEN so, never by a later write of the same words. (A row that has the mark keeps it through the merge below, so the
+      // mark is never one of the tags to merge in.)
+      const incoming = (Array.isArray(input.tags) ? input.tags : []).filter((t) => t !== CANDIDATE_TAG) // memory_write hands `tags` over as the model sent it
       if (incoming.length > 0) {
         const merged = Array.from(new Set([...(existing.tags || []), ...incoming])).slice(0, 20)
         if (merged.length !== (existing.tags?.length ?? 0)) { existing.tags = merged; changed = true }
