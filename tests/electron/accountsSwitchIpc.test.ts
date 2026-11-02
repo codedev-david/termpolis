@@ -513,6 +513,33 @@ describe('accounts:switch, an account that isn\'t offered automatically (D14, R1
   })
 })
 
+describe('accounts:switch, a Codex session that falls back to a new one in place keeps its flags for the next switch (path (c), MODELS-R1-5)', () => {
+  it('records the fresh start as the line it typed, so Switch back repeats -m and -s', async () => {
+    const first = 'codex -m gpt-5.6-sol -s read-only'
+    term = new FakeTerminal({ agent: 'codex', family: 'posix', start: 'idle', exit: 'hint', relaunch: ['not-found', 'box', 'box'], launch: first })
+    register()
+    mkdirSync(join(sb.paths.codexHome, 'sessions'), { recursive: true })
+    const added = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'b', folder: 'new', copy: false, share: [] })
+    const doc = loadAccounts(sb.paths.userData)
+    if (!doc.ok) throw new Error(doc.error)
+    const main = doc.doc.file.accounts.find((a) => a.agent === 'codex' && a.profile === null)!.id
+    noteTerminalAccount('t1', main)
+    noteAgentStart('t1', { at: term.launchedAt, commands: [first] })
+    const hop1 = await switchTo(added.account.id)
+    expect(hop1.kind).toBe('fresh')
+    const typed1 = term.ran.filter(Boolean)
+    expect(typed1[typed1.length - 1]).toContain('-m gpt-5.6-sol')
+    expect(typed1[typed1.length - 1]).toContain('-s read-only')
+    expect(terminalAgentStart('t1')!.commands[0]).toBe(typed1[typed1.length - 1])
+    const before = term.ran.length
+    const hop2 = await switchTo(main)
+    expect(hop2.kind).not.toBe('refused')
+    const typed2 = term.ran.slice(before).filter(Boolean).join('\n')
+    expect(typed2).toContain('-m gpt-5.6-sol')
+    expect(typed2).toContain('-s read-only')
+  })
+})
+
 describe('accounts:switch, what the agent was started with comes back with it (carryForSwitch)', () => {
   /** A terminal on the default account whose agent was started with `line`, on a conversation. */
   async function startedWith(line: string): Promise<{ main: string; b: string }> {

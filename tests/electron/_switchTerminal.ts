@@ -57,6 +57,8 @@ export interface TermScript {
   footer?: string
   /** A prompt entered in the agent's box starts a turn (its spinner shows), as it does for the real CLIs. */
   busyAfterPrompt?: boolean
+  /** The shell starts reading keys only this long after the agent's process is gone (a prompt that is drawn late). */
+  shellLateMs?: number
   /** The pane's size. Default 80 x 24. */
   cols?: number
   rows?: number
@@ -348,7 +350,7 @@ export class FakeTerminal {
       const c = data[i]
       if (this.mode === 'shell') {
         // The shell isn't reading while the agent's process is still going: the keys are lost.
-        if (this.s.shellDead || this.clock < this.goneAt) continue
+        if (this.s.shellDead || this.clock < this.goneAt + (this.s.shellLateMs ?? 0)) continue
         if (c === '\r') {
           this.flushSlowEcho()
           const line = this.line

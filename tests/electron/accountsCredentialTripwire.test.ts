@@ -56,8 +56,8 @@ function accountsModules(): string[] {
     if (!realFs.existsSync(full)) return
     for (const name of realFs.readdirSync(full)) if (keep(name)) out.push(join(full, name))
   }
-  add('src/main', (n) => /^account.*\.ts$/i.test(n) || n === 'agentAccounts.ts' || n === 'agySwitch.ts' || n === 'signInSession.ts')
-  add('src/shared', (n) => n === 'agentAccounts.ts' || n === 'accountSwitch.ts' || n === 'signInScreens.ts')
+  add('src/main', (n) => /^account.*\.ts$/i.test(n) || n === 'agentAccounts.ts' || n === 'agySwitch.ts' || n === 'signInSession.ts' || n === 'limitLook.ts')
+  add('src/shared', (n) => n === 'agentAccounts.ts' || n === 'accountSwitch.ts' || n === 'accountLimits.ts' || n === 'signInScreens.ts')
   add('src/renderer/src/lib', (n) => /^(?:account|signIn).*\.ts$/i.test(n))
   add('src/renderer/src/components/Accounts', (n) => /\.tsx?$/.test(n))
   add('src/renderer/src/components/SettingsPane', (n) => /^Accounts.*\.tsx$/.test(n))

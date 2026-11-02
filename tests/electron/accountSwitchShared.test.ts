@@ -274,6 +274,18 @@ describe('relaunchCommand: the flags a relaunch keeps', () => {
 })
 
 
+describe('carryForSwitch never carries another agent\'s model or flags (MODELS-R1-5)', () => {
+  it('a Claude Code line for a Codex or agy switch, and a Codex line for a Claude Code one, carries nothing', () => {
+    expect(carryForSwitch('codex', 'claude --model opus --dangerously-skip-permissions')).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('claude', 'codex -m gpt-5.6-sol -s read-only')).toEqual({ ok: true, extra: [] })
+    expect(carryForSwitch('agy', 'claude --model opus')).toEqual({ ok: true, extra: [] })
+  })
+
+  it('control: the same agent still carries its model and flags', () => {
+    expect(carryForSwitch('claude', 'claude --model opus --dangerously-skip-permissions')).toEqual({ ok: true, model: 'opus', extra: ['--dangerously-skip-permissions'] })
+  })
+})
+
 describe('carryForSwitch: an agent typed with its path or its extension (MODELS-R1-1, SWITCH-R1 G3)', () => {
   // The chip and the switch work for a terminal whose agent was started as claude.exe or by its path, so
   // what that line carried must come back, the restrictions included.

@@ -12,7 +12,7 @@
 //       --continue or resume --last.
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
+  ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, OUTCOME_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
   exitShown, hintAtFoot, look, ownScreen, releaseModelHold, runAccountSwitch, typeAtPrompt,
 } from '../../src/main/accountSwitch'
 import type { Look, SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
@@ -646,9 +646,33 @@ describe('B1 and MODELS-R1-3: the agent is gone on screen while a program still 
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
   })
 
+  it('waits through a moment the OS cannot answer, and types nothing before the process is gone (MODELS-R1-5)', async () => {
+    const r = await run(claude({ start: 'gone-hint', reports: false, os: 'flaky', teardownMs: 6000, relaunch: ['box'] }))
+    expect(r.t.writeClocks.length).toBeGreaterThan(0)
+    expect(Math.min(...r.t.writeClocks), 'the first key was typed while a program still ran in the terminal').toBeGreaterThanOrEqual(6000)
+    expect(r.outcome.kind).toBe('switched')
+  })
+
+  it('gives the shell a moment to draw its prompt once the process is gone, before it types (MODELS-R1-5)', async () => {
+    // The shell reads keys only 550 ms after the process is gone: a line typed at once would be lost.
+    const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells', teardownMs: 6000, shellLateMs: PROMPT_SETTLE_MS - 50, relaunch: ['box'] }))
+    expect(r.outcome.kind).toBe('switched')
+    expect(Math.min(...r.t.writeClocks)).toBeGreaterThanOrEqual(6000 + PROMPT_SETTLE_MS - 50)
+  })
+
   it('does not ask the OS at all at the user\'s word that it has exited', async () => {
     const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells', teardownMs: 90_000 }), {}, { assumeExited: true })
     expect(r.t.osAsked).toBe(0)
+  })
+})
+
+describe('the lock outlasts the longest chain of waits a switch makes (MODELS-R1-5)', () => {
+  it('is longer than the screen\'s exit window, the OS\'s ceiling, the prompt\'s settle and the relaunch\'s watch together', () => {
+    expect(LOCK_MS).toBeGreaterThan(EXIT_CONFIRM_MS + EXIT_CEILING_MS + PROMPT_SETTLE_MS + OUTCOME_MS)
+  })
+
+  it('is not shorter than the model picker\'s hold', () => {
+    expect(LOCK_MS).toBeGreaterThanOrEqual(MODEL_HOLD_MS)
   })
 })
 
