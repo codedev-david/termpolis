@@ -1640,3 +1640,108 @@ describe('the edges of the listing a sweep relies on', () => {
     expect(store.rows.size).toBe(1)
   })
 })
+
+describe('a store that was replaced, when other computers\' notes are in it (memory sync)', () => {
+  const peerRow = (id: string, ts: number): StoredNote => ({ id, ts, agentId: 'claude-notes', source: 'claude-notes', origin: 'peer-1', content: id } as unknown as StoredNote)
+  const NEWER = Date.UTC(2030, 0, 1)
+  const me = { ownOrigin: async () => 'me' }
+  const imported = async (): Promise<ReturnType<typeof fakeStore>> => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store, me))
+    return store
+  }
+
+  it('looks through them for this computer\'s own copies, and imports again when it has none', async () => {
+    const store = await imported()
+    store.rows.clear()
+    store.rows.set('p1', peerRow('p1', NEWER)) // newer than anything of ours, so it is the one row a quick look sees
+    const stats = await runClaudeNotesIngest(deps(store, me))
+    expect(stats.chunksWritten).toBe(3)
+    expect(store.rows.has('p1')).toBe(true) // a peer's note is theirs: it stays
+    expect([...store.rows.values()].filter((r) => (r as { origin?: string }).origin === undefined)).toHaveLength(3)
+  })
+
+  it('leaves the record alone when its own copies are still there, behind a newer one of a peer\'s', async () => {
+    const store = await imported()
+    store.rows.set('p1', peerRow('p1', NEWER))
+    const stats = await runClaudeNotesIngest(deps(store, me))
+    expect(stats.chunksWritten).toBe(0)
+    expect(store.rows.size).toBe(4)
+  })
+
+  it('asks for one row, and no more, when the newest is its own', async () => {
+    const store = await imported()
+    store.lists.length = 0
+    await runClaudeNotesIngest(deps(store, me))
+    expect(store.lists).toEqual([{ agentId: 'claude-notes', limit: 1 }])
+  })
+
+  it('counts any row as its own while it does not know its own id', async () => {
+    const store = await imported()
+    store.rows.clear()
+    store.rows.set('p1', peerRow('p1', NEWER))
+    const stats = await runClaudeNotesIngest(deps(store)) // no ownOrigin: nothing says this row is not ours
+    expect(stats.chunksWritten).toBe(0)
+  })
+
+  it('changes nothing when the look through them fails', async () => {
+    const store = await imported()
+    store.rows.clear()
+    store.rows.set('p1', peerRow('p1', NEWER))
+    const before = manifestJson().files
+    const listed = store.list.bind(store)
+    let n = 0
+    store.list = async (o) => { if (++n > 1) throw new Error('host down'); return listed(o) }
+    const stats = await runClaudeNotesIngest(deps(store, me))
+    expect(stats.chunksWritten).toBe(0)
+    expect(manifestJson().files).toEqual(before)
+  })
+})
+
+describe('a pass over a record that is clean and knows no note', () => {
+  // Nothing can be left over by an interrupted pass or a lost record, so nothing is looked for: with no note on this computer
+  // (the usual state of a user whose projects keep none) the 30-minute pass costs no listing of the store at all.
+  it('does not list the store', async () => {
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store)) // nothing on disk: the first pass settles an empty record
+    expect(manifestJson().dirty).toBe(false)
+    store.lists.length = 0
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.chunksWritten).toBe(0)
+    expect(store.lists).toEqual([])
+  })
+
+  it('does look, before anything is imported, once the record is dirty', async () => {
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const m = manifestJson()
+    m.dirty = true // an interrupted pass, or a record that could not be read, leaves this behind
+    fs.writeFileSync(manifestFile(), JSON.stringify(m))
+    store.lists.length = 0
+    await runClaudeNotesIngest(deps(store))
+    expect(store.lists.length).toBeGreaterThan(0)
+  })
+})
+
+describe('the sweep before an import, and a removal that has just failed', () => {
+  it('does not try it a second time in the same pass: the queue of removals made it once, and left it queued', async () => {
+    seedNotes(2)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const ids = [...store.rows.keys()]
+    const m = manifestJson()
+    m.files = {} // a record that lost track of its notes, with their removal already queued by a pass that was killed
+    m.stale = ids
+    m.dirty = true
+    fs.writeFileSync(manifestFile(), JSON.stringify(m))
+    store.failRemoves(new Error('memory is locked'))
+    let attempts = 0
+    const remove = store.remove.bind(store)
+    store.remove = async (id) => { attempts++; return remove(id) }
+    await runClaudeNotesIngest(deps(store))
+    expect(attempts).toBe(ids.length) // once each, from the queue; the sweep that follows leaves them to it
+    expect([...manifestJson().stale].sort()).toEqual([...ids].sort()) // and they stay queued for the next pass
+    expect(manifestJson().dirty).toBe(true) // so the record is not called settled
+  })
+})

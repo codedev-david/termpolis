@@ -402,9 +402,16 @@ async function listAll(store: NotesStore): Promise<StoredNote[]> {
   return [...seen.values()]
 }
 
-/** True when the store lists no imported note at all. A store that cannot be listed says nothing about what it holds: false. */
-async function holdsNoNotes(store: NotesStore): Promise<boolean> {
-  try { return (await store.list({ agentId: NOTES_SOURCE, limit: 1 })).filter(isRow).length === 0 } catch { return false }
+/** True when the store holds no imported note of THIS computer's. One row settles it, the newest; only when that one is another
+ *  computer's (memory sync) are this computer's looked for through all of them, because a peer's newer note must not hide that
+ *  its own copies are gone. A store that cannot be listed says nothing about what it holds: false. */
+async function holdsNoNotes(deps: NotesDeps): Promise<boolean> {
+  try {
+    const newest = (await deps.store.list({ agentId: NOTES_SOURCE, limit: 1 })).filter(isRow)
+    if (newest.length === 0) return true
+    if (ownedBy(newest[0], await originOf(deps))) return false
+    return (await ownNotes(deps)).length === 0
+  } catch { return false }
 }
 
 /** Is this row this computer's to remove? Another computer's notes (memory sync) are theirs. */
@@ -617,13 +624,13 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
   stats.rootsRead = found.rootsRead
   stats.filesSeen = found.notes.length
 
-  // 0. A store that was replaced under the manifest (a new memory key, a data folder restored from before the import, a log
-  //    deleted by hand) holds none of the notes the manifest says it does, and every note would be found unchanged and never
+  // 0. A store that was replaced under the manifest (a new memory key, the memory log deleted by hand or put back from a backup
+  //    on its own) holds none of the notes the manifest says it does, and every note would be found unchanged and never
   //    imported again, while Settings goes on saying they are in memory. A store with no imported note at all cannot hold any:
   //    the record of what was stored starts over. Nothing else changes (the same text is the same entry, so it cannot double up
   //    if the store did hold them after all, and what is queued for removal stays queued), and a store that cannot be listed
   //    says nothing, so it is left alone.
-  if (Object.values(m.files).some((file) => file.chunks.length > 0) && (await holdsNoNotes(deps.store))) m.files = {}
+  if (Object.values(m.files).some((file) => file.chunks.length > 0) && (await holdsNoNotes(deps))) m.files = {}
 
   // 1. Removals a killed pass had written ahead. The epoch moves on first, so what is stored again below
   //    cannot carry a hash that these deletions retire.

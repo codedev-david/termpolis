@@ -370,6 +370,19 @@ describe('secrets in a note', () => {
     expect(disk).not.toContain(FAKE_KEY)
     expect(manifestJson().last.secretsRedacted).toBe(stats.secretsRedacted)
   })
+
+  // The panel and the README say the redaction is the Memory scrub (Settings > AI Security), the one switch that covers all of
+  // memory, and that a note is stored as it is when that is off: the sentence is true only while this holds.
+  it('are stored as they are, and counted as none redacted, when the Memory scrub is switched off', async () => {
+    setMemoryScrub(false)
+    note(FOLDER, 'n.md', `---\nname: n\ntype: reference\n---\nThe deploy key is ${FAKE_KEY} for the staging account.`)
+    session(FOLDER, CWD)
+    const stats = await runClaudeNotesIngest(deps(realStore))
+    expect(stats.secretsRedacted).toBe(0)
+    expect(stored()).toHaveLength(1)
+    expect(stored()[0].content).toContain(FAKE_KEY)
+    expect(manifestJson().last.secretsRedacted).toBe(0)
+  })
 })
 
 describe('what an agent gets back', () => {
