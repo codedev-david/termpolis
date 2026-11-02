@@ -17,6 +17,9 @@ import {
   _resetMemoryAuditForTests,
   _setMaxBytesForTests,
   MAX_BYTES,
+  AUDIT_FILES,
+  memoryAuditSize,
+  clearMemoryAudit,
 } from '../../src/main/memoryAudit'
 
 describe('memory/learning audit (WP-E)', () => {
@@ -271,5 +274,101 @@ describe('memory/learning audit written from the main process', () => {
     initMemoryAudit(tmp)
     auditMemory({ event: 'learn', kind: 'reflect', detail: 'x' })
     expect(fs.existsSync(hostFile())).toBe(true)
+  })
+})
+
+// The user's way to forget the record in the app: Settings > Memory & Learning > Activity record. It only ever touches the four
+// files the record is kept in, in the app-data folder it is handed, and it is safe while the other process is still writing.
+describe('the record, as the user sees it and clears it', () => {
+  let tmp: string
+  const file = (name: string): string => path.join(tmp, name)
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'memaudit-clear-'))
+    _resetMemoryAuditForTests()
+  })
+  afterEach(() => {
+    _resetMemoryAuditForTests()
+    try { fs.rmSync(tmp, { recursive: true, force: true }) } catch { /* ignore */ }
+  })
+
+  it('is kept in exactly four files: the memory process\'s and the main process\'s, each with its earlier copy', () => {
+    expect([...AUDIT_FILES].sort()).toEqual(['memory-audit-main.jsonl', 'memory-audit-main.prev.jsonl', 'memory-audit.jsonl', 'memory-audit.prev.jsonl'])
+  })
+
+  it('has a size of nothing when nothing has been recorded, or when the folder is not there', () => {
+    expect(memoryAuditSize(tmp)).toEqual({ files: 0, bytes: 0 })
+    expect(memoryAuditSize(path.join(tmp, 'not-a-folder'))).toEqual({ files: 0, bytes: 0 })
+  })
+
+  it('adds up the size of the files that are there, and counts them, without reading a line', () => {
+    fs.writeFileSync(file('memory-audit.jsonl'), 'a'.repeat(100))
+    fs.writeFileSync(file('memory-audit.prev.jsonl'), 'b'.repeat(40))
+    fs.writeFileSync(file('memory-audit-main.jsonl'), 'c'.repeat(7))
+    expect(memoryAuditSize(tmp)).toEqual({ files: 3, bytes: 147 })
+  })
+
+  it('does not count something that is not a file as part of the record', () => {
+    fs.mkdirSync(file('memory-audit.jsonl'))
+    fs.writeFileSync(file('memory-audit-main.jsonl'), 'abc')
+    expect(memoryAuditSize(tmp)).toEqual({ files: 1, bytes: 3 })
+  })
+
+  it('removes all four, and says how many', () => {
+    for (const name of AUDIT_FILES) fs.writeFileSync(file(name), 'x\n')
+    expect(clearMemoryAudit(tmp)).toEqual({ removed: 4, failed: 0 })
+    for (const name of AUDIT_FILES) expect(fs.existsSync(file(name))).toBe(false)
+    expect(memoryAuditSize(tmp)).toEqual({ files: 0, bytes: 0 })
+  })
+
+  it('leaves everything else in the folder alone', () => {
+    for (const name of AUDIT_FILES) fs.writeFileSync(file(name), 'x\n')
+    fs.writeFileSync(file('swarm-memory.jsonl'), 'a memory')
+    fs.writeFileSync(file('memory-metrics.jsonl'), 'a metric')
+    fs.writeFileSync(file('memory-audit.jsonl.bak'), 'not ours')
+    clearMemoryAudit(tmp)
+    expect(fs.readFileSync(file('swarm-memory.jsonl'), 'utf8')).toBe('a memory')
+    expect(fs.readFileSync(file('memory-metrics.jsonl'), 'utf8')).toBe('a metric')
+    expect(fs.readFileSync(file('memory-audit.jsonl.bak'), 'utf8')).toBe('not ours')
+  })
+
+  it('counts a file that is not there as already forgotten, not as a failure', () => {
+    fs.writeFileSync(file('memory-audit.jsonl'), 'x\n')
+    expect(clearMemoryAudit(tmp)).toEqual({ removed: 1, failed: 0 })
+    expect(clearMemoryAudit(tmp)).toEqual({ removed: 0, failed: 0 })
+    expect(clearMemoryAudit(path.join(tmp, 'not-a-folder'))).toEqual({ removed: 0, failed: 0 })
+  })
+
+  it('counts a file it cannot remove as failed, and still removes the others', () => {
+    for (const name of AUDIT_FILES) fs.writeFileSync(file(name), 'x\n')
+    // A folder where a file should be cannot be unlinked as one: a refusal like the one an open file gives on Windows.
+    fs.rmSync(file('memory-audit.prev.jsonl'))
+    fs.mkdirSync(file('memory-audit.prev.jsonl'))
+    expect(clearMemoryAudit(tmp)).toEqual({ removed: 3, failed: 1 })
+    expect(fs.existsSync(file('memory-audit.jsonl'))).toBe(false)
+    expect(fs.existsSync(file('memory-audit-main.jsonl'))).toBe(false)
+  })
+
+  it('lets the process that writes the record start it again: the next event makes a new file', () => {
+    initMemoryAudit(tmp)
+    auditMemory({ event: 'learn', kind: 'reflect', detail: 'first' })
+    expect(readMemoryAudit(10)).toHaveLength(1)
+    clearMemoryAudit(tmp)
+    expect(readMemoryAudit(10)).toEqual([])
+    auditMemory({ event: 'learn', kind: 'reflect', detail: 'second' })
+    const after = readMemoryAudit(10)
+    expect(after).toHaveLength(1)
+    expect((after[0] as { detail: string }).detail).toBe('second')
+  })
+
+  it('does not stop the other process from rotating a file it still counts as big', () => {
+    // The other process keeps its own count of the size of its file; after this clears the file the count is stale, and a rotation
+    // it then makes finds nothing to rename. It must carry on and write the line.
+    _setMaxBytesForTests(300)
+    initMemoryAudit(tmp)
+    for (let i = 0; i < 2; i++) auditMemory({ event: 'learn', kind: 'reflect', detail: 'x'.repeat(40) })
+    clearMemoryAudit(tmp)
+    auditMemory({ event: 'learn', kind: 'reflect', detail: 'y'.repeat(40) })
+    expect(readMemoryAudit(10)).toHaveLength(1)
+    expect(fs.existsSync(file('memory-audit.prev.jsonl'))).toBe(false)
   })
 })

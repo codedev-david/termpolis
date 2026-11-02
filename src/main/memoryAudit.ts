@@ -7,7 +7,7 @@
 // Distinct from the AI Security audit (aiSecurity.ts), which is DEFAULT-OFF and about cloud egress.
 // This is:
 //   - DEFAULT ON (it's the brain auditing itself). setMemoryAuditEnabled is an internal switch with no setting in the app: the
-//     user's way to clear it is to delete the files (PRIVACY.md, Your Choices).
+//     user's way to clear it is Settings > Memory & Learning > Activity record (clearMemoryAudit; PRIVACY.md, Your Choices).
 //   - LOCAL-ONLY — the file never leaves the machine (same trust boundary as the memory store).
 //   - SECRET-SAFE — every free-text preview is run through the secret scanner, so a stored or queried
 //     secret is masked before it is written.
@@ -46,6 +46,8 @@ const FILES: Record<MemoryAuditRole, { live: string; prev: string }> = {
   host: { live: 'memory-audit.jsonl', prev: 'memory-audit.prev.jsonl' },
   main: { live: 'memory-audit-main.jsonl', prev: 'memory-audit-main.prev.jsonl' },
 }
+/** Every file the record is kept in, in the app-data folder: each process's live file and its earlier copy. */
+export const AUDIT_FILES: readonly string[] = [FILES.host.live, FILES.host.prev, FILES.main.live, FILES.main.prev]
 /** The size a live audit file may reach before it rotates (one previous generation is kept): PRIVACY.md says "about 2 MB". */
 export const MAX_BYTES = 2_000_000
 let maxBytes = MAX_BYTES
@@ -69,6 +71,38 @@ export function setMemoryAuditEnabled(v: boolean): void { enabled = v !== false 
 export function memoryAuditEnabled(): boolean { return enabled }
 
 function auditPath(): string | null { return dir ? join(dir, FILES[role].live) : null }
+
+/** How much the record holds in the app-data folder `d`: how many of its files exist and their size together. It reads no
+ *  line, only the size of each file, and counts nothing that is not a file. Never throws. */
+export function memoryAuditSize(d: string): { files: number; bytes: number } {
+  let files = 0
+  let bytes = 0
+  for (const name of AUDIT_FILES) {
+    try {
+      const s = statSync(join(d, name))
+      if (s.isFile()) { files++; bytes += s.size }
+    } catch { /* not there: nothing recorded */ }
+  }
+  return { files, bytes }
+}
+
+/** Forget the record: remove every file it is kept in, in the app-data folder `d`, and nothing else. A file that is not there
+ *  is already forgotten. The other process may append at the same moment; its next line starts a new file, and the byte count
+ *  either process keeps for rotation can only be too high, which makes it rotate a file that is not there, and rotating nothing
+ *  loses nothing. `failed` counts the files that are there and could not be removed (one an antivirus scan holds open, say). */
+export function clearMemoryAudit(d: string): { removed: number; failed: number } {
+  let removed = 0
+  let failed = 0
+  for (const name of AUDIT_FILES) {
+    try {
+      unlinkSync(join(d, name))
+      removed++
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') failed++
+    }
+  }
+  return { removed, failed }
+}
 
 /** What goes to disk for an event: the event itself, minus the one field that is the beginning of someone's
  *  words. A recall keeps who asked, how many it found and which ids; the query stays with the caller. */

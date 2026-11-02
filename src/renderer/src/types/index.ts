@@ -533,6 +533,10 @@ export interface TermpolisAPI {
   memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => Promise<IpcResponse<ClaudeNotesSettings>>
   /** Take every imported note out of memory and turn the import off. */
   memoryRemoveImportedNotes: () => Promise<IpcResponse<{ removed: number; failed: number; settings: ClaudeNotesSettings }>>
+  /** The record of what memory did, in the app-data folder: how many of its files exist and their size together. */
+  memoryAuditSize: () => Promise<IpcResponse<{ files: number; bytes: number }>>
+  /** Forget the record. `failed` counts files that exist and could not be removed. */
+  memoryClearAudit: () => Promise<IpcResponse<{ removed: number; failed: number }>>
   /** Reflect a solo agent session's transcript delta into the learning brain (idle-settle / on close). */
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => Promise<IpcResponse<{ fired: boolean; lessons: number }>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>

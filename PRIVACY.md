@@ -451,9 +451,11 @@ this: it starts when you answer yes.
 - **Stop Termpolis reading Claude Code's saved notes** — turn off *Include
   Claude Code's saved notes in memory* in Settings → Memory & Learning, and use
   *Remove imported notes* there to take out the copies already made.
-- **Clear the record of what memory did** — it has no switch. Quit Termpolis and
-  delete `memory-audit.jsonl`, `memory-audit-main.jsonl` and their `.prev.jsonl`
-  copies from the data folder; they are made again from then on.
+- **Clear the record of what memory did** — Settings → Memory & Learning →
+  *Activity record* has a *Clear activity record* button. It asks first, then
+  removes `memory-audit.jsonl`, `memory-audit-main.jsonl` and their `.prev.jsonl`
+  copies from the data folder and nothing else; no memory is touched, and the
+  record starts again from then on. The record itself has no switch.
 - **Turn crash reports or usage statistics on or off** — Settings → General →
   Privacy has a switch for each. Both are off unless you turn them on, and a
   change applies at once.

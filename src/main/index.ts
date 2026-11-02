@@ -240,6 +240,7 @@ import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2
 import { withoutCandidates } from './lessonSubstance'
 import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, clearNotesRecord, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
 import { registerClaudeNotesIpc } from './claudeNotesIpc'
+import { registerMemoryAuditIpc } from './memoryAuditIpc'
 import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './claudeNotesShare'
 import { fillVisible, type FillBounds } from './doorFill'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
@@ -2546,6 +2547,9 @@ registerClaudeNotesIpc(ipcMain, {
   // Turning the notes on starts a pass now, not at the next 30-minute tick; a locked memory just waits.
   passSoon: () => { void memoryIsLocked().then((locked) => (locked ? undefined : runClaudeNotesIngest(claudeNotesDeps()))).catch(() => {}) },
 })
+
+// The record of what memory did (memoryAudit.ts): how big it is, and clearing it. Settings > Memory & Learning > Activity record.
+registerMemoryAuditIpc(ipcMain, { dir: () => app.getPath('userData') })
 
 // Vector quantization — the RAM/exactness dial for the packed vector store.
 //

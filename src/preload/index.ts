@@ -270,6 +270,9 @@ const api: TermpolisAPI = {
   memoryGetNotesSettings: () => ipcRenderer.invoke('memory:get-notes-settings'),
   memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => ipcRenderer.invoke('memory:set-notes-settings', p),
   memoryRemoveImportedNotes: () => ipcRenderer.invoke('memory:remove-imported-notes'),
+  // The record of what memory did (memoryAuditIpc.ts): how big it is, and clearing it.
+  memoryAuditSize: () => ipcRenderer.invoke('memory:audit-size'),
+  memoryClearAudit: () => ipcRenderer.invoke('memory:audit-clear'),
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => ipcRenderer.invoke('memory:reflect-session', { terminalId, cwd, agent }),
   memorySyncStatus: () => ipcRenderer.invoke('memory:sync-status'),
   memorySetSyncDir: (dir: string | null) => ipcRenderer.invoke('memory:set-sync-dir', { dir }),
