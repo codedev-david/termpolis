@@ -18,6 +18,7 @@ import {
   _resetForTests,
   _setEmbeddingsAvailable,
   initSwarmMemory,
+  memoryCount,
   memoryDelete,
   memoryList,
   memorySearch,
@@ -28,7 +29,10 @@ import {
 } from '../../src/main/swarmMemory'
 import { getSettings, scanText, setMemoryScrub } from '../../src/main/aiSecurity'
 import {
+  NOTES_MANIFEST_FILE,
   _resetNotesLockForTests,
+  fileManifest,
+  notesStatus,
   removeImportedNotes,
   runClaudeNotesIngest,
   type NotesDeps,
@@ -529,6 +533,46 @@ describe('the store\'s own behaviour the pass relies on', () => {
     for (let i = 0; i < 6; i++) await memoryWrite({ agentId: 'claude-notes', kind: 'fact', content: `row ${i}`, ts: 1000 + Math.floor(i / 2), project: CWD })
     expect(memoryList({ agentId: 'claude-notes', before: 1002 })).toHaveLength(4)
     expect(memoryList({ agentId: 'claude-notes', since: 1001, before: 1002 })).toHaveLength(2)
+  })
+})
+
+// Round 3, against the real store: the two ways the record of what was stored and the store itself can disagree.
+describe('the manifest and the store disagree', () => {
+  /** `count` notes that all carry one modified time, as a copied or extracted folder does; each is one chunk of its own wording. */
+  function seedSameTime(count: number): void {
+    const stamp = Date.UTC(2026, 8, 5)
+    for (let i = 0; i < count; i++) {
+      const p = note(FOLDER, `rule_${i}.md`, FEEDBACK.replace('Invalidate on write, not on a timer.', `Rule number ${i}: invalidate on write, and only then, because a timer serves stale data (${i}).`))
+      fs.utimesSync(p, new Date(stamp), new Date(stamp))
+    }
+    session(FOLDER, CWD)
+  }
+
+  it('a lost manifest over 600 notes that share one modified time leaves exactly 600 copies, and settles', async () => {
+    seedSameTime(600)
+    for (let pass = 0; pass < 4; pass++) await runClaudeNotesIngest(deps(realStore), { maxChunks: 1000 })
+    expect(memoryCount()).toBe(600) // this store holds nothing but the notes; a listing shows at most 500, a count shows all
+    fs.rmSync(path.join(data, NOTES_MANIFEST_FILE)) // the manifest is lost; the store is not
+    for (let pass = 0; pass < 4; pass++) await runClaudeNotesIngest(deps(realStore), { maxChunks: 1000 })
+    expect(memoryCount()).toBe(600) // not 1,200: a full page of one time's new copies cannot hide the old ones from the sweep
+    restart()
+    expect(memoryCount()).toBe(600)
+    expect(manifestJson().dirty).toBe(false)
+  })
+
+  it('a store replaced by an empty one is imported into again, and Settings counts what it really holds', async () => {
+    seedSameTime(3)
+    await runClaudeNotesIngest(deps(realStore))
+    expect(await stored()).toHaveLength(3)
+    // A new memory key: the old log is left unread and the store the app sees is empty.
+    fs.rmSync(storeDir, { recursive: true, force: true })
+    storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'notes-store-'))
+    openStore()
+    expect(await stored()).toHaveLength(0)
+    expect(notesStatus(fileManifest(data)).chunks).toBe(3) // what the record claims, before a pass looks
+    for (let pass = 0; pass < 3; pass++) await runClaudeNotesIngest(deps(realStore))
+    expect(await stored()).toHaveLength(3)
+    expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 3, chunks: 3 })
   })
 })
 

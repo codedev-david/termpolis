@@ -13,6 +13,8 @@
 // be reached by calling it with no args at all.
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import * as path from 'path'
+import { NOTES_MANIFEST_FILE } from '../../src/main/claudeNotesIngest'
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -681,6 +683,24 @@ describe('memory:count / memory:clear / memory:stats', () => {
     expect(typeof deps.manifest.read).toBe('function')
     expect(typeof deps.manifest.write).toBe('function')
     expect(mem.memoryClear).toHaveBeenCalledTimes(1)
+  })
+
+  // The manifest it hands over has to be the one the passes keep (<userData>/claude-notes-manifest.json): a stand-in would leave
+  // Settings counting notes that are gone, and no other test would notice. `fs` is a spy in this file, so what it saw is the proof.
+  it('hands the record over as the one file the passes keep, in the user data folder', async () => {
+    notesMock.clearNotesRecord.mockClear()
+    await invoke('memory:clear')
+    const [deps] = notesMock.clearNotesRecord.mock.calls[0] as unknown as [{ manifest: { read: () => string | null; write: (text: string) => void } }]
+    const file = path.join(USER_DATA, NOTES_MANIFEST_FILE)
+    fsMock.readFileSync.mockClear()
+    fsMock.writeFileSync.mockClear()
+    deps.manifest.read()
+    expect(fsMock.readFileSync.mock.calls.map((c) => String(c[0]))).toEqual([file])
+    deps.manifest.write('{"version":1}')
+    const written = fsMock.writeFileSync.mock.calls.map((c) => String(c[0]))
+    expect(written).toHaveLength(1)
+    expect(written[0].startsWith(file)).toBe(true) // the atomic write goes through a temporary file beside it, then renames onto it
+    expect(String(fsMock.renameSync.mock.calls.at(-1)?.[1])).toBe(file)
   })
 
   it('clear that the store refuses (locked) is reported and the record is left as it was', async () => {

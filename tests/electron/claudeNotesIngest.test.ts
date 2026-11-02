@@ -848,14 +848,15 @@ describe('the manifest is the record of what was stored', () => {
     expect(store.lists.length).toBeGreaterThan(0) // the sweep listed what the store holds
   })
 
-  it('does not list the store at all on a pass that was not interrupted and has nothing to account for', async () => {
+  it('lists one row of the store, and no more, on a pass that was not interrupted and has nothing to account for', async () => {
     note(FOLDER, 'n.md', FEEDBACK)
     session(FOLDER, CWD)
     const store = fakeStore()
     await runClaudeNotesIngest(deps(store))
     store.lists.length = 0
     await runClaudeNotesIngest(deps(store))
-    expect(store.lists).toEqual([])
+    // The one question: does the store still hold a note at all (it may have been replaced). Never a walk of all of them.
+    expect(store.lists).toEqual([{ agentId: 'claude-notes', limit: 1 }])
   })
 })
 
@@ -1186,7 +1187,7 @@ describe('more notes than a listing can reach in one go', () => {
     const store = fakeStore()
     await stored(store, 1200)
     await runClaudeNotesIngest(deps(store, { sweepRounds: 1 }))
-    expect(store.rows.size).toBe(700)
+    expect(store.rows.size).toBe(200) // a round of 500 for the sweep before the import, and another for the sweep at the end
     expect(manifestJson().dirty).toBe(true)
     await runClaudeNotesIngest(deps(store)) // the next pass carries on
     expect(store.rows.size).toBe(0)
@@ -1420,5 +1421,222 @@ describe('what a pass keeps between runs, and what it will not follow', () => {
       expect(found.skipped.links).toBe(1)
       expect(f.calls.stat).toEqual([]) // and it was not even sized
     })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// Round 3: what a pass does when the user takes the grant back in its middle, when the manifest knows nothing, when the store
+// was replaced under it, and the edges of a listing it relies on.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+/** `count` notes on disk, each of its own wording, each one chunk, in one project folder with a transcript. */
+function seedNotes(count: number, mtime = (i: number): number => Date.UTC(2026, 8, 1 + i)): void {
+  for (let i = 0; i < count; i++) note(FOLDER, `rule_${i}.md`, FEEDBACK.replace('Invalidate on write, not on a timer.', `Rule number ${i}: invalidate on write, and only then, because a timer serves stale data (${i}).`), mtime(i))
+  session(FOLDER, CWD)
+}
+
+describe('a pass stops the moment the user takes the grant back', () => {
+  it('opens no further note and stores no further chunk once the answer has become no', async () => {
+    seedNotes(6)
+    const store = fakeStore()
+    let granted = true
+    const stored = store.write.bind(store)
+    store.write = async (i) => { const row = await stored(i); granted = false; return row } // the user disconnects as the first copy is stored
+    const reads: string[] = []
+    const watched: NotesFs = { ...realNotesFs, read: async (file, max) => { reads.push(file); return realNotesFs.read(file, max) } }
+    const stats = await runClaudeNotesIngest(deps(store, { connected: () => granted, fs: watched }))
+    expect(reads.filter((file) => file.endsWith('.md'))).toHaveLength(1) // the session transcript is read too, to find the project
+    expect(store.rows.size).toBe(1)
+    expect(stats.chunksWritten).toBe(1)
+  })
+
+  it('leaves the rest for the next pass, which reads nothing while the answer stays no and finishes when it is yes again', async () => {
+    seedNotes(6)
+    const store = fakeStore()
+    let granted = true
+    let flipped = false
+    const stored = store.write.bind(store)
+    store.write = async (i) => { const row = await stored(i); if (!flipped) { flipped = true; granted = false } return row }
+    await runClaudeNotesIngest(deps(store, { connected: () => granted }))
+    const reads: string[] = []
+    const watched: NotesFs = { ...realNotesFs, read: async (file, max) => { reads.push(file); return realNotesFs.read(file, max) } }
+    const idle = await runClaudeNotesIngest(deps(store, { connected: () => granted, fs: watched }))
+    expect(idle.idle).toBe('not-connected')
+    expect(reads).toEqual([])
+    expect(store.rows.size).toBe(1)
+    granted = true
+    await runClaudeNotesIngest(deps(store, { connected: () => granted }))
+    expect(store.rows.size).toBe(6) // each note once: the first copy is still the first copy
+    expect(notesStatus(fileManifest(data)).notes).toBe(6)
+  })
+
+  it('asks about the grant for a note it is about to open, and not for one it passes over unchanged', async () => {
+    seedNotes(6)
+    const store = fakeStore()
+    const connected = vi.fn(() => true)
+    await runClaudeNotesIngest(deps(store, { connected }))
+    expect(connected).toHaveBeenCalledTimes(1 + 6) // the pass, then each of the six notes it opened
+    connected.mockClear()
+    await runClaudeNotesIngest(deps(store, { connected }))
+    expect(connected).toHaveBeenCalledTimes(1) // nothing changed: the pass alone
+  })
+})
+
+describe('a manifest that knows nothing is told apart from the store before the notes are imported again', () => {
+  /** The store with every write and removal logged, in order. */
+  const logged = (store: ReturnType<typeof fakeStore>, events: string[]): NotesStore => ({
+    write: async (i) => { events.push('write'); return store.write(i) },
+    remove: async (id) => { events.push('remove'); return store.remove(id) },
+    list: (o) => store.list(o),
+  })
+
+  it('removes every copy the lost manifest cannot account for before it stores the new ones', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    expect(store.rows.size).toBe(3)
+    fs.rmSync(manifestFile()) // the manifest is lost; the store is not
+    const events: string[] = []
+    await runClaudeNotesIngest(deps(logged(store, events)))
+    expect(events.filter((e) => e === 'remove')).toHaveLength(3)
+    expect(events.lastIndexOf('remove')).toBeLessThan(events.indexOf('write')) // none of the old copies is left to hide behind the new ones
+    expect(store.rows.size).toBe(3)
+    expect(manifestJson().dirty).toBe(false)
+  })
+
+  it('does not do it on the first import, where the store holds nothing of the notes', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    const events: string[] = []
+    await runClaudeNotesIngest(deps(logged(store, events)))
+    expect(events).toEqual(['write', 'write', 'write'])
+    expect(store.removed).toEqual([])
+  })
+
+  it('does not do it to a manifest that knows its notes: an interrupted import leaves its copies in use until it is finished', async () => {
+    seedNotes(6)
+    const store = fakeStore()
+    const first = await runClaudeNotesIngest(deps(store), { maxChunks: 2 })
+    expect(first.truncated).toBe(true)
+    expect(manifestJson().dirty).toBe(true)
+    const events: string[] = []
+    await runClaudeNotesIngest(deps(logged(store, events)))
+    expect(events).toEqual(['write', 'write', 'write', 'write']) // the four it still lacked; the two it had are not touched
+    expect(store.rows.size).toBe(6)
+    expect(store.removed).toEqual([])
+  })
+
+  it('leaves the old copies and says so when the manifest cannot be written ahead of removing them', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    fs.rmSync(manifestFile())
+    const stats = await runClaudeNotesIngest(deps(store, { manifest: flakyManifest(0) }))
+    expect(stats.manifestFailed).toBe(true)
+    expect(store.removed).toEqual([])
+    expect(store.rows.size).toBe(3) // nothing written either: a manifest that cannot be saved ends the pass
+  })
+
+  it('carries on to the import when the store cannot be listed, and the end of the pass tries again', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    store.failList(new Error('host down'))
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.chunksWritten).toBe(3)
+    expect(manifestJson().dirty).toBe(true) // the store was never seen whole
+  })
+})
+
+describe('a store that was replaced under the manifest', () => {
+  it('is imported into again: a store with none of the notes the manifest says it holds', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    store.rows.clear() // a new memory key, a restored data folder, a log deleted by hand
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.chunksWritten).toBe(3)
+    expect(store.rows.size).toBe(3)
+    expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 3, chunks: 3, pending: 0 })
+  })
+
+  it('starts from the store as it is: the same text is the same entry, so nothing doubles up', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    store.rows.clear()
+    await runClaudeNotesIngest(deps(store))
+    expect(store.rows.size).toBe(3)
+    expect(store.removed).toEqual([])
+  })
+
+  it('is not mistaken for an ordinary pass: a store that still holds a note is left alone', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.chunksWritten).toBe(0)
+    expect(store.writes).toHaveLength(3)
+  })
+
+  it('changes nothing when the store cannot be listed: that says nothing about what it holds', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const before = manifestJson()
+    store.failList(new Error('host down'))
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.chunksWritten).toBe(0)
+    expect(manifestJson().files).toEqual(before.files)
+  })
+
+  it('is not looked for when the manifest holds no chunk: there is nothing to compare, and the pass asks the store nothing', async () => {
+    note(FOLDER, 'empty.md', '---\nname: nothing\n---\n')
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store)) // a complete pass over a note with no text: settled, and no chunk on record
+    expect(manifestJson().dirty).toBe(false)
+    const listsBefore = store.lists.length
+    await runClaudeNotesIngest(deps(store))
+    expect(store.lists.length).toBe(listsBefore)
+  })
+
+  it('does not undo Clear memory: its record keeps the notes it saw but not their chunks', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    await clearNotesRecord({ manifest: fileManifest(data) }, async () => { store.rows.clear() })
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.chunksWritten).toBe(0)
+    expect(store.rows.size).toBe(0)
+  })
+})
+
+describe('the edges of the listing a sweep relies on', () => {
+  const noteRow = (id: string, ts: number): StoredNote => ({ id, ts, agentId: 'claude-notes', source: 'claude-notes', content: id } as unknown as StoredNote)
+
+  it('reaches the notes that share the oldest time of a full page, when they do not all fit in it', async () => {
+    const store = fakeStore()
+    for (let i = 0; i < 470; i++) store.rows.set(`n${i}`, noteRow(`n${i}`, 1_000_000 - i))
+    for (let i = 0; i < 50; i++) store.rows.set(`t${i}`, noteRow(`t${i}`, 1_000)) // 30 of these fit in the page of 500; 20 do not
+    const result = await removeImportedNotes(deps(store, { sweepRounds: 1 }))
+    expect(result.removed).toBe(520)
+    expect(store.rows.size).toBe(0)
+    expect(manifestJson().dirty).toBe(false) // one round saw them all: nothing was left for a second to find
+  })
+
+  it('treats a chunk with no id on the manifest as untrustworthy: the entry is dropped, the record is dirty, the note is imported again', async () => {
+    seedNotes(1)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const m = manifestJson()
+    const key = Object.keys(m.files)[0]
+    m.files[key].chunks[0].id = ''
+    fs.writeFileSync(manifestFile(), JSON.stringify(m))
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.filesChanged).toBe(1) // not unchanged: the entry could not be trusted
+    const after = manifestJson()
+    expect(after.files[key].chunks[0].id).not.toBe('')
+    expect(after.files[key].chunks[0].id).toBe([...store.rows.keys()][0])
+    expect(store.rows.size).toBe(1)
   })
 })

@@ -390,12 +390,21 @@ async function listAll(store: NotesStore): Promise<StoredNote[]> {
     for (const r of page) if (!seen.has(r.id)) { seen.set(r.id, r); added++ }
     if (raw.length < LIST_PAGE || added === 0) break
     const oldest = Math.min(...page.map((r) => r.ts))
+    // The notes that share the oldest time of a full page may not all have fit in it, and the next page starts below that time:
+    // they are asked for by that time alone, up to one more page of them. A listing that is not swept (the one "Remove imported
+    // notes" starts from, the one the end of a pass counts with) still sees them; more than a page of ONE time cannot be reached
+    // without removing some first, which is what the sweep's next round is for (sweepOwnNotes).
     for (const r of (await store.list({ agentId: NOTES_SOURCE, limit: LIST_PAGE, since: oldest, before: oldest + 1 })).filter(isRow)) {
       if (!seen.has(r.id)) seen.set(r.id, r)
     }
     before = oldest
   }
   return [...seen.values()]
+}
+
+/** True when the store lists no imported note at all. A store that cannot be listed says nothing about what it holds: false. */
+async function holdsNoNotes(store: NotesStore): Promise<boolean> {
+  try { return (await store.list({ agentId: NOTES_SOURCE, limit: 1 })).filter(isRow).length === 0 } catch { return false }
 }
 
 /** Is this row this computer's to remove? Another computer's notes (memory sync) are theirs. */
@@ -608,6 +617,14 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
   stats.rootsRead = found.rootsRead
   stats.filesSeen = found.notes.length
 
+  // 0. A store that was replaced under the manifest (a new memory key, a data folder restored from before the import, a log
+  //    deleted by hand) holds none of the notes the manifest says it does, and every note would be found unchanged and never
+  //    imported again, while Settings goes on saying they are in memory. A store with no imported note at all cannot hold any:
+  //    the record of what was stored starts over. Nothing else changes (the same text is the same entry, so it cannot double up
+  //    if the store did hold them after all, and what is queued for removal stays queued), and a store that cannot be listed
+  //    says nothing, so it is left alone.
+  if (Object.values(m.files).some((file) => file.chunks.length > 0) && (await holdsNoNotes(deps.store))) m.files = {}
+
   // 1. Removals a killed pass had written ahead. The epoch moves on first, so what is stored again below
   //    cannot carry a hash that these deletions retire.
   if (m.stale.length > 0) await ledger.retire([...m.stale])
@@ -626,6 +643,13 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
       stats.filesRemoved++
     }
   }
+
+  // 2b. A record that is dirty and knows no note (it was lost, or could not be read, or never saved) cannot say which entries in
+  //     the store are this computer's own copies: every one is an old copy. They go BEFORE the new ones are stored. The sweep
+  //     at the end of the pass cannot see an old copy behind a full page of one time's new copies (a listing reaches no further
+  //     than the notes that share a time, see sweepOwnNotes), so with 500 notes of one modified time it would call the store
+  //     settled with every note in it twice. Here there is nothing yet to hide behind, and each round has something to remove.
+  if (sweepDue && Object.keys(m.files).length === 0 && !ledger.halted) await sweepOwnNotes(deps, ledger, new Set(m.stale), 'swept')
 
   // 3. New and edited notes, newest first.
   const noProject = new Set<string>()
@@ -648,6 +672,9 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
     if (!deps.enabled()) { incomplete = true; break } // turned off mid-pass: stop, with nothing queued
     const prev = m.files[f.key]
     if (prev && prev.mtimeMs === f.mtimeMs && prev.size === f.size) continue // unchanged: not even opened
+    // The answer can become no while a long import runs: the next note is not opened, and nothing more is stored. Asked here and
+    // not above, so a note passed over unchanged (nearly all of them, nearly always) costs no read of the ledger.
+    if (!deps.connected()) { incomplete = true; break }
 
     const buf = await deps.fs.read(f.path, MAX_NOTE_BYTES + 1)
     if (!buf) { stats.unreadable++; continue }
@@ -719,7 +746,9 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
     for (const file of Object.values(m.files)) for (const c of file.chunks) keep.add(c.id)
     settled = await sweepOwnNotes(deps, ledger, keep, 'swept')
   }
-  if (complete && settled) m.dirty = false
+  // Settled also means nothing is waiting to be removed: a removal the sweep before the import could not make is on `stale`, which
+  // the sweep at the end counts as known, and the next pass retires it before anything else.
+  if (complete && settled && m.stale.length === 0) m.dirty = false
 
   m.last = { at: now(), filesSeen: stats.filesSeen, noProject: stats.noProject, secretsRedacted: (m.last?.secretsRedacted ?? 0) + stats.secretsRedacted }
   ledger.save()
