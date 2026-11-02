@@ -361,14 +361,13 @@ vi.mock('../../src/main/claudeNotesIngest', async () => ({
 }))
 // The saved-notes import waits for a yes (isAgentIntegrationGranted), not for the broader "connected" that an install an older
 // version connected, and nobody has asked, also has. This file runs the real module against a mocked fs, where no ledger exists:
-// these let a test say what the ledger would, and leave everything else to the real module.
-const integration = vi.hoisted(() => ({ granted: undefined as boolean | undefined, connected: undefined as boolean | undefined }))
+// this lets a test say what the ledger would, and leaves everything else to the real module.
+const integration = vi.hoisted(() => ({ granted: undefined as boolean | undefined }))
 vi.mock('../../src/main/agentIntegrationManager', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../src/main/agentIntegrationManager')>()
   return {
     ...real,
     isAgentIntegrationGranted: (...a: Parameters<typeof real.isAgentIntegrationGranted>) => integration.granted ?? real.isAgentIntegrationGranted(...a),
-    isAgentIntegrationConnected: (...a: Parameters<typeof real.isAgentIntegrationConnected>) => integration.connected ?? real.isAgentIntegrationConnected(...a),
   }
 })
 // A commit has to land for an outcome to be charged back to the memories recalled for it ("recall noting" below). git is a
@@ -2947,7 +2946,6 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
 
   afterEach(async () => {
     integration.granted = undefined
-    integration.connected = undefined
     notesMock.runClaudeNotesIngest.mockReset()
     notesMock.runClaudeNotesIngest.mockImplementation(async () => NO_RUN)
     notesMock.removeImportedNotes.mockClear()
@@ -2983,8 +2981,7 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
   // answers the one-time review. The saved notes are a read that did not exist then, so they wait for the answer: the pass, and
   // the panel that says whether it can run, ask whether the user said yes.
   it('waits for a yes: an install connected by an older version that nobody has asked does not start the import', async () => {
-    integration.connected = true // what an unasked older install answers to "connected"
-    integration.granted = false // ...and to "said yes"
+    integration.granted = false // what an unasked older install answers to "said yes"
     await indexer.run()
     const d = depsOfLastPass()
     expect(d.connected()).toBe(false)
@@ -2994,11 +2991,12 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     expect((await invoke('memory:get-notes-settings')).data.connected).toBe(true)
   })
 
-  it('does not take "connected" for a yes when the answer is not given either', async () => {
-    integration.connected = false
+  it('asks whether the user said yes and nothing broader: the answer is the ledger\'s, whatever the agents\' configs say', async () => {
+    // The mocked fs holds no ledger, so any other question (the status's connected) would answer no here: only the granted
+    // answer says yes.
     integration.granted = true
     await indexer.run()
-    expect(depsOfLastPass().connected()).toBe(true) // the question asked is whether the user said yes
+    expect(depsOfLastPass().connected()).toBe(true)
   })
 
   it('the fast pass never runs it: notes are checked on the slow tick only', async () => {
