@@ -314,11 +314,19 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   }
   const withoutForeignNotes = (hits: PrimerHit[], scoped: boolean): PrimerHit[] =>
     (hits.some((h) => foreignNote(h, scoped)) ? hits.filter((h) => !foreignNote(h, scoped)) : hits)
+  // The gate folds a chunk into the fuller chunk that begins with it, which takes the better score and the place of the earliest head, so
+  // the diversity pass reads the passage where the search ranked it. The read that names no project returns this project's own rows
+  // among everyone's, and there a row this project claims (filed under it, or naming it) and a fuller row it does not claim are two
+  // passages for the project block: folding across them would let a row that is not known to be this project's take the place of one
+  // that is, and the passage would go missing when the block has no room for the stranger (the pool and "may NOT apply" blocks see
+  // to such a pair afterwards, with the project's row standing for it).
+  const slugRe = project.length >= 4 ? new RegExp(`\\b${escapeRegExp(project)}\\b`, 'i') : null
+  const claimed = (h: PrimerHit): boolean => h.project === project || !!(slugRe && slugRe.test(h.content || ''))
   // What a read hands this is already what the digest may show (readCandidates hides the rows it must not, with the judgement its
   // read calls for), so this only ranks.
-  const gate = (hits: PrimerHit[]): PrimerHit[] =>
+  const gate = (hits: PrimerHit[], byClaim = false): PrimerHit[] =>
     adaptiveGate(
-      diversifyHits(dropPrefixDuplicates(dedupeHits(hits)), { threshold: DIVERSITY_THRESHOLD }),
+      diversifyHits(dropPrefixDuplicates(dedupeHits(hits), true, byClaim ? (a, b) => claimed(a) === claimed(b) : undefined), { threshold: DIVERSITY_THRESHOLD }),
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
@@ -355,7 +363,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   }
   let globalHits: PrimerHit[] = []
   try {
-    globalHits = gate(await readCandidates(undefined, false))
+    globalHits = gate(await readCandidates(undefined, false), project !== '')
   } catch {
     if (projectHits.length === 0) return null
   }
@@ -400,11 +408,10 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // F21: promote a global hit into THIS project only on an exact tag match, or a
     // WORD-BOUNDARY mention of a slug that is at least 4 chars — never a bare substring
     // (which made short slugs like 'app'/'api'/'go' match 'mapping'/'category'/'logo').
-    const slugRe = project.length >= 4 ? new RegExp(`\\b${escapeRegExp(project)}\\b`, 'i') : null
     for (const h of fromAnywhere) {
       if (seen.has(hitKey(h))) continue
       seen.add(hitKey(h))
-      if (h.project === project || (slugRe && slugRe.test(h.content || ''))) promoted.push(h)
+      if (claimed(h)) promoted.push(h)
       else others.push(h)
     }
     // The project bucket leads with what its author vouched for: saved notes (curated and verified), then lessons the
@@ -421,8 +428,8 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // A hit promoted by the mention above while it is filed under ANOTHER project (one filed under none, and one the store scoped
     // to this project, are not). A lesson of another project that merely says this one's name has no claim to the lead: it keeps
     // the place it had before there was a lead, after the conversations.
-    const byMentionOnly = new Set(promoted.filter((h) => { const s = slugOf(h); return s !== '' && s !== project }))
-    const leadsAsLesson = (h: PrimerHit): boolean => isGatedLesson(h) && !byMentionOnly.has(h)
+    const byMentionOnly = new Set(promoted.filter((h) => { const s = slugOf(h); return s !== '' && s !== project }).map(hitKey))
+    const leadsAsLesson = (h: PrimerHit): boolean => isGatedLesson(h) && !byMentionOnly.has(hitKey(h))
     let leadingNotes = 0
     let leadingLessons = 0
     const tier = pool.map((h): number => {

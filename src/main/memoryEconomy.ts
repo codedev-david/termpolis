@@ -285,15 +285,18 @@ export function dropOverlapping<T extends { content: string }>(kept: ReadonlyArr
  * `atFirst` is for a list that is a RANKING nobody sorts again: the fuller hit then takes the place of the earliest head
  * it replaces, so a passage ranked first stays first. (A list that is sorted by score afterwards needs no such thing:
  * the fuller hit already carries the best score.)
+ *
+ * `sameGroup` is for a list of two kinds of hit, where one kind must not take the place of the other: a head then gives
+ * way only to a fuller hit the predicate accepts it with, and stays (beside the fuller one) otherwise.
  */
-export function dropPrefixDuplicates<T extends { content: string; score?: number }>(hits: T[], atFirst = false): T[] {
+export function dropPrefixDuplicates<T extends { content: string; score?: number }>(hits: T[], atFirst = false, sameGroup?: (a: T, b: T) => boolean): T[] {
   if (hits.length < 2) return hits
   const texts = hits.map((h) => norm(h.content))
   const fuller: number[] = new Array(hits.length).fill(-1) // the hit each one is the head of: the longest, the first of equals
   let heads = 0
   for (let i = 0; i < hits.length; i++) {
     for (let j = 0; j < hits.length; j++) {
-      if (j !== i && isHead(texts[i], texts[j]) && (fuller[i] < 0 || texts[j].length > texts[fuller[i]].length)) fuller[i] = j
+      if (j !== i && isHead(texts[i], texts[j]) && (!sameGroup || sameGroup(hits[i], hits[j])) && (fuller[i] < 0 || texts[j].length > texts[fuller[i]].length)) fuller[i] = j
     }
     if (fuller[i] >= 0) heads++
   }

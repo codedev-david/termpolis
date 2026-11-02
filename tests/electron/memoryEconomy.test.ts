@@ -470,6 +470,49 @@ describe('memoryEconomy', () => {
       expect(out.find((h) => h.id === 'b')?.score).toBe(0.2)
     })
 
+    // `sameGroup`: a list of two kinds of hit, where a head gives way only to a fuller hit of its own kind.
+    describe('sameGroup: a head gives way only to a fuller chunk it is grouped with', () => {
+      const own = (id: string, content: string, score: number) => ({ ...mk(id, content, score), own: true })
+      const theirs = (id: string, content: string, score: number) => ({ ...mk(id, content, score), own: false })
+      const alike = (a: { own: boolean }, b: { own: boolean }) => a.own === b.own
+      const ids = (hits: Array<{ id: string }>) => hits.map((h) => h.id)
+
+      it('keeps the head, and the fuller chunk beside it, when they are not grouped', () => {
+        const list = [own('head', FIRST, 0.9), theirs('full', FULL, 0.6)]
+        const out = dropPrefixDuplicates(list, true, alike)
+        expect(out).toBe(list) // nothing is dropped, so it is the same array and nothing is copied
+        expect(dropPrefixDuplicates(list, true)).toEqual([{ ...list[1], score: 0.9 }]) // without it, the stranger takes the place
+      })
+
+      it('folds the pair as before when they are grouped', () => {
+        const out = dropPrefixDuplicates([own('head', FIRST, 0.9), own('x', 'one unrelated thing', 0.8), own('full', FULL, 0.6)], true, alike)
+        expect(ids(out)).toEqual(['full', 'x'])
+        expect(out[0].score).toBe(0.9)
+      })
+
+      it('gives a head to the longest fuller chunk of its own group, passing over a longer one of the other', () => {
+        const LONGEST = `${FULL}\n\nuser: and one more thing after that, please`
+        const list = [own('head', FIRST, 0.9), own('full', FULL, 0.5), theirs('longest', LONGEST, 0.4)]
+        const out = dropPrefixDuplicates(list, false, alike)
+        expect(ids(out)).toEqual(['full', 'longest'])
+        expect(out[0].score).toBe(0.9) // the head's score went to the fuller chunk it is grouped with
+        expect(out[1].score).toBe(0.4)
+      })
+
+      it('does not link a chain across groups: the middle one keeps its own group\'s end', () => {
+        const MID = `${FIRST}\n\nuser: done, thanks`
+        const out = dropPrefixDuplicates([own('head', FIRST, 0.95), theirs('mid', MID, 0.5), own('full', FULL, 0.3)], false, alike)
+        expect(ids(out)).toEqual(['mid', 'full']) // head folds into full (same group); mid is not grouped with full and stays
+        expect(out[1].score).toBe(0.95)
+      })
+
+      it('is asked about a pair only when one is the head of the other', () => {
+        const asked: string[] = []
+        dropPrefixDuplicates([mk('a', 'alpha beta gamma', 0.9), mk('b', 'delta epsilon zeta', 0.8), mk('head', FIRST, 0.7), mk('full', FULL, 0.6)], false, (a, b) => { asked.push(`${a.id}>${b.id}`); return true })
+        expect(asked).toEqual(['head>full'])
+      })
+    })
+
     it('works on hits that carry no score at all', () => {
       const out = dropPrefixDuplicates([mk('head', FIRST), mk('full', FULL)])
       expect(out).toEqual([{ id: 'full', content: FULL }])

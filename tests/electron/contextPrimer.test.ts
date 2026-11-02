@@ -1257,6 +1257,19 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
       inOrder(out, ['installer check fails', 'conversation 1 ', 'BILLING_MODE'])
     })
 
+    // The other project's lesson says the project's own advice and then more, so it stands for the pair and takes the better of their
+    // scores: a copy of the row, not the row the search returned. Whose it is does not change with the score it takes.
+    it.each([0.7, 0.95])('does not lead when it stands for the project\'s own lesson that it extends, whatever score it takes from it (%s)', async (score) => {
+      const longer = `${G2} The termpolis release script must remove the link first with a plain \`rmdir\`, so call that there.`
+      expect(lessonSubstance(longer).score).toBeGreaterThanOrEqual(KEEP_SCORE)
+      const convs = [conv(1, { score: 0.8 }), conv(2, { score: 0.75 })]
+      const out = await build([lesson('own', G2, { score }), ...convs], {}, [lesson('own', G2, { score: 0.7 }), lesson('longer', longer, { project: 'billing', score: 0.6 }), ...convs])
+      expect(rows(out)[0]).toContain('conversation 1 ')
+      inOrder(out, ['conversation 1 ', 'conversation 2 ', 'release script must remove the link'])
+      expect(out).toContain('past conversations first:')
+      expect(out).not.toContain('lessons learned')
+    })
+
     it('is the one case: the project\'s own lesson that names it still leads', async () => {
       const own = lesson('ol', 'The termpolis loadConfig cache goes stale because `config.ts` is read only once, so call `resetCache()` after editing it.', { score: 0.5 })
       expect(lessonSubstance(own.content).score).toBeGreaterThanOrEqual(KEEP_SCORE)
@@ -1482,6 +1495,54 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
       const out = (await ask([a], [b]))!
       expect(out.match(/release notes for v1/g)).toHaveLength(2) // "v1" is not the head of "v10": two passages, two lines
       expect(out).toContain('Other saved context')
+    })
+
+    // The head is this project's own but only the search that names no project returns it (the project search matches by the key of
+    // the folder, and this row carries another clone's), together with a fuller chunk filed elsewhere. The project search fills all
+    // the lines but one, so the head is the last line of the project block, as it was before chunks were folded into their fuller ones.
+    describe('when this project\'s own head comes only from the search that names no project, with a fuller chunk filed elsewhere', () => {
+      const scopedRow = (i: number) => chunk(`s${i}`, `scoped row ${i} ${Array.from({ length: 10 }, (_, j) => `sx${i}y${j}`).join(' ')}`, { score: 0.9 - i * 0.01, ts: NOW - 5 * 24 * HOUR })
+      const weak = chunk('weak', 'we keep the retry queue in memory and flush it on exit, nothing else about releases', { score: 0.65 })
+      const digest = (filing: Partial<PrimerHit>, limit: number) => {
+        const scoped = Array.from({ length: limit - 1 }, (_, i) => scopedRow(i))
+        const unscoped = [chunk('head', HEAD, { score: 0.8 }), chunk('full', FULL, { score: 0.7, ...filing }), weak]
+        return buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? scoped : unscoped)), { query: 'q', project: proj, limit, now: NOW, maxSnippetChars: 2000 })
+      }
+
+      it.each([
+        ['another project', { project: 'otherproj' }],
+        ['no project', { project: undefined }],
+      ])('keeps the project\'s own head when the fuller chunk is filed under %s, and the weaker own row does not take its line', async (_name, filing) => {
+        for (const limit of [3, 4, 6]) {
+          const out = (await digest(filing, limit))!
+          expect(rows(out)).toHaveLength(limit)
+          expect(rows(out)[limit - 1]).toContain('how do I cut a release')
+          expect(out).not.toContain('retry queue')
+          expect(out).not.toContain('the release workflow writes it') // and the stranger's tail is not said either: the passage is said once
+        }
+      })
+
+      it('still folds the pair into the fuller chunk when both are the project\'s', async () => {
+        for (const limit of [3, 6]) {
+          const out = (await digest({}, limit))!
+          expect(rows(out)).toHaveLength(limit)
+          expect(out.match(/how do I cut a release/g)).toHaveLength(1)
+          expect(rows(out)[limit - 1]).toContain('the release workflow writes it') // the fuller chunk, which has the head's better score
+        }
+      })
+
+      it('folds the pair when neither is the project\'s, in the digest of a project that has none of this', async () => {
+        const out = (await buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? [] : [chunk('head', HEAD, { score: 0.8, project: 'a-b-c' }), chunk('full', FULL, { score: 0.7, project: 'x-y-z' })])), { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 }))!
+        expect(out.match(/how do I cut a release/g)).toHaveLength(1)
+        expect(out).toContain('the release workflow writes it')
+      })
+
+      it('counts a fuller chunk that names the project as the project\'s, so the pair folds as before', async () => {
+        const naming = `${FULL}\n\nuser: and where does termpolis keep it?`
+        const out = (await buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? [] : [chunk('head', HEAD, { score: 0.8 }), chunk('full', naming, { score: 0.7, project: 'otherproj' })])), { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 }))!
+        expect(out.match(/how do I cut a release/g)).toHaveLength(1)
+        expect(out).toContain('where does termpolis keep it')
+      })
     })
   })
 
