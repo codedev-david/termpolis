@@ -928,6 +928,7 @@ describe('T1 K5: a key file stored base64 encoded', () => {
 })
 
 describe('T1 K6: a PuTTY key file', () => {
+  const BS = '\\'
   it('removes the private lines in the 7 forms: YAML, JSON, CR, trailing spaces, from Private-Lines on, cat -n, a diff', () => {
     const ppk = K.ppk
     const secret = secretLinesOf(ppk, true)
@@ -986,6 +987,181 @@ describe('T1 K6: a PuTTY key file', () => {
     const r = screenKeys(logged)
     expect(r.removed).toEqual({ putty_private_key: 1 })
     expect(leakedWindows(r.text, priv)).toBe(0)
+  })
+
+  // The five kinds of key PuTTYgen writes, each with the size of its public and private blobs: an Ed25519 key's private part is one line of 48
+  // characters (PuTTYgen's default), an ECDSA P-256 key's one of 52, P-521's two (64 and 32), a DSA key's one of 36. Built from a fixed stream of
+  // bytes, so what is asserted of a short line's randomness is the same every run (3 in 100 of them fail the test); a stream is taken whose
+  // private part passes it and does not start with a digit (a file with no line breaks reads the digits after `Private-Lines: ` as its count).
+  const PPK_KINDS: Record<string, [string, number, number]> = {
+    rsa: ['ssh-rsa', 279, 880],
+    ed25519: ['ssh-ed25519', 51, 36],
+    p256: ['ecdsa-sha2-nistp256', 104, 37],
+    p521: ['ecdsa-sha2-nistp521', 172, 70],
+    dsa: ['ssh-dss', 435, 25],
+  }
+  function ppkOf(kind: string, opts: { version?: 2 | 3; mac?: boolean } = {}): { lines: string[]; secret: string[] } {
+    const [type, pubSize, privSize] = PPK_KINDS[kind]
+    const stream = (tag: string, size: number): Buffer => Buffer.concat(Array.from({ length: Math.ceil(size / 32) }, (_, k) => createHash('sha256').update(`${tag}/${k}`).digest())).subarray(0, size)
+    for (let i = 0; ; i++) {
+      const priv = wrap(stream(`${kind}/private/${i}`, privSize).toString('base64'))
+      if (/^\D/.test(priv[0]) && looksRandom(priv.join(''))) {
+        const pub = wrap(stream(`${kind}/public/${i}`, pubSize).toString('base64'))
+        const lines = [`PuTTY-User-Key-File-${opts.version ?? 3}: ${type}`, 'Encryption: none', 'Comment: key-20261102', `Public-Lines: ${pub.length}`, ...pub, `Private-Lines: ${priv.length}`, ...priv]
+        if (opts.mac !== false) lines.push(`Private-MAC: ${stream(`${kind}/mac/${i}`, opts.version === 2 ? 20 : 32).toString('hex')}`)
+        return { lines, secret: priv }
+      }
+    }
+  }
+
+  it('takes the private lines of a PuTTY file of any kind in a string whose line breaks are written out, with its MAC line behind and without it', () => {
+    // An Ed25519, ECDSA or DSA file has one or two private lines, and the line before `Private-MAC:` is the only one there is: the rule that
+    // skips a path (a listing's `deploy/key.ppk:12:`) read the `\nPrivate-` after it as more of a path and its dash as the end of one.
+    const joinings: Record<string, (ls: string[]) => string> = {
+      'a JSON string': (ls) => JSON.stringify(ls.join('\n')),
+      'a JSON object': (ls) => `{"ppk":${JSON.stringify(ls.join('\n'))},"ok":true}`,
+      'JSON in JSON': (ls) => JSON.stringify(JSON.stringify(ls.join('\n'))),
+      'an environment variable': (ls) => `PUTTY_KEY="${ls.join(BS + 'n')}"`,
+      'a YAML double-quoted string': (ls) => `key: "${ls.join(BS + 'n')}"`,
+      'a JavaScript string': (ls) => `const key = '${ls.join(BS + 'n')}'`,
+      'a $ string': (ls) => `$'${ls.join(BS + 'n')}'`,
+      'the Unicode escape of a line feed': (ls) => ls.join(BS + 'u000a'),
+      'the hex escape of a line feed': (ls) => ls.join(BS + 'x0a'),
+      'a CR and a LF written out': (ls) => `"${ls.join(BS + 'r' + BS + 'n')}"`,
+    }
+    for (const kind of Object.keys(PPK_KINDS)) {
+      for (const version of [2, 3] as const) {
+        for (const mac of [true, false]) {
+          const { lines, secret } = ppkOf(kind, { version, mac })
+          for (const [name, join] of Object.entries(joinings)) {
+            const label = `${kind}, version ${version}, ${mac ? 'with' : 'without'} the MAC line, ${name}`
+            const r = screenKeys(`Here is the file:\n${join(lines)}\nDone.`)
+            expect(r.removed, label).toEqual({ putty_private_key: 1 })
+            expect(leakedWindows(r.text, secret), label).toBe(0)
+          }
+        }
+      }
+    }
+  })
+
+  it('takes the private lines of a PuTTY file with a log frame on each line inside one string, and of one in a listing in a JSON string', () => {
+    // A tool result quotes a log in a JSON string: each line carries the clock time `docker logs -t` writes, a compose service's `web-1  | `,
+    // or ripgrep's `path:N:`, and the lines are joined by written-out breaks. After the break of the last private line comes the frame of the
+    // next one, whose digits and dash (or colon) the rule that skips a path read as the rest of a path.
+    const frames: Record<string, (l: string, i: number) => string> = {
+      'docker logs -t': (l, i) => `2026-11-02T10:11:${String(10 + (i % 50))}.123456789Z ${l}`,
+      'compose': (l) => `web-1  | ${l}`,
+      'ripgrep': (l, i) => `config/deploy/key.ppk:${i + 1}:${l}`,
+      'ripgrep with a long directory name': (l, i) => `/home/dev/projects/infrastructure/deployment/keys/production/deploy.ppk:${i + 1}:${l}`,
+    }
+    for (const kind of ['rsa', 'ed25519', 'p521']) {
+      const { lines, secret } = ppkOf(kind)
+      for (const [name, frame] of Object.entries(frames)) {
+        const r = screenKeys(`Output:\n${JSON.stringify(lines.map(frame).join('\n'))}\nDone.`)
+        expect(r.removed, `${kind}, ${name}`).toEqual({ putty_private_key: 1 })
+        expect(leakedWindows(r.text, secret), `${kind}, ${name}`).toBe(0)
+      }
+    }
+    // the same RSA file whose RSA lines are K's own (a fresh key of the fixture's), in the two framings that put a colon after the path
+    const fresh = K.ppk
+    const rg = JSON.stringify(fresh.map((l, i) => `config/deploy/key.ppk:${i + 1}:${l}`).join('\n'))
+    expect(screenKeys(rg).removed).toEqual({ putty_private_key: 1 })
+    expect(leakedWindows(screenKeys(rg).text, secretLinesOf(fresh, true))).toBe(0)
+  })
+
+  it('skips a long piece of a path that a colon, a context line number or an equals sign ends, and takes the private lines after it', () => {
+    // The directory's name is a run of 70 characters, longer than any key line, and what follows it says it is a path: an extension and a `:` (grep -H over
+    // a file whose lines are indented, or rg without line numbers), a `-12-` (a context line), or an `=` and a line's worth of payload (journalctl's NAME=).
+    const { lines, secret } = ppkOf('ed25519')
+    const dir = Array.from({ length: 70 }, (_, i) => 'abcdefghijklmnopqrstuvwxyz0123456789'[(i * 7 + 3) % 36]).join('')
+    const forms: Record<string, (l: string, i: number) => string> = {
+      'a colon and an indent': (l) => `config/${dir}.yaml:    ${l}`,
+      'a colon': (l) => `config/${dir}.ppk:${l}`,
+      'a line number between colons': (l, i) => `config/${dir}.ppk:${i + 1}:${l}`,
+      'a context line number between dashes': (l, i) => `config/${dir}.ppk-${i + 1}-${l}`,
+      'an equals sign': (l) => `config/${dir}.ppk=${l}`,
+      'a name with a dash in it, and a colon': (l) => `config/${dir}-signing.ppk:${l}`,
+      'a name with an underscore in it': (l) => `config/${dir}_key.ppk:${l}`,
+      'a name with a folder after it': (l, i) => `config/${dir}_sub/deploy.ppk:${i + 1}:${l}`,
+      'a name that goes on with MAC': (l, i) => `config/${dir}-MACHINE.ppk:${i + 1}:${l}`,
+    }
+    for (const [name, form] of Object.entries(forms)) {
+      const r = screenKeys(lines.map(form).join('\n'))
+      expect(r.removed, name).toEqual({ putty_private_key: 1 })
+      expect(leakedWindows(r.text, secret), name).toBe(0)
+      expect(r.text, name).toContain(dir)
+    }
+  })
+
+  it('reads an extension and an equals sign as the end of a path only with a line of payload behind them', () => {
+    // After the last private line comes `.k=` and no payload (a quote, or the name of the MAC line): the `=` is not a listing's NAME= (journalctl's),
+    // so the run in front of it is a private line, not the long piece of a path.
+    for (const kind of ['ed25519', 'p256', 'p521']) {
+      const { lines, secret } = ppkOf(kind)
+      const last = lines.length - 2
+      const head = lines.slice(0, last).join('\n')
+      const forms: Record<string, string> = {
+        'a quote and a line break': `${head}\n${lines[last]}.k="\n${lines[last + 1]}`,
+        'the name of the MAC line': `${head}\n${lines[last]}.k=${lines[last + 1]}`,
+      }
+      for (const [name, text] of Object.entries(forms)) {
+        const r = screenKeys(text)
+        expect(r.removed, `${kind}, ${name}`).toEqual({ putty_private_key: 1 })
+        expect(leakedWindows(r.text, secret), `${kind}, ${name}`).toBe(0)
+      }
+    }
+  })
+
+  it('takes the private lines of a PuTTY file whose lines are joined by a few characters of punctuation, with the MAC line behind and without it', () => {
+    // `-`, `.` and `_` are characters of a path, and a dash or a colon in front of more text is where a path would end. A run that one of them, or
+    // three, joins to the next line is no path's piece: nor is the last private line when the MAC line's name follows it (`Private-MAC:` has a colon).
+    for (const kind of ['ed25519', 'p521', 'rsa']) {
+      for (const mac of [true, false]) {
+        const { lines, secret } = ppkOf(kind, { mac })
+        for (const joiner of ['-', '.', '_', '--', '-_-', '.-.']) {
+          const label = `${kind}, ${mac ? 'with' : 'without'} the MAC line, joined by ${joiner}`
+          const r = screenKeys(`PUTTY_KEY="${lines.join(joiner)}"`)
+          expect(r.removed, label).toEqual({ putty_private_key: 1 })
+          expect(leakedWindows(r.text, secret), label).toBe(0)
+        }
+      }
+    }
+    // and by a colon, where only the MAC line's name is told from a path (a file of lines joined by colons is a listing's path and line)
+    const { lines, secret } = ppkOf('p256')
+    const r = screenKeys(`PUTTY_KEY="${lines.join(':')}"`)
+    expect(r.removed).toEqual({ putty_private_key: 1 })
+    expect(leakedWindows(r.text, secret)).toBe(0)
+  })
+
+  it('skips the long pieces of the path of a listing on Windows, whose folders start with an r or an n, and takes the private lines of a PuTTY file under it', () => {
+    // `\notes` and `\repos` read as a written-out line break. The piece of the path in front of one is 45 characters, and the private lines
+    // are under it, in a listing: the run of letters before `\keys\repos` ends in a path, and is no private line. (A file of 14 private
+    // lines: one taken from the path would be the first of the 14 and the last of them would be left.)
+    const { lines, secret } = ppkOf('rsa')
+    const piece = Array.from({ length: 45 }, (_, i) => 'abcdefghijklmnopqrstuvwxyz0123456789'[(i * 11 + 5) % 36]).join('')
+    for (const dir of [`C:${BS}work${BS}${piece}${BS}keys${BS}repos`, `D:${BS}ci${BS}${piece}${BS}keys${BS}notes`]) {
+      const text = lines.map((l, i) => `${dir}${BS}deploy.ppk:${i + 1}:${l}`).join('\r\n')
+      const r = screenKeys(text)
+      expect(r.removed, dir).toEqual({ putty_private_key: 1 })
+      expect(leakedWindows(r.text, secret), dir).toBe(0)
+      expect(r.text, dir).toContain(piece)
+    }
+  })
+
+  it('takes the private lines of a PuTTY file written with no line break at all, with its MAC line behind and without it', () => {
+    // `tr -d '\n'`, or PowerShell's `-join ''`: the lines run together, the last private line into the `Private` of `Private-MAC`. The
+    // padding `=` that line ends in (ECDSA P-256 and P-521, DSA) is not the end of a NAME=, and the name of the MAC line is not a path.
+    for (const kind of Object.keys(PPK_KINDS)) {
+      for (const version of [2, 3] as const) {
+        for (const mac of [true, false]) {
+          const { lines, secret } = ppkOf(kind, { version, mac })
+          const label = `${kind}, version ${version}, ${mac ? 'with' : 'without'} the MAC line`
+          const r = screenKeys(`PUTTY_KEY="${lines.join('')}"`)
+          expect(r.removed, label).toEqual({ putty_private_key: 1 })
+          expect(leakedWindows(r.text, secret), label).toBe(0)
+        }
+      }
+    }
   })
 
   it('leaves an excerpt, prose and a parser alone', () => {

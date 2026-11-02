@@ -499,9 +499,13 @@ const LISTING_SEP = /^(?:\.[A-Za-z0-9_]{1,12})?(?::\d{1,9}[:-]|-\d{1,9}-|:)/
 const PATH_REST_SEP = /^[A-Za-z0-9_.\-/\\]{0,96}?(?:(?::\d{1,9}){1,2}[:-]|-\d{1,9}-)/
 /** The rest of a path and a `:`, then the end of what the line holds (grep without -n: `path:` in front of a blank line or an END marker). */
 const PATH_REST_END = /^[A-Za-z0-9_.\-/\\]{1,96}:\s*$/
-/** The rest of a path (no space) and the `:` or `-` that ends it, right before the line's own text or a line number: a listing. (The last
- *  line of a key is short, so one character is all it asks of that.) */
-const PATH_THEN_RUN = /^[A-Za-z0-9_.\-/\\]{0,96}?[:-](?=[A-Za-z0-9+/=])/
+/** The rest of a path (no space) and what ends it, right before the line's own text or a line number: a listing's `:` (`:N:` and the like
+ *  begin with one), `-N-` for a context line, or the `=` after an extension with a line's worth of payload behind it (journalctl's `NAME=`). A lone
+ *  dash ends nothing: the private lines of a file joined by `-` read so, and the colon of the MAC line's name, `Private-MAC:`, is not a path's
+ *  (MAC_NEXT). */
+const PATH_THEN_RUN = /^[A-Za-z0-9_.\-/\\]{0,96}?(?::|-\d{1,9}-|\.[A-Za-z0-9_]{1,12}=(?=[A-Za-z0-9+/]{16}))/
+/** What stands between the last private line and the name of the MAC line when the file's lines are joined by a few characters of punctuation. */
+const MAC_NEXT = /^[^A-Za-z0-9+/=]{0,3}Private-MAC/
 /** Whether the run that ends at `e` is a listing's path, not a payload: a separator follows it at once, or only more of the path
  *  does, up to the line's end `limit`. (A path longer than a key line has a long piece in front of its `_key.asc:4:`; on the
  *  blank line of an armored key and in front of an END marker it is the only base64 there is, and taken as the key's last line it
@@ -1700,8 +1704,12 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
         break
       }
       const e = r[1]
+      // (a file with no line breaks at all glues the last private line to the name of the MAC line after it, `…Private-MAC: `, and the
+      // padding `=` before that name is not a NAME=. The MAC line follows the last private line, however they are joined: it is no path's rest)
+      const glued = text.startsWith('-MAC', e) && text.startsWith('Private', e - 7)
+      const beforeMac = glued || MAC_NEXT.test(text.slice(e, e + 16))
       // (a NAME= in front of the value, as journalctl's MESSAGE= or a properties file writes one on every line, is not part of it)
-      const a = valueStart(text, r[0], e)
+      const a = valueStart(text, r[0], glued ? e - 7 : e)
       i = e
       at = e
       const len = e - a
@@ -1721,8 +1729,10 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
       }
       // A run followed at once by a listing separator (the `.` of `deploy.ppk:12:`), or by only more of a path and then the `:` or `-`
       // that ends it (`_key.asc:12:`, or `grep` without -n, `rg` piped), is a path: of any length (a long one is not a private line
-      // either, nor the key written with no line breaks).
-      if (LISTING_SEP.test(text.slice(e, e + 24)) || PATH_THEN_RUN.test(text.slice(e, e + 112))) continue
+      // either, nor the key written with no line breaks). A run that a written-out line break follows at once is a line's end, not a
+      // path's piece: after the `\n` of a JSON string comes the next line's own `Private-MAC:` or `2026-11-02T10:11:10Z `, whose
+      // letters, digits and dash would read as the rest of a path. (Nor is the last private line, glued to the name of the MAC line.)
+      if (!beforeMac && escapeAt(text, e) === null && PATH_THEN_RUN.test(text.slice(e, e + 112))) continue
       // The last private line is short: it is the Nth line when the text between it and the line
       // before is what separates the lines before it (digits as 0), Private-MAC line or not.
       // (`lineSeparator` of `System.lineSeparator()` or a path's `infrastructure` are frame.)
