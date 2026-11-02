@@ -119,6 +119,37 @@ describe('parseNote: shapes of file', () => {
     expect(parseNote('Just a line.', 'plain_note.md')?.name).toBe('plain_note')
   })
 
+  // The closing hashes of an ATX heading are not part of its name; a hash that is part of a word, or that stands alone, is.
+  it.each([
+    ['# Deploy checklist', 'Deploy checklist'],
+    ['# Deploy checklist ##', 'Deploy checklist'],
+    ['# Deploy checklist #', 'Deploy checklist'],
+    ['## Deploy checklist \t## \t', 'Deploy checklist'],
+    ['#   Deploy checklist   ', 'Deploy checklist'],
+    ['# C#', 'C#'],
+    ['# Deploy checklist##', 'Deploy checklist##'],
+    ['# ##', '##'],
+    ['# # #', '#'], // one level of closing hashes: the last
+    ['# a ## b', 'a ## b'],
+    ['# a # #', 'a #'],
+    ['# a \t#\t #\t ', 'a \t#'],
+  ])('reads the heading %j as the name %j', (heading, name) => {
+    expect(parseNote(`${heading}\n\nText.`, 'f.md')?.name).toBe(name)
+  })
+
+  // A note is read on the main process, in the indexer's tick, and a file of any shape may be among them: a long run of blanks in a
+  // heading must cost time in proportion to its length (it once cost its square, seconds for a note at the 64 KB limit).
+  it('names a heading with a long run of blanks in it without taking seconds', () => {
+    for (const blanks of [' ', ' \t']) {
+      const heading = `# a${blanks.repeat(Math.floor(65_000 / blanks.length))}b`
+      const started = performance.now()
+      expect(parseNote(heading, 'f.md')?.name).toBe(`a${blanks.repeat(Math.floor(65_000 / blanks.length))}b`)
+      expect(parseNote(`${heading} ##`, 'f.md')?.name).toBe(`a${blanks.repeat(Math.floor(65_000 / blanks.length))}b`)
+      // Generous for a loaded CI box; the pattern it replaced took seconds on each of these.
+      expect(performance.now() - started).toBeLessThan(1_000)
+    }
+  })
+
   it('survives a byte order mark and CRLF line endings', () => {
     const crlf = '﻿' + NESTED.replace(/\n/g, '\r\n')
     expect(parseNote(crlf, 'x.md')).toEqual(parseNote(NESTED, 'x.md'))
@@ -404,6 +435,58 @@ describe('which project a folder belongs to', () => {
     expect(projectCwdFor('C--r-app', [])).toBeNull()
     expect(projectCwdFor('-x', ['/x'])).toBe('/x') // one segment under the root
     expect(projectCwdFor('-y', ['/x'])).toBeNull() // and the root itself is never a project
+  })
+
+  // A path and its parents are asked about as a whole: a parent ends where a separator begins, and what it is named for has the
+  // length of the path. These are the shapes that tell a parent from a prefix that is not one.
+  it('takes a parent only at a separator, never part-way through a name', () => {
+    expect(projectCwdFor('C--r-ap', ['C:\\r\\app'])).toBeNull() // C:\r\ap is not a parent of C:\r\app
+    expect(projectCwdFor('C--r', ['C:\\r\\app'])).toBe('C:\\r') // C:\r is
+    expect(projectCwdFor('C-', ['C:\\r\\app'])).toBe('C:') // and so is C:
+    expect(projectCwdFor('C--r-app-x', ['C:\\r\\app'])).toBeNull() // a folder named for a longer path than this one
+    expect(projectCwdFor('-home-dev', ['/home/dev/app/ui'])).toBe('/home/dev')
+    expect(projectCwdFor('-home', ['/home/dev/app'])).toBe('/home')
+    expect(projectCwdFor('-', ['/home'])).toBeNull() // the root is not a project
+    expect(projectCwdFor('', ['/home', 'C:\\r'])).toBeNull() // and a folder with no name belongs to no path
+  })
+
+  it('counts doubled and mixed separators, and drops only the ones at the end', () => {
+    expect(projectCwdFor('a-', ['a//b'])).toBe('a/') // the parent of a//b that ends at its last separator keeps the first
+    expect(projectCwdFor('a', ['a//b'])).toBe('a')
+    expect(projectCwdFor('a-b', ['a//b'])).toBeNull()
+    expect(projectCwdFor('a--b', ['a//b'])).toBe('a//b')
+    expect(projectCwdFor('C--r-app', ['C:\\r\\app\\\\//'])).toBe('C:\\r\\app') // a run of trailing separators of either kind
+    expect(projectCwdFor('C--r', ['C:/r\\app'])).toBe('C:/r')
+    expect(projectCwdFor('x', ['/x/', '/x'])).toBeNull() // the separator at the front is a dash in the folder's name too
+  })
+
+  it('ignores the space around a path, and a path with only separators in it', () => {
+    expect(projectCwdFor('-home-dev-app', ['  /home/dev/app  '])).toBe('/home/dev/app')
+    // Space is trimmed before the separators at the end are, so one that sits before them is part of the path.
+    expect(projectCwdFor('-home-dev-app-', ['/home/dev/app /'])).toBe('/home/dev/app ')
+    expect(projectCwdFor('-home-dev-app', ['/home/dev/app /'])).toBeNull()
+    expect(projectCwdFor('-', ['///', '\\', ' / '])).toBeNull()
+    expect(projectCwdFor('-x', ['', '   ', '/x'])).toBe('/x')
+  })
+
+  it('measures a path in the characters it is named in, an emoji being two', () => {
+    const cwd = '/work/\u{1F600}/app'
+    expect(projectCwdFor(encodeProjectFolder(cwd), [cwd])).toBe(cwd)
+    expect(projectCwdFor(encodeProjectFolder('/work/\u{1F600}'), [cwd])).toBe('/work/\u{1F600}')
+    expect(projectCwdFor('-work--', [cwd])).toBeNull() // half an emoji is not a parent
+  })
+
+  // Same reason as the heading: this runs on text read from a transcript, whose working directory may be any length (the head of
+  // one is 256 KB). Asking about every parent in turn, each encoded afresh, took the square of the length; a run of separators at
+  // the end, stripped by a pattern, the same.
+  it('answers for a path of tens of thousands of characters without taking seconds', () => {
+    const started = performance.now()
+    expect(projectCwdFor('zzz', ['/a'.repeat(16_384)])).toBeNull()
+    expect(projectCwdFor('zzz', [`${'/'.repeat(20_000)}a`])).toBeNull()
+    expect(projectCwdFor('-a', [`/a${'/b'.repeat(16_384)}`])).toBe('/a')
+    expect(projectCwdFor('zzz', cwdsFromTranscript(`{"cwd":"${'/'.repeat(200_000)}"}`))).toBeNull()
+    // Generous for a loaded CI box; each of the first three took seconds before.
+    expect(performance.now() - started).toBeLessThan(1_000)
   })
 
   it('reads the distinct working directories out of the start of a transcript', () => {

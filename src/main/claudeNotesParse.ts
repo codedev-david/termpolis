@@ -93,9 +93,23 @@ function parseFront(lines: string[]): { top: Record<string, string>; meta: Recor
   return { top, meta }
 }
 
+const isBlank = (c: string): boolean => c === ' ' || c === '\t'
+
+/** `s` without the closing hashes of an ATX heading (`Title ##`): a run of `#` at the end, after a blank. Read from the end, because a
+ *  pattern for it (`[ \t]+#+[ \t]*$`) starts again at every blank of a long run of them and takes time as the square of its length. */
+function withoutClosingHashes(s: string): string {
+  let end = s.length
+  while (end > 0 && isBlank(s[end - 1])) end--
+  let start = end
+  while (start > 0 && s[start - 1] === '#') start--
+  if (start === end || start === 0 || !isBlank(s[start - 1])) return s // no closing hashes: none, or not set apart by a blank
+  while (start > 0 && isBlank(s[start - 1])) start--
+  return s.slice(0, start)
+}
+
 function firstHeading(body: string): string {
   const m = /^#{1,6}[ \t]+(.+)$/m.exec(body)
-  return m ? m[1].replace(/[ \t]+#+[ \t]*$/, '').trim() : ''
+  return m ? withoutClosingHashes(m[1]).trim() : ''
 }
 
 /**
@@ -272,14 +286,16 @@ export function encodeProjectFolder(cwd: string): string {
  */
 export function projectCwdFor(folder: string, cwds: readonly string[]): string | null {
   const want = folder.toLowerCase()
+  const isSeparator = (c: string): boolean => c === '/' || c === '\\'
   for (const cwd of cwds) {
-    let p = cwd.trim().replace(/[\\/]+$/, '')
-    while (p) {
-      if (encodeProjectFolder(p).toLowerCase() === want) return p
-      const cut = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
-      if (cut <= 0) break
-      p = p.slice(0, cut)
-    }
+    const path = cwd.trim()
+    let end = path.length
+    while (end > 0 && isSeparator(path[end - 1])) end-- // a trailing slash is not part of the path
+    // The name a path encodes to is as long as the path, so of the path and its parents (each ends where a separator begins, and
+    // never at the root) only the one as long as the folder's name can be the one named for it. Asking each in turn would encode
+    // the rest of the path again at every step, which for a path of thousands of characters is a long time on the main process.
+    const n = want.length
+    if (n > 0 && (n === end || (n < end && isSeparator(path[n]))) && encodeProjectFolder(path.slice(0, n)).toLowerCase() === want) return path.slice(0, n)
   }
   return null
 }
@@ -288,12 +304,13 @@ export function projectCwdFor(folder: string, cwds: readonly string[]): string |
  *  of a partial read may be cut off; it just does not parse. */
 export function cwdsFromTranscript(text: string): string[] {
   const out: string[] = []
+  const seen = new Set<string>() // not out.includes(): thousands of distinct directories in 256 KB would each be compared with all before
   for (const line of text.split('\n')) {
     if (!line.includes('"cwd"')) continue
     let o: unknown
     try { o = JSON.parse(line) } catch { continue }
     const cwd = (o as { cwd?: unknown } | null)?.cwd
-    if (typeof cwd === 'string' && cwd && !out.includes(cwd)) out.push(cwd)
+    if (typeof cwd === 'string' && cwd && !seen.has(cwd)) { seen.add(cwd); out.push(cwd) }
   }
   return out
 }
