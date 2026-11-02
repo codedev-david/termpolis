@@ -561,6 +561,8 @@ describe('the manifest and the store disagree', () => {
     session(FOLDER, CWD)
   }
 
+  // 600 is deliberate: it has to exceed the 500 rows one listing shows. Every copy is a real fsynced write and a real fsynced delete,
+  // so this takes 14 s on a quiet machine and well over the 30 s default when others are busy: it gets a timeout of its own.
   it('a lost manifest over 600 notes that share one modified time leaves exactly 600 copies, and settles', async () => {
     seedSameTime(600)
     for (let pass = 0; pass < 4; pass++) await runClaudeNotesIngest(deps(realStore), { maxChunks: 1000 })
@@ -571,7 +573,7 @@ describe('the manifest and the store disagree', () => {
     restart()
     expect(memoryCount()).toBe(600)
     expect(manifestJson().dirty).toBe(false)
-  })
+  }, 120_000)
 
   it('a store replaced by an empty one is imported into again, and Settings counts what it really holds', async () => {
     seedSameTime(3)
@@ -586,6 +588,50 @@ describe('the manifest and the store disagree', () => {
     for (let pass = 0; pass < 3; pass++) await runClaudeNotesIngest(deps(realStore))
     expect(await stored()).toHaveLength(3)
     expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 3, chunks: 3 })
+  })
+
+  // Deleting a memory by hand (the Memory panel) retires its content hash for good: the store drops a later entry with that hash
+  // when it reloads. A store that holds no imported note looks replaced, so the notes are imported again; if that import used
+  // the hashes the user's deletions retired, it would be live now and gone at the next restart, then imported again at the next
+  // pass, on every launch. The record starting over moves its epoch on first, so the new copies carry hashes nobody retired.
+  it('every imported note deleted by hand is imported again once, and stays: the new copies are not the hashes the deletions retired', async () => {
+    seedSameTime(3)
+    await runClaudeNotesIngest(deps(realStore))
+    for (const row of await stored()) await memoryDelete(row.id)
+    expect(await stored()).toHaveLength(0)
+
+    const first = await runClaudeNotesIngest(deps(realStore))
+    expect(first.chunksWritten).toBe(3)
+    expect(await stored()).toHaveLength(3) // live now...
+    restart()
+    expect(await stored()).toHaveLength(3) // ...and after a restart, which is what a retired hash would have undone
+
+    const second = await runClaudeNotesIngest(deps(realStore))
+    expect(second.chunksWritten).toBe(0) // nothing to do: not once per launch
+    restart()
+    expect(await stored()).toHaveLength(3)
+    expect(manifestJson().dirty).toBe(false)
+    expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 3, chunks: 3 })
+  })
+
+  // The documentation says what the record does and does not notice: a copy deleted by hand stays deleted while the record exists,
+  // and it comes back when the note is edited (a store that holds SOME of the notes is not told apart from one that holds all).
+  it('deleting only some of them by hand leaves the rest alone and brings nothing back, until the note is edited', async () => {
+    seedSameTime(3)
+    await runClaudeNotesIngest(deps(realStore))
+    const [gone] = await stored()
+    await memoryDelete(gone.id)
+    for (let pass = 0; pass < 2; pass++) await runClaudeNotesIngest(deps(realStore))
+    restart()
+    expect(await stored()).toHaveLength(2)
+    expect(notesStatus(fileManifest(data)).chunks).toBe(3) // Settings counts what was imported, not what memory holds
+
+    const file = (gone.tags ?? []).find((t: string) => t.startsWith('note:'))!.slice('note:'.length)
+    note(FOLDER, file, FEEDBACK.replace('Invalidate on write, not on a timer.', 'Rule edited: invalidate on write, and only then, because a timer serves stale data.'))
+    await runClaudeNotesIngest(deps(realStore))
+    restart()
+    expect(await stored()).toHaveLength(3) // edited, so imported afresh, and it stays
+    expect(notesStatus(fileManifest(data)).chunks).toBe(3)
   })
 })
 

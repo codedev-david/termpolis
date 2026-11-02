@@ -1314,6 +1314,23 @@ describe('Clear memory and the record of imported notes', () => {
     expect(notesStatus(fileManifest(data)).pending).toBe(0)
   })
 
+  // PRIVACY.md describes the record as existing once notes are imported. A computer that never connected its agents, or never had the
+  // switch on, has none, and clearing memory must not make one (it would hold no user data, but it is a file the user was not told of).
+  it('makes no record where there was none: the clear runs, no file appears', async () => {
+    const store = fakeStore()
+    store.rows.set('x', { id: 'x', ts: 1, agentId: 'claude-notes', content: 'x' } as never)
+    expect(fs.existsSync(manifestFile())).toBe(false)
+    await clearNotesRecord(deps(store), clearing(store))
+    expect(store.rows.size).toBe(0)
+    expect(fs.existsSync(manifestFile())).toBe(false)
+  })
+
+  it('makes no record where the manifest cannot be read either: there is nothing it can say is cleared', async () => {
+    const write = vi.fn()
+    await clearNotesRecord({ manifest: { read: () => null, write } }, async () => undefined)
+    expect(write).not.toHaveBeenCalled()
+  })
+
   it('leaves the record alone when the clear fails, and lets the error through', async () => {
     const store = await setup()
     const before = fs.readFileSync(manifestFile(), 'utf8')
@@ -1559,7 +1576,7 @@ describe('a store that was replaced under the manifest', () => {
     expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 3, chunks: 3, pending: 0 })
   })
 
-  it('starts from the store as it is: the same text is the same entry, so nothing doubles up', async () => {
+  it('starts from the store as it is: nothing is removed, and nothing doubles up', async () => {
     seedNotes(3)
     const store = fakeStore()
     await runClaudeNotesIngest(deps(store))
@@ -1567,6 +1584,63 @@ describe('a store that was replaced under the manifest', () => {
     await runClaudeNotesIngest(deps(store))
     expect(store.rows.size).toBe(3)
     expect(store.removed).toEqual([])
+  })
+
+  // A store with no imported note may have been emptied by its owner one memory at a time, which retires each content hash for
+  // good (a copy stored under one is dropped at the next restart). So the record starts over under a new epoch: the copies it
+  // stores are not any hash an earlier epoch could have retired.
+  it('moves the epoch on when the record starts over, so the new copies carry hashes the old ones did not', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const before = { epoch: manifestJson().epoch, hashes: store.writes.map((w) => w.hash) }
+    store.rows.clear()
+    await runClaudeNotesIngest(deps(store))
+    expect(manifestJson().epoch).toBeGreaterThan(before.epoch)
+    const fresh = store.writes.slice(before.hashes.length).map((w) => w.hash)
+    expect(fresh).toHaveLength(3)
+    expect(fresh.filter((h) => before.hashes.includes(h))).toEqual([])
+  })
+
+  it('is not an ordinary pass\'s business to move the epoch: a store that still holds a note keeps its hashes', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const epoch = manifestJson().epoch
+    await runClaudeNotesIngest(deps(store))
+    expect(manifestJson().epoch).toBe(epoch)
+  })
+
+  // The listing that said "none" could be wrong. Then the store does hold the copies, and the new ones (new hashes) would sit
+  // beside them: the record is dirty, so the copies the record cannot account for go BEFORE the new ones are stored.
+  it('sweeps the copies a wrong listing hid, so they do not double up with the new ones', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const held = [...store.rows.keys()]
+    const list = store.list
+    let lied = false
+    store.list = async (o) => { if (!lied && o.limit === 1) { lied = true; return [] } return list(o) } // only the one-row look is wrong
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(lied).toBe(true)
+    expect(stats.swept).toBe(3)
+    expect(stats.chunksWritten).toBe(3)
+    expect([...store.rows.keys()].filter((id) => held.includes(id))).toEqual([]) // the old copies are gone
+    expect(store.rows.size).toBe(3)
+    expect(manifestJson().dirty).toBe(false) // settled
+  })
+
+  it('leaves the record dirty when the pass is cut short right after it started over', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    store.rows.clear()
+    await runClaudeNotesIngest(deps(store, { stopped: () => true })) // the app is quitting: nothing is stored, nothing is swept
+    expect(manifestJson()).toMatchObject({ dirty: true, files: {} })
+    expect(store.rows.size).toBe(0)
+    await runClaudeNotesIngest(deps(store)) // the next pass imports them, and settles
+    expect(store.rows.size).toBe(3)
+    expect(manifestJson().dirty).toBe(false)
   })
 
   it('is not mistaken for an ordinary pass: a store that still holds a note is left alone', async () => {

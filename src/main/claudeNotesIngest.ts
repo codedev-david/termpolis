@@ -17,7 +17,9 @@
 // the store drops any later entry with that hash when it reloads. A note edited back to an earlier wording,
 // or removed and imported again, would then be stored, looked fine, and vanish at the next restart. So a
 // chunk's hash is taken over a per-manifest salt and an epoch counter, and the epoch moves on before
-// anything is deleted: nothing written afterwards can equal a hash that was retired.
+// anything is deleted: nothing written afterwards can equal a hash that was retired. It moves on too when
+// the record starts over because the store holds none of the notes (step 0 of a pass): the user may have
+// deleted them one by one, which retires their hashes without this module knowing.
 //
 // WHY removals are written ahead. A pass that is killed between "delete from the store" and "record that
 // in the manifest" would leave a manifest claiming chunks that are gone: a note that looks imported and is
@@ -65,7 +67,11 @@ const LIST_PAGE = 500
  *
  * Once fix/accounts154 merges, this body becomes `return walkRoots(transcriptRoots('claude'))`
  * (conversationIngest.ts): every sign-in profile's projects folder, each real folder once. This is the only
- * line to change; nothing else here assumes a single root.
+ * line of CODE to change; nothing else here assumes a single root. The WORDS are another matter: that adds
+ * read locations the user was told nothing about, and the v1.49 consent model has the disclosure match the code.
+ * PRIVACY.md ("What it reads"), docs/DOCUMENTATION.md ("What is read"), README.md (the saved-notes bullet),
+ * ClaudeNotesPanel.tsx and the note in AgentWritesList.tsx all name `~/.claude/projects` alone, and must then
+ * name each sign-in profile's own projects folder too (one folder where Termpolis linked them).
  */
 export async function noteRoots(): Promise<string[]> {
   const home = process.env.TERMPOLIS_TEST_AGENT_HOME?.trim() || homedir()
@@ -616,7 +622,7 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
 
   const roots = await deps.roots()
   const m = parseManifest(deps.manifest.read())
-  const sweepDue = m.dirty
+  let sweepDue = m.dirty
   const ledger = new Ledger(deps, m, stats)
   const imported = new Set(Object.keys(m.files).map((key) => key.slice(0, key.indexOf('/')))) // the project folders notes were taken from
   const found = await findNotes(roots, deps.fs, { maxFiles: opts.maxFiles, imported })
@@ -625,12 +631,21 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
   stats.filesSeen = found.notes.length
 
   // 0. A store that was replaced under the manifest (a new memory key, the memory log deleted by hand or put back from a backup
-  //    on its own) holds none of the notes the manifest says it does, and every note would be found unchanged and never
-  //    imported again, while Settings goes on saying they are in memory. A store with no imported note at all cannot hold any:
-  //    the record of what was stored starts over. Nothing else changes (the same text is the same entry, so it cannot double up
-  //    if the store did hold them after all, and what is queued for removal stays queued), and a store that cannot be listed
-  //    says nothing, so it is left alone.
-  if (Object.values(m.files).some((file) => file.chunks.length > 0) && (await holdsNoNotes(deps))) m.files = {}
+  //    that held none of the notes) holds none of the notes the manifest says it does, and every note would be found unchanged and
+  //    never imported again, while Settings goes on saying they are in memory. A store with no imported note at all cannot hold
+  //    any: the record of what was stored starts over, and what is queued for removal stays queued. The epoch moves on first: a
+  //    store that is empty because its owner deleted every imported note by hand has retired their hashes for good, and a copy
+  //    stored under one would be live now and dropped at the next restart, then stored again, on every launch. And the record is
+  //    marked dirty, so a store that did hold copies after all (the listing was wrong) has them swept before the new ones are
+  //    stored (2b) instead of doubling. A store that cannot be listed says nothing, so it is left alone. A store that holds SOME
+  //    of the notes (a backup taken after the first imports) is not noticed: the record still claims the rest, each is found
+  //    unchanged and never opened, and it comes back when the note is edited, or by Remove imported notes and a new import.
+  if (Object.values(m.files).some((file) => file.chunks.length > 0) && (await holdsNoNotes(deps))) {
+    m.files = {}
+    ledger.bump()
+    m.dirty = true
+    sweepDue = true
+  }
 
   // 1. Removals a killed pass had written ahead. The epoch moves on first, so what is stored again below
   //    cannot carry a hash that these deletions retire.
@@ -826,13 +841,16 @@ export function finishQueuedRemovals(deps: NotesDeps): Promise<RemoveResult> {
  * saw of each note (size, time, hash): an unchanged note is not opened again, so clearing memory is not undone at the next pass,
  * and a note that is edited afterwards is imported afresh like any other change. `clear` runs inside the same turn-taking as the
  * passes, so none is writing notes while it goes through, and the record is touched only once it has. A record that cannot be
- * saved does not undo the clear, which has already happened: it only leaves the old count on screen.
+ * saved does not undo the clear, which has already happened: it only leaves the old count on screen. A computer with no record
+ * (it never imported a note) gets none made here.
  */
 export function clearNotesRecord(deps: Pick<NotesDeps, 'manifest'>, clear: () => Promise<unknown>): Promise<void> {
   return exclusive(async () => {
     await clear()
     try {
-      const m = parseManifest(deps.manifest.read())
+      const text = deps.manifest.read()
+      if (text === null) return // no record: nothing was ever imported here, so there is nothing to empty and no file to make
+      const m = parseManifest(text)
       for (const file of Object.values(m.files)) file.chunks = []
       m.stale = []
       m.dirty = false
