@@ -44,6 +44,7 @@ describe('AgentWritesList', () => {
   it('says that connected agents also let Termpolis read the notes Claude Code saves, where, and where to turn it off', () => {
     render(<AgentWritesList />)
     const note = screen.getByTestId('agent-reads-note')
+    expect(note).toBeVisible() // a disclosure that is in the page but hidden from the person reading it is not one
     expect(note.textContent).toContain('also lets Termpolis read Claude Code’s saved notes')
     expect(note.textContent).toContain('~/.claude/projects/')
     expect(note.textContent).toContain('Nothing is written back into Claude’s folders')

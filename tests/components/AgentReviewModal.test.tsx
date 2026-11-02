@@ -143,6 +143,7 @@ describe('AgentReviewModal', () => {
     expect(legacy).toHaveTextContent('new in this version')
     expect(legacy).toHaveTextContent('starts when you choose to stay connected')
     expect(screen.getByTestId('agent-reads-note')).toHaveTextContent('Connecting also lets Termpolis read Claude Code')
+    expect(screen.getByTestId('agent-reads-note')).toBeVisible()
   })
 
   it('offers to keep or undo a connection that is already in place', () => {

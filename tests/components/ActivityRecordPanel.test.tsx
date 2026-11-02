@@ -44,6 +44,8 @@ describe('ActivityRecordPanel: what is shown', () => {
     expect(t).toContain('never what was asked')
     expect(t).toContain('stays on this computer')
     expect(t).toContain('about 2 MB')
+    // Clearing it is not clearing memory: the one sentence that says so is part of what the person decides on.
+    expect(t).toContain('Your memories are not touched.')
   })
 
   it('says how much of it there is', async () => {

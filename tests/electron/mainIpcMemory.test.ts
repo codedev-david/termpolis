@@ -65,7 +65,9 @@ vi.mock('fs', () => ({ ...fsMock, default: fsMock }))
 
 vi.mock('electron', () => ({
   app: {
-    getPath: vi.fn(() => USER_DATA),
+    // Only 'userData' is USER_DATA; every other name has a folder of its own. (USER_DATA is the OS temp folder, so answering every
+    // name with it let a call that asked for 'temp' by mistake pass for one that asked for 'userData'.)
+    getPath: vi.fn((name: string) => (name === 'userData' ? USER_DATA : `${USER_DATA}-not-user-data-${name}`)),
     getVersion: vi.fn(() => '1.25.3'),
     whenReady: () => Promise.resolve(),
     requestSingleInstanceLock: () => true,
@@ -2858,6 +2860,15 @@ describe('the searches behind a digest and memory_anticipate ask again, deeper, 
       expect(asked().slice(0, 2)).toEqual([16, 32]) // 2 x 8, then twice that
     })
 
+    // The default limit is 5, so the window is 40. The most the store gives is 100: a first read of 40 still has room to go deeper,
+    // 40 -> 80 -> 100. (With a ceiling of 40 the first read would be the last, and 60 notes at the top would leave an empty answer.)
+    it('at the default limit reads a window of 40 and goes deeper, to the most the store gives, under a crowd of notes', async () => {
+      mem.memorySearch.mockImplementation(faithful([...notes(60), ...kept(60)]))
+      const got = await mcp.memoryAnticipate({ task })
+      expect(got.map((r: any) => r.id)).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+      expect(asked().slice(0, 3)).toEqual([40, 80, 100])
+    })
+
     it('still reads the window once when there was nothing to hide', async () => {
       mem.memorySearch.mockImplementation(faithful(kept(30)))
       expect((await mcp.memoryAnticipate({ task, limit: 2 })).map((r: any) => r.id)).toEqual(['c1', 'c2'])
@@ -3082,6 +3093,26 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
       lockedOnce()
       expect((await invoke('memory:get-notes-settings')).data.locked).toBe(true)
       expect((await invoke('memory:get-notes-settings')).data.locked).toBe(false) // and only the once
+    })
+
+    // Three places hand the notes record to something: the pass, the Settings status and Clear memory. If any asked a folder other than
+    // the app-data one, the pass would keep one record and Settings count another, and nothing else would notice. `fs` is a spy in this
+    // file and the other folder names answer with folders of their own, so the file each one reads is the proof.
+    it('reads the same record in the pass, in the Settings status and in Clear memory: the one file in the user data folder', async () => {
+      const file = path.join(USER_DATA, NOTES_MANIFEST_FILE)
+      const readsOf = (io: { read: () => string | null }): string[] => {
+        fsMock.readFileSync.mockClear()
+        io.read()
+        return fsMock.readFileSync.mock.calls.map((c) => String(c[0]))
+      }
+      notesMock.notesStatus.mockClear()
+      await invoke('memory:get-notes-settings')
+      expect(readsOf(notesMock.notesStatus.mock.calls[0][0])).toEqual([file])
+      await indexer.run()
+      expect(readsOf(depsOfLastPass().manifest)).toEqual([file])
+      notesMock.clearNotesRecord.mockClear()
+      await invoke('memory:clear')
+      expect(readsOf((notesMock.clearNotesRecord.mock.calls[0] as unknown as [{ manifest: { read: () => string | null } }])[0].manifest)).toEqual([file])
     })
 
     it('answers with both switches at their defaults, whether the agents are connected, and the status', async () => {

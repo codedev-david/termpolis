@@ -57,6 +57,27 @@ describe('the activity record: its IPC', () => {
     }
   })
 
+  // A renderer can send any value: the folder as text, a list, a number, nothing. None of them is read as a folder, on either channel.
+  it.each([
+    ['the folder as plain text', (dir: string) => dir],
+    ['a list holding the folder', (dir: string) => [dir]],
+    ['an object with the folder under several names', (dir: string) => ({ dir, path: dir, folder: dir, userData: dir })],
+    ['null', () => null],
+    ['a number', () => 7],
+  ])('does not take %s for the folder, on either channel', async (_label, send) => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-ipc-other-'))
+    try {
+      fs.writeFileSync(path.join(elsewhere, 'memory-audit.jsonl'), 'keep me')
+      fs.writeFileSync(path.join(tmp, 'memory-audit.jsonl'), 'x')
+      expect(await call(AUDIT_IPC.size, send(elsewhere))).toEqual({ success: true, data: { files: 1, bytes: 1 } }) // the handed folder's one byte, not 'keep me'
+      expect(await call(AUDIT_IPC.clear, send(elsewhere))).toEqual({ success: true, data: { removed: 1, failed: 0 } })
+      expect(fs.existsSync(path.join(tmp, 'memory-audit.jsonl'))).toBe(false)
+      expect(fs.readFileSync(path.join(elsewhere, 'memory-audit.jsonl'), 'utf8')).toBe('keep me')
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
   it('reports a file it could not remove', async () => {
     fs.mkdirSync(path.join(tmp, 'memory-audit.jsonl')) // a folder where the file should be: it cannot be unlinked as a file
     expect(await call(AUDIT_IPC.clear)).toEqual({ success: true, data: { removed: 0, failed: 1 } })

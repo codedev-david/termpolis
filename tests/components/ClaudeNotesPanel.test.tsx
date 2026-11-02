@@ -105,6 +105,24 @@ describe('ClaudeNotesPanel: what is shown', () => {
     expect(screen.getByTestId('claude-notes-index-toggle').getAttribute('aria-label')).toBe("Include Claude Code's saved notes in memory")
   })
 
+  // What the two rows promise is part of the consent: which is on and which is off before anyone touches them, when the reading
+  // happens, what turning it off does and does not undo, and what the sharing reaches. A sentence changed or dropped must fail a test.
+  it('tells the user the defaults and the limits of each switch, in the words the privacy policy gives', async () => {
+    await open()
+    const rows = screen.getByTestId('claude-notes-panel').textContent!
+    const text = rows.replace(/\s+/g, ' ')
+    // The import: on by default, runs with the indexer, only once the agents are connected, and turning it off keeps the copies.
+    expect(text).toContain('On by default. Runs with the background indexer (about every 30 minutes), only once you have connected your agents.')
+    expect(text).toContain('Turning it off stops the reading; the copies already made stay until you remove them below.')
+    // The sharing: off by default, what it may return, how many, in what order, and when to leave it off.
+    expect(text).toContain('Off by default. When on, a memory search in one project may also return up to two notes of the kinds')
+    expect(text).toContain('after that project’s own results and marked with the project they came from')
+    expect(text).toContain('Notes about one project’s own state never leave it.')
+    expect(text).toContain('Leave it off if your projects are not meant to see each other (employer and personal, say).')
+    // The undo leaves Claude's own notes alone.
+    expect(text).toContain('Claude’s own notes are not touched.')
+  })
+
   it('says nothing has been imported before the first pass', async () => {
     await open()
     expect(screen.getByTestId('claude-notes-status').textContent).toBe('Nothing imported yet.')

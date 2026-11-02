@@ -294,6 +294,14 @@ describe('mnemeSociety', () => {
       expect(p.ids).toEqual(['m1', 'm2'])
     })
 
+    // Equal in length (23 characters each), so neither is "longer": the earlier one stays, whichever id sorts first.
+    it.each([['a', 'b'], ['b', 'a']])('on a tie in length keeps the earlier phrasing and its id (%s, then %s)', (first, second) => {
+      const [p] = poolLessons([I(first, 'claude', 'rebuild the cache first'), I(second, 'codex', 'rebuild the cache later')], { similar: () => 1, threshold: 0.5 })
+      expect(p.content).toBe('rebuild the cache first')
+      expect(p.id).toBe(first)
+      expect(p.ids).toEqual([first, second])
+    })
+
     it('gives a lesson that is alone in its group its own id', () => {
       const out = poolLessons([I('a', 'claude', 'first distinct lesson'), I('b', 'codex', 'completely other lesson')])
       expect(out.map((p) => [p.id, p.ids])).toEqual([['a', ['a']], ['b', ['b']]])
