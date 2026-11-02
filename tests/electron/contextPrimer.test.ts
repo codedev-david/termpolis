@@ -762,6 +762,13 @@ describe('buildContextPrimer — a saved note the store scoped to this project',
     expect(await buildContextPrimer(search, here)).toBeNull()
   })
 
+  // The key rule needs two keys to disagree. A digest that gives the folder's name and not its path has none of its own, so a note of
+  // that name that the unscoped search found is shown (the documented fallback: it cannot tell two repos of one name apart).
+  it('is shown to a digest that gives only the folder\'s name, when only the unscoped search found it', async () => {
+    const search = vi.fn(async (o: { project?: string }) => (o.project ? [] : [stamped()]))
+    expect(await buildContextPrimer(search, { query: 'q', project: 'termpolis', now: NOW })).toContain('how we cut a release')
+  })
+
   it('is not another repo\'s note just because the store scoped the read: the folder name still has to be this project\'s', async () => {
     const search = vi.fn(async () => [stamped({ project: 'billing' })])
     expect(await buildContextPrimer(search, here)).toBeNull()
@@ -811,6 +818,14 @@ describe('buildContextPrimer — a saved note that belongs to no project', () =>
   it('is not shown to a digest for another folder that also has no project, nor to one that carries no key', async () => {
     expect(await buildContextPrimer(vi.fn(async () => [homeNote()]), { query: 'q', projectPath: 'C:/Users/another', now: NOW })).toBeNull()
     expect(await buildContextPrimer(vi.fn(async () => [homeNote({ projectKey: undefined })]), { query: 'q', projectPath: HOME, now: NOW })).toBeNull()
+  })
+
+  // Neither a project nor a key: nobody's. A digest that names no folder has no key to match it by, and "no key" must not match "no key".
+  it('is nobody\'s when it carries neither a project nor a key: a digest that names no folder does not show it either', async () => {
+    const orphan = homeNote({ id: 'orphan', project: undefined, projectKey: undefined })
+    expect(await buildContextPrimer(vi.fn(async () => [orphan]), { query: 'q', now: NOW })).toBeNull()
+    const lane = vi.fn().mockResolvedValue([{ ...orphan, content: long('habits.md: how I like my answers'), score: 0, ts: NOW - HOUR }])
+    expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', recent: lane, now: NOW })).toBeNull()
   })
 
   it('is told apart from a memory an agent filed itself: only the importer\'s notes are held to this', async () => {
@@ -888,6 +903,18 @@ describe('buildContextPrimer — a search page that rows it must not show have c
     const search = store([...foreignNotes(5), ...convs(3)])
     await buildContextPrimer(search, { query: 'q', now: NOW, limit: 10 })
     expect(limits(search, 'global')).toEqual([40])
+  })
+
+  // Only a read that named no project has to tell two repos of one folder name apart by key, so that is the read whose page the other
+  // repo's notes can crowd without a slug to show for it: it is judged by key, and read again deeper.
+  it('reads the unscoped page deeper when it is full of another same-named repo\'s notes, which only the key tells apart', async () => {
+    const OTHER = projectKeyOf('D:/personal/termpolis')
+    const crowd = foreignNotes(40).map((n, i) => ({ ...n, id: `x${i}`, content: `a note of the other termpolis number ${i}`, project: proj, projectKey: OTHER }))
+    const search = store([...crowd, ...convs(3)])
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, projectPath: 'C:/work/termpolis', now: NOW, limit: 10 })
+    expect(out).not.toContain('the other termpolis')
+    expect(ids(out).filter((l) => l.startsWith('conversation')).length).toBeGreaterThan(0) // what the digest may show, behind the crowd
+    expect(limits(search, 'global')).toEqual([40, 80])
   })
 
   it('does not ask for a deeper page when what it hid was this project\'s own note (it is shown, not hidden)', async () => {
@@ -1203,6 +1230,52 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
       const [mine, others] = (out ?? '').split('Other saved context (may NOT apply to this project):')
       expect(mine).not.toContain('installer check fails')
       expect(others).toContain('installer check fails')
+    })
+  })
+
+  // A hit the unscoped search found is promoted into this project's block when its text names the project as a whole word. That
+  // was true before 1.55 and is kept; what the lead is not for is a lesson of ANOTHER project that happens to say the name. The
+  // lead belongs to what this project learned, so a promoted lesson filed elsewhere keeps the place it had: after the conversations.
+  describe('a lesson filed under another project that names this one', () => {
+    const F1 = 'In billing we call the termpolis CLI only when `BILLING_MODE` is unset, because the CLI reads `billing.json` once, so restart it.'
+    it('is a lesson the gate keeps (so the tests below hold only because of whose it is)', () => {
+      expect(lessonSubstance(F1).score).toBeGreaterThanOrEqual(KEEP_SCORE)
+    })
+
+    it('does not lead, and does not make the title say lessons lead; it is still shown, after the conversations', async () => {
+      const convs = [conv(1, { score: 0.9 }), conv(2, { score: 0.8 })]
+      const out = await build(convs, {}, [lesson('fl', F1, { project: 'billing', score: 0.5 })])
+      const lines = rows(out)
+      expect(lines[0]).toContain('conversation 1 ')
+      inOrder(out, ['conversation 1 ', 'conversation 2 ', 'BILLING_MODE'])
+      expect(out).toContain('past conversations first:')
+      expect(out).not.toContain('lessons learned')
+    })
+
+    it('does not fill the second leading lesson place the project\'s own lessons left free', async () => {
+      const out = await build([conv(1, { score: 0.9 }), lesson('o1', G1, { score: 0.6 })], {}, [lesson('fl', F1, { project: 'billing', score: 0.95 })])
+      inOrder(out, ['installer check fails', 'conversation 1 ', 'BILLING_MODE'])
+    })
+
+    it('is the one case: the project\'s own lesson that names it still leads', async () => {
+      const own = lesson('ol', 'The termpolis loadConfig cache goes stale because `config.ts` is read only once, so call `resetCache()` after editing it.', { score: 0.5 })
+      expect(lessonSubstance(own.content).score).toBeGreaterThanOrEqual(KEEP_SCORE)
+      const out = await build([conv(1, { score: 0.9 })], {}, [own])
+      expect(rows(out)[0]).toMatch(/^- \[lesson/)
+      expect(out).toContain('lessons learned, then past conversations')
+    })
+
+    it('does not touch a lesson filed under no project that names this one (older stores): it leads, as it could before', async () => {
+      const legacy = lesson('lg', F1, { project: undefined, score: 0.5 })
+      const out = await build([conv(1, { score: 0.9 })], {}, [legacy])
+      expect(rows(out)[0]).toMatch(/^- \[lesson/)
+    })
+
+    it('does not touch what the store scoped to this project, whatever the slug it is filed under (another computer\'s clone of it)', async () => {
+      const peer = lesson('pl', G1, { project: 'termpolis-clone', score: 0.5 })
+      const out = await build([conv(1, { score: 0.9 }), peer])
+      expect(rows(out)[0]).toMatch(/^- \[lesson/)
+      expect(out).toContain('lessons learned, then past conversations')
     })
   })
 

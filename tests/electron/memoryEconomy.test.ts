@@ -355,6 +355,14 @@ describe('memoryEconomy', () => {
       expect(isStrictPrefix('', '[x] todo')).toBe(false)
     })
 
+    // A head is where the longer text BEGINS. A text that merely appears inside another, and ends where a word does not, is not
+    // one: "then fix the build. next" holds "fix the build." but does not begin with it.
+    it('is false for a text that appears inside the other and does not begin it', () => {
+      expect(isStrictPrefix('fix the build.', 'then fix the build. next')).toBe(false)
+      expect(dropPrefixDuplicates([{ content: 'fix the build.' }, { content: 'then fix the build. next' }])).toHaveLength(2)
+      expect(dropOverlapping([{ content: 'then fix the build. next' }], [{ content: 'fix the build.' }])).toHaveLength(1)
+    })
+
     it('does not cut a word in two: "content 1" is not the head of "content 10"', () => {
       expect(isStrictPrefix('content 1', 'content 10')).toBe(false)
       expect(isStrictPrefix('see v1', 'see v10 for the fix')).toBe(false)

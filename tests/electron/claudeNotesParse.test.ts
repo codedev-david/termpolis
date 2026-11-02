@@ -339,6 +339,13 @@ describe('noteFields, noteTags, isPortableType', () => {
     expect(noteFileOfTags(undefined)).toBeNull()
     expect(noteFileOfTags('note:x.md')).toBeNull() // text is not a list of tags
   })
+
+  // A stored row's tags are whatever the store was given, and the primer reads them for every hit: something that is not a list
+  // must answer "none", not throw (a number or an object is not even iterable, and text only looked harmless because its characters are).
+  it('reads a tag list and nothing else: whatever is not a list names no file, and never throws', () => {
+    for (const odd of [5, {}, true, 'note:plan.md', () => 1, { 0: 'note:plan.md', length: 1 }]) expect(noteFileOfTags(odd)).toBeNull()
+    expect(noteFileOfTags(['type:reference', 'note:plan.md'])).toBe('plan.md')
+  })
 })
 
 describe('what is an imported note', () => {

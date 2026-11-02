@@ -314,9 +314,11 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   }
   const withoutForeignNotes = (hits: PrimerHit[], scoped: boolean): PrimerHit[] =>
     (hits.some((h) => foreignNote(h, scoped)) ? hits.filter((h) => !foreignNote(h, scoped)) : hits)
-  const gate = (hits: PrimerHit[], scoped = false): PrimerHit[] =>
+  // What a read hands this is already what the digest may show (readCandidates hides the rows it must not, with the judgement its
+  // read calls for), so this only ranks.
+  const gate = (hits: PrimerHit[]): PrimerHit[] =>
     adaptiveGate(
-      diversifyHits(dropPrefixDuplicates(dedupeHits(withoutForeignNotes(withoutCandidates(hits), scoped))), { threshold: DIVERSITY_THRESHOLD }),
+      diversifyHits(dropPrefixDuplicates(dedupeHits(hits)), { threshold: DIVERSITY_THRESHOLD }),
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
@@ -349,7 +351,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const searchScope = (opts.projectPath && opts.projectPath.trim()) ? opts.projectPath.trim() : project
   let projectHits: PrimerHit[] = []
   if (project) {
-    try { projectHits = gate(await readCandidates(searchScope, true), true) } catch { projectHits = [] }
+    try { projectHits = gate(await readCandidates(searchScope, true)) } catch { projectHits = [] }
   }
   let globalHits: PrimerHit[] = []
   try {
@@ -416,11 +418,16 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // project's never takes the place of one that is, whatever it adds.
     const own = [...fromProject, ...promoted]
     const pool = dropPrefixDuplicates(own, true)
+    // A hit promoted by the mention above while it is filed under ANOTHER project (one filed under none, and one the store scoped
+    // to this project, are not). A lesson of another project that merely says this one's name has no claim to the lead: it keeps
+    // the place it had before there was a lead, after the conversations.
+    const byMentionOnly = new Set(promoted.filter((h) => { const s = slugOf(h); return s !== '' && s !== project }))
+    const leadsAsLesson = (h: PrimerHit): boolean => isGatedLesson(h) && !byMentionOnly.has(h)
     let leadingNotes = 0
     let leadingLessons = 0
     const tier = pool.map((h): number => {
       if (leadsAsNote(h)) return leadingNotes++ < LEADING_NOTES ? 0 : 2
-      if (isGatedLesson(h)) return leadingLessons++ < LEADING_LESSONS ? 1 : 2
+      if (leadsAsLesson(h)) return leadingLessons++ < LEADING_LESSONS ? 1 : 2
       return isConversation(h) ? 2 : 3
     })
     const bucket = pool
@@ -438,7 +445,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       projLines.push(line)
       shown.push(h)
       if (leadsAsNote(h)) notesShown++
-      else if (isGatedLesson(h)) lessonsShown++
+      else if (leadsAsLesson(h)) lessonsShown++
     }
     const otherLines: string[] = []
     for (const h of dropOverlapping(pool, others)) {
