@@ -296,6 +296,28 @@ describe('another project\'s search, against the real store', () => {
     expect(res.some((r) => r.tags?.includes('type:project'))).toBe(false)
   })
 
+  // PRIVACY.md, DOCUMENTATION.md and the Settings row say that notes from sessions run in the home folder belong to no project,
+  // so a search that names a project is never lent them. The store drops the home folder from a project's name, which leaves the
+  // note with nothing to say where it came from; the lender takes only notes that do.
+  it('lends nothing from a session run in the home folder: such a note belongs to no project', async () => {
+    const home = os.homedir() // only the text of the path is used: nothing under the real home is read
+    const homeFolder = encodeProjectFolder(home)
+    note(homeFolder, 'user_style.md', '---\nname: style\ndescription: widget cache invalidation\ntype: user\n---\nInvalidate the widget cache on write, always: the home style.')
+    session(homeFolder, home)
+    await runClaudeNotesIngest(deps(store))
+    const homeNote = memoryList({ agentId: 'claude-notes' }).find((r) => r.content.includes('the home style'))
+    expect(homeNote).toBeDefined()
+    expect(homeNote!.project).toBeUndefined()
+    // Its own words make it the best match of the lot, so it would be the first note lent if it could be.
+    const query = 'invalidate widget cache write home style'
+    expect((await ask(false, { query, limit: 10 }))[0].content).toContain('the home style') // found when nothing is scoped
+    for (const enabled of [false, true]) {
+      const res = await ask(enabled, { query, project: OTHER_CWD, limit: 10 })
+      expect(res.some((r) => r.content.includes('the home style')), `sharing ${enabled}`).toBe(false)
+    }
+    expect((await ask(true, { query, project: OTHER_CWD, limit: 10 })).some((r) => r.project === 'app')).toBe(true) // others are lent
+  })
+
   it('never goes above the limit', async () => {
     expect((await ask(true, { project: OTHER_CWD, limit: 2 }))).toHaveLength(2) // the project\'s own two fill it
     expect((await ask(true, { project: OTHER_CWD, limit: 3 })).length).toBeLessThanOrEqual(3)

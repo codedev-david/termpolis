@@ -606,6 +606,46 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
       const out = (await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent, now: NOW }))!
       expect(out).toMatch(/- \[note · 1h ago\] the note I edited an hour ago/)
     })
+
+    // A note stored in several chunks has one date for all of them (its last edit) and starts every chunk with its name and
+    // description, and the store lists equal dates newest-stored first. Chunk by chunk, one long note filled the whole lane
+    // with the same opening three times, last part first, and pushed the conversations out.
+    describe('a note stored in several chunks', () => {
+      const part = (i: number, over: Partial<PrimerHit> = {}) => recentNote(`p${i}`, `plan.md, part ${i} of 3`, { tags: ['type:project', 'note:plan.md'], ...over })
+      const conversations = [
+        chunk('c1', long('a conversation from this morning'), { score: 0, ts: NOW - 2 * 3_600_000 }),
+        chunk('c2', long('the conversation before it'), { score: 0, ts: NOW - 3 * 3_600_000 }),
+      ]
+      const digest = async (rows: PrimerHit[]) => (await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, recent: lane(rows), now: NOW }))!
+
+      it('takes one line of the lane, and leaves the others to the conversations', async () => {
+        const out = await digest([part(3), part(2), part(1), ...conversations])
+        expect(out.match(/\[note · 1h ago\]/g)).toHaveLength(1)
+        expect(out).toContain('a conversation from this morning')
+        expect(out).toContain('the conversation before it')
+      })
+
+      it('leaves a second note its own line', async () => {
+        const other = recentNote('o1', 'ops.md, the only part', { tags: ['type:reference', 'note:ops.md'], ts: NOW - 1.5 * 3_600_000 })
+        const out = await digest([part(3), part(2), part(1), other, ...conversations])
+        expect(out.match(/- \[note ·/g)).toHaveLength(2)
+        expect(out).toContain('plan.md, part 3 of 3') // the first one listed stands for the note
+        expect(out).not.toContain('plan.md, part 2 of 3')
+        expect(out).toContain('ops.md, the only part')
+        expect(out).toContain('a conversation from this morning')
+      })
+
+      it('holds only the importer\'s rows to one line: a memory an agent tagged like a note is not one', async () => {
+        const faux = (i: number) => recentNote(`f${i}`, `agent memory ${i}`, { agentId: 'claude', tags: ['type:project', 'note:plan.md'], ts: NOW - i * 3_600_000 })
+        const out = await digest([faux(1), faux(2), faux(3)])
+        for (const i of [1, 2, 3]) expect(out).toContain(`agent memory ${i}`)
+      })
+
+      it('counts a chunk with no file tag, or with another file\'s, as a note of its own', async () => {
+        const out = await digest([part(2), part(1, { tags: ['type:project', 'note:other.md'] }), recentNote('bare', 'no file tag at all', { tags: undefined }), ...conversations])
+        expect(out.match(/- \[note ·/g)).toHaveLength(3)
+      })
+    })
   })
 
   it('compares projects without regard to case', async () => {

@@ -24,7 +24,7 @@
 import { existsSync } from 'fs'
 import { adaptiveGate, dedupeHits, diversifyHits, dropPrefixDuplicates, isStrictPrefix, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
-import { isClaudeNote } from './claudeNotesParse'
+import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
 import { projectKeyOf } from './projectKey'
 
 // Default number of memories injected into a primer when the caller passes no
@@ -95,9 +95,9 @@ const isConversation = (h: PrimerHit): boolean =>
 
 const hitKey = (h: PrimerHit): string => h.id || h.content
 
-/** How many saved notes may lead the project block, and how many lessons the substance gate vouches for. Past these a
- *  note or a lesson ranks with the conversations, on the relevance the search gave it: a crowd of either cannot fill
- *  the block. */
+/** How many passages of saved notes may lead the project block (a long note is stored in several, and each counts), and how
+ *  many lessons the substance gate vouches for. Past these a note or a lesson ranks with the conversations, on the relevance
+ *  the search gave it: a crowd of either cannot fill the block. */
 export const LEADING_NOTES = 3
 export const LEADING_LESSONS = 2
 
@@ -232,6 +232,9 @@ async function collectRecent(
     return (h.content || '').replace(/\s+/g, ' ').trim().length >= MIN_RECENT_CHARS
   })
   const out: PrimerHit[] = []
+  // A saved note is stored in chunks that share one date (its last edit) and each begin with the note's name and description,
+  // so the lane gives a note one line, the first chunk the lister gave, and not one per chunk.
+  const noteLines = new Set<string>()
   // The newest chunks are where a live session's partial chunk and the fuller one that begins with it pile up: the
   // lane counts them once, whichever the lister gave first, and not at all when relevance already carries the fuller one.
   for (const h of dropPrefixDuplicates(viable)) {
@@ -239,6 +242,11 @@ async function collectRecent(
     const key = hitKey(h)
     if (o.exclude.has(key)) continue
     if (o.carried.some((c) => isStrictPrefix(h.content, c.content))) continue
+    const file = isClaudeNote(h) ? noteFileOfTags(h.tags) : null // another project's notes are out already, so a file names one note here
+    if (file !== null) {
+      if (noteLines.has(file)) continue
+      noteLines.add(file)
+    }
     o.exclude.add(key)
     out.push(h)
   }

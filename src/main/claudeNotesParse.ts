@@ -211,6 +211,13 @@ export function noteTags(type: NoteType, fileName: string): string[] {
   return [`type:${type}`, `note:${clip(fileName, FILE_TAG_CLIP)}`]
 }
 
+/** The file a stored note came from (its `note:<file>` tag), or null. Every chunk of one note names the same file. */
+export function noteFileOfTags(tags: unknown): string | null {
+  if (!Array.isArray(tags)) return null
+  for (const t of tags) if (typeof t === 'string' && t.startsWith('note:') && t.length > 5) return t.slice(5)
+  return null
+}
+
 /** The note type a stored row's tags name, or null. */
 export function noteTypeOfTags(tags: unknown): NoteType | null {
   if (!Array.isArray(tags)) return null

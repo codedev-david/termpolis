@@ -10,6 +10,7 @@ import {
   isClaudeNote,
   isPortableType,
   noteFields,
+  noteFileOfTags,
   noteTags,
   noteTypeOfTags,
   parseNote,
@@ -323,6 +324,17 @@ describe('noteFields, noteTags, isPortableType', () => {
     expect(noteTypeOfTags(['note:a.md', 42, 'other'])).toBeNull()
     expect(noteTypeOfTags(undefined)).toBeNull()
     expect(noteTypeOfTags('type:user')).toBeNull()
+  })
+
+  it('reads the file a chunk came from back from its tags: all the chunks of one note name the same one', () => {
+    expect(noteFileOfTags(['type:user', 'note:style.md'])).toBe('style.md')
+    expect(noteFileOfTags(noteTags('feedback', 'feedback_cache.md'))).toBe('feedback_cache.md') // the importer's own tags
+    expect(noteFileOfTags([7, null, 'note:a.md', 'note:b.md'])).toBe('a.md') // the first, and anything that is not text passed over
+    expect(noteFileOfTags(['type:user'])).toBeNull()
+    expect(noteFileOfTags(['note:'])).toBeNull() // a tag with no file in it names none
+    expect(noteFileOfTags([])).toBeNull()
+    expect(noteFileOfTags(undefined)).toBeNull()
+    expect(noteFileOfTags('note:x.md')).toBeNull() // text is not a list of tags
   })
 })
 
