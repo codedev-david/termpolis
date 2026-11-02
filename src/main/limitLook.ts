@@ -16,6 +16,7 @@ import { ACCOUNT_AGENT_LABEL } from '../shared/agentAccounts'
 import type { AccountAgent } from '../shared/agentAccounts'
 import type { LimitLook } from '../shared/accountLimits'
 import { agentOfLaunch } from '../shared/launchCarry'
+import { CODEX_STARTING } from '../shared/accountSwitch'
 import { HINT_HEAD, hintAtFoot, indexOf, look, plain } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
 import { PROMPT_REPORT, sinceStarted } from './mcpServer'
@@ -83,7 +84,10 @@ export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefi
   if (!start) return { agent: null, live: false, turned: false, startAt: null, status, words: null }
   if (agentGone(io, id, start, now, l)) start.ended = true
   const live = !start.ended
-  if (live && status.status === 'working' && !start.turned) {
+  // Codex says "model: loading" in its header until it is up, with its box already drawn, and the detector reads
+  // that as work (the real fresh-launch streams do, at 0.7 s): no prompt was taken, so it is no turn.
+  const starting = start.agent === 'codex' && CODEX_STARTING.test(l.lines.join('\n'))
+  if (live && status.status === 'working' && !start.turned && !starting) {
     start.turned = true
     start.turnedAt = io.end(id)
   }

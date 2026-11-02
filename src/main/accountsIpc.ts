@@ -406,7 +406,8 @@ function gatherLines(terminalId: string, typed: string, onLine: (line: string) =
       // the user's own Enter sends it. An end marker that never came ends it with what was written.
       const end = typed.indexOf('\x1b[201~', i + 6)
       const body = typed.slice(i + 6, end < 0 ? typed.length : end)
-      line = (line + body.replace(/\r\n|\r|\n/g, '; ').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')).slice(0, TYPED_LINE_MAX)
+      // An empty line (a trailing newline, as copied from a README) adds no ';': "claude;" is no launch.
+      line = (line + body.split(/\r\n|\r|\n/).filter(Boolean).join('; ').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')).slice(0, TYPED_LINE_MAX)
       i = end < 0 ? typed.length : end + 5
     } else if (c === '\x1b' && (typed[i + 1] === '\r' || typed[i + 1] === '\n')) {
       // Esc then Enter (Shift+Enter in an agent's box, TerminalPane): a new line in the box, not a submit.
@@ -450,6 +451,9 @@ export function terminalsOnAccount(accountId: string): number {
   for (const id of terminalAccounts.values()) if (id === accountId) n++
   return n
 }
+
+/** The lines one write makes, for the tests of how keystrokes are gathered. */
+export const _gatherLinesForTest = gatherLines
 
 export function _resetTerminalAccountsForTest(): void {
   terminalAccounts.clear()

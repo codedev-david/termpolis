@@ -706,6 +706,7 @@ describe('a stop an admin or a workspace puts on a seat (round 1)', () => {
   it.each([
     ['Claude Code: no usage in this seat type', 'Claude', ['❯ Build the page', `${REPLY}Your seat type doesn't include usage`, ...CLAUDE_IDLE]],
     ['Claude Code: no usage credits in this seat type', 'Claude', ['❯ Build the page', `${REPLY}Your seat type doesn't include usage credits`, ...CLAUDE_IDLE]],
+    ['Claude Code: no extra usage in this seat type', 'Claude', ['❯ Build the page', `${REPLY}Your seat type doesn't include extra usage`, ...CLAUDE_IDLE]],
     ['Claude Code: the allocation turned off by an admin', 'Claude', ['❯ Build the page', `${REPLY}Your usage allocation has been disabled by your admin`, ...CLAUDE_IDLE]],
     ['Claude Code: a group limit of nothing', 'Claude', ['❯ Build the page', `${REPLY}Your group's usage limit is set to $0`, ...CLAUDE_IDLE]],
     ['Codex: the workspace is out of credits', 'Codex', ['› Fix the login test', '', '• I will fix the test.', '', '■ Your workspace is out of credits. Add credits to continue.', ...CODEX_IDLE]],

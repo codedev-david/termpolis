@@ -257,6 +257,46 @@ describe('where a turn began (R4): an old limit is not the answer to it', () => 
     expect(lookForLimit(io, 't1', start, 1).turned).toBe(true)
   })
 
+  // CHOOSER-R1-5 (K06): the words matched against what was printed since the turn began are the limit's first 40
+  // letters. Anything else printed since is no redraw of the old limit.
+  it('counts other text printed since the turn began as no redraw of the old limit', () => {
+    const out = { text: screen(OLD) }
+    const io = ioOver(out)
+    const start: LiveStart = { at: 0, commands: ['claude'], agent: 'claude', time: 0 }
+    noteEnteredLine(io, 't1', start, 'continue', out.text.length, 1)
+    // Text with the letters of the old limit's start in it, but not its words.
+    out.text += 'You asked your assistant to review the session now'
+    expect(lookForLimit(io, 't1', start, 2)).toMatchObject({ turned: false, words: OLD })
+  })
+
+  // CHOOSER-R1-4: Codex 0.153's header says "model: loading" until it is up, with its box already drawn, and the
+  // detector reads that as at work. The 45 real fresh-launch streams of the #36 runs latch a turn at 0.7 s that
+  // way, before any prompt. A resumed conversation's old limit drawn after that would then count as fresh.
+  it('does not take Codex\'s start-up "model: loading" for a turn, and takes the first real one', () => {
+    const LOADING = ['╭──────────────────────────────────────────╮', '│ >_ OpenAI Codex (v0.153.4)               │', '│ model:     loading   /model to change    │', '╰──────────────────────────────────────────╯', '', '› Ask Codex to do anything', '', '  ? for shortcuts']
+    const out = { text: paint(LOADING) }
+    const io = ioOver(out)
+    const start: LiveStart = { at: 0, commands: ['codex resume x'], agent: 'codex', time: 0 }
+    expect(lookForLimit(io, 't1', start, 1)).toMatchObject({ live: true, turned: false })
+    expect(start.turnedAt).toBeUndefined()
+    // It is up, idle: still no turn.
+    out.text += paint(['› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~/repo'])
+    expect(lookForLimit(io, 't1', start, 2).turned).toBe(false)
+    // The first turn the user takes.
+    out.text += paint(['› go on', '• Working (3s • esc to interrupt)', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~/repo'])
+    expect(lookForLimit(io, 't1', start, 3).turned).toBe(true)
+    expect(start.turnedAt).toBe(out.text.length)
+  })
+
+  it('still takes a turn at work from Claude Code and agy as before', () => {
+    for (const agent of ['claude', 'agy'] as const) {
+      // Even with the words Codex's loading screen uses in what it quoted: only Codex's own header means "starting".
+      const io = ioOver({ text: paint(['● Resuming session… and model: loading are what Codex draws', '❯ go on', '✻ Thinking… (3s · esc to interrupt)', '', RULE, '❯ ', RULE]) })
+      const start: LiveStart = { at: 0, commands: [agent], agent, time: 0 }
+      expect(lookForLimit(io, 't1', start, 1).turned, agent).toBe(true)
+    }
+  })
+
   it('takes a turn seen at work from the look that saw it', () => {
     const out = { text: paint(['❯ go on', '✻ Thinking… (3s · esc to interrupt)', '', RULE, '❯ ', RULE]) }
     const io = ioOver(out)

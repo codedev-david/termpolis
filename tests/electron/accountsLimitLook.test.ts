@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
-  _resetTerminalAccountsForTest, isAccountChangedByHand, noteAgentStart, noteTerminalAccount, noteTypedInput, registerAccountsIpc,
+  _gatherLinesForTest, _resetTerminalAccountsForTest, isAccountChangedByHand, noteAgentStart, noteTerminalAccount, noteTypedInput, registerAccountsIpc,
   terminalAccountId, terminalAgentStart, LIMIT_CHOOSER_VAR, withLimitChooser,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
@@ -471,6 +471,21 @@ describe('R15: an account benched before an agent started on it, whose agent the
     expect(await limitOf(id)).toBeUndefined()
   })
 
+  // CHOOSER-R1-5 (H06): an agent that is gone cannot have answered a prompt, whatever the frame it left shows.
+  it('lifts nothing for an agent that is gone, though the last frame it left shows it at work', async () => {
+    const id = await onAccount()
+    await ok(ACCOUNTS_IPC.noteLimit, { id, text: WORDS, window: 'weekly' })
+    clock += 60_000
+    await started(id)
+    term.out += paint(WORKING)
+    // Killed mid-turn: the shell's prompt is drawn under the frame it left.
+    term.mode = 'shell'
+    term.out += term.prompt()
+    const seen = await lookNow()
+    expect(seen.live).toBe(false)
+    expect(await limitOf(id)).toBeDefined()
+  })
+
   it('keeps a limit recorded after the agent started, and one while the agent is not at work', async () => {
     const id = await onAccount()
     clock += 60_000
@@ -548,5 +563,45 @@ describe('R15: an account benched before an agent started on it, whose agent the
     term.out += paint(WORKING)
     expect((await lookNow()).turned).toBe(true)
     expect(await limitOf(id)).toBeDefined()
+  })
+})
+
+// CHOOSER-R1-1: the launch line of an agent, pasted into a shell as copied from a README (a trailing newline), is
+// text in the box until the user's Enter, and its line breaks read as ';'. A trailing or empty line adds nothing:
+// "claude;" is not a launch, and the chooser would never watch the agent that really runs.
+describe('a launch line pasted into a shell, then Enter', () => {
+  it.each([
+    ['claude', 'claude', 'claude'],
+    ['claude\n', 'claude', 'claude'],
+    ['cd proj\nclaude\n', 'claude', 'claude'],
+    ['cd proj\rclaude\r', 'claude', 'claude'],
+    ['claude --resume abc\r\n\r\n', 'claude', 'claude'],
+    ['\n\ncodex -m gpt-5.6-sol\n', 'codex', 'codex'],
+  ])('%j starts a record for %s', (text, _agent, expected) => {
+    noteTypedInput('t1', `${E}[200~${text}${E}[201~`, clock)
+    // Nothing was entered by the paste: no record until the user's Enter.
+    expect(terminalAgentStart('t1')).toBeUndefined()
+    noteTypedInput('t1', '\r', clock)
+    expect(terminalAgentStart('t1')?.agent).toBe(expected)
+  })
+
+  it('does not read a pasted note that only mentions the agent as a launch', () => {
+    noteTypedInput('t1', `${E}[200~please run claude now\n${E}[201~\r`, clock)
+    expect(terminalAgentStart('t1')).toBeUndefined()
+  })
+})
+
+describe('how the keys of one write are gathered into lines (CHOOSER-R1-5)', () => {
+  // CHOOSER-R1-5 (G02, G03, G05, G07, G08): how a write's keys are gathered into a line.
+  it.each([
+    ['a paste and the Enter in one write', `${E}[200~foo bar${E}[201~\r`, 'foo bar'],
+    ['a paste, then keys after its end marker, then Enter', `${E}[200~foo${E}[201~ bar\r`, 'foo bar'],
+    ['Esc then LF (Shift+Enter) is a space in the line, not a submit', `foo${E}\nbar\r`, 'foo bar'],
+    ['control characters in a paste are left out', `${E}[200~fo\x01\x02o\x1b bar${E}[201~\r`, 'foo bar'],
+    ['a paste\'s line breaks read as ";"', `${E}[200~one\ntwo${E}[201~\r`, 'one; two'],
+  ])('%s', (_what, written, expected) => {
+    const lines: string[] = []
+    _gatherLinesForTest('t9', written, (l) => lines.push(l))
+    expect(lines).toEqual([expected])
   })
 })

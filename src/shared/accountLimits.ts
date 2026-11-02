@@ -256,6 +256,6 @@ function targetOf(r: AccountRowView, limitedEmail: string | null, outEmails: rea
   if (check?.kind === 'unknown') return { row: r, state: 'unknown', text: `couldn't tell whether it is signed in: ${check.why}` }
   let text = !isProfileAgent(r.agent) ? r.email ?? 'no email given' : check?.kind === 'signed-in' ? (check.email ? `signed in as ${check.email}` : 'signed in') : 'available'
   // A model's limit leaves the account on offer, with the CLI's words.
-  if (r.limit) text += ` · ${r.limit.text}`
+  if (r.limit && r.limit.scope === 'model') text += ` · ${r.limit.text}`
   return { row: r, state: 'available', text }
 }

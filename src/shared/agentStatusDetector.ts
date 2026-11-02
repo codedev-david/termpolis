@@ -379,7 +379,7 @@ const CLAUDE_LIMIT_MESSAGES: readonly RegExp[] = [
   /^[ \t]*(?:⎿[ \t\u00a0]+)?(?:Fable|Haiku|Mythos|Opus|Sonnet)(?: [^·\n]{1,40}?)? requires usage credits\./,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?You['’]re out of (?:usage credits|extra usage)\b/,
   // What an admin puts on a seat (read from the program text of Claude Code 2.1.316): another account may have one.
-  /^\s*(?:⎿\s+)?Your seat type doesn['’]t include usage(?: credits)?\b/,
+  /^\s*(?:⎿\s+)?Your seat type doesn['’]t include (?:extra )?usage(?: credits)?\b/,
   /^\s*(?:⎿\s+)?Your usage allocation has been disabled by your admin\b/,
   /^\s*(?:⎿\s+)?Your group['’]s usage limit is set to \$0(?![\d.])/,
   /^[ \t]*(?:⎿[ \t\u00a0]+)?Your org is out of usage\b/,

@@ -190,6 +190,21 @@ describe('limitTargets', () => {
     expect(limitTargets([personal, lasting, row('e', { order: 4, lastEmail: 'b@example.test' })], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now).find((x) => x.row.id === 'e')!.state).toBe('limited')
   })
 
+  it('reads a lifted account limit as an account that is free again, not as one that hit a limit (CHOOSER-R1-2)', () => {
+    const lifted = row('a', { order: 1, limit: { seenAt: now - 7200_000, resetsAt: now - 3600_000, text: "You've hit your session limit · resets 3pm (America/New_York)", scope: 'account' }, lastEmail: 'a@example.test' })
+    const t = limitTargets([personal, lifted], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now)
+    const a = t.find((x) => x.row.id === 'a')!
+    expect(a.state).toBe('available')
+    expect(a.text).toBe('available')
+    expect(a.text).not.toMatch(/limit/)
+  })
+
+  it('still says what a model\'s limit was, on an account that stays on offer', () => {
+    const model = row('m', { order: 1, limit: { seenAt: now, resetsAt: now + 3600_000, text: "You've hit your Opus limit", scope: 'model', model: 'Opus' } })
+    const t = limitTargets([personal, model], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now)
+    expect(t.find((x) => x.row.id === 'm')).toMatchObject({ state: 'available', text: "available · You've hit your Opus limit" })
+  })
+
   it('never offers an account not offered automatically, and lists none of another agent (D14)', () => {
     const codex = row('cx', { agent: 'codex' })
     const t = limitTargets([personal, codedev, work, codex], 'claude', { accountId: 'personal', email: 'personal@example.test' }, now)
