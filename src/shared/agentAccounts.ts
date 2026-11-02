@@ -391,8 +391,8 @@ export interface TerminalAccountEvent {
   terminalId: string
   /** null: the agent's default profile. */
   accountId: string | null
-  /** A line typed by hand set or unset the profile variable (or ran switch-now): Termpolis no
-   *  longer knows the account, and the chip shows "?". */
+  /** A line typed by hand set or unset the profile variable (or ran switch-now, claude-switch or
+   *  /switch-account): Termpolis no longer knows the account, and the chip shows "?". */
   byHand: boolean
   /** A swarm worker's agent, as run_command started it: a worker has no launch line of its own. */
   agent?: AccountAgent

@@ -268,8 +268,12 @@ export const CODEX_STARTING = /Resuming session|\bmodel:\s+loading\b/
 const PROFILE_VARS = '(?:CLAUDE_CONFIG_DIR|CODEX_HOME|GEMINI_CLI_HOME)'
 
 /** A line typed by hand that changes which account the terminal's shell runs agents on: a profile
- *  variable set or unset in any shell's syntax, or David's `switch-now`. Termpolis's own lines
- *  match too; main tells them apart by remembering the line it built (R1). */
+ *  variable set or unset in any shell's syntax, or one of David's own ways to move a terminal:
+ *  `switch-now` (also as switch-now.sh or .cmd, and as the `claude-switch` alias of his .bashrc), and
+ *  `/switch-account <acct>` typed in Claude followed by /exit. ~/.claude/claude-run.sh then starts Claude again
+ *  on the other profile with a prefix assignment, which passes through no line Termpolis types, so the
+ *  line typed is the only sign the terminal's account changed (SW2-1). Termpolis's own lines match
+ *  too; main tells them apart by remembering the line it built (R1). */
 const BY_HAND: readonly RegExp[] = [
   new RegExp(`(?:^|[\\s;&|(])${PROFILE_VARS}=`, 'i'),
   new RegExp(`(?:^|[\\s;&|(])unset\\s+(?:-v\\s+)?(?:[A-Za-z_]\\w*\\s+)*${PROFILE_VARS}\\b`, 'i'),
@@ -277,7 +281,8 @@ const BY_HAND: readonly RegExp[] = [
   new RegExp(`\\$env:${PROFILE_VARS}\\s*=`, 'i'),
   new RegExp(`\\bRemove-Item\\s+(?:-Path\\s+)?Env:\\\\?${PROFILE_VARS}\\b`, 'i'),
   new RegExp(`(?:^|[\\s&|(])set\\s+"?${PROFILE_VARS}=`, 'i'),
-  /(?:^|[\s;&|(])switch-now(?:\s|$)/i,
+  /(?:^|[\s;&|(/\\])(?:switch-now(?:\.(?:sh|cmd))?|claude-switch)(?:\s|$)/i,
+  /(?:^|[\s;&|(])\/switch-account(?:\s|$)/i,
 ]
 
 export function changesAccountByHand(typed: string): boolean {

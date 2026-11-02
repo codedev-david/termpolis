@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, mkdirSync, renameSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
-  _resetTerminalAccountsForTest, forgetTerminalAccount, noteAgentStart, noteTerminalAccount, noteTerminalSession, noteTypedInput, registerAccountsIpc,
+  _resetTerminalAccountsForTest, forgetTerminalAccount, isAccountChangedByHand, noteAgentStart, noteTerminalAccount, noteTerminalSession, noteTypedInput, registerAccountsIpc,
   terminalAccountId, terminalAgentStart, terminalSessionId,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
@@ -467,6 +467,27 @@ describe('accounts:switch, an account that isn\'t offered automatically (D14, R1
       expect(term.writes).toEqual([])
       expect(carriedTo(other)).toBe(false)
       expect(terminalAccountId('t1')).toBe(main)
+    })
+
+    // David's /switch-account <acct> inside Claude, then /exit: ~/.claude/claude-run.sh starts Claude again on the
+    // other profile with a prefix assignment, so no line Termpolis can see sets the variable (SW2-1).
+    it('asks for it after /switch-account and /exit: the restart on the other profile passes through no line of ours', async () => {
+      const { main, other } = await workAndAnother()
+      startedOn(main)
+      expect(noteTypedInput('t1', '/switch-account work\r', 40)).toBe('by-hand')
+      expect(noteTypedInput('t1', '/exit\r', 41)).toBeNull()
+      expect(isAccountChangedByHand('t1')).toBe(true)
+      expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash' })).toBe(MAYBE)
+      expect(term.writes).toEqual([])
+      expect(carriedTo(other)).toBe(false)
+    })
+
+    it.each(['claude-switch work\r', 'bash ~/.claude/switch-now.sh work\r'])('asks for it after %j as it does after switch-now', async (line) => {
+      const { main, other } = await workAndAnother()
+      startedOn(main)
+      expect(noteTypedInput('t1', line, 40)).toBe('by-hand')
+      expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash' })).toBe(MAYBE)
+      expect(term.writes).toEqual([])
     })
 
     it('asks for it when the terminal has no record at all (an agent started by hand)', async () => {

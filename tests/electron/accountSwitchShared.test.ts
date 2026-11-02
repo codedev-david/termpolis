@@ -195,6 +195,45 @@ describe('changesAccountByHand (§6.1)', () => {
     ]) expect(changesAccountByHand(typed), typed).toBe(true)
   })
 
+  // David's own ways of moving a terminal to another account (~/.claude/skills/switch-account.sh,
+  // switch-now.sh, and the `claude-switch` alias of ~/.bashrc): the restart they do passes through no
+  // line Termpolis types, so the typed line is the only sign (SW2-1).
+  it('sees David\'s /switch-account, claude-switch and switch-now.sh, whoever starts them and however they are named', () => {
+    for (const typed of [
+      '/switch-account work',
+      '/switch-account personal',
+      '/switch-account codedev',
+      '/switch-account status',
+      '  /switch-account   work ',
+      '/SWITCH-ACCOUNT work',
+      '/switch-account',
+      'claude-switch work',
+      'claude-switch',
+      'cd repo && claude-switch codedev',
+      'bash ~/.claude/switch-now.sh work',
+      'bash C:\\Users\\me\\.claude\\switch-now.sh codedev',
+      'sh /c/Users/me/.claude/switch-now.sh',
+      '~/.local/bin/switch-now work',
+      'switch-now.cmd work',
+      'switch-now.sh',
+      '(switch-now personal)',
+    ]) expect(changesAccountByHand(typed), typed).toBe(true)
+  })
+
+  it('sees nothing in lines that only look like them', () => {
+    for (const typed of [
+      '/switch-accounts',
+      '/switch-account-notes',
+      'cat /docs/switch-account.md',
+      'cat claude-switch.md',
+      'ls claude-switches',
+      'cat my-switch-now.txt',
+      'node switch-now.js',
+      'echo claude-switching',
+      'switch-nowhere',
+    ]) expect(changesAccountByHand(typed), typed).toBe(false)
+  })
+
   it('sees nothing in lines that only mention one', () => {
     for (const typed of [
       'claude --resume ' + ID,
