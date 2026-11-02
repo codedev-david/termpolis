@@ -879,16 +879,39 @@ describe('the sweep: entries the manifest cannot account for', () => {
     expect(manifestJson().epoch).toBeGreaterThan(0) // what was removed can no longer be mistaken for what is stored next
   })
 
-  it('treats every entry as its own when this computer\'s origin is unknown or cannot be asked', async () => {
+  it('treats every entry as its own while the store has no id of its own to compare with', async () => {
     note(FOLDER, 'n.md', FEEDBACK)
     session(FOLDER, CWD)
-    for (const own of [undefined, 'throws'] as const) {
+    for (const ownOrigin of [undefined, async () => undefined]) {
       fs.rmSync(manifestFile(), { force: true })
       const store = fakeStore()
       store.rows.set('x', { id: 'x', ts: 1, agentId: 'claude-notes', source: 'claude-notes', content: 'x', origin: 'other' } as never)
-      const stats = await runClaudeNotesIngest(deps(store, { ownOrigin: own === 'throws' ? async () => { throw new Error('no status') } : undefined }))
+      const stats = await runClaudeNotesIngest(deps(store, { ownOrigin }))
       expect(stats.swept).toBe(1)
     }
+  })
+
+  // "I have no id" and "I could not ask" are two answers. The first means the store marks nothing, so every entry is this
+  // computer's. The second says nothing about whose entries these are: reading it as the first would let a host that is busy for a
+  // moment turn every other computer's copy into one of ours to delete.
+  it('removes nothing, and does not call the record settled, while it cannot ask what its own id is', async () => {
+    note(FOLDER, 'n.md', FEEDBACK)
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    store.rows.set('peer', { id: 'peer', ts: 1, agentId: 'claude-notes', source: 'claude-notes', content: 'x', origin: 'laptop' } as never)
+    store.rows.set('orphan', { id: 'orphan', ts: 2, agentId: 'claude-notes', source: 'claude-notes', content: 'y', origin: 'me' } as never)
+    const stats = await runClaudeNotesIngest(deps(store, { ownOrigin: async () => { throw new Error('host busy') } }))
+    expect(stats.swept).toBe(0)
+    expect(stats.chunksWritten).toBe(1) // the note on this computer is imported all the same
+    expect(store.removed).toEqual([])
+    expect(store.rows.has('peer')).toBe(true)
+    expect(store.rows.has('orphan')).toBe(true) // not known to be this computer's: it waits until it can be told
+    expect(manifestJson().dirty).toBe(true)
+    const again = await runClaudeNotesIngest(deps(store, { ownOrigin: async () => 'me' }))
+    expect(again.swept).toBe(1) // the answer is back: its own orphan goes, the other computer's copy stays
+    expect(store.rows.has('orphan')).toBe(false)
+    expect(store.rows.has('peer')).toBe(true)
+    expect(manifestJson().dirty).toBe(false)
   })
 
   it('pages through a store of more notes than one listing holds, whole groups of equal time included', async () => {
@@ -1063,6 +1086,18 @@ describe('Remove imported notes', () => {
     const res = await removeImportedNotes(deps(store, { ownOrigin: async () => 'me' }))
     expect(res).toEqual({ removed: 0, failed: 0 })
     expect(store.rows.has('peer')).toBe(true)
+  })
+
+  it('removes only what the manifest knows, and leaves another computer\'s notes alone, while it cannot ask what its own id is', async () => {
+    note(FOLDER, 'a.md', '---\nname: a\n---\nAlpha.')
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    store.rows.set('peer', { id: 'peer', ts: 1, agentId: 'claude-notes', source: 'claude-notes', content: 'x', origin: 'laptop' } as never)
+    const res = await removeImportedNotes(deps(store, { ownOrigin: async () => { throw new Error('host busy') } }))
+    expect(res).toEqual({ removed: 1, failed: 0 })
+    expect([...store.rows.keys()]).toEqual(['peer'])
+    expect(manifestJson().dirty).toBe(true) // what the store holds was not seen whole: the next pass checks
   })
 
   it('works on a computer that never imported anything', async () => {
@@ -1821,15 +1856,18 @@ describe('the sweep before an import, and a removal that has just failed', () =>
 })
 
 // A brain export from another computer brings that computer's copies of its saved notes. They carry no mark of who made them and this
-// computer's record has never heard of them, so its first pass takes them for stale copies of its own and replaces them with copies
-// made from the notes on THIS computer. PRIVACY.md and the documentation say so, and say to turn the import off first to keep them.
+// computer's record has never heard of them. A pass takes the entries it cannot account for for stale copies of its own only when it has
+// reason to look (a record that is new, lost or left unfinished by an interrupted pass), and then replaces them with copies made from the
+// notes on THIS computer; with a whole record it does not look, and they stay. PRIVACY.md and the documentation say so, and say to turn the
+// import off first to keep them in the first case. (Once memory sync stamps whose an entry is, the strangers are no longer taken for this
+// computer's in any case, and those sentences change with it: the notes at the top of claudeNotesIngest.ts's `ownedBy` say what to re-read.)
 describe('copies that came in with a brain import from another computer', () => {
   const imported = (): Array<StoredNote & { content: string }> => [1, 2, 3].map((n) => ({
     id: `brain${n}`, ts: 5_000 + n, agentId: 'claude-notes', source: 'claude-notes', content: `a note of the other computer, number ${n}`,
     tags: ['type:reference', `note:other${n}.md`],
   } as unknown as StoredNote & { content: string }))
 
-  it('are removed by the first pass here, which imports its own notes in their place', async () => {
+  it('are removed by the first pass here when this computer has no record yet, which imports its own notes in their place', async () => {
     seedNotes(3)
     const store = fakeStore()
     for (const r of imported()) store.rows.set(r.id, r)
@@ -1839,6 +1877,50 @@ describe('copies that came in with a brain import from another computer', () => 
     expect(stats.chunksWritten).toBe(3)
     expect([...store.rows.keys()].filter((id) => id.startsWith('brain'))).toEqual([])
     expect(store.rows.size).toBe(3)
+  })
+
+  // The documents say what happens to a computer that already has its record: nothing. It knows which copies are its own, the
+  // others are not among them, and a pass that finds nothing unfinished does not go looking for strangers.
+  it('stay beside this computer\'s own copies when it has imported before and its record is whole', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store)) // its own three; the pass settles the record
+    expect(manifestJson().dirty).toBe(false)
+    for (const r of imported()) store.rows.set(r.id, r)
+    store.lists.length = 0
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.swept).toBe(0)
+    expect(stats.chunksWritten).toBe(0)
+    expect(store.removed).toEqual([])
+    expect(store.rows.size).toBe(6)
+    expect(manifestJson().dirty).toBe(false)
+    // and it did not even look: one row asked for to see that the store still holds a note of its own, never a walk of all of them
+    expect(store.lists).toEqual([{ agentId: 'claude-notes', limit: 1 }])
+  })
+
+  it('are removed by the next pass when the record was left unfinished by an interrupted pass, and this computer\'s own stay', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const own = [...store.rows.keys()]
+    for (const r of imported()) store.rows.set(r.id, r)
+    const m = manifestJson()
+    m.dirty = true // what a pass cut short leaves behind
+    fs.writeFileSync(manifestFile(), JSON.stringify(m))
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats.swept).toBe(3)
+    expect([...store.rows.keys()].sort()).toEqual([...own].sort())
+    expect(stats.chunksWritten).toBe(0) // nothing of its own was missing: it only took the strangers out
+    expect(manifestJson().dirty).toBe(false)
+  })
+
+  it('go with the rest when Remove imported notes is used (nothing marks whose they are, so they are taken for this computer\'s)', async () => {
+    seedNotes(3)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    for (const r of imported()) store.rows.set(r.id, r)
+    expect(await removeImportedNotes(deps(store))).toEqual({ removed: 6, failed: 0 })
+    expect(store.rows.size).toBe(0)
   })
 
   it('stay for as long as the import is off, which is what the documentation says to do first', async () => {

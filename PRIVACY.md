@@ -434,17 +434,20 @@ this: it starts when you answer yes.
   move your memory yourself, with a brain export, say, or hand a job to another
   of your computers: that computer starts it with its own memory, and its answer
   can quote what it holds, a saved note among it, back to the computer that
-  asked. A computer that imports such a brain export does not take the copies
-  as its own: while its own saved-notes import is on, its first pass (and any
-  after an interrupted one) removes the copies it did not make and imports its
-  own from the notes on that computer. Turning the import off first keeps them
-  for as long as it stays off.
+  asked. A computer that imports such a brain export does not count the copies
+  as its own. If it has imported notes before and its record of them is whole,
+  they stay beside its own copies. If its record is new, lost, or was left
+  unfinished by an interrupted pass, its next pass, while its own saved-notes
+  import is on, removes every copy it cannot account for (those included) and
+  imports its own from the notes on that computer. Turning the import off first
+  keeps them for as long as it stays off.
 - **Undo.** *Remove imported notes* (Settings → Memory & Learning) takes every
-  copy out of memory and turns the import off; Claude's own notes are not
-  touched. Turning the switch off stops the reading and leaves the existing
-  copies until you remove them. Disconnecting your agents stops it too, and a
-  locked memory pauses it; copies that could not be removed because memory was
-  locked are removed by the next indexer pass once it opens. If Termpolis
+  copy out of memory (the ones a brain import brought in as well) and turns the
+  import off; Claude's own notes are not touched. Turning the switch off stops
+  the reading and leaves the existing copies until you remove them.
+  Disconnecting your agents stops it too, and a locked memory pauses it; copies
+  that could not be removed because memory was locked are removed by the next
+  indexer pass once it opens. If Termpolis
   cannot read its settings file (a write cut short by a crash, say), it leaves
   the import off until you turn it on again, and a switch it could not save is
   reported as an error, not shown as changed (*Remove imported notes* then

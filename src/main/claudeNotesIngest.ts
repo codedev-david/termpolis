@@ -69,9 +69,13 @@ const LIST_PAGE = 500
  * (conversationIngest.ts): every sign-in profile's projects folder, each real folder once. This is the only
  * line of CODE to change; nothing else here assumes a single root. The WORDS are another matter: that adds
  * read locations the user was told nothing about, and the v1.49 consent model has the disclosure match the code.
- * PRIVACY.md ("What it reads"), docs/DOCUMENTATION.md ("What is read"), README.md (the saved-notes bullet),
- * ClaudeNotesPanel.tsx and the note in AgentWritesList.tsx all name `~/.claude/projects` alone, and must then
- * name each sign-in profile's own projects folder too (one folder where Termpolis linked them).
+ * Every place that names `~/.claude/projects` for the saved notes must then name each sign-in profile's own projects
+ * folder too (one folder where Termpolis linked them). Do not work from a list of section names: search for the path
+ * itself (`grep -F ".claude/projects"`) over PRIVACY.md, README.md, docs/DOCUMENTATION.md, ClaudeNotesPanel.tsx and
+ * AgentWritesList.tsx, and read every hit. Today that is PRIVACY.md ("Claude Code's saved notes": the intro and "What it
+ * reads"), README.md (the saved-notes bullet), docs/DOCUMENTATION.md ("Connecting your coding agents"; the saved-notes
+ * bullet of "What's in it"; "Claude Code's saved notes": the intro and "What is read"; the "Past AI conversations" bullet
+ * is the transcript reader's, not this one), the sentence in ClaudeNotesPanel.tsx and the note in AgentWritesList.tsx.
  */
 export async function noteRoots(): Promise<string[]> {
   const home = process.env.TERMPOLIS_TEST_AGENT_HOME?.trim() || homedir()
@@ -420,7 +424,16 @@ async function holdsNoNotes(deps: NotesDeps): Promise<boolean> {
   } catch { return false }
 }
 
-/** Is this row this computer's to remove? Another computer's notes (memory sync) are theirs. */
+/**
+ * Is this row this computer's to remove? Another computer's notes (memory sync) are theirs.
+ *
+ * Until the store stamps an origin on its entries (fix/memsync) nothing says whose a copy is, and every entry under the notes' author is
+ * taken for this computer's: a sweep then removes the copies a brain import brought in, when a pass sweeps at all, and so does "Remove
+ * imported notes". PRIVACY.md ("Where it goes", "Undo") and docs/DOCUMENTATION.md ("Staying true", "Undo") say exactly that. Once entries are
+ * stamped, a copy that came from another computer (by sync, or in a brain export) is that computer's, nothing here removes it, and
+ * those sentences are wrong until they are rewritten. memsync's isOwnDeviceId also counts this computer's previous ids as its own, so
+ * `ownOrigin` may have to hand back a predicate instead of one id; choose that with the real thing in hand.
+ */
 const ownedBy = (row: StoredNote, own: string | undefined): boolean => own === undefined || typeof row.origin !== 'string' || row.origin === own
 
 /** Rounds of "list what is left, remove what was not tried" one sweep may take: 100 rounds reach 50,000 notes. */
@@ -442,7 +455,8 @@ export interface NotesDeps {
   stopped?: () => boolean
   /** Awaited between writes so a first import cannot freeze the app. Default: a setImmediate. */
   yield?: () => Promise<void>
-  /** This computer's id as the store stamps it on entries, when the store does (memory sync). */
+  /** This computer's id as the store stamps it on entries, when the store does (memory sync); undefined when it has none yet.
+   *  Rejects when it cannot be asked: a pass, a removal or a look at the store then leaves it exactly as it is. */
   ownOrigin?: () => Promise<string | undefined>
   /** Rounds one sweep of the store may take (MAX_SWEEP_ROUNDS). A seam for tests. */
   sweepRounds?: number
@@ -485,9 +499,12 @@ const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex
 const textHash = (type: NoteType, project: string, text: string): string => sha256(`${type}\u001f${project}\u001f${text}`).slice(0, 16)
 const storeHash = (m: Manifest, key: string, th: string): string => sha256([NOTES_SOURCE, m.salt, String(m.epoch), key, th].join('\u001f'))
 
+/** This computer's id as the store stamps it; undefined when the store stamps none, and every entry is then this computer's. A
+ *  lookup that FAILS throws instead: "could not ask" says nothing about whose entries these are, and every caller below treats a
+ *  throw as a store it cannot read (it changes nothing and leaves the record dirty), where undefined would let a host that is busy
+ *  for a moment turn every other computer's copy into one of ours to delete. */
 async function originOf(deps: NotesDeps): Promise<string | undefined> {
-  if (!deps.ownOrigin) return undefined
-  try { return await deps.ownOrigin() } catch { return undefined }
+  return deps.ownOrigin ? deps.ownOrigin() : undefined
 }
 
 /** Every imported note this computer holds, from the store's own listing. Throws when the store cannot be listed. */
