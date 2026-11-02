@@ -885,6 +885,20 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(n).toHaveTextContent('next time Termpolis starts')
   })
 
+  // Two checkboxes sit under the Late/Legacy select. Their notes used to say "the setting above" (which is
+  // now Shorten tool results, not Aggressiveness) and "Everything else here is free" (switching Late and
+  // Legacy also costs a one-off prompt-cache rebuild for a resumed session).
+  it('names the setting the savings-floor checkbox is relative to, and does not call everything else on the page free', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const floor = (await screen.findByTestId('hr-toggle-floor')).closest('label') as HTMLElement
+    expect(floor).toHaveTextContent('Only ever compresses harder than the Aggressiveness setting, never softer')
+    expect(floor).not.toHaveTextContent('the setting above')
+    const decay = screen.getByTestId('hr-toggle-decay').closest('label') as HTMLElement
+    expect(decay).toHaveTextContent('Most of the rest here is free; this one pays a one-off prompt-cache rebuild')
+    expect(decay).not.toHaveTextContent('Everything else here is free')
+  })
+
   it('lists what the proxy shortens without leading with Bash, which Claude Code already trims, and gives the size from which under each policy', async () => {
     serve(settingsWith({ firstSightElision: 'late' }))
     render(<TokenSavingsSettings />)
