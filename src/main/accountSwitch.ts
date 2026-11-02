@@ -620,7 +620,8 @@ function lineFor(ctx: SwitchContext, family: ShellFamily, spec: RelaunchSpec): {
   try {
     return accountLine(family, accountEnv(ctx.target, ctx.agent, ctx.extraUnset ?? []), relaunchCommand(spec))
   } catch (e) {
-    return { refused: e instanceof Error ? e.message : String(e) }
+    // relaunchCommand throws an Error about the one token it refused.
+    return { refused: (e as Error).message }
   }
 }
 

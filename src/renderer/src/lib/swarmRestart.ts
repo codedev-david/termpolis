@@ -440,12 +440,17 @@ export async function offerConductorRun(words: string, accountId: string | null,
   try {
     await deps.accounts.noteLimit(own0.id, { text: words, resetsAt, scope: kind.scope, window: kind.window, ...(own0.lastEmail ? { email: own0.lastEmail } : {}) })
   } catch { /* the offer goes on without the record */ }
+  let view = view0
   try {
     const fresh = await deps.accounts.list()
-    if (fresh.success) deps.store().setAccountsView(fresh.data)
+    if (fresh.success) {
+      deps.store().setAccountsView(fresh.data)
+      view = fresh.data
+    }
   } catch { /* the view it had stands */ }
-  const view = deps.store().accountsView ?? view0
-  const own = view.accounts.find((r) => r.id === own0.id) ?? own0
+  // Gone from main's accounts meanwhile: nothing to run the conductor again on.
+  const own = view.accounts.find((r) => r.id === own0.id && r.agent === 'claude')
+  if (!own) return false
   const limited = { accountId: own.id, email: own.lastEmail }
   const candidates = conductorTargets(view, limited, now, {}, kind)
   const checks = await signedInNow(candidates, now, deps)

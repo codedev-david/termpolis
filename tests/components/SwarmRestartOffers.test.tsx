@@ -325,5 +325,9 @@ describe('SwarmRestartOffers: an account to sign in to', () => {
     expect(sheet).toMatchObject({ accountId: 'acc_c', doneLabel: 'Run the conductor again on codedev' })
     // No clock runs for the conductor, so closing the sheet unsigned leaves nothing to restart.
     expect(sheet.cancelled).toBeUndefined()
+    // Signed in: the conductor is run again, which says how it went (here, there is none to run).
+    sheet.then!()
+    await flush()
+    expect(screen.getByTestId('swarm-restart-done').textContent).toBe('The conductor wasn\'t run again: the conductor is gone: start the swarm again from its dashboard.')
   })
 })

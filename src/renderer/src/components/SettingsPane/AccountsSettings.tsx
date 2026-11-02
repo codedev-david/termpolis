@@ -100,10 +100,9 @@ export function AccountsSettings() {
     // Where the user put the focus meanwhile (Tab to another control) is theirs.
     if (document.activeElement && document.activeElement !== document.body) { restore.current = null; return }
     const button = document.querySelector<HTMLButtonElement>(`[data-row-action="${want.id}:${want.kind}"]`)
-    if (!button) { restore.current = null; return }
     // A card is disabled while its change is saved: tried again when that is done.
-    if (button.disabled) return
-    button.focus()
+    if (button?.disabled) return
+    button?.focus()
     restore.current = null
   }, [rowAction, busy])
   const [emailDraft, setEmailDraft] = useState('')

@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, OUTCOME_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
-  exitShown, hintAtFoot, look, ownScreen, releaseModelHold, runAccountSwitch, typeAtPrompt,
+  exitShown, hintAtFoot, look, ownScreen, plain, releaseModelHold, runAccountSwitch, typeAtPrompt,
 } from '../../src/main/accountSwitch'
 import type { Look, SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
 import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
@@ -628,6 +628,21 @@ describe('ownScreen: where a sign-in screen\'s or a question\'s words are judged
     const rows = ['old history', 'more history', '  Sign in with ChatGPT to use Codex', '', '› Ask Codex to do anything', '', '  gpt-5.6-sol medium · ~/repo']
     expect(ownScreen(rows, 'codex')).toBe(rows.slice(1).join('\n'))
     expect(ownScreen(['› Ask Codex to do anything', ''], 'codex')).toBe(['› Ask Codex to do anything', ''].join('\n'))
+  })
+})
+
+describe('plain, and typing at a terminal main holds nothing for', () => {
+  it('turns a cursor-forward into the spaces it moves over, one by default', () => {
+    expect(plain('a\u001b[1Cb\u001b[3Cc\u001b[Cd')).toBe('a b   c d')
+    // A huge move is capped: it can't build a megabyte of spaces.
+    expect(plain('a\u001b[999999Cb')).toBe('a        b')
+  })
+
+  it('enters nothing at a terminal with no output held', async () => {
+    const t = new FakeTerminal(claude({ start: 'gone-hint' }))
+    const io = { ...t.io(), output: () => null }
+    const typed = await typeAtPrompt(io, 't1', 'posix', 'claude --resume x', 0, io.now() + 3000)
+    expect(typed.outcome).toBe('didnt-start')
   })
 })
 

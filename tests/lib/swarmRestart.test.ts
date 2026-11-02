@@ -1144,6 +1144,12 @@ describe('the conductor\'s run-again offer reads main\'s accounts, as the worker
     expect(groups()[0]).toMatchObject({ conductor: true, targets: ['acc_c'] })
   })
 
+  it('offers nothing when the account it ran on is gone from main\'s accounts meanwhile', async () => {
+    ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: view([CODEDEV, WORK]) })
+    expect(await offerConductorRun(WORDS, 'acc_m', deps)).toBe(false)
+    expect(groups()).toEqual([])
+  })
+
   it('goes on with the view it had when main cannot be read', async () => {
     ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('gone'))
     ;(deps.accounts.noteLimit as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('gone'))
@@ -1238,6 +1244,29 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
     await vi.advanceTimersByTimeAsync(10)
     expect(deps.accounts.switchAccount).toHaveBeenCalled()
     expect(messages()[messages().length - 1]).toBe(restartedMessage(W1))
+  })
+
+  it('names an account the view no longer holds as "that account" on the sheet\'s button', async () => {
+    signedOut('acc_c')
+    await stopped()
+    useTerminalStore.setState({ accountsView: view([MAIN, WORK]) })
+    signInThenRestart(groups()[0].id, 'acc_c', deps)
+    expect(useTerminalStore.getState().signInSheet).toMatchObject({ accountId: 'acc_c', doneLabel: 'Restart it on that account' })
+  })
+
+  it('starts no clock when the sheet is closed after the offer went away or moved on', async () => {
+    signedOut('acc_c')
+    await stopped()
+    const id = groups()[0].id
+    signInThenRestart(id, 'acc_c', deps)
+    const cancelled = useTerminalStore.getState().signInSheet!.cancelled!
+    // The offer is restarting its workers now (something else began it), or is gone: nothing waits any more.
+    useTerminalStore.getState().putSwarmRestart({ ...groups()[0], phase: { kind: 'restarting', targetId: 'acc_c' } })
+    cancelled()
+    useTerminalStore.getState().dropSwarmRestart(id)
+    cancelled()
+    await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS * 2)
+    expect(messages()).toEqual([offeredMessage(W1, LIMIT.summary)])
   })
 
   it('runs the clock again when the sheet is closed without signing in', async () => {
