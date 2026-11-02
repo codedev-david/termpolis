@@ -109,7 +109,10 @@ export function createProxyServer(opts: ProxyOpts): http.Server {
                 try {
                   const sse = decodeBody(Buffer.concat(respChunks), String(up.headers['content-encoding'] || ''))
                   const usage = parseUsageFromSse(sse)
-                  const turn = parseTurnShapeFromSse(sse)
+                  // The shape of the turn is bookkeeping for the retrieval charge. If reading it ever
+                  // failed, the usage must still arrive, as it did before the turn was read at all.
+                  let turn: TurnShape = { toolCalls: 0, retrieveCalls: 0, pure: false }
+                  try { turn = parseTurnShapeFromSse(sse) } catch { /* the usage still counts */ }
                   opts.onResult({ changed: rewritten.changed, stats: rewritten.stats, usage, turn, stashes: rewritten.stashes, status: up.statusCode || 0 })
                 } catch { /* best effort */ }
               }

@@ -10,7 +10,7 @@ import * as http from 'http'
  * Faults are injected through the modules the rewriter and the server call.
  */
 
-const fault = vi.hoisted(() => ({ rewrite: false, classify: false, stamp: false }))
+const fault = vi.hoisted(() => ({ rewrite: false, classify: false, stamp: false, turn: false }))
 
 vi.mock('../../src/main/headroomProxy/wireCompress', async () => {
   const real = await vi.importActual<typeof import('../../src/main/headroomProxy/wireCompress')>('../../src/main/headroomProxy/wireCompress')
@@ -47,6 +47,17 @@ vi.mock('../../src/main/headroom/elisionMeta', async () => {
   }
 })
 
+vi.mock('../../src/main/headroomProxy/usageParse', async () => {
+  const real = await vi.importActual<typeof import('../../src/main/headroomProxy/usageParse')>('../../src/main/headroomProxy/usageParse')
+  return {
+    ...real,
+    parseTurnShapeFromSse: (...a: Parameters<typeof real.parseTurnShapeFromSse>): ReturnType<typeof real.parseTurnShapeFromSse> => {
+      if (fault.turn) throw new Error('reading the turn blew up')
+      return real.parseTurnShapeFromSse(...a)
+    },
+  }
+})
+
 const { createProxyServer } = await import('../../src/main/headroomProxy/proxyMain')
 const { rewriteMessagesBody } = await import('../../src/main/headroomProxy/wireCompress')
 
@@ -60,7 +71,7 @@ const body = JSON.stringify({
   ],
 })
 
-beforeEach(() => { fault.rewrite = false; fault.classify = false; fault.stamp = false })
+beforeEach(() => { fault.rewrite = false; fault.classify = false; fault.stamp = false; fault.turn = false })
 
 describe('the server fails open around the rewriter', () => {
   let stub: http.Server, proxy: http.Server, port: number
@@ -149,5 +160,61 @@ describe('the rewriter keeps its compression when only the bookkeeping fails', (
     const r = rewriteMessagesBody(small)
     expect(r.changed).toBe(false)
     expect(r.body).toBe(small)
+  })
+})
+
+// The usage of an answer and the shape of its turn are read in two passes over the same stream. The
+// shape is bookkeeping for the retrieval charge: if reading it ever failed, the usage (the cost the whole
+// ledger rests on) has to arrive all the same, as it did before the shape was read at all.
+describe('the server keeps the usage of an answer whose turn it cannot read', () => {
+  let stub: http.Server, proxy: http.Server, port: number
+  const results: Array<{ usage: unknown; turn: unknown; changed: boolean; status: number }> = []
+  const ev = (type: string, data: object): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`
+  const SSE =
+    ev('message_start', { message: { id: 'm', role: 'assistant', content: [], usage: { input_tokens: 3, cache_read_input_tokens: 52_000, cache_creation_input_tokens: 10, output_tokens: 1 } } }) +
+    ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 't', name: 'mcp__termpolis__retrieve_full', input: {} } }) +
+    ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"token":"hr_0123456789abcdef"}' } }) +
+    ev('content_block_stop', { index: 0 }) +
+    ev('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 90 } })
+
+  beforeAll(async () => {
+    stub = http.createServer((req, res) => {
+      req.on('data', () => {})
+      req.on('end', () => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(SSE) })
+    })
+    await new Promise<void>((r) => stub.listen(0, '127.0.0.1', () => r()))
+    proxy = createProxyServer({ upstreamHost: '127.0.0.1', upstreamPort: (stub.address() as { port: number }).port, useHttps: false, onResult: (r) => { results.push(r) } })
+    await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', () => r()))
+    port = (proxy.address() as { port: number }).port
+  })
+  afterAll(() => { stub.close(); proxy.close() })
+  beforeEach(() => { results.length = 0 })
+
+  const send = (b: string): Promise<{ status: number; text: string }> => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(b) } }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }))
+    })
+    req.on('error', reject); req.write(b); req.end()
+  })
+
+  it('reads the turn of an answer when nothing is wrong, so the test below is about the throw', async () => {
+    const r = await send(body)
+    expect(r.text).toBe(SSE)
+    await vi.waitFor(() => expect(results).toHaveLength(1))
+    expect(results[0].turn).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
+    expect(results[0].usage).toEqual({ input_tokens: 3, cache_read_input_tokens: 52_000, cache_creation_input_tokens: 10, output_tokens: 90 })
+  })
+
+  it('when reading the turn throws, the result still arrives with the usage and a turn that charges nothing', async () => {
+    fault.turn = true
+    const r = await send(body)
+    expect(r.status).toBe(200)
+    expect(r.text).toBe(SSE) // the client gets the whole answer
+    await vi.waitFor(() => expect(results).toHaveLength(1))
+    expect(results[0].usage).toEqual({ input_tokens: 3, cache_read_input_tokens: 52_000, cache_creation_input_tokens: 10, output_tokens: 90 })
+    expect(results[0].turn).toEqual({ toolCalls: 0, retrieveCalls: 0, pure: false })
+    expect(results[0]).toMatchObject({ changed: true, status: 200 })
   })
 })

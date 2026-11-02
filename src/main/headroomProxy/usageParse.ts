@@ -78,9 +78,15 @@ const TOOL_SEARCH = 'ToolSearch'
 const SEARCH_INPUT_CAP = 2048
 /** How many ToolSearch calls of one answer are followed. The rest still count as tool calls. */
 const SEARCH_CALLS_MAX = 16
-/** The tool's name as a word of its own: `select:mcp__termpolis__retrieve_full`, a bare name or a
- *  keyword all match, a longer name that merely begins with it does not. */
-const NAMES_RETRIEVE_FULL = /(?<![A-Za-z0-9])retrieve_full(?![A-Za-z0-9_])/
+/** The API's own tool search, which runs inside the one answer (`tool_search_tool_regex`, `_bm25`).
+ *  It only loads tools, so it is not counted as a call: an answer that loads retrieve_full this way
+ *  and then calls it is a turn that only fetched. Matched on a server-run block only. */
+const SERVER_TOOL_SEARCH = 'tool_search'
+/** The tool's name as a word of its own, or as the last `__` segment of a namespaced one, which is how
+ *  bareToolName reads a name in the tools list: `select:mcp__termpolis__retrieve_full`, a bare name or
+ *  a keyword all match; a name that merely begins or ends with it (`retrieve_full_all`,
+ *  `not_retrieve_full`) is another tool and does not. */
+const NAMES_RETRIEVE_FULL = /(?:(?<![A-Za-z0-9_])|(?<=__))retrieve_full(?![A-Za-z0-9_])/
 
 /**
  * Read which tools an Anthropic Messages SSE stream (already decoded) called. Total by design: a
@@ -94,21 +100,24 @@ export function parseTurnShapeFromSse(sse: string): TurnShape {
   // What each ToolSearch call is being asked, by content-block index, assembled from its input
   // deltas. Created by the first ToolSearch call, so an answer without one never pays for it.
   let searchInput: Map<number, string> | null = null
+  // The ToolSearch blocks that have started and not yet stopped.
+  const open = new Set<number>()
   try {
     for (const line of sse.split('\n')) {
       if (!line.startsWith('data:')) continue
       const j = line.slice(5).trim()
       // A tool call announces itself on one event type only. Skipping the many delta lines before
       // the parse keeps this cheap on a long answer, which parseUsageFromSse already walks once. The
-      // one exception is the input of a ToolSearch call, wanted only once such a call has started.
-      const starts = j.includes('content_block_start')
-      if (!starts && !(searchInput !== null && j.includes('input_json_delta'))) continue
+      // one exception is the input of a ToolSearch call, wanted from its start to its stop and no
+      // longer: the input of any call after it, a Write or an Edit, can be far longer and is not read.
+      if (!j.includes('content_block_start') && !(open.size > 0 && (j.includes('input_json_delta') || j.includes('content_block_stop')))) continue
       let o: { type?: unknown; index?: unknown; content_block?: { type?: unknown; name?: unknown } | null; delta?: { type?: unknown; partial_json?: unknown } | null }
       try { o = JSON.parse(j) } catch { continue }
       if (!o || typeof o !== 'object') continue
       if (o.type === 'content_block_start') {
         const b = o.content_block
         if (!b || typeof b !== 'object' || typeof b.type !== 'string' || !TOOL_CALL_BLOCKS.has(b.type)) continue
+        if (b.type === 'server_tool_use' && typeof b.name === 'string' && b.name.startsWith(SERVER_TOOL_SEARCH)) continue
         toolCalls++
         if (b.type !== 'tool_use' || typeof b.name !== 'string') continue
         const name = bareToolName(b.name)
@@ -117,13 +126,15 @@ export function parseTurnShapeFromSse(sse: string): TurnShape {
           searchCalls++
           if (typeof o.index === 'number') {
             if (searchInput === null) searchInput = new Map()
-            if (searchInput.size < SEARCH_CALLS_MAX) searchInput.set(o.index, '')
+            if (searchInput.size < SEARCH_CALLS_MAX) { searchInput.set(o.index, ''); open.add(o.index) }
           }
         }
+      } else if (o.type === 'content_block_stop') {
+        if (typeof o.index === 'number') open.delete(o.index)
       } else if (o.type === 'content_block_delta' && searchInput !== null) {
         const d = o.delta
         if (typeof o.index !== 'number' || !d || typeof d !== 'object' || d.type !== 'input_json_delta' || typeof d.partial_json !== 'string') continue
-        const have = searchInput.get(o.index)
+        const have = open.has(o.index) ? searchInput.get(o.index) : undefined
         if (have !== undefined && have.length < SEARCH_INPUT_CAP) searchInput.set(o.index, (have + d.partial_json).slice(0, SEARCH_INPUT_CAP))
       }
     }

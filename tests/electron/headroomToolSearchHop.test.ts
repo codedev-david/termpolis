@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as http from 'http'
 import * as zlib from 'zlib'
 import { mkdtempSync, rmSync } from 'fs'
@@ -72,8 +72,8 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
   })
 
   it('sees the plugin namespace, the bare name and a keyword query', () => {
-    for (const q of ['select:mcp__plugin_termpolis_termpolis__retrieve_full', 'select:retrieve_full', 'retrieve_full headroom', '+termpolis retrieve_full']) {
-      expect(parseTurnShapeFromSse(stream([search(q)])).hop).toBe(true)
+    for (const q of ['select:mcp__plugin_termpolis_termpolis__retrieve_full', 'select:mcp__claude_ai_Foo__retrieve_full', 'select:retrieve_full', 'retrieve_full headroom', '+termpolis retrieve_full']) {
+      expect(parseTurnShapeFromSse(stream([search(q)])).hop, q).toBe(true)
     }
   })
 
@@ -84,7 +84,15 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
 
   it('a ToolSearch that loads any other tool is not a hop', () => {
     for (const q of ['select:mcp__termpolis__read_output', 'select:Read,Grep', 'notebook jupyter', 'select:retrieve_full_all', 'select:mcp__x__retrieve_fullish', '']) {
-      expect(parseTurnShapeFromSse(stream([search(q)]))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+      expect(parseTurnShapeFromSse(stream([search(q)])), q).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+    }
+  })
+
+  // The name has to stand as a word of its own, or as the last `__` segment of a namespaced one, the
+  // way bareToolName reads a tool in the tools list. A tool whose name merely ends in it is another tool.
+  it('a name glued to the end of a longer one is not retrieve_full: after a letter, a digit or a single underscore', () => {
+    for (const q of ['xretrieve_full', 'select:xretrieve_full', '9retrieve_full', 'select:not_retrieve_full', 'select:mcp__x__not_retrieve_full', 'my_retrieve_full headroom']) {
+      expect(parseTurnShapeFromSse(stream([search(q)])), q).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
     }
   })
 
@@ -109,6 +117,58 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
   it('only a tool_use named ToolSearch is a hop: a server-side search block with that name is not', () => {
     const shape = parseTurnShapeFromSse(stream([{ ...search('select:retrieve_full'), kind: 'server_tool_use' }]))
     expect(shape).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+  })
+
+  // The API's own tool search (tool_search_tool_regex, tool_search_tool_bm25) loads tools inside the one
+  // answer and costs no turn. It is a loader, not work: an answer that loads retrieve_full that way and
+  // then calls it only fetched, and is charged as the retrieval turn it is.
+  it('a server-run tool search is a loader, not a call: loading retrieve_full that way and calling it is a retrieval turn', () => {
+    for (const name of ['tool_search_tool_regex', 'tool_search_tool_bm25']) {
+      const loader: Call = { name, kind: 'server_tool_use', fragments: ['{"query":"retrieve_full"}'] }
+      expect(parseTurnShapeFromSse(stream([loader, RETRIEVE])), name).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
+      expect(parseTurnShapeFromSse(stream([loader, READ])), name).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+      expect(parseTurnShapeFromSse(stream([loader])), name).toEqual({ toolCalls: 0, retrieveCalls: 0, pure: false })
+    }
+  })
+
+  it('only a server-run tool search is exempt: other server calls and a client tool with that name still count', () => {
+    expect(parseTurnShapeFromSse(stream([{ name: 'web_search', kind: 'server_tool_use' }, RETRIEVE]))).toEqual({ toolCalls: 2, retrieveCalls: 1, pure: false })
+    expect(parseTurnShapeFromSse(stream([{ name: 'tool_search_tool_regex' }, RETRIEVE]))).toEqual({ toolCalls: 2, retrieveCalls: 1, pure: false })
+    expect(parseTurnShapeFromSse(stream([{ name: 'my_tool_search_tool', kind: 'server_tool_use' }, RETRIEVE]))).toEqual({ toolCalls: 2, retrieveCalls: 1, pure: false })
+  })
+
+  // After a ToolSearch call the parser reads input deltas, to see what was asked for. It must read only
+  // that call's own: a Write or Edit streamed after it can run to hundreds of thousands of characters, and
+  // the proxy child is one thread for every session. Counted in parses, so the test reads no clock.
+  it('reads the input of a ToolSearch call and of no other: what a long Write streams after it costs no parse', () => {
+    const parses = (writeFragments: number): number => {
+      const fragments = Array.from({ length: writeFragments }, (_, i) => `${i}x`)
+      const sse = stream([search('select:mcp__termpolis__retrieve_full'), { name: 'Write', fragments }])
+      const spy = vi.spyOn(JSON, 'parse')
+      try {
+        expect(parseTurnShapeFromSse(sse)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false })
+        return spy.mock.calls.length
+      } finally { spy.mockRestore() }
+    }
+    expect(parses(400)).toBe(parses(4))
+    expect(parses(400)).toBeLessThan(10)
+  })
+
+  it('reads every ToolSearch call of an answer, with thinking and text between them', () => {
+    const s = stream([search('select:Read'), 'think', { text: 'Loading it now.' }, search('select:retrieve_full')])
+    expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false, hop: true })
+  })
+
+  it('follows ToolSearch inputs that are open at the same time, each by its own block index', () => {
+    const ev = (type: string, data: object): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n`
+    const start = (i: number): string => ev('content_block_start', { index: i, content_block: { type: 'tool_use', id: `t${i}`, name: 'ToolSearch', input: {} } })
+    const delta = (i: number, piece: string): string => ev('content_block_delta', { index: i, delta: { type: 'input_json_delta', partial_json: piece } })
+    const stop = (i: number): string => ev('content_block_stop', { index: i })
+    const s = [start(0), start(1), delta(0, '{"query":"select:mcp__term'), delta(1, '{"query":"select:Read"}'), delta(0, 'polis__retrieve_full"}'), stop(0), stop(1)].join('\n')
+    expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false, hop: true })
+    // The input that names the tool belongs to the block that closed last: it is still being read.
+    const late = [start(0), start(1), delta(0, '{"query":"select:Read"}'), stop(0), delta(1, '{"query":"select:retrieve_full"}'), stop(1)].join('\n')
+    expect(parseTurnShapeFromSse(late).hop).toBe(true)
   })
 
   it('a mention of retrieve_full in text or in another block\'s input is not a hop', () => {
