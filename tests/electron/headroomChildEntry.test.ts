@@ -212,11 +212,14 @@ function post(port: number, body: object): Promise<number> {
   })
 }
 
+/** How long a test waits for the child to start or to post a frame. Event-ordered, not timed: generous so a loaded machine cannot fail it. */
+const WAIT_MS = 20_000
+
 /** A child on the legacy policy, serving; resolves with its port and the frames it has posted so far. */
 async function servingChild(): Promise<{ port: FakePort; listenOn: number }> {
   const { port } = await launchChild()
   port.send({ kind: 'init', port: 0, upstreamHost: 'upstream.invalid', mode: 'aggressive', thinkingCap: 0, decay: false, firstSight: 'legacy' })
-  await vi.waitFor(() => expect(ready(port)).toBe(true), { timeout: 5_000 })
+  await vi.waitFor(() => expect(ready(port)).toBe(true), { timeout: WAIT_MS })
   return { port, listenOn: (port.posted.find((m) => m.kind === 'ready') as { port: number }).port }
 }
 
@@ -229,7 +232,7 @@ describe('what the proxy child posts to the main process', () => {
     upstream.sse = answer(RETRIEVE_CALL)
     const { port, listenOn } = await servingChild()
     expect(await post(listenOn, requestBody(['mcp__termpolis__retrieve_full']))).toBe(200)
-    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: 5_000 })
+    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: WAIT_MS })
 
     const stashFrames = frames(port, 'stash') as unknown as Array<{ stashes: Array<{ token: string; meta?: Meta }> }>
     expect(stashFrames).toHaveLength(1)
@@ -255,7 +258,7 @@ describe('what the proxy child posts to the main process', () => {
     upstream.sse = answer(SEARCH_CALL)
     const { port, listenOn } = await servingChild()
     expect(await post(listenOn, requestBody(['ToolSearch']))).toBe(200)
-    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: 5_000 })
+    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: WAIT_MS })
     const result = frames(port, 'result')[0] as unknown as PostedResult
     expect(result.turn).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false, hop: true })
     expect(result.stats!.retrieveOffer).toBe('deferred')
@@ -266,7 +269,7 @@ describe('what the proxy child posts to the main process', () => {
     upstream.sse = answer(RETRIEVE_CALL)
     const { port, listenOn } = await servingChild()
     expect(await post(listenOn, requestBody(['mcp__termpolis__retrieve_full'], 'a short answer'))).toBe(200)
-    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: 5_000 })
+    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: WAIT_MS })
     expect(frames(port, 'stash')).toHaveLength(0)
     const result = frames(port, 'result')[0] as unknown as PostedResult
     expect(result).toMatchObject({ changed: false, status: 200, stashes: [] })
@@ -279,7 +282,7 @@ describe('what the proxy child posts to the main process', () => {
     const { port, listenOn } = await servingChild()
     port.refuses.add('stash')
     expect(await post(listenOn, requestBody(['mcp__termpolis__retrieve_full']))).toBe(200)
-    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: 5_000 })
+    await vi.waitFor(() => expect(frames(port, 'result')).toHaveLength(1), { timeout: WAIT_MS })
     expect(frames(port, 'stash')).toHaveLength(0)
     const errors = frames(port, 'error') as unknown as Array<{ message: string }>
     expect(errors).toHaveLength(1)
