@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
+import ts from 'typescript'
 
 /**
  * What the README says about Token Headroom's savings, held to what the app does.
@@ -199,55 +200,94 @@ describe('the Settings copy on the savings floor', () => {
 })
 
 /**
- * The README is not the only place the old promise could come back: the guide, the privacy policy and every string of
- * the app's own UI are read as claims too. The README rule works on a bullet; these texts are not bullets (JSX is
- * not even lines of prose), so the unit is the sentence, and a sentence that uses a word of the old promise has to
- * name the policy it is true of itself or follow a sentence that does.
+ * The README bullets are held by the rule above, which works on a bullet: a bullet that names Legacy somewhere
+ * excuses every sentence in it. That is too coarse to catch a sentence planted in a bullet that is otherwise
+ * about Legacy, and it does not reach the other places a person reads the claim at all: the guide, the privacy
+ * policy and the words of the app's own UI. So the rule here is about the SENTENCE: one that uses a word of the old
+ * promise has to say, itself, that it is about v1.34, Legacy or the holdout. A neighbouring sentence or a bold
+ * label that names Legacy does not excuse it ("Shorten tool results: Late or Legacy." is a label, not a
+ * qualifier of what follows).
+ *
+ * Markdown is read as prose, sentence by sentence. A renderer file is code, so it is parsed and only what a person
+ * can read in it is taken: each piece of JSX text and each string or template literal, on its own, so that a
+ * heading in one element cannot borrow the Legacy of the element beside it.
  */
-describe('the old promise, anywhere else a person could read it', () => {
-  /** The sentences of a text that use a word of the old promise without naming v1.34, Legacy or the holdout. */
-  const unqualifiedSentences = (text: string): string[] => {
-    const sentences = text.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+(?=[A-Z*`(<{'"])/)
-    return sentences.filter((s, i) => PROMISE_WORDS.some((w) => s.includes(w)) && !QUALIFIER.test(s) && !(i > 0 && QUALIFIER.test(sentences[i - 1])))
+describe('the old promise, anywhere a person could read it', () => {
+  /** The sentences of a prose text that use a word of the old promise and do not name v1.34, Legacy or the holdout themselves. */
+  const unqualifiedSentences = (text: string): string[] =>
+    // A sentence ends at . ! or ? and whatever closes it (a bold label's ** or a bracket or a quote), and the next begins at a capital or an opener.
+    text.replace(/\s+/g, ' ').split(/(?<=[.!?][*)"'’”`]*)\s+(?=[A-Z*`(<{'"])/).filter((s) => PROMISE_WORDS.some((w) => s.includes(w)) && !QUALIFIER.test(s))
+
+  /** Everything a person can read in a .ts or .tsx source: JSX text, string and template literals, each on its own. */
+  const readableText = (source: string, file: string): string[] => {
+    const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+    const out: string[] = []
+    const visit = (n: ts.Node): void => {
+      if (ts.isJsxText(n) || ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)) out.push(n.text)
+      ts.forEachChild(n, visit)
+    }
+    visit(sf)
+    return out.filter((t) => t.trim().length > 0)
   }
 
-  /** Every .ts and .tsx file under a folder, with its text. */
-  const sourceFiles = (dir: string): Array<{ name: string; text: string }> =>
+  /** Every .ts and .tsx file under a folder, by path from the repo root. */
+  const sourceFiles = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
       const p = join(dir, e.name)
       if (e.isDirectory()) return sourceFiles(p)
-      return /\.tsx?$/.test(e.name) ? [{ name: p.slice(ROOT.length + 1), text: readFileSync(p, 'utf8') }] : []
+      return /\.tsx?$/.test(e.name) ? [p.slice(ROOT.length + 1).split('\\').join('/')] : []
     })
 
-  it('is not made in the guide, the privacy policy or any file of the renderer (the pane, the card, the what\'s-new text)', () => {
-    const files = [
-      { name: 'docs/DOCUMENTATION.md', text: readFileSync(join(ROOT, 'docs', 'DOCUMENTATION.md'), 'utf8') },
-      { name: 'PRIVACY.md', text: readFileSync(join(ROOT, 'PRIVACY.md'), 'utf8') },
-      ...sourceFiles(join(ROOT, 'src', 'renderer', 'src')),
-    ]
-    // The two files that are the point of the sweep are in it: a path typo must not make it vacuous.
-    const names = files.map((f) => f.name.split('\\').join('/'))
-    expect(names).toContain('src/renderer/src/components/SettingsPane/TokenSavingsSettings.tsx')
-    expect(names).toContain('src/renderer/src/components/SettingsPane/ElisionHealthCard.tsx')
-    expect(files.length).toBeGreaterThan(50)
-    for (const f of files) expect(unqualifiedSentences(f.text), f.name).toEqual([])
+  it('is not made in any sentence of the README bullets, the guide or the privacy policy', () => {
+    for (const bullet of headroomBullets()) expect(unqualifiedSentences(bullet), bullet.slice(0, 80)).toEqual([])
+    for (const file of ['docs/DOCUMENTATION.md', 'PRIVACY.md']) expect(unqualifiedSentences(readFileSync(join(ROOT, file), 'utf8')), file).toEqual([])
   })
 
-  it('and that rule is not vacuous: it fails the old promise in the words a pane or a guide would use and passes it when it names its policy', () => {
+  it('is not made in any readable text of any file of the renderer (the pane, the card, the what\'s-new text)', () => {
+    const files = sourceFiles(join(ROOT, 'src', 'renderer', 'src'))
+    // The two files that are the point of the sweep are in it: a path typo must not make it vacuous.
+    expect(files).toContain('src/renderer/src/components/SettingsPane/TokenSavingsSettings.tsx')
+    expect(files).toContain('src/renderer/src/components/SettingsPane/ElisionHealthCard.tsx')
+    expect(files.length).toBeGreaterThan(50)
+    let pieces = 0
+    for (const f of files) {
+      for (const piece of readableText(readFileSync(join(ROOT, f), 'utf8'), f)) {
+        pieces++
+        expect(unqualifiedSentences(piece), f).toEqual([])
+      }
+    }
+    expect(pieces).toBeGreaterThan(1000)
+  })
+
+  it('and that rule is not vacuous: it fails the old promise in the words a pane or a guide would use, and passes it when the sentence names its policy', () => {
     expect(unqualifiedSentences('Claude Code compression proxy: saves 51% fewer tokens, always.')).toHaveLength(1)
     expect(unqualifiedSentences('It removes at least half of your tool text, every time.')).toHaveLength(1)
-    expect(unqualifiedSentences("<p>Termpolis removes 50% minimum of tool text.</p>")).toHaveLength(1)
+    expect(unqualifiedSentences('<p>Termpolis removes 50% minimum of tool text.</p>')).toHaveLength(1)
     expect(unqualifiedSentences('Nothing to see. It removes at least 50% of every result.')).toHaveLength(1)
     expect(unqualifiedSentences('Termpolis removes 50 percent of your tool text, every time.')).toHaveLength(1)
     // Across the line breaks JSX and Markdown put inside a sentence.
     expect(unqualifiedSentences('It removes\n   at least half\n   of your tool text.')).toHaveLength(1)
-    // Named in the same sentence or the one before it.
+    // Named in the same sentence.
     expect(unqualifiedSentences('Under Legacy it removes at least half of your tool text.')).toEqual([])
-    expect(unqualifiedSentences('That was the v1.34 measurement. It removed 51% fewer tokens.')).toEqual([])
-    expect(unqualifiedSentences('The holdout keeps the old behavior. It removes at least half of your tool text.')).toEqual([])
-    // Two sentences away is too far: the qualifier has to be where the figure is.
+    expect(unqualifiedSentences('That was the v1.34 measurement, which removed 51% fewer tokens.')).toEqual([])
+    expect(unqualifiedSentences('The holdout keeps the old behavior and removes at least half of your tool text.')).toEqual([])
+    // A neighbouring sentence, or a label that names Legacy, does not excuse the one after it.
+    expect(unqualifiedSentences('That was the v1.34 measurement. It removed 51% fewer tokens.')).toHaveLength(1)
+    expect(unqualifiedSentences('- **Shorten tool results: Late or Legacy.** It removes at least half of your tool text, every time.')).toHaveLength(1)
     expect(unqualifiedSentences('That was Legacy. Nothing else here. It removes at least half of your tool text.')).toHaveLength(1)
     expect(unqualifiedSentences('Late shortens a result from 40,000 characters.')).toEqual([])
+  })
+
+  it('and the renderer reading is not vacuous: a heading in one element is not excused by the Legacy of the next', () => {
+    const jsx = "export const A = () => (<div><h4>Claude Code compression proxy: saves 51% fewer tokens, always</h4><p>Under Legacy a tier sets the size.</p></div>)"
+    const pieces = readableText(jsx, 'a.tsx')
+    expect(pieces).toEqual(['Claude Code compression proxy: saves 51% fewer tokens, always', 'Under Legacy a tier sets the size.'])
+    expect(pieces.flatMap(unqualifiedSentences)).toEqual(['Claude Code compression proxy: saves 51% fewer tokens, always'])
+    // A string, a template and a template with a hole are all read.
+    const code = "const a = 'It removes at least half of your tool text.'; const b = `Saves 51% fewer tokens`; const c = `Saves ${n} and removes 50 percent of your tool text`"
+    expect(readableText(code, 'b.ts').flatMap(unqualifiedSentences)).toHaveLength(3)
+    // Code that is not text is not read: an identifier or a comment that spells a word of the promise is not a claim.
+    expect(readableText('// removes at least half of your tool text\nconst atLeastHalf = 1', 'c.ts')).toEqual([])
   })
 
   // The sentences the round-2 verifier found nothing pinned, each held to the words it is true in. They are the
