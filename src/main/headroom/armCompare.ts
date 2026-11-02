@@ -32,7 +32,8 @@ import type { ArmCounts, ArmState } from './armLedger'
  *    requests from fewer than five groups, is "not enough data yet". A verdict is only given outside a
  *    99% interval, not a 95% one, because the card is read again and again and each look is a chance to
  *    be fooled: a 95% rule read weekly for two months falsely announced a difference about one time in
- *    four (simulated), and a 99% rule cuts that by two thirds.
+ *    four (simulated), and a 99% rule cuts that by two thirds. The margin that gives the 99% is read from
+ *    the t table at 99.9% (see T999): at 99% it did not hold on the holdout's skewed costs.
  *
  * A cost difference needs a lot of conversations to read: a true saving of a tenth shows up, at the
  * volume of a heavy user, after months, not days. What is read in days is the mechanism, the share of
@@ -47,15 +48,27 @@ export const MIN_ARM_REQUESTS = 500
 /** Fewer groups of conversations than this in either arm and the margin cannot be measured. */
 export const MIN_ARM_GROUPS = 5
 
-/** Two-sided 99% quantiles of the t distribution (the 0.995 quantile) for 1 to 30 degrees of freedom. */
-const T99 = [
-  63.657, 9.925, 5.841, 4.604, 4.032, 3.707, 3.499, 3.355, 3.25, 3.169, 3.106, 3.055, 3.012, 2.977, 2.947,
-  2.921, 2.898, 2.878, 2.861, 2.845, 2.831, 2.819, 2.807, 2.797, 2.787, 2.779, 2.771, 2.763, 2.756, 2.75,
+/**
+ * Two-sided 99.9% quantiles of the t distribution (the 0.9995 quantile) for 1 to 30 degrees of freedom.
+ *
+ * Why 99.9% to state a 99% margin. A t interval assumes the estimate is roughly symmetric, and the
+ * holdout's is not: it is about a tenth of the conversations, so its cost per unit of work is the mean of
+ * a few dozen right-skewed numbers, and the spread read off its groups understates how far it can stray.
+ * Simulated on identical arms (conversation costs lognormal, spread 1.0 and 1.5, 20 groups an arm, a tenth
+ * in the holdout) the textbook 99% quantile named "Late is costing more" in 1.5 to 3.4 reads in 100, three
+ * to six times the half a percent that side of a 99% rule allows, and "cheaper" almost never. The 99.9%
+ * quantile brings that to under 1 read in 100 at the largest spread, and the share of retrieval turns,
+ * which had the same lean, to a quarter of a percent. The test that holds this (the verdicts are
+ * calibrated) fails with the 99% quantile in place.
+ */
+const T999 = [
+  636.619, 31.599, 12.924, 8.61, 6.869, 5.959, 5.408, 5.041, 4.781, 4.587, 4.437, 4.318, 4.221, 4.14, 4.073,
+  4.015, 3.965, 3.922, 3.883, 3.85, 3.819, 3.792, 3.768, 3.745, 3.725, 3.707, 3.69, 3.674, 3.659, 3.646,
 ]
 /** With no degrees of freedom there is no margin to speak of, so nothing can clear it. */
 export function tCritical(df: number): number {
   if (!(df >= 1)) return Number.POSITIVE_INFINITY
-  return df <= T99.length ? T99[Math.floor(df) - 1] : 2.576
+  return df <= T999.length ? T999[Math.floor(df) - 1] : 3.291
 }
 
 /** A gap needing more than this many times the data so far is not worth a number: it is "far more". */

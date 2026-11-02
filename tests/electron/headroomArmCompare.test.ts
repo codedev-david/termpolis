@@ -129,20 +129,21 @@ describe('the comparison of the arms', () => {
     // leave-one-out values of ln R are ln(R x 0.8889 / 0.9) and ln(R x 0.9111 / 0.9) alternating:
     // half the spread of ln(10111.11 / 9888.89) = 0.022223, i.e. 0.0111115, squared and summed over ten
     // groups, times 9/10: variance 1.1112e-3 per arm, whatever the mean. The difference of two arms
-    // has variance 2.2224e-3, se 0.047141; with 9 degrees of freedom at 99% t = 3.250, margin 0.15321.
-    it('finds no clear difference when the gap is inside the margin: 9.1% cheaper, give or take 14.0', () => {
-      // d = ln(10000 / 11000) = -0.095310, inside +/-0.15321.
-      // percent margin = (exp(d + m) - exp(d - m)) / 2 = (1.059612 - 0.779945) / 2 = 13.98
+    // has variance 2.2224e-3, se 0.047141; with 9 degrees of freedom at the 99.9% quantile t = 4.781 (see T999 in
+    // armCompare.ts for why a stated 99% reads it there), margin 0.22538.
+    it('finds no clear difference when the gap is inside the margin: 9.1% cheaper, give or take 20.7', () => {
+      // d = ln(10000 / 11000) = -0.095310, inside +/-0.22538.
+      // percent margin = (exp(d + m) - exp(d - m)) / 2 = (1.138909 - 0.725647) / 2 = 20.66
       const c = compareArms(state(groups(10, 10_000, 1_000), groups(10, 11_000, 1_100)))
       expect(c.verdict).toBe('no-clear-difference')
       expect(c.costDeltaPct).toBeCloseTo(-9.1, 1)
-      expect(c.costMarginPct).toBeCloseTo(14.0, 1)
+      expect(c.costMarginPct).toBeCloseTo(20.7, 1)
     })
 
-    it('says how much more data would settle a gap it cannot yet: a gap this size, about 11 times as much', () => {
-      // factor = (2 x 0.15321 / 0.095310) ^ 2 = 10.34, rounded up
+    it('says how much more data would settle a gap it cannot yet: a gap this size, about 23 times as much', () => {
+      // factor = (2 x 0.22538 / 0.095310) ^ 2 = 22.37, rounded up
       const c = compareArms(state(groups(10, 10_000, 1_000), groups(10, 11_000, 1_100)))
-      expect(c.moreDataFactor).toBe(11)
+      expect(c.moreDataFactor).toBe(23)
     })
 
     it('does not quote a factor for a gap so small that it is no number, nor for a gap that is already clear', () => {
@@ -150,28 +151,28 @@ describe('the comparison of the arms', () => {
       const tiny = compareArms(state(groups(10, 10_000, 1_000), groups(10, 10_010, 1_001)))
       expect(tiny.verdict).toBe('no-clear-difference')
       expect(tiny.moreDataFactor).toBeNull()
-      expect(compareArms(state(groups(10, 9_000, 900), groups(10, 11_000, 1_100))).moreDataFactor).toBeNull()
+      expect(compareArms(state(groups(10, 8_000, 800), groups(10, 11_000, 1_100))).moreDataFactor).toBeNull()
       // And not for no gap at all.
       expect(compareArms(state(groups(10, 10_000, 0), groups(10, 10_000, 0))).moreDataFactor).toBeNull()
     })
 
-    it('calls late cheaper when the gap clears the margin: 18.2% cheaper, give or take 12.6', () => {
-      // d = ln(9000 / 11000) = -0.200671, beyond -0.15321.
-      // percent margin = (exp(d + m) - exp(d - m)) / 2 = (0.953644 - 0.701842) / 2 = 12.59
-      const c = compareArms(state(groups(10, 9_000, 900), groups(10, 11_000, 1_100)))
+    it('calls late cheaper when the gap clears the margin: 27.3% cheaper, give or take 16.5', () => {
+      // d = ln(8000 / 11000) = -0.318454, beyond -0.22538.
+      // percent margin = (exp(d + m) - exp(d - m)) / 2 = (0.911127 - 0.580518) / 2 = 16.53
+      const c = compareArms(state(groups(10, 8_000, 800), groups(10, 11_000, 1_100)))
       expect(c.verdict).toBe('late-cheaper')
-      expect(c.costDeltaPct).toBeCloseTo(-18.2, 1)
-      expect(c.costMarginPct).toBeCloseTo(12.6, 1)
+      expect(c.costDeltaPct).toBeCloseTo(-27.3, 1)
+      expect(c.costMarginPct).toBeCloseTo(16.5, 1)
       expect(c.moreDataFactor).toBeNull()
     })
 
-    it('calls late dearer when it is dearer by more than the margin: 18.2% dearer, give or take 18.2', () => {
-      // d = ln(13000 / 11000) = 0.167054, beyond +0.15321.
-      // percent margin = (exp(0.320264) - exp(0.013844)) / 2 = (1.377513 - 1.013940) / 2 = 18.18
-      const c = compareArms(state(groups(10, 13_000, 1_300), groups(10, 11_000, 1_100)))
+    it('calls late dearer when it is dearer by more than the margin: 36.4% dearer, give or take 31.0', () => {
+      // d = ln(15000 / 11000) = 0.310155, beyond +0.22538.
+      // percent margin = (exp(d + m) - exp(d - m)) / 2 = (1.708364 - 1.088471) / 2 = 31.00
+      const c = compareArms(state(groups(10, 15_000, 1_500), groups(10, 11_000, 1_100)))
       expect(c.verdict).toBe('late-costlier')
-      expect(c.costDeltaPct).toBeCloseTo(18.2, 1)
-      expect(c.costMarginPct).toBeCloseTo(18.2, 1)
+      expect(c.costDeltaPct).toBeCloseTo(36.4, 1)
+      expect(c.costMarginPct).toBeCloseTo(31.0, 1)
     })
 
     it('agrees with a plain re-derivation of the jackknife on 200 random ledgers', () => {
@@ -248,11 +249,11 @@ describe('the comparison of the arms', () => {
       expect(c.turnVerdict).toBe('fewer')
     })
 
-    it('says so through noise that is smaller than the gap: groups 0 and 10 against 18 and 28, margin 7.7', () => {
-      // late S = 0.05, se 0.016667; holdout S = 0.23, se 0.016667; se(diff) = 0.02357; margin = 3.250 x 0.02357
+    it('says so through noise that is smaller than the gap: groups 0 and 10 against 18 and 28, margin 11.3', () => {
+      // late S = 0.05, se 0.016667; holdout S = 0.23, se 0.016667; se(diff) = 0.02357; margin = 4.781 x 0.02357
       const c = compareArms(state(withTurns((i) => (i % 2 ? 10 : 0)), withTurns((i) => (i % 2 ? 28 : 18))))
       expect(c.shareDeltaPts).toBeCloseTo(-18, 5)
-      expect(c.shareMarginPts).toBeCloseTo(7.7, 1)
+      expect(c.shareMarginPts).toBeCloseTo(11.3, 1)
       expect(c.turnVerdict).toBe('fewer')
     })
 
@@ -273,16 +274,19 @@ describe('the comparison of the arms', () => {
   })
 
   describe('tCritical', () => {
-    it('is the two-sided 99% quantile of the t distribution', () => {
-      expect(tCritical(1)).toBeCloseTo(63.657, 3)
-      expect(tCritical(4)).toBeCloseTo(4.604, 3)
-      expect(tCritical(9)).toBeCloseTo(3.25, 3)
-      expect(tCritical(19)).toBeCloseTo(2.861, 3)
-      expect(tCritical(30)).toBeCloseTo(2.75, 3)
+    it('is the two-sided 99.9% quantile of the t distribution, wider than the stated 99% on purpose', () => {
+      expect(tCritical(1)).toBeCloseTo(636.619, 3)
+      expect(tCritical(4)).toBeCloseTo(8.61, 3)
+      expect(tCritical(9)).toBeCloseTo(4.781, 3)
+      expect(tCritical(19)).toBeCloseTo(3.883, 3)
+      expect(tCritical(30)).toBeCloseTo(3.646, 3)
+      // Never narrower than the 99% value at the same degrees of freedom (2.861 at 19, 2.75 at 30).
+      expect(tCritical(19)).toBeGreaterThan(2.861)
+      expect(tCritical(30)).toBeGreaterThan(2.75)
     })
     it('falls back to the normal quantile for many degrees of freedom, and refuses none', () => {
-      expect(tCritical(31)).toBe(2.576)
-      expect(tCritical(10_000)).toBe(2.576)
+      expect(tCritical(31)).toBe(3.291)
+      expect(tCritical(10_000)).toBe(3.291)
       for (const bad of [0, -1, Number.NaN]) expect(tCritical(bad)).toBe(Number.POSITIVE_INFINITY)
     })
   })
@@ -318,19 +322,83 @@ describe('the verdicts are calibrated, not only computed', () => {
     expect(costlier / TRIALS).toBeLessThanOrEqual(0.025)
   })
 
-  it('still finds a real difference: a true 25% saving is called cheaper in most trials', () => {
-    const next = seeded(0xbeef)
-    let cheaper = 0
-    const TRIALS = 200
-    for (let i = 0; i < TRIALS; i++) {
-      const normal = (): number => { let a = 0; for (let k = 0; k < 12; k++) a += next(); return a - 6 }
-      const arm = (mean: number): Array<Partial<ArmCounts>> => Array.from({ length: 20 }, () => {
-        const work = 100 + Math.floor(next() * 300)
-        return { requests: work, work, units: work * mean * Math.exp(0.2 * normal() - 0.02) }
-      })
-      if (compareArms(state(arm(750), arm(1000))).verdict === 'late-cheaper') cheaper++
+  // The simulation above builds two arms of twenty groups of the same size, which is not what the ledger
+  // holds. A tenth of the conversations are held out, so the holdout's twenty groups hold about two
+  // conversations each against the other arm's eighteen, and its cost per unit of work is the mean of a few
+  // dozen right-skewed numbers: skewed enough that the spread read off its groups understates how far it can
+  // stray, and a t interval at 99% named "Late is costing more" in 1.5 to 3.4 trials in 100 when the two
+  // arms were the same, three to six times its level, and "cheaper" almost never (and "more retrieval turns"
+  // about twice as often as "fewer"). So this builds the ledger the way the app does: each conversation falls
+  // in the holdout with probability a tenth and in one of twenty clusters, its cost per request is
+  // lognormal, and its share of retrieval turns varies from conversation to conversation. The verdicts must
+  // hold the level the card states, 99%, which is one false verdict in a hundred in all.
+  describe('identical arms with a tenth of the conversations held out', () => {
+    const REQUESTS = 40
+    const build = (next: () => number, conversations: number, sigma: number): ArmState => {
+      const normal = (): number => { let a = 0; for (let i = 0; i < 12; i++) a += next(); return a - 6 }
+      const zero = (): ArmCounts => ({ requests: 0, work: 0, units: 0, turns: 0, turnUnits: 0 })
+      const arms = { late: Array.from({ length: 20 }, zero), holdout: Array.from({ length: 20 }, zero) }
+      for (let i = 0; i < conversations; i++) {
+        const arm = next() < 0.1 ? 'holdout' : 'late'
+        const cluster = Math.min(19, Math.floor(next() * 20))
+        const cost = Math.exp(sigma * normal())
+        const rate = Math.min(0.95, Math.max(0.01, 0.2 * Math.exp(0.6 * normal())))
+        let turns = 0
+        for (let k = 0; k < REQUESTS; k++) if (next() < rate) turns++
+        const g = arms[arm][cluster]
+        g.requests += REQUESTS; g.work += REQUESTS - turns; g.turns += turns
+        g.units += REQUESTS * cost * 1000; g.turnUnits += turns * cost * 600
+      }
+      return { ...arms, legacy: zero() }
     }
-    expect(cheaper / TRIALS).toBeGreaterThan(0.9)
+
+    it.each([[400, 1.0], [400, 1.5], [150, 1.5]])('%s conversations at a spread of %s: at most 1 false verdict in 100, in any of the four directions and in all of them together', (conversations, sigma) => {
+      const next = seeded(0x10ad + conversations + Math.round(sigma * 10))
+      const TRIALS = 1_000
+      const count = { costlier: 0, cheaper: 0, more: 0, fewer: 0, decided: 0 }
+      for (let i = 0; i < TRIALS; i++) {
+        const c = compareArms(build(next, conversations, sigma))
+        if (c.verdict === 'not-enough-data') continue
+        count.decided++
+        if (c.verdict === 'late-costlier') count.costlier++
+        if (c.verdict === 'late-cheaper') count.cheaper++
+        if (c.turnVerdict === 'more') count.more++
+        if (c.turnVerdict === 'fewer') count.fewer++
+      }
+      expect(count.decided).toBeGreaterThan(TRIALS * 0.7) // the arms were big enough to be judged, so this is about verdicts
+      const rate = (n: number): number => n / count.decided
+      expect(rate(count.costlier)).toBeLessThanOrEqual(0.01)
+      expect(rate(count.cheaper)).toBeLessThanOrEqual(0.01)
+      expect(rate(count.more)).toBeLessThanOrEqual(0.01)
+      expect(rate(count.fewer)).toBeLessThanOrEqual(0.01)
+      expect(rate(count.costlier + count.cheaper)).toBeLessThanOrEqual(0.01)
+      expect(rate(count.more + count.fewer)).toBeLessThanOrEqual(0.01)
+    })
+  })
+
+  it('still finds a real difference: a true 35% saving is called cheaper in most trials', () => {
+    // At this group spread (0.2) the plain 99% quantile found a 25% saving in more than 9 trials in 10. The
+    // quantile in use, which holds the false alarms under 1 in 100 on the holdout's skewed costs, finds it in
+    // about 6 in 10 and a 35% saving in 99 in 100: needing about 1.8 times the data for the same call is the
+    // price of the false-alarm rate, and this is what it still buys.
+    const power = (late: number): number => {
+      const next = seeded(0xbeef)
+      let cheaper = 0
+      const TRIALS = 200
+      for (let i = 0; i < TRIALS; i++) {
+        const normal = (): number => { let a = 0; for (let k = 0; k < 12; k++) a += next(); return a - 6 }
+        const arm = (mean: number): Array<Partial<ArmCounts>> => Array.from({ length: 20 }, () => {
+          const work = 100 + Math.floor(next() * 300)
+          return { requests: work, work, units: work * mean * Math.exp(0.2 * normal() - 0.02) }
+        })
+        if (compareArms(state(arm(late), arm(1000))).verdict === 'late-cheaper') cheaper++
+      }
+      return cheaper / TRIALS
+    }
+    const p25 = power(750), p35 = power(650)
+    // Seeded, so these are the same every run: measured 0.63 and 0.99.
+    expect(p25).toBeGreaterThan(0.5)
+    expect(p35).toBeGreaterThan(0.9)
   })
 })
 
