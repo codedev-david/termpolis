@@ -556,6 +556,48 @@ describe('a terminal on the work account (R17)', () => {
     expect(st().accountSwitch).toBeNull()
   })
 
+  it('asks about the account the conversation may be on when the terminal was changed by hand, before any switch', async () => {
+    // Termpolis's record says personal; the user pointed the shell at another profile since.
+    useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_a' })], accountsByHand: { t1: true } })
+    card()
+    openLimit(ctx({ accountId: 'acc_a' }))
+    await waitFor(() => expect(accounts.check).toHaveBeenCalled())
+    await act(async () => undefined)
+    expect(screen.getByTestId('limit-card-new')).toHaveTextContent('New terminal on codedev')
+    click('limit-card-continue')
+    expect(screen.getByTestId('limit-card-carry')).toHaveTextContent('This conversation may be on work, which isn\'t offered automatically. Carry it to codedev?')
+    expect(startSwitch).not.toHaveBeenCalled()
+    click('limit-card-carry-no')
+    click('limit-card-continue')
+    click('limit-card-carry-yes')
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', expect.objectContaining({ reason: 'usage limit', confirmed: true }))
+  })
+
+  it('asks it too for an agent Termpolis has no record of', async () => {
+    useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: undefined })] })
+    card()
+    openLimit(ctx({ accountId: 'acc_a' }))
+    await waitFor(() => expect(accounts.check).toHaveBeenCalled())
+    await act(async () => undefined)
+    click('limit-card-continue')
+    expect(screen.getByTestId('limit-card-carry')).toHaveTextContent('This conversation may be on work')
+    expect(startSwitch).not.toHaveBeenCalled()
+    click('limit-card-carry-yes')
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', expect.objectContaining({ confirmed: true }))
+  })
+
+  it('asks nothing extra of a terminal changed by hand when no account is kept from the offers', async () => {
+    useTerminalStore.setState({ terminals: [T('t1')], accountsByHand: { t1: true }, accountsView: view([A, B, C]) })
+    card()
+    openLimit(ctx({ accountId: 'acc_a' }))
+    await waitFor(() => expect(accounts.check).toHaveBeenCalled())
+    await act(async () => undefined)
+    expect(screen.queryByTestId('limit-card-new')).toBeNull()
+    click('limit-card-continue')
+    expect(screen.queryByTestId('limit-card-carry')).toBeNull()
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', expect.not.objectContaining({ confirmed: true }))
+  })
+
   it('asks the same question before signing a signed-out account in, and opens the sheet only on yes', async () => {
     useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_w' })] })
     accounts.check.mockImplementation(async (id: string) => (id === 'acc_c' ? identity(C, false) : identity(B, true)))

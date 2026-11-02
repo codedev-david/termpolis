@@ -439,6 +439,78 @@ describe('accounts:switch, an account that isn\'t offered automatically (D14, R1
     aConversation()
     expect((await switchTo(b)).kind).toBe('switched')
   })
+
+  describe('when Termpolis doesn\'t know which account the terminal is really on', () => {
+    const MAYBE = 'this conversation may be on b, which isn\'t offered automatically, so switching it needs your confirmation'
+
+    /** Work is `b`, never offered; `c` is a third account that is. The conversation is in work's projects. */
+    async function workAndAnother(): Promise<{ main: string; work: string; workDir: string; other: AddAccountResult['account'] }> {
+      const { main, work, workDir } = await withWork()
+      const other = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'c', folder: 'new', copy: false, share: [] })).account
+      mkdirSync(join(workDir, 'projects', 'C--repo'), { recursive: true })
+      writeFileSync(join(workDir, 'projects', 'C--repo', `${ID}.jsonl`), '{"work":"conversation"}\n')
+      return { main, work, workDir, other }
+    }
+    const carriedTo = (other: AddAccountResult['account']): boolean => existsSync(join(other.profile!, 'projects', 'C--repo', `${ID}.jsonl`))
+    const startedOn = (main: string): void => {
+      noteTerminalAccount('t1', main)
+      noteAgentStart('t1', { at: term.launchedAt, commands: [term.launchLine()] })
+      noteTerminalSession('t1', ID)
+    }
+
+    it('asks for the second confirmation when the user pointed the shell at another profile by hand', async () => {
+      const { main, workDir, other } = await workAndAnother()
+      startedOn(main)
+      // Termpolis's record still says main; the shell now runs on work (David's own switch-now does this).
+      expect(noteTypedInput('t1', `export CLAUDE_CONFIG_DIR='${workDir}'\r`, 40)).toBe('by-hand')
+      expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash' })).toBe(MAYBE)
+      expect(term.writes).toEqual([])
+      expect(carriedTo(other)).toBe(false)
+      expect(terminalAccountId('t1')).toBe(main)
+    })
+
+    it('asks for it when the terminal has no record at all (an agent started by hand)', async () => {
+      const { other } = await workAndAnother()
+      noteAgentStart('t1', { at: term.launchedAt, commands: [term.launchLine()] })
+      noteTerminalSession('t1', ID)
+      expect(terminalAccountId('t1')).toBeUndefined()
+      expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash' })).toBe(MAYBE)
+      // Anything but a true is no confirmation.
+      expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash', confirmedCarry: 'yes' })).toBe(MAYBE)
+      expect(term.writes).toEqual([])
+      expect(carriedTo(other)).toBe(false)
+    })
+
+    it('goes ahead, carrying the conversation, once the user confirmed', async () => {
+      const { main, workDir, other } = await workAndAnother()
+      startedOn(main)
+      noteTypedInput('t1', `export CLAUDE_CONFIG_DIR='${workDir}'\r`, 40)
+      expect((await switchTo(other.id, { confirmedCarry: true })).kind).toBe('switched')
+      expect(carriedTo(other)).toBe(true)
+    })
+
+    it('asks nothing when no account of the agent is kept from the automatic offers, whatever the terminal\'s record', async () => {
+      const { main, bDir } = await twoClaude()
+      startedOn(main)
+      noteTypedInput('t1', `export CLAUDE_CONFIG_DIR='${bDir}'\r`, 40)
+      mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+      writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+      const c = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'c', folder: 'new', copy: false, share: [] })).account
+      expect((await switchTo(c.id)).kind).toBe('switched')
+    })
+
+    it('does not ask about another agent\'s accounts that aren\'t offered', async () => {
+      const { main, b, bDir } = await twoClaude()
+      // A Codex account kept from the offers says nothing about where a Claude conversation is.
+      const codex = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'codex-work', folder: 'new', copy: false, share: [] })).account
+      await ok(ACCOUNTS_IPC.update, { id: codex.id, autoOffer: false })
+      startedOn(main)
+      noteTypedInput('t1', `export CLAUDE_CONFIG_DIR='${bDir}'\r`, 40)
+      mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+      writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+      expect((await switchTo(b)).kind).toBe('switched')
+    })
+  })
 })
 
 describe('accounts:switch, what the agent was started with comes back with it (carryForSwitch)', () => {

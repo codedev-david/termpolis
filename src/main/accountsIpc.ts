@@ -1295,9 +1295,13 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (source && source.id === target.id && !isAccountChangedByHand(terminalId) && !unsettled.has(terminalId)) throw new Error(`this terminal already runs on ${target.label}`)
     // D14, R17: onto an account that isn't offered automatically (work), or carrying a conversation
     // off one, is the user's second confirmation. The UI asks it where it asks for the switch; a
-    // request without it is refused here, so no path can skip the question.
+    // request without it is refused here, so no path can skip the question. When Termpolis doesn't
+    // know which account the terminal is on (the user changed it by hand, as the account scripts do,
+    // or an agent started by hand has no record), the conversation may be on such an account too.
     const unoffered = !target.autoOffer ? target : source && !source.autoOffer ? source : null
     if (unoffered && input.confirmedCarry !== true) throw new Error(`${unoffered.label} isn't offered automatically, so switching a conversation to or from it needs your confirmation`)
+    const mayBeOn = !source || isAccountChangedByHand(terminalId) ? doc.file.accounts.find((a) => a.agent === target.agent && !a.autoOffer) : undefined
+    if (mayBeOn && input.confirmedCarry !== true) throw new Error(`this conversation may be on ${mayBeOn.label}, which isn't offered automatically, so switching it needs your confirmation`)
     if (target.profile !== null && !liveProfileDir(target, home, fsx)) throw new Error(`${target.label}'s profile folder doesn't exist`)
     const agent = target.agent
     // Claude Code: where this conversation's transcript can be, and where the target looks for it.

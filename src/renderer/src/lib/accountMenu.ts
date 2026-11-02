@@ -87,11 +87,20 @@ export function actionWords(row: MenuRow): string | null {
   return null
 }
 
+/** When Termpolis doesn't know which account a terminal runs on (the user changed it by hand, or an
+ *  agent was started by hand, so `current` is none), the account kept from the automatic offers
+ *  that its conversation may be on: main's switch gate asks the same (D14, R17). */
+export function maybeOnUnoffered(accounts: readonly AccountRowView[], agent: AccountAgent, current: AccountRowView | undefined): AccountRowView | undefined {
+  return current ? undefined : accounts.find((r) => r.agent === agent && !r.autoOffer)
+}
+
 /** The second confirmation (D14, R17): onto an account not offered automatically, or carrying a
- *  conversation off one. Carrying off one offers a fresh session in a new terminal instead. */
-export function confirmFor(from: AccountRowView | undefined, to: AccountRowView): { question: string; newTerminal: boolean } | null {
+ *  conversation off one, or one that may be on one (`maybeOn`, when the terminal's account isn't
+ *  known). Carrying off one offers a fresh session in a new terminal instead. */
+export function confirmFor(from: AccountRowView | undefined, to: AccountRowView, maybeOn?: AccountRowView): { question: string; newTerminal: boolean } | null {
   if (!to.autoOffer) return { question: `${to.label} isn't offered automatically. Switch this terminal to ${to.label}?`, newTerminal: false }
   if (from && !from.autoOffer) return { question: `This conversation is on ${from.label}, which isn't offered automatically. Carry it to ${to.label}?`, newTerminal: true }
+  if (!from && maybeOn) return { question: `This conversation may be on ${maybeOn.label}, which isn't offered automatically. Carry it to ${to.label}?`, newTerminal: true }
   return null
 }
 

@@ -16,7 +16,7 @@ import { terminalAgent } from '../../lib/accountSwitchFlow'
 import { hasAccounts } from '../../lib/accountsView'
 import { refreshAccounts } from '../../lib/accountsState'
 import { requestSettingsTab } from '../../lib/settingsNav'
-import { MENU_WIDTH, actionWords, confirmFor, focusTerminal, menuPosition, menuRows, moveIndex, typeAhead } from '../../lib/accountMenu'
+import { MENU_WIDTH, actionWords, confirmFor, focusTerminal, maybeOnUnoffered, menuPosition, menuRows, moveIndex, typeAhead } from '../../lib/accountMenu'
 import type { MenuRow } from '../../lib/accountMenu'
 import { newTerminalOn, queueSwitch, startSwitch } from '../../lib/accountSwitchRun'
 import { SMALL_BUTTON, SMALL_PRIMARY } from './ui'
@@ -153,7 +153,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
       close(false)
       return store().openAgySwitchSheet(row.account.id)
     }
-    const c = confirmFor(current, row.account)
+    const c = confirmFor(current, row.account, maybeOnUnoffered(view.accounts, agent, current))
     if (c) return setConfirm({ row, ...c })
     go(row)
   }

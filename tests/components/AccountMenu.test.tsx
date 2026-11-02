@@ -267,6 +267,47 @@ describe('the rows', () => {
     expect(startSwitch).not.toHaveBeenCalled()
   })
 
+  it('asks about the account the conversation may be on when the terminal was changed by hand, before any switch (D14, R17)', async () => {
+    // Termpolis's record says personal, but the user pointed the shell at another profile: it may be work's.
+    openMenu({ byHand: true })
+    await settle()
+    fireEvent.click(rowOf('codedev'))
+    expect(screen.getByTestId('account-menu-confirm')).toHaveTextContent('This conversation may be on work, which isn\'t offered automatically. Carry it to codedev?')
+    expect(startSwitch).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('account-menu-confirm-no'))
+    expect(screen.queryByTestId('account-menu-confirm')).toBeNull()
+    fireEvent.click(rowOf('codedev'))
+    fireEvent.click(screen.getByTestId('account-menu-confirm-yes'))
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', { confirmed: true })
+  })
+
+  it('offers a fresh session in a new terminal instead, from that question', async () => {
+    openMenu({ byHand: true })
+    await settle()
+    fireEvent.click(rowOf('codedev'))
+    fireEvent.click(screen.getByTestId('account-menu-confirm-new'))
+    expect(newTerminalOn).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), expect.objectContaining({ id: 'acc_b' }))
+    expect(startSwitch).not.toHaveBeenCalled()
+  })
+
+  it('asks it too for an agent that has no record, and carries the yes through a queued switch', async () => {
+    limitLook.mockResolvedValueOnce({ success: true, data: { live: true, status: { status: 'working' } } })
+    openMenu({ terminals: [{ ...T, agentAccountId: undefined }] })
+    await waitFor(() => expect(rowOf('codedev')).toHaveTextContent('Switch when it finishes'))
+    fireEvent.click(rowOf('codedev'))
+    expect(screen.getByTestId('account-menu-confirm')).toHaveTextContent('This conversation may be on work')
+    fireEvent.click(screen.getByTestId('account-menu-confirm-yes'))
+    expect(queueSwitch).toHaveBeenCalledWith('t1', 'acc_b', 'by hand', true)
+  })
+
+  it('asks nothing extra of a terminal changed by hand when no account is kept from the offers', async () => {
+    openMenu({ byHand: true, accounts: [A, B] })
+    await settle()
+    fireEvent.click(rowOf('codedev'))
+    expect(screen.queryByTestId('account-menu-confirm')).toBeNull()
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b')
+  })
+
   it('signs a signed-out work account in only after the second question, and the switch that follows carries the yes (D14, R17)', async () => {
     openMenu({ accounts: [A, B, row({ ...W, lastEmail: null })] })
     await settle()

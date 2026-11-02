@@ -3,7 +3,7 @@
 // picked, what picking one does (switch, wait for the turn, sign in first, agy's switch-all), the
 // work account's second confirmation (D14, R17), and the menu's keyboard moves.
 import { describe, it, expect } from 'vitest'
-import { actionWords, confirmFor, isSignedIn, menuRows, moveIndex, typeAhead } from '../../src/renderer/src/lib/accountMenu'
+import { actionWords, confirmFor, isSignedIn, maybeOnUnoffered, menuRows, moveIndex, typeAhead } from '../../src/renderer/src/lib/accountMenu'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 
 function row(over: Partial<AccountRowView>): AccountRowView {
@@ -145,6 +145,30 @@ describe('confirmFor (D14, R17)', () => {
   it('asks nothing between two ordinary accounts, or from none', () => {
     expect(confirmFor(A, B)).toBeNull()
     expect(confirmFor(undefined, B)).toBeNull()
+  })
+  it('asks about the account a conversation may be on when the terminal\'s own account isn\'t known', () => {
+    // Changed by hand, or an agent started by hand: the conversation may sit on an account kept from the offers.
+    expect(confirmFor(undefined, B, W)).toEqual({ question: 'This conversation may be on work, which isn\'t offered automatically. Carry it to codedev?', newTerminal: true })
+    // A known account decides it alone: the maybe is never asked about next to a record.
+    expect(confirmFor(A, B, W)).toBeNull()
+    // Onto the unoffered account itself, the first question is the one asked.
+    expect(confirmFor(undefined, W, W)?.newTerminal).toBe(false)
+  })
+
+})
+
+describe('maybeOnUnoffered (D14, R17)', () => {
+  it('names the account kept from the offers that an unknown terminal may be on', () => {
+    expect(maybeOnUnoffered([A, B, W], 'claude', undefined)).toBe(W)
+  })
+
+  it('names none when the terminal\'s account is known, or the agent has none kept from the offers', () => {
+    expect(maybeOnUnoffered([A, B, W], 'claude', A)).toBeUndefined()
+    expect(maybeOnUnoffered([A, B], 'claude', undefined)).toBeUndefined()
+  })
+
+  it('looks only at the terminal\'s own agent', () => {
+    expect(maybeOnUnoffered([A, B, row({ id: 'cx', agent: 'codex', autoOffer: false })], 'claude', undefined)).toBeUndefined()
   })
 })
 

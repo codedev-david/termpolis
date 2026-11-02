@@ -18,6 +18,7 @@ import type { TerminalSession } from '../../types'
 import { checkSignIn, openOtherAgent, terminalAgent } from '../../lib/accountSwitchFlow'
 import type { LimitContext } from '../../lib/limitWatch'
 import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgents, recentCheck } from '../../lib/limitChooser'
+import { maybeOnUnoffered } from '../../lib/accountMenu'
 import { newTerminalOn, startSwitch } from '../../lib/accountSwitchRun'
 import { modelHoldBridge, relaunchHeld, terminalRelaunchIo } from '../../lib/modelRelaunch'
 import { relaunchNotice } from '../../lib/modelRelaunchNotice'
@@ -56,9 +57,13 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   const limited = limitedAccount(view, limit)
   const targets: LimitTarget[] = limitTargets(view.accounts, agent, { accountId: limit.accountId, email: limited.email }, now, checks)
   const ways = targets.filter((t) => t.state === 'available' || t.state === 'unknown')
-  const current = terminal.agentAccountId ? view.accounts.find((r) => r.id === terminal.agentAccountId) : undefined
-  // agy's own sheet asks the work account's question for every agy terminal it moves.
-  const fromWork = isProfileAgent(agent) && !!current && !current.autoOffer
+  // A terminal changed by hand has a stale record: the shell may run on another profile than it names.
+  const current = terminal.agentAccountId && !byHand ? view.accounts.find((r) => r.id === terminal.agentAccountId) : undefined
+  // The account kept from the automatic offers (work) that the conversation is on, or may be on when
+  // Termpolis doesn't know the terminal's account. agy's own sheet asks the work account's question
+  // for every agy terminal it moves.
+  const workOf = isProfileAgent(agent) ? (current && !current.autoOffer ? current : maybeOnUnoffered(view.accounts, agent, current)) : undefined
+  const fromWork = !!workOf
   const model = suggestedModel(agent, limit.kind)
 
   // Each way out asked, all at once, whether it is signed in now; and the agents installed here.
@@ -201,7 +206,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
         </div>
         {carry ? (
           <div className="flex flex-wrap items-center gap-2" data-testid="limit-card-carry">
-            <span>This conversation is on {current!.label}, which isn&apos;t offered automatically. Carry it to {carry.label}?</span>
+            <span>This conversation {current ? 'is' : 'may be'} on {workOf!.label}, which isn&apos;t offered automatically. Carry it to {carry.label}?</span>
             {/* A signed-out account has no session to start in a new terminal: the sign-in comes first. */}
             {!carrySignsIn && <button type="button" className={SMALL_PRIMARY} onClick={() => { void fresh(carry) }} data-testid="limit-card-carry-new">New terminal on {carry.label}</button>}
             <button type="button" className={carrySignsIn ? SMALL_PRIMARY : SMALL_BUTTON} onClick={() => (carrySignsIn ? openSignIn(carry, true) : switchTo(carry, true))} data-testid="limit-card-carry-yes">{carrySignsIn ? `Sign in and carry it to ${carry.label}` : `Carry it to ${carry.label}`}</button>
