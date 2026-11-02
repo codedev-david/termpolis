@@ -249,10 +249,10 @@ export function TokenSavingsSettings() {
             — the flattering one — is how a compression feature ends up quoted as a bill cut it
             never delivered, so all three are stated here, largest to smallest, side by side. */}
         <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }} data-testid="hr-denominators">
-          <div style={{ fontWeight: 600, opacity: 0.8, marginBottom: 4 }}>The saving, measured three ways (the last also subtracts the turns that fetched elided text):</div>
-          <div><b data-testid="hr-denom-wire">{unified?.cumulative.savedPct ?? 0}%</b> of the text Headroom is allowed to touch (tool results + the agent&rsquo;s own tool inputs) — how well compression works.</div>
-          <div><b data-testid="hr-denom-input">{shareOfTotalInput(proxy?.cumulative) ?? 0}%</b> of every input token you sent — the rest is system prompt, tool schemas and conversation history.</div>
-          <div><b data-testid="hr-denom-cost">{effectiveCostShare(unified?.cumulative) ?? 0}%</b> of what the conversation actually cost, at Anthropic&rsquo;s rates — the smallest figure, and the only spendable one.</div>
+          <div style={{ fontWeight: 600, opacity: 0.8, marginBottom: 4 }}>The saving, measured three ways (each on its own basis, below; only the last subtracts the turns that fetched elided text):</div>
+          <div><b data-testid="hr-denom-wire">{unified?.cumulative.savedPct ?? 0}%</b> of the text Headroom is allowed to touch (tool results + the agent&rsquo;s own tool inputs), net of the text fetched back — how well compression works.</div>
+          <div><b data-testid="hr-denom-input">{shareOfTotalInput(proxy?.cumulative) ?? 0}%</b> of every input token you sent, counting every token removed, none of it taken back — the rest is system prompt, tool schemas and conversation history.</div>
+          <div><b data-testid="hr-denom-cost">{effectiveCostShare(unified?.cumulative) ?? 0}%</b> of what the conversation actually cost, at Anthropic&rsquo;s rates, net of the text fetched back and of the turns that fetched it — the smallest figure, and the only spendable one.</div>
         </div>
 
         {/* Floor evidence. A lifetime average of 50% is compatible with half of all requests

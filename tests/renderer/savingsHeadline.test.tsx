@@ -149,7 +149,38 @@ describe('what the headline claims to be', () => {
     const d = await screen.findByTestId('hr-denominators')
     expect(d).not.toHaveTextContent('The same saving')
     expect(d).toHaveTextContent('The saving, measured three ways')
-    expect(d).toHaveTextContent('the last also subtracts the turns that fetched elided text')
+    expect(d).toHaveTextContent('only the last subtracts the turns that fetched elided text')
+  })
+
+  // The heading used to say "(the last also subtracts the turns ...)", which reads as if the first two shared a
+  // basis. They do not: the first is net of the text fetched back, the second counts every token removed.
+  it('says what each of the three figures counts, so the first two are not read as sharing a basis', async () => {
+    render(<TokenSavingsSettings />)
+    const d = await screen.findByTestId('hr-denominators')
+    expect(d).not.toHaveTextContent('the last also subtracts')
+    const row = (id: string): HTMLElement => screen.getByTestId(id).parentElement as HTMLElement
+    expect(row('hr-denom-wire')).toHaveTextContent('net of the text fetched back')
+    expect(row('hr-denom-wire')).not.toHaveTextContent('turns')
+    expect(row('hr-denom-input')).toHaveTextContent('counting every token removed, none of it taken back')
+    expect(row('hr-denom-input')).not.toHaveTextContent('net of')
+    expect(row('hr-denom-cost')).toHaveTextContent('net of the text fetched back and of the turns that fetched it')
+  })
+
+  it('computes the second figure from every token removed, whatever was fetched back, as that row says', async () => {
+    const serveProxy = (over: Record<string, number>): void => {
+      api().tokenSavingsGetProxyReceipt = vi.fn().mockResolvedValue({ success: true, data: { session: proxyTotals(), cumulative: proxyTotals(over) } })
+    }
+    const base = { textSavedTokens: 20_000, inputTokens: 0, cacheReadTokens: 80_000, cacheCreationTokens: 0 }
+    serveProxy({ ...base, givebackTokens: 0, askedBackTokens: 0 })
+    const first = render(<TokenSavingsSettings />)
+    // 20,000 removed of the 100,000 that would have been sent.
+    expect((await screen.findByTestId('hr-denom-input')).textContent).toBe('20%')
+    first.unmount()
+    // The same ledger with 15,000 tokens given back and 4,000 asked back: this row does not move, because it counts
+    // every token removed. (The first and the third figure are the ones that net the fetched text.)
+    serveProxy({ ...base, givebackTokens: 15_000, askedBackTokens: 4_000, retrieves: 6 })
+    render(<TokenSavingsSettings />)
+    expect((await screen.findByTestId('hr-denom-input')).textContent).toBe('20%')
   })
 
   it('shows the credit withdrawn for text already asked back, in tokens, only when there is some', async () => {
