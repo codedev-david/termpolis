@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
+import { MIN_RECENT_CHARS, buildContextPrimer, getLastPrimerCost, recentSlotCount, type PrimerHit } from '../../src/main/contextPrimer'
 import { projectKeyOf } from '../../src/main/projectKey'
 import { KEEP_SCORE, lessonSubstance } from '../../src/main/lessonSubstance'
 
@@ -317,6 +317,17 @@ describe('buildContextPrimer — freshness lane', () => {
     expect(out).not.toContain('Most recent activity here')
   })
 
+  it('keeps a row of exactly MIN_RECENT_CHARS once its whitespace is folded, and leaves out one of a character fewer', async () => {
+    const exactly = (n: number, tag: string): string => `${tag} ${'x'.repeat(n)}`.slice(0, n)
+    const recent = vi.fn().mockResolvedValue([
+      freshOne({ id: 'short', content: exactly(MIN_RECENT_CHARS - 1, 'ONE-FEWER'), ts: ago(HOUR) }),
+      freshOne({ id: 'edge', content: exactly(MIN_RECENT_CHARS, 'EXACTLY-MIN'), ts: ago(2 * HOUR) }),
+    ])
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('EXACTLY-MIN')
+    expect(out).not.toContain('ONE-FEWER')
+  })
+
   it('skips trivially short chunks rather than spending a slot on them', async () => {
     const recent = vi.fn().mockResolvedValue([
       freshOne({ id: 'tiny', content: 'assistant: Now tests 8 and 9:', ts: ago(HOUR) }),
@@ -596,9 +607,13 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
       expect(out).toContain('shipped the first fix')
     })
 
-    it('tells two repos with the same folder name apart in the lane too, by key', async () => {
-      const recent = lane([recentNote('n1', 'the other termpolis checkout', { projectKey: 'not-this-repos-key' })])
-      expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, projectPath: 'C:/work/termpolis', recent, now: NOW })).toBeNull()
+    // The lane of a digest that names a project is the store's own listing, scoped to the folder by its key: telling two repos of
+    // one folder name apart is done there (swarmMemory.ts memoryList), not by comparing the path hash again here.
+    it('asks the store for the lane by the full path, so by key, and shows what it lists', async () => {
+      const recent = lane([recentNote('n1', 'a note the store listed for this folder', { projectKey: 'whatever-the-store-stamped' })])
+      const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: proj, projectPath: 'C:/work/termpolis', recent, now: NOW })
+      expect(recent.mock.calls[0][0].project).toBe('C:/work/termpolis')
+      expect(out).toContain('a note the store listed for this folder')
     })
 
     it('still shows this project\'s own recent note, labelled as one', async () => {
@@ -660,11 +675,21 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
     const mineKey = projectKeyOf(MINE)
     const otherKey = projectKeyOf('D:\\personal\\termpolis')
 
-    it('the note whose key is this folder\'s is shown, the other\'s is not', async () => {
+    // In a search the store did not scope to a project (the global one) nothing has told the two apart yet: the key does.
+    it('the note whose key is this folder\'s is shown, the other\'s is not, in a search nothing scoped', async () => {
       const list = [note('n1', 'a note about my termpolis', { projectKey: mineKey }), note('n2', 'a note about the other termpolis', { projectKey: otherKey })]
-      const out = (await build(list, { projectPath: MINE }))!
+      const search = vi.fn(async (o: { project?: string }) => (o.project ? [] : list))
+      const out = (await buildContextPrimer(search, { query: 'q', project: proj, projectPath: MINE, now: NOW }))!
       expect(out).toContain('a note about my termpolis')
       expect(out).not.toContain('the other termpolis')
+    })
+
+    it('leaves it to the store in a search it scoped to this folder: whatever it returns is this project\'s', async () => {
+      const list = [note('n1', 'a note about my termpolis', { projectKey: mineKey }), note('n2', 'a note the store stamped with its repository\'s key', { projectKey: otherKey })]
+      const search = vi.fn(async (o: { project?: string }) => (o.project ? list : []))
+      const out = (await buildContextPrimer(search, { query: 'q', project: proj, projectPath: MINE, now: NOW }))!
+      expect(out).toContain('a note about my termpolis')
+      expect(out).toContain('a note the store stamped with its repository')
     })
 
     it('falls back to the folder name when either side has no key (an older entry, or a primer with no full path)', async () => {
@@ -698,6 +723,132 @@ describe('buildContextPrimer — Claude Code\'s saved notes', () => {
     const out = (await build(list))!
     expect(out).toContain(`This project (${proj}) — past conversations first:`)
     expect(out.indexOf('we decided to use HNSW')).toBeLessThan(out.indexOf('a code chunk'))
+  })
+})
+
+// Whose key a saved note carries is the STORE's to judge whenever the store scoped the read to this project: it matches by the
+// key of the folder (and, once memory sync stamps a memory with its repository's key instead, by that key and the aliases of the
+// computers that wrote it), so a key worked out here from the path (projectKeyOf) is not the one it stamped. Only a read that
+// named no project has to be told apart by key in the builder.
+describe('buildContextPrimer — a saved note the store scoped to this project', () => {
+  const NOW = 1_700_000_000_000
+  const HOUR = 3_600_000
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+  const REPO_KEY = 'key-of-the-repository' // what memory sync stamps: not projectKeyOf of any folder path
+  const stamped = (over: Partial<PrimerHit> = {}): PrimerHit => ({
+    id: 'n1', content: long('release.md: how we cut a release'), source: 'claude-notes', agentId: 'claude-notes', kind: 'fact', score: 0.9,
+    memoryType: 'summary', tags: ['type:reference', 'note:release.md'], project: 'termpolis', projectKey: REPO_KEY, ts: NOW - 2 * HOUR, ...over,
+  })
+  const here = { query: 'q', project: 'termpolis', projectPath: 'C:/x/termpolis', now: NOW }
+
+  it('is shown when the search the store scoped to this project found it', async () => {
+    const search = vi.fn(async (o: { project?: string }) => (o.project ? [stamped()] : []))
+    expect(await buildContextPrimer(search, here)).toContain('how we cut a release')
+  })
+
+  it('is shown when the lane the store scoped to this project listed it', async () => {
+    const recent = vi.fn().mockResolvedValue([{ ...stamped(), score: 0 }])
+    expect(await buildContextPrimer(vi.fn(async () => []), { ...here, recent })).toContain('how we cut a release')
+  })
+
+  it('is shown once, with its label, when both searches found it', async () => {
+    const out = (await buildContextPrimer(vi.fn(async () => [stamped()]), here))!
+    expect(out.match(/how we cut a release/g)).toHaveLength(1)
+    expect(out).toMatch(/- \[note · 2h ago\] release\.md/)
+  })
+
+  it('is still left out of an UNSCOPED search, where only a key can tell two repos of one folder name apart', async () => {
+    const search = vi.fn(async (o: { project?: string }) => (o.project ? [] : [stamped()]))
+    expect(await buildContextPrimer(search, here)).toBeNull()
+  })
+
+  it('is not another repo\'s note just because the store scoped the read: the folder name still has to be this project\'s', async () => {
+    const search = vi.fn(async () => [stamped({ project: 'billing' })])
+    expect(await buildContextPrimer(search, here)).toBeNull()
+    const recent = vi.fn().mockResolvedValue([{ ...stamped({ project: 'billing' }), score: 0 }])
+    expect(await buildContextPrimer(vi.fn(async () => []), { ...here, recent })).toBeNull()
+  })
+
+  it('is judged by key in a lane that names no project, where the store scoped nothing', async () => {
+    const mine = stamped({ project: undefined, projectKey: projectKeyOf('C:/Users/someone') })
+    const recent = vi.fn().mockResolvedValue([{ ...mine, score: 0 }])
+    expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', projectPath: 'C:/Users/someone', recent, now: NOW })).toContain('how we cut a release')
+    expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', projectPath: 'C:/Users/another', recent, now: NOW })).toBeNull()
+  })
+})
+
+// A note written from a session run in the home folder belongs to no project (the store refuses a slug for it) but carries the
+// key of that folder. The doors give a caller that names no project no saved note while sharing is off, and the digest is the
+// one read nobody asks for, so it is not the door that does: a digest that names no project shows none, and one launched from
+// the home folder itself (its path, so its key) shows that folder's own.
+describe('buildContextPrimer — a saved note that belongs to no project', () => {
+  const NOW = 1_700_000_000_000
+  const HOUR = 3_600_000
+  const HOME = 'C:/Users/someone'
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+  const homeNote = (over: Partial<PrimerHit> = {}): PrimerHit => ({
+    id: 'home', content: long('habits.md: how I like my answers'), source: 'claude-notes', agentId: 'claude-notes', kind: 'fact', score: 0.9,
+    memoryType: 'summary', tags: ['type:user', 'note:habits.md'], ts: NOW - 2 * HOUR, projectKey: projectKeyOf(HOME), ...over,
+  })
+
+  it('is shown to none that names a project, and to none that names no folder at all', async () => {
+    const search = vi.fn(async () => [homeNote()])
+    expect(await buildContextPrimer(search, { query: 'q', project: 'termpolis', projectPath: 'C:/x/termpolis', now: NOW })).toBeNull()
+    expect(await buildContextPrimer(search, { query: 'q', now: NOW })).toBeNull()
+  })
+
+  it('is left out of the lane of a digest that names no folder', async () => {
+    const recent = vi.fn().mockResolvedValue([{ ...homeNote(), score: 0 }])
+    expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', recent, now: NOW })).toBeNull()
+  })
+
+  it('is shown to a digest for the folder it was written in, from the search and from the lane', async () => {
+    expect(await buildContextPrimer(vi.fn(async () => [homeNote()]), { query: 'q', projectPath: HOME, now: NOW })).toContain('how I like my answers')
+    const recent = vi.fn().mockResolvedValue([{ ...homeNote(), score: 0 }])
+    expect(await buildContextPrimer(vi.fn(async () => []), { query: 'q', projectPath: HOME, recent, now: NOW })).toContain('how I like my answers')
+  })
+
+  it('is not shown to a digest for another folder that also has no project, nor to one that carries no key', async () => {
+    expect(await buildContextPrimer(vi.fn(async () => [homeNote()]), { query: 'q', projectPath: 'C:/Users/another', now: NOW })).toBeNull()
+    expect(await buildContextPrimer(vi.fn(async () => [homeNote({ projectKey: undefined })]), { query: 'q', projectPath: HOME, now: NOW })).toBeNull()
+  })
+
+  it('is told apart from a memory an agent filed itself: only the importer\'s notes are held to this', async () => {
+    const filed = homeNote({ agentId: 'claude', source: 'claude', kind: 'message', content: 'an ordinary memory with no project' })
+    expect(await buildContextPrimer(vi.fn(async () => [filed]), { query: 'q', now: NOW })).toContain('an ordinary memory with no project')
+  })
+})
+
+// The lane reads every row it is given and never throws, whatever a lister hands back.
+describe('buildContextPrimer — a lane row whose fields are not what the store writes', () => {
+  const NOW = 1_700_000_000_000
+  const HOUR = 3_600_000
+  const long = (s: string) => `${s} ${'detail '.repeat(30)}`
+  const row = (id: string, text: string, over: Record<string, unknown> = {}): PrimerHit =>
+    ({ id, content: long(text), source: 'claude', kind: 'message', score: 0, project: 'termpolis', ts: NOW - 2 * HOUR, ...over } as PrimerHit)
+
+  it.each([
+    ['a number', 123],
+    ['an array', ['a']],
+    ['an object', { toLowerCase: 1 }],
+    ['true', true],
+  ])('skips nothing it can read, and does not throw, when a row\'s project is %s', async (_name, project) => {
+    const recent = vi.fn().mockResolvedValue([row('a', 'the first good line of the lane'), row('odd', 'a row with an odd project', { project }), row('b', 'the second good line of the lane', { ts: NOW - 3 * HOUR })])
+    const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: 'termpolis', recent, now: NOW })
+    expect(out).toContain('the first good line of the lane')
+    expect(out).toContain('the second good line of the lane')
+  })
+
+  it.each([
+    ['a number', 123],
+    ['an array', ['a']],
+    ['an object', { toLowerCase: 1 }],
+  ])('does not throw on a saved note whose project is %s either', async (_name, project) => {
+    const note = row('n', 'a note with an odd project', { source: 'claude-notes', agentId: 'claude-notes', kind: 'fact', project, tags: ['type:reference', 'note:x.md'] })
+    const recent = vi.fn().mockResolvedValue([row('a', 'the first good line of the lane'), note])
+    const out = await buildContextPrimer(vi.fn(async () => []), { query: 'q', project: 'termpolis', recent, now: NOW })
+    expect(out).toContain('the first good line of the lane')
+    expect(out).not.toContain('a note with an odd project') // not a project name it can read: not this project's note
   })
 })
 
@@ -761,6 +912,38 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
     expect(rows(out)).toHaveLength(10) // the default limit; the seventh conversation fell to the cap, the demoted lesson to the cut
     expect(out).not.toContain('Always run the full suite and not only') // the demoted lesson is absent
     expect(out).not.toContain('conversation 7 ')
+  })
+
+  // A demotion is a person (or a failed outcome) saying the memory is unreliable: a demoted lesson never leads, and neither
+  // does a demoted note. It keeps the place relevance gives it, still labelled as the note it is, and takes no leading slot.
+  describe('a note someone has demoted', () => {
+    // It outscores the trusted notes here (and clears the relevance cut), so that nothing but the demotion keeps it from leading.
+    const demoted = (id: string, text: string, over: Partial<PrimerHit> = {}) =>
+      note(id, text, { score: 0.85, correction: { kind: 'demote' }, ...over })
+
+    it('does not lead the block, and does not make the title say notes lead it', async () => {
+      const out = (await build([conv(1, { score: 0.9 }), demoted('d1', 'a note that was demoted'), conv(2, { score: 0.5 })]))!
+      expect(rows(out)[0]).toContain('conversation 1')
+      expect(out).toContain(`This project (${proj}) — past conversations first:`)
+      expect(out).toMatch(/- \[note · 1mo ago\] a note that was demoted/) // still shown, still a note
+    })
+
+    it('takes none of the three leading slots from the notes that are still trusted', async () => {
+      const list = [demoted('d1', 'demoted one'), note('n1', 'trusted one'), note('n2', 'trusted two'), note('n3', 'trusted three'), conv(1)]
+      const out = (await build(list))!
+      inOrder(out, ['trusted one', 'trusted two', 'trusted three', 'conversation 1 ', 'demoted one'])
+    })
+
+    it('does not count toward the title either way: trusted notes still lead it', async () => {
+      const out = (await build([conv(1), demoted('d1', 'demoted one'), note('n1', 'trusted one')]))!
+      expect(out).toContain(`This project (${proj}) — saved notes, then past conversations:`)
+      expect(rows(out)[0]).toContain('trusted one')
+    })
+
+    it('is still led by an amended note: the person put the words right', async () => {
+      const out = (await build([conv(1), note('n1', 'an amended note', { correction: { kind: 'amend' } })]))!
+      expect(rows(out)[0]).toContain('an amended note')
+    })
   })
 
   it('lets the order decide who is cut when the lane has taken three of the ten slots', async () => {
@@ -1038,6 +1221,52 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
     const out = await buildContextPrimer(search, { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 })
     expect(rows(out).filter((r) => r.includes('how do I cut a release'))).toHaveLength(1)
     expect(out).toContain('the release workflow writes it')
+  })
+
+  // A row filed with no project (one the back-tagging has not reached yet) is listed under "Other saved context" while the row it
+  // pairs with sits in the project block. The passage is still said once, and where the project's own row was.
+  describe('when the two rows are filed differently, one under the project and one under none', () => {
+    const untagged = (id: string, content: string, over: Partial<PrimerHit> = {}) => chunk(id, content, { project: undefined, ...over })
+    const ask = (projectList: PrimerHit[], globalList: PrimerHit[]) =>
+      buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? projectList : globalList)), { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 })
+
+    it('carries the fuller one, in the project block, when only the head is filed under the project', async () => {
+      const out = (await ask([chunk('head', HEAD, { score: 0.9 }), OTHER], [untagged('full', FULL, { score: 0.85 })]))!
+      expect(out.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(out).toContain('the release workflow writes it')
+      expect(out).not.toContain('Other saved context')
+    })
+
+    it('puts the fuller one where the head was in the project block', async () => {
+      const top = chunk('top', 'something else entirely about caching and invalidation rules', { score: 0.95 })
+      const out = (await ask([top, chunk('head', HEAD, { score: 0.9 }), OTHER], [untagged('full', FULL, { score: 0.85 })]))!
+      expect(out.indexOf('something else entirely')).toBeLessThan(out.indexOf('the release workflow writes it'))
+      expect(out.indexOf('the release workflow writes it')).toBeLessThan(out.indexOf('we keep the retry queue'))
+    })
+
+    it('leaves out the head from "may NOT apply" when the project block carries the fuller one', async () => {
+      const out = (await ask([chunk('full', FULL, { score: 0.9 }), OTHER], [untagged('head', HEAD, { score: 0.85 })]))!
+      expect(rows(out).filter((r) => r.includes('how do I cut a release'))).toHaveLength(1)
+      expect(out).toContain('the release workflow writes it')
+      expect(out).not.toContain('Other saved context')
+    })
+
+    it('still lists an unrelated row filed under no project under "may NOT apply"', async () => {
+      const unrelated = untagged('unrelated', 'the build farm restarts every night at two', { score: 0.85 })
+      const out = (await ask([chunk('head', HEAD, { score: 0.9 }), OTHER], [untagged('full', FULL, { score: 0.88 }), unrelated]))!
+      expect(out).toContain('Other saved context (may NOT apply to this project):')
+      expect(out.slice(out.indexOf('Other saved context'))).toContain('the build farm restarts every night')
+      expect(out.slice(out.indexOf('Other saved context'))).not.toContain('how do I cut a release')
+      expect(out.match(/how do I cut a release/g)).toHaveLength(1)
+    })
+
+    it('is not a pair when the cut falls inside a word', async () => {
+      const a = chunk('a', 'release notes for v1', { score: 0.9 })
+      const b = untagged('b', long('release notes for v10'), { score: 0.85 })
+      const out = (await ask([a], [b]))!
+      expect(out.match(/release notes for v1/g)).toHaveLength(2) // "v1" is not the head of "v10": two passages, two lines
+      expect(out).toContain('Other saved context')
+    })
   })
 
   describe('in the freshness lane', () => {

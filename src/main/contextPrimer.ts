@@ -22,7 +22,7 @@
 // treat them as command substitution), simple dividers, single-line snippets.
 
 import { existsSync } from 'fs'
-import { adaptiveGate, dedupeHits, diversifyHits, dropPrefixDuplicates, isStrictPrefix, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
+import { adaptiveGate, dedupeHits, diversifyHits, dropPrefixDuplicates, isStrictPrefix, splitByHeads, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
 import { projectKeyOf } from './projectKey'
@@ -95,6 +95,10 @@ const isConversation = (h: PrimerHit): boolean =>
 
 const hitKey = (h: PrimerHit): string => h.id || h.content
 
+/** The project a hit is filed under, lowercased, or '' when it names none a digest can read (the store's slug is always text,
+ *  and a lister is not held to that: the builder never throws on what it is given). */
+const slugOf = (h: PrimerHit): string => (typeof h.project === 'string' ? h.project.toLowerCase() : '')
+
 /** How many passages of saved notes may lead the project block (a long note is stored in several, and each counts), and how
  *  many lessons the substance gate vouches for. Past these a note or a lesson ranks with the conversations, on the relevance
  *  the search gave it: a crowd of either cannot fill the block. */
@@ -112,6 +116,10 @@ const isGatedLesson = (h: PrimerHit): boolean =>
   (h.memoryType === 'semantic' || h.memoryType === 'procedural') &&
   h.correction?.kind !== 'demote' &&
   lessonSubstance(h.content).score >= KEEP_SCORE
+
+/** A saved note that leads the project block. One someone has demoted does not, for the same reason a demoted lesson does not
+ *  (isGatedLesson): it is unreliable, and keeps the place relevance gives it, still labelled as the note it is. */
+const leadsAsNote = (h: PrimerHit): boolean => isClaudeNote(h) && h.correction?.kind !== 'demote'
 
 // How many candidates to pull per inject slot before the relevance gate trims them.
 const CANDIDATE_FACTOR = 4
@@ -227,7 +235,7 @@ async function collectRecent(
     // stand", and the same memory still reaches the digest through relevance, where the overlay already ranked it.
     if (h.correction) return false
     // An automated run's memory is the newest there is and says nothing about any project, unless the digest is about it.
-    const slug = (h.project || '').toLowerCase()
+    const slug = slugOf(h)
     if (AUTOMATION_SLUGS.has(slug) && slug !== o.ownProject) return false
     return h.content.replace(/\s+/g, ' ').trim().length >= MIN_RECENT_CHARS // a string: the first line of this filter saw to it
   })
@@ -287,14 +295,26 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   // the relevance cut + cap to `limit`.
   // Claude Code's saved notes belong to the project they were written in. Another project's never enters a
   // primer, whatever the "share notes" switch says (that switch governs memory_search only): this digest is
-  // injected without anyone asking. With no project there is none for a note to belong to.
+  // injected without anyone asking. A note from a session run in the home folder belongs to no project, so a
+  // digest that names no project has none to show; only one launched from that very folder (its path, so its
+  // key) shows that folder's own.
+  //
+  // `scoped`: the hits came from a read the store scoped to this project itself. The store matched them by the key
+  // of the folder (and, once memory sync stamps a memory with its repository's key, by that key and the aliases of
+  // the computers that wrote it), so whose key a note carries is its to judge, not the path hash worked out here.
+  // Only a read that named no project has to be told apart by key in this builder: two repos can share a folder name.
   const projectKey = opts.projectPath && opts.projectPath.trim() ? projectKeyOf(opts.projectPath.trim()) : undefined
-  const foreignNote = (h: PrimerHit): boolean =>
-    isClaudeNote(h) && ((h.project || '').toLowerCase() !== project || (projectKey !== undefined && h.projectKey !== undefined && h.projectKey !== projectKey))
-  const withoutForeignNotes = (hits: PrimerHit[]): PrimerHit[] => (hits.some(foreignNote) ? hits.filter((h) => !foreignNote(h)) : hits)
-  const gate = (hits: PrimerHit[]): PrimerHit[] =>
+  const foreignNote = (h: PrimerHit, scoped = false): boolean => {
+    if (!isClaudeNote(h)) return false
+    if (slugOf(h) !== project) return true
+    if (project === '') return !(projectKey !== undefined && h.projectKey === projectKey) // belongs to no project
+    return !scoped && projectKey !== undefined && h.projectKey !== undefined && h.projectKey !== projectKey
+  }
+  const withoutForeignNotes = (hits: PrimerHit[], scoped: boolean): PrimerHit[] =>
+    (hits.some((h) => foreignNote(h, scoped)) ? hits.filter((h) => !foreignNote(h, scoped)) : hits)
+  const gate = (hits: PrimerHit[], scoped = false): PrimerHit[] =>
     adaptiveGate(
-      diversifyHits(dropPrefixDuplicates(dedupeHits(withoutForeignNotes(withoutCandidates(hits)))), { threshold: DIVERSITY_THRESHOLD }),
+      diversifyHits(dropPrefixDuplicates(dedupeHits(withoutForeignNotes(withoutCandidates(hits), scoped))), { threshold: DIVERSITY_THRESHOLD }),
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
@@ -303,7 +323,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
   const searchScope = (opts.projectPath && opts.projectPath.trim()) ? opts.projectPath.trim() : project
   let projectHits: PrimerHit[] = []
   if (project) {
-    try { projectHits = gate((await search({ query: opts.query, limit: candidateLimit, project: searchScope })) || []) } catch { projectHits = [] }
+    try { projectHits = gate((await search({ query: opts.query, limit: candidateLimit, project: searchScope })) || [], true) } catch { projectHits = [] }
   }
   let globalHits: PrimerHit[] = []
   try {
@@ -364,12 +384,16 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     // notes or lessons from filling the block; past them they rank with the conversations. The stable sort preserves the
     // score order the search already returned within each class, and the budget is the same one: this reorders, never adds.
     // The two searches rank the same corpus on different candidate sets, so a head can reach one list and the fuller chunk the
-    // other: say it once here too, now that the lists are one.
-    const pool = dropPrefixDuplicates([...fromProject, ...promoted], true)
+    // other: say it once here too, now that the lists are one. That holds across the two blocks as well: a passage the project
+    // block carries is not repeated under "may NOT apply" (the pair differs in project metadata when one row was back-tagged
+    // and the other was not), and a project passage whose fuller form sits in the other list is carried in that form.
+    const own = [...fromProject, ...promoted]
+    const { fuller, rest } = splitByHeads(own, others)
+    const pool = dropPrefixDuplicates([...own, ...fuller], true)
     let leadingNotes = 0
     let leadingLessons = 0
     const tier = pool.map((h): number => {
-      if (isClaudeNote(h)) return leadingNotes++ < LEADING_NOTES ? 0 : 2
+      if (leadsAsNote(h)) return leadingNotes++ < LEADING_NOTES ? 0 : 2
       if (isGatedLesson(h)) return leadingLessons++ < LEADING_LESSONS ? 1 : 2
       return isConversation(h) ? 2 : 3
     })
@@ -387,11 +411,11 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       if (!line) continue
       projLines.push(line)
       shown.push(h)
-      if (isClaudeNote(h)) notesShown++
+      if (leadsAsNote(h)) notesShown++
       else if (isGatedLesson(h)) lessonsShown++
     }
     const otherLines: string[] = []
-    for (const h of others) {
+    for (const h of rest) {
       if (projLines.length + otherLines.length >= room) break
       const line = lineOf(h)
       if (!line) continue
@@ -422,7 +446,7 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
     now,
     exclude: excludeFromRecent,
     carried: certain,
-    foreign: foreignNote,
+    foreign: (h) => foreignNote(h, project !== ''), // a lane that names a project is listed by the store, scoped to it
   })
   const roomFor = (lane: PrimerHit[]): number => Math.max(0, limit - lane.length)
   let block = relevance(recentHits, roomFor(recentHits))

@@ -15,6 +15,7 @@ import {
   normText,
   isStrictPrefix,
   dropPrefixDuplicates,
+  splitByHeads,
 } from '../../src/main/memoryEconomy'
 
 const DAY = 86_400_000
@@ -496,6 +497,58 @@ describe('memoryEconomy', () => {
       expect(dropPrefixDuplicates(same)).toBe(same)
       const blank = [mk('a', '', 0.9), mk('b', '- a list item', 0.8)]
       expect(dropPrefixDuplicates(blank)).toBe(blank)
+    })
+  })
+
+  describe('splitByHeads — how rows stand to the passages already kept', () => {
+    const FIRST = 'user: how do I cut a release?\n\nassistant: bump the version and push a tag'
+    const FULLER = `${FIRST}\n\nuser: and the changelog?\n\nassistant: the release workflow writes it`
+    const row = (id: string, content: string) => ({ id, content })
+
+    it('sorts a row into the head of a kept passage, the fuller form of one, or neither', () => {
+      const kept = [row('kept', FIRST)]
+      const head = row('head', 'user: how do I cut a release?')
+      const fuller = row('fuller', FULLER)
+      const other = row('other', 'we keep the retry queue in memory')
+      const out = splitByHeads(kept, [head, other, fuller])
+      expect(out.heads).toEqual([head])
+      expect(out.fuller).toEqual([fuller])
+      expect(out.rest).toEqual([other])
+    })
+
+    it('keeps the order of the rows within each group, and the rows themselves (same objects)', () => {
+      const kept = [row('kept', FIRST)]
+      const f1 = row('f1', `${FIRST} and then some`)
+      const f2 = row('f2', `${FIRST} and then more`)
+      const out = splitByHeads(kept, [f1, f2])
+      expect(out.fuller[0]).toBe(f1)
+      expect(out.fuller[1]).toBe(f2)
+    })
+
+    it('puts a row that is both a head of one kept passage and the fuller form of another with the heads', () => {
+      const kept = [row('short', FIRST), row('long', FULLER)]
+      const middle = row('middle', `${FIRST}\n\nuser: and the changelog?`)
+      expect(splitByHeads(kept, [middle])).toEqual({ heads: [middle], fuller: [], rest: [] })
+    })
+
+    it('folds whitespace and case before it compares, as isStrictPrefix does', () => {
+      const kept = [row('kept', 'The   Release script\ntags it')]
+      const fuller = row('fuller', 'the release SCRIPT tags it and pushes the tag')
+      expect(splitByHeads(kept, [fuller]).fuller).toEqual([fuller])
+    })
+
+    it('does not take a text for the head of one that merely shares its letters, nor equal text for a head', () => {
+      const kept = [row('kept', 'content 10')]
+      const out = splitByHeads(kept, [row('a', 'content 1'), row('b', 'content 10'), row('c', '')])
+      expect(out.heads).toEqual([])
+      expect(out.fuller).toEqual([])
+      expect(out.rest).toHaveLength(3)
+    })
+
+    it('has nothing to sort against an empty kept list, or from an empty row list', () => {
+      const rows = [row('a', FIRST)]
+      expect(splitByHeads([], rows)).toEqual({ heads: [], fuller: [], rest: rows })
+      expect(splitByHeads([row('k', FIRST)], [])).toEqual({ heads: [], fuller: [], rest: [] })
     })
   })
 })

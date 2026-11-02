@@ -254,6 +254,29 @@ export function isStrictPrefix(shorter: string, longer: string): boolean {
 }
 
 /**
+ * How the passages in `rows` stand to those already `kept`, each text folded once (isStrictPrefix folds both on every call,
+ * which a list of a few dozen against a few dozen should not pay):
+ *   - `heads`: a strict head of a kept passage, which is carried in its fuller form already;
+ *   - `fuller`: one a kept passage is a strict head of, which carries that passage in its fuller form;
+ *   - `rest`: unrelated.
+ * A row that is both goes to `heads`. Each keeps the order of `rows`. Pure.
+ */
+export function splitByHeads<T extends { content: string }>(
+  kept: ReadonlyArray<{ content: string }>,
+  rows: readonly T[],
+): { heads: T[]; fuller: T[]; rest: T[] } {
+  const out: { heads: T[]; fuller: T[]; rest: T[] } = { heads: [], fuller: [], rest: [] }
+  const folded = kept.map((k) => norm(k.content))
+  for (const row of rows) {
+    const text = norm(row.content)
+    if (folded.some((k) => isHead(text, k))) out.heads.push(row)
+    else if (folded.some((k) => isHead(k, text))) out.fuller.push(row)
+    else out.rest.push(row)
+  }
+  return out
+}
+
+/**
  * Drop every hit whose text is a strict head of another hit's, keeping the fuller one.
  *
  * The 30-minute ingest pass stores the trailing partial chunk of a session that is still going, and a later pass stores
