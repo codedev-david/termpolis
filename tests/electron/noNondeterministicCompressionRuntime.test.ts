@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterAll } from 'vitest'
 import { caseBody, realistic, editLoop, longRun, conversationCases, FIRST_MESSAGE } from './fixtures/lateGoldenCases'
 
 /**
@@ -8,7 +8,16 @@ import { caseBody, realistic, editLoop, longRun, conversationCases, FIRST_MESSAG
  * words is only as good as the words: a clock or a generator reached through an alias or a cast
  * (`const R = Math; R.random()`, `(Date as unknown as () => string)()`, `const pf = performance; pf.now()`)
  * does not contain them. This is the other half. It RUNS the code, with a counter on every source of time
- * and of randomness the runtime has, and asserts that nothing was called: it cannot be spelled around.
+ * and of randomness the runtime has, and asserts that nothing was called.
+ *
+ * The counters go in once, at the top of this file, before any module under test is first evaluated, and stay
+ * until the file is done. A counter installed later (around each run, say) cannot see a clock that a module took
+ * as an alias when it was evaluated (`const clock = Date.now`, `const R = Math`) and calls under another name:
+ * the alias holds the unwrapped function. With the counters first, the alias holds the counted one. What this
+ * still cannot see is a source of time that is not on the list below: a formatter that reads the current time
+ * inside the engine (`new Intl.DateTimeFormat().format()`), a native binding, a timer that is read back, a clock
+ * of another realm. That is why the static sweep stays beside it, and why the sweep refuses the words Date, Intl,
+ * performance, globalThis and Math.random outright.
  *
  * What runs: the rewriter under the three behaviours a request can get (Late, the holdout and the kill
  * switch), with the decay pass on, over bodies of every shape the fixtures make; the arm choice; the stub
@@ -63,12 +72,15 @@ function watchEverything(): () => void {
   return () => { for (const u of undo.reverse()) u() }
 }
 
-/** Run `fn` with everything watched, and say what it read. */
+// Installed before anything below imports the code under test, and undone when this file is done.
+const unwatchAll = watchEverything()
+afterAll(() => { unwatchAll() })
+
+/** Run `fn` and say what it read. Everything is already watched; this only arms the counter around the call. */
 function reads(fn: () => void): string[] {
-  const unwatch = watchEverything()
   hits.what = []
   hits.armed = true
-  try { fn() } finally { hits.armed = false; unwatch() }
+  try { fn() } finally { hits.armed = false }
   return [...hits.what]
 }
 
@@ -114,11 +126,46 @@ describe('the watcher sees every source it is there to see (the net is not vacuo
     expect(reads(() => { crypto.randomInt(10) })).toEqual(['crypto.randomInt'])
   })
 
-  it('reports nothing for work that reads neither, and puts everything back afterwards', () => {
+  it('reports a clock or a generator a module took as an alias when it was first evaluated, not only one read by name at call time', async () => {
+    vi.resetModules()
+    const aliased = await import('./fixtures/clockAliasedAtLoad')
+    expect(reads(() => { aliased.readAliasedClock() })).toEqual(['Date.now'])
+    expect(reads(() => { aliased.readAliasedDate() })).toEqual(['new Date()'])
+    expect(reads(() => { aliased.readAliasedRandom() })).toEqual(['Math.random'])
+    expect(reads(() => { aliased.readAliasedStopwatch() })).toEqual(['performance.now'])
+  })
+
+  it('reports nothing for work that reads neither, and leaves every watched function working', () => {
     expect(reads(() => { JSON.stringify({ a: [1, 2, 3] }); [3, 1, 2].sort() })).toEqual([])
     expect(Date.now()).toBeGreaterThan(0)
     expect(typeof Math.random()).toBe('number')
     expect(new Date(0).getTime()).toBe(0)
+    expect(new Date(0) instanceof Date).toBe(true)
+    expect(typeof performance.now()).toBe('number')
+    expect(process.hrtime.bigint()).toBeGreaterThan(0n)
+    expect(Array.isArray(process.hrtime())).toBe(true)
+  })
+
+  it('counts nothing while it is not armed: the framework reads the clock between tests', () => {
+    hits.what = []
+    Date.now(); Math.random(); performance.now(); void new Date()
+    expect(hits.what).toEqual([])
+  })
+
+  it('puts back exactly what a watch replaced when it is undone', () => {
+    const before = { now: Date.now, random: Math.random, perf: performance.now, D: globalThis.Date, hr: process.hrtime, big: process.hrtime.bigint, uuid: globalThis.crypto.randomUUID }
+    const undo = watchEverything()
+    expect(Date.now).not.toBe(before.now)
+    expect(globalThis.Date).not.toBe(before.D)
+    expect(process.hrtime.bigint).not.toBe(before.big)
+    undo()
+    expect(Date.now).toBe(before.now)
+    expect(Math.random).toBe(before.random)
+    expect(performance.now).toBe(before.perf)
+    expect(globalThis.Date).toBe(before.D)
+    expect(process.hrtime).toBe(before.hr)
+    expect(process.hrtime.bigint).toBe(before.big)
+    expect(globalThis.crypto.randomUUID).toBe(before.uuid)
   })
 })
 

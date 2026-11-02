@@ -11,6 +11,9 @@ import * as http from 'http'
  */
 
 const fault = vi.hoisted(() => ({ rewrite: false, classify: false, stamp: false, turn: false }))
+// What the server did, in order, when it read an answer: the end of the client's response and the three steps of
+// reading the stream. Only the order test below looks at it.
+const order = vi.hoisted(() => ({ trace: [] as string[], proxyPort: -1 }))
 
 vi.mock('../../src/main/headroomProxy/wireCompress', async () => {
   const real = await vi.importActual<typeof import('../../src/main/headroomProxy/wireCompress')>('../../src/main/headroomProxy/wireCompress')
@@ -51,7 +54,16 @@ vi.mock('../../src/main/headroomProxy/usageParse', async () => {
   const real = await vi.importActual<typeof import('../../src/main/headroomProxy/usageParse')>('../../src/main/headroomProxy/usageParse')
   return {
     ...real,
+    decodeBody: (...a: Parameters<typeof real.decodeBody>): ReturnType<typeof real.decodeBody> => {
+      order.trace.push('decodeBody')
+      return real.decodeBody(...a)
+    },
+    parseUsageFromSse: (...a: Parameters<typeof real.parseUsageFromSse>): ReturnType<typeof real.parseUsageFromSse> => {
+      order.trace.push('parseUsage')
+      return real.parseUsageFromSse(...a)
+    },
     parseTurnShapeFromSse: (...a: Parameters<typeof real.parseTurnShapeFromSse>): ReturnType<typeof real.parseTurnShapeFromSse> => {
+      order.trace.push('parseTurn')
       if (fault.turn) throw new Error('reading the turn blew up')
       return real.parseTurnShapeFromSse(...a)
     },
@@ -216,5 +228,76 @@ describe('the server keeps the usage of an answer whose turn it cannot read', ()
     expect(results[0].usage).toEqual({ input_tokens: 3, cache_read_input_tokens: 52_000, cache_creation_input_tokens: 10, output_tokens: 90 })
     expect(results[0].turn).toEqual({ toolCalls: 0, retrieveCalls: 0, pure: false })
     expect(results[0]).toMatchObject({ changed: true, status: 200 })
+  })
+})
+
+// Speed (D11). Reading an answer (unzipping it, then two passes over it for its usage and the shape of its turn) takes a
+// few milliseconds on a short one and tens on a long one, and the person reading it must not wait for that: the
+// client's response is ended FIRST and the bookkeeping runs after, as it did in v1.54.4 for the usage. A parse moved
+// above res.end() would delay the end of every streamed answer by the parse time and nothing else would notice.
+describe('the server ends the client\'s answer before it reads it', () => {
+  let stub: http.Server, proxy: http.Server, port: number
+  let realEnd: typeof http.ServerResponse.prototype.end
+  const done: unknown[] = []
+  const ev = (type: string, data: object): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`
+  const SSE =
+    ev('message_start', { message: { id: 'm', role: 'assistant', content: [], usage: { input_tokens: 3, cache_read_input_tokens: 52_000, cache_creation_input_tokens: 10, output_tokens: 1 } } }) +
+    ev('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 90 } })
+
+  beforeAll(async () => {
+    stub = http.createServer((req, res) => {
+      req.on('data', () => {})
+      req.on('end', () => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(SSE) })
+    })
+    await new Promise<void>((r) => stub.listen(0, '127.0.0.1', () => r()))
+    proxy = createProxyServer({ upstreamHost: '127.0.0.1', upstreamPort: (stub.address() as { port: number }).port, useHttps: false, onResult: (r) => { done.push(r) } })
+    await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', () => r()))
+    port = (proxy.address() as { port: number }).port
+    order.proxyPort = port
+    // The stub in this file is a server too, so only a response written on the proxy's own port is the one that matters.
+    realEnd = http.ServerResponse.prototype.end
+    http.ServerResponse.prototype.end = function (this: http.ServerResponse, ...a: unknown[]): http.ServerResponse {
+      if (this.socket?.localPort === order.proxyPort) order.trace.push('end')
+      return (realEnd as (...b: unknown[]) => http.ServerResponse).apply(this, a)
+    } as typeof realEnd
+  })
+  afterAll(() => { http.ServerResponse.prototype.end = realEnd; order.proxyPort = -1; stub.close(); proxy.close() })
+  beforeEach(() => { done.length = 0; order.trace.length = 0 })
+
+  const send = (b: string): Promise<number> => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(b) } }, (res) => {
+      res.on('data', () => {})
+      res.on('end', () => resolve(res.statusCode ?? 0))
+    })
+    req.on('error', reject); req.write(b); req.end()
+  })
+
+  it('ends the response first, then decodes the stream, then reads the usage, then the turn', async () => {
+    expect(await send(body)).toBe(200)
+    await vi.waitFor(() => { expect(done).toHaveLength(1) })
+    expect(order.trace).toEqual(['end', 'decodeBody', 'parseUsage', 'parseTurn'])
+  })
+
+  it('does the same for a request the rewriter left unchanged: it is counted, so its answer is read, still after the end', async () => {
+    const small = JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hello there' }] })
+    expect(await send(small)).toBe(200)
+    await vi.waitFor(() => { expect(done).toHaveLength(1) })
+    expect(done[0]).toMatchObject({ changed: false })
+    expect(order.trace).toEqual(['end', 'decodeBody', 'parseUsage', 'parseTurn'])
+  })
+
+  it('and reads nothing of the answer to a request the rewriter threw on, which is forwarded untouched and counted nowhere', async () => {
+    fault.rewrite = true
+    expect(await send(body)).toBe(200)
+    await vi.waitFor(() => { expect(order.trace).toContain('end') })
+    expect(order.trace).toEqual(['end'])
+    expect(done).toHaveLength(0)
+  })
+
+  it('observes only the proxy\'s own responses, so the test above is about the server and not about the stub', async () => {
+    await send(body)
+    await vi.waitFor(() => { expect(done).toHaveLength(1) })
+    // The stub also ends a response (with the stream) before the proxy reads it; it is not in the trace.
+    expect(order.trace.filter((t) => t === 'end')).toHaveLength(1)
   })
 })

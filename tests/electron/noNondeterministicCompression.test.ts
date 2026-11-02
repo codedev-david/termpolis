@@ -21,12 +21,19 @@ const ROOTS = [
 const EXEMPT = new Set(['proxySupervisor.ts', 'receiptStore.ts'])
 // Every way a clock or a random number gets into a module: the usual calls, a bare Date() call, a computed
 // member (Date['now'], performance['now']), the random calls of node's and the web's crypto, and the uptime.
+// The last line is the bare words. A pattern for the CALL is blind to an alias taken once at module scope
+// (`const clock = Date.now`, `const D = Date`, `const rnd = Math.random`) and read later under another name, so the
+// objects themselves may not appear in these modules at all: nothing here has a use for the global Date, for
+// Math.random, for performance, for globalThis or for Intl (whose formatters read the current time).
+// noNondeterministicCompressionRuntime.test.ts is the other half: it runs the code under counters installed
+// before the code is first evaluated, so an alias taken at load is a counted one.
 const FORBIDDEN = new RegExp([
   String.raw`\bDate\.now\s*\(`, String.raw`\bnew Date\s*\(`, String.raw`\bDate\s*\(`, String.raw`\bDate\s*\[`,
   String.raw`\bMath\.random\s*\(`, String.raw`\bperformance\.now\s*\(`, String.raw`\bperformance\s*\[`, String.raw`\bprocess\.hrtime\b`,
   String.raw`\brandomUUID\b`, String.raw`\brandomBytes\b`, String.raw`\brandomInt\b`, String.raw`\brandomFill(?:Sync)?\b`,
   String.raw`\bgetRandomValues\b`, String.raw`\bcrypto\.random`, String.raw`\buptime\s*\(`,
   String.raw`\[\s*['"\x60]now['"\x60]\s*\]`,
+  String.raw`\bDate\b`, String.raw`\bMath\s*(?:\.\s*random\b|\[)`, String.raw`\bperformance\b`, String.raw`\bglobalThis\b`, String.raw`\bIntl\b`,
 ].join('|'))
 
 function tsFiles(dir: string): string[] {
@@ -90,11 +97,23 @@ describe('the sweep pattern itself', () => {
     'crypto.getRandomValues(new Uint8Array(4))', 'webcrypto.getRandomValues(a)', 'randomFillSync(buf)', 'const u = process.uptime()',
     'const u = os.uptime()', 'const k = globalThis[`now`]',
   ]
+  // The aliases a call-shaped pattern cannot see: the clock or the generator is TAKEN at module scope and called
+  // later under another name, so the line that reads it has no `Date.now(` in it. Each of these was planted in the
+  // rewriter by a verifier and passed both this sweep and the runtime net before the bare words were added.
+  const ALIASED = [
+    'const clock = Date.now', 'const __D = Date', 'const rnd = Math.random', "const r = Math['random']",
+    'const tick = performance.now.bind(performance)', "const stamp = Date['no' + 'w']", 'const fmt = new Intl.DateTimeFormat(\'en\')',
+    'const g = globalThis', 'const { now } = Date', 'const T = typeof Date',
+  ]
   const FINE = [
     'const hash = crypto.createHash(\'sha1\').update(s).digest(\'hex\')', 'const isoDate = format(x)', 'type DateLike = string',
     'const candidate = makeCandidate(text)', 'export function updateDate(x) {}', 'const knowledge = 1', 'const nowhere = 2',
     'const now = elisionRevision()', 'revision++',
+    // Words that only contain the bare ones, and are ordinary code.
+    'const performanceBudget = 3', 'const mathRandomFree = true', 'type DateRange = [number, number]', 'const globalThisIsNot = 1',
+    'const internationalised = false', 'const Mathematics = 1',
   ]
   it.each(FLAGGED)('flags %s', (line) => { expect(FORBIDDEN.test(line)).toBe(true) })
+  it.each(ALIASED)('flags the alias %s, where it is taken', (line) => { expect(FORBIDDEN.test(line)).toBe(true) })
   it.each(FINE)('lets %s through', (line) => { expect(FORBIDDEN.test(line)).toBe(false) })
 })
