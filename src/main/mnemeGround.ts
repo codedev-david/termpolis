@@ -100,6 +100,9 @@ export async function groundEpisode(episode: Episode, deps: GroundDeps): Promise
   const written: string[] = []
   let skipped = 0
   for (const lesson of lessons) {
+    // Not an object, so not a lesson the gate could refuse. Skipped uncounted, as the write's try/catch below skipped it before the
+    // gate existed; a bad entry never costs the batch.
+    if (!lesson || typeof lesson !== 'object') continue
     const verdict = lessonSubstance(lesson.content)
     const band = substanceBand(verdict.score)
     if (band === 'drop') { skipped++; continue }

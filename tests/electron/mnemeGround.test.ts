@@ -207,6 +207,16 @@ describe('mnemeGround — the substance gate', () => {
     })
     expect(res).toEqual({ written: ['mem-1'], lessons: 2, skipped: 1 })
   })
+
+  // The header promises a flaky distiller never aborts the batch. An entry that is not an object at all is not a lesson the gate
+  // refused and not one the store did: it is skipped where it stands, uncounted, and the lessons after it are still written.
+  it('skips an entry that is not an object at all, and writes the lessons around it', async () => {
+    const write = vi.fn().mockResolvedValueOnce({ id: 'mem-1' }).mockResolvedValueOnce({ id: 'mem-2' })
+    const entries = [null, lesson({ content: KEEP_A }), undefined, 0, '', 'a string', true, lesson({ content: KEEP_C })] as unknown as Lesson[]
+    const res = await groundEpisode(episode(), { distill: vi.fn().mockResolvedValue(entries), write })
+    expect(res).toEqual({ written: ['mem-1', 'mem-2'], lessons: 8, skipped: 0 })
+    expect(write.mock.calls.map((c) => c[0].content)).toEqual([KEEP_A, KEEP_C])
+  })
 })
 
 describe('mnemeGround — connections (entity nodes + typed edges)', () => {
