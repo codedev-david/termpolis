@@ -205,15 +205,17 @@ export function renderReceiptMarkdown(receipt: SignedReceipt): string {
     `|---|---|`,
     `| Requests measured | ${fmt(p.requests)} |`,
     `| Tokens examined | ${fmt(p.origTokens)} |`,
-    `| Saved (net of give-back) | **${fmt(p.netSavedTokens)}** (${pct(p.savedPct)}) |`,
+    `| Saved (net of give-back and text asked back) | **${fmt(p.netSavedTokens)}** (${pct(p.savedPct)}) |`,
     `| Cost of reversing compression | ${fmt(p.givebackTokens)} across ${fmt(p.retrieves)} retrievals |`,
     `| Retrieval rate | ${pct(p.retrieveRate * 100)} of requests |`,
     '',
-    // The signed payload is in tokens of text. Since v1.55 the app's headline is in billed units and is net of
-    // two things this payload does not carry (the turns that fetched shortened text, and the credit for text
-    // already asked back); changing the signed payload needs a new version and a new verifier, so until then
-    // the receipt says what it leaves out rather than let two numbers disagree without a word.
-    'These are tokens of text, before two costs the in-app headline subtracts: the turns that fetched shortened text, and the credit for text already asked back. Settings → Token Savings shows the billed-unit figure net of both.',
+    // The signed payload is in tokens of text. Its net figure is unifiedReceipt's: gross, less the give-back,
+    // less the credit for text the conversation already asked back (the payload carries the first and the
+    // last but not the credit, so gross less give-back is not the figure and this note says why). Since v1.55
+    // the app's headline is in billed units and is also net of the turns that fetched shortened text, which
+    // this payload does not carry; changing the signed payload needs a new version and a new verifier, so until
+    // then the receipt says what it leaves out rather than let two numbers disagree without a word.
+    'These are tokens of text, not billed units. The saved figure already has the give-back and the credit for text already asked back taken out; it does not subtract the turns that fetched shortened text, which the headline in Settings → Token Savings does.',
     '',
     '## Where the remaining bill is',
     '',
