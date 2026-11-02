@@ -819,6 +819,113 @@ describe('buildContextPrimer — a saved note that belongs to no project', () =>
   })
 })
 
+// The builder drops what it must not show (another project's saved notes, a lesson the gate holds back) AFTER the search has cut
+// its answer to the limit it was asked for, best rows first. A page those rows fill used to leave the digest thin or empty with
+// rows it may show sitting just behind them, so each of its two searches is read the way the doors are (doorFill.ts): the first
+// read is the one it always made, and it asks again, deeper, only while hidden rows left it short of a full page.
+describe('buildContextPrimer — a search page that rows it must not show have crowded', () => {
+  const proj = 'termpolis'
+  const NOW = 1_700_000_000_000
+  const HOUR = 3_600_000
+  const foreignNotes = (n: number): PrimerHit[] => Array.from({ length: n }, (_, i) => ({
+    id: `f${i + 1}`, content: `a note of the billing project, number ${i + 1}`, source: 'claude-notes', agentId: 'claude-notes', kind: 'fact', score: 0.95,
+    memoryType: 'summary', tags: ['type:reference', `note:f${i + 1}.md`], project: 'billing', ts: NOW - 5 * HOUR,
+  }))
+  const heldBack = (n: number): PrimerHit[] => Array.from({ length: n }, (_, i) => ({
+    id: `h${i + 1}`, content: `a lesson the gate held back, number ${i + 1}`, source: 'claude', agentId: 'mneme', kind: 'fact', score: 0.95,
+    memoryType: 'procedural', tags: ['candidate'], project: proj, ts: NOW - 5 * HOUR,
+  }))
+  const convs = (n: number): PrimerHit[] => Array.from({ length: n }, (_, i) => ({
+    id: `c${i + 1}`, content: `conversation ${i + 1} alpha${i + 1} beta${i + 1} gamma${i + 1} delta${i + 1}`, source: 'claude', agentId: 'claude-history', kind: 'message',
+    score: 0.9, project: proj, ts: NOW - 3 * HOUR,
+  }))
+  /** A search that answers the way the store does: the best rows first, cut to the limit it is given, at most 100. */
+  const store = (rows: PrimerHit[], scoped: PrimerHit[] = []) =>
+    vi.fn(async (o: { limit?: number; project?: string }) => (o.project ? scoped : rows).slice(0, Math.min(Math.max(o.limit ?? 10, 1), 100)))
+  const limits = (search: ReturnType<typeof store>, scope: 'project' | 'global'): Array<number | undefined> =>
+    search.mock.calls.filter((c) => (scope === 'project') === (c[0].project !== undefined)).map((c) => c[0].limit)
+  const ids = (out: string | null): string[] => (out ?? '').split('\n').filter((l) => l.startsWith('- [')).map((l) => l.replace(/^- \[[^\]]*\] /, ''))
+
+  it('shows rows it may show that sit behind 45 other projects\' notes, in a digest that names no project', async () => {
+    const search = store([...foreignNotes(45), ...convs(8)])
+    const out = await buildContextPrimer(search, { query: 'q', now: NOW, limit: 10 })
+    expect(ids(out).filter((l) => l.startsWith('conversation'))).toHaveLength(8)
+    expect(out).not.toContain('billing project')
+  })
+
+  it('does the same in a digest for a project whose own search found nothing (the folder with no memory of its own)', async () => {
+    const elsewhere = convs(5).map((c) => ({ ...c, project: 'other-app' }))
+    const search = store([...foreignNotes(60), ...elsewhere], [])
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, projectPath: 'C:/work/termpolis', now: NOW, limit: 10 })
+    expect(ids(out).filter((l) => l.startsWith('conversation'))).toHaveLength(5)
+    expect(out).toContain('Other saved context (may NOT apply to this project):')
+  })
+
+  it('asks for the candidates it always asked for, then twice that, and never above 100', async () => {
+    const search = store([...foreignNotes(200), ...convs(5)])
+    await buildContextPrimer(search, { query: 'q', now: NOW, limit: 10 })
+    expect(limits(search, 'global')).toEqual([40, 80, 100])
+  })
+
+  it('also reads the project search deeper when lessons the gate holds back crowd it', async () => {
+    const search = store([], [...heldBack(30), ...convs(20)])
+    const out = await buildContextPrimer(search, { query: 'q', project: proj, projectPath: 'C:/work/termpolis', now: NOW, limit: 5 })
+    expect(limits(search, 'project')).toEqual([20, 40, 80]) // 20 = 4 x 5; 30 held back sit in the first 30 rows
+    expect(ids(out).filter((l) => l.startsWith('conversation')).length).toBeGreaterThan(0)
+    expect(out).not.toContain('held back')
+  })
+
+  it('asks once, exactly as before, when nothing it must not show was in the page', async () => {
+    const search = store(convs(60), convs(60))
+    await buildContextPrimer(search, { query: 'q', project: proj, projectPath: 'C:/work/termpolis', now: NOW, limit: 10 })
+    expect(search.mock.calls.map((c) => c[0])).toEqual([
+      { query: 'q', limit: 40, project: 'C:/work/termpolis' },
+      { query: 'q', limit: 40 },
+    ])
+  })
+
+  it('asks once when the store had no more to give than was asked for', async () => {
+    const search = store([...foreignNotes(5), ...convs(3)])
+    await buildContextPrimer(search, { query: 'q', now: NOW, limit: 10 })
+    expect(limits(search, 'global')).toEqual([40])
+  })
+
+  it('does not ask for a deeper page when what it hid was this project\'s own note (it is shown, not hidden)', async () => {
+    const mine = foreignNotes(40).map((n, i) => ({ ...n, id: `m${i}`, project: proj }))
+    const search = store(mine, mine)
+    await buildContextPrimer(search, { query: 'q', project: proj, projectPath: 'C:/work/termpolis', now: NOW, limit: 10 })
+    expect(limits(search, 'global')).toEqual([40])
+  })
+
+  it('keeps what the first page gave when a deeper read fails, and never throws', async () => {
+    const rows = [...foreignNotes(40), ...convs(3)]
+    const search = vi.fn(async (o: { limit?: number }) => {
+      if ((o.limit ?? 0) > 40) throw new Error('index busy')
+      return rows.slice(0, o.limit ?? 10)
+    })
+    const out = await buildContextPrimer(search, { query: 'q', now: NOW, limit: 10 })
+    expect(out).toBeNull() // the first page held only other projects' notes: nothing it may show, and nothing lost to the failure
+    expect(search).toHaveBeenCalledTimes(2)
+    const withKept = vi.fn(async (o: { limit?: number }) => {
+      if ((o.limit ?? 0) > 40) throw new Error('index busy')
+      return [...foreignNotes(30), ...convs(10)].slice(0, o.limit ?? 10)
+    })
+    expect(ids(await buildContextPrimer(withKept, { query: 'q', now: NOW, limit: 10 })).filter((l) => l.startsWith('conversation')).length).toBeGreaterThan(0)
+  })
+
+  it('treats a first read that fails exactly as it always did', async () => {
+    const search = vi.fn(async () => { throw new Error('index busy') })
+    expect(await buildContextPrimer(search, { query: 'q', now: NOW })).toBeNull()
+    expect(search).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads a search that answers with nothing at all as an empty page', async () => {
+    const search = vi.fn(async () => null as unknown as PrimerHit[])
+    expect(await buildContextPrimer(search, { query: 'q', now: NOW })).toBeNull()
+    expect(search).toHaveBeenCalledTimes(1)
+  })
+})
+
 // The lane reads every row it is given and never throws, whatever a lister hands back.
 describe('buildContextPrimer — a lane row whose fields are not what the store writes', () => {
   const NOW = 1_700_000_000_000

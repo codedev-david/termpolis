@@ -2714,6 +2714,125 @@ describe('MCP read paths never serve a lesson the substance gate holds back', ()
   })
 })
 
+// The searches behind every digest and memory_anticipate drop a retracted memory and a lesson the gate holds back AFTER the
+// store has cut the read to its limit, best rows first. A read whose best rows were of that kind used to come back short, or
+// empty, with rows the agent may have sitting just behind them (the four doors had the same defect: see doorFill.ts). The store
+// here answers the way the real one does: the best rows first, cut to the limit it is given, at most 100.
+describe('the searches behind a digest and memory_anticipate ask again, deeper, when hidden rows crowd the page', () => {
+  const held = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ id: `k${i + 1}`, content: `held back lesson ${i + 1}`, tags: ['candidate'], agentId: 'mneme', score: 1, memoryType: 'procedural', source: 'claude', importance: 0.9 }))
+  const kept = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ id: `c${i + 1}`, content: `a kept lesson ${i + 1}`, tags: ['note:x'], score: 0.8, memoryType: 'procedural', source: 'claude', importance: 0.7 }))
+  const notes = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ id: `n${i + 1}`, content: `note ${i + 1}`, source: 'claude-notes', agentId: 'claude-notes', tags: ['type:reference', `note:n${i + 1}.md`], score: 1, memoryType: 'summary', importance: 0.9, project: 'billing' }))
+  const faithful = (rows: any[]) => async (o: any) => rows.slice(0, Math.min(Math.max(o.limit ?? 10, 1), 100)) as never
+  const asked = (): unknown[] => mem.memorySearch.mock.calls.map((c) => (c[0] as { limit?: number }).limit)
+  /** The very search function every digest is built from (the Memory panel's, the launch check's, memory_primer's, exec's). */
+  const digestSearch = async (): Promise<(o: any) => Promise<any[]>> => {
+    primer.buildContextPrimer.mockResolvedValueOnce('- digest')
+    await invoke('memory:build-primer', { query: 'q', cwd: 'C:/repos/termpolis' })
+    return primer.buildContextPrimer.mock.calls.at(-1)![0] as (o: any) => Promise<any[]>
+  }
+
+  // The correction overlay is module state: a retraction made here must not reach the next test.
+  const forgetCorrections = async (): Promise<void> => { (await import('../../src/main/memoryCorrectionStore')).resetMemoryCorrections() }
+  beforeEach(async () => {
+    await forgetCorrections()
+    mem.memorySearch.mockReset()
+    mem.memorySearch.mockImplementation(async () => [] as any[])
+    await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: false })
+  })
+  afterEach(async () => {
+    await forgetCorrections()
+    mem.memorySearch.mockReset()
+    mem.memorySearch.mockImplementation(async () => [] as any[])
+  })
+
+  it.each([5, 10, 40])('gives a digest the %i rows it asks for when 30 held-back lessons hold the best places', async (limit) => {
+    mem.memorySearch.mockImplementation(faithful([...held(30), ...kept(60)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    const got = await search({ query: 'q', limit })
+    expect(got.map((r: any) => r.id)).toEqual(Array.from({ length: limit }, (_, i) => `c${i + 1}`))
+  })
+
+  it('asks for what the digest asked for first, then twice that, and never above the most the store gives', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(150), ...kept(5)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect(await search({ query: 'q', limit: 40 })).toEqual([]) // 150 held back ahead of everything: nothing it may show within the store's reach
+    expect(asked()).toEqual([40, 80, 100])
+  })
+
+  it('starts from the store\'s own default when no limit is named', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(15), ...kept(12)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    const got = await search({ query: 'q' })
+    expect(got.map((r: any) => r.id)).toEqual(Array.from({ length: 10 }, (_, i) => `c${i + 1}`)) // the 10 it would have read
+    expect(asked()).toEqual([undefined, 20, 40]) // a page of 20 that came back cut short may have more behind it: one more ask finds there is not
+  })
+
+  it('asks the store once when nothing was hidden', async () => {
+    mem.memorySearch.mockImplementation(faithful(kept(60)))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect(await search({ query: 'q', limit: 5 })).toHaveLength(5)
+    expect(asked()).toEqual([5])
+  })
+
+  it('asks the store once when it had no more to give than was asked for', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(2), ...kept(2)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect((await search({ query: 'q', limit: 10 })).map((r: any) => r.id)).toEqual(['c1', 'c2'])
+    expect(asked()).toEqual([10])
+  })
+
+  it('does the same for what someone retracted, which the overlay drops after the cut as well', async () => {
+    const { correctMemory } = await import('../../src/main/memoryCorrectionStore')
+    for (const id of ['c1', 'c2']) correctMemory({ id, kind: 'retract', reason: 'wrong', by: 'david' })
+    mem.memorySearch.mockImplementation(faithful(kept(20)))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    expect((await search({ query: 'q', limit: 3 })).map((r: any) => r.id)).toEqual(['c3', 'c4', 'c5'])
+    expect(asked()).toEqual([3, 6])
+  })
+
+  it('leaves the options it was given alone but for the limit', async () => {
+    mem.memorySearch.mockImplementation(faithful([...held(4), ...kept(10)]))
+    const search = await digestSearch()
+    mem.memorySearch.mockClear()
+    await search({ query: 'q', limit: 4, project: 'C:/repos/termpolis' })
+    expect(mem.memorySearch.mock.calls.map((c) => c[0])).toEqual([
+      { query: 'q', limit: 4, project: 'C:/repos/termpolis' },
+      { query: 'q', limit: 8, project: 'C:/repos/termpolis' },
+    ])
+  })
+
+  describe('memory_anticipate', () => {
+    const task = 'the deploy fails with ENOENT'
+
+    it('reads its window of rows an agent may be handed: 30 saved notes at the top do not eat it', async () => {
+      mem.memorySearch.mockImplementation(faithful([...notes(30), ...kept(10)]))
+      const got = await mcp.memoryAnticipate({ task, limit: 2 })
+      expect(got.map((r: any) => r.id)).toEqual(['c1', 'c2'])
+      expect(asked().slice(0, 2)).toEqual([16, 32]) // 2 x 8, then twice that
+    })
+
+    it('still reads the window once when there was nothing to hide', async () => {
+      mem.memorySearch.mockImplementation(faithful(kept(30)))
+      expect((await mcp.memoryAnticipate({ task, limit: 2 })).map((r: any) => r.id)).toEqual(['c1', 'c2'])
+      expect(asked()).toEqual([16])
+    })
+
+    it('hands the general notes along once notes may help in other projects, and reads the window once', async () => {
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      mem.memorySearch.mockImplementation(faithful([...notes(30), ...kept(10)]))
+      const got = await mcp.memoryAnticipate({ task, limit: 2 })
+      expect(got.map((r: any) => r.id)).toEqual(['n1', 'n2']) // type:reference travels; the importance bar (0.6) holds
+      expect(asked()).toEqual([16])
+    })
+  })
+})
+
 // =========================================================================
 // recall noting — the half that makes outcome grounding possible
 // =========================================================================

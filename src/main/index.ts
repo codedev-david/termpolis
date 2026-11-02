@@ -2501,8 +2501,13 @@ const primerRecent: PrimerRecent = createPrimerRecent({ list: (o) => memoryList(
  *  primer (the Memory panel's preview, the launch check, a headless run's, the MCP one) and
  *  `memory_anticipate` included. Through v1.46 only `memory_search` applied the overlay, so a
  *  retracted fact still reached agents through the other five tools; through v1.54 three of
- *  the four primers still searched raw. */
-const correctedSearch: typeof memorySearch = async (opts) => applyCorrections(await memorySearch(opts))
+ *  the four primers still searched raw.
+ *
+ *  The overlay drops what was retracted and every lesson the substance gate holds back AFTER the store has cut the read to
+ *  its limit, best rows first, so a read whose best rows were of that kind came back short, or empty, with rows an agent may
+ *  have sitting just behind them. It asks again, deeper, while that is so (doorFill.ts), as the four doors do. */
+const correctedSearch: typeof memorySearch = (opts) =>
+  fillVisible(opts.limit, (limit) => memorySearch({ ...opts, limit }), (rows) => applyCorrections(rows), SEARCH_READ)
 
 // Pre-context primer: pull the most relevant memories for a query (e.g. the
 // user's first ask or the active project) so it can be injected as an agent's
@@ -3896,7 +3901,9 @@ async function semanticPoolOptions(
         // ranked just below the naive top-`limit` is a false negative and the fleet re-derives it.
         // 1.55.0: this door names no project, so a saved note (importance 0.9) would reach every project: none does unless
         // the user lets general notes help in other projects, and then only the general kinds (claudeNotesShare.ts).
-        const hits = withoutUnshareableNotes(await correctedSearch({ query: q, limit: limit * 8 }), getShareNotesAcrossProjects())
+        // The window is of rows an agent may be handed: a crowd of saved notes at the top does not eat it (doorFill.ts).
+        const sharing = getShareNotesAcrossProjects()
+        const hits = await fillVisible(limit * 8, (window) => correctedSearch({ query: q, limit: window }), (rows) => withoutUnshareableNotes(rows, sharing), SEARCH_READ)
         return hits.filter((h) => h.memoryType === 'procedural' || (h.importance ?? 0) >= 0.6).slice(0, limit)
       },
       memoryConflicts: async (opts) => {

@@ -23,6 +23,7 @@
 
 import { existsSync } from 'fs'
 import { adaptiveGate, dedupeHits, diversifyHits, dropPrefixDuplicates, isStrictPrefix, splitByHeads, truncateContent, summarizePrimerCost, type PrimerCost } from './memoryEconomy'
+import { fillVisible } from './doorFill'
 import { KEEP_SCORE, isCandidate, lessonSubstance, withoutCandidates } from './lessonSubstance'
 import { isClaudeNote, noteFileOfTags } from './claudeNotesParse'
 import { projectKeyOf } from './projectKey'
@@ -318,16 +319,40 @@ export async function buildContextPrimer(search: PrimerSearch, opts: PrimerOptio
       { absoluteFloor: MIN_RELEVANCE, relFrac: RELEVANCE_REL_FRAC, floor: Math.min(RELEVANCE_FLOOR, limit), cap: limit },
     )
 
+  // A search cuts its answer to `candidateLimit`, best rows first, and the gate drops what this digest must not show (another
+  // project's saved notes, a lesson held back) AFTER that. A page those rows fill left the digest thin, or empty, with rows it
+  // may show sitting just behind them, so each search is read as the doors are (doorFill.ts): the first read is the one it
+  // always made, and it asks again, deeper, only while hidden rows left it short of a full page. A deeper read that fails keeps
+  // the page before it: this builder never throws.
+  const readCandidates = (scope: string | undefined, scoped: boolean): Promise<PrimerHit[]> => {
+    let page: PrimerHit[] = []
+    let deeper = false
+    return fillVisible(
+      candidateLimit,
+      async (asked) => {
+        try {
+          page = (await search(scope === undefined ? { query: opts.query, limit: asked } : { query: opts.query, limit: asked, project: scope })) || []
+        } catch (e) {
+          if (!deeper) throw e
+        }
+        deeper = true
+        return page
+      },
+      (rows) => withoutForeignNotes(withoutCandidates(rows), scoped),
+      { fallback: candidateLimit, ceiling: 100 },
+    )
+  }
+
   // F19: scope the project-bucket search by the FULL cwd when available (precise projectKey),
   // falling back to the slug. Display/promotion still use the slug `project`.
   const searchScope = (opts.projectPath && opts.projectPath.trim()) ? opts.projectPath.trim() : project
   let projectHits: PrimerHit[] = []
   if (project) {
-    try { projectHits = gate((await search({ query: opts.query, limit: candidateLimit, project: searchScope })) || [], true) } catch { projectHits = [] }
+    try { projectHits = gate(await readCandidates(searchScope, true), true) } catch { projectHits = [] }
   }
   let globalHits: PrimerHit[] = []
   try {
-    globalHits = gate((await search({ query: opts.query, limit: candidateLimit })) || [])
+    globalHits = gate(await readCandidates(undefined, false))
   } catch {
     if (projectHits.length === 0) return null
   }
