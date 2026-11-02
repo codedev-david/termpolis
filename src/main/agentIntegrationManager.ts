@@ -847,6 +847,18 @@ export function isAgentIntegrationConnected(paths: AgentIntegrationPaths): boole
   }
 }
 
+/** Has the user SAID yes? Stricter than isAgentIntegrationConnected, which also counts an install an older Termpolis connected
+ *  and nobody has asked since: that one keeps working, in the narrower form v1.49 gave it, until its owner answers the one-time
+ *  review. A read that did not exist before 1.55 (the saved-notes import) does not start for that install; it waits for the
+ *  answer. False when unreadable. */
+export function isAgentIntegrationGranted(paths: AgentIntegrationPaths): boolean {
+  try {
+    return loadLedger(paths).consent === 'granted'
+  } catch {
+    return false
+  }
+}
+
 /** Onboarding, the review and Settings: record the answer, then apply or disconnect. Never throws.
  *  `saveError` says the answer could not be saved, so the next start would not know it. A connect
  *  then writes nothing into agent configs; a disconnect still takes everything out. */

@@ -409,7 +409,7 @@ const MAX_SWEEP_ROUNDS = 100
 export interface NotesDeps {
   /** The user's switch ("Include Claude Code's saved notes in memory"). */
   enabled: () => boolean
-  /** Whether the user's agents are connected: the consent every other agent integration is gated on. */
+  /** Whether the user said yes to connecting their agents: the consent every other agent integration is gated on. */
   connected: () => boolean
   roots: () => Promise<readonly string[]>
   fs: NotesFs

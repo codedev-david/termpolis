@@ -159,7 +159,7 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
         <div className="flex flex-col gap-0.5">
           <label htmlFor="claude-notes-index-toggle" className="text-sm font-medium cursor-pointer">Include Claude Code&rsquo;s saved notes in memory</label>
           <span className="text-xs text-[#9ca3af] leading-relaxed">
-            On by default. Runs with the background indexer (about every 30 minutes), only while your agents are connected.
+            On by default. Runs with the background indexer (about every 30 minutes), only once you have connected your agents.
             Turning it off stops the reading; the copies already made stay until you remove them below.
           </span>
         </div>
@@ -167,8 +167,9 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
 
       {waiting ? (
         <div data-testid="claude-notes-waiting" role="status" className="text-xs text-[#e2c08d] p-3 border border-[#e2c08d]/40 rounded bg-[#e2c08d]/10 leading-relaxed">
-          Your agents are not connected, so no note is read. The switch above is on; once you connect them in Settings &rsaquo;
-          Agent Integration, the notes are picked up at the next check (about every 30 minutes).
+          Your agents are not connected (or an earlier version connected them and you have not been asked yet), so no note is
+          read. The switch above is on; once you connect them, or answer that question, in Settings &rsaquo; Agent Integration,
+          the notes are picked up at the next check (about every 30 minutes).
         </div>
       ) : null}
 

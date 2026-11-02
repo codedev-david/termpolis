@@ -90,7 +90,7 @@ const M = vi.hoisted(() => ({
   setIndexClaudeNotes: vi.fn((v: boolean) => v),
   getShareNotesAcrossProjects: vi.fn(() => false),
   setShareNotesAcrossProjects: vi.fn((v: boolean) => v),
-  isAgentIntegrationConnected: vi.fn<(...a: unknown[]) => boolean>(() => true),
+  isAgentIntegrationGranted: vi.fn<(...a: unknown[]) => boolean>(() => true),
   // context pins
   listPins: vi.fn(() => [] as unknown[]),
   addPin: vi.fn(() => ({ id: 'pin-1' })),
@@ -387,7 +387,7 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   bootAgentIntegration: M.bootAgentIntegration,
   disconnectAgentIntegration: M.disconnectAgentIntegration,
   getAgentIntegrationStatus: M.getAgentIntegrationStatus,
-  isAgentIntegrationConnected: M.isAgentIntegrationConnected,
+  isAgentIntegrationGranted: M.isAgentIntegrationGranted,
   setAgentIntegration: M.setAgentIntegration,
   isFolderTrustAllowed: M.isFolderTrustAllowed,
   trustFolderForAgents: M.trustFolderForAgents,

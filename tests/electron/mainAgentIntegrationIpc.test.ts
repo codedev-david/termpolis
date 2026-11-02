@@ -386,7 +386,7 @@ vi.mock('../../src/main/agentIntegrationManager', () => ({
   bootAgentIntegration: H.bootAgentIntegration,
   disconnectAgentIntegration: H.disconnectAgentIntegration,
   getAgentIntegrationStatus: H.getAgentIntegrationStatus,
-  isAgentIntegrationConnected: () => true, // the saved-notes pass asks it; this suite never runs one
+  isAgentIntegrationGranted: () => true, // the saved-notes pass asks it; this suite never runs one
   setAgentIntegration: H.setAgentIntegration,
   isFolderTrustAllowed: H.isFolderTrustAllowed,
   trustFolderForAgents: H.trustFolderForAgents,

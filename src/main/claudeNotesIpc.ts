@@ -18,7 +18,7 @@ export interface NotesIpcLike {
 export interface NotesSettingsView {
   indexClaudeNotes: boolean
   shareNotesAcrossProjects: boolean
-  /** The user's agents are connected. Until they are, no note is read, whatever the first switch says. */
+  /** The user has said yes to connecting their agents (an older install nobody has asked yet does not count). Until then, no note is read, whatever the first switch says. */
   connected: boolean
   /** Memory is locked (its key cannot be opened): the import and every removal wait until it opens. */
   locked: boolean

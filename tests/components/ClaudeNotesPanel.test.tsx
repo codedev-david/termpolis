@@ -165,9 +165,10 @@ describe('ClaudeNotesPanel: what is shown', () => {
   it('says plainly that no note is read while the agents are not connected, only when the switch is on', async () => {
     mockApi(view({ connected: false }))
     await open()
-    expect(screen.getByTestId('claude-notes-waiting').textContent).toContain('Your agents are not connected, so no note is read')
-    // Connecting does not start a pass; the next check does (about every 30 minutes), and the banner must not promise sooner.
     const banner = screen.getByTestId('claude-notes-waiting').textContent ?? ''
+    expect(banner).toContain('Your agents are not connected')
+    expect(banner).toContain('so no note is read')
+    // Connecting does not start a pass; the next check does (about every 30 minutes), and the banner must not promise sooner.
     expect(banner).toContain('picked up at the next check (about every 30 minutes)')
     expect(banner).not.toContain('as soon as')
     cleanup()
@@ -541,6 +542,8 @@ describe('ClaudeNotesPanel: keyboard and screen reader', () => {
     mockApi(view({ connected: false }))
     await open()
     expect(screen.getByTestId('claude-notes-waiting').getAttribute('role')).toBe('status')
+    // An install an older version connected, that nobody has asked, reads as not connected here too: the banner says so.
+    expect(screen.getByTestId('claude-notes-waiting').textContent).toMatch(/earlier version connected them and you have not been asked yet/)
     cleanup()
     getSettings = vi.fn(async () => ({ success: false, error: 'no host' }))
     ;(window as any).termpolis.memoryGetNotesSettings = getSettings

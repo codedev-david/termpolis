@@ -357,6 +357,18 @@ vi.mock('../../src/main/claudeNotesIngest', async () => ({
   clearNotesRecord: notesMock.clearNotesRecord,
   notesStatus: notesMock.notesStatus,
 }))
+// The saved-notes import waits for a yes (isAgentIntegrationGranted), not for the broader "connected" that an install an older
+// version connected, and nobody has asked, also has. This file runs the real module against a mocked fs, where no ledger exists:
+// these let a test say what the ledger would, and leave everything else to the real module.
+const integration = vi.hoisted(() => ({ granted: undefined as boolean | undefined, connected: undefined as boolean | undefined }))
+vi.mock('../../src/main/agentIntegrationManager', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/agentIntegrationManager')>()
+  return {
+    ...real,
+    isAgentIntegrationGranted: (...a: Parameters<typeof real.isAgentIntegrationGranted>) => integration.granted ?? real.isAgentIntegrationGranted(...a),
+    isAgentIntegrationConnected: (...a: Parameters<typeof real.isAgentIntegrationConnected>) => integration.connected ?? real.isAgentIntegrationConnected(...a),
+  }
+})
 // A commit has to land for an outcome to be charged back to the memories recalled for it ("recall noting" below). git is a
 // spy that answers with nothing, so the commit shield sees an empty staged diff and the commit itself succeeds; no process runs.
 const gitMock = vi.hoisted(() => ({ safeGitAsync: vi.fn(async (_args?: string[], _opts?: unknown) => '') }))
@@ -2773,6 +2785,8 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
   const depsOfLastPass = (): any => { const calls = notesMock.runClaudeNotesIngest.mock.calls; return calls[calls.length - 1][0] }
 
   afterEach(async () => {
+    integration.granted = undefined
+    integration.connected = undefined
     notesMock.runClaudeNotesIngest.mockReset()
     notesMock.runClaudeNotesIngest.mockImplementation(async () => NO_RUN)
     notesMock.removeImportedNotes.mockClear()
@@ -2802,6 +2816,28 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
     expect(await indexer.run()).toEqual({ written: 4, more: false })
     expect(mneme.runConsolidation).toHaveBeenCalled()
     expect(mneme.runWeave).toHaveBeenCalled()
+  })
+
+  // v1.49 left an install an older Termpolis connected, and nobody has asked since, working in a narrower form until its owner
+  // answers the one-time review. The saved notes are a read that did not exist then, so they wait for the answer: the pass, and
+  // the panel that says whether it can run, ask whether the user said yes.
+  it('waits for a yes: an install connected by an older version that nobody has asked does not start the import', async () => {
+    integration.connected = true // what an unasked older install answers to "connected"
+    integration.granted = false // ...and to "said yes"
+    await indexer.run()
+    const d = depsOfLastPass()
+    expect(d.connected()).toBe(false)
+    expect((await invoke('memory:get-notes-settings')).data.connected).toBe(false)
+    integration.granted = true // the owner answers the review with yes
+    expect(d.connected()).toBe(true)
+    expect((await invoke('memory:get-notes-settings')).data.connected).toBe(true)
+  })
+
+  it('does not take "connected" for a yes when the answer is not given either', async () => {
+    integration.connected = false
+    integration.granted = true
+    await indexer.run()
+    expect(depsOfLastPass().connected()).toBe(true) // the question asked is whether the user said yes
   })
 
   it('the fast pass never runs it: notes are checked on the slow tick only', async () => {

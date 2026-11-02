@@ -397,8 +397,9 @@ const GRAPH_READ: FillBounds = { fallback: 20, ceiling: 100 }
 
 /**
  * The saved-notes pass's deps (claudeNotesIngest.ts): one definition for the indexer tick, the "Remove imported
- * notes" undo and the switch that starts a pass at once. The pass reads nothing unless the switch is on AND the user's
- * agents are connected (the consent every agent integration is gated on).
+ * notes" undo and the switch that starts a pass at once. The pass reads nothing unless the switch is on AND the user has said
+ * yes to connecting their agents (the consent every agent integration is gated on). An install an older version connected, that
+ * nobody has asked yet, does not count: it keeps working in the narrower form v1.49 gave it, and this read is new.
  *
  * `roots: noteRoots` is the ONE call site to change once fix/accounts154 merges: noteRoots() (claudeNotesIngest.ts)
  * then returns `walkRoots(transcriptRoots('claude'))`, so every sign-in profile's notes are read.
@@ -406,7 +407,7 @@ const GRAPH_READ: FillBounds = { fallback: 20, ceiling: 100 }
 function claudeNotesDeps(): NotesDeps {
   return {
     enabled: getIndexClaudeNotes,
-    connected: () => isAgentIntegrationConnected(agentIntegrationPaths()),
+    connected: () => isAgentIntegrationGranted(agentIntegrationPaths()),
     roots: noteRoots,
     fs: realNotesFs,
     manifest: fileManifest(app.getPath('userData')),
@@ -650,7 +651,7 @@ import {
   bootAgentIntegration,
   disconnectAgentIntegration,
   getAgentIntegrationStatus,
-  isAgentIntegrationConnected,
+  isAgentIntegrationGranted,
   setAgentIntegration,
   isFolderTrustAllowed,
   trustFolderForAgents,
@@ -2533,7 +2534,7 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
 registerClaudeNotesIpc(ipcMain, {
   index: { get: getIndexClaudeNotes, set: setIndexClaudeNotes },
   share: { get: getShareNotesAcrossProjects, set: setShareNotesAcrossProjects },
-  connected: () => isAgentIntegrationConnected(agentIntegrationPaths()),
+  connected: () => isAgentIntegrationGranted(agentIntegrationPaths()),
   locked: () => memoryIsLocked(),
   status: () => notesStatus(fileManifest(app.getPath('userData'))),
   remove: () => removeImportedNotes(claudeNotesDeps()),
