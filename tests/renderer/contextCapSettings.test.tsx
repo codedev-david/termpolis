@@ -243,7 +243,31 @@ describe('what the control says', () => {
     serve()
     render(<TokenSavingsSettings />)
     const note = await screen.findByTestId('hr-context-cap-note')
-    expect(note).toHaveTextContent('It also wins over a window set in a subagent’s definition, in a --settings argument, or by your organization’s managed settings, none of which Termpolis can read')
+    expect(note).toHaveTextContent('It also wins over a window saved in a subagent’s definition, in a --settings argument, or in your organization’s managed settings, none of which Termpolis can read')
+    expect(note).not.toHaveTextContent('wins over a window set in a subagent’s definition')
+  })
+
+  // The variable beats a saved autoCompactWindow wherever it lives, but Claude Code writes an env entry of a
+  // --settings argument or of managed settings over the value Termpolis passed, so that one wins over this setting.
+  it('says an env entry in a --settings argument or managed settings that sets the variable itself wins over this setting', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    expect(note).toHaveTextContent('an env entry in the last two that sets the variable itself is different, and wins over this setting')
+  })
+
+  it('says CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is a percentage of the window in force, so a smaller window compacts sooner than that person chose', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    expect(note).toHaveTextContent('If you also set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, it is a percentage of the window in force, so with a smaller window compaction comes sooner than you chose')
+  })
+
+  it('says a Claude session the Workflow Orchestrator starts itself gets neither the variable nor the proxy route', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    expect(note).toHaveTextContent('A Claude session the Workflow Orchestrator’s agent steps start themselves gets neither this variable nor the proxy route')
   })
 
   it('says where the figures stop being true: a model whose own window is smaller, the exact point, the interpolated 500,000', async () => {
