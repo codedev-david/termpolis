@@ -266,6 +266,8 @@ export interface Structure {
    *  first line is its modulus or its parameters, an encrypted key's its salt: documentation shows
    *  those.) */
   priv?: [number, number]
+  /** Its algorithm's public parameters are fixed text that can run long (00 and FF bytes): an EC curve's, a Diffie-Hellman group's. */
+  fixed?: true
 }
 
 /** 1.2.840.10045.2.1: id-ecPublicKey. (X25519, X448, Ed25519 and Ed448 are 1.3.101.110-113, in pkcs8PrivateAt.) */
@@ -275,7 +277,7 @@ const EC_OID = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
  *  one (`d`: the OCTET STRING that holds the key), or undefined. An ECPrivateKey is a SEQUENCE { 1,
  *  OCTET STRING value, ... }, a CurvePrivateKey just the OCTET STRING. */
 function pkcs8PrivateAt(b: Uint8Array, oid: Uint8Array, d: Tlv): [number, number] | undefined {
-  if (oid.length === EC_OID.length && startsWith(oid, EC_OID)) {
+  if (isEcOid(oid)) {
     const seq = tlv(b, d.body)
     const ver = seq && seq.tag === 0x30 ? tlv(b, seq.body) : null
     const key = ver && ver.tag === 0x02 ? tlv(b, ver.end) : null
@@ -285,8 +287,18 @@ function pkcs8PrivateAt(b: Uint8Array, oid: Uint8Array, d: Tlv): [number, number
     const key = tlv(b, d.body)
     return key && key.tag === 0x04 ? [key.body, key.end] : undefined
   }
+  if (isDhOid(oid)) {
+    // (a Diffie-Hellman key's private value is the INTEGER inside the OCTET STRING)
+    const x = tlv(b, d.body)
+    return x && x.tag === 0x02 ? [x.body, x.end] : undefined
+  }
   return undefined
 }
+
+/** 1.2.840.113549.1.3.1 (PKCS #3 dhKeyAgreement) and 1.2.840.10046.2.1 (X9.42 dhpublicnumber). */
+const DH_OIDS = [[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x03, 0x01], [0x2a, 0x86, 0x48, 0xce, 0x3e, 0x02, 0x01]]
+const isDhOid = (oid: Uint8Array): boolean => DH_OIDS.some((o) => oid.length === o.length && startsWith(oid, o))
+const isEcOid = (oid: Uint8Array): boolean => oid.length === EC_OID.length && startsWith(oid, EC_OID)
 
 /** What private-key structure `b` starts with, and how long it says it is, or null. */
 export function structureOf(b: Buffer): Structure | null {
@@ -306,13 +318,14 @@ export function structureOf(b: Buffer): Structure | null {
       const oid = tlv(b, c.body)
       const d = tlv(b, c.end)
       if (oid && oid.tag === 0x06 && (!d || d.tag === 0x04)) {
-        const priv = d ? pkcs8PrivateAt(b, b.subarray(oid.body, oid.end), d) : undefined
-        return { type: 'pkcs8', declared: outer.end, ...(priv === undefined ? {} : { priv }) }
+        const algorithm = b.subarray(oid.body, oid.end)
+        const priv = d ? pkcs8PrivateAt(b, algorithm, d) : undefined
+        return { type: 'pkcs8', declared: outer.end, ...(priv === undefined ? {} : { priv }), ...(isEcOid(algorithm) || isDhOid(algorithm) ? { fixed: true as const } : {}) }
       }
       return null
     }
     if (c.tag === 0x02 && v === 0 && c.len >= 64) return { type: 'pkcs1-or-dsa', declared: outer.end }
-    if (c.tag === 0x04 && v === 1 && c.len >= 16 && c.len <= 72) return { type: 'sec1', declared: outer.end, priv: [c.body, c.end] }
+    if (c.tag === 0x04 && v === 1 && c.len >= 16 && c.len <= 72) return { type: 'sec1', declared: outer.end, priv: [c.body, c.end], fixed: true }
     return null
   }
   if (a.tag === 0x30) {
@@ -400,7 +413,7 @@ export function pgpPacket(b: Buffer): { tag: number; v: number; algo: number } |
  *  with it, and with the first line's dropped alone the bytes after it were misaligned (an
  *  encrypted PKCS#8 key, whose PBES2 parameters run past its first line, failed to decode in 17 of
  *  40 `git diff` listings). */
-export function decodeHead(text: string, runs: Run[]): (Structure & { offset: number }) | null {
+export function decodeHead(text: string, runs: Run[]): (Structure & { offset: number; head: string }) | null {
   for (let k = 0; k <= 4; k++) {
     const glue = text.slice(runs[0][0], runs[0][0] + k)
     let head = ''
@@ -410,7 +423,7 @@ export function decodeHead(text: string, runs: Run[]): (Structure & { offset: nu
       if (head.length >= 512) break
     }
     const st = structureOf(Buffer.from(head, 'base64'))
-    if (st) return { ...st, offset: k }
+    if (st) return { ...st, offset: k, head }
   }
   return null
 }
@@ -444,9 +457,19 @@ export function looksRandom(s: string): boolean {
 /** Whether the base64 body under a BEGIN line looks random. A standard curve's or Diffie-Hellman group's public parameters are
  *  runs of 00 and FF bytes (`AAAA...` and `////...`), so an EC key with explicit curve parameters and a DH key fail the run test
  *  of looksRandom over the whole body, though their structure is a private key's: judged again with each such run counted once,
- *  and only while most of the body is something else (a real header over a page of `A` is no key). */
-function bodyLooksRandom(body: string): boolean {
+ *  and only while most of the body is something else (a real header over a page of `A` is no key), for a structure of such an
+ *  algorithm (`st.fixed`), and only when the private value the structure locates in what was decoded is random itself: a curve's
+ *  parameters and a public key are a real key's, and a test key's value is the number 1, or all zero, or all FF. (A value the
+ *  decoded head holds fewer than 16 characters of is not told by it.) */
+function bodyLooksRandom(body: string, st: (Structure & { head: string }) | null): boolean {
   if (looksRandom(body)) return true
+  if (!st || !st.fixed) return false
+  if (st.priv !== undefined) {
+    // (what of the value the decoded head holds: a key's last line is short, and is not part of the payload)
+    const [from, to] = st.priv
+    const shown = st.head.slice(Math.ceil((from * 4) / 3), Math.min(Math.floor((to * 4) / 3), st.head.length))
+    if (shown.length >= 16 && !looksRandomToken(shown)) return false
+  }
   const sample = body.length > 4096 ? body.slice(0, 4096) : body
   const collapsed = sample.replace(/A{6,}|\/{6,}/g, (run) => run[0])
   return collapsed.length >= sample.length / 2 && looksRandom(collapsed)
@@ -807,7 +830,7 @@ function scanBlock(
   // armor line shows only its path, `src/main/resources/keys/deploy:4:`, whose first piece is a run. The head is then read without it.)
   const st0 = decodeHead(text, runs) ?? (runs.length >= 3 && runs[0][1] - runs[0][0] < runs[1][1] - runs[1][0] ? decodeHead(text, runs.slice(1)) : null)
   const st = st0 && family.includes(st0.type) ? st0 : null
-  const random = bodyLooksRandom(runs.map(([s, e]) => text.slice(s, e)).join(''))
+  const random = bodyLooksRandom(runs.map(([s, e]) => text.slice(s, e)).join(''), st)
   if (st) {
     if (st.declared > 0) {
       const decoded = Math.floor(((payload - st.offset) * 3) / 4)

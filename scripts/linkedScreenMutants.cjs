@@ -367,6 +367,19 @@ const REVIEW = {
   "r3: putty: the rest of a path needs 40 characters after it": [KEY, "const PATH_THEN_RUN = /^[A-Za-z0-9_.\\-/\\\\]{0,96}?[:-](?=[A-Za-z0-9+/=])/", "const PATH_THEN_RUN = /^[A-Za-z0-9_.\\-/\\\\]{0,96}?[:-](?=[A-Za-z0-9+/=]{40})/"],
   "r3: putty: the rest of a path of 20 characters at most": [KEY, "const PATH_THEN_RUN = /^[A-Za-z0-9_.\\-/\\\\]{0,96}?[:-](?=[A-Za-z0-9+/=])/", "const PATH_THEN_RUN = /^[A-Za-z0-9_.\\-/\\\\]{0,20}?[:-](?=[A-Za-z0-9+/=])/"],
   "r3: putty: the rest of a path ends with a colon only": [KEY, "const PATH_THEN_RUN = /^[A-Za-z0-9_.\\-/\\\\]{0,96}?[:-](?=[A-Za-z0-9+/=])/", "const PATH_THEN_RUN = /^[A-Za-z0-9_.\\-/\\\\]{0,96}?[:](?=[A-Za-z0-9+/=])/"],
+  // Round 3, after the false-removal check of its own fix: the collapse of a fixed parameter is for an EC or DH structure whose private
+  // value, where the structure locates it, is random.
+  "r3: fixed: any structure may collapse (not only EC and DH)": [KEY, "if (!st || !st.fixed) return false", "if (!st) return false"],
+  "r3: fixed: SEC1 is not fixed": [KEY, "return { type: 'sec1', declared: outer.end, priv: [c.body, c.end], fixed: true }", "return { type: 'sec1', declared: outer.end, priv: [c.body, c.end] }"],
+  "r3: fixed: PKCS#8 only for EC, not DH": [KEY, "isEcOid(algorithm) || isDhOid(algorithm) ? { fixed: true as const } : {}", "isEcOid(algorithm) ? { fixed: true as const } : {}"],
+  "r3: fixed: PKCS#8 only for DH, not EC": [KEY, "isEcOid(algorithm) || isDhOid(algorithm) ? { fixed: true as const } : {}", "isDhOid(algorithm) ? { fixed: true as const } : {}"],
+  "r3: fixed: the private value is not judged": [KEY, "if (shown.length >= 16 && !looksRandomToken(shown)) return false", ""],
+  "r3: fixed: the private value is judged only when 64 characters are shown": [KEY, "if (shown.length >= 16 && !looksRandomToken(shown)) return false", "if (shown.length >= 64 && !looksRandomToken(shown)) return false"],
+  "r3: fixed: the DH private value is not located": [KEY, "  if (isDhOid(oid)) {\n    // (a Diffie-Hellman key's private value is the INTEGER inside the OCTET STRING)\n    const x = tlv(b, d.body)\n    return x && x.tag === 0x02 ? [x.body, x.end] : undefined\n  }\n", ""],
+  "r3: fixed: PKCS #3 dhKeyAgreement not known": [KEY, "const DH_OIDS = [[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x03, 0x01], [0x2a, 0x86, 0x48, 0xce, 0x3e, 0x02, 0x01]]", "const DH_OIDS = [[0x2a, 0x86, 0x48, 0xce, 0x3e, 0x02, 0x01]]"],
+  "r3: fixed: X9.42 dhpublicnumber not known": [KEY, "const DH_OIDS = [[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x03, 0x01], [0x2a, 0x86, 0x48, 0xce, 0x3e, 0x02, 0x01]]", "const DH_OIDS = [[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x03, 0x01]]"],
+  "r3: fixed: the DH value is any element, not an INTEGER": [KEY, "return x && x.tag === 0x02 ? [x.body, x.end] : undefined", "return x ? [x.body, x.end] : undefined"],
+  "r3: fixed: the head is not kept (the value is judged from nothing)": [KEY, "if (st) return { ...st, offset: k, head }", "if (st) return { ...st, offset: k, head: '' }"],
 }
 
 /** Mutants no test can kill, because they change nothing the screen returns. */
@@ -387,6 +400,8 @@ const EQUIVALENT = new Set([
   "r3 OpenVPN: begin tail memo never set (recomputed each time)",
   // (round 3) The collapse of a fixed parameter's runs (`AAAA`, `////`) takes the runs that looksRandom itself rejects (six or more): taking two to five as well changes the verdict only for a body made of them, which no key's is.
   "r3: collapse: runs of 2 or more",
+  // (round 3) A Diffie-Hellman key's private value is an INTEGER; the tag check only keeps a malformed structure (another element in the OCTET STRING) from being judged by the wrong bytes.
+  "r3: fixed: the DH value is any element, not an INTEGER",
 ])
 
 const group = process.argv[2] ?? 'judge'

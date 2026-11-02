@@ -2729,13 +2729,16 @@ describe('T1 thresholds: the sizes that tell a key from an excerpt', () => {
     expect(whyOf(excerpt(K.F.pkcs8_rsa, 127, 64, false))).toEqual([['remove', 'pkcs8-incomplete']])
   })
 
-  it('an OpenSSH or OpenPGP blob has no length of its own: 128 characters are the key, 80 to 127 an excerpt in two lines, 79 an example', () => {
+  it('an OpenSSH or OpenPGP blob has no length of its own: 128 characters are the key; an OpenPGP excerpt is 80 to 127 characters in two lines, and 79 is an example', () => {
     for (const [format, type] of [['openssh', 'openssh'], ['pgp_rsa_nohdr', 'pgp']] as Array<[Format, string]>) {
       expect(whyOf(excerpt(K.F[format], 128, 64, false)), format).toEqual([['remove', type]])
-      expect(whyOf(excerpt(K.F[format], 127, 64, false)), format).toEqual([['remove', `${type}-short`]])
-      expect(whyOf(excerpt(K.F[format], 80, 64, false)), format).toEqual([['remove', `${type}-short`]])
-      expect(whyOf(excerpt(K.F[format], 79, 63, false)), format).toEqual([['flag', `${type}-example`]])
     }
+    // (below 128 the excerpt must look random, which an OpenSSH header's own runs of A -- the key count, the empty KDF options -- do not)
+    const pgp = K.F.pgp_rsa_nohdr
+    expect(whyOf(excerpt(pgp, 127, 64, false))).toEqual([['remove', 'pgp-short']])
+    expect(whyOf(excerpt(pgp, 80, 64, false))).toEqual([['remove', 'pgp-short']])
+    expect(whyOf(excerpt(pgp, 79, 63, false))).toEqual([['flag', 'pgp-example']])
+    expect(whyOf(excerpt(K.F.openssh, 127, 64, false))).toEqual([['flag', 'openssh-example']])
   })
 
   it('a block longer than 1 MB is removed whole (MAX_BLOCK is 4 MB)', () => {
@@ -3300,6 +3303,80 @@ describe('T1 K1: a private key whose algorithm parameters are fixed text (an EC 
         expect(screenKeys(odd).text, `${name}/${filler}`).toBe(odd)
         expect(screenKeys(odd).removed, `${name}/${filler}`).toEqual({})
       }
+    }
+  })
+
+  it('still reports the same structures over a made-up private value (all zero, the number 1, all FF, a fill), and removes them over a real one', () => {
+    // A famous test key is the number 1 (secp256k1's `0x00...01`), and the parameters of a real curve or group, which are public, fill most of
+    // the body: the structure and the parameters are a key's, and the value that makes it one is not. (Judged on the private value the
+    // structure locates.)
+    const pemOf = (kind: string, buf: Buffer): string => [`-----BEGIN ${kind}-----`, ...wrap(buf.toString('base64')), `-----END ${kind}-----`].join('\n')
+    /** A value a key does not have, `n` bytes of it. */
+    const fakes = (n: number): Array<[string, Buffer]> => [
+      ['all zero', Buffer.alloc(n, 0)],
+      ['the number 1', Buffer.concat([Buffer.alloc(n - 1, 0), Buffer.from([1])])],
+      ['all FF', Buffer.alloc(n, 0xff)],
+      ['a 0x41 fill', Buffer.alloc(n, 0x41)],
+    ]
+    /** Where the body of the DER element at `at` starts and ends. */
+    const tlvAt = (b: Buffer, at: number): { body: number; end: number } => {
+      const l = b[at + 1]
+      const n = l < 0x80 ? 0 : l & 0x7f
+      const len = n === 0 ? l : b.readUIntBE(at + 2, n)
+      return { body: at + 2 + n, end: at + 2 + n + len }
+    }
+    const patch = (b: Buffer, from: number, value: Buffer): Buffer => Buffer.concat([b.subarray(0, from), value, b.subarray(from + value.length)])
+    const kept = (pem: string, label: string): void => {
+      expect(keyBlocks(pem).map((x) => x.cls), label).toEqual(['flag'])
+      expect(screenKeys(pem).text, label).toBe(pem)
+      expect(screenKeys(pem).removed, label).toEqual({})
+    }
+
+    // named curves, built by hand around a real public key
+    for (const [curve, oid, size] of [['prime256v1', '2a8648ce3d030107', 32], ['secp256k1', '2b8104000a', 32], ['secp384r1', '2b81040022', 48]] as Array<[string, string, number]>) {
+      const pub = (generateKeyPairSync('ec', { namedCurve: curve }).publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-(size * 2 + 1))
+      const point = der(0xa1, der(0x03, Buffer.concat([Buffer.from([0]), pub])))
+      const sec1 = (value: Buffer): Buffer => der(0x30, Buffer.concat([der(0x02, Buffer.from([1])), der(0x04, value), der(0xa0, der(0x06, Buffer.from(oid, 'hex'))), point]))
+      const alg = der(0x30, Buffer.concat([der(0x06, Buffer.from('2a8648ce3d0201', 'hex')), der(0x06, Buffer.from(oid, 'hex'))]))
+      const p8 = (value: Buffer): Buffer => der(0x30, Buffer.concat([der(0x02, Buffer.from([0])), alg, der(0x04, der(0x30, Buffer.concat([der(0x02, Buffer.from([1])), der(0x04, value), point])))]))
+      for (const [form, kind, make] of [['SEC1', 'EC PRIVATE KEY', sec1], ['PKCS#8', 'PRIVATE KEY', p8]] as Array<[string, string, (v: Buffer) => Buffer]>) {
+        for (const [fake, value] of fakes(size)) kept(pemOf(kind, make(value)), `${curve} ${form}/${fake}`)
+        expect(screenKeys(pemOf(kind, make(randomBytes(size)))).removed, `${curve} ${form}/real`).toEqual({ private_key: 1 })
+      }
+    }
+
+    // explicit curve parameters: a real key's DER with its scalar replaced by a fake of the same length
+    // (a P-384 key's PKCS#8 holds its scalar past the 512 characters that are decoded, where nothing tells a fake value from a real one: SEC1 only)
+    for (const curve of ['prime256v1', 'secp384r1']) {
+      const key = generateKeyPairSync('ec', { namedCurve: curve, paramEncoding: 'explicit' }).privateKey
+      const s1 = key.export({ type: 'sec1', format: 'der' }) as Buffer
+      const p8 = key.export({ type: 'pkcs8', format: 'der' }) as Buffer
+      const sc = tlvAt(s1, tlvAt(s1, tlvAt(s1, 0).body).end) // SEQUENCE { INTEGER 1, OCTET STRING scalar, ... }
+      const scalar = s1.subarray(sc.body, sc.end)
+      const at8 = p8.indexOf(scalar)
+      expect(at8, curve).toBeGreaterThan(0)
+      for (const [fake, value] of fakes(scalar.length)) {
+        kept(pemOf('EC PRIVATE KEY', patch(s1, sc.body, value)), `${curve} explicit SEC1/${fake}`)
+        if (curve === 'prime256v1') kept(pemOf('PRIVATE KEY', patch(p8, at8, value)), `${curve} explicit PKCS#8/${fake}`)
+      }
+    }
+
+    // a Diffie-Hellman group: the private value is the INTEGER inside the last OCTET STRING
+    for (const group of ['modp2', 'modp14']) {
+      const key = (generateKeyPairSync as unknown as (t: string, o: { group: string }) => { privateKey: crypto.KeyObject })('dh', { group }).privateKey
+      const p8 = key.export({ type: 'pkcs8', format: 'der' }) as Buffer
+      const outer = tlvAt(p8, 0)
+      const octet = tlvAt(p8, tlvAt(p8, tlvAt(p8, outer.body).end).end) // SEQUENCE { INTEGER 0, SEQUENCE { OID, parameters }, OCTET STRING { INTEGER x } }
+      const x = tlvAt(p8, octet.body)
+      for (const [fake, value] of fakes(x.end - x.body)) kept(pemOf('PRIVATE KEY', patch(p8, x.body, value)), `${group}/${fake}`)
+      // the same key with the X9.42 algorithm (dhpublicnumber, `openssl genpkey -algorithm DHX`) in place of PKCS #3's dhKeyAgreement
+      const version = tlvAt(p8, outer.body)
+      const alg = tlvAt(p8, version.end)
+      const params = p8.subarray(tlvAt(p8, alg.body).end, alg.end)
+      const x942 = (value: Buffer): Buffer =>
+        der(0x30, Buffer.concat([p8.subarray(outer.body, version.end), der(0x30, Buffer.concat([der(0x06, Buffer.from('2a8648ce3e0201', 'hex')), params])), der(0x04, der(0x02, value))]))
+      expect(screenKeys(pemOf('PRIVATE KEY', x942(p8.subarray(x.body, x.end)))).removed, `${group} X9.42`).toEqual({ private_key: 1 })
+      for (const [fake, value] of fakes(x.end - x.body)) kept(pemOf('PRIVATE KEY', x942(value)), `${group} X9.42/${fake}`)
     }
   })
 })
