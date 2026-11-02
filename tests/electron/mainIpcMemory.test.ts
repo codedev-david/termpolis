@@ -3076,5 +3076,106 @@ describe('the saved-notes pass and the app quitting', () => {
     expect(d.stopped()).toBe(false)
     onBeforeQuit!()
     expect(d.stopped()).toBe(true)
+
+      // The store cuts a read to its limit, best first, BEFORE the door drops what the agent may not be handed. A note is stored at
+      // importance 0.9 and matches the topic it was written about, so a read whose best rows were notes used to come back short,
+      // or empty, with rows the agent may have sitting just behind them. The store here answers the way the real one does: the
+      // best rows first, cut to the limit it is given.
+      describe('a read whose best rows are ones the agent may not be handed', () => {
+        const noteRows = (n: number, type = 'reference'): any[] => Array.from({ length: n }, (_, i) => ({ ...lendable, id: `n${i + 1}`, tags: [`type:${type}`, `note:n${i + 1}.md`] }))
+        const chunks = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ ...chunk, id: `c${i + 1}` }))
+        const held = (n: number): any[] => Array.from({ length: n }, (_, i) => ({ ...chunk, id: `k${i + 1}`, agentId: 'mneme', tags: ['candidate'] }))
+        const faithful = (rows: any[], dflt: number, ceiling: number) => async (o: any) => rows.slice(0, Math.min(Math.max(o.limit ?? dflt, 1), ceiling)) as never
+        const sharing = (on: boolean) => invoke('memory:set-notes-settings', { shareNotesAcrossProjects: on })
+
+        beforeEach(async () => { await sharing(false) })
+        afterEach(() => {
+          mem.memorySearch.mockReset(); mem.memorySearch.mockImplementation(async () => [] as any[])
+        })
+
+        // The numbers each door reads a missing limit and a deep one by are the store's own (swarmMemory.ts): what it reads when
+        // none is named (10, 50, 5, 20), and the most it gives in one read (100, 500, 100; the graph walk has no clamp and is held to 100).
+        const LADDERS = {
+          memory_search: { asked30: [30, 60, 100], none: [undefined, 20, 40, 80, 100] },
+          memory_list: { asked30: [30, 60, 120, 240, 480, 500], none: [undefined, 100, 200, 400, 500] },
+          memory_related: { asked30: [30, 60, 100], none: [undefined, 10, 20, 40, 80, 100] },
+          memory_graph: { asked30: [30, 60, 100], none: [undefined, 40, 80, 100] },
+        } as const
+        describe.each([
+          ['memory_search', (over: Record<string, unknown>) => mcp.memorySearch({ query: 'cache', ...over }), (rows: any[]) => mem.memorySearch.mockImplementation(faithful(rows, 10, 100)), () => mem.memorySearch],
+          ['memory_list', (over: Record<string, unknown>) => mcp.memoryList({ ...over }), (rows: any[]) => mem.memoryList.mockImplementation(faithful(rows, 50, 500)), () => mem.memoryList],
+          ['memory_related', (over: Record<string, unknown>) => mcp.memoryRelated({ id: 'seed', ...over }), (rows: any[]) => mem.memoryRelated.mockImplementation(faithful(rows, 5, 100)), () => mem.memoryRelated],
+          ['memory_graph', (over: Record<string, unknown>) => mcp.memoryGraph({ id: 'seed', ...over }), (rows: any[]) => mem.memoryGraphQuery.mockImplementation(faithful(rows, 20, 1000)), () => mem.memoryGraphQuery],
+        ])('%s', (name, call, backend, spy) => {
+          it('never asks the store for more than it gives in one read, and starts from the number it would have used', async () => {
+            const ladder = LADDERS[name as keyof typeof LADDERS]
+            backend(noteRows(700))
+            await sharing(false)
+            spy().mockClear()
+            expect(await call({ limit: 30 })).toEqual([])
+            expect(spy().mock.calls.map((c: any[]) => c[0].limit)).toEqual(ladder.asked30)
+            spy().mockClear()
+            expect(await call({})).toEqual([])
+            expect(spy().mock.calls.map((c: any[]) => c[0].limit)).toEqual(ladder.none)
+          })
+
+          it.each([3, 5, 10])('still gives an agent %i rows when 12 notes hold the best places and notes may not travel', async (limit) => {
+            backend([...noteRows(12), ...chunks(30)])
+            await sharing(false)
+            const got = ids(await call({ limit }))
+            expect(got).toEqual(Array.from({ length: limit }, (_, i) => `c${i + 1}`))
+          })
+
+          it('does the same when the notes are project notes, which never travel even once notes may', async () => {
+            backend([...noteRows(12, 'project'), ...chunks(30)])
+            await sharing(true)
+            expect(ids(await call({ limit: 5 }))).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+          })
+
+          it('counts the general notes as results once notes may help in other projects, and never goes above the limit', async () => {
+            backend([...noteRows(2), ...noteRows(6, 'project').map((n, i) => ({ ...n, id: `p${i + 1}` })), ...chunks(30)])
+            await sharing(true)
+            // (memory_search puts what it serves in score order, which differs between a note and a chunk in these fixtures)
+            expect(ids(await call({ limit: 5 })).sort()).toEqual(['c1', 'c2', 'c3', 'n1', 'n2'])
+          })
+
+          it('asks the store once when there was nothing to hide', async () => {
+            backend(chunks(30))
+            await sharing(false)
+            spy().mockClear()
+            expect(ids(await call({ limit: 4 }))).toEqual(['c1', 'c2', 'c3', 'c4'])
+            expect(spy()).toHaveBeenCalledTimes(1)
+          })
+
+          it('returns what there is when everything the store holds is hidden, and stops asking', async () => {
+            backend(noteRows(4))
+            await sharing(false)
+            spy().mockClear()
+            expect(await call({ limit: 3 })).toEqual([])
+            expect(spy().mock.calls.length).toBeLessThanOrEqual(3) // 3, then 6, which came back with 4: that is all of it
+          })
+        })
+
+        // Lessons the gate stores but holds back are dropped at every door too, and shrank a read the same way.
+        describe.each([
+          ['memory_search', (over: Record<string, unknown>) => mcp.memorySearch({ query: 'cache', ...over }), (rows: any[]) => mem.memorySearch.mockImplementation(faithful(rows, 10, 100))],
+          ['memory_list', (over: Record<string, unknown>) => mcp.memoryList({ ...over }), (rows: any[]) => mem.memoryList.mockImplementation(faithful(rows, 50, 500))],
+        ])('%s, with a project named, and held-back lessons at the top', (_name, call, backend) => {
+          it('gives the limit asked for', async () => {
+            backend([...held(8), ...chunks(20)])
+            expect(ids(await call({ limit: 3, project: 'C:\\w\\billing' }))).toEqual(['c1', 'c2', 'c3'])
+          })
+
+          it('leaves the project\'s own notes as the store scoped them, and fills the rest', async () => {
+            backend([...held(3), { ...chunk, id: 'mine', source: 'claude-notes', agentId: 'claude-notes', tags: ['type:project', 'note:own.md'] }, ...chunks(20)])
+            expect(ids(await call({ limit: 3, project: 'C:\\w\\billing' }))).toEqual(['mine', 'c1', 'c2'])
+          })
+        })
+
+        it('keeps a note someone tagged candidate: only the lesson writer\'s rows are held back', async () => {
+          mem.memorySearch.mockImplementation(faithful([{ ...chunk, id: 'mine', agentId: 'claude', tags: ['candidate'] }, ...chunks(5)], 10, 100))
+          expect(ids(await mcp.memorySearch({ query: 'cache', limit: 2, project: 'C:\\w\\billing' }))).toEqual(['mine', 'c1'])
+        })
+      })
   })
 })

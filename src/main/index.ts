@@ -241,6 +241,7 @@ import { withoutCandidates } from './lessonSubstance'
 import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
 import { registerClaudeNotesIpc } from './claudeNotesIpc'
 import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './claudeNotesShare'
+import { fillVisible, type FillBounds } from './doorFill'
 import { LINKED_RECHECK_MARKER, recheckLinkedHistory } from './linkedHistoryRecheck'
 import { runHeadless, execRequestFromVerb } from './headlessExec'
 import { initReceiptIdentity, issueReceipt, checkReceipt } from './headroom/receiptStore'
@@ -379,11 +380,20 @@ function ingestMemoryDeps() {
  * The saved notes (claudeNotesIngest.ts) a read may hand an agent. A search or a listing that names a project is scoped by the
  * store and left as it gave it. One that names none, and a walk of the graph (which starts from a memory, not a project), cannot
  * say whose notes it may have: it gets none while "let general notes help in other projects" is off, and only the general kinds
- * once it is on, which is what memory_anticipate does too (claudeNotesShare.ts).
+ * once it is on, which is what memory_anticipate does too (claudeNotesShare.ts). A lesson the substance gate holds back is
+ * never handed to an agent, whichever door it reads through.
  */
 function visibleNotes<T extends NoteRow>(rows: T[], project?: string): T[] {
-  return project ? rows : withoutUnshareableNotes(rows, getShareNotesAcrossProjects())
+  return withoutCandidates(project ? rows : withoutUnshareableNotes(rows, getShareNotesAcrossProjects()))
 }
+
+// The store cuts a read to its limit before visibleNotes drops anything, so each door asks again, deeper, when that left it
+// short (doorFill.ts). These are the numbers the store itself reads a missing limit and a large one by (swarmMemory.ts); the
+// graph walk has no clamp of its own, so a deeper read of it stops at the same 100 the search doors do.
+const SEARCH_READ: FillBounds = { fallback: 10, ceiling: 100 }
+const LIST_READ: FillBounds = { fallback: 50, ceiling: 500 }
+const RELATED_READ: FillBounds = { fallback: 5, ceiling: 100 }
+const GRAPH_READ: FillBounds = { fallback: 20, ceiling: 100 }
 
 /**
  * The saved-notes pass's deps (claudeNotesIngest.ts): one definition for the indexer tick, the "Remove imported
@@ -3752,16 +3762,16 @@ async function semanticPoolOptions(
       },
       memorySearch: async (opts) => {
         const started = Date.now()
-        const res = visibleNotes(await memorySearch({
+        const res = await fillVisible(opts.limit, (limit) => memorySearch({
           query: opts.query,
-          limit: opts.limit,
+          limit,
           agentId: opts.agentId,
           kind: opts.kind as MemoryEntry['kind'] | undefined,
           taskId: opts.taskId,
           project: opts.project,
           diversify: opts.diversify, // agent-facing recall is gated + diversified (executeTool defaults it on)
           fuseGraph: opts.fuseGraph, // …and fuses graph-connected neighbours one hop out
-        }), opts.project)
+        }), (rows) => visibleNotes(rows, opts.project), SEARCH_READ)
         // Capture latency BEFORE the readiness probe (a second memory-process RPC) so the probe's
         // round-trip does not inflate the recall-latency SLI.
         const ms = Date.now() - started
@@ -3795,13 +3805,13 @@ async function semanticPoolOptions(
         noteServed(opts.project, served)
         return served
       },
-      memoryList: async (opts) => applyEntryCorrections(visibleNotes(await memoryList({
-        limit: opts.limit,
+      memoryList: async (opts) => applyEntryCorrections(await fillVisible(opts.limit, (limit) => memoryList({
+        limit,
         agentId: opts.agentId,
         kind: opts.kind as MemoryEntry['kind'] | undefined,
         since: opts.since,
         project: opts.project,
-      }), opts.project)),
+      }), (rows) => visibleNotes(rows, opts.project), LIST_READ)),
       // Behind-the-scenes memory load: agents call this (prompted by the one-line
       // launch pointer) instead of having the digest pasted into the terminal.
       // Current-directory context leads; cross-project hits follow, labeled.
@@ -3839,19 +3849,19 @@ async function semanticPoolOptions(
         try { if (primerOut) recordMetric({ t: 'inject', ts: Date.now(), tokens: Math.ceil(primerOut.length / 4) }) } catch { /* best effort */ }
         return { project: project || null, primer: primerOut }
       },
-      memoryRelated: async (opts) => applyEntryCorrections(visibleNotes(await memoryRelated({
+      memoryRelated: async (opts) => applyEntryCorrections(await fillVisible(opts.limit, (limit) => memoryRelated({
         id: opts.id,
         query: opts.query,
-        limit: opts.limit,
-      }))),
+        limit,
+      }), (rows) => visibleNotes(rows), RELATED_READ)),
       memoryLink: (opts) => memoryLink({ from: opts.from, to: opts.to, relation: opts.relation, createdBy: 'agent' }),
-      memoryGraph: async (opts) => applyEntryCorrections(visibleNotes(await memoryGraphQuery({
+      memoryGraph: async (opts) => applyEntryCorrections(await fillVisible(opts.limit, (limit) => memoryGraphQuery({
         id: opts.id,
         query: opts.query,
         relation: opts.relation,
         depth: opts.depth,
-        limit: opts.limit,
-      }))),
+        limit,
+      }), (rows) => visibleNotes(rows), GRAPH_READ)),
       memoryFeedback: async (opts) => {
         const helpful = opts.helpful !== false
         try {
