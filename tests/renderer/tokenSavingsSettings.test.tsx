@@ -885,6 +885,15 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(n).toHaveTextContent('next time Termpolis starts')
   })
 
+  it('lists what the proxy shortens without leading with Bash, which Claude Code already trims, and gives the size from which under each policy', async () => {
+    serve(settingsWith({ firstSightElision: 'late' }))
+    render(<TokenSavingsSettings />)
+    const n = await screen.findByTestId('hr-proxy-note')
+    expect(n).toHaveTextContent('large file reads, fetched pages, search dumps and MCP results, and command output where Claude Code has not already trimmed it, which it does at about 30,000 characters')
+    expect(n).toHaveTextContent('from 40,000 characters under Late, the default, and from the size of the tier under Legacy')
+    expect(n).not.toHaveTextContent('Read/Bash')
+  })
+
   it('says what is running when it matches what is chosen', async () => {
     serve()
     render(<TokenSavingsSettings />)

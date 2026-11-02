@@ -371,10 +371,11 @@ export function TokenSavingsSettings() {
           <span style={{ opacity: 0.6 }}>— off means Claude talks to Anthropic directly; a session that is already running keeps its route until it ends</span>
         </label>
         <ProxyStatusLine status={status} />
-        <p style={{ opacity: 0.8, marginTop: 0 }}>
+        <p data-testid="hr-proxy-note" style={{ opacity: 0.8, marginTop: 0 }}>
           When on, each Claude Code session Termpolis launches sends its API requests to a small proxy on 127.0.0.1, which
-          shortens the largest tool results (from {LATE_FLOOR} characters under Late, the default; from the size of the tier under
-          Legacy: large Read/Bash output, search dumps, MCP results) and pasted images, then forwards the
+          shortens the largest tool results (large file reads, fetched pages, search dumps and MCP results, and command output
+          where Claude Code has not already trimmed it, which it does at about 30,000 characters; from {LATE_FLOOR} characters under
+          Late, the default, and from the size of the tier under Legacy) and pasted images, then forwards the
           request to api.anthropic.com and nowhere else. Repeat results collapse to a reference and near-identical ones (a
           re-read edited file) are sent as a patch, so the model sees a shorter version; <code>retrieve_full</code> brings
           any compressed block back in full. Whatever the agent writes to disk or runs — file bodies, commands, both sides of
