@@ -124,8 +124,8 @@ export function ActivityRecordPanel({ refreshToken = 0 }: { refreshToken?: numbe
             <span data-testid="activity-record-confirm" className="text-xs text-[#e5e5e5]">
               Forget what memory has recorded about its own work? No memory is removed.
             </span>
-            <button className={BUTTON} data-testid="activity-record-confirm-yes" disabled={busy} onClick={() => { void clear() }}>Clear</button>
-            <button ref={cancelRef} className={BUTTON} data-testid="activity-record-cancel" disabled={busy} onClick={dismissConfirm}>Cancel</button>
+            <button className={BUTTON} data-testid="activity-record-confirm-yes" onClick={() => { void clear() }}>Clear</button>
+            <button ref={cancelRef} className={BUTTON} data-testid="activity-record-cancel" onClick={dismissConfirm}>Cancel</button>
           </>
         ) : (
           <button

@@ -390,7 +390,18 @@ vi.mock('../../src/main/mnemeSociety', async () => {
   return { ...real, poolLessons: mneme.poolLessons, toAgentLesson: mneme.toAgentLesson }
 })
 vi.mock('../../src/main/nliContradict', () => ({ detectConflictsNli: mneme.detectConflictsNli }))
-vi.mock('../../src/main/memoryAudit', () => ({ auditMemory: mneme.auditMemory, initMemoryAudit: mneme.initMemoryAudit }))
+// The record of what memory did: its size and clearing it (Settings > Memory & Learning > Activity record). Main hands both the
+// app-data folder; the real functions are in memoryAudit.test.ts.
+const auditRecord = vi.hoisted(() => ({
+  size: vi.fn((_dir: string) => ({ files: 2, bytes: 10 })),
+  clear: vi.fn((_dir: string) => ({ removed: 2, failed: 0 })),
+}))
+vi.mock('../../src/main/memoryAudit', () => ({
+  auditMemory: mneme.auditMemory,
+  initMemoryAudit: mneme.initMemoryAudit,
+  memoryAuditSize: auditRecord.size,
+  clearMemoryAudit: auditRecord.clear,
+}))
 vi.mock('../../src/main/mnemeRetrieval', () => ({ proactiveQuery: mneme.proactiveQuery, proactiveSignals: mneme.proactiveSignals }))
 vi.mock('../../src/main/codeLocate', () => ({ codeLocate: mneme.codeLocate }))
 
@@ -683,6 +694,17 @@ describe('memory:count / memory:clear / memory:stats', () => {
     expect(typeof deps.manifest.read).toBe('function')
     expect(typeof deps.manifest.write).toBe('function')
     expect(mem.memoryClear).toHaveBeenCalledTimes(1)
+  })
+
+  // Settings > Memory & Learning > Activity record asks main how big the record of what memory did is, and to clear it. Both work on
+  // the app-data folder main holds, never on anything the renderer sends.
+  it('serves the activity record on the app-data folder, whatever the renderer sends along', async () => {
+    auditRecord.size.mockClear()
+    auditRecord.clear.mockClear()
+    expect(await invoke('memory:audit-size', { dir: 'C:\\elsewhere' })).toEqual({ success: true, data: { files: 2, bytes: 10 } })
+    expect(auditRecord.size).toHaveBeenCalledWith(USER_DATA)
+    expect(await invoke('memory:audit-clear', { dir: 'C:\\elsewhere' })).toEqual({ success: true, data: { removed: 2, failed: 0 } })
+    expect(auditRecord.clear).toHaveBeenCalledWith(USER_DATA)
   })
 
   // The manifest it hands over has to be the one the passes keep (<userData>/claude-notes-manifest.json): a stand-in would leave

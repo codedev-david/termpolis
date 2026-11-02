@@ -63,8 +63,7 @@ describe('ActivityRecordPanel: what is shown', () => {
   ])('writes %j as "%s, %s"', async (size, files, amount) => {
     mockApi(size)
     await open()
-    expect(status()).toContain(files)
-    expect(status()).toContain(amount)
+    expect(status()).toBe(`${files} on this computer, ${amount} together.`) // the whole sentence: "1 bytes" and "1 files" would pass a check for "1 byte" and "1 file"
   })
 
   it('says plainly that nothing is recorded, and offers nothing to clear', async () => {
@@ -113,10 +112,14 @@ describe('ActivityRecordPanel: clearing it', () => {
     expect(document.activeElement).toBe(screen.getByTestId('activity-record-clear'))
   })
 
-  it('Escape closes the question without clearing', async () => {
+  it('Escape closes the question without clearing, and does not also close the Settings pane', async () => {
     await open()
     fireEvent.click(screen.getByTestId('activity-record-clear'))
+    const outer = vi.fn()
+    document.addEventListener('keydown', outer)
     fireEvent.keyDown(screen.getByTestId('activity-record-cancel'), { key: 'Escape' })
+    document.removeEventListener('keydown', outer)
+    expect(outer).not.toHaveBeenCalled() // the key was taken by the question
     expect(screen.queryByTestId('activity-record-confirm')).toBeNull()
     expect(clearCall).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(screen.getByTestId('activity-record-clear'))
@@ -228,6 +231,52 @@ describe('ActivityRecordPanel: clearing it', () => {
     await act(async () => { release() })
     await flush()
     expect(sizeCall).toHaveBeenCalledTimes(1) // it did not read the size again for a panel nobody sees
+  })
+
+  it('says "them" when more than one file could not be removed', async () => {
+    mockApi({ files: 4, bytes: 8192 }, () => ({ removed: 2, failed: 2 }))
+    await open()
+    fireEvent.click(screen.getByTestId('activity-record-clear'))
+    await act(async () => { fireEvent.click(screen.getByTestId('activity-record-confirm-yes')) })
+    await flush(); await flush()
+    const notice = screen.getByTestId('activity-record-notice').textContent ?? ''
+    expect(notice).toContain('Cleared 2 files.')
+    expect(notice).toContain('2 files could not be removed (another program may be holding them open); try again.')
+  })
+
+  it('does not set state for a panel that has gone away when the clear throws', async () => {
+    let fail: () => void = () => {}
+    clearCall.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = () => reject(new Error('late')) }))
+    const view = render(<ActivityRecordPanel />)
+    await flush(); await flush()
+    fireEvent.click(screen.getByTestId('activity-record-clear'))
+    fireEvent.click(screen.getByTestId('activity-record-confirm-yes'))
+    await flush()
+    view.unmount()
+    await act(async () => { fail() })
+    expect(document.body.textContent).toBe('')
+  })
+
+  it('ignores Escape while nothing is being asked, and leaves it to the Settings pane', async () => {
+    await open()
+    const outer = vi.fn()
+    document.addEventListener('keydown', outer)
+    fireEvent.keyDown(screen.getByTestId('activity-record-clear'), { key: 'Escape' })
+    document.removeEventListener('keydown', outer)
+    expect(outer).toHaveBeenCalledTimes(1) // not taken: the pane may close on it
+    expect(screen.queryByTestId('activity-record-confirm')).toBeNull()
+    expect(clearCall).not.toHaveBeenCalled()
+    expect(screen.getByTestId('activity-record-clear')).toBeTruthy()
+  })
+
+  it('keeps what it last read, and says so, when a later read fails', async () => {
+    const view = render(<ActivityRecordPanel refreshToken={0} />)
+    await flush(); await flush()
+    sizeCall.mockResolvedValueOnce({ success: false, error: 'no userData' })
+    view.rerender(<ActivityRecordPanel refreshToken={1} />)
+    await flush(); await flush()
+    expect(status()).toContain('2 files')
+    expect(screen.getByTestId('activity-record-error').textContent).toBe('no userData')
   })
 })
 

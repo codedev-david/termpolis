@@ -361,14 +361,25 @@ describe('the record, as the user sees it and clears it', () => {
   })
 
   it('does not stop the other process from rotating a file it still counts as big', () => {
-    // The other process keeps its own count of the size of its file; after this clears the file the count is stale, and a rotation
-    // it then makes finds nothing to rename. It must carry on and write the line.
+    // The other process keeps its own count of the size of its file; after the clear the count is stale, and a rotation it then
+    // makes finds nothing to rename. It must carry on and write the line. (This module's own count is told, below; the other
+    // process's is simulated by removing the file without going through clearMemoryAudit.)
     _setMaxBytesForTests(300)
     initMemoryAudit(tmp)
     for (let i = 0; i < 2; i++) auditMemory({ event: 'learn', kind: 'reflect', detail: 'x'.repeat(40) })
-    clearMemoryAudit(tmp)
+    fs.rmSync(file('memory-audit.jsonl'))
     auditMemory({ event: 'learn', kind: 'reflect', detail: 'y'.repeat(40) })
     expect(readMemoryAudit(10)).toHaveLength(1)
     expect(fs.existsSync(file('memory-audit.prev.jsonl'))).toBe(false)
+  })
+
+  it('sizes its own live file again after the clear, so that it does not rotate early on a count of a file that is gone', () => {
+    _setMaxBytesForTests(400)
+    initMemoryAudit(tmp)
+    for (let i = 0; i < 2; i++) auditMemory({ event: 'learn', kind: 'reflect', detail: 'x'.repeat(40) }) // about 210 bytes
+    clearMemoryAudit(tmp)
+    for (let i = 0; i < 2; i++) auditMemory({ event: 'learn', kind: 'reflect', detail: 'y'.repeat(40) }) // about 210 again: under the cap
+    expect(fs.existsSync(file('memory-audit.prev.jsonl'))).toBe(false) // a count of 210 left over would have rotated these two
+    expect(readMemoryAudit(10)).toHaveLength(2)
   })
 })

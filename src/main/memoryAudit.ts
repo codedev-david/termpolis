@@ -87,9 +87,10 @@ export function memoryAuditSize(d: string): { files: number; bytes: number } {
 }
 
 /** Forget the record: remove every file it is kept in, in the app-data folder `d`, and nothing else. A file that is not there
- *  is already forgotten. The other process may append at the same moment; its next line starts a new file, and the byte count
- *  either process keeps for rotation can only be too high, which makes it rotate a file that is not there, and rotating nothing
- *  loses nothing. `failed` counts the files that are there and could not be removed (one an antivirus scan holds open, say). */
+ *  is already forgotten. The other process may append at the same moment; its next line starts a new file. The process that
+ *  clears sizes its own live file again at its next line; the other process's count of its file can only be too high, which makes
+ *  it rotate early, and rotating a file that is not there loses nothing. `failed` counts the files that are there and could not
+ *  be removed (one an antivirus scan holds open, say). */
 export function clearMemoryAudit(d: string): { removed: number; failed: number } {
   let removed = 0
   let failed = 0
@@ -101,6 +102,7 @@ export function clearMemoryAudit(d: string): { removed: number; failed: number }
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') failed++
     }
   }
+  liveBytes = -1 // the file this process was counting may be gone: its next line sizes whatever is there
   return { removed, failed }
 }
 

@@ -171,6 +171,17 @@ describe('window.termpolis IPC channels', () => {
     expect(mockInvoke).toHaveBeenCalledWith('memory:remove-imported-notes')
   })
 
+  // The activity record (1.55.0): its size and clearing it. Same seam, same reason.
+  it('memoryAuditSize invokes memory:audit-size, and names no folder', async () => {
+    await exposed.termpolis.memoryAuditSize()
+    expect(mockInvoke).toHaveBeenCalledWith('memory:audit-size')
+  })
+
+  it('memoryClearAudit invokes memory:audit-clear, and names no folder', async () => {
+    await exposed.termpolis.memoryClearAudit()
+    expect(mockInvoke).toHaveBeenCalledWith('memory:audit-clear')
+  })
+
   // The freeze history went with the profiler that fed it and is not coming back.
   it('exposes no bridge to the deleted freeze-history IPC', () => {
     expect(exposed.termpolis.memoryGetStalls).toBeUndefined()
