@@ -1211,6 +1211,15 @@ describe('buildContextPrimer — notes, then lessons the gate vouches for, then 
       expect(out).toMatch(/- \[claude · 3d ago\] The installer check fails/)
     })
 
+    // The documentation says "a demoted one is still shown, after the conversations": it is a lesson (a note or a fact), the block
+    // puts the conversations first, and a demoted lesson ranks with the rest of what is left. It does not slip between two
+    // conversations because its score is higher than the weaker one's.
+    it('shows a demoted lesson after every conversation of the block, however well it scores', async () => {
+      const out = await build([conv(1, { score: 0.6 }), lesson('d1', G1, { score: 0.99, correction: { kind: 'demote' } }), conv(2, { score: 0.5 })])
+      inOrder(out, ['conversation 1 ', 'conversation 2 ', 'installer check fails'])
+      expect(out).not.toContain('[lesson')
+    })
+
     it('judges an amended lesson on the text that replaced it', async () => {
       const kept = await build([conv(1, { score: 0.9 }), lesson('a1', G2, { score: 0.5, correction: { kind: 'amend' } })])
       inOrder(kept, ['worktree remove --force', 'conversation 1 '])

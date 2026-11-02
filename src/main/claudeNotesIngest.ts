@@ -59,7 +59,8 @@ const MAX_TRANSCRIPTS_STATTED = 5000
 const BINARY_SNIFF_BYTES = 8192
 /** The manifest is saved after this many notes, not after each: a kill then costs at most this many notes' ids. */
 const CHECKPOINT_EVERY = 20
-const LIST_PAGE = 500
+/** Rows one listing of the store shows: memoryList's own cap (a test holds the two together). */
+export const LIST_PAGE = 500
 
 /**
  * THE ONE PLACE the folders to read come from: Claude Code's projects folder, or a test run's scratch home
@@ -390,21 +391,21 @@ const isRow = (r: unknown): r is StoredNote => !!r && typeof r === 'object' && i
 
 /** Every entry the store holds under the notes' author, newest first. Entries that share a time and straddle
  *  a page boundary are fetched whole, because the listing's cursor skips the time it was given. */
-async function listAll(store: NotesStore): Promise<StoredNote[]> {
+async function listAll(store: NotesStore, pageSize: number): Promise<StoredNote[]> {
   const seen = new Map<string, StoredNote>()
   let before: number | undefined
   for (;;) {
-    const raw = await store.list({ agentId: NOTES_SOURCE, limit: LIST_PAGE, ...(before === undefined ? {} : { before }) })
+    const raw = await store.list({ agentId: NOTES_SOURCE, limit: pageSize, ...(before === undefined ? {} : { before }) })
     const page = raw.filter(isRow)
     let added = 0
     for (const r of page) if (!seen.has(r.id)) { seen.set(r.id, r); added++ }
-    if (raw.length < LIST_PAGE || added === 0) break
+    if (raw.length < pageSize || added === 0) break
     const oldest = Math.min(...page.map((r) => r.ts))
     // The notes that share the oldest time of a full page may not all have fit in it, and the next page starts below that time:
     // they are asked for by that time alone, up to one more page of them. A listing that is not swept (the one "Remove imported
     // notes" starts from, the one the end of a pass counts with) still sees them; more than a page of ONE time cannot be reached
     // without removing some first, which is what the sweep's next round is for (sweepOwnNotes).
-    for (const r of (await store.list({ agentId: NOTES_SOURCE, limit: LIST_PAGE, since: oldest, before: oldest + 1 })).filter(isRow)) {
+    for (const r of (await store.list({ agentId: NOTES_SOURCE, limit: pageSize, since: oldest, before: oldest + 1 })).filter(isRow)) {
       if (!seen.has(r.id)) seen.set(r.id, r)
     }
     before = oldest
@@ -460,6 +461,8 @@ export interface NotesDeps {
   ownOrigin?: () => Promise<string | undefined>
   /** Rounds one sweep of the store may take (MAX_SWEEP_ROUNDS). A seam for tests. */
   sweepRounds?: number
+  /** Rows asked of the store at a time (LIST_PAGE). A seam for tests: a store of a few dozen notes then spans several pages. */
+  listPage?: number
 }
 
 export interface NotesStats {
@@ -510,7 +513,7 @@ async function originOf(deps: NotesDeps): Promise<string | undefined> {
 /** Every imported note this computer holds, from the store's own listing. Throws when the store cannot be listed. */
 async function ownNotes(deps: NotesDeps): Promise<StoredNote[]> {
   const own = await originOf(deps)
-  return (await listAll(deps.store)).filter((r) => isClaudeNote(r) && ownedBy(r, own))
+  return (await listAll(deps.store, deps.listPage ?? LIST_PAGE)).filter((r) => isClaudeNote(r) && ownedBy(r, own))
 }
 
 /** Passes and removals take turns: a removal in the middle of a pass would delete what it is about to record. */

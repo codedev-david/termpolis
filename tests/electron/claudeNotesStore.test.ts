@@ -29,6 +29,7 @@ import {
 } from '../../src/main/swarmMemory'
 import { getSettings, scanText, setMemoryScrub } from '../../src/main/aiSecurity'
 import {
+  LIST_PAGE,
   NOTES_MANIFEST_FILE,
   _resetNotesLockForTests,
   fileManifest,
@@ -561,19 +562,38 @@ describe('the manifest and the store disagree', () => {
     session(FOLDER, CWD)
   }
 
-  // 600 is deliberate: it has to exceed the 500 rows one listing shows. Every copy is a real fsynced write and a real fsynced delete,
-  // so this takes 14 s on a quiet machine and well over the 30 s default when others are busy: it gets a timeout of its own.
-  it('a lost manifest over 600 notes that share one modified time leaves exactly 600 copies, and settles', async () => {
-    seedSameTime(600)
-    for (let pass = 0; pass < 4; pass++) await runClaudeNotesIngest(deps(realStore), { maxChunks: 1000 })
-    expect(memoryCount()).toBe(600) // this store holds nothing but the notes; a listing shows at most 500, a count shows all
+  // The pass asks the store for a page of rows at a time, and one listing cannot reach past a page of notes that share a time: the
+  // sweep goes in rounds. A page of 20 stands for the real one of 500 here (the next test holds the two together), so a store of
+  // three pages and a bit costs 65 notes and not 600: every copy is a real fsynced write and a real fsynced delete, which took
+  // 14 s for 600 on a quiet machine and over a minute when others were busy.
+  it('a lost manifest over three pages of notes that share one modified time leaves exactly that many copies, and settles', async () => {
+    const PAGE = 20
+    const count = PAGE * 3 + 5 // more than a page, and not a whole number of them
+    seedSameTime(count)
+    const asked: number[] = [] // the rows each listing was asked for: a page this small is what makes the store span pages
+    const store: NotesStore = { ...realStore, list: async (o) => { asked.push(o.limit); return realStore.list(o) } }
+    const pass = (): Promise<unknown> => runClaudeNotesIngest(deps(store, { listPage: PAGE }), { maxChunks: 1000 })
+    for (let i = 0; i < 4; i++) await pass()
+    expect(Math.max(...asked)).toBe(PAGE)
+    expect(memoryCount()).toBe(count) // this store holds nothing but the notes; a listing shows at most one page, a count shows all
     fs.rmSync(path.join(data, NOTES_MANIFEST_FILE)) // the manifest is lost; the store is not
-    for (let pass = 0; pass < 4; pass++) await runClaudeNotesIngest(deps(realStore), { maxChunks: 1000 })
-    expect(memoryCount()).toBe(600) // not 1,200: a full page of one time's new copies cannot hide the old ones from the sweep
+    for (let i = 0; i < 4; i++) await pass()
+    expect(memoryCount()).toBe(count) // not twice that: a full page of one time's new copies cannot hide the old ones from the sweep
     restart()
-    expect(memoryCount()).toBe(600)
+    expect(memoryCount()).toBe(count)
     expect(manifestJson().dirty).toBe(false)
-  }, 120_000)
+  })
+
+  // What the test above stands a small page in for: the page the pass asks for is the most the real store ever shows, however many
+  // rows it is asked for. If the store's own cap moves, the pass would take a short page for the last one, or leave notes unlisted.
+  // (Plain notes, which the store does not fsync, so 501 of them are quick.)
+  it('asks the store for exactly as many rows as one listing of the store shows', async () => {
+    for (let i = 0; i < LIST_PAGE + 1; i++) {
+      await memoryWrite({ agentId: 'claude-notes', source: 'claude-notes', kind: 'note', content: `a note of its own, number ${i}`, ts: 1_000 })
+    }
+    expect(memoryCount()).toBe(LIST_PAGE + 1)
+    expect(memoryList({ agentId: 'claude-notes', limit: LIST_PAGE * 4 })).toHaveLength(LIST_PAGE)
+  })
 
   it('a store replaced by an empty one is imported into again, and Settings counts what it really holds', async () => {
     seedSameTime(3)
