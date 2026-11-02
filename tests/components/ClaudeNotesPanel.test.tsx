@@ -63,6 +63,15 @@ describe('ClaudeNotesPanel: what is shown', () => {
     expect(text).toContain('Secrets in a note are redacted')
   })
 
+  // The redaction is the Memory scrub, a real switch (Settings > AI Security): the panel must not promise it unconditionally.
+  it('says that the redaction of secrets is the Memory scrub, and where that switch is', async () => {
+    await open()
+    const text = screen.getByTestId('claude-notes-panel').textContent!.replace(/\s+/g, ' ')
+    expect(text).toContain('Secrets in a note are redacted before the copy is stored by the Memory scrub')
+    expect(text).toContain('Settings › AI Security')
+    expect(text).toContain('a note is stored as it is if you have turned that off there')
+  })
+
   // Termpolis itself sends nothing anywhere, but the point of the feature is that Codex and the Antigravity CLI read what Claude
   // kept private to Claude, and an agent passes what it reads to its own provider. "Nothing leaves this computer" was not true of that.
   it('does not say the notes stay on this computer: an agent that finds one passes it to its own provider', async () => {
@@ -171,6 +180,12 @@ describe('ClaudeNotesPanel: what is shown', () => {
     // Connecting does not start a pass; the next check does (about every 30 minutes), and the banner must not promise sooner.
     expect(banner).toContain('picked up at the next check (about every 30 minutes)')
     expect(banner).not.toContain('as soon as')
+    // Where the answer is given: Settings > Agent Integration connects them, and an install an older version connected is
+    // answered in the review Termpolis shows when it starts (Settings only lists it as "not yet reviewed" and offers to disconnect).
+    expect(banner).toContain('in Settings › Agent Integration')
+    expect(banner).toContain('review Termpolis shows when it starts')
+    expect(banner).toContain('not yet reviewed')
+    expect(banner).not.toContain('answer that question, in Settings')
     cleanup()
     mockApi(view({ connected: false, indexClaudeNotes: false }))
     await open()

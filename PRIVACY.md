@@ -431,7 +431,10 @@ this: it starts when you answer yes.
   feature, and also why it is a choice: if you do not want another vendor's agent
   to see what Claude kept, turn the import off and remove the copies. The copies
   are part of your memory like any other, so they go anywhere else only if you
-  move your memory yourself, with a brain export, say.
+  move your memory yourself, with a brain export, say, or hand a job to another
+  of your computers: that computer starts it with its own memory, and its answer
+  can quote what it holds, a saved note among it, back to the computer that
+  asked.
 - **Undo.** *Remove imported notes* (Settings → Memory & Learning) takes every
   copy out of memory and turns the import off; Claude's own notes are not
   touched. Turning the switch off stops the reading and leaves the existing

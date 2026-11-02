@@ -144,7 +144,8 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
           project they belong to, so Codex and the Antigravity CLI can find them too. Nothing is ever written back into
           Claude&rsquo;s folder. Termpolis sends nothing off this computer, but an agent that finds a note passes its text on to
           its own provider, as it does any memory it reads. An edited note updates its copy; a deleted one removes it.
-          Secrets in a note are redacted before the copy is stored.
+          Secrets in a note are redacted before the copy is stored by the Memory scrub, the one switch that covers all of memory
+          (Settings &rsaquo; AI Security); a note is stored as it is if you have turned that off there.
         </p>
       </div>
 
@@ -168,8 +169,9 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
       {waiting ? (
         <div data-testid="claude-notes-waiting" role="status" className="text-xs text-[#e2c08d] p-3 border border-[#e2c08d]/40 rounded bg-[#e2c08d]/10 leading-relaxed">
           Your agents are not connected (or an earlier version connected them and you have not been asked yet), so no note is
-          read. The switch above is on; once you connect them, or answer that question, in Settings &rsaquo; Agent Integration,
-          the notes are picked up at the next check (about every 30 minutes).
+          read. The switch above is on; once you connect them in Settings &rsaquo; Agent Integration, or answer the review Termpolis
+          shows when it starts (Settings lists such an install as not yet reviewed), the notes are picked up at the next check
+          (about every 30 minutes).
         </div>
       ) : null}
 
