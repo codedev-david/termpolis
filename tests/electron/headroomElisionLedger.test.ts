@@ -123,6 +123,21 @@ describe('rolling window', () => {
     expect(elisionState().classes['compact|Read|4-10k'].elided).toBe(ELISION_WINDOW + extra)
   })
 
+  // The window is exactly 2,000, not about 2,000: the test below pushes it out by three and so would pass for a window
+  // of 2,001 or 2,002. Written with the number itself, so changing the window means changing the number in this test
+  // too, which is the point: the verdict, the card and the copy that says "the last 2,000" all stand on it.
+  it('holds exactly the last 2,000 elisions: the 2,001st pushes out the first and nothing else', () => {
+    expect(ELISION_WINDOW).toBe(2000)
+    for (let i = 0; i < 2000; i++) recordElision(tok(i), compactRead())
+    expect(recentByClass().get('compact|Read|4-10k')?.elided).toBe(2000)
+    recordElision(tok(2000), compactRead())
+    expect(recentByClass().get('compact|Read|4-10k')?.elided).toBe(2000)
+    recordRedemption(tok(0), compactRead()) // out: counts for life only
+    expect(recentByClass().get('compact|Read|4-10k')?.redeemed).toBe(0)
+    recordRedemption(tok(1), compactRead()) // the oldest one still in: counts in the window too
+    expect(recentByClass().get('compact|Read|4-10k')?.redeemed).toBe(1)
+  })
+
   it('a redemption of a token already out of the window counts for life only', () => {
     for (let i = 0; i < ELISION_WINDOW + 3; i++) recordElision(tok(i), compactRead())
     recordRedemption(tok(0), compactRead()) // pushed out by the 2,001st elision

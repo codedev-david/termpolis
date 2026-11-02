@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { compareArms, tCritical, MIN_ARM_REQUESTS, MIN_ARM_GROUPS } from '../../src/main/headroom/armCompare'
+import { compareArms, tCritical, MIN_ARM_REQUESTS, MIN_ARM_GROUPS, MORE_DATA_CAP } from '../../src/main/headroom/armCompare'
 import { ARM_CLUSTERS } from '../../src/main/headroom/elisionPolicy'
 import type { ArmCounts, ArmState } from '../../src/main/headroom/armLedger'
 
@@ -156,6 +156,27 @@ describe('the comparison of the arms', () => {
       expect(compareArms(state(groups(10, 10_000, 0), groups(10, 10_000, 0))).moreDataFactor).toBeNull()
     })
 
+    // The cap is exactly 100 times the data so far, not about that. The sweep walks the holdout's cost across the point
+    // where the factor passes it, so no hand-worked constant can drift: the first gap quoted is the one that needs 100 times
+    // (or just under), and every narrower one, which would need more, is null.
+    it('quotes a factor up to 100 times the data so far and not past it: the largest it ever says is exactly 100', () => {
+      expect(MORE_DATA_CAP).toBe(100)
+      const quoted: number[] = []
+      let narrowestQuoted = Number.POSITIVE_INFINITY
+      for (let m = 10_200; m <= 11_000; m++) {
+        const c = compareArms(state(groups(10, 10_000, 1_000), groups(10, m, m / 10)))
+        expect(c.verdict, `m ${m}`).toBe('no-clear-difference')
+        if (c.moreDataFactor === null) { expect(narrowestQuoted, `m ${m}: a narrower gap than one already quoted`).toBe(Number.POSITIVE_INFINITY); continue }
+        quoted.push(c.moreDataFactor)
+        narrowestQuoted = Math.min(narrowestQuoted, m)
+      }
+      expect(quoted.length).toBeGreaterThan(100)
+      expect(Math.max(...quoted)).toBe(100)
+      expect(Math.min(...quoted)).toBeLessThan(30)
+      // Wider gaps need less: the quoted factors never rise as the gap grows.
+      for (let i = 1; i < quoted.length; i++) expect(quoted[i]).toBeLessThanOrEqual(quoted[i - 1])
+    })
+
     it('calls late cheaper when the gap clears the margin: 27.3% cheaper, give or take 16.5', () => {
       // d = ln(8000 / 11000) = -0.318454, beyond -0.22538.
       // percent margin = (exp(d + m) - exp(d - m)) / 2 = (0.911127 - 0.580518) / 2 = 16.53
@@ -274,6 +295,63 @@ describe('the comparison of the arms', () => {
   })
 
   describe('tCritical', () => {
+    /**
+     * The two-sided 99.9% point of Student's t with `df` degrees of freedom, from the distribution and not from a table:
+     * P(|T| > t) is the regularized incomplete beta I_x(df/2, 1/2) at x = df / (df + t^2) (Lentz's continued fraction), and
+     * the point where it falls to 0.001 is found by bisection. The table in armCompare.ts is typed in by hand; this is
+     * what each of its entries is checked against.
+     */
+    const exactT999 = (df: number): number => {
+      const lgamma = (x0: number): number => {
+        const c = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7]
+        const x = x0 - 1
+        const t = x + 7.5
+        let a = c[0]
+        for (let i = 1; i < 9; i++) a += c[i] / (x + i)
+        return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a)
+      }
+      const betacf = (a: number, b: number, x: number): number => {
+        const tiny = 1e-300
+        let c = 1
+        let d = 1 - ((a + b) * x) / (a + 1)
+        if (Math.abs(d) < tiny) d = tiny
+        d = 1 / d
+        let h = d
+        for (let m = 1; m <= 1000; m++) {
+          const m2 = 2 * m
+          let aa = (m * (b - m) * x) / ((a - 1 + m2) * (a + m2))
+          d = 1 + aa * d
+          if (Math.abs(d) < tiny) d = tiny
+          c = 1 + aa / c
+          if (Math.abs(c) < tiny) c = tiny
+          d = 1 / d
+          h *= d * c
+          aa = (-(a + m) * (a + b + m) * x) / ((a + m2) * (a + 1 + m2))
+          d = 1 + aa * d
+          if (Math.abs(d) < tiny) d = tiny
+          c = 1 + aa / c
+          if (Math.abs(c) < tiny) c = tiny
+          d = 1 / d
+          const del = d * c
+          h *= del
+          if (Math.abs(del - 1) < 3e-16) break
+        }
+        return h
+      }
+      const ibeta = (x: number, a: number, b: number): number => {
+        const bt = Math.exp(lgamma(a + b) - lgamma(a) - lgamma(b) + a * Math.log(x) + b * Math.log(1 - x))
+        return x < (a + 1) / (a + b + 2) ? (bt * betacf(a, b, x)) / a : 1 - (bt * betacf(b, a, 1 - x)) / b
+      }
+      let lo = 0
+      let hi = 1e4
+      for (let i = 0; i < 200; i++) {
+        const mid = (lo + hi) / 2
+        if (ibeta(df / (df + mid * mid), df / 2, 0.5) > 0.001) lo = mid
+        else hi = mid
+      }
+      return (lo + hi) / 2
+    }
+
     it('is the two-sided 99.9% quantile of the t distribution, wider than the stated 99% on purpose', () => {
       expect(tCritical(1)).toBeCloseTo(636.619, 3)
       expect(tCritical(4)).toBeCloseTo(8.61, 3)
@@ -288,6 +366,27 @@ describe('the comparison of the arms', () => {
       expect(tCritical(31)).toBe(3.291)
       expect(tCritical(10_000)).toBe(3.291)
       for (const bad of [0, -1, Number.NaN]) expect(tCritical(bad)).toBe(Number.POSITIVE_INFINITY)
+    })
+
+    // A wrong entry in a reachable row would tighten or loosen every verdict at that many groups, and the few rows the
+    // tests above name leave the rest unpinned. A card holds at most 20 groups an arm, so the reachable degrees of
+    // freedom are 4 to 19, but every entry is held: to three decimals, which is the table's own precision.
+    it('has every entry equal to the quantile of the t distribution it names, to the three decimals it is written in', () => {
+      for (let df = 1; df <= 30; df++) expect(tCritical(df), `df ${df}`).toBeCloseTo(exactT999(df), 3)
+    })
+
+    it('is not a table typed wrong in the other direction either: falling with every degree of freedom, and never under the normal point', () => {
+      for (let df = 1; df < 30; df++) expect(tCritical(df), `df ${df}`).toBeGreaterThan(tCritical(df + 1))
+      for (let df = 1; df <= 30; df++) expect(tCritical(df), `df ${df}`).toBeGreaterThan(3.291)
+      // The fallback is the normal point it says it is, found by the same routine at many degrees of freedom.
+      expect(exactT999(1_000_000)).toBeCloseTo(3.291, 2)
+    })
+
+    it('checks itself: the routine reproduces quantiles known from a printed table, and sets a wrong entry apart', () => {
+      expect(exactT999(10)).toBeCloseTo(4.587, 2)
+      expect(exactT999(20)).toBeCloseTo(3.85, 2)
+      expect(exactT999(1000)).toBeCloseTo(3.3, 2)
+      expect(Math.abs(exactT999(13) - 2.221)).toBeGreaterThan(1) // 2.221 is the entry a mutant wrote over 4.221
     })
   })
 })

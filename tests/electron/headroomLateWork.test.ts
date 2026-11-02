@@ -16,8 +16,14 @@ import { realistic, editLoop, FIRST_MESSAGE } from './fixtures/lateGoldenCases'
  *   effectiveFloor ...... once per result that gets as far as a floor, under both
  *   SHA-1 updates ....... late no more than legacy; characters hashed, the same
  *   JSON.parse .......... one parse of the whole body, under both (headroomLateCost holds that too)
+ *   JSON.stringify ...... two calls under both (the round-trip check, the body that goes out), and exactly the
+ *                         body that came in plus the body that left in characters, so a third call or a
+ *                         larger one shows
  *
- * A hidden extra pass over the text would show as a count that goes up. Nothing here reads a clock.
+ * An extra pass that goes through one of these operations shows as a count that goes up. What is NOT counted:
+ * a late-only pass that uses none of them (a loop, a split, a regular expression over the text, a spin). That
+ * is held only by the 1.25 times bound in headroomLateCost, which cannot see a slowdown under about 40%. This
+ * file says what it counts so that nobody reads it as more. Nothing here reads a clock.
  */
 
 const work = vi.hoisted(() => ({ armOf: 0, effectiveFloor: 0, hashes: 0, hashedChars: 0 }))
@@ -51,7 +57,7 @@ interface Wire {
   rewriteMessagesBody: (raw: string) => { body: string; changed: boolean; stats: { arm: string }; stashes: Array<{ original: string }> }
 }
 
-interface Counted { armOf: number; effectiveFloor: number; hashes: number; hashedChars: number; parses: number; arm: string; changed: boolean }
+interface Counted { armOf: number; effectiveFloor: number; hashes: number; hashedChars: number; parses: number; stringifies: number; stringifiedChars: number; bodyChars: number; arm: string; changed: boolean }
 
 /** One rewrite of `raw` under `policy`, in a fresh module, with every counter read for that rewrite only. */
 async function counted(policy: 'late' | 'legacy', raw: string): Promise<Counted> {
@@ -61,10 +67,15 @@ async function counted(policy: 'late' | 'legacy', raw: string): Promise<Counted>
   m.setFirstSightPolicy(policy)
   work.armOf = 0; work.effectiveFloor = 0; work.hashes = 0; work.hashedChars = 0
   const parse = vi.spyOn(JSON, 'parse')
+  const stringify = vi.spyOn(JSON, 'stringify')
   try {
     const r = m.rewriteMessagesBody(raw)
-    return { armOf: work.armOf, effectiveFloor: work.effectiveFloor, hashes: work.hashes, hashedChars: work.hashedChars, parses: parse.mock.calls.length, arm: r.stats.arm, changed: r.changed }
-  } finally { parse.mockRestore() }
+    const stringifiedChars = stringify.mock.results.reduce((n, x) => n + (typeof x.value === 'string' ? x.value.length : 0), 0)
+    return {
+      armOf: work.armOf, effectiveFloor: work.effectiveFloor, hashes: work.hashes, hashedChars: work.hashedChars,
+      parses: parse.mock.calls.length, stringifies: stringify.mock.calls.length, stringifiedChars, bodyChars: r.body.length, arm: r.stats.arm, changed: r.changed,
+    }
+  } finally { parse.mockRestore(); stringify.mockRestore() }
 }
 
 const TOOLS = ['Read', 'Bash', 'Grep', 'Glob', 'PowerShell', 'WebFetch']
@@ -105,6 +116,13 @@ describe('the late path does no more than the legacy path, counted', () => {
     expect(late.hashedChars).toBeLessThanOrEqual(legacy.hashedChars)
     expect(late.parses).toBe(legacy.parses)
     expect(late.parses).toBe(1)
+    // The two stringifies both policies make and nothing else: the check that the body round-trips, and the body that
+    // goes out. Characters stringified are therefore exactly the body that came in plus the body that left. (The body
+    // that leaves is larger under Late, which leaves results whole, so the characters are not compared between the two.)
+    expect(late.stringifies).toBe(2)
+    expect(legacy.stringifies).toBe(2)
+    expect(late.stringifiedChars).toBe(raw.length + late.bodyChars)
+    expect(legacy.stringifiedChars).toBe(raw.length + legacy.bodyChars)
   })
 
   it('and on the band body late really skips work: it hashes strictly less, because results under the floor are left whole', async () => {
@@ -124,6 +142,9 @@ describe('the late path does no more than the legacy path, counted', () => {
     const twice = await counted('late', JSON.stringify(doubled))
     expect(twice.effectiveFloor).toBeGreaterThan(once.effectiveFloor)
     expect(twice.hashedChars).toBeGreaterThan(once.hashedChars)
+    expect(twice.stringifiedChars).toBeGreaterThan(once.stringifiedChars)
     expect(twice.armOf).toBe(1)
+    // The stringify count is of calls, so it does not move with the size of the body: it is the number that an added pass moves.
+    expect(twice.stringifies).toBe(once.stringifies)
   })
 })

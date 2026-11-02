@@ -216,13 +216,28 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     expect(parseTurnShapeFromSse(stream([{ name: 'ToolSearch', fragments: [`{"query":"${pad} select:retrieve_full"}`] }])).hop).toBeUndefined()
   })
 
+  // The same bound to the character: the query is {"query":" (10 characters) then the pad then the name (13). A name
+  // that ends exactly at character 2,048 is read; one more space in front of it and its last character is cut.
+  it('keeps exactly the first 2,048 characters of a query, not about that many', () => {
+    const query = (spaces: number): Item[] => [{ name: 'ToolSearch', fragments: [`{"query":"${' '.repeat(spaces)}retrieve_full"}`] }]
+    expect(parseTurnShapeFromSse(stream(query(2025))).hop).toBe(true)
+    expect(parseTurnShapeFromSse(stream(query(2026))).hop).toBeUndefined()
+    // A query that arrives in pieces is cut in the same place.
+    const pieces = (spaces: number): Item[] => [{ name: 'ToolSearch', fragments: ['{"query":"', ' '.repeat(spaces), 'retrieve_', 'full"}'] }]
+    expect(parseTurnShapeFromSse(stream(pieces(2025))).hop).toBe(true)
+    expect(parseTurnShapeFromSse(stream(pieces(2026))).hop).toBeUndefined()
+  })
+
   it('follows at most 16 ToolSearch calls in one answer, and still counts every call', () => {
-    const many: Item[] = Array.from({ length: 20 }, (_, i) => search(i === 17 ? 'select:retrieve_full' : 'select:Read'))
-    const shape = parseTurnShapeFromSse(stream(many))
-    expect(shape.toolCalls).toBe(20)
-    expect(shape.hop).toBeUndefined() // the one that names it is past the limit
-    const early: Item[] = Array.from({ length: 20 }, (_, i) => search(i === 3 ? 'select:retrieve_full' : 'select:Read'))
-    expect(parseTurnShapeFromSse(stream(early)).hop).toBe(true)
+    // The limit is exactly 16, not about 16: the 16th call (index 15) is the last one followed and the 17th (index 16)
+    // is the first one that is not. A call named far past it (index 17) would pass for a limit of 17 as well.
+    const naming = (k: number): Item[] => Array.from({ length: 20 }, (_, i) => search(i === k ? 'select:retrieve_full' : 'select:Read'))
+    expect(parseTurnShapeFromSse(stream(naming(15))).hop).toBe(true)
+    const past = parseTurnShapeFromSse(stream(naming(16)))
+    expect(past.toolCalls).toBe(20)
+    expect(past.hop).toBeUndefined() // the one that names it is past the limit
+    expect(parseTurnShapeFromSse(stream(naming(17))).hop).toBeUndefined()
+    expect(parseTurnShapeFromSse(stream(naming(3))).hop).toBe(true)
   })
 
   it('skips what the prefilter lets through that is not a block start or a block delta, once a ToolSearch call has started', () => {

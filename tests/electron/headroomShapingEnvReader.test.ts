@@ -142,6 +142,19 @@ describe('reading the Claude Code settings files that can hold a window', () => 
     expect((await readClaudeWindowSettings(userDir, project)).env).toEqual({ [VAR]: '250000' })
   })
 
+  // The test above builds its files from the constant, so it would pass for any limit. This draws the line in bytes: a
+  // file may be one mebibyte and not a byte more, which is what stops a launch decoding something huge on the main thread.
+  it('draws the limit at one mebibyte exactly: a file of 1,048,576 bytes is read and one of 1,048,577 is not', async () => {
+    expect(SETTINGS_FILE_MAX_BYTES).toBe(1024 * 1024)
+    const base = JSON.stringify({ env: { [VAR]: '250000' }, pad: '' }).length
+    put(userFile(), JSON.stringify({ env: { [VAR]: '250000' }, pad: 'x'.repeat(1_048_576 - base) }))
+    expect(fs.statSync(userFile()).size).toBe(1_048_576)
+    expect((await readClaudeWindowSettings(userDir, project)).env).toEqual({ [VAR]: '250000' })
+    put(userFile(), JSON.stringify({ env: { [VAR]: '250000' }, pad: 'x'.repeat(1_048_577 - base) }))
+    expect(fs.statSync(userFile()).size).toBe(1_048_577)
+    expect(await readClaudeWindowSettings(userDir, project)).toEqual(NOTHING)
+  })
+
   it('reads only the three named files: a neighbour with a similar name is never looked at', async () => {
     put(path.join(userDir, 'settings.backup.json'), { env: { [VAR]: '250000' } })
     put(path.join(userDir, 'settings.local.json'), { env: { [VAR]: '250000' } })
