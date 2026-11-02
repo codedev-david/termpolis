@@ -12,7 +12,10 @@
 // and remaining global hits are appended under a "may NOT apply" label so the
 // agent weighs them correctly. Without `project` the legacy flat behavior is
 // unchanged. The order spends the same lines as before: where a digest holds no
-// saved note and no such lesson it is the text 1.54 built.
+// saved note and no such lesson, the order is the one 1.54 used. (The text can still
+// differ from 1.54's: a chunk and the fuller chunk that begins with it collapse into
+// one line, the freshness lane leaves out what is superseded, suppressed or corrected,
+// and a correction applies to every digest.)
 //
 // Decoupled from the store (search is injected) so it unit-tests cleanly. The
 // formatting mirrors the cross-AI handoff prompt: no backticks (AI shells often
@@ -213,6 +216,7 @@ async function collectRecent(
 
   const cutoff = o.now - RECENT_WINDOW_MS
   const viable = hits.filter((h) => {
+    if (typeof h?.content !== 'string') return false // not a passage: the lane looks at every row it is given, and never throws
     // Enforce the window here too — an injected lister may ignore `since`.
     if (typeof h.ts === 'number' && h.ts > 0 && h.ts < cutoff) return false
     if (isCandidate(h)) return false // a lesson the substance gate stores but holds back is never shown

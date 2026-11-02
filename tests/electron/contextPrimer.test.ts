@@ -388,6 +388,21 @@ describe('buildContextPrimer — freshness lane', () => {
     expect(out).not.toContain('Most recent activity')
   })
 
+  // buildContextPrimer never throws. A row the lister hands back that is not a passage (no text, text that is not a string, not even an
+  // object) is skipped, wherever in the list it is: the lane looks at every row it was given, not only the first few.
+  it.each([
+    ['a number for its text', { id: 'bad', content: 123 }],
+    ['an object for its text', { id: 'bad', content: { text: 'x' } }],
+    ['no text', { id: 'bad' }],
+    ['null', null],
+    ['text instead of a row', 'oops'],
+  ])('skips a row with %s and still shows the good ones around it', async (_name, bad) => {
+    const recent = vi.fn().mockResolvedValue([freshOne({ id: 'a' }), bad, freshOne({ id: 'b', content: long('the second good line of the lane') })] as any)
+    const out = await buildContextPrimer(staleSearch, { query: 'q', project: proj, recent, now: NOW })
+    expect(out).toContain('shipped the shortcut icon fix an hour ago')
+    expect(out).toContain('the second good line of the lane')
+  })
+
   it('also fills the lane on the flat (no-project) digest, and labels both blocks', async () => {
     const recent = vi.fn().mockResolvedValue([freshOne()])
     const out = await buildContextPrimer(staleSearch, { query: 'q', recent, now: NOW })
