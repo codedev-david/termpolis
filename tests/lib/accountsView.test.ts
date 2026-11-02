@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 import {
-  ACCOUNT_COLORS, ACCOUNT_COLOR_NAMES, AGENT_COLOR, accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, freeColor, hasAccounts,
+  ACCOUNT_COLORS, ACCOUNT_COLOR_NAMES, AGENT_COLOR, accountBadge, accountsOf, agentOfCommand, agentOfName, agentOfTerminal, folderLine, freeColor, hasAccounts, onUnconnectedAccount,
 } from '../../src/renderer/src/lib/accountsView'
 import type { AccountsView } from '../../src/shared/agentAccounts'
 
@@ -157,5 +157,27 @@ describe('agentOfTerminal: the agent a terminal runs, as Termpolis knows it', ()
     expect(agentOfTerminal({ swarmAgent: 'claude' })).toBeNull()
     expect(agentOfTerminal({ agentCommand: 'claude', isConductor: true, isSwarm: true })).toBeNull()
     expect(agentOfTerminal(undefined)).toBeNull()
+  })
+})
+
+describe('onUnconnectedAccount: a terminal whose registered account the user did not connect (R17)', () => {
+  const view = (...rows: AccountRowView[]) => ({ accounts: rows })
+  const other = row({ id: 'acc_o', isDefault: false, connect: false })
+  it('is true only for a registered account that is neither the default profile nor connected', () => {
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view(other), {})).toBe(true)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, connect: true }), {})).toBe(false)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view({ ...other, isDefault: true }), {})).toBe(false)
+  })
+  it('judges no terminal it knows nothing of: no account, a stale one, one changed by hand, no view, no record', () => {
+    expect(onUnconnectedAccount({ id: 't' }, view(other), {})).toBe(false)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_gone' }, view(other), {})).toBe(false)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view(other), { t: true })).toBe(false)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, null, {})).toBe(false)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, undefined, undefined)).toBe(false)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view(), {})).toBe(false)
+    expect(onUnconnectedAccount(undefined, view(other), {})).toBe(false)
+    // A record kept for a terminal of another id is no word on this one.
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view(other), { u: true })).toBe(true)
+    expect(onUnconnectedAccount({ id: 't', agentAccountId: 'acc_o' }, view(other), undefined)).toBe(true)
   })
 })

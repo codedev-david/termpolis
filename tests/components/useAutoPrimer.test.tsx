@@ -87,6 +87,64 @@ describe('injectAutoPrimer', () => {
     expect(payload).toContain('"/home/me/myproject"')
   })
 
+  // SAFETY-R2-1 (R17): a profile the user did not connect holds no Termpolis server, so the agent there can't call
+  // memory_primer: the pointer would cost it a turn on "memory tools unavailable", and the banner would say memories loaded
+  // that nothing loaded. The primer FILE already leaves such an account alone (main); the typed pointer, which is the same
+  // intent through the other channel, does too, on a launch and after a compaction alike.
+  describe('on an account the user did not connect (R17)', () => {
+    const acct = (over: Record<string, unknown> = {}) => ({
+      id: 'acc_w', agent: 'claude', label: 'work', profile: '/h/.claude-work', folder: '/h/.claude-work', isDefault: false, autoOffer: false, order: 2,
+      connect: false, origin: 'adopted', folderExists: true, shares: [], lastEmail: 'w@corp.test', connection: null, bypassReady: false, terminals: 0, recopyAvailable: false, ...over,
+    })
+    const view = (rows: unknown[]) => ({ accounts: rows, preferred: {}, chooser: true, hidden: {}, integrationConnected: true, importAvailable: false, drift: [], advice: { stopFailureHooks: [], authOverrides: [] }, home: '/h' }) as never
+    const put = (rows: unknown[], over: Record<string, unknown> = {}) => useTerminalStore.setState({
+      accountsView: view(rows), accountsByHand: {},
+      terminals: [{ id: 'term-1', name: 'Claude', color: '', shellType: 'gitbash', cwd: '/p', fontSize: 13, theme: 'dark', fontFamily: 'mono', agentCommand: 'claude', agentAccountId: 'acc_w', ...over } as never],
+      memoryNotice: null,
+    })
+    afterEach(() => useTerminalStore.setState({ accountsView: null, terminals: [], accountsByHand: {}, memoryNotice: null }))
+
+    it('types no pointer, shows no banner and builds no recall for it, on a launch', async () => {
+      put([acct()])
+      expect(await injectAutoPrimer('term-1', '/p', false, true)).toBe(false)
+      const api = (window as any).termpolis
+      expect(api.writeToTerminal).not.toHaveBeenCalled()
+      expect(api.memoryBuildPrimer).not.toHaveBeenCalled()
+      expect(useTerminalStore.getState().memoryNotice).toBeNull()
+    })
+
+    it('types none after a compaction either (the same function), for Codex too', async () => {
+      put([acct({ agent: 'codex', id: 'acc_cx' })], { agentCommand: 'codex', agentAccountId: 'acc_cx' })
+      expect(await injectAutoPrimer('term-1', '/p')).toBe(false)
+      expect((window as any).termpolis.writeToTerminal).not.toHaveBeenCalled()
+    })
+
+    it('still types it for the default profile and for a connected account', async () => {
+      put([acct({ id: 'acc_w', isDefault: true, connect: false })])
+      expect(await injectAutoPrimer('term-1', '/p', false, true)).toBe(true)
+      put([acct({ connect: true })])
+      expect(await injectAutoPrimer('term-1', '/p', false, true)).toBe(true)
+      expect((window as any).termpolis.writeToTerminal).toHaveBeenCalled()
+      expect(useTerminalStore.getState().memoryNotice).toMatch(/Loaded/)
+    })
+
+    it('changes nothing for a terminal with no account, a stale one, one changed by hand, or a user with no accounts (D13)', async () => {
+      put([acct()], { agentAccountId: undefined })
+      expect(await injectAutoPrimer('term-1', '/p')).toBe(true)
+      put([acct()], { agentAccountId: 'acc_gone' })
+      expect(await injectAutoPrimer('term-1', '/p')).toBe(true)
+      put([acct()])
+      useTerminalStore.setState({ accountsByHand: { 'term-1': true } })
+      expect(await injectAutoPrimer('term-1', '/p')).toBe(true)
+      put([])
+      expect(await injectAutoPrimer('term-1', '/p')).toBe(true)
+      useTerminalStore.setState({ accountsView: null })
+      expect(await injectAutoPrimer('term-1', '/p')).toBe(true)
+      useTerminalStore.setState({ terminals: [] })
+      expect(await injectAutoPrimer('term-1', '/p')).toBe(true)
+    })
+  })
+
   it('pastes a background-only contract: no acting on memory, minimal ack, single paste-safe line', async () => {
     await injectAutoPrimer('term-1', 'C:\\code\\acme')
     const [, payload] = (window as any).termpolis.writeToTerminal.mock.calls[0]

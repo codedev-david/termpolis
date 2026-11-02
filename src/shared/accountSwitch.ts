@@ -35,10 +35,11 @@ export const EXIT_COMMAND: Readonly<Record<AccountAgent, string>> = { claude: '/
  *  write: eighty read to Claude Code as a paste. At a shell's prompt it clears the line. */
 export const CLEAR_BOX_KEYS = '\u0015'.repeat(20)
 
-/** What clears a shell's line before Termpolis types on it (R7): Ctrl+U in bash, zsh and fish, Esc
- *  in PowerShell (PSReadLine's RevertLine) and cmd. Whatever was left there (a conductor's text,
- *  the phone, keys typed during the switch) would otherwise run with the Enter. */
-export const LINE_CLEAR: Readonly<Record<ShellFamily, string>> = { posix: '\u0015', powershell: '\u001b', cmd: '\u001b' }
+/** What clears a shell's line before Termpolis types on it (R7): Ctrl+E then Ctrl+U in bash, zsh and fish (Ctrl+U kills
+ *  only what is left of the cursor, so the end of the line comes first: text a user left to its right would run with the
+ *  Enter), Esc in PowerShell (PSReadLine's RevertLine) and cmd. Whatever was left there (a conductor's text, the phone,
+ *  keys typed during the switch) would otherwise run with the Enter. */
+export const LINE_CLEAR: Readonly<Record<ShellFamily, string>> = { posix: '\u0005\u0015', powershell: '\u001b', cmd: '\u001b' }
 
 export interface ExitHint {
   /** The session the hint names, or null for one it names none of: Claude Code's `claude --resume`
@@ -326,10 +327,11 @@ export type SwitchOutcome =
   | { kind: 'fresh'; why: 'no-session' | 'not-found' | 'asked' }
   /** The agent is at work: stop it first? Nothing was typed. */
   | { kind: 'busy' }
-  /** Termpolis can't tell whether the agent still runs: has it exited? Nothing was typed. */
-  | { kind: 'unknown-exit' }
-  /** The exit command went in, but no exit showed within 8 s: nothing more was typed. */
-  | { kind: 'exit-unconfirmed' }
+  /** Termpolis can't tell whether the agent still runs: has it exited? Nothing was typed. `osSees`: the operating system
+   *  itself still showed a program running in the terminal (not merely nothing readable on the screen). */
+  | { kind: 'unknown-exit'; osSees?: true }
+  /** The exit command went in, but no exit showed within 8 s: nothing more was typed. `osSees` as above. */
+  | { kind: 'exit-unconfirmed'; osSees?: true }
   /** The line landed in the agent's own box (it never exited): it was cleared, and not entered. */
   | { kind: 'agent-alive' }
   /** The line never showed: nothing was entered. `line` is what to type by hand. `otherShell`: the

@@ -13,7 +13,10 @@
 //    and every accounts flow runs, from the Settings channels to agent integration's own connect
 //    and disconnect over every profile and the uninstall-time disconnect. Not one path any of
 //    them touched may be a sign-in file, and every decoy must be exactly as it was.
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+// 3. A leak scan. The same flows run again with a Console key planted in every place a profile can
+//    hold one, and the key must reach no reply, no message main sends the renderer, no console
+//    line and no file Termpolis wrote (R12).
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import { createRequire, syncBuiltinESMExports } from 'module'
 import { fileURLToPath } from 'url'
 import { join, resolve } from 'path'
@@ -189,6 +192,9 @@ let sb: Sandbox
 let handlers: Map<string, (e: unknown, input?: unknown) => unknown>
 let timers: Map<number, () => void>
 let picks: string[]
+/** What main told the renderer, and what each handler answered: the leak scan reads both. */
+const sent: string[] = []
+const replies: string[] = []
 const SECRET = 'sk-ant-' + 'a'.repeat(40)
 
 /** A sign-in file's stand-in: its bytes and its mtime, checked again at the end. */
@@ -210,7 +216,7 @@ function deps(): AccountsIpcDeps {
     runtime: () => ({ ...sb.rt, hookShell: 'sh' }),
     integrationConnected: () => true,
     pickFolder: async () => picks.shift() ?? null,
-    send: () => undefined,
+    send: (channel: string, payload: unknown) => { sent.push(`${channel} ${JSON.stringify(payload)}`) },
     checkCwd: () => sb.root,
     // Each CLI is looked for on a PATH of the sandbox's own, found, and never started.
     env: { PATH: bin, PATHEXT: '.EXE;.CMD' },
@@ -432,6 +438,110 @@ describe('the live tripwire (D11)', () => {
     // Nor did any copy or link carry one into a profile Termpolis made.
     for (const dir of [made.account.profile, codex.account.profile] as string[]) {
       for (const name of realFs.readdirSync(dir)) expect(SIGN_IN_FILES).not.toContain(name.toLowerCase())
+    }
+  })
+})
+
+/** Each handler's answer is kept as it goes out, so the scan reads what the renderer was given. */
+function instrument(): void {
+  for (const [channel, fn] of [...handlers]) {
+    handlers.set(channel, async (e: unknown, input?: unknown) => {
+      const r = await fn(e, input)
+      replies.push(`${channel} ${JSON.stringify(r)}`)
+      return r
+    })
+  }
+}
+
+/** Every file under `dir`, recursively, never following a link. */
+function walk(dir: string, out: string[] = []): string[] {
+  for (const e of realFs.readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) walk(p, out)
+    else if (e.isFile()) out.push(p)
+  }
+  return out
+}
+
+// SAFETY-R2-3 (c): the tripwire above says which paths were touched; this says what came out. A Console key sits in .claude.json,
+// settings.json's env and CLAUDE_CODE_* env of the profiles (and next to a parse error in one, where V8 quotes its source), and
+// every flow runs: none of it may appear in what a handler answered, what main sent the renderer, what it logged, what the
+// disconnect said, or any file Termpolis wrote under its own folder or into a profile it made.
+describe('the leak scan (R12, D11)', () => {
+  it('lets a planted key reach no reply, message, log line or written file, across every accounts flow', async () => {
+    sent.length = 0
+    replies.length = 0
+    const logs: string[] = []
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((k) => vi.spyOn(console, k).mockImplementation((...a: unknown[]) => {
+      logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '))
+    }))
+    instrument()
+    try {
+      // A profile whose .claude.json does not parse, with the key next to the break.
+      realFs.writeFileSync(join(sb.home, '.claude-work', '.claude.json'), '{ "oauthAccount": { "emailAddress": "w@example.test" }, "primaryApiKey": ' + SECRET + ' }')
+
+      await ok(ACCOUNTS_IPC.list)
+      await ok(ACCOUNTS_IPC.importPreview)
+      await ok(ACCOUNTS_IPC.import, { connect: { codedev: true, work: true } })
+      picks.push(join(sb.home, '.claude-work'))
+      await ok(ACCOUNTS_IPC.pickFolder, { agent: 'claude' })
+      await answered(ACCOUNTS_IPC.add, { agent: 'claude', label: 'work2', folder: 'existing' })
+      const made = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'side', email: 's@example.test', folder: 'new', copy: true, connect: true, share: ['projects', 'commands', 'skills', 'agents', 'plugins', 'hooks'] })
+      const codex = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'codex', label: 'second', folder: 'new', copy: true, connect: true })
+      await ok(ACCOUNTS_IPC.add, { agent: 'agy', label: 'google', email: 'g@example.test' })
+      const view = await ok<AccountsView>(ACCOUNTS_IPC.list)
+      const by = (l: string): AccountRowView => view.accounts.find((a) => a.label === l) as AccountRowView
+      await answered(ACCOUNTS_IPC.setConnect, { id: by('work').id, connect: true })
+      await answered(ACCOUNTS_IPC.stripCopied, { id: by('work').id })
+      await answered(ACCOUNTS_IPC.setConnect, { id: by('work').id, connect: false })
+      await answered(ACCOUNTS_IPC.setConnect, { id: by('codedev').id, connect: true })
+      await answered(ACCOUNTS_IPC.recopy, { id: made.account.id })
+      await answered(ACCOUNTS_IPC.update, { id: by('codedev').id, label: 'codedev2', email: 'b2@example.test', autoOffer: false, color: '#112233' })
+      await answered(ACCOUNTS_IPC.move, { id: by('codedev').id, by: -1 })
+      await answered(ACCOUNTS_IPC.setPreferred, { agent: 'claude', id: by('codedev').id })
+      await answered(ACCOUNTS_IPC.noteLimit, { id: by('codedev').id, text: "You've hit your weekly limit", window: 'weekly' })
+      await answered(ACCOUNTS_IPC.clearLimit, { id: by('codedev').id })
+      await answered(ACCOUNTS_IPC.check, { id: by('codedev').id })
+      await answered(ACCOUNTS_IPC.check, { id: codex.account.id })
+      await answered(ACCOUNTS_IPC.launchAccount, { agent: 'claude' })
+      await answered(ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', command: 'claude', shellType: 'gitbash' })
+      for (const a of [made.account, codex.account]) {
+        const { sessionId } = await ok<{ sessionId: string }>(ACCOUNTS_IPC.signInStart, { accountId: a.id })
+        for (const fn of [...timers.values()]) fn()
+        await new Promise((r) => setTimeout(r, 0))
+        await answered(ACCOUNTS_IPC.signInInput, { sessionId, kind: 'cancel' })
+      }
+      const rt = { ...sb.rt, hookShell: 'sh' as const, profiles: connectedProfileTargets(sb.paths) }
+      const rows: unknown[] = []
+      rows.push(setAgentIntegration(rt, { connect: true, primerHook: true }))
+      rows.push(bootAgentIntegration(rt))
+      rows.push(getAgentIntegrationStatus(sb.paths))
+      const proj = join(sb.root, 'proj')
+      realFs.mkdirSync(proj, { recursive: true })
+      for (const t of rt.profiles) rows.push(trustFolderForAgents(sb.paths, proj, null, t))
+      rows.push(prepareCodexLaunch(sb.paths, proj, {}, codex.account.profile as string))
+      rows.push(removeCodexHomeTrust(sb.paths, codex.account.profile as string))
+      await answered(ACCOUNTS_IPC.remove, { id: made.account.id })
+      rows.push(disconnectAgentIntegration(sb.paths))
+      const cli: string[] = []
+      runDisconnectAgentsCli([sb.paths.userData], { ...process.env, HOME: sb.home }, { log: (m: string) => { cli.push(String(m)) }, error: (m: string) => { cli.push(String(m)) }, homedir: () => sb.home })
+      await ok(ACCOUNTS_IPC.list)
+
+      // The scan reads a real amount of output, not an empty one.
+      expect(replies.length).toBeGreaterThan(20)
+      expect(logs.length).toBeGreaterThan(0)
+      for (const text of [...replies, ...sent, ...logs, ...cli, JSON.stringify(rows)]) {
+        expect(text.includes(SECRET) || /sk-ant/.test(text), `a key in output: ${text.slice(0, 200)}`).toBe(false)
+      }
+      // The files Termpolis wrote: its own folder, and the profiles it made (their sign-in decoys are not its writing).
+      const written = [...walk(sb.paths.userData), ...walk(made.account.profile as string).filter((p) => !isSignInPath(p)), ...walk(codex.account.profile as string)]
+      expect(written.length).toBeGreaterThan(3)
+      for (const f of written) {
+        const text = realFs.readFileSync(f, 'utf-8')
+        expect(text.includes(SECRET) || /sk-ant/.test(text), `a key in a file: ${f}`).toBe(false)
+      }
+    } finally {
+      for (const s of spies) s.mockRestore()
     }
   })
 })

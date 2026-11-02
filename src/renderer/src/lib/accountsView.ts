@@ -95,6 +95,20 @@ export function canSwitchAccount(
   return !!agent && !!view?.accounts.some((r) => r.agent === agent)
 }
 
+/** Is this terminal's agent on a registered account the user did not connect to Termpolis (neither the default profile,
+ *  which Agent Integration itself connects, nor one with Connect on)? Such a profile holds no Termpolis server, so
+ *  nothing about memory is typed or shown for it (R17). A terminal with no account, a stale one or one changed by hand
+ *  is not judged: as before, and a user with no accounts sees no change (D13). */
+export function onUnconnectedAccount(
+  t: { id: string; agentAccountId?: string } | undefined,
+  view: { accounts: readonly AccountRowView[] } | null | undefined,
+  byHand: Readonly<Record<string, boolean>> | undefined,
+): boolean {
+  if (!t?.agentAccountId || byHand?.[t.id]) return false
+  const row = view?.accounts.find((r) => r.id === t.agentAccountId)
+  return !!row && !(row.isDefault || row.connect)
+}
+
 /** Why an account can't take a swarm worker over, or null when it can: it must be connected, its
  *  profile holding Termpolis's server entry with Agent Integration on, so the worker keeps
  *  Termpolis's tools (§8.3 rule 8); and for Claude Code it must skip the bypass-permissions

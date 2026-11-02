@@ -17,7 +17,7 @@ import {
 } from '../../src/main/accountSwitch'
 import type { Look, SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
 import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
-import { HINT_FROM_FOOT_ROWS, exitHintOf } from '../../src/shared/accountSwitch'
+import { HINT_FROM_FOOT_ROWS, LINE_CLEAR, exitHintOf } from '../../src/shared/accountSwitch'
 import type { SwitchOutcome, SwitchRequest } from '../../src/shared/accountSwitch'
 import type { AgentAccount } from '../../src/shared/agentAccounts'
 import { FakeTerminal, ID, ID2, keys } from './_switchTerminal'
@@ -34,8 +34,9 @@ interface Run {
   progress: string[]
 }
 
-async function run(script: TermScript, over: Partial<SwitchContext> = {}, req: Partial<SwitchRequest> = {}): Promise<Run> {
+async function run(script: TermScript, over: Partial<SwitchContext> = {}, req: Partial<SwitchRequest> = {}, prep?: (t: FakeTerminal) => void): Promise<Run> {
   const t = new FakeTerminal(script)
+  prep?.(t)
   const recorded: Run['recorded'] = []
   const progress: string[] = []
   const target = script.agent === 'codex' ? CODEX_B : B
@@ -112,7 +113,7 @@ describe('Claude Code: the whole switch (§7.2)', () => {
     // sacrificial Enter, then the line in two parts (its first characters, then the rest once those
     // showed), then its Enter.
     const line = `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}`
-    expect(r.t.writes).toEqual(['/exit', '\r', '\u0015', '\r', line.slice(0, ECHO_PROBE_CHARS), line.slice(ECHO_PROBE_CHARS), '\r'])
+    expect(r.t.writes).toEqual(['/exit', '\r', '\u0005\u0015', '\r', line.slice(0, ECHO_PROBE_CHARS), line.slice(ECHO_PROBE_CHARS), '\r'])
     expect(r.t.ran).toEqual(['', line])
     expect(r.recorded).toEqual([{ accountId: 'acc_b', start: { at: expect.any(Number), commands: [line] }, sessionId: ID }])
     expect(r.progress).toEqual(['exiting', 'confirming', 'typing', 'waiting'])
@@ -169,7 +170,7 @@ describe('R2: nothing goes to an agent that is gone', () => {
   it('reads the hint already on screen and types only the line', async () => {
     const r = await run(claude({ start: 'gone-hint' }))
     expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
-    expect(r.t.writes[0]).toBe('\u0015')
+    expect(r.t.writes[0]).toBe('\u0005\u0015')
     expect(keys(r.t)).not.toContain('/exit')
     cleanRun(r)
   })
@@ -322,10 +323,55 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
     expect(r.recorded).toEqual([])
   })
 
+  // SW2-7, MODELS-R2-1: "It has exited, switch now" replaces the exit check, not the screen. An agent's box still drawn, with
+  // nothing to show the shell is back (no hint, no prompt since the start, no foreground word), is an agent that may well be
+  // live with a draft in it, and a sacrificial Enter SUBMITS that draft where Esc does not clear it (PowerShell, cmd). So no
+  // sacrificial key is sent there: the first part of the line is typed and looked at, and if it lands in the box it is taken
+  // back out (the draft goes with it: nothing is submitted).
+  describe.each([['powershell'], ['cmd'], ['posix']] as const)('at the user\'s word with an agent\'s box still on screen (%s)', (family) => {
+    const DRAFT = 'refactor the whole module'
+    const draft = (t: FakeTerminal): void => { t.box = DRAFT }
+
+    it('submits no draft: the sacrificial Enter is not sent into a box that may be live', async () => {
+      const r = await run(claude({ family }), { start: undefined }, { assumeExited: true }, draft)
+      expect(r.outcome).toEqual({ kind: 'agent-alive' })
+      expect(r.t.sentPrompts).toEqual([])
+      expect(r.t.writes).not.toContain('\r')
+      expect(r.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
+      expect(r.t.box).toBe('')
+      expect(r.recorded).toEqual([])
+    })
+
+    it('still sends it where the screen shows the shell is back: the hint at the foot, or a prompt since the start', async () => {
+      const hint = await run(claude({ family, start: 'gone-hint' }), { start: undefined }, { assumeExited: true })
+      expect(hint.outcome).toMatchObject({ kind: 'switched', resumed: true })
+      expect(hint.t.writes.slice(0, 2)).toEqual([family === 'posix' ? '\u0005\u0015' : '\u001b', '\r'])
+      // No hint on this screen, so the conversation starts new: what matters here is that the line was entered.
+      const prompt = await run(claude({ family, start: 'gone-quiet' }), {}, { assumeExited: true })
+      expect(prompt.outcome).toMatchObject({ kind: 'fresh', why: 'no-session' })
+      expect(prompt.t.writes.slice(0, 2)).toEqual([family === 'posix' ? '\u0005\u0015' : '\u001b', '\r'])
+    })
+  })
+
+  it('sends it where the PTY\'s foreground says the shell is back, though a box is still drawn above', async () => {
+    const r = await run(claude({ start: 'gone-hint', foreground: true }), { start: undefined }, { assumeExited: true })
+    expect(r.t.writes.slice(0, 2)).toEqual(['\u0005\u0015', '\r'])
+    expect(r.outcome).toMatchObject({ kind: 'switched' })
+  })
+
+  // SW2-8: Ctrl+U kills only what is LEFT of readline's cursor, so text the user left to the right of it stayed on the line,
+  // and the sacrificial Enter ran it. The end of the line first, then the kill: the whole line goes. (PowerShell and cmd use Esc,
+  // which clears the whole line.)
+  it('clears a bash line from its end, so text right of the cursor is not left to run', () => {
+    expect(LINE_CLEAR.posix).toBe('\u0005\u0015')
+    expect(LINE_CLEAR.powershell).toBe('\u001b')
+    expect(LINE_CLEAR.cmd).toBe('\u001b')
+  })
+
   it('enters nothing when the line never shows', async () => {
     const r = await run(claude({ start: 'gone-hint', shellDead: true }))
     expect(r.outcome).toEqual({ kind: 'didnt-start', line: `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}` })
-    expect(r.t.writes.slice(-1)).toEqual(['\u0015'])
+    expect(r.t.writes.slice(-1)).toEqual(['\u0005\u0015'])
     expect(r.recorded).toEqual([])
   })
 
@@ -650,7 +696,7 @@ describe('B1 and MODELS-R1-3: the agent is gone on screen while a program still 
   it.each([45_000, 90_000])('types nothing into it, and does not guess it has gone (teardown %i ms)', async (teardownMs) => {
     // The agent was quit by hand a moment ago; the OS says a program has held the terminal ever since.
     const r = await run(claude({ start: 'gone-hint', reports: false, os: 'tells', teardownMs }))
-    expect(r.outcome).toEqual({ kind: 'unknown-exit' })
+    expect(r.outcome).toEqual({ kind: 'unknown-exit', osSees: true })
     expect(r.t.writes).toEqual([])
     expect(r.t.ran).toEqual([])
     expect(r.t.clock).toBeGreaterThanOrEqual(EXIT_CEILING_MS)
@@ -1039,7 +1085,7 @@ describe('the OS has the last word on whether the agent is gone', () => {
 
   it('types nothing but its exit command, and says it could not confirm, when the process outlives the ceiling', async () => {
     const r = await run(claude({ exit: 'ignore', reports: false, os: 'tells' }))
-    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(r.t.writes).toEqual(['/exit', '\r'])
     expect(r.t.clock).toBeGreaterThanOrEqual(EXIT_CONFIRM_MS + EXIT_CEILING_MS)
     expect(r.t.ran).toEqual([])
@@ -1051,7 +1097,7 @@ describe('the OS has the last word on whether the agent is gone', () => {
   // terminal. The card's "It has exited, switch now" is the user's word that it has.
   it.each([45_000, 90_000])('types nothing more when the process outlives the ceiling, though its hint shows (teardown %i ms)', async (teardownMs) => {
     const r = await run(claude({ reports: false, os: 'tells', teardownMs }))
-    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed' })
+    expect(r.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
     expect(r.t.writes).toEqual(['/exit', '\r'])
     expect(r.t.ran).toEqual([])
     expect(keys(r.t)).not.toMatch(/[\u0003\u0004]/)

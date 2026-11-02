@@ -139,6 +139,23 @@ describe('cardFor: what a switch that didn\'t finish says, and what comes next',
     expect(cardFor({ kind: 'unknown-exit' }, { ...run, from: null }, false)?.now).toBe('Claude Code is as you left it, on the account it was on.')
   })
 
+  // SAFETY-R2-4: where the operating system itself still showed a program running, the card says so before it offers the
+  // user's word that the agent has exited: that word is for a terminal sitting at its prompt, and typing the line into a
+  // program that still holds the terminal is not what they mean.
+  it('says the system still showed a program running, when it did, and leaves the way on as it was', () => {
+    const seen = cardFor({ kind: 'unknown-exit', osSees: true }, run, false)!
+    expect(seen.what).toBe('The operating system still shows a program running in this terminal, so Termpolis typed nothing.')
+    expect(seen.now).toBe('Claude Code is as you left it, on personal. Say it has exited only if the terminal is at its prompt.')
+    expect(seen.actions.map((a) => a.kind)).toEqual(['retry', 'exited', 'new-terminal', 'close'])
+    const unconfirmed = cardFor({ kind: 'exit-unconfirmed', osSees: true }, run, false)!
+    expect(unconfirmed.what).toBe('Claude Code didn\'t confirm it exited, and the operating system still shows a program running in this terminal, so Termpolis typed nothing more.')
+    expect(unconfirmed.now).toBe('Claude Code may still be running here, on personal. Say it has exited only if the terminal is at its prompt.')
+    expect(unconfirmed.actions.map((a) => a.kind)).toEqual(['retry', 'exited', 'new-terminal', 'close'])
+    // Without the OS's word, the card is the one it always was.
+    expect(cardFor({ kind: 'unknown-exit' }, run, false)!.what).toBe('Termpolis couldn\'t tell whether Claude Code is still running, so it typed nothing.')
+    expect(cardFor({ kind: 'exit-unconfirmed' }, run, false)!.what).toBe('Claude Code didn\'t confirm it exited, so Termpolis typed nothing more.')
+  })
+
   it('offers a way on for each, New terminal on the account except to a swarm worker', () => {
     expect(kinds({ kind: 'unknown-exit' })).toEqual(['retry', 'exited', 'new-terminal', 'close'])
     expect(kinds({ kind: 'exit-unconfirmed' })).toEqual(['retry', 'exited', 'new-terminal', 'close'])

@@ -289,7 +289,7 @@ const WAITING_OUT = /continuing automatically at.*\besc to cancel\b/
 /** How many of the screen's last rows hold the box, its status line and its footer. */
 const STATUS_ROWS = 8
 
-export type Liveness = { state: 'live' } | { state: 'gone'; hint: ExitHint | null } | { state: 'unknown' }
+export type Liveness = { state: 'live' } | { state: 'gone'; hint: ExitHint | null } | { state: 'unknown'; os?: true }
 
 /** Is the agent live on screen (R2)? Gone: its exit hint at the foot, a prompt since it was
  *  started, or (macOS and Linux) its shell in the PTY's foreground. Live: its box, a menu or a busy
@@ -350,7 +350,8 @@ export async function livenessNow(io: SwitchIO, id: string, agent: AccountAgent,
   const alone = await askOs(io, id, memo)
   const alive = liveness(io, id, agent, start)
   if (alone === true && alive.state !== 'gone') return { state: 'gone', hint: hintAtFoot(look(io, id), agent) }
-  if (alone === false && alive.state === 'gone' && !(await processGone(io, id))) return { state: 'unknown' }
+  // `os`: it is the OS that still shows a program, so the card can say that and not only that nothing was readable.
+  if (alone === false && alive.state === 'gone' && !(await processGone(io, id))) return { state: 'unknown', os: true }
   return alive
 }
 
@@ -491,23 +492,29 @@ function heardBefore(io: SwitchIO, id: string): string {
 /** Types an account line at the shell's prompt (step 8): the line cleared, a sacrificial Enter and
  *  the shell's answer to it, then the line without its Enter, which is pressed only once the line
  *  shows outside every agent box. `enterAt` is where the output ended before that Enter. */
-export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily, line: string, mark: number, until = Infinity): Promise<Typed> {
+export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily, line: string, mark: number, until = Infinity, sacrifice = true): Promise<Typed> {
   // No wait here outlasts the lock the switch holds the terminal under: a shell that reads a long line
   // very slowly is given up on at its end, not minutes later (SWITCH-R1 G1).
   const wait = (ms: number): number => Math.min(ms, until - io.now())
-  io.write(id, LINE_CLEAR[family])
-  const before = io.end(id)
-  io.write(id, '\r')
-  // The prompt's report, or the shell gone quiet: input is being read (ConPTY can drop the first
-  // byte typed before that, aiProfiles.ts).
-  let last = -1
-  await waitFor(io, wait(PROMPT_WAIT_MS), () => {
-    const out = io.outputFrom(id, before)
-    if (out.search(PROMPT_REPORT) >= 0) return true
-    const quiet = out.length > 0 && out.length === last
-    last = out.length
-    return quiet
-  })
+  // The line cleared and a sacrificial Enter, to learn that the shell reads input. Not where the screen still draws an
+  // agent's box and shows nothing of the shell: on a live agent with a draft that Enter would submit it, where Esc (the
+  // PowerShell and cmd clear) does not empty the box. The first part of the line is typed and looked at instead
+  // (SW2-7, MODELS-R2-1), and what lands in a box is taken back out of it.
+  if (sacrifice) {
+    io.write(id, LINE_CLEAR[family])
+    const before = io.end(id)
+    io.write(id, '\r')
+    // The prompt's report, or the shell gone quiet: input is being read (ConPTY can drop the first
+    // byte typed before that, aiProfiles.ts).
+    let last = -1
+    await waitFor(io, wait(PROMPT_WAIT_MS), () => {
+      const out = io.outputFrom(id, before)
+      if (out.search(PROMPT_REPORT) >= 0) return true
+      const quiet = out.length > 0 && out.length === last
+      last = out.length
+      return quiet
+    })
+  }
   // A shell of another family reported since: a shell started inside this one, which the line
   // built for this terminal's shell doesn't fit (R1: only such a positive mismatch refuses).
   if (nestedShellReported(io.outputFrom(id, mark), family, heardBefore(io, id))) return { outcome: 'mismatch' }
@@ -652,6 +659,9 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   const mark = io.end(id)
   const os: OsMemo = { known: false }
   let hint: ExitHint | null = null
+  // The user's word that it exited, with an agent's box still drawn and nothing on screen that shows the shell is back
+  // (see typeAtPrompt): no sacrificial key goes in there.
+  let boxStillDrawn = false
 
   // What the agent was started with is decided before anything is typed: a relaunch that could not
   // repeat it would come back without it, and some of it is a restriction (carryForSwitch).
@@ -664,11 +674,14 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   if ('refused' in probe) return { kind: 'refused', why: probe.refused }
 
   if (req.assumeExited) {
-    // The user's word that it exited: an exit hint on screen still names the session.
+    // The user's word that it exited: an exit hint on screen still names the session. It replaces the exit check (the
+    // OS is not asked, and not waited for), not the screen: a box still drawn with no hint, no prompt since the start
+    // and no foreground word for the shell is an agent that may be live (SW2-7, MODELS-R2-1).
     hint = hintAtFoot(look(io, id), agent)
+    boxStillDrawn = liveness(io, id, agent, ctx.start).state === 'live'
   } else {
     const alive = await livenessNow(io, id, agent, ctx.start, os)
-    if (alive.state === 'unknown') return { kind: 'unknown-exit' }
+    if (alive.state === 'unknown') return { kind: 'unknown-exit', ...(alive.os ? { osSees: true as const } : {}) }
     if (alive.state === 'gone') hint = alive.hint
     else {
       // Step 2: what holds the box out of the way. Claude Code's rate-limit menu and a Codex popup
@@ -687,17 +700,17 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
         io.write(id, ESC)
       }
       const idle = await waitFor(io, ESC_WAIT_MS, () => atIdleBox(io, id))
-      if (!idle) return { kind: 'unknown-exit' }
+      if (!idle) return { kind: 'unknown-exit', ...(os.known ? { osSees: true as const } : {}) }
       // Step 3: its own exit command, entered only once its box shows it.
       io.progress?.({ terminalId: id, step: 'exiting' })
       const exitMark = io.end(id)
       const typed = await typeIntoBox(io, id, EXIT_COMMAND[agent], idle)
       if (typed === 'held') return { kind: 'refused', why: `${ACCOUNT_AGENT_LABEL[agent]}'s input held text that clearing it didn't remove, so nothing was typed` }
-      if (typed === 'not-shown') return { kind: 'exit-unconfirmed' }
+      if (typed === 'not-shown') return { kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}) }
       // Step 4: the exit, shown.
       io.progress?.({ terminalId: id, step: 'confirming' })
       const shown = await exitConfirmed(io, id, agent, exitMark, os)
-      if (!shown) return { kind: 'exit-unconfirmed' }
+      if (!shown) return { kind: 'exit-unconfirmed', ...(os.known ? { osSees: true as const } : {}) }
       hint = shown.hint
     }
   }
@@ -725,7 +738,7 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
     if ('refused' in built) return { outcome: 'refused', why: built.refused }
     io.progress?.({ terminalId: id, step: 'typing' })
     const at = io.end(id)
-    return { ...(await typeAtPrompt(io, id, family, built.line, mark, until)), line: built.line, at }
+    return { ...(await typeAtPrompt(io, id, family, built.line, mark, until, !boxStillDrawn)), line: built.line, at }
   }
   let typed = await run(spec)
   if (typed.outcome !== 'entered') return notEntered(typed)

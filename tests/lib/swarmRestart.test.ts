@@ -873,6 +873,13 @@ describe('what a restart that did not happen says of a worker (UI addendum 1)', 
     { kind: 'switched', resumed: true }, { kind: 'fresh', why: 'asked' },
   ]
 
+  it('says the system still showed a program running in the worker\'s terminal, as a statement, when it did', () => {
+    expect(failureText({ kind: 'unknown-exit', osSees: true }, 'claude', CODEDEV)).toBe('The operating system still shows a program running in this worker\'s terminal, so Termpolis typed nothing.')
+    expect(failureText({ kind: 'exit-unconfirmed', osSees: true }, 'codex', CODEDEV)).toBe('Codex didn\'t confirm it exited, and the operating system still shows a program running in this worker\'s terminal, so Termpolis typed nothing more.')
+    expect(failureText({ kind: 'unknown-exit' }, 'claude', CODEDEV)).toBe('Termpolis couldn\'t tell whether Claude Code is still running, so it typed nothing.')
+    expect(failureText({ kind: 'exit-unconfirmed' }, 'claude', CODEDEV)).toBe('Claude Code didn\'t confirm it exited, so Termpolis typed nothing more.')
+  })
+
   it.each(outcomes)('%j: a statement, no question, no command to type, no terminal to look at', (o) => {
     for (const agent of ['claude', 'codex'] as const) {
       const text = failureText(o, agent, CODEDEV)

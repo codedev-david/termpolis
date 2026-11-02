@@ -60,10 +60,36 @@ describe('the credential tripwire', () => {
       expect(() => accountFs.rename(p, join(root, 'x'))).toThrow(CredentialPathError)
       expect(() => accountFs.rename(join(root, 'x'), p)).toThrow(CredentialPathError)
       expect(() => accountFs.writePrivate(p, 'x')).toThrow(CredentialPathError)
+      expect(() => accountFs.copyFile(p, join(root, 'x'))).toThrow(CredentialPathError)
+      expect(() => accountFs.copyFile(join(root, 'x'), p)).toThrow(CredentialPathError)
       expect(readClaudeJsonFields(p, ['a'])).toEqual({ kind: 'unreadable' })
     }
     // Nothing was created by any of those calls.
     expect(readdirSync(root)).toEqual([])
+  })
+
+  // SAFETY-R2-3 (b): the source of a copy is guarded on its own. The carry stats each source first, so no live path reaches
+  // it with a sign-in file, but the seam must not depend on that: a sign-in file that EXISTS is not copied, whatever the
+  // destination, and the destination is not created.
+  it('refuses to copy a sign-in file that exists, or .claude.json, and creates nothing', () => {
+    mkdirSync(join(root, 'p'))
+    const planted = 'planted-' + 'a'.repeat(30)
+    for (const n of CREDENTIAL_BASENAMES) {
+      const from = join(root, 'p', n)
+      writeFileSync(from, planted)
+      expect(() => accountFs.copyFile(from, join(root, 'copy'))).toThrow(CredentialPathError)
+      expect(existsSync(join(root, 'copy'))).toBe(false)
+      expect(() => accountFs.copyFile(join(root, 'p', 'plain.json'), join(root, 'p', n))).toThrow(CredentialPathError)
+    }
+    const json = join(root, 'p', '.claude.json')
+    writeFileSync(json, '{"a":1}')
+    expect(() => accountFs.copyFile(json, join(root, 'copy'))).toThrow(/named fields/)
+    expect(existsSync(join(root, 'copy'))).toBe(false)
+    writeFileSync(join(root, 'p', 'plain.json'), '{}')
+    expect(() => accountFs.copyFile(join(root, 'p', 'plain.json'), join(root, 'q', '.claude.json'))).toThrow(/never copied/)
+    // A plain file still copies, so the refusals above are the guard's and not a broken copy.
+    accountFs.copyFile(join(root, 'p', 'plain.json'), join(root, 'copy'))
+    expect(readFileSync(join(root, 'copy'), 'utf8')).toBe('{}')
   })
 
   it('refuses an empty or non-string path', () => {

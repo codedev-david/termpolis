@@ -543,6 +543,9 @@ export function accountsShLines(home: string, label: string, email: string | und
   if (read.kind !== 'ok') return null
   const key = label.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'account'
   const folder = basename(profile)
+  // The scripts source this file: a name with a command substitution, a quote or a space would run or break there. Only
+  // the names the import itself takes (shProfile) are offered; any other folder is left to the user to write by hand.
+  if (!/^[A-Za-z0-9._-]+$/.test(folder) || folder === '.' || folder === '..') return null
   return [
     `ACCOUNTS=(${[...read.sh.accounts, key].join(' ')})   # add ${key}`,
     `  [${key}]="${email ?? ''}"   # in ACCOUNT_EMAIL`,

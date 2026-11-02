@@ -553,6 +553,19 @@ describe('accountsShLines', () => {
     ])
     expect(accountsShLines(home, '日本', undefined, join(home, '.claude-x'))?.[1]).toBe('  [account]=""   # in ACCOUNT_EMAIL')
   })
+
+  // SAFETY-R2-2: the lines are pasted into a file the user's scripts SOURCE, where a folder name holding a command
+  // substitution would run at every status-line render. Termpolis's own reading of the file refuses such a value, and its
+  // import takes only [A-Za-z0-9._-] folder names: the lines are offered for the same names, and for no other.
+  it('offers no lines for a folder whose name the scripts could not read safely', () => {
+    writeAccountsSh()
+    for (const name of ['.claude-$(touch pwned)', '.claude-`id`', '.claude-a"b', '.claude-a b', '.claude-a;b', '.claude-$HOME', '.claude-a&b', '.claude-a|b', '.claude-a\'b', '.claude-é']) {
+      expect(accountsShLines(home, 'side', 'me@example.test', join(home, name)), name).toBeNull()
+    }
+    for (const name of ['.claude-side', '.claude-side_2.x', '.claude-A-b', 'plain']) {
+      expect(accountsShLines(home, 'side', 'me@example.test', join(home, name)), name).not.toBeNull()
+    }
+  })
 })
 
 describe('limitedMarker', () => {

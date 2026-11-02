@@ -589,8 +589,8 @@ export function failureText(o: SwitchOutcome, agent: ProfileAgent, target: Accou
   const name = ACCOUNT_AGENT_LABEL[agent]
   switch (o.kind) {
     case 'busy': return `${name} was working, so Termpolis typed nothing and left it as it was.`
-    case 'unknown-exit': return `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`
-    case 'exit-unconfirmed': return `${name} didn't confirm it exited, so Termpolis typed nothing more.`
+    case 'unknown-exit': return o.osSees ? 'The operating system still shows a program running in this worker\'s terminal, so Termpolis typed nothing.' : `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`
+    case 'exit-unconfirmed': return o.osSees ? `${name} didn't confirm it exited, and the operating system still shows a program running in this worker's terminal, so Termpolis typed nothing more.` : `${name} didn't confirm it exited, so Termpolis typed nothing more.`
     case 'agent-alive': return `${name} didn't exit: the account line showed in its own input, so Termpolis took it back out and entered nothing.`
     case 'didnt-start': return o.otherShell ? 'This worker\'s shell is of another kind than the one Termpolis types for, so nothing was entered.' : 'The account line never showed, so nothing was entered.'
     case 'resume-not-found': return `${target.label} can't see that conversation.`

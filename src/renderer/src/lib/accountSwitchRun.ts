@@ -118,6 +118,7 @@ const CLOSE: CardAction = { kind: 'close', label: 'Close' }
 /** First on a card that asks whether the agent exited: the card's default focus is the safe one, never the
  *  answer that says it has (a stray Enter must not assert something nobody checked). */
 const TRY_AGAIN: CardAction = { kind: 'retry', label: 'Try again' }
+const SAY_ONLY_AT_PROMPT = ' Say it has exited only if the terminal is at its prompt.'
 
 /** The card a switch that didn't finish shows, or null for one that did (or that waits, busy). */
 export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 'from'>, worker: boolean): ErrorCard | null {
@@ -130,10 +131,20 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
     case 'fresh':
     case 'busy':
       return null
+    // Where the operating system itself still showed a program running, the card says so before it offers the user's word
+    // that the agent has exited: that word is for a terminal sitting at its prompt (SAFETY-R2-4).
     case 'unknown-exit':
-      return { what: `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`, now: `${name} is as you left it, on ${from}.`, actions: [TRY_AGAIN, { kind: 'exited', label: 'It has exited, switch now' }, ...newTerminal, CLOSE] }
+      return {
+        what: o.osSees ? 'The operating system still shows a program running in this terminal, so Termpolis typed nothing.' : `Termpolis couldn't tell whether ${name} is still running, so it typed nothing.`,
+        now: `${name} is as you left it, on ${from}.${o.osSees ? SAY_ONLY_AT_PROMPT : ''}`,
+        actions: [TRY_AGAIN, { kind: 'exited', label: 'It has exited, switch now' }, ...newTerminal, CLOSE],
+      }
     case 'exit-unconfirmed':
-      return { what: `${name} didn't confirm it exited, so Termpolis typed nothing more.`, now: `${name} may still be running here, on ${from}.`, actions: [TRY_AGAIN, { kind: 'exited', label: 'It has exited, switch now' }, ...newTerminal, CLOSE] }
+      return {
+        what: o.osSees ? `${name} didn't confirm it exited, and the operating system still shows a program running in this terminal, so Termpolis typed nothing more.` : `${name} didn't confirm it exited, so Termpolis typed nothing more.`,
+        now: `${name} may still be running here, on ${from}.${o.osSees ? SAY_ONLY_AT_PROMPT : ''}`,
+        actions: [TRY_AGAIN, { kind: 'exited', label: 'It has exited, switch now' }, ...newTerminal, CLOSE],
+      }
     case 'agent-alive':
       return { what: `${name} didn't exit: the account line showed in its own input, so Termpolis took it back out.`, now: `${name} is still running here, on ${from}.`, actions: [{ kind: 'retry', label: 'Try again' }, ...newTerminal, CLOSE] }
     case 'didnt-start':
