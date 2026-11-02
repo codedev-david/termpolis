@@ -3378,6 +3378,17 @@ describe('T1 K1: a private key whose algorithm parameters are fixed text (an EC 
     }
   })
 
+  it('judges a block of more than 4,096 characters by its first 4,096, as looksRandom does: the key and then more lines of its width', () => {
+    // (an EC key's lines, then 84 more of random base64, then the rest: the parameters are in the first 4,096 and the block is long)
+    const ls = keys.find(([name]) => name === 'EC prime256v1 explicit, SEC1')?.[1] as string[]
+    const text = [ls[0], ...ls.slice(1, 4), ...wrap(randomBytes(4000).toString('base64'), 64), ...ls.slice(4)].join('\n')
+    expect(text.length).toBeGreaterThan(4_096 + 500)
+    expect(keyBlocks(text).map((b) => [b.cls, b.rule])).toEqual([['remove', 'private_key']])
+    const r = screenKeys(text)
+    expect(Object.keys(r.removed)).toEqual(['private_key']) // (twice: the block's short last line ends it, and its END line is taken as a tail)
+    expect(leakedWindows(r.text, secretLinesOf(ls))).toBe(0)
+  })
+
   it('still reports the same header over a body that is mostly one repeated character, or whose runs are no public parameters', () => {
     for (const [name, ls] of keys.filter(([n]) => n.includes('explicit'))) {
       // the key's own first three lines, then padding: a made-up excerpt
