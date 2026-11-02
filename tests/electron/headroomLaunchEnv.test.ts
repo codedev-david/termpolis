@@ -197,10 +197,34 @@ const calleeName = (call: ts.CallExpression): string | null => {
   return null
 }
 
-/** The name a destructuring pattern takes from the object: `x` in `{ x }` and in `{ x: alias }`; null for a computed key. */
+/** The name a destructuring pattern takes from the object: `x` in `{ x }`, `{ x: alias }`, `{ 'x': alias }` and
+ *  `{ ['x']: alias }`; null for a key that is computed from a variable, which a static scan cannot read. */
 const bindingKey = (n: ts.BindingElement): string | null => {
   const key = n.propertyName ?? n.name
-  return ts.isIdentifier(key) ? key.text : null
+  if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) return key.text
+  if (ts.isComputedPropertyName(key) && ts.isStringLiteralLike(key.expression)) return key.expression.text
+  return null
+}
+
+/**
+ * Whether a node takes `getProxyEnv` by any way other than the one import index.ts hands to the helper: a call by its
+ * name, an alias an import or a re-export makes, a member of a module (`mod.getProxyEnv`, `mod['getProxyEnv']`), or the
+ * name pulled out of a dynamic import by destructuring. The real scan below and the planted-shape tests both call this,
+ * so a check taken out of it fails the tests that plant the shape it exists for.
+ */
+const takesProxyEnv = (n: ts.Node, inIndex: boolean): boolean =>
+  (ts.isCallExpression(n) && calleeName(n) === 'getProxyEnv') ||
+  ((ts.isImportSpecifier(n) || ts.isExportSpecifier(n)) && (n.propertyName ?? n.name).text === 'getProxyEnv' && !inIndex) ||
+  (ts.isPropertyAccessExpression(n) && n.name.text === 'getProxyEnv') ||
+  (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === 'getProxyEnv') ||
+  (ts.isBindingElement(n) && bindingKey(n) === 'getProxyEnv')
+
+/** The statements of a source text that take `getProxyEnv`, by the predicate the real scan uses. */
+function proxyEnvTakers(code: string, inIndex = false): string[] {
+  const sf = ts.createSourceFile('planted.ts', code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const hits: string[] = []
+  walk(sf, (n) => { if (takesProxyEnv(n, inIndex)) hits.push(n.getText(sf)) })
+  return hits
 }
 
 /** The initializer text of the nearest `const <name> = ...` visible from a node: its own function first, then each one outside it. */
@@ -217,8 +241,16 @@ function initializerInScope(node: ts.Node, name: string, sf: ts.SourceFile): str
 }
 
 /** The files that build an account-switch line (they pass `extraUnset`) and say nothing about the window variable. */
+/** Whether a source text uses the window variable's constant in CODE: an identifier named CONTEXT_WINDOW_VAR. A comment that
+ *  names the variable, or a string that spells it (which the one-place guard below refuses anywhere but the helper), is not it. */
+const namesTheWindowInCode = (text: string): boolean => {
+  const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  let found = false
+  walk(sf, (n) => { if (ts.isIdentifier(n) && n.text === 'CONTEXT_WINDOW_VAR') found = true })
+  return found
+}
 const blindToTheWindow = (sources: ReadonlyArray<{ file: string; text: string }>): string[] =>
-  sources.filter((s) => s.text.includes('extraUnset') && !/CONTEXT_WINDOW_VAR|AUTO_COMPACT_WINDOW/.test(s.text)).map((s) => s.file)
+  sources.filter((s) => s.text.includes('extraUnset') && !namesTheWindowInCode(s.text)).map((s) => s.file)
 
 describe('every spawn site that carries the proxy env also carries the window (R3 criterion 4)', () => {
   const indexFile = join(MAIN, 'index.ts')
@@ -233,30 +265,35 @@ describe('every spawn site that carries the proxy env also carries the window (R
       if (file.endsWith(`${sep}proxySupervisor.ts`)) continue
       const sf = parse(file)
       const at = (n: ts.Node): string => `${relative(MAIN, file)}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`
-      walk(sf, (n) => {
-        // A call by its name...
-        if (ts.isCallExpression(n) && calleeName(n) === 'getProxyEnv') offenders.push(at(n))
-        // ...by an alias, which only an import or a re-export can make (index.ts imports it once, checked below)...
-        if ((ts.isImportSpecifier(n) || ts.isExportSpecifier(n)) && (n.propertyName ?? n.name).text === 'getProxyEnv' && !file.endsWith(`${sep}index.ts`)) offenders.push(at(n))
-        // ...or reached as a member of a module: `mod.getProxyEnv` or `mod['getProxyEnv']`.
-        if (ts.isPropertyAccessExpression(n) && n.name.text === 'getProxyEnv') offenders.push(at(n))
-        if (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === 'getProxyEnv') offenders.push(at(n))
-        // ...or pulled out of a dynamic import by destructuring: `const { getProxyEnv: gp } = await import(...)`.
-        if (ts.isBindingElement(n) && bindingKey(n) === 'getProxyEnv') offenders.push(at(n))
-      })
+      walk(sf, (n) => { if (takesProxyEnv(n, file.endsWith(`${sep}index.ts`))) offenders.push(at(n)) })
     }
     expect(offenders, 'getProxyEnv() taken outside claudeLaunchEnv: route it through the helper so the window rides with the route').toEqual([])
   })
 
-  // The guard above is only as good as the shapes it walks. This plants the destructuring shape in a scratch
-  // source, which the real tree does not contain, and checks the same walk reports it.
-  it('and the walk reports a getProxyEnv pulled out of a dynamic import by destructuring', () => {
-    const planted = ts.createSourceFile('planted.ts', "async function f() { const { getProxyEnv: gp } = await import('./headroomProxy/proxySupervisor'); return gp() }", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-    const hits: string[] = []
-    walk(planted, (n) => {
-      if (ts.isBindingElement(n) && bindingKey(n) === 'getProxyEnv') hits.push(n.getText(planted))
-    })
-    expect(hits).toEqual(['getProxyEnv: gp'])
+  // The guard above is only as good as the shapes it walks. These plant each shape in a scratch source, which the
+  // real tree does not contain, and run the SAME predicate over it: a check removed from it fails here.
+  it('and the walk reports each way getProxyEnv can be taken outside the helper, planted in a scratch source', () => {
+    const imp = "import('./headroomProxy/proxySupervisor')"
+    // A call by its name; as a member of a module, by dot or by a string key.
+    expect(proxyEnvTakers('getProxyEnv()')).not.toEqual([])
+    expect(proxyEnvTakers('sup.getProxyEnv()')).toContain('sup.getProxyEnv')
+    expect(proxyEnvTakers("sup['getProxyEnv']()")).toContain("sup['getProxyEnv']")
+    // An alias an import or a re-export makes (and not the one index.ts is allowed).
+    expect(proxyEnvTakers("import { getProxyEnv as gp } from './headroomProxy/proxySupervisor'")).toEqual(['getProxyEnv as gp'])
+    expect(proxyEnvTakers("export { getProxyEnv } from './headroomProxy/proxySupervisor'")).toEqual(['getProxyEnv'])
+    expect(proxyEnvTakers("import { getProxyEnv } from './headroomProxy/proxySupervisor'", true)).toEqual([])
+    // Pulled out of a dynamic import by destructuring: by an identifier key, shorthand, a string key, a computed string key.
+    expect(proxyEnvTakers(`async function f() { const { getProxyEnv: gp } = await ${imp}; return gp() }`)).toEqual(['getProxyEnv: gp'])
+    expect(proxyEnvTakers(`async function f() { const { getProxyEnv } = await ${imp}; return getProxyEnv() }`)).toContain('getProxyEnv')
+    expect(proxyEnvTakers(`async function f() { const { 'getProxyEnv': gp } = await ${imp}; return gp() }`)).toEqual(["'getProxyEnv': gp"])
+    expect(proxyEnvTakers(`async function f() { const { ['getProxyEnv']: gp } = await ${imp}; return gp() }`)).toEqual(["['getProxyEnv']: gp"])
+  })
+
+  // The limit of a static scan, stated so nobody reads the guard as proof: a key that is computed from a variable, a
+  // reflective read, and a name assembled from parts are out of its reach, and are left to review.
+  it('and does not report what it cannot see, or another name', () => {
+    expect(proxyEnvTakers(`async function f() { const { somethingElse: gp } = await import('./x'); const k = 'getProxy' + 'Env'; const { [k]: h } = await import('./x'); return Reflect.get(gp, k) }`)).toEqual([])
+    expect(proxyEnvTakers('getProxyEnvironment(); sup.getProxyEnvs; sup["getProxyEnvs"]')).toEqual([])
   })
 
   it('index.ts hands getProxyEnv to the helper as a function and uses it nowhere else, under its own name', () => {
@@ -349,24 +386,29 @@ describe('every spawn site that carries the proxy env also carries the window (R
   // `export CLAUDE_CONFIG_DIR=<profile> && claude`, and Claude Code lets this variable beat every window that
   // profile's settings hold, so the typed line has to take the variable off again when the target profile
   // holds a window of its own. That branch passes the names it takes off a line as `extraUnset`. Until it is
-  // merged nothing here does, and this passes; once a file that does has no mention of the window variable
-  // beside it, the merge has taken the first half of the contract (the account-aware helper) and left the
-  // second, and this says so. It is deliberately about the file, not the line: the integrator may name the
-  // list however the switcher's code is shaped, and edits this test then, with the pins above.
+  // merged nothing here does, and this passes; once a file that does has no use of CONTEXT_WINDOW_VAR in code
+  // beside it (a comment that names the variable does not count), the merge has taken the first half of the
+  // contract (the account-aware helper) and left the second, and this says so. It is deliberately about the
+  // file, not the line: the integrator may name the list however the switcher's code is shaped, and edits
+  // this test then, with the pins above.
   it('a file that builds the line a terminal types to change account also deals with the window variable', () => {
     const offenders = blindToTheWindow(SOURCES).map((f) => relative(MAIN, f))
     expect(offenders, 'a typed account switch leaves our CLAUDE_CODE_AUTO_COMPACT_WINDOW in place over the target profile\'s own window: unset it there when Termpolis put it in the terminal and the profile holds one').toEqual([])
   })
 
-  it('and that rule is not vacuous: it reports a file that unsets names on the line and never mentions the window', () => {
+  it('and that rule is not vacuous: it reports a file that unsets names on the line and never uses the window constant in code', () => {
     const text = (names: string): string => `const line = accountLine({ set: { CLAUDE_CONFIG_DIR: dir }, extraUnset: [${names}] })`
     const sources = [
       { file: 'accountsIpc.ts', text: text("'ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY'") },
       { file: 'accountsIpcDone.ts', text: text("'ANTHROPIC_BASE_URL', CONTEXT_WINDOW_VAR") },
+      // Spelled as a string: the one-place guard refuses it outside the helper, so it does not count as dealing with it here either.
       { file: 'accountsNamed.ts', text: text("'CLAUDE_CODE_AUTO_COMPACT_WINDOW'") },
+      // A comment that names the variable (or the constant) is the half-contract state this canary exists to catch.
+      { file: 'accountsComment.ts', text: `// TODO: unset CLAUDE_CODE_AUTO_COMPACT_WINDOW (CONTEXT_WINDOW_VAR) here\n${text("'ANTHROPIC_BASE_URL'")}` },
+      { file: 'accountsBlock.ts', text: `/* CONTEXT_WINDOW_VAR */ ${text("'ANTHROPIC_BASE_URL'")}` },
       { file: 'unrelated.ts', text: 'export const x = 1' },
     ]
-    expect(blindToTheWindow(sources)).toEqual(['accountsIpc.ts'])
+    expect(blindToTheWindow(sources)).toEqual(['accountsIpc.ts', 'accountsNamed.ts', 'accountsComment.ts', 'accountsBlock.ts'])
     expect(blindToTheWindow([])).toEqual([])
   })
 })
