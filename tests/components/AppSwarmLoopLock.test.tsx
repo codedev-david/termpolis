@@ -36,7 +36,7 @@ vi.mock('../../src/renderer/src/hooks/useAutoCodeIndex', () => ({ startRepoReswe
 import App from '../../src/renderer/src/App'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import { _resetLimitWatchForTest } from '../../src/renderer/src/lib/limitWatch'
-import { _resetStopReportsForTest } from '../../src/renderer/src/lib/swarmStopReports'
+import { _resetStopReportsForTest, carryWorkerStop } from '../../src/renderer/src/lib/swarmStopReports'
 
 const PICKER = 'Select login method:\r\n❯ 1. Claude account with subscription\r\n  2. Anthropic Console account\r\n'
 const LIMIT_ROWS = ['❯ Build the login page.', "  ⎿  You've hit your session limit · resets 3pm (America/New_York)", '', '─'.repeat(80), '❯ ', '─'.repeat(80)]
@@ -77,7 +77,7 @@ afterEach(() => {
   useTerminalStore.setState(RESET as never)
 })
 
-async function runWorkerLoop(output: string, relaunching: Record<string, 'account' | 'model' | 'sign-in'>, worker: typeof WORKER & { agentAccountId?: string } = WORKER) {
+async function runWorkerLoop(output: string, relaunching: Record<string, 'account' | 'model' | 'sign-in'>, worker: typeof WORKER & { agentAccountId?: string } = WORKER, status: 'working' | 'idle' = 'working') {
   const api = bridge(output)
   const sendMessage = vi.fn(async () => ({ success: true }))
   ;(window as any).swarmAPI = { getTasks: vi.fn(async () => ({ success: true, data: [] })), sendMessage }
@@ -86,7 +86,7 @@ async function runWorkerLoop(output: string, relaunching: Record<string, 'accoun
   act(() => {
     useTerminalStore.setState({
       terminals: [worker], accountsView: view(1) as never, relaunching,
-      swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'working' }],
+      swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status }],
     } as never)
   })
   await act(async () => { await vi.advanceTimersByTimeAsync(5100) })
@@ -123,6 +123,48 @@ describe('App: the swarm loop leaves a worker a relaunch holds alone (R7)', () =
     const { sendMessage } = await runWorkerLoop(LIMIT_SCREEN, {}, { ...WORKER, agentAccountId: 'acc_0' })
     // The offer read the words off the screen to record the limit, found no way out, and left the report to the conductor.
     expect(api.noteLimit).toHaveBeenCalledWith('acc_0', expect.objectContaining({ text: expect.stringContaining('hit your') }))
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+  })
+})
+
+// SWARM-R1 N5: a worker Termpolis restarted on another account draws the limit it stopped at again above its empty
+// box. The dashboard shows it waiting, not blocked, and the conductor hears nothing of a stop that is not the new
+// run's, until the worker has taken a turn; a limit shown after that is a new stop and is reported as one.
+describe('App: the swarm loop and a stop carried across a worker\'s restart (N5)', () => {
+  const statusOfWorker = (): string | undefined => useTerminalStore.getState().swarmAgents.find((a) => a.terminalId === 'w1')?.status
+
+  it('shows the carried limit as waiting and tells the conductor nothing', async () => {
+    carryWorkerStop('w1', "You've hit your session limit", async () => false)
+    const { sendMessage } = await runWorkerLoop(LIMIT_SCREEN, {})
+    expect(statusOfWorker()).toBe('idle')
+    expect(sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('shows a limit as blocked again, and reports it, once the worker took a turn since', async () => {
+    carryWorkerStop('w1', "You've hit your session limit", async () => true)
+    const { sendMessage } = await runWorkerLoop(LIMIT_SCREEN, {})
+    expect(statusOfWorker()).toBe('blocked')
+    expect(sendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  const at = (rows: string[]): string => `\x1b[H\x1b[2J${rows.map((r, i) => `\x1b[${i + 1};1H${r}`).join('')}`
+  const RULE = '─'.repeat(80)
+
+  it('shows a worker that is at work as at work, whatever was carried for it', async () => {
+    carryWorkerStop('w1', "You've hit your session limit", async () => false)
+    await runWorkerLoop(at(['❯ continue', '✻ Thinking… (3s · esc to interrupt)', '', RULE, '❯ ', RULE]), {}, WORKER, 'idle')
+    expect(statusOfWorker()).toBe('working')
+  })
+
+  it('shows a worker that asks something as asking, whatever was carried for it', async () => {
+    carryWorkerStop('w1', "You've hit your session limit", async () => false)
+    await runWorkerLoop(at(['● I will edit the file.', '', RULE, ' Edit file', ' app.ts', ' Do you want to make this edit to app.ts?', ' ❯ 1. Yes', '   2. Yes, allow all edits during this session (shift+tab)', '   3. No', '', ' Esc to cancel']), {}, WORKER, 'working')
+    expect(statusOfWorker()).toBe('waiting_for_input')
+  })
+
+  it('control: a worker nothing was carried for shows its limit as blocked', async () => {
+    const { sendMessage } = await runWorkerLoop(LIMIT_SCREEN, {})
+    expect(statusOfWorker()).toBe('blocked')
     expect(sendMessage).toHaveBeenCalledTimes(1)
   })
 })

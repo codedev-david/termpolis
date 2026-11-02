@@ -55,6 +55,8 @@ export interface TermScript {
   /** The row under Claude Code's or agy's box, instead of its usual footer (Claude Code 2.1.316 draws
    *  "Not logged in · Run /login" there in a profile that is signed out). */
   footer?: string
+  /** A prompt entered in the agent's box starts a turn (its spinner shows), as it does for the real CLIs. */
+  busyAfterPrompt?: boolean
   /** The pane's size. Default 80 x 24. */
   cols?: number
   rows?: number
@@ -212,10 +214,12 @@ export class FakeTerminal {
     // Codex's Windows set-up question on a home it never ran in, as the real 0.164 drew it before its keys row.
     if (st === 'sandbox') return ['  >_ OpenAI Codex (v0.164.0)', '     ~\\repo', '  Set up the Codex agent sandbox to protect your files and control network access. Learn more', '  <https://developers.openai.com/codex/windows>', '› 1. Set up default sandbox (requires Administrator permissions)', '  2. Use non-admin sandbox (higher risk if prompt injected)', '  3. Quit', '', '  enter select · esc back']
     if (st === 'loading') return ['  >_ OpenAI Codex (v0.164.0)', '     ~\\repo', '  Resuming session…', '› Ask Codex to do anything']
-    const above = this.relaunches > 0 && this.s.history ? [...this.s.history, ''] : st === 'busy'
-      ? (a === 'codex' ? ['• Working (12s • esc to interrupt)', ''] : a === 'agy' ? ['⡿ Generating... (esc to cancel)', ''] : ['✻ Thinking… (2s · esc to interrupt)', ''])
+    // What a resumed conversation drew above its box (its history, which can end at the CLI's own error).
+    const history = this.relaunches > 0 && this.s.history ? [...this.s.history, ''] : null
+    const above = st === 'busy'
+      ? [...(history ?? []), ...(a === 'codex' ? ['• Working (12s • esc to interrupt)', ''] : a === 'agy' ? ['⡿ Generating... (esc to cancel)', ''] : ['✻ Thinking… (2s · esc to interrupt)', ''])]
       : st === 'waiting' ? ['✻ Usage limit reached · continuing automatically at 3pm · esc to cancel', '']
-      : this.s.quoteHint ? ['● When it exits it prints:', '', 'Resume this session with:', `claude --resume ${this.s.id ?? ID}`, ''] : ['● Done.', '']
+      : history ?? (this.s.quoteHint ? ['● When it exits it prints:', '', 'Resume this session with:', `claude --resume ${this.s.id ?? ID}`, ''] : ['● Done.', ''])
     if (a === 'codex') {
       const composer = `› ${this.box || 'Ask Codex to do anything'}`
       const popup = this.box.startsWith('/') ? ['  /quit   exit Codex'] : []
@@ -393,6 +397,7 @@ export class FakeTerminal {
           this.redraw()
         } else {
           if (this.box) this.sentPrompts.push(this.box)
+          if (this.box && this.s.busyAfterPrompt) this.agentState = 'busy'
           this.box = ''
           this.redraw()
         }

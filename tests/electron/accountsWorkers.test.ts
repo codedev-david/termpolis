@@ -11,10 +11,13 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, envAccountOf, envAccounts, forgetTerminalAccount, isAccountChangedByHand, noteAgentStart, noteSwarmWorker,
-  noteWorkerCommand, noteWorkerInput, registerAccountsIpc, terminalAccountId, terminalAgentStart,
+  noteTerminalAccount, noteTerminalSession,
+  noteWorkerCommand, noteWorkerInput, registerAccountsIpc, terminalAccountId, terminalAgentStart, workerStopCarried,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { _resetSwitchLocksForTest, relaunchLockReason } from '../../src/main/accountSwitch'
+import { submitToTerminal } from '../../src/main/mcpServer'
+import type { McpToolHandlers, SubmitClock } from '../../src/main/mcpServer'
 import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
 import type { AccountsView, AddAccountResult } from '../../src/shared/agentAccounts'
 import type { SwitchOutcome } from '../../src/shared/accountSwitch'
@@ -258,6 +261,104 @@ describe('envAccountOf and the view\'s envAccount', () => {
   })
 })
 
+describe('workerStopCarried: a stop the restarted agent draws again is no stop of its new run (SWARM-R1 N5)', () => {
+  const run = async (target: 'b' | 'main', over: Record<string, unknown> = {}): Promise<SwitchOutcome> => {
+    const a = await accounts()
+    noteSwarmWorker('t1')
+    end = term.launchedAt
+    noteWorkerCommand('t1', term.launchLine())
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      return await ok<SwitchOutcome>(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: target === 'b' ? a.b : a.main, shellType: 'gitbash', reason: 'usage limit', ...over })
+    } finally {
+      log.mockRestore()
+    }
+  }
+
+  it('is not so for a worker run_command started: a limit it shows then is its own', async () => {
+    await accounts()
+    noteSwarmWorker('t1')
+    end = term.launchedAt
+    noteWorkerCommand('t1', term.launchLine())
+    expect(workerStopCarried('t1')).toBe(false)
+  })
+
+  it('is so once Termpolis restarted the worker on another account, until the worker takes a turn', async () => {
+    expect((await run('b')).kind).toBe('switched')
+    expect(workerStopCarried('t1')).toBe(true)
+    // The conductor's follow-up is typed but not yet entered: not a turn.
+    noteWorkerInput('t1', 'Continue your task.')
+    expect(workerStopCarried('t1')).toBe(true)
+    // Entered: a turn, and a limit shown after it is a new stop.
+    noteWorkerInput('t1', '\r')
+    expect(workerStopCarried('t1')).toBe(false)
+  })
+
+  it('is so for a terminal switched by the user, like the worker (the same screen is drawn again)', async () => {
+    const a = await accounts()
+    noteTerminalAccount('t1', a.main)
+    noteAgentStart('t1', { at: term.launchedAt, commands: [term.launchLine()] })
+    noteTerminalSession('t1', ID)
+    expect(workerStopCarried('t1')).toBe(false)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    expect((await ok<SwitchOutcome>(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: a.b, shellType: 'gitbash' })).kind).toBe('switched')
+    log.mockRestore()
+    expect(workerStopCarried('t1')).toBe(true)
+  })
+
+  it('is so for nothing Termpolis has no record of, and not after the terminal is gone', async () => {
+    expect(workerStopCarried('nobody')).toBe(false)
+    expect((await run('b')).kind).toBe('switched')
+    forgetTerminalAccount('t1')
+    expect(workerStopCarried('t1')).toBe(false)
+  })
+})
+
+
+// SWARM-R1 N5, end to end through the real parts: the engine restarts a worker on another account, the resumed
+// session draws its old limit again above its empty box (real Claude Code does), and the conductor's follow-up
+// is typed through the real submit, not refused as blocked; a limit shown after the worker's turn blocks again.
+describe('a worker restarted on another account, then sent the conductor\'s follow-up (N5)', () => {
+  const OLD = "You've hit your session limit · resets 3pm (America/New_York)"
+  const restarted = async (): Promise<McpToolHandlers> => {
+    term = new FakeTerminal({ agent: 'claude', family: 'posix', start: 'idle', exit: 'hint', launch: 'claude --dangerously-skip-permissions', busyAfterPrompt: true, history: ['❯ Build the page', `  ⎿  ${OLD}`] })
+    register()
+    const a = await accounts()
+    noteSwarmWorker('t1')
+    end = term.launchedAt
+    noteWorkerCommand('t1', term.launchLine())
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const outcome = await ok<SwitchOutcome>(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: a.b, shellType: 'gitbash', reason: 'usage limit' })
+    log.mockRestore()
+    expect(outcome.kind).toBe('switched')
+    return {
+      listTerminals: () => [{ id: 't1', name: 'Claude (Build)', shellType: 'gitbash', cwd: '/p' }],
+      readOutput: () => term.io().output('t1')?.raw ?? '',
+      terminalSize: () => term.io().size('t1'),
+      writeToTerminal: (id: string, text: string) => { term.type(text); noteWorkerInput(id, text) },
+      relaunchLock: (id: string) => relaunchLockReason(id, term.clock),
+      carriedStop: (id: string) => workerStopCarried(id),
+    } as unknown as McpToolHandlers
+  }
+  const clock = (): SubmitClock => ({ now: () => term.clock, sleep: (ms) => term.io().sleep(ms) })
+
+  it('is typed and entered, the old limit on its screen notwithstanding', async () => {
+    const handlers = await restarted()
+    expect(workerStopCarried('t1')).toBe(true)
+    const res = await submitToTerminal(handlers, 't1', 'Continue your task.', clock())
+    expect(res.submitted).toBe(true)
+    expect(term.sentPrompts).toEqual(['Continue your task.'])
+  })
+
+  it('is refused as blocked, as v1.54.0 did, where Termpolis did not relaunch the worker', async () => {
+    const handlers = await restarted()
+    noteAgentStart('t1', { at: 0, commands: [term.launchLine()] })
+    expect(workerStopCarried('t1')).toBe(false)
+    const res = await submitToTerminal(handlers, 't1', 'Continue your task.', clock())
+    expect(res).toMatchObject({ submitted: false, error: expect.stringMatching(/^The agent is blocked: usage limit reached/) })
+    expect(term.sentPrompts).toEqual([])
+  })
+})
 describe('accounts:switch on a worker (§9)', () => {
   it('holds it as a worker\'s while it runs, starts the worker\'s own command on the target, and records it', async () => {
     const { main, b, bDir } = await accounts()

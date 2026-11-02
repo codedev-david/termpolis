@@ -38,6 +38,9 @@ export interface LiveStart {
   turnedAt?: number
   /** Its account's recorded limit was looked at once, for this start (R15). */
   healed?: boolean
+  /** Termpolis relaunched the agent here (an account switch, a swarm worker's restart): the conversation
+   *  it resumed shows the limit it stopped at again, which is no stop of this run until it takes a turn. */
+  relaunched?: boolean
 }
 
 /** Letters and digits only: how the CLI's words are matched in raw output, which colours and wraps them. */

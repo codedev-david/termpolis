@@ -108,6 +108,7 @@ const H = vi.hoisted(() => {
     noteSwarmWorker: vi.fn((_id: string) => undefined),
     noteWorkerCommand: vi.fn((_id: string, _command: string) => undefined),
     noteWorkerInput: vi.fn((_id: string, _typed: string) => undefined),
+    workerStopCarried: vi.fn((_id: string): boolean => false),
     // The chooser's marker (R6): the extra env as it came, so every other test sees today's.
     withLimitChooser: vi.fn((extra: Record<string, string> | undefined, _watch: unknown) => extra),
     relaunchLockReason: vi.fn((_id: string, _now?: number, _key?: string): string | null => null),
@@ -442,6 +443,7 @@ vi.mock('../../src/main/accountsIpc', () => ({
   noteSwarmWorker: H.noteSwarmWorker,
   noteWorkerCommand: H.noteWorkerCommand,
   noteWorkerInput: H.noteWorkerInput,
+  workerStopCarried: H.workerStopCarried,
   withLimitChooser: H.withLimitChooser,
   endAccountSignIns: vi.fn(),
 }))
@@ -880,6 +882,13 @@ describe('Settings ▸ Accounts wiring', () => {
     expect(H.mcpHandlers!.relaunchLock('t-held')).toBe('held')
     expect(H.mcpHandlers!.relaunchLock('t-free')).toBeNull()
     H.relaunchLockReason.mockImplementation(() => null)
+  })
+
+  it('asks main whether a limit is the old one its relaunched agent draws again (SWARM-R1 N5)', () => {
+    H.workerStopCarried.mockImplementation((id: string) => id === 't-restarted')
+    expect(H.mcpHandlers!.carriedStop!('t-restarted')).toBe(true)
+    expect(H.mcpHandlers!.carriedStop!('t-other')).toBe(false)
+    H.workerStopCarried.mockImplementation(() => false)
   })
 
   it('lets the model picker\'s own writes through its hold, by the key they carry (§7.5)', () => {

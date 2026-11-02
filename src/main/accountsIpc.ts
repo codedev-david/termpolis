@@ -439,6 +439,17 @@ export function noteWorkerInput(terminalId: string, typed: string, now: number =
   })
 }
 
+/**
+ * Whether the terminal's agent was relaunched by Termpolis and has taken no turn since: the limit its
+ * screen shows is the one the conversation stopped at before, drawn again by the resumed session above
+ * its empty box (R4, real Claude Code does), and no stop of the new run. A prompt entered in its box ends
+ * it (noteWorkerInput for a worker the conductor writes to), and a limit shown after that blocks again.
+ */
+export function workerStopCarried(terminalId: string): boolean {
+  const start = agentStarts.get(terminalId)
+  return start !== undefined && start.relaunched === true && start.turned !== true
+}
+
 /** The account Termpolis put this terminal on: undefined when it never did (a terminal from
  *  before accounts, or an agent started by hand), null for the default profile. */
 export function terminalAccountId(terminalId: string): string | null | undefined {
@@ -1340,6 +1351,8 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
         noteTerminalAccount(terminalId, r.accountId)
         if (workers.has(terminalId)) shellAccounts.set(terminalId, { ...shellAccounts.get(terminalId), [agent]: r.accountId })
         noteAgentStart(terminalId, r.start, now())
+        const relaunched = agentStarts.get(terminalId)
+        if (relaunched) relaunched.relaunched = true
         if (agent === 'claude') noteTerminalSession(terminalId, r.sessionId)
         deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: r.accountId, byHand: false })
       },

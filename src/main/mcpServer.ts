@@ -5,7 +5,7 @@ import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
-import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
+import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, stopKind, type AgentStatusResult } from '../shared/agentStatusDetector'
 import { screenOf, type ScreenSize } from '../shared/terminalScreen'
 import { RELAUNCH_HELD } from '../shared/accountSwitch'
 
@@ -649,6 +649,10 @@ export interface McpToolHandlers {
   /** Why nothing may be typed into the terminal now, or null: Termpolis is switching its agent's
    *  account and types into it itself (accountSwitch.ts, R7). */
   relaunchLock?: (terminalId: string) => string | null
+  /** Whether the terminal's agent was relaunched by Termpolis (an account switch, a swarm worker's restart)
+   *  and has taken no turn since (R4): a usage limit its screen shows is the one it stopped at before, which
+   *  the resumed session draws again above its empty box, and no stop of the new run. */
+  carriedStop?: (terminalId: string) => boolean
   /** Whether nothing runs in the terminal but its shell, as the OS tells (shellAlone.ts): true once
    *  whatever its prompt ran, an agent among them, has exited; null where main can't tell. Submit
    *  types into an agent only where this isn't true. */
@@ -891,7 +895,10 @@ function readScreen(handlers: McpToolHandlers, terminalId: string, agentName: st
   if (!raw) return null
   const size = handlers.terminalSize?.(terminalId) ?? null
   const { lines, title } = drawn(raw, size)
-  const status = detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title })
+  let status = detectAgentStatus(lines.join('\n'), agentName, previous, { screen: true, title })
+  // R4: the old limit a resumed session draws again above its fresh, empty box is no stop of this run, so the
+  // follow-up the conductor sends is typed (real Claude Code 2.1.304 does this, agentScreensLimit.json).
+  if (stopKind(status) === 'limit' && inputBoxRow(lines) >= 0 && handlers.carriedStop?.(terminalId)) status = { status: 'idle', summary: 'Waiting at prompt' }
   const start = agentStarts.get(terminalId)
   if (start === undefined) return { lines, title, status, shell: false }
   // `raw` ends where the output does.

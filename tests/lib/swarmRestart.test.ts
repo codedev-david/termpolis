@@ -10,7 +10,7 @@ import {
 } from '../../src/renderer/src/lib/swarmRestart'
 import type { RestartDeps, SwarmRestartGroup } from '../../src/renderer/src/lib/swarmRestart'
 import { _resetLimitWatchForTest, noteSwarmStop } from '../../src/renderer/src/lib/limitWatch'
-import { _resetStopReportsForTest, noteWorkerStatus, setSwarmWorkingAgain } from '../../src/renderer/src/lib/swarmStopReports'
+import { _resetStopReportsForTest, carryWorkerStop, isStopCarried, noteWorkerStatus, setSwarmWorkingAgain } from '../../src/renderer/src/lib/swarmStopReports'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { SwitchOutcome } from '../../src/shared/accountSwitch'
@@ -694,6 +694,18 @@ describe('noteWorkerSwitched', () => {
     await noteWorkerSwitched('w1', { kind: 'fresh', why: 'asked' }, deps)
     expect(groups().map((g) => g.id)).toEqual(['other'])
     expect(messages()[1]).toBe(freshMessage(W1))
+  })
+
+  it('says a stop is carried while its worker has taken no turn since, and not once it has (N5)', async () => {
+    expect(await isStopCarried('w1')).toBe(false)
+    let took = false
+    carryWorkerStop('w1', 'usage limit reached', async () => took)
+    expect(await isStopCarried('w1')).toBe(true)
+    took = true
+    expect(await isStopCarried('w1')).toBe(false)
+    // A stop nothing was carried for is a stop of the worker's own run.
+    await noteWorkerStatus(W2, LIMIT)
+    expect(await isStopCarried('w2')).toBe(false)
   })
 
   it('lets go of the worker\'s timer', async () => {

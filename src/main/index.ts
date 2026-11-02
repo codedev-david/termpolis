@@ -611,7 +611,7 @@ import {
 } from './agentIntegrationManager'
 import {
   accountSettingsEnv, codexHomeFor, connectedProfileTargets, endAccountSignIns, forgetTerminalAccount, isTerminalAccountConnected,
-  noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser,
+  noteSwarmWorker, noteTypedInput, noteWorkerCommand, noteWorkerInput, registerAccountsIpc, resolveLaunchTarget, withLimitChooser, workerStopCarried,
 } from './accountsIpc'
 import { relaunchLockReason } from './accountSwitch'
 import { AGENT_INTEGRATION_IPC, type AgentIntegrationSetRequest } from '../shared/agentIntegration'
@@ -3669,6 +3669,7 @@ async function semanticPoolOptions(
       terminalSize: (terminalId) => getTerminalSize(terminalId),
       outputOffset: (terminalId) => readOutputFrom(terminalOutputBuffers, terminalId, 0).nextOffset,
       relaunchLock: (terminalId) => relaunchLockReason(terminalId),
+      carriedStop: (terminalId) => workerStopCarried(terminalId),
       shellAlone: (terminalId) => terminalShellAlone(terminalId),
       runAndWait: async ({ command, cwd, shell, timeoutMs }) => {
         if (!mcpExecRunner) return { exitCode: -1, output: '[run_and_wait] terminal runner not ready' }

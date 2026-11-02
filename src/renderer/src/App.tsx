@@ -53,7 +53,8 @@ import { testDelay, isClaudeCommand } from './lib/testAgents'
 import { launchAgents } from './lib/agentLaunch'
 import { startBridgeForAgent, stopBridgeForAgent } from './lib/swarmBridgeManager'
 import { noteSwarmStop, osNotify, pruneBanners, pruneChooser, pruneStops, showLimit, watchTerminal } from './lib/limitWatch'
-import { detectAgentStatus, limitWords } from '../../shared/agentStatusDetector'
+import { isStopCarried } from './lib/swarmStopReports'
+import { detectAgentStatus, limitWords, stopKind } from '../../shared/agentStatusDetector'
 import { screenOfReplay } from '../../shared/terminalScreen'
 import { replyToScreen, screenKey } from './lib/promptAutoDismiss'
 import * as contextPressureLib from './lib/contextPressure'
@@ -732,7 +733,10 @@ export default function App() {
           // (GitHub #36). The screen also shows a usage limit or a menu, which the conductor is
           // told about once per stop.
           const screen = screenOfReplay(bufferRes.data)
-          const result = detectAgentStatus(screen.lines().join('\n'), agent.agentName, agent.status, { screen: true, title: screen.title })
+          let result = detectAgentStatus(screen.lines().join('\n'), agent.agentName, agent.status, { screen: true, title: screen.title })
+          // A worker Termpolis restarted on another account draws the limit it stopped at again above its empty
+          // box: waiting, until it has taken a turn (N5; the conductor's follow-up is typed the same way).
+          if (stopKind(result) === 'limit' && await isStopCarried(agent.terminalId)) result = { status: 'idle', summary: 'Waiting at prompt' }
           void noteSwarmStop(agent, result, () => limitWords(screen.lines().join('\n')))
 
           // Only update if status or summary actually changed

@@ -95,6 +95,14 @@ export function carryWorkerStop(terminalId: string, summary: string, turned: () 
   stopped.set(terminalId, { key: stopKey(summary), clear: 0, carried: turned })
 }
 
+/** Whether the stop a worker shows is the one carried across a restart and the worker has taken no turn
+ *  since: the resumed session draws its old limit again above its empty box (R4), so the dashboard shows it
+ *  waiting, not blocked, and the conductor hears nothing of it. A limit after a turn is a new stop. */
+export async function isStopCarried(terminalId: string): Promise<boolean> {
+  const carried = stopped.get(terminalId)?.carried
+  return carried !== undefined && !(await carried())
+}
+
 /** As carryWorkerStop, for a worker switched by hand: the stop it shows, if it shows one. */
 export function carryIfStopped(terminalId: string, turned: () => Promise<boolean>): void {
   const last = stopped.get(terminalId)
