@@ -5,6 +5,7 @@
 import { useTerminalStore } from '../../store/terminalStore'
 import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
 import { accountChipFor } from '../../lib/accountChip'
+import { focusTerminal } from '../../lib/accountMenu'
 
 export function AccountChip({ terminalId }: { terminalId: string }) {
   const terminal = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId))
@@ -47,7 +48,7 @@ export function AccountChip({ terminalId }: { terminalId: string }) {
         aria-label={`Cancel the switch to ${queuedTo ?? 'another account'}`}
         title={`Cancel the switch to ${queuedTo ?? 'another account'}`}
         className="text-[10px] px-1 py-1 rounded text-[#9ca3af] hover:bg-white/10"
-        onClick={(e) => { e.stopPropagation(); useTerminalStore.getState().dropQueuedSwitch(terminalId) }}
+        onClick={(e) => { e.stopPropagation(); useTerminalStore.getState().dropQueuedSwitch(terminalId); focusTerminal(terminalId) }}
         data-testid="account-chip-cancel"
       >
         <i className="fa-solid fa-xmark" aria-hidden="true"></i>

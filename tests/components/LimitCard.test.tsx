@@ -180,6 +180,71 @@ describe('its ways out', () => {
     expect(st().accountSwitch).toEqual({ terminalId: 't2', limit: ctx({ terminals: ['t2'] }) })
   })
 
+  // UI2-3: the card goes with the button that had the focus, and the keyboard would go to <body>, where typing reaches nothing.
+  // The pane's own input takes it, as the account menu's actions do; a focus the user moved elsewhere is left alone.
+  describe('where the keyboard goes when the card goes (UI2-3)', () => {
+    let pane: HTMLElement
+    beforeEach(() => {
+      pane = document.createElement('div')
+      pane.setAttribute('data-terminal-id', 't1')
+      pane.innerHTML = '<textarea></textarea>'
+      document.body.appendChild(pane)
+    })
+    afterEach(() => pane.remove())
+    const input = (): HTMLTextAreaElement => pane.querySelector('textarea')!
+    const ready = async (): Promise<void> => {
+      card()
+      openLimit()
+      await waitFor(() => expect(accounts.check).toHaveBeenCalledTimes(2))
+      await act(async () => undefined)
+    }
+
+    it('is the terminal after Continue, with a mouse or a key', async () => {
+      await ready()
+      const button = screen.getByTestId('limit-card-continue')
+      button.focus()
+      expect(document.activeElement).toBe(button)
+      fireEvent.click(button)
+      expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', expect.objectContaining({ reason: 'usage limit' }))
+      expect(document.activeElement).toBe(input())
+    })
+
+    it('is the terminal after Not now, and after a switch of another account from the list', async () => {
+      await ready()
+      const notNow = screen.getByTestId('limit-card-not-now')
+      notNow.focus()
+      fireEvent.click(notNow)
+      expect(document.activeElement).toBe(input())
+      await act(async () => { st().openLimitChooser(ctx()) })
+      click('limit-card-more')
+      const other = screen.getAllByTestId('limit-card-switch')[0]
+      other.focus()
+      fireEvent.click(other)
+      expect(startSwitch).toHaveBeenCalled()
+      expect(document.activeElement).toBe(input())
+    })
+
+    it('is the terminal while the card goes to a sheet, so the sheet gives it back there when it closes', async () => {
+      await ready()
+      click('limit-card-more')
+      const add = screen.getByTestId('limit-card-add')
+      add.focus()
+      fireEvent.click(add)
+      expect(st().addAccountSheet).toEqual({ agent: 'claude' })
+      expect(document.activeElement).toBe(input())
+    })
+
+    it('leaves a focus the user moved elsewhere alone', async () => {
+      await ready()
+      const elsewhere = document.createElement('input')
+      document.body.appendChild(elsewhere)
+      elsewhere.focus()
+      fireEvent.click(screen.getByTestId('limit-card-not-now'))
+      expect(document.activeElement).toBe(elsewhere)
+      elsewhere.remove()
+    })
+  })
+
   it('leaves the sign-in to the switch when its answer hasn\'t come yet', async () => {
     accounts.check.mockImplementation(() => new Promise(() => undefined))
     card()

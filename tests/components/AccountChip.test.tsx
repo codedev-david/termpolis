@@ -106,6 +106,27 @@ describe('ActiveTerminalAccount', () => {
     expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
   })
 
+  // UI2-5: Settings replaces the main area, so a switch begun from it showed its progress, toast and error card in a
+  // pane that was not on screen. The terminal comes first, then the menu opens over it, as from the chip.
+  it('shows the terminal before it opens the menu, so the switch is seen from start to end', () => {
+    useTerminalStore.setState({ showSettings: true, activeTerminalId: 't1' })
+    render(<ActiveTerminalAccount view={VIEW} />)
+    fireEvent.click(screen.getByTestId('accounts-switch-active'))
+    expect(useTerminalStore.getState().showSettings).toBe(false)
+    expect(useTerminalStore.getState().activeTerminalId).toBe('t1')
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+  })
+
+  // UI2-4: the chip, Ctrl+Shift+N and the palette count a swarm worker by the agent run_command started in it, and so does
+  // this line (an MCP-created worker has no agentCommand, only swarmAgent).
+  it('counts a swarm worker by the agent started in it, as the chip does', () => {
+    useTerminalStore.setState({ terminals: [term({ agentCommand: undefined, isSwarm: true, swarmAgent: 'claude', agentAccountId: 'acc_a' })], activeTerminalId: 't1' })
+    render(<ActiveTerminalAccount view={VIEW} />)
+    expect(screen.getByTestId('accounts-active-terminal')).toHaveTextContent('Claude Code on personal')
+    fireEvent.click(screen.getByTestId('accounts-switch-active'))
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+  })
+
   it('says how the account stands when it isn\'t a registered one', () => {
     const { rerender } = render(<ActiveTerminalAccount view={VIEW} />)
     act(() => { useTerminalStore.setState({ accountsByHand: { t1: true } }) })
@@ -204,6 +225,26 @@ describe('AccountChip: a switch waiting for the agent\'s turn to end', () => {
     expect(screen.queryByTestId('account-chip-queued')).toBeNull()
     // The cancel is the chip's own: it opens no menu.
     expect(useTerminalStore.getState().accountMenu).toBeNull()
+  })
+
+  // UI2-3: the × goes with the queue it cancels, and the focus it held would go to <body>, where typing reaches nothing.
+  it('gives the keyboard back to the terminal when its × cancels the switch', () => {
+    const pane = document.createElement('div')
+    pane.setAttribute('data-terminal-id', 't1')
+    pane.innerHTML = '<textarea></textarea>'
+    document.body.appendChild(pane)
+    try {
+      render(<AccountChip terminalId="t1" />)
+      act(() => { useTerminalStore.setState({ queuedSwitches: { t1: { targetId: 'acc_a', reason: 'by hand' } } }) })
+      const cancel = screen.getByTestId('account-chip-cancel')
+      cancel.focus()
+      expect(document.activeElement).toBe(cancel)
+      fireEvent.click(cancel)
+      expect(useTerminalStore.getState().queuedSwitches).toEqual({})
+      expect(document.activeElement).toBe(pane.querySelector('textarea'))
+    } finally {
+      pane.remove()
+    }
   })
 
   it('names no account it no longer has', () => {

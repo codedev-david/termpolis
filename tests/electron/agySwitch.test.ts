@@ -74,6 +74,14 @@ describe('exit: agy out of the terminal, by its own /exit', () => {
     expect(ignores.writes).toEqual(['/exit', '\r'])
   })
 
+  // UI2-7 (1): the loop below walks the list itself, so a name dropped from it would drop out of the test as well.
+  it('names both the variables agy signs in from', () => {
+    expect([...AGY_ENV_AUTH]).toEqual(['GEMINI_API_KEY', 'AGY_ADC_AUTH'])
+    expect(agyEnvAuth({ AGY_ADC_AUTH: 'x' })).toBe('AGY_ADC_AUTH')
+    expect(agyEnvAuth({ GEMINI_API_KEY: 'x', AGY_ADC_AUTH: 'x' })).toBe('GEMINI_API_KEY')
+    expect(agyEnvAuth({})).toBeNull()
+  })
+
   it('refuses, before anything is typed, where agy signs in from the environment, by the name only', async () => {
     for (const name of AGY_ENV_AUTH) {
       const t = new FakeTerminal(agy())

@@ -94,7 +94,7 @@ function Toast({ run }: { run: SwitchRun }) {
       <div role="status" className="flex items-center gap-3 bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-xl px-3 py-2 text-xs text-[#d4d4d4]">
         <i className="fa-solid fa-circle-check text-[#7ee2a3]" aria-hidden="true"></i>
         <span>{toast.text}</span>
-        {toast.back && <button type="button" className={SMALL_BUTTON} onClick={() => { void actOnRun(run.terminalId, 'back') }} data-testid="switch-back">Switch back</button>}
+        {toast.back && <button type="button" className={SMALL_BUTTON} onClick={() => { void actOnRun(run.terminalId, 'back'); focusTerminal(run.terminalId) }} data-testid="switch-back">Switch back</button>}
         <button type="button" aria-label="Dismiss" className="px-1 rounded hover:bg-white/10" onClick={() => { useTerminalStore.getState().dropSwitchRun(run.terminalId); focusTerminal(run.terminalId) }} data-testid="switch-toast-close">
           <i className="fa-solid fa-xmark" aria-hidden="true"></i>
         </button>

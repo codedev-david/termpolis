@@ -524,8 +524,27 @@ export function signInThenRestart(groupId: string, targetId: string, deps: Resta
       const now = deps.store().swarmRestarts.find((x) => x.id === groupId)
       if (!now || now.phase.kind !== 'offered') return
       for (const w of now.workers) startClock(w.terminalId, RESTART_WAIT_MS, deps)
+      void signedInMeanwhile(groupId, targetId, deps)
     },
   })
+}
+
+/** The sheet was closed without its restart button, perhaps after the sign-in finished (Esc, the X, Cancel): the
+ *  card's lists are a snapshot of the moment it was offered, so an account that is signed in now moves from its
+ *  sign-in list to its restart list, and is not offered a second sign-in, with the warning that goes with one (UI2-1).
+ *  Main's own view is read: it kept the sign-in before the sheet said "success". */
+async function signedInMeanwhile(groupId: string, targetId: string, deps: RestartDeps): Promise<void> {
+  try {
+    const fresh = await deps.accounts.list()
+    if (!fresh.success) return
+    deps.store().setAccountsView(fresh.data)
+    if (fresh.data.accounts.find((r) => r.id === targetId)?.identity?.signedIn !== true) return
+    const g = deps.store().swarmRestarts.find((x) => x.id === groupId)
+    if (!g || g.phase.kind !== 'offered' || !g.signIn?.includes(targetId)) return
+    const { signIn: _before, ...rest } = g
+    const signIn = g.signIn.filter((id) => id !== targetId)
+    deps.store().putSwarmRestart({ ...rest, targets: [...g.targets, targetId], ...(signIn.length > 0 ? { signIn } : {}) })
+  } catch { /* the card stays as it was */ }
 }
 
 /**

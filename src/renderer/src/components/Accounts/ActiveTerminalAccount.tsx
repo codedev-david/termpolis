@@ -3,13 +3,14 @@
 import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
 import type { AccountsView } from '../../../../shared/agentAccounts'
 import { useTerminalStore } from '../../store/terminalStore'
-import { agentOfCommand, canSwitchAccount } from '../../lib/accountsView'
+import { agentOfTerminal, canSwitchAccount } from '../../lib/accountsView'
 
 export function ActiveTerminalAccount({ view }: { view: AccountsView }) {
   const terminal = useTerminalStore((s) => s.terminals.find((t) => t.id === s.activeTerminalId))
   const byHand = useTerminalStore((s) => !!s.activeTerminalId && !!s.accountsByHand[s.activeTerminalId])
   const openAccountSwitch = useTerminalStore((s) => s.openAccountSwitch)
-  const agent = terminal && !terminal.isConductor ? agentOfCommand(terminal.agentCommand) : null
+  // As the chip, Ctrl+Shift+N and the palette read it: a swarm worker counts by the agent started in it, the conductor never.
+  const agent = agentOfTerminal(terminal)
   if (!terminal || !agent) {
     return <p className="text-xs text-[#9ca3af]" data-testid="accounts-active-terminal">Open an agent terminal to switch its account.</p>
   }
@@ -29,7 +30,13 @@ export function ActiveTerminalAccount({ view }: { view: AccountsView }) {
       <button
         type="button"
         data-testid="accounts-switch-active"
-        onClick={() => openAccountSwitch(terminal.id)}
+        onClick={() => {
+          // Settings replaces the main area, and the terminal's pane is where the switch shows its progress, its toast and
+          // its error card: the terminal comes first (a click on one of the card's terminals does the same; it closes Settings),
+          // then the menu opens over it. The menu is drawn after the main area, so its own effects take the focus last.
+          useTerminalStore.getState().setActiveTerminal(terminal.id)
+          openAccountSwitch(terminal.id)
+        }}
         className="underline text-[#22D3EE] hover:text-[#67e8f9]"
       >
         Switch account…

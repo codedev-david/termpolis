@@ -134,6 +134,17 @@ describe('where the keyboard goes when the card or the toast goes (UI-R1-F)', ()
     expect(document.activeElement).toBe(pane.querySelector('textarea'))
   })
 
+  it('is the terminal when Switch back is pressed on the toast (UI2-3)', () => {
+    render(<SwitchOverlay terminalId="t1" />)
+    put(run({ status: 'done', steps: ['done', 'done', 'done'], toast: { text: 'Claude Code is on codedev now.', until: Date.now() + 10_000, back: 'acc_a' } }))
+    const back = screen.getByTestId('switch-back')
+    back.focus()
+    expect(document.activeElement).toBe(back)
+    fireEvent.click(back)
+    expect(actOnRun).toHaveBeenCalledWith('t1', 'back')
+    expect(document.activeElement).toBe(pane.querySelector('textarea'))
+  })
+
   it('is the terminal when the toast is dismissed', () => {
     render(<SwitchOverlay terminalId="t1" />)
     put(run({ status: 'done', steps: ['done', 'done', 'done'], toast: { text: 'Claude Code is on codedev now.', until: Date.now() + 10_000, back: 'acc_a' } }))

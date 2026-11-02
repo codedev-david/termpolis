@@ -22,6 +22,8 @@ function createMockAgy(io) {
     // Where agy goes after /logout: its sign-in screen, or ('box') back to its box.
     afterLogout: env.MOCK_AGY_AFTER_LOGOUT || 'sign-in',
     ignoreArrows: env.MOCK_AGY_IGNORE_ARROWS === '1',
+    // A Google Cloud project agy refuses, naming it in its error (the project id is the user's own, and masked wherever shown).
+    badProject: env.MOCK_AGY_BAD_PROJECT === '1',
     screen: env.MOCK_AGY_TRUST === '1' ? 'trust' : 'main',
     sel: 0,
     text: '',
@@ -108,7 +110,13 @@ function createMockAgy(io) {
       st.text = ''
       return draw()
     }
-    if (st.screen === 'project') return st.text ? go('license') : draw()
+    if (st.screen === 'project') {
+      if (st.text && st.badProject) {
+        io.write('\r\nError: project ' + st.text + ' was not found.\r\n')
+        return io.exit(1)
+      }
+      return st.text ? go('license') : draw()
+    }
     return choose()
   }
   const onInput = (data) => {

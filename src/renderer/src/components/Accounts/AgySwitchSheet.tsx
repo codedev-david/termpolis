@@ -230,8 +230,8 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
           <p className="text-xs text-[#9ca3af]">An agy running anywhere else on this computer (a swarm worker, another window) moves to the new sign-in too, and Termpolis does not resume it.</p>
           {list}
           <div className="flex gap-2">
-            <button type="button" className={SHEET_PRIMARY} data-autofocus="" onClick={go} data-testid="agy-switch-go">{n > 1 ? 'Switch all Gemini terminals' : 'Switch Gemini CLI'}</button>
-            <button type="button" className={SHEET_SECONDARY} onClick={close} data-testid="agy-switch-cancel">Cancel</button>
+            <button type="button" className={SHEET_PRIMARY} onClick={go} data-testid="agy-switch-go">{n > 1 ? 'Switch all Gemini terminals' : 'Switch Gemini CLI'}</button>
+            <button type="button" className={SHEET_SECONDARY} data-autofocus="" onClick={close} data-testid="agy-switch-cancel">Cancel</button>
           </div>
         </div>
       )
@@ -241,8 +241,8 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
         <div className="flex flex-col gap-3" data-testid="agy-switch-confirm-work">
           <p>{phase.question}</p>
           <div className="flex gap-2">
-            <button type="button" className={SHEET_PRIMARY} data-autofocus="" onClick={() => { void exitAll() }} data-testid="agy-switch-confirm-work-yes">{phase.yes}</button>
-            <button type="button" className={SHEET_SECONDARY} onClick={close} data-testid="agy-switch-confirm-work-no">Cancel</button>
+            <button type="button" className={SHEET_PRIMARY} onClick={() => { void exitAll() }} data-testid="agy-switch-confirm-work-yes">{phase.yes}</button>
+            <button type="button" className={SHEET_SECONDARY} data-autofocus="" onClick={close} data-testid="agy-switch-confirm-work-no">Cancel</button>
           </div>
         </div>
       )
@@ -266,8 +266,8 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
         <div className="flex flex-col gap-2" data-testid="agy-switch-ask">
           <p>Termpolis can&apos;t tell whether agy still runs in {t.name}, so it typed nothing there.</p>
           <div className="flex gap-2">
-            <button type="button" className={SHEET_PRIMARY} data-autofocus="" onClick={() => answer.current?.(true)} data-testid="agy-switch-exited">It has exited, go on</button>
-            <button type="button" className={SHEET_SECONDARY} onClick={() => answer.current?.(false)} data-testid="agy-switch-stop">Stop</button>
+            <button type="button" className={SHEET_PRIMARY} onClick={() => answer.current?.(true)} data-testid="agy-switch-exited">It has exited, go on</button>
+            <button type="button" className={SHEET_SECONDARY} data-autofocus="" onClick={() => answer.current?.(false)} data-testid="agy-switch-stop">Stop</button>
           </div>
         </div>
       )

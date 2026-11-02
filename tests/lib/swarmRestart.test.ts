@@ -1390,6 +1390,83 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
     expect(messages()).toEqual([offeredMessage(W1, LIMIT.summary)])
   })
 
+  // UI2-1: the sheet closed (Esc, the X, Cancel) after the sign-in finished. The card's lists are a snapshot of the offer's
+  // time, so it would go on offering a second sign-in (with its re-sign-in warning) to an account that is signed in.
+  describe('when the sheet is closed after the sign-in finished', () => {
+    const signedInNow = (): AccountsView => view([MAIN, CODEDEV, { ...third, identity: { email: 't@example.test', signedIn: true, checkedAt: NOW, source: 'auth-status' as const } }, WORK])
+    const closedAfterSignIn = async (): Promise<void> => {
+      withSignedOutThird()
+      await stopped()
+      signInThenRestart(groups()[0].id, 'acc_t', deps)
+      ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: signedInNow() })
+      useTerminalStore.getState().signInSheet!.cancelled!()
+      await vi.advanceTimersByTimeAsync(10)
+    }
+
+    it('moves the account from the sign-in list to the restart list, and keeps the others', async () => {
+      await closedAfterSignIn()
+      expect(groups()[0]).toMatchObject({ targets: ['acc_c', 'acc_t'], phase: { kind: 'offered' } })
+      expect(groups()[0].signIn).toBeUndefined()
+      expect(useTerminalStore.getState().accountsView?.accounts.find((a) => a.id === 'acc_t')?.identity?.signedIn).toBe(true)
+    })
+
+    it('keeps the sign-in of another account that is still signed out', async () => {
+      const fourth = row({ id: 'acc_f', label: 'fourth', profile: '/h/.claude-fourth', isDefault: false, order: 4, lastEmail: 'f@example.test' })
+      useTerminalStore.setState({ accountsView: view([MAIN, CODEDEV, third, fourth, WORK]) })
+      signedOut('acc_t', 'acc_f')
+      await stopped()
+      expect(groups()[0].signIn).toEqual(['acc_t', 'acc_f'])
+      signInThenRestart(groups()[0].id, 'acc_t', deps)
+      ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: view([MAIN, CODEDEV, { ...third, identity: { email: 't@example.test', signedIn: true, checkedAt: NOW, source: 'auth-status' as const } }, fourth, WORK]) })
+      useTerminalStore.getState().signInSheet!.cancelled!()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(groups()[0]).toMatchObject({ targets: ['acc_c', 'acc_t'], signIn: ['acc_f'] })
+    })
+
+    it('changes nothing when the account is still signed out, main cannot be read, or the offer moved on', async () => {
+      withSignedOutThird()
+      await stopped()
+      const id = groups()[0].id
+      const before = groups()[0]
+      signInThenRestart(id, 'acc_t', deps)
+      const cancelled = useTerminalStore.getState().signInSheet!.cancelled!
+      // Still signed out in main's view.
+      ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: view([MAIN, CODEDEV, third, WORK]) })
+      cancelled()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(groups()[0]).toEqual(before)
+      // main answers with a failure, or throws.
+      ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ success: false, error: 'x' })
+      cancelled()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(groups()[0]).toEqual(before)
+      ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('gone'))
+      cancelled()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(groups()[0]).toEqual(before)
+      // Signed in, but the offer is already restarting (or gone) by the time main answers: it is left alone.
+      ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+        useTerminalStore.getState().putSwarmRestart({ ...groups()[0], phase: { kind: 'restarting', targetId: 'acc_c' } })
+        return { success: true, data: signedInNow() }
+      })
+      cancelled()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(groups()[0]).toMatchObject({ phase: { kind: 'restarting' }, targets: ['acc_c'], signIn: ['acc_t'] })
+    })
+
+    it('ignores an account that was never on the card\'s sign-in list', async () => {
+      withSignedOutThird()
+      await stopped()
+      signInThenRestart(groups()[0].id, 'acc_t', deps)
+      const cancelled = useTerminalStore.getState().signInSheet!.cancelled!
+      useTerminalStore.getState().putSwarmRestart({ ...groups()[0], signIn: [] })
+      ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: signedInNow() })
+      cancelled()
+      await vi.advanceTimersByTimeAsync(10)
+      expect(groups()[0]).toMatchObject({ targets: ['acc_c'], signIn: [] })
+    })
+  })
+
   it('runs the clock again when the sheet is closed without signing in', async () => {
     withSignedOutThird()
     await stopped()

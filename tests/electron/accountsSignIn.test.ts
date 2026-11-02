@@ -260,6 +260,16 @@ describe('accounts:sign-in-start and sign-in-input', () => {
     expect(spawned).toEqual([])
   })
 
+  // UI2-7 (1): the exception UI doc 2.4 says is shown before anything is typed names both variables, not only the first.
+  it('refuses agy\'s switch for AGY_ADC_AUTH too, by its name only', async () => {
+    register({ env: { PATH: '/nowhere', AGY_ADC_AUTH: 'a'.repeat(39) } })
+    const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', email: 'g@example.test' })
+    const r = await call(ACCOUNTS_IPC.signInStart, { accountId: g.account.id, mode: 'agy-switch' })
+    expect(r.error).toBe('agy signs in with AGY_ADC_AUTH from the environment here, so signing out changes nothing: change AGY_ADC_AUTH instead')
+    expect(r.error).not.toContain('aaaa')
+    expect(spawned).toEqual([])
+  })
+
   it('runs agy\'s switch in the hidden agy, and moves every agy terminal and new launches to the account once agy is back', async () => {
     const old = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'old', email: 'old@example.test' })
     const g = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'agy', label: 'g', email: 'new.person@example.test' })

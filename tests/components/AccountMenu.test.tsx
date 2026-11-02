@@ -5,7 +5,7 @@
 // footer opens a new terminal on another account or Settings ▸ Accounts. Keyboard: arrows,
 // Home/End, type-ahead, Enter/Space, Esc back to the terminal. Nothing at all with no account (D13).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, cleanup, within } from '@testing-library/react'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 import type { TerminalSession } from '../../src/renderer/src/types'
 
@@ -121,6 +121,11 @@ describe('when there is a menu', () => {
       expect(screen.queryByTestId('account-menu')).toBeNull()
       unmount()
     }
+    // UI2-7 (6): not even for one render. A menu drawn for a moment and closed again by its own effect would still have asked
+    // main for the accounts and looked at the terminal, for a user who added none.
+    await settle()
+    expect(limitLook).not.toHaveBeenCalled()
+    expect(list).not.toHaveBeenCalled()
     useTerminalStore.setState({ accountMenu: null, accountsView: view([A]) })
     render(<AccountMenu />)
     expect(screen.queryByTestId('account-menu')).toBeNull()
@@ -135,6 +140,9 @@ describe('the rows', () => {
     const menu = screen.getByRole('menu', { name: 'Claude Code accounts for Claude Code — repo' })
     expect(menu).toHaveTextContent('Claude Code · Claude Code — repo')
     expect(rows().map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false', 'false', 'false'])
+    // UI2-7 (2): a screen reader hears the accounts as one choice among radio items, the current one checked.
+    expect(within(menu).getAllByRole('menuitemradio')).toEqual(rows())
+    expect(within(menu).getByRole('menuitemradio', { checked: true })).toBe(rowOf('personal'))
     expect(rowOf('personal')).toHaveTextContent('personala@example.testSigned in')
     expect(rowOf('codedev')).toHaveTextContent('codedevb@example.testSigned in')
     expect(rowOf('contoso')).toHaveTextContent('contosoSigned outSign in to contoso and switch')
@@ -268,6 +276,27 @@ describe('the rows', () => {
     fireEvent.click(screen.getByTestId('account-menu-confirm-yes'))
     // Main refuses the switch without the user's yes (D14, R17): it travels with the call.
     expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_w', { confirmed: true })
+  })
+
+  // UI2-2: the Enter that opens a question that guards a move must not be the Enter that passes it. Focus starts on the
+  // safe answer, and a second Enter (or key repeat) on it sends no switch.
+  it('starts the focus on Cancel in the work question, so a second Enter carries nothing off the account (UI2-2)', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(rowOf('work'))
+    expect(screen.getByTestId('account-menu-confirm-no')).toHaveFocus()
+    expect(screen.getByTestId('account-menu-confirm-yes')).not.toHaveFocus()
+    expect(startSwitch).not.toHaveBeenCalled()
+    expect(queueSwitch).not.toHaveBeenCalled()
+  })
+
+  it('starts the focus on Cancel in the question about the account a conversation may be on, too (UI2-2)', async () => {
+    openMenu({ byHand: true })
+    await settle()
+    fireEvent.click(rowOf('codedev'))
+    expect(screen.getByTestId('account-menu-confirm')).toHaveTextContent('Carry it to codedev?')
+    expect(screen.getByTestId('account-menu-confirm-no')).toHaveFocus()
+    expect(screen.getByTestId('account-menu-confirm-new')).not.toHaveFocus()
   })
 
   it('carries the yes through a queued switch (D14, R17)', async () => {
@@ -471,6 +500,22 @@ describe('the menu stays inside the window and its chip can close it (UI-R1-D, U
     await settle()
     expect(screen.getByTestId('account-menu').style.top).toBe('80px')
     expect(screen.getByTestId('account-menu').style.maxHeight).toBe('')
+  })
+
+  // UI2-6: a menu that scrolls is a scroll container on both axes, so a panel standing outside its box grew a horizontal
+  // scroll and ArrowRight pushed the account rows out of view. Capped, the panel opens inside the menu, over its rows.
+  it('opens the New terminal on submenu inside the menu, not beside it, when the menu scrolls', async () => {
+    sized(1024, 600)
+    heightOf(900)
+    openMenu()
+    await settle()
+    expect(screen.getByTestId('account-menu').style.overflowY).toBe('auto')
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    const sub = screen.getByTestId('account-menu-submenu')
+    expect(sub.className).toContain('right-2')
+    expect(sub.className).not.toContain('right-full')
+    expect(sub.className).not.toContain('left-full')
+    expect(screen.getByTestId('account-menu').scrollLeft).toBe(0)
   })
 
   it('opens the New terminal on submenu on the left when there is room for it, else on the right', async () => {

@@ -18,7 +18,7 @@ import type { TerminalSession } from '../../types'
 import { checkSignIn, openOtherAgent, terminalAgent } from '../../lib/accountSwitchFlow'
 import type { LimitContext } from '../../lib/limitWatch'
 import { AGENT_COMMAND, groupNote, limitOn, limitedAccount, noWayOut, otherAgents, recentCheck } from '../../lib/limitChooser'
-import { maybeOnUnoffered } from '../../lib/accountMenu'
+import { focusTerminal, maybeOnUnoffered } from '../../lib/accountMenu'
 import { newTerminalOn, startSwitch } from '../../lib/accountSwitchRun'
 import { modelHoldBridge, relaunchHeld, terminalRelaunchIo } from '../../lib/modelRelaunch'
 import { relaunchNotice } from '../../lib/modelRelaunchNotice'
@@ -48,6 +48,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   const [more, setMore] = useState(false)
   const [carry, setCarry] = useState<AccountRowView | null>(null)
   const opening = useRef(false)
+  const card = useRef<HTMLDivElement>(null)
   /** The carry question was asked on the way to a sign-in (a signed-out row): its yes opens the
    *  sign-in sheet, and the switch goes on when that finishes. */
   const [carrySignsIn, setCarrySignsIn] = useState(false)
@@ -85,8 +86,14 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [limit.words, terminal.id])
 
-  /** This terminal's part of the prompt is over: on to its next terminal, if any. */
-  const leave = (): void => store().leaveLimitChooser(terminal.id)
+  /** This terminal's part of the prompt is over: on to its next terminal, if any. The card goes with the button that had
+   *  the focus, and the keyboard would go to <body>, where typing reaches nothing: the pane's own input takes it, as the
+   *  account menu's actions do (UI2-3). A focus the user has moved elsewhere (another field, a sheet) is left alone. */
+  const leave = (): void => {
+    const at = document.activeElement
+    if (!at || at === document.body || card.current?.contains(at)) focusTerminal(terminal.id)
+    store().leaveLimitChooser(terminal.id)
+  }
 
   /** `confirmed`: the user said yes to carrying a work conversation off its account (R17). Main
    *  refuses that switch without it. */
@@ -194,7 +201,7 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   const note = groupNote(limit, view)
 
   return (
-    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 w-[min(560px,92%)]" data-testid="limit-card">
+    <div ref={card} className="absolute top-2 left-1/2 -translate-x-1/2 z-10 w-[min(560px,92%)]" data-testid="limit-card">
       <div role="status" className={STOP_CARD}>
         <div className="flex items-start gap-2">
           <i className="fa-solid fa-hourglass-half text-[#e5c07b] mt-0.5" aria-hidden="true"></i>

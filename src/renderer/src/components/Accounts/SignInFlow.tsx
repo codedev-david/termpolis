@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../../shared/agentAccounts'
 import type { AccountRowView, AccountsView, SignInMethod } from '../../../../shared/agentAccounts'
 import type { SignInInput, SignInPhase } from '../../../../shared/signInScreens'
+import { refreshAccounts } from '../../lib/accountsState'
 import { SIGN_IN_METHODS, announce, keysFor, resignWarning, sentence, successWarnings } from '../../lib/signInSheet'
 import { SHEET_CHOICE, SHEET_INPUT, SHEET_PRIMARY, SHEET_SECONDARY, SMALL_BUTTON, SPINNER } from './ui'
 
@@ -64,6 +65,10 @@ export function SignInFlow({ account, view, mode = 'sign-in', method, onDone, do
       return
     }
     if (ENDED.has(s.phase.kind)) ended.current = true
+    // Main keeps the new sign-in before it says "success" and pushes nothing else: read again now, so every way out of
+    // this flow (Done, Skip, Esc, the X, Cancel, the wizard's own finish) leaves Settings, the menu and a swarm offer
+    // seeing the account signed in, not as it stood when the flow began (UI2-1).
+    if (s.phase.kind === 'success') void refreshAccounts()
     setStage({ kind: 'session', phase: s.phase })
   }), [api])
 

@@ -161,6 +161,23 @@ describe('Claude Code: claude auth login', () => {
     log.mockRestore()
   })
 
+  // SAFETY-R2-3 (a), UI2-7 (3): PRIVACY.md says nothing the session shows is logged. The log line holds the account's name and
+  // how it ended, never the CLI's own sentence, which may repeat a code, an address or an email.
+  it('logs the account and how the sign-in ended, and none of the CLI\'s own sentence', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    // This mock's CLI answers a wrong code with a sentence that repeats the code and holds a key-shaped string.
+    deps.spawn = login({ MOCK_LOGIN_MODE: 'echo' })
+    const { sessionId } = startSignInSession(spec(), deps)
+    await advance(TICK_MS)
+    await signInInput(sessionId, { kind: 'code', value: 'wrong-code-1234' })
+    await advance(TICK_MS)
+    const e = last() as Extract<SignInPhase, { kind: 'error' }>
+    expect(e.message).toContain('was refused')
+    // The sheet shows the sentence; the console holds one fixed line.
+    expect(log.mock.calls.map((c) => c.join(' '))).toEqual(['[accounts] sign-in for codedev: error'])
+    log.mockRestore()
+  })
+
   it('masks a code the screen wraps over two rows', async () => {
     const code = 'x'.repeat(150)
     const { sessionId } = startSignInSession(spec(), deps)
@@ -684,6 +701,26 @@ describe('agy: the switch-all sign-in, in a hidden agy', () => {
     expect(await signInInput(sessionId, { kind: 'pick', index: 0, label: 'Gemini Code Assist Standard' })).toEqual({ ok: true })
     await until('success')
     expect(JSON.stringify(sent)).not.toContain('my-project-1')
+  })
+
+  // UI2-7 (4): the project id is the user's own and agy may name it in an error; wherever that screen is shown it is masked.
+  it('masks the Google Cloud project the user typed wherever agy\'s error shows it, and logs none of it', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    deps.spawn = agy({ MOCK_AGY_SIGNED_IN: '0', MOCK_AGY_BAD_PROJECT: '1' })
+    const { sessionId } = startSignInSession(agySpec(), deps)
+    await until('choose')
+    const go = signInInput(sessionId, { kind: 'pick', index: 1, label: 'Use a Google Cloud project' })
+    await advance(PICK_MOVE_MS)
+    await go
+    await until('text-wanted')
+    expect(await signInInput(sessionId, { kind: 'text', value: 'my-project-1' })).toEqual({ ok: true })
+    await until('error')
+    const e = last() as Extract<SignInPhase, { kind: 'error' }>
+    expect(JSON.stringify(sent)).not.toContain('my-project-1')
+    expect(`${e.message}\n${e.details.join('\n')}`).toContain(`project ${'•'.repeat('my-project-1'.length)} was not found`)
+    expect(log.mock.calls.flat().join(' ')).not.toContain('my-project-1')
+    expect(_typedHeldForTest()).toBe(0)
+    log.mockRestore()
   })
 
   it('says agy\'s own error, after a code it refused', async () => {

@@ -375,6 +375,31 @@ describe('AgySwitchSheet', () => {
     await screen.findByTestId('flow')
     expect(agySwitch).toHaveBeenCalledTimes(2)
   })
+
+  // UI2-2: signing agy out of every terminal on the computer, and carrying a work conversation off its account, are asked
+  // with the focus on the safe answer, so the Enter that opened the sheet, pressed again or held, ends it with no switch.
+  it('starts its focus on the safe answer in each question, so an extra Enter signs nothing out (UI2-2)', async () => {
+    const { unmount } = open('g2', [T1])
+    expect(screen.getByTestId('agy-switch-cancel')).toHaveFocus()
+    expect(screen.getByTestId('agy-switch-go')).not.toHaveFocus()
+    expect(agySwitch).not.toHaveBeenCalled()
+    unmount()
+    const work = open('gw', [T1])
+    click('agy-switch-go')
+    expect(screen.getByTestId('agy-switch-confirm-work')).toBeInTheDocument()
+    // The control that was clicked went with its step: the trap gives the focus back to the step's own safe control.
+    await waitFor(() => expect(screen.getByTestId('agy-switch-confirm-work-no')).toHaveFocus())
+    expect(screen.getByTestId('agy-switch-confirm-work-yes')).not.toHaveFocus()
+    expect(agySwitch).not.toHaveBeenCalled()
+    work.unmount()
+    answers = { 't1:exit': [{ kind: 'unknown-exit' }] }
+    open('g2', [T1])
+    click('agy-switch-go')
+    await screen.findByTestId('agy-switch-ask')
+    await waitFor(() => expect(screen.getByTestId('agy-switch-stop')).toHaveFocus())
+    expect(screen.getByTestId('agy-switch-exited')).not.toHaveFocus()
+    expect(agySwitch.mock.calls.filter((c) => c[0].assumeExited)).toEqual([])
+  })
 })
 
 describe('AgySwitchSheet: leaving mid-switch never strands a terminal (round 1)', () => {

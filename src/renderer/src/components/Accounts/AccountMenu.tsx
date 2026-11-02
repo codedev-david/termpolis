@@ -252,15 +252,20 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   const itemClass = (i: number, off = false): string =>
     `flex items-start gap-2 w-full px-3 py-1.5 text-left focus:outline-none ${off ? 'cursor-default opacity-60' : 'cursor-pointer hover:bg-[#2a2d2e]'} ${active === i ? 'bg-[#2a2d2e]' : ''}`
 
+  // A menu that scrolls (taller than the window) is a scroll container on both axes: a panel standing outside its box would
+  // grow a horizontal scroll and push the account rows out of view. It then opens inside the menu, over its rows (UI2-6).
+  const subPlace = fit.maxHeight ? 'right-2' : submenuSide(pos.left) === 'left' ? 'right-full mr-1' : 'left-full ml-1'
+
   const body = confirm ? (
     <div role="group" aria-label="Confirm the switch" className="p-3 flex flex-col gap-2 text-xs" data-testid="account-menu-confirm">
       <p className="text-[#d4d4d4]">{confirm.question}</p>
       <div className="flex flex-wrap gap-2">
-        <button type="button" className={SMALL_PRIMARY} autoFocus onClick={() => go(confirm.row, true)} data-testid="account-menu-confirm-yes">
+        {/* The focus starts on the safe answer: the Enter that opened this question, pressed again or held, must not carry a conversation off its account (UI2-2). */}
+        <button type="button" className={SMALL_PRIMARY} onClick={() => go(confirm.row, true)} data-testid="account-menu-confirm-yes">
           {confirm.newTerminal ? `Carry it to ${confirm.row.account.label}` : `Switch to ${confirm.row.account.label}`}
         </button>
         {confirm.newTerminal && <button type="button" className={SMALL_BUTTON} onClick={() => openOn(confirm.row)} data-testid="account-menu-confirm-new">New terminal on {confirm.row.account.label}</button>}
-        <button type="button" className={SMALL_BUTTON} onClick={() => setConfirm(null)} data-testid="account-menu-confirm-no">Cancel</button>
+        <button type="button" className={SMALL_BUTTON} autoFocus onClick={() => setConfirm(null)} data-testid="account-menu-confirm-no">Cancel</button>
       </div>
     </div>
   ) : (
@@ -330,7 +335,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
               {it.kind === 'new-terminal' && <i className="fa-solid fa-chevron-right text-[10px] mt-1" aria-hidden="true"></i>}
             </button>
             {it.kind === 'new-terminal' && sub !== null && (
-              <div role="menu" aria-label={`New terminal on another ${name} account`} className={`absolute bottom-0 ${submenuSide(pos.left) === 'left' ? 'right-full mr-1' : 'left-full ml-1'} w-56 py-1 rounded border border-[#3c3c3c] bg-[#252526] shadow-2xl`} data-testid="account-menu-submenu">
+              <div role="menu" aria-label={`New terminal on another ${name} account`} className={`absolute bottom-0 ${subPlace} w-56 py-1 rounded border border-[#3c3c3c] bg-[#252526] shadow-2xl`} data-testid="account-menu-submenu">
                 {others.map((row, k) => (
                   <button
                     key={row.account.id}

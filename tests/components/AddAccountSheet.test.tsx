@@ -134,6 +134,40 @@ describe('step 1, name and colour: a Claude Code account in a new folder', () =>
     expect(st().accountsView?.accounts.map((r) => r.id)).toEqual(['acc_000000000001'])
   })
 
+  // UI2-7 (5): main refuses an empty or duplicate name too, but the sheet must not send one, nor send twice.
+  it('adds nothing without a name, and not twice while it is adding', async () => {
+    let release!: () => void
+    const api = bridge({ add: vi.fn(() => new Promise((resolve) => { release = () => resolve({ success: true, data: result() }) })) })
+    open()
+    expect(screen.getByTestId('add-account-submit')).toBeDisabled()
+    type('add-account-label', '   ')
+    expect(screen.getByTestId('add-account-submit')).toBeDisabled()
+    fireEvent.click(screen.getByTestId('add-account-submit'))
+    expect(api.add).not.toHaveBeenCalled()
+    type('add-account-label', 'Side')
+    expect(screen.getByTestId('add-account-submit')).toBeEnabled()
+    fireEvent.click(screen.getByTestId('add-account-submit'))
+    expect(screen.getByTestId('add-account-submit')).toBeDisabled()
+    fireEvent.click(screen.getByTestId('add-account-submit'))
+    fireEvent.click(screen.getByTestId('add-account-submit'))
+    expect(api.add).toHaveBeenCalledTimes(1)
+    await act(async () => { release() })
+    await screen.findByTestId('add-account-sign-in-step')
+    expect(api.add).toHaveBeenCalledTimes(1)
+  })
+
+  it('adds no Gemini CLI account without a name either: it has no folder name to need one', async () => {
+    const api = bridge({ add: vi.fn(async () => ({ success: true, data: result({ account: accountRow({ agent: 'agy', profile: null, folder: null }) }) })) })
+    open('agy')
+    expect(screen.getByTestId('add-account-submit')).toBeDisabled()
+    type('add-account-label', '  ')
+    expect(screen.getByTestId('add-account-submit')).toBeDisabled()
+    fireEvent.click(screen.getByTestId('add-account-submit'))
+    expect(api.add).not.toHaveBeenCalled()
+    type('add-account-label', 'me')
+    expect(screen.getByTestId('add-account-submit')).toBeEnabled()
+  })
+
   it('picks a colour: the first one the agent\'s accounts don\'t have yet, or the user\'s', async () => {
     const api = bridge()
     open('claude', view({ accounts: [accountRow({ id: 'a', color: undefined }), accountRow({ id: 'b', color: '#10b981' })] }))
