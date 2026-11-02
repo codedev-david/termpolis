@@ -5,7 +5,7 @@
 // is a vitest run of the screen's six test files, about a minute, so a group takes 20 minutes or
 // more.
 //
-//   node scripts/linkedScreenMutants.cjs [judge|wiring|review|all] [part of a mutant's name]
+//   node scripts/linkedScreenMutants.cjs [judge|wiring|review|all] [part of a mutant's name, or several parts joined with |]
 //
 //   judge   (the default) the design's own 20 mutants of its decisions, ported from the judge's
 //           prototype probe (k9-mutants-final.cjs) to the TypeScript; its 21st, "public: never
@@ -17,8 +17,12 @@
 // Each mutant edits its source file in place, and the file is written back after the run, and
 // at the end whatever happens. The script refuses to start while any of the files it edits has
 // changes git doesn't have: if a run is killed, `git checkout -- src/main` puts them back. It
-// prints, for each mutant, the tests that failed on it, and exits 1 if one survived that should
-// not, or its text is no longer in the source.
+// runs the tests once as they are first (once more for each set of extra test files a mutant
+// names), so it knows how many there are, and prints, for each mutant, the tests that failed on
+// it and how many ran. A run that has fewer tests than that, or a test file that did not start
+// (a worker that did not come up under load, a timeout) and no failed test to show for it, is
+// NO RUN, not SURVIVED: it proves nothing, and the mutant is run again alone. The script exits 1
+// if a mutant survived that should not, was not run, or its text is no longer in the source.
 'use strict'
 const fs = require('fs')
 const os = require('os')
@@ -198,7 +202,16 @@ const REVIEW = {
   'jwk: a hex string is read as base64 for a phrase': [KEY, "  if (!hex && printableText(body)) return 'text'", "  if (printableText(body)) return 'text'"],
   'jwk: a phrase of 11 bytes is one': [KEY, '  if (core.length < 16 || /[^A-Za-z0-9+/]/.test(core)) return false', '  if (core.length < 12 || /[^A-Za-z0-9+/]/.test(core)) return false'],
   'jwk: a value with a character outside base64 is read as a phrase': [KEY, '  if (core.length < 16 || /[^A-Za-z0-9+/]/.test(core)) return false', '  if (core.length < 16) return false'],
-  'jwk: one unprintable byte still makes a phrase': [KEY, "  for (const x of Buffer.from(core, 'base64')) if (x < 0x20 || x > 0x7e) return false", "  let bad = 0\n  for (const x of Buffer.from(core, 'base64')) if (x < 0x20 || x > 0x7e) bad++\n  if (bad > 1) return false"],
+  'jwk: one unprintable byte still makes a phrase': [
+    KEY,
+    "  for (const x of Buffer.from(core, 'base64')) if ((x < 0x20 && x !== 9 && x !== 10 && x !== 13) || x > 0x7e) return false",
+    "  let bad = 0\n  for (const x of Buffer.from(core, 'base64')) if ((x < 0x20 && x !== 9 && x !== 10 && x !== 13) || x > 0x7e) bad++\n  if (bad > 1) return false",
+  ],
+  'jwk: a line feed ends a phrase (what echo adds to a text base64 encodes)': [KEY, '(x < 0x20 && x !== 9 && x !== 10 && x !== 13)', '(x < 0x20 && x !== 9 && x !== 13)'],
+  'jwk: a carriage return ends a phrase': [KEY, '(x < 0x20 && x !== 9 && x !== 10 && x !== 13)', '(x < 0x20 && x !== 9 && x !== 10)'],
+  'jwk: a tab ends a phrase': [KEY, '(x < 0x20 && x !== 9 && x !== 10 && x !== 13)', '(x < 0x20 && x !== 10 && x !== 13)'],
+  'jwk: a byte over 0x7e is text': [KEY, '|| x > 0x7e) return false', '|| x > 0xff) return false'],
+  'jwk: a control character is text': [KEY, '(x < 0x20 && x !== 9 && x !== 10 && x !== 13)', '(x < 0x01 && x !== 9 && x !== 10 && x !== 13)'],
   'jwk: the url-safe alphabet is not read as base64': [KEY, ".replace(/-/g, '+').replace(/_/g, '/')\n  if (core.length < 16", "\n  if (core.length < 16"],
   // the recall findings of the final round 2: a key with no line breaks, an OpenVPN key a script echoes line by line
   'valueStart: a name of any length (the = before a glued checksum)': [KEY, 'return p - a >= MAX_NAME ? a : p + 1', 'return p + 1'],
@@ -290,10 +303,10 @@ const EQUIVALENT = new Set([
 ])
 
 const group = process.argv[2] ?? 'judge'
-const only = process.argv[3]
+const only = process.argv[3] ? process.argv[3].split('|') : null
 const mutants = group === 'all' ? { ...JUDGE, ...WIRING, ...REVIEW } : group === 'wiring' ? WIRING : group === 'review' ? REVIEW : group === 'judge' ? JUDGE : null
 if (!mutants) {
-  console.error('usage: node scripts/linkedScreenMutants.cjs [judge|wiring|review|all] [part of a mutant name]')
+  console.error('usage: node scripts/linkedScreenMutants.cjs [judge|wiring|review|all] [part of a mutant name, or several joined with |]')
   process.exit(2)
 }
 const files = [...new Set(Object.values(mutants).map(([file]) => file))]
@@ -359,7 +372,7 @@ try {
     return baselines.get(key)
   }
   for (const [name, [file, from, to, more]] of Object.entries(mutants)) {
-    if (only && !name.includes(only)) continue
+    if (only && !only.some((part) => name.includes(part))) continue
     const src = originals.get(file)
     const n = src.split(from).length - 1
     if (n !== 1) {

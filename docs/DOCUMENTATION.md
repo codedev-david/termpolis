@@ -1426,7 +1426,10 @@ audit log.
     `RSAKeyValue`'s private members (of those two only the values, so the JSON or
     XML stays well formed) and a key file URL-encoded whole. A block runs from
     its BEGIN line to its END line, or with no END line in view to its last key
-    line. One whose lines are laid out unevenly (one indented, split or joined,
+    line (in rg or Select-String output on Windows whose paths hold `\r` or `\n`
+    after a backslash, as `\repos` and `\notes` do, the pair reads as an escaped
+    line break, and a last line under 16 characters and a PGP checksum line can
+    stay behind). One whose lines are laid out unevenly (one indented, split or joined,
     or re-wrapped) still runs to its END line once the lines before the uneven
     one show it is a key, and with no END line is removed up to the uneven line
     and the rest named in a note (but for an uneven line that is the key's last,

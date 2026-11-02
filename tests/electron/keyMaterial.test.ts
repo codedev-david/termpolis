@@ -469,6 +469,24 @@ describe('T2 K3: an OpenVPN static key is lines of exactly 32 hex digits, and no
       expect(r.text.startsWith('Answer follows.') && r.text.endsWith('That was the file.'), label).toBe(true)
     }
   })
+  it('a coloured listing of the key (bat, a coloured diff) is one although its BEGIN line has a comment after it: the colour code is not part of what follows the digits', () => {
+    const key = K.F.openvpn.slice(3)
+    const values = key.filter((l) => /^[0-9a-f]{32}$/.test(l))
+    const text = `Answer follows.\n${key.map((l, i) => (i === 0 ? `${l} # the file ta.key` : `\x1b[32m${l}\x1b[0m`)).join('\n')}\nThat was the file.`
+    const r = screenKeys(text)
+    expect(r.removed).toEqual({ openvpn_static_key: 1 })
+    expect(leakedWindows(r.text, values)).toBe(0)
+  })
+  it('a run of 512 digits behind a long word is a hex number in a sentence, not the key with its line breaks taken out: reported, left as it is', () => {
+    const hex = randomBytes(256).toString('hex')
+    for (const prefix of ['', 'xx', 'ghijklmnopqrstu', 'ghijklmnopqrstuv', 'ghijklmnopqrstuvw', 'ghijklmnopqrstuvwxyzGHIJKLMNOPQRSTUVWXYZ']) {
+      const text = `${HEADER}\n${prefix}${hex}\n`
+      const r = screenKeys(text)
+      // (a frame of up to 16 characters is a key's own: a quote, a name that is not hex)
+      expect(r.removed, JSON.stringify(prefix)).toEqual(prefix.length > 16 ? {} : { openvpn_static_key: 1 })
+      if (prefix.length > 16) expect(r.text, JSON.stringify(prefix)).toBe(text)
+    }
+  })
   it('but the same cell after a list of digests, under a header that does not have it, is no key', () => {
     // (a table of md5 sums with the same status on every row, under a header row of its own; the header in a sentence, in a list
     // item, in an echo that only writes it; sha256 sums and git ids with a constant cell)
@@ -2457,11 +2475,16 @@ describe('looksRandom and placeholderWhy', () => {
 
   it('names a value that decodes to a phrase, and passes the random ones of every size a key has', () => {
     // The checks above read the encoded characters, and base64 of a phrase passes every one of them: a test secret
-    // ("my-super-secret-key") in a JWK. A key's bytes are random: 16 of them are all printable ASCII about once in 10^7.
-    // (the last two encode with a - or _ in base64url and a + or / in base64)
-    for (const phrase of ['my-super-secret-key', 'this is a test key for unit tests', 'change-me-in-production-please', 'not-a-real-key-just-an-example-value', 'Some documentation text that is base64 encoded', 'what is the secret key?? maybe>>>', 'the test key is ???~~~ not real']) {
-      expect(placeholderWhy(Buffer.from(phrase).toString('base64url'), 'b62'), phrase).toBe('text')
-      expect(placeholderWhy(Buffer.from(phrase).toString('base64'), 'b62'), phrase).toBe('text')
+    // ("my-super-secret-key") in a JWK. A key's bytes are random: 16 of them are all printable ASCII, a tab or a line break about twice in 10^7.
+    // (the last two encode with a - or _ in base64url and a + or / in base64; the ones with a line feed are what `echo my-secret | base64`
+    // makes, and a Windows editor's)
+    for (const phrase of ['my-super-secret-key', 'this is a test key for unit tests', 'change-me-in-production-please', 'not-a-real-key-just-an-example-value', 'Some documentation text that is base64 encoded', 'what is the secret key?? maybe>>>', 'the test key is ???~~~ not real', 'my-super-secret-key\n', 'my-super-secret-key\r\n', 'a\ttab-separated\tsecret-phrase']) {
+      expect(placeholderWhy(Buffer.from(phrase).toString('base64url'), 'b62'), JSON.stringify(phrase)).toBe('text')
+      expect(placeholderWhy(Buffer.from(phrase).toString('base64'), 'b62'), JSON.stringify(phrase)).toBe('text')
+    }
+    // a control character or a byte over 0x7e anywhere is no text: the bytes of a key
+    for (const bytes of [Buffer.from('my-super-secret\u0001key-for-tests'), Buffer.from('my-super-secret-key-for-tests\u007f'), Buffer.from('my-super-secret-key-for-testsé'), Buffer.concat([Buffer.from('my-super-secret-key-for-tests'), Buffer.from([0])])]) {
+      expect(placeholderWhy(bytes.toString('base64url'), 'b62'), bytes.toString('hex')).not.toBe('text')
     }
     // (twelve bytes is the least: a shorter run of letters is a word the checks above judged)
     expect(placeholderWhy(Buffer.from('eleven bytes').toString('base64'), 'b62')).toBe('text')
@@ -2489,8 +2512,8 @@ describe('looksRandom and placeholderWhy', () => {
     const rsa = `<RSAKeyValue><Modulus>${randomBytes(128).toString('base64')}</Modulus><Exponent>AQAB</Exponent><P>${Buffer.from('lorem ipsum dolor sit amet, consectetur adipiscing elit').toString('base64')}</P><Q>${Buffer.from('sed do eiusmod tempor incididunt ut labore et dolore magna').toString('base64')}</Q></RSAKeyValue>`
     expect(screenKeys(rsa).text).toBe(rsa)
     expect(screenKeys(rsa).removed).toEqual({})
-    // a random oct key of 16 bytes (the least) is removed, its object left parseable
-    const real = JSON.stringify({ kty: 'oct', k: randomBytes(16).toString('base64url') })
+    // an oct key of 16 bytes (the least; bytes from a hash, so it is the same every run) is removed, its object left parseable
+    const real = JSON.stringify({ kty: 'oct', k: createHash('sha256').update('an oct key of 16 bytes').digest().subarray(0, 16).toString('base64url') })
     const r = screenKeys(real)
     expect(r.removed).toEqual({ jwk_private_key: 1 })
     expect(JSON.parse(r.text.replace('[REDACTED:jwk_private_key]', 'x')).kty).toBe('oct')

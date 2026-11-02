@@ -1873,16 +1873,17 @@ export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = fals
   if (named && (body.match(/[-_]/g) ?? []).length >= 3 && !/[A-Z]/.test(body) && body.split(/[-_]+/).every((x) => /^[a-z0-9]{0,12}$/.test(x))) return 'slug'
   if (!hex && named && wordy(body)) return 'wordy'
   // Every check above reads the encoded characters, and base64 of a phrase passes them all (`bXktc2VjcmV0LWtleQ`, a test
-  // secret's "my-secret-key"). A key's bytes are random: 16 of them are all printable ASCII about once in 10^7.
+  // secret's "my-secret-key"). A key's bytes are random: 16 of them are all text about twice in 10^7.
   if (!hex && printableText(body)) return 'text'
   return null
 }
 
-/** Whether `body`, read as base64 or base64url, decodes to 12 bytes or more (16 characters) that are all printable ASCII. */
+/** Whether `body`, read as base64 or base64url, decodes to 12 bytes or more (16 characters) that are all printable ASCII or a tab,
+ *  line feed or carriage return (`echo my-secret | base64` encodes the line feed `echo` ends its text with). */
 function printableText(body: string): boolean {
   const core = body.replace(/[\s=]/g, '').replace(/-/g, '+').replace(/_/g, '/')
   if (core.length < 16 || /[^A-Za-z0-9+/]/.test(core)) return false
-  for (const x of Buffer.from(core, 'base64')) if (x < 0x20 || x > 0x7e) return false
+  for (const x of Buffer.from(core, 'base64')) if ((x < 0x20 && x !== 9 && x !== 10 && x !== 13) || x > 0x7e) return false
   return true
 }
 
