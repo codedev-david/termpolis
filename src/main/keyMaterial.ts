@@ -1757,9 +1757,9 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
         const br = nextLineBreak(ae, a)
         if (wordsEnd(ae) <= (br ? br[0] : a)) break
       }
-      // A run followed at once by a listing separator (the `.` of `deploy.ppk:12:`), or by only more of a path and then the `:` or `-`
-      // that ends it (`_key.asc:12:`, or `grep` without -n, `rg` piped), is a path: of any length (a long one is not a private line
-      // either, nor the key written with no line breaks). A run that a written-out line break follows at once is a line's end, not a
+      // A run followed by more of a path (no space) and then what ends one (PATH_THEN_RUN: the `:` of `deploy.ppk:12:`, `_key.asc:12:` or
+      // `grep` without -n, the `-12-` of a context line, the `=` of journalctl's `NAME=`) is a path: of any length (a long one is not a
+      // private line either, nor the key written with no line breaks). A run that a written-out line break follows at once is a line's end, not a
       // path's piece: after the `\n` of a JSON string comes the next line's own `Private-MAC:` or `2026-11-02T10:11:10Z `, whose
       // letters, digits and dash would read as the rest of a path. (Nor is the last private line, glued to the name of the MAC line.)
       if (!beforeMac && escapeAt(text, e) === null && PATH_THEN_RUN.test(text.slice(e, e + 112))) continue
