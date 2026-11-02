@@ -9,6 +9,11 @@ import { generateKeyPairSync, randomBytes } from 'crypto'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
+// Several tests here screen answers of hundreds of thousands of characters or keys in every layout: 2 to 5 s each alone and a few times
+// that under coverage beside the rest of the suite (one took 8 s of the default 30). A test's own timeout is only a guard against a hang,
+// and a synchronous loop cannot be interrupted by it anyway: the assertions are the bounds, as in keyMaterial.test.ts.
+vi.setConfig({ testTimeout: 600_000 })
+
 import { RULES, SCREEN_RULES, maskForDisplay, requiredLiteral, scanText, screenText } from '../../src/main/aiSecurity'
 import { MAX_ERROR_CHARS, MAX_OUTPUT_CHARS, SCREEN_LOOKBACK_CHARS, activitySummary, keepEnd } from '../../src/main/linkedJobs'
 import { JOIN, leakedWindows, makeKeys, pgpPhotoExport, secretLinesOf, wrap, type KeySet } from './fixtures/freshKeys'
