@@ -153,6 +153,21 @@ describe('classifyForwardedResults — text that only looks like a stub', () => 
     expect(one(aged + '\nmore lines of the output')).toEqual(kinds({ plain: 1 }))
   })
 
+  // The start anchor of the two one-line patterns, held apart from the end anchor above: a text that BEGINS with
+  // "[headroom] " and ends with a stub is the shape a note followed by a stub takes (the proxy's own launch note is
+  // one: "[headroom] wire tier at launch: aggressive"). Without the anchor at the front the stub at the back would
+  // be taken for the whole text, and a plain result would be counted as an aged or a collapsed one.
+  it('counts a text that starts with a [headroom] note and then ends with a stub as plain, not as the stub', () => {
+    const note = '[headroom] wire tier at launch: aggressive\n'
+    expect(one(note + aged)).toEqual(kinds({ plain: 1 }))
+    expect(one(note + dedup)).toEqual(kinds({ plain: 1 }))
+    expect(one('[headroom] note ' + aged)).toEqual(kinds({ plain: 1 }))
+    expect(one('[headroom] note ' + dedup)).toEqual(kinds({ plain: 1 }))
+    // And the stubs alone, with the same prefix check passing, are still the kinds they are.
+    expect(one(aged)).toEqual(kinds({ aged: 1, agedEarly: 1 }))
+    expect(one(dedup)).toEqual(kinds({ dedup: 1 }))
+  })
+
   it('needs a token of the shape the proxy mints', () => {
     for (const tok of ['hr_zzzzzzzzzzzzzzzz', 'hr_0123', 'hr_0123456789ABCDEF', 'x_0123456789abcdef', '']) {
       const bad = footer.replace('hr_0123456789abcdef', tok)

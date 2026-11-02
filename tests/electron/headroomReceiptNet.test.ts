@@ -111,6 +111,46 @@ describe('the unified receipt', () => {
     expect(r.cumulative.retrievalTurnUnits).toBeCloseTo(60_700, 6)
   })
 
+  // The pane labels its first figure "net of the text fetched back" and its third "net of the text fetched back and of
+  // the turns that fetched it", so those are the two bases held here: the share of the text Headroom may touch takes
+  // give-back and asked-back off, and the turns, which cost units and not tokens, come off only the bill.
+  it('takes the text fetched back off the first denominator figure, and the turns that fetched it off the bill alone', () => {
+    const ledger = { textOrigTokens: 200_000, textSavedTokens: 100_000 }
+    loadProxyBase({ ...ledger })
+    expect(summarizeUnifiedSavings().cumulative.savedPct).toBe(50) // 100,000 removed of 200,000
+    resetProxyLedger()
+    loadProxyBase({ ...ledger, givebackTokens: 15_000, askedBackTokens: 5_000 })
+    let c = summarizeUnifiedSavings().cumulative
+    expect(c.grossSavedTokens).toBe(100_000)
+    expect(c.netSavedTokens).toBe(80_000) //  100,000 - 15,000 given back - 5,000 asked back
+    expect(c.savedPct).toBe(40) //             80,000 of 200,000
+    expect(c.retrievalTurnUnits).toBe(0)
+    resetProxyLedger()
+    // Turns that fetched text cost units: they move the bill, not the share of text.
+    loadProxyBase({ ...ledger, givebackTokens: 15_000, askedBackTokens: 5_000, retrievalTurns: 3, retrievalTurnUnits: 60_000 })
+    c = summarizeUnifiedSavings().cumulative
+    expect(c.savedPct).toBe(40)
+    expect(c.bill.avoided).toBeCloseTo(c.bill.grossAvoided - 60_000, 6)
+  })
+
+  // The pane's coverage caveat divides one by the other: a ledger from before v1.55 holds responses and no read
+  // shapes, and a total that took turnRequests from requests would read as fully netted and never show the caveat.
+  it('counts the responses whose turn was read apart from every response, so an upgraded ledger is not read as fully netted', () => {
+    loadProxyBase({ requests: 477_099, turnRequests: 0 })
+    let u = summarizeUnifiedSavings()
+    expect(u.cumulative.requests).toBe(477_099)
+    expect(u.cumulative.turnRequests).toBe(0)
+    expect(u.session.requests).toBe(0)
+    expect(u.session.turnRequests).toBe(0)
+    recordProxyResult(result(1_000, 0, 1, 0, 0, MIXED)) // a child that reads the shape of the turn
+    recordProxyResult(result(1_000, 0, 1, 0, 0)) //        one that predates it: a response, and not a read one
+    u = summarizeUnifiedSavings()
+    expect(u.session.requests).toBe(2)
+    expect(u.session.turnRequests).toBe(1)
+    expect(u.cumulative.requests).toBe(477_101)
+    expect(u.cumulative.turnRequests).toBe(1)
+  })
+
   it('prices the headline from the same counters: avoided = kept off the bill - retrieval turns', () => {
     // 800,000 chars in, 200,000 out = 150,000 tokens removed; 10,000 handed back by one retrieve_full.
     recordProxyResult(result(900_000, 90_000, 8_000, 800_000, 200_000)) //    an ordinary request
