@@ -12,6 +12,7 @@ import {
   MAX_NOTE_FILES,
   NOTES_MANIFEST_FILE,
   fileManifest,
+  clearNotesRecord,
   finishQueuedRemovals,
   findNotes,
   noteRoots,
@@ -150,7 +151,7 @@ describe('findNotes: which files are notes', () => {
   it('a folder with no notes folder is not an error, and a file in the projects folder itself is ignored', async () => {
     fs.mkdirSync(path.join(root, 'bare'))
     fs.writeFileSync(path.join(root, 'stray.md'), 'x')
-    const found = await findNotes([root], realNotesFs)
+    const found = await findNotes([root], realNotesFs, { imported: new Set(['bare']) })
     expect(found.notes).toEqual([])
     expect([...found.folders]).toEqual(['bare'])
     expect([...found.listed]).toEqual(['bare']) // it was read, and holds no notes folder: whatever was imported from it is gone
@@ -160,25 +161,38 @@ describe('findNotes: which files are notes', () => {
   // and has no entry called memory. Anything short of that is unknown, and unknown removes nothing.
   describe('a project folder with no notes folder to read', () => {
     const memoryDir = (): string => path.join(root, 'P', 'memory')
+    const imported = { imported: new Set(['P']) }
     const seen = (entries: Array<{ name: string; kind: 'file' | 'dir' | 'link' | 'other' }> | null) =>
       spyFs({ dirs: { [root]: [{ name: 'P', kind: 'dir' }], [path.join(root, 'P')]: entries }, reals: { [memoryDir()]: null } })
 
     it('is listed, empty, when the project folder reads fine and holds no notes folder', async () => {
-      const found = await findNotes([root], seen([{ name: 'aaaa.jsonl', kind: 'file' }]))
+      const found = await findNotes([root], seen([{ name: 'aaaa.jsonl', kind: 'file' }]), imported)
       expect([...found.listed]).toEqual(['P'])
       expect(found.notes).toEqual([])
     })
 
+    // Looking inside a project folder that has no notes folder is only worth doing for a folder notes were taken from: for any
+    // other there is nothing to take out. PRIVACY.md and DOCUMENTATION.md say what is read; this is what keeps them true.
+    it("looks inside only a folder that notes were imported from, and reads no other folder's entries", async () => {
+      const f = seen([{ name: 'aaaa.jsonl', kind: 'file' }])
+      for (const opts of [{}, { imported: new Set<string>() }, { imported: new Set(['Q']) }]) {
+        const found = await findNotes([root], f, opts)
+        expect([...found.listed]).toEqual([])
+        expect([...found.folders]).toEqual(['P']) // it was seen, and is still reported as a folder
+      }
+      expect(f.calls.list).toEqual([root, root, root]) // the projects folder each time, and never the folder P
+    })
+
     it('is not listed when the project folder cannot be read', async () => {
-      expect([...(await findNotes([root], seen(null))).listed]).toEqual([])
+      expect([...(await findNotes([root], seen(null), imported)).listed]).toEqual([])
     })
 
     it('is not listed when there is an entry called memory that cannot be resolved (a dangling link, a drive not mounted)', async () => {
-      expect([...(await findNotes([root], seen([{ name: 'memory', kind: 'link' }]))).listed]).toEqual([])
+      expect([...(await findNotes([root], seen([{ name: 'memory', kind: 'link' }]), imported)).listed]).toEqual([])
     })
 
     it('is not listed when the entry is spelt in another case, which a case-sensitive disk keeps apart', async () => {
-      expect([...(await findNotes([root], seen([{ name: 'Memory', kind: 'dir' }]))).listed]).toEqual([])
+      expect([...(await findNotes([root], seen([{ name: 'Memory', kind: 'dir' }]), imported)).listed]).toEqual([])
     })
   })
 
@@ -1123,5 +1137,274 @@ describe('an unreadable store entry never breaks a listing', () => {
     const list = store.list.bind(store)
     store.list = async (o) => [...(await list(o)), null as never, 'x' as never, { id: 'no-source' } as never]
     expect(await runClaudeNotesIngest(deps(store))).toMatchObject({ chunksWritten: 1 })
+  })
+})
+
+// A listing of the store holds at most LIST_PAGE (500) notes, and a page cannot go on past 500 that carry the same time: notes
+// copied or extracted together all get one modified time, and the store orders equal times by when they were stored, so no cursor
+// falls between them. What one listing cannot reach shows up in the next once the first are gone, so the sweeps list again.
+describe('more notes than a listing can reach in one go', () => {
+  const T = Date.UTC(2026, 8, 1) // one modified time for every one of them
+  const stored = async (store: ReturnType<typeof fakeStore>, n: number): Promise<void> => {
+    for (let i = 0; i < n; i++) {
+      await store.write({
+        agentId: 'claude-notes', source: 'claude-notes', kind: 'note', content: `x${i}`, tags: ['type:project'], hash: `x-hash-${i}`,
+        importance: 0.8, memoryType: 'summary', project: CWD, ts: T,
+      })
+    }
+  }
+
+  it('Remove imported notes removes all of them when the manifest is gone, not just the first page', async () => {
+    const store = fakeStore()
+    await stored(store, 1200)
+    expect(await removeImportedNotes(deps(store))).toEqual({ removed: 1200, failed: 0 })
+    expect(store.rows.size).toBe(0)
+    expect(manifestJson().dirty).toBe(false) // the store was seen whole
+  })
+
+  it('the sweep that settles an interrupted pass finds them all too', async () => {
+    const store = fakeStore()
+    await stored(store, 1200)
+    const stats = await runClaudeNotesIngest(deps(store)) // a fresh manifest: nothing in the store is accounted for
+    expect(stats.swept).toBe(1200)
+    expect(store.rows.size).toBe(0)
+    expect(manifestJson().dirty).toBe(false)
+  })
+
+  it('leaves the manifest dirty when the rounds run out, so the next pass looks again, and a second removal finishes the job', async () => {
+    const store = fakeStore()
+    await stored(store, 1200)
+    expect(await removeImportedNotes(deps(store, { sweepRounds: 1 }))).toEqual({ removed: 1000, failed: 0 }) // the first listing's 500, and one round of 500
+    expect(store.rows.size).toBe(200)
+    expect(manifestJson().dirty).toBe(true)
+    expect(await removeImportedNotes(deps(store))).toEqual({ removed: 200, failed: 0 })
+    expect(store.rows.size).toBe(0)
+    expect(manifestJson().dirty).toBe(false)
+  })
+
+  it('does not call a sweep settled when it ran out of rounds, and does not clear the flag', async () => {
+    const store = fakeStore()
+    await stored(store, 1200)
+    await runClaudeNotesIngest(deps(store, { sweepRounds: 1 }))
+    expect(store.rows.size).toBe(700)
+    expect(manifestJson().dirty).toBe(true)
+    await runClaudeNotesIngest(deps(store)) // the next pass carries on
+    expect(store.rows.size).toBe(0)
+    expect(manifestJson().dirty).toBe(false)
+  })
+
+  it('asks for nothing twice: a note whose removal fails is not tried again within the sweep, and is reported', async () => {
+    const store = fakeStore()
+    await stored(store, 600)
+    store.failRemoves(new Error('locked'))
+    const res = await removeImportedNotes(deps(store))
+    expect(res).toEqual({ removed: 0, failed: 500 }) // the first page; the sweep sees only those 500 again and leaves them
+    expect(store.rows.size).toBe(600)
+    expect(manifestJson().dirty).toBe(true)
+    expect(manifestJson().stale).toHaveLength(500)
+  })
+
+  it('a removal that fails in a later round is reported and leaves the manifest dirty', async () => {
+    const store = fakeStore()
+    await stored(store, 600)
+    const remove = store.remove.bind(store)
+    let removals = 0
+    store.remove = async (id) => { if (++removals > 500) throw new Error('locked'); return remove(id) }
+    const res = await removeImportedNotes(deps(store))
+    expect(res).toEqual({ removed: 500, failed: 100 })
+    expect(manifestJson().dirty).toBe(true)
+    expect(manifestJson().stale).toHaveLength(100)
+  })
+
+  it('stops quietly when the store cannot be listed in a later round', async () => {
+    const store = fakeStore()
+    await stored(store, 600)
+    const list = store.list.bind(store)
+    let lists = 0
+    store.list = async (o) => { if (++lists > 3) throw new Error('host gone'); return list(o) }
+    const res = await removeImportedNotes(deps(store))
+    expect(res.failed).toBe(0)
+    expect(manifestJson().dirty).toBe(true) // not seen whole: the next pass checks
+  })
+
+  it('stops when the manifest cannot be saved in a later round', async () => {
+    const store = fakeStore()
+    await stored(store, 600)
+    const res = await removeImportedNotes(deps(store, { manifest: flakyManifest(1) })) // the first save goes through, the rest fail
+    expect(res.removed).toBeLessThanOrEqual(500)
+    expect(store.rows.size).toBeGreaterThanOrEqual(100)
+  })
+})
+
+// "Clear memory" empties the store, so the record of what was imported has to stop claiming it is there (Settings read "N notes are in
+// memory" over an empty store), without bringing the notes straight back at the next pass.
+describe('Clear memory and the record of imported notes', () => {
+  const setup = async (): Promise<ReturnType<typeof fakeStore>> => {
+    note(FOLDER, 'a.md', '---\nname: a\ndescription: A\nmetadata:\n  type: reference\n---\nAlpha.')
+    note(FOLDER, 'b.md', FEEDBACK)
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    expect(notesStatus(fileManifest(data)).notes).toBe(2)
+    return store
+  }
+  const clearing = (store: ReturnType<typeof fakeStore>) => async (): Promise<void> => { store.rows.clear() }
+
+  it('runs the clear, and then Settings counts no notes', async () => {
+    const store = await setup()
+    await clearNotesRecord(deps(store), clearing(store))
+    expect(store.rows.size).toBe(0)
+    expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 0, chunks: 0, projects: 0, pending: 0 })
+  })
+
+  it('keeps when it last looked, and forgets how many secrets were redacted from copies that are gone', async () => {
+    const store = await setup()
+    const before = notesStatus(fileManifest(data))
+    const m = manifestJson()
+    m.last.secretsRedacted = 5
+    fs.writeFileSync(manifestFile(), JSON.stringify(m))
+    await clearNotesRecord(deps(store), clearing(store))
+    const after = notesStatus(fileManifest(data))
+    expect(after.lastAt).toBe(before.lastAt)
+    expect(after.secretsRedacted).toBe(0)
+  })
+
+  it('does not bring the notes back at the next pass: an unchanged note is not opened again', async () => {
+    const store = await setup()
+    await clearNotesRecord(deps(store), clearing(store))
+    const opened = spyFs({})
+    const read = realNotesFs.read
+    const stats = await runClaudeNotesIngest(deps(store, { fs: { ...realNotesFs, read: async (file, max) => { opened.calls.read.push(file); return read(file, max) } } }))
+    expect(stats.chunksWritten).toBe(0)
+    expect(store.rows.size).toBe(0)
+    expect(opened.calls.read.filter((f) => f.endsWith('.md'))).toEqual([]) // no note was opened
+  })
+
+  it('imports a note that is edited afterwards, as it does any change', async () => {
+    const store = await setup()
+    await clearNotesRecord(deps(store), clearing(store))
+    note(FOLDER, 'b.md', FEEDBACK + '\n\nAnd a second rule.', Date.UTC(2026, 9, 1))
+    expect(await runClaudeNotesIngest(deps(store))).toMatchObject({ filesChanged: 1, chunksWritten: 1 })
+    expect(store.rows.size).toBe(1)
+    expect(notesStatus(fileManifest(data)).notes).toBe(1)
+  })
+
+  it('removes the queued removals from the record: the rows they named are gone with the rest', async () => {
+    const store = await setup()
+    store.failRemoves(new Error('locked'))
+    await removeImportedNotes(deps(store))
+    expect(notesStatus(fileManifest(data)).pending).toBe(2)
+    store.failRemoves(null)
+    await clearNotesRecord(deps(store), clearing(store))
+    expect(notesStatus(fileManifest(data)).pending).toBe(0)
+  })
+
+  it('leaves the record alone when the clear fails, and lets the error through', async () => {
+    const store = await setup()
+    const before = fs.readFileSync(manifestFile(), 'utf8')
+    await expect(clearNotesRecord(deps(store), async () => { throw new Error('store is locked') })).rejects.toThrow('store is locked')
+    expect(fs.readFileSync(manifestFile(), 'utf8')).toBe(before)
+    expect(notesStatus(fileManifest(data)).notes).toBe(2)
+  })
+
+  it('does not undo the clear when the record cannot be saved: the old count stays on screen, nothing throws', async () => {
+    const store = await setup()
+    await expect(clearNotesRecord({ manifest: flakyManifest(0) }, clearing(store))).resolves.toBeUndefined()
+    expect(store.rows.size).toBe(0)
+  })
+
+  it('works on a record that does not exist yet', async () => {
+    const store = fakeStore()
+    await clearNotesRecord(deps(store), async () => {})
+    expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 0, lastAt: null })
+  })
+
+  it('runs in turn with the passes: a clear that is waiting for a pass does not interleave with it', async () => {
+    const store = await setup()
+    note(FOLDER, 'c.md', '---\nname: c\n---\nGamma.', Date.UTC(2026, 9, 2))
+    const order: string[] = []
+    const pass = runClaudeNotesIngest(deps(store, { yield: async () => { order.push('pass') } }))
+    const cleared = clearNotesRecord(deps(store), async () => { order.push('clear'); store.rows.clear() })
+    await Promise.all([pass, cleared])
+    expect(order.lastIndexOf('pass')).toBeLessThan(order.indexOf('clear')) // every step of the pass came first
+    expect(store.rows.size).toBe(0)
+    expect(notesStatus(fileManifest(data)).notes).toBe(0)
+  })
+})
+
+// What the manifest carries from one pass to the next, and the guards the documents promise.
+describe('what a pass keeps between runs, and what it will not follow', () => {
+  const alpha = '---\nname: a\n---\nAlpha.'
+
+  // Claude Code prunes old sessions. After that only the working directory kept in the manifest can place a folder's notes.
+  it('remembers the working directory a project folder stands for, after the sessions that named it are gone', async () => {
+    note(FOLDER, 'a.md', alpha)
+    session(FOLDER, CWD, 'aaaa.jsonl')
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    expect(manifestJson().cwds[FOLDER]).toBe(CWD)
+    fs.rmSync(path.join(root, FOLDER, 'aaaa.jsonl'))
+    note(FOLDER, 'a.md', '---\nname: a\n---\nAlpha, edited.', Date.UTC(2026, 9, 1))
+    expect(await runClaudeNotesIngest(deps(store))).toMatchObject({ noProject: 0, chunksWritten: 1 })
+    expect(store.writes[store.writes.length - 1].project).toBe(CWD)
+  })
+
+  it('without that memory, a folder whose sessions are gone is left out and counted', async () => {
+    note(FOLDER, 'a.md', alpha)
+    const store = fakeStore()
+    expect(await runClaudeNotesIngest(deps(store))).toMatchObject({ noProject: 1, chunksWritten: 0 })
+  })
+
+  it('reads a manifest of a version it does not know as no manifest at all, and sweeps the copies it cannot account for', async () => {
+    note(FOLDER, 'a.md', alpha)
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    const m = manifestJson()
+    m.version = 2
+    fs.writeFileSync(manifestFile(), JSON.stringify(m))
+    expect(notesStatus(fileManifest(data))).toMatchObject({ notes: 0, chunks: 0 })
+    const stats = await runClaudeNotesIngest(deps(store))
+    expect(stats).toMatchObject({ chunksWritten: 1, swept: 1 }) // read again under a new salt; the first copy had no record
+    expect(store.rows.size).toBe(1)
+    expect(manifestJson().version).toBe(1)
+  })
+
+  it('reads a manifest with an empty salt, a negative epoch or no files as no manifest', () => {
+    for (const bad of [{ salt: '' }, { epoch: -1 }, { files: null }]) {
+      fs.writeFileSync(manifestFile(), JSON.stringify({ version: 1, salt: 's', epoch: 0, dirty: false, files: {}, stale: [], cwds: {}, last: { at: 1, filesSeen: 1, noProject: 0, secretsRedacted: 0 }, ...bad }))
+      expect(notesStatus(fileManifest(data)).lastAt).toBeNull()
+    }
+  })
+
+  // On Windows the path from one drive's folder to another drive's is an absolute path with no `..` in it, which a naive "does it climb out"
+  // test lets through. A notes folder, or a note, that is a link to another drive is outside the projects folder like any other.
+  describe.runIf(process.platform === 'win32')('a link to another drive', () => {
+    const other = (): string => (root.slice(0, 1).toUpperCase() === 'D' ? 'C' : 'D') + ':\\elsewhere'
+    const memoryDir = (): string => path.join(root, 'P', 'memory')
+
+    it('is not followed when it is the notes folder', async () => {
+      const f = spyFs({
+        dirs: { [root]: [{ name: 'P', kind: 'dir' }], [memoryDir()]: [{ name: 'a.md', kind: 'file' }] },
+        reals: { [memoryDir()]: `${other()}\\memory` },
+        stats: { [path.join(memoryDir(), 'a.md')]: { size: 10, mtimeMs: 1 } },
+      })
+      const found = await findNotes([root], f)
+      expect(found.notes).toEqual([])
+      expect(found.skipped.links).toBe(1)
+      expect(f.calls.list).toEqual([root]) // the folder behind the link was never listed
+    })
+
+    it('is not followed when it is a note', async () => {
+      const f = spyFs({
+        dirs: { [root]: [{ name: 'P', kind: 'dir' }], [memoryDir()]: [{ name: 'a.md', kind: 'link' }] },
+        reals: { [path.join(memoryDir(), 'a.md')]: `${other()}\\a.md` },
+        stats: { [path.join(memoryDir(), 'a.md')]: { size: 10, mtimeMs: 1 } },
+      })
+      const found = await findNotes([root], f)
+      expect(found.notes).toEqual([])
+      expect(found.skipped.links).toBe(1)
+      expect(f.calls.stat).toEqual([]) // and it was not even sized
+    })
   })
 })

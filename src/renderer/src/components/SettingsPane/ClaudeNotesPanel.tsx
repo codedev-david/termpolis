@@ -22,12 +22,14 @@ function Switch({ on, label, testId, disabled, onClick }: { on: boolean; label: 
   return (
     <button
       id={testId}
-      onClick={onClick}
-      disabled={disabled}
+      // Not `disabled`: a button that goes disabled drops the keyboard focus it holds, so a screen-reader user who flips it with
+      // Space never hears the new state. It stays in the tab order and says it is busy; a click is ignored meanwhile.
+      onClick={() => { if (!disabled) onClick() }}
+      aria-disabled={disabled || undefined}
       aria-label={label}
       aria-pressed={on}
       data-testid={testId}
-      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 disabled:opacity-50 ${on ? 'bg-[#0078d4]' : 'bg-[#555]'}`}
+      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${disabled ? 'opacity-50' : ''} ${on ? 'bg-[#0078d4]' : 'bg-[#555]'}`}
     >
       <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${on ? 'translate-x-5' : 'translate-x-0.5'}`} />
     </button>
@@ -51,13 +53,15 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
   const mounted = useRef(true)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const removeRef = useRef<HTMLButtonElement>(null)
-  // Focus follows the confirm step: onto the SAFE choice when it opens (a held Enter must not confirm a removal), and back onto
-  // the button that opened it once it closes and nothing is in flight (a button that is disabled cannot take focus).
+  // Focus follows the confirm step: onto the SAFE choice when it opens (a held Enter must not confirm a removal) and only then, not
+  // each time something else in the panel finishes; and back onto the button that opened it once it closes and nothing is in
+  // flight (a button that is disabled cannot take focus).
   const refocus = useRef(false)
+  useEffect(() => { if (confirming) cancelRef.current?.focus() }, [confirming])
   useEffect(() => {
-    if (confirming) { cancelRef.current?.focus(); return }
-    if (!busy && refocus.current) { refocus.current = false; removeRef.current?.focus() }
+    if (!confirming && !busy && refocus.current) { refocus.current = false; removeRef.current?.focus() }
   }, [confirming, busy])
+  const dismissConfirm = () => { refocus.current = true; setConfirming(false) }
 
   const load = useCallback(async () => {
     try {
@@ -163,8 +167,8 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
 
       {waiting ? (
         <div data-testid="claude-notes-waiting" role="status" className="text-xs text-[#e2c08d] p-3 border border-[#e2c08d]/40 rounded bg-[#e2c08d]/10 leading-relaxed">
-          Your agents are not connected, so no note is read. The switch above is on and takes effect as soon as you connect
-          them in Settings &rsaquo; Agent Integration.
+          Your agents are not connected, so no note is read. The switch above is on; once you connect them in Settings &rsaquo;
+          Agent Integration, the notes are picked up at the next check (about every 30 minutes).
         </div>
       ) : null}
 
@@ -188,9 +192,10 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
           <span className="text-xs text-[#9ca3af] leading-relaxed">
             Off by default. When on, a memory search in one project may also return up to two notes of the kinds
             <em> reference</em>, <em>feedback</em> and <em>user</em> from another project, after that project&rsquo;s own results and marked with
-            the project they came from. Notes about one project&rsquo;s own state never leave it. A search that names no project
-            returns no saved note (with this on, only those kinds). Leave it off if your projects are not meant to see each other
-            (employer and personal, say).
+            the project they came from. Notes about one project&rsquo;s own state never leave it. Notes from sessions run in your home
+            folder belong to no project, so a search that names a project is not lent them. A search that names no project returns no
+            saved note (with this on, only those kinds). Leave it off if your projects are not meant to see each other (employer and
+            personal, say).
           </span>
         </div>
       </div>
@@ -216,12 +221,15 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
         ) : null}
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap">
+      <div
+        className="flex items-center gap-2 flex-wrap"
+        onKeyDown={(e) => { if (confirming && e.key === 'Escape') { e.stopPropagation(); dismissConfirm() } }}
+      >
         {confirming ? (
           <>
             <span className="text-xs text-[#e5e5e5]">Remove every imported note from memory and turn the import off?</span>
             <button className={BUTTON} data-testid="claude-notes-remove-confirm" disabled={busy} onClick={() => { void remove() }}>Remove</button>
-            <button ref={cancelRef} className={BUTTON} data-testid="claude-notes-remove-cancel" disabled={busy} onClick={() => { refocus.current = true; setConfirming(false) }}>Cancel</button>
+            <button ref={cancelRef} className={BUTTON} data-testid="claude-notes-remove-cancel" disabled={busy} onClick={dismissConfirm}>Cancel</button>
           </>
         ) : (
           <button ref={removeRef} className={BUTTON} data-testid="claude-notes-remove" disabled={busy} onClick={() => setConfirming(true)}>Remove imported notes</button>

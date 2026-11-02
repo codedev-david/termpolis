@@ -238,7 +238,7 @@ import { remember } from './mcpGateway/policy'
 import { initMemoryCorrections, correctMemory, applyCorrections, applyEntryCorrections, correctionForMemory } from './memoryCorrectionStore'
 import { recheckMarker, recheckStoredLessons, recheckStoredLessonsV2, RECHECK_V2_MARKER } from './mnemeLessonRecheck'
 import { withoutCandidates } from './lessonSubstance'
-import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
+import { runClaudeNotesIngest, removeImportedNotes, finishQueuedRemovals, clearNotesRecord, notesStatus, noteRoots, fileManifest, realNotesFs, type NotesDeps } from './claudeNotesIngest'
 import { registerClaudeNotesIpc } from './claudeNotesIpc'
 import { withBorrowedNotes, withoutUnshareableNotes, type NoteRow } from './claudeNotesShare'
 import { fillVisible, type FillBounds } from './doorFill'
@@ -2184,7 +2184,7 @@ ipcMain.handle('memory:list', async (_, opts: { limit?: number; agentId?: string
 // structured-clonable — the renderer gets a clone error or an empty object, i.e. "your memory is
 // gone". An un-awaited memoryClear() would also return success before the store had cleared.
 ipcMain.handle('memory:count', async () => { try { return ok(await memoryCount()) } catch (e: any) { return err(e.message) } })
-ipcMain.handle('memory:clear', async () => { try { await memoryClear(); return ok() } catch (e: any) { return err(e.message) } })
+ipcMain.handle('memory:clear', async () => { try { await clearNotesRecord({ manifest: fileManifest(app.getPath('userData')) }, memoryClear); return ok() } catch (e: any) { return err(e.message) } })
 /** What the last Weave pass drew. Null until the indexer has run one — which is itself the
  *  signal worth surfacing, because "the Weave has never run" and "the Weave runs and mints
  *  nothing" used to look identical from outside. */

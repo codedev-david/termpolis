@@ -80,6 +80,14 @@ describe('ClaudeNotesPanel: what is shown', () => {
     expect(text).toContain('A search that names no project returns no saved note')
   })
 
+  // A session run in the home folder has no project (the store does not call the home folder one), so what it saved has no
+  // project to come from, and is not lent to a search that names one. The row says so; PRIVACY.md and DOCUMENTATION say it too.
+  it('says that notes from sessions run in the home folder are not lent', async () => {
+    await open()
+    const text = (screen.getByTestId('claude-notes-panel').textContent ?? '').replace(/\s+/g, ' ')
+    expect(text).toContain('Notes from sessions run in your home folder belong to no project, so a search that names a project is not lent them')
+  })
+
   it('shows the notes switch on and the sharing switch off, as they are by default', async () => {
     await open()
     expect(pressed('claude-notes-index-toggle')).toBe('true')
@@ -158,6 +166,10 @@ describe('ClaudeNotesPanel: what is shown', () => {
     mockApi(view({ connected: false }))
     await open()
     expect(screen.getByTestId('claude-notes-waiting').textContent).toContain('Your agents are not connected, so no note is read')
+    // Connecting does not start a pass; the next check does (about every 30 minutes), and the banner must not promise sooner.
+    const banner = screen.getByTestId('claude-notes-waiting').textContent ?? ''
+    expect(banner).toContain('picked up at the next check (about every 30 minutes)')
+    expect(banner).not.toContain('as soon as')
     cleanup()
     mockApi(view({ connected: false, indexClaudeNotes: false }))
     await open()
@@ -271,18 +283,20 @@ describe('ClaudeNotesPanel: the switches', () => {
     await waitFor(() => expect(screen.queryByTestId('claude-notes-action-error')).toBeNull())
   })
 
-  it('disables both switches and the remove button while a change is in flight, so a second click cannot start another', async () => {
+  it('marks both switches busy and disables the remove button while a change is in flight, so a second click cannot start another', async () => {
     let release: (v: unknown) => void = () => {}
     await open()
     setSettings.mockImplementationOnce(() => new Promise((r) => { release = r }))
     fireEvent.click(screen.getByTestId('claude-notes-share-toggle'))
-    await waitFor(() => expect((screen.getByTestId('claude-notes-index-toggle') as HTMLButtonElement).disabled).toBe(true))
-    expect((screen.getByTestId('claude-notes-share-toggle') as HTMLButtonElement).disabled).toBe(true)
+    await waitFor(() => expect(screen.getByTestId('claude-notes-index-toggle').getAttribute('aria-disabled')).toBe('true'))
+    expect(screen.getByTestId('claude-notes-share-toggle').getAttribute('aria-disabled')).toBe('true')
     expect((screen.getByTestId('claude-notes-remove') as HTMLButtonElement).disabled).toBe(true)
     fireEvent.click(screen.getByTestId('claude-notes-share-toggle'))
-    expect(setSettings).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('claude-notes-index-toggle'))
+    expect(setSettings).toHaveBeenCalledTimes(1) // neither second click did anything
     await act(async () => { release({ success: true, data: view({ shareNotesAcrossProjects: true }) }) })
-    expect((screen.getByTestId('claude-notes-index-toggle') as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByTestId('claude-notes-index-toggle').getAttribute('aria-disabled')).toBeNull()
+    expect((screen.getByTestId('claude-notes-remove') as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('does not touch its state if it is closed while a change is still in flight', async () => {
@@ -455,6 +469,58 @@ describe('ClaudeNotesPanel: keyboard and screen reader', () => {
   it('does not take focus on first render or while nothing is being confirmed', async () => {
     await open()
     expect(document.activeElement).toBe(document.body)
+  })
+
+  // A switch that went disabled while it held focus handed focus to the page, so a person flipping it with the keyboard lost their
+  // place and heard nothing of the new state. It is now busy, not disabled, and keeps focus through the change.
+  it('keeps keyboard focus on a switch through the change it makes', async () => {
+    let release: (v: unknown) => void = () => {}
+    await open()
+    const toggle = screen.getByTestId('claude-notes-share-toggle')
+    toggle.focus()
+    setSettings.mockImplementationOnce(() => new Promise((r) => { release = r }))
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle.getAttribute('aria-disabled')).toBe('true'))
+    expect(document.activeElement).toBe(toggle) // in flight
+    await act(async () => { release({ success: true, data: view({ shareNotesAcrossProjects: true }) }) })
+    expect(document.activeElement).toBe(toggle) // and after
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('leaves focus where the person put it when a switch is used while the removal is being confirmed', async () => {
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    expect(document.activeElement).toBe(screen.getByTestId('claude-notes-remove-cancel'))
+    const toggle = screen.getByTestId('claude-notes-share-toggle')
+    toggle.focus()
+    fireEvent.click(toggle)
+    await flush(); await flush()
+    expect(setSettings).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(toggle) // not pulled back to Cancel when the change finished
+    expect(screen.getByTestId('claude-notes-remove-confirm')).toBeTruthy() // the question is still open
+  })
+
+  it('closes the confirm step on Escape, back on the button that opened it, and does nothing on Escape otherwise', async () => {
+    await open()
+    fireEvent.keyDown(screen.getByTestId('claude-notes-remove'), { key: 'Escape' })
+    expect(screen.queryByTestId('claude-notes-remove-confirm')).toBeNull() // nothing was open
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    const outer = vi.fn()
+    document.addEventListener('keydown', outer)
+    fireEvent.keyDown(screen.getByTestId('claude-notes-remove-cancel'), { key: 'Escape' })
+    document.removeEventListener('keydown', outer)
+    expect(screen.queryByTestId('claude-notes-remove-confirm')).toBeNull()
+    expect(outer).not.toHaveBeenCalled() // the Settings pane does not also close
+    await flush()
+    expect(document.activeElement).toBe(screen.getByTestId('claude-notes-remove'))
+    expect(removeNotes).not.toHaveBeenCalled()
+  })
+
+  it('leaves other keys alone while the confirm step is open', async () => {
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    fireEvent.keyDown(screen.getByTestId('claude-notes-remove-cancel'), { key: 'a' })
+    expect(screen.getByTestId('claude-notes-remove-confirm')).toBeTruthy()
   })
 
   it('announces the result of a removal politely, and a failure at once', async () => {

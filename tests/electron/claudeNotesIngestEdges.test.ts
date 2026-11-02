@@ -212,6 +212,49 @@ describe('findProject', () => {
     expect(await findProject(capped, FOLDER, dir, { maxStat: 1 })).toBeNull() // only the first was looked at, and it is silent
     expect(capped.calls.stat).toHaveLength(1)
   })
+
+  // PRIVACY.md and DOCUMENTATION.md: "the first 256 KB of that folder's three newest session files", and nothing else of a session.
+  describe('what it reads of a folder\'s sessions', () => {
+    const dir = (): string => path.join(root, FOLDER)
+    const silent = Buffer.from('{"type":"summary"}\n')
+    const says = Buffer.from(`${JSON.stringify({ cwd: CWD })}\n`)
+    /** Sessions newest first: `names[0]` is the newest. A session's content comes from `content`. */
+    const sessions = (names: string[], content: Record<string, Buffer>) => {
+      const reads: Array<{ file: string; max: number }> = []
+      const base = spyFs({
+        dirs: { [dir()]: names.map((name) => ({ name, kind: 'file' as const })) },
+        stats: Object.fromEntries(names.map((name, i) => [path.join(dir(), name), { size: 1, mtimeMs: 1000 - i }])),
+        reads: Object.fromEntries(Object.entries(content).map(([name, buf]) => [path.join(dir(), name), buf])),
+      })
+      const f: NotesFs & { reads: typeof reads } = { ...base, reads, read: async (file, max) => { reads.push({ file: path.basename(file), max }); return base.read(file, max) } }
+      return f
+    }
+
+    it('looks at the three newest and no more: a project only the fourth newest names is not found', async () => {
+      const f = sessions(['s1.jsonl', 's2.jsonl', 's3.jsonl', 's4.jsonl'], { 's1.jsonl': silent, 's2.jsonl': silent, 's3.jsonl': silent, 's4.jsonl': says })
+      expect(await findProject(f, FOLDER, dir())).toBeNull()
+      expect(f.reads.map((r) => r.file)).toEqual(['s1.jsonl', 's2.jsonl', 's3.jsonl'])
+    })
+
+    it('finds it in the third newest', async () => {
+      const f = sessions(['s1.jsonl', 's2.jsonl', 's3.jsonl', 's4.jsonl'], { 's1.jsonl': silent, 's2.jsonl': silent, 's3.jsonl': says, 's4.jsonl': silent })
+      expect(await findProject(f, FOLDER, dir())).toBe(CWD)
+      expect(f.reads.map((r) => r.file)).toEqual(['s1.jsonl', 's2.jsonl', 's3.jsonl'])
+    })
+
+    it('stops at the first that answers, and reads at most the first 256 KB of a session', async () => {
+      const f = sessions(['s1.jsonl', 's2.jsonl', 's3.jsonl'], { 's1.jsonl': says, 's2.jsonl': says, 's3.jsonl': says })
+      expect(await findProject(f, FOLDER, dir())).toBe(CWD)
+      expect(f.reads).toEqual([{ file: 's1.jsonl', max: 256 * 1024 }])
+    })
+
+    it('looks at the times of up to 5,000 of a folder\'s sessions to find the newest, and no more', async () => {
+      const names = Array.from({ length: 5003 }, (_, i) => `s${i}.jsonl`)
+      const f = sessions(names, {})
+      await findProject(f, FOLDER, dir())
+      expect(f.calls.stat).toHaveLength(5000)
+    })
+  })
 })
 
 describe('a root that lists as nothing', () => {

@@ -157,6 +157,30 @@ describe('chunkNote', () => {
     expect(chunkNote(note({ name: '', description: '', body: '' }))).toEqual([])
   })
 
+  // PRIVACY.md and DOCUMENTATION.md say "pieces of at most 1,800 characters" (the embedder reads about 512 tokens).
+  it('keeps to 1,800 characters, to the character: a chunk of exactly that is one piece and one more is two', () => {
+    expect(MAX_CHUNK_CHARS).toBe(1800)
+    const head = 'cache rules — when to invalidate\n\n' // what every chunk of this note opens with
+    const room = MAX_CHUNK_CHARS - head.length
+    const exact = chunkNote(note({ body: noise(room) }))
+    expect(exact).toHaveLength(1)
+    expect(exact[0].length).toBe(1800)
+    const over = chunkNote(note({ body: noise(room) + '\n\n' + 'z' }))
+    expect(over).toHaveLength(2)
+    expect(over.every((c) => c.length <= 1800)).toBe(true)
+    const oneLine = chunkNote(note({ body: noise(room + 1) })) // one unbroken line, a character too long
+    expect(oneLine.length).toBeGreaterThan(1)
+    expect(oneLine.every((c) => c.length <= 1800)).toBe(true)
+  })
+
+  it('clips a name at 100 characters and a description at 280, each ending in an ellipsis, and no sooner', () => {
+    const prefixOf = (name: string, description: string): string => chunkNote(note({ name, description, body: 'b' }))[0].split('\n\n')[0]
+    expect(prefixOf('n'.repeat(100), 'd')).toBe(`${'n'.repeat(100)} — d`) // 100 stays whole
+    expect(prefixOf('n'.repeat(101), 'd')).toBe(`${'n'.repeat(99)}… — d`) // 101 is cut to 100 with the ellipsis
+    expect(prefixOf('n', 'd'.repeat(280))).toBe(`n — ${'d'.repeat(280)}`)
+    expect(prefixOf('n', 'd'.repeat(281))).toBe(`n — ${'d'.repeat(279)}…`)
+  })
+
   it('splits a long note at paragraph boundaries, every chunk within the limit and prefixed', () => {
     const paras = Array.from({ length: 12 }, (_, i) => `Paragraph ${i} ` + 'word '.repeat(60).trim())
     const chunks = chunkNote(note({ body: paras.join('\n\n') }))

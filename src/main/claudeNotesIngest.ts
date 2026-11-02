@@ -172,7 +172,7 @@ const byName = (a: NotesDirEntry, b: NotesDirEntry): number => a.name.localeComp
  * others), not empty, not over 64 KB, not a link that leaves the projects folder, at most `maxFiles` of
  * them. What was left out is counted, so Settings can say so.
  */
-export async function findNotes(roots: readonly string[], fs: NotesFs, opts: { maxFiles?: number } = {}): Promise<FoundNotes> {
+export async function findNotes(roots: readonly string[], fs: NotesFs, opts: { maxFiles?: number; imported?: ReadonlySet<string> } = {}): Promise<FoundNotes> {
   const maxFiles = opts.maxFiles ?? MAX_NOTE_FILES
   const out: FoundNotes = {
     notes: [], listed: new Set(), folders: new Set(), uncertain: new Set(), rootsRead: 0,
@@ -197,9 +197,12 @@ export async function findNotes(roots: readonly string[], fs: NotesFs, opts: { m
         // Nothing at the notes folder's path. Deleting a project's notes means deleting this folder, with the project and its
         // sessions left in place, so when the project folder reads fine and holds no entry called memory the notes are gone and
         // whatever was imported from here goes with them. Anything short of that is unknown, not empty: a project folder that
-        // cannot be listed, or an entry that is there and cannot be resolved (a dangling link, a drive not mounted).
-        const around = await fs.list(folderDir)
-        if (around && !around.some((e) => e.name.toLowerCase() === 'memory')) out.listed.add(project.name)
+        // cannot be listed, or an entry that is there and cannot be resolved (a dangling link, a drive not mounted). Only a
+        // folder that has had notes imported is looked into: for any other there is nothing to take out, and nothing is read.
+        if (opts.imported?.has(project.name)) {
+          const around = await fs.list(folderDir)
+          if (around && !around.some((e) => e.name.toLowerCase() === 'memory')) out.listed.add(project.name)
+        }
         continue
       }
       if (!within(rootReal, memoryReal)) { out.skipped.links++; continue } // a notes folder that is a link out
@@ -398,6 +401,9 @@ async function listAll(store: NotesStore): Promise<StoredNote[]> {
 /** Is this row this computer's to remove? Another computer's notes (memory sync) are theirs. */
 const ownedBy = (row: StoredNote, own: string | undefined): boolean => own === undefined || typeof row.origin !== 'string' || row.origin === own
 
+/** Rounds of "list what is left, remove what was not tried" one sweep may take: 100 rounds reach 50,000 notes. */
+const MAX_SWEEP_ROUNDS = 100
+
 // ---- One pass ----
 
 export interface NotesDeps {
@@ -416,6 +422,8 @@ export interface NotesDeps {
   yield?: () => Promise<void>
   /** This computer's id as the store stamps it on entries, when the store does (memory sync). */
   ownOrigin?: () => Promise<string | undefined>
+  /** Rounds one sweep of the store may take (MAX_SWEEP_ROUNDS). A seam for tests. */
+  sweepRounds?: number
 }
 
 export interface NotesStats {
@@ -539,6 +547,34 @@ class Ledger {
   }
 }
 
+/**
+ * Remove every note of this computer's that the store holds and `tried` does not already cover, and look again. One listing
+ * cannot reach past LIST_PAGE entries that share a single time (notes copied or extracted in one go all carry the same modified
+ * time, and the store orders equal times by when they were stored, so there is no cursor between them), so what a listing did not
+ * show appears in the next one once the first are gone. It ends when a listing shows nothing that was not tried. `tried` grows
+ * with every id removed here, so a note whose removal fails is not asked for again.
+ *
+ * True when the store was seen whole and everything found was removed: the caller may then call it settled. False when the store
+ * could not be listed, the manifest could not be saved, a removal failed, or the rounds ran out with notes still turning up.
+ */
+async function sweepOwnNotes(deps: NotesDeps, ledger: Ledger, tried: Set<string>, counter: 'chunksDeleted' | 'swept'): Promise<boolean> {
+  let clean = true
+  const rounds = deps.sweepRounds ?? MAX_SWEEP_ROUNDS
+  for (let round = 0; round < rounds; round++) {
+    let fresh: string[]
+    try {
+      fresh = (await ownNotes(deps)).map((r) => r.id).filter((id) => !tried.has(id))
+    } catch {
+      return false // the store could not be listed: check again next time
+    }
+    if (fresh.length === 0) return clean
+    for (const id of fresh) tried.add(id)
+    if (!(await ledger.retire(fresh, counter))) return false
+    if (fresh.some((id) => ledger.m.stale.includes(id))) clean = false // a removal failed; it waits on the manifest's list
+  }
+  return false // the rounds ran out with notes still turning up
+}
+
 export interface PassOptions {
   maxChunks?: number
   maxFiles?: number
@@ -563,7 +599,8 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
   const m = parseManifest(deps.manifest.read())
   const sweepDue = m.dirty
   const ledger = new Ledger(deps, m, stats)
-  const found = await findNotes(roots, deps.fs, { maxFiles: opts.maxFiles })
+  const imported = new Set(Object.keys(m.files).map((key) => key.slice(0, key.indexOf('/')))) // the project folders notes were taken from
+  const found = await findNotes(roots, deps.fs, { maxFiles: opts.maxFiles, imported })
   Object.assign(stats.skipped, found.skipped)
   stats.rootsRead = found.rootsRead
   stats.filesSeen = found.notes.length
@@ -677,12 +714,7 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
   if (complete && sweepDue) {
     const keep = new Set<string>(m.stale)
     for (const file of Object.values(m.files)) for (const c of file.chunks) keep.add(c.id)
-    try {
-      const orphans = (await ownNotes(deps)).map((r) => r.id).filter((id) => !keep.has(id))
-      if (!(await ledger.retire(orphans, 'swept')) || orphans.some((id) => m.stale.includes(id))) settled = false
-    } catch {
-      settled = false // the store could not be listed: check again next time
-    }
+    settled = await sweepOwnNotes(deps, ledger, keep, 'swept')
   }
   if (complete && settled) m.dirty = false
 
@@ -721,8 +753,10 @@ export function removeImportedNotes(deps: NotesDeps): Promise<RemoveResult> {
     const stats = emptyStats()
     const ledger = new Ledger(deps, m, stats)
     const wroteAhead = await ledger.retire([...ids])
+    // One listing cannot reach past 500 notes that share a time, so look again until it shows nothing that was not tried.
+    const swept = listed && wroteAhead && (await sweepOwnNotes(deps, ledger, new Set(ids), 'chunksDeleted'))
     // Not clean until every id is gone and the store was seen whole; the next pass then checks.
-    m.dirty = !listed || m.stale.length > 0
+    m.dirty = !swept || m.stale.length > 0
     ledger.save()
     return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : ids.size }
   })
@@ -744,6 +778,28 @@ export function finishQueuedRemovals(deps: NotesDeps): Promise<RemoveResult> {
     const wroteAhead = await ledger.retire([...m.stale])
     ledger.save()
     return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : queued }
+  })
+}
+
+/**
+ * "Clear memory" empties the store, imported notes with the rest. This runs `clear` and then empties the record of what was
+ * imported (every note's chunks, and the removals waiting), so Settings stops saying that notes are in memory. It keeps what it
+ * saw of each note (size, time, hash): an unchanged note is not opened again, so clearing memory is not undone at the next pass,
+ * and a note that is edited afterwards is imported afresh like any other change. `clear` runs inside the same turn-taking as the
+ * passes, so none is writing notes while it goes through, and the record is touched only once it has. A record that cannot be
+ * saved does not undo the clear, which has already happened: it only leaves the old count on screen.
+ */
+export function clearNotesRecord(deps: Pick<NotesDeps, 'manifest'>, clear: () => Promise<unknown>): Promise<void> {
+  return exclusive(async () => {
+    await clear()
+    try {
+      const m = parseManifest(deps.manifest.read())
+      for (const file of Object.values(m.files)) file.chunks = []
+      m.stale = []
+      m.dirty = false
+      if (m.last) m.last = { ...m.last, secretsRedacted: 0 }
+      deps.manifest.write(JSON.stringify(m))
+    } catch { /* the clear stands; only the count shown in Settings is out of date */ }
   })
 }
 

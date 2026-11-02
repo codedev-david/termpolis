@@ -345,6 +345,8 @@ const notesMock = vi.hoisted(() => ({
   runClaudeNotesIngest: vi.fn(async (_deps?: any) => ({ chunksWritten: 0, truncated: false })),
   removeImportedNotes: vi.fn(async (_deps?: any) => ({ removed: 2, failed: 0 })),
   finishQueuedRemovals: vi.fn(async (_deps?: any) => ({ removed: 0, failed: 0 })),
+  // "Clear memory" runs the store's clear inside it; the real one is in claudeNotesIngest.test.ts. This spy runs the clear as it does.
+  clearNotesRecord: vi.fn(async (_deps: any, clear: () => Promise<unknown>) => { await clear() }),
   notesStatus: vi.fn((_io?: any) => ({ notes: 3, chunks: 4, projects: 2, lastAt: 1700000000000, noProject: 0, secretsRedacted: 0, pending: 0 })),
 }))
 vi.mock('../../src/main/claudeNotesIngest', async () => ({
@@ -352,11 +354,9 @@ vi.mock('../../src/main/claudeNotesIngest', async () => ({
   runClaudeNotesIngest: notesMock.runClaudeNotesIngest,
   removeImportedNotes: notesMock.removeImportedNotes,
   finishQueuedRemovals: notesMock.finishQueuedRemovals,
+  clearNotesRecord: notesMock.clearNotesRecord,
   notesStatus: notesMock.notesStatus,
 }))
-// WEAVE_NEIGHBOUR_K is a real export index.ts now reads (so the k it pre-fetches neighbours with
-// cannot drift from the k runWeave uses). Omitting it here makes vitest's mock proxy THROW on access
-// — inside the weave's best-effort catch, so the whole pass would silently do nothing.
 // A commit has to land for an outcome to be charged back to the memories recalled for it ("recall noting" below). git is a
 // spy that answers with nothing, so the commit shield sees an empty staged diff and the commit itself succeeds; no process runs.
 const gitMock = vi.hoisted(() => ({ safeGitAsync: vi.fn(async (_args?: string[], _opts?: unknown) => '') }))
@@ -364,6 +364,9 @@ vi.mock('../../src/main/gitCommand', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/main/gitCommand')>()),
   safeGitAsync: gitMock.safeGitAsync,
 }))
+// WEAVE_NEIGHBOUR_K is a real export index.ts now reads (so the k it pre-fetches neighbours with
+// cannot drift from the k runWeave uses). Omitting it here makes vitest's mock proxy THROW on access
+// — inside the weave's best-effort catch, so the whole pass would silently do nothing.
 vi.mock('../../src/main/mnemeWeave', () => ({ runWeave: mneme.runWeave, WEAVE_NEIGHBOUR_K: 6 }))
 vi.mock('../../src/main/mnemeSociety', async () => {
   // poolLessons is stubbed (this suite tests the WIRING, not the pooling maths), but the word
@@ -653,6 +656,24 @@ describe('memory:count / memory:clear / memory:stats', () => {
     const r = await invoke('memory:clear')
     expect(mem.memoryClear).toHaveBeenCalledTimes(1)
     expect(r).toEqual({ success: true, data: undefined })
+  })
+
+  // The store's clear goes through the saved-notes record, so Settings stops counting notes that were in the store it just emptied.
+  // It runs the clear itself (inside the turn-taking that keeps a pass from writing meanwhile), and hands over the manifest only.
+  it('clear runs through the saved-notes record, so that Settings does not go on counting notes that are gone', async () => {
+    notesMock.clearNotesRecord.mockClear()
+    mem.memoryClear.mockClear()
+    await invoke('memory:clear')
+    expect(notesMock.clearNotesRecord).toHaveBeenCalledTimes(1)
+    const [deps] = notesMock.clearNotesRecord.mock.calls[0] as unknown as [{ manifest: { read: unknown; write: unknown } }]
+    expect(typeof deps.manifest.read).toBe('function')
+    expect(typeof deps.manifest.write).toBe('function')
+    expect(mem.memoryClear).toHaveBeenCalledTimes(1)
+  })
+
+  it('clear that the store refuses (locked) is reported and the record is left as it was', async () => {
+    mem.memoryClear.mockRejectedValueOnce(new Error('memory is locked'))
+    expect(await invoke('memory:clear')).toEqual({ success: false, error: 'memory is locked' })
   })
 
   it('stats returns the store stats, plus what the last Weave pass drew', async () => {
@@ -2689,27 +2710,6 @@ describe('MCP read paths never serve a lesson the substance gate holds back', ()
 // project: everything else (memory_anticipate, memory_list) has no attribution key, and guessing
 // one would charge a failure to memories that had nothing to do with it.
 
-describe('recall noting — a recall is remembered long enough for the outcome to find it', () => {
-  beforeEach(() => recalls.resetRecallLedger())
-
-  it('notes a project-scoped search, so a later outcome in that project can charge it', async () => {
-    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }, { id: 'm2', content: 'b' }])
-    await mcp.memorySearch({ query: 'q', project: 'C:/repos/termpolis' })
-    expect(recalls.claimRecalled('termpolis', Date.now()).sort()).toEqual(['m1', 'm2'])
-  })
-
-  it('does not note a search with no project — there is nothing to attribute it to', async () => {
-    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }])
-    await mcp.memorySearch({ query: 'q' })
-    expect(recalls.claimRecalled('', Date.now())).toEqual([])
-    expect(recalls.claimRecalled('termpolis', Date.now())).toEqual([])
-  })
-
-  it('notes what the primer injected — the biggest single recall an agent ever gets', async () => {
-    mem.memorySearch.mockResolvedValue([{ id: 'p1', content: 'primed' }])
-    primer.buildContextPrimer.mockImplementationOnce(async (search: (a: { query: string; limit?: number }) => Promise<unknown[]>) => {
-      await search({ query: 'anything', limit: 5 })
-      return '- [claude] primed'
 // The outcome is written into the activity record, which memory_audit hands to every agent: it says HOW MANY memories an outcome
 // was charged to and never which project, or one project's agent would learn what else is being worked on. PRIVACY.md and
 // DOCUMENTATION.md say "never which project".
@@ -2736,6 +2736,27 @@ describe('the activity record\'s line for an outcome', () => {
   })
 })
 
+describe('recall noting — a recall is remembered long enough for the outcome to find it', () => {
+  beforeEach(() => recalls.resetRecallLedger())
+
+  it('notes a project-scoped search, so a later outcome in that project can charge it', async () => {
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }, { id: 'm2', content: 'b' }])
+    await mcp.memorySearch({ query: 'q', project: 'C:/repos/termpolis' })
+    expect(recalls.claimRecalled('termpolis', Date.now()).sort()).toEqual(['m1', 'm2'])
+  })
+
+  it('does not note a search with no project — there is nothing to attribute it to', async () => {
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }])
+    await mcp.memorySearch({ query: 'q' })
+    expect(recalls.claimRecalled('', Date.now())).toEqual([])
+    expect(recalls.claimRecalled('termpolis', Date.now())).toEqual([])
+  })
+
+  it('notes what the primer injected — the biggest single recall an agent ever gets', async () => {
+    mem.memorySearch.mockResolvedValue([{ id: 'p1', content: 'primed' }])
+    primer.buildContextPrimer.mockImplementationOnce(async (search: (a: { query: string; limit?: number }) => Promise<unknown[]>) => {
+      await search({ query: 'anything', limit: 5 })
+      return '- [claude] primed'
     })
     await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
     expect(recalls.claimRecalled('termpolis', Date.now())).toEqual(['p1'])
@@ -3055,60 +3076,6 @@ describe('Claude Code\'s saved notes: the wiring in index.ts', () => {
           expect(ids(await call())).toEqual(['chunk2'])
         })
       })
-    })
-
-    // memory_anticipate names no project and keeps anything with importance >= 0.6, which a note (0.9) is.
-    describe('memory_anticipate, which cannot tell which project is asking', () => {
-      const lesson = { id: 'les1', content: 'a procedural lesson', score: 0.9, memoryType: 'procedural', importance: 0.5, tags: [] as string[], source: 'claude', agentId: 'mneme' }
-      const noteOf = (id: string, type: string) => ({ ...lendable, id, importance: 0.9, memoryType: 'summary', tags: [`type:${type}`, 'note:x.md'] })
-      const hits = (): any[] => [noteOf('n-ref', 'reference'), noteOf('n-proj', 'project'), noteOf('n-fb', 'feedback'), lesson, noteOf('n-user', 'user'), noteOf('n-untyped', 'untyped')]
-      const ids = async (): Promise<string[]> => (await mcp.memoryAnticipate({ task: 'the deploy fails with ENOENT', limit: 10 })).map((r: any) => r.id)
-
-      it('returns no saved note by default, only the lesson', async () => {
-        mem.memorySearch.mockResolvedValueOnce(hits() as never)
-        expect(await ids()).toEqual(['les1'])
-      })
-
-      it('returns the general kinds once notes may help in other projects, never a project or untyped note', async () => {
-        await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
-        mem.memorySearch.mockResolvedValueOnce(hits() as never)
-        expect(await ids()).toEqual(['les1', 'n-ref', 'n-fb', 'n-user']) // by score: the lesson 0.9, the notes 0.8
-      })
-    })
-
-    it('a retracted note is not lent: the lending search goes through the same corrections', async () => {
-      backend()
-      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
-      const { correctMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
-      resetMemoryCorrections()
-      correctMemory({ id: 'note1', kind: 'retract', reason: 'wrong', by: 'user' })
-      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
-      resetMemoryCorrections()
-    })
-  })
-
-  describe('the freshness lane carries the project key, so a saved note reaches only its own project\'s primer', () => {
-    it('hands the primer the key of each recent entry', async () => {
-      mem.memoryList.mockResolvedValueOnce([{ id: 'r1', content: 'recent', kind: 'note', ts: 5, project: 'app', projectKey: 'pk:app', tags: [], agentId: 'a' }] as never)
-      const { buildContextPrimer } = await import('../../src/main/contextPrimer')
-      ;(buildContextPrimer as any).mockClear()
-      await invoke('memory:build-primer', { query: 'q', cwd: 'C:\\w\\app' })
-      const recent = (buildContextPrimer as any).mock.calls[0][1].recent
-      expect(await recent({ limit: 3, project: 'app' })).toEqual([expect.objectContaining({ id: 'r1', projectKey: 'pk:app' })])
-    })
-  })
-})
-
-// LAST in the file, on purpose: before-quit tears the module down (the memory host stops, the terminals are killed).
-describe('the saved-notes pass and the app quitting', () => {
-  it('ends its pass when the app quits: the pass is handed a quit signal that turns true at before-quit', async () => {
-    expect(typeof onBeforeQuit).toBe('function')
-    notesMock.runClaudeNotesIngest.mockClear()
-    await indexer.run()
-    const d = notesMock.runClaudeNotesIngest.mock.calls[notesMock.runClaudeNotesIngest.mock.calls.length - 1][0]
-    expect(d.stopped()).toBe(false)
-    onBeforeQuit!()
-    expect(d.stopped()).toBe(true)
 
       // The store cuts a read to its limit, best first, BEFORE the door drops what the agent may not be handed. A note is stored at
       // importance 0.9 and matches the topic it was written about, so a read whose best rows were notes used to come back short,
@@ -3210,5 +3177,59 @@ describe('the saved-notes pass and the app quitting', () => {
           expect(ids(await mcp.memorySearch({ query: 'cache', limit: 2, project: 'C:\\w\\billing' }))).toEqual(['mine', 'c1'])
         })
       })
+    })
+
+    // memory_anticipate names no project and keeps anything with importance >= 0.6, which a note (0.9) is.
+    describe('memory_anticipate, which cannot tell which project is asking', () => {
+      const lesson = { id: 'les1', content: 'a procedural lesson', score: 0.9, memoryType: 'procedural', importance: 0.5, tags: [] as string[], source: 'claude', agentId: 'mneme' }
+      const noteOf = (id: string, type: string) => ({ ...lendable, id, importance: 0.9, memoryType: 'summary', tags: [`type:${type}`, 'note:x.md'] })
+      const hits = (): any[] => [noteOf('n-ref', 'reference'), noteOf('n-proj', 'project'), noteOf('n-fb', 'feedback'), lesson, noteOf('n-user', 'user'), noteOf('n-untyped', 'untyped')]
+      const ids = async (): Promise<string[]> => (await mcp.memoryAnticipate({ task: 'the deploy fails with ENOENT', limit: 10 })).map((r: any) => r.id)
+
+      it('returns no saved note by default, only the lesson', async () => {
+        mem.memorySearch.mockResolvedValueOnce(hits() as never)
+        expect(await ids()).toEqual(['les1'])
+      })
+
+      it('returns the general kinds once notes may help in other projects, never a project or untyped note', async () => {
+        await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+        mem.memorySearch.mockResolvedValueOnce(hits() as never)
+        expect(await ids()).toEqual(['les1', 'n-ref', 'n-fb', 'n-user']) // by score: the lesson 0.9, the notes 0.8
+      })
+    })
+
+    it('a retracted note is not lent: the lending search goes through the same corrections', async () => {
+      backend()
+      await invoke('memory:set-notes-settings', { shareNotesAcrossProjects: true })
+      const { correctMemory, resetMemoryCorrections } = await import('../../src/main/memoryCorrectionStore')
+      resetMemoryCorrections()
+      correctMemory({ id: 'note1', kind: 'retract', reason: 'wrong', by: 'user' })
+      expect((await ask()).map((r: any) => r.id)).toEqual(['own1'])
+      resetMemoryCorrections()
+    })
+  })
+
+  describe('the freshness lane carries the project key, so a saved note reaches only its own project\'s primer', () => {
+    it('hands the primer the key of each recent entry', async () => {
+      mem.memoryList.mockResolvedValueOnce([{ id: 'r1', content: 'recent', kind: 'note', ts: 5, project: 'app', projectKey: 'pk:app', tags: [], agentId: 'a' }] as never)
+      const { buildContextPrimer } = await import('../../src/main/contextPrimer')
+      ;(buildContextPrimer as any).mockClear()
+      await invoke('memory:build-primer', { query: 'q', cwd: 'C:\\w\\app' })
+      const recent = (buildContextPrimer as any).mock.calls[0][1].recent
+      expect(await recent({ limit: 3, project: 'app' })).toEqual([expect.objectContaining({ id: 'r1', projectKey: 'pk:app' })])
+    })
+  })
+})
+
+// LAST in the file, on purpose: before-quit tears the module down (the memory host stops, the terminals are killed).
+describe('the saved-notes pass and the app quitting', () => {
+  it('ends its pass when the app quits: the pass is handed a quit signal that turns true at before-quit', async () => {
+    expect(typeof onBeforeQuit).toBe('function')
+    notesMock.runClaudeNotesIngest.mockClear()
+    await indexer.run()
+    const d = notesMock.runClaudeNotesIngest.mock.calls[notesMock.runClaudeNotesIngest.mock.calls.length - 1][0]
+    expect(d.stopped()).toBe(false)
+    onBeforeQuit!()
+    expect(d.stopped()).toBe(true)
   })
 })
