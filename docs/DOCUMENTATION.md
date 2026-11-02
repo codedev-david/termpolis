@@ -1253,7 +1253,8 @@ Agents get one MCP tool, `linked_machines`, with three actions:
   (`\\server\share`) are refused. A URL is refused before anything is sent (a
   clone URL can carry a token). A folder's name is not screened for
   credentials; where a refusal repeats one, anything in it that looks like a
-  credential is taken out first.
+  credential is taken out first, and a name with a control character in it
+  (one nobody types) is not repeated at all.
 - **`write: true`** works only if that machine lets this one edit.
 - **`model`** picks the agent's model there. By default the agent uses its own.
 
@@ -1412,9 +1413,9 @@ audit log.
     base64 under a private-key BEGIN line must decode to a private key's
     structure: PKCS#8, encrypted PKCS#8, PKCS#1 RSA, DSA, SEC1 EC, OpenSSH,
     OpenPGP or SSH2. An OpenVPN static key (its 2,048 random bits, as lines of
-    exactly 32 hex digits, or all 512 digits in one run) is removed too, and so is a legacy encrypted PEM key
+    exactly 32 hex digits, or all 512 digits in one run right under its BEGIN line) is removed too, and so is a legacy encrypted PEM key
     with its Proc-Type and DEK-Info lines. A key's lines count when they are
-    framed in any of these ways: indented, as string literals joined with `+`, `.`, `&`
+    framed in any of these ways: indented, as string literals (one to a line) joined with `+`, `.`, `&`
     or a newline constant, as `\n` escapes in a JSON string or one JSON string per
     line (with `/` or `+` escaped too, as PHP and .NET write them), behind comment
     or quote marks, in a diff (a coloured one too), behind `cat -n`, in grep or rg
@@ -1459,7 +1460,12 @@ audit log.
     BEGIN line; a test key whose body is made up; prose or code between a BEGIN
     and an END line; a placeholder JWK value (such as `REPLACE_ME`, or a name or
     description of a key such as `JWT_SIGNING_SECRET_BASE64URL`; named in the note
-    when it is written in a key's own characters); and base64 in a
+    when it is written in a key's own characters), and a JWK or `RSAKeyValue`
+    value that is base64 of a phrase a person typed (`my-super-secret-key`: a
+    sentence, a word that names a secret, a slug of words, a repeat; an `oct`
+    key's `k` that is a secret kept as text, such as the hex of `openssl rand
+    -hex 32`, base64 text, a generated password or a UUID, is removed); and
+    base64 in a
     format Termpolis can't check under a private-key BEGIN line. The note names
     the rules that matched.
   Both tiers write a line to the AI Security audit log on the computer that
@@ -1469,7 +1475,13 @@ audit log.
   Not recognised: a private key in a format Termpolis can't decode, or whose
   lines were re-wrapped to alternating widths (both reported, as above); a key
   written on one line with a `NAME=` in front of each of its lines (reported);
-  an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
+  a key written one `NAME=<line>` to a line when the name is 64 characters or
+  more; a key written on one line with a newline constant between its lines
+  (reported);
+  a key file URL-encoded twice, or with its base64 characters written as HTML
+  entities (`&#43;`); key lines that a few other layouts alter or break apart (a
+  word diff, a `git diff` that alternates context and changed lines, email
+  quoted-printable, `cat -A` of a tab-indented key); an SSH2, PuTTY or OpenVPN key file URL-encoded whole; a PuTTY key's
   private lines run together with no separator; a PKCS#12 (`.pfx`) file or a
   binary OpenPGP export in base64; a key file base64 encoded twice, or from
   UTF-16 text (Windows PowerShell's `>`); a JWK or an `RSAKeyValue` stored
@@ -1494,9 +1506,13 @@ audit log.
   still crossed between your two computers, sealed. Versions 1.50 to 1.53.0
   cut an answer to its end before screening it (1.50 to 1.52 don't screen it
   at all). A private key their cut ran through is still removed here if its
-  END line and 16 or more of its characters are in what arrived, and reported
-  if 80 or more of them arrived without its END line. Not so for a key written
-  all on one line, echoed into a file line by line or URL-encoded whole; for a
+  END line and a line of it, or the end of one, of 16 characters or more are
+  in what arrived, and reported if two or more of its lines of 8 characters or
+  more, 80 characters or more in all, arrived without its END line. Not so for
+  an OpenVPN static key or a PuTTY
+  key, which have no private-key END line to find the rest from (what arrived
+  of one crosses, with a note in some cuts and none in others); for a key
+  written all on one line, echoed into a file line by line or URL-encoded whole; for a
   key whose lines carry markup, colour codes or a blame prefix (a coloured
   `git diff`, `git blame`, HTML tags or table cells) or another language's
   string concatenation (SQL, Lua, MATLAB); for a listing of Windows paths in
