@@ -28,8 +28,9 @@ export interface ClassCounts {
 }
 export interface ElisionState {
   classes: Record<string, ClassCounts>
-  /** Redemptions of a token whose class nothing recorded: a stash written before v1.55, or one this
-   *  run never saw stored. Kept apart so the per-class rates stay exact. */
+  /** Redemptions of a token whose class nothing recorded: a stash written before v1.55, which carries no
+   *  class. A stash written by this version does, in the file that answers the redemption, so one from an
+   *  earlier launch is counted in its class. Kept apart so the per-class rates stay exact. */
   legacyRedeemed: number
 }
 

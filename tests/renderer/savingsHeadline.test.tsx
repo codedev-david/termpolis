@@ -67,6 +67,18 @@ describe('the all-time headline says how much of its history was netted', () => 
     expect(note).toHaveTextContent('This session’s figure is fully measured')
   })
 
+  // The caveat used to say the figure "settles as new traffic outweighs the old". For a ledger of 477,099
+  // responses at about 5,000 a day, new traffic would have to be 99 times the old before the notice cleared,
+  // so it never would; the notice says what is true, that the old history stays in the total as it was.
+  it('does not promise the figure will settle: the old history stays in the all-time total as it was', async () => {
+    serve({}, { requests: 477_099, turnRequests: 0 })
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-bill-coverage')
+    expect(note).toHaveTextContent('it stays higher: it carries that history as it was, and only what is added from now on is net')
+    expect(note).not.toHaveTextContent('settles')
+    expect(note).not.toHaveTextContent('outweighs')
+  })
+
   it('and says how far it has come once some were: 12,000 of 477,099', async () => {
     serve({}, { requests: 477_099, turnRequests: 12_000 })
     render(<TokenSavingsSettings />)
@@ -161,6 +173,14 @@ describe('what the headline claims to be', () => {
     render(<TokenSavingsSettings />)
     const head = await screen.findByTestId('hr-bill-avoided')
     expect(head.textContent).toBe('0')
+  })
+
+  it('writes a session figure that rounds to zero as 0 as well, in the same place', async () => {
+    // Math.round(-0.3) is -0, and (-0).toLocaleString() is "-0".
+    serve({ netSavedTokens: 0, grossSavedTokens: 0, retrievalTurnUnits: 0.3, retrievalTurns: 1 }, {})
+    render(<TokenSavingsSettings />)
+    const line = await screen.findByTestId('hr-unified-session')
+    expect(line.textContent).toBe('this session: 0 units')
   })
 })
 

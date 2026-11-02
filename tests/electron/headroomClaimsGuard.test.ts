@@ -46,6 +46,25 @@ describe('the README on Token Headroom', () => {
     expect(found).toBeGreaterThanOrEqual(2)
   })
 
+  // The check above only looks at a bullet that already carries one of the exact figures it lists, so a new
+  // bullet that promises the old thing in other words would pass it. These are the words the promise came in.
+  const PROMISE_WORDS = ['51%', 'at least half', 'half of your', '50% minimum', 'at least 50%']
+  /** A bullet that uses a word of the old promise and does not say it is about v1.34, Legacy or the holdout. */
+  const promisesTheOldFigure = (bullet: string): boolean => PROMISE_WORDS.some((w) => bullet.includes(w)) && !/v1\.34|Legacy|holdout/.test(bullet)
+
+  it('has no bullet that promises the old half-of-your-tool-text figure without saying which policy it is about', () => {
+    for (const bullet of headroomBullets()) expect(promisesTheOldFigure(bullet), bullet.slice(0, 90)).toBe(false)
+  })
+
+  it('and that rule is not vacuous: it fails a new unqualified bullet and passes the same words when they name Legacy', () => {
+    expect(promisesTheOldFigure('- **Saves you money.** Termpolis removes about 51% fewer tokens, at least half of your tool text, every time.')).toBe(true)
+    expect(promisesTheOldFigure('- **Half.** Saves at least half of your tool text.')).toBe(true)
+    expect(promisesTheOldFigure('- **A 50% minimum.** Always.')).toBe(true)
+    expect(promisesTheOldFigure('- **Legacy only.** Under the Legacy policy it removed at least half of your tool text.')).toBe(false)
+    expect(promisesTheOldFigure('- **Measured (v1.34).** About 51% fewer tokens.')).toBe(false)
+    expect(promisesTheOldFigure('- **Nothing of the sort.** It shortens large results.')).toBe(false)
+  })
+
   it('pins the sentences that say whose the old figures are, in full, so they cannot be reworded into the default\'s', () => {
     const measured = headroomBullets().find((b) => b.startsWith('- **Measured, not asserted'))
     expect(measured).toBeDefined()
@@ -96,7 +115,11 @@ describe('the README on Token Headroom', () => {
     expect(late).not.toContain('does less work per request, not more')
     expect(late).toContain('Speed is measured, not promised')
     expect(late).toContain('about eight times less')
-    expect(late).toContain('at most about 0.05 ms more on a request made only of small results')
+    // Per result and not per request: the added work grows with the number of results, so a fixed bound on a
+    // request is only true of a short one. About a microsecond each; 400 results of 300 characters measured
+    // 0.39 ms (legacy) and 0.50 ms (late) more, about 15% of a 2.5 ms rewrite.
+    expect(late).toContain('about one microsecond more for each tool result in a request made only of small ones (under half a millisecond for a request of 400 results)')
+    expect(late).not.toContain('0.05 ms')
   })
 
   it('says Legacy is v1.54 byte for byte only in its compression, since retrieve_full hands back the text itself under both', () => {

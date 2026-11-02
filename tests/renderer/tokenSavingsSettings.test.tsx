@@ -711,6 +711,24 @@ describe('TokenSavingsSettings - billed units avoided, net of retrieval turns', 
     expect(screen.getByTestId('hr-bill-parts')).toHaveTextContent('spent on 12 turns that only fetched elided text')
   })
 
+  it('gives the bill denominator as the same net percentage as the headline, not a gross one', async () => {
+    // Net: 9,500 / (155,500 + 9,500) = 5.76%, which the headline shows to a decimal and the caption rounds
+    // to 6. A gross figure would be 12,500 / (155,500 + 12,500) = 7.4%, which rounds to 7.
+    withTurns({ retrievalTurns: 12, retrievalTurnUnits: 3000 })
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-bill-avoided')
+    expect(screen.getByTestId('hr-bill-pct')).toHaveTextContent('5.8%')
+    expect(screen.getByTestId('hr-denom-cost')).toHaveTextContent('6%')
+  })
+
+  it('and when the turns cost more than the elision saved, the bill denominator goes negative with the headline', async () => {
+    withTurns({ retrievalTurns: 40, retrievalTurnUnits: 20_000 })
+    render(<TokenSavingsSettings />)
+    await screen.findByTestId('hr-bill-negative')
+    expect(screen.getByTestId('hr-bill-pct')).toHaveTextContent('-5.1%')
+    expect(screen.getByTestId('hr-denom-cost')).toHaveTextContent('-5%')
+  })
+
   it('says in words that it is net of the retrieval turns and what a unit is', async () => {
     withTurns({})
     render(<TokenSavingsSettings />)
@@ -726,6 +744,9 @@ describe('TokenSavingsSettings - billed units avoided, net of retrieval turns', 
     expect(await screen.findByTestId('hr-bill-avoided')).toHaveTextContent('-7,500') // 12,500 - 20,000
     expect(screen.getByTestId('hr-bill-pct')).toHaveTextContent('-5.1%') // -7,500 / (155,500 - 7,500)
     expect(screen.getByTestId('hr-bill-negative')).toHaveTextContent('cost more than eliding them saved')
+    // The card that says which kinds of result are asked back sits below the headline in the tab.
+    expect(screen.getByTestId('hr-bill-negative')).toHaveTextContent('the Elision health card below shows which kinds of result are being asked back')
+    expect(screen.getByTestId('hr-bill-negative')).not.toHaveTextContent('card above')
   })
 
   it('has no negative note when the turns cost less than the elision saved', async () => {
@@ -847,9 +868,16 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(n).toHaveTextContent('retrieve_full')
     expect(n).toHaveTextContent('cannot measure')
     expect(n).toHaveTextContent('quality')
-    // What the model sees: at least as much as under Legacy, and all of anything under the floor.
-    expect(n).toHaveTextContent('at least as much of every result as under Legacy, and the whole of every result under 40,000 characters')
+    // What the model sees: at least as much as under Legacy, and all of anything under the floor the first
+    // time it appears. Not "the whole of every result under 40,000 characters": a repeat is a reference, a
+    // near-repeat a patch, and old history ages out, under Late as under Legacy.
+    expect(n).toHaveTextContent('at least as much of every result as under Legacy, and every result under 40,000 characters whole the first time it appears')
+    expect(n).toHaveTextContent('a repeat of one already shown is a reference to it, a near-repeat a patch against it, and old history in a long conversation ages out, as under Legacy')
+    expect(n).not.toHaveTextContent('the whole of every result')
     expect(n).not.toHaveTextContent('never less')
+    // What the tier still does under Late, and the part of the result sizes it actually reaches.
+    expect(n).toHaveTextContent('Under Late the Aggressiveness setting only changes how hard a result of 40,000 characters or more is cut')
+    expect(n).toHaveTextContent('Claude Code already trims long command output to about 30,000 characters itself, so in practice Late mostly shortens large file reads and fetched pages')
     // The holdout, as it really is chosen, and where the card is.
     expect(n).toHaveTextContent('one distinct opening message in ten')
     expect(n).toHaveTextContent('Elision health card at the top of this tab')
@@ -863,6 +891,9 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     const s = await screen.findByTestId('hr-first-sight-status')
     expect(s).toHaveTextContent('Running: Late.')
     expect(s).not.toHaveTextContent('next time')
+    // A change of what is running is announced to a screen reader, and the status says whether it is waiting.
+    expect(s.getAttribute('role')).toBe('status')
+    expect(s.getAttribute('data-pending')).toBe('false')
   })
 
   it('says what is running and what will run when a change is waiting for the next start', async () => {

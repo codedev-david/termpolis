@@ -212,15 +212,15 @@ export function TokenSavingsSettings() {
             <div style={{ fontSize: 34, fontWeight: 700 }} data-testid="hr-bill-pct">{(bill?.totalBillSavedPct ?? 0) + 0}%</div>
             <div style={{ opacity: 0.7 }}>of what your usage would have cost</div>
             <div style={{ opacity: 0.7, fontSize: 13 }} data-testid="hr-unified-session">
-              this session: {fmt(Math.round(unified?.session.bill?.avoided ?? 0))} units
+              this session: {fmt(Math.round(unified?.session.bill?.avoided ?? 0) + 0)} units
             </div>
           </div>
         </div>
         {partlyNetted && (
           <div style={{ marginTop: 8, fontSize: 13, color: '#fbbf24' }} data-testid="hr-bill-coverage">
             Retrieval turns are counted from v1.55 on, and have been read for {fmt(responsesRead)} of the {fmt(responses)} responses behind this
-            all-time figure. Earlier history was never netted, so this number is higher than your bill supports, and it settles as new traffic
-            outweighs the old. This session’s figure is fully measured.
+            all-time figure. Earlier history was never netted, so this number is higher than your bill supports, and it stays higher: it carries
+            that history as it was, and only what is added from now on is net. This session’s figure is fully measured.
           </div>
         )}
         <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }} data-testid="hr-bill-note">
@@ -489,7 +489,11 @@ export function TokenSavingsSettings() {
               changes only which results are shortened: repeats are still collapsed, old history still ages out in a long
               conversation, and anything shortened can still be brought back with <code>retrieve_full</code>. Termpolis cannot measure
               the effect on the quality of answers on your work; under Late the model is shown at least as much of every result as under
-              Legacy, and the whole of every result under {LATE_FLOOR} characters.
+              Legacy, and every result under {LATE_FLOOR} characters whole the first time it appears (a repeat of one already shown is a
+              reference to it, a near-repeat a patch against it, and old history in a long conversation ages out, as under Legacy).
+              Under Late the Aggressiveness setting only changes how hard a result of {LATE_FLOOR} characters or more is cut. Claude Code
+              already trims long command output to about 30,000 characters itself, so in practice Late mostly shortens large file reads
+              and fetched pages.
               About one distinct opening message in ten always runs Legacy so the two can be compared. A change takes effect the next time
               Termpolis starts, because one proxy serves every Claude session of a run and a change in the middle would rewrite each
               session’s prompt cache.
@@ -498,11 +502,11 @@ export function TokenSavingsSettings() {
           <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-floor" type="checkbox" checked={settings.floorControl} onChange={() => update({ floorControl: !settings.floorControl })} />
             {' '}Under Legacy, hold a 50% savings floor — raise the tier automatically if the ledger shows it slipping{' '}
-            <span style={{ opacity: 0.6 }}>— only used when Legacy is what runs: Late removes less tool text on purpose, so it leaves the tier as selected. Only ever compresses harder than the setting above, never softer, and is decided at launch and frozen for the session (re-tiering mid-conversation would break the prompt cache)</span>
+            <span style={{ opacity: 0.6 }}>— only used when Legacy is what runs: Late removes less tool text on purpose, so it leaves the tier as selected. Only ever compresses harder than the Aggressiveness setting, never softer, and is decided at launch and frozen for the session (re-tiering mid-conversation would break the prompt cache)</span>
           </label>
           <label style={{ display: 'block', margin: '8px 0' }}>
             <input data-testid="hr-toggle-decay" type="checkbox" checked={settings.prefixDecay} onChange={() => update({ prefixDecay: !settings.prefixDecay })} />
-            {' '}Age out old history in very long conversations <span style={{ opacity: 0.6 }}>— on by default. Everything else here is free; this one pays a one-off prompt-cache rebuild to buy a smaller prefix on every later turn. It waits for 128 messages before the first cut, about 3x the ~44-turn break-even, and aged blocks stay recoverable with <code>retrieve_full</code>.</span>
+            {' '}Age out old history in very long conversations <span style={{ opacity: 0.6 }}>— on by default. Most of the rest here is free; this one pays a one-off prompt-cache rebuild to buy a smaller prefix on every later turn. It waits for 128 messages before the first cut, about 3x the ~44-turn break-even, and aged blocks stay recoverable with <code>retrieve_full</code>.</span>
           </label>
 
           <h4 style={{ margin: '18px 0 6px' }}>Output tokens <span style={{ fontWeight: 400, opacity: 0.65 }}>— what Claude writes back (billed 5× input)</span></h4>
@@ -574,8 +578,12 @@ export function TokenSavingsSettings() {
                 the compression proxy. Termpolis sets Claude Code’s own <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> variable, and never overrides a
                 window you set yourself: in your environment, in the env block of your Claude Code <code>settings.json</code>, or with{' '}
                 <code>/autocompact</code>. It cannot see a <code>--autocompact</code> flag typed on a command line, and Claude Code lets this variable
-                win over that flag, so to use the flag turn this Off first. It also wins over a window set in a subagent’s definition, in a{' '}
-                <code>--settings</code> argument, or by your organization’s managed settings, none of which Termpolis can read. To tell, it reads
+                win over that flag, so to use the flag turn this Off first. It also wins over a window saved in a subagent’s definition, in a{' '}
+                <code>--settings</code> argument, or in your organization’s managed settings, none of which Termpolis can read; an <code>env</code>{' '}
+                entry in the last two that sets the variable itself is different, and wins over this setting. If you also set{' '}
+                <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code>, it is a percentage of the window in force, so with a smaller window compaction comes
+                sooner than you chose. A Claude session the Workflow Orchestrator’s agent steps start themselves gets neither this variable nor
+                the proxy route. To tell, it reads
                 the window variable in the env block, and any saved window, of your Claude Code settings files (your own, and the project’s in the
                 folder a terminal opens in) when a terminal opens, and nothing else in them. A file it cannot read for a moment is tried once more,
                 and if it still cannot be read the window is left unset, because Termpolis cannot tell. Terminals that swarm workers, agents and a paired

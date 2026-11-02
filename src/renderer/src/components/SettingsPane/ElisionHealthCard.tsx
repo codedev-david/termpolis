@@ -8,8 +8,14 @@ const pctText = (n: number | null): string => (n === null ? '—' : `${Math.roun
 const TOP_ROWS = 8
 /** Mirrors MIN_SAMPLES in src/main/headroom/elisionHealth.ts — the card names the real floor. */
 const MIN_SAMPLES = 30
-/** Mirrors UNITS_PER_KEPT_TOKEN, ASSUMED_TURN_UNITS and MIN_TURNS_MEASURED in the same file. */
+/** Mirrors UNITS_PER_KEPT_TOKEN in src/main/headroom/elisionHealth.ts. */
 const UNITS_PER_KEPT_TOKEN = 11
+/** Mirrors ASSUMED_TURN_UNITS in the same file: what the break-even charges a retrieval turn until it has measured some. */
+const ASSUMED_TURN_UNITS = 16800
+/** Mirrors MIN_TURNS_MEASURED in the same file. */
+const MIN_TURNS_MEASURED = 20
+/** Mirrors CHARS_PER_TOKEN in the same file. */
+const CHARS_PER_TOKEN = 4
 /** Mirrors LATE_FLOOR_CHARS in src/main/headroom/elisionPolicy.ts. */
 const LATE_FLOOR = '40,000'
 /** Mirrors DECAY_FIRST_THRESHOLD in src/main/headroomProxy/prefixDecay.ts. */
@@ -71,7 +77,7 @@ function OldBehaviour({ o }: { o: FirstSightSummaryView | null }) {
   const units = `${fmt(Math.abs(o.netUnits))} billed units`
   return (
     <div data-testid="hr-elision-old" data-verdict={o.verdict} style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
-      For comparison, the conversations kept on the old behaviour (the holdout) have results shortened at first sight from 1,600 characters up (the default tier&rsquo;s floor).
+      For comparison, the conversations kept on the old behaviour (the holdout, and any earlier run on the Legacy setting) have results shortened at first sight from the size of the tier&rsquo;s floor up.
       Over {basisText(o)} that {o.verdict === 'costs' ? 'cost' : 'saved'} about {units}: {rateText(o)}. This is not what your setting does.
     </div>
   )
@@ -88,7 +94,8 @@ function Turns({ t }: { t: ElisionHealthView['turns'] }) {
     <div data-testid="hr-elision-turns" style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
       Retrieval turns: <b>{fmt(t.count)}</b> {t.count === 1 ? 'turn' : 'turns'} that only fetched elided text
       {t.sharePct !== null && <> ({share})</>} cost <b>{fmt(Math.round(t.units))} billed units</b>,
-      about {fmt(t.unitsPerTurn)} each ({t.costBasis}).
+      about {fmt(Math.round(t.units / t.count))} each.
+      {t.costBasis === 'assumed' && <> The break-even in the table does not use that yet: until it has seen {MIN_TURNS_MEASURED} such turns it charges {fmt(ASSUMED_TURN_UNITS)} billed units for each.</>}
       {t.hops > 0 && <> {fmt(t.hops)} of them {t.hops === 1 ? 'was' : 'were'} preceded by a turn that only loaded the tool (Claude Code keeps it deferred behind ToolSearch); that turn is in the cost.</>}
       {' '}Each re-reads the whole cached prefix, which is why one costs far more than the text it brings back.
       {t.shareBasis === 'could-ask' && t.unaskable > 0 && <> {fmt(t.unaskable)} {t.unaskable === 1 ? 'response' : 'responses'} came from requests with no way to ask, and {t.unaskable === 1 ? 'is' : 'are'} left out of the rate.</>}
@@ -102,16 +109,21 @@ const RED = '#f87171'
 const num1 = (n: number | null): string => (n === null ? '—' : fmt(n))
 const groupsText = (n: number): string => `${n} ${n === 1 ? 'group' : 'groups'}`
 
-function ArmVerdictLine({ a }: { a: ArmComparisonView }) {
+function ArmVerdictLine({ a, policy }: { a: ArmComparisonView; policy: 'late' | 'legacy' }) {
   const delta = a.costDeltaPct ?? 0
   const margin = a.costMarginPct ?? 0
   const give = `give or take ${margin} points at 99% confidence`
   let text: string
   let color = 'inherit'
   if (a.verdict === 'not-enough-data') {
+    // Only requests of the Legacy setting so far. What the sentence says depends on the policy in force
+    // and not on the ledger, which outlives the setting: a run on Late that follows one on Legacy has
+    // none of its own yet, and has to say so rather than say it is on Legacy.
     const onlyLegacy = a.late.requests === 0 && a.holdout.requests === 0 && a.legacy.requests > 0
     text = onlyLegacy
-      ? `This run is on the Legacy setting, so every request ran the old behaviour and there is nothing to compare (${fmt(a.legacy.requests)} requests so far).`
+      ? (policy === 'legacy'
+        ? `This run is on the Legacy setting, so every request ran the old behaviour and there is nothing to compare (${fmt(a.legacy.requests)} requests so far).`
+        : `No request has run under Late in this ledger yet; the ${fmt(a.legacy.requests)} ${a.legacy.requests === 1 ? 'request' : 'requests'} from the Legacy setting ${a.legacy.requests === 1 ? 'is' : 'are'} not compared.`)
       : `Not enough data yet to compare. It needs at least ${fmt(a.minRequests)} requests in each arm, from at least ${MIN_ARM_GROUPS} different groups of conversations. So far: late ${fmt(a.late.requests)} requests in ${groupsText(a.late.groups)}, the holdout ${fmt(a.holdout.requests)} in ${groupsText(a.holdout.groups)}.`
   } else if (a.verdict === 'late-cheaper') {
     color = '#4ade80'
@@ -170,13 +182,13 @@ function ArmRow({ id, label, s, note }: { id: string; label: string; s: ArmSumma
  * person's own work, and so can the thing that matters more: that it did not cost anything. This is
  * the card's answer, with the margin stated and a plain "not enough data yet" until there is some.
  */
-function Arms({ a }: { a: ArmComparisonView }) {
+function Arms({ a, policy }: { a: ArmComparisonView; policy: 'late' | 'legacy' }) {
   const total = a.late.requests + a.holdout.requests
   const holdoutShare = total > 0 ? Math.round((a.holdout.requests / total) * 100) : null
   return (
     <div data-testid="hr-arms" style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid #8883' }}>
       <div style={{ fontWeight: 600 }}>Late compared with the holdout <span style={{ fontWeight: 400, opacity: 0.65 }}>— conversations split at random, compared on cost per working request</span></div>
-      <ArmVerdictLine a={a} />
+      <ArmVerdictLine a={a} policy={policy} />
       <ArmTurnsLine a={a} />
       <table data-testid="hr-arms-table" aria-label="Late compared with the holdout" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginTop: 8 }}>
         <thead>
@@ -200,6 +212,9 @@ function Arms({ a }: { a: ArmComparisonView }) {
         without counting them as work, and is the figure the verdict uses. The margin is measured between groups of conversations, not between
         requests, because the requests of one conversation cost alike; nothing is claimed before there are at least {fmt(a.minRequests)} requests
         and {MIN_ARM_GROUPS} groups on each side, and a verdict needs a gap that a 99% interval cannot explain, because this card is read again and again.
+        The margin is deliberately wider than a plain 99% interval, because the holdout is small and its costs lean one way: on simulated arms
+        that were the same it named a difference falsely in fewer than 1 read in 100, and a plain 99% interval did so 3 to 6 times as often when
+        it said Late cost more. The price is that it takes about 1.8 times the data to name a real difference.
         A difference in cost takes many conversations to read; the retrieval-turn lines settle first. This compares cost and round trips.
         It cannot see the quality of an answer; under late the model is shown the whole of a result where the holdout is shown a window of it.
       </div>
@@ -330,7 +345,7 @@ export function ElisionHealthCard() {
           )}
 
           <Turns t={view.turns} />
-          <Arms a={view.arms} />
+          <Arms a={view.arms} policy={view.firstSight.policy} />
           {view.agedEarly.requests > 0 || view.agedEarly.stubs > 0 ? (
             <div data-testid="hr-elision-aged-early" style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>
               Aged-out stubs in conversations shorter than {DECAY_FIRST} messages: {fmt(view.agedEarly.requests)} {view.agedEarly.requests === 1 ? 'request' : 'requests'}
@@ -340,13 +355,16 @@ export function ElisionHealthCard() {
           ) : null}
           {view.legacyRedeemed > 0 && (
             <div data-testid="hr-elision-legacy" style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-              {fmt(view.legacyRedeemed)} {view.legacyRedeemed === 1 ? 'retrieval was' : 'retrievals were'} of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes {view.legacyRedeemed === 1 ? 'it' : 'them'}.
+              {fmt(view.legacyRedeemed)} {view.legacyRedeemed === 1 ? 'retrieval was' : 'retrievals were'} of text elided before this version counted by kind, so no row above includes {view.legacyRedeemed === 1 ? 'it' : 'them'}.
             </div>
           )}
           <div data-testid="hr-elision-estimate" style={{ marginTop: 8, fontSize: 12, opacity: 0.65 }}>
             The counts and rates are measured; the break-even and the verdict are an estimate. It values a token that stays in the
             conversation at {UNITS_PER_KEPT_TOKEN} billed units (its cache write plus a tenth of a unit for every response that re-reads it),
-            counts four characters to a token, and charges a retrieval turn what the ledger has measured, or the research&rsquo;s 16,800 units until it has seen 20.
+            counts {CHARS_PER_TOKEN} characters to a token, and charges a retrieval turn what the ledger has measured, or the research&rsquo;s {fmt(ASSUMED_TURN_UNITS)} units until it has seen {MIN_TURNS_MEASURED}.
+            A turn that only loaded the tool through ToolSearch is matched to the retrieval turn after it by the conversation&rsquo;s opening
+            message, so when conversations that open with the same message run at the same time (parallel subagents, say) it can be missed,
+            and the retrieval-turn figures are a lower bound there.
           </div>
         </>
       )}

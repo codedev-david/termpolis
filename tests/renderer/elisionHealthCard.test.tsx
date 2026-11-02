@@ -182,18 +182,31 @@ describe('Elision health card — regime, turns and notes', () => {
     expect(t).toHaveTextContent('230 turns that only fetched elided text')
     expect(t).toHaveTextContent('23% of responses')
     expect(t).toHaveTextContent('3,910,000 billed units')
-    expect(t).toHaveTextContent('17,000')
-    expect(t).toHaveTextContent('measured')
+    expect(t).toHaveTextContent('about 17,000 each.')
+    // Measured enough: the table uses the measured cost, so there is no assumption to state.
+    expect(t).not.toHaveTextContent('charges')
+    expect(t).not.toHaveTextContent('assumed')
   })
 
-  it('says the cost per turn is an assumption until enough turns have been seen', async () => {
+  it('says what the break-even charges instead, until enough turns have been seen, and prints the measured cost beside the measured total', async () => {
     serve(view({ turns: { count: 4, units: 70_000, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 0, observed: 90, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: 4.4 } }))
     render(<ElisionHealthCard />)
     const t = await screen.findByTestId('hr-elision-turns')
     expect(t).toHaveTextContent('4 turns')
     expect(t).toHaveTextContent('4.4% of responses')
-    expect(t).toHaveTextContent('assumed')
-    expect(t).toHaveTextContent('16,800')
+    expect(t).toHaveTextContent('cost 70,000 billed units, about 17,500 each.')
+    expect(t).toHaveTextContent('The break-even in the table does not use that yet: until it has seen 20 such turns it charges 16,800 billed units for each.')
+  })
+
+  it('does not set an assumed figure beside a measured total: 12 turns that cost 94,000 units are 7,833 each, and the 16,800 is the table\'s', async () => {
+    // The sentence used to read "cost 94,000 billed units, about 16,800 each (assumed)": 94,000 / 12 is not 16,800.
+    serve(view({ turns: { count: 12, units: 94_000, unitsPerTurn: 16_800, costBasis: 'assumed', hops: 4, observed: 87, askable: 0, unaskable: 0, shareBasis: 'responses', sharePct: 13.8 } }))
+    render(<ElisionHealthCard />)
+    const t = await screen.findByTestId('hr-elision-turns')
+    expect(t).toHaveTextContent('cost 94,000 billed units, about 7,833 each.')
+    expect(t).not.toHaveTextContent('16,800 each')
+    expect(t).not.toHaveTextContent('(assumed)')
+    expect(t).toHaveTextContent('it charges 16,800 billed units for each')
   })
 
   it('says there are none yet rather than showing zeros', async () => {
@@ -255,14 +268,16 @@ describe('Elision health card — regime, turns and notes', () => {
     expect(await screen.findByTestId('hr-elision-turns')).not.toHaveTextContent('only loaded the tool')
   })
 
-  it('notes the redemptions of text the ledger could not class (older versions, earlier launches), only when there are some', async () => {
+  it('notes the redemptions of text the ledger could not class (stored by an older version), only when there are some', async () => {
     serve(view({ legacyRedeemed: 1234 }))
     const { unmount } = render(<ElisionHealthCard />)
-    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1,234 retrievals were of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes them')
+    // An earlier launch of this version is not in the sentence: its stash carries the class, so those are counted in their rows.
+    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1,234 retrievals were of text elided before this version counted by kind, so no row above includes them')
+    expect(screen.getByTestId('hr-elision-legacy')).not.toHaveTextContent('earlier launch')
     unmount()
     serve(view({ legacyRedeemed: 1 }))
     const one = render(<ElisionHealthCard />)
-    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1 retrieval was of text elided before this version counted by kind, or in an earlier launch of the app, so no row above includes it')
+    expect(await screen.findByTestId('hr-elision-legacy')).toHaveTextContent('1 retrieval was of text elided before this version counted by kind, so no row above includes it')
     one.unmount()
     serve(view({ legacyRedeemed: 0 }))
     render(<ElisionHealthCard />)
@@ -276,11 +291,32 @@ describe('Elision health card — regime, turns and notes', () => {
     const note = await screen.findByTestId('hr-elision-estimate')
     expect(note).toHaveTextContent('estimate')
     expect(note).toHaveTextContent('11 billed units')
-    expect(note).toHaveTextContent('four characters')
+    expect(note).toHaveTextContent('counts 4 characters to a token')
+    expect(note).toHaveTextContent('or the research’s 16,800 units until it has seen 20.')
+  })
+
+  it('says how the loading turn is matched to the retrieval turn, and that interleaved conversations with the same opening can leave one uncharged', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const note = await screen.findByTestId('hr-elision-estimate')
+    expect(note).toHaveTextContent('matched to the retrieval turn after it by the conversation’s opening message')
+    expect(note).toHaveTextContent('conversations that open with the same message run at the same time')
+    expect(note).toHaveTextContent('the retrieval-turn figures are a lower bound there')
   })
 })
 
 describe('Elision health card — states and controls', () => {
+  it('explains each column of the table in its header, the first as counting a result sent in several conversations once', async () => {
+    serve(view())
+    render(<ElisionHealthCard />)
+    const table = await screen.findByTestId('hr-elision-table')
+    const titles = Array.from(table.querySelectorAll('th')).map((h) => h.getAttribute('title') ?? '')
+    expect(titles).toContain('Distinct results of this kind elided, all time. A result sent in several conversations counts once.')
+    expect(titles).toContain('Share of those distinct results the model later asked for back, all time')
+    expect(titles).toContain('The asked-back rate above which eliding this kind at first sight loses money')
+    expect(titles.some((t) => t.startsWith('The same over the last 2,000 elisions of this run'))).toBe(true)
+  })
+
   it('shows an empty state before anything has been elided', async () => {
     serve(view({ classes: [], elided: 0, redeemed: 0, firstSight: { verdict: 'unknown', basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 } }))
     render(<ElisionHealthCard />)
@@ -383,6 +419,31 @@ describe('Elision health card — late compared with the holdout', () => {
     expect(v.getAttribute('data-verdict')).toBe('not-enough-data')
   })
 
+  // The arm ledger outlives the setting. A run on Late that follows one on Legacy starts with Legacy history
+  // and none of its own, and the sentence has to be about the policy in force, not about the ledger.
+  it('does not say the run is on Legacy when Late is in force and the ledger holds only the history of a Legacy run', async () => {
+    const lateInForce = { policy: 'late' as const, verdict: 'unknown' as const, basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 }
+    serve(view({ firstSight: lateInForce, arms: arms({ legacy: arm({ requests: 4_000, working: 3_100, turns: 900, groups: 1, sharePct: 22.5 }) }) }))
+    const { unmount } = render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('No request has run under Late in this ledger yet; the 4,000 requests from the Legacy setting are not compared.')
+    expect(v).not.toHaveTextContent('This run is on the Legacy setting')
+    expect(v.getAttribute('data-verdict')).toBe('not-enough-data')
+    unmount()
+    serve(view({ firstSight: lateInForce, arms: arms({ legacy: arm({ requests: 1, working: 1, turns: 0, groups: 1, sharePct: 0 }) }) }))
+    render(<ElisionHealthCard />)
+    expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('the 1 request from the Legacy setting is not compared.')
+  })
+
+  it('still says the run is on Legacy when Legacy is in force, and compares nothing', async () => {
+    const legacyInForce = { policy: 'legacy' as const, verdict: 'unknown' as const, basis: null, elided: 0, ratePct: null, breakEvenPct: null, netUnits: 0 }
+    serve(view({ firstSight: legacyInForce, arms: arms({ legacy: arm({ requests: 4_000, working: 3_100, turns: 900, groups: 1, sharePct: 22.5 }) }) }))
+    render(<ElisionHealthCard />)
+    const v = await screen.findByTestId('hr-arms-verdict')
+    expect(v).toHaveTextContent('This run is on the Legacy setting, so every request ran the old behaviour and there is nothing to compare (4,000 requests so far).')
+    expect(v).not.toHaveTextContent('No request has run under Late')
+  })
+
   it('says late is cheaper, by how much and with what margin', async () => {
     serve(view({ arms: arms({ late, holdout, verdict: 'late-cheaper', costDeltaPct: -13.5, costMarginPct: 6.2, turnVerdict: 'fewer', shareDeltaPts: -19.4, shareMarginPts: 7.1 }) }))
     render(<ElisionHealthCard />)
@@ -399,6 +460,8 @@ describe('Elision health card — late compared with the holdout', () => {
     const v = await screen.findByTestId('hr-arms-verdict')
     expect(v.getAttribute('data-verdict')).toBe('late-costlier')
     expect(v).toHaveTextContent('Late is costing more')
+    // Where to act on it: the setting is named by its label, not by "the setting above", and the delay is stated.
+    expect(v).toHaveTextContent('You can switch to Legacy in Settings > Token Savings > Shorten tool results; it applies the next time Termpolis starts.')
     expect(v).toHaveTextContent('9.8% more billed units per unit of work')
     expect(v).toHaveTextContent('give or take 4.1 points')
     expect(v).toHaveTextContent('Legacy')
@@ -574,7 +637,10 @@ describe('Elision health card — the verdict is about the policy in force', () 
     render(<ElisionHealthCard />)
     const old = await screen.findByTestId('hr-elision-old')
     expect(old).toHaveTextContent('conversations kept on the old behaviour')
-    expect(old).toHaveTextContent('from 1,600 characters')
+    // The old behaviour is the holdout and also any earlier run on the Legacy setting, and its floor is the tier's own.
+    expect(old).toHaveTextContent('(the holdout, and any earlier run on the Legacy setting)')
+    expect(old).toHaveTextContent('from the size of the tier’s floor up')
+    expect(old).not.toHaveTextContent('1,600')
     expect(old).toHaveTextContent('cost about 579,820 billed units')
     expect(old).toHaveTextContent('asked for 80% of them back')
     expect(old).toHaveTextContent('35%')
@@ -693,6 +759,15 @@ describe('Elision health card — late against the holdout, read at 99%', () => 
     serve(view({ arms: arms({ late: arm(side), holdout: arm(hold), verdict: 'late-cheaper', costDeltaPct: -13.5, costMarginPct: 6.2 }) }))
     render(<ElisionHealthCard />)
     expect(await screen.findByTestId('hr-arms-verdict')).toHaveTextContent('give or take 6.2 points at 99% confidence')
+  })
+
+  it('says the margin is wider than a plain 99% interval, why, how often it then names a difference falsely, and what that costs in data', async () => {
+    serve(view({ arms: arms({ late: arm(side), holdout: arm(hold) }) }))
+    render(<ElisionHealthCard />)
+    const note = await screen.findByTestId('hr-arms-note')
+    expect(note).toHaveTextContent('The margin is deliberately wider than a plain 99% interval, because the holdout is small and its costs lean one way')
+    expect(note).toHaveTextContent('on simulated arms that were the same it named a difference falsely in fewer than 1 read in 100')
+    expect(note).toHaveTextContent('it takes about 1.8 times the data to name a real difference')
   })
 
   it('says how much more data would settle a gap it cannot yet', async () => {

@@ -16,7 +16,11 @@
  * `late` therefore leaves a tool result whole until it reaches 40,000 characters and shortens it
  * from there exactly as before. Everything else Token Headroom does (collapsing a repeat or a
  * near-repeat within one request, ageing out old history in a long conversation, scaling images) is
- * outside this choice and unchanged. `legacy` adds no floor of its own and is v1.54 to the byte.
+ * outside this choice and unchanged in kind. One outcome does differ, and in the model's favour: a
+ * near-repeat under the floor is replaced by a patch against the earlier copy whenever that is shorter
+ * than the whole text, where `legacy` replaced it by the head and tail window unless the patch was
+ * shorter than the window, so the model is shown more of such a result. `legacy` adds no floor of its
+ * own and is v1.54 to the byte.
  *
  * `late` only ever RAISES the floor: the one in force is the larger of the tier's own (1,600
  * characters at Aggressive) and the policy's, so a policy can never shorten more than the tier would

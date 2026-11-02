@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { LATE_FLOOR_CHARS } from '../../src/main/headroom/elisionPolicy'
-import { MIN_SAMPLES, UNITS_PER_KEPT_TOKEN } from '../../src/main/headroom/elisionHealth'
+import { MIN_SAMPLES, UNITS_PER_KEPT_TOKEN, ASSUMED_TURN_UNITS, MIN_TURNS_MEASURED, CHARS_PER_TOKEN } from '../../src/main/headroom/elisionHealth'
 import { MIN_ARM_GROUPS } from '../../src/main/headroom/armCompare'
 import { DECAY_FIRST_THRESHOLD } from '../../src/main/headroomProxy/prefixDecay'
 import { CCR_MAX_BYTES } from '../../src/main/headroom/ccrStore'
@@ -43,6 +43,21 @@ describe('the renderer quotes the numbers the main process uses', () => {
     expect(num(card, 'MIN_SAMPLES')).toBe(MIN_SAMPLES)
     expect(num(card, 'UNITS_PER_KEPT_TOKEN')).toBe(UNITS_PER_KEPT_TOKEN)
     expect(num(card, 'MIN_ARM_GROUPS')).toBe(MIN_ARM_GROUPS)
+  })
+
+  it('what a retrieval turn is charged until some have been measured, how many that takes, and characters to a token', () => {
+    // These three are quoted in the card as plain text in the estimate note and beside the turns, so a change
+    // to the model has to reach the words.
+    expect(num(card, 'ASSUMED_TURN_UNITS')).toBe(ASSUMED_TURN_UNITS)
+    expect(num(card, 'MIN_TURNS_MEASURED')).toBe(MIN_TURNS_MEASURED)
+    expect(num(card, 'CHARS_PER_TOKEN')).toBe(CHARS_PER_TOKEN)
+  })
+
+  it('the card uses them where it states them, and does not write the numbers a second time', () => {
+    expect(card).toContain('{fmt(ASSUMED_TURN_UNITS)}')
+    expect(card).toContain('{MIN_TURNS_MEASURED}')
+    expect(card).toContain('{CHARS_PER_TOKEN} characters to a token')
+    for (const stale of ['16,800', 'seen 20', 'four characters', '1,600 characters']) expect(card, stale).not.toContain(stale)
   })
 
   it('the message the ageing-out pass waits for', () => {
