@@ -403,6 +403,26 @@ vi.mock('../../src/main/agentMcpRegistry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/main/agentMcpRegistry')>()),
   resolveNodeRunner: H.resolveNodeRunner,
 }))
+// The real compression-proxy supervisor, with the pushes the boot makes to it written down in the order they
+// arrive. Only the recording is added: the launch tier is resolved from the first-sight policy, so the policy
+// has to be handed over first, and nothing else observes that order (the boot block cannot run in the suites
+// that mock the supervisor whole).
+const PROXY = vi.hoisted(() => ({ pushes: [] as string[] }))
+vi.mock('../../src/main/headroomProxy/proxySupervisor', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/main/headroomProxy/proxySupervisor')>()
+  const recorded = <A extends unknown[], R>(name: string, fn: (...a: A) => R) => (...a: A): R => {
+    PROXY.pushes.push(`${name}:${String(a[0])}`)
+    return fn(...a)
+  }
+  return {
+    ...real,
+    setProxyFirstSight: recorded('firstSight', real.setProxyFirstSight),
+    setProxyMode: recorded('mode', real.setProxyMode),
+    setProxyThinkingCap: recorded('thinkingCap', real.setProxyThinkingCap),
+    setProxyDecay: recorded('decay', real.setProxyDecay),
+    setProxyEnabled: recorded('enabled', real.setProxyEnabled),
+  }
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -772,5 +792,54 @@ describe('--disconnect-agents', () => {
     expect(errorSpy).toHaveBeenCalledWith('Could not disconnect agents:', 'HOME is not set')
     expect(H.appExit).toHaveBeenCalledTimes(1)
     expect(H.appExit).toHaveBeenCalledWith(0)
+  })
+})
+
+// The compression proxy's launch policy (R1 criterion 7 and the first-sight policy of R2): index.ts hands the
+// saved setting to the proxy before anything is resolved from it, and says once which tier that makes. This
+// is the one suite that runs the boot block for real, on a real folder, so it is where the order can be seen.
+describe('the compression proxy at launch', () => {
+  /** A fresh index.ts, with the headroom settings file holding `saved` (null: no file, as on a first run). */
+  async function launch(saved: Record<string, unknown> | null) {
+    PROXY.pushes.length = 0
+    vi.resetModules()
+    // A run resolves the policy once and keeps it, and this file has already booted: start from a run that has not.
+    ;(await import('../../src/main/headroomProxy/proxySupervisor'))._resetProxyForTest()
+    const fs = await import('fs')
+    vi.mocked(fs.readFileSync).mockImplementation(
+      ((p: unknown) => (saved && String(p).endsWith('headroom-settings.json') ? JSON.stringify(saved) : '{}')) as never,
+    )
+    await import('../../src/main/index')
+    const log = await import('../../src/main/appLog')
+    const tierLines = () => log.readAppLog(5000).map((e) => e.msg).filter((m) => m.startsWith('[headroom] wire tier at launch'))
+    await vi.waitFor(() => expect(tierLines()).not.toHaveLength(0), { timeout: 15_000, interval: 20 })
+    const sup = await import('../../src/main/headroomProxy/proxySupervisor')
+    return { sup, tierLines }
+  }
+
+  it('hands the proxy the first-sight policy first and the tier after it, then logs the tier once', async () => {
+    const { sup, tierLines } = await launch(null)
+    expect(PROXY.pushes.map((p) => p.split(':')[0])).toEqual(['firstSight', 'mode', 'thinkingCap', 'decay', 'enabled'])
+    expect(PROXY.pushes[0]).toBe('firstSight:late') // the default for an install that never chose
+    expect(sup.getProxyFirstSight()).toBe('late')
+    expect(tierLines()).toHaveLength(1)
+    expect(tierLines()[0]).toContain('eliding tool results of 40,000 characters or more')
+    expect(tierLines()[0]).toContain('first-sight policy late')
+  })
+
+  it('hands it the saved Legacy choice, not a constant, and the log says the tier that policy makes', async () => {
+    const { sup, tierLines } = await launch({ firstSightElision: 'legacy' })
+    expect(PROXY.pushes[0]).toBe('firstSight:legacy')
+    expect(PROXY.pushes.map((p) => p.split(':')[0])).toEqual(['firstSight', 'mode', 'thinkingCap', 'decay', 'enabled'])
+    expect(sup.getProxyFirstSight()).toBe('legacy')
+    expect(tierLines()).toHaveLength(1)
+    expect(tierLines()[0]).toContain('eliding tool results of 1,600 characters or more')
+    expect(tierLines()[0]).toContain('first-sight policy legacy')
+  })
+
+  it('reads a damaged choice as the default and never lets the boot stop over it', async () => {
+    const { sup, tierLines } = await launch({ firstSightElision: 'sometimes' })
+    expect(sup.getProxyFirstSight()).toBe('late')
+    expect(tierLines()).toHaveLength(1)
   })
 })

@@ -4,9 +4,12 @@ import { join } from 'path'
 
 /**
  * The resolved wire tier is logged once at launch, from the main process (R1 criterion 7). The
- * boot block that does it sits behind `fileURLToPath(new URL(..., import.meta.url))`, which throws
- * under vitest, so no suite can run it; this holds its shape at the source instead, the way
- * noWholeFileJsonlRead holds its. What the line SAYS is tested in headroomWireTier.test.ts.
+ * boot block that does it cannot run in the suites that mock the supervisor or the folder (cov-main-index
+ * gets a string for app.getPath, and the block throws before it), so this holds its shape at the source
+ * the way noWholeFileJsonlRead holds its. The block DOES run, for real and on a real folder, in
+ * mainAgentIntegrationIpc.test.ts ('the compression proxy at launch'), which pins what it does: the
+ * order of the pushes, the saved policy it hands over, and the one line it logs. What the line SAYS is
+ * tested in headroomWireTier.test.ts.
  */
 
 const SRC = join(__dirname, '..', '..', 'src', 'main')

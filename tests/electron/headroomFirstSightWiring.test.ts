@@ -3,12 +3,13 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 
 /**
- * How the main process hands the first-sight policy to the proxy. The boot block that does it sits
- * behind `fileURLToPath(new URL(..., import.meta.url))`, which throws under vitest, so no suite can
- * run it (the launch tier log is held the same way, in headroomTierLogWiring.test.ts); what it does
- * is tested where it lands (headroomFirstSightTransport, headroomFirstSightSettings) and its shape is
- * held here at the source. The settings-change handler and the status handler ARE run, in
- * cov-main-index.test.ts.
+ * How the main process hands the first-sight policy to the proxy. The boot block that does it cannot
+ * run in the suites that mock the supervisor or the folder (the launch tier log is held the same way,
+ * in headroomTierLogWiring.test.ts), so its shape is held here at the source. What it does is pinned
+ * where it runs for real: mainAgentIntegrationIpc.test.ts ('the compression proxy at launch') checks the
+ * order of the pushes and that the saved policy, not a constant, is handed over; the effect is tested
+ * where it lands (headroomFirstSightTransport, headroomFirstSightSettings). The settings-change handler
+ * and the status handler ARE run, in cov-main-index.test.ts.
  */
 
 const SRC = join(__dirname, '..', '..', 'src', 'main')
