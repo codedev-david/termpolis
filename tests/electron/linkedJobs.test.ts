@@ -319,7 +319,7 @@ describe('peerRun working folder', () => {
     )
     // Control characters are never a path, and nothing of a folder with one is echoed back (not even the rest of it).
     await expect(start(h, FROM, META, { cwd: `${REPO}\u0000\u001b[2J` })).rejects.toThrow(
-      'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control characters]',
+      'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control or invisible characters]',
     )
   })
 
@@ -403,7 +403,7 @@ describe('peerRun working folder', () => {
     // can show nothing, wherever the cut to 200 characters would fall (k7b). Masking the two halves one after the other did not
     // do it: a rule that takes the first half alone (`sk-` and 20 characters of an Anthropic key, an `xoxb-` token's first part)
     // masked it, and the second half, rejoined, matched nothing and showed about half of the key.
-    const NOT_SHOWN = 'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control characters]'
+    const NOT_SHOWN = 'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control or invisible characters]'
     const families: Record<string, string> = {
       'a GitHub token': token,
       'an Anthropic key': `sk-ant-api03-${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(3)}`.slice(0, 108),
@@ -438,6 +438,47 @@ describe('peerRun working folder', () => {
     // A folder that can't be masked is not repeated at all.
     const broken = await refusal(`relative/${token}`, { mask: () => { throw new Error('mask broke') } })
     expect(broken).toBe(`cwd must be an absolute folder path on linux, or start with ~: ${WITHHELD}`)
+  })
+
+  it('withholds a folder name at each end of the two ranges of control characters, and shows the characters next to them', async () => {
+    const refusal = async (cwd: string): Promise<string> => ((await start(setup({ mask: maskForDisplay }), FROM, META, { cwd }).catch((e: Error) => e)) as Error).message
+    const SAY = 'cwd must be an absolute folder path on linux, or start with ~: '
+    // U+0000-U+001F (C0) and U+007F-U+009F (DEL and C1): the first and the last of each range
+    for (const ctl of ['\u0000', '\u0001', '\u001f', '\u007f', '\u0080', '\u009f']) {
+      expect(await refusal(`relative/a${ctl}b/app`), JSON.stringify(ctl)).toBe(`${SAY}[a folder name with control or invisible characters]`)
+    }
+    // and the characters just outside them are part of a name that is shown (a space, `~`, and the no-break space)
+    for (const ok of [' ', '~', '\u00a0']) {
+      expect(await refusal(`relative/a${ok}b/app`), JSON.stringify(ok)).toBe(`${SAY}relative/a${ok}b/app`)
+    }
+  })
+
+  it('withholds a folder name in which a character nobody sees splits a token, and shows one that holds no credential, whatever else it holds', async () => {
+    const SAY = 'cwd must be an absolute folder path on linux, or start with ~: '
+    const NOT_SHOWN = `${SAY}[a folder name with control or invisible characters]`
+    const refusal = async (cwd: string): Promise<string> => ((await start(setup({ mask: maskForDisplay }), FROM, META, { cwd }).catch((e: Error) => e)) as Error).message
+    const families: Record<string, string> = {
+      'a GitHub token': `ghp_${'a'.repeat(36)}`,
+      'an Anthropic key': `sk-ant-api03-${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(3)}`.slice(0, 108),
+      'a fine-grained GitHub token': `github_pat_aB3dE6gH9jK2mN5pQ8sT1v_${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(2).slice(0, 59)}`,
+      'an AWS key id': `AKIA${'A'.repeat(16)}`,
+    }
+    // a zero-width space, joiner and non-joiner, a word joiner, a soft hyphen, the byte order mark, the line and paragraph separators, a no-break space,
+    // an ideographic space, a combining grapheme joiner, a variation selector, the Hangul filler, and a plain space
+    const splits = ['\u200b', '\u200c', '\u200d', '\u2060', '\u00ad', '\ufeff', '\u2028', '\u2029', '\u00a0', '\u3000', '\u034f', '\ufe0f', '\u3164', ' ']
+    for (const [label, key] of Object.entries(families)) {
+      for (const split of splits) {
+        for (const cut of [2, 5, 11, 20, 31]) {
+          const at = Math.min(cut, key.length - 1)
+          const message = await refusal(`/srv/work/${key.slice(0, at)}${split}${key.slice(at)}/app`)
+          expect(message, `${label}, ${JSON.stringify(split)} at ${at}`).toBe(NOT_SHOWN)
+        }
+      }
+    }
+    // a name that holds no credential is shown as it is, with its spaces and its characters from other scripts (an emoji's joiner, a Hebrew mark)
+    for (const name of ['My Documents', 'caf\u00e9 notes', 'family \u{1f468}\u200d\u{1f469}\u200d\u{1f467}', 'a\u200fb', 'new\u3000folder']) {
+      expect(await refusal(`relative/${name}/app`), name).toBe(`${SAY}relative/${name}/app`)
+    }
   })
 })
 

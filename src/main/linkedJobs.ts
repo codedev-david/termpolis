@@ -221,8 +221,8 @@ const messageOf = (err: unknown): string => (err instanceof Error ? err.message 
 /** Absent, for an optional field: JSON writers emit `null` for "not set". */
 const absent = (v: unknown): v is null | undefined => v === undefined || v === null
 
-/** What a refusal shows in place of a folder name that holds a control character. */
-const FOLDER_WITH_CONTROLS = '[a folder name with control characters]'
+/** What a refusal shows in place of a folder name that holds a control character, or a credential that a character nobody sees splits. */
+const FOLDER_WITH_CONTROLS = '[a folder name with control or invisible characters]'
 
 /** What goes back in place of output or an error that couldn't be checked for
  *  credentials: nothing leaves this computer unscreened. */
@@ -235,12 +235,17 @@ export const WITHHELD = '[Termpolis could not check this for credentials, so it 
  *  1.54 or older among them. A name with a control character in it is not one anybody types, and
  *  none of it is repeated: a token the character splits matches no rule in its halves, or only
  *  one of them (a key's first 20 characters after `sk-`), and taking the character out to join
- *  them up again left the rest of the key to show. Withheld when it can't be masked. */
+ *  them up again left the rest of the key to show. Nor is a name in which a character nobody sees
+ *  (a zero-width space, a soft hyphen, a no-break space) or a plain space splits a token the same
+ *  way: it is judged again with every character but the visible ASCII ones taken out, and a name
+ *  that holds a credential then is not repeated either. Withheld when it can't be masked. */
 function shownFolder(folder: string, mask: (text: string) => string): string {
   if (/[\u0000-\u001f\u007f-\u009f]/.test(folder)) return FOLDER_WITH_CONTROLS
   let shown: string
   try {
     shown = mask(folder)
+    const joined = folder.replace(/[^\u0021-\u007e]/g, '')
+    if (joined !== folder && mask(joined) !== joined) return FOLDER_WITH_CONTROLS
   } catch {
     return WITHHELD
   }

@@ -16,7 +16,8 @@
 // gateway's injection guard before an agent reads it. A job's output and error
 // always arrive under a label saying whose they are (`frame`): a failed run's
 // error is its stderr, as much the agent's own text as its output. A refusal
-// is checked for injection only (`inspect`).
+// is masked for credentials first (a version before 1.55 repeats a refused
+// folder as it came) and then checked for injection (`inspect`).
 //
 // Credentials don't cross: the prompt is screened before it leaves, and the
 // answer when it arrives, in case the other machine runs a version that doesn't

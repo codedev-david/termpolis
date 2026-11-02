@@ -1254,7 +1254,8 @@ Agents get one MCP tool, `linked_machines`, with three actions:
   clone URL can carry a token). A folder's name is not screened for
   credentials; where a refusal repeats one, anything in it that looks like a
   credential is taken out first, and a name with a control character in it
-  (one nobody types) is not repeated at all.
+  (one nobody types), or one that holds a credential once its spaces and
+  invisible characters are taken out, is not repeated at all.
 - **`write: true`** works only if that machine lets this one edit.
 - **`model`** picks the agent's model there. By default the agent uses its own.
 
