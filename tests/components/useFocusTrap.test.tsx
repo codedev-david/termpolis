@@ -5,7 +5,7 @@
 // terminal when the control that opened the sheet is gone.
 import React, { useState } from 'react'
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Sheet } from '../../src/renderer/src/components/Accounts/Sheet'
 import { focusables } from '../../src/renderer/src/hooks/useFocusTrap'
 import { useTerminalStore } from '../../src/renderer/src/store/terminalStore'
@@ -60,6 +60,72 @@ describe('Tab with the focus on the sheet itself, no control in it having it', (
     expect(tab()).toBe('sheet-close')
     sheet.focus()
     expect(tab(true)).toBe('submit')
+  })
+})
+
+describe('a press on the dark backdrop behind a sheet (UI-R1-C)', () => {
+  const sheet = (onClose?: () => void) => render(
+    <Sheet title="Title" icon="fa-x" testId="s" onClose={onClose}>
+      <button type="button" data-testid="inner">Inside</button>
+    </Sheet>,
+  )
+
+  it('keeps the keyboard in the sheet, so Esc still closes it', () => {
+    const onClose = vi.fn()
+    sheet(onClose)
+    screen.getByTestId('inner').focus()
+    const press = fireEvent.mouseDown(screen.getByTestId('s-overlay'))
+    // The browser would have moved the focus to the page: the default is prevented, and the sheet holds it.
+    expect(press).toBe(false)
+    expect(document.activeElement).toBe(screen.getByTestId('s'))
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a press inside the sheet alone', () => {
+    sheet(vi.fn())
+    screen.getByTestId('inner').focus()
+    expect(fireEvent.mouseDown(screen.getByTestId('inner'))).toBe(true)
+    expect(fireEvent.mouseDown(screen.getByTestId('s'))).toBe(true)
+    expect(document.activeElement).toBe(screen.getByTestId('inner'))
+  })
+})
+
+describe('keys in a sheet (UI-R1-I)', () => {
+  it('takes Tab and Shift+Tab from the browser: its default is prevented, so only the sheet\'s own controls get the focus', () => {
+    render(<Form />)
+    screen.getByTestId('first').focus()
+    expect(fireEvent.keyDown(document.activeElement!, { key: 'Tab' })).toBe(false)
+    expect(fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true })).toBe(false)
+  })
+
+  it('keeps Esc from reaching a listener above the sheet, so the swarm dashboard under it stays open', () => {
+    const onClose = vi.fn()
+    const above = vi.fn()
+    document.addEventListener('keydown', above)
+    try {
+      render(<Sheet title="T" icon="fa-x" testId="s" onClose={onClose}><button type="button">x</button></Sheet>)
+      fireEvent.keyDown(screen.getByTestId('s'), { key: 'Escape' })
+      expect(onClose).toHaveBeenCalledTimes(1)
+      expect(above).not.toHaveBeenCalled()
+      // Any other key goes on up as it did.
+      fireEvent.keyDown(screen.getByTestId('s'), { key: 'a' })
+      expect(above).toHaveBeenCalledTimes(1)
+    } finally {
+      document.removeEventListener('keydown', above)
+    }
+  })
+
+  it('does nothing about Esc for a sheet that cannot be closed (a step that must finish)', () => {
+    const above = vi.fn()
+    document.addEventListener('keydown', above)
+    try {
+      render(<Sheet title="T" icon="fa-x" testId="s"><button type="button">x</button></Sheet>)
+      fireEvent.keyDown(screen.getByTestId('s'), { key: 'Escape' })
+      expect(above).toHaveBeenCalledTimes(1)
+    } finally {
+      document.removeEventListener('keydown', above)
+    }
   })
 })
 

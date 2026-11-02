@@ -130,6 +130,22 @@ export function typeAhead(labels: readonly string[], typed: string, from: number
 export const MENU_WIDTH = 320
 const MARGIN = 6
 
+/** Keeps a menu of `height` inside a window of `windowHeight`: moved up when its bottom would pass the
+ *  window's, and capped (so it scrolls) when it is taller than the window holds. */
+export function fitMenu(top: number, height: number, windowHeight: number): { top: number; maxHeight?: number } {
+  const room = windowHeight - 2 * MARGIN
+  if (height > room) return { top: MARGIN, maxHeight: room }
+  return { top: Math.max(MARGIN, Math.min(top, windowHeight - height - MARGIN)) }
+}
+
+/** The submenu is 224 px wide and sits 4 px off the menu: on its left when the menu leaves room for that,
+ *  else on its right. */
+export function submenuSide(menuLeft: number): 'left' | 'right' {
+  return menuLeft - SUBMENU_WIDTH - 4 >= MARGIN ? 'left' : 'right'
+}
+
+const SUBMENU_WIDTH = 224
+
 /** The terminal's own input, which takes the keyboard back when the menu closes. */
 export function focusTerminal(terminalId: string): void {
   document.querySelector<HTMLElement>(`[data-terminal-id="${terminalId}"] textarea`)?.focus()

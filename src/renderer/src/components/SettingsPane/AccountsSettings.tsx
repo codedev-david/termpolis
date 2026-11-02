@@ -88,6 +88,24 @@ export function AccountsSettings() {
   const [error, setError] = useState<string | null>(null)
   const [changes, setChanges] = useState<AccountChange[] | null>(null)
   const [rowAction, setRowAction] = useState<RowAction | null>(null)
+  // The keyboard keeps its place: when a card's field or panel closes (a rename done, a question answered "Keep
+  // it") the focus it held goes with it, so it comes back to the button that opened it.
+  const lastAction = useRef<RowAction | null>(null)
+  const restore = useRef<RowAction | null>(null)
+  useEffect(() => {
+    if (lastAction.current && !rowAction) restore.current = lastAction.current
+    lastAction.current = rowAction
+    const want = restore.current
+    if (!want || rowAction) return
+    // Where the user put the focus meanwhile (Tab to another control) is theirs.
+    if (document.activeElement && document.activeElement !== document.body) { restore.current = null; return }
+    const button = document.querySelector<HTMLButtonElement>(`[data-row-action="${want.id}:${want.kind}"]`)
+    if (!button) { restore.current = null; return }
+    // A card is disabled while its change is saved: tried again when that is done.
+    if (button.disabled) return
+    button.focus()
+    restore.current = null
+  }, [rowAction, busy])
   const [emailDraft, setEmailDraft] = useState('')
   const [importing, setImporting] = useState<{ preview: ImportPreview; keys: string[]; connect: Record<string, boolean> } | null>(null)
   const [copiedCheck, setCopiedCheck] = useState(false)
@@ -215,14 +233,14 @@ export function AccountsSettings() {
             : <button className={BUTTON} disabled={busy || !view.integrationConnected} aria-label={`Connect ${r.label}`} title={view.integrationConnected ? CONNECT_DATA_LINE : 'Turn on Agent Integration first'} onClick={() => { void act(async () => must(await api.setConnect(r.id, true)).changes) }} data-testid={`account-connect-${r.id}`}>Connect</button>
         )}
         {r.limit && <button className={BUTTON} disabled={busy} aria-label={`Mark ${r.label} available`} onClick={() => { void act(async () => { must(await api.clearLimit(r.id)) }) }} data-testid={`account-mark-available-${r.id}`}>Mark available</button>}
-        {r.recopyAvailable && <button className={BUTTON} disabled={busy} aria-label={`Re-copy ${r.label} from the main profile`} onClick={() => setRowAction({ id: r.id, kind: 'recopy' })} data-testid={`account-recopy-${r.id}`}>Re-copy from main profile</button>}
+        {r.recopyAvailable && <button className={BUTTON} disabled={busy} aria-label={`Re-copy ${r.label} from the main profile`} onClick={() => setRowAction({ id: r.id, kind: 'recopy' })} data-row-action={`${r.id}:recopy`} data-testid={`account-recopy-${r.id}`}>Re-copy from main profile</button>}
         <label className="flex items-center gap-1 text-[11px] text-[#d4d4d4]">
           <input type="checkbox" checked={r.autoOffer} disabled={busy} aria-label={`Offer ${r.label} automatically when another account runs out`} onChange={(e) => { const on = e.target.checked; void act(async () => { must(await api.update(r.id, { autoOffer: on })) }) }} data-testid={`account-auto-offer-${r.id}`} />
           Offer automatically
         </label>
         <button className={BUTTON} disabled={busy || i === 0} aria-label={`Move ${r.label} up`} onClick={() => { void act(async () => { must(await api.move(r.id, -1)) }) }} data-testid={`account-up-${r.id}`}>↑</button>
         <button className={BUTTON} disabled={busy || i === list.length - 1} aria-label={`Move ${r.label} down`} onClick={() => { void act(async () => { must(await api.move(r.id, 1)) }) }} data-testid={`account-down-${r.id}`}>↓</button>
-        <button className={BUTTON} disabled={busy} aria-label={`Remove ${r.label}`} aria-expanded={removing} onClick={() => setRowAction(removing ? null : { id: r.id, kind: 'remove' })} data-testid={`account-remove-${r.id}`}>Remove…</button>
+        <button className={BUTTON} disabled={busy} aria-label={`Remove ${r.label}`} aria-expanded={removing} onClick={() => setRowAction(removing ? null : { id: r.id, kind: 'remove' })} data-row-action={`${r.id}:remove`} data-testid={`account-remove-${r.id}`}>Remove…</button>
       </div>
     )
   }
@@ -289,7 +307,7 @@ export function AccountsSettings() {
           ) : (
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#9ca3af]">
               <span>{r.agent === 'agy' ? 'Its Google email' : 'The email it should sign in with'}: {r.email ?? 'none given'}</span>
-              <button className={BUTTON} disabled={busy} onClick={() => { setRowAction({ id: r.id, kind: 'email' }); setEmailDraft(r.email ?? '') }} data-testid={`account-edit-${r.id}`}>Change</button>
+              <button className={BUTTON} disabled={busy} onClick={() => { setRowAction({ id: r.id, kind: 'email' }); setEmailDraft(r.email ?? '') }} data-row-action={`${r.id}:email`} data-testid={`account-edit-${r.id}`}>Change</button>
             </div>
           )}
         </div>
@@ -319,7 +337,7 @@ export function AccountsSettings() {
               {renaming
                 ? <RenameField r={r} busy={busy} onCancel={() => setRowAction(null)} onSave={(label) => { void act(async () => { must(await api.update(r.id, { label })); setRowAction(null) }) }} />
                 : (
-                  <button type="button" className="text-sm font-medium text-[#e0e0e0] hover:underline decoration-dotted" title={`Rename ${r.label}`} disabled={busy} onClick={() => setRowAction({ id: r.id, kind: 'rename' })} data-testid={`account-label-${r.id}`}>
+                  <button type="button" className="text-sm font-medium text-[#e0e0e0] hover:underline decoration-dotted" title={`Rename ${r.label}`} disabled={busy} onClick={() => setRowAction({ id: r.id, kind: 'rename' })} data-row-action={`${r.id}:rename`} data-testid={`account-label-${r.id}`}>
                     {r.label}
                   </button>
                 )}

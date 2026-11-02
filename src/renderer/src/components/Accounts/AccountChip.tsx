@@ -12,6 +12,7 @@ export function AccountChip({ terminalId }: { terminalId: string }) {
   const view = useTerminalStore((s) => s.accountsView ?? null)
   const byHand = useTerminalStore((s) => !!s.accountsByHand?.[terminalId])
   const openAccountSwitch = useTerminalStore((s) => s.openAccountSwitch)
+  const closeAccountMenu = useTerminalStore((s) => s.closeAccountMenu)
   const queued = useTerminalStore((s) => s.queuedSwitches?.[terminalId])
   const menuOpen = useTerminalStore((s) => s.accountMenu?.terminalId === terminalId)
   const queuedTo = queued ? view?.accounts.find((r) => r.id === queued.targetId)?.label : undefined
@@ -26,7 +27,7 @@ export function AccountChip({ terminalId }: { terminalId: string }) {
       aria-haspopup="menu"
       aria-expanded={menuOpen}
       aria-label={`${ACCOUNT_AGENT_LABEL[chip.agent]} account: ${chip.label}. Switch account`}
-      onClick={(e) => { e.stopPropagation(); openAccountSwitch(terminalId) }}
+      onClick={(e) => { e.stopPropagation(); if (menuOpen) closeAccountMenu(); else openAccountSwitch(terminalId) }}
       title={queued ? `${chip.title} Switching to ${queuedTo ?? 'another account'} when it finishes.` : chip.title}
       className={`flex items-center gap-1.5 text-[10px] font-medium bg-[#2d2d2d]/90 border rounded px-2 py-1 transition-colors hover:bg-[#0e639c] ${
         chip.alert ? 'text-[#e06c75] border-[#e06c75]' : 'text-[#e0e0e0] border-[#3c3c3c] hover:border-[#1177bb]'

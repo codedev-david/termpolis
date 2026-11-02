@@ -21,7 +21,12 @@ export function Sheet({ title, subtitle, icon, onClose, testId, children }: Prop
   useFocusTrap(ref)
   const titleId = `${testId}-title`
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70" data-testid={`${testId}-overlay`}>
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70"
+      data-testid={`${testId}-overlay`}
+      // A press on the dark backdrop would drop the focus to the page, and Esc and Tab (handled here) would go nowhere.
+      onMouseDown={(e) => { if (e.target === e.currentTarget) { e.preventDefault(); ref.current?.focus() } }}
+    >
       <div
         ref={ref}
         role="dialog"

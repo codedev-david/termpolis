@@ -116,6 +116,32 @@ describe('SwitchOverlay', () => {
   })
 })
 
+describe('where the keyboard goes when the card or the toast goes (UI-R1-F)', () => {
+  let pane: HTMLElement
+  beforeEach(() => {
+    pane = document.createElement('div')
+    pane.setAttribute('data-terminal-id', 't1')
+    pane.innerHTML = '<textarea></textarea>'
+    document.body.appendChild(pane)
+  })
+  afterEach(() => pane.remove())
+
+  it('is the terminal when a button of the error card is pressed', () => {
+    render(<SwitchOverlay terminalId="t1" />)
+    put(run({ status: 'failed', card: { what: 'w', now: 'n', actions: [{ kind: 'close', label: 'Close' }] } }))
+    fireEvent.click(screen.getByTestId('switch-action-close'))
+    expect(actOnRun).toHaveBeenCalledWith('t1', 'close')
+    expect(document.activeElement).toBe(pane.querySelector('textarea'))
+  })
+
+  it('is the terminal when the toast is dismissed', () => {
+    render(<SwitchOverlay terminalId="t1" />)
+    put(run({ status: 'done', steps: ['done', 'done', 'done'], toast: { text: 'Claude Code is on codedev now.', until: Date.now() + 10_000, back: 'acc_a' } }))
+    fireEvent.click(screen.getByTestId('switch-toast-close'))
+    expect(document.activeElement).toBe(pane.querySelector('textarea'))
+  })
+})
+
 describe('SwitchStatusLine (a swarm worker\'s, in the swarm dashboard)', () => {
   it('shows nothing without a switch, or in a store that holds none', () => {
     render(<SwitchStatusLine terminalId="t1" />)

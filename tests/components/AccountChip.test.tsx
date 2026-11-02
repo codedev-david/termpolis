@@ -46,6 +46,28 @@ describe('AccountChip', () => {
     expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
   })
 
+  it('closes its own menu when it is clicked while that is open, and opens another terminal\'s menu for itself (UI-R1-D)', () => {
+    render(<AccountChip terminalId="t1" />)
+    const chip = screen.getByTestId('account-chip')
+    fireEvent.click(chip)
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+    fireEvent.click(chip)
+    expect(useTerminalStore.getState().accountMenu).toBeNull()
+    fireEvent.click(chip)
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+    // The menu of another terminal is not this chip's to close: it opens its own.
+    act(() => { useTerminalStore.setState({ accountMenu: { terminalId: 'other' } }) })
+    fireEvent.click(chip)
+    expect(useTerminalStore.getState().accountMenu).toEqual({ terminalId: 't1' })
+  })
+
+  it('keeps its click from the pane header it sits in, which would take it for its own (UI-R1-I)', () => {
+    const header = vi.fn()
+    render(<div onClick={header}><AccountChip terminalId="t1" /></div>)
+    fireEvent.click(screen.getByTestId('account-chip'))
+    expect(header).not.toHaveBeenCalled()
+  })
+
   it('names itself and says whether its menu is open, for assistive technology', () => {
     render(<AccountChip terminalId="t1" />)
     const chip = screen.getByTestId('account-chip')

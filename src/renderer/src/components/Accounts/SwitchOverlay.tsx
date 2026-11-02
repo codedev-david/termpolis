@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { ACCOUNT_AGENT_LABEL } from '../../../../shared/agentAccounts'
 import { useTerminalStore } from '../../store/terminalStore'
 import { actOnRun, stepLabels } from '../../lib/accountSwitchRun'
+import { focusTerminal } from '../../lib/accountMenu'
 import type { Endpoint, StepState, SwitchRun } from '../../lib/accountSwitchRun'
 import { SMALL_BUTTON, SMALL_PRIMARY, SPINNER } from './ui'
 
@@ -74,7 +75,7 @@ function Card({ run }: { run: SwitchRun }) {
         {steps && <Steps run={run} />}
         <div className="flex flex-wrap gap-2 pt-1">
           {card.actions.map((a, i) => (
-            <button key={a.kind + a.label} type="button" className={i === 0 && a.kind !== 'close' ? SMALL_PRIMARY : SMALL_BUTTON} autoFocus={i === 0} onClick={() => { void actOnRun(run.terminalId, a.kind) }} data-testid={`switch-action-${a.kind}`}>
+            <button key={a.kind + a.label} type="button" className={i === 0 && a.kind !== 'close' ? SMALL_PRIMARY : SMALL_BUTTON} autoFocus={i === 0} onClick={() => { void actOnRun(run.terminalId, a.kind); focusTerminal(run.terminalId) }} data-testid={`switch-action-${a.kind}`}>
               {a.label}
             </button>
           ))}
@@ -94,7 +95,7 @@ function Toast({ run }: { run: SwitchRun }) {
         <i className="fa-solid fa-circle-check text-[#7ee2a3]" aria-hidden="true"></i>
         <span>{toast.text}</span>
         {toast.back && <button type="button" className={SMALL_BUTTON} onClick={() => { void actOnRun(run.terminalId, 'back') }} data-testid="switch-back">Switch back</button>}
-        <button type="button" aria-label="Dismiss" className="px-1 rounded hover:bg-white/10" onClick={() => useTerminalStore.getState().dropSwitchRun(run.terminalId)} data-testid="switch-toast-close">
+        <button type="button" aria-label="Dismiss" className="px-1 rounded hover:bg-white/10" onClick={() => { useTerminalStore.getState().dropSwitchRun(run.terminalId); focusTerminal(run.terminalId) }} data-testid="switch-toast-close">
           <i className="fa-solid fa-xmark" aria-hidden="true"></i>
         </button>
       </div>

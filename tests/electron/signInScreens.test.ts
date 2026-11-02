@@ -4,7 +4,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { describe, expect, it } from 'vitest'
-import { isSignInPage, readSignInScreen, signInText } from '../../src/shared/signInScreens'
+import { SIGN_IN_PAGES, isSignInPage, readSignInScreen, signInText } from '../../src/shared/signInScreens'
 import type { SignInScreen } from '../../src/shared/signInScreens'
 import { screenOf } from '../../src/shared/terminalScreen'
 import type { AccountAgent } from '../../src/shared/agentAccounts'
@@ -190,6 +190,25 @@ describe('agy: its sign-in screens', () => {
   it('ends a question at a row that is no option', () => {
     const raw = '\x1b[2J\x1b[HSelect login method:\r\n\r\n> Continue with Google\r\nA footer row\r\n  Not an option of it\r\n'
     expect(read('agy', raw, 80)).toEqual({ kind: 'choose', question: 'Select login method:', detail: [], options: ['Continue with Google'], selected: 0 })
+  })
+})
+
+describe('isSignInPage and the raw address main hands to the browser (UI-R1-I)', () => {
+  const page = SIGN_IN_PAGES.claude[0]
+  const ok = `https://${page.host}${page.path}`
+
+  it('refuses an address with a space, a tab, a line break or any control character that the URL parser would have dropped', () => {
+    expect(isSignInPage('claude', ok)).toBe(true)
+    for (const bad of [`${ok}\n`, `${ok}\t`, `${ok} `, `${ok}\r`, `${ok}\u0000`, `${ok}\u007f`, `${ok}?next=a b`, `https:/\t/${page.host}${page.path}`, ` ${ok}`]) {
+      expect(isSignInPage('claude', bad), JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  it('refuses one longer than 4096 characters, and a value that is no string', () => {
+    expect(isSignInPage('claude', `${ok}?${'a'.repeat(4000)}`)).toBe(true)
+    expect(isSignInPage('claude', `${ok}?${'a'.repeat(4096)}`)).toBe(false)
+    expect(isSignInPage('claude', 42 as never)).toBe(false)
+    expect(isSignInPage('claude', undefined as never)).toBe(false)
   })
 })
 

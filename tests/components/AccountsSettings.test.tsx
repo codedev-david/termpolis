@@ -227,6 +227,45 @@ describe('AccountsSettings: a card', () => {
     await waitFor(() => expect(accounts.update).toHaveBeenCalledWith(B.id, { autoOffer: false }))
   })
 
+  it('puts the keyboard back on the button that opened a field or a panel once it closes (UI-R1-F)', async () => {
+    const { accounts } = bridge()
+    await renderLoaded()
+    // Rename: Esc.
+    fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+    fireEvent.keyDown(screen.getByTestId(`account-edit-label-${B.id}`), { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId(`account-edit-label-${B.id}`)).toBeNull())
+    expect(document.activeElement).toBe(screen.getByTestId(`account-label-${B.id}`))
+    // Rename: Enter, saved.
+    fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+    const field = screen.getByTestId(`account-edit-label-${B.id}`)
+    fireEvent.change(field, { target: { value: 'codedev2' } })
+    fireEvent.keyDown(field, { key: 'Enter' })
+    await waitFor(() => expect(accounts.update).toHaveBeenCalledWith(B.id, { label: 'codedev2' }))
+    await waitFor(() => expect(screen.queryByTestId(`account-edit-label-${B.id}`)).toBeNull())
+    expect(document.activeElement).toBe(screen.getByTestId(`account-label-${B.id}`))
+    // Remove?, answered "Keep it".
+    fireEvent.click(screen.getByTestId(`account-remove-${B.id}`))
+    // A browser gives a clicked button the focus, and the panel takes the button with it.
+    const keep = screen.getByText('Keep it')
+    keep.focus()
+    fireEvent.click(keep)
+    expect(document.activeElement).toBe(screen.getByTestId(`account-remove-${B.id}`))
+  })
+
+  it('leaves the focus where the user put it when a panel closes under it, and the rename name at 40 characters (UI-R1-F, UI-R1-I)', async () => {
+    bridge()
+    await renderLoaded()
+    fireEvent.click(screen.getByTestId(`account-label-${B.id}`))
+    const field = screen.getByTestId(`account-edit-label-${B.id}`)
+    expect(field).toHaveAttribute('maxlength', '40')
+    // The user tabbed to another control: the field's blur closes it, and the focus stays on that control.
+    const other = screen.getByTestId(`account-remove-${B.id}`)
+    other.focus()
+    fireEvent.blur(field)
+    await waitFor(() => expect(screen.queryByTestId(`account-edit-label-${B.id}`)).toBeNull())
+    expect(document.activeElement).toBe(other)
+  })
+
   it('renames an account in place: Enter keeps the new name, Esc or leaving the field doesn\'t', async () => {
     const { accounts } = bridge()
     await renderLoaded()

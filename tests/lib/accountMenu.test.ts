@@ -3,7 +3,7 @@
 // picked, what picking one does (switch, wait for the turn, sign in first, agy's switch-all), the
 // work account's second confirmation (D14, R17), and the menu's keyboard moves.
 import { describe, it, expect } from 'vitest'
-import { actionWords, confirmFor, isSignedIn, maybeOnUnoffered, menuRows, moveIndex, typeAhead } from '../../src/renderer/src/lib/accountMenu'
+import { actionWords, confirmFor, fitMenu, isSignedIn, maybeOnUnoffered, menuRows, moveIndex, submenuSide, typeAhead } from '../../src/renderer/src/lib/accountMenu'
 import type { AccountRowView, AccountsView } from '../../src/shared/agentAccounts'
 
 function row(over: Partial<AccountRowView>): AccountRowView {
@@ -169,6 +169,32 @@ describe('maybeOnUnoffered (D14, R17)', () => {
 
   it('looks only at the terminal\'s own agent', () => {
     expect(maybeOnUnoffered([A, B, row({ id: 'cx', agent: 'codex', autoOffer: false })], 'claude', undefined)).toBeUndefined()
+  })
+})
+
+describe('fitMenu and submenuSide: the menu stays inside the window (UI-R1-G)', () => {
+  it('moves a menu up when its bottom would pass the window\'s, and leaves one that fits', () => {
+    expect(fitMenu(80, 300, 768)).toEqual({ top: 80 })
+    expect(fitMenu(500, 300, 600)).toEqual({ top: 294 })
+    // Exactly to the margin, and one pixel past it.
+    expect(fitMenu(306, 288, 600)).toEqual({ top: 306 })
+    expect(fitMenu(307, 288, 600)).toEqual({ top: 306 })
+  })
+
+  it('caps a menu taller than the window to what the window holds, so it scrolls', () => {
+    expect(fitMenu(80, 900, 600)).toEqual({ top: 6, maxHeight: 588 })
+    expect(fitMenu(80, 588, 600)).toEqual({ top: 6 })
+  })
+
+  it('never puts the top above the margin', () => {
+    expect(fitMenu(0, 100, 600)).toEqual({ top: 6 })
+  })
+
+  it('opens the submenu on the menu\'s left when there is room for it, else on its right', () => {
+    expect(submenuSide(352)).toBe('left')
+    expect(submenuSide(234)).toBe('left')
+    expect(submenuSide(233)).toBe('right')
+    expect(submenuSide(6)).toBe('right')
   })
 })
 

@@ -127,6 +127,22 @@ describe('Claude Code: claude auth login', () => {
     expect(deps.killTree).not.toHaveBeenCalled()
   })
 
+  it('asks the CLI\'s status command once, though its tick comes round again while that is being asked (UI-R1-I)', async () => {
+    let release: (c: Confirmed) => void = () => undefined
+    const confirm = vi.fn(() => new Promise<Confirmed>((r) => { release = r }))
+    const { sessionId } = startSignInSession(spec({ confirm }), deps)
+    await advance(TICK_MS)
+    await signInInput(sessionId, { kind: 'code', value: 'good-code' })
+    await advance(TICK_MS)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    await advance(TICK_MS * 6)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(last().kind).toBe('confirming')
+    release({ email: 'person@example.test', plan: 'max' })
+    await advance(TICK_MS)
+    expect(last()).toEqual({ kind: 'success', email: 'person@example.test', plan: 'max' })
+  })
+
   it('says the CLI\'s own words when the code is wrong, and never shows or logs the code', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     const { sessionId } = startSignInSession(spec(), deps)
@@ -508,6 +524,23 @@ describe('agy: the switch-all sign-in, in a hidden agy', () => {
     expect(await signInInput(sessionId, { kind: 'pick', index: 0, label: 'Yes, I trust this folder' })).toEqual({ ok: true })
     const login = await until('choose') as Extract<SignInPhase, { kind: 'choose' }>
     expect(login.question).toBe('Select login method:')
+  })
+
+  it('shows agy\'s screen no more while a pick moves the highlight: its ticks wait for the pick (UI-R1-I)', async () => {
+    // agy takes a second to draw each move of its highlight, so ticks come round while the pick waits for it.
+    deps.spawn = () => fakePty((io) => {
+      const cli = createMockAgy({ ...io, env: { MOCK_AGY_SIGNED_IN: '0' } })
+      return { input: (d: string) => { if (d === '\u001b[B') setTimeout(() => cli.input(d), 1000); else cli.input(d) } }
+    })
+    const { sessionId } = startSignInSession(agySpec(), deps)
+    await until('choose')
+    const before = sent.length
+    const go = signInInput(sessionId, { kind: 'pick', index: 2, label: 'Other sign-in options' })
+    // The highlight is on the second row now, and the pick waits for the third: no tick shows it half way.
+    await advance(1800)
+    expect(sent.slice(before).map((s) => s.phase.kind)).not.toContain('choose')
+    await advance(4000)
+    expect(await go).toEqual({ ok: true })
   })
 
   it('moves the highlight down and up, each move seen before the next, and enters only on the row clicked', async () => {

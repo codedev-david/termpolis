@@ -55,6 +55,31 @@ describe('isAccountLimited: out of usage as Termpolis knows it now', () => {
 })
 
 describe('launchAccountAsked', () => {
+  it('does not offer an account known to be signed out: the agent would open on its sign-in screen (UI-R1-B)', async () => {
+    const signedOut = { ...CODEDEV, identity: { email: null, signedIn: false, checkedAt: NOW - 1000, source: 'auth-status' as const } }
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limit: limit() }, signedOut, SPARE, WORK]) })
+    const ask = asks({ kind: 'on', accountId: 'acc_c' })
+    expect(await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)).toEqual({ cancelled: false, accountId: 'acc_c' })
+    expect(ask.mock.calls[0][0].options).toEqual([{ id: 'acc_c', label: 'spare' }])
+  })
+
+  it('asks nothing when the only other account is known to be signed out', async () => {
+    const signedOut = { ...CODEDEV, identity: { email: null, signedIn: false, checkedAt: NOW - 1000, source: 'sign-in-screen' as const } }
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limit: limit() }, signedOut, WORK]) })
+    const ask = asks({ kind: 'cancel' })
+    expect(await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)).toEqual({ cancelled: false, accountId: 'acc_a' })
+    expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('still offers an account whose sign-in is merely not known yet, or known to be in', async () => {
+    const signedIn = { ...CODEDEV, identity: { email: 'b@example.test', signedIn: true, checkedAt: NOW - 1000, source: 'auth-status' as const } }
+    const unknown = { ...SPARE, identity: { email: null, signedIn: null, checkedAt: NOW - 1000, source: 'auth-status' as const } }
+    useTerminalStore.setState({ accountsView: view([{ ...PERSONAL, limit: limit() }, signedIn, unknown, WORK]) })
+    const ask = asks({ kind: 'anyway' })
+    await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)
+    expect(ask.mock.calls[0][0].options.map((o) => o.id)).toEqual(['acc_b', 'acc_c'])
+  })
+
   it('asks when the preferred account is out of usage and another is free, naming when it is back and the ways out', async () => {
     const ask = asks({ kind: 'on', accountId: 'acc_b' })
     const r = await launchAccountAsked('claude', undefined, bridge('acc_a'), ask, NOW)

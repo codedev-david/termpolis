@@ -33,7 +33,7 @@ describe('LaunchAskSheet', () => {
     // Said under the title, and announced politely.
     expect(screen.getAllByText('Claude Code: personal is out of usage until 4:00 pm. Launch on codedev?')).toHaveLength(2)
     expect(screen.getByRole('status')).toHaveTextContent('Claude Code: personal is out of usage until 4:00 pm. Launch on codedev?')
-    expect(screen.getByTestId('launch-ask-text')).toHaveTextContent('personal will not answer until it is back. codedev is free now.')
+    expect(screen.getByTestId('launch-ask-text')).toHaveTextContent('personal will not answer until it is back. codedev has no usage limit on record.')
     expect(screen.getByTestId('launch-ask-first')).toHaveTextContent('Launch on codedev')
     expect(screen.getAllByTestId('launch-ask-other').map((b) => b.textContent)).toEqual(['Launch on spare'])
     expect(screen.getByTestId('launch-ask-anyway')).toHaveTextContent('Launch on personal anyway')

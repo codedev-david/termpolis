@@ -6,7 +6,7 @@
 // account… (the wizard, for this agent) and Manage accounts… (Settings ▸ Accounts). It shows what
 // main last said and refreshes behind, never waiting
 // on a CLI. Keyboard: arrows, Home/End, type-ahead, Enter; Esc back to the terminal.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../../shared/agentAccounts'
 import type { AccountAgent, AccountsView } from '../../../../shared/agentAccounts'
@@ -16,7 +16,7 @@ import { terminalAgent } from '../../lib/accountSwitchFlow'
 import { hasAccounts } from '../../lib/accountsView'
 import { refreshAccounts } from '../../lib/accountsState'
 import { requestSettingsTab } from '../../lib/settingsNav'
-import { MENU_WIDTH, actionWords, confirmFor, focusTerminal, maybeOnUnoffered, menuPosition, menuRows, moveIndex, typeAhead } from '../../lib/accountMenu'
+import { MENU_WIDTH, actionWords, confirmFor, fitMenu, focusTerminal, maybeOnUnoffered, menuPosition, menuRows, moveIndex, submenuSide, typeAhead } from '../../lib/accountMenu'
 import type { MenuRow } from '../../lib/accountMenu'
 import { newTerminalOn, queueSwitch, startSwitch } from '../../lib/accountSwitchRun'
 import { SMALL_BUTTON, SMALL_PRIMARY } from './ui'
@@ -62,6 +62,8 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   const [sub, setSub] = useState<number | null>(null)
   const [confirm, setConfirm] = useState<{ row: MenuRow; question: string; newTerminal: boolean } | null>(null)
   const [pos] = useState(() => menuPosition(terminal.id))
+  // Inside the window: moved up when the menu would run past its foot, and made to scroll when it is taller than it.
+  const [fit, setFit] = useState<{ top: number; maxHeight?: number }>({ top: pos.top })
   const root = useRef<HTMLDivElement>(null)
   const items = useRef<Array<HTMLElement | null>>([])
   const subItems = useRef<Array<HTMLElement | null>>([])
@@ -112,6 +114,17 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
     if (sub !== null) subItems.current[sub]?.focus()
   }, [sub])
 
+  // Measured once drawn, and again when its rows change (a question opens, a check answers): its content
+  // height, which a cap leaves as it is, so fitting it can't undo itself.
+  // No list of what it depends on: any row can change its height. It settles, since setFit keeps a fit that is the same.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    const el = root.current
+    if (!el || el.scrollHeight <= 0) return
+    const next = fitMenu(pos.top, el.scrollHeight + 2, window.innerHeight)
+    setFit((cur) => (cur.top === next.top && cur.maxHeight === next.maxHeight ? cur : next))
+  })
+
   const close = (back = true): void => {
     store().closeAccountMenu()
     if (back) focusTerminal(terminal.id)
@@ -121,6 +134,8 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   useEffect(() => {
     const onDown = (e: MouseEvent): void => {
       if (root.current && e.target instanceof Node && root.current.contains(e.target)) return
+      // Its own chip toggles it (AccountChip): a press there is not an outside press, or the click would open it again.
+      if (e.target instanceof Element && e.target.closest(`[data-account-chip="${terminal.id}"]`)) return
       close(false)
     }
     const onBlur = (): void => close(false)
@@ -315,7 +330,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
               {it.kind === 'new-terminal' && <i className="fa-solid fa-chevron-right text-[10px] mt-1" aria-hidden="true"></i>}
             </button>
             {it.kind === 'new-terminal' && sub !== null && (
-              <div role="menu" aria-label={`New terminal on another ${name} account`} className="absolute top-0 right-full mr-1 w-56 py-1 rounded border border-[#3c3c3c] bg-[#252526] shadow-2xl" data-testid="account-menu-submenu">
+              <div role="menu" aria-label={`New terminal on another ${name} account`} className={`absolute bottom-0 ${submenuSide(pos.left) === 'left' ? 'right-full mr-1' : 'left-full ml-1'} w-56 py-1 rounded border border-[#3c3c3c] bg-[#252526] shadow-2xl`} data-testid="account-menu-submenu">
                 {others.map((row, k) => (
                   <button
                     key={row.account.id}
@@ -345,7 +360,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
       role="menu"
       aria-label={`${name} accounts for ${terminal.name}`}
       className="fixed z-[200] py-1 rounded border border-[#3c3c3c] bg-[#252526] shadow-2xl"
-      style={{ top: pos.top, left: pos.left, width: MENU_WIDTH }}
+      style={{ top: fit.top, left: pos.left, width: MENU_WIDTH, ...(fit.maxHeight ? { maxHeight: fit.maxHeight, overflowY: 'auto' as const } : {}) }}
       onKeyDown={onKey}
       onContextMenu={(e) => e.preventDefault()}
       data-testid="account-menu"

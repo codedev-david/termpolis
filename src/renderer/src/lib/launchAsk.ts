@@ -66,7 +66,10 @@ export async function launchAccountAsked(
   const view = useTerminalStore.getState().accountsView
   const row: AccountRowView | undefined = view?.accounts.find((r) => r.id === accountId)
   if (!view || !row || !isAccountLimited(row, now)) return { cancelled: false, accountId }
-  const ways = limitTargets(view.accounts, row.agent, { accountId: row.id, email: row.lastEmail ?? null }, now).filter((t) => t.state === 'available')
+  // Not one known to be signed out: the agent would open on its sign-in screen inside the terminal, which the
+  // account UI never asks of the user (its sign-in has a sheet of its own).
+  const ways = limitTargets(view.accounts, row.agent, { accountId: row.id, email: row.lastEmail ?? null }, now)
+    .filter((t) => t.state === 'available' && t.row.identity?.signedIn !== false)
   if (ways.length === 0) return { cancelled: false, accountId }
   const choice = await ask({
     agent: row.agent,

@@ -15,7 +15,7 @@ export function LaunchAskSheet() {
   return (
     <Sheet title="Launch on another account?" subtitle={launchAskHeadline(ctx)} icon="fa-hourglass-half" testId="launch-ask" onClose={() => answerLaunchAsk({ kind: 'cancel' })}>
       <p className="text-sm text-[#d4d4d4]" data-testid="launch-ask-text">
-        {ctx.limited.label} will not answer until it is back. {first.label} is free now.
+        {ctx.limited.label} will not answer until it is back. {first.label} has no usage limit on record.
       </p>
       <div className="flex flex-wrap gap-2">
         <button type="button" className={SHEET_PRIMARY} data-autofocus="" onClick={() => answerLaunchAsk({ kind: 'on', accountId: first.id })} data-testid="launch-ask-first">

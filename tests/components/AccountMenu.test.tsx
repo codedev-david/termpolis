@@ -424,6 +424,101 @@ describe('the keyboard', () => {
   })
 })
 
+describe('the menu stays inside the window and its chip can close it (UI-R1-D, UI-R1-G)', () => {
+  const realScroll = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight')!
+  const realHeight = window.innerHeight
+  const realWidth = window.innerWidth
+  /** A menu of this height, as a browser would measure its content (its two border pixels included). */
+  const heightOf = (h: number): void => {
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get(this: Element) { return this.getAttribute('data-testid') === 'account-menu' ? h - 2 : 0 },
+    })
+  }
+  const sized = (w: number, h: number): void => {
+    Object.defineProperty(window, 'innerWidth', { value: w, configurable: true })
+    Object.defineProperty(window, 'innerHeight', { value: h, configurable: true })
+  }
+  afterEach(() => {
+    Object.defineProperty(Element.prototype, 'scrollHeight', realScroll)
+    sized(realWidth, realHeight)
+  })
+
+  it('moves up when its bottom would pass the window\'s', async () => {
+    sized(1024, 600)
+    heightOf(560)
+    openMenu()
+    await settle()
+    expect(screen.getByTestId('account-menu').style.top).toBe('34px')
+    expect(screen.getByTestId('account-menu').style.maxHeight).toBe('')
+  })
+
+  it('scrolls, from the window\'s top, when it is taller than the window', async () => {
+    sized(1024, 600)
+    heightOf(900)
+    openMenu()
+    await settle()
+    const menu = screen.getByTestId('account-menu')
+    expect(menu.style.top).toBe('6px')
+    expect(menu.style.maxHeight).toBe('588px')
+    expect(menu.style.overflowY).toBe('auto')
+  })
+
+  it('stays where it opened when it fits', async () => {
+    sized(1024, 768)
+    heightOf(300)
+    openMenu()
+    await settle()
+    expect(screen.getByTestId('account-menu').style.top).toBe('80px')
+    expect(screen.getByTestId('account-menu').style.maxHeight).toBe('')
+  })
+
+  it('opens the New terminal on submenu on the left when there is room for it, else on the right', async () => {
+    sized(1024, 768)
+    openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    expect(screen.getByTestId('account-menu-submenu').className).toContain('right-full')
+    cleanup()
+    // A window so narrow that the menu opens at x = 90: 224 px of submenu don't fit on its left.
+    sized(500, 768)
+    openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    const sub = screen.getByTestId('account-menu-submenu')
+    expect(sub.className).toContain('left-full')
+    expect(sub.className).not.toContain('right-full')
+  })
+
+  it('opens the submenu upward from the footer row, so a menu at the window\'s foot keeps it in view', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    expect(screen.getByTestId('account-menu-submenu').className).toContain('bottom-0')
+  })
+
+  it('is not closed by a press on its own chip, which toggles it instead', async () => {
+    const chip = document.createElement('button')
+    chip.setAttribute('data-account-chip', 't1')
+    document.body.appendChild(chip)
+    try {
+      openMenu()
+      await settle()
+      fireEvent.mouseDown(chip)
+      expect(st().accountMenu).toEqual({ terminalId: 't1' })
+      // A press anywhere else still closes it, and so does another terminal's chip.
+      const other = document.createElement('button')
+      other.setAttribute('data-account-chip', 't2')
+      document.body.appendChild(other)
+      fireEvent.mouseDown(other)
+      expect(st().accountMenu).toBeNull()
+      other.remove()
+    } finally {
+      chip.remove()
+    }
+  })
+})
+
 describe('the footer', () => {
   it('opens a new terminal on another account from its submenu, by click or keys', async () => {
     openMenu()
