@@ -1844,44 +1844,53 @@ interface BareMember {
   cands: BareKty[]
 }
 
-/** The private members of the JWKs that have no braces around them. They run from a kty to the next one, so each member is read in the
- *  stretch between two kty members, and belongs to the one above it or the one below it (a YAML object that lists kty last has its
- *  members above it): taken if it has a private member's size under either, and as it is judged by its own neighbours, a list of keys
- *  of different types is judged key by key. A stretch wider than twice BARE_REACH is read at its two ends. Members inside a braced
- *  object (`skip`) are that object's. (The size of an EC or OKP `d` is judged against every curve's, not its `crv`'s: which `crv`
- *  belongs to which key is as unclear as which member does.) */
+/** The private members of the JWKs that have no braces around them. A member belongs to the kty above it or the one below it (a YAML
+ *  object that lists kty last has its members above it), by its name: taken if it has a private member's size under either, and as it is
+ *  judged by its own neighbours, a list of keys of different types is judged key by key. It must be within BARE_REACH of a kty.
+ *  Members inside a braced object (`skip`) are that object's. (The size of an EC or OKP `d` is judged against every curve's, not its
+ *  `crv`'s: which `crv` belongs to which key is as unclear as which member does.)
+ *
+ *  The stretches within reach of a kty are merged where they meet and each is read once, in one pass of the member pattern: read for
+ *  each kty with room past its end for a value, a text of nothing but `kty: oct` lines was read 4 KB beyond every one of them, a second
+ *  for a long answer. */
 function bareJwks(text: string, ktys: BareKty[], skip: readonly Run[], out: KeySpan[]): void {
   const n = ktys.length
+  const ranges: Run[] = []
+  for (const k of ktys) {
+    const lo = Math.max(0, k.at - BARE_REACH)
+    const hi = Math.min(text.length, k.end + BARE_REACH)
+    const last = ranges[ranges.length - 1]
+    if (last !== undefined && lo <= last[1]) last[1] = Math.max(last[1], hi)
+    else ranges.push([lo, hi])
+  }
   const members: BareMember[] = []
+  const mem = new RegExp(MEMBER_RE.source, 'g')
+  let g = 0 // the first kty that starts after the member being read: the one below it, the one before that above it
   let si = 0
-  for (let g = 0; g <= n; g++) {
-    const above = g > 0 ? ktys[g - 1] : null
-    const below = g < n ? ktys[g] : null
-    const lo = above ? above.end : Math.max(0, (below as BareKty).at - BARE_REACH)
-    const hi = below ? below.at : Math.min(text.length, (above as BareKty).end + BARE_REACH)
-    const stretches: Run[] = above && below && hi - lo > 2 * BARE_REACH ? [[lo, lo + BARE_REACH], [hi - BARE_REACH, hi]] : [[lo, hi]]
-    for (const [a, b] of stretches) {
-      // (one character before the stretch, for the member's lookbehind; its end, with room for a value that runs past it)
-      const from = Math.max(0, a - 1)
-      const mem = new RegExp(MEMBER_RE.source, 'g')
-      const win = text.slice(from, Math.min(text.length, b + 4096))
-      let mm: RegExpExecArray | null
-      while ((mm = mem.exec(win)) !== null) {
-        const at = from + mm.index + mm[0].length - mm[2].length
-        if (from + mm.index < a && a > 0) continue
-        if (at >= b) break
-        while (si < skip.length && skip[si][1] <= at) si++
-        if (si < skip.length && skip[si][0] <= at) continue
-        const name = mm[1]
-        const value = mm[2]
-        const cands: BareKty[] = []
-        if (above && privateName(above.kty, name)) cands.push(above)
-        if (below && privateName(below.kty, name)) cands.push(below)
-        if (cands.length) {
-          // (a quoted value the text ends inside is cut short: its length then says nothing)
-          const cut = at + value.length === text.length && /(?:["']|\\u0022|&quot;)$/.test(text.slice(Math.max(0, at - 6), at))
-          members.push({ name, value, at, cut, cands })
-        }
+  for (const [lo, hi] of ranges) {
+    // (one character before the range, for the member's lookbehind; room after it for a value that runs past it)
+    const from = Math.max(0, lo - 1)
+    const win = text.slice(from, Math.min(text.length, hi + 4096))
+    mem.lastIndex = 0
+    let mm: RegExpExecArray | null
+    while ((mm = mem.exec(win)) !== null) {
+      const at = from + mm.index + mm[0].length - mm[2].length
+      if (from + mm.index < lo && lo > 0) continue
+      if (at >= hi) break
+      while (si < skip.length && skip[si][1] <= at) si++
+      if (si < skip.length && skip[si][0] <= at) continue
+      while (g < n && ktys[g].at < at) g++
+      const above = g > 0 ? ktys[g - 1] : null
+      const below = g < n ? ktys[g] : null
+      const name = mm[1]
+      const value = mm[2]
+      const cands: BareKty[] = []
+      if (above !== null && privateName(above.kty, name)) cands.push(above)
+      if (below !== null && privateName(below.kty, name)) cands.push(below)
+      if (cands.length) {
+        // (a quoted value the text ends inside is cut short: its length then says nothing)
+        const cut = at + value.length === text.length && /(?:["']|\\u0022|&quot;)$/.test(text.slice(Math.max(0, at - 6), at))
+        members.push({ name, value, at, cut, cands })
       }
     }
   }
@@ -1894,9 +1903,13 @@ function bareJwks(text: string, ktys: BareKty[], skip: readonly Run[], out: KeyS
     }
   }
   // A key none of whose members was taken: its first d or k, when it is a value and not a word.
+  const first = new Map<BareKty, BareMember>()
+  for (const p of members) {
+    if ((p.name !== 'd' && p.name !== 'k') || p.value.length < 8) continue
+    for (const c of p.cands) if (!first.has(c)) first.set(c, p)
+  }
   for (const c of ktys) {
-    if (c.taken) continue
-    const p = members.find((x) => (x.name === 'd' || x.name === 'k') && x.value.length >= 8 && x.cands.includes(c))
+    const p = c.taken ? undefined : first.get(c)
     if (p) out.push({ rule: 'jwk_private_key', cls: 'flag', why: `jwk ${c.kty} ${p.name} not a key`, from: p.at, to: p.at + p.value.length, group: c.at })
   }
 }
@@ -2051,6 +2064,13 @@ export function placeholderWhy(body: string, alphabet: 'hex' | 'b62', cut = fals
   if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(body)) return 'env-name'
   if (new Set(body.toLowerCase().match(NAME_WORDS) ?? []).size >= 2) return 'named'
   if (!decoded && !hex && core.length >= 32 && (!/[A-Z]/.test(core) || !/[a-z]/.test(core)) && !/^[0-9a-f]+$/.test(core)) return 'one-case'
+  // Prose with its blanks taken out (an XML value is read across them): next to no capital among 40 letters or more. A random value holds
+  // a capital in two of every five characters, and one in 16 letters is out of its reach (none in 30 million draws of 32 bytes). (Hex, in
+  // lower case, is not prose either, as for one-case; and text a base64 value decodes to is judged as text, below.)
+  if (!decoded && !/^[0-9a-f]+$/.test(core)) {
+    const letters = core.replace(/[^A-Za-z]/g, '')
+    if (letters.length >= 40 && letters.replace(/[^A-Z]/g, '').length * 16 <= letters.length) return 'prose'
+  }
   // A lower-case slug: `your-256-bit-secret-goes-here`, `my_dev_signing_key_2026`. The two name
   // checks only on 24 characters or more: shorter, they misfire on random base64url.
   // A value the text's end cut short (`cut`) is judged by them at any length: what was cut off may

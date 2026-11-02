@@ -34,7 +34,7 @@ import {
   type KeySpan,
 } from '../../src/main/keyMaterial'
 import { COST_SHAPES, within } from './fixtures/costShapes'
-import { JOIN, T1_JOININGS, der, leakedWindows, makeKeys, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
+import { JOIN, T1_JOININGS, armor, der, leakedWindows, makeKeys, pgpPhotoExport, pgpRsaBody, secretLinesOf, shownWhole, ssh2Key, wrap, type Format, type KeySet } from './fixtures/freshKeys'
 
 // Several tests here screen a key in every joining at every cut offset, or 200 trials of 22 kinds of text: 10 to 15 s each on a quiet
 // laptop, 3 to 5 times that under coverage, and 30 to 60 s beside the rest of the suite (two of them failed on the default 30 s). A
@@ -2316,6 +2316,22 @@ describe('the structure checks, on decoded bytes', () => {
     expect(structureOf(seq(int([2]), seq(oid(RSA_OID)), der(0x04, r)))).toBeNull() // version 2
     expect(structureOf(seq(seq(oid(PBES2), r), der(0x04, r)))).toMatchObject({ type: 'encrypted-pkcs8' })
     expect(structureOf(seq(seq(oid(PKCS12), r), der(0x04, r)))).toMatchObject({ type: 'encrypted-pkcs8' })
+    // the algorithms whose public parameters are fixed text, and where each says its private value is: an EC key's scalar, a DH key's INTEGER
+    const EC_OID = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
+    const DH_PKCS3 = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x03, 0x01]
+    const DH_X942 = [0x2a, 0x86, 0x48, 0xce, 0x3e, 0x02, 0x01]
+    expect(structureOf(seq(int([0]), seq(oid(RSA_OID)), der(0x04, r)))).not.toHaveProperty('fixed')
+    for (const [name, algorithm] of [['PKCS #3', DH_PKCS3], ['X9.42', DH_X942]] as Array<[string, number[]]>) {
+      const key = seq(int([0]), seq(oid(algorithm), r), der(0x04, der(0x02, r)))
+      const body = key.indexOf(r, key.length - r.length - 4)
+      expect(structureOf(key), name).toMatchObject({ type: 'pkcs8', fixed: true, priv: [body, body + r.length] })
+      // a private value that is no INTEGER is not located
+      expect(structureOf(seq(int([0]), seq(oid(algorithm), r), der(0x04, der(0x04, r)))), name).not.toHaveProperty('priv')
+    }
+    const point = der(0x30, Buffer.concat([int([1]), der(0x04, r.subarray(0, 32))]))
+    expect(structureOf(seq(int([0]), seq(oid(EC_OID), oid([0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07])), der(0x04, point)))).toMatchObject({ fixed: true, priv: [expect.any(Number), expect.any(Number)] })
+    // (Ed25519 has no parameters at all: its value is located and nothing is fixed)
+    expect(structureOf(seq(int([0]), seq(oid([0x2b, 0x65, 0x70])), der(0x04, der(0x04, r.subarray(0, 32)))))).not.toHaveProperty('fixed')
     expect(structureOf(seq(seq(oid(PBES2), r)).subarray(0, 40))).toMatchObject({ type: 'encrypted-pkcs8' }) // cut before its OCTET STRING
     expect(structureOf(seq(seq(oid(PBES2), r), der(0x03, r)))).toBeNull()
     expect(structureOf(seq(seq(oid(RSA_OID), r), der(0x03, r)))).toBeNull() // SubjectPublicKeyInfo
@@ -2610,6 +2626,7 @@ describe('looksRandom and placeholderWhy', () => {
       'alphanumerics, 32': (i) => pick(ALNUM, 'al32', i, 32),
       'alphanumerics, 16': (i) => pick(ALNUM, 'al16', i, 16),
       'lower case and digits, 32': (i) => pick('abcdefghijklmnopqrstuvwxyz0123456789', 'ld32', i, 32),
+      'lower case letters, 48': (i) => pick('abcdefghijklmnopqrstuvwxyz', 'lc48', i, 48),
       'alphanumerics and symbols, 20': (i) => pick(ALNUM + '!@#$%^&*()-_=+[]{};:,.?', 'sy20', i, 20),
       'a UUID': (i) => uuid('uuid', i),
       'two UUIDs': (i) => uuid('uuidA', i) + uuid('uuidB', i),
@@ -2638,6 +2655,8 @@ describe('looksRandom and placeholderWhy', () => {
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'a-string-secret-at-least-256-bits-long\n',
       // (a word that names a secret and nothing else that tells a phrase: no space, no dashes, no repeat or run)
       'mySuperSecretKey!2026', 'MyDummyHmacKey#9', 'PasswordForTheDemoServer',
+      // (a name of three words with two capitals among 41 letters is prose by its capitals, and still a phrase for what it decodes to: wordy)
+      'hynixfirmwaretoolsandmorenotesLinuxSystems',
     ]
     for (const phrase of phrases) {
       const text = JSON.stringify({ kty: 'oct', k: Buffer.from(phrase).toString('base64url'), alg: 'HS256' })
@@ -2645,6 +2664,48 @@ describe('looksRandom and placeholderWhy', () => {
       expect(r.text, JSON.stringify(phrase)).toBe(text)
       expect(r.removed, JSON.stringify(phrase)).toEqual({})
       for (const enc of ['base64url', 'base64'] as const) expect(placeholderWhy(Buffer.from(phrase).toString(enc), 'b62'), JSON.stringify(phrase)).not.toBeNull()
+    }
+  })
+
+  it('leaves an RSAKeyValue whose members are a sentence, the XML reader reading across its spaces; a value is prose when it has next to no capital letters among 40 letters or more', () => {
+    // `<D>Lorem ipsum dolor sit amet ...</D>`: the value is the text up to the next tag with its blanks taken out, and no check named it
+    // (the case check wanted no capital at all). A random value holds a capital in two of five characters: one in 16 letters is out of reach.
+    const modulus = randomBytes(256).toString('base64')
+    const xml = (d: string, p: string): string => `<RSAKeyValue><Modulus>${modulus}</Modulus><Exponent>AQAB</Exponent><P>${p}</P><Q>${p}</Q><D>${d}</D></RSAKeyValue>`
+    const sentences = [
+      'Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore',
+      'The quick brown fox jumps over the lazy dog and then runs back across the field to the barn behind the house',
+      'Four score and seven years ago our fathers brought forth on this continent a new nation conceived in liberty',
+      'This value is filled in by the installer when the service is first started and is not meant to be edited by hand',
+      'Call me Ishmael some years ago never mind how long precisely having little or no money in my purse',
+    ]
+    for (const sentence of sentences) {
+      for (const [form, value] of [['spaces', sentence], ['no spaces', sentence.replace(/ /g, '')], ['wrapped', sentence.replace(/ /g, '\n    ')]]) {
+        const text = xml(value, value.slice(0, 50))
+        const r = screenKeys(text)
+        expect(r.text, `${sentence.slice(0, 20)}/${form}`).toBe(text)
+        expect(r.removed, `${sentence.slice(0, 20)}/${form}`).toEqual({})
+      }
+    }
+    // the rule's edges: 40 letters with one capital, or two (40/16 = 2.5); not three, not 39 letters, not a hex string
+    const lower = (n: number, label: string): string => Array.from(createHash('sha256').update(label).digest().subarray(0, n), (b) => String.fromCharCode(97 + (b % 26))).join('')
+    const withCaps = (letters: string, at: number[]): string => Array.from(letters, (c, i) => (at.includes(i) ? c.toUpperCase() : c)).join('')
+    const forty = lower(32, 'prose/a') + lower(8, 'prose/b')
+    expect(placeholderWhy(withCaps(forty, [0]), 'b62')).toBe('prose')
+    expect(placeholderWhy(withCaps(forty, [0, 20]), 'b62')).toBe('prose')
+    expect(placeholderWhy(withCaps(forty, [10, 11, 12]), 'b62')).toBeNull() // (together: three spread apart read as three words, which wordy names)
+    expect(placeholderWhy(withCaps(forty, [10, 11, 12]) + '70394816259203', 'b62')).toBeNull() // (digits are not letters: 3 capitals among 40, not 54)
+    expect(placeholderWhy(withCaps(forty, [0, 13, 27]), 'b62')).toBe('wordy')
+    expect(placeholderWhy(withCaps(forty.slice(0, 39), [0]), 'b62')).toBeNull()
+    const hex128 = createHash('sha512').update('prose/hex').digest('hex')
+    expect(hex128.replace(/[^a-f]/g, '').length).toBeGreaterThanOrEqual(40) // (letters enough to be prose, if hex were not the key's)
+    expect(placeholderWhy(hex128, 'b62')).toBeNull() // (hex in a base62 slot is the key's, as one-case has it)
+    expect(placeholderWhy(hex128, 'hex')).toBeNull()
+    // a random value of the sizes a key's members have is never prose (a fixed stream, so the same every run): 3,000 of each, none. (Looser by
+    // a factor of 8 -- a capital in one letter of two -- this would name one in two of them.)
+    const stream = (size: number, i: number): Buffer => Buffer.concat(Array.from({ length: Math.ceil(size / 32) }, (_, k) => createHash('sha256').update(`prose/${size}/${i}/${k}`).digest())).subarray(0, size)
+    for (const size of [32, 48, 64, 128]) {
+      for (let i = 0; i < 3_000; i++) expect(placeholderWhy(stream(size, i).toString('base64url'), 'b62'), `${size}/${i}`).not.toBe('prose')
     }
   })
 
@@ -2709,6 +2770,25 @@ describe('T1 K1/K5/K6: a key file behind a NAME= on every line, and a PuTTY file
 describe('T1 thresholds: the sizes that tell a key from an excerpt', () => {
   // The first line of a PKCS#8, OpenSSH or OpenPGP key says what it is, and what is shown of the rest decides: 80 characters in two lines
   // are an excerpt of a real key, a key cut short needs 128, and an OpenSSH or OpenPGP blob has no length of its own.
+  // The keys here are made of a fixed stream of bytes, the same every run: how much of a short excerpt looks random depends on the key
+  // (a real RSA-2048 key's first 80 characters, 51 of them its fixed header, fail the randomness test 3.4 times in 100), so a random
+  // key would make an assertion about the 80 and the 128 a matter of luck.
+  const stream = (label: string, size: number): Buffer => Buffer.concat(Array.from({ length: Math.ceil(size / 32) }, (_, k) => createHash('sha256').update(`${label}/${k}`).digest())).subarray(0, size)
+  const dint = (b: Buffer): Buffer => der(0x02, b[0] & 0x80 ? Buffer.concat([Buffer.from([0]), b]) : b)
+  /** A PKCS#8 RSA-2048 key laid out as OpenSSL writes one. */
+  const steadyP8 = (label: string): string[] => {
+    const s = stream(label, 1400)
+    const inner = der(0x30, Buffer.concat([dint(Buffer.from([0])), dint(s.subarray(0, 256)), dint(Buffer.from([1, 0, 1])), dint(s.subarray(256, 512)), dint(s.subarray(512, 640)), dint(s.subarray(640, 768)), dint(s.subarray(768, 896)), dint(s.subarray(896, 1024)), dint(s.subarray(1024, 1152))]))
+    const key = der(0x30, Buffer.concat([der(0x02, Buffer.from([0])), der(0x30, Buffer.concat([der(0x06, Buffer.from('2a864886f70d010101', 'hex')), der(0x05, Buffer.alloc(0))])), der(0x04, inner)]))
+    return ['-----BEGIN PRIVATE KEY-----', ...wrap(key.toString('base64')), '-----END PRIVATE KEY-----']
+  }
+  /** An armored OpenPGP RSA secret-key packet (old format, tag 5): version 4, a fixed time, the modulus and the secret MPIs. */
+  const steadyPgp = (label: string): string[] => {
+    const s = stream(label, 600)
+    const mpi = (b: Buffer): Buffer => Buffer.concat([Buffer.from([(((b.length - 1) * 8 + (32 - Math.clz32(b[0]))) >> 8) & 255, ((b.length - 1) * 8 + (32 - Math.clz32(b[0]))) & 255]), b])
+    const body = Buffer.concat([Buffer.from([4, 0x63, 0, 0, 0, 1]), mpi(Buffer.concat([Buffer.from([0xc3]), s.subarray(0, 255)])), mpi(Buffer.from([1, 0, 1])), Buffer.from([0]), mpi(Buffer.concat([Buffer.from([0x9b]), s.subarray(255, 510)]))])
+    return armor(Buffer.concat([Buffer.from([0x95, body.length >> 8, body.length & 255]), body]), [])
+  }
   /** The characters of a key's body (its BEGIN and END lines, headers and checksum left out). */
   const bodyOf = (ls: string[]): string => ls.filter((l) => /^[A-Za-z0-9+/]{16,}$/.test(l)).join('')
   /** A BEGIN line, a key's first `n` characters in a first line of `first` and the rest in a second, then (with `end`) an elision and the END line. */
@@ -2717,24 +2797,33 @@ describe('T1 thresholds: the sizes that tell a key from an excerpt', () => {
     return [ls[0], body.slice(0, first), body.slice(first, n), ...(end ? ['...', ls[ls.length - 1]] : [])].join('\n')
   }
   const whyOf = (text: string): Array<[string, string]> => keyBlocks(text).map((b) => [b.cls, b.why])
+  const p8 = steadyP8('threshold/pkcs8')
+  const pgp = steadyPgp('threshold/pgp')
+
+  it('the fixed keys are what they are said to be: structures the detector verifies, and excerpts of 80, 127 and 128 characters that look random', () => {
+    expect(structureOf(Buffer.from(bodyOf(p8), 'base64'))).toMatchObject({ type: 'pkcs8' })
+    expect(structureOf(Buffer.from(bodyOf(pgp), 'base64'))).toMatchObject({ type: 'pgp' }) // (the packet's own header is the base64 text's first characters)
+    for (const n of [80, 127, 128]) {
+      expect(looksRandom(bodyOf(p8).slice(0, n)), `pkcs8 ${n}`).toBe(true)
+      expect(looksRandom(bodyOf(pgp).slice(0, n)), `pgp ${n}`).toBe(true)
+    }
+  })
 
   it('a verified DER header over two lines: 80 characters are an excerpt of a real key and 79 are not', () => {
     // (the second line is 16 characters in both, the least a line can be: only the total differs)
-    expect(whyOf(excerpt(K.F.pkcs8_rsa, 80, 64, true))).toEqual([['remove', 'pkcs8-incomplete']])
-    expect(whyOf(excerpt(K.F.pkcs8_rsa, 79, 63, true))).toEqual([['flag', 'pkcs8-example']])
+    expect(whyOf(excerpt(p8, 80, 64, true))).toEqual([['remove', 'pkcs8-incomplete']])
+    expect(whyOf(excerpt(p8, 79, 63, true))).toEqual([['flag', 'pkcs8-example']])
   })
 
   it('a verified DER header cut short before its END line: 128 characters are a key cut short, 127 an excerpt of one', () => {
-    expect(whyOf(excerpt(K.F.pkcs8_rsa, 128, 64, false))).toEqual([['remove', 'pkcs8-prefix']])
-    expect(whyOf(excerpt(K.F.pkcs8_rsa, 127, 64, false))).toEqual([['remove', 'pkcs8-incomplete']])
+    expect(whyOf(excerpt(p8, 128, 64, false))).toEqual([['remove', 'pkcs8-prefix']])
+    expect(whyOf(excerpt(p8, 127, 64, false))).toEqual([['remove', 'pkcs8-incomplete']])
   })
 
   it('an OpenSSH or OpenPGP blob has no length of its own: 128 characters are the key; an OpenPGP excerpt is 80 to 127 characters in two lines, and 79 is an example', () => {
-    for (const [format, type] of [['openssh', 'openssh'], ['pgp_rsa_nohdr', 'pgp']] as Array<[Format, string]>) {
-      expect(whyOf(excerpt(K.F[format], 128, 64, false)), format).toEqual([['remove', type]])
-    }
+    expect(whyOf(excerpt(K.F.openssh, 128, 64, false))).toEqual([['remove', 'openssh']])
+    expect(whyOf(excerpt(pgp, 128, 64, false))).toEqual([['remove', 'pgp']])
     // (below 128 the excerpt must look random, which an OpenSSH header's own runs of A -- the key count, the empty KDF options -- do not)
-    const pgp = K.F.pgp_rsa_nohdr
     expect(whyOf(excerpt(pgp, 127, 64, false))).toEqual([['remove', 'pgp-short']])
     expect(whyOf(excerpt(pgp, 80, 64, false))).toEqual([['remove', 'pgp-short']])
     expect(whyOf(excerpt(pgp, 79, 63, false))).toEqual([['flag', 'pgp-example']])
@@ -2743,9 +2832,8 @@ describe('T1 thresholds: the sizes that tell a key from an excerpt', () => {
 
   it('a block longer than 1 MB is removed whole (MAX_BLOCK is 4 MB)', () => {
     // a PGP key's first body line, then 1.1 MB of base64: the packet header verifies the block, and every line of it goes
-    const ls = K.F.pgp_rsa_nohdr
-    const first = ls.find((l) => /^[A-Za-z0-9+/]{16,}$/.test(l)) as string
-    const text = ['Answer follows.', ls[0], first, ...wrap(randomBytes(1_100_000).toString('base64'), first.length), '=ab12', ls[ls.length - 1], 'That was the file.'].join('\n')
+    const first = bodyOf(pgp).slice(0, 64)
+    const text = ['Answer follows.', pgp[0], first, ...wrap(randomBytes(1_100_000).toString('base64'), first.length), '=ab12', pgp[pgp.length - 1], 'That was the file.'].join('\n')
     expect(text.length).toBeGreaterThan(1_400_000)
     const r = screenKeys(text)
     expect(r.removed).toEqual({ gpg_block: 1 })
@@ -3445,14 +3533,16 @@ describe('T1 K1: a key in a grep or rg listing whose path holds a long run of ba
 
   it('does not take the path in front of an END marker for the last line of a key of one line (an Ed25519 key, with grep and no line numbers)', () => {
     // The END line's `/etc/ssl/private/server` is a run of 23 characters when nothing but `-key.pem:` follows it, and was added to the
-    // key's 64 as its last line: its letters tipped the randomness test of that short body about 1 key in 50.
+    // key's 64 as its last line: its letters tipped the randomness test of that short body about 1 key in 50. Each key is judged as the
+    // same key written plainly is (a body that is a heuristic's edge case is one either way), and a hundred keys of that rate would show.
     const p = '/etc/ssl/private/server-key.pem'
     for (let i = 0; i < 300; i++) {
       const ls = (generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }) as string).trim().split('\n')
+      const plain = Object.keys(screenKeys(ls.join('\n')).removed).length
       for (const write of [(l: string) => `${p}:${l}`, (l: string) => `${p}: ${l}`]) {
         const r = screenKeys(ls.map(write).join('\n'))
-        expect(r.removed, ls[1]).toEqual({ private_key: 1 })
-        expect(r.text.includes(ls[1].slice(0, 20)), ls[1]).toBe(false)
+        expect(Object.keys(r.removed).length, ls[1]).toBe(plain)
+        if (plain) expect(r.text.includes(ls[1].slice(0, 20)), ls[1]).toBe(false)
       }
     }
   })
@@ -3605,6 +3695,50 @@ describe('T1 K7: a JWK with no braces around it (YAML, TOML, properties) is read
     expect(r.text.includes(near1.slice(0, 20)) || r.text.includes(near2.slice(0, 20))).toBe(false)
     for (const far of [before, middle, after]) expect(r.text.includes(far)).toBe(true)
     expect(r.removed).toEqual({ jwk_private_key: 2 })
+  })
+
+  it('the reach is 16,384 characters exactly: a member inside it is read, one a character further is not, on either side of the kty', () => {
+    const REACH = 16_384
+    const value = (): string => randomBytes(32).toString('base64url')
+    for (const off of [0, 1]) {
+      // before the kty: the member's name starts REACH + off characters before the kty's, 5 characters into the text (so the range does not start at 0)
+      const v = value()
+      const member = `k: ${v}\n`
+      const kty = 5 + REACH + off
+      const before = '#'.repeat(5) + member + '#'.repeat(kty - 5 - member.length - 1) + '\n' + 'kty: oct\n'
+      expect(before.indexOf('kty: oct') - before.indexOf('k: '), `before/${off}`).toBe(REACH + off)
+      expect(screenKeys(before).text.includes(v), `before/${off}`).toBe(off === 1)
+      // after the kty: the member's value starts REACH - 1 + off characters after the kty's end
+      const w = value()
+      const after = 'kty: oct' + '#'.repeat(REACH - 1 + off - 4) + '\nk: ' + w + '\n'
+      expect(after.indexOf(w) - 'kty: oct'.length, `after/${off}`).toBe(REACH - 1 + off)
+      expect(screenKeys(after).text.includes(w), `after/${off}`).toBe(off === 1)
+    }
+  })
+
+  it('reads a member whose opening quote is on the seam of two keys\' reach ranges, which just meet', () => {
+    // kty at 0 reaches to 8 + 16,384; a second kty 2 x 16,384 characters further has its reach start there: ranges that meet are one.
+    // The member `"k": "..."` starts with its quote on the last character of the first range, its name on the first of the second
+    // (read as two, the first stops at its end and the second skips a member that starts before its own start: nobody reads it).
+    const REACH = 16_384
+    const v = randomBytes(32).toString('base64url')
+    const member = `"k": "${v}"`
+    const text = 'kty: oct' + '#'.repeat(8 + REACH - 1 - 8) + member + '#'.repeat(8 + 2 * REACH - (8 + REACH - 1) - member.length) + 'kty: oct\n'
+    expect(text.indexOf('"k"'), 'the quote is the last character of the first range').toBe(8 + REACH - 1)
+    expect(text.lastIndexOf('kty: oct') - REACH, 'the second range starts where the first ends').toBe(8 + REACH)
+    expect(screenKeys(text).text.includes(v)).toBe(false)
+  })
+
+  it('flags the first d or k of a key that had no private member to take, and no other member, and no value of fewer than 8 characters', () => {
+    const phrase = (s: string): string => Buffer.from(s).toString('base64url')
+    // two placeholders under one kty (the first is named), a placeholder p (RSA's p is a private member, but not the one a note is about), a short k
+    const two = `kty: oct\nk: ${phrase('my-super-secret-key-one')}\nk: ${phrase('my-super-secret-key-two')}\n`
+    const spans = jwkKeys(two)
+    expect(spans.map((s) => [s.cls, s.why, two.slice(s.from, s.to)])).toEqual([['flag', 'jwk oct k not a key', phrase('my-super-secret-key-one')]])
+    expect(jwkKeys(`kty: RSA\np: ${phrase('my-super-secret-prime-value-for-tests')}\n`)).toEqual([])
+    expect(jwkKeys('kty: oct\nk: abc1234\n')).toEqual([]) // (seven characters)
+    expect(jwkKeys('kty: oct\nk: abc12345\n').map((s) => s.cls)).toEqual(['flag']) // (eight)
+    expect(jwkKeys('kty: oct\nk: abc\n')).toEqual([])
   })
 
   it('names a placeholder of each key of a list, and takes one span for a member two keys could own', () => {

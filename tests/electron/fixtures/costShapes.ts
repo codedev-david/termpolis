@@ -101,4 +101,9 @@ export const COST_SHAPES: Record<string, [string, CostAsk, number]> = {
   'a line of letters between the lines of a real key': [[...REAL.slice(0, 4), `${'Aa'.repeat(30_000)}x`, ...REAL.slice(4)].join('\n'), ANSWER, 500],
   // (a value's trailing whitespace is taken off with `\s+$`, retried from each blank of a run inside the value: 400,000 characters took 2.9 s)
   'RSAKeyValue members with a long run of whitespace inside their values': [`<RSAKeyValue><D>QUJDREVGR0hJSktMTU5PUA${' '.repeat(12_000)}QUJDREVGR0hJSktMTU5PUA</D></RSAKeyValue>\n`.repeat(33), ANSWER, 500],
+  // (a JWK with no braces is read in the stretch around its kty. Each stretch was scanned 4 KB past its end, and a key's first d or k was found by a
+  // search of all the members: 465,000 characters of these took 1.0 s, 0.4 s and 1.1 s. They are read once now, as one range)
+  'a text of kty members with no private member to find': [fill('kty: oct\n', 465_000), ANSWER, 400],
+  'a text of kty members, each with a placeholder k': [fill('kty: oct\nk: REPLACE_ME_WITH_A_KEY\n', 465_000), ANSWER, 400],
+  'a text of kty members on one line, no braces': [fill('"kty":"oct",', 465_000), ANSWER, 400],
 }
