@@ -82,7 +82,7 @@ describe('stash metadata — duplicates and patches', () => {
   describe('near-duplicates', () => {
     // A window wide enough that ordinary compaction does nothing, so this isolates the diff path.
     beforeEach(() => setWireWindow({ headLines: 5000, tailLines: 5000, maxChars: 1_000_000, floorChars: 0 }))
-    afterEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }))
+    afterEach(() => setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 1600 }))
 
     it('marks a result sent as a patch against an earlier one as a diff', () => {
       const first = file(60)

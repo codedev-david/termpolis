@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { DECAY_FIRST_THRESHOLD } from '../../src/main/headroomProxy/prefixDecay'
 const { classifyForwardedResults, classifyMessages, emptyKinds } = await import('../../src/main/headroomProxy/forwardedKinds')
 const { rewriteMessagesBody, setWireWindow } = await import('../../src/main/headroomProxy/wireCompress')
@@ -26,12 +28,16 @@ function bodyOf(texts: string[], tool = 'Read'): string {
   })
   return JSON.stringify({ model: 'claude-x', messages })
 }
-const kinds = (over: Partial<ReturnType<typeof emptyKinds>>) => ({ ...emptyKinds(), ...over })
+const kinds = (over: Partial<ReturnType<typeof emptyKinds>> = {}) => ({ ...emptyKinds(), ...over })
 
 describe('classifyForwardedResults — where it is found', () => {
   it('is reachable from wireCompress, which the design names, and is the same function', async () => {
+    // Both from one registry. The top-level imports above are the first one; a test further down resets the
+    // modules, after which a fresh import of wireCompress brings a fresh forwardedKinds with it, so comparing
+    // that with the top-level function would pass or fail by the order the tests ran in.
+    const kindsModule = await import('../../src/main/headroomProxy/forwardedKinds')
     const viaWire = await import('../../src/main/headroomProxy/wireCompress')
-    expect(viaWire.classifyForwardedResults).toBe(classifyForwardedResults)
+    expect(viaWire.classifyForwardedResults).toBe(kindsModule.classifyForwardedResults)
   })
 
   it('agrees with the tally the rewriter keeps on its stats, for the body it forwards', () => {
@@ -65,7 +71,7 @@ describe('classifyForwardedResults — one golden body per kind', () => {
       const r = rewriteMessagesBody(bodyOf([lines(60), lines(60).replace('compute(30)', 'compute(30) + 1 // EDITED')]))
       expect(r.stashes.map((s) => s.meta?.kind)).toEqual(['diff'])
       expect(classifyForwardedResults(r.body)).toEqual(kinds({ plain: 1, diff: 1 }))
-    } finally { setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000 }) }
+    } finally { setWireWindow({ headLines: 12, tailLines: 6, maxChars: 1000, floorChars: 1600 }) }
   })
 
   it('a result aged out of a long conversation is aged, and not early', () => {
@@ -297,5 +303,42 @@ describe('classifyForwardedResults — total and read-only', () => {
       expect(total).toBeLessThanOrEqual(results * 5) // a result splits into at most a few segments around reminders
       expect(k.agedEarly).toBeLessThanOrEqual(k.aged)
     }
+  })
+})
+
+/**
+ * Where the tally is taken from, held in the source, because two ways of getting it wrong cost nothing a
+ * correctness test can see. The tally reads the messages the rewriter has already parsed; reading it from a
+ * re-parsed copy (`JSON.parse(JSON.stringify(...))`) would add a second parse of the whole body to every
+ * request in the one thread that serves every Claude session, and reading the reminders by rebuilding the
+ * text (mapOutsideReminders) would add a copy of every tool result. Both give the same counts as the right
+ * way, so nothing that checks the counts notices; the cost tests compare parse counts with the tally
+ * stubbed out, and the re-parse sits in the argument of the stubbed call, so it is in both runs.
+ */
+describe('the tally is read-only and adds no parse and no copy (source pins)', () => {
+  const SRC = join(__dirname, '..', '..', 'src', 'main', 'headroomProxy')
+  const kindsSource = readFileSync(join(SRC, 'forwardedKinds.ts'), 'utf8')
+  const wireSource = readFileSync(join(SRC, 'wireCompress.ts'), 'utf8')
+  const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1
+
+  it('forwardedKinds walks reminders in place with eachOutsideReminder, and never rebuilds the text with mapOutsideReminders', () => {
+    expect(kindsSource).toContain("import { eachOutsideReminder } from './reminders'")
+    expect(count(kindsSource, 'eachOutsideReminder(')).toBeGreaterThanOrEqual(1)
+    expect(kindsSource).not.toContain('mapOutsideReminders')
+  })
+
+  it('wireCompress takes the tally from the messages it holds, at both places it takes one, and parses nothing for it', () => {
+    expect(count(wireSource, 'stats.kinds = classifyMessages(obj.messages as unknown[])')).toBe(2)
+    expect(count(wireSource, 'classifyMessages(')).toBe(2)
+    expect(wireSource).not.toMatch(/classifyMessages\(\s*JSON\.parse/)
+    expect(wireSource).not.toMatch(/JSON\.parse\(\s*JSON\.stringify\(\s*obj\.messages/)
+    expect(wireSource).not.toContain('classifyForwardedResults(out')
+  })
+
+  it('and these pins are not vacuous: the shapes they forbid are caught by the same checks', () => {
+    const reparsed = 'stats.kinds = classifyMessages(JSON.parse(JSON.stringify(obj.messages)) as unknown[])'
+    expect(reparsed.includes('stats.kinds = classifyMessages(obj.messages as unknown[])')).toBe(false)
+    expect(/classifyMessages\(\s*JSON\.parse/.test(reparsed)).toBe(true)
+    expect('const t = mapOutsideReminders(text, f)'.includes('mapOutsideReminders')).toBe(true)
   })
 })
