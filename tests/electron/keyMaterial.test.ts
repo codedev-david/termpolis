@@ -925,6 +925,58 @@ describe('T1 K5: a key file stored base64 encoded', () => {
     }
     expect(encodedKeys(`fixture: ${template}\n`).map((s) => [s.cls, s.why])).toEqual([['flag', 'decoded:not-key-material']])
   })
+
+  it('takes every line of a key file stored base64 encoded whose lines end in a CR and an LF written out (PowerShell InsertLineBreaks in a JSON string, a form post)', () => {
+    const pem = `${K.F.pkcs8_rsa.join('\n')}\n`
+    const lines = wrap(Buffer.from(pem).toString('base64'), 76)
+    expect(lines.length).toBeGreaterThan(10)
+    const BS = '\\'
+    const breaks: Record<string, string> = {
+      'JSON': `${BS}r${BS}n`,
+      'JSON in JSON': `${BS}${BS}r${BS}${BS}n`,
+      'Unicode': `${BS}u000d${BS}u000a`,
+      'Unicode in upper case': `${BS}u000D${BS}u000A`,
+      'hex': `${BS}x0d${BS}x0a`,
+      'hex in upper case': `${BS}x0D${BS}x0A`,
+      'URL': '%0D%0A',
+      'URL in lower case': '%0d%0a',
+      'HTML decimal': '&#13;&#10;',
+      'HTML hex': '&#xD;&#xA;',
+      'HTML hex with a zero': '&#x0d;&#x0a;',
+      'PowerShell': '`r`n',
+      'a real CR and LF': '\r\n',
+      'a written-out LF alone': `${BS}n`,
+    }
+    for (const [name, sep] of Object.entries(breaks)) {
+      const r = screenKeys(`{"tls.key":"${lines.join(sep)}","ok":true}`)
+      // (the last line, wrapped narrower and followed by the JSON's own text, is a span of its own, as it is when a break is the LF alone)
+      expect(Object.keys(r.removed), name).toEqual(['private_key_b64'])
+      expect(leakedWindows(r.text, lines.filter((l) => l.length >= 12)), name).toBe(0)
+      expect(r.text.endsWith('","ok":true}') || r.text.endsWith(',"ok":true}'), name).toBe(true)
+    }
+    // Only a CR and then an LF are one break. Two breaks of any other pair (an LF and an LF, an LF and a CR, a CR and a CR) leave a blank
+    // line between them, which ends the file as a real blank line does: the lines after it are another value's.
+    const head = lines.slice(0, 12)
+    const tail = lines.slice(12)
+    const LF = `${BS}n`
+    const CR = `${BS}r`
+    const blanks: Record<string, string> = {
+      'two LFs': LF + LF,
+      'an LF and a CR': LF + CR,
+      'two CRs': CR + CR,
+      'two LFs in Unicode': `${BS}u000a${BS}u000a`,
+      'two LFs in URL escapes': '%0A%0A',
+      'two LFs as entities': '&#10;&#10;',
+      'two CR LF pairs': CR + LF + CR + LF,
+    }
+    for (const [name, blank] of Object.entries(blanks)) {
+      const r = screenKeys(`{"tls.key":"${head.join(LF)}${blank}${tail.join(LF)}","ok":true}`)
+      // (the file's last line, with its END line in it, is a span of its own when what lies between is cut)
+      expect(Object.keys(r.removed), name).toEqual(['private_key_b64'])
+      expect(r.text.includes(tail[2].slice(0, 12)), `${name}: the lines after the blank line are not the file's`).toBe(true)
+      expect(r.text.includes(head[2].slice(0, 12)), `${name}: the lines before it are`).toBe(false)
+    }
+  })
 })
 
 describe('T1 K6: a PuTTY key file', () => {

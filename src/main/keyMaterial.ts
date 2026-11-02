@@ -76,6 +76,10 @@ const ESC_RE = /\\+(?:[nr]|u000[aAdD]|x0[aAdD])|%0[aAdD]|&#(?:x0?[aAdD]|1[03]);|
  *  same characters follow all of it, so an escape starts at no other. (Tried at each, a run of n of them cost n * n.) */
 export const ESC_ALL_RE = new RegExp('(?<!\\\\)' + ESC_RE.source, 'g')
 
+/** A CR written out and the LF written out right behind it (a Windows line end in a JSON string, a form post, PowerShell's text): one break, as a real
+ *  CR LF is for nextBreak, which reads the two as a break with an empty line between them. */
+const CRLF_ESCAPED = /^(?:\\+r|\\+u000[dD]|\\+x0[dD]|%0[dD]|&#(?:x0?[dD]|13);|`r)(?:\\+n|\\+u000[aA]|\\+x0[aA]|%0[aA]|&#(?:x0?[aA]|10);|`n)/
+
 /** The written-out line break that starts at i, or null. PowerShell's `n and `r count only after the text they end: a base64
  *  character, a quote or a dash (a BEGIN line's). An inline-code span opens with a backtick in front of a key line (after a space,
  *  a comma or a line start), and about half of the key lines start with n or r. */
@@ -1613,8 +1617,10 @@ export function encodedKeys(text: string, start = 0, cutText = false): KeySpan[]
     let j = i
     // (base64 padding ends a value: a padded line has none after it)
     for (let n = 0; n < 65536 && text.charCodeAt(j - 1) !== 61; n++) {
-      const br = nextBreak(text, j, Math.min(text.length, j + 256))
-      if (!br) break
+      const next = nextBreak(text, j, Math.min(text.length, j + 256))
+      if (!next) break
+      const pair = CRLF_ESCAPED.exec(text.slice(next[0], next[0] + 40))
+      const br: Run = pair ? [next[0], next[0] + pair[0].length] : next
       const stop = Math.min(text.length, br[1] + 4096)
       const lineEnd = (nextBreak(text, br[1], stop) ?? [stop])[0]
       const lr = runsIn(text, br[1], lineEnd, 4)
