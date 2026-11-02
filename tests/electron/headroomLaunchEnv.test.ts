@@ -197,6 +197,12 @@ const calleeName = (call: ts.CallExpression): string | null => {
   return null
 }
 
+/** The name a destructuring pattern takes from the object: `x` in `{ x }` and in `{ x: alias }`; null for a computed key. */
+const bindingKey = (n: ts.BindingElement): string | null => {
+  const key = n.propertyName ?? n.name
+  return ts.isIdentifier(key) ? key.text : null
+}
+
 /** The initializer text of the nearest `const <name> = ...` visible from a node: its own function first, then each one outside it. */
 function initializerInScope(node: ts.Node, name: string, sf: ts.SourceFile): string | null {
   for (let fn: ts.Node | undefined = node.parent; fn; fn = fn.parent) {
@@ -209,6 +215,10 @@ function initializerInScope(node: ts.Node, name: string, sf: ts.SourceFile): str
   }
   return null
 }
+
+/** The files that build an account-switch line (they pass `extraUnset`) and say nothing about the window variable. */
+const blindToTheWindow = (sources: ReadonlyArray<{ file: string; text: string }>): string[] =>
+  sources.filter((s) => s.text.includes('extraUnset') && !/CONTEXT_WINDOW_VAR|AUTO_COMPACT_WINDOW/.test(s.text)).map((s) => s.file)
 
 describe('every spawn site that carries the proxy env also carries the window (R3 criterion 4)', () => {
   const indexFile = join(MAIN, 'index.ts')
@@ -231,9 +241,22 @@ describe('every spawn site that carries the proxy env also carries the window (R
         // ...or reached as a member of a module: `mod.getProxyEnv` or `mod['getProxyEnv']`.
         if (ts.isPropertyAccessExpression(n) && n.name.text === 'getProxyEnv') offenders.push(at(n))
         if (ts.isElementAccessExpression(n) && ts.isStringLiteralLike(n.argumentExpression) && n.argumentExpression.text === 'getProxyEnv') offenders.push(at(n))
+        // ...or pulled out of a dynamic import by destructuring: `const { getProxyEnv: gp } = await import(...)`.
+        if (ts.isBindingElement(n) && bindingKey(n) === 'getProxyEnv') offenders.push(at(n))
       })
     }
     expect(offenders, 'getProxyEnv() taken outside claudeLaunchEnv: route it through the helper so the window rides with the route').toEqual([])
+  })
+
+  // The guard above is only as good as the shapes it walks. This plants the destructuring shape in a scratch
+  // source, which the real tree does not contain, and checks the same walk reports it.
+  it('and the walk reports a getProxyEnv pulled out of a dynamic import by destructuring', () => {
+    const planted = ts.createSourceFile('planted.ts', "async function f() { const { getProxyEnv: gp } = await import('./headroomProxy/proxySupervisor'); return gp() }", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const hits: string[] = []
+    walk(planted, (n) => {
+      if (ts.isBindingElement(n) && bindingKey(n) === 'getProxyEnv') hits.push(n.getText(planted))
+    })
+    expect(hits).toEqual(['getProxyEnv: gp'])
   })
 
   it('index.ts hands getProxyEnv to the helper as a function and uses it nowhere else, under its own name', () => {
@@ -258,7 +281,9 @@ describe('every spawn site that carries the proxy env also carries the window (R
     expect(body).toContain('settings: getHeadroomSettings')
     expect(body).toContain('proxyEnv: getProxyEnv')
     expect(body).toContain('env: process.env')
-    expect(body).toContain('readClaudeWindowSettings(agentIntegrationPaths().claudeDir')
+    // The terminal's own folder reaches the reader as well as the user's: without it the project's settings
+    // are never read, and the variable is set over a window the project file holds (CLAUDE_CODE wins).
+    expect(body).toContain('readClaudeWindowSettings(agentIntegrationPaths().claudeDir, dir)')
   })
 
   it('finds the two terminal sites and the workflow pass-through, and no other spawn', () => {
@@ -299,6 +324,9 @@ describe('every spawn site that carries the proxy env also carries the window (R
     expect(withEnv, 'a workflow spawn now passes an env: route it through claudeLaunchEnv, or the window is missed there').toEqual([])
   })
 
+  // The limit of a textual scan, stated so nobody reads it as proof: it sees a name spelled in one piece. A name
+  // assembled at run time (`'CLAUDE_CODE_AUTO' + '_COMPACT_WINDOW'`, or built from parts in a table) is out of
+  // its reach, and that case is left to review.
   it('the helper is the only code that names the window variable outside the pure module', () => {
     const named: string[] = []
     for (const file of candidates(/AUTO_COMPACT_WINDOW/i)) {
@@ -314,5 +342,31 @@ describe('every spawn site that carries the proxy env also carries the window (R
       })
     }
     expect(named).toEqual([])
+  })
+
+  // INTEGRATION CANARY (the account switcher, fix/accounts154). The window is decided once, when the PTY is
+  // made, from Termpolis's own Claude folder. The switcher moves a terminal to another sign-in by TYPING
+  // `export CLAUDE_CONFIG_DIR=<profile> && claude`, and Claude Code lets this variable beat every window that
+  // profile's settings hold, so the typed line has to take the variable off again when the target profile
+  // holds a window of its own. That branch passes the names it takes off a line as `extraUnset`. Until it is
+  // merged nothing here does, and this passes; once a file that does has no mention of the window variable
+  // beside it, the merge has taken the first half of the contract (the account-aware helper) and left the
+  // second, and this says so. It is deliberately about the file, not the line: the integrator may name the
+  // list however the switcher's code is shaped, and edits this test then, with the pins above.
+  it('a file that builds the line a terminal types to change account also deals with the window variable', () => {
+    const offenders = blindToTheWindow(SOURCES).map((f) => relative(MAIN, f))
+    expect(offenders, 'a typed account switch leaves our CLAUDE_CODE_AUTO_COMPACT_WINDOW in place over the target profile\'s own window: unset it there when Termpolis put it in the terminal and the profile holds one').toEqual([])
+  })
+
+  it('and that rule is not vacuous: it reports a file that unsets names on the line and never mentions the window', () => {
+    const text = (names: string): string => `const line = accountLine({ set: { CLAUDE_CONFIG_DIR: dir }, extraUnset: [${names}] })`
+    const sources = [
+      { file: 'accountsIpc.ts', text: text("'ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY'") },
+      { file: 'accountsIpcDone.ts', text: text("'ANTHROPIC_BASE_URL', CONTEXT_WINDOW_VAR") },
+      { file: 'accountsNamed.ts', text: text("'CLAUDE_CODE_AUTO_COMPACT_WINDOW'") },
+      { file: 'unrelated.ts', text: 'export const x = 1' },
+    ]
+    expect(blindToTheWindow(sources)).toEqual(['accountsIpc.ts'])
+    expect(blindToTheWindow([])).toEqual([])
   })
 })

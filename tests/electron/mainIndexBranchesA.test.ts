@@ -697,6 +697,30 @@ describe('terminal:create and the swarm worker — the context window is the use
     expect(await createClaude('cap-bad-settings')).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
   })
 
+  // The settings the user keeps in the folder a terminal opens in are read too, and the folder has to reach the
+  // reader: a helper that read the user's settings only would pass every test above and set the variable over a
+  // window the project's own file holds, which Claude Code lets win. Two real folders, at both sites.
+  it('never overrides a window in the PROJECT settings of the folder the terminal opens in, at both sites', async () => {
+    cfg.setSettings({ contextCap: 300_000 })
+    const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const proj = await mkdtemp(join(tmpdir(), 'capproj-'))
+    try {
+      await mkdir(join(proj, '.claude'), { recursive: true })
+      await writeFile(join(proj, '.claude', 'settings.json'), JSON.stringify({ env: { [VAR]: '250000' } }), 'utf8')
+      expect(await createClaude('proj-env', proj)).toEqual(PROXY_ENV)
+      expect(await createWorker('Backend Dev', proj)).toEqual(PROXY_ENV)
+      await writeFile(join(proj, '.claude', 'settings.json'), '{}', 'utf8')
+      await writeFile(join(proj, '.claude', 'settings.local.json'), JSON.stringify({ autoCompactWindow: 250_000 }), 'utf8')
+      expect(await createClaude('proj-local', proj)).toEqual(PROXY_ENV)
+      expect(await createWorker('Backend Dev', proj)).toEqual(PROXY_ENV)
+      // A project file with nothing about a window in it leaves the choice in force.
+      await writeFile(join(proj, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { allow: [] } }), 'utf8')
+      expect(await createClaude('proj-other', proj)).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
+      expect(await createWorker('Backend Dev', proj)).toEqual({ ...PROXY_ENV, [VAR]: '300000' })
+    } finally { await rm(proj, { recursive: true, force: true }) }
+  })
+
   it('applies to the next terminal at once, and to no running one: it is read at creation, not frozen for the run', async () => {
     expect(await createClaude('before')).toEqual(PROXY_ENV)
     cfg.setSettings({ contextCap: 300_000 })

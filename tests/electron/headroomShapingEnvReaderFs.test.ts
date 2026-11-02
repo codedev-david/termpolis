@@ -103,6 +103,51 @@ describe('the file calls the settings reader makes', () => {
     expect((await readClaudeWindowSettings(USER)).unreadable).toBe(true)
   })
 
+  // The retry waits RETRY_AFTER_MS, and the whole read is bounded by SETTINGS_READ_DEADLINE_MS, after which a
+  // launch gives up and sets nothing. If the wait were as long as the bound, the retry could never finish in
+  // time and a lock that clears in a moment would leave the window unset for that terminal; nothing else ties
+  // the two numbers together. The wait is also run, on fake timers so the answer does not depend on load.
+  it('waits a small part of the deadline before it tries again, so the second try always has time to answer', async () => {
+    const { RETRY_AFTER_MS } = await import('../../src/main/headroom/shapingEnvReader')
+    const { SETTINGS_READ_DEADLINE_MS } = await import('../../src/main/headroom/shapingEnv')
+    expect(RETRY_AFTER_MS).toBeLessThan(SETTINGS_READ_DEADLINE_MS / 5)
+  })
+
+  it('a lock that clears within the wait lets the launch read the file: with no window of its own in it, the variable is set', async () => {
+    const { resolveShapingEnv, SETTINGS_READ_DEADLINE_MS } = await import('../../src/main/headroom/shapingEnv')
+    const { RETRY_AFTER_MS } = await import('../../src/main/headroom/shapingEnvReader')
+    vi.useFakeTimers()
+    try {
+      M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
+      M.readFile.mockRejectedValueOnce(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })).mockResolvedValue('{}')
+      const pending = resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(USER))
+      // Past the wait, well inside the deadline: the second try has run.
+      await vi.advanceTimersByTimeAsync(RETRY_AFTER_MS + 1)
+      expect(await pending).toEqual({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' })
+      expect(M.readFile).toHaveBeenCalledTimes(2)
+      expect(RETRY_AFTER_MS + 1).toBeLessThan(SETTINGS_READ_DEADLINE_MS)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('waits before the second try: a lock held for a few milliseconds is gone by then, and one tried again at once would still be there', async () => {
+    const { resolveShapingEnv } = await import('../../src/main/headroom/shapingEnv')
+    const { RETRY_AFTER_MS } = await import('../../src/main/headroom/shapingEnvReader')
+    vi.useFakeTimers()
+    try {
+      const t0 = Date.now()
+      M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
+      M.readFile.mockImplementation(async () => {
+        if (Date.now() - t0 < 10) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' })
+        return '{}'
+      })
+      const pending = resolveShapingEnv({ contextCap: 300000 }, {}, () => readClaudeWindowSettings(USER))
+      await vi.advanceTimersByTimeAsync(RETRY_AFTER_MS + 1)
+      expect(await pending).toEqual({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' })
+      expect(M.readFile).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it('and that makes the variable stay unset, which is the whole point', async () => {
     const { resolveShapingEnv } = await import('../../src/main/headroom/shapingEnv')
     M.stat.mockResolvedValue({ isFile: () => true, size: 10 })
