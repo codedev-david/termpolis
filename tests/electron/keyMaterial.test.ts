@@ -2486,6 +2486,13 @@ describe('looksRandom and placeholderWhy', () => {
     for (const bytes of [Buffer.from('my-super-secret\u0001key-for-tests'), Buffer.from('my-super-secret-key-for-tests\u007f'), Buffer.from('my-super-secret-key-for-testsé'), Buffer.concat([Buffer.from('my-super-secret-key-for-tests'), Buffer.from([0])])]) {
       expect(placeholderWhy(bytes.toString('base64url'), 'b62'), bytes.toString('hex')).not.toBe('text')
     }
+    // a value with a character outside the base64 alphabets is no base64: Node's decoder skips such a character, and the phrase left
+    // over would make a value with a `!` or an `@` among its letters one
+    const encoded = Buffer.from('my-super-secret-key-for-tests').toString('base64url')
+    expect(placeholderWhy(encoded, 'b62')).toBe('text')
+    for (const odd of ['.', '!', '@@', '~', ':']) {
+      expect(placeholderWhy(encoded.slice(0, 12) + odd + encoded.slice(12), 'b62'), odd).not.toBe('text')
+    }
     // (twelve bytes is the least: a shorter run of letters is a word the checks above judged)
     expect(placeholderWhy(Buffer.from('eleven bytes').toString('base64'), 'b62')).toBe('text')
     expect(placeholderWhy(Buffer.from('ten bytes!!').toString('base64'), 'b62')).not.toBe('text')
