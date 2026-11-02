@@ -440,7 +440,7 @@ describe('Elision health card — late compared with the holdout', () => {
     serve(view({ firstSight: legacyInForce, arms: arms({ legacy: arm({ requests: 4_000, working: 3_100, turns: 900, groups: 1, sharePct: 22.5 }) }) }))
     render(<ElisionHealthCard />)
     const v = await screen.findByTestId('hr-arms-verdict')
-    expect(v).toHaveTextContent('This run is on the Legacy setting, so every request ran the old behaviour and there is nothing to compare (4,000 requests so far).')
+    expect(v).toHaveTextContent('This run is on the Legacy setting, so every request ran the old behavior and there is nothing to compare (4,000 requests so far).')
     expect(v).not.toHaveTextContent('No request has run under Late')
   })
 
@@ -573,7 +573,7 @@ describe('Elision health card — late compared with the holdout', () => {
     expect(n).toHaveTextContent('quality of an answer')
   })
 
-  it('says how the holdout is chosen and that it runs the old behaviour whichever setting is on', async () => {
+  it('says how the holdout is chosen and that it runs the old behavior whichever setting is on', async () => {
     serve(view())
     render(<ElisionHealthCard />)
     const n = await screen.findByTestId('hr-arms-holdout-note')
@@ -582,7 +582,7 @@ describe('Elision health card — late compared with the holdout', () => {
     expect(n).toHaveTextContent('about one distinct opening message in ten')
     expect(n).toHaveTextContent('always lands in the same arm')
     expect(n).toHaveTextContent('first message')
-    expect(n).toHaveTextContent('old behaviour')
+    expect(n).toHaveTextContent('old behavior')
   })
 })
 
@@ -632,12 +632,12 @@ describe('Elision health card — the verdict is about the policy in force', () 
     expect(v.style.color).not.toBe('rgb(248, 113, 113)')
   })
 
-  it('shows the old behaviour beside it, labelled as the holdout and not as what the setting does, and not in red', async () => {
+  it('shows the old behavior beside it, labelled as the holdout and not as what the setting does, and not in red', async () => {
     serve(view({ classes: [holdoutRow], firstSight: { policy: 'late', ...none }, oldBehaviour: holdoutCosts }))
     render(<ElisionHealthCard />)
     const old = await screen.findByTestId('hr-elision-old')
-    expect(old).toHaveTextContent('conversations kept on the old behaviour')
-    // The old behaviour is the holdout and also any earlier run on the Legacy setting, and its floor is the tier's own.
+    expect(old).toHaveTextContent('conversations kept on the old behavior')
+    // The old behavior is the holdout and also any earlier run on the Legacy setting, and its floor is the tier's own.
     expect(old).toHaveTextContent('(the holdout, and any earlier run on the Legacy setting)')
     expect(old).toHaveTextContent('from the size of the tier’s floor up')
     expect(old).not.toHaveTextContent('1,600')
@@ -649,7 +649,7 @@ describe('Elision health card — the verdict is about the policy in force', () 
     expect(old.style.color).toBe('')
   })
 
-  it('says the old behaviour paid, when it did', async () => {
+  it('says the old behavior paid, when it did', async () => {
     serve(view({ classes: [holdoutRow], firstSight: { policy: 'late', ...none }, oldBehaviour: { ...holdoutCosts, verdict: 'pays', netUnits: 120_000, ratePct: 12, breakEvenPct: 35 } }))
     render(<ElisionHealthCard />)
     expect(await screen.findByTestId('hr-elision-old')).toHaveTextContent('saved about 120,000 billed units')
@@ -685,13 +685,13 @@ describe('Elision health card — the verdict is about the policy in force', () 
     expect(v.style.color).toBe('rgb(248, 113, 113)')
   })
 
-  it('keeps the old wording under the Legacy setting, where the old behaviour is what runs', async () => {
+  it('keeps the old wording under the Legacy setting, where the old behavior is what runs', async () => {
     serve(view())
     render(<ElisionHealthCard />)
     expect(await screen.findByTestId('hr-elision-verdict')).toHaveTextContent('Eliding results at first sight is costing you about 863,500 billed units over all 100 results so far')
   })
 
-  it("tags the rows by policy under Late: Late's own, and the old behaviour; a repeat or a patch is not tagged", async () => {
+  it("tags the rows by policy under Late: Late's own, and the old behavior; a repeat or a patch is not tagged", async () => {
     const dedup = cls({ key: 'dedup|Read|4-10k', kind: 'dedup', policy: 'legacy', elided: 50, redeemed: 5, ratePct: 10, breakEvenPct: null, verdict: 'unknown', netUnitsPer1000: null, basis: null })
     serve(view({ classes: [lateRow, holdoutRow, dedup], firstSight: { policy: 'late', ...none }, oldBehaviour: holdoutCosts }))
     render(<ElisionHealthCard />)
@@ -699,17 +699,17 @@ describe('Elision health card — the verdict is about the policy in force', () 
     expect(late).toHaveTextContent('Compacted at first sight')
     expect(late).toHaveTextContent('(Late)')
     const old = screen.getByTestId('hr-elision-row-compact|Bash|4-10k')
-    expect(old).toHaveTextContent('(old behaviour)')
+    expect(old).toHaveTextContent('(old behavior)')
     const rep = screen.getByTestId('hr-elision-row-dedup|Read|4-10k')
     expect(rep).not.toHaveTextContent('(Late)')
-    expect(rep).not.toHaveTextContent('(old behaviour)')
+    expect(rep).not.toHaveTextContent('(old behavior)')
   })
 
   it('does not tag any row under the Legacy setting', async () => {
     serve(view())
     render(<ElisionHealthCard />)
     const row = await screen.findByTestId('hr-elision-row-compact|Read|4-10k')
-    expect(row).not.toHaveTextContent('(old behaviour)')
+    expect(row).not.toHaveTextContent('(old behavior)')
     expect(row).not.toHaveTextContent('(Late)')
   })
 })

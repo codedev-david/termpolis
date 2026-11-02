@@ -243,8 +243,48 @@ describe('what the control says', () => {
     serve()
     render(<TokenSavingsSettings />)
     const note = await screen.findByTestId('hr-context-cap-note')
-    expect(note).toHaveTextContent('It also wins over a window saved in a subagent’s definition, in a --settings argument, or in your organization’s managed settings, none of which Termpolis can read')
+    expect(note).toHaveTextContent('It also wins over a window saved in a subagent’s definition, in a --settings argument, or in your organization’s managed settings (the managed-settings file included), none of which Termpolis reads')
     expect(note).not.toHaveTextContent('wins over a window set in a subagent’s definition')
+    // "does not read", not "cannot read": a managed-settings FILE in a system folder is one an app could read.
+    expect(note).not.toHaveTextContent('Termpolis can read')
+    expect(note).not.toHaveTextContent('none of which Termpolis cannot')
+  })
+
+  // What a person who turns the window on is told about its reach, read against Anthropic's own pages: subagents compact
+  // at the variable's window too (sub-agents page), /autocompact typed in a session is reported as overridden and not
+  // saved (model-config page), and what a resumed conversation already longer than the window does is not documented
+  // anywhere, so the pane says that instead of guessing.
+  it('says Claude Code\'s subagents compact at it too, that /autocompact is overridden while it is on, and that nothing is known about a resumed long conversation', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    expect(note).toHaveTextContent('Claude Code’s subagents use the variable’s window too, so they compact sooner as well')
+    expect(note).toHaveTextContent('While it is on, /autocompact typed inside a session is reported as overridden and not saved')
+    expect(note).toHaveTextContent('Anthropic does not say what a resumed conversation that is already longer than the window does')
+    expect(note).not.toHaveTextContent('subagents of a Workflow')
+  })
+
+  // The note is long (three paragraphs). What a person decides on and what Termpolis reads stay in view; the limits
+  // (where it does not look, and what else the window touches) are folded under a summary that says what is inside,
+  // CLOSED until opened, and the text is still in the page for a screen reader and for a search.
+  it('folds the limits under a labelled summary, closed by default, and keeps what the person decides on outside it', async () => {
+    serve()
+    render(<TokenSavingsSettings />)
+    const note = await screen.findByTestId('hr-context-cap-note')
+    const folded = within(note).getByTestId('hr-context-cap-limits') as HTMLDetailsElement
+    expect(folded.tagName).toBe('DETAILS')
+    expect(folded.open).toBe(false)
+    expect(folded.querySelector('summary')).toHaveTextContent('Where it does not look, and what else it affects')
+    // Inside the fold: the places it cannot see and what else it touches.
+    for (const s of ['--autocompact', '/autocompact typed inside a session', 'managed-settings file', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', 'Workflow Orchestrator']) expect(folded, s).toHaveTextContent(s)
+    // Outside it, in plain view: what it sets, for whom, what it never overrides, and what is read.
+    const outside = (note.cloneNode(true) as HTMLElement)
+    outside.querySelector('[data-testid="hr-context-cap-limits"]')?.remove()
+    for (const s of ['applies to new Claude Code terminals only', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'never overrides a window you set yourself', 'when a terminal opens', 'Codex and Gemini CLI ignore it']) expect(outside.textContent, s).toContain(s)
+    expect(outside.textContent).not.toContain('--autocompact')
+    // Opening it shows the same text without any change to what is said.
+    fireEvent.click(folded.querySelector('summary') as HTMLElement)
+    expect(folded.open).toBe(true)
   })
 
   // The variable beats a saved autoCompactWindow wherever it lives, but Claude Code writes an env entry of a

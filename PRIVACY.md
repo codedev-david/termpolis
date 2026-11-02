@@ -1,7 +1,7 @@
 # Privacy Policy
 
 **Termpolis — Secure AI-Assisted Development**
-Last updated: November 1, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behaviour; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers)
+Last updated: November 2, 2026 (an optional smaller context window for Claude Code reads the env and window keys of your Claude Code settings when a Claude terminal opens; the Claude Code compression proxy now shortens a tool result only from 40,000 characters by default and keeps a local comparison of that against the old behavior, and what it reads of each answer is described; the Activity Feed's local event log is described; Linked machines keeps a job history on the computer that runs the jobs, and screens prompts and answers for credentials on both computers)
 
 ## Overview
 
@@ -30,7 +30,7 @@ to keep your data local.
   Settings → Token Savings — see [The Claude Code compression
   proxy](#the-claude-code-compression-proxy). Since v1.55 it shortens a tool
   result only from 40,000 characters by default, and keeps a comparison on your
-  machine of that against the old behaviour (Late or Legacy, your choice).
+  machine of that against the old behavior (Late or Legacy, your choice).
 - Termpolis changes Claude Code, Codex and Gemini CLI settings **only if you
   connect them**, and Disconnect removes everything it wrote — see [Your
   coding agents' settings](#your-coding-agents-settings).
@@ -64,14 +64,25 @@ upload it.
   agent can ask for it back with `retrieve_full` (`userData/headroom/ccr`, one
   file per block, capped at 200 MB, **not encrypted**), plus running counts of
   what was saved. Beside each original it keeps the name of the tool whose
-  result it was, the model's name, the two sizes (the original and what replaced
-  it) and which first-sight setting the request ran under. It also keeps counts,
+  result it was, the model's name, how it was shortened (a window of it, a
+  reference to a repeat, a patch against a near-repeat, or aged out of a long
+  conversation), the two sizes (the original and what replaced it) and which
+  first-sight setting the request ran under. It also keeps counts,
   by kind of tool and size of result, of how many results were shortened and how
   many of those the agent later asked back for
   (`userData/headroom/elision-ledger.json`), and cost counters for the two
   groups of conversations that Settings → Token Savings compares (inside
   `userData/headroom/proxy-totals.json`). Counts, sizes and names only, never
   the content of a conversation.
+- The Activity Feed's event log (`userData/agent-events.jsonl`, plus
+  `agent-events.jsonl.old` once it passes 5 MB), which Termpolis builds from
+  the transcripts that Claude Code, Codex and Gemini CLI write: one line per
+  event, with a short summary and a size-capped payload. It holds the name and
+  input of each tool call, the first 200 characters of each message, whether a
+  tool result was an error (not the result itself), token counts and
+  compactions. A compaction event also holds the size of the conversation when
+  Claude Code compacted and whether it chose to. It stays on your machine and
+  is not sent anywhere.
 - If you turn on **Termpolis Remote**: this desktop's X25519 identity key
   (`userData/remote-identity-key`, encrypted at rest through the OS keystore —
   DPAPI on Windows, Keychain on macOS, libsecret on Linux), one record per
@@ -178,11 +189,17 @@ can ask for it back; none of it is sent to Termpolis.
   history still ages out under both.
 - **A comparison on your machine.** About one distinct opening message in ten,
   chosen by a hash of the conversation's first message, computed on your
-  machine and kept for the conversation's whole length, always runs the Legacy
-  behaviour whichever setting is on, so that Termpolis can compare the two on
-  your own work (the Elision health card). Which group a request belonged to is
-  recorded with its cost, locally. The comparison is computed locally and
-  nothing about it is sent anywhere.
+  machine and kept for as long as that message stays the same (a compaction
+  summarizes the start of a conversation, so a compacted one can be assigned
+  again), always runs the Legacy behavior whichever setting is on, so that
+  Termpolis can compare the two on your own work (the Elision health card).
+  Which group a request belonged to is recorded with its cost, locally. The
+  comparison is computed locally and nothing about it is sent anywhere.
+- **What it reads of the answer.** The proxy also reads each answer as it
+  streams back, for Anthropic's token counts and the names of the tools the
+  model called, which is how Termpolis counts the turns that only fetched
+  shortened text and the ToolSearch calls that led to them. It keeps counts
+  only, and forwards the answer to Claude Code unchanged.
 
 ## What We Never Collect
 
@@ -408,19 +425,24 @@ sets none, since it cannot tell.
 
 It does not see every place a window can live. Claude Code lets this variable
 win over a window saved in a subagent's definition, in a `--settings` argument
-or in your organization's managed settings, none of which Termpolis reads, and a
+or in your organization's managed settings, none of which Termpolis reads (that
+includes the managed-settings file), and a
 `CLAUDE_CONFIG_DIR` that a script sets inside the terminal (to switch accounts,
 say) names a folder Termpolis did not check. An `env` entry that sets the
 variable itself in a `--settings` argument or in managed settings is different:
 Claude Code writes it over the value Termpolis passed, so that one wins. Turn
 the choice Off first if you rely on any of them. If you also set
 `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, it is a percentage of the window in force, so
-with a smaller window compaction comes sooner than you chose. A Claude session
+with a smaller window compaction comes sooner than you chose. Claude Code's
+subagents use the variable's window too, so they compact sooner as well, and
+`/autocompact` typed inside a session is reported as overridden and not saved
+while the window is on. Anthropic does not say what a resumed conversation that
+is already longer than the window does. A Claude session
 the Workflow Orchestrator's agent steps start themselves gets neither this
 variable nor the proxy route.
 
 It is yours to turn off: choose Off, and new terminals go back to Claude Code's
-own behaviour. Nothing is read while it is Off.
+own behavior. Nothing is read while it is Off.
 
 ## Your Choices
 
@@ -432,11 +454,11 @@ own behaviour. Nothing is read while it is Off.
 - **Switch tool-result shortening between Late and Legacy** — Settings → Token
   Savings → Shorten tool results. It applies the next time Termpolis starts.
   The comparison group (about one opening message in ten, which always runs the
-  old behaviour) cannot be switched off while Late is on; it is what lets the
+  old behavior) cannot be switched off while Late is on; it is what lets the
   app tell you whether Late helps on your work, and it stays on your machine.
 - **Turn the smaller context window off** — Settings → Token Savings → Long
   conversations → Off. New terminals then go back to Claude Code's own
-  behaviour.
+  behavior.
 - **Disconnect your coding agents** — Disconnect in Settings → Agent
   Integration removes everything Termpolis wrote into their settings. Folders
   trusted before v1.49 stay trusted (see above).

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 
 /**
@@ -19,6 +19,10 @@ import { join } from 'path'
 
 const ROOT = join(__dirname, '..', '..')
 const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+
+/** The words the old promise came in, and the names of the policy it is true of. */
+const PROMISE_WORDS = ['51%', 'at least half', 'half of your', '50% minimum', 'at least 50%', '51 percent', '50 percent', 'fifty percent', 'half the tool', 'half of the tool']
+const QUALIFIER = /v1\.34|Legacy|holdout/
 
 /** The bullets of the Token Headroom section, one entry per list item. */
 function headroomBullets(): string[] {
@@ -48,9 +52,8 @@ describe('the README on Token Headroom', () => {
 
   // The check above only looks at a bullet that already carries one of the exact figures it lists, so a new
   // bullet that promises the old thing in other words would pass it. These are the words the promise came in.
-  const PROMISE_WORDS = ['51%', 'at least half', 'half of your', '50% minimum', 'at least 50%']
   /** A bullet that uses a word of the old promise and does not say it is about v1.34, Legacy or the holdout. */
-  const promisesTheOldFigure = (bullet: string): boolean => PROMISE_WORDS.some((w) => bullet.includes(w)) && !/v1\.34|Legacy|holdout/.test(bullet)
+  const promisesTheOldFigure = (bullet: string): boolean => PROMISE_WORDS.some((w) => bullet.includes(w)) && !QUALIFIER.test(bullet)
 
   it('has no bullet that promises the old half-of-your-tool-text figure without saying which policy it is about', () => {
     for (const bullet of headroomBullets()) expect(promisesTheOldFigure(bullet), bullet.slice(0, 90)).toBe(false)
@@ -60,6 +63,11 @@ describe('the README on Token Headroom', () => {
     expect(promisesTheOldFigure('- **Saves you money.** Termpolis removes about 51% fewer tokens, at least half of your tool text, every time.')).toBe(true)
     expect(promisesTheOldFigure('- **Half.** Saves at least half of your tool text.')).toBe(true)
     expect(promisesTheOldFigure('- **A 50% minimum.** Always.')).toBe(true)
+    // The same promise spelled out, which a list of the digit forms alone would let through.
+    expect(promisesTheOldFigure('- **Half.** Termpolis removes 50 percent of your tool text, every time.')).toBe(true)
+    expect(promisesTheOldFigure('- **Half.** It takes out fifty percent of what a tool prints.')).toBe(true)
+    expect(promisesTheOldFigure('- **Half.** About 51 percent fewer tokens.')).toBe(true)
+    expect(promisesTheOldFigure('- **Half.** It cuts half the tool output on every request.')).toBe(true)
     expect(promisesTheOldFigure('- **Legacy only.** Under the Legacy policy it removed at least half of your tool text.')).toBe(false)
     expect(promisesTheOldFigure('- **Measured (v1.34).** About 51% fewer tokens.')).toBe(false)
     expect(promisesTheOldFigure('- **Nothing of the sort.** It shortens large results.')).toBe(false)
@@ -72,6 +80,24 @@ describe('the README on Token Headroom', () => {
     const meter = headroomBullets().find((b) => b.includes('The meter reports all three denominators'))
     expect(meter).toBeDefined()
     expect(meter).toContain('(Those three figures are the v1.34 measurement.)')
+  })
+
+  // The bullet's title says "the v1.34 numbers", but the SENTENCE that carries the percentages used to open
+  // "At the shipped default:", which on its own is the stale at-least-half claim for a default that is now Late
+  // (which removes less on purpose). The qualifier has to be in the sentence that holds the numbers.
+  it('puts the qualifier in the very sentence that carries the v1.34 percentages, never "the shipped default"', () => {
+    const measured = headroomBullets().find((b) => b.startsWith('- **Measured, not asserted')) as string
+    expect(measured).toContain("At v1.34's default tier (Aggressive, Legacy policy): **61.0% of compressible tool text removed**")
+    expect(measured).not.toContain('shipped default')
+    // Every sentence of this bullet that holds one of the percentages names its source or follows one that does.
+    // The bold title is cut off first: it names v1.34 and Legacy, and would excuse the sentence after it.
+    const sentences = measured.replace(/^- \*\*[^*]+\*\*/, '').trim().split(/(?<=[.)])\s+(?=[A-Z])/)
+    const holders = sentences.map((s, i) => ({ s, i })).filter(({ s }) => /61\.0%|93\.8%|72\.3%|99\.9%/.test(s))
+    expect(holders.length).toBeGreaterThanOrEqual(2)
+    for (const { s, i } of holders) {
+      const named = QUALIFIER.test(s) || (i > 0 && QUALIFIER.test(sentences[i - 1]))
+      expect(named, s.slice(0, 80)).toBe(true)
+    }
   })
 
   it('does not present the savings floor as a promise of the default policy', () => {
@@ -169,5 +195,71 @@ describe('the Settings copy on the savings floor', () => {
   it('no longer describes the compressor\'s reach as the 86% of message bytes it reached before v1.49 stopped touching tool inputs', () => {
     expect(settings).not.toContain('about 86% of message bytes')
     expect(settings).toContain('the input of any tool call')
+  })
+})
+
+/**
+ * The README is not the only place the old promise could come back: the guide, the privacy policy and every string of
+ * the app's own UI are read as claims too. The README rule works on a bullet; these texts are not bullets (JSX is
+ * not even lines of prose), so the unit is the sentence, and a sentence that uses a word of the old promise has to
+ * name the policy it is true of itself or follow a sentence that does.
+ */
+describe('the old promise, anywhere else a person could read it', () => {
+  /** The sentences of a text that use a word of the old promise without naming v1.34, Legacy or the holdout. */
+  const unqualifiedSentences = (text: string): string[] => {
+    const sentences = text.replace(/\s+/g, ' ').split(/(?<=[.!?])\s+(?=[A-Z*`(<{'"])/)
+    return sentences.filter((s, i) => PROMISE_WORDS.some((w) => s.includes(w)) && !QUALIFIER.test(s) && !(i > 0 && QUALIFIER.test(sentences[i - 1])))
+  }
+
+  /** Every .ts and .tsx file under a folder, with its text. */
+  const sourceFiles = (dir: string): Array<{ name: string; text: string }> =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) return sourceFiles(p)
+      return /\.tsx?$/.test(e.name) ? [{ name: p.slice(ROOT.length + 1), text: readFileSync(p, 'utf8') }] : []
+    })
+
+  it('is not made in the guide, the privacy policy or any file of the renderer (the pane, the card, the what\'s-new text)', () => {
+    const files = [
+      { name: 'docs/DOCUMENTATION.md', text: readFileSync(join(ROOT, 'docs', 'DOCUMENTATION.md'), 'utf8') },
+      { name: 'PRIVACY.md', text: readFileSync(join(ROOT, 'PRIVACY.md'), 'utf8') },
+      ...sourceFiles(join(ROOT, 'src', 'renderer', 'src')),
+    ]
+    // The two files that are the point of the sweep are in it: a path typo must not make it vacuous.
+    const names = files.map((f) => f.name.split('\\').join('/'))
+    expect(names).toContain('src/renderer/src/components/SettingsPane/TokenSavingsSettings.tsx')
+    expect(names).toContain('src/renderer/src/components/SettingsPane/ElisionHealthCard.tsx')
+    expect(files.length).toBeGreaterThan(50)
+    for (const f of files) expect(unqualifiedSentences(f.text), f.name).toEqual([])
+  })
+
+  it('and that rule is not vacuous: it fails the old promise in the words a pane or a guide would use and passes it when it names its policy', () => {
+    expect(unqualifiedSentences('Claude Code compression proxy: saves 51% fewer tokens, always.')).toHaveLength(1)
+    expect(unqualifiedSentences('It removes at least half of your tool text, every time.')).toHaveLength(1)
+    expect(unqualifiedSentences("<p>Termpolis removes 50% minimum of tool text.</p>")).toHaveLength(1)
+    expect(unqualifiedSentences('Nothing to see. It removes at least 50% of every result.')).toHaveLength(1)
+    expect(unqualifiedSentences('Termpolis removes 50 percent of your tool text, every time.')).toHaveLength(1)
+    // Across the line breaks JSX and Markdown put inside a sentence.
+    expect(unqualifiedSentences('It removes\n   at least half\n   of your tool text.')).toHaveLength(1)
+    // Named in the same sentence or the one before it.
+    expect(unqualifiedSentences('Under Legacy it removes at least half of your tool text.')).toEqual([])
+    expect(unqualifiedSentences('That was the v1.34 measurement. It removed 51% fewer tokens.')).toEqual([])
+    expect(unqualifiedSentences('The holdout keeps the old behavior. It removes at least half of your tool text.')).toEqual([])
+    // Two sentences away is too far: the qualifier has to be where the figure is.
+    expect(unqualifiedSentences('That was Legacy. Nothing else here. It removes at least half of your tool text.')).toHaveLength(1)
+    expect(unqualifiedSentences('Late shortens a result from 40,000 characters.')).toEqual([])
+  })
+
+  // The sentences the round-2 verifier found nothing pinned, each held to the words it is true in. They are the
+  // ones a later edit could flip without any test going red: a restart that is not needed, a headline that stops
+  // saying it is overstated, a summary that stops saying what the default is.
+  it('keeps the sentences a person relies on to read the savings and the restart', () => {
+    const flat = (s: string): string => s.replace(/\s+/g, ' ')
+    const privacy = flat(readFileSync(join(ROOT, 'PRIVACY.md'), 'utf8'))
+    const docs = flat(readFileSync(join(ROOT, 'docs', 'DOCUMENTATION.md'), 'utf8'))
+    const pane = flat(readFileSync(join(ROOT, 'src', 'renderer', 'src', 'components', 'SettingsPane', 'TokenSavingsSettings.tsx'), 'utf8'))
+    expect(pane).toContain('A change takes effect the next time Termpolis starts, because one proxy serves every Claude session of a run and a change in the middle would rewrite each session’s prompt cache.')
+    expect(docs).toContain('the all-time figure is higher than your bill supports, and stays higher: it carries the older history as it was, never netted, and only what is added from v1.55 on is.')
+    expect(privacy).toContain('Since v1.55 it shortens a tool result only from 40,000 characters by default, and keeps a comparison on your machine of that against the old behavior (Late or Legacy, your choice).')
   })
 })

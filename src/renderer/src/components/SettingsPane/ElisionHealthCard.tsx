@@ -48,7 +48,7 @@ function rateText(v: FirstSightSummaryView): string {
 
 /** The verdict is about the policy in force, and says which. Under Late a result is shortened at first
  *  sight only from 40,000 characters, so what is judged is those; the conversations kept on the old
- *  behaviour are reported apart (OldBehaviour) and never as the setting's own cost. */
+ *  behavior are reported apart (OldBehaviour) and never as the setting's own cost. */
 function Verdict({ v }: { v: ElisionHealthView['firstSight'] }) {
   const late = v.policy === 'late'
   let text: string
@@ -70,14 +70,14 @@ function Verdict({ v }: { v: ElisionHealthView['firstSight'] }) {
   )
 }
 
-/** What the old behaviour did in the conversations held out on it, beside the verdict and plainly not
+/** What the old behavior did in the conversations held out on it, beside the verdict and plainly not
  *  the setting's own: a user running Late must not read the holdout's cost as Late's. */
 function OldBehaviour({ o }: { o: FirstSightSummaryView | null }) {
   if (!o || o.verdict === 'unknown') return null
   const units = `${fmt(Math.abs(o.netUnits))} billed units`
   return (
     <div data-testid="hr-elision-old" data-verdict={o.verdict} style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
-      For comparison, the conversations kept on the old behaviour (the holdout, and any earlier run on the Legacy setting) have results shortened at first sight from the size of the tier&rsquo;s floor up.
+      For comparison, the conversations kept on the old behavior (the holdout, and any earlier run on the Legacy setting) have results shortened at first sight from the size of the tier&rsquo;s floor up.
       Over {basisText(o)} that {o.verdict === 'costs' ? 'cost' : 'saved'} about {units}: {rateText(o)}. This is not what your setting does.
     </div>
   )
@@ -122,7 +122,7 @@ function ArmVerdictLine({ a, policy }: { a: ArmComparisonView; policy: 'late' | 
     const onlyLegacy = a.late.requests === 0 && a.holdout.requests === 0 && a.legacy.requests > 0
     text = onlyLegacy
       ? (policy === 'legacy'
-        ? `This run is on the Legacy setting, so every request ran the old behaviour and there is nothing to compare (${fmt(a.legacy.requests)} requests so far).`
+        ? `This run is on the Legacy setting, so every request ran the old behavior and there is nothing to compare (${fmt(a.legacy.requests)} requests so far).`
         : `No request has run under Late in this ledger yet; the ${fmt(a.legacy.requests)} ${a.legacy.requests === 1 ? 'request' : 'requests'} from the Legacy setting ${a.legacy.requests === 1 ? 'is' : 'are'} not compared.`)
       : `Not enough data yet to compare. It needs at least ${fmt(a.minRequests)} requests in each arm, from at least ${MIN_ARM_GROUPS} different groups of conversations. So far: late ${fmt(a.late.requests)} requests in ${groupsText(a.late.groups)}, the holdout ${fmt(a.holdout.requests)} in ${groupsText(a.holdout.groups)}.`
   } else if (a.verdict === 'late-cheaper') {
@@ -177,7 +177,7 @@ function ArmRow({ id, label, s, note }: { id: string; label: string; s: ArmSumma
 }
 
 /**
- * Late against the holdout. About one distinct opening message in ten keeps running the old behaviour
+ * Late against the holdout. About one distinct opening message in ten keeps running the old behavior
  * whichever setting is on, so the saving the research modelled from one history can be checked on this
  * person's own work, and so can the thing that matters more: that it did not cost anything. This is
  * the card's answer, with the margin stated and a plain "not enough data yet" until there is some.
@@ -202,7 +202,7 @@ function Arms({ a, policy }: { a: ArmComparisonView; policy: 'late' | 'legacy' }
         </thead>
         <tbody>
           <ArmRow id="hr-arm-late" label="Late" s={a.late} />
-          <ArmRow id="hr-arm-holdout" label="Holdout" note="old behaviour" s={a.holdout} />
+          <ArmRow id="hr-arm-holdout" label="Holdout" note="old behavior" s={a.holdout} />
           {a.legacy.requests > 0 && <ArmRow id="hr-arm-legacy" label="Legacy setting" note="not compared" s={a.legacy} />}
         </tbody>
       </table>
@@ -213,14 +213,15 @@ function Arms({ a, policy }: { a: ArmComparisonView; policy: 'late' | 'legacy' }
         requests, because the requests of one conversation cost alike; nothing is claimed before there are at least {fmt(a.minRequests)} requests
         and {MIN_ARM_GROUPS} groups on each side, and a verdict needs a gap that a 99% interval cannot explain, because this card is read again and again.
         The margin is deliberately wider than a plain 99% interval, because the holdout is small and its costs lean one way: on simulated arms
-        that were the same it named a difference falsely in fewer than 1 read in 100, and a plain 99% interval did so 3 to 6 times as often when
-        it said Late cost more. The price is that it takes about 1.8 times the data to name a real difference.
+        that were the same it named a difference falsely in fewer than 1 read in 100, where a plain 99% interval did so in about 1 to 3 reads
+        in 100 when it said Late cost more. The price is that it takes about 1.8 times the data to name a real difference.
         A difference in cost takes many conversations to read; the retrieval-turn lines settle first. This compares cost and round trips.
         It cannot see the quality of an answer; under late the model is shown the whole of a result where the holdout is shown a window of it.
       </div>
       <div data-testid="hr-arms-holdout-note" style={{ marginTop: 4, fontSize: 12, opacity: 0.65 }}>
-        The holdout is about one distinct opening message in ten, chosen by a hash of the conversation’s first message and kept for its whole length,
-        so an opening message you use again and again always lands in the same arm. It runs the old behaviour whichever setting is on.
+        The holdout is about one distinct opening message in ten, chosen by a hash of the conversation’s first message and kept for as long as that
+        message stays the same, so an opening message you use again and again always lands in the same arm. A compaction summarizes the start of a
+        conversation, so a compacted one can be assigned again. It runs the old behavior whichever setting is on.
         {holdoutShare !== null && <> It is {holdoutShare}% of the requests so far.</>}
       </div>
     </div>
@@ -231,7 +232,7 @@ function Row({ c, inForce }: { c: ElisionClassView; inForce: 'late' | 'legacy' }
   const judged = c.kind === 'compact'
   // Under Late there are two sorts of compaction in the table and the reader has to be able to tell
   // them apart. A repeat, a patch and an aged-out result are made the same way under both.
-  const tag = judged && inForce === 'late' ? (c.policy === 'late' ? 'Late' : 'old behaviour') : null
+  const tag = judged && inForce === 'late' ? (c.policy === 'late' ? 'Late' : 'old behavior') : null
   return (
     <tr data-testid={`hr-elision-row-${c.key}`}>
       <td style={{ padding: '3px 8px 3px 0' }}>{KIND_LABEL[c.kind]}{tag && <span style={{ opacity: 0.6 }}> ({tag})</span>}</td>

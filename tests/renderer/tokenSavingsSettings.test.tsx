@@ -884,9 +884,23 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(n).toHaveTextContent('Claude Code already trims long command output to about 30,000 characters itself, so in practice Late mostly shortens large file reads and fetched pages')
     // The holdout, as it really is chosen, and where the card is.
     expect(n).toHaveTextContent('one distinct opening message in ten')
-    expect(n).toHaveTextContent('Elision health card at the top of this tab')
+    expect(n).toHaveTextContent('Elision health card, just under the headline at the top of this tab')
     expect(n).not.toHaveTextContent('card below')
     expect(n).toHaveTextContent('next time Termpolis starts')
+  })
+
+  // The note, the guide and the card all say where the Elision health card is: just under the headline at the top of
+  // the tab. It is the second block, not the first, so "at the top" alone was a little off; hold the order itself.
+  it('puts the Elision health card under the headline receipt and above the proxy settings, where the note says', async () => {
+    serve(settingsWith({ firstSightElision: 'late' }))
+    const { container } = render(<TokenSavingsSettings />)
+    const card = await screen.findByTestId('hr-elision-health')
+    const proxyNote = await screen.findByTestId('hr-proxy-note')
+    const headline = container.querySelector('.hr-unified-receipt') as HTMLElement
+    expect(headline).not.toBeNull()
+    const before = (a: Node, b: Node): boolean => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+    expect(before(headline, card)).toBe(true)
+    expect(before(card, proxyNote)).toBe(true)
   })
 
   // Two checkboxes sit under the Late/Legacy select. Their notes used to say "the setting above" (which is
@@ -981,7 +995,7 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(box.textContent).not.toMatch(/^\s*Hold a 50% savings floor —/)
   })
 
-  it('says the floor check counts only the requests that ran the old behaviour', async () => {
+  it('says the floor check counts only the requests that ran the old behavior', async () => {
     tp().tokenSavingsGetUnifiedReceipt = vi.fn().mockResolvedValue({
       success: true,
       data: { session: unifiedTotals(), cumulative: unifiedTotals({ worstSavedPct: 18, belowFloorRequests: 7, floorEligibleRequests: 400 }) },

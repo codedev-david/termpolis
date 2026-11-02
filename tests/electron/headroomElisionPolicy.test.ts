@@ -112,6 +112,33 @@ describe('armForBody', () => {
     for (let i = 0; i < 50; i++) expect(armForBody(userText(FIRST))).toBe(arm)
   })
 
+  // The copy says the assignment is kept "for as long as the conversation's first message stays the same", not
+  // "for its whole length": a compaction summarizes the start of a conversation, so what leads the next request
+  // may be a different message, and the arm is the one THAT message would have had on its own. This is the
+  // behaviour the sentence describes, held in both directions.
+  it('keeps a conversation on its arm while its first message stays, and chooses again from the new first message when that changes', () => {
+    const summary = (i: number): string => `This session is being continued from a previous conversation that ran out of context. Summary ${i}: ${FIRST}`
+    const turns = (first: string, n: number): Record<string, unknown> => ({
+      messages: [{ role: 'user', content: first }, ...Array.from({ length: n }, (_, k) => ({ role: k % 2 ? 'user' : 'assistant', content: `turn ${k}` }))],
+    })
+    // Appending turns never moves it.
+    for (let i = 0; i < 40; i++) {
+      const first = `${FIRST} (${i})`
+      const arm = armForBody(turns(first, 0))
+      for (const n of [1, 5, 30, 120]) expect(armForBody(turns(first, n))).toBe(arm)
+    }
+    // A different first message is chosen on its own: the arm it gets is the one that message has alone, whatever
+    // the conversation had before, and across many such conversations the change does move some of them.
+    let moved = 0
+    for (let i = 0; i < 200; i++) {
+      const before = armForBody(turns(`${FIRST} (${i})`, 12))
+      const after = armForBody(turns(summary(i), 12))
+      expect(after).toBe(armForBody(userText(summary(i))))
+      if (after !== before) moved++
+    }
+    expect(moved).toBeGreaterThan(0)
+  })
+
   it('reads a body given as text the same as the parsed body', () => {
     for (let i = 0; i < 100; i++) {
       const body = userText(`${FIRST} ${i}`)

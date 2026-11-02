@@ -257,7 +257,7 @@ export function TokenSavingsSettings() {
 
         {/* Floor evidence. A lifetime average of 50% is compatible with half of all requests
             sitting under it; only the worst single request can settle whether a floor holds.
-            Counted over the requests that ran the old behaviour only: the Late policy removes less
+            Counted over the requests that ran the old behavior only: the Late policy removes less
             tool text on purpose and is not held to a floor, so its requests are not in these numbers. */}
         {(unified?.cumulative.floorEligibleRequests ?? 0) > 0 && (
           <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }} data-testid="hr-floor-evidence">
@@ -486,7 +486,7 @@ export function TokenSavingsSettings() {
               again. Late leaves a result whole until it reaches {LATE_FLOOR} characters. Modeled on that history it saves about 10% of
               the bill where the model asks that often. It saves less where the model asks for fewer results back, and it costs a little
               below roughly a third to a half. That is a modeled figure from one person’s history, not a promise for your work. The
-              Elision health card at the top of this tab compares Late with the holdout on yours. It
+              Elision health card, just under the headline at the top of this tab, compares Late with the holdout on yours. It
               changes only which results are shortened: repeats are still collapsed, old history still ages out in a long
               conversation, and anything shortened can still be brought back with <code>retrieve_full</code>. Termpolis cannot measure
               the effect on the quality of answers on your work; under Late the model is shown at least as much of every result as under
@@ -574,23 +574,36 @@ export function TokenSavingsSettings() {
                 between two modeled windows. Late and a smaller window overlap, so together they save less than the two figures added. Context meters, in Claude Code’s status line and in Termpolis, keep measuring against the model’s
                 full window, so they do not show how near the smaller one is.
               </p>
-              <p style={{ margin: 0 }}>
+              <p style={{ margin: '0 0 6px' }}>
                 It applies to new Claude Code terminals only; a terminal that is already open keeps what it started with. It works with or without
                 the compression proxy. Termpolis sets Claude Code’s own <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> variable, and never overrides a
                 window you set yourself: in your environment, in the env block of your Claude Code <code>settings.json</code>, or with{' '}
-                <code>/autocompact</code>. It cannot see a <code>--autocompact</code> flag typed on a command line, and Claude Code lets this variable
-                win over that flag, so to use the flag turn this Off first. It also wins over a window saved in a subagent’s definition, in a{' '}
-                <code>--settings</code> argument, or in your organization’s managed settings, none of which Termpolis can read; an <code>env</code>{' '}
-                entry in the last two that sets the variable itself is different, and wins over this setting. If you also set{' '}
-                <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code>, it is a percentage of the window in force, so with a smaller window compaction comes
-                sooner than you chose. A Claude session the Workflow Orchestrator’s agent steps start themselves gets neither this variable nor
-                the proxy route. To tell, it reads
+                <code>/autocompact</code>. To tell, it reads
                 the window variable in the env block, and any saved window, of your Claude Code settings files (your own, and the project’s in the
                 folder a terminal opens in) when a terminal opens, and nothing else in them. A file it cannot read for a moment is tried once more,
                 and if it still cannot be read the window is left unset, because Termpolis cannot tell. Terminals that swarm workers, agents and a paired
                 phone open through Termpolis get the variable too, because the command they will run is not known when they are created; Codex and Gemini
                 CLI ignore it.
               </p>
+              {/* The limits: where it does not look and what else it touches. Folded so the paragraphs above stay readable, and labelled with what
+                  is inside. What a person decides on, and what Termpolis reads and where the variable reaches, is above; this is what they would
+                  look up afterwards if they have a window of their own somewhere Termpolis cannot see. */}
+              <details data-testid="hr-context-cap-limits">
+                <summary style={{ cursor: 'pointer', opacity: 0.9 }}>Where it does not look, and what else it affects</summary>
+                <p style={{ margin: '6px 0 0' }}>
+                  It cannot see a <code>--autocompact</code> flag typed on a command line, and Claude Code lets this variable
+                  win over that flag, so to use the flag turn this Off first. While it is on, <code>/autocompact</code> typed inside a session is
+                  reported as overridden and not saved. It also wins over a window saved in a subagent’s definition, in a{' '}
+                  <code>--settings</code> argument, or in your organization’s managed settings (the managed-settings file included), none of
+                  which Termpolis reads; an <code>env</code>{' '}
+                  entry in the last two that sets the variable itself is different, and wins over this setting. Claude Code’s subagents use the
+                  variable’s window too, so they compact sooner as well. Anthropic does not say what a resumed conversation that is already longer
+                  than the window does. If you also set{' '}
+                  <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code>, it is a percentage of the window in force, so with a smaller window compaction comes
+                  sooner than you chose. A Claude session the Workflow Orchestrator’s agent steps start themselves gets neither this variable nor
+                  the proxy route.
+                </p>
+              </details>
             </div>
           </div>
         </>
