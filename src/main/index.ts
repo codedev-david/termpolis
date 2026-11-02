@@ -152,7 +152,7 @@ import {
   RULES as SECRET_RULES,
 } from './aiSecurity'
 import { scanStagedDiff, scanPushRange, blockMessage } from './commitScan'
-import { deriveOutcome, type WorkEvent } from './outcomeSignals'
+import { deriveOutcome, outcomeAuditDetail, type WorkEvent } from './outcomeSignals'
 // Safe Import — static scan -> hash-pinned approval -> install into the agent configs.
 import { scanImportArtifact, type Finding as ImportFinding, type RiskLevel as ImportRiskLevel } from './importScanner'
 import { initImportTrust, artifactHash, isApproved, approveArtifact, revokeArtifact, listImported } from './importTrust'
@@ -1668,11 +1668,7 @@ function groundOutcomeInMemories(project: string, success: boolean, now: number)
     void Promise.resolve(memoryFeedback({ id, helpful: success })).catch(() => { /* best effort */ })
   }
   try {
-    auditMemory({
-      event: 'learn',
-      kind: 'feedback',
-      detail: `outcome ${success ? 'success' : 'FAILURE'} → ${ids.length} recalled memories ${success ? 'reinforced' : 'demoted'}`, // no project name: memory_audit hands this to every agent
-    })
+    auditMemory({ event: 'learn', kind: 'feedback', detail: outcomeAuditDetail(success, ids.length) }) // a count only: memory_audit hands this to every agent
   } catch { /* best effort */ }
 }
 

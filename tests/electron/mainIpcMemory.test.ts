@@ -357,6 +357,13 @@ vi.mock('../../src/main/claudeNotesIngest', async () => ({
 // WEAVE_NEIGHBOUR_K is a real export index.ts now reads (so the k it pre-fetches neighbours with
 // cannot drift from the k runWeave uses). Omitting it here makes vitest's mock proxy THROW on access
 // — inside the weave's best-effort catch, so the whole pass would silently do nothing.
+// A commit has to land for an outcome to be charged back to the memories recalled for it ("recall noting" below). git is a
+// spy that answers with nothing, so the commit shield sees an empty staged diff and the commit itself succeeds; no process runs.
+const gitMock = vi.hoisted(() => ({ safeGitAsync: vi.fn(async (_args?: string[], _opts?: unknown) => '') }))
+vi.mock('../../src/main/gitCommand', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/main/gitCommand')>()),
+  safeGitAsync: gitMock.safeGitAsync,
+}))
 vi.mock('../../src/main/mnemeWeave', () => ({ runWeave: mneme.runWeave, WEAVE_NEIGHBOUR_K: 6 }))
 vi.mock('../../src/main/mnemeSociety', async () => {
   // poolLessons is stubbed (this suite tests the WIRING, not the pooling maths), but the word
@@ -2703,6 +2710,32 @@ describe('recall noting — a recall is remembered long enough for the outcome t
     primer.buildContextPrimer.mockImplementationOnce(async (search: (a: { query: string; limit?: number }) => Promise<unknown[]>) => {
       await search({ query: 'anything', limit: 5 })
       return '- [claude] primed'
+// The outcome is written into the activity record, which memory_audit hands to every agent: it says HOW MANY memories an outcome
+// was charged to and never which project, or one project's agent would learn what else is being worked on. PRIVACY.md and
+// DOCUMENTATION.md say "never which project".
+describe('the activity record\'s line for an outcome', () => {
+  beforeEach(() => recalls.resetRecallLedger())
+
+  const learnLines = (): unknown[] => mneme.auditMemory.mock.calls.map((c: any[]) => c[0]).filter((e: any) => e?.event === 'learn' && e.kind === 'feedback')
+
+  it('charges a commit that landed to the recalled memories and names no project', async () => {
+    mem.memorySearch.mockResolvedValueOnce([{ id: 'm1', content: 'a' }, { id: 'm2', content: 'b' }])
+    await mcp.memorySearch({ query: 'q', project: 'C:\\w\\billing-ledger-team' })
+    mneme.auditMemory.mockClear()
+    mem.memoryFeedback.mockClear()
+    expect((await invoke('git:commit', { cwd: 'C:\\w\\billing-ledger-team', message: 'feat: x' })).success).toBe(true)
+    expect(learnLines()).toEqual([{ event: 'learn', kind: 'feedback', detail: 'outcome success → 2 recalled memories reinforced' }])
+    expect(JSON.stringify(learnLines())).not.toMatch(/billing|ledger|team/i)
+    expect(mem.memoryFeedback).toHaveBeenCalledTimes(2)
+  })
+
+  it('writes no line when nothing was recalled for the project', async () => {
+    mneme.auditMemory.mockClear()
+    await invoke('git:commit', { cwd: 'C:\\w\\nothing-recalled', message: 'feat: x' })
+    expect(learnLines()).toEqual([])
+  })
+})
+
     })
     await mcp.memoryPrimer({ cwd: 'C:/repos/termpolis' })
     expect(recalls.claimRecalled('termpolis', Date.now())).toEqual(['p1'])
