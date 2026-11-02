@@ -242,6 +242,9 @@ describe('lessonSubstance: progress and time-bound markers', () => {
     'today', 'yesterday', 'tomorrow', 'tonight', 'this morning', 'this week', 'just now', 'right now', 'at the moment',
     'currently', 'for now', 'so far', 'in progress', 'awaiting', 'todo', 'to-do', 'upcoming', 'next sprint', 'still running', 'still failing',
     'still broken', "I'll", "I’ll", "I'm", 'I am', "I've", 'I have', 'I can', 'let me', 'we are', "we're", 'gonna', 'now I',
+    // and the rest of the vocabulary, so that dropping any one of them fails a test
+    'I will', "I'd", 'I could', 'I should', 'I need to', 'I want to', "we've", 'next I', 'then I', 'this afternoon', 'this evening',
+    'this session', 'this sprint', 'later today', 'earlier today', 'last night', 'next week', 'next release', 'next step', 'next steps',
   ])('counts "%s"', (marker) => {
     expect(progress(`The queue is ${marker} the queue is` + pad)).toBe('progress -1')
   })
@@ -374,6 +377,85 @@ describe('lessonSubstance: json residue', () => {
     expect(json('Set `"strict": true` in the config file' + pad)).toBe(false)
     expect(json('The file lives at C:\\new\\table\\test\\notes and is read' + pad)).toBe(false)
     expect(json('The anchor had its \\u00b7 escape' + pad)).toBe(false)
+  })
+})
+
+// The numbers each rule turns on. A rule that moves by one character should fail a test, not change what agents are shown.
+describe('lessonSubstance: the edges of each rule', () => {
+  const ids = (text: string): string | undefined => lessonSubstance(text).reasons.find((r) => r.startsWith('identifiers'))
+  const reasons = (text: string): string => lessonSubstance(text).reasons.join(', ')
+  const has = (text: string, reason: string): boolean => lessonSubstance(text).reasons.includes(reason)
+  const pad = ' in the long run of the work that was done across the whole week'
+
+  it('counts a plain lower-case file name, which no code-case shape would catch', () => {
+    expect(ids('Edit vite.config.ts first' + pad)).toBe('identifiers +1')
+    expect(ids('Edit package.json first' + pad)).toBe('identifiers +1')
+  })
+
+  it('counts a two-character backticked span and a quoted command up to 60 characters, and no longer one', () => {
+    expect(ids('Run `ls` first' + pad)).toBe('identifiers +1')
+    expect(ids('Run `npm run build --workspaces --if-present` first' + pad)).toBe('identifiers +1') // 38 between the ticks
+    expect(ids('Run `' + 'x'.repeat(31) + '` first' + pad)).toBe('identifiers +1') // 31: past a limit of 30
+    expect(ids('Run `' + 'x'.repeat(60) + '` first' + pad)).toBe('identifiers +1')
+    expect(ids('Run `' + 'x'.repeat(61) + '` first' + pad)).toBeUndefined() // over the cap: not a span, and not a code-case shape either
+  })
+
+  it('does not take a two-letter acronym for something to search for, and takes three letters', () => {
+    expect(ids('The PR and the CI are green and ready' + pad)).toBeUndefined()
+    expect(ids('It fails with ENOENT on that path' + pad)).toBe('identifiers +1')
+  })
+
+  it('calls an opener an announcement only when fewer than four words follow it', () => {
+    expect(reasons('Root cause found. Now fixing it.')).toContain('announcement -3') // three words follow
+    expect(reasons('Root cause found. Now fixing it today.')).not.toContain('announcement') // four words follow
+  })
+
+  it('does not count a 6-character hex string, or plain words made only of the letters a to f, as commit hashes', () => {
+    expect(has('Landed in 3fa9c2, b81d0e and 9c7e5a' + pad, 'hashes -2')).toBe(false) // a short SHA needs 7
+    expect(has('Landed in 3fa9c2e, b81d0e4 and 9c7e5a1' + pad, 'hashes -2')).toBe(true)
+    expect(has('The defaced, effaced and deedeed entries' + pad, 'hashes -2')).toBe(false) // hex letters only: words
+  })
+
+  it('takes two key/value pairs for an ordinary quoted setting and three for residue', () => {
+    expect(has('Set "strict": true and "target": "es2020" in the config' + pad, 'json -2')).toBe(false)
+    expect(has('Set "strict": true, "target": "es2020" and "lib": "dom" in the config' + pad, 'json -2')).toBe(true)
+  })
+
+  it('takes an object or array that opens the text for residue, and not one that opens a sentence', () => {
+    expect(has('{"a": 1}' + pad, 'json -2')).toBe(true)
+    expect(has('[{"a"' + pad, 'json -2')).toBe(true)
+    expect(has('The list [1, 2, 3] is sorted before it is stored' + pad, 'json -2')).toBe(false)
+  })
+
+  // The distiller cuts a lesson at 600 characters; the gate reads the first 1,200 of whatever it is given.
+  describe('the window it reads', () => {
+    const filler = (n: number): string => 'The queue drains in order and keeps the items that share a key together. '.repeat(Math.ceil(n / 76)).slice(0, n)
+
+    it('sees an identifier and a connective at character 500, where a lesson of the length the distiller keeps can carry them', () => {
+      const text = filler(500) + 'because retryHelper never retries a 4xx'
+      expect(text.length).toBeLessThan(580)
+      expect(ids(text)).toBe('identifiers +1')
+      expect(has(text, 'connective +2')).toBe(true)
+    })
+
+    it('reads to character 1,200 and no further', () => {
+      const at = (n: number): string => filler(n) + ' because retryHelper never retries a 4xx'
+      expect(has(at(1150), 'connective +2')).toBe(true)
+      expect(ids(at(1150))).toBe('identifiers +1')
+      expect(has(at(1250), 'connective +2')).toBe(false) // starts after the window
+      expect(ids(at(1250))).toBeUndefined()
+    })
+
+    it('still takes the length of the whole text for the long and the short penalty, not of the window', () => {
+      expect(has(filler(5000), 'long -1')).toBe(true)
+      expect(has('a'.repeat(59), 'short -2')).toBe(true)
+    })
+  })
+
+  it('takes "I will" for a first-person progress marker: an identifier does not carry a promise to the bar', () => {
+    const text = 'I will rename retryHelper in the next change to match the others'
+    expect(lessonSubstance(text).reasons).toContain('progress -1')
+    expect(substanceBand(lessonSubstance(text).score)).toBe('drop')
   })
 })
 

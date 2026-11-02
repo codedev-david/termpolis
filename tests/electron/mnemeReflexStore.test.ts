@@ -132,14 +132,96 @@ describe('Mneme reflex — real-store end-to-end', () => {
     const before = await memoryWrite({ ...derived[0], tags: undefined, importance: 0.8 })
     expect(memoryList({ limit: 50 }).find((m) => m.id === before.id)!.tags).toBeUndefined()
 
+    // A held-back lesson hashes in a space of its own, so the re-derived one is a separate (hidden) row and the old lesson is
+    // not touched at all: not retagged, not re-scored, still served.
     const res = await onTaskComplete(task, realDeps())
-    expect(res.written).toEqual([before.id]) // the store answered with the row it already had
+    expect(res.written).toHaveLength(1)
+    const derivedId = res.written[0]
+    expect(derivedId).not.toBe(before.id)
     const row = memoryList({ limit: 50 }).find((m) => m.id === before.id)!
     expect(row.tags).toBeUndefined()
     expect(row.importance).toBe(0.8)
+    expect(memoryList({ limit: 50 }).find((m) => m.id === derivedId)!.tags).toEqual([CANDIDATE_TAG])
     expect(applyEntryCorrections(memoryList({ limit: 50 })).map((m) => m.id)).toContain(before.id)
-    expect(applyCorrections(await memorySearch({ query: 'retry helper retryHelper.ts', limit: 10 })).map((m) => m.id)).toContain(before.id)
+    expect(applyEntryCorrections(memoryList({ limit: 50 })).map((m) => m.id)).not.toContain(derivedId)
+    const served = applyCorrections(await memorySearch({ query: 'retry helper retryHelper.ts', limit: 10 })).map((m) => m.id)
+    expect(served).toContain(before.id)
+    expect(served).not.toContain(derivedId)
+
+    // and a third derivation of the same sentence lands on the hidden row it made, so the store does not grow
+    const rows = memoryList({ limit: 50 }).length
+    expect((await onTaskComplete(task, realDeps())).written).toEqual([derivedId])
+    expect(memoryList({ limit: 50 })).toHaveLength(rows)
   })
+
+  // The words of a held-back lesson are not the lesson's alone. An agent that writes the same sentence as a note of its own
+  // meant it to be found. De-duplicated into the hidden row it was found by nobody, and after a restart not even its tag survived.
+  describe('an agent\'s own note with the words of a held-back lesson', () => {
+    const SENTENCE = 'a borderline lesson about the retry helper'
+    const seen = async (query: string): Promise<{ listed: string[]; served: string[] }> => ({
+      listed: applyEntryCorrections(memoryList({ limit: 50 })).map((m) => m.id),
+      served: applyCorrections(await memorySearch({ query, limit: 10 })).map((m) => m.id),
+    })
+    const restart = (): void => { _resetForTests(); initSwarmMemory(tmp); _setEmbeddingsAvailable(false) }
+
+    it('is its own row, listed and found, and stays so after a restart (lesson first)', async () => {
+      const held = await memoryWrite({ agentId: 'mneme', kind: 'decision', content: SENTENCE, tags: [CANDIDATE_TAG], importance: 0.45 })
+      const mine = await memoryWrite({ agentId: 'claude', kind: 'note', content: SENTENCE, tags: ['mine'] })
+      expect(mine.id).not.toBe(held.id)
+      for (const phase of ['now', 'after a restart']) {
+        if (phase !== 'now') restart()
+        const row = memoryList({ limit: 50 }).find((m) => m.id === mine.id)!
+        expect(row, phase).toMatchObject({ agentId: 'claude', tags: ['mine'] })
+        const { listed, served } = await seen('borderline lesson retry helper')
+        expect(listed, phase).toContain(mine.id)
+        expect(served, phase).toContain(mine.id)
+        expect(listed, phase).not.toContain(held.id)
+        expect(served, phase).not.toContain(held.id)
+        expect(memoryList({ limit: 50 }).find((m) => m.id === held.id)!.tags, phase).toEqual([CANDIDATE_TAG]) // the lesson is still held back
+      }
+    })
+
+    it('does not lose the note when the lesson is derived second: both rows are kept, the note still shown', async () => {
+      const mine = await memoryWrite({ agentId: 'claude', kind: 'note', content: SENTENCE, tags: ['mine'] })
+      const held = await memoryWrite({ agentId: 'mneme', kind: 'decision', content: SENTENCE, tags: [CANDIDATE_TAG], importance: 0.45 })
+      expect(held.id).not.toBe(mine.id)
+      for (const phase of ['now', 'after a restart']) {
+        if (phase !== 'now') restart()
+        const { listed } = await seen('borderline lesson retry helper')
+        expect(listed, phase).toContain(mine.id)
+        expect(listed, phase).not.toContain(held.id)
+        expect(memoryList({ limit: 50 }).find((m) => m.id === mine.id)!.tags, phase).toEqual(['mine'])
+      }
+    })
+
+    it('leaves a lesson derived twice as one hidden row', async () => {
+      const a = await memoryWrite({ agentId: 'mneme', kind: 'decision', content: SENTENCE, tags: [CANDIDATE_TAG], importance: 0.45 })
+      const b = await memoryWrite({ agentId: 'mneme', kind: 'decision', content: SENTENCE, tags: [CANDIDATE_TAG], importance: 0.45 })
+      expect(b.id).toBe(a.id)
+      expect(memoryList({ limit: 50 })).toHaveLength(1)
+      restart()
+      expect(memoryList({ limit: 50 })).toHaveLength(1)
+    })
+
+    it('keeps the tag a lesson derived without one as a plain lesson: only the lesson writer\'s hold-back is held back', async () => {
+      const plain = await memoryWrite({ agentId: 'mneme', kind: 'decision', content: SENTENCE, importance: 0.8 })
+      const heldByHand = await memoryWrite({ agentId: 'claude', kind: 'note', content: SENTENCE, tags: [CANDIDATE_TAG] })
+      expect(heldByHand.id).toBe(plain.id) // an agent\'s own `candidate` is not the lesson writer\'s: the same words are the same row
+      expect(memoryList({ limit: 50 }).find((m) => m.id === plain.id)!.tags).toBeUndefined() // ...and the word is not added to a shown lesson
+    })
+  })
+
+  // memory_write passes `tags` through as the model sent it, and the server does no schema validation: a repeat of words already
+  // stored must answer with the row it has whatever the tags are, as it did before the gate.
+  it.each([['text', 'release,deploy'], ['a number', 5], ['an object', { a: 1 }], ['true', true], ['null', null]])(
+    'answers a repeat of stored words with the row it has when its tags are %s',
+    async (_name, tags) => {
+      const first = await memoryWrite({ agentId: 'codex', kind: 'note', content: 'the deploy needs the staging flag', tags: ['deploy'] })
+      const again = await memoryWrite({ agentId: 'codex', kind: 'note', content: 'the deploy needs the staging flag', tags: tags as never })
+      expect(again.id).toBe(first.id)
+      expect(memoryList({ limit: 10 }).find((m) => m.id === first.id)!.tags).toEqual(['deploy'])
+    },
+  )
 
   it('still merges every other tag of a re-written memory into the row it already has', async () => {
     const first = await memoryWrite({ agentId: 'codex', kind: 'note', content: 'the deploy needs the staging flag', tags: ['deploy'] })

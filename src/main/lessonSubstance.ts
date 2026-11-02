@@ -36,6 +36,10 @@ export const KEEP_SCORE = 2
 export const CANDIDATE_SCORE = 1
 /** The tag a held-back lesson carries. Read paths that hand memories to agents drop anything carrying it. */
 export const CANDIDATE_TAG = 'candidate'
+/** What a held-back lesson's content hash starts with (swarmMemory.memoryWrite). The words of a lesson are not its alone: the same
+ *  sentence written as a note by an agent, or stored as a shown lesson before 1.55, is a different row, and a write of it must
+ *  not be de-duplicated into the hidden one. */
+export const CANDIDATE_HASH_PREFIX = 'candidate:'
 /** The agent id groundEpisode writes every lesson under. Only a row written under it can be a held-back lesson. */
 export const LESSON_AGENT_ID = 'mneme'
 /** Below the 0.6 bar memory_anticipate keeps lessons at, so a held-back lesson can never qualify on it. */
@@ -172,10 +176,11 @@ const ANNOUNCE_REST_WORDS = 4 // this many words after the opener and it was the
 // "we will", "let us"), which are the very phrases the distiller turns a decision into a lesson on ("we'll use X because Y");
 // and the engineering vocabulary "pending" (a promise, a queue, a test), "waiting for/on" (a lock, an event), "ongoing" (a
 // rebase), "going to" ("the handler is going to receive a buffer") and "still open" ("the handle was still open, which is why
-// rename failed"). On 51 lessons invented to be usable, penalising them kept 35 of them at the bar and not penalising them keeps
-// 37, with the same 9 of 54 invented narrations over it (tests/electron/lessonSubstance.test.ts, "progress vocabulary"). What
-// stays is what is time-bound, which is what this penalty is for: "currently", "upcoming", "to-do", and a status of the work
-// ("still running/failing/broken").
+// rename failed"). On a scratch set of 51 lessons invented to be usable (kept out of the repo), penalising them kept 35 of them
+// at the bar and not penalising them keeps 37, with the same 9 of 54 invented narrations over it. What stays is what is
+// time-bound, which is what this penalty is for: "currently", "upcoming", "to-do", and a status of the work ("still
+// running/failing/broken"). The phrase table in tests/electron/lessonSubstance.test.ts ("progress and time-bound markers")
+// pins every phrase that stays, one by one; it does not hold those counts.
 const PROGRESS_RE = new RegExp(
   '\\b(?:i[\'’]ll|i will|i[\'’]m|i am|i[\'’]ve|i have|i[\'’]d|i can|i could|i should|i need to|i want to|let me|' +
     'we[\'’]re|we are|we[\'’]ve|now i|next i|then i|gonna|' +

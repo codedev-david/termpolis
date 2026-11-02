@@ -13,7 +13,7 @@ import { LexicalIndex } from './lexicalIndex'
 import { TtlLruCache, rankScore, mergeRelated, gateByScore } from './memoryEconomy'
 import { rerankEnabled, getRerankScorer, rerankByScorer } from './crossEncoderRerank'
 import { initMemoryAudit, auditMemory, redactPreview } from './memoryAudit'
-import { CANDIDATE_TAG, isCandidate } from './lessonSubstance'
+import { CANDIDATE_HASH_PREFIX, CANDIDATE_TAG, isCandidate } from './lessonSubstance'
 import { isClaudeNote } from './claudeNotesParse'
 import { mmrRerank } from './mmrRerank'
 import { compactGraphLog, initMemoryGraph, addMemoryEdge, traverseGraph, edgesFrom, neighboursOf, graphStats, graphRelationStats, getAllEdges, expandWithGraph, effectiveWeight, EDGE_EPSILON, _resetGraphForTests, clearMemoryGraph, removeNodeEdges, type MemoryEdge } from './memoryGraph'
@@ -1482,7 +1482,11 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
   // F14: hash over the ORIGINAL (untruncated) content so a corrected/identical long
   // note dedups to one entry instead of proliferating truncated fragments. WP-G: over the
   // SCRUBBED text, so re-pasting the same note with a rotated key dedups to one redacted entry.
-  const effectiveHash = input.hash || contentHash(scrub.content)
+  // A held-back lesson (the substance gate's middle band) hashes in a space of its own: an agent that writes the same sentence as a
+  // note of its own meant it to be found, and a lesson stored before 1.55 with these words is being shown. De-duplicated into the hidden
+  // row, the note would be hidden with it, and its tag would be lost at the next restart (a dedup merge is held in memory only).
+  const heldBack = !input.hash && isCandidate({ tags: input.tags, agentId: input.agentId || 'unknown' })
+  const effectiveHash = input.hash || (heldBack ? CANDIDATE_HASH_PREFIX : '') + contentHash(scrub.content)
   if (seenHashes.has(effectiveHash)) {
     const existing = entries.find(e => e.hash === effectiveHash)
     if (existing) {
@@ -1493,8 +1497,9 @@ export async function memoryWrite(input: WriteInput): Promise<MemoryEntry> {
       // The substance gate's hold-back mark is the one tag that is not scoping metadata: added to a row that did not have it, it would
       // take away a lesson that was being shown (a resumed session derives the same sentence again). A row is held back when it
       // is WRITTEN so, never by a later write of the same words.
-      const incoming = existing.tags?.includes(CANDIDATE_TAG) ? input.tags : input.tags?.filter((t) => t !== CANDIDATE_TAG)
-      if (incoming && incoming.length > 0) {
+      const given = Array.isArray(input.tags) ? input.tags : [] // memory_write hands `tags` over as the model sent it
+      const incoming = Array.isArray(existing.tags) && existing.tags.includes(CANDIDATE_TAG) ? given : given.filter((t) => t !== CANDIDATE_TAG)
+      if (incoming.length > 0) {
         const merged = Array.from(new Set([...(existing.tags || []), ...incoming])).slice(0, 20)
         if (merged.length !== (existing.tags?.length ?? 0)) { existing.tags = merged; changed = true }
       }
