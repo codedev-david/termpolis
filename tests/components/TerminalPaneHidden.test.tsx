@@ -629,6 +629,19 @@ describe('TerminalPane: side-effect passes per second', () => {
     expect(lookups).toHaveBeenCalledTimes(1) // and nothing is left to run under the new one
   })
 
+  it('unmounting a pane drops the pass it was still waiting for: nothing runs for a pane that is gone', async () => {
+    await mount(tabs(2, 0))
+    await settle(500)
+    detectCalls = []
+    await act(async () => { ipc.emit('terminal:data', 't0', 'lead\r\n', 6) })
+    await act(async () => { ipc.emit('terminal:data', 't0', 'waiting for its pass\r\n', 30) })
+    expect(detectCalls).toHaveLength(1) // the second chunk is pending behind the 250 ms window
+    await show([['t1', false]]) // the tab of t0 is closed; t1 stays
+    await settle(2000)
+    expect(detectCalls).toHaveLength(1) // the pass that was waiting never ran
+    expect(Object.keys((window as unknown as { __termpolis_pane_effects: () => Record<string, unknown> }).__termpolis_pane_effects())).toEqual(['t1'])
+  })
+
   it('Clear terminal drops the output still waiting for its pass, with the screen: nothing stale runs afterwards', async () => {
     await mount(tabs(1, 0))
     await settle(500)
