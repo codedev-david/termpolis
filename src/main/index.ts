@@ -274,12 +274,14 @@ import {
 import { memoryUnavailableInfo } from './memoryFallbackGuard'
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
+import { configureConversationIngest, makeDrainRun, passResult } from './ingestRuntime'
+import { noteTyping, whenTypingQuiet } from './typingQuiet'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
 import { initCodeGraph, buildCodeGraph, reindexWatchedChange, codeExplore, codeCallers, codeCallees, codeImpact, codeSymbols, codeGraphStats, graphKeyForRoot, resolveCodeRefs, resolveToken, ALL_REPOS, type CodeRef } from './codeGraph'
 import { ensureRepoWatch, stopRepoWatches, fsBackedWatchDeps } from './codeWatch'
 import { watch as fsWatch, promises as fsPromises } from 'fs'
 import { initAnomalyLog, getAnomalies, anomalyCount } from './memoryAnomalyLog'
-import { startIndexer, stopIndexer } from './memoryIndexer'
+import { startIndexer, stopIndexer, nudgeIndexer } from './memoryIndexer'
 import { runWeave, WEAVE_NEIGHBOUR_K, type WeaveStats } from './mnemeWeave'
 import { auditMemory } from './memoryAudit' // WP-E: audit learning events (reflection / consolidation)
 // Mneme — the learning layer (see docs/learning-architecture.md).
@@ -510,7 +512,7 @@ async function reflectOnTask(
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, getLearnFromConversations, setLearnFromConversations } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import { scheduleNoNewPrivsNotice } from './noNewPrivs'
 import { installSudoAskpass, sudoAskpassPath } from './sudoAskpass'
@@ -975,6 +977,7 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 // paste actually reached a terminal. Only populated under NODE_ENV=test.
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
 ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
+  noteTyping() // background work (conversation ingest, the indexer) stands aside for 500 ms after this
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
   // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
   // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
@@ -2190,12 +2193,15 @@ ipcMain.handle('memory:graph-sample', async (_e, opts: { limit?: number } = {}) 
 
 // What a bulk writer says when the brain is LOCKED (Decision 2) — the panel's banner says why.
 const MEMORY_LOCKED = 'Memory is locked, so nothing new can be saved. Open the Memory panel to see why.'
+// What a conversation indexer says when the "Learn from conversations" switch (Settings) is OFF.
+const MEMORY_LEARN_OFF = 'Learning from conversations is turned off (Settings, Memory). Turn it on to index past sessions.'
 
 // Ingest past AI sessions (Claude/Codex/Gemini transcripts on disk) into the
 // shared memory so every agent can semantically recall them. Idempotent — only
 // genuinely new chunks are embedded, so re-running is cheap.
 ipcMain.handle('memory:ingest-conversations', async () => {
   try {
+    if (!getLearnFromConversations()) return err(MEMORY_LEARN_OFF)
     if (await memoryIsLocked()) return err(MEMORY_LOCKED)
     const stats = await runConversationIngest(ingestMemoryDeps(), { stopped: () => appQuitting })
     return ok(stats)
@@ -2477,6 +2483,20 @@ ipcMain.handle('memory:get-primer-limit', async () => {
 })
 ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => {
   try { return ok(setPrimerLimit(opts?.value)) } catch (e: any) { return err(e.message) }
+})
+
+// "Learn from conversations": the pause switch for conversation ingest and the indexer passes (default ON).
+// OFF stops them at their next timer, file or slice; nothing is deleted and memory search keeps working.
+ipcMain.handle('memory:get-learn-conversations', async () => {
+  try { return ok(getLearnFromConversations()) } catch (e: any) { return err(e.message) }
+})
+ipcMain.handle('memory:set-learn-conversations', async (_, opts: { value: boolean }) => {
+  try {
+    const settings = setLearnFromConversations(opts?.value)
+    // Back ON: do not wait for the next 30-minute tick to catch up on what was missed.
+    if (settings.learnFromConversations) nudgeIndexer()
+    return ok(settings)
+  } catch (e: any) { return err(e.message) }
 })
 
 // Vector quantization — the RAM/exactness dial for the packed vector store.
@@ -4208,7 +4228,28 @@ async function semanticPoolOptions(
     // so a first index over months of history can't peg the main thread / freeze
     // the UI — it drains as short, responsive bursts (the indexer reschedules a
     // quick follow-up whenever a pass reports more backlog).
+    // P4: the watermark, byte budget, time slices, typing gate and pass counters every ingest pass below gets
+    // (ingestRuntime). Never blocks launch.
+    try {
+      configureConversationIngest({
+        userData: app.getPath('userData'),
+        appVersion: app.getVersion(),
+        isLocked: memoryIsLocked,
+        paused: () => !getLearnFromConversations(),
+      })
+    } catch { /* ingest stays what it was */ }
     startIndexer({
+      log: (msg) => console.log(`[mneme] ${msg}`), // nobody could see drain mode before: every pass that did something is logged now
+      paused: () => !getLearnFromConversations(), // "Learn from conversations" OFF: no timer starts a pass
+      quiet: () => whenTypingQuiet(), // nothing starts within 500 ms of a keystroke (capped at 2 s)
+      // A pass that hit its cap continues with the incremental tier only (ingest, nothing else), not a whole full pass again.
+      drainRun: makeDrainRun({
+        memory: ingestMemoryDeps,
+        isLocked: memoryIsLocked,
+        persist: persistMemoryIndex,
+        stopped: () => appQuitting,
+        ingest: runConversationIngest,
+      }),
       run: async () => {
         // LOCKED (Decision 2): no ingest, no lesson recheck, no consolidation, no Weave, no index
         // persist — every one of them either writes to a brain that refuses writes or decides things
@@ -4225,6 +4266,8 @@ async function semanticPoolOptions(
           ingestMemoryDeps(), // F30: backfill legacy project tags each pass (now persisted)
           { maxChunks: 250, stopped: () => appQuitting, onDelegated: (hashes) => { for (const h of hashes) delegatedHashes.add(h) } },
         )
+        // "Learn from conversations" went OFF while the pass ran: it ends here, planners included.
+        if (stats.stop === 'stopped' && !getLearnFromConversations()) return passResult(stats)
         // Keep the on-disk HNSW graph tracking recent state (no-op if not built).
         try { await persistMemoryIndex() } catch { /* best effort */ }
         // Once per install: demote the sessions other computers' jobs left in memory through 1.52
@@ -4359,7 +4402,7 @@ async function semanticPoolOptions(
           }
           await weaveEdges.flush()
         } catch { /* best effort */ }
-        return { written: stats.chunksWritten, more: stats.truncated }
+        return passResult(stats)
       },
       // Fast tier (#2 live-session lag): every 90s, ingest ONLY transcripts touched
       // in the last 10 min — i.e. the ACTIVE session — so its new turns become
@@ -4376,7 +4419,7 @@ async function semanticPoolOptions(
           { maxChunks: 250, freshSinceTs: Date.now() - 10 * 60_000, chunkOptions: { sealedOnly: true }, stopped: () => appQuitting },
         )
         try { await persistMemoryIndex() } catch { /* best effort */ }
-        return { written: stats.chunksWritten, more: stats.truncated }
+        return passResult(stats)
       },
     })
 

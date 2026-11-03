@@ -46,7 +46,10 @@ describe('unchanged files cost nothing', () => {
 
     expect(c.reads).toEqual([]) // 0 readFile
     expect(parsed).toBe(0) // 0 JSON.parse
-    expect(c.hashAsks).toEqual([]) // nothing asked of the store
+    // The store is asked ONE small question, whatever the corpus holds: do the few probe chunks the watermark kept
+    // still exist? (If none does the store was wiped, and the marks are no good.) Never about the chunks of a file.
+    expect(c.hashAsks).toHaveLength(1)
+    expect(c.hashAsks[0].length).toBeLessThanOrEqual(8)
     expect(c.stats).toHaveLength(20) // a stat per file is the whole cost
     expect(second).toMatchObject({ filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false, unchanged: 20 })
   })

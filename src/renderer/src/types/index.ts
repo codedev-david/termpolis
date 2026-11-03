@@ -538,6 +538,9 @@ export interface TermpolisAPI {
   /** Primer size (memories injected per primer): the user-tunable Memory-panel control. */
   memoryGetPrimerLimit: () => Promise<IpcResponse<number>>
   memorySetPrimerLimit: (value: number) => Promise<IpcResponse<{ primerLimit: number }>>
+  /** "Learn from conversations": whether conversation ingest and the indexer passes run (default true). */
+  memoryGetLearnConversations: () => Promise<IpcResponse<boolean>>
+  memorySetLearnConversations: (value: boolean) => Promise<IpcResponse<{ learnFromConversations: boolean }>>
   /** Reflect a solo agent session's transcript delta into the learning brain (idle-settle / on close). */
   memoryReflectSession: (terminalId: string, cwd: string, agent: string) => Promise<IpcResponse<{ fired: boolean; lessons: number }>>
   memorySyncStatus: () => Promise<IpcResponse<MemorySyncStatus>>
