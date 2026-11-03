@@ -1459,8 +1459,9 @@ audit log.
     is not a key. That includes a BEGIN line with no key under it, or a BEGIN and
     an END line with none between them (as a PEM parser or a test writes them,
     empty pairs included); a public key, certificate or CSR under a private-key
-    BEGIN line; a test key whose body is made up (but with explicit curve
-    parameters an EC key's made-up private value can be taken for a real one);
+    BEGIN line; a test key whose body is made up (zeros, or one byte repeated;
+    a made-up private value that looks random, such as counting bytes or a
+    phrase, can be taken for a real one);
     prose or code between a BEGIN and an END line; a placeholder
     JWK value (such as `REPLACE_ME`, or a name or
     description of a key such as `JWT_SIGNING_SECRET_BASE64URL`, or a sentence in
@@ -1478,10 +1479,11 @@ audit log.
   credential you deliberately want on the other computer should live in a file
   there, not in the prompt.
   Not recognised: a private key in a format Termpolis can't decode, or whose
-  lines were re-wrapped to alternating widths (both reported, as above); the
-  first line alone of an RSA, DSA, encrypted or post-quantum private key, with
-  no END line and nothing of the key under that line (reported: only an EC or
-  Ed25519 key's first line is known to hold its private value); a key
+  lines were re-wrapped to alternating widths, or to under 16 characters (all
+  reported, as above); the first line alone of an RSA, DSA, OpenSSH, OpenPGP,
+  SSH2 or encrypted private key, with no END line and nothing of the key under
+  that line (reported: only the first line of an EC, EdDSA or post-quantum key
+  is known to hold some of its private value); a key
   written on one line with a `NAME=` in front of each of its lines (reported);
   a key written one `NAME=<line>` to a line when the name is 63 characters or
   more (64 for all but an armored OpenPGP key); a key written on one line

@@ -314,10 +314,30 @@ export interface Structure {
 /** 1.2.840.10045.2.1: id-ecPublicKey. (X25519, X448, Ed25519 and Ed448 are 1.3.101.110-113, in pkcs8PrivateAt.) */
 const EC_OID = [0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]
 
-/** Where the private value starts and ends in a PKCS#8 key whose algorithm `oid` is an EC or EdDSA/XDH
- *  one (`d`: the OCTET STRING that holds the key), or undefined. An ECPrivateKey is a SEQUENCE { 1,
+/** 2.16.840.1.101.3.4, NIST's arcs for algorithms: ML-DSA is .3.17 to .3.19, SLH-DSA .3.20 to .3.31, ML-KEM .4.1 to .4.3. */
+const NIST_ARC = [0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04]
+/** 'seeded': a key of ML-DSA or ML-KEM (RFC 9881 and the ones for ML-KEM), which opens with its seed of 32 or 64 bytes: that as [0] IMPLICIT OCTET
+ *  STRING, an expanded key as OCTET STRING, or both in a SEQUENCE. 'raw': a key of SLH-DSA, which is the key's own bytes. */
+function pqcKind(oid: Uint8Array): 'seeded' | 'raw' | null {
+  if (oid.length !== 9 || !startsWith(oid, NIST_ARC)) return null
+  if (oid[7] === 3) return oid[8] >= 17 && oid[8] <= 19 ? 'seeded' : oid[8] >= 20 && oid[8] <= 31 ? 'raw' : null
+  return oid[7] === 4 && oid[8] >= 1 && oid[8] <= 3 ? 'seeded' : null
+}
+
+/** Where the private value starts and ends in a PKCS#8 key whose algorithm `oid` is an EC, EdDSA/XDH or
+ *  post-quantum one (`d`: the OCTET STRING that holds the key), or undefined. An ECPrivateKey is a SEQUENCE { 1,
  *  OCTET STRING value, ... }, a CurvePrivateKey just the OCTET STRING. */
 function pkcs8PrivateAt(b: Uint8Array, oid: Uint8Array, d: Tlv): [number, number] | undefined {
+  const pqc = pqcKind(oid)
+  if (pqc === 'raw') return [d.body, d.end]
+  if (pqc === 'seeded') {
+    const x = tlv(b, d.body)
+    if (x && x.tag === 0x30) {
+      const seed = tlv(b, x.body)
+      return seed && seed.tag === 0x04 ? [seed.body, seed.end] : undefined
+    }
+    return x && (x.tag === 0x80 || x.tag === 0x04) ? [x.body, x.end] : undefined
+  }
   if (isEcOid(oid)) {
     const seq = tlv(b, d.body)
     const ver = seq && seq.tag === 0x30 ? tlv(b, seq.body) : null
@@ -366,7 +386,7 @@ export function structureOf(b: Buffer): Structure | null {
       return null
     }
     if (c.tag === 0x02 && v === 0 && c.len >= 64) return { type: 'pkcs1-or-dsa', declared: outer.end }
-    if (c.tag === 0x04 && v === 1 && c.len >= 16 && c.len <= 72) return { type: 'sec1', declared: outer.end, priv: [c.body, c.end], fixed: true }
+    if (c.tag === 0x04 && v === 1 && c.len >= 14 && c.len <= 72) return { type: 'sec1', declared: outer.end, priv: [c.body, c.end], fixed: true }
     return null
   }
   if (a.tag === 0x30) {
@@ -495,6 +515,11 @@ export function looksRandom(s: string): boolean {
   return tri.size / (sample.length - 2) >= 0.8
 }
 
+/** A DER key under 100 base64 characters is a short body: its structure's own header is a large share of it (see bodyLooksRandom). */
+const SHORT_BODY = 100
+/** The characters of a short body that are its header: the SEQUENCE, the version and the algorithm's identifier of a PKCS#8 key (24 of an ML-DSA key's 72). */
+const SHORT_BODY_HEADER = 24
+
 /** Whether the base64 body under a BEGIN line looks random. A standard curve's or Diffie-Hellman group's public parameters are
  *  runs of 00 and FF bytes (`AAAA...` and `////...`), so an EC key with explicit curve parameters and a DH key fail the run test
  *  of looksRandom over the whole body, though their structure is a private key's: judged again with each such run counted once,
@@ -504,6 +529,9 @@ export function looksRandom(s: string): boolean {
  *  decoded head holds fewer than 16 characters of is not told by it.) */
 function bodyLooksRandom(body: string, st: (Structure & { head: string }) | null): boolean {
   if (looksRandom(body)) return true
+  // (a short key of a verified structure: 24 of the 72 characters of an ML-DSA seed-only key are the header every such key has, and the count of distinct
+  // characters that looksRandom asks of all 72 is missed by about 1 key in 300. Judged without the header, it is a random body's alone.)
+  if (st && st.declared > 0 && body.length < SHORT_BODY && looksRandom(body.slice(SHORT_BODY_HEADER))) return true
   if (!st || !st.fixed) return false
   if (st.priv !== undefined) {
     // (what of the value the decoded head holds: a key's last line is short, and is not part of the payload)
@@ -902,9 +930,12 @@ function scanBlock(
   if (st) {
     if (st.declared > 0) {
       // (no END line, and what the declared length lacks, under a payload run, is the line right under the key's last: that line is the key's)
-      const lack = Math.ceil(st.declared / 3) * 4 - (payload - st.offset)
+      const size = Math.ceil(st.declared / 3) * 4
+      const lack = size - (payload - st.offset)
       const lacked = endAt === -1 && lack < MIN_RUN ? lackedLine(text, lastPayloadEnd, frames[frames.length - 1], lack, text.slice(runs[runs.length - 1][0], runs[runs.length - 1][0] + st.offset)) : -1
-      if ((lacked !== -1 || wholeDer(st, payload, endAt !== -1)) && payload >= 64 && random) return span('remove', `${st.type}-complete`, Math.max(lacked, endOfKey))
+      // (64 characters are the least a private key is: an Ed25519 key's 48 bytes. The key says how long it is, and one wrapped to a width that leaves a
+      // last line under a payload run, which no run counts, has fewer than that in its runs: 51 to 62 at a width of 17 to 21 or 25 to 31.)
+      if ((lacked !== -1 || wholeDer(st, payload, endAt !== -1)) && (payload >= 64 || size >= 64) && random) return span('remove', `${st.type}-complete`, Math.max(lacked, endOfKey))
       if (endAt === -1 && payload >= LONG_PAYLOAD && random) return span('remove', `${st.type}-prefix`) // cut short
       // A verified private-key header over a random body of two lines or more: an excerpt of a
       // real key's own bytes.
