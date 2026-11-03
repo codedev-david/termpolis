@@ -180,9 +180,16 @@ const WEAK_CONNECTIVE_RE = new RegExp(
 // On scratch sets kept out of the repo and labelled before they were scored, this left the credit 58 of the 68 usable lessons the
 // extractor wrote from invented turns (the credit alone keeps 65, and the gate without it 52) and none of the 31 junk ones (the
 // credit alone kept 4). On the 207 labelled lines two reviewers built to find the hole, it keeps 82 of 95 usable and 12 of 112 junk
-// (the credit alone: 82 and 58). It cannot tell a report in the present tense ("CI is green
-// on `main`, so the release branch can be cut.") from a rule, and it holds a decision in the past tense ("We decided to use `pnpm`
-// since the lockfile is smaller.") back with the reports: a score of 1, stored and not shown, never a deletion.
+// (the credit alone: 82 and 58). Those sets were scored again while the rule was chosen, so these are measurements of the rule, not
+// a forecast: on 290 lines a reviewer invented after reading it, 78 percent land on the right side of the keep bar (a usable lesson
+// kept, a junk one not), where the gate before it had 79. The rule cannot tell a report in the present tense ("CI is green on the `release` branch, so the tag can be created."
+// scores 3) from a rule, and it holds a decision in the past tense ("We decided to use `pnpm` since the lockfile is smaller and
+// the installs are faster.") back with the reports: a score of 1, stored and not shown, never a deletion. One whose only reason
+// is a bare "so" or "since" is not stored at all when it names nothing, nor is a report under 60 characters that names one thing
+// (a score of 1 less the 2 of "short"). A wider list after the bare "so" (the, this, it, all, every:
+// "The build on `main` is green, so the release branch can be cut.") was measured too: over 1,157 labelled lines it moves 7 usable
+// rules from shown to held for 18 status lines, +1 point right at the bar, which is inside the noise of one rater's labels, so it
+// waits for real labels (decision D4).
 const PAST_IRREGULAR = new Set([
   'was', 'were', 'did', 'ran', 'went', 'came', 'wrote', 'got', 'made', 'took', 'found', 'saw', 'left', 'kept', 'built', 'sent', 'began', 'gave', 'told',
   'broke', 'lost', 'chose', 'held', 'threw', 'spent', 'fell', 'drew', 'drove', 'became', 'met', 'paid', 'said', 'sat', 'stood', 'thought',

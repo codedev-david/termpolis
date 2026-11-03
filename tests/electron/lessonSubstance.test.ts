@@ -1078,15 +1078,47 @@ describe('lessonSubstance: the score adds up and the call is safe', () => {
   })
 })
 
+// docs/DOCUMENTATION.md quotes six sentences to show what the gate does with a report, a rule and a decision. A quoted example that
+// scores otherwise tells the user something the code does not keep, so each is scored here as the text says, and each must still be in
+// the document word for word (change one in either place and the other one fails).
+describe('the sentences the documentation quotes', () => {
+  const docs = readFileSync(join(__dirname, '..', '..', 'docs', 'DOCUMENTATION.md'), 'utf8')
+  const band = (text: string): string => substanceBand(lessonSubstance(text).score)
+
+  it.each<[what: string, text: string, expected: string]>([
+    ['a report that names something is held back', 'The `lessonSubstance` tests passed on the branch, so the gate is done.', 'candidate'],
+    ['a report in the perfect is held back too', 'The lint job in `ci.yml` has been red since the bump landed.', 'candidate'],
+    ['a since that opens its sentence is judged by what it says', 'Since the `main` build passed, the release branch can be created.', 'candidate'],
+    ['a rule that names something is kept', 'The watcher in `watchFolder.ts` fires twice, so debounce the handler.', 'keep'],
+    ['a status line in the present tense is the known leak: kept', 'CI is green on the `release` branch, so the tag can be created.', 'keep'],
+    ['a decision in the past tense is held back with the reports', 'We decided to use `pnpm` since the lockfile is smaller and the installs are faster.', 'candidate'],
+  ])('%s', (_what, text, expected) => {
+    expect(band(text)).toBe(expected)
+    expect(docs).toContain(text)
+  })
+
+  // "one whose only reason is a so or a since is not stored at all when it names nothing you could search for"
+  it.each([
+    'The watcher on the project folder fires twice on Windows for a single save, so debounce the handler.',
+    'We decided to go with the smaller package manager since the lockfile is smaller and the installs are faster.',
+  ])('does not store a lesson that gives a so or a since as its only reason and names nothing: %s', (text) => {
+    expect(band(text)).toBe('drop')
+    expect(docs).toContain('one whose only reason is a "so" or a "since" is not stored at all when it names nothing you could search for')
+  })
+})
+
 // What this file is, and is not. The first 60 lessons were written, and labelled, by the author of the gate, who then tuned the gate
 // until the bars below held: it is a REGRESSION PIN for the gate's own behaviour, and 95% / 5% on it is not a measured precision.
 // The 20 after them (a "kind" on each) were added when a review found that a status line naming one file and carrying a bare "so" or
 // "since" was kept as a rule: ten rules and ten status lines of that shape, two of the status lines present-tense ones the gate still
-// cannot tell from a rule, so the pin does not flatter it. Sets nobody tuned against (lessons invented afterwards and labelled before
-// they were scored, and lessons the extractor wrote from invented turns, labelled blind) keep 78 to 100 percent of the usable lessons
-// and 0 to 20 percent of the not usable ones (counts in the comment above WEAK_CONNECTIVE_RE), which is inside what research doc 6.3
-// allows of a single rater's thresholds (in-sample recall 0.67, weighted precision 0.45). Real labels (decision D4: David labelling
-// 100 lessons) would replace these numbers, and are still open.
+// cannot tell from a rule, so the pin does not flatter it. Lessons invented afterwards and labelled before they were scored, and
+// lessons the extractor wrote from invented turns and labelled blind, keep 78 to 100 percent of the usable lessons and 0 to 20 percent
+// of the not usable ones (counts in the comment above WEAK_CONNECTIVE_RE). Those are NOT hold-outs: the sets were labelled before they
+// were scored, and then scored again while the rule for a bare "so" or "since" was chosen, so the figures measure the rule as it
+// stands and do not forecast it (on 290 lines a reviewer invented after reading it, 78 percent land on the right side of the keep
+// bar, a usable lesson kept and a junk one not, where the gate before it had 79). They are inside what research doc 6.3 allows of a single rater's thresholds (in-sample recall
+// 0.67, weighted precision 0.45), and that is all they show. Real labels (decision D4: David labelling 100 lessons) would replace
+// these numbers, and are still open.
 describe('the golden file: 80 invented lessons, 30 usable, 20 marginal, 30 not usable', () => {
   type Lesson = { id: string; label: 'usable' | 'marginal' | 'not-usable'; kind?: string; content: string }
   const golden = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'lessonsGolden.json'), 'utf8')) as {
