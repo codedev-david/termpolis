@@ -242,11 +242,16 @@ export interface GovernorSnapshot {
   enters: number
   forcedLeaves: number
   samples: number
-  /** The last histogram p99 as Node reports it (includes the timer tick), 1 decimal; null before the first sample. */
+  /** The last histogram p99 as Node reports it (RAW: it includes the timer tick), 1 decimal; null before the first sample. */
   lastP99Ms: number | null
-  /** The last sample's delay beyond the idle floor (or the sampler's lateness, if larger). */
+  /** The last sample's delay beyond the idle floor (NET: raw minus idleFloorMs, or the sampler's lateness, if larger). */
   lastDelayMs: number | null
+  /** The worst NET delay since start (same basis as lastDelayMs). */
   maxDelayMs: number
+  /** What an idle loop reads on this platform at this resolution: the floor lastDelayMs and maxDelayMs have taken off
+   *  the raw number (lastP99Ms is about lastDelayMs + idleFloorMs). Null while no governor runs. The typing trace's
+   *  `typing.loopDelay` carries the same pair for its own 10 ms histogram (1.54.5 merge, seam 9). */
+  idleFloorMs: number | null
   /** How long the current SHED has lasted; 0 when calm. */
   shedForMs: number
   totalShedMs: number
@@ -278,7 +283,7 @@ const round = (n: number, places: number): number => {
 function emptySnapshot(registry: ShedRegistry): GovernorSnapshot {
   return {
     enabled: false, shed: false, transitions: 0, enters: 0, forcedLeaves: 0, samples: 0, lastP99Ms: null,
-    lastDelayMs: null, maxDelayMs: 0, shedForMs: 0, totalShedMs: 0, freeMB: null, registered: registry.names(), errors: 0,
+    lastDelayMs: null, maxDelayMs: 0, idleFloorMs: null, shedForMs: 0, totalShedMs: 0, freeMB: null, registered: registry.names(), errors: 0,
   }
 }
 
@@ -478,6 +483,7 @@ function createWatchdog(deps: GovernorDeps, registry: ShedRegistry): GovernorHan
       lastP99Ms,
       lastDelayMs,
       maxDelayMs,
+      idleFloorMs: round(floor, 2),
       shedForMs: shed ? Math.max(0, now() - shedSince) : 0,
       totalShedMs: Math.round(totalShedMs),
       freeMB,

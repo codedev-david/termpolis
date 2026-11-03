@@ -801,7 +801,7 @@ describe('watchdog: lifecycle, kill switch and failing open', () => {
     const logs: string[] = []
     const handle = startLoopGovernor({
       env: {}, registry: createShedRegistry(), log: (l) => logs.push(l),
-      createHistogram: () => { throw 'no perf hooks here' }, // eslint-disable-line no-throw-literal
+      createHistogram: () => { throw 'no perf hooks here' },
       setInterval: vi.fn() as never, clearInterval: vi.fn(),
     })
     expect(handle.enabled).toBe(false)
@@ -864,7 +864,21 @@ describe('diagnostics snapshot', () => {
     expect(s.freeMB).toBe(6144)
     expect(s.registered).toEqual(['alpha', 'beta'])
     expect(s.shedForMs).toBe(2000)
+    expect(s.idleFloorMs).toBe(0) // the rig maps raw numbers 1:1 (idleFloorMs: 0), so raw and net agree here
     expect(JSON.stringify(s)).not.toMatch(/undefined|NaN/)
+  })
+
+  it('names the floor it subtracts: lastP99Ms is RAW, lastDelayMs and maxDelayMs are NET of idleFloorMs (1.54.5 merge, seam 9)', () => {
+    const win = rig({ platform: 'win32', config: { idleFloorMs: undefined } })
+    win.sample(31.25 + 40) // an idle Windows loop reads 31.25 at 20 ms: 40 ms above it is 40 ms of lag
+    const w = win.handle.snapshot()
+    expect(w.idleFloorMs).toBe(31.25)
+    expect(w.lastP99Ms).toBe(71.3) // raw, rounded to one decimal
+    expect(w.lastDelayMs).toBe(40)
+    expect(w.maxDelayMs).toBe(40)
+    const linux = rig({ platform: 'linux', config: { idleFloorMs: undefined } })
+    linux.sample(60)
+    expect(linux.handle.snapshot()).toMatchObject({ idleFloorMs: 20, lastP99Ms: 60, lastDelayMs: 40 })
   })
 
   it('getGovernorSnapshot(): disabled and empty before anything starts, live once started (control for the wiring)', () => {

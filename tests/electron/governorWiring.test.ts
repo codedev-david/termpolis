@@ -73,7 +73,7 @@ describe('diagnostics:collect carries a separate, small governor block', () => {
     expect(g).toBeTruthy()
     expect(g).toMatchObject({ enabled: false, shed: false, transitions: 0, lastP99Ms: null })
     expect(Object.keys(g).sort()).toEqual([
-      'enabled', 'enters', 'errors', 'forcedLeaves', 'freeMB', 'lastDelayMs', 'lastP99Ms', 'maxDelayMs',
+      'enabled', 'enters', 'errors', 'forcedLeaves', 'freeMB', 'idleFloorMs', 'lastDelayMs', 'lastP99Ms', 'maxDelayMs',
       'registered', 'samples', 'shed', 'shedForMs', 'totalShedMs', 'transitions',
     ])
     expect(JSON.stringify(g)).not.toMatch(/undefined|NaN/)
@@ -92,7 +92,8 @@ describe('diagnostics:collect carries a separate, small governor block', () => {
     })
     for (let i = 0; i < 3; i++) { now += 2000; tick() }
     const g = (collectDiagnostics() as unknown as { governor: Record<string, unknown> }).governor
-    expect(g).toMatchObject({ enabled: true, shed: true, transitions: 1, samples: 3, lastP99Ms: 150 })
+    // idleFloorMs: the effective floor (here the config's 0) sits beside the raw lastP99Ms and the net lastDelayMs
+    expect(g).toMatchObject({ enabled: true, shed: true, transitions: 1, samples: 3, lastP99Ms: 150, lastDelayMs: 150, idleFloorMs: 0 })
     gov.__resetLoopGovernorForTests()
   })
 

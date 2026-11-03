@@ -8,7 +8,10 @@
 //
 // WHAT IT RECORDS (numbers only: no key, no path, no terminal id, nothing leaves the machine):
 //   * event-loop delay, per 5 s window: p50 / p99 / max beyond the 10 ms period, from the Node
-//     histogram (one read per window), and the loop's busy share (ELU) for the window;
+//     histogram (one read per window), and the loop's busy share (ELU) for the window. It comes on TWO
+//     labelled bases (1.54.5 merge, seam 9): RAW (`last`, `minute`: the histogram minus the 10 ms period, so an
+//     idle Windows loop reads 5.6) and NET (`net`: minus the platform's idle floor, lane G's basis, so an idle
+//     loop reads 0 and the numbers sit next to governor.lastDelayMs), with the floor recorded beside them;
 //   * V8 garbage collections: count and longest pause for major and incremental, count for minor;
 //   * per-IPC-handler {count, msSum, msMax}: terminal:write, terminal:resize, memory:reflect-session,
 //     agentWatcher:attach, and each MCP tool by name (see timedIpc, traceMcpTool);
@@ -48,6 +51,9 @@
 import * as perfHooks from 'perf_hooks'
 import { freemem as osFreemem } from 'os'
 import { getHeapStatistics } from 'v8'
+// The ONE thing taken from lane G's governor: its pure floor function, so "what an idle loop reads on this platform"
+// has a single definition (the histograms themselves stay separate, see loopDelayBasis.test.ts).
+import { idleFloorMs } from './loopGovernor'
 
 /** Set to 0 / off / false / no to turn the whole trace off. */
 export const KILL_SWITCH_ENV = 'TERMPOLIS_TYPING_TRACE'
@@ -76,6 +82,8 @@ export type GcKind = 'major' | 'minor' | 'incremental' | 'other'
 
 /** One window of the loop-delay histogram. Milliseconds of delay beyond the 10 ms period. */
 export interface LoopDelayReading { count: number; p50: number; p99: number; max: number }
+/** A loop-delay reading net of the platform's idle floor (lane G's basis): milliseconds the loop was late. */
+export interface NetLoopReading { p50: number; p99: number; max: number }
 export interface LoopDelaySource {
   /** One pass over the histogram, then a reset: the per-window cost, whatever the loop did. */
   readAndReset(): LoopDelayReading
@@ -98,6 +106,8 @@ export interface TypingTraceDeps {
   rss?: () => number
   heap?: () => { used: number; total: number; limit: number }
   log?: (line: string) => void
+  /** Whose timer floor the `net` numbers take off (tests); default process.platform. */
+  platform?: NodeJS.Platform
 }
 
 export interface LatencyStat { n: number; avg: number; max: number }
@@ -109,10 +119,17 @@ export interface TypingTraceSnapshot {
   started: boolean
   uptimeMs: number
   loopDelay: {
-    /** The last completed 5 s window, or null before the first (or with no histogram). */
+    /** The last completed 5 s window, or null before the first (or with no histogram). RAW lag: the histogram's value
+     *  minus the 10 ms timer PERIOD, so an idle Windows loop (15.6 ms timer tick) reads about 5.6 here, not 0. */
     last: LoopDelayReading | null
-    /** The worst of the last minute of windows, or null. */
+    /** The worst of the last minute of windows, or null. The same raw basis as `last`. */
     minute: { windows: number; p50Median: number; p99Max: number; max: number; over250: number; over1000: number } | null
+    /** What an idle loop reads on this platform at this histogram's 10 ms resolution: lane G's idleFloorMs (15.6 on
+     *  Windows, 10 elsewhere). The histogram's own value is `net` plus this. */
+    idleFloorMs: number
+    /** `last` and `minute` on lane G's basis (governor.lastDelayMs and maxDelayMs): the histogram's value minus
+     *  idleFloorMs, never below 0, so an idle loop reads 0 on every platform. */
+    net: { last: NetLoopReading | null; minute: { p50Median: number; p99Max: number; max: number } | null }
   }
   /** Busy share of the last window, 0..1. */
   elu: number | null
@@ -175,7 +192,8 @@ const realHooks = perfHooks as unknown as LoopHooks & EluHooks & GcHooks
  * READING IT ON WINDOWS: the OS timer floor is about 15.6 ms, so a 10 ms timer fires roughly every
  * 15.6 ms even on an idle loop and p50 reads about 5 to 6 ms here. That is the clock, not lag
  * (project_v1_47_learning_loop.md measured the same floor). Compare windows with each other, and
- * look at max and the over-250 ms counts, not at the idle baseline.
+ * look at max and the over-250 ms counts, not at the idle baseline, or at the snapshot's `net`
+ * numbers, which have that floor taken off (this reader stays RAW: minus the period only).
  */
 export function openLoopDelay(hooks: LoopHooks = realHooks): LoopDelaySource | null {
   try {
@@ -276,6 +294,12 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
     return { used: h.used_heap_size, total: h.total_heap_size, limit: h.heap_size_limit }
   })
   const log = deps.log ?? ((line: string): void => { console.info(line) })
+  // The same basis lane G's governor judges: what the histogram reads minus what an idle loop reads on this platform.
+  // `last` and `minute` already took the 10 ms period off, so what is left to take off is floor minus period (5.6 ms on
+  // Windows, 0 elsewhere). The floor is a plain-Node number (UNVERIFIED.md B1, G1): it is recorded in the snapshot.
+  const floorMs = idleFloorMs(LOOP_RESOLUTION_MS, deps.platform ?? process.platform)
+  const restingMs = Math.max(0, floorMs - LOOP_RESOLUTION_MS)
+  const netOf = (lag: number): number => Math.max(0, lag - restingMs)
 
   let started = false
   let startedAt = 0
@@ -457,6 +481,16 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
     }
   }
 
+  /** The last minute of windows on lane G's basis: the same three numbers as minuteLoop's, net of the resting lag. */
+  function minuteNet(): NonNullable<TypingTraceSnapshot['loopDelay']['net']['minute']> | null {
+    if (ring.length === 0) return null
+    return {
+      p50Median: round1(netOf(median(ring.map((w) => w.p50)))),
+      p99Max: round1(netOf(Math.max(...ring.map((w) => w.p99)))),
+      max: round1(netOf(Math.max(...ring.map((w) => w.max)))),
+    }
+  }
+
   function minuteLine(): string | null {
     const loopAgg = minuteLoop()
     const writes = ipc.get('terminal:write')
@@ -466,7 +500,11 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
 
     const parts: string[] = ['[typing-trace] 60s']
     if (loopAgg !== null) {
-      parts.push(`loop p50med=${loopAgg.p50Median}ms p99max=${loopAgg.p99Max}ms max=${loopAgg.max}ms over250=${loopAgg.over250}`)
+      const net = minuteNet()! // the ring is not empty whenever loopAgg is not null
+      parts.push(
+        `loop p50med=${loopAgg.p50Median}ms p99max=${loopAgg.p99Max}ms max=${loopAgg.max}ms over250=${loopAgg.over250}` +
+        ` (minus the 10ms period; net of the ${round1(floorMs)}ms floor: p99max=${net.p99Max}ms max=${net.max}ms)`,
+      )
     }
     if (elu !== null) parts.push(`elu=${elu}`)
     parts.push(`| gc major=${gcMinute.majorCount}/${round1(gcMinute.majorMaxMs)}ms incr=${gcMinute.incrementalCount}/${round1(gcMinute.incrementalMaxMs)}ms minor=${gcMinute.minorCount}`)
@@ -555,6 +593,11 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
       loopDelay: {
         last: lastWindow === null ? null : { count: lastWindow.count, p50: round1(lastWindow.p50), p99: round1(lastWindow.p99), max: round1(lastWindow.max) },
         minute: minuteLoop(),
+        idleFloorMs: round1(floorMs),
+        net: {
+          last: lastWindow === null ? null : { p50: round1(netOf(lastWindow.p50)), p99: round1(netOf(lastWindow.p99)), max: round1(netOf(lastWindow.max)) },
+          minute: minuteNet(),
+        },
       },
       elu,
       sampler: { ticks: samplerTicks, msSum: round1(samplerSum), msMax: round1(samplerMax) },

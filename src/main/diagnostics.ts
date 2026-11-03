@@ -13,14 +13,19 @@ export interface Diagnostics {
   appVersion: string
   platform: NodeJS.Platform
   osRelease: string
-  /** The event-loop governor's state (SHED or not, how often, the last p99): plain numbers, not in the issue text. */
+  /** The event-loop governor's state (SHED or not, how often, the last p99): plain numbers, not in the issue text.
+   *  Its delays come on two labelled bases: `lastP99Ms` is RAW (the histogram's own value, timer tick included),
+   *  `lastDelayMs` and `maxDelayMs` are NET of `idleFloorMs`. */
   governor?: GovernorSnapshot
   arch: string
   electronVersion: string
   nodeVersion: string
   chromeVersion: string
   /** The typing trace (loop delay, echo latency, handler timings, memory): numbers only. Not part of
-   *  the Report-a-Problem text, which prints the seven fields above. */
+   *  the Report-a-Problem text, which prints the seven fields above. Its loop delay is on two labelled bases
+   *  too: `loopDelay.last` / `minute` are RAW (the histogram minus its 10 ms period), `loopDelay.net` is NET of
+   *  `loopDelay.idleFloorMs`, the same basis as the governor's `lastDelayMs`. The two blocks read two separate
+   *  histograms (20 ms read every 2 s, 10 ms read every 5 s) on purpose. */
   typing?: TypingTraceSnapshot
 }
 

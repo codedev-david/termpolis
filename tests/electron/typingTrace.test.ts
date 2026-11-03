@@ -677,7 +677,7 @@ describe('typingTrace: fails open and can be switched off', () => {
     r.trace.start()
     r.trace.start()
     r.clock.advance(60_000)
-    expect(r.trace.snapshot().loopDelay).toEqual({ last: null, minute: null }) // unknown is not 0 ms
+    expect(r.trace.snapshot().loopDelay).toMatchObject({ last: null, minute: null, net: { last: null, minute: null } }) // unknown is not 0 ms, on either basis
     expect(r.calls.freemem).toBe(6)
   })
 
@@ -707,7 +707,7 @@ describe('typingTrace: fails open and can be switched off', () => {
     const s = r.trace.snapshot()
     expect(s.enabled).toBe(true)
     expect(s.started).toBe(false)
-    expect(s.loopDelay).toEqual({ last: null, minute: null })
+    expect(s.loopDelay).toMatchObject({ last: null, minute: null, net: { last: null, minute: null } })
     expect(s.uptimeMs).toBe(0)
   })
 
@@ -984,5 +984,71 @@ describe('typingTrace: the defaults and the edges', () => {
     r.trace.start()
     expect(() => r.trace.stop()).not.toThrow()
     expect(r.trace.snapshot().started).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// 1.54.5 merge, seam 9. Lane G's governor judges how late the loop is as DELAY = raw p99 minus the platform's idle
+// floor; this trace has always reported the histogram minus its 10 ms timer PERIOD ("raw"). The merge keeps those
+// numbers exactly as they were and adds the governor's basis next to them, `net`, with the floor it took off. Here: the
+// trace alone says which is which. tests/electron/loopDelayBasis.test.ts puts the two modules side by side.
+describe('typingTrace: raw and net loop delay', () => {
+  const fixed = (reading: LoopDelayReading): LoopDelaySource => ({ readAndReset: () => reading, stop: () => undefined })
+  // A 10 ms timer on Windows' 15.625 ms tick fires every 15.625 ms: 5.625 ms "late" while nothing is wrong.
+  const IDLE_WINDOWS: LoopDelayReading = { count: 300, p50: 5.625, p99: 5.625, max: 5.625 }
+
+  function oneWindow(platform: NodeJS.Platform, reading: LoopDelayReading) {
+    const r = rig({ platform, openLoopDelay: () => fixed(reading) })
+    r.trace.start()
+    r.clock.advance(5_000)
+    return r
+  }
+
+  it('an idle Windows loop reads 5.6 raw and 0 net, with the 15.6 ms floor it took off recorded beside it', () => {
+    const s = oneWindow('win32', IDLE_WINDOWS).trace.snapshot().loopDelay
+    expect(s.last).toEqual({ count: 300, p50: 5.6, p99: 5.6, max: 5.6 })
+    expect(s.idleFloorMs).toBe(15.6)
+    expect(s.net.last).toEqual({ p50: 0, p99: 0, max: 0 })
+    expect(s.net.minute).toEqual({ p50Median: 0, p99Max: 0, max: 0 })
+  })
+
+  it('a stall is the same lag on both bases once the resting 5.6 ms is counted (Windows), and the same number elsewhere', () => {
+    const win = oneWindow('win32', { count: 300, p50: 5.625, p99: 45.625, max: 305.625 }).trace.snapshot().loopDelay
+    expect(win.net.last).toEqual({ p50: 0, p99: 40, max: 300 })
+    expect(win.net.minute).toEqual({ p50Median: 0, p99Max: 40, max: 300 })
+    expect(win.minute!.max).toBe(305.6) // the raw number is still raw
+    const linux = oneWindow('linux', { count: 300, p50: 0, p99: 40, max: 300 }).trace.snapshot().loopDelay
+    expect(linux.idleFloorMs).toBe(10)
+    expect(linux.net.last).toEqual({ p50: 0, p99: 40, max: 300 })
+    expect(linux.last).toMatchObject({ p50: 0, p99: 40, max: 300 })
+  })
+
+  it('NEGATIVE CONTROL: a reading below the resting lag never goes negative', () => {
+    const s = oneWindow('win32', { count: 3, p50: 1, p99: 2, max: 3 }).trace.snapshot().loopDelay
+    expect(s.net.last).toEqual({ p50: 0, p99: 0, max: 0 })
+  })
+
+  it('before the first window there is no reading on either basis, but the floor is already known', () => {
+    const r = rig({ platform: 'win32' })
+    r.trace.start()
+    const s = r.trace.snapshot().loopDelay
+    expect(s.last).toBeNull()
+    expect(s.minute).toBeNull()
+    expect(s.net).toEqual({ last: null, minute: null })
+    expect(s.idleFloorMs).toBe(15.6)
+  })
+
+  it("takes this machine's platform when none is given", () => {
+    const t = createTypingTrace({ env: {}, openLoopDelay: () => null, observeGc: () => null })
+    expect(t.snapshot().loopDelay.idleFloorMs).toBe(process.platform === 'win32' ? 15.6 : 10)
+  })
+
+  it('the minute line names both bases and the floor, in numbers and fixed labels only', () => {
+    const r = oneWindow('win32', { count: 300, p50: 5.625, p99: 5.625, max: 205.625 }) // a 200 ms stall: worth a line
+    r.clock.advance(60_000)
+    expect(r.lines.length).toBe(1)
+    expect(r.lines[0]).toContain('loop p50med=5.6ms p99max=5.6ms max=205.6ms over250=0')
+    expect(r.lines[0]).toContain('(minus the 10ms period; net of the 15.6ms floor: p99max=0ms max=200ms)')
+    expect(r.lines[0]).toMatch(/^[A-Za-z0-9 _.:=,;()<>/%+\-[\]|]+$/)
   })
 })
