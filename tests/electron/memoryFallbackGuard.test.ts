@@ -16,7 +16,7 @@ import {
   DEFAULT_INPROC_MAX_BYTES, GUARD_ENV, LIMIT_ENV, resolveInprocGuard, measureMemoryStoreBytes,
   RETRY_BASE_MS, RETRY_CAP_MS, retryDelayMs, retryReadyTimeoutMs,
   UNAVAILABLE_PREFIX, unavailableMessage, isMemoryUnavailableMessage,
-  setMemoryUnavailableState, memoryUnavailableInfo, type MemoryUnavailableState,
+  setMemoryUnavailableState, memoryUnavailableInfo, isMemoryUnavailable, type MemoryUnavailableState,
 } from '../../src/main/memoryFallbackGuard'
 import {
   initSwarmMemory, memoryWrite, _resetForTests, _setEmbeddingsAvailable, _setMaxShardBytesForTests,
@@ -207,6 +207,14 @@ describe('memoryUnavailableInfo — what the Settings panel reads', () => {
     setMemoryUnavailableState(state())
     setMemoryUnavailableState(null)
     expect(memoryUnavailableInfo()).toEqual({})
+  })
+
+  it('isMemoryUnavailable() follows the record: true while it is set, false once it is cleared', () => {
+    expect(isMemoryUnavailable()).toBe(false)
+    setMemoryUnavailableState(state())
+    expect(isMemoryUnavailable()).toBe(true)
+    setMemoryUnavailableState(null)
+    expect(isMemoryUnavailable()).toBe(false)
   })
 
   it('reports the attempt, the countdown, the sizes in whole MB and the cause', () => {

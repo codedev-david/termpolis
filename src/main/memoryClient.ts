@@ -143,8 +143,10 @@ export type MemoryRetryGovernor = (ctx: { attempt: number }) => number
 const STORE_PROBE_TIMEOUT_MS = 3_000
 
 let storeSizeProbe: StoreSizeProbe = measureMemoryStoreBytes
-let storeSize: { key: string; bytes: number | null } | undefined // the last answer, per store location
-let storeProbe: { key: string; promise: Promise<number | null> } | null = null
+// What the disk said, per store location (the local folder, or a sync folder). Only a real number is
+// kept: a probe that could not tell (null) is asked again at the next failure, not remembered.
+const storeSizes = new Map<string, number>()
+const storeProbes = new Map<string, Promise<number | null>>() // asks in flight
 let retryGovernor: MemoryRetryGovernor | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 let nextRetryAt: number | null = null
@@ -179,7 +181,7 @@ export function setMemoryRetryGovernor(fn: MemoryRetryGovernor | null): void {
  * does nothing, unless memory is unavailable with no retry already running (and the app not quitting).
  */
 export function retryMemoryHostNow(): boolean {
-  if (stopped || mode !== 'unavailable' || retrying || !initParams) return false
+  if (stopped || mode !== 'unavailable' || retrying) return false
   clearRetryTimer()
   void retryStart()
   return true
@@ -189,7 +191,8 @@ export function retryMemoryHostNow(): boolean {
  *  better answer); null restores the real probe. */
 export function setMemoryStoreSizeProbe(fn: StoreSizeProbe | null): void {
   storeSizeProbe = fn ?? measureMemoryStoreBytes
-  storeSize = undefined
+  storeSizes.clear()
+  storeProbes.clear()
 }
 
 /** @internal test-only — tear the client back down to a virgin module. */
@@ -219,8 +222,8 @@ export function _resetMemoryClientForTests(): void {
   lastStoreBytes = null
   lastLimit = 0
   storeSizeProbe = measureMemoryStoreBytes
-  storeSize = undefined
-  storeProbe = null
+  storeSizes.clear()
+  storeProbes.clear()
   retryGovernor = null
   setMemoryUnavailableState(null)
 }
@@ -359,12 +362,6 @@ function clearRetryTimer(): void {
 
 const storeKey = (p: HostInitMsg): string => (p.syncDir ? `sync:${p.syncDir}` : `local:${p.userDataPath}`)
 
-/** What we already know of the store's size on the location we are running on: a number, null for
- *  "could not tell", or undefined for "not asked yet". Answered from memory, never from disk. */
-function knownStoreBytes(): number | null | undefined {
-  return initParams && storeSize && storeSize.key === storeKey(initParams) ? storeSize.bytes : undefined
-}
-
 function probeWithTimeout(p: Promise<number | null>, ms: number): Promise<number | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), ms)
@@ -376,26 +373,33 @@ function probeWithTimeout(p: Promise<number | null>, ms: number): Promise<number
   })
 }
 
-/** Ask the disk how big the store is, once per store location. Never rejects and never takes longer
- *  than STORE_PROBE_TIMEOUT_MS (null = could not tell, and the guard then fails open). Async: not one
- *  synchronous file call lands on the main thread. */
-function ensureStoreSize(): Promise<number | null> {
-  const p = initParams
-  if (!p) return Promise.resolve(null)
+/** How big the store is on the location `p` points at: from memory when it is already known, else one
+ *  read of the disk (shared by everyone who asks while it is in flight). Never rejects and never takes
+ *  longer than STORE_PROBE_TIMEOUT_MS: null means "could not tell", and the guard then fails open.
+ *  Async: not one synchronous file call lands on the main thread. */
+function ensureStoreSize(p: HostInitMsg): Promise<number | null> {
   const key = storeKey(p)
-  if (storeSize && storeSize.key === key) return Promise.resolve(storeSize.bytes)
-  if (storeProbe && storeProbe.key === key) return storeProbe.promise
-  const gen = clientGen
-  const promise = probeWithTimeout((async () => storeSizeProbe(p.userDataPath, p.syncDir))(), STORE_PROBE_TIMEOUT_MS)
-    .then((bytes) => {
-      if (gen === clientGen) {
-        storeSize = { key, bytes }
-        if (storeProbe && storeProbe.key === key) storeProbe = null
-      }
-      return bytes
-    })
-  storeProbe = { key, promise }
-  return promise
+  const known = storeSizes.get(key)
+  if (known !== undefined) return Promise.resolve(known)
+  let probe = storeProbes.get(key)
+  if (!probe) {
+    const gen = clientGen
+    probe = probeWithTimeout((async () => storeSizeProbe(p.userDataPath, p.syncDir))(), STORE_PROBE_TIMEOUT_MS)
+      .then((bytes) => {
+        if (gen === clientGen) {
+          storeProbes.delete(key)
+          if (bytes !== null) storeSizes.set(key, bytes)
+        }
+        return bytes
+      })
+    storeProbes.set(key, probe)
+  }
+  return probe
+}
+
+/** Start measuring the store now, if the guard is on (off means no extra file call at all). */
+function warmStoreSize(p: HostInitMsg): void {
+  if (resolveInprocGuard().enabled) void ensureStoreSize(p)
 }
 
 /** Let go of the current child, killing it: a failed start must not leave a hung process behind (a
@@ -420,18 +424,16 @@ async function fallBack(why: string): Promise<void> {
   const gen = clientGen
   const guard = resolveInprocGuard()
   if (guard.enabled && initParams) {
-    let bytes = knownStoreBytes()
-    if (bytes === undefined) {
-      bytes = await ensureStoreSize()
-      if (stopped || gen !== clientGen) return
-    }
+    // Known already (the normal case: it was asked for beside the first spawn) means the verdict is
+    // reached without waiting for the disk, in the same turn as the failure.
+    const bytes = storeSizes.get(storeKey(initParams)) ?? await ensureStoreSize(initParams)
+    if (stopped || gen !== clientGen) return
     if (bytes !== null && bytes > guard.maxBytes) { enterUnavailable(why, bytes, guard.maxBytes); return }
   }
   fallBackToInProcess(why)
 }
 
 function enterUnavailable(why: string, bytes: number, limit: number): void {
-  if (stopped) return
   const rssBefore = mainRssMb()
   abandonChild()
   readyPromise = null
@@ -461,7 +463,7 @@ function publishUnavailable(): void {
 }
 
 function scheduleRetry(delayMs: number): void {
-  if (retryTimer) clearTimeout(retryTimer)
+  clearRetryTimer()
   nextRetryAt = Date.now() + delayMs
   const timer = setTimeout(onRetryTimer, delayMs)
   // A pending retry must never be what keeps a quitting process (or a test worker) alive.
@@ -471,9 +473,11 @@ function scheduleRetry(delayMs: number): void {
 }
 
 function onRetryTimer(): void {
+  // A retry timer exists only while mode is 'unavailable' with no retry running and the app not
+  // quitting: every way out of that state (a retry that comes up, the in-process fallback, a restart of
+  // the client, the quit) clears it first. So nothing is re-checked here.
   retryTimer = null
   nextRetryAt = null
-  if (stopped || mode !== 'unavailable' || retrying) return
   // P13 hook: the governor may say "not now". A broken governor must never keep memory down.
   let wait = 0
   if (retryGovernor) {
@@ -487,15 +491,17 @@ function onRetryTimer(): void {
  * One more try at the memory host, in the background. The mode stays 'unavailable' until the child
  * reports ready, so calls keep failing fast instead of queuing behind a start that may take minutes.
  * A retry is given longer than the last to load (a starved machine needs it); a failure goes back
- * through fallBack(), which re-judges the store as it is now and schedules the next, longer, wait.
+ * through fallBack(), which re-judges the store from the size already known and schedules the next,
+ * longer, wait.
+ *
+ * Preconditions, not re-checked: mode is 'unavailable', no retry is running, the app is not quitting.
+ * Its two callers guarantee them (the timer exists only in that state; retryMemoryHostNow checks).
  */
 async function retryStart(): Promise<void> {
-  if (stopped || mode !== 'unavailable' || retrying || !initParams) return
   const gen = clientGen
   const attemptNo = startFailures
   retrying = true
   nextRetryAt = null
-  storeSize = undefined // judge a failure of THIS try against the store as it is now
   publishUnavailable()
   logLoud(`retry ${attemptNo}: starting the memory host again`)
   try {
@@ -504,7 +510,7 @@ async function retryStart(): Promise<void> {
     retrying = false
     unavailableSince = 0
     publishUnavailable() // the mode is 'host' now, so this clears the record
-    logLoud(`memory is back after ${attemptNo} failed start${attemptNo === 1 ? '' : 's'}: the store is OFF the main thread again`)
+    logLoud(`memory is back (failed starts before it: ${attemptNo}): the store is OFF the main thread again`)
   } catch (err) {
     if (stopped || gen !== clientGen) return
     abandonChild()
@@ -525,10 +531,13 @@ function onChildMessage(msg: HostResponse): void {
 }
 
 function onChildExit(code: number, from?: MemoryHostTransport): void {
-  // v1.54.5: an exit from a child that is no longer THE child (a failed start we abandoned, whose exit
-  // lands after the next retry began) must not touch the child that replaced it: it would null the
-  // live transport and make the retry's own 'ready' look like a start that was stopped.
-  if (from && transport !== null && transport !== from) return
+  // v1.54.5: an exit from a child that is no longer THE child must change nothing. That is a child we
+  // abandoned (a failed start, killed), whose exit event lands after the next retry began (it would null
+  // the live transport and make the retry's own 'ready' look like a start that was stopped), OR while
+  // the verdict on the failure is still being reached (it would null readyPromise, and a call arriving
+  // then would be answered from a store nobody loaded). utilityProcess is an EventEmitter: the same
+  // exit can also be delivered twice.
+  if (from && transport !== from) return
   const wasHost = mode === 'host'
   transport = null
   readyPromise = null
@@ -686,7 +695,7 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
   }
   // How big is the store? Asked for NOW, beside the spawn and not before it (the spawn below is still
   // synchronous), so that if the child fails the verdict does not have to wait for the disk.
-  const sized = ensureStoreSize()
+  warmStoreSize(initParams)
   // Held on the verdict too (fallBack), not just on the spawn: a call that arrives while the size is
   // still being read must wait for it, not be answered from a store nobody has loaded.
   readyPromise = spawnAndInit().catch(async (err) => {
@@ -694,7 +703,6 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
     await fallBack(`could not start the memory host: ${(err as Error)?.message}`)
   })
   try { await readyPromise } catch { /* fallBack does not throw; the mode below says what happened */ }
-  await sized // never rejects, and is bounded: a healthy start still returns once the size is known
   return mode
 }
 
@@ -897,6 +905,9 @@ export const disableSyncEncryption = (): Promise<SyncStatus> => call('disableSyn
 export async function setSyncDir(dir: string | null): Promise<SyncStatus> {
   const status = await call<SyncStatus>('setSyncDir', [dir])
   initParams = { ...(initParams as HostInitMsg), syncDir: status.syncing ? status.dir : null }
+  // The store now lives somewhere else: have its size ready before a failure needs it, so that verdict
+  // never waits on a disk read at the moment the machine is struggling (v1.54.5).
+  warmStoreSize(initParams)
   return status
 }
 

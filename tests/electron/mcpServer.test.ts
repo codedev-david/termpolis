@@ -777,6 +777,38 @@ describe('MCP HTTP server', () => {
     }
   })
 
+  it('tools/call: memory_primer does not answer "no primer" while memory is unavailable: it says so, and never reaches the store', async () => {
+    // buildContextPrimer turns a failing search into an EMPTY primer (right for a launch, which should
+    // go ahead bare). For an agent that ASKS for the primer that silence reads as "no context saved".
+    // The tool checks first, so the agent gets the honest answer and the handler is not even called.
+    const { setMemoryUnavailableState, unavailableMessage } = await import('../../src/main/memoryFallbackGuard')
+    handlers.memoryPrimer.mockClear()
+    setMemoryUnavailableState({
+      attempt: 1, nextRetryAt: Date.now() + 10_000, retrying: false,
+      storeBytes: 400 * 1024 * 1024, limitBytes: 256 * 1024 * 1024, reason: 'memory host exited during startup (code 9)', since: Date.now(),
+    })
+    try {
+      const res = await jsonRpcRequest(port, token, {
+        jsonrpc: '2.0', method: 'tools/call', params: { name: 'memory_primer', arguments: { cwd: 'C:\code\termpolis' } }, id: 205,
+      })
+      const body = JSON.parse(res.body)
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toBe(`Error: ${unavailableMessage()}`)
+      expect(handlers.memoryPrimer).not.toHaveBeenCalled()
+    } finally {
+      setMemoryUnavailableState(null)
+    }
+  })
+
+  it('tools/call: CONTROL — memory_primer still runs when memory is available', async () => {
+    handlers.memoryPrimer.mockClear()
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0', method: 'tools/call', params: { name: 'memory_primer', arguments: { cwd: 'C:\code\termpolis' } }, id: 206,
+    })
+    expect(JSON.parse(res.body).result.isError).toBeUndefined()
+    expect(handlers.memoryPrimer).toHaveBeenCalledTimes(1)
+  })
+
   it('tools/call: CONTROL — a memory error that only MENTIONS the host stays generic (no internals leak)', async () => {
     // The host's own exit message names a call and a code: internal detail, not for an agent.
     handlers.memorySearch.mockRejectedValueOnce(new Error('memory host exited unexpectedly (code 1) (during memorySearch)'))

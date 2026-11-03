@@ -53,7 +53,7 @@ import {
   setSyncDir, enableLocalEncryption, startNewMemoryKey, consolidationSimOf, exportMemorySnapshot,
   type MemoryHostTransport, type MemoryHostSpawner,
 } from '../../src/main/memoryClient'
-import { memoryUnavailableInfo } from '../../src/main/memoryFallbackGuard'
+import { memoryUnavailableInfo, RETRY_CAP_MS } from '../../src/main/memoryFallbackGuard'
 import { _resetForTests, _setEmbeddingsAvailable } from '../../src/main/swarmMemory'
 
 const MB = 1024 * 1024
@@ -80,7 +80,7 @@ interface Child {
   ready: () => void
 }
 
-function makeChild(how: 'ready' | 'exit' | 'silent' | 'init-error'): Child {
+function makeChild(how: 'ready' | 'exit' | 'silent' | 'init-error', answers: Record<string, unknown> = {}): Child {
   const posted: HostRequest[] = []
   let msgCb: ((m: HostResponse) => void) | null = null
   let exitCb: ((code: number) => void) | null = null
@@ -96,7 +96,7 @@ function makeChild(how: 'ready' | 'exit' | 'silent' | 'init-error'): Child {
         }
         return
       }
-      if (msg.kind === 'call') queueMicrotask(() => msgCb?.({ kind: 'result', id: msg.id, ok: true, result: 5 }))
+      if (msg.kind === 'call') queueMicrotask(() => msgCb?.({ kind: 'result', id: msg.id, ok: true, result: msg.fn in answers ? answers[msg.fn] : 5 }))
     },
     onMessage: (cb) => { msgCb = cb },
     onExit: (cb) => { exitCb = cb },
@@ -114,7 +114,7 @@ function makeChild(how: 'ready' | 'exit' | 'silent' | 'init-error'): Child {
 
 /** A spawner whose n-th attempt does what steps[n] says (the last step repeats). It counts attempts
  *  and stamps each with the (possibly virtual) time, so a test can assert WHEN the client tried. */
-function scripted(steps: Step[]) {
+function scripted(steps: Step[], answers: Record<string, unknown> = {}) {
   const children: Child[] = []
   const spawnAt: number[] = []
   const spawner: MemoryHostSpawner = () => {
@@ -122,7 +122,7 @@ function scripted(steps: Step[]) {
     spawnAt.push(Date.now())
     if (step === 'null') return null
     if (step === 'throw') throw new Error('fork: ENOENT')
-    const c = makeChild(step)
+    const c = makeChild(step, answers)
     children.push(c)
     return c.transport
   }
@@ -672,6 +672,142 @@ describe('unavailable — shutdown and stale children', () => {
   })
 })
 
+describe('unavailable — the verdict window and the quit', () => {
+  it('a duplicate exit event from the abandoned child, while the verdict is pending, cannot let a call reach an unloaded store', async () => {
+    // The hole: the child died, the size is still being read, the exit event is delivered AGAIN
+    // (utilityProcess is an EventEmitter). If that second delivery cleared the "wait for the verdict"
+    // promise, a call arriving now would see a client that is neither started nor unavailable and be
+    // answered by the in-process store, which nobody initialised: "0 memories".
+    let release!: (n: number | null) => void
+    probeReturns(() => new Promise<number | null>((r) => { release = r }))
+    const s = scripted(['exit'])
+    setMemoryHostSpawner(s.spawner)
+    const started = startMemoryHost({ userDataPath: tmp })
+    await tick()
+    s.children[0].exit(9)                          // the same exit, delivered again, mid-verdict
+    await tick()
+
+    let outcome: unknown = 'pending'
+    const early = memoryCount().then((v) => { outcome = v }, (e) => { outcome = e })
+    await tick()
+    expect(outcome).toBe('pending')                // still held for the verdict
+
+    release(400 * MB)
+    await started
+    await early
+    expect(outcome).toBeInstanceOf(Error)
+    expect((outcome as Error).message).toMatch(UNAVAILABLE)
+    expect(inproc.inits).toBe(0)
+  })
+
+  it('the app quitting while the size is still being read leaves the client stopped: no verdict is acted on', async () => {
+    let release!: (n: number | null) => void
+    probeReturns(() => new Promise<number | null>((r) => { release = r }))
+    const s = scripted(['exit'])
+    setMemoryHostSpawner(s.spawner)
+    const started = startMemoryHost({ userDataPath: tmp })
+    await tick()
+
+    stopMemoryHost()
+    release(400 * MB)
+    expect(await started).toBe('unstarted')
+    expect(memoryHostMode()).toBe('unstarted')
+    expect(inproc.inits).toBe(0)
+    expect(s.attempts()).toBe(1)
+    expect(memoryUnavailableInfo()).toEqual({})
+  })
+
+  it('a retry that comes up in the same instant the app quits does not become a live host', async () => {
+    vi.useFakeTimers()
+    storeIs(400 * MB)
+    const s = scripted(['exit', 'silent'])
+    setMemoryHostSpawner(s.spawner)
+    await startMemoryHost({ userDataPath: tmp })
+    await vi.advanceTimersByTimeAsync(10_000)      // retry 1 is loading
+    expect(s.attempts()).toBe(2)
+
+    s.last().ready()                               // ready lands...
+    stopMemoryHost()                               // ...and the quit follows in the same tick
+    await vi.advanceTimersByTimeAsync(0)
+    expect(memoryHostMode()).toBe('unstarted')
+    expect(memoryUnavailableInfo()).toEqual({})
+    await vi.advanceTimersByTimeAsync(60 * 60_000)
+    expect(s.attempts()).toBe(2)
+  })
+})
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// 3b. THE SIZE IS KNOWN BEFORE A FAILURE NEEDS IT
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('the size of the store is known before a failure needs it (a starved machine must not decide on a fresh read)', () => {
+  it('a retry that fails again is judged from the size already known: no new read, and never released onto the main thread', async () => {
+    vi.useFakeTimers()
+    let reads = 0
+    probeReturns(async () => { reads++; return 400 * MB })
+    const s = scripted(['exit'])
+    setMemoryHostSpawner(s.spawner)
+    await startMemoryHost({ userDataPath: tmp })
+    expect(reads).toBe(1)                          // once, at start, beside the first spawn
+
+    for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(RETRY_CAP_MS)
+    expect(s.attempts()).toBeGreaterThanOrEqual(5) // it kept retrying...
+    expect(reads).toBe(1)                          // ...and never asked the disk again
+    expect(memoryHostMode()).toBe('unavailable')
+    expect(inproc.inits).toBe(0)
+  })
+
+  it('a probe that stalls AFTER the first answer cannot turn a retry failure into a main-thread load', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    // The first answer is fine; any later read would hang (a starved box, a share that went away).
+    probeReturns(() => (++calls === 1 ? Promise.resolve(400 * MB) : new Promise<number | null>(() => { /* hangs */ })))
+    const s = scripted(['exit'])
+    setMemoryHostSpawner(s.spawner)
+    await startMemoryHost({ userDataPath: tmp })
+    for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(RETRY_CAP_MS)
+    expect(memoryHostMode()).toBe('unavailable')   // on the old behaviour this is 'inproc' after the first failure
+    expect(inproc.inits).toBe(0)
+  })
+
+  it('a size that could not be read at start is not remembered: a later crash loop asks again, and is judged on the real answer', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    // The first read hangs (a starved box): after 3 s it counts as "could not tell". The second works.
+    probeReturns(() => (++calls === 1 ? new Promise<number | null>(() => { /* hangs */ }) : Promise.resolve(400 * MB)))
+    const s = scripted(['ready'])
+    setMemoryHostSpawner(s.spawner)
+    expect(await startMemoryHost({ userDataPath: tmp })).toBe('host')   // a healthy start does not wait for the size
+    await vi.advanceTimersByTimeAsync(3_000)       // the first read gives up
+    expect(calls).toBe(1)
+
+    for (let i = 0; i < 4; i++) { s.last().exit(1); await vi.advanceTimersByTimeAsync(0) }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(calls).toBe(2)                          // asked again at the failure
+    expect(memoryHostMode()).toBe('unavailable')
+    expect(inproc.inits).toBe(0)
+  })
+
+  it('setSyncDir keeps the size answer warm for the NEW location, so a later crash loop is judged without a fresh read', async () => {
+    const seen: Array<string | null> = []
+    probeReturns(async (_userData, syncDir) => { seen.push(syncDir); return 400 * MB })
+    const share = path.join(tmp, 'shared-folder')
+    const s = scripted(['ready'], { setSyncDir: { syncing: true, dir: share } })
+    setMemoryHostSpawner(s.spawner)
+    await startMemoryHost({ userDataPath: tmp })
+    expect(seen).toEqual([null])                   // the local store, at start
+
+    await setSyncDir(share)                        // the child confirms it is now syncing there
+    await tick()
+    expect(seen).toEqual([null, share])            // asked once for the new location, in the background
+
+    for (let i = 0; i < 4; i++) { s.last().exit(1); await tick() }
+    await vi.waitFor(() => expect(memoryHostMode()).toBe('unavailable'))
+    expect(seen).toEqual([null, share])            // judged from the warm answer
+    expect(inproc.inits).toBe(0)
+  })
+})
+
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 // 4. THE TRANSITION IS LOGGED, WITH MAIN'S RSS BEFORE AND AFTER
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -745,10 +881,12 @@ describe('CONTROL — below the limit, with the kill switch, or with no size at 
 
   it.each(['0', 'off', 'false', 'no', 'OFF'])('the kill switch TERMPOLIS_MEMORY_INPROC_GUARD=%s restores today\'s behaviour on a huge store', async (value) => {
     vi.stubEnv('TERMPOLIS_MEMORY_INPROC_GUARD', value)
-    storeIs(900 * MB)
+    let reads = 0
+    probeReturns(async () => { reads++; return 900 * MB })
     setMemoryHostSpawner(scripted(['exit']).spawner)
     expect(await startMemoryHost({ userDataPath: tmp })).toBe('inproc')
     expect(inproc.inits).toBe(1)
+    expect(reads).toBe(0) // off means off: not even the size is read
   })
 
   it('a size that cannot be read (null, or a throw) fails OPEN to today\'s behaviour', async () => {

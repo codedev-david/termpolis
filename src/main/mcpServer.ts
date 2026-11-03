@@ -3,7 +3,7 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
-import { isMemoryUnavailableMessage } from './memoryFallbackGuard'
+import { isMemoryUnavailable, isMemoryUnavailableMessage, unavailableMessage } from './memoryFallbackGuard'
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
@@ -1413,6 +1413,9 @@ export async function executeTool(
         project: args.project,
       })
     case 'memory_primer': {
+      // The primer builder turns a failing search into an empty primer, which an agent that asked for
+      // it would read as "no context saved". While memory is unavailable, say so (v1.54.5).
+      if (isMemoryUnavailable()) throw new Error(unavailableMessage())
       const res = await handlers.memoryPrimer({
         cwd: args.cwd,
         query: args.query,

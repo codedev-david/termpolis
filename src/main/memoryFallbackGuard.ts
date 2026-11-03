@@ -154,6 +154,12 @@ export function setMemoryUnavailableState(next: MemoryUnavailableState | null): 
   state = next ? { ...next } : null
 }
 
+/** True while memory is unavailable (mode 'unavailable'). For a caller that would otherwise turn a failed
+ *  search into an empty answer (the primer), so it can say so instead. */
+export function isMemoryUnavailable(): boolean {
+  return state !== null
+}
+
 const REASON_MAX = 200
 
 /** The status record, or {} when memory is not unavailable (so the IPC payload spreading it is byte for
