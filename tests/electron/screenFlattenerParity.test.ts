@@ -405,6 +405,16 @@ const RESIZE_CASES: ResizeCase[] = [
     today: null,
   },
   {
+    // The case the "rows under the cursor go first" rule is for once something has scrolled (with nothing scrolled the
+    // bottom-pop rule gives the same answer): twelve lines scroll a ten-row screen, then the cursor moves up four rows
+    // and erases below it, as a TUI does when its frame gets shorter. Four blank rows now sit under the cursor.
+    name: 'with history and blank rows under the cursor, rows 10 to 6 (a frame that shrank)',
+    from: { cols: 40, rows: 10 },
+    to: { cols: 40, rows: 6 },
+    pre: `${numbered(12)}tail${ESC}[4A${ESC}[J`,
+    today: { rows: 13, duplicates: 4, paneRows: 9, paneDuplicates: 0 },
+  },
+  {
     name: 'with history: columns narrowed so a line wraps, the top scrolls into it',
     from: { cols: 40, rows: 10 },
     to: { cols: 30, rows: 10 },
@@ -436,6 +446,22 @@ const RESIZE_CASES: ResizeCase[] = [
     pre: 'abcdefghi你你你xyz\r\n$ ',
     repaint: 'none',
     today: { rows: 2, duplicates: 0, paneRows: 2, paneDuplicates: 0 },
+  },
+  {
+    // Nothing is under the cursor, so nothing may be popped to make room for the row the rewrap adds: xterm scrolls
+    // the top into history instead (its cursor is on the last row).
+    name: 'an exactly full screen, the cursor on its last row, a line now wraps (40x4 to 30x4)',
+    from: { cols: 40, rows: 4 },
+    to: { cols: 30, rows: 4 },
+    pre: `${'A'.repeat(35)}\r\nline B\r\nline C\r\n$ `,
+    today: null,
+  },
+  {
+    name: 'an exactly full screen where one line now needs a third row (40x4 to 30x4)',
+    from: { cols: 40, rows: 4 },
+    to: { cols: 30, rows: 4 },
+    pre: `${'A'.repeat(70)}\r\nline B\r\n$ `,
+    today: null,
   },
   {
     name: 'a screen of long lines narrowed, ConPTY painting its old wide rows (120x30 to 90x30)',
@@ -553,6 +579,52 @@ describe('the wrapped line the cursor is on', () => {
     // Both versions always agreed on this one.
     expectSameScreen(await run(TODAY, { cols: 80, rows: 8 }, text))
     expectSameScreen(await run(TODAY, { cols: 30, rows: 8 }, text))
+  })
+
+  // The cursor parked on the FIRST row of a wrapped line (a cursor-up after the line was written). xterm keeps the
+  // whole line, because the cursor is in it, and cuts each of its rows at the new width: 78 characters at 40 columns
+  // are rows of 40 and 38, and at 30 columns they show as 30 and 30.
+  const PARKED_ON_FIRST_ROW = `${'x'.repeat(40)}${'y'.repeat(38)}${ESC}[1A`
+
+  it('keeps every row of the line when the cursor is on its first row, cutting each at the new width', async () => {
+    const pair = await run(WITH_PARITY, { cols: 30, rows: 8 }, PARKED_ON_FIRST_ROW)
+    expectSameScreen(pair)
+    expect(pair.desktop()).toEqual([`${'x'.repeat(29)}!`, 'y'.repeat(30)])
+  })
+
+  it('control: the flattener as it was re-wrapped the later row, showing a row the pane does not', async () => {
+    const pair = await run(TODAY, { cols: 30, rows: 8 }, PARKED_ON_FIRST_ROW)
+    expect(pair.counters()).toMatchObject({ desktopRows: 2, phoneRows: 3 })
+  })
+
+  // A line the cursor was on is held through one resize, and keeps the wrap mark xterm keeps on its rows, so the NEXT
+  // resize reflows it like any other once the cursor has left it. A window being dragged is a run of resizes, so the
+  // second one is the ordinary case: 78 characters at 40 columns, narrowed to 30 with the cursor on the line, the
+  // cursor then moves off it, and the screen is resized again.
+  async function heldThenReleased(options: { parity: boolean } | undefined, then: TerminalSize): Promise<Pair> {
+    const pair = new Pair(new ScreenFlattener(120, 30, options), SIZE)
+    await pair.feed(PARKED_ON_FIRST_ROW)
+    pair.resize({ cols: 30, rows: 8 })
+    await pair.feed('!')
+    await pair.feed(`${ESC}[3B`)
+    pair.resize(then)
+    await pair.feed('Z')
+    return pair
+  }
+
+  it('reflows a line that was held through one resize at the next one, once the cursor has left it', async () => {
+    // Widened to 80 the two held rows join into one row of 60 characters; narrowed to 20 they wrap three ways.
+    const wider = await heldThenReleased(WITH_PARITY, { cols: 80, rows: 8 })
+    expectSameScreen(wider)
+    expect(wider.desktop()).toHaveLength(3)
+    const narrower = await heldThenReleased(WITH_PARITY, { cols: 20, rows: 8 })
+    expectSameScreen(narrower)
+    expect(narrower.desktop()).toHaveLength(5)
+  })
+
+  it('control: the flattener as it was showed a row more than the pane after the second resize', async () => {
+    expect((await heldThenReleased(TODAY, { cols: 80, rows: 8 })).counters()).toMatchObject({ desktopRows: 3, phoneRows: 4 })
+    expect((await heldThenReleased(TODAY, { cols: 20, rows: 8 })).counters()).toMatchObject({ desktopRows: 5, phoneRows: 6 })
   })
 
   it('holds the cursor line while the height shrinks under it, then ConPTY repaints', async () => {
