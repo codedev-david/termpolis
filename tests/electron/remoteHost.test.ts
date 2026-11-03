@@ -673,6 +673,7 @@ describe('the phone pump before a pty resize (plan P11)', () => {
     flushBeforeResize('t1', () => undefined)
     expect(outputs()).toHaveLength(sent)
     _resetSupervisorForTests()
+    harness.text.t1 = '' // the new host's opening read must not already hold what is about to wait
     waitingForTheTick()
     const opening = outputs().length
     flushBeforeResize('t1', () => undefined)

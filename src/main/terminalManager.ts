@@ -7,6 +7,7 @@ import { app } from 'electron'
 import { execShellCaptureOffThread } from './procClient'
 import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
+import { flushBeforeResize } from './ptyResizeFlush'
 import { sudoAskpassEnv } from './sudoAskpass'
 import { shellAlone } from './shellAlone'
 import {
@@ -267,6 +268,11 @@ export function writeToTerminal(id: string, data: string): void {
 export function resizeTerminal(id: string, cols: number, rows: number): void {
   const proc = processes.get(id)
   if (proc === undefined) return
+  // Bytes already read from the pty were drawn for the size it still has, and everything that reads them
+  // later asks for the size then (the phone pump does, as it sends). So they leave first: the coalescer's
+  // held bytes, then the remote pump's, both at the old size (ptyResizeFlush.ts). A resize to the size
+  // the terminal already has changes nothing for any reader and flushes nothing; the pty still gets it.
+  if (proc.cols !== cols || proc.rows !== rows) flushBeforeResize(id, () => proc.coalescer.flush())
   // Recorded even if the resize throws. A failed resize leaves the child drawing
   // for whatever size it last accepted, and that is still `cols`/`rows` as far as
   // every reader is concerned -- node-pty throws here for a closed pty, not for a
