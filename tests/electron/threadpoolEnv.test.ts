@@ -11,11 +11,16 @@
  *      module has no imports at all, so nothing can run (or use the pool) before it. ES imports are hoisted, so
  *      a plain assignment written as the first line of the file body would run AFTER every import: a leading
  *      side-effect import is the only way to be first.
- *   2. BEHAVIOUR: 16 when unset or empty, the user's own value when set, nothing at all with the kill switch.
- *   3. EFFECT in a real Node process (Windows, named pipes): with the module imported first the pool is large
- *      enough to run a 7th operation while 6 are blocked; with the same module imported AFTER the first pool use
- *      it is not (negative control). Counters, with asymmetric timeouts (a free thread answers in microseconds,
- *      so a 5 s allowance cannot fail by being slow; the stuck case can only pass by really being stuck).
+ *   2. BEHAVIOUR: the pool is started with 16 in place when the variable is unset or empty, the user's own value
+ *      is kept (and nothing is started), nothing at all happens with the kill switch.
+ *   3. RELEASE (the merge's SEAM 8): the variable is put back exactly as the user had it (deleted, or the empty
+ *      string) before anything else can run, so no shell, agent CLI, host or relaunched Termpolis inherits it;
+ *      and when the pool cannot be started on the spot the variable is still put back (default pool: today).
+ *   4. EFFECT in a real Node process (Windows, named pipes): with the module imported first the pool is large
+ *      enough to run a 7th operation while 6 are blocked, although the variable is gone again by then; with the
+ *      same module imported AFTER the first pool use it is not (negative control). Counters, with asymmetric
+ *      timeouts (a free thread answers in microseconds, so a 5 s allowance cannot fail by being slow; the stuck
+ *      case can only pass by really being stuck).
  *
  * WHERE THE POOL IS FIRST USED (measured/searched, 11-03, Node 24.21): Node's ESM loader and CJS package loading
  * do not touch the pool (probes T1 to T3 in the lane-G notes); no module-level code in src/main submits pool work
@@ -34,16 +39,38 @@ import ts from 'typescript'
 const MAIN = join(__dirname, '..', '..', 'src', 'main')
 const read = (f: string) => readFileSync(join(MAIN, f), 'utf8')
 
-const saved = { size: process.env.UV_THREADPOOL_SIZE, kill: process.env.TERMPOLIS_NO_GOVERNOR }
+type Host = { getBuiltinModule?: unknown }
+const saved = {
+  size: process.env.UV_THREADPOOL_SIZE,
+  kill: process.env.TERMPOLIS_NO_GOVERNOR,
+  builtin: (process as unknown as Host).getBuiltinModule,
+}
 afterEach(() => {
   if (saved.size === undefined) delete process.env.UV_THREADPOOL_SIZE; else process.env.UV_THREADPOOL_SIZE = saved.size
   if (saved.kill === undefined) delete process.env.TERMPOLIS_NO_GOVERNOR; else process.env.TERMPOLIS_NO_GOVERNOR = saved.kill
+  ;(process as unknown as Host).getBuiltinModule = saved.builtin
   vi.resetModules()
 })
 
-async function freshImport(): Promise<void> {
+async function freshImport(): Promise<typeof import('../../src/main/threadpoolEnv')> {
   vi.resetModules()
-  await import('../../src/main/threadpoolEnv')
+  return import('../../src/main/threadpoolEnv')
+}
+
+/**
+ * Stand in for process.getBuiltinModule so the test sees THE MOMENT THE POOL WOULD START: every async stat the
+ * module submits records what the variable holds right then (that is what libuv would read), and calls counts how
+ * many times the module asked for a built-in at all.
+ */
+function stubPoolStart(impl?: (id: string) => unknown): { atStat: Array<string | undefined>; calls: string[] } {
+  const atStat: Array<string | undefined> = []
+  const calls: string[] = []
+  ;(process as unknown as Host).getBuiltinModule = (id: string) => {
+    calls.push(id)
+    if (impl) return impl(id)
+    return { stat: (_path: string, _done: () => void) => { atStat.push(process.env.UV_THREADPOOL_SIZE) } }
+  }
+  return { atStat, calls }
 }
 
 describe('order: nothing can run before threadpoolEnv', () => {
@@ -79,38 +106,110 @@ describe('order: nothing can run before threadpoolEnv', () => {
   })
 })
 
-describe('behaviour', () => {
-  it('sets 16 when the variable is unset', async () => {
+describe('behaviour: the pool is started with the default in place', () => {
+  it('unset: libuv would read 16 at the first submission (counter: the variable at the moment of the stat)', async () => {
     delete process.env.UV_THREADPOOL_SIZE
     delete process.env.TERMPOLIS_NO_GOVERNOR
-    await freshImport()
-    expect(process.env.UV_THREADPOOL_SIZE).toBe('16')
+    const probe = stubPoolStart()
+    const m = await freshImport()
+    expect(probe.atStat).toEqual(['16'])
+    expect(probe.calls).toEqual(['node:fs'])
+    expect(m.threadpoolEnvState).toEqual({ applied: true, started: true, original: undefined })
   })
 
-  it('sets 16 when the variable is the empty string (libuv treats that as unset)', async () => {
+  it('the empty string (libuv treats that as unset): 16 at the moment of the stat as well', async () => {
     process.env.UV_THREADPOOL_SIZE = ''
     delete process.env.TERMPOLIS_NO_GOVERNOR
-    await freshImport()
-    expect(process.env.UV_THREADPOOL_SIZE).toBe('16')
+    const probe = stubPoolStart()
+    const m = await freshImport()
+    expect(probe.atStat).toEqual(['16'])
+    expect(m.threadpoolEnvState).toEqual({ applied: true, started: true, original: '' })
   })
 
-  it("keeps the user's own value (control: it is a default, not an override)", async () => {
-    process.env.UV_THREADPOOL_SIZE = '8'
+  it.each(['8', '16', '64'])("the user's own value (%s) is kept and the module does nothing at all (control: a default, not an override; the user's 16 is not ours)", async (value) => {
+    process.env.UV_THREADPOOL_SIZE = value
     delete process.env.TERMPOLIS_NO_GOVERNOR
-    await freshImport()
-    expect(process.env.UV_THREADPOOL_SIZE).toBe('8')
+    const probe = stubPoolStart()
+    const m = await freshImport()
+    expect(process.env.UV_THREADPOOL_SIZE).toBe(value)
+    expect(probe.atStat).toEqual([])
+    expect(probe.calls).toEqual([])
+    expect(m.threadpoolEnvState).toEqual({ applied: false, started: false, original: undefined })
   })
 
-  it('TERMPOLIS_NO_GOVERNOR=1 leaves the variable alone: behaviour identical to today', async () => {
+  it.each(['1', 'true'])('TERMPOLIS_NO_GOVERNOR=%s leaves the process alone: nothing set, nothing started, behaviour identical to today', async (value) => {
     delete process.env.UV_THREADPOOL_SIZE
-    process.env.TERMPOLIS_NO_GOVERNOR = '1'
-    await freshImport()
+    process.env.TERMPOLIS_NO_GOVERNOR = value
+    const probe = stubPoolStart()
+    const m = await freshImport()
     expect(process.env.UV_THREADPOOL_SIZE).toBeUndefined()
+    expect(probe.calls).toEqual([])
+    expect(m.threadpoolEnvState.applied).toBe(false)
+  })
+
+  it('control: any other value of the kill switch is not the kill switch', async () => {
+    delete process.env.UV_THREADPOOL_SIZE
+    process.env.TERMPOLIS_NO_GOVERNOR = '0'
+    const probe = stubPoolStart()
+    await freshImport()
+    expect(probe.atStat).toEqual(['16'])
   })
 
   it('the unit suite itself runs with the kill switch on, so no test ever starts a real governor by accident', () => {
     expect(saved.kill).toBe('1')
     expect(process.env.TERMPOLIS_NO_HOST_PRIORITY).toBe('1')
+  })
+})
+
+describe('release (SEAM 8): the variable is put back exactly as the user had it, before anything else runs', () => {
+  it('unset before: unset after (a child of this process inherits nothing)', async () => {
+    delete process.env.UV_THREADPOOL_SIZE
+    delete process.env.TERMPOLIS_NO_GOVERNOR
+    stubPoolStart()
+    await freshImport()
+    expect('UV_THREADPOOL_SIZE' in process.env).toBe(false)
+  })
+
+  it('the empty string before: the empty string after (restored exactly, not deleted)', async () => {
+    process.env.UV_THREADPOOL_SIZE = ''
+    delete process.env.TERMPOLIS_NO_GOVERNOR
+    stubPoolStart()
+    await freshImport()
+    expect(process.env.UV_THREADPOOL_SIZE).toBe('')
+  })
+
+  it('it is put back synchronously, not from the stat callback (nothing can run in between)', async () => {
+    delete process.env.UV_THREADPOOL_SIZE
+    delete process.env.TERMPOLIS_NO_GOVERNOR
+    let done: (() => void) | undefined
+    stubPoolStart(() => ({ stat: (_p: string, cb: () => void) => { done = cb } }))
+    await freshImport()
+    expect(done).toBeTypeOf('function') // the callback has NOT run (the stub holds it)
+    expect(process.env.UV_THREADPOOL_SIZE).toBeUndefined()
+  })
+
+  const failures: Array<[string, () => void]> = [
+    ['there is no process.getBuiltinModule (an older runtime)', () => { ;(process as unknown as Host).getBuiltinModule = undefined }],
+    ['process.getBuiltinModule throws', () => { stubPoolStart(() => { throw new Error('boom') }) }],
+    ['the fs module it returns is missing', () => { stubPoolStart(() => undefined) }],
+    ['the fs module has no stat', () => { stubPoolStart(() => ({})) }],
+    ['stat throws', () => { stubPoolStart(() => ({ stat: () => { throw new Error('boom') } })) }],
+  ]
+  it.each(failures)('fail open when %s: no throw, nothing started, the variable is put back anyway (default pool, as today)', async (_name, arrange) => {
+    delete process.env.UV_THREADPOOL_SIZE
+    delete process.env.TERMPOLIS_NO_GOVERNOR
+    arrange()
+    const m = await freshImport()
+    expect(process.env.UV_THREADPOOL_SIZE).toBeUndefined()
+    expect(m.threadpoolEnvState).toEqual({ applied: true, started: false, original: undefined })
+  })
+
+  it('fail open with the empty string before: the empty string comes back too', async () => {
+    process.env.UV_THREADPOOL_SIZE = ''
+    delete process.env.TERMPOLIS_NO_GOVERNOR
+    ;(process as unknown as Host).getBuiltinModule = undefined
+    await freshImport()
+    expect(process.env.UV_THREADPOOL_SIZE).toBe('')
   })
 })
 
@@ -167,12 +266,12 @@ function runChild(entrySource: string, allowMs: number): Promise<{ seventhOperat
 }
 
 describe.skipIf(process.platform !== 'win32')('effect in a real Node process (Windows named pipes park pool threads without any timing assumption)', () => {
-  it('imported FIRST: 6 parked operations leave the pool able to run a 7th (pool is 16)', async () => {
+  it('imported FIRST: 6 parked operations leave the pool able to run a 7th (pool is 16), although the variable is already gone again', async () => {
     const r = await runChild(
       "import './threadpoolEnv.mjs'\nimport { probe } from './probe.mjs'\nawait probe(6)\n",
       5000,
     )
-    expect(r.env).toBe('16')
+    expect(r.env).toBeNull() // released: the pool has read 16, nothing that starts later inherits it
     expect(r.seventhOperationCompleted).toBe(true)
   }, 60_000)
 
@@ -181,7 +280,7 @@ describe.skipIf(process.platform !== 'win32')('effect in a real Node process (Wi
       "import fs from 'node:fs'\nawait new Promise((r) => fs.stat('.', () => r()))\nawait import('./threadpoolEnv.mjs')\nconst { probe } = await import('./probe.mjs')\nawait probe(6)\n",
       1500,
     )
-    expect(r.env).toBe('16') // the variable IS set: libuv already started its pool and will not read it again
+    expect(r.env).toBeNull() // released as well: the module cannot tell the pool was running already, and must leave no variable behind
     expect(r.seventhOperationCompleted).toBe(false)
   }, 60_000)
 })

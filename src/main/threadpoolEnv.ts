@@ -12,11 +12,52 @@
 // threadpoolEnv.test.ts pins both facts: this is index.ts's first statement, and this file imports nothing.)
 //
 // A value the user (or CI) already set is respected; TERMPOLIS_NO_GOVERNOR=1 leaves the process exactly as it
-// was before the governor existed. Child processes (the utility hosts) inherit the value through the
-// environment, so each of them gets the same pool size.
-if (process.env.TERMPOLIS_NO_GOVERNOR !== '1' && process.env.TERMPOLIS_NO_GOVERNOR !== 'true' && !process.env.UV_THREADPOOL_SIZE) {
-  process.env.UV_THREADPOOL_SIZE = '16'
+// was before the governor existed.
+//
+// THE VARIABLE LIVES FOR A FEW LINES ONLY. Whatever stays in process.env is inherited by EVERYTHING Termpolis
+// starts afterwards: every shell and every agent CLI in a terminal (Claude Code, Codex and Gemini are Node
+// programs and would run with a pool size nobody asked for), every workflow command, the utility hosts, and a
+// Termpolis relaunched by the updater (which would take the value for the USER's own and pass it on for ever).
+// A user's shell must see no variable the user never set. libuv has read the variable by the time the first
+// async call has been submitted (uv__work_submit starts the whole pool, and reads the variable, synchronously
+// inside that call), so this module makes that call itself, a throw-away async stat, and puts the environment
+// back exactly as it found it: deleted when the user had none, the empty string when that is what they had.
+// That happens before anything else in the app can run, so no child can exist yet and no per-spawn cleanup is
+// needed anywhere. If the pool cannot be started on the spot (no process.getBuiltinModule, or the call throws)
+// the variable is still put back and the pool starts later at the default size: today's behaviour, nothing
+// leaked. (tests/electron/threadpoolPtyEnv.test.ts counts the environment a terminal is given;
+// tests/electron/threadpoolChildEnv.test.ts asks a real child process what it inherited.)
+
+/** What this module did, for the tests and the field diagnostics. Plain data. */
+export interface ThreadpoolEnvState {
+  /** The default was put in place for the pool: false when the user set a value, or the kill switch is on. */
+  applied: boolean
+  /** The pool was started here, so libuv has read the default; false when that could not be done (default size). */
+  started: boolean
+  /** What the variable held before this module touched it: undefined means the user never set it. */
+  original: string | undefined
 }
 
-// A module, not a script: isolatedModules needs one export (an empty one).
-export {}
+export const threadpoolEnvState: ThreadpoolEnvState = { applied: false, started: false, original: undefined }
+
+if (process.env.TERMPOLIS_NO_GOVERNOR !== '1' && process.env.TERMPOLIS_NO_GOVERNOR !== 'true' && !process.env.UV_THREADPOOL_SIZE) {
+  const original = process.env.UV_THREADPOOL_SIZE // undefined, or the empty string (libuv treats that as unset)
+  threadpoolEnvState.applied = true
+  threadpoolEnvState.original = original
+  process.env.UV_THREADPOOL_SIZE = '16'
+  try {
+    const host = process as unknown as { getBuiltinModule?: (id: string) => unknown }
+    const fs = typeof host.getBuiltinModule === 'function'
+      ? (host.getBuiltinModule('node:fs') as { stat?: (path: string, done: () => void) => void } | undefined)
+      : undefined
+    if (fs && typeof fs.stat === 'function') {
+      fs.stat('.', () => {})
+      threadpoolEnvState.started = true
+    }
+  } catch {
+    // Not started: the pool will start at the default size when first used. Today's behaviour.
+  }
+  // Put it back, whatever happened above: from here on no child process can inherit it.
+  if (original === undefined) delete process.env.UV_THREADPOOL_SIZE
+  else process.env.UV_THREADPOOL_SIZE = original
+}

@@ -8,7 +8,9 @@
  * imports above bundled code, so an external package that did async pool work while loading would win over
  * threadpoolEnv.ts). This spec does, counter by counter:
  *
- *   1. diagnostics:collect carries a `governor` block, enabled, sampling, calm at rest, with the pool variable at 16.
+ *   1. diagnostics:collect carries a `governor` block, enabled, sampling, calm at rest, and the pool variable is NOT
+ *      left in main's environment (threadpoolEnv.ts starts the pool with 16 and puts the variable back at once, so
+ *      no shell, agent CLI or host inherits it: the merge's SEAM 8).
  *   2. The effective libuv pool size inside the real main process is above the default 4 (Windows: 6 pool
  *      threads are parked on a named pipe nobody writes, a 7th operation still completes; the parked reads are
  *      released again before the check ends).
@@ -117,7 +119,7 @@ test.describe.serial('Event-loop governor in the real app', () => {
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  test('1. diagnostics:collect carries a started governor block, calm at rest, and the pool variable is 16', async () => {
+  test('1. diagnostics:collect carries a started governor block, calm at rest, and no pool variable is left in main for children to inherit', async () => {
     await expect.poll(async () => (await governor(page)).samples, { timeout: 30_000 }).toBeGreaterThan(0)
     const g = await governor(page)
     expect(g.enabled).toBe(true)
@@ -126,8 +128,10 @@ test.describe.serial('Event-loop governor in the real app', () => {
     // Startup itself is heavy synchronous work: the governor may honestly have been shed while the app came up.
     // Calm is reached by itself (10 s under 40 ms), so poll for it rather than assert it at once.
     await expect.poll(async () => (await governor(page)).shed, { timeout: 60_000 }).toBe(false)
+    // The pool took 16 at start-up (test 2 measures the size itself); the variable must be gone again, because every
+    // child this process starts inherits its environment: a user's shell and agent CLIs see nothing they did not set.
     const pool = await app.evaluate(() => process.env.UV_THREADPOOL_SIZE)
-    expect(pool).toBe('16')
+    expect(pool).toBeUndefined()
   })
 
   test('2. the effective libuv pool in the real main process is above the default 4', async () => {
