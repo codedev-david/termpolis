@@ -145,6 +145,19 @@ describe('where the keyboard goes when the card or the toast goes (UI-R1-F)', ()
     expect(document.activeElement).toBe(pane.querySelector('textarea'))
   })
 
+  // UI R3-2: `left-1/2` gave the toast half the pane to be in, so a sentence of three lines (the new-session words, a worktree left,
+  // options not carried) stood 226 px tall in a 260 px pane, over the input line.
+  it('is as wide as its words need up to most of the pane, centred between its insets, not squeezed into half of it (R3-2)', () => {
+    render(<SwitchOverlay terminalId="t1" />)
+    put(run({ status: 'done', steps: ['done', 'done', 'done'], toast: { text: 'Claude Code is on codedev now. '.repeat(8), until: Date.now() + 10_000, back: null } }))
+    const el = screen.getByTestId('switch-toast')
+    expect(el.className).toContain('inset-x-3')
+    expect(el.className).toContain('mx-auto')
+    expect(el.className).toContain('w-fit')
+    expect(el.className).toMatch(/max-w-\[90%\]/)
+    expect(el.className).not.toMatch(/left-1\/2|-translate-x-1\/2/)
+  })
+
   it('is the terminal when the toast is dismissed', () => {
     render(<SwitchOverlay terminalId="t1" />)
     put(run({ status: 'done', steps: ['done', 'done', 'done'], toast: { text: 'Claude Code is on codedev now.', until: Date.now() + 10_000, back: 'acc_a' } }))

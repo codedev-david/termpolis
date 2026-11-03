@@ -30,12 +30,13 @@ export function AccountChip({ terminalId }: { terminalId: string }) {
       aria-label={`${ACCOUNT_AGENT_LABEL[chip.agent]} account: ${chip.label}. Switch account`}
       onClick={(e) => { e.stopPropagation(); if (menuOpen) closeAccountMenu(); else openAccountSwitch(terminalId) }}
       title={queued ? `${chip.title} Switching to ${queuedTo ?? 'another account'} when it finishes.` : chip.title}
-      className={`flex items-center gap-1.5 text-[10px] font-medium bg-[#2d2d2d]/90 border rounded px-2 py-1 transition-colors hover:bg-[#0e639c] ${
+      className={`flex items-center gap-1.5 shrink-0 max-w-[10rem] text-[10px] font-medium bg-[#2d2d2d]/90 border rounded px-2 py-1 transition-colors hover:bg-[#0e639c] ${
         chip.alert ? 'text-[#e06c75] border-[#e06c75]' : 'text-[#e0e0e0] border-[#3c3c3c] hover:border-[#1177bb]'
       }`}
     >
-      <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: chip.alert ? '#e06c75' : chip.color }} />
-      {chip.label}
+      <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: chip.alert ? '#e06c75' : chip.color }} />
+      {/* A long label (40 characters is 230 px) is cut with an ellipsis, so the chip is the last thing a narrow pane clips (R3-8). */}
+      <span className="truncate min-w-0" data-testid="account-chip-label">{chip.label}</span>
       {queued && <i className="fa-solid fa-hourglass-half text-[9px] text-[#e5c07b]" aria-label="switch waiting" data-testid="account-chip-queued"></i>}
     </button>
   )

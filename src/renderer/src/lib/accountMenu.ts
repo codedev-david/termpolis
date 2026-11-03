@@ -4,7 +4,7 @@
 // moves; and where it opens, and where the keyboard goes back to when it closes.
 import { isProfileAgent } from '../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../shared/agentAccounts'
-import { untilText } from '../../../shared/accountLimits'
+import { unofferedLoginOwner, untilText } from '../../../shared/accountLimits'
 import { signedInElsewhere, signedInEmail } from './accountChip'
 import { AGENT_COLOR, workerBlocker } from './accountsView'
 
@@ -55,12 +55,14 @@ function statusOf(r: AccountRowView, now: number): { status: string; tone: MenuT
   return r.autoOffer ? { status: 'Signed in', tone: 'good' } : { status: 'Not offered automatically', tone: 'muted' }
 }
 
-export function menuRows(view: AccountsView, agent: AccountAgent, currentId: string | undefined, now: number, opts: { busy: boolean; worker: boolean }): MenuRow[] {
+export function menuRows(view: AccountsView, agent: AccountAgent, currentId: string | undefined, now: number, opts: { busy: boolean; worker: boolean; switching?: string | null }): MenuRow[] {
   return view.accounts.filter((r) => r.agent === agent).map((r): MenuRow => {
     const current = r.id === currentId
     const profile = isProfileAgent(agent)
     const blocker = opts.worker && !current ? workerBlocker(r, view) : null
-    const disabled = !current && profile && !r.folderExists ? 'Its profile folder is missing' : blocker ? WORKER_BLOCKED[blocker] : null
+    // A switch of this terminal is under way (`switching` names its target): no other can start, and a pick would be dropped without a word.
+    const waiting = opts.switching && !current ? `Switching to ${opts.switching}…` : null
+    const disabled = !current && profile && !r.folderExists ? 'Its profile folder is missing' : waiting ?? (blocker ? WORKER_BLOCKED[blocker] : null)
     const { status, tone } = statusOf(r, now)
     const signIn = profile && (status === 'Sign-in expired' || !isSignedIn(r))
     const action: MenuAction = current || disabled ? 'none' : !profile ? 'agy' : signIn ? 'sign-in-and-switch' : opts.busy ? 'queue' : 'switch'
@@ -71,7 +73,7 @@ export function menuRows(view: AccountsView, agent: AccountAgent, currentId: str
       color: r.color ?? AGENT_COLOR[agent],
       email: (profile ? signedInEmail(r) : null) ?? r.email ?? null,
       status: disabled ?? status,
-      tone: disabled ? 'bad' : tone,
+      tone: disabled ? (disabled === waiting ? 'warn' : 'bad') : tone,
       note: profile && !r.isDefault && !r.connect ? 'Not connected: loses Termpolis\'s tools' : null,
       disabled,
       action,
@@ -96,8 +98,14 @@ export function maybeOnUnoffered(accounts: readonly AccountRowView[], agent: Acc
 
 /** The second confirmation (D14, R17): onto an account not offered automatically, or carrying a
  *  conversation off one, or one that may be on one (`maybeOn`, when the terminal's account isn't
- *  known). Carrying off one offers a fresh session in a new terminal instead. */
-export function confirmFor(from: AccountRowView | undefined, to: AccountRowView, maybeOn?: AccountRowView): { question: string; newTerminal: boolean } | null {
+ *  known). Carrying off one offers a fresh session in a new terminal instead. `rows`: the agent's accounts, to read the login in
+ *  each profile by: a profile that holds the work login is the work account whatever folder it is, as accounts.sh's
+ *  account_for_email decides it (SWARM-R3-1). */
+export function confirmFor(from: AccountRowView | undefined, to: AccountRowView, maybeOn?: AccountRowView, rows?: readonly AccountRowView[]): { question: string; newTerminal: boolean } | null {
+  const toOwner = rows ? unofferedLoginOwner(rows, to) : undefined
+  const fromOwner = rows && from ? unofferedLoginOwner(rows, from) : undefined
+  if (to.autoOffer && toOwner) return { question: `${to.label} is signed in as ${toOwner.label}, which isn't offered automatically. Switch this terminal to ${to.label}?`, newTerminal: false }
+  if (from && from.autoOffer && fromOwner) return { question: `This conversation is on ${from.label}, which is signed in as ${fromOwner.label}, which isn't offered automatically. Carry it to ${to.label}?`, newTerminal: true }
   if (!to.autoOffer) return { question: `${to.label} isn't offered automatically. Switch this terminal to ${to.label}?`, newTerminal: false }
   if (from && !from.autoOffer) return { question: `This conversation is on ${from.label}, which isn't offered automatically. Carry it to ${to.label}?`, newTerminal: true }
   if (!from && maybeOn) return { question: `This conversation may be on ${maybeOn.label}, which isn't offered automatically. Carry it to ${to.label}?`, newTerminal: true }

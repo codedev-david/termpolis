@@ -600,6 +600,55 @@ describe('the other ways', () => {
   })
 })
 
+// SWARM-R3-1: the login in a profile is the account, not the folder's row. The default profile holds the work login while the registry
+// calls it personal (David's logins move between his folders): the conversation on it is work's, so the card offers a new terminal first and
+// asks before carrying it off, and never offers the profile that holds the work login as a way out of another account.
+describe('a terminal on a profile that holds the work login (SWARM-R3-1)', () => {
+  const swapped = (): void => {
+    useTerminalStore.setState({
+      accountsView: view([
+        { ...A, email: 'a@example.test', lastEmail: 'w@example.test' }, { ...B, email: 'b@example.test' }, { ...C, email: 'c@example.test' },
+        { ...W, email: 'w@example.test', lastEmail: 'a@example.test' },
+      ]),
+    })
+  }
+
+  it('asks before carrying the conversation off it, and says whose login it holds', async () => {
+    swapped()
+    card()
+    openLimit(ctx({ accountId: 'acc_a' }))
+    await waitFor(() => expect(accounts.check).toHaveBeenCalled())
+    await act(async () => undefined)
+    expect(screen.getByTestId('limit-card-new')).toHaveTextContent('New terminal on codedev')
+    click('limit-card-continue')
+    expect(screen.getByTestId('limit-card-carry')).toHaveTextContent('This conversation is on work, which isn\'t offered automatically. Carry it to codedev?')
+    expect(startSwitch).not.toHaveBeenCalled()
+    click('limit-card-carry-yes')
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', expect.objectContaining({ reason: 'usage limit', confirmed: true }))
+  })
+
+  it('does not list the profile that holds the work login among the ways out of another account', async () => {
+    swapped()
+    useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_b' }), T('t2')] })
+    card()
+    openLimit(ctx({ accountId: 'acc_b' }))
+    await waitFor(() => expect(accounts.check).toHaveBeenCalled())
+    await act(async () => undefined)
+    expect(screen.getByTestId('limit-card-continue')).toHaveTextContent('Continue on spare')
+    click('limit-card-more')
+    expect(screen.getByTestId('limit-card-others').textContent).not.toContain('personal')
+  })
+
+  it('asks nothing of the layout the registry was imported with', async () => {
+    card()
+    openLimit(ctx({ accountId: 'acc_a' }))
+    await act(async () => undefined)
+    click('limit-card-continue')
+    expect(screen.queryByTestId('limit-card-carry')).toBeNull()
+    expect(startSwitch).toHaveBeenCalled()
+  })
+})
+
 describe('a terminal on the work account (R17)', () => {
   it('offers a fresh session first, and asks before carrying the conversation off it', async () => {
     useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_w' })] })
@@ -755,6 +804,102 @@ describe('agy', () => {
     click('limit-card-continue')
     expect(screen.queryByTestId('limit-card-carry')).toBeNull()
     expect(st().agySwitchSheet).toEqual({ targetId: 'g1' })
+    await act(async () => undefined)
+  })
+})
+
+// UI R3-4: the pane's own toolbar (the account chip, Clear, Past AI Sessions, Model, Second Opinion) is `absolute top-1.5 right-8 z-30` and
+// about 32 px tall, in the same top band the card sat in at top-2: in a pane under about 1100 px, and in any split view, it covered the
+// sentence the card exists to say (the headline reads 18% under the toolbar at 1000 px, 75% at 540). The card sits below it.
+describe('where the card sits (R3-4)', () => {
+  it('is below the pane toolbar, not in its band', async () => {
+    card()
+    openLimit()
+    const el = screen.getByTestId('limit-card')
+    expect(el.className).toContain('top-10')
+    expect(el.className).not.toMatch(/\btop-2\b/)
+    expect(el.className).toMatch(/\bz-10\b/)
+    await act(async () => undefined)
+  })
+})
+
+// UI R3-5: a card is dismissed only by its own buttons, the banner's Choose path and pruneChooser (the agent changed). The terminal
+// moved to another account by another route (the chip's menu, Settings > Switch account, the toast's Switch back) left it saying
+// "out of usage on personal ... Continue on codedev" over a terminal that is fine, and its button reached only main's refusal.
+describe('a card for an account the terminal has left (R3-5)', () => {
+  it('goes when the terminal moves to another account by another route', async () => {
+    card()
+    openLimit()
+    expect(screen.getByTestId('limit-card')).toBeInTheDocument()
+    await act(async () => { useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_b' }), T('t2')] }) })
+    expect(screen.queryByTestId('limit-card')).toBeNull()
+    // The chooser moved on too: a card left open for a terminal that no longer needs it would come back with the next account.
+    expect(st().accountSwitch?.limit?.terminals ?? []).not.toContain('t1')
+  })
+
+  it('stays when the terminal is on the account that ran out, or the account is not known (changed by hand)', async () => {
+    card()
+    openLimit()
+    await act(async () => { useTerminalStore.setState({ accountsByHand: { t1: true }, terminals: [T('t1', { agentAccountId: 'acc_b' }), T('t2')] }) })
+    expect(screen.getByTestId('limit-card')).toBeInTheDocument()
+    await act(async () => { useTerminalStore.setState({ accountsByHand: {}, terminals: [T('t1', { agentAccountId: undefined }), T('t2')] }) })
+    expect(screen.getByTestId('limit-card')).toBeInTheDocument()
+    await act(async () => { useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_a' }), T('t2')] }) })
+    expect(screen.getByTestId('limit-card')).toBeInTheDocument()
+  })
+
+  it('stays when the limit names no account (Termpolis did not know the terminal\'s): there is nothing it could have left', async () => {
+    card()
+    openLimit(ctx({ accountId: null }))
+    await act(async () => { useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_b' }), T('t2')] }) })
+    expect(screen.getByTestId('limit-card')).toBeInTheDocument()
+  })
+
+  it('leaves the other terminals of the same limit their cards', async () => {
+    useTerminalStore.setState({ terminals: [T('t1'), T('t2')] })
+    render(<><LimitCard terminalId="t1" /><LimitCard terminalId="t2" /></>)
+    openLimit(ctx({ terminals: ['t1', 't2'] }))
+    expect(screen.getAllByTestId('limit-card')).toHaveLength(2)
+    await act(async () => { useTerminalStore.setState({ terminals: [T('t1', { agentAccountId: 'acc_b' }), T('t2')] }) })
+    expect(screen.getAllByTestId('limit-card')).toHaveLength(1)
+    expect(st().accountSwitch?.limit?.terminals).toEqual(['t2'])
+  })
+})
+
+// UI R3-9a: the card's button that had the focus is gone when the card is, and the keyboard would go to <body>, where typing reaches
+// nothing. The pane's own input takes it, which is the case the UI2-3 fix is for.
+describe('where the keyboard goes when the card closes with its button focused (R3-9)', () => {
+  it('goes to the terminal when the focus sat on <body> (the pressed button had already unmounted)', async () => {
+    const pane = document.createElement('div')
+    pane.setAttribute('data-terminal-id', 't1')
+    const input = document.createElement('textarea')
+    pane.appendChild(input)
+    document.body.appendChild(pane)
+    try {
+      card()
+      openLimit()
+      ;(document.activeElement as HTMLElement | null)?.blur()
+      expect(document.activeElement).toBe(document.body)
+      click('limit-card-not-now')
+      expect(document.activeElement).toBe(input)
+    } finally {
+      pane.remove()
+    }
+    await act(async () => undefined)
+  })
+
+  it('leaves a focus the user has put on another field alone', async () => {
+    const field = document.createElement('input')
+    document.body.appendChild(field)
+    try {
+      card()
+      openLimit()
+      field.focus()
+      click('limit-card-not-now')
+      expect(document.activeElement).toBe(field)
+    } finally {
+      field.remove()
+    }
     await act(async () => undefined)
   })
 })

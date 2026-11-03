@@ -14,6 +14,7 @@ import { isAutoPrimerEnabled } from '../hooks/useAutoPrimer'
 import { launchAgents } from './agentLaunch'
 import { checkSignIn, openOnAccount, runSwitch, terminalAgent } from './accountSwitchFlow'
 import type { SignInCheck, SwitchAnswers } from './accountSwitchFlow'
+import { unofferedLoginOwner } from '../../../shared/accountLimits'
 import { AGENT_COLOR } from './accountsView'
 import { refreshAccounts } from './accountsState'
 import { liveRestartDeps, noteWorkerSwitched } from './swarmRestart'
@@ -77,6 +78,16 @@ export interface QueuedSwitch {
 
 /** How long the toast and its Switch back stay. */
 export const TOAST_MS = 10_000
+/** A toast with more words than a short one stays longer, in proportion to them: the sentence that says a switch's model and options were
+ *  not carried, or that a worktree was left, is gone with the toast, and 10 s is not time to read three lines (R3-2). */
+const TOAST_FREE_CHARS = 100
+const TOAST_MS_PER_CHAR = 100
+const TOAST_MAX_MS = 60_000
+
+/** How long a toast of these words stays: TOAST_MS, and 100 ms for each character past 100, up to a minute. */
+export function toastMs(text: string): number {
+  return Math.min(TOAST_MAX_MS, TOAST_MS + Math.max(0, text.length - TOAST_FREE_CHARS) * TOAST_MS_PER_CHAR)
+}
 /** How often a queued switch looks whether its agent is done. */
 export const QUEUE_POLL_MS = 2000
 
@@ -279,16 +290,20 @@ export async function startSwitch(terminalId: string, targetId: string, opts: St
     return
   }
   if (outcome.kind === 'switched' || outcome.kind === 'fresh') {
-    const until = deps.now() + TOAST_MS
+    const text = toastFor(outcome, run)
+    const ms = toastMs(text)
+    const until = deps.now() + ms
     // Switch back is a switch like any other: onto, or off, an account that isn't offered
     // automatically it would need the second question (D14, R17), which a toast can't ask. The menu does.
-    const back = fromRow && fromRow.autoOffer && target.autoOffer ? fromRow.id : null
-    put({ ...run, status: 'done', steps: ['done', 'done', 'done'], toast: { text: toastFor(outcome, run), until, back } })
+    // A profile that holds the work login is work's, whatever its row is called (SWARM-R3-1).
+    const rows = view.accounts
+    const back = fromRow && fromRow.autoOffer && target.autoOffer && !unofferedLoginOwner(rows, fromRow) && !unofferedLoginOwner(rows, target) ? fromRow.id : null
+    put({ ...run, status: 'done', steps: ['done', 'done', 'done'], toast: { text, until, back } })
     // The toast goes at its time, wherever it shows (a pane, or a worker's line in the swarm
     // dashboard), unless another switch took its place meanwhile.
     setTimeout(() => {
       if (store().switchRuns[terminalId]?.toast?.until === until) store().dropSwitchRun(terminalId)
-    }, TOAST_MS)
+    }, ms)
     return
   }
   put({

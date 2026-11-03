@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 import { v4 as uuid } from 'uuid'
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../../shared/agentAccounts'
 import type { AccountAgent, AccountRowView, AccountsView } from '../../../../shared/agentAccounts'
-import { limitTargets, suggestedModel, untilText } from '../../../../shared/accountLimits'
+import { limitTargets, suggestedModel, unofferedLoginOwner, untilText } from '../../../../shared/accountLimits'
 import type { LimitTarget, TargetCheck } from '../../../../shared/accountLimits'
 import { useTerminalStore } from '../../store/terminalStore'
 import type { TerminalSession } from '../../types'
@@ -33,8 +33,17 @@ export function LimitCard({ terminalId }: { terminalId: string }) {
   const open = useTerminalStore((s) => s.accountSwitch ?? null)
   const terminal = useTerminalStore((s) => s.terminals.find((t) => t.id === terminalId))
   const view = useTerminalStore((s) => s.accountsView ?? null)
+  const byHand = useTerminalStore((s) => !!s.accountsByHand?.[terminalId])
   const limit = open?.limit
-  if (!limit || !limit.terminals.includes(terminalId) || !terminal || !view) return null
+  // The card is about the account that ran out. A terminal that is on another one now, by another route (the chip's menu, Settings,
+  // the toast's Switch back, a worker's restart), has left it: its card, which would say "out of usage on personal ... Continue on
+  // codedev" over a terminal that is fine, goes, and the chooser moves on. An account Termpolis does not know (changed by hand, or
+  // never recorded) is no such move (R3-5).
+  const moved = !!limit && !!terminal && !!terminal.agentAccountId && !byHand && !!limit.accountId && terminal.agentAccountId !== limit.accountId
+  useEffect(() => {
+    if (moved) useTerminalStore.getState().leaveLimitChooser(terminalId)
+  }, [moved, terminalId])
+  if (!limit || !limit.terminals.includes(terminalId) || !terminal || !view || moved) return null
   const agent = terminalAgent(terminal)
   if (agent !== limit.agent) return null
   return <Card terminal={terminal} agent={agent} view={view} limit={limit} />
@@ -63,7 +72,8 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   // The account kept from the automatic offers (work) that the conversation is on, or may be on when
   // Termpolis doesn't know the terminal's account. agy's own sheet asks the work account's question
   // for every agy terminal it moves.
-  const workOf = isProfileAgent(agent) ? (current && !current.autoOffer ? current : maybeOnUnoffered(view.accounts, agent, current)) : undefined
+  // The login in a profile is the account: a profile that holds the work login is work's, whatever its row is called (SWARM-R3-1).
+  const workOf = isProfileAgent(agent) ? (current && !current.autoOffer ? current : current ? unofferedLoginOwner(view.accounts, current) : maybeOnUnoffered(view.accounts, agent, current)) : undefined
   const fromWork = !!workOf
   const model = suggestedModel(agent, limit.kind)
 
@@ -201,7 +211,9 @@ function Card({ terminal, agent, view, limit }: { terminal: TerminalSession; age
   const note = groupNote(limit, view)
 
   return (
-    <div ref={card} className="absolute top-2 left-1/2 -translate-x-1/2 z-10 w-[min(560px,92%)]" data-testid="limit-card">
+    // Below the pane's own toolbar (the chip, Clear, Past AI Sessions, Model, Second Opinion: absolute top-1.5, about 32 px tall), whose
+    // buttons would otherwise cover the sentence this card exists to say (R3-4).
+    <div ref={card} className="absolute top-10 left-1/2 -translate-x-1/2 z-10 w-[min(560px,92%)]" data-testid="limit-card">
       <div role="status" className={STOP_CARD}>
         <div className="flex items-start gap-2">
           <i className="fa-solid fa-hourglass-half text-[#e5c07b] mt-0.5" aria-hidden="true"></i>

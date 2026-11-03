@@ -20,7 +20,7 @@ import { launchAgents } from '../../src/renderer/src/lib/agentLaunch'
 import { liveRestartDeps, noteWorkerSwitched } from '../../src/renderer/src/lib/swarmRestart'
 import {
   QUEUE_POLL_MS, TOAST_MS, actOnRun, cardFor, endpoint, installSwitchQueue, liveRunDeps, newTerminalOn, processQueue, queueSwitch,
-  startSwitch, stepLabels, stepsAt, toastFor,
+  startSwitch, stepLabels, stepsAt, toastFor, toastMs,
 } from '../../src/renderer/src/lib/accountSwitchRun'
 import type { RunDeps, SwitchRun } from '../../src/renderer/src/lib/accountSwitchRun'
 
@@ -137,6 +137,43 @@ describe('the words', () => {
     expect(toastFor({ kind: 'fresh', why: 'not-found', unseenStart: true }, { ...run, from: null })).toContain(SAID)
     expect(toastFor({ kind: 'switched', resumed: true }, run)).not.toContain('not carried')
     expect(toastFor({ kind: 'switched', resumed: true, unseenStart: true }, { ...run, agent: 'codex' as const })).toContain('how Codex was started')
+  })
+})
+
+// UI R3-2: a toast of three lines (the new-session words, a worktree left, options not carried) carries a warning, and it was gone after
+// a fixed 10 s with no way to read it again. It stays in proportion to its words.
+describe('how long a toast stays (R3-2)', () => {
+  it('is TOAST_MS for the words of a plain success, and longer for more of them, up to a minute', () => {
+    expect(toastMs('')).toBe(TOAST_MS)
+    expect(toastMs('Claude Code is on codedev now. Conversation resumed.')).toBe(TOAST_MS)
+    expect(toastMs('x'.repeat(100))).toBe(TOAST_MS)
+    expect(toastMs('x'.repeat(101))).toBe(TOAST_MS + 100)
+    expect(toastMs('x'.repeat(300))).toBe(TOAST_MS + 20_000)
+    expect(toastMs('x'.repeat(10_000))).toBe(60_000)
+  })
+
+  it('is longer for the warnings a switch can end with than for the plain one', () => {
+    const run = { agent: 'claude', to: { id: 'b', label: 'codedev', color: null }, from: { id: 'a', label: 'personal', color: null } } as never
+    const plain = toastFor({ kind: 'switched', resumed: true }, run)
+    const warned = toastFor({ kind: 'fresh', why: 'not-found', leftWorktree: 'feat-x', unseenStart: true }, run)
+    expect(toastMs(plain)).toBe(TOAST_MS)
+    expect(toastMs(warned)).toBeGreaterThan(TOAST_MS)
+  })
+
+  it('keeps a long toast up past TOAST_MS, and drops it at its own time', async () => {
+    vi.useFakeTimers()
+    const { d } = deps({ outcome: { kind: 'fresh', why: 'not-found', leftWorktree: 'feat-x', unseenStart: true } })
+    await startSwitch('t1', 'acc_b', {}, d)
+    const toast = st().switchRuns.t1.toast!
+    const ms = toastMs(toast.text)
+    expect(ms).toBeGreaterThan(TOAST_MS)
+    expect(toast.until).toBe(1_000 + ms)
+    await vi.advanceTimersByTimeAsync(TOAST_MS)
+    expect(st().switchRuns.t1.status).toBe('done')
+    await vi.advanceTimersByTimeAsync(ms - TOAST_MS - 1)
+    expect(st().switchRuns.t1.status).toBe('done')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(st().switchRuns).toEqual({})
   })
 })
 
@@ -586,6 +623,22 @@ describe("the second confirmation (D14, R17): an account that isn't offered auto
     expect(st().queuedSwitches.t1).toEqual({ targetId: 'acc_w', reason: 'by hand', confirmed: true })
     queueSwitch('t1', 'acc_b')
     expect(st().queuedSwitches.t1).toEqual({ targetId: 'acc_b', reason: 'by hand' })
+  })
+
+  // SWARM-R3-1: the login in a profile is the account. A profile that holds the work login is work's, whatever its row is called: a toast's
+  // one click must not carry its conversation back, which only the menu may ask about.
+  it('offers no Switch back onto or off a profile that holds the work login, though its row is offered', async () => {
+    const swappedView = view([{ ...A, email: 'a@example.test', lastEmail: 'w@example.test' }, { ...B, email: 'b@example.test' }, row({ id: 'acc_w', label: 'work', profile: '/h/.claude-w', folder: '/h/.claude-w', isDefault: false, autoOffer: false, email: 'w@example.test', lastEmail: 'a@example.test', order: 2 })])
+    const { d } = deps()
+    useTerminalStore.setState({ accountsView: swappedView })
+    // personal (holding the work login) -> codedev
+    await startSwitch('t1', 'acc_b', { confirmed: true }, d)
+    expect(st().switchRuns.t1.toast?.back).toBeNull()
+    st().dropSwitchRun('t1')
+    // codedev -> personal (holding the work login)
+    useTerminalStore.setState({ terminals: [{ ...T, agentAccountId: 'acc_b' }] })
+    await startSwitch('t1', 'acc_a', { confirmed: true }, d)
+    expect(st().switchRuns.t1.toast?.back).toBeNull()
   })
 
   it("offers Switch back only between accounts that are offered automatically", async () => {

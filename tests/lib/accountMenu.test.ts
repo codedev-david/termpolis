@@ -46,6 +46,24 @@ describe('menuRows: one row per account of the agent, in registry order', () => 
     expect(rows[1]).toMatchObject({ current: false, initial: 'C', color: '#7ee2a3', status: 'Signed in', action: 'switch' })
   })
 
+  // R3-1: while this terminal's switch runs (`switching` names its target), no other can start: the other rows are off and say so.
+  it('turns every other row off, in the warning tone, while a switch of this terminal runs, and never the current one', () => {
+    const rows = menuRows(view([A, B, row({ id: 'acc_c', label: 'spare', isDefault: false, profile: '/h/s', order: 2 })]), 'claude', 'acc_a', NOW, { ...idle, switching: 'codedev' })
+    expect(rows[0]).toMatchObject({ current: true, disabled: null, status: 'Signed in', tone: 'good', action: 'none' })
+    for (const r of rows.slice(1)) expect(r).toMatchObject({ disabled: 'Switching to codedev…', status: 'Switching to codedev…', tone: 'warn', action: 'none' })
+    // Nothing switching: as before.
+    expect(menuRows(view([A, B]), 'claude', 'acc_a', NOW, { ...idle, switching: null })[1]).toMatchObject({ disabled: null, action: 'switch' })
+    expect(menuRows(view([A, B]), 'claude', 'acc_a', NOW, idle)[1]).toMatchObject({ disabled: null, action: 'switch' })
+  })
+
+  it('keeps a missing profile folder\'s words, which say why it can never be picked, and puts a running switch before a worker\'s connection', () => {
+    const gone = row({ id: 'acc_g', label: 'gone', isDefault: false, profile: '/h/g', folderExists: false, order: 2 })
+    expect(menuRows(view([A, gone]), 'claude', 'acc_a', NOW, { ...idle, switching: 'codedev' })[1]).toMatchObject({ disabled: 'Its profile folder is missing', tone: 'bad' })
+    expect(menuRows(view([A, gone]), 'claude', 'acc_a', NOW, idle)[1]).toMatchObject({ disabled: 'Its profile folder is missing', tone: 'bad' })
+    const unconnected = row({ id: 'acc_u', label: 'u', isDefault: false, profile: '/h/u', connect: false, order: 2 })
+    expect(menuRows(view([A, unconnected]), 'claude', 'acc_a', NOW, { busy: false, worker: true, switching: 'codedev' })[1]).toMatchObject({ disabled: 'Switching to codedev…' })
+  })
+
   it('reads a blank label\'s initial as ?, and an account\'s email from its check before its registration', () => {
     const r = menuRows(view([row({ label: '  ', email: 'reg@x', identity: { email: 'now@x', signedIn: true, checkedAt: 1, source: 'auth-status' } })]), 'claude', undefined, NOW, idle)[0]
     expect(r.initial).toBe('?')
@@ -155,6 +173,41 @@ describe('confirmFor (D14, R17)', () => {
     expect(confirmFor(undefined, W, W)?.newTerminal).toBe(false)
   })
 
+})
+
+// SWARM-R3-1: the login in a profile decides which account it is. The registry as imported calls the default profile personal, but when it
+// holds the work login (David's logins move between his folders) a conversation on it is work's, and the question is asked as for work.
+describe('confirmFor, with the logins that sit in the profiles (SWARM-R3-1)', () => {
+  const rows = [
+    { ...A, email: 'a@example.test', lastEmail: 'w@example.test' },
+    { ...B, email: 'b@example.test', lastEmail: 'b@example.test' },
+    { ...W, email: 'w@example.test', lastEmail: 'a@example.test' },
+  ]
+  const swappedA = rows[0]
+
+  it('asks when the conversation is on a profile that holds the work login, whatever its row is called', () => {
+    expect(confirmFor(swappedA, rows[1], undefined, rows)).toEqual({
+      question: 'This conversation is on personal, which is signed in as work, which isn\'t offered automatically. Carry it to codedev?', newTerminal: true,
+    })
+  })
+
+  it('asks when it is carried ONTO a profile that holds the work login', () => {
+    expect(confirmFor(rows[1], swappedA, undefined, rows)).toEqual({
+      question: 'personal is signed in as work, which isn\'t offered automatically. Switch this terminal to personal?', newTerminal: false,
+    })
+  })
+
+  it('asks nothing for the layout the registry was imported with, or when the rows are not given', () => {
+    const nominal = [{ ...A, email: 'a@example.test', lastEmail: 'a@example.test' }, rows[1], { ...W, email: 'w@example.test', lastEmail: 'w@example.test' }]
+    expect(confirmFor(nominal[0], nominal[1], undefined, nominal)).toBeNull()
+    expect(confirmFor(swappedA, rows[1])).toBeNull()
+  })
+
+  it('still puts the row\'s own flag first, and an unknown account\'s "may be on" after the logins', () => {
+    expect(confirmFor(undefined, W, W, rows)?.newTerminal).toBe(false)
+    expect(confirmFor(W, A, undefined, rows)?.question).toBe('This conversation is on work, which isn\'t offered automatically. Carry it to personal?')
+    expect(confirmFor(undefined, rows[1], W, rows)?.question).toBe('This conversation may be on work, which isn\'t offered automatically. Carry it to codedev?')
+  })
 })
 
 describe('maybeOnUnoffered (D14, R17)', () => {

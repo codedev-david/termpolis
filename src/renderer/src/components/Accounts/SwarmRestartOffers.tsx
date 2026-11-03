@@ -153,7 +153,8 @@ export function SwarmRestartPaneCard({ terminalId, deps = liveRestartDeps }: { t
   const view = useTerminalStore((s) => s.accountsView ?? null)
   if (!g) return null
   return (
-    <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 w-[min(560px,92%)]" data-testid="swarm-restart-pane">
+    // Below the pane's own toolbar, as the usage-limit card is (R3-4): in a split view this is the only place the offer shows.
+    <div className="absolute top-10 left-1/2 -translate-x-1/2 z-10 w-[min(560px,92%)]" data-testid="swarm-restart-pane">
       <Offer g={g} view={view} deps={deps} />
     </div>
   )

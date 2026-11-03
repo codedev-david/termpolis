@@ -88,6 +88,20 @@ describe('AccountChip', () => {
     expect(screen.getByTestId('account-chip')).toHaveAttribute('data-alert', 'true')
   })
 
+  // UI R3-8: the toolbar row is right-anchored and does not wrap, and the chip is its first item, so a narrow pane clips it first; the label
+  // had no width at all (a 40-character label is about 230 px).
+  it('keeps its width in a narrow pane, and cuts a long label with an ellipsis (R3-8)', () => {
+    act(() => { useTerminalStore.setState({ accountsView: { ...VIEW, accounts: [VIEW.accounts[0], { ...VIEW.accounts[1], label: 'a very long account label of forty chars!!' }] } }) })
+    render(<AccountChip terminalId="t1" />)
+    const chip = screen.getByTestId('account-chip')
+    expect(chip.className).toContain('shrink-0')
+    expect(chip.className).toMatch(/max-w-\[10rem\]/)
+    const label = screen.getByTestId('account-chip-label')
+    expect(label).toHaveTextContent('a very long account label of forty chars!!')
+    expect(label.className).toContain('truncate')
+    expect(label.className).toContain('min-w-0')
+  })
+
   it('shows nothing for a plain shell, or before the view is read', () => {
     useTerminalStore.setState({ terminals: [term({ agentCommand: undefined })] })
     const { rerender } = render(<AccountChip terminalId="t1" />)

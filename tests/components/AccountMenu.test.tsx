@@ -54,6 +54,7 @@ function openMenu(over: { terminals?: TerminalSession[]; accounts?: AccountRowVi
   useTerminalStore.setState({
     terminals: over.terminals ?? [T], accountsView: accounts ? view(accounts) : null, accountsByHand: over.byHand ? { t1: true } : {},
     queuedSwitches: {}, accountMenu: { terminalId: over.id ?? 't1' }, signInSheet: null, agySwitchSheet: null, showSettings: false, addAccountSheet: null,
+    switchRuns: {},
   })
   return render(<AccountMenu />)
 }
@@ -718,5 +719,198 @@ describe('closing and placing', () => {
     document.body.appendChild(pane)
     focusTerminal('t1')
     expect(document.activeElement).toBe(input)
+  })
+})
+
+// UI R3-3: the list closes the menu on Tab, so the keyboard goes back to the terminal; the D14 question and the "New terminal on" submenu
+// left it open with the focus on the page behind it, and Esc (handled on the menu's root) then did nothing. UI2-2 had moved the default
+// focus of the question to Cancel, the last button, so one Tab walked out of it.
+// SWARM-R3-1: the login in a profile is the account. The default profile holds the work login while the registry calls it personal.
+describe('the work login in a profile asks the second question whatever the row is called (SWARM-R3-1)', () => {
+  const swapped = [
+    { ...A, email: 'a@example.test', lastEmail: 'w@example.test' }, { ...B, email: 'b@example.test' },
+    { ...W, email: 'w@example.test', lastEmail: 'a@example.test' },
+  ]
+
+  it('asks before carrying the conversation off the profile that holds it, and switches only on yes', async () => {
+    openMenu({ accounts: swapped })
+    await settle()
+    fireEvent.click(rowOf('codedev'))
+    expect(screen.getByTestId('account-menu-confirm')).toHaveTextContent('This conversation is on personal, which is signed in as work, which isn\'t offered automatically. Carry it to codedev?')
+    expect(startSwitch).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('account-menu-confirm-yes'))
+    expect(startSwitch).toHaveBeenCalledWith('t1', 'acc_b', { confirmed: true })
+  })
+
+  it('asks before moving a terminal onto the profile that holds the work login', async () => {
+    openMenu({ accounts: swapped, terminals: [{ ...T, agentAccountId: 'acc_b' }] })
+    await settle()
+    fireEvent.click(rowOf('personal'))
+    expect(screen.getByTestId('account-menu-confirm')).toHaveTextContent('personal is signed in as work, which isn\'t offered automatically. Switch this terminal to personal?')
+    expect(startSwitch).not.toHaveBeenCalled()
+  })
+
+  it('asks nothing of the layout the registry was imported with', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(rowOf('codedev'))
+    expect(screen.queryByTestId('account-menu-confirm')).toBeNull()
+    expect(startSwitch).toHaveBeenCalled()
+  })
+})
+
+describe('Tab inside the menu closes it from every state, as it does from the list (R3-3)', () => {
+  it('closes it from the list, with the keyboard back in the terminal', async () => {
+    openMenu()
+    await settle()
+    key('Tab')
+    expect(st().accountMenu).toBeNull()
+  })
+
+  it('closes it from the work account\'s second question, and takes the key as its own', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(rowOf('work'))
+    expect(screen.getByTestId('account-menu-confirm')).toBeInTheDocument()
+    expect(screen.getByTestId('account-menu-confirm-no')).toHaveFocus()
+    const notPrevented = fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab' })
+    expect(notPrevented).toBe(false)
+    expect(st().accountMenu).toBeNull()
+    expect(startSwitch).not.toHaveBeenCalled()
+  })
+
+  it('closes it from the New terminal on submenu, and takes the key as its own', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    expect(screen.getByTestId('account-menu-submenu')).toBeInTheDocument()
+    const notPrevented = fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab' })
+    expect(notPrevented).toBe(false)
+    expect(st().accountMenu).toBeNull()
+    expect(newTerminalOn).not.toHaveBeenCalled()
+  })
+
+  it('and Shift+Tab does the same from the question and from the submenu', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(rowOf('work'))
+    fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab', shiftKey: true })
+    expect(st().accountMenu).toBeNull()
+    cleanup()
+    openMenu()
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    fireEvent.keyDown(screen.getByTestId('account-menu'), { key: 'Tab', shiftKey: true })
+    expect(st().accountMenu).toBeNull()
+  })
+
+  it('still lets Esc take the question back to the list, and the submenu back to its item', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(rowOf('work'))
+    key('Escape')
+    expect(screen.queryByTestId('account-menu-confirm')).toBeNull()
+    expect(st().accountMenu).not.toBeNull()
+    fireEvent.click(screen.getByTestId('account-menu-new-terminal'))
+    key('Escape')
+    expect(screen.queryByTestId('account-menu-submenu')).toBeNull()
+    expect(st().accountMenu).not.toBeNull()
+  })
+})
+
+// UI R3-1: while a switch runs the chip stays clickable above the overlay and the menu opened with every row enabled; a pick, even
+// through the D14 question and its yes, closed the menu and did nothing (startSwitch returns silently for a run that is checking or
+// running). The rows say so instead.
+describe('while this terminal\'s switch runs (R3-1)', () => {
+  const run = (status: 'checking' | 'running' | 'failed' | 'done') => ({
+    t1: { terminalId: 't1', agent: 'claude' as const, from: { id: 'acc_a', label: 'personal' }, to: { id: 'acc_b', label: 'codedev' }, reason: 'by hand', status, steps: ['working', 'pending', 'pending'] as ['working', 'pending', 'pending'], answers: {} },
+  } as unknown as ReturnType<typeof useTerminalStore.getState>['switchRuns'])
+
+  it.each(['checking', 'running'] as const)('its other rows are off while the switch is %s, and say why', async (status) => {
+    openMenu()
+    useTerminalStore.setState({ switchRuns: run(status) })
+    await settle()
+    for (const label of ['codedev', 'contoso', 'work']) {
+      expect(rowOf(label)).toHaveAttribute('aria-disabled', 'true')
+      expect(rowOf(label)).toHaveTextContent('Switching to codedev')
+    }
+    fireEvent.click(rowOf('codedev'))
+    expect(startSwitch).not.toHaveBeenCalled()
+    expect(queueSwitch).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('account-menu-confirm')).toBeNull()
+  })
+
+  it.each(['failed', 'done'] as const)('its rows are on again once the switch is %s', async (status) => {
+    openMenu()
+    useTerminalStore.setState({ switchRuns: run(status) })
+    await settle()
+    expect(rowOf('codedev')).not.toHaveAttribute('aria-disabled')
+    fireEvent.click(rowOf('codedev'))
+    expect(startSwitch).toHaveBeenCalled()
+  })
+
+  it('is no business of another terminal\'s switch', async () => {
+    openMenu()
+    useTerminalStore.setState({ switchRuns: { t9: { ...run('running').t1, terminalId: 't9' } } as never })
+    await settle()
+    expect(rowOf('codedev')).not.toHaveAttribute('aria-disabled')
+  })
+
+  it('leaves the footer\'s own items alone: Add account and Manage accounts still open', async () => {
+    openMenu()
+    useTerminalStore.setState({ switchRuns: run('running') })
+    await settle()
+    fireEvent.click(screen.getByTestId('account-menu-add'))
+    expect(st().addAccountSheet).not.toBeNull()
+  })
+})
+
+// UI R3-6: the work account's second question is a group with a label and no description, so a screen-reader user landed on Cancel
+// without hearing what the question was.
+describe('the second question is described to a screen reader (R3-6)', () => {
+  it('names the question as the description of its group', async () => {
+    openMenu()
+    await settle()
+    fireEvent.click(rowOf('work'))
+    const group = screen.getByTestId('account-menu-confirm')
+    expect(group).toHaveAttribute('aria-label', 'Confirm the switch')
+    const id = group.getAttribute('aria-describedby')
+    expect(id).toBeTruthy()
+    const text = document.getElementById(id as string)?.textContent ?? ''
+    expect(text.length).toBeGreaterThan(10)
+    expect(text).toBe(screen.getByTestId('account-menu-confirm').querySelector('p')?.textContent)
+  })
+})
+
+// UI R3-7: opened from Settings > Switch account..., the menu mounts in the same commit as the pane it opens on (setActiveTerminal closes
+// Settings), so neither the chip nor the pane existed when its position was read, and it showed centred at the fallback instead of under
+// the chip. It reads the position again once it is drawn, when the chip is there.
+describe('where it opens when its chip mounts with it (R3-7)', () => {
+  it('moves under the chip once the chip is in the page', () => {
+    Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true })
+    useTerminalStore.setState({
+      terminals: [T], accountsView: view([A, B]), accountsByHand: {}, queuedSwitches: {}, accountMenu: { terminalId: 't1' },
+      signInSheet: null, agySwitchSheet: null, showSettings: false, addAccountSheet: null, switchRuns: {},
+    })
+    // The chip is drawn in the same commit as the menu, below it in the tree: it is not in the page while the menu renders.
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return (this.hasAttribute('data-account-chip') ? { top: 10, right: 700, bottom: 30, left: 600 } : { top: 0, right: 0, bottom: 0, left: 0 }) as DOMRect
+    })
+    try {
+      render(<><AccountMenu /><button data-account-chip="t1">chip</button></>)
+      const menu = screen.getByTestId('account-menu')
+      expect(menu.style.top).toBe('34px')
+      expect(menu.style.left).toBe(`${700 - MENU_WIDTH}px`)
+    } finally {
+      rect.mockRestore()
+    }
+  })
+
+  it('stays where it was put when there is no chip to move under (a pane with only the fallback)', () => {
+    Object.defineProperty(window, 'innerWidth', { value: 1000, configurable: true })
+    openMenu()
+    const menu = screen.getByTestId('account-menu')
+    expect(menu.style.top).toBe('80px')
+    expect(menu.style.left).toBe(`${(1000 - MENU_WIDTH) / 2}px`)
   })
 })

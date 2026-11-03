@@ -376,6 +376,7 @@ describe('AccountsSettings: a card', () => {
     expect(said).toContain('Termpolis forgets personal')
     expect(said).toContain('Your main profile stays connected through Agent Integration')
     expect(said).not.toContain('takes its entries out')
+    expect(said).toContain('remove its links first')
   })
 
   it('removes an account after saying what stays, and keeps it on "Keep it"', async () => {
@@ -383,6 +384,8 @@ describe('AccountsSettings: a card', () => {
     await renderLoaded()
     fireEvent.click(screen.getByTestId(`account-remove-${B.id}`))
     expect(screen.getByTestId(`account-remove-confirm-${B.id}`)).toHaveTextContent('The folder, its sign-in and its links stay.')
+    // W3-0: the way to delete that folder by hand is not to follow its links, which lead into the main profile.
+    expect(screen.getByTestId(`account-remove-confirm-${B.id}`)).toHaveTextContent('To delete the folder yourself, remove its links first (see Removing an account in the documentation): they lead into your main profile.')
     fireEvent.click(screen.getByRole('button', { name: 'Keep it' }))
     expect(screen.queryByTestId(`account-remove-confirm-${B.id}`)).toBeNull()
     fireEvent.click(screen.getByTestId(`account-remove-${B.id}`))

@@ -55,13 +55,25 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   const store = useTerminalStore.getState
   const byHand = useTerminalStore((s) => !!s.accountsByHand[terminal.id])
   const queued = useTerminalStore((s) => s.queuedSwitches[terminal.id])
+  // The chip stays clickable above the overlay while this terminal's switch runs, and startSwitch refuses a second one without a word:
+  // so the rows say that one is under way, and are off meanwhile (R3-1).
+  const switching = useTerminalStore((s) => {
+    const run = s.switchRuns?.[terminal.id]
+    return run && (run.status === 'checking' || run.status === 'running') ? run.to.label : null
+  })
   const [busy, setBusy] = useState(false)
   // The item at hand, by its key: the list can grow above it while the menu is open (a switch
   // queued meanwhile), and the focus stays on the same item.
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const [sub, setSub] = useState<number | null>(null)
   const [confirm, setConfirm] = useState<{ row: MenuRow; question: string; newTerminal: boolean } | null>(null)
-  const [pos] = useState(() => menuPosition(terminal.id))
+  const [pos, setPos] = useState(() => menuPosition(terminal.id))
+  // Opened from Settings, the menu mounts in the same commit as the pane it opens on, so neither the chip nor the pane was in the page
+  // when the position above was read: it is read again once they are, and the menu moves under its chip (R3-7).
+  useLayoutEffect(() => {
+    const next = menuPosition(terminal.id)
+    setPos((cur) => (cur.top === next.top && cur.left === next.left ? cur : next))
+  }, [terminal.id])
   // Inside the window: moved up when the menu would run past its foot, and made to scroll when it is taller than it.
   const [fit, setFit] = useState<{ top: number; maxHeight?: number }>({ top: pos.top })
   const root = useRef<HTMLDivElement>(null)
@@ -72,7 +84,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   const name = ACCOUNT_AGENT_LABEL[agent]
   const worker = !!terminal.isSwarm
   const currentId = byHand ? undefined : terminal.agentAccountId
-  const rows = menuRows(view, agent, currentId, Date.now(), { busy, worker })
+  const rows = menuRows(view, agent, currentId, Date.now(), { busy, worker, switching })
   const current = rows.find((r) => r.current)?.account
   const queuedTo = queued ? view.accounts.find((r) => r.id === queued.targetId) : undefined
   const others = rows.filter((r) => !r.current && !(isProfileAgent(agent) && !r.account.folderExists))
@@ -120,7 +132,8 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const el = root.current
-    if (!el || el.scrollHeight <= 0) return
+    // Not drawn yet (no height to fit): where it was asked to open, uncapped.
+    if (!el || el.scrollHeight <= 0) return setFit((cur) => (cur.top === pos.top && cur.maxHeight === undefined ? cur : { top: pos.top }))
     const next = fitMenu(pos.top, el.scrollHeight + 2, window.innerHeight)
     setFit((cur) => (cur.top === next.top && cur.maxHeight === next.maxHeight ? cur : next))
   })
@@ -168,7 +181,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
       close(false)
       return store().openAgySwitchSheet(row.account.id)
     }
-    const c = confirmFor(current, row.account, maybeOnUnoffered(view.accounts, agent, current))
+    const c = confirmFor(current, row.account, maybeOnUnoffered(view.accounts, agent, current), view.accounts)
     if (c) return setConfirm({ row, ...c })
     go(row)
   }
@@ -208,6 +221,13 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   }
 
   const onKey = (e: React.KeyboardEvent): void => {
+    // Tab leaves the menu from every state, back to the terminal, as it does from the list: left open, the second question or the
+    // submenu kept the menu on screen with the focus on the page behind it, where Esc (handled here) did nothing (R3-3).
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      e.stopPropagation()
+      return close()
+    }
     if (confirm) {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -235,7 +255,7 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
     // Something is always at hand once it opens: Add account… and Manage accounts… always are.
     else if (e.key === 'Enter' || e.key === ' ') activate(list[Math.max(0, active)])
     else if (e.key === 'ArrowRight' && list[active]?.kind === 'new-terminal') setSub(0)
-    else if (e.key === 'Escape' || e.key === 'Tab') close()
+    else if (e.key === 'Escape') close()
     else if (e.key.length === 1 && e.key !== ' ') {
       const now = Date.now()
       const text = now - typed.current.at < TYPE_AHEAD_MS ? typed.current.text + e.key : e.key
@@ -257,8 +277,9 @@ function MenuBody({ terminal, agent, view }: { terminal: TerminalSession; agent:
   const subPlace = fit.maxHeight ? 'right-2' : submenuSide(pos.left) === 'left' ? 'right-full mr-1' : 'left-full ml-1'
 
   const body = confirm ? (
-    <div role="group" aria-label="Confirm the switch" className="p-3 flex flex-col gap-2 text-xs" data-testid="account-menu-confirm">
-      <p className="text-[#d4d4d4]">{confirm.question}</p>
+    // The question is the group's description: the focus starts on Cancel, so a screen reader would otherwise say only the button (R3-6).
+    <div role="group" aria-label="Confirm the switch" aria-describedby="account-menu-question" className="p-3 flex flex-col gap-2 text-xs" data-testid="account-menu-confirm">
+      <p id="account-menu-question" className="text-[#d4d4d4]">{confirm.question}</p>
       <div className="flex flex-wrap gap-2">
         {/* The focus starts on the safe answer: the Enter that opened this question, pressed again or held, must not carry a conversation off its account (UI2-2). */}
         <button type="button" className={SMALL_PRIMARY} onClick={() => go(confirm.row, true)} data-testid="account-menu-confirm-yes">

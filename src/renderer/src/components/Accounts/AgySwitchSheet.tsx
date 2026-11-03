@@ -23,6 +23,10 @@ const ANNOUNCE: Readonly<Record<string, string>> = {
   resuming: 'Resuming the conversations.', done: 'Gemini CLI switched.',
 }
 
+/** The text of the confirmation, which the dialog is described by: the focus starts on Cancel, so a screen reader would otherwise say
+ *  only the button, and not that the switch moves every Gemini terminal on this computer (R3-6). */
+const QUESTION_ID = 'agy-switch-question'
+
 /** How often a busy agy terminal is looked at again, while the switch waits for its turn. */
 export const AGY_WAIT_MS = 2000
 
@@ -228,7 +232,7 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
     case 'confirm':
       body = (
         <div className="flex flex-col gap-3" data-testid="agy-switch-confirm">
-          <p>
+          <p id={QUESTION_ID}>
             Gemini CLI has one Google sign-in for this whole computer. Switching to {who} moves {n === 0 ? 'new Gemini terminals' : n === 1 ? 'your Gemini terminal' : `all ${n} Gemini terminals`}
             {n > 0 ? `; ${n === 1 ? 'it resumes its' : 'each one resumes its'} conversation.` : '.'}
           </p>
@@ -245,7 +249,7 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
     case 'confirm-work':
       body = (
         <div className="flex flex-col gap-3" data-testid="agy-switch-confirm-work">
-          <p>{phase.question}</p>
+          <p id={QUESTION_ID}>{phase.question}</p>
           <div className="flex gap-2">
             <button type="button" className={SHEET_PRIMARY} onClick={() => { void exitAll() }} data-testid="agy-switch-confirm-work-yes">{phase.yes}</button>
             <button type="button" className={SHEET_SECONDARY} data-autofocus="" onClick={close} data-testid="agy-switch-confirm-work-no">Cancel</button>
@@ -337,7 +341,7 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
 
   const busyPhase = phase.kind === 'exiting' || phase.kind === 'resuming'
   return (
-    <Sheet title={`Switch Gemini CLI to ${target.label}`} subtitle={target.email} icon="fa-user-group" testId="agy-switch" {...(busyPhase ? {} : { onClose: leave })}>
+    <Sheet title={`Switch Gemini CLI to ${target.label}`} subtitle={target.email} icon="fa-user-group" testId="agy-switch" {...(busyPhase ? {} : { onClose: leave })} {...(phase.kind === 'confirm' || phase.kind === 'confirm-work' ? { describedBy: QUESTION_ID } : {})}>
       {body}
       <p className="sr-only" role="status" aria-live="polite" data-testid="agy-switch-live">{ANNOUNCE[phase.kind]}</p>
     </Sheet>

@@ -90,7 +90,10 @@ function Card({ run }: { run: SwitchRun }) {
 function Toast({ run }: { run: SwitchRun }) {
   const toast = run.toast!
   return (
-    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 max-w-[90%]" data-testid="switch-toast">
+    // `left-1/2` made the toast's room half the pane, and a sentence of three lines (the new-session words, a worktree left, options not
+    // carried) stood 226 px tall in a 260 px pane, over the input line: it is centred between its insets instead, as wide as its words
+    // need up to 90% of the pane (R3-2).
+    <div className="absolute bottom-3 inset-x-3 mx-auto w-fit z-20 max-w-[90%]" data-testid="switch-toast">
       <div role="status" className="flex items-center gap-3 bg-[#252526] border border-[#3c3c3c] rounded-lg shadow-xl px-3 py-2 text-xs text-[#d4d4d4]">
         <i className="fa-solid fa-circle-check text-[#7ee2a3]" aria-hidden="true"></i>
         <span>{toast.text}</span>

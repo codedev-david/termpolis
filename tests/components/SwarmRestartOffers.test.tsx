@@ -110,6 +110,17 @@ describe('where the offer shows (the in-app account UI, §2.6)', () => {
     expect(deps.swarm.sendMessage).toHaveBeenCalled()
   })
 
+  // UI R3-4: the pane's own toolbar (chip, Clear, Past AI Sessions, Model, Second Opinion) is absolute top-1.5 right-8 z-30, about 32 px
+  // tall. In a split view this card is the only place the offer shows, and at top-2 its title was 72% under the toolbar at 540 px.
+  it('sits below the pane toolbar, not in its band', () => {
+    render(<SwarmRestartPaneCard terminalId="w1" deps={() => deps} />)
+    put([group()])
+    const el = screen.getByTestId('swarm-restart-pane')
+    expect(el.className).toContain('top-10')
+    expect(el.className).not.toMatch(/\btop-2\b/)
+    expect(el.className).toMatch(/\bz-10\b/)
+  })
+
   it('shows none in a store that holds no offers', () => {
     act(() => { useTerminalStore.setState({ swarmRestarts: undefined as never, accountsView: undefined as never }) })
     const { container } = render(<><SwarmRestartPaneCard terminalId="w1" /><SwarmRestartList /></>)

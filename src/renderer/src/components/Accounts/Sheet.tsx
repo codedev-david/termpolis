@@ -12,11 +12,14 @@ interface Props {
   icon: string
   /** Esc and the close button; absent while the sheet can't be closed (a step that must finish). */
   onClose?: () => void
+  /** The id of the text inside that says what the sheet asks: a screen reader says it with the title, where the focus starts on a
+   *  button (the safe answer) and would otherwise not hear what it answers (R3-6). */
+  describedBy?: string
   testId: string
   children: ReactNode
 }
 
-export function Sheet({ title, subtitle, icon, onClose, testId, children }: Props) {
+export function Sheet({ title, subtitle, icon, onClose, describedBy, testId, children }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   useFocusTrap(ref)
   const titleId = `${testId}-title`
@@ -32,6 +35,7 @@ export function Sheet({ title, subtitle, icon, onClose, testId, children }: Prop
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        {...(describedBy ? { 'aria-describedby': describedBy } : {})}
         tabIndex={-1}
         data-testid={testId}
         onKeyDown={(e) => {

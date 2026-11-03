@@ -77,6 +77,37 @@ afterEach(() => {
   useTerminalStore.setState({ agySwitchSheet: null, terminals: [], relaunching: {} })
 })
 
+// UI R3-6: the focus starts on Cancel, so a screen reader landed there without hearing that the switch moves every Gemini terminal on this
+// computer; the dialog is described by the text of its confirmation.
+describe('the confirmation is described to a screen reader (R3-6)', () => {
+  const described = (): string => {
+    const id = screen.getByRole('dialog').getAttribute('aria-describedby')
+    return id ? (document.getElementById(id)?.textContent ?? '') : ''
+  }
+
+  it('names the every-terminal move as the dialog\'s description, at the first confirmation', () => {
+    open('g2')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-describedby', 'agy-switch-question')
+    expect(described()).toMatch(/moves all 2 Gemini terminals/)
+  })
+
+  it('names the work account\'s question as its description at the second one', () => {
+    open('gw')
+    click('agy-switch-go')
+    expect(screen.getByTestId('agy-switch-confirm-work')).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-describedby', 'agy-switch-question')
+    expect(described()).toBe(screen.getByTestId('agy-switch-confirm-work').querySelector('p')?.textContent)
+    expect(described()).toMatch(/isn't offered automatically/)
+  })
+
+  it('has no description at the steps after it, whose live region says them', async () => {
+    open('g2')
+    click('agy-switch-go')
+    await waitFor(() => expect(screen.getByTestId('agy-switch-live')).not.toHaveTextContent(/^$/))
+    expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-describedby')
+  })
+})
+
 describe('AgySwitchSheet', () => {
   it('shows nothing until a switch opens it', () => {
     useTerminalStore.setState({ agySwitchSheet: null, accountsView: view([G1]) })
