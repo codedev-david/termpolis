@@ -123,6 +123,11 @@ test.describe.serial('Typing trace in the real app', () => {
     expect(t.loopDelay.last!.count).toBeGreaterThan(0)
     expect(t.memory!.rssMB).toBeGreaterThan(50) // an Electron main process is well past 50 MB
     expect(t.elu === null || (t.elu >= 0 && t.elu <= 1)).toBe(true)
+    // 1.54.5 merge, seam 3: the memory passes' counters and the brain's host mode ride in the same record (numbers only).
+    const extra = (t as unknown as { extra?: { passes?: { v?: number }; memoryHost?: { mode?: number; hosted?: boolean; onMain?: boolean } } }).extra
+    expect(extra?.passes?.v).toBe(1)
+    expect(typeof extra?.memoryHost?.mode).toBe('number')
+    expect(typeof extra?.memoryHost?.onMain).toBe('boolean')
   })
 
   test('2. a typed line arrives intact, stamped keys are timed (1 in 10), and the echo is timed', async () => {

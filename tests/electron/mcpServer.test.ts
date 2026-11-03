@@ -757,6 +757,67 @@ describe('MCP HTTP server', () => {
     expect(body.result.content[0].text).toBe(`Error: ${locked}`)
   })
 
+  it('tools/call: memory that is UNAVAILABLE says so, in the fixed text, so the agent stops asking instead of reading "failed"', async () => {
+    // v1.54.5: memoryClient's refusal while its process is down and the store is too big to load on
+    // the main thread. Fixed text with nothing internal in it. Sanitised to "Tool execution failed"
+    // it would be a shrug the agent retries in a loop; here it tells the agent nothing was read or
+    // saved, which is the one thing that must not be mistaken for "no memories".
+    const unavailable = 'Memory is unavailable (retrying): the memory process is not running, so nothing was read and nothing was saved. Termpolis is restarting it in the background; try again in a minute, or open Settings, Memory & Learning to see its state.'
+    for (const [tool, handler, args] of [
+      ['memory_search', handlers.memorySearch, { agentId: 'a1', query: 'q' }],
+      ['memory_write', handlers.memoryWrite, { agentId: 'a1', content: 'fact' }],
+    ] as const) {
+      handler.mockRejectedValueOnce(new Error(unavailable))
+      const res = await jsonRpcRequest(port, token, {
+        jsonrpc: '2.0', method: 'tools/call', params: { name: tool, arguments: args }, id: 203,
+      })
+      const body = JSON.parse(res.body)
+      expect(body.result.isError, tool).toBe(true)
+      expect(body.result.content[0].text, tool).toBe(`Error: ${unavailable}`)
+    }
+  })
+
+  it('tools/call: memory_primer does not answer "no primer" while memory is unavailable: it says so, and never reaches the store', async () => {
+    // buildContextPrimer turns a failing search into an EMPTY primer (right for a launch, which should
+    // go ahead bare). For an agent that ASKS for the primer that silence reads as "no context saved".
+    // The tool checks first, so the agent gets the honest answer and the handler is not even called.
+    const { setMemoryUnavailableState, unavailableMessage } = await import('../../src/main/memoryFallbackGuard')
+    handlers.memoryPrimer.mockClear()
+    setMemoryUnavailableState({
+      attempt: 1, nextRetryAt: Date.now() + 10_000, retrying: false,
+      storeBytes: 400 * 1024 * 1024, limitBytes: 256 * 1024 * 1024, reason: 'memory host exited during startup (code 9)', since: Date.now(),
+    })
+    try {
+      const res = await jsonRpcRequest(port, token, {
+        jsonrpc: '2.0', method: 'tools/call', params: { name: 'memory_primer', arguments: { cwd: 'C:\code\termpolis' } }, id: 205,
+      })
+      const body = JSON.parse(res.body)
+      expect(body.result.isError).toBe(true)
+      expect(body.result.content[0].text).toBe(`Error: ${unavailableMessage()}`)
+      expect(handlers.memoryPrimer).not.toHaveBeenCalled()
+    } finally {
+      setMemoryUnavailableState(null)
+    }
+  })
+
+  it('tools/call: CONTROL — memory_primer still runs when memory is available', async () => {
+    handlers.memoryPrimer.mockClear()
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0', method: 'tools/call', params: { name: 'memory_primer', arguments: { cwd: 'C:\code\termpolis' } }, id: 206,
+    })
+    expect(JSON.parse(res.body).result.isError).toBeUndefined()
+    expect(handlers.memoryPrimer).toHaveBeenCalledTimes(1)
+  })
+
+  it('tools/call: CONTROL — a memory error that only MENTIONS the host stays generic (no internals leak)', async () => {
+    // The host's own exit message names a call and a code: internal detail, not for an agent.
+    handlers.memorySearch.mockRejectedValueOnce(new Error('memory host exited unexpectedly (code 1) (during memorySearch)'))
+    const res = await jsonRpcRequest(port, token, {
+      jsonrpc: '2.0', method: 'tools/call', params: { name: 'memory_search', arguments: { agentId: 'a1', query: 'q' } }, id: 204,
+    })
+    expect(JSON.parse(res.body).result.content[0].text).toBe('Error: Tool execution failed')
+  })
+
   // --- Additional tool calls ---
 
   it('tools/call close_terminal calls handler', async () => {

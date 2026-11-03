@@ -102,6 +102,8 @@ export function SettingsPane() {
   const [autoPrimer, setAutoPrimer] = useState(() => isAutoPrimerEnabled())
   const [primerLimit, setPrimerLimit] = useState<number>(10)
   const [soloLearning, setSoloLearning] = useState(() => isSoloLearningEnabled())
+  // "Learn from conversations" lives in main (the indexer reads it there), so the row shows what main says.
+  const [learnConversations, setLearnConversations] = useState<boolean>(true)
   const [autoReprime, setAutoReprime] = useState(() => isAutoReprimeOnCompactionEnabled())
   const [autoIndex, setAutoIndex] = useState(() => isAutoIndexEnabled())
   const [termDefaults, setTermDefaults] = useState(() => getTerminalDefaults())
@@ -117,6 +119,22 @@ export function SettingsPane() {
       if (res?.success && typeof res.data === 'number') setPrimerLimit(res.data)
     })?.catch(() => {})
   }, [])
+
+  useEffect(() => {
+    void window.termpolis.memoryGetLearnConversations?.()?.then((res) => {
+      if (res?.success && typeof res.data === 'boolean') setLearnConversations(res.data)
+    })?.catch(() => {})
+  }, [])
+
+  // Optimistic, then whatever main answers: a switch that could not be saved must not look saved.
+  const toggleLearnConversations = () => {
+    const next = !learnConversations
+    setLearnConversations(next)
+    void window.termpolis.memorySetLearnConversations?.(next)?.then((res) => {
+      if (res?.success && typeof res.data?.learnFromConversations === 'boolean') setLearnConversations(res.data.learnFromConversations)
+      else if (res && !res.success) setLearnConversations(!next)
+    })?.catch(() => setLearnConversations(!next))
+  }
 
   useEffect(() => {
     const onOpenShortcuts = () => setActiveTab('keybindings')
@@ -488,6 +506,32 @@ export function SettingsPane() {
                 session (Claude, Codex, or Gemini) pauses or closes, Termpolis reflects on what happened
                 and distils reusable lessons and self-competence into the shared brain, so the fleet gets
                 smarter from your everyday solo work. Runs locally in the background.
+              </span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 p-3 border border-[#3c3c3c] rounded bg-[#252526]">
+            <button
+              onClick={toggleLearnConversations}
+              role="switch"
+              aria-checked={learnConversations}
+              aria-label="Toggle learning from conversations"
+              data-testid="settings-learn-conversations-toggle"
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors mt-0.5 flex-shrink-0 ${
+                learnConversations ? 'bg-[#0078d4]' : 'bg-[#555]'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                learnConversations ? 'translate-x-5' : 'translate-x-0.5'
+              }`} />
+            </button>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Learn from conversations</span>
+              <span className="text-xs text-[#9ca3af] leading-relaxed">
+                On by default. Termpolis reads your past Claude Code, Codex and Gemini conversations in
+                the background and stores them as searchable memory. Turn it off to stop that reading
+                completely, for example to rule it out while you are chasing a slowdown. Nothing is
+                deleted and memory search keeps working; it just stops adding. Turning it back on picks
+                up where it left off.
               </span>
             </div>
           </div>

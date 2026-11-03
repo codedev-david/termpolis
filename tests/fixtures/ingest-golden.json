@@ -1,0 +1,103 @@
+{
+  "_format": 1,
+  "claude/default": {
+    "parsedTurns": 36,
+    "ownTurns": 36,
+    "chunks": 12,
+    "hashes": "211dfc79a869cb7ecfb775fa1df834e26d748001739ccfdb8104f36e6123f784",
+    "first": "bc100c2ace419c10fcdae07b45392abf51af36a531f0a67f5295175a50d0444b",
+    "last": "7f80b7b768706a170df95dfc8e9f4acdb139233cae92a4f995240a74cc6a820b",
+    "meta": "59a385abf2074c4cfcb100250faea174eee4cc268f9238599b6f6beebf71095b",
+    "text": "2b8a3bd7e32ab51e6236ad7a0da900de2eac742380d5a735935ffe1e748c66f8"
+  },
+  "codex/default": {
+    "parsedTurns": 4,
+    "ownTurns": 4,
+    "chunks": 3,
+    "hashes": "b28bae8bb9e6d8461b92343676ba52f9a475303dfb2783cd44f932774a4ca79a",
+    "first": "3c3bd4488a3cb6c7055e426e9641cfff51f5bc48522b154bd216ca879dfa865b",
+    "last": "a273ffcfc87a2e8c69b476c8a0f07b5bfb82b21513f1d45583489ee77486286f",
+    "meta": "fd961afaf99ab37557c9e92804f4b4e6731fdba15c7ee7904e1ac57873babf2d",
+    "text": "291d29b6061731f49630a3ee0084c560395e0caefe424bc6bec3a116af78e84d"
+  },
+  "gemini/default": {
+    "parsedTurns": 4,
+    "ownTurns": 4,
+    "chunks": 3,
+    "hashes": "c377c3940c4953582a73fad253d219680132be3ad9ec68efc8eccfb8a46eb660",
+    "first": "f2ca35d417f81107a7b94afa6bc71ec1b777aa17c33a9bc9100759a50079af02",
+    "last": "d0cfa7494af75696e3324e83c393d4c5dcf82e047ca5aa624d312ae8307eef68",
+    "meta": "7aab34da1e5fd808bfae92f5bcf92b8c36c6db38a96233f4fee2c3214159dafc",
+    "text": "e737cbb9d9990f10c214a42cbd521a52dd983e03f6f2aee6e8473231ba6af63b"
+  },
+  "claude/sealed": {
+    "parsedTurns": 36,
+    "ownTurns": 36,
+    "chunks": 11,
+    "hashes": "a0eadeccc9f754b2bcbd92d11b9cdd350caed812f7b4f77042c930941d3d9d9e",
+    "first": "bc100c2ace419c10fcdae07b45392abf51af36a531f0a67f5295175a50d0444b",
+    "last": "66494eb47969ead63dc444c4c15341f0fd3889502fbaa3d2253d0394524e2430",
+    "meta": "a01c8d5d62bbe7a148263486cfb537828d5d937350c20a54ded6c4f3f585c58c",
+    "text": "30a5c4bc20bca2a37d2228000f986941871a91924894645886bcd9dbac0f9a29"
+  },
+  "codex/sealed": {
+    "parsedTurns": 4,
+    "ownTurns": 4,
+    "chunks": 3,
+    "hashes": "b28bae8bb9e6d8461b92343676ba52f9a475303dfb2783cd44f932774a4ca79a",
+    "first": "3c3bd4488a3cb6c7055e426e9641cfff51f5bc48522b154bd216ca879dfa865b",
+    "last": "a273ffcfc87a2e8c69b476c8a0f07b5bfb82b21513f1d45583489ee77486286f",
+    "meta": "fd961afaf99ab37557c9e92804f4b4e6731fdba15c7ee7904e1ac57873babf2d",
+    "text": "291d29b6061731f49630a3ee0084c560395e0caefe424bc6bec3a116af78e84d"
+  },
+  "gemini/sealed": {
+    "parsedTurns": 4,
+    "ownTurns": 4,
+    "chunks": 3,
+    "hashes": "c377c3940c4953582a73fad253d219680132be3ad9ec68efc8eccfb8a46eb660",
+    "first": "f2ca35d417f81107a7b94afa6bc71ec1b777aa17c33a9bc9100759a50079af02",
+    "last": "d0cfa7494af75696e3324e83c393d4c5dcf82e047ca5aa624d312ae8307eef68",
+    "meta": "7aab34da1e5fd808bfae92f5bcf92b8c36c6db38a96233f4fee2c3214159dafc",
+    "text": "e737cbb9d9990f10c214a42cbd521a52dd983e03f6f2aee6e8473231ba6af63b"
+  },
+  "claude/small": {
+    "parsedTurns": 36,
+    "ownTurns": 36,
+    "chunks": 66,
+    "hashes": "202687b3ae5e58da8915e57828f2bff1c73e17c232c46da85a1e848305eedb99",
+    "first": "bc100c2ace419c10fcdae07b45392abf51af36a531f0a67f5295175a50d0444b",
+    "last": "94dc3acf6c0826db07b843eb7179f399aadf520a3618ab03eb871a3dd69abd51",
+    "meta": "cafd528d02093196664b0b815ce596c07fa50b3fdad2b54f4cb03e936c22dbd4",
+    "text": "c646206f941ee7e71498886f1f917c0a6da3f1ca89950c26dba6cb5be1fff200"
+  },
+  "codex/small": {
+    "parsedTurns": 4,
+    "ownTurns": 4,
+    "chunks": 14,
+    "hashes": "d57a89d10e8929634c04af35f4444e88169db2f9a4ac889a1f9b16d5cfe9e447",
+    "first": "87ca7f9b45b600944652c9b5d93119724879131315b468d57acb68b8a8e52efa",
+    "last": "1636bae1eadcc62a23a5e37b10e4b580caac703ef52cecc5b282dbc4abef6de0",
+    "meta": "b16f5db2042d5cfef07e5c885719b43995e3735358c177c53b17b02dccd3365f",
+    "text": "93852c72f3ee91f20d22b28a492371ae0330f98811b5976a42b71e15c69ffccf"
+  },
+  "gemini/small": {
+    "parsedTurns": 4,
+    "ownTurns": 4,
+    "chunks": 18,
+    "hashes": "b3dbab56d41c1a217d8524e3c4e32e449781183c1a9cce49cd9ac252ffefbae8",
+    "first": "92f21f889a9163d7ace0325fcfba4e0ce11bab376529462d96066a5ab310d2cf",
+    "last": "5850b1951ecbd4473ff4bcee0a02e6e850e7b847b4822958d1a53bfc185de0d8",
+    "meta": "8f1328190315f66fda5e1f6f922eead85d99491654f1a6aa00c2b42bb68f3b81",
+    "text": "784cf8dd231eb6d5e7cfe744fea4730682e0bf3d3a01d31c0d9ebdfab03c2dd5"
+  },
+  "delegated/default": {
+    "parsedTurns": 2,
+    "ownTurns": null,
+    "chunks": null,
+    "hashes": null,
+    "first": null,
+    "last": null,
+    "meta": null,
+    "text": null
+  }
+}

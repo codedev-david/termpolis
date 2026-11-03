@@ -15,6 +15,7 @@ import {
   isDelegatedSession,
   TURN_WINDOW,
   ownDialogue,
+  openingSettled,
   type DialogueTurn,
 } from '../../src/shared/headlessPrompt'
 import { buildExecPrompt } from '../../src/main/headlessExec'
@@ -211,5 +212,55 @@ describe('PREAMBLES_ONLY and TURN_WINDOW: what may come before an opening prompt
     expect(TURN_WINDOW.test('user: a turn of its own')).toBe(false)
     expect(TURN_WINDOW.test('assistant: a turn of its own')).toBe(false)
     expect(TURN_WINDOW.test('the end of one turn\n\nassistant: and the next')).toBe(false)
+  })
+})
+
+// A cursor that remembers WHERE in a transcript file it stands (transcriptDelta.ts) may only carry on from
+// that byte when what ownDialogue decided about the opening can no longer change as the file grows. That is
+// so once the opening prompt is there, or once a turn that is not the user's came before any: from then on
+// ownDialogue only ever touches turns that are already in the file.
+describe('openingSettled', () => {
+  it('is false for a session with no turns yet, and for one that has only said its preambles so far', () => {
+    expect(openingSettled([])).toBe(false)
+    expect(openingSettled([user('<environment_context>cwd: /r</environment_context>')])).toBe(false)
+    expect(openingSettled([user('<user_instructions>be brief</user_instructions>'), user('# AGENTS.md instructions for /r')])).toBe(false)
+  })
+
+  it('is true once the opening prompt is in, whatever it is (own, primed or delegated)', () => {
+    expect(openingSettled([user('Fix the build.')])).toBe(true)
+    expect(openingSettled([user('<environment_context>x</environment_context>'), user('Fix the build.')])).toBe(true)
+    expect(openingSettled([user(delegatedPrompt('Review it.'))])).toBe(true)
+    expect(openingSettled([user(buildExecPrompt('Go.', PRIMER))])).toBe(true)
+  })
+
+  it('is true when an assistant turn comes before any prompt: ownDialogue then keeps every turn, for good', () => {
+    expect(openingSettled([assistant('Welcome back.')])).toBe(true)
+    expect(openingSettled([user('<environment_context>x</environment_context>'), assistant('hi'), user('Fix it.')])).toBe(true)
+  })
+
+  it('agrees with ownDialogue: appending turns after a settled opening never changes what it decided about the earlier ones', () => {
+    const openings: DialogueTurn[][] = [
+      [user('Fix the build.')],
+      [user(buildExecPrompt('Go.', PRIMER))],
+      [user(buildExecPrompt('', PRIMER))],
+      [assistant('Welcome back.')],
+      [user('<environment_context>x</environment_context>'), user('Fix it.')],
+    ]
+    for (const opening of openings) {
+      expect(openingSettled(opening)).toBe(true)
+      const before = ownDialogue(opening)
+      const grown = ownDialogue([...opening, assistant('on it'), user('<environment_context>again</environment_context>'), user('more')])
+      expect(grown).not.toBeNull()
+      expect(grown!.slice(0, before!.length)).toEqual(before)
+    }
+  })
+
+  it('CONTROL: an opening that is NOT settled can change what ownDialogue decided once the prompt arrives', () => {
+    const preamble: DialogueTurn[] = [user('<environment_context>x</environment_context>')]
+    expect(openingSettled(preamble)).toBe(false)
+    const before = ownDialogue(preamble)
+    const grown = ownDialogue([...preamble, user(delegatedPrompt('Review it.'))])
+    expect(before).toEqual(preamble)
+    expect(grown).toBeNull() // the whole session turned out to be another computer's: what was kept is no longer kept
   })
 })

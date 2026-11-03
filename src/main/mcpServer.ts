@@ -3,6 +3,7 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
 import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary, flushMemoryAudit } from './memoryAudit'
+import { isMemoryUnavailable, isMemoryUnavailableMessage, unavailableMessage } from './memoryFallbackGuard'
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
@@ -1434,6 +1435,9 @@ export async function executeTool(
         project: args.project,
       })
     case 'memory_primer': {
+      // The primer builder turns a failing search into an empty primer, which an agent that asked for
+      // it would read as "no context saved". While memory is unavailable, say so (v1.54.5).
+      if (isMemoryUnavailable()) throw new Error(unavailableMessage())
       const res = await handlers.memoryPrimer({
         cwd: args.cwd,
         query: args.query,
@@ -1523,11 +1527,12 @@ export async function executeTool(
 
 /** A thrown tool error as it may be repeated: our own argument and unknown-tool messages, LOCKED
  *  memory's refusal (fixed text that tells the agent to stop and send the user to the Memory panel),
+ *  UNAVAILABLE memory's refusal (fixed text: nothing was read or saved, retrying in the background),
  *  and a generic line for anything else, which can carry internals (a path, a connection string). */
 function safeToolMessage(e: unknown): string {
   const message = (e as { message?: unknown } | null | undefined)?.message
   return typeof message === 'string' &&
-    (message.includes('Unknown tool') || message.includes('Invalid') || message.startsWith('Memory is locked ('))
+    (message.includes('Unknown tool') || message.includes('Invalid') || message.startsWith('Memory is locked (') || isMemoryUnavailableMessage(message))
     ? message
     : 'Tool execution failed'
 }

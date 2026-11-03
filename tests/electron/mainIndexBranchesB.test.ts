@@ -328,7 +328,7 @@ vi.mock('../../src/main/liveTranscript', () => ({
   readActiveTranscript: vi.fn(async () => []),
   readSessionTranscript: vi.fn(async () => ({ turns: [] })),
 }))
-vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: vi.fn(), stopIndexer: vi.fn() }))
+vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: vi.fn(), stopIndexer: vi.fn(), nudgeIndexer: vi.fn() }))
 
 const MEMC = vi.hoisted(() => ({
   initSwarmMemory: vi.fn(),

@@ -1,0 +1,492 @@
+// The persisted per-file watermark: "this file was COMPLETELY ingested when it looked like this".
+// Skipping a file on a wrong mark loses memory silently, so everything that is not a clean yes is a no:
+// a different size, a different mtime, a different tier, a different stamp, a damaged file.
+
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync, writeFileSync, promises as fsPromises } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import {
+  INGEST_FORMAT_VERSION,
+  MAX_PROBES,
+  WATERMARK_FILE,
+  fileWatermarkIO,
+  ingestFastEnabled,
+  openWatermark,
+  type WatermarkIO,
+} from '../../src/main/ingestWatermark'
+
+/** An in-memory file, counting what is done to it. */
+function memoryIO(initial: string | null = null): WatermarkIO & { text: string | null; reads: number; writes: number; failWrites: boolean; failReads: boolean } {
+  const io = {
+    text: initial,
+    reads: 0,
+    writes: 0,
+    failWrites: false,
+    failReads: false,
+    async read(): Promise<string | null> {
+      io.reads++
+      if (io.failReads) throw new Error('disk gone')
+      return io.text
+    },
+    async write(text: string): Promise<void> {
+      io.writes++
+      if (io.failWrites) throw new Error('disk full')
+      io.text = text
+    },
+  }
+  return io
+}
+
+const A = { size: 100, mtimeMs: 1_000 }
+
+describe('the mark itself', () => {
+  it('knows nothing at first, and remembers exactly the file, size and mtime it was told', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    expect(wm.isDone('/a.jsonl', A, 'full')).toBe(false)
+    wm.markDone('/a.jsonl', A, 'full')
+    expect(wm.isDone('/a.jsonl', A, 'full')).toBe(true)
+    expect(wm.isDone('/a.jsonl', { size: 101, mtimeMs: 1_000 }, 'full')).toBe(false) // it grew
+    expect(wm.isDone('/a.jsonl', { size: 100, mtimeMs: 1_001 }, 'full')).toBe(false) // it was touched
+    expect(wm.isDone('/b.jsonl', A, 'full')).toBe(false) // another file
+  })
+
+  it('a full mark covers a sealed pass; a sealed mark does not cover a full pass (the trailing partial chunk)', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/s.jsonl', A, 'sealed')
+    expect(wm.isDone('/s.jsonl', A, 'sealed')).toBe(true)
+    expect(wm.isDone('/s.jsonl', A, 'full')).toBe(false)
+    wm.markDone('/s.jsonl', A, 'full')
+    expect(wm.isDone('/s.jsonl', A, 'full')).toBe(true)
+    expect(wm.isDone('/s.jsonl', A, 'sealed')).toBe(true)
+    wm.markDone('/s.jsonl', A, 'sealed') // a later sealed pass never takes the full mark back
+    expect(wm.isDone('/s.jsonl', A, 'full')).toBe(true)
+  })
+
+  it('a mark for a changed file replaces the old one (no stale tier survives a new size)', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/a.jsonl', A, 'full')
+    wm.markDone('/a.jsonl', { size: 200, mtimeMs: 2_000 }, 'sealed')
+    expect(wm.isDone('/a.jsonl', { size: 200, mtimeMs: 2_000 }, 'full')).toBe(false)
+    expect(wm.isDone('/a.jsonl', { size: 200, mtimeMs: 2_000 }, 'sealed')).toBe(true)
+    expect(wm.isDone('/a.jsonl', A, 'sealed')).toBe(false)
+  })
+
+  it('refuses a stamp that is not a real size and time (never a wrong skip)', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    for (const bad of [{ size: -1, mtimeMs: 1 }, { size: 1, mtimeMs: Number.NaN }, { size: Number.POSITIVE_INFINITY, mtimeMs: 1 }, { size: '1' as unknown as number, mtimeMs: 1 }]) {
+      wm.markDone('/x.jsonl', bad, 'full')
+      expect(wm.isDone('/x.jsonl', bad, 'full')).toBe(false)
+    }
+    expect(wm.pending).toBe(0)
+  })
+})
+
+describe('persistence', () => {
+  it('flush writes once, and a store opened later with the same stamp knows what was marked', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/a.jsonl', A, 'full')
+    wm.markDone('/b.jsonl', { size: 5, mtimeMs: 6 }, 'sealed')
+    expect(wm.pending).toBe(2)
+    expect(io.writes).toBe(0) // nothing is written until flush: a pass decides when its marks are safe to keep
+    expect(await wm.flush()).toBe(true)
+    expect(io.writes).toBe(1)
+    expect(wm.pending).toBe(0)
+
+    const again = await openWatermark(io, 's1')
+    expect(again.size).toBe(2)
+    expect(again.isDone('/a.jsonl', A, 'full')).toBe(true)
+    expect(again.isDone('/b.jsonl', { size: 5, mtimeMs: 6 }, 'sealed')).toBe(true)
+    expect(again.isDone('/b.jsonl', { size: 5, mtimeMs: 6 }, 'full')).toBe(false)
+  })
+
+  it('a flush with nothing new does not touch the disk (a steady pass writes nothing)', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    expect(await wm.flush()).toBe(false)
+    wm.markDone('/a.jsonl', A, 'full')
+    await wm.flush()
+    const writes = io.writes
+    expect(await wm.flush()).toBe(false)
+    expect(io.writes).toBe(writes)
+  })
+
+  it('a different stamp (another app version or chunker format) starts empty: one budgeted re-scan, never a wrong skip', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 'fmt1|1.54.5')
+    wm.markDone('/a.jsonl', A, 'full')
+    await wm.flush()
+    const next = await openWatermark(io, 'fmt1|1.54.6')
+    expect(next.size).toBe(0)
+    expect(next.isDone('/a.jsonl', A, 'full')).toBe(false)
+  })
+
+  it('a damaged, odd or unreadable file is an empty store, never an error', async () => {
+    for (const text of ['', '{', 'null', '[]', '{"v":1}', '{"v":99,"stamp":"s1","files":{}}', '{"v":1,"stamp":"s1","files":[]}', '{"v":1,"stamp":"s1","files":{"/a":"x","/b":[1],"/c":[1,2,9],"/d":[-1,2,2],"/e":[1,"2",2]}}']) {
+      const wm = await openWatermark(memoryIO(text), 's1')
+      expect(wm.size).toBe(0)
+      expect(wm.isDone('/a', { size: 1, mtimeMs: 2 }, 'full')).toBe(false)
+    }
+    const io = memoryIO('{"v":1,"stamp":"s1","files":{}}')
+    io.failReads = true
+    expect((await openWatermark(io, 's1')).size).toBe(0)
+  })
+
+  it('keeps the good entries of a file that also has bad ones', async () => {
+    const text = JSON.stringify({ v: 1, stamp: 's1', files: { '/good': [10, 20, 2], '/bad': [10, 20, 7], '/worse': 'x' } })
+    const wm = await openWatermark(memoryIO(text), 's1')
+    expect(wm.size).toBe(1)
+    expect(wm.isDone('/good', { size: 10, mtimeMs: 20 }, 'full')).toBe(true)
+  })
+
+  it('a failed write is reported, keeps the marks, and the next flush tries again', async () => {
+    const io = memoryIO()
+    io.failWrites = true
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/a.jsonl', A, 'full')
+    expect(await wm.flush()).toBe(false)
+    expect(wm.isDone('/a.jsonl', A, 'full')).toBe(true)
+    io.failWrites = false
+    expect(await wm.flush()).toBe(true)
+    expect(JSON.parse(io.text as string).files['/a.jsonl']).toEqual([100, 1_000, 2])
+  })
+
+  it('discard drops the marks made since the last flush and nothing before it', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/kept.jsonl', A, 'full')
+    await wm.flush()
+    wm.markDone('/lost.jsonl', A, 'full')
+    wm.markDone('/kept.jsonl', { size: 7, mtimeMs: 7 }, 'full') // a newer mark over a flushed one
+    wm.discard()
+    expect(wm.pending).toBe(0)
+    expect(wm.isDone('/lost.jsonl', A, 'full')).toBe(false)
+    expect(wm.isDone('/kept.jsonl', A, 'full')).toBe(true) // back to what was flushed
+    expect(wm.isDone('/kept.jsonl', { size: 7, mtimeMs: 7 }, 'full')).toBe(false)
+    expect(await wm.flush()).toBe(false)
+  })
+
+  it('forgetMissing also drops the marks made since the last flush for files that are gone', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/gone', A, 'full')
+    wm.markDone('/here', A, 'full')
+    expect(wm.forgetMissing(new Set(['/here']))).toBe(1)
+    expect(wm.isDone('/gone', A, 'full')).toBe(false)
+    expect(wm.isDone('/here', A, 'full')).toBe(true)
+    expect(wm.pending).toBe(1)
+  })
+
+  it('forgetMissing drops the files that are gone, so the file stays the size of the corpus', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    for (const f of ['/a', '/b', '/c']) wm.markDone(f, A, 'full')
+    await wm.flush()
+    expect(wm.forgetMissing(new Set(['/a', '/c']))).toBe(1)
+    expect(wm.size).toBe(2)
+    expect(wm.isDone('/b', A, 'full')).toBe(false)
+    expect(await wm.flush()).toBe(true) // the pruned file is written
+    expect(Object.keys(JSON.parse(io.text as string).files).sort()).toEqual(['/a', '/c'])
+    expect(wm.forgetMissing(new Set(['/a', '/c']))).toBe(0)
+    expect(await wm.flush()).toBe(false)
+  })
+
+  it('the file is small: well under 200 bytes per file even with long paths', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    for (let i = 0; i < 2_000; i++) wm.markDone(`C:\\Users\\someone\\.claude\\projects\\C--Users-someone-repos-project\\${'0'.repeat(8)}-${i}-aaaa-bbbb-cccc.jsonl`, { size: 123_456 + i, mtimeMs: 1_762_000_000_000.5 + i }, 'full')
+    await wm.flush()
+    expect((io.text as string).length / 2_000).toBeLessThan(200)
+  })
+})
+
+const H = (n: number): string => n.toString(16).padStart(64, '0') // a chunk hash is 64 hex characters
+
+describe('probes: a few chunk hashes to ask the store about before a mark is trusted', () => {
+  it('keeps the hash given with each mark, newest last, at most 8, each once', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    expect(wm.probes()).toEqual([])
+    for (let i = 1; i <= 12; i++) wm.markDone(`/f${i}`, { size: i, mtimeMs: i }, 'full', H(i))
+    expect(wm.probes()).toEqual([5, 6, 7, 8, 9, 10, 11, 12].map(H))
+    wm.markDone('/g', A, 'full', H(6)) // seen again: it becomes the newest, not a duplicate
+    expect(wm.probes()).toEqual([5, 7, 8, 9, 10, 11, 12, 6].map(H))
+    expect(MAX_PROBES).toBe(8)
+  })
+
+  it('refuses anything that is not a chunk hash, and a mark without a probe adds none', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    for (const bad of ['', 'xyz', 'G'.repeat(64), 'a'.repeat(129), 'abc', '../../etc/passwd', 42 as unknown as string]) wm.markDone('/x', A, 'full', bad)
+    wm.markDone('/y', { size: 2, mtimeMs: 2 }, 'full')
+    expect(wm.probes()).toEqual([])
+    expect(wm.isDone('/y', { size: 2, mtimeMs: 2 }, 'full')).toBe(true) // the marks themselves are fine
+  })
+
+  it('are written with the marks and come back after a restart; damaged ones are dropped, the good ones kept', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/a', A, 'full', H(1))
+    wm.markDone('/b', { size: 5, mtimeMs: 6 }, 'full', H(2))
+    await wm.flush()
+    expect((await openWatermark(io, 's1')).probes()).toEqual([H(1), H(2)])
+    const doc = JSON.parse(io.text as string)
+    doc.probes = [H(3), 'not a hash', 7, null, H(4), H(3)]
+    io.text = JSON.stringify(doc)
+    expect((await openWatermark(io, 's1')).probes()).toEqual([H(4), H(3)]) // the repeat of H(3) is the newer place
+    delete doc.probes
+    io.text = JSON.stringify(doc)
+    expect((await openWatermark(io, 's1')).probes()).toEqual([]) // an older file without any
+  })
+
+  it('discard forgets the probes made since the last flush too; a failed write keeps them for the next try', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/kept', A, 'full', H(1))
+    await wm.flush()
+    wm.markDone('/lost', { size: 2, mtimeMs: 2 }, 'full', H(2))
+    wm.discard()
+    expect(wm.probes()).toEqual([H(1)])
+    wm.markDone('/again', { size: 3, mtimeMs: 3 }, 'full', H(3))
+    ;(io as unknown as { failWrites: boolean }).failWrites = true
+    expect(await wm.flush()).toBe(false)
+    expect(wm.probes()).toEqual([H(1), H(3)])
+    ;(io as unknown as { failWrites: boolean }).failWrites = false
+    expect(await wm.flush()).toBe(true)
+    expect(JSON.parse(io.text as string).probes).toEqual([H(1), H(3)])
+  })
+
+  it('clear() forgets every mark and probe (the store was wiped); the next flush writes the empty store, and new marks work after it', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/a', A, 'full', H(1))
+    await wm.flush()
+    wm.markDone('/b', { size: 2, mtimeMs: 2 }, 'full', H(2)) // not flushed yet
+    wm.clear()
+    expect(wm.size).toBe(0)
+    expect(wm.probes()).toEqual([])
+    expect(wm.isDone('/a', A, 'full')).toBe(false)
+    expect(await wm.flush()).toBe(true) // something left the store: the file must say so
+    expect(JSON.parse(io.text as string)).toMatchObject({ files: {}, probes: [] })
+    wm.markDone('/c', A, 'full', H(3))
+    await wm.flush()
+    const again = await openWatermark(io, 's1')
+    expect(again.size).toBe(1)
+    expect(again.probes()).toEqual([H(3)])
+    expect(await wm.flush()).toBe(false) // and then quiet again
+  })
+})
+
+describe('writes: a mark made while a write is out is never lost', () => {
+  /** An io whose writes wait until released, so the timing is the test's. */
+  function slowIO() {
+    const io = {
+      text: null as string | null,
+      writes: [] as string[],
+      inFlight: 0,
+      maxInFlight: 0,
+      release: [] as Array<() => void>,
+      async read() { return io.text },
+      async write(text: string) {
+        io.inFlight++
+        io.maxInFlight = Math.max(io.maxInFlight, io.inFlight)
+        io.writes.push(text)
+        await new Promise<void>((resolve) => io.release.push(resolve))
+        io.text = text
+        io.inFlight--
+      },
+    }
+    return io
+  }
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
+
+  it('the mark is still vouched for while its write is out, and a mark made meanwhile goes out with the NEXT write', async () => {
+    const io = slowIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/one', A, 'full', H(1))
+    const first = wm.flush()
+    await tick()
+    expect(io.writes).toHaveLength(1)
+    expect(wm.isDone('/one', A, 'full')).toBe(true) // out on its way, still good
+    expect(wm.size).toBe(1)
+    wm.markDone('/two', { size: 2, mtimeMs: 2 }, 'full', H(2)) // made while the first write is out
+    const second = wm.flush()
+    await tick()
+    expect(io.writes).toHaveLength(1) // writes go one at a time
+    io.release.shift()!()
+    expect(await first).toBe(true)
+    await tick()
+    expect(io.writes).toHaveLength(2)
+    io.release.shift()!()
+    expect(await second).toBe(true)
+    expect(io.maxInFlight).toBe(1)
+    const stored = JSON.parse(io.text as string)
+    expect(Object.keys(stored.files).sort()).toEqual(['/one', '/two'])
+    expect(stored.probes).toEqual([H(1), H(2)])
+    expect(await wm.flush()).toBe(false) // nothing was left behind in memory only
+  })
+
+  it('a newer mark for the same file made while a write fails is the one kept', async () => {
+    const io = slowIO()
+    const failing = { ...io, async write(text: string) { io.writes.push(text); await new Promise((r) => setTimeout(r, 40)); throw new Error('disk full') } }
+    const wm = await openWatermark(failing as never, 's1')
+    wm.markDone('/f', A, 'full', H(1))
+    const first = wm.flush()
+    await tick() // the write is out now (it holds the first mark)
+    expect(io.writes).toHaveLength(1)
+    wm.markDone('/f', { size: 9, mtimeMs: 9 }, 'sealed', H(2)) // the same file, newer, while the write is out
+    expect(await first).toBe(false)
+    expect(wm.isDone('/f', { size: 9, mtimeMs: 9 }, 'sealed')).toBe(true)
+    expect(wm.isDone('/f', A, 'full')).toBe(false)
+  })
+
+  it('a write that fails while another mark is pending keeps both for the next try', async () => {
+    const io = slowIO()
+    const failing = { ...io, async write(text: string) { io.writes.push(text); await tick(); throw new Error('disk full') } }
+    const wm = await openWatermark(failing as never, 's1')
+    wm.markDone('/one', A, 'full', H(1))
+    const first = wm.flush()
+    wm.markDone('/two', { size: 2, mtimeMs: 2 }, 'full', H(2))
+    expect(await first).toBe(false)
+    expect(wm.isDone('/one', A, 'full')).toBe(true)
+    expect(wm.isDone('/two', { size: 2, mtimeMs: 2 }, 'full')).toBe(true)
+    expect(wm.probes()).toEqual([H(1), H(2)])
+    expect(wm.pending).toBe(2)
+  })
+})
+
+describe("delegated sessions (another computer's work, never ingested)", () => {
+  it('a delegated mark is a verdict about the session at exactly this size and time, and is never an ingest mark', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/j.jsonl', A, 'delegated')
+    expect(wm.isDelegated('/j.jsonl', A)).toBe(true)
+    expect(wm.isDone('/j.jsonl', A, 'sealed')).toBe(false) // never confused with "ingested"
+    expect(wm.isDone('/j.jsonl', A, 'full')).toBe(false)
+    expect(wm.isDelegated('/j.jsonl', { size: 101, mtimeMs: 1_000 })).toBe(false) // it grew
+    expect(wm.isDelegated('/j.jsonl', { size: 100, mtimeMs: 1_001 })).toBe(false) // it was touched
+    expect(wm.isDelegated('/other.jsonl', A)).toBe(false)
+    wm.markDone('/own.jsonl', A, 'full')
+    expect(wm.isDelegated('/own.jsonl', A)).toBe(false) // an ingested file is not "delegated"
+  })
+
+  it('a verdict of the other kind replaces the old one at the same stamp, in both directions; the same verdict is a no-op', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/f', A, 'full')
+    wm.markDone('/f', A, 'delegated')
+    expect(wm.isDelegated('/f', A)).toBe(true)
+    expect(wm.isDone('/f', A, 'sealed')).toBe(false)
+    wm.markDone('/f', A, 'sealed')
+    expect(wm.isDelegated('/f', A)).toBe(false)
+    expect(wm.isDone('/f', A, 'sealed')).toBe(true)
+    expect(wm.isDone('/f', A, 'full')).toBe(false)
+    const pending = wm.pending
+    wm.markDone('/f', A, 'sealed') // identical: nothing new to write
+    wm.markDone('/g', A, 'delegated')
+    wm.markDone('/g', A, 'delegated')
+    expect(wm.pending).toBe(pending + 1)
+  })
+
+  it('is written with the file, read back after a restart, and a kind that is none of the three is dropped as damaged', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/j', A, 'delegated')
+    wm.markDone('/o', { size: 5, mtimeMs: 6 }, 'full', H(1))
+    await wm.flush()
+    const again = await openWatermark(io, 's1')
+    expect(again.isDelegated('/j', A)).toBe(true)
+    expect(again.isDone('/j', A, 'full')).toBe(false)
+    expect(again.isDone('/o', { size: 5, mtimeMs: 6 }, 'full')).toBe(true)
+    const doc = JSON.parse(io.text as string)
+    doc.files['/bad'] = [1, 2, 3]
+    doc.files['/bad2'] = [1, 2, 6]
+    doc.files['/bad3'] = [1, 2, 0]
+    io.text = JSON.stringify(doc)
+    expect((await openWatermark(io, 's1')).size).toBe(2)
+  })
+})
+
+describe('the real file', () => {
+  const dirs: string[] = []
+  afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
+  const tmp = (): string => { const d = mkdtempSync(join(tmpdir(), 'wm-')); dirs.push(d); return d }
+
+  it('reads null for a file that is not there, writes it whole, and leaves no temp file behind', async () => {
+    const dir = tmp()
+    const io = fileWatermarkIO(join(dir, WATERMARK_FILE))
+    expect(await io.read()).toBeNull()
+    await io.write('{"hello":1}')
+    expect(readFileSync(join(dir, WATERMARK_FILE), 'utf8')).toBe('{"hello":1}')
+    await io.write('{"hello":2}')
+    expect(readFileSync(join(dir, WATERMARK_FILE), 'utf8')).toBe('{"hello":2}')
+    expect(readdirSync(dir)).toEqual([WATERMARK_FILE])
+  })
+
+  it('creates the folder if userData does not exist yet, and a real store round-trips through it', async () => {
+    const dir = join(tmp(), 'not', 'yet')
+    const io = fileWatermarkIO(join(dir, WATERMARK_FILE))
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/a', A, 'full')
+    expect(await wm.flush()).toBe(true)
+    expect(existsSync(join(dir, WATERMARK_FILE))).toBe(true)
+    expect((await openWatermark(fileWatermarkIO(join(dir, WATERMARK_FILE)), 's1')).isDone('/a', A, 'full')).toBe(true)
+  })
+
+  it('a read error other than "no such file" reaches the caller (openWatermark then starts empty)', async () => {
+    const dir = tmp()
+    const spy = vi.spyOn(fsPromises, 'readFile').mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }))
+    try {
+      await expect(fileWatermarkIO(join(dir, WATERMARK_FILE)).read()).rejects.toThrow('denied')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('when the rename onto an existing file is refused the text is written in place and the temp file is removed', async () => {
+    const dir = tmp()
+    const target = join(dir, WATERMARK_FILE)
+    writeFileSync(target, 'old')
+    const spy = vi.spyOn(fsPromises, 'rename').mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }))
+    try {
+      await fileWatermarkIO(target).write('new')
+    } finally {
+      spy.mockRestore()
+    }
+    expect(readFileSync(target, 'utf8')).toBe('new')
+    expect(readdirSync(dir)).toEqual([WATERMARK_FILE])
+  })
+
+  it('a temp file that cannot be removed after the fallback write does not fail the write', async () => {
+    const dir = tmp()
+    const target = join(dir, WATERMARK_FILE)
+    writeFileSync(target, 'old')
+    const rename = vi.spyOn(fsPromises, 'rename').mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }))
+    const rm = vi.spyOn(fsPromises, 'rm').mockRejectedValueOnce(new Error('EPERM'))
+    try {
+      await expect(fileWatermarkIO(target).write('new')).resolves.toBeUndefined()
+    } finally {
+      rename.mockRestore()
+      rm.mockRestore()
+    }
+    expect(readFileSync(target, 'utf8')).toBe('new')
+  })
+
+  it('a path that runs through a file instead of a folder simply reads as "not there"', async () => {
+    const dir = tmp()
+    writeFileSync(join(dir, 'asdir'), 'x')
+    const io = fileWatermarkIO(join(dir, 'asdir', WATERMARK_FILE)) // ENOTDIR or ENOENT, depending on the OS
+    await expect(io.read()).resolves.toBeNull()
+    expect((await openWatermark(io, 's1')).size).toBe(0)
+  })
+})
+
+describe('the kill switch and the format version', () => {
+  it('TERMPOLIS_INGEST_FAST=off|0|false|no turns the whole mechanism off; anything else leaves it on', () => {
+    expect(ingestFastEnabled({})).toBe(true)
+    expect(ingestFastEnabled({ TERMPOLIS_INGEST_FAST: '1' })).toBe(true)
+    expect(ingestFastEnabled({ TERMPOLIS_INGEST_FAST: '' })).toBe(true)
+    for (const v of ['off', 'OFF', '0', 'false', 'No', ' off ']) expect(ingestFastEnabled({ TERMPOLIS_INGEST_FAST: v }), v).toBe(false)
+  })
+
+  it('INGEST_FORMAT_VERSION is the one the golden fixture was made for (change one, change both)', () => {
+    const golden = JSON.parse(readFileSync(join(__dirname, '../fixtures/ingest-golden.json'), 'utf8'))
+    expect(golden._format).toBe(INGEST_FORMAT_VERSION)
+  })
+})

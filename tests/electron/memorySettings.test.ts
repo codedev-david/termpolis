@@ -32,14 +32,14 @@ describe('memorySettings — primer limit', () => {
   it('defaults to 10 when nothing is persisted', async () => {
     const m = await freshModule()
     expect(m.getPrimerLimit()).toBe(10)
-    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false })
+    expect(m.getMemorySettings()).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
     expect(m.PRIMER_LIMIT_MIN).toBe(1)
     expect(m.PRIMER_LIMIT_MAX).toBe(50)
   })
 
   it('persists a set value to disk and returns it', async () => {
     const m = await freshModule()
-    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false })
+    expect(m.setPrimerLimit(20)).toEqual({ primerLimit: 20, vectorQuantize: false, learnFromConversations: true })
     expect(m.getPrimerLimit()).toBe(20)
     expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).primerLimit).toBe(20)
   })
@@ -144,5 +144,87 @@ describe('vectorQuantize', () => {
     const s = m.setVectorQuantize(true)
     expect(s.primerLimit).toBe(19)
     expect(s.vectorQuantize).toBe(true)
+  })
+})
+
+// --------------------------------------------------------------------------------------------
+// learnFromConversations — the pause switch for conversation ingest ("Learn from conversations").
+//
+// The DEFAULT is the point: it is ON, and anything that is not an explicit `false` reads as ON, so
+// upgrading, a damaged file or a hand-edited value can never silently stop Termpolis from learning.
+// --------------------------------------------------------------------------------------------
+describe('a settings file that is valid JSON but not an object', () => {
+  it('reads as the defaults (null, a number, a string)', async () => {
+    for (const text of ['null', '7', '"x"']) {
+      writeFileSync(settingsFile(), text)
+      const m = await freshModule()
+      expect(m.getMemorySettings(), text).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
+    }
+  })
+})
+
+describe('learnFromConversations', () => {
+  it('is ON when nothing is persisted', async () => {
+    const m = await freshModule()
+    expect(m.getLearnFromConversations()).toBe(true)
+    expect(m.getMemorySettings().learnFromConversations).toBe(true)
+  })
+
+  it('persists OFF to memory-settings.json and survives a restart; and ON again sticks too', async () => {
+    let m = await freshModule()
+    expect(m.setLearnFromConversations(false).learnFromConversations).toBe(false)
+    expect(JSON.parse(readFileSync(settingsFile(), 'utf8')).learnFromConversations).toBe(false)
+    m = await freshModule()
+    expect(m.getLearnFromConversations()).toBe(false)
+    m.setLearnFromConversations(true)
+    m = await freshModule()
+    expect(m.getLearnFromConversations()).toBe(true)
+  })
+
+  it('an existing settings file from before this switch (no such key) reads as ON', async () => {
+    writeFileSync(settingsFile(), JSON.stringify({ primerLimit: 12, vectorQuantize: true }))
+    const m = await freshModule()
+    expect(m.getLearnFromConversations()).toBe(true)
+    expect(m.getPrimerLimit()).toBe(12)
+    expect(m.getVectorQuantize()).toBe(true)
+  })
+
+  it('only a literal false turns it off: null, 0, "false", garbage and a damaged file all read as ON', async () => {
+    for (const bad of [null, 0, 'false', 'off', 1, {}, []]) {
+      writeFileSync(settingsFile(), JSON.stringify({ learnFromConversations: bad }))
+      expect((await freshModule()).getLearnFromConversations(), JSON.stringify(bad)).toBe(true)
+    }
+    writeFileSync(settingsFile(), '{ not json')
+    expect((await freshModule()).getLearnFromConversations()).toBe(true)
+  })
+
+  it('setting it to anything but a literal false turns it ON (the safe direction), true or not', async () => {
+    const m = await freshModule()
+    m.setLearnFromConversations(false)
+    expect(m.setLearnFromConversations('nope').learnFromConversations).toBe(true)
+    m.setLearnFromConversations(false)
+    expect(m.setLearnFromConversations(undefined).learnFromConversations).toBe(true)
+  })
+
+  it('does not clobber the other settings, and they do not clobber it', async () => {
+    const m = await freshModule()
+    m.setPrimerLimit(19)
+    m.setVectorQuantize(true)
+    const s = m.setLearnFromConversations(false)
+    expect(s).toEqual({ primerLimit: 19, vectorQuantize: true, learnFromConversations: false })
+    m.setPrimerLimit(7)
+    m.setVectorQuantize(false)
+    expect(m.getLearnFromConversations()).toBe(false)
+    const reloaded = await freshModule()
+    expect(reloaded.getMemorySettings()).toEqual({ primerLimit: 7, vectorQuantize: false, learnFromConversations: false })
+  })
+
+  // NEGATIVE CONTROL: the switch is read live, so flipping it takes effect on the very next question.
+  it('control: the value read after a set is the value set (no stale copy)', async () => {
+    const m = await freshModule()
+    for (const v of [false, true, false, false, true]) {
+      m.setLearnFromConversations(v)
+      expect(m.getLearnFromConversations()).toBe(v)
+    }
   })
 })

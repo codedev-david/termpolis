@@ -118,7 +118,7 @@ vi.mock('../../src/main/localEmbedder', async (orig) => ({
 vi.mock('../../src/main/embedWorker', () => ({ createWorkerTransport: vi.fn() }))
 vi.mock('uuid', () => ({ v4: vi.fn(() => `uuid-${Math.random().toString(36).slice(2)}`) }))
 // Capture the indexer options instead of arming real timers — `run()` IS the pass under test.
-vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: mockStartIndexer, stopIndexer: vi.fn() }))
+vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: mockStartIndexer, stopIndexer: vi.fn(), nudgeIndexer: vi.fn() }))
 vi.mock('../../src/main/conversationIngest', async (orig) => ({
   ...(await orig<Record<string, unknown>>()), // knownHashes stays REAL
   runConversationIngest: mockRunConversationIngest,

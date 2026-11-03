@@ -16,7 +16,10 @@ import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
-import { isDelegatedSession, ownDialogue } from '../shared/headlessPrompt'
+import { performance } from 'perf_hooks'
+import { isDelegatedSession, openingSettled, ownDialogue } from '../shared/headlessPrompt'
+import type { FileStamp, IngestWatermark, MarkTier } from './ingestWatermark'
+import { getIngestRuntime, type IngestRuntime } from './ingestRuntime'
 
 export type ConversationSource = 'claude' | 'codex' | 'gemini'
 
@@ -53,17 +56,23 @@ function parseTs(v: unknown): number | undefined {
   return Number.isFinite(ms) ? ms : undefined
 }
 
+/** One JSONL line as an object: blank, broken and non-object lines are nothing (never an error). */
+function parseJsonLine(line: string): Record<string, unknown> | null {
+  const s = line.trim()
+  if (!s) return null
+  let obj: unknown
+  try {
+    obj = JSON.parse(s)
+  } catch {
+    return null
+  }
+  return obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : null
+}
+
 function* iterJsonl(content: string): Generator<Record<string, unknown>> {
   for (const line of content.split('\n')) {
-    const s = line.trim()
-    if (!s) continue
-    let obj: unknown
-    try {
-      obj = JSON.parse(s)
-    } catch {
-      continue
-    }
-    if (obj && typeof obj === 'object') yield obj as Record<string, unknown>
+    const obj = parseJsonLine(line)
+    if (obj) yield obj
   }
 }
 
@@ -85,39 +94,51 @@ function joinTextBlocks(content: unknown): string {
 }
 
 // ---- Claude Code: ~/.claude/projects/**/*.jsonl ----
-export function parseClaudeTranscript(content: string): IngestTurn[] {
-  const turns: IngestTurn[] = []
-  let sessionId: string | undefined
-  let cwd: string | undefined
+// The parsers below are state machines fed one JSONL object at a time (claudeStep, codexStep), so a pass can
+// parse a transcript in time slices and in pieces (ingestConversations) with exactly the code that parses a
+// whole string (parseClaudeTranscript, parseCodexRollout). tests/electron/ingestChunkGolden.test.ts compares
+// both with a verbatim copy of the v1.54.4 functions over random files: a chunk hash is the idempotency key
+// of the whole memory store, so the output must not change by a byte.
+interface ClaudeState {
+  sessionId: string | undefined
+  cwd: string | undefined
+  turns: IngestTurn[]
+}
 
-  for (const obj of iterJsonl(content)) {
-    if (!sessionId && typeof obj.sessionId === 'string') sessionId = obj.sessionId
-    // F32: track cwd PER-TURN (update on every occurrence, not first-wins) so a session that
-    // moves between repos (/add-dir, resume) tags each turn with the cwd it actually ran under.
-    if (typeof obj.cwd === 'string' && obj.cwd) cwd = obj.cwd
-    if (obj.isMeta === true) continue
+const newClaudeState = (): ClaudeState => ({ sessionId: undefined, cwd: undefined, turns: [] })
 
-    const ts = parseTs(obj.timestamp)
-    const message = obj.message
-    if (!message || typeof message !== 'object') continue
+function claudeStep(st: ClaudeState, obj: Record<string, unknown>): void {
+  if (!st.sessionId && typeof obj.sessionId === 'string') st.sessionId = obj.sessionId
+  // F32: track cwd PER-TURN (update on every occurrence, not first-wins) so a session that
+  // moves between repos (/add-dir, resume) tags each turn with the cwd it actually ran under.
+  if (typeof obj.cwd === 'string' && obj.cwd) st.cwd = obj.cwd
+  if (obj.isMeta === true) return
 
-    if (obj.type === 'user') {
-      const m = message as { role?: string; content?: unknown }
-      if (m.role !== 'user' && m.role !== undefined) continue
-      // Wave2 (claude-array-content): a user turn can be an ARRAY (image/attachment + text
-      // blocks), not just a plain string. Extract the text blocks (joinTextBlocks ignores
-      // tool_result/thinking) instead of dropping the whole turn — a pure tool_result array
-      // yields no text and is still skipped.
-      const text = typeof m.content === 'string' ? m.content.trim() : joinTextBlocks(m.content)
-      if (!text || isCommandNoise(text)) continue
-      turns.push({ role: 'user', text, ts, source: 'claude', sessionId, cwd })
-    } else if (obj.type === 'assistant') {
-      const m = message as { content?: unknown }
-      const text = joinTextBlocks(m.content)
-      if (text) turns.push({ role: 'assistant', text, ts, source: 'claude', sessionId, cwd })
-    }
+  const ts = parseTs(obj.timestamp)
+  const message = obj.message
+  if (!message || typeof message !== 'object') return
+
+  if (obj.type === 'user') {
+    const m = message as { role?: string; content?: unknown }
+    if (m.role !== 'user' && m.role !== undefined) return
+    // Wave2 (claude-array-content): a user turn can be an ARRAY (image/attachment + text
+    // blocks), not just a plain string. Extract the text blocks (joinTextBlocks ignores
+    // tool_result/thinking) instead of dropping the whole turn — a pure tool_result array
+    // yields no text and is still skipped.
+    const text = typeof m.content === 'string' ? m.content.trim() : joinTextBlocks(m.content)
+    if (!text || isCommandNoise(text)) return
+    st.turns.push({ role: 'user', text, ts, source: 'claude', sessionId: st.sessionId, cwd: st.cwd })
+  } else if (obj.type === 'assistant') {
+    const m = message as { content?: unknown }
+    const text = joinTextBlocks(m.content)
+    if (text) st.turns.push({ role: 'assistant', text, ts, source: 'claude', sessionId: st.sessionId, cwd: st.cwd })
   }
-  return turns
+}
+
+export function parseClaudeTranscript(content: string): IngestTurn[] {
+  const st = newClaudeState()
+  for (const obj of iterJsonl(content)) claudeStep(st, obj)
+  return st.turns
 }
 
 // ---- OpenAI Codex CLI: ~/.codex/sessions/**/rollout-*.jsonl ----
@@ -135,42 +156,49 @@ function joinCodexText(content: unknown): string {
   return ''
 }
 
-export function parseCodexRollout(content: string): IngestTurn[] {
-  const turns: IngestTurn[] = []
-  let sessionId: string | undefined
-  let cwd: string | undefined
-  let sawFirstUser = false
+interface CodexState {
+  sessionId: string | undefined
+  cwd: string | undefined
+  sawFirstUser: boolean
+  turns: IngestTurn[]
+}
 
-  for (const obj of iterJsonl(content)) {
-    const ts = parseTs(obj.timestamp)
-    if (obj.type === 'session_meta') {
-      const p = obj.payload as { id?: unknown; cwd?: unknown } | undefined
-      if (p) {
-        if (typeof p.id === 'string') sessionId = p.id
-        if (typeof p.cwd === 'string') cwd = p.cwd
-      }
-      continue
+const newCodexState = (): CodexState => ({ sessionId: undefined, cwd: undefined, sawFirstUser: false, turns: [] })
+
+function codexStep(st: CodexState, obj: Record<string, unknown>): void {
+  const ts = parseTs(obj.timestamp)
+  if (obj.type === 'session_meta') {
+    const p = obj.payload as { id?: unknown; cwd?: unknown } | undefined
+    if (p) {
+      if (typeof p.id === 'string') st.sessionId = p.id
+      if (typeof p.cwd === 'string') st.cwd = p.cwd
     }
-    if (obj.type !== 'response_item') continue
-    const payload = obj.payload as { type?: string; role?: string; content?: unknown } | undefined
-    if (!payload || payload.type !== 'message') continue
-    // Drop injected 'developer' harness instructions — not dialogue.
-    if (payload.role !== 'user' && payload.role !== 'assistant') continue
-
-    const text = joinCodexText(payload.content)
-    if (!text) continue
-
-    if (payload.role === 'user') {
-      // The first user item is a synthetic <environment_context> preamble.
-      if (!sawFirstUser && text.startsWith('<environment_context>')) {
-        sawFirstUser = true
-        continue
-      }
-      sawFirstUser = true
-    }
-    turns.push({ role: payload.role, text, ts, source: 'codex', sessionId, cwd })
+    return
   }
-  return turns
+  if (obj.type !== 'response_item') return
+  const payload = obj.payload as { type?: string; role?: string; content?: unknown } | undefined
+  if (!payload || payload.type !== 'message') return
+  // Drop injected 'developer' harness instructions — not dialogue.
+  if (payload.role !== 'user' && payload.role !== 'assistant') return
+
+  const text = joinCodexText(payload.content)
+  if (!text) return
+
+  if (payload.role === 'user') {
+    // The first user item is a synthetic <environment_context> preamble.
+    if (!st.sawFirstUser && text.startsWith('<environment_context>')) {
+      st.sawFirstUser = true
+      return
+    }
+    st.sawFirstUser = true
+  }
+  st.turns.push({ role: payload.role, text, ts, source: 'codex', sessionId: st.sessionId, cwd: st.cwd })
+}
+
+export function parseCodexRollout(content: string): IngestTurn[] {
+  const st = newCodexState()
+  for (const obj of iterJsonl(content)) codexStep(st, obj)
+  return st.turns
 }
 
 // ---- Gemini CLI: ~/.gemini/tmp/<proj>/chats/session-*.json ----
@@ -257,20 +285,28 @@ function makeChunk(turns: IngestTurn[], text: string): IngestChunk {
   }
 }
 
+/** Characters per chunk when nobody says otherwise (~500 tokens, the bge window). */
+const DEFAULT_MAX_CHARS = 2000
+
 // Greedily pack turns into ~maxChars chunks; a single oversized turn is
 // windowed into multiple chunks so nothing exceeds the embedding window.
-export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): IngestChunk[] {
-  const maxChars = opts.maxChars ?? 2000
-  const chunks: IngestChunk[] = []
+//
+// A generator, so a pass can build (and hash) a long session's chunks in time slices; chunkTurns is the
+// whole list. The cut points are the contract (they decide every chunk hash): do not change them without
+// bumping INGEST_FORMAT_VERSION and the golden fixture.
+export function* chunkTurnsIter(turns: IngestTurn[], opts: ChunkOptions = {}): Generator<IngestChunk> {
+  const maxChars = opts.maxChars ?? DEFAULT_MAX_CHARS
   let buf: { turn: IngestTurn; line: string }[] = []
   let len = 0
 
-  const flush = (): void => {
-    if (buf.length === 0) return
+  /** The chunk the buffer makes (none when it is empty or blank); the buffer is emptied either way. */
+  const take = (): IngestChunk | null => {
+    if (buf.length === 0) return null
     const text = buf.map((b) => b.line).join('\n\n').trim()
-    if (text) chunks.push(makeChunk(buf.map((b) => b.turn), text))
+    const chunk = text ? makeChunk(buf.map((b) => b.turn), text) : null
     buf = []
     len = 0
+    return chunk
   }
 
   for (const t of turns) {
@@ -279,15 +315,22 @@ export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): Ingest
     // F32: a chunk carries ONE cwd (makeChunk stamps turns[0].cwd on all its turns), so split
     // on a cwd change — otherwise a session that moves between repos mis-tags the later repo's
     // work with the first repo's project (and loses it from the true project's recall).
-    if (buf.length > 0 && buf[0].turn.cwd !== t.cwd) flush()
+    if (buf.length > 0 && buf[0].turn.cwd !== t.cwd) {
+      const c = take()
+      if (c) yield c
+    }
     if (line.length > maxChars) {
-      flush()
+      const c = take()
+      if (c) yield c
       for (let i = 0; i < line.length; i += maxChars) {
-        chunks.push(makeChunk([t], line.slice(i, i + maxChars)))
+        yield makeChunk([t], line.slice(i, i + maxChars))
       }
       continue
     }
-    if (len > 0 && len + line.length + 2 > maxChars) flush()
+    if (len > 0 && len + line.length + 2 > maxChars) {
+      const c = take()
+      if (c) yield c
+    }
     buf.push({ turn: t, line })
     len += line.length + 2
   }
@@ -295,19 +338,62 @@ export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): Ingest
   // ACTIVE session, skip the trailing partial — it grows by one turn each pass and would
   // deposit a new strict-superset duplicate every ~90s (and, since ts is now conversation
   // time, they'd all rank as freshest). The tail is captured once it fills, or by the full pass.
-  if (!opts.sealedOnly) flush()
-  return chunks
+  if (!opts.sealedOnly) {
+    const c = take()
+    if (c) yield c
+  }
+}
+
+export function chunkTurns(turns: IngestTurn[], opts: ChunkOptions = {}): IngestChunk[] {
+  return [...chunkTurnsIter(turns, opts)]
 }
 
 // ---- Orchestration ----
+
+/** Why a truncated pass stopped: its chunk cap, its byte budget, or a stop (the app is quitting, or the pause switch). */
+export type IngestStop = 'chunks' | 'bytes' | 'stopped'
 
 export interface IngestStats {
   filesScanned: number
   chunksWritten: number
   chunksSkipped: number // already present (content-hash dedup)
-  truncated: boolean    // maxChunks halted this pass early — backlog remains for the next run
+  truncated: boolean    // a cap, the byte budget or a stop halted this pass early — backlog remains for the next run
   /** Sessions another computer started over Linked machines, left out. Absent when there were none. */
   delegatedSkipped?: number
+  /** Files passed over untouched because the watermark says they were completely ingested at this size and time. Present when a watermark was given. */
+  unchanged?: number
+  /** Files this pass vouched for (marked complete, or known to be another computer's). A pass that stopped at its byte budget without marking one got nowhere. Present when a watermark was given. */
+  marked?: number
+  /** Bytes the pass spent: the size of every file it read (the characters read, for one whose size is unknown). Present when the pass looks at file sizes. */
+  bytesRead?: number
+  /** Why a truncated pass stopped. */
+  stop?: IngestStop
+}
+
+/** The counters of one pass, handed to IngestDeps.onPass: numbers only, never a path or a word of a transcript. */
+export interface PassMetrics {
+  /** Files read and parsed. */
+  files: number
+  /** Files skipped unread (watermark). */
+  unchanged: number
+  /** Bytes spent (see IngestStats.bytesRead). */
+  bytes: number
+  /** Chunks built and hashed. */
+  hashed: number
+  /** Chunks the store already had. */
+  known: number
+  /** Chunks written. */
+  written: number
+  /** Milliseconds of synchronous work (parse, chunk, hash) in the pass, summed over its slices. */
+  parseMsSum: number
+  /** The longest single synchronous slice, in milliseconds: the thing the typing path feels. */
+  parseMsMax: number
+  truncated: boolean
+  stop?: IngestStop
+  /** The whole pass, in milliseconds, waits included. */
+  ms: number
+  /** Which follow-up of a drain this was (0 when it was not one). */
+  drainPass: number
 }
 
 // A macrotask yield. Embedding is CPU-heavy and runs in-process on the main
@@ -372,8 +458,37 @@ export interface IngestDeps {
    *  under way is one more request its exit has to wait out. */
   stopped?: () => boolean
   /** Told the chunk hashes a delegated session would have had, for the one-time pass that finds
-   *  the ones an earlier version stored (linkedHistoryRecheck). */
+   *  the ones an earlier version stored (linkedHistoryRecheck). A pass that gives none wants no
+   *  such hashes, so with a watermark it passes over a delegated session already known (unread). */
   onDelegated?: (hashes: string[]) => void
+
+  // ---- P4: everything below is optional, and with none of it given a pass is exactly what it was in 1.54.4 ----
+
+  /** Size and mtime of a file, null when unknown (such a file is always processed). */
+  statFile?: (filePath: string) => Promise<FileStamp | null>
+  /** The persisted per-file watermark. With it, a file whose stamp (taken before it was read) matches a mark is skipped unread. */
+  watermark?: IngestWatermark
+  /** Stop before the next file once this many bytes were spent (a file is never cut: one that crosses the budget ends the pass). */
+  maxBytes?: number
+  /** Monotonic clock in ms (default: performance.now). */
+  now?: () => number
+  /** Longest synchronous stretch of parsing and chunking, in ms. When set, a pass yields to the event loop between slices
+   *  and asks stopped() and quiet() at every slice boundary. */
+  sliceMs?: number
+  /** Resolves when background work may go ahead (the user is not typing). Asked before every file that needs reading, and at slice boundaries. */
+  quiet?: () => Promise<unknown>
+  /** The file's text in pieces, instead of readFile (so a very large transcript is never one read, one string and one parse). */
+  readText?: (filePath: string) => AsyncIterable<string>
+  /** The first bytes of a file: enough to tell whether a subagent's PARENT session was started by another computer, without reading it whole. */
+  readHead?: (filePath: string, maxBytes: number) => Promise<{ text: string; eof: boolean }>
+  /** Asked once at the end of the pass: false (or a throw) means the marks it made must not be kept (the store was locked). */
+  canMark?: () => Promise<boolean>
+  /** The listing was every transcript there is (all sources, no freshness filter): files missing from it leave the watermark. */
+  fullListing?: boolean
+  /** Told the counters of the pass, once, however it ended. */
+  onPass?: (metrics: PassMetrics) => void
+  /** Which follow-up of a drain this pass is (reported back in PassMetrics). */
+  drainPass?: number
 }
 
 // Sources with stable, documented on-disk transcripts.
@@ -400,120 +515,459 @@ export function parentSessionFile(source: ConversationSource, filePath: string):
   return basename(dir) === 'subagents' ? `${dirname(dir)}.jsonl` : null
 }
 
+/** The head of a subagent's parent session that settles whether another computer started it. Far less than the file. */
+export const PARENT_HEAD_BYTES = 256 * 1024
+
+/** Hashes per question when checking that the store kept what a pass wrote (the store answers at most 5,000 at a time). */
+const VERIFY_BATCH = 4000
+
+/** The tier a pass's marks are kept under: null when its chunking is not the default (a mark would vouch for another cut). */
+function markTier(o?: ChunkOptions): MarkTier | null {
+  if (o?.maxChars !== undefined && o.maxChars !== DEFAULT_MAX_CHARS) return null
+  return o?.sealedOnly ? 'sealed' : 'full'
+}
+
+async function* singlePiece(text: string): AsyncGenerator<string> {
+  yield text
+}
+
+/** The head's text up to its last complete line (all of it when it reaches the end of the file). */
+function completeLines(head: { text: string; eof: boolean }): string {
+  if (head.eof) return head.text
+  const nl = head.text.lastIndexOf('\n')
+  return nl < 0 ? '' : head.text.slice(0, nl + 1)
+}
+
 // Read every transcript, chunk it, and write new (unseen) chunks. Idempotent:
 // chunks whose content hash is already stored are skipped, so re-running over a
 // growing set of transcripts only embeds genuinely new content. Tolerant of
 // unreadable files / sources — one failure never aborts the run.
+//
+// P4 (all of it through optional deps): a file the watermark vouches for is not opened; a pass spends at
+// most a byte budget; the synchronous parse and hash work is cut into time slices with the event loop (and
+// the keyboard) served between them; the user typing holds a pass back. Chunks, hashes and what is written
+// are the same as ever.
 export async function ingestConversations(deps: IngestDeps): Promise<IngestStats> {
   const sources = deps.sources ?? DISK_SOURCES
   const doYield = deps.yield ?? yieldToEventLoop
   const yieldEvery = Math.max(1, deps.yieldEvery ?? 1)
   const maxChunks = deps.maxChunks ?? Infinity
+  const maxBytes = deps.maxBytes ?? Infinity
+  const now = deps.now ?? ((): number => performance.now())
+  const sliceMs = deps.sliceMs
+  const wm = deps.watermark
+  const tier = markTier(deps.chunkOptions)
+  const wantStat = wm !== undefined || Number.isFinite(maxBytes)
   const stats: IngestStats = { filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false }
+  const metrics: PassMetrics = { files: 0, unchanged: 0, bytes: 0, hashed: 0, known: 0, written: 0, parseMsSum: 0, parseMsMax: 0, truncated: false, ms: 0, drainPass: deps.drainPass ?? 0 }
+  const startedAt = now()
   let sinceYield = 0
+  let bytesRead = 0
+  let marked = 0
+  const listed: Set<string> | null = wm && deps.fullListing ? new Set<string>() : null
+  let listingComplete = true
+
+  const stopWith = (reason: IngestStop): void => {
+    stats.truncated = true
+    stats.stop = reason
+  }
+
+  // SYNCHRONOUS STRETCHES. A stretch is the time the thread was held since the last genuine await (I/O, the
+  // store, a yield). `sliceStart` marks where it began and is reset ONLY after such an await: running from
+  // parsing straight into chunking with no event-loop turn between them is one stretch, not two. Every
+  // genuine await in the per-file pipeline goes through io(), which closes the stretch (it is counted in the
+  // pass counters: the longest one is what the keyboard feels) and starts the next when the await returns.
+  let sliceStart = now()
+  const resume = (): void => {
+    sliceStart = now()
+  }
+  const account = (): void => {
+    const d = now() - sliceStart
+    metrics.parseMsSum += d
+    if (d > metrics.parseMsMax) metrics.parseMsMax = d
+  }
+  const io = async <T>(call: () => PromiseLike<T> | T): Promise<T> => {
+    account()
+    const result = await call()
+    resume()
+    return result
+  }
+  /** The stretch has used its slice. */
+  const due = (): boolean => sliceMs !== undefined && now() - sliceStart >= sliceMs
+
+  // The user typing holds work back; asked before a file is read and between slices. Fails open.
+  const waitQuiet = async (): Promise<void> => {
+    if (!deps.quiet) return
+    try {
+      await io(() => (deps.quiet as () => Promise<unknown>)())
+    } catch {
+      /* the work goes ahead */
+    }
+  }
+
+  /** Let the event loop (the keyboard) in. false: the pass was stopped while it did. */
+  const boundary = async (): Promise<boolean> => {
+    await io(() => doYield())
+    if (deps.stopped?.()) return false
+    await waitQuiet()
+    if (deps.stopped?.()) return false
+    return true
+  }
+
   // Per session file, whether another computer started it: asked once a pass however many
   // subagents it ran, and false for one that can't be read -- there is no telling then.
   const delegatedParents = new Map<string, Promise<boolean>>()
+  const decideParent = async (parent: string): Promise<boolean> => {
+    const whole = (): Promise<boolean> => deps.readFile(parent).then((text) => isDelegatedSession(parseClaudeTranscript(text)), () => false)
+    if (!deps.readHead) return whole()
+    let head: { text: string; eof: boolean }
+    try {
+      head = await deps.readHead(parent, PARENT_HEAD_BYTES)
+    } catch {
+      return false
+    }
+    // A session's opening decides it, and that is the head of the file: the turns of its complete lines are a
+    // prefix of the turns the whole file has. Only while nothing settles it yet is the whole file read.
+    const turns = parseClaudeTranscript(completeLines(head))
+    if (head.eof || openingSettled(turns)) return isDelegatedSession(turns)
+    return whole()
+  }
   const parentDelegated = (parent: string): Promise<boolean> => {
     let known = delegatedParents.get(parent)
     if (!known) {
-      known = deps.readFile(parent).then((text) => isDelegatedSession(parseClaudeTranscript(text)), () => false)
+      known = decideParent(parent)
       delegatedParents.set(parent, known)
     }
     return known
   }
+
   // Skipped-but-cwd-bearing chunks → project backfill for legacy entries.
   const pendingPatches: Array<{ hash: string; project: string }> = []
   const flushPatches = (): void => {
     if (pendingPatches.length === 0 || !deps.patchProjects) return
     try { deps.patchProjects(pendingPatches.splice(0)) } catch { /* best-effort */ }
   }
-  for (const source of sources) {
-    let files: string[]
+
+  /** The turns of one file, parsed line by line from its pieces; null when the pass was stopped meanwhile. */
+  const parseStream = async (
+    source: ConversationSource,
+    filePath: string,
+    pieces: AsyncIterable<string>,
+    count: (chars: number) => void,
+    /** The pieces come from real reads (each fetch is a genuine await). In-memory text is not: fetching it must not reset the slice clock. */
+    fromDisk: boolean,
+  ): Promise<IngestTurn[] | null> => {
+    const it = pieces[Symbol.asyncIterator]()
+    const next = (): Promise<IteratorResult<string>> => (fromDisk ? io(() => it.next()) : it.next())
     try {
-      files = await deps.listFiles(source)
-    } catch {
-      continue
+      if (source !== 'claude' && source !== 'codex') {
+        // One JSON document (Gemini): nothing to slice, it is one parse.
+        let text = ''
+        for (;;) {
+          const r = await next()
+          if (r.done) break
+          text += r.value
+          count(r.value.length)
+        }
+        return parseBySource(source, text, filePath)
+      }
+      const st = source === 'claude' ? newClaudeState() : newCodexState()
+      const handle = (line: string): void => {
+        const obj = parseJsonLine(line)
+        if (!obj) return
+        if (source === 'claude') claudeStep(st as ClaudeState, obj)
+        else codexStep(st as CodexState, obj)
+      }
+      // The pieces of a line whose end has not come yet, joined once when it does (a multi-MB tool result is ONE line).
+      let pending: string[] = []
+      for (;;) {
+        const r = await next()
+        if (r.done) break
+        const piece = r.value
+        count(piece.length)
+        let pos = 0
+        for (;;) {
+          const nl = piece.indexOf('\n', pos)
+          if (nl < 0) break
+          let line: string
+          if (pending.length > 0) {
+            pending.push(piece.slice(pos, nl))
+            line = pending.join('')
+            pending = []
+          } else {
+            line = piece.slice(pos, nl)
+          }
+          pos = nl + 1
+          handle(line)
+          if (due() && !(await boundary())) return null
+        }
+        if (pos < piece.length) pending.push(pos === 0 ? piece : piece.slice(pos))
+      }
+      if (pending.length > 0) handle(pending.join(''))
+      return st.turns
+    } finally {
+      // Closes the file when the pass stops early or fails; a no-op after the last piece.
+      await it.return?.()
     }
-    for (const filePath of files) {
-      if (deps.stopped?.()) {
-        // No flushPatches: the store is shutting down too, and the next pass rebuilds them.
-        stats.truncated = true
-        return stats
+  }
+
+  /** The parsed turns of a file and what reading it cost; 'stopped'; or null when it cannot be read. */
+  const readParsed = async (
+    source: ConversationSource,
+    filePath: string,
+    stamp: FileStamp | null,
+  ): Promise<{ turns: IngestTurn[]; spent: number } | 'stopped' | null> => {
+    let chars = 0
+    try {
+      if (!deps.readText && sliceMs === undefined) {
+        const content = await io(() => deps.readFile(filePath))
+        const turns = parseBySource(source, content, filePath)
+        return { turns, spent: stamp ? stamp.size : content.length }
       }
-      let content: string
+      const pieces = deps.readText ? deps.readText(filePath) : singlePiece(await io(() => deps.readFile(filePath)))
+      const turns = await parseStream(source, filePath, pieces, (n) => { chars += n }, deps.readText !== undefined)
+      return turns === null ? 'stopped' : { turns, spent: stamp ? stamp.size : chars }
+    } catch {
+      return null
+    }
+  }
+
+  /** The chunks of `turns`, built (and hashed) in slices; null when the pass was stopped meanwhile. */
+  const buildChunks = async (turns: IngestTurn[]): Promise<IngestChunk[] | null> => {
+    if (sliceMs === undefined) return chunkTurns(turns, deps.chunkOptions)
+    const out: IngestChunk[] = []
+    for (const chunk of chunkTurnsIter(turns, deps.chunkOptions)) {
+      out.push(chunk)
+      if (due() && !(await boundary())) return null
+    }
+    return out
+  }
+
+  /**
+   * A mark is a claim about the memory store, and the store can be cleared, restored or re-keyed behind it.
+   * So before a pass trusts any mark it asks the store about the probes the watermark kept (the first chunk
+   * of the files it marked last): if NONE of them is there the store was wiped or replaced and every mark is
+   * dropped, so everything is learned again, as every pass used to do. A store that cannot answer is not
+   * evidence of anything: the marks stay.
+   */
+  const confirmStore = async (): Promise<void> => {
+    if (!wm) return
+    const probes = wm.probes()
+    if (probes.length === 0 || (!deps.hasHashes && !deps.hasHash)) return
+    let present: number | null = null
+    try {
+      if (deps.hasHashes) present = [...(await io(() => (deps.hasHashes as NonNullable<IngestDeps['hasHashes']>)(probes)))].length
+      else present = probes.filter((h) => (deps.hasHash as (hash: string) => boolean)(h)).length
+    } catch {
+      present = null
+    }
+    if (present === 0) wm.clear()
+  }
+
+  /**
+   * Whether the store really holds `hashes` now. A write that returned is not proof of it: the store answers
+   * a write whose disk append failed (it keeps the entry in memory, says nothing, and does not count the hash
+   * as stored), and the old loop made up for that by offering the chunk again on the next pass. A mark would
+   * stop that, so a file is marked only once the store itself says it has everything this pass wrote. A store
+   * that cannot answer (it throws, or knownHashes degrades to "none") means "not proven": the file is simply
+   * read again next pass.
+   */
+  const storeHolds = async (hashes: string[]): Promise<boolean> => {
+    if (hashes.length === 0 || (!deps.hasHashes && !deps.hasHash)) return true
+    for (let i = 0; i < hashes.length; i += VERIFY_BATCH) {
+      const batch = hashes.slice(i, i + VERIFY_BATCH)
+      const kept = await io(() => knownHashes(deps, batch))
+      if (kept.size < batch.length) return false
+    }
+    return true
+  }
+
+  const walk = async (): Promise<void> => {
+    if (deps.stopped?.()) return stopWith('stopped')
+    await confirmStore()
+    for (const source of sources) {
+      let files: string[]
       try {
-        content = await deps.readFile(filePath)
+        files = await deps.listFiles(source)
       } catch {
+        listingComplete = false
         continue
       }
-      stats.filesScanned++
-      const parsed = parseBySource(source, content, filePath)
-      // A session another computer started here over Linked machines is that computer's job, not
-      // this one's memory, and the primer a headless run opened with is memory already. Both are
-      // left out (shared/headlessPrompt). A subagent's transcript opens with the task its session
-      // gave it, not with the session's prompt: it is another computer's work when its session is.
-      const parent = parentSessionFile(source, filePath)
-      const turns = parent !== null && (await parentDelegated(parent)) ? null : ownDialogue(parsed)
-      if (!turns) {
-        stats.delegatedSkipped = (stats.delegatedSkipped ?? 0) + 1
-        if (deps.onDelegated) {
-          try { deps.onDelegated(chunkTurns(parsed, deps.chunkOptions).map((c) => c.hash)) } catch { /* best effort */ }
+      if (listed) for (const f of files) listed.add(f)
+      for (const filePath of files) {
+        if (deps.stopped?.()) {
+          // No flushPatches: the store is shutting down too, and the next pass rebuilds them.
+          return stopWith('stopped')
         }
-        continue
-      }
-      if (turns.length === 0) continue
-      let chunks = [...chunkTurns(turns, deps.chunkOptions)]
-      if (chunks.length === 0) continue
-      // One membership query per FILE, resolved BEFORE the write loop, so the predicate below stays
-      // synchronous. `known` is then kept current as we write: two identical chunks in one file must
-      // dedup to one, exactly as they did when hasHash read the live store.
-      let known = await knownHashes(deps, chunks.map((c) => c.hash))
-      // The primer came off this session's opening prompt. One an earlier version stored with it
-      // keeps the chunking it was stored under: the shorter first turn moves every cut after it, so
-      // re-cut, the whole session would get new hashes and be stored and embedded a second time,
-      // beside the old copy. Its first chunk, primer and all, tells: only an earlier version stores
-      // that one, where a later chunk can be cut the same with the primer or without.
-      if (turns !== parsed) {
-        const whole = chunkTurns(parsed, deps.chunkOptions)
-        const stored = await knownHashes(deps, whole.map((c) => c.hash))
-        if (stored.has(whole[0].hash)) {
-          chunks = whole
-          known = stored
+        // The stamp is taken BEFORE the read, and is what gets marked: a file appended to while it is read looks changed next pass.
+        let stamp: FileStamp | null = null
+        if (deps.statFile && wantStat) {
+          try {
+            stamp = await io(() => (deps.statFile as (p: string) => Promise<FileStamp | null>)(filePath))
+          } catch {
+            stamp = null
+          }
         }
-      }
-      for (const chunk of chunks) {
-        if (known.has(chunk.hash)) {
-          stats.chunksSkipped++
-          if (chunk.cwd) pendingPatches.push({ hash: chunk.hash, project: chunk.cwd })
+        if (wm && tier && stamp && wm.isDone(filePath, stamp, tier)) {
+          metrics.unchanged++
           continue
         }
-        try {
-          await deps.write(chunk)
-          stats.chunksWritten++
-          known.add(chunk.hash) // the store has it now — a repeat inside this same file must skip
-        } catch {
-          continue // skip a chunk that fails to persist (no embed happened to yield for)
+        // Another computer's session, known at exactly this size and time: only the pass that feeds the one-time
+        // linked-history recheck (it asks for the hashes, with onDelegated) has any reason to read it again.
+        if (wm && stamp && !deps.onDelegated && wm.isDelegated(filePath, stamp)) {
+          metrics.unchanged++
+          continue
         }
-        // Let the event loop service IPC/timers between embeds so a bulk
-        // first-run trickles in the background instead of freezing the app.
-        if (++sinceYield >= yieldEvery) {
-          sinceYield = 0
-          await doYield()
+        if (bytesRead >= maxBytes) return stopWith('bytes')
+        await waitQuiet()
+        if (deps.stopped?.()) return stopWith('stopped')
+
+        const got = await readParsed(source, filePath, stamp)
+        if (got === 'stopped') return stopWith('stopped')
+        if (got === null) continue
+        bytesRead += got.spent
+        metrics.bytes += got.spent
+        stats.filesScanned++
+        metrics.files++
+        const parsed = got.turns
+        const markFile = (probe?: string): void => {
+          if (wm && tier && stamp) {
+            wm.markDone(filePath, stamp, tier, probe)
+            marked++
+          }
         }
-        // Bound the pass so a huge first index is spread over several short
-        // bursts (the indexer reschedules a quick follow-up) rather than one
-        // long grind. The caller decides whether to cap (background) or not (
-        // an explicit user-triggered "index everything").
-        if (stats.chunksWritten >= maxChunks) {
-          stats.truncated = true
-          flushPatches()
-          return stats
+        /** Mark a file that wrote chunks, once the store has proven it keeps them. */
+        const markWritten = async (written: string[], probe: string): Promise<void> => {
+          if (wm && tier && stamp && (await storeHolds(written))) markFile(probe)
         }
+
+        // A session another computer started here over Linked machines is that computer's job, not
+        // this one's memory, and the primer a headless run opened with is memory already. Both are
+        // left out (shared/headlessPrompt). A subagent's transcript opens with the task its session
+        // gave it, not with the session's prompt: it is another computer's work when its session is.
+        // Such a file is marked as another computer's, so a pass that wants no hashes of it (the drain, the
+        // fast tier) passes it over unread; a pass that does (onDelegated, the one-time linked-history
+        // recheck) reads it every time, so the recheck always gets the hashes it needs.
+        const parent = parentSessionFile(source, filePath)
+        const turns = parent !== null && (await io(() => parentDelegated(parent))) ? null : ownDialogue(parsed)
+        if (!turns) {
+          stats.delegatedSkipped = (stats.delegatedSkipped ?? 0) + 1
+          if (deps.onDelegated) {
+            const would = await buildChunks(parsed)
+            if (would === null) return stopWith('stopped')
+            try { deps.onDelegated(would.map((c) => c.hash)) } catch { /* best effort */ }
+          }
+          if (wm && stamp) {
+            wm.markDone(filePath, stamp, 'delegated')
+            marked++
+          }
+          continue
+        }
+        if (turns.length === 0) {
+          markFile()
+          continue
+        }
+        let chunks = await buildChunks(turns)
+        if (chunks === null) return stopWith('stopped')
+        if (chunks.length === 0) {
+          markFile()
+          continue
+        }
+        metrics.hashed += chunks.length
+        // One membership query per FILE, resolved BEFORE the write loop, so the predicate below stays
+        // synchronous. `known` is then kept current as we write: two identical chunks in one file must
+        // dedup to one, exactly as they did when hasHash read the live store.
+        let known = await io(() => knownHashes(deps, (chunks as IngestChunk[]).map((c) => c.hash)))
+        // The primer came off this session's opening prompt. One an earlier version stored with it
+        // keeps the chunking it was stored under: the shorter first turn moves every cut after it, so
+        // re-cut, the whole session would get new hashes and be stored and embedded a second time,
+        // beside the old copy. Its first chunk, primer and all, tells: only an earlier version stores
+        // that one, where a later chunk can be cut the same with the primer or without.
+        if (turns !== parsed) {
+          const whole = await buildChunks(parsed)
+          if (whole === null) return stopWith('stopped')
+          metrics.hashed += whole.length
+          const stored = await io(() => knownHashes(deps, whole.map((c) => c.hash)))
+          if (stored.has(whole[0].hash)) {
+            chunks = whole
+            known = stored
+          }
+        }
+        let failed = false
+        const written: string[] = [] // the hashes this pass wrote for this file
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i]
+          if (known.has(chunk.hash)) {
+            stats.chunksSkipped++
+            metrics.known++
+            if (chunk.cwd) pendingPatches.push({ hash: chunk.hash, project: chunk.cwd })
+            continue
+          }
+          try {
+            await io(() => deps.write(chunk))
+            stats.chunksWritten++
+            metrics.written++
+            known.add(chunk.hash) // the store has it now — a repeat inside this same file must skip
+            written.push(chunk.hash)
+          } catch {
+            failed = true // skip a chunk that fails to persist (no embed happened to yield for); the file is not complete
+            continue
+          }
+          // Let the event loop service IPC/timers between embeds so a bulk
+          // first-run trickles in the background instead of freezing the app.
+          if (++sinceYield >= yieldEvery) {
+            sinceYield = 0
+            await io(() => doYield())
+          }
+          // Bound the pass so a huge first index is spread over several short
+          // bursts (the indexer reschedules a quick follow-up) rather than one
+          // long grind. The caller decides whether to cap (background) or not (
+          // an explicit user-triggered "index everything").
+          if (stats.chunksWritten >= maxChunks) {
+            if (!failed && i === chunks.length - 1) await markWritten(written, chunks[0].hash) // the cap fell on this file's last chunk: it is complete
+            return stopWith('chunks')
+          }
+        }
+        if (!failed) await markWritten(written, chunks[0].hash)
       }
     }
   }
-  flushPatches()
+
+  /** What the marks of this pass become: kept (written) when the pass is safe to build on, dropped otherwise. */
+  const settleMarks = async (): Promise<void> => {
+    if (!wm) return
+    if (stats.stop === 'stopped') return wm.discard()
+    let ok = true
+    if (deps.canMark) {
+      try {
+        ok = await deps.canMark()
+      } catch {
+        ok = false
+      }
+    }
+    if (!ok) return wm.discard()
+    if (listed && listingComplete && !stats.truncated) wm.forgetMissing(listed)
+    await wm.flush()
+  }
+
+  let threw = true
+  try {
+    await walk()
+    threw = false
+    if (stats.stop !== 'stopped') flushPatches()
+    await settleMarks()
+  } finally {
+    if (threw) wm?.discard()
+    if (wm) {
+      stats.unchanged = metrics.unchanged
+      stats.marked = marked
+    }
+    if (wantStat) stats.bytesRead = bytesRead
+    metrics.truncated = stats.truncated
+    metrics.stop = stats.stop
+    metrics.ms = now() - startedAt
+    try { deps.onPass?.(metrics) } catch { /* reporting never breaks a pass */ }
+  }
   return stats
 }
 
@@ -606,22 +1060,58 @@ export interface IngestMemory {
   link?: (from: string, to: string, relation: string, weight: number, ts?: number) => void
 }
 
+/** What the app's runtime (ingestRuntime) adds to every pass: the watermark, the byte budget, slices, the typing gate. */
+async function runtimeDeps(
+  rt: IngestRuntime,
+  opts: { maxChunks?: number; maxBytes?: number; freshSinceTs?: number; sources?: ConversationSource[]; drainPass?: number },
+  pausedNow: boolean,
+): Promise<Partial<IngestDeps>> {
+  const base: Partial<IngestDeps> = { onPass: (m) => rt.record(m), drainPass: opts.drainPass }
+  if (rt.legacy) return base
+  // Switched OFF: the pass ends before it touches anything, and that includes our own state file.
+  // (openWatermark never rejects: whatever cannot be read is an empty store.)
+  const watermark: IngestWatermark | undefined = rt.openWatermark && !pausedNow ? await rt.openWatermark() : undefined
+  return {
+    ...base,
+    statFile: rt.statFile,
+    watermark,
+    sliceMs: rt.sliceMs,
+    quiet: rt.quiet,
+    readText: rt.readText,
+    readHead: rt.readHead,
+    canMark: rt.canMark,
+    // A pass that carries a chunk cap is a background pass and gets the byte budget too; the explicit
+    // "index everything" has no cap and no budget (it still yields, waits for typing and skips what is done).
+    maxBytes: opts.maxBytes ?? (opts.maxChunks !== undefined ? rt.passBytes : undefined),
+    fullListing: opts.freshSinceTs === undefined && opts.sources === undefined,
+  }
+}
+
 // Compose real ingestion: discover on disk + dedup/write via the memory store.
 // Kept decoupled from swarmMemory so the orchestration stays unit-testable.
 export async function runConversationIngest(
   memory: IngestMemory,
-  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; freshSinceTs?: number; stopped?: () => boolean; onDelegated?: (hashes: string[]) => void } = {},
+  opts: { roots?: Partial<Record<ConversationSource, string>>; sources?: ConversationSource[]; chunkOptions?: ChunkOptions; maxChunks?: number; maxBytes?: number; drainPass?: number; freshSinceTs?: number; stopped?: () => boolean; onDelegated?: (hashes: string[]) => void } = {},
 ): Promise<IngestStats> {
   // BB6: track the last-written chunk id per session so we can lay down a 'follows'
   // edge between consecutive same-session chunks. Idempotent: already-stored chunks
   // are skipped (this closure isn't called for them) and upsertEdge dedups repeats.
   // A fresh map per run — cross-pass continuity isn't needed for the backbone.
   const lastIdBySession = new Map<string, string>()
+  // Set once at start-up (ingestRuntime.configureConversationIngest); null in tests and in anything that
+  // never configured it, and then a pass is exactly what it was in 1.54.4.
+  const rt = getIngestRuntime()
+  // The "Learn from conversations" switch: asked at every file and every slice. A switch that cannot be read is not "off".
+  const pausedNow = (): boolean => {
+    try { return rt?.paused() === true } catch { return false }
+  }
+  const stopped = rt ? (): boolean => pausedNow() || opts.stopped?.() === true : opts.stopped
+  const extra = rt ? await runtimeDeps(rt, opts, pausedNow()) : {}
   return ingestConversations({
     sources: opts.sources,
     chunkOptions: opts.chunkOptions,
     maxChunks: opts.maxChunks,
-    stopped: opts.stopped,
+    stopped,
     onDelegated: opts.onDelegated,
     listFiles: (source) => discoverTranscriptFiles(source, opts.roots?.[source], opts.freshSinceTs),
     readFile: (fp) => fsp.readFile(fp, 'utf8'),
@@ -650,5 +1140,6 @@ export async function runConversationIngest(
         lastIdBySession.set(sid, curId)
       }
     },
+    ...extra,
   })
 }

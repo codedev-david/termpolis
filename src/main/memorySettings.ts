@@ -1,6 +1,6 @@
-// Persisted, user-tunable memory settings (main process). Currently just the
-// primer size — how many of the most relevant memories are injected when an
-// agent launches or calls the memory_primer MCP tool. Lives in main (not
+// Persisted, user-tunable memory settings (main process): the primer size — how many of the most
+// relevant memories are injected when an agent launches or calls the memory_primer MCP tool — the int8
+// vector toggle, and the "Learn from conversations" pause switch. Lives in main (not
 // renderer localStorage like the auto-primer on/off toggle) because the MCP
 // primer handler runs here, so the setting must be readable server-side.
 //
@@ -25,6 +25,13 @@ export interface MemorySettings {
    * migration.
    */
   vectorQuantize: boolean
+  /**
+   * "Learn from conversations" (Settings). ON by default; OFF pauses the background indexer and conversation
+   * ingest (the passes that read past agent transcripts into memory). Nothing is deleted and memory search
+   * keeps working: it only stops adding. Anything but a literal `false` reads as ON, so an upgrade, a damaged
+   * file or a hand-edited value can never silently stop Termpolis from learning.
+   */
+  learnFromConversations: boolean
 }
 
 // UI/UX bounds. The pure builder still hard-caps at 100; this keeps the panel
@@ -38,7 +45,7 @@ function clampPrimerLimit(value: unknown): number {
   return Math.min(PRIMER_LIMIT_MAX, Math.max(PRIMER_LIMIT_MIN, n))
 }
 
-let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false }
+let settings: MemorySettings = { primerLimit: DEFAULT_PRIMER_LIMIT, vectorQuantize: false, learnFromConversations: true }
 let initialized = false
 
 function settingsPath(): string {
@@ -60,6 +67,8 @@ function init(): void {
           primerLimit: clampPrimerLimit(parsed.primerLimit),
           // Absent key => false. A memory system defaults to EXACT; you opt in to the approximation.
           vectorQuantize: parsed.vectorQuantize === true,
+          // Absent key => ON. Learning is the default; you opt out of it, and only by saying `false`.
+          learnFromConversations: parsed.learnFromConversations !== false,
         }
       }
     }
@@ -106,6 +115,20 @@ export function getVectorQuantize(): boolean {
 export function setVectorQuantize(value: unknown): MemorySettings {
   if (!initialized) init()
   settings.vectorQuantize = value === true
+  persist()
+  return getMemorySettings()
+}
+
+export function getLearnFromConversations(): boolean {
+  if (!initialized) init()
+  return settings.learnFromConversations
+}
+
+/** Persist the pause switch. Stopping or restarting the passes is memoryIndexer's and conversationIngest's job
+ *  (they read this on every timer and at every slice); this module only remembers what the user picked. */
+export function setLearnFromConversations(value: unknown): MemorySettings {
+  if (!initialized) init()
+  settings.learnFromConversations = value !== false
   persist()
   return getMemorySettings()
 }

@@ -19,15 +19,20 @@
 
 import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
+import type { TranscriptPos } from './mnemeSession'
 
 export interface SessionCursor {
   count: number
   hash: string
+  /** Where in the transcript file this stands (transcriptDelta.ts), when known. Kept and written as is:
+   *  the reader that uses it validates it, so a hand-edited or older file costs one read in full. */
+  pos?: TranscriptPos
 }
 
 const FILE = 'session-cursors.json'
-/** One entry is ~80 bytes, so this caps the file around 40 KB. A user with more than 500
- *  distinct (repo, agent) transcripts is not being served by keeping the coldest ones. */
+/** One entry is ~80 bytes, ~300 with the position of the transcript file in it, so this caps the
+ *  file around 150 KB. A user with more than 500 distinct (repo, agent) transcripts is not being
+ *  served by keeping the coldest ones. */
 const MAX_ENTRIES = 500
 
 let dir: string | null = null
@@ -76,10 +81,10 @@ export function setSessionCursor(key: string, cursor: SessionCursor): void {
 export function flushSessionCursors(): void {
   if (!dir || !dirty) return
   try {
-    while (cursors.size > MAX_ENTRIES) {
-      const oldest = cursors.keys().next()
-      if (oldest.done) break
-      cursors.delete(oldest.value)
+    // A Map iterates in insertion order, so the first keys are the coldest.
+    for (const oldest of cursors.keys()) {
+      if (cursors.size <= MAX_ENTRIES) break
+      cursors.delete(oldest)
     }
     // Write-then-rename: a quit landing mid-write leaves the previous good file, not a
     // truncated one that the next boot would throw away entirely.

@@ -269,6 +269,7 @@ const mneme = vi.hoisted(() => ({
   initAnomalyLog: vi.fn(), getAnomalies: vi.fn(() => [{ e: 'anom' }]), anomalyCount: vi.fn(() => 3),
   // memoryIndexer
   stopIndexer: vi.fn(),
+  nudgeIndexer: vi.fn(),
   // conversation / code ingest
   runConversationIngest: vi.fn(async () => ({ chunksWritten: 4, truncated: false })),
   runCodeIngest: vi.fn(async () => ({ filesIndexed: 2 })),
@@ -310,7 +311,7 @@ const mneme = vi.hoisted(() => ({
 vi.mock('../../src/main/memoryAnomalyLog', () => ({
   initAnomalyLog: mneme.initAnomalyLog, getAnomalies: mneme.getAnomalies, anomalyCount: mneme.anomalyCount,
 }))
-vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: mockStartIndexer, stopIndexer: mneme.stopIndexer }))
+vi.mock('../../src/main/memoryIndexer', () => ({ startIndexer: mockStartIndexer, stopIndexer: mneme.stopIndexer, nudgeIndexer: mneme.nudgeIndexer }))
 vi.mock('../../src/main/conversationIngest', () => ({ runConversationIngest: mneme.runConversationIngest }))
 vi.mock('../../src/main/codeIngest', () => ({ runCodeIngest: mneme.runCodeIngest, discoverRepoFiles: mneme.discoverRepoFiles }))
 vi.mock('../../src/main/codeWatch', () => ({
@@ -728,6 +729,37 @@ describe('memory:host-status', () => {
     // pid null, not undefined: `undefined` is dropped by structured clone, and the panel would then
     // read a payload with no `pid` key at all rather than one that says "there is no child".
     expect(await invoke('memory:host-status')).toEqual({ success: true, data: { mode: 'inproc', pid: null } })
+  })
+
+  it('v1.54.5: an UNAVAILABLE brain carries what the panel shows: the attempt, the wait, the sizes and the cause', async () => {
+    // The mode alone would only say "unavailable". The panel also tells a person how big the store
+    // is against the limit, which attempt this is and when the next one is; those ride on the same
+    // payload, from the one small module that holds them, so this handler gained one spread.
+    const { setMemoryUnavailableState } = await import('../../src/main/memoryFallbackGuard')
+    mem.memoryHostMode.mockReturnValueOnce('unavailable')
+    mem.memoryHostPid.mockReturnValueOnce(undefined)
+    setMemoryUnavailableState({
+      attempt: 2, nextRetryAt: Date.now() + 20_000, retrying: false,
+      storeBytes: 475 * 1024 * 1024, limitBytes: 256 * 1024 * 1024,
+      reason: 'memory host exited during startup (code 9)', since: Date.now(),
+    })
+    try {
+      const res = await invoke('memory:host-status') as { success: boolean; data: Record<string, unknown> }
+      expect(res.success).toBe(true)
+      expect(res.data).toMatchObject({
+        mode: 'unavailable', pid: null, attempt: 2, retrying: false, storeMB: 475, limitMB: 256,
+        reason: 'memory host exited during startup (code 9)',
+      })
+      expect(res.data.retryInMs as number).toBeGreaterThan(0)
+      expect(res.data.retryInMs as number).toBeLessThanOrEqual(20_000)
+    } finally {
+      setMemoryUnavailableState(null)
+    }
+  })
+
+  it('CONTROL: with nothing unavailable the payload is still exactly {mode, pid}, with no extra keys', async () => {
+    const res = await invoke('memory:host-status') as { data: Record<string, unknown> }
+    expect(Object.keys(res.data).sort()).toEqual(['mode', 'pid'])
   })
 })
 
@@ -1186,22 +1218,22 @@ describe('memory:get-primer-limit / memory:set-primer-limit', () => {
   })
 
   it('clamps a too-small value up to the minimum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false })
-    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 0 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true })
+    expect((await invoke('memory:set-primer-limit', { value: -99 })).data).toEqual({ primerLimit: 1, vectorQuantize: false, learnFromConversations: true })
   })
 
   it('clamps a too-large value down to the maximum', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 9999 })).data).toEqual({ primerLimit: 50, vectorQuantize: false, learnFromConversations: true })
   })
 
   it('rounds a fractional value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 12.6 })).data).toEqual({ primerLimit: 13, vectorQuantize: false, learnFromConversations: true })
   })
 
   it('falls back to the default for junk and for a missing value', async () => {
-    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false })
-    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false })
-    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false })
+    expect((await invoke('memory:set-primer-limit', { value: 'lots' })).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
+    expect((await invoke('memory:set-primer-limit', {})).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
+    expect((await invoke('memory:set-primer-limit')).data).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
   })
 
   it('a new limit is what the NEXT primer is built with', async () => {
@@ -1483,6 +1515,93 @@ describe('memory:reflect-session', () => {
     mneme.reflectSoloSession.mockRejectedValueOnce(new Error('transcript unreadable'))
     const r = await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
     expect(r).toEqual({ success: false, error: 'transcript unreadable' })
+  })
+
+  // The pass used to read the WHOLE transcript before it looked at the cursor, and five terminals on one
+  // repo each ran it (the cursor only moves after the reflex resolves, so all five reflected the same turns).
+  // The handler now goes through runSessionReflection: a delta reader that is told the cursor first, and
+  // one pass per (cwd, agent) at a time. TERMPOLIS_REFLECT_FAST=off is today's call, exactly.
+  describe('the cursor is read first, and one pass runs per transcript (TERMPOLIS_REFLECT_FAST)', () => {
+    const saved = process.env.TERMPOLIS_REFLECT_FAST
+    afterEach(async () => {
+      if (saved === undefined) delete process.env.TERMPOLIS_REFLECT_FAST
+      else process.env.TERMPOLIS_REFLECT_FAST = saved
+      mneme.reflectSoloSession.mockImplementation(async () => ({ fired: true, lessons: 2 }))
+      const { resetFlights } = await import('../../src/main/sessionReflectPass')
+      resetFlights()
+    })
+
+    /** Hold every reflectSoloSession call until `release()`, so five requests can be in flight together. */
+    function held() {
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      mneme.reflectSoloSession.mockImplementation(async () => {
+        await gate
+        return { fired: true, lessons: 2 }
+      })
+      return release
+    }
+    const five = () =>
+      Array.from({ length: 5 }, (_, i) => invoke('memory:reflect-session', { terminalId: `t${i}`, cwd: 'C:/repos/Termpolis', agent: 'claude' }))
+    const settle = () => new Promise((r) => setTimeout(r, 25))
+
+    it('hands the reflex the delta reader, so the cursor decides what is read', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      await invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r', agent: 'claude' })
+      const deps = mneme.reflectSoloSession.mock.calls[0][1]
+      const { readSessionDelta } = await import('../../src/main/transcriptDelta')
+      expect(deps.readDelta).toBe(readSessionDelta)
+      expect(typeof deps.readTranscript).toBe('function') // the whole-transcript read is still there to fall back on
+    })
+
+    it('five terminals on one repo: ONE pass runs, then ONE shared trailing pass, not five', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      const release = held()
+      const calls = five()
+      await vi.waitFor(() => expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(1))
+      await settle() // the other four have arrived by now, and none started a pass of its own
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(1)
+      release()
+      const results = await Promise.all(calls)
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(2)
+      expect(results.every((r: { success: boolean }) => r.success)).toBe(true)
+    })
+
+    it('different repos, and different agents on one repo, are different transcripts: each runs at once', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      const release = held()
+      const calls = [
+        invoke('memory:reflect-session', { terminalId: 't1', cwd: '/r/one', agent: 'claude' }),
+        invoke('memory:reflect-session', { terminalId: 't2', cwd: '/r/two', agent: 'claude' }),
+        invoke('memory:reflect-session', { terminalId: 't3', cwd: '/r/one', agent: 'codex' }),
+      ]
+      await vi.waitFor(() => expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(3))
+      release()
+      await Promise.all(calls)
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(3)
+    })
+
+    it('records the pass in the pass counters (numbers only)', async () => {
+      delete process.env.TERMPOLIS_REFLECT_FAST
+      const { resetPasses, snapshotPasses } = await import('../../src/main/passCounters')
+      resetPasses()
+      await invoke('memory:reflect-session', { terminalId: 't1', cwd: 'C:/very/private/project', agent: 'claude' })
+      const snap = snapshotPasses()
+      expect(snap.kinds.reflect.n).toBe(1)
+      expect(snap.kinds.reflect.sum).toMatchObject({ callers: 1, fired: 1, lessons: 2 })
+      expect(JSON.stringify(snap)).not.toContain('private')
+    })
+
+    it('CONTROL: with the switch off the deps are the old ones (no delta reader) and five requests are five passes', async () => {
+      process.env.TERMPOLIS_REFLECT_FAST = 'off'
+      const release = held()
+      const calls = five()
+      await vi.waitFor(() => expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(5))
+      expect(mneme.reflectSoloSession.mock.calls[0][1].readDelta).toBeUndefined()
+      release()
+      await Promise.all(calls)
+      expect(mneme.reflectSoloSession).toHaveBeenCalledTimes(5)
+    })
   })
 })
 
@@ -2027,6 +2146,143 @@ describe('memory indexer passes', () => {
     await indexerOpts().fastRun()
     mneme.runConversationIngest.mock.calls[1][0].link('c', 'd', 'follows', 0.3, 8)
     expect(mem.memoryLink).toHaveBeenCalledWith({ from: 'c', to: 'd', relation: 'follows', weight: 0.3, ts: 8, createdBy: 'ingest' })
+  })
+})
+
+// ===========================================================================
+// P4 — "Learn from conversations", the drain tier, and what index.ts hands the indexer.
+// ===========================================================================
+describe('Learn from conversations (the pause switch) and the drain tier', () => {
+  const indexerOpts = () => indexer
+
+  afterEach(async () => { await invoke('memory:set-learn-conversations', { value: true }) })
+
+  it('is ON by default, and the handlers read and set it (a literal false turns it off)', async () => {
+    expect(await invoke('memory:get-learn-conversations')).toEqual({ success: true, data: true })
+    const off = await invoke('memory:set-learn-conversations', { value: false })
+    expect(off).toEqual({ success: true, data: expect.objectContaining({ learnFromConversations: false }) })
+    expect((await invoke('memory:get-learn-conversations')).data).toBe(false)
+    expect((await invoke('memory:set-learn-conversations', { value: true })).data.learnFromConversations).toBe(true)
+    expect((await invoke('memory:set-learn-conversations', {})).data.learnFromConversations).toBe(true) // only a literal false stops learning
+  })
+
+  it('turning it back ON nudges the indexer (so the catch-up is not 30 minutes away); turning it OFF does not', async () => {
+    mneme.nudgeIndexer.mockClear()
+    await invoke('memory:set-learn-conversations', { value: false })
+    expect(mneme.nudgeIndexer).not.toHaveBeenCalled()
+    await invoke('memory:set-learn-conversations', { value: true })
+    expect(mneme.nudgeIndexer).toHaveBeenCalledTimes(1)
+  })
+
+  it('the indexer is handed the switch: paused() follows it, and every timer asks it', async () => {
+    expect(indexerOpts().paused()).toBe(false)
+    await invoke('memory:set-learn-conversations', { value: false })
+    expect(indexerOpts().paused()).toBe(true)
+    await invoke('memory:set-learn-conversations', { value: true })
+    expect(indexerOpts().paused()).toBe(false)
+  })
+
+  it('the manual "index everything" refuses with a plain message while it is OFF, and reads nothing', async () => {
+    await invoke('memory:set-learn-conversations', { value: false })
+    mneme.runConversationIngest.mockClear()
+    const r = await invoke('memory:ingest-conversations')
+    expect(r).toEqual({ success: false, error: expect.stringMatching(/turned off/i) })
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+    // NEGATIVE CONTROL: back ON, the same call runs
+    await invoke('memory:set-learn-conversations', { value: true })
+    expect((await invoke('memory:ingest-conversations')).success).toBe(true)
+    expect(mneme.runConversationIngest).toHaveBeenCalledTimes(1)
+  })
+
+  it('the indexer is handed a typing gate, a log, and the drain tier; the runtime was configured once at start-up', async () => {
+    const o = indexerOpts()
+    expect(typeof o.quiet).toBe('function')
+    await expect(o.quiet()).resolves.toMatchObject({ capped: false })
+    expect(typeof o.log).toBe('function')
+    expect(typeof o.drainRun).toBe('function')
+    const { getIngestRuntime } = await import('../../src/main/ingestRuntime')
+    const rt = getIngestRuntime()
+    expect(rt).not.toBeNull()
+    // and every ingest pass reads the very same switch, at every file and every slice
+    expect(rt!.paused()).toBe(false)
+    await invoke('memory:set-learn-conversations', { value: false })
+    expect(rt!.paused()).toBe(true)
+    await invoke('memory:set-learn-conversations', { value: true })
+    expect(rt!.paused()).toBe(false)
+  })
+
+  it('the drain tier ingests only: capped at 250 chunks, told which drain pass it is, with no recheck, no planners, no Weave', async () => {
+    mneme.runConversationIngest.mockClear()
+    mneme.runConsolidation.mockClear()
+    mneme.runSummarization.mockClear()
+    mneme.runWeave.mockClear()
+    mem.persistMemoryIndex.mockClear()
+    mem.reloadMemoryFromSync.mockClear()
+    mem.edgeKeysIncident.mockClear()
+    mneme.runConversationIngest.mockResolvedValueOnce({ filesScanned: 9, chunksWritten: 250, chunksSkipped: 0, truncated: true, stop: 'chunks' })
+    const out = await indexerOpts().drainRun({ drainPass: 3 })
+    expect(out).toMatchObject({ written: 250, more: true })
+    expect(mneme.runConversationIngest).toHaveBeenCalledWith(expect.anything(), { maxChunks: 250, stopped: expect.any(Function), drainPass: 3 })
+    expect(mem.persistMemoryIndex).not.toHaveBeenCalled() // still draining: persisted when it is done
+    for (const planner of [mneme.runConsolidation, mneme.runSummarization, mneme.runWeave, mem.reloadMemoryFromSync, mem.edgeKeysIncident]) expect(planner).not.toHaveBeenCalled()
+    // caught up: the index is persisted, still no planners
+    const done = await indexerOpts().drainRun({ drainPass: 4 })
+    expect(done).toMatchObject({ written: 4, more: false })
+    expect(mem.persistMemoryIndex).toHaveBeenCalledTimes(1)
+    expect(mneme.runConsolidation).not.toHaveBeenCalled()
+  })
+
+  // NEGATIVE CONTROL: the FULL pass is the one that plans and rechecks.
+  it('control: the full pass still runs the planners the drain tier skips', async () => {
+    mneme.runConsolidation.mockClear()
+    mneme.runWeave.mockClear()
+    await indexerOpts().run()
+    expect(mneme.runConsolidation).toHaveBeenCalled()
+    expect(mneme.runWeave).toHaveBeenCalled()
+  })
+
+  it('a drain pass over a LOCKED brain does nothing at all', async () => {
+    mem.getSyncStatus.mockResolvedValueOnce({ ownLocked: true })
+    mneme.runConversationIngest.mockClear()
+    expect(await indexerOpts().drainRun({ drainPass: 1 })).toEqual({ written: 0 })
+    expect(mneme.runConversationIngest).not.toHaveBeenCalled()
+  })
+
+  it('the full pass ends at once when the switch goes OFF while it ingests (no persist, no planners)', async () => {
+    mneme.runConsolidation.mockClear()
+    mneme.runWeave.mockClear()
+    mem.persistMemoryIndex.mockClear()
+    mneme.runConversationIngest.mockImplementationOnce(async () => {
+      await invoke('memory:set-learn-conversations', { value: false })
+      return { filesScanned: 2, chunksWritten: 1, chunksSkipped: 0, truncated: true, stop: 'stopped' }
+    })
+    const out = await indexerOpts().run()
+    expect(out).toMatchObject({ written: 1, more: false }) // a stopped pass asks for no follow-up
+    expect(mem.persistMemoryIndex).not.toHaveBeenCalled()
+    expect(mneme.runConsolidation).not.toHaveBeenCalled()
+    expect(mneme.runWeave).not.toHaveBeenCalled()
+  })
+
+  it('the fast pass ends at once too when the switch goes OFF while it ingests (no index persist); a quit-stop still persists as it always did', async () => {
+    mem.persistMemoryIndex.mockClear()
+    mneme.runConversationIngest.mockImplementationOnce(async () => {
+      await invoke('memory:set-learn-conversations', { value: false })
+      return { filesScanned: 1, chunksWritten: 0, chunksSkipped: 0, truncated: true, stop: 'stopped' }
+    })
+    expect(await indexerOpts().fastRun()).toMatchObject({ more: false })
+    expect(mem.persistMemoryIndex).not.toHaveBeenCalled()
+    // CONTROL: a pass stopped by something else (the app quitting) with the switch still ON is handled as before
+    await invoke('memory:set-learn-conversations', { value: true })
+    mneme.runConversationIngest.mockResolvedValueOnce({ filesScanned: 1, chunksWritten: 0, chunksSkipped: 0, truncated: true, stop: 'stopped' })
+    await indexerOpts().fastRun()
+    expect(mem.persistMemoryIndex).toHaveBeenCalledTimes(1)
+  })
+
+  it('both passes report their counters as a note for the log', async () => {
+    mneme.runConversationIngest.mockResolvedValueOnce({ filesScanned: 9, chunksWritten: 5, chunksSkipped: 0, truncated: false, unchanged: 40, bytesRead: 8 * 1024 * 1024 })
+    expect((await indexerOpts().run()).note).toMatch(/files 9 skipped 40 8\.0 MB/)
+    mneme.runConversationIngest.mockResolvedValueOnce({ filesScanned: 1, chunksWritten: 0, chunksSkipped: 3, truncated: false, unchanged: 2 })
+    expect((await indexerOpts().fastRun()).note).toMatch(/files 1 skipped 2/)
   })
 })
 

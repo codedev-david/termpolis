@@ -542,6 +542,25 @@ describe('terminal:write', () => {
     invokeOnHandler('terminal:write', { id: 'term-1', data: 'ls -la\r' })
     expect(mockWriteToTerminal).toHaveBeenCalledWith('term-1', 'ls -la\r')
   })
+
+  // P4: background ingest stands aside for 500 ms after a keystroke. The handler's whole contribution is one
+  // store of one number (typingQuiet.noteTyping); this is the only place that tells ingest the user is typing.
+  it('tells background work that the user is typing (one stamp, no timer)', async () => {
+    const tq = await import('../../src/main/typingQuiet')
+    tq.resetTypingQuiet()
+    expect(tq.msSinceTyping()).toBe(Number.POSITIVE_INFINITY)
+    invokeOnHandler('terminal:write', { id: 'term-1', data: 'x' })
+    expect(tq.msSinceTyping()).toBeLessThan(2_000)
+    expect(tq.msSinceTyping()).toBeGreaterThanOrEqual(0)
+  })
+
+  // NEGATIVE CONTROL: only a write counts as typing; a resize does not.
+  it('control: a resize is not typing', async () => {
+    const tq = await import('../../src/main/typingQuiet')
+    tq.resetTypingQuiet()
+    invokeOnHandler('terminal:resize', { id: 'term-1', cols: 100, rows: 30 })
+    expect(tq.msSinceTyping()).toBe(Number.POSITIVE_INFINITY)
+  })
 })
 
 // =========================================================================
