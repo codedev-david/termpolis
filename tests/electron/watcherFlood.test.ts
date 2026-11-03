@@ -38,6 +38,8 @@ const C = vi.hoisted(() => {
       active: 0,
       maxActive: 0,
       readDelayMs: 0,
+      /** How many times the OS watch was opened: the first, and every reopening after a storm closed it. */
+      watchOpens: 0,
     },
   }
 })
@@ -57,6 +59,7 @@ vi.mock('fs', async (importOriginal) => {
   wrapped.watch = (...args: unknown[]) => {
     if (C.tail.fake) {
       C.tail.listener = args[2] as (event: string, filename: string | null) => void
+      C.tail.watchOpens++
       return { on() {}, close() {} }
     }
     return (actual.watch as unknown as (...a: unknown[]) => unknown)(...args)
@@ -538,13 +541,16 @@ describe('tailFile under a 100,000-event storm', () => {
     }
     expect(syncCalls()).toBe(0)
     expect(spawnCalls()).toBe(0)
-    // Bounded: a leading tick, one at the end of its window, then the back-off schedule (about 7 in
-    // 70 s), never one per event and never one per poll. Each tick is one async stat; a tick that
-    // finds growth adds one open + one read.
-    expect(C.tail.read).toBeLessThanOrEqual(10)
-    expect(C.tail.stat).toBeLessThanOrEqual(12)
-    // No starvation: the data of a flood still arrives (one line per read here).
-    expect(C.tail.read).toBeGreaterThanOrEqual(4)
+    // The OS watch sheds itself (shedWatch.ts): closed after 200 events in a second, reopened at 4, 12, 28 and
+    // 60 s, so of the 105,000 write notifications about a thousand reached the tail at all.
+    expect(C.tail.watchOpens).toBeGreaterThanOrEqual(4)
+    expect(C.tail.watchOpens).toBeLessThanOrEqual(8)
+    // What reads the file is then its 1.5 s poll through the 2 s window: one read per window, never one per
+    // event, and the data of the flood still arrives. Each tick is one async stat; a tick that finds growth adds
+    // one open + one read.
+    expect(C.tail.read).toBeLessThanOrEqual(SUSTAINED.seconds / 2 + 4)
+    expect(C.tail.stat).toBeLessThanOrEqual(SUSTAINED.seconds / 2 + 8)
+    expect(C.tail.read).toBeGreaterThanOrEqual(SUSTAINED.seconds / 2 - 10)
     expect(t.lines.length).toBeGreaterThanOrEqual(C.tail.read)
     expect(C.tail.maxActive).toBeLessThanOrEqual(1)
     t.handle.stop()

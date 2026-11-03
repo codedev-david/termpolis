@@ -75,6 +75,8 @@ function harness(over: { throwOnOpen?: (n: number) => boolean; noEmitter?: boole
       }
       t = end
     },
+    /** The clock steps back (NTP, a manual change). */
+    back(ms: number): void { t -= ms },
     /** `n` events at the current instant, through the CURRENT handle. */
     burst(n: number, name = 'a.ts'): void {
       const h = opened[opened.length - 1]
@@ -120,6 +122,17 @@ describe('openSheddingWatch', () => {
     h.burst(150)
     h.advance(1000)
     h.burst(150)
+    h.advance(1000)
+    h.burst(150)
+    expect(h.events).toHaveLength(450)
+    expect(h.w.shed).toBe(false)
+  })
+
+  it('a clock stepped BACK does not turn a calm stream into a storm', () => {
+    const h = harness()
+    h.burst(150)
+    h.back(5000)
+    h.burst(150) // 300 events by the count, but on a clock that went backwards: a new window
     h.advance(1000)
     h.burst(150)
     expect(h.events).toHaveLength(450)

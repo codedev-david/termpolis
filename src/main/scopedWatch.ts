@@ -42,7 +42,7 @@
 
 import { promises as fsp } from 'fs'
 import { join, sep } from 'path'
-import { isIgnoredWatchPath, CASE_FOLDING_PLATFORMS } from './watchGuard'
+import { makeNameRule, CASE_FOLDING_PLATFORMS } from './watchGuard'
 import { openSheddingWatch, type ShedFsWatcher, type ShedFsWatchFn, type SheddingWatchOptions } from './shedWatch'
 
 export type ScopedFsWatcher = ShedFsWatcher
@@ -111,7 +111,7 @@ export function scopedRecursiveWatch(
   options: ScopedWatchOptions = {},
 ): ScopedWatch {
   const ci = options.caseInsensitive ?? CASE_FOLDING_PLATFORMS.has(process.platform)
-  const extra = [...(options.skipNames ?? [])]
+  const ignoredName = makeNameRule(options.skipNames)
   const expand = new Set([...(options.expandNames ?? ['.claude'])].map((n) => n.toLowerCase()))
   const maxSubs = options.maxSubscriptions ?? DEFAULT_MAX_SUBSCRIPTIONS
   const listDirs = options.listDirs ?? defaultListDirs
@@ -154,7 +154,7 @@ export function scopedRecursiveWatch(
       { recursive, ...persistent },
       (event, name) => {
         const t = text(name)
-        if (t === null || !isIgnoredWatchPath(t, extra)) wanted++
+        if (t === null || !ignoredName(t)) wanted++
         onEvent(event, name)
       },
       {
@@ -227,7 +227,7 @@ export function scopedRecursiveWatch(
   function considerChild(levelRel: string, name: string): void {
     if (closed || fellBack) return
     const rel = levelRel ? `${levelRel}/${name}` : name
-    if (isIgnoredWatchPath(rel, extra)) return
+    if (ignoredName(rel)) return
     const k = keyOf(rel)
     if (pending.has(k)) {
       // Another event for a name that is being looked at: the answer in flight may predate it (a directory
@@ -262,7 +262,7 @@ export function scopedRecursiveWatch(
     for (const n of names) {
       if (closed || fellBack) return
       const rel = levelRel ? `${levelRel}/${n}` : n
-      if (isIgnoredWatchPath(rel, extra)) continue
+      if (ignoredName(rel)) continue
       kept.add(keyOf(rel))
       await yieldToLoop()
       if (closed || fellBack) return
@@ -323,7 +323,7 @@ export function scopedRecursiveWatch(
       try { children = await listDirs(abs) } catch { /* unreadable: the level's own events still arrive */ }
       for (const child of children) {
         if (closed || fellBack) return
-        if (isIgnoredWatchPath(`${rel}/${child}`, extra)) continue
+        if (ignoredName(`${rel}/${child}`)) continue
         await yieldToLoop()
         await subscribe(rel, child, false)
       }
@@ -339,7 +339,7 @@ export function scopedRecursiveWatch(
       return
     }
     if (closed) return
-    const eligible = names.filter((n) => !isIgnoredWatchPath(n, extra))
+    const eligible = names.filter((n) => !ignoredName(n))
     if (eligible.length > maxSubs) { fallBack(`more than ${maxSubs} directories to watch`); return }
     for (const n of eligible) {
       if (closed || fellBack) return

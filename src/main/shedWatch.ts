@@ -110,7 +110,9 @@ export function openSheddingWatch(
   function onEvent(event: string, name: string | Buffer | null): void {
     if (closed || shed) return // already closed by us, or a queued event arriving after close()
     const t = now()
-    if (t - windowStart >= 1000) {
+    if (t - windowStart >= 1000 || t < windowStart) {
+      // A new second, or the clock was stepped BACK (NTP): without this the old window would count every event
+      // until the clock caught up, and a calm stream would look like a storm.
       windowStart = t
       count = 0
     }

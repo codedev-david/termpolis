@@ -10,6 +10,7 @@ import {
   createIgnoreFilter,
   createRunGate,
   isIgnoredWatchPath,
+  makeNameRule,
   probeNestedRepo,
   setWatchGatesPaused,
   watchGatesPaused,
@@ -55,6 +56,18 @@ describe('isIgnoredWatchPath', () => {
     expect(isIgnoredWatchPath('Pods/x.swift', ['PODS'])).toBe(true)
     expect(isIgnoredWatchPath('a/.termpolis/s.json', ['.termpolis'])).toBe(true)
     expect(isIgnoredWatchPath('src/a.ts', ['.termpolis'])).toBe(false)
+  })
+
+  it('makeNameRule folds the extra names in once and agrees with isIgnoredWatchPath', () => {
+    const rule = makeNameRule(['.TermPolis', 'Pods'])
+    for (const p of ['.termpolis/workflows/x.yml', 'a/PODS/b.swift', 'node_modules/x', '.worktrees\\wt\\f.ts', '.claude/worktrees/x']) {
+      expect(rule(p)).toBe(true)
+      expect(rule(p)).toBe(isIgnoredWatchPath(p, ['.TermPolis', 'Pods']))
+    }
+    for (const p of ['src/a.ts', '', '/', 'termpolis/a.ts', 'podsx/a']) expect(rule(p)).toBe(false)
+    const base = makeNameRule()
+    expect(base('dist/a.js')).toBe(true)
+    expect(base('.termpolis/a')).toBe(false)
   })
 
   it('exposes the contract numbers', () => {

@@ -87,12 +87,20 @@ function firstIgnoredSegment(lower: string, names: ReadonlySet<string>): number 
 /** The pure name rule, with no learning and no I/O: does any directory name on this event path say
  *  "not this tree"? `extra` adds names for one watcher (e.g. `.termpolis`). */
 export function isIgnoredWatchPath(rel: string, extra?: Iterable<string>): boolean {
+  if (extra) return makeNameRule(extra)(rel)
   const lower = toSlashes(rel).toLowerCase()
-  if (!lower) return false
-  if (!extra) return firstIgnoredSegment(lower, BASE_NAMES) !== -1
+  return lower !== '' && firstIgnoredSegment(lower, BASE_NAMES) !== -1
+}
+
+/** The same rule with `extra` folded in ONCE, for a watcher that applies it to every event it hears (this is on
+ *  the path of every event the OS delivers, so it builds nothing per call). */
+export function makeNameRule(extra: Iterable<string> = []): (rel: string) => boolean {
   const names = new Set(BASE_NAMES)
   for (const n of extra) names.add(n.toLowerCase())
-  return firstIgnoredSegment(lower, names) !== -1
+  return (rel) => {
+    const lower = toSlashes(rel).toLowerCase()
+    return lower !== '' && firstIgnoredSegment(lower, names) !== -1
+  }
 }
 
 /** Does this directory hold its own `.git` (file OR folder: a worktree's is a file) or is it a link
