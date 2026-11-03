@@ -121,6 +121,7 @@ import {
   liveScreen,
   reportedFamilies,
   resizeScreen,
+  takeRestarted,
   watchScreen,
   type OutputBuffers,
 } from './terminalOutputBuffer'
@@ -2948,6 +2949,8 @@ registerAccountsIpc(ipcMain, {
     watch: (terminalId) => { watchScreen(terminalOutputBuffers, terminalId, getTerminalSize(terminalId)) },
     // Which shells have ever reported a prompt here, though the window has lost the reports (SW2-10).
     reported: (terminalId) => reportedFamilies(terminalOutputBuffers, terminalId),
+    // David's wrapper restarted Claude Code here on another profile since this was last asked (SW3-3).
+    restarted: (terminalId) => takeRestarted(terminalOutputBuffers, terminalId),
     write: (terminalId, data) => writeToTerminal(terminalId, data),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),

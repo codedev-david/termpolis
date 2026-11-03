@@ -27,6 +27,8 @@ let sb: Sandbox
 let handlers: Map<string, (e: unknown, input?: unknown) => unknown>
 let sent: Array<{ channel: string; payload: any }>
 let term: FakeTerminal
+/** Terminals whose output printed the restart line of ~/.claude/claude-run.sh since main last asked (terminalOutputBuffer.ts takeRestarted). */
+let restartedIds: Set<string>
 
 function register(over: Partial<AccountsIpcDeps> = {}): void {
   handlers = new Map()
@@ -47,6 +49,7 @@ function register(over: Partial<AccountsIpcDeps> = {}): void {
       write: (id, data) => term.io().write(id, data),
       sleep: (ms) => term.io().sleep(ms),
       now: () => term.clock,
+      restarted: (id) => restartedIds.delete(id),
     },
     ...over,
   })
@@ -73,6 +76,7 @@ const claude = (over: Partial<TermScript> = {}): TermScript => ({ agent: 'claude
 beforeEach(() => {
   sb = createSandbox()
   sent = []
+  restartedIds = new Set()
   term = new FakeTerminal(claude())
   _resetTerminalAccountsForTest()
   _resetSwitchLocksForTest()
@@ -492,6 +496,86 @@ describe('accounts:switch, an account that isn\'t offered automatically (D14, R1
       expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash' })).toBe(MAYBE)
       expect(term.writes).toEqual([])
       expect(carriedTo(other)).toBe(false)
+    })
+
+    // SW3-3: Claude draws completions itself, so the keys main sees need not spell /switch-account out. What does not depend on
+    // the keys is what David's wrapper prints when it restarts Claude on the other profile.
+    it.each([
+      ['a completed name', '/switch-acc\t work\r'],
+      ['a name picked from the list', '/sw\x1b[B\rwork\r'],
+      ['a recalled line', '\x1b[A\r'],
+    ])('asks for it after the wrapper restarted Claude (%s): the banner it prints says the account moved', async (_what, keys) => {
+      const { main, other } = await workAndAnother()
+      startedOn(main)
+      noteTypedInput('t1', keys, 40)
+      restartedIds.add('t1')
+      expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash' })).toBe(MAYBE)
+      expect(isAccountChangedByHand('t1')).toBe(true)
+      expect(sent).toContainEqual({ channel: ACCOUNTS_IPC.terminalAccount, payload: { terminalId: 't1', accountId: main, byHand: true } })
+      expect(term.writes).toEqual([])
+      expect(carriedTo(other)).toBe(false)
+    })
+
+    it('marks the terminal at the next limit look too, once, and the look says so', async () => {
+      const { main } = await workAndAnother()
+      startedOn(main)
+      restartedIds.add('t1')
+      expect(await ok(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })).toMatchObject({ accountId: main, byHand: true })
+      expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount)).toHaveLength(1)
+      await ok(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+      expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount)).toHaveLength(1)
+    })
+
+    it('tells the renderer once for a terminal that is already of an account Termpolis does not know', async () => {
+      const { main } = await workAndAnother()
+      startedOn(main)
+      restartedIds.add('t1')
+      await ok(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+      restartedIds.add('t1')
+      await ok(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+      expect(sent.filter((s) => s.channel === ACCOUNTS_IPC.terminalAccount)).toHaveLength(1)
+      expect(restartedIds.has('t1')).toBe(false)
+    })
+
+    it('leaves a terminal alone that printed no such line', async () => {
+      const { main, other } = await workAndAnother()
+      startedOn(main)
+      expect(await ok(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })).toMatchObject({ byHand: false })
+      expect(isAccountChangedByHand('t1')).toBe(false)
+      expect((await switchTo(other.id)).kind).toBe('switched')
+    })
+
+    it('forgets a banner printed before Termpolis put the terminal on an account: it is the account that is known now', async () => {
+      const { main, other } = await workAndAnother()
+      restartedIds.add('t1')
+      startedOn(main)
+      expect(restartedIds.has('t1')).toBe(false)
+      expect((await switchTo(other.id)).kind).toBe('switched')
+    })
+
+    it('a main that cannot tell leaves things as they were', async () => {
+      const { main, other } = await workAndAnother()
+      register({ switchIO: { ...term.io(), now: () => term.clock } })
+      startedOn(main)
+      expect((await switchTo(other.id)).kind).toBe('switched')
+    })
+
+    // A /switch-account cut short by Claude's own completion, typed into the live box: possibly what ran.
+    it.each(['/sw', '/switch', '/switch-acc work'])('asks for it after %j completed with Tab in the box: it may have become /switch-account', async (line) => {
+      const { main, other } = await workAndAnother()
+      startedOn(main)
+      expect(noteTypedInput('t1', `${line}\t\r`, 40)).toBe('by-hand')
+      expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: other.id, shellType: 'gitbash' })).toBe(MAYBE)
+    })
+
+    it('but not after the same words typed whole and plain, or after another command completed', async () => {
+      const { main, other } = await workAndAnother()
+      startedOn(main)
+      expect(noteTypedInput('t1', '/sw\r', 40)).toBeNull()
+      expect(noteTypedInput('t1', '/model\t\r', 41)).toBeNull()
+      expect(noteTypedInput('t1', '/s\t\r', 42)).toBeNull()
+      expect(isAccountChangedByHand('t1')).toBe(false)
+      expect((await switchTo(other.id)).kind).toBe('switched')
     })
 
     it.each(['claude-switch work\r', 'bash ~/.claude/switch-now.sh work\r'])('asks for it after %j as it does after switch-now', async (line) => {

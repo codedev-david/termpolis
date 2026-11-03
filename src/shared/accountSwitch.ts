@@ -295,14 +295,28 @@ const BY_HAND: readonly RegExp[] = [
   new RegExp(`(?:^|[\\s;&|(])unset\\s+(?:-v\\s+)?(?:[A-Za-z_]\\w*\\s+)*${PROFILE_VARS}\\b`, 'i'),
   new RegExp(`\\benv\\s+(?:-\\S+\\s+)*-u\\s*${PROFILE_VARS}\\b`, 'i'),
   new RegExp(`\\$env:${PROFILE_VARS}\\s*=`, 'i'),
+  new RegExp(`\\$\\{env:${PROFILE_VARS}\\}\\s*=`, 'i'),
   new RegExp(`\\bRemove-Item\\s+(?:-Path\\s+)?Env:\\\\?${PROFILE_VARS}\\b`, 'i'),
   new RegExp(`(?:^|[\\s&|(])set\\s+"?${PROFILE_VARS}=`, 'i'),
+  // A profile variable named in a line as a bare word, with no sigil to say it is only read (`$VAR`, `${VAR}`, `%VAR%`, `$env:VAR`):
+  // Set-Item Env:VAR, New-Item, [Environment]::SetEnvironmentVariable('VAR', ...), fish's `set -gx VAR x`, csh's `setenv VAR x`,
+  // `export -n VAR`, and whatever else an environment is changed with. A line that merely names one has the chip say `?` and
+  // asks the second confirmation once more, which is cheap; one missed moves a work conversation without it (SAFETY-R3-7).
+  new RegExp(`(?<![\\w$%])(?<!\\$env:)(?<!\\$\\{env:)(?<!\\$\\{)${PROFILE_VARS}(?![\\w%}])`, 'i'),
   /(?:^|[\s;&|(/\\])(?:switch-now(?:\.(?:sh|cmd))?|claude-switch)(?:\s|$)/i,
   /(?:^|[\s;&|(])\/switch-account(?:\s|$)/i,
 ]
 
 export function changesAccountByHand(typed: string): boolean {
   return BY_HAND.some((p) => p.test(typed))
+}
+
+/** A slash command cut short by the completion Claude Code draws itself (`/sw`, Tab, Down and Enter, or an Up recall), which the
+ *  keys main sees do not spell out: `/switch-account` can be what it ran, and then the terminal's account changed (SW3-3). A name of
+ *  at least three characters that `/switch-account` begins with. */
+export function completesSwitchAccount(typed: string): boolean {
+  const word = typed.trim().split(/\s+/)[0].toLowerCase()
+  return word.length >= 3 && '/switch-account'.startsWith(word)
 }
 
 // ── The switch, as the renderer asks for it and main answers ──────────────────────────────

@@ -7,7 +7,7 @@
 // Logs hold account labels, never emails.
 import { randomUUID } from 'crypto'
 import { join } from 'path'
-import { MODEL_HELD, changesAccountByHand, isSessionId } from '../shared/accountSwitch'
+import { MODEL_HELD, changesAccountByHand, completesSwitchAccount, isSessionId } from '../shared/accountSwitch'
 import type { AgyStepOutcome, AgyStepRequest, ModelHold, SwitchOutcome, SwitchRequest } from '../shared/accountSwitch'
 import { AGY_ENV_AUTH, runAgyStep } from './agySwitch'
 import { endSignIns, endSignInsOf, signInInput, startSignInSession } from './signInSession'
@@ -17,7 +17,7 @@ import type { SignInInput, SignInState } from '../shared/signInScreens'
 import { carryTranscript, findTranscript } from './accountCarry'
 import { holdForModel, holdsModelKey, look, releaseModelHold, runAccountSwitch } from './accountSwitch'
 import type { Look, SwitchIO } from './accountSwitch'
-import { agentOfLaunch, lookForLimit, noteEnteredLine } from './limitLook'
+import { agentGone, agentOfLaunch, lookForLimit, noteEnteredLine } from './limitLook'
 import { setExtraTranscriptRoots } from './conversationIngest'
 import type { ConversationSource } from './conversationIngest'
 import type { LiveStart } from './limitLook'
@@ -107,6 +107,23 @@ const terminalAccounts = new Map<string, string | null>()
 export function noteTerminalAccount(terminalId: string, accountId: string | null): void {
   terminalAccounts.set(terminalId, accountId)
   byHand.delete(terminalId)
+  // A restart line printed before this is of an agent Termpolis has since put on an account itself: not held against it.
+  try { wiring.io?.restarted?.(terminalId) } catch { /* nothing to forget */ }
+}
+
+/** Marks the terminal's account as unknown to Termpolis, which keeps what it last knew for the chip to say: something moved it that
+ *  no line Termpolis typed shows (§6.1). The renderer is told. */
+function markByHand(terminalId: string): void {
+  byHand.add(terminalId)
+  wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: terminalAccounts.get(terminalId) ?? null, byHand: true })
+}
+
+/** David's own wrapper printed that it starts Claude Code again here on another profile (SW3-3): a /switch-account that Claude's own
+ *  completion or history made, which the keys main saw do not spell out. The terminal is then of an account Termpolis does not know. */
+function noteRestarted(terminalId: string): void {
+  let restarted = false
+  try { restarted = wiring.io?.restarted?.(terminalId) === true } catch { /* no sign read */ }
+  if (restarted && !byHand.has(terminalId)) markByHand(terminalId)
 }
 
 export function forgetTerminalAccount(terminalId: string): void {
@@ -307,6 +324,8 @@ export function noteWorkerCommand(terminalId: string, command: string, now: numb
       return
     }
     setStart(terminalId, startRecord({ at: wiring.outputEnd?.(terminalId) ?? 0, commands: [typed], agent }, now))
+    // A new run of the agent: the conversation an earlier run of it named is not this one's (SAFETY-R3-1).
+    if (agent === 'claude') noteTerminalSession(terminalId, claudeSessionOf(typed).id)
     const handSet = byHand.has(terminalId)
     let accountId: string | null = null
     if (!handSet && isProfileAgent(agent)) {
@@ -337,7 +356,17 @@ export function envAccounts(doc: AccountsDoc, env: Readonly<Record<string, strin
 
 /** The longest typed line kept: a pasted file is no account line. */
 const TYPED_LINE_MAX = 4096
-const ESCAPE_SEQUENCE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|.)?/
+/** One escape sequence at the head of a write, whole: an X10 mouse report (three bytes follow its CSI M), any other CSI, an OSC
+ *  reply (`ESC ] 11 ; ...`) or a DCS, SOS, PM or APC string with its terminator, an SS3 key, or Alt+key. A lone Alt+] or Alt+P is
+ *  a key, so a string is taken only where it is a reply (an OSC with its number, the others with their ST). */
+const ESCAPE_SEQUENCE = /^\x1b(?:\[M[\s\S]{3}|\[[0-?]*[ -/]*[@-~]|\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\)?|[PX^_][^\x1b]*\x1b\\|O.|.)?/
+/** What xterm.js and the terminal behind it send through the same write as keystrokes, and no key is: focus in and out, mouse
+ *  reports, the cursor position, device attributes, status and mode replies, the answers to colour queries, and the bracketed
+ *  paste's end marker. ConPTY turns the focus reports on and asks for the cursor in every Windows session, so one is sent at the
+ *  start and with every change of focus. None touches a shell's line (MODELS-R3-1). */
+const TERMINAL_REPLY = /^\x1b(?:\[(?:M[\s\S]{3}|[IO]|20[01]~|[<=>?][0-9;:]*[ -/]*[@-~]|[0-9;:]*[ -/]*[Rcnty])|[\]PX^_][\s\S]+)$/
+/** Keys that move in a line or delete from it without changing an empty one: the cursor keys, Home, End, Insert and Delete. */
+const MOVES_NOTHING = /^\x1b(?:\[(?:\d+(?:;\d+)*)?[CDHF]|\[[123478](?:;\d+)?~|O[CDHF])$/
 
 /** A line typed by hand, for the agent's lifecycle (limitLook.ts): an agent started at the shell, or
  *  a prompt entered in the agent's box. A look that fails changes nothing, and never stops the
@@ -348,15 +377,53 @@ function noteLife(terminalId: string, typed: string, now: number, lookNow: () =>
   if (!io || end === undefined) return
   try {
     const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now, lookNow, edited)
-    if (started) setStart(terminalId, started)
+    if (started) {
+      setStart(terminalId, started)
+      // The conversation of the line just typed is the terminal's now, and the one an earlier launch named is not: a switch before
+      // this session has a turn (no exit hint) must not resume the old one (SAFETY-R3-1). A line the shell edited names none.
+      if (started.agent === 'claude') noteTerminalSession(terminalId, started.unsure ? null : claudeSessionOf(typed).id)
+    } else if (edited && mayStartAgent(typed)) noteUnseenLaunch(terminalId, end, now, lookNow)
   } catch { /* the next look reads it */ }
+}
+
+/** The agent words, which a completion the keys cut short can stand for: `cla` and Tab typed `claude`. */
+const AGENT_WORDS: readonly string[] = ['claude', 'codex', 'agy', 'gemini']
+
+/** Whether an edited line's first word could be the start of an agent's name, or is one. */
+function mayStartAgent(typed: string): boolean {
+  const word = typed.split(/\s+/)[0].toLowerCase()
+  return word.length > 0 && AGENT_WORDS.some((w) => w.startsWith(word))
+}
+
+/**
+ * The shell ran a line the keys do not say (a history recall, a completion): while an earlier start is on record and its agent is
+ * gone, it may have started the agent again, with other flags and another conversation. The record becomes one of an agent started
+ * with unknown options (a bare relaunch that says so), and the session the earlier launch named is not this one (SAFETY-R3-1,
+ * MODELS-R3-3). An agent still running took the line into its box: nothing changes. With no earlier start there is no agent to
+ * name, and the line is left alone.
+ */
+function noteUnseenLaunch(terminalId: string, end: number, now: number, lookNow: () => Look): void {
+  const io = wiring.io
+  const prev = agentStarts.get(terminalId)
+  if (!io || !prev?.agent) return
+  if (!agentGone(io, terminalId, prev, now, lookNow())) return
+  prev.ended = true
+  setStart(terminalId, { at: end, commands: [prev.agent], agent: prev.agent, time: now, unsure: true })
+  if (prev.agent === 'claude') noteTerminalSession(terminalId, null)
 }
 
 /** A whole line was typed into a terminal: Termpolis's own (one main built), or one that changes
  *  the account by hand, which marks the terminal so (§6.1) and tells the renderer. */
 function noteLine(terminalId: string, line: string, now: number, lookNow: () => Look, held = false, edited = false): 'own' | 'by-hand' | null {
   const typed = line.trim()
-  if (!typed) return null
+  if (!typed) {
+    // An Enter after a recall or a completion with nothing typed over it: the shell ran a line the keys do not say.
+    const end = wiring.outputEnd?.(terminalId)
+    if (edited && end !== undefined) {
+      try { noteUnseenLaunch(terminalId, end, now, lookNow) } catch { /* the next look reads it */ }
+    }
+    return null
+  }
   const mine = (ownLines.get(terminalId) ?? []).filter((l) => l.until > now)
   // Typed under the model picker's hold: the agent's start again, as the picker's relaunch chose it
   // once the agent had exited (so main could not be told beforehand). Never a line that sets or
@@ -376,9 +443,9 @@ function noteLine(terminalId: string, line: string, now: number, lookNow: () => 
     return 'own'
   }
   noteLife(terminalId, typed, now, lookNow, edited)
-  if (!changesAccountByHand(typed)) return null
-  byHand.add(terminalId)
-  wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: terminalAccounts.get(terminalId) ?? null, byHand: true })
+  // A slash command the CLI's own completion cut short may be what ran: `/sw`, Tab (or Down and Enter) is /switch-account (SW3-3).
+  if (!changesAccountByHand(typed) && !(edited && completesSwitchAccount(typed))) return null
+  markByHand(terminalId)
   return 'by-hand'
 }
 
@@ -404,11 +471,16 @@ function oneLook(terminalId: string): () => Look {
   return () => (seen ??= look(wiring.io as Omit<SwitchIO, 'progress'>, terminalId))
 }
 
-/** Keys a shell edits a line with beyond what the gatherer follows (readline's and PSReadLine's): Tab completes, Ctrl+R
- *  searches the history, and Ctrl+A/E/B/F/K/W/Y/T/D move, kill, yank, transpose or delete. A line made with one of them, or
- *  with an escape sequence (the arrow keys recall and move, Home, End and Delete edit), is not the text the keys typed say
- *  (MODELS-R2-4). Backspace, Ctrl+U and Ctrl+C are followed, so they are not among them. */
-const EDITING_KEYS = '\t\x12\x01\x05\x02\x06\x0b\x17\x19\x14\x04'
+/** Keys a shell edits a line with beyond what the gatherer follows (readline's and PSReadLine's). A line made with one of them,
+ *  or with an escape sequence that is a key (the arrow keys recall and move, Home, End and Delete edit), is not the text the keys
+ *  typed say (MODELS-R2-4). Backspace, Ctrl+U and Ctrl+C are followed, so they are not among them. These fill a line, whatever
+ *  it holds: Ctrl+R searches the history, Ctrl+P and Ctrl+N recall from it, Ctrl+Y yanks what was killed, Ctrl+O runs the line and
+ *  brings the next one. */
+const FILLING_KEYS = '\x12\x10\x0e\x19\x0f'
+/** And these change only a line that holds text: Tab completes (in cmd also an empty one, which no launch word follows), and
+ *  Ctrl+A/E/B/F/K/W/T/D move, kill, transpose or delete, which an empty line has nothing for. Ctrl+D with nothing typed is
+ *  the end of input: how an agent is left, never an edit (SW3-6). */
+const LINE_KEYS = '\t\x01\x05\x02\x06\x0b\x17\x14\x04'
 /** The lines whose pending text has been edited so far (by terminal), carried across the writes that make one line. */
 const editedLines = new Set<string>()
 
@@ -441,9 +513,11 @@ function gatherLines(terminalId: string, typed: string, onLine: (line: string, e
       line = ''
       edited = false
     } else if (c === '\x1b') {
-      i += (ESCAPE_SEQUENCE.exec(typed.slice(i)) as RegExpExecArray)[0].length - 1
-      edited = true
-    } else if (EDITING_KEYS.includes(c)) edited = true
+      const seq = (ESCAPE_SEQUENCE.exec(typed.slice(i)) as RegExpExecArray)[0]
+      i += seq.length - 1
+      // What the terminal sends of itself is no key, and a key that cannot change an empty line changes none.
+      if (!TERMINAL_REPLY.test(seq) && (line !== '' || !MOVES_NOTHING.test(seq))) edited = true
+    } else if (FILLING_KEYS.includes(c) || (LINE_KEYS.includes(c) && line !== '')) edited = true
     else if (c >= ' ' && line.length < TYPED_LINE_MAX) line += c
   }
   if (line || edited) typedLines.set(terminalId, line)
@@ -1304,6 +1378,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     if (!io) throw new Error('main has no terminals to look at')
     const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
     if (!terminalId) throw new Error('which terminal?')
+    noteRestarted(terminalId)
     const start = agentStarts.get(terminalId)
     const seen = lookForLimit(io, terminalId, start, now())
     const accountId = terminalAccounts.get(terminalId) ?? null
@@ -1325,6 +1400,7 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     const terminalId = typeof input.terminalId === 'string' ? input.terminalId : ''
     if (!terminalId) throw new Error('which terminal?')
     const req: SwitchRequest = { terminalId, targetId: String(input.targetId ?? ''), shellType: String(input.shellType ?? '') }
+    noteRestarted(terminalId)
     if (typeof input.instructions === 'string') req.instructions = input.instructions
     for (const flag of ['assumeExited', 'stopBusy', 'fresh'] as const) if (input[flag] === true) req[flag] = true
     if (typeof input.reason === 'string') req.reason = input.reason.slice(0, 80)

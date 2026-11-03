@@ -120,6 +120,10 @@ export interface SwitchIO {
   /** Which shells have printed a prompt report in this terminal, ever (terminalOutputBuffer.ts reportedFamilies), which
    *  the 32 KB window the reads above replay does not keep. Absent: the window is all there is to go on. */
   reported?(terminalId: string): { posix: boolean; windows: boolean }
+  /** Whether the terminal printed the line of David's own wrapper (~/.claude/claude-run.sh) that says it starts Claude Code again on
+   *  another profile, since this was last asked (terminalOutputBuffer.ts takeRestarted): the one sign that something moved the terminal's
+   *  agent to another account without a line Termpolis typed (SW3-3). The answer is given up once. Absent: no such sign is read. */
+  restarted?(terminalId: string): boolean
 }
 
 /** Where a terminal's agent was started, and the line that started it (accountsIpc.ts). */

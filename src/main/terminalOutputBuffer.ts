@@ -60,6 +60,10 @@ export interface OutputWindow {
    *  terminal's own shell reported, and a minute of an agent's work pushes every report out of 32 KB (SW2-10). Absent
    *  until one is seen. */
   reported?: { posix: boolean; windows: boolean }
+  /** David's own wrapper (~/.claude/claude-run.sh) printed the line that says it starts Claude Code again on another profile, here,
+   *  since main last asked (takeRestarted): the terminal's account is no longer the one Termpolis put it on (SW3-3). A latch: the
+   *  line itself leaves the window within moments, as the resumed conversation redraws. */
+  restarted?: boolean
 }
 
 export type OutputBuffers = Map<string, OutputWindow>
@@ -89,6 +93,7 @@ export function appendOutput(
   win.bytes += data.length
   win.total += data.length
   if (win.reported?.posix !== true || win.reported.windows !== true) noteReports(win, data)
+  noteRestart(win, data)
   if (win.screen) drawOnScreen(win, data)
   if (win.bytes <= cap) return win.total
 
@@ -117,6 +122,31 @@ function noteReports(win: OutputWindow, data: string): void {
   const r = (win.reported ??= { posix: false, windows: false })
   if (posix) r.posix = true
   if (windows) r.windows = true
+}
+
+/** What ~/.claude/claude-run.sh prints, after "Switching this terminal to <account>", before it starts Claude Code again on another
+ *  profile: the one sign that the terminal's agent moved without a line Termpolis typed (a /switch-account completed by the CLI's own
+ *  box, or recalled from its history, never reaches main as the keys that spell it). */
+const RESTART_MARK = ': starting Claude again on its profile'
+
+/** The end of the last chunk each terminal printed, as long as the mark less one character: a chunk can end inside the mark. Kept
+ *  beside the window, not in it, so that a window that never saw the line keeps its old shape. */
+const markTails = new WeakMap<OutputWindow, string>()
+
+/** Notes the restart line in `data`, whole or cut between two chunks. A chunk without it costs one search. */
+function noteRestart(win: OutputWindow, data: string): void {
+  const keep = RESTART_MARK.length - 1
+  const tail = markTails.get(win)
+  if (data.includes(RESTART_MARK) || (tail !== undefined && (tail + data.slice(0, keep)).includes(RESTART_MARK))) win.restarted = true
+  markTails.set(win, data.length >= keep ? data.slice(data.length - keep) : ((tail ?? '') + data).slice(-keep))
+}
+
+/** Whether the restart line was printed in this terminal since the last time this was asked: the latch is given up with the answer. */
+export function takeRestarted(buffers: OutputBuffers, id: string): boolean {
+  const win = buffers.get(id)
+  if (win?.restarted !== true) return false
+  delete win.restarted
+  return true
 }
 
 /** Which shells have reported a prompt in this terminal, ever (OutputWindow.reported). */

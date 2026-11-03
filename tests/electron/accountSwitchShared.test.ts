@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   AGY_SIGNED_IN, ASKS_USER, CLEAR_BOX_KEYS, EXIT_COMMAND, HINT_FROM_FOOT_ROWS, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND,
-  SIGN_IN_SCREEN, carryForSwitch, changesAccountByHand, exitHintOf, isSafeModelName, isSessionId, nestedShellReported, otherShellReported,
+  SIGN_IN_SCREEN, carryForSwitch, changesAccountByHand, completesSwitchAccount, exitHintOf, isSafeModelName, isSessionId, nestedShellReported, otherShellReported,
   relaunchCommand,
 } from '../../src/shared/accountSwitch'
 
@@ -223,6 +223,50 @@ describe('changesAccountByHand (§6.1)', () => {
       'switch-now.sh',
       '(switch-now personal)',
     ]) expect(changesAccountByHand(typed), typed).toBe(true)
+  })
+
+  // SAFETY-R3-7: the other ways an environment is changed by hand, in PowerShell, fish, csh and the rest. A profile variable named
+  // as a bare word, with no sigil that says it is only read, is a change as far as the chip is concerned.
+  it('sees a profile variable named as a bare word: the other ways to change an environment', () => {
+    for (const typed of [
+      "Set-Item Env:CLAUDE_CONFIG_DIR 'C:\\x'",
+      "New-Item -Path Env:\\CODEX_HOME -Value 'C:\\x'",
+      'Set-Item -Path Env:\\CLAUDE_CONFIG_DIR -Value x',
+      "${env:CLAUDE_CONFIG_DIR} = 'C:\\x'",
+      "${ENV:codex_home}='C:\\x'",
+      "[Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', 'C:\\x', 'Process')",
+      "[System.Environment]::SetEnvironmentVariable(\"CODEX_HOME\",\"C:\\x\")",
+      'set -gx CLAUDE_CONFIG_DIR /x',
+      'set -e CODEX_HOME',
+      'set --erase CLAUDE_CONFIG_DIR',
+      'setenv CLAUDE_CONFIG_DIR /x',
+      'unsetenv GEMINI_CLI_HOME',
+      'export -n CLAUDE_CONFIG_DIR',
+      'declare -x CODEX_HOME=/x',
+      'typeset -x CLAUDE_CONFIG_DIR=/x',
+      'direnv exec . env CLAUDE_CONFIG_DIR=/x claude',
+      'echo CLAUDE_CONFIG_DIR',
+    ]) expect(changesAccountByHand(typed), typed).toBe(true)
+  })
+
+  it('and still not one that is only read, whatever the shell\'s syntax', () => {
+    for (const typed of [
+      'echo $CLAUDE_CONFIG_DIR',
+      'echo "${CLAUDE_CONFIG_DIR}"',
+      'echo ${CLAUDE_CONFIG_DIR:-none}',
+      'echo %CLAUDE_CONFIG_DIR%',
+      'echo $env:CLAUDE_CONFIG_DIR',
+      'echo ${env:CODEX_HOME}',
+      'cd "$CODEX_HOME/sessions"',
+      'ls $GEMINI_CLI_HOME',
+      'cat MY_CODEX_HOME_NOTES.md',
+      'echo CODEX_HOME_X',
+    ]) expect(changesAccountByHand(typed), typed).toBe(false)
+  })
+
+  it('sees a /switch-account that completion cut short (SW3-3), and no other command', () => {
+    for (const typed of ['/sw', '/swi work', '/switch', '/switch-acc work', '/switch-account', '  /SWITCH-ACC  ']) expect(completesSwitchAccount(typed), typed).toBe(true)
+    for (const typed of ['/s', '/st', '/status', '/model', '/switcher', '/switch-accounts', 'switch', '', 'claude /sw']) expect(completesSwitchAccount(typed), typed).toBe(false)
   })
 
   it('sees nothing in lines that only look like them', () => {
