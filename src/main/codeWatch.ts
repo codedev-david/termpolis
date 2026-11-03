@@ -16,6 +16,7 @@
 // before running once.
 
 import { createIgnoreFilter, createRunGate } from './watchGuard'
+import { scopedRecursiveWatch, CODE_SKIP_NAMES, type ScopedFsWatchFn } from './scopedWatch'
 
 export interface RepoWatcher {
   close: () => void
@@ -45,9 +46,9 @@ export interface WatchDeps {
 }
 
 // Names that are not source of THIS repo beyond the shared list (watchGuard.ts): vendored Pods and the
-// Turborepo cache. The shared list already covers node_modules, .git, .worktrees, dist, out, build,
-// target, .venv, .next, coverage and the usual tool caches.
-const EXTRA_IGNORED = ['Pods', '.turbo']
+// Turborepo cache (scopedWatch.ts). The shared list already covers node_modules, .git, .worktrees, dist,
+// out, build, target, .venv, .next, coverage and the usual tool caches.
+const EXTRA_IGNORED = CODE_SKIP_NAMES
 // Only re-index when a SOURCE file (a language the graph understands) changes.
 const SRC_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|cs|csx|rb|swift|tf|bicep)$/i
 /** More distinct changed files than this in one window means a mass change (a checkout, a codegen):
@@ -82,6 +83,13 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
   })
   try {
     handle = deps.watch(root, (event, filename) => {
+      // A storm closed an OS watch (shedWatch.ts) and it is back: what changed meanwhile was not heard, so the
+      // next run re-sweeps the whole repo instead of naming files.
+      if (event === 'overflow') {
+        overflowed = true
+        gate.note()
+        return
+      }
       if (!filename) return
       const name = String(filename)
       // The filter first, on EVERY event: a `.git` event below the root is how it learns a nested repo.
@@ -147,9 +155,17 @@ export function fsBackedWatchDeps(
   fsWatchFn: (dir: string, opts: { recursive: boolean }, listener: (event: string, filename: string | null) => void) => FsWatchLike,
   reindex: (root: string, files: string[]) => void | Promise<unknown>,
   probeNested?: (absDir: string) => Promise<boolean>,
+  /** Subscribe to the directories that matter instead of to the whole tree (scopedWatch.ts): nothing under
+   *  `.worktrees`, `node_modules`, `dist` ... is ever delivered. What the app passes; off by default so
+   *  the plain recursive shape stays what the function's own tests pin. */
+  scoped = false,
 ): WatchDeps {
   return {
     watch: (dir, listener) => {
+      if (scoped) {
+        const s = scopedRecursiveWatch(fsWatchFn as unknown as ScopedFsWatchFn, dir, listener, { skipNames: CODE_SKIP_NAMES, log: (m) => console.warn(m) })
+        return { close: () => s.close() }
+      }
       const w = fsWatchFn(dir, { recursive: true }, listener)
       return { close: () => w.close() }
     },

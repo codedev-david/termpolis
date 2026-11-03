@@ -24,6 +24,7 @@ function harness(over: Partial<WatchDeps> = {}) {
     deps,
     closed,
     emit: (n: string | null) => listener('change', n),
+    raw: (e: string, n: string | null) => listener(e, n),
     flush: () => { const fns = [...timers.values()]; timers.clear(); for (const fn of fns) fn() },
     get armed() { return timers.size },
     get armedTotal() { return seq },
@@ -50,6 +51,23 @@ describe('codeWatch storm guard', () => {
     h.emit('src/a.ts')
     h.flush()
     expect((h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls[2][1]).toEqual(['src/a.ts'])
+  })
+
+  it('an overflow (a storm closed an OS watch and it is back) makes the next run a full re-sweep: no names, and it does not stick', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    h.emit('src/a.ts')
+    h.raw('overflow', 'src')
+    h.flush()
+    const calls = (h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toEqual(['/repo', []]) // "everything may have changed": the whole repo is re-swept
+    h.emit('src/b.ts')
+    h.flush()
+    expect(calls[1]).toEqual(['/repo', ['src/b.ts']]) // the next window is an ordinary one again
+    h.raw('overflow', null) // a bare one (the root watch's) is the same
+    h.flush()
+    expect(calls[2]).toEqual(['/repo', []])
   })
 
   it('arms ONE timer however many events arrive in the window', () => {
@@ -171,5 +189,26 @@ describe('fsBackedWatchDeps', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     deps.log?.('[watch] flood on x')
     expect(warn).toHaveBeenCalledWith('[watch] flood on x')
+  })
+
+  it('scoped: opens the root NON-recursively (the directories below are subscribed one by one), and closes it', () => {
+    const opened: Array<{ dir: string; recursive?: boolean; close: ReturnType<typeof vi.fn> }> = []
+    const fsWatchFn = vi.fn((dir: string, o: { recursive?: boolean }) => {
+      const rec = { dir, recursive: o.recursive, close: vi.fn() }
+      opened.push(rec)
+      return rec
+    })
+    const deps = fsBackedWatchDeps(fsWatchFn as never, vi.fn(), undefined, true)
+    const handle = deps.watch('/repo', vi.fn())
+    expect(opened[0]).toMatchObject({ dir: '/repo', recursive: false })
+    handle.close()
+    expect(opened[0].close).toHaveBeenCalled()
+  })
+
+  it('unscoped (the default): ONE recursive watch of the root, exactly as before', () => {
+    const fsWatchFn = vi.fn(() => ({ close() {} }))
+    const deps = fsBackedWatchDeps(fsWatchFn as never, vi.fn())
+    deps.watch('/repo', vi.fn())
+    expect(fsWatchFn).toHaveBeenCalledWith('/repo', { recursive: true }, expect.any(Function))
   })
 })

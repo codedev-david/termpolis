@@ -63,6 +63,7 @@ function setup(config: Record<string, string> = {}, deps: Partial<TriggerDeps> =
     closed,
     clock,
     emit: (n: string | null) => listener('change', n),
+    raw: (e: string, n: string | null) => listener(e, n),
     flush: () => { const fns = [...timers.values()]; timers.clear(); for (const fn of fns) fn() },
     get armed() { return timers.size },
     get armedTotal() { return seq },
@@ -141,6 +142,22 @@ describe('fileWatch trigger storm guard', () => {
     expect(h.fires).toHaveLength(1)
     expect(h.fires[0].reason).toBe('file change: (many files)')
     // The next burst is an ordinary one again: no stuck overflow flag, and a real non-match stays a non-match.
+    h.clock.now += 10_000
+    h.emit('src/a.ts')
+    h.flush()
+    expect(h.fires).toHaveLength(1)
+    h.sup.stop()
+  })
+
+  it('an overflow (a storm closed an OS watch and it is back) means files changed that were never heard: the workflow runs once, whatever its path filter', () => {
+    const h = setup({ paths: 'docs/' })
+    h.raw('overflow', 'src')
+    h.raw('overflow', null)
+    expect(h.armedTotal).toBe(1) // one timer for both
+    h.flush()
+    expect(h.fires).toHaveLength(1)
+    expect(h.fires[0].reason).toBe('file change: (many files)')
+    // and it does not stick: the next burst is matched against the filter as usual
     h.clock.now += 10_000
     h.emit('src/a.ts')
     h.flush()

@@ -111,6 +111,10 @@ export async function probeNestedRepo(absDir: string): Promise<boolean> {
   }
 }
 
+/** Platforms whose usual file systems fold case (NTFS, APFS), so `Src` and `src` are one directory there. A
+ *  lookup, not a comparison, so the rule has no branch that only one platform can reach. */
+export const CASE_FOLDING_PLATFORMS: ReadonlySet<string> = new Set(['win32', 'darwin'])
+
 export interface IgnoreFilterOptions {
   /** The watched root. Event names are relative to it. */
   root: string
@@ -158,7 +162,7 @@ export interface IgnoreFilter {
 }
 
 export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
-  const ci = o.caseInsensitive ?? (process.platform === 'win32' || process.platform === 'darwin')
+  const ci = o.caseInsensitive ?? CASE_FOLDING_PLATFORMS.has(process.platform)
   const names = new Set<string>(BASE_NAMES)
   for (const n of o.names ?? []) names.add(n.toLowerCase())
   const probe = o.probeNested ?? probeNestedRepo

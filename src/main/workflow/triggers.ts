@@ -24,6 +24,7 @@ import type { Workflow, WorkflowScope } from '../../renderer/src/types'
 import { workflowsDir, globalWorkflowsDir, listWorkflowsFull, type FsLike } from './workflowStore'
 import { parseCron, dueSince, MAX_CATCHUP_MS, type CronFields } from './cron'
 import { createIgnoreFilter, createRunGate, WATCH_MIN_INTERVAL_MS, type IgnoreFilter, type RunGate } from '../watchGuard'
+import { TRIGGER_SKIP_NAMES } from '../scopedWatch'
 
 export interface WatchHandle {
   close(): void
@@ -62,7 +63,7 @@ export interface TriggerDeps {
 // The shared rule (watchGuard.ts) already drops node_modules, .git, .worktrees, nested repositories,
 // dist, out, build, target, .venv, .next, coverage and the usual tool caches; these are this
 // supervisor's own on top of it (`.termpolis` is the one that matters: see above).
-const EXTRA_IGNORED = ['.termpolis', 'Pods', '.turbo']
+const EXTRA_IGNORED = TRIGGER_SKIP_NAMES
 /** More distinct names than this in one window and the supervisor stops remembering them: a path
  *  filter can no longer be answered exactly, so every fileWatch workflow runs (never a silent miss). */
 const MAX_PENDING_NAMES = 256
@@ -423,7 +424,14 @@ export class TriggerSupervisor {
   }
 
   private onFileEvent(p: Project, filename: string | null, event?: string): void {
-    if (!filename || !p.gate || !p.filter) return
+    if (!p.gate || !p.filter) return
+    if (event === 'overflow') {
+      // A storm closed an OS watch (shedWatch.ts) and it is back: files changed that were never heard.
+      p.pendingOverflow = true
+      p.gate.note()
+      return
+    }
+    if (!filename) return
     const name = String(filename)
     if (p.filter.shouldIgnore(name, event)) return
     if (p.pendingNames.size < MAX_PENDING_NAMES) p.pendingNames.add(name)

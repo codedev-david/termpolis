@@ -35,7 +35,10 @@
 // that moves in `.git` (a commit, a checkout) is the answer changing, not noise, so it does not wait
 // out a flood's back-off: it repaints as soon as the window since the last repaint allows.
 
-import type { FSWatcher } from 'fs'
+/** What a watch hands back: an fs.FSWatcher, or a scoped watch (scopedWatch.ts). Only close() is used. */
+export interface WatchHandle {
+  close(): void
+}
 import { promises as fsp } from 'fs'
 import { createIgnoreFilter, createRunGate, isIgnoredWatchPath, type IgnoreFilter, type RunGate } from './watchGuard'
 
@@ -43,7 +46,7 @@ export type WatchFn = (
   path: string,
   opts: { recursive?: boolean; persistent?: boolean },
   listener: (event: string, filename: string | Buffer | null) => void,
-) => FSWatcher
+) => WatchHandle
 
 export interface GitWatcherDeps {
   watch: WatchFn
@@ -93,7 +96,7 @@ export function isIgnoredGitPath(filename: string): boolean {
 
 interface RepoWatch {
   refs: number
-  watchers: FSWatcher[]
+  watchers: WatchHandle[]
   gate: RunGate
   filter: IgnoreFilter
 }
@@ -139,7 +142,7 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
     recursive: boolean,
     ignore: (name: string, event: string) => boolean,
     priority: boolean,
-  ): FSWatcher | null {
+  ): WatchHandle | null {
     try {
       // persistent:false — a file watcher must never be the reason the process stays alive.
       return deps.watch(target, { recursive, persistent: false }, (event, filename) => {
@@ -171,7 +174,7 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
         log: deps.log,
         run: () => fire(root),
       })
-      const watchers: FSWatcher[] = []
+      const watchers: WatchHandle[] = []
       // `.git` events are the low-volume ones that say the answer changed: they get priority.
       const gitDir = open(gate, joinPath(root, '.git'), true, isIgnoredGitPath, true)
       if (gitDir) watchers.push(gitDir)

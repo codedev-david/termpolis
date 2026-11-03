@@ -865,8 +865,12 @@ describe('memory:ingest-code', () => {
     // A watcher that is wired but never re-indexes leaves a silently stale graph, so pin
     // the callback itself: it must forward the changed files AND a real file reader.
     await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
-    const [watchImpl, onChange] = mneme.fsBackedWatchDeps.mock.calls[0]
+    const [watchImpl, onChange, , scoped] = mneme.fsBackedWatchDeps.mock.calls[0]
     expect(watchImpl).toBe(fsMock.watch) // the REAL fs watcher, not a stub
+    // And scoped (scopedWatch.ts): subscribed directory by directory, so nothing under .worktrees,
+    // node_modules, dist ... is ever delivered to the main thread by the OS. A plain recursive watch of the
+    // root cost 1.79 ms of CPU per event while agents wrote there.
+    expect(scoped).toBe(true)
 
     onChange('/repos/x', ['a.ts', 'b.ts'])
     expect(cg.reindexWatchedChange).toHaveBeenCalledWith('/repos/x', ['a.ts', 'b.ts'], expect.any(Function))

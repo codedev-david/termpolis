@@ -582,6 +582,7 @@ import { createProcHostTransport } from './procHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
 import { WATCH_MIN_INTERVAL_MS } from './watchGuard'
+import { openScopedGitWatch, scopedTriggerWatch } from './scopedWatch'
 import { installApplicationMenu, globalHotkeys } from './appMenu'
 import { writeSecureFile } from './secureFile'
 import {
@@ -1822,7 +1823,9 @@ ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
 // mechanism. Nothing here is load-bearing for correctness: if every watcher on the box fails to
 // open, the app behaves exactly like v1.47 with a slower poll.
 const gitWatchers = createGitWatcherRegistry({
-  watch: (target, opts, listener) => fsWatch(target, opts, listener),
+  // Scoped (scopedWatch.ts): the working tree is watched directory by directory, .git for refs/index/HEAD
+  // only, so nothing in .worktrees, node_modules, objects/ ... is ever delivered to this thread.
+  watch: (target, opts, listener) => openScopedGitWatch(fsWatch, target, opts, listener, (msg) => console.warn(msg)),
   // At most one repaint per 2 s per repo (each one costs the renderer three git processes), and a
   // flood backs off. The module's own default stays 1 s because its tests pin it.
   throttleMs: WATCH_MIN_INTERVAL_MS,
@@ -2242,8 +2245,13 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // logic (and is unit-tested); this callback just wires the real fs reader.
       // The promise is RETURNED, not dropped: the watch gate (watchGuard.ts) waits for it, so two
       // re-indexes never overlap however long one takes. reindexWatchedChange never rejects.
-      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root, files) =>
-        reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8')),
+      // The last two arguments: no custom nested-repo probe, and `scoped` (scopedWatch.ts) so that nothing
+      // under .worktrees, node_modules, dist ... is ever delivered to this thread by the OS.
+      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(
+        fsWatch,
+        (root, files) => reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8')),
+        undefined,
+        true,
       ))
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
@@ -4481,7 +4489,8 @@ async function semanticPoolOptions(
       const wfTriggers = new TriggerSupervisor({
         fs: wfFs,
         readBytes: (p: string) => readFileSync(p),
-        watch: (dir, listener) => fsWatch(dir, { recursive: true }, listener),
+        // Scoped (scopedWatch.ts): nothing under .worktrees, node_modules, .termpolis ... reaches this thread.
+        watch: scopedTriggerWatch(fsWatch, (msg) => console.warn(msg)),
         setTimer: (fn, ms) => setTimeout(fn, ms),
         clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
         now: Date.now,

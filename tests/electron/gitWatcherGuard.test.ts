@@ -90,6 +90,25 @@ describe('the governor can pause it', () => {
   })
 })
 
+describe('an overflow (a storm closed an OS watch and it is back)', () => {
+  it('is a reason to repaint, from the working tree (named or bare) and from .git', () => {
+    const h = harness()
+    h.reg.add('/repo')
+    h.tree().listener('overflow', null)
+    expect(h.onChange).toHaveBeenCalledTimes(1)
+    h.fireTimer()
+    h.fireTimer()
+    h.onChange.mockClear()
+    h.tree().listener('overflow', 'src')
+    expect(h.onChange).toHaveBeenCalledTimes(1)
+    h.fireTimer()
+    h.fireTimer()
+    h.onChange.mockClear()
+    h.gitDir().listener('overflow', 'refs')
+    expect(h.onChange).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('what the working-tree watch passes', () => {
   it('knows the nested-worktree folders by name', () => {
     expect(isIgnoredPath('.worktrees/wt1/src/a.ts')).toBe(true)

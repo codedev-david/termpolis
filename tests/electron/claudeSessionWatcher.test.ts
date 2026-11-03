@@ -105,9 +105,8 @@ describe('attachClaudeSessionWatcher', () => {
     fs.appendFileSync(file, toolLine('swarm_update_task'))
     poll()
     // Growth is read by the watcher's poll too, but off the main thread (watchGuard.ts), so it lands
-    // when the real read does, not inside the poll call.
-    await settle()
-    expect(tools()).toEqual(['swarm_send_message', 'swarm_update_task'])
+    // when the real read does, not inside the poll call. Wait for it; do not guess how long it takes.
+    await vi.waitFor(() => expect(tools()).toEqual(['swarm_send_message', 'swarm_update_task']), { timeout: 15_000, interval: 25 })
   })
 
   it('never follows another session in the folder, however new it is', () => {
