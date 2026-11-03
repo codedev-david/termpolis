@@ -884,13 +884,16 @@ describe('TokenSavingsSettings — when to shorten a tool result (the first-sigh
     expect(n).toHaveTextContent('Claude Code already trims long command output to about 30,000 characters itself, so in practice Late mostly shortens large file reads and fetched pages')
     // The holdout, as it really is chosen, and where the card is.
     expect(n).toHaveTextContent('one distinct opening message in ten')
-    expect(n).toHaveTextContent('Elision health card, just under the headline at the top of this tab')
+    // Where it is: in the receipt section, which is not "just under the headline" (three more blocks come first).
+    expect(n).toHaveTextContent('Elision health card, in the receipt section near the top of this tab, above the proxy settings')
+    expect(n).not.toHaveTextContent('just under the headline')
     expect(n).not.toHaveTextContent('card below')
     expect(n).toHaveTextContent('next time Termpolis starts')
   })
 
-  // The note, the guide and the card all say where the Elision health card is: just under the headline at the top of
-  // the tab. It is the second block, not the first, so "at the top" alone was a little off; hold the order itself.
+  // The note and the guide say where the Elision health card is: in the receipt section near the top of the tab, above
+  // the proxy settings. It is not "just under the headline": the denominators, the floor check, the cache and depth lines
+  // and the store-health notices come between them, so the order is held, and the sentence says no more than the order.
   it('puts the Elision health card under the headline receipt and above the proxy settings, where the note says', async () => {
     serve(settingsWith({ firstSightElision: 'late' }))
     const { container } = render(<TokenSavingsSettings />)

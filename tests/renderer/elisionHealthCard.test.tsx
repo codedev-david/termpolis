@@ -607,10 +607,14 @@ describe('Elision health card — late compared with the holdout', () => {
     serve(view())
     render(<ElisionHealthCard />)
     const n = await screen.findByTestId('hr-arms-holdout-note')
-    // One distinct opening message in ten, not one conversation in ten: the arm follows the first message,
-    // so an opener used again and again keeps landing in the same arm.
+    // One distinct opening message in ten, not one conversation in ten: the arm follows the whole first message as the
+    // API receives it. Claude Code puts the date and the project's instructions in it, so a first message with exactly
+    // the same text keeps its arm, and the same words typed on another day are a new draw: the card says that, and not
+    // that an opener used again and again keeps landing in the same arm.
     expect(n).toHaveTextContent('about one distinct opening message in ten')
-    expect(n).toHaveTextContent('always lands in the same arm')
+    expect(n).toHaveTextContent('A first message that is exactly the same, character for character, always lands in the same arm')
+    expect(n).toHaveTextContent('Claude Code puts more than your words in that message (your project instructions, the date, the state of your repository), so the same words typed in another session often start a new draw')
+    expect(n).not.toHaveTextContent('again and again')
     expect(n).toHaveTextContent('first message')
     expect(n).toHaveTextContent('old behavior')
   })
@@ -906,8 +910,10 @@ describe('Elision health card — late against the holdout, read at 99%', () => 
     render(<ElisionHealthCard />)
     const note = await screen.findByTestId('hr-arms-note')
     expect(note).toHaveTextContent('The margin is deliberately wider than a plain 99% interval, because the holdout is small and its costs lean one way')
-    expect(note).toHaveTextContent('on simulated arms that were the same it named a difference falsely in fewer than 1 read in 100')
-    expect(note).toHaveTextContent('it takes about 1.8 times the data to name a real difference')
+    expect(note).toHaveTextContent('on simulated arms that were the same it named a difference falsely in fewer than 1 read in 100 in each direction')
+    // Not one number: the fewer groups the thinner side has, the more data the wider margin costs (3.5 at five, 1.8 at twenty).
+    expect(note).toHaveTextContent('it takes more data to name a real difference: about 3.5 times as much when the side with fewer groups has five, falling to about 1.8 times as much at twenty')
+    expect(note).not.toHaveTextContent('about 1.8 times the data')
   })
 
   it('says how much more data would settle a gap it cannot yet', async () => {

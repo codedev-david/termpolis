@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import { join, relative, sep } from 'path'
+import ts from 'typescript'
 import { claudeWindowSettingsFiles } from '../../src/main/headroom/shapingEnvReader'
 import { CONTEXT_CAP_CHOICES, CONTEXT_CAP_MIN, CONTEXT_CAP_MAX } from '../../src/main/headroom/shapingEnv'
 import { MIN_ARM_REQUESTS, MIN_ARM_GROUPS } from '../../src/main/headroom/armCompare'
@@ -117,6 +118,9 @@ describe('the context window is disclosed, and the disclosure matches what is re
     expect(docsSection).toContain('a `CLAUDE_CONFIG_DIR` that a script sets inside the terminal (to switch accounts, say) names a folder that is not the one checked')
     expect(docsSection).toContain('A `--autocompact` flag typed on a command line cannot be seen')
     expect(docsSection).toContain('a plain shell terminal in which you type `claude` by hand')
+    // And what it concludes: such a terminal gets NEITHER the window nor the proxy route (a flip to "gets this" is false).
+    expect(docsSection).toContain('a plain shell terminal in which you type `claude` by hand is not a Claude launch Termpolis knows about, so it gets neither this nor the proxy route')
+    expect(docsSection).not.toContain('so it gets this and the proxy route')
   })
 
   it('says what it cannot see and what it does not change: a flag on a command line, and the meters', () => {
@@ -124,6 +128,19 @@ describe('the context window is disclosed, and the disclosure matches what is re
     expect(docsSection).toContain('Claude Code lets the variable win over the flag')
     expect(docsSection).toContain('turn the window Off first')
     expect(docsSection).toContain('Context meters, in Claude Code\'s status line and in Termpolis, keep measuring against the model\'s full window')
+  })
+
+  // The conclusions a person acts on, held as the whole sentence: each still names every keyword when flipped to its
+  // opposite ("on by default", "all of which Termpolis reads", "in your home folder", "needs both").
+  it('says in full that it is off by default, what is never read, where the project files are, and that it needs no proxy', () => {
+    expect(flat(privacy)).toContain('- **Optional, off by default:** a smaller context window for Claude Code')
+    expect(flat(privacy)).not.toContain('- **Optional, on by default:**')
+    expect(privacySection).toContain('none of which Termpolis reads (that includes the managed-settings file)')
+    expect(privacySection).not.toContain('all of which Termpolis reads')
+    expect(privacySection).toContain('`.claude/settings.json` and `.claude/settings.local.json` in the folder the terminal opens in')
+    expect(privacySection).not.toContain('in your home folder')
+    expect(docsSection).toContain('It needs neither the compression proxy nor the tool-output compression')
+    expect(docsSection).not.toContain('It needs both')
   })
 
   it('says it is off by default, and what never gets overridden', () => {
@@ -220,7 +237,7 @@ describe('the first-sight policy, the holdout and what is kept about them are di
     expect(privacyProxy).toContain('always runs the Legacy behavior whichever setting is on')
     expect(privacyProxy).toContain('nothing about it is sent anywhere')
     expect(docsProxy).toContain('About one *distinct opening message* in ten')
-    expect(docsProxy).toContain('always lands in the same group')
+    expect(docsProxy).toContain('A first message that is exactly the same, character for character, always lands in the same group')
   })
 
   // The assignment follows the conversation's FIRST message, not the conversation: "kept for its whole length" was
@@ -235,6 +252,38 @@ describe('the first-sight policy, the holdout and what is kept about them are di
       expect(text, name).toContain('a compacted one can be assigned again')
       expect(text, name).not.toContain('whole length')
     }
+  })
+
+  // What the group follows is the WHOLE first message as the API receives it (its length, its first and its last
+  // kilobyte, elisionPolicy.armOf), and Claude Code puts more than the typed words in that message: the project's
+  // instructions, the date, the state of the repository. So the same words typed in another session are a different
+  // first message whenever any of that changes its length or its ends, and "an opener you use again and again always
+  // lands in the same group" was a promise about the typed prompt that the code does not keep. What it keeps is said.
+  it('promises a group for a first message that is exactly the same, not for an opener typed again, everywhere it is described', () => {
+    const readmeText = flat(readFileSync(join(ROOT, 'README.md'), 'utf8')).toLowerCase()
+    const card = flat(readFileSync(join(ROOT, 'src', 'renderer', 'src', 'components', 'SettingsPane', 'ElisionHealthCard.tsx'), 'utf8')).toLowerCase()
+    const guide = docsProxy.toLowerCase()
+    for (const [name, text, side] of [['README.md', readmeText, 'group'], ['the guide', guide, 'group'], ['the card', card, 'arm']] as const) {
+      expect(text, name).toContain(`a first message that is exactly the same, character for character, always lands in the same ${side}`)
+      expect(text, name).toContain('claude code puts more than your words in that message')
+      expect(text, name).toContain('your project instructions, the date, the state of your repository')
+      expect(text, name).toContain('the same words typed in another session often start a new draw')
+      expect(text, name).not.toMatch(/use again and again|used again and again|again and again always/)
+    }
+    expect(privacyProxy.toLowerCase()).not.toMatch(/again and again/)
+  })
+
+  // The code's side of it, so the sentence cannot outlive a change to what the hash reads: the same typed words in a
+  // first message whose context differs in length (a longer git status) are drawn again, and a first message that is
+  // exactly the same draws the same arm and group every time.
+  it('is true of the code: an identical first message draws the same group, and the same typed words in a longer message draw again', async () => {
+    const { armOf } = await import('../../src/main/headroom/elisionPolicy')
+    const body = (context: string): unknown => ({ messages: [{ role: 'user', content: [{ type: 'text', text: context }, { type: 'text', text: 'fix the flaky test in the parser' }] }] })
+    const same = armOf(body('Today is 2026-11-03.\ngit status: clean'))
+    expect(armOf(body('Today is 2026-11-03.\ngit status: clean'))).toEqual(same)
+    let drawn = 0
+    for (let i = 0; i < 200; i++) if (armOf(body(`Today is 2026-11-03.\ngit status: ${'M file.ts\n'.repeat(i + 1)}`)).key !== same.key) drawn++
+    expect(drawn).toBe(200)
   })
 
   it('names what is kept beside each original and the two local files, and that it is counts, sizes and names only', () => {
@@ -306,6 +355,10 @@ describe('the first-sight policy, the holdout and what is kept about them are di
 
   it('describes the Elision health card and the headline as the code computes them', () => {
     expect(docsProxy).toContain('The first start after upgrading to v1.55 rebuilds the prompt cache once for a conversation you resume')
+    // Where the card is: in the receipt section, not "just under the headline" (the denominators and the cache and depth
+    // lines come first); the pane renders it above the proxy settings and below the headline (tokenSavingsSettings test).
+    expect(docsProxy).toContain('**Elision health** card, in the receipt section near the top of the tab, above the proxy settings')
+    expect(docsProxy).not.toContain('just under the headline')
     expect(docsProxy).toContain('**Elision health.**')
     expect(docsProxy).toContain('billed units avoided, net of the turns that fetched elided text and of text asked back')
     expect(docsProxy).toContain('Retrieval turns are counted from v1.55 on')
@@ -471,15 +524,24 @@ describe('the comparison says its margin is wider than the 99% it states, and wh
   const card = flat(readFileSync(join(ROOT, 'src', 'renderer', 'src', 'components', 'SettingsPane', 'ElisionHealthCard.tsx'), 'utf8'))
   const docsProxy = flat(section(docs, '### Token Savings — the Claude Code compression proxy'))
 
-  it('has the README, the guide and the card quote the false-verdict rate and the data it costs', () => {
+  // The calibration holds for each verdict on its own (costlier, cheaper, more turns, fewer turns). Summed over the two
+  // directions of the retrieval-turn line it can pass 1 in 100 on a very uneven workload (about 1.6 in 100 where the
+  // conversations' request counts are heavy-tailed), so the sentence says "in each direction" and not "in all".
+  // And the data the margin costs is not one number: it is the ratio of two t quantiles, which depends on how many groups
+  // the thinner side has. A verdict is given from five and an arm has at most twenty.
+  it('has the README, the guide and the card quote the false-verdict rate for each direction, and the data it costs from five groups to twenty', () => {
+    const price = 'about 3.5 times as much when the side with fewer groups has five, falling to about 1.8 times as much at twenty'
     expect(readmeFlat).toContain('read from a wider interval than a plain 99% one')
-    expect(readmeFlat).toContain('names a difference falsely in under 1 read in 100')
-    expect(readmeFlat).toContain('about 1.8 times the data to name a real one')
+    expect(readmeFlat).toContain('names a difference falsely in under 1 read in 100 in each direction')
+    expect(readmeFlat).toContain(`at the price of more data to name a real one: ${price}`)
     expect(docsProxy).toContain('The margin is read from a wider interval than a plain 99% one')
-    expect(docsProxy).toContain('named a difference falsely in under 1 read in 100')
-    expect(docsProxy).toContain('The price is about 1.8 times the data to name a real difference')
-    expect(card).toContain('named a difference falsely in fewer than 1 read in 100')
-    expect(card).toContain('it takes about 1.8 times the data to name a real difference')
+    expect(docsProxy).toContain('named a difference falsely in under 1 read in 100 in each direction')
+    expect(docsProxy).toContain(`The price is more data to name a real difference: ${price}`)
+    expect(card).toContain('named a difference falsely in fewer than 1 read in 100 in each direction')
+    expect(card).toContain(`it takes more data to name a real difference: ${price}`)
+    for (const [name, text] of [['README.md', readmeFlat], ['the guide', docsProxy], ['the card', card]] as const) {
+      expect(text, name).not.toMatch(/about 1\.8 times the data/)
+    }
   })
 
   // The card says "not enough data yet" until BOTH floors are met: 500 requests in each arm AND at least five groups
@@ -489,7 +551,9 @@ describe('the comparison says its margin is wider than the 99% it states, and wh
     expect(MIN_ARM_REQUESTS).toBe(500)
     expect(MIN_ARM_GROUPS).toBe(5)
     expect(readmeFlat).toContain('until each side has 500 requests from at least five groups of conversations')
-    expect(docsProxy).toContain('until each group has 500 requests from at least five groups of conversations')
+    // "each side", as the README says it: "each group" named the arm and the group of conversations in one breath.
+    expect(docsProxy).toContain('until each side has 500 requests from at least five groups of conversations')
+    expect(docsProxy).not.toContain('until each group has')
     expect(card).toContain('at least ${fmt(a.minRequests)} requests in each arm, from at least ${MIN_ARM_GROUPS} different groups of conversations')
     expect(readmeFlat).not.toContain('until it has 500 requests on each side')
   })
@@ -505,10 +569,41 @@ describe('the comparison says its margin is wider than the 99% it states, and wh
     expect(card).not.toContain('times as often')
   })
 
-  it('keeps the 1.8 true to the table: the ratio of the two quantiles squared, at the degrees of freedom of twenty groups', async () => {
+  it('keeps the 3.5 and the 1.8 true to the table: the ratio of the two quantiles squared, at the degrees of freedom of five groups and of twenty', async () => {
     const { tCritical } = await import('../../src/main/headroom/armCompare')
-    // 99% two-sided at 19 degrees of freedom is 2.861; the quantile in use over it, squared, is the data factor.
-    expect(((tCritical(19) / 2.861) ** 2).toFixed(1)).toBe('1.8')
+    const { ARM_CLUSTERS } = await import('../../src/main/headroom/elisionPolicy')
+    // The thinner side's groups, less one, are the degrees of freedom (armCompare.compareArms). A verdict needs at least
+    // MIN_ARM_GROUPS of them and an arm has at most ARM_CLUSTERS: the two ends of what the sentence quotes.
+    expect(MIN_ARM_GROUPS).toBe(5)
+    expect(ARM_CLUSTERS).toBe(20)
+    // 99% two-sided: 4.604 at 4 degrees of freedom, 2.861 at 19; the quantile in use over it, squared, is the data factor.
+    expect(((tCritical(MIN_ARM_GROUPS - 1) / 4.604) ** 2).toFixed(1)).toBe('3.5')
+    expect(((tCritical(ARM_CLUSTERS - 1) / 2.861) ** 2).toFixed(1)).toBe('1.8')
+  })
+
+  // The range the README quotes belongs to the research's all-sizes figure, not to the 10%: the research gave +11.7% with
+  // a range of +5.6 to +17.9% around it, and +10.0% for results of 1,600 characters or more, which has none.
+  it('puts the 5.6 to 17.9% range with the 11.7% it belongs to, and the 10% with the sizes Late is about', () => {
+    const late = flat((readFileSync(join(ROOT, 'README.md'), 'utf8').split('\n').find((l) => l.startsWith('- **Late, not early (v1.55).**')) as string))
+    expect(late).toContain('about **10%** of the bill saved where the model asks for results back that often, from one person\'s history (10.0% counting only results of 1,600 characters or more; the research\'s 11.7% counts every size, and its range of 5.6 to 17.9% belongs to that figure and varies only the cost of one retrieval turn, not how often the model asks)')
+    expect(late).not.toContain('the range it gave')
+    // Said once, and only there: it is never the headline, and the range appears once.
+    expect(late.split('11.7%')).toHaveLength(2)
+    expect(late.split('5.6 to 17.9%')).toHaveLength(2)
+    // The pane never quoted a range (it says about 10% and where it holds), so there is nothing in it to attribute.
+    const pane = flat(readFileSync(join(ROOT, 'src', 'renderer', 'src', 'components', 'SettingsPane', 'TokenSavingsSettings.tsx'), 'utf8'))
+    expect(pane).not.toContain('17.9')
+    expect(pane).not.toContain('11.7')
+  })
+
+  // Old history ages out of a long conversation (at 128 messages, then at each doubling), and that is the one place the
+  // cached prefix changes: it did in v1.54 at the same requests (measured over 4,138 appended-turn requests: the breaks
+  // are the same under v1.54.4, Legacy and Late). The README said the prefix stays byte-identical as it grows, flat.
+  it('says the prefix stays byte-identical except where old history ages out, which is where v1.54 did it too', async () => {
+    const { DECAY_FIRST_THRESHOLD } = await import('../../src/main/headroomProxy/prefixDecay')
+    expect(DECAY_FIRST_THRESHOLD).toBe(128)
+    const late = flat((readFileSync(join(ROOT, 'README.md'), 'utf8').split('\n').find((l) => l.startsWith('- **Late, not early (v1.55).**')) as string))
+    expect(late).toContain('the cached prefix stays byte-identical as a conversation grows, apart from the points where old history ages out (at 128 messages and at each doubling after, while Age out old history is on), which are the same as in v1.54')
   })
 })
 
@@ -525,6 +620,50 @@ describe('the documents attribute the rate to the author\'s machine and spell mo
       expect(readFileSync(join(ROOT, name), 'utf8'), name).not.toMatch(/modelled/i)
     }
   })
+
+  // The documents are written in US spelling ("behavior", "modeled", "labeled", "aging"). Other parts of those files
+  // are older than this release and spell some words the other way, so the rule is held where this release wrote: the
+  // Token Headroom section of the README, the two sections of the guide, the privacy policy (clean throughout) and what
+  // a person reads in the two Settings components (their text and string literals; an identifier such as the card's
+  // `oldBehaviour` field is part of the main process's interface and is not copy).
+  it('uses US spelling in what this release wrote: behavior, modeled, labeled, aging', () => {
+    const UK = /behaviour|modelled|labelled|ageing|colour|favour/i
+    const docsProxy = flat(section(docs, '### Token Savings — the Claude Code compression proxy'))
+    const readmeFull = readFileSync(join(ROOT, 'README.md'), 'utf8')
+    const start = readmeFull.indexOf('## ⚡ Token Headroom')
+    const headroomReadme = readmeFull.slice(start, readmeFull.indexOf('\n---', start))
+    expect(start).toBeGreaterThan(0)
+    expect(headroomReadme.length).toBeGreaterThan(2000)
+    /** The JSX text and the string and template literals of a source: what a person can read in it. */
+    const readable = (text: string, file: string): string => {
+      const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+      const out: string[] = []
+      const visit = (n: ts.Node): void => {
+        if (ts.isJsxText(n) || ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)) out.push(n.text)
+        ts.forEachChild(n, visit)
+      }
+      visit(sf)
+      return out.join('\n')
+    }
+    const settingsDir = join(ROOT, 'src', 'renderer', 'src', 'components', 'SettingsPane')
+    const paneText = readable(readFileSync(join(settingsDir, 'TokenSavingsSettings.tsx'), 'utf8'), 'TokenSavingsSettings.tsx')
+    const cardText = readable(readFileSync(join(settingsDir, 'ElisionHealthCard.tsx'), 'utf8'), 'ElisionHealthCard.tsx')
+    expect(paneText.length).toBeGreaterThan(5000)
+    expect(cardText.length).toBeGreaterThan(3000)
+    const places: Array<[string, string]> = [
+      ['the README Token Headroom section', headroomReadme],
+      ['the guide, proxy section', docsProxy],
+      ['the guide, long conversations section', docsSection],
+      ['PRIVACY.md', privacy],
+      ['the pane', paneText],
+      ['the card', cardText],
+    ]
+    for (const [name, text] of places) expect(text, name).not.toMatch(UK)
+    // Not vacuous: the pattern finds each word the verifiers found, and the reader leaves an identifier alone.
+    for (const w of ['the ageing-out pass', 'labelled as not', 'old behaviour', 'research modelled']) expect(w).toMatch(UK)
+    expect(readable('const OldBehaviour = () => <p>The ageing-out pass.</p>', 'x.tsx')).toBe('The ageing-out pass.')
+    expect(readable('const OldBehaviour = () => <p>The aging-out pass.</p>', 'x.tsx')).not.toMatch(UK)
+  })
 })
 
 /** The way to check the window is in the app: the Activity Feed's compaction event carries the size (claudeCodeWatcher). */
@@ -537,4 +676,67 @@ describe('the guide says where to see the size at which Claude Code compacted', 
     expect(docsSection).toContain('Anthropic does not say how close to the window it does')
   })
 
+})
+
+/**
+ * The guide says a plain shell terminal, where a person types `claude` by hand, is not a Claude launch Termpolis knows
+ * about, so it gets neither the window nor the proxy route. That holds because the renderer tells the main process a
+ * terminal is for an agent only from the places that start one: the fifth argument of createTerminal. A new plain
+ * terminal or a split pane passes none. Held at the call sites, so that a new site cannot pass the flag for a plain shell
+ * (which would then get the variable and the route) or an agent launch drop it, without this sentence being looked at.
+ */
+describe('only the places that start an agent tell the main process a terminal is for one', () => {
+  const rendererSrc = join(ROOT, 'src', 'renderer', 'src')
+  const sourceFiles = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const p = join(dir, e.name)
+      if (e.isDirectory()) return sourceFiles(p)
+      return /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [p] : []
+    })
+
+  /** The number of arguments of every call of a function named createTerminal in one source, found through a property access too. */
+  const argCounts = (text: string, path: string): number[] => {
+    const out: number[] = []
+    const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, path.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n)) {
+        const callee = n.expression
+        const name = ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isIdentifier(callee) ? callee.text : ''
+        if (name === 'createTerminal') out.push(n.arguments.length)
+      }
+      ts.forEachChild(n, visit)
+    }
+    visit(sf)
+    return out
+  }
+
+  /** Every such call in the renderer, by file. */
+  const calls = (): Array<{ file: string; args: number }> =>
+    sourceFiles(rendererSrc).flatMap((path) => {
+      const text = readFileSync(path, 'utf8')
+      const file = relative(ROOT, path).split(sep).join('/')
+      return text.includes('createTerminal') ? argCounts(text, path).map((args) => ({ file, args })) : []
+    })
+
+  it('passes the flag (a fifth argument) from the agent launches and from nowhere else', () => {
+    const all = calls()
+    const R = 'src/renderer/src/'
+    expect(all.filter((c) => c.args >= 5).map((c) => c.file).sort()).toEqual([
+      `${R}App.tsx`, `${R}App.tsx`,
+      `${R}components/PastAISessions/PastAISessions.tsx`, `${R}components/PastAISessions/PastAISessions.tsx`,
+      `${R}components/Sidebar/WorkspaceList.tsx`,
+      `${R}lib/aiProfiles.ts`,
+      `${R}lib/conductorManager.ts`,
+    ])
+    // A plain new terminal (the app's new-terminal action, the sidebar's, a split pane) passes the shell and the folder only.
+    const plain = all.filter((c) => c.args < 5)
+    expect(plain.map((c) => c.file).sort()).toEqual([`${R}App.tsx`, `${R}components/Sidebar/Sidebar.tsx`, `${R}components/SplitView/PaneRenderer.tsx`])
+    expect(plain.every((c) => c.args === 3)).toBe(true)
+  })
+
+  it('and the reading is not vacuous: it counts the arguments of a call, finds one through a property access, and skips what is not a call', () => {
+    expect(argCounts('a.b.createTerminal(id, shell, cwd); createTerminal(id, shell, cwd, undefined, true)', 'x.ts')).toEqual([3, 5])
+    expect(argCounts('const createTerminal = 1; type T = { createTerminal: (a: string) => void }; // createTerminal(a, b, c, d, e)', 'x.ts')).toEqual([])
+    expect(argCounts('export const A = () => <button onClick={() => window.termpolis.createTerminal(id, s, c, undefined, isClaude)} />', 'x.tsx')).toEqual([5])
+  })
 })

@@ -425,12 +425,15 @@ describe('the verdicts are calibrated, not only computed', () => {
   // holds. A tenth of the conversations are held out, so the holdout's twenty groups hold about two
   // conversations each against the other arm's eighteen, and its cost per unit of work is the mean of a few
   // dozen right-skewed numbers: skewed enough that the spread read off its groups understates how far it can
-  // stray, and a t interval at 99% named "Late is costing more" in 1.5 to 3.4 trials in 100 when the two
-  // arms were the same, three to six times its level, and "cheaper" almost never (and "more retrieval turns"
-  // about twice as often as "fewer"). So this builds the ledger the way the app does: each conversation falls
-  // in the holdout with probability a tenth and in one of twenty clusters, its cost per request is
-  // lognormal, and its share of retrieval turns varies from conversation to conversation. The verdicts must
-  // hold the level the card states, 99%, which is one false verdict in a hundred in all.
+  // stray, and a t interval at 99% named "Late is costing more" in about 1 to 3 trials in 100 when the two
+  // arms were the same (1.1 to 3.4 over three replications), two to seven times its level, and "cheaper"
+  // almost never (and "more retrieval turns" about twice as often as "fewer"). So this builds the ledger the
+  // way the app does: each conversation falls in the holdout with probability a tenth and in one of twenty
+  // clusters, its cost per request is lognormal, and its share of retrieval turns varies from conversation to
+  // conversation. The verdicts must hold the level the card states, 99%, which is one false verdict in a
+  // hundred for each verdict. (On a workload whose request counts per conversation are very uneven the two
+  // directions of the retrieval-turn line together can pass that, which is why the documents say "in each
+  // direction"; the workloads here have the same request count in every conversation.)
   describe('identical arms with a tenth of the conversations held out', () => {
     const REQUESTS = 40
     const build = (next: () => number, conversations: number, sigma: number): ArmState => {

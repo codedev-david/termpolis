@@ -192,7 +192,7 @@ function ArmRow({ id, label, s, note }: { id: string; label: string; s: ArmSumma
 
 /**
  * Late against the holdout. About one distinct opening message in ten keeps running the old behavior
- * whichever setting is on, so the saving the research modelled from one history can be checked on this
+ * whichever setting is on, so the saving the research modeled from one history can be checked on this
  * person's own work, and so can the thing that matters more: that it did not cost anything. This is
  * the card's answer, with the margin stated and a plain "not enough data yet" until there is some.
  */
@@ -227,15 +227,18 @@ function Arms({ a, policy }: { a: ArmComparisonView; policy: 'late' | 'legacy' }
         requests, because the requests of one conversation cost alike; nothing is claimed before there are at least {fmt(a.minRequests)} requests
         and {MIN_ARM_GROUPS} groups on each side, and a verdict needs a gap that a 99% interval cannot explain, because this card is read again and again.
         The margin is deliberately wider than a plain 99% interval, because the holdout is small and its costs lean one way: on simulated arms
-        that were the same it named a difference falsely in fewer than 1 read in 100, where a plain 99% interval did so in about 1 to 3 reads
-        in 100 when it said Late cost more. The price is that it takes about 1.8 times the data to name a real difference.
+        that were the same it named a difference falsely in fewer than 1 read in 100 in each direction, where a plain 99% interval did so in
+        about 1 to 3 reads in 100 when it said Late cost more. The price is that it takes more data to name a real difference: about 3.5 times
+        as much when the side with fewer groups has five, falling to about 1.8 times as much at twenty.
         A difference in cost takes many conversations to read; the retrieval-turn lines settle first. This compares cost and round trips.
         It cannot see the quality of an answer; under late the model is shown the whole of a result where the holdout is shown a window of it.
       </div>
       <div data-testid="hr-arms-holdout-note" style={{ marginTop: 4, fontSize: 12, opacity: 0.65 }}>
         The holdout is about one distinct opening message in ten, chosen by a hash of the conversation’s first message and kept for as long as that
-        message stays the same, so an opening message you use again and again always lands in the same arm. A compaction summarizes the start of a
-        conversation, so a compacted one can be assigned again. It runs the old behavior whichever setting is on.
+        message stays the same. A first message that is exactly the same, character for character, always lands in the same arm. Claude Code puts
+        more than your words in that message (your project instructions, the date, the state of your repository), so the same words typed in
+        another session often start a new draw. A compaction summarizes the start of a conversation, so a compacted one can be assigned again. It
+        runs the old behavior whichever setting is on.
         {holdoutShare !== null && <> It is {holdoutShare}% of the requests so far.</>}
       </div>
     </div>
@@ -367,8 +370,8 @@ export function ElisionHealthCard() {
           {view.agedEarly.requests > 0 || view.agedEarly.stubs > 0 ? (
             <div data-testid="hr-elision-aged-early" style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>
               Aged-out stubs in conversations shorter than {DECAY_FIRST} messages: {fmt(view.agedEarly.requests)} {view.agedEarly.requests === 1 ? 'request' : 'requests'}
-              {' '}({fmt(view.agedEarly.stubs)} {view.agedEarly.stubs === 1 ? 'stub' : 'stubs'}). The ageing-out pass starts at {DECAY_FIRST} messages, so there should be none;
-              a count here means something else is ageing results out.
+              {' '}({fmt(view.agedEarly.stubs)} {view.agedEarly.stubs === 1 ? 'stub' : 'stubs'}). The aging-out pass starts at {DECAY_FIRST} messages, so there should be none;
+              a count here means something else is aging results out.
             </div>
           ) : null}
           {view.legacyRedeemed > 0 && (

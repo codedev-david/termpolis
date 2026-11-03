@@ -22,7 +22,7 @@ const ROOT = join(__dirname, '..', '..')
 const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
 
 /** The words the old promise came in, and the names of the policy it is true of. */
-const PROMISE_WORDS = ['51%', 'at least half', 'half of your', '50% minimum', 'at least 50%', '51 percent', '50 percent', 'fifty percent', 'half the tool', 'half of the tool']
+const PROMISE_WORDS = ['51%', 'at least half', 'half of your', '50% minimum', 'at least 50%', '51 percent', '50 percent', 'fifty percent', 'half the tool', 'half of the tool', 'half your', 'halves your', 'halve your', 'in half,', 'in half.']
 const QUALIFIER = /v1\.34|Legacy|holdout/
 
 /** The bullets of the Token Headroom section, one entry per list item. */
@@ -115,10 +115,14 @@ describe('the README on Token Headroom', () => {
     expect(late).toContain('two thirds')
     // Whose: the author's machine, with the two models it differs by.
     expect(late).toContain("on the author's own machine (about 69% on Opus 5.5 and 44% on Sonnet 5.5)")
-    // What it is worth: about 10% (not the 11.7% that included a band Late does not touch), where, and what less looks like.
+    // What it is worth: about 10% (the 11.7% included a band Late does not touch, so it is never the headline: it is named
+    // once, as the research's figure for every size, and the range of 5.6 to 17.9% is attributed to it and not to the 10%),
+    // where it holds, and what less looks like.
     expect(late).toMatch(/about \*\*10%\*\* of the bill saved where the model asks for results back that often, from one person's history/)
-    expect(late).not.toContain('11.7%')
-    expect(late).toContain('varies only the cost of one retrieval turn, not how often the model asks')
+    expect(late.split('11.7%')).toHaveLength(2)
+    expect(late).not.toContain('**11.7%**')
+    expect(late).toContain("the research's 11.7% counts every size")
+    expect(late).toContain('belongs to that figure and varies only the cost of one retrieval turn, not how often the model asks')
     expect(late).toContain('below roughly a third to a half of the time it costs a little')
     expect(late).toMatch(/\*\*modeled\*\* figure, not a promise/)
     expect(late).toContain('one distinct opening message in ten')
@@ -213,10 +217,18 @@ describe('the Settings copy on the savings floor', () => {
  * heading in one element cannot borrow the Legacy of the element beside it.
  */
 describe('the old promise, anywhere a person could read it', () => {
-  /** The sentences of a prose text that use a word of the old promise and do not name v1.34, Legacy or the holdout themselves. */
+  /**
+   * The sentences of a prose text that use a word of the old promise and do not name v1.34, Legacy or the holdout themselves.
+   * A list item, a heading, a table row and a blank line each begin something new whatever the line before ended with, so the
+   * text is cut there on its lines, before the wrap of a long line is flattened: a promise that ends one bullet would otherwise
+   * join the first sentence of the next and be excused by the Legacy in its label. Within one such piece a sentence ends at
+   * . ! or ? and whatever closes it (a bold label's ** or a bracket or a quote), and the next begins at a capital or an opener.
+   */
   const unqualifiedSentences = (text: string): string[] =>
-    // A sentence ends at . ! or ? and whatever closes it (a bold label's ** or a bracket or a quote), and the next begins at a capital or an opener.
-    text.replace(/\s+/g, ' ').split(/(?<=[.!?][*)"'’”`]*)\s+(?=[A-Z*`(<{'"])/).filter((s) => PROMISE_WORDS.some((w) => s.includes(w)) && !QUALIFIER.test(s))
+    text
+      .split(/\n\s*\n|\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t]|#{1,6}[ \t]|\|)/)
+      .flatMap((piece) => piece.replace(/\s+/g, ' ').split(/(?<=[.!?][*)"'’”`]*)\s+(?=[A-Z*`(<{'"])/))
+      .filter((s) => PROMISE_WORDS.some((w) => s.includes(w)) && !QUALIFIER.test(s))
 
   /** Everything a person can read in a .ts or .tsx source: JSX text, string and template literals, each on its own. */
   const readableText = (source: string, file: string): string[] => {
@@ -276,6 +288,35 @@ describe('the old promise, anywhere a person could read it', () => {
     expect(unqualifiedSentences('- **Shorten tool results: Late or Legacy.** It removes at least half of your tool text, every time.')).toHaveLength(1)
     expect(unqualifiedSentences('That was Legacy. Nothing else here. It removes at least half of your tool text.')).toHaveLength(1)
     expect(unqualifiedSentences('Late shortens a result from 40,000 characters.')).toEqual([])
+  })
+
+  // The guide and the privacy policy are lists of bullets. A bullet starts with "- ", which is not a capital or an opener, so a
+  // promise that ended one bullet used to join the first sentence of the next, and the Legacy or holdout named in that next
+  // bullet's label excused it. These are the three the round-3 verifier planted, and the lines around them.
+  it('and a bullet, a heading or a paragraph that follows does not excuse the promise that ends the one before it', () => {
+    const promise = 'Termpolis removes at least half of your tool text every time.'
+    // Before a bullet labelled with the holdout, before one labelled with Legacy, and as the last sentence of a bullet.
+    expect(unqualifiedSentences(`- **Savings.** ${promise}\n- **A holdout on your own work.** About one distinct opening message in ten always runs Legacy.`)).toHaveLength(1)
+    expect(unqualifiedSentences(`- **Savings.** ${promise}\n- **Shorten tool results: Late or Legacy.** Since v1.55 the default is Late.`)).toHaveLength(1)
+    expect(unqualifiedSentences(`- **Savings.** Nothing else here. ${promise}\n- **Shorten tool results: Late or Legacy.** Since v1.55 the default is Late.`)).toHaveLength(1)
+    // A numbered list, a heading and a paragraph after a blank line are the same.
+    expect(unqualifiedSentences(`1. ${promise}\n2. Under Legacy a tier sets the size.`)).toHaveLength(1)
+    expect(unqualifiedSentences(`${promise}\n\n## Legacy\n\nUnder Legacy a tier sets the size.`)).toHaveLength(1)
+    expect(unqualifiedSentences(`${promise}\n\nthe holdout keeps the old behavior.`)).toHaveLength(1)
+    // The same bullets pass when the promise names its policy itself, and a sentence wrapped over lines is still one sentence.
+    expect(unqualifiedSentences(`- **Savings.** Under Legacy ${promise.toLowerCase()}\n- **A holdout on your own work.** About one in ten runs Legacy.`)).toEqual([])
+    expect(unqualifiedSentences('- **Savings.** It removes\n  at least half\n  of your tool text, under Legacy.\n- **Other.** Something else.')).toEqual([])
+    expect(unqualifiedSentences('- **Savings.** It removes\n  at least half\n  of your tool text.\n- **Other.** Under Legacy, something else.')).toHaveLength(1)
+  })
+
+  // The words the promise came in other than the ones above: "half your", "halves", "in half" read the same to a person.
+  it('and it holds the paraphrases of the old promise too: half your, halves, in half', () => {
+    expect(unqualifiedSentences('Termpolis removes half your tool text, every time.')).toHaveLength(1)
+    expect(unqualifiedSentences('Termpolis halves your tool text on every request.')).toHaveLength(1)
+    expect(unqualifiedSentences('It cuts what tools print in half, on every request.')).toHaveLength(1)
+    expect(unqualifiedSentences('Under Legacy it halves your tool text on every request.')).toEqual([])
+    // A bare "half" is not a promise ("the oldest half" of a conversation ages out), so it is not one of the words.
+    expect(unqualifiedSentences('Age the oldest half of a long conversation down to stubs.')).toEqual([])
   })
 
   it('and the renderer reading is not vacuous: a heading in one element is not excused by the Legacy of the next', () => {

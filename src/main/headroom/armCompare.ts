@@ -55,11 +55,14 @@ export const MIN_ARM_GROUPS = 5
  * holdout's is not: it is about a tenth of the conversations, so its cost per unit of work is the mean of
  * a few dozen right-skewed numbers, and the spread read off its groups understates how far it can stray.
  * Simulated on identical arms (conversation costs lognormal, spread 1.0 and 1.5, 20 groups an arm, a tenth
- * in the holdout) the textbook 99% quantile named "Late is costing more" in 1.5 to 3.4 reads in 100, three
- * to six times the half a percent that side of a 99% rule allows, and "cheaper" almost never. The 99.9%
- * quantile brings that to under 1 read in 100 at the largest spread, and the share of retrieval turns,
- * which had the same lean, to a quarter of a percent. The test that holds this (the verdicts are
- * calibrated) fails with the 99% quantile in place.
+ * in the holdout) the textbook 99% quantile named "Late is costing more" in about 1 to 3 reads in 100
+ * (1.1 to 3.4 over three replications of the simulation, the figure the card, the guide and the README
+ * quote), two to seven times the half a percent that side of a 99% rule allows, and "cheaper" almost never.
+ * The 99.9% quantile brings that to under 1 read in 100 at the largest spread, and the share of retrieval
+ * turns, which had the same lean, to a quarter of a percent. The test that holds this (the verdicts are
+ * calibrated) fails with the 99% quantile in place. "Under 1 in 100" is a rate for each verdict on its own:
+ * summed over both directions of the retrieval-turn line it can pass 1 in 100 on a workload whose request
+ * counts per conversation are very uneven, which is why the user-facing text says "in each direction".
  */
 const T999 = [
   636.619, 31.599, 12.924, 8.61, 6.869, 5.959, 5.408, 5.041, 4.781, 4.587, 4.437, 4.318, 4.221, 4.14, 4.073,

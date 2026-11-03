@@ -486,7 +486,7 @@ export function TokenSavingsSettings() {
               again. Late leaves a result whole until it reaches {LATE_FLOOR} characters. Modeled on that history it saves about 10% of
               the bill where the model asks that often. It saves less where the model asks for fewer results back, and it costs a little
               below roughly a third to a half. That is a modeled figure from one person’s history, not a promise for your work. The
-              Elision health card, just under the headline at the top of this tab, compares Late with the holdout on yours. It
+              Elision health card, in the receipt section near the top of this tab, above the proxy settings, compares Late with the holdout on yours. It
               changes only which results are shortened: repeats are still collapsed, old history still ages out in a long
               conversation, and anything shortened can still be brought back with <code>retrieve_full</code>. Termpolis cannot measure
               the effect on the quality of answers on your work; under Late the model is shown at least as much of every result as under
@@ -585,7 +585,7 @@ export function TokenSavingsSettings() {
                 phone open through Termpolis get the variable too, because the command they will run is not known when they are created; Codex and Gemini
                 CLI ignore it.
               </p>
-              {/* The limits: where it does not look and what else it touches. Folded so the paragraphs above stay readable, and labelled with what
+              {/* The limits: where it does not look and what else it touches. Folded so the paragraphs above stay readable, and labeled with what
                   is inside. What a person decides on, and what Termpolis reads and where the variable reaches, is above; this is what they would
                   look up afterwards if they have a window of their own somewhere Termpolis cannot see. */}
               <details data-testid="hr-context-cap-limits">
