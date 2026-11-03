@@ -531,22 +531,23 @@ function onChildMessage(msg: HostResponse): void {
   else p.reject(rehydrate(msg.error, `memory host: ${p.fn} failed`))
 }
 
-function onChildExit(code: number, from?: MemoryHostTransport): void {
+function onChildExit(code: number, from: MemoryHostTransport): void {
   // v1.54.5: an exit from a child that is no longer THE child must change nothing. That is a child we
   // abandoned (a failed start, killed), whose exit event lands after the next retry began (it would null
   // the live transport and make the retry's own 'ready' look like a start that was stopped), OR while
   // the verdict on the failure is still being reached (it would null readyPromise, and a call arriving
   // then would be answered from a store nobody loaded). utilityProcess is an EventEmitter: the same
   // exit can also be delivered twice.
-  if (from && transport !== from) return
-  const wasHost = mode === 'host'
+  if (transport !== from) return
   transport = null
   readyPromise = null
   // (a) nothing may hang. A pending call whose process just died must REJECT — a silent "empty
   // result" here would be indistinguishable from "you have no memories", the worst lie this app
   // can tell.
   failAllPending(`memory host exited unexpectedly (code ${code})`)
-  if (!wasHost || !initParams || stopped) return
+  // Past the filter above this is the live child of a started client that has reported ready: the mode is
+  // 'host', params are set and the app is not quitting (stop, reset and every abandon null the transport
+  // first, so their exits never get here).
 
   // (b) respawn — but do not flap. A child that dies on init (bad key, corrupt store) would
   // otherwise restart forever, and the app would look alive while every call failed.

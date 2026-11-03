@@ -219,6 +219,8 @@ describe('above the limit — a memory host that cannot serve never loads the st
     // may be fractional). This is the path the shipped app takes, with only the sizes shrunk.
     writeStore(4_000)
     vi.stubEnv('TERMPOLIS_MEMORY_INPROC_MAX_MB', '0.001')
+    probeReturns(async () => 1)       // a seam answer first...
+    setMemoryStoreSizeProbe(null)     // ...and back to the REAL probe, which is what this test is about
     const s = scripted(['ready'])
     setMemoryHostSpawner(s.spawner)
     expect(await startMemoryHost({ userDataPath: tmp })).toBe('host')
