@@ -494,6 +494,20 @@ export class ScreenFlattener {
     return { replaceFrom: screen.settledLen - screen.tail.length, text: screen.tail + screen.live }
   }
 
+  /** The viewport alone, as one edit: the part of a screen a rewrite may replace.
+   *
+   *  Everything above it is settled -- permanent, sent once, never again -- so a copy that is only wrong in the
+   *  viewport is put right by this and by nothing larger. It starts where the settled text ends, which is also
+   *  where `snapshot`'s text passes from the kept tail to the viewport: the two are in one numbering, and either
+   *  applies to the same copy. Reads only what `feed` has committed, like `snapshot`.
+   *
+   *  Null when there is no emulator for this terminal. */
+  liveRegion(terminalId: string): FlatEdit | null {
+    const screen = this.screens.get(terminalId)
+    if (screen === undefined) return null
+    return { replaceFrom: screen.settledLen, text: screen.live }
+  }
+
   /** Drop a terminal's emulator. Called when nobody is watching it any more:
    *  an emulator kept for an unwatched terminal is a grid nobody reads. */
   forget(terminalId: string): void {
