@@ -421,6 +421,7 @@ function createWatchdog(deps: GovernorDeps, registry: ShedRegistry): GovernorHan
     let rawMs = 0
     try {
       rawMs = hist.percentile(99) / 1e6 // the ONE histogram read of this sample
+      if (!Number.isFinite(rawMs)) rawMs = 0 // garbage reads as no data, never as calm or slow
       hist.reset()
       errorsInRow = 0
     } catch {

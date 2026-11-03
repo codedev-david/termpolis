@@ -611,6 +611,27 @@ describe('watchdog: the sensor', () => {
   })
 })
 
+describe('watchdog: a garbage histogram reading', () => {
+  it('NaN or Infinity is "no data": it neither enters SHED nor ends one, and never reaches the snapshot', () => {
+    const r = rig()
+    r.hist.percentile.mockImplementation(() => NaN)
+    for (let i = 0; i < 10; i++) r.sample(0)
+    r.hist.percentile.mockImplementation(() => Infinity)
+    for (let i = 0; i < 10; i++) r.sample(0)
+    expect(r.registry.isShed()).toBe(false)
+    expect(JSON.stringify(r.handle.snapshot())).not.toMatch(/NaN|Infinity/)
+    // and while shed it cannot count as a calm sample either
+    r.hist.percentile.mockImplementation(() => SLOW * 1e6)
+    r.sample(0); r.sample(0); r.sample(0)
+    expect(r.registry.isShed()).toBe(true)
+    r.hist.percentile.mockImplementation(() => NaN)
+    for (let i = 0; i < 4; i++) r.sample(0)
+    expect(r.registry.isShed()).toBe(true) // 8 s of "no data" is not 10 s calm yet
+    r.sample(0)
+    expect(r.registry.isShed()).toBe(false) // control: it does end once 10 s have passed without a bad sample
+  })
+})
+
 describe('watchdog: the idle floor (Windows reports 31.25 ms for an idle loop at resolution 20)', () => {
   it('idleFloorMs: the resolution rounded up to the 15.625 ms timer tick on win32, the resolution elsewhere', () => {
     expect(idleFloorMs(20, 'win32')).toBe(31.25)
