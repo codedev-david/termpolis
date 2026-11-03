@@ -235,7 +235,8 @@ describe('the counters see a timer tick of src/main (control)', () => {
   })
 })
 
-describe('steady-state timers of the real main entry', () => {
+// A bound for a slow CI machine (the warm-up waits for a real indexer pass; the repo default is 30 s per test).
+describe('steady-state timers of the real main entry', { timeout: 120_000 }, () => {
   it('an app with nothing open: forty simulated minutes of timers, after the warm-up, make no sync call and no spawn', async () => {
     await warmUp() // un-judged: the first firing of the jobs armed at launch
     const before = vi.getTimerCount()

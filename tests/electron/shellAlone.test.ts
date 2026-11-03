@@ -13,7 +13,7 @@ const HELPER_PATH = 'C:\data\termpolis-console-list.cjs'
 vi.mock('../../src/main/procClient', () => ({ execCaptureOffThread: h.exec }))
 vi.mock('../../src/main/consoleListHelper', () => ({ ensureConsoleListHelper: h.ensure }))
 
-import { shellAlone, ownConsoleProcesses, parseConsoleList, CONSOLE_LIST_TIMEOUT_MS, CONSOLE_LIST_SHARE_MS, _resetShellAloneForTests } from '../../src/main/shellAlone'
+import { shellAlone, ownConsoleProcesses, parseConsoleList, primeShellAlone, CONSOLE_LIST_TIMEOUT_MS, CONSOLE_LIST_SHARE_MS, _resetShellAloneForTests } from '../../src/main/shellAlone'
 
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const GIT_BASH = 'C:\\Program Files\\Git\\bin\\bash.exe'
@@ -259,5 +259,22 @@ describe('shellAlone on Unix', () => {
   it.each(['/usr/bin/pwsh', '/opt/homebrew/bin/nu'])("can't tell for %s, which keeps what it runs in its own group, and asks nothing", async (exe) => {
     expect(await shellAlone(SHELL, exe, 'darwin')).toBeNull()
     expect(h.exec).not.toHaveBeenCalled()
+  })
+})
+
+describe('primeShellAlone', () => {
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor
+  afterEach(() => { Object.defineProperty(process, 'platform', realPlatform) })
+
+  it('on Windows it writes the helper at start-up, once, so the first submit makes no file call', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    await primeShellAlone()
+    expect(h.ensure).toHaveBeenCalledTimes(1)
+  })
+
+  it('elsewhere it asks for nothing: there is no console to read', async () => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    await primeShellAlone()
+    expect(h.ensure).not.toHaveBeenCalled()
   })
 })

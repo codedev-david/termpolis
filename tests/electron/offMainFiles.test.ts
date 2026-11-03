@@ -1,7 +1,7 @@
 // AC1: the primitive every hot path uses instead of a *Sync call. Everything is a COUNTER: fs calls
 // made, operations in flight, operations waiting, operations shed. No wall-clock ratios.
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'fs'
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { OffMainFiles, QueueFullError, DEFAULT_SOON_MS, type FsPromisesLike } from '../../src/main/offMainFiles'
@@ -256,6 +256,165 @@ describe('OffMainFiles on the real file system', () => {
       expect(readFileSync(join(dir, 'late', 'log.txt'), 'utf8')).toBe('late\n')
       expect(readFileSync(join(dir, 'late', 'soon.json'), 'utf8')).toBe('soon')
       expect(existsSync(join(dir, 'late'))).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+/** A hand-made fs.promises: every call is a vi.fn, so a test counts what reached the disk and with what arguments. */
+function mkFs() {
+  const writeFile = vi.fn(async (_p: string, _d: string | Uint8Array, _o?: { mode?: number }): Promise<void> => {})
+  const appendFile = vi.fn(async (_p: string, _d: string): Promise<void> => {})
+  const mkdir = vi.fn(async (_p: string, _o: { recursive: true }): Promise<unknown> => undefined)
+  const readFile = vi.fn(async (_p: string, _e: BufferEncoding): Promise<string | Buffer> => 'x')
+  return { fs: { writeFile, appendFile, mkdir, readFile } as FsPromisesLike, writeFile, appendFile, mkdir, readFile }
+}
+const deferred = <T,>() => {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
+
+describe('OffMainFiles: modes, failures and the edges of each operation', () => {
+  it('passes a file mode to the write; a later ask for the same waiting write can set one, and a write without one passes none', async () => {
+    const { fs, writeFile } = mkFs()
+    const io = new OffMainFiles({ fs })
+    const first = io.write('/a/f', 'one') // no mode yet
+    const second = io.write('/a/f', 'two', { mode: 0o600 }) // takes its place, and sets the mode
+    await Promise.all([first, second])
+    expect(writeFile).toHaveBeenCalledTimes(1)
+    expect(writeFile).toHaveBeenCalledWith('/a/f', 'two', { mode: 0o600 })
+    await io.write('/a/g', 'plain')
+    expect(writeFile).toHaveBeenLastCalledWith('/a/g', 'plain', undefined)
+    expect(io.stats().coalesced).toBe(1)
+  })
+
+  it('writeSoon keeps the latest content and mode and writes once, when its timer ends', async () => {
+    vi.useFakeTimers()
+    const { fs, writeFile } = mkFs()
+    const io = new OffMainFiles({ fs })
+    io.writeSoon('/a/s', 'one')
+    io.writeSoon('/a/s', 'two', { mode: 0o640 }) // the armed one: new content, the mode set, counted as coalesced
+    expect(writeFile).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(DEFAULT_SOON_MS + 10)
+    await io.idle()
+    expect(writeFile).toHaveBeenCalledTimes(1)
+    expect(writeFile).toHaveBeenCalledWith('/a/s', 'two', { mode: 0o640 })
+    expect(io.stats().coalesced).toBe(1)
+  })
+
+  it('a writeSoon still waiting is written early by idle(), with its mode, and one with no mode without', async () => {
+    const { fs, writeFile } = mkFs()
+    const io = new OffMainFiles({ fs })
+    io.writeSoon('/a/early', 'content', { mode: 0o600 })
+    await io.idle()
+    expect(writeFile).toHaveBeenCalledWith('/a/early', 'content', { mode: 0o600 })
+    io.writeSoon('/a/early2', 'content2')
+    await io.idle()
+    expect(writeFile).toHaveBeenLastCalledWith('/a/early2', 'content2', undefined)
+  })
+
+  it('a writeSoon whose write fails is dropped quietly, on its timer and when released early; the next ask writes again', async () => {
+    const { fs, writeFile } = mkFs()
+    const io = new OffMainFiles({ fs })
+    writeFile.mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }))
+    vi.useFakeTimers()
+    io.writeSoon('/a/x', 'one')
+    await vi.advanceTimersByTimeAsync(DEFAULT_SOON_MS + 10) // the timer's write fails: nothing is thrown anywhere
+    await io.idle()
+    vi.useRealTimers()
+    writeFile.mockRejectedValueOnce(Object.assign(new Error('EIO'), { code: 'EIO' }))
+    io.writeSoon('/a/x', 'two')
+    await io.idle() // released early: the same failure, the same silence
+    io.writeSoon('/a/x', 'three')
+    await io.idle()
+    expect(writeFile).toHaveBeenCalledTimes(3)
+    expect(writeFile).toHaveBeenLastCalledWith('/a/x', 'three', undefined)
+  })
+
+  it('a failed append is forgotten: the next append for the path starts a fresh one', async () => {
+    const { fs, appendFile } = mkFs()
+    appendFile.mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+    const io = new OffMainFiles({ fs })
+    await expect(io.append('/a/log', 'one\n')).rejects.toThrow('EACCES')
+    await io.append('/a/log', 'two\n')
+    expect(appendFile).toHaveBeenCalledTimes(2)
+    expect(appendFile).toHaveBeenLastCalledWith('/a/log', 'two\n')
+  })
+
+  it('a write or an append refused by a full queue leaves nothing behind for the next ask to join', async () => {
+    const { fs, writeFile, appendFile } = mkFs()
+    const hold = deferred<void>()
+    writeFile.mockImplementationOnce(() => hold.promise) // keeps the one queue slot busy
+    const io = new OffMainFiles({ fs, maxQueued: 1, concurrency: 1 })
+    const busy = io.write('/a/busy', 'x')
+    await expect(io.append('/a/log', 'refused\n')).rejects.toBeInstanceOf(QueueFullError)
+    await expect(io.write('/a/state', 'refused')).rejects.toBeInstanceOf(QueueFullError)
+    expect(io.stats().shedOps).toBe(2)
+    hold.resolve()
+    await busy
+    await io.idle() // the slot is given back a moment after the write settles
+    await io.append('/a/log', 'accepted\n') // a new append, not a join to the refused one
+    await io.idle()
+    await io.write('/a/state', 'accepted')
+    expect(appendFile).toHaveBeenCalledTimes(1)
+    expect(appendFile).toHaveBeenCalledWith('/a/log', 'accepted\n')
+    expect(writeFile).toHaveBeenLastCalledWith('/a/state', 'accepted', undefined)
+  })
+
+  it('read gives text whether the fs hands back a string or a Buffer', async () => {
+    const { fs, readFile } = mkFs()
+    const io = new OffMainFiles({ fs })
+    readFile.mockResolvedValueOnce(Buffer.from('héllo', 'utf8'))
+    expect(await io.read('/a/b')).toBe('héllo')
+    readFile.mockResolvedValueOnce('plain')
+    expect(await io.read('/a/b')).toBe('plain')
+    expect(io.stats().reads).toBe(2)
+  })
+
+  it('a missing folder is made once and the call repeated; any other failure (even one with no code) is thrown as it is', async () => {
+    const { fs, writeFile, mkdir } = mkFs()
+    const io = new OffMainFiles({ fs })
+    writeFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
+    await io.write('/a/new/f', 'x')
+    expect(mkdir).toHaveBeenCalledTimes(1)
+    expect(writeFile).toHaveBeenCalledTimes(2)
+    writeFile.mockRejectedValueOnce(Object.assign(new Error('EPERM'), { code: 'EPERM' }))
+    await expect(io.write('/a/other', 'x')).rejects.toThrow('EPERM')
+    writeFile.mockRejectedValueOnce(undefined)
+    await expect(io.write('/a/nothing', 'x')).rejects.toBeUndefined()
+    expect(mkdir).toHaveBeenCalledTimes(1) // neither of those was a missing folder
+  })
+
+  it('flushSync lands what is still waiting (mode and all), skips what cannot be written, never throws, and writes nothing twice', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omf-flush-'))
+    try {
+      const { fs, writeFile, appendFile } = mkFs()
+      const hold = deferred<void>()
+      writeFile.mockImplementationOnce(() => hold.promise)
+      const io = new OffMainFiles({ fs, concurrency: 1 })
+      const running = io.write(join(dir, 'running.txt'), 'in flight') // takes the one slot
+      await new Promise<void>((r) => setTimeout(r, 5)) // ...and is under way (held in the fake fs) before the rest is asked for
+      expect(writeFile).toHaveBeenCalledTimes(1)
+      void io.write(join(dir, 'a', 'withmode.txt'), 'M', { mode: 0o600 }).catch(() => undefined)
+      void io.write(join(dir, 'b.txt'), 'B').catch(() => undefined)
+      void io.append(join(dir, 'log', 'c.log'), 'one\n').catch(() => undefined)
+      void io.append(join(dir, 'log', 'c.log'), 'two\n').catch(() => undefined)
+      writeFileSync(join(dir, 'afile'), 'a file where a folder is needed')
+      void io.write(join(dir, 'afile', 'sub', 'blocked.txt'), 'nope').catch(() => undefined)
+      void io.append(join(dir, 'afile', 'sub2', 'blocked.log'), 'nope\n').catch(() => undefined)
+      expect(() => io.flushSync()).not.toThrow()
+      expect(readFileSync(join(dir, 'a', 'withmode.txt'), 'utf8')).toBe('M')
+      expect(readFileSync(join(dir, 'b.txt'), 'utf8')).toBe('B')
+      expect(readFileSync(join(dir, 'log', 'c.log'), 'utf8')).toBe('one\ntwo\n')
+      expect(existsSync(join(dir, 'afile', 'sub', 'blocked.txt'))).toBe(false)
+      hold.resolve()
+      await running
+      await io.idle()
+      expect(writeFile).toHaveBeenCalledTimes(1) // only the one that was already running went through the pool
+      expect(appendFile).not.toHaveBeenCalled() // the flushed appends were not appended again
+      expect(readFileSync(join(dir, 'log', 'c.log'), 'utf8')).toBe('one\ntwo\n')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

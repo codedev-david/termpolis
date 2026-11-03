@@ -114,6 +114,18 @@ describe('the asynchronous git plumbing gives the synchronous answers', () => {
     expect(await gitDirOfAsync('/r', fake)).toBe(join('/r', '.git'))
     expect(await headRefAsync(join('/r', '.git'), fake)).toBe('refs/heads/x')
   })
+
+  it('asAsync hands the bytes reader through unchanged, and an unreadable HEAD is no symbolic ref (not an error)', async () => {
+    const bytes = new Uint8Array([1, 2, 3])
+    const asked: string[] = []
+    const fake = asAsync(
+      { existsSync: () => true, readFileSync: () => { throw new Error('EISDIR') } },
+      (p) => { asked.push(p); return bytes },
+    )
+    expect(await fake.readBytes('/r/.git/packed-refs')).toBe(bytes)
+    expect(asked).toEqual(['/r/.git/packed-refs'])
+    expect(await headRefAsync('/r/.git', fake)).toBeNull() // HEAD cannot be read: the same quiet null as the sync original
+  })
 })
 
 describe('no synchronous call and no process, counted', () => {

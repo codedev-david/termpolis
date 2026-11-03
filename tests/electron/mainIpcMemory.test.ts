@@ -367,6 +367,7 @@ let eventFeed: Function
 // index.ts registers these ONCE at startup, so they are captured here rather than
 // read from mock.calls (which every test's clearAllMocks() wipes).
 let recalls: typeof import('../../src/main/recallLedger')
+let recheckModule: typeof import('../../src/main/mnemeLessonRecheck')
 
 beforeAll(async () => {
   vi.resetModules()
@@ -374,6 +375,8 @@ beforeAll(async () => {
   // Same post-reset registry index.ts loaded from — a statically imported ledger would be a
   // different module object holding a different Map.
   recalls = await import('../../src/main/recallLedger')
+  // The recheck markers remember what the disk said at the first look of a launch; each test here is a new launch.
+  recheckModule = await import('../../src/main/mnemeLessonRecheck')
   await new Promise((resolve) => setTimeout(resolve, 50))
   mcp = mockStartMcpServer.mock.calls[0]?.[0]
   indexer = mockStartIndexer.mock.calls[0]?.[0]
@@ -398,6 +401,7 @@ it('registers the memory brain with the MCP server, the indexer and the event bu
 })
 
 beforeEach(() => {
+  recheckModule._resetRecheckMarkersForTests()
   vi.clearAllMocks()
   // Re-arm the defaults vi.clearAllMocks() strips (it clears implementations set via
   // the vi.fn(impl) constructor form only for *Once* impls, but resets call history —

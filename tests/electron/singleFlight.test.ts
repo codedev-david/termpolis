@@ -78,4 +78,30 @@ describe('singleFlight', () => {
     }
     expect(sf.size()).toBeLessThanOrEqual(1)
   })
+
+  it('with no clock given it uses the real one: a second ask inside the TTL is answered without a second run', async () => {
+    const sf = createSingleFlight()
+    const fn = vi.fn(async () => 'answer')
+    expect(await sf.run('k', 60_000, fn)).toBe('answer')
+    expect(await sf.run('k', 60_000, fn)).toBe('answer')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('clear() forgets every entry, so the next ask runs again; a call already running still settles for its callers', async () => {
+    const c = clock()
+    const sf = createSingleFlight(c.now)
+    const fn = vi.fn(async () => 'v')
+    await sf.run('a', 5000, fn)
+    await sf.run('b', 5000, fn)
+    expect(sf.size()).toBe(2)
+    sf.clear()
+    expect(sf.size()).toBe(0)
+    await sf.run('a', 5000, fn)
+    expect(fn).toHaveBeenCalledTimes(3)
+    let release!: (v: string) => void
+    const running = sf.run('slow', 5000, () => new Promise<string>((r) => { release = r }))
+    sf.clear()
+    release('late')
+    expect(await running).toBe('late')
+  })
 })
