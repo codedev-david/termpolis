@@ -542,6 +542,7 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   const reporting = ownShellHeard(io, id, family)
   io.write(id, LINE_CLEAR[family])
   const before = io.end(id)
+  const askedAt = io.now()
   io.write(id, '\r')
   // The prompt's report, or the shell gone quiet: input is being read (ConPTY can drop the first
   // byte typed before that, aiProfiles.ts). Where the shell reports, silence only means it is busy
@@ -555,6 +556,8 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
     last = out.length
     return quiet
   })
+  // How long the shell took to answer the Enter: it is as slow, or slower, to read what is typed next.
+  const answeredIn = io.now() - askedAt
   // A shell of another family reported since: a shell started inside this one, which the line
   // built for this terminal's shell doesn't fit (R1: only such a positive mismatch refuses).
   if (nestedShellReported(io.outputFrom(id, mark), family, reporting)) return { outcome: 'mismatch' }
@@ -564,8 +567,9 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   io.write(id, probe)
   // The first part gets ECHO_MS and a slow shell's time a character, and while the shell is still PRINTING it is not stalled
   // (Git Bash right after an agent exits, building a git-aware prompt, took 5 to 15 s to read what was typed): the wait
-  // goes on while the output grows, ends after that quiet spell, and ends at ECHO_MAX_MS in any case (SW2-5).
-  const quietMs = ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS
+  // goes on while the output grows, ends after a quiet spell, and ends at ECHO_MAX_MS in any case (SW2-5). The quiet spell
+  // is that long, or three times the time the shell took to answer its Enter, when that is more (a loaded machine's shell).
+  const quietMs = Math.max(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS, Math.min(ECHO_MAX_MS, answeredIn * 3))
   let seenEnd = io.end(id)
   let movedAt = io.now()
   const first = await waitFor(io, wait(ECHO_MAX_MS), () => {

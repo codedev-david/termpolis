@@ -1537,6 +1537,22 @@ describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
     expect(probeAt).toBeGreaterThanOrEqual(3000)
   })
 
+  // A shell that took seconds to answer an Enter will take as long to read and draw what is typed next, so the quiet spell it is
+  // given grows with the time it took to answer (three times it, to ECHO_MAX_MS): a loaded laptop's Git Bash answered in 3 s and drew
+  // the first part of the line 8 s after it was typed, and a fixed 4.4 s of quiet gave up on it (SW2-5, in the real-PTY runs).
+  it('gives a shell that answered its Enter slowly a longer quiet spell to draw the first part of the line', async () => {
+    const slow = slowShell({ readyAt: 3000, echoMs: 8000, report: true, knownReporting: true })
+    expect((await typeAtPrompt(slow.io, 't1', 'powershell', LINE_SW, 0)).outcome).toBe('entered')
+  })
+
+  it('does not give it the whole ECHO_MAX_MS: three times what it took to answer, and no more', async () => {
+    const s = slowShell({ readyAt: 3000, echoMs: 60_000, report: true, knownReporting: true })
+    expect((await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)).outcome).toBe('didnt-start')
+    const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
+    expect(s.clock() - probeAt).toBeGreaterThanOrEqual(3 * 3000)
+    expect(s.clock() - probeAt).toBeLessThanOrEqual(3 * 3000 + 2 * POLL_MS + 1000)
+  })
+
   it("reads a bash terminal's kept reports as its own: it waits for the report there, and a PowerShell report is another shell's", async () => {
     const OSC7 = '\x1b]7;file://host/c/repo\x07'
     const waits = slowShell({ readyAt: 3000, echoMs: 40, report: true, knownReporting: true, kept: { posix: true, windows: false }, osc: OSC7 })
