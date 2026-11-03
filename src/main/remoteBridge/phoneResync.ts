@@ -26,7 +26,10 @@
 //     early. The live region is put right all the same (the seeded scenarios in remoteBridgeEntry.test.ts find
 //     none left wrong, where without the rewrite about half stay wrong even after the agent draws again), but
 //     the hole above it, as many chars as the lost frame added, stays until the next attach replaces the copy.
-//     It is the hole the next edit would have cut anyway; the rewrite only brings it forward.
+//     Every later edit cuts that same hole. The rewrite is anchored where the live region STARTS, which can be
+//     earlier than where the agent's next edit would have started, so it can cut a few settled chars more than
+//     that edit would have: 1 scenario in about 250 in each of two scratch fuzzes against the real bridge (27 and
+//     123 chars), against the live region right in all of them (136 of 257 and 141 of 253 without the rewrite).
 
 /** Environment switch for everything in this file's header: attach, lag and quiet. Any value but empty, `0`
  *  or `false` puts the bridge back to exactly what it did before them (the whole backlog on attach, the
