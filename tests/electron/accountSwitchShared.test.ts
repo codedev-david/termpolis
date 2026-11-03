@@ -409,7 +409,10 @@ describe('carryForSwitch: what a switch repeats of the line the agent was starte
     expect(carryForSwitch('claude', 'claude -w --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
     expect(carryForSwitch('claude', 'claude --worktree=feat-x --verbose')).toEqual({ ok: true, extra: ['--verbose'], worktree: 'feat-x' })
     expect(carryForSwitch('claude', 'claude -w feat-y --model opus')).toEqual({ ok: true, model: 'opus', extra: [], worktree: 'feat-y' })
-    // A name it could not type back safely is not offered as one to say.
+    // A name it could not type back safely is not offered as one to say, though the line is repeated as it was (a slash is no
+    // character of a worktree name Termpolis types; the exit hint's own `--worktree "<name>"` is the one that names it).
+    expect(carryForSwitch('claude', 'claude --worktree feat/x --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
+    expect(carryForSwitch('claude', 'claude --worktree=feat/x')).toEqual({ ok: true, extra: [] })
     expect(carryForSwitch('claude', 'claude --worktree=a;b')).toMatchObject({ ok: false })
   })
 

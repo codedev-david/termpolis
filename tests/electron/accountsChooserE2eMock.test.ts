@@ -252,6 +252,10 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         if ('refused' in built) throw new Error(built.refused)
         const start = launch(t, built.line, 'claude')
         await untilBox(t, 'the mock Claude Code box')
+        // A turn first: the mock writes its transcript when it takes one, and a session with none is not there to resume.
+        prompt(t, start, 'a first turn')
+        await t.until(() => t.screen().includes('Done.'), 20_000, 'the mock\'s reply to the first turn')
+        await untilBox(t, 'the mock Claude Code box after the turn')
         const answers: Array<boolean | null> = []
         const writes: string[] = []
         const io = {
