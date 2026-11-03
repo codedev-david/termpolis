@@ -194,7 +194,9 @@ describe('the compression path reads no clock and no random number, run and coun
       seen.push(...reads(() => { for (const raw of list) wire.rewriteMessagesBody(raw, { decay: true }) }))
     }
     expect(seen).toEqual([])
-  })
+    // Three policies over eleven bodies, every one run under the counters: 7 s on a quiet machine, 15 s under coverage. A
+    // budget of its own, as the heavy tests beside it have, so a busy machine does not fail it on the default 30 s.
+  }, 120_000)
 
   it('the arm choice and the stub tally, the stash metadata and its stamps', async () => {
     const { armOf, armForBody } = await import('../../src/main/headroom/elisionPolicy')

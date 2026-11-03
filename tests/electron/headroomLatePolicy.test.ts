@@ -255,7 +255,9 @@ describe('late keeps the cached prefix still as a conversation grows', () => {
         expect(JSON.stringify(after.slice(0, n)), `n=${n} k=${k}`).toBe(before)
       }
     }
-  })
+    // 33 rewrites of a conversation that long take 7 s on a quiet machine, 15 s under coverage: a budget of its own, as the
+    // heavy tests beside it have, so a busy machine does not fail it on the default 30 s.
+  }, 120_000)
 
   it('across the decay boundary (127 to 128 messages) only the messages before the cutoff change, and nothing after', async () => {
     const m = await launch('late')
