@@ -13,30 +13,45 @@ import { join } from 'path'
  */
 
 const SRC = join(__dirname, '..', '..', 'src', 'main')
-const index = readFileSync(join(SRC, 'index.ts'), 'utf8')
+// The needles below run over two lines and end each in LF. A Windows checkout hands the file over with
+// CRLF (git's default there is core.autocrlf=true, and the unit job runs on windows-latest), so the
+// text is read as LF whatever the checkout gave it.
+const sourceOf = (text: string): string => text.replace(/\r\n/g, '\n')
+const index = sourceOf(readFileSync(join(SRC, 'index.ts'), 'utf8'))
 const count = (needle: string): number => index.split(needle).length - 1
 
-describe('the first-sight policy in the boot block', () => {
-  const PUSH = 'setProxyFirstSight(hs.firstSightElision)'
+const PUSH = 'setProxyFirstSight(hs.firstSightElision)'
+const bootBlockOrder = (source: string): Record<'settings' | 'pushed' | 'resolved' | 'tier' | 'logged' | 'started', number> => ({
+  settings: source.indexOf('const hs = getHeadroomSettings()\n        let wireMode = hs.mode'),
+  pushed: source.indexOf(PUSH),
+  resolved: source.indexOf('wireMode = resolveWireMode(wireMode, cum, getProxyFirstSight())'),
+  tier: source.indexOf('setProxyMode(wireMode)'),
+  logged: source.indexOf('describeWireTier('),
+  started: source.indexOf('if (getHeadroomSettings().wireProxy) ensureHeadroomProxy()'),
+})
+const expectInOrder = (o: ReturnType<typeof bootBlockOrder>): void => {
+  expect(o.settings).toBeGreaterThan(0)
+  expect(o.pushed).toBeGreaterThan(o.settings)
+  expect(o.resolved).toBeGreaterThan(o.pushed)
+  expect(o.tier).toBeGreaterThan(o.resolved)
+  expect(o.logged).toBeGreaterThan(o.tier)
+  expect(o.started).toBeGreaterThan(o.logged)
+}
 
+describe('the first-sight policy in the boot block', () => {
   it('is pushed once, from the settings the block has just read', () => {
     expect(count('setProxyFirstSight(')).toBe(1)
     expect(index).toContain(PUSH)
   })
 
   it('is pushed before anything is resolved from it and before the proxy can start', () => {
-    const settings = index.indexOf('const hs = getHeadroomSettings()\n        let wireMode = hs.mode')
-    const pushed = index.indexOf(PUSH)
-    const resolved = index.indexOf('wireMode = resolveWireMode(wireMode, cum, getProxyFirstSight())')
-    const tier = index.indexOf('setProxyMode(wireMode)')
-    const logged = index.indexOf('describeWireTier(')
-    const started = index.indexOf('if (getHeadroomSettings().wireProxy) ensureHeadroomProxy()')
-    expect(settings).toBeGreaterThan(0)
-    expect(pushed).toBeGreaterThan(settings)
-    expect(resolved).toBeGreaterThan(pushed)
-    expect(tier).toBeGreaterThan(resolved)
-    expect(logged).toBeGreaterThan(tier)
-    expect(started).toBeGreaterThan(logged)
+    expectInOrder(bootBlockOrder(index))
+  })
+
+  it('is found in the same order in a file a Windows checkout gave CRLF line ends', () => {
+    const crlf = index.replace(/\n/g, '\r\n')
+    expect(crlf).toContain('\r\n')
+    expectInOrder(bootBlockOrder(sourceOf(crlf)))
   })
 
   it('is pushed whether or not floor control is on, and whether or not the proxy is switched on', () => {
