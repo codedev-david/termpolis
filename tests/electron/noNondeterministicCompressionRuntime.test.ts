@@ -19,6 +19,12 @@ import { caseBody, realistic, editLoop, longRun, conversationCases, FIRST_MESSAG
  * of another realm. That is why the static sweep stays beside it, and why the sweep refuses the words Date, Intl,
  * performance, globalThis and Math.random outright.
  *
+ * A named import from the process module (`import { hrtime as h } from 'process'`) is held by the static sweep ONLY, and
+ * that is deliberate: the counters sit on the global `process`, while a named import reads the value Node put in the
+ * module's namespace the first time anything imported it, which can be before these counters were installed. One
+ * runner saw such an import and another did not, so this file does not claim it. The sweep refuses the names hrtime,
+ * uptime, cpuUsage, memoryUsage and resourceUsage and the modules process and perf_hooks, wherever they are spelled.
+ *
  * What runs: the rewriter under the three behaviours a request can get (Late, the holdout and the kill
  * switch), with the decay pass on, over bodies of every shape the fixtures make; the arm choice; the stub
  * tally; the stash metadata and its two stamps; and the two readers of the answer stream. Bodies hold no

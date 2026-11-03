@@ -34,6 +34,12 @@ const FORBIDDEN = new RegExp([
   String.raw`\bgetRandomValues\b`, String.raw`\bcrypto\.random`, String.raw`\buptime\s*\(`,
   String.raw`\[\s*['"\x60]now['"\x60]\s*\]`,
   String.raw`\bDate\b`, String.raw`\bMath\s*(?:\.\s*random\b|\[)`, String.raw`\bperformance\b`, String.raw`\bglobalThis\b`, String.raw`\bIntl\b`,
+  // The clocks and the readings of the process, by name: a named import (`import { hrtime as h } from 'process'`) holds
+  // the function under another name and has no `process.hrtime(` in it, and the runtime net may or may not see it.
+  String.raw`\bhrtime\b`, String.raw`\buptime\b`, String.raw`\bcpuUsage\b`, String.raw`\bmemoryUsage\b`, String.raw`\bresourceUsage\b`,
+  // And the two modules that hold them, however they are reached (import ... from, require(), import()): nothing here needs
+  // either. Only as a module specifier, so a string that happens to be the word process (a kind, a label) is not a read.
+  String.raw`(?:\bfrom|\brequire\s*\(|\bimport\s*\(|\bimport)\s*['"\x60](?:node:)?(?:process|perf_hooks)['"\x60]`,
 ].join('|'))
 
 function tsFiles(dir: string): string[] {
@@ -105,6 +111,18 @@ describe('the sweep pattern itself', () => {
     'const tick = performance.now.bind(performance)', "const stamp = Date['no' + 'w']", 'const fmt = new Intl.DateTimeFormat(\'en\')',
     'const g = globalThis', 'const { now } = Date', 'const T = typeof Date',
   ]
+  // The same clocks reached by NAME from the modules that hold them, which no `process.hrtime(` or `os.uptime(` in the
+  // line spells: `import { hrtime as h } from 'process'` has neither, and `h()` later is a call of an alias. The counters
+  // of the runtime net cannot be relied on for these (they sit on the global object, and a named import reads the value
+  // Node put in the module's namespace the first time anything imported it, which can be before the counters went in:
+  // it did on one runner and not on another), so the names and the two modules are refused outright.
+  const NAMED = [
+    "import { hrtime } from 'node:process'", "import { hrtime as __hr } from 'process'", "import * as p from 'node:process'",
+    "import process from 'node:process'", "import { performance } from 'perf_hooks'", "import { monitorEventLoopDelay } from 'node:perf_hooks'",
+    "import { uptime as up } from 'os'", "import { uptime } from 'node:os'", 'const t = p.hrtime.bigint()', 'void p.uptime()',
+    "const { cpuUsage } = process", "import { memoryUsage as mu } from 'node:process'", "const { resourceUsage: ru } = process",
+    "const m = require('node:process')", "const m = await import('perf_hooks')", 'const cu = process.cpuUsage()', 'const mem = process.memoryUsage.rss()',
+  ]
   const FINE = [
     'const hash = crypto.createHash(\'sha1\').update(s).digest(\'hex\')', 'const isoDate = format(x)', 'type DateLike = string',
     'const candidate = makeCandidate(text)', 'export function updateDate(x) {}', 'const knowledge = 1', 'const nowhere = 2',
@@ -112,8 +130,13 @@ describe('the sweep pattern itself', () => {
     // Words that only contain the bare ones, and are ordinary code.
     'const performanceBudget = 3', 'const mathRandomFree = true', 'type DateRange = [number, number]', 'const globalThisIsNot = 1',
     'const internationalised = false', 'const Mathematics = 1',
+    // The names above, as words that only contain them, and the neighbours of the two modules.
+    'const hrtimeFree = true', 'const uptimeMs = 5', 'const cpuUsageLabel = "x"', 'const memoryUsageNote = 1', 'const resourceUsages = []',
+    "import * as path from 'path'", "import { homedir } from 'os'", "import { createHash } from 'crypto'", "const processed = items.map(f)", "const subprocess = 1",
+    'const env = process.env.NODE_ENV', "const where = process.platform", "const kind = 'process'", "const label = `the process of it`",
   ]
   it.each(FLAGGED)('flags %s', (line) => { expect(FORBIDDEN.test(line)).toBe(true) })
   it.each(ALIASED)('flags the alias %s, where it is taken', (line) => { expect(FORBIDDEN.test(line)).toBe(true) })
+  it.each(NAMED)('flags %s, a clock reached by name from the module that holds it', (line) => { expect(FORBIDDEN.test(line)).toBe(true) })
   it.each(FINE)('lets %s through', (line) => { expect(FORBIDDEN.test(line)).toBe(false) })
 })
