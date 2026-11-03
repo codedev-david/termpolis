@@ -38,14 +38,18 @@ describe('exit: agy out of the terminal, by its own /exit', () => {
     expect(relaunchLockReason('t1', t.clock)).toBeNull()
   })
 
-  it('types nothing to an agy already gone: its hint on screen names the conversation', async () => {
+  // SW2-9: a pane whose user quit agy by hand has no agy to move to the new sign-in, so it says it was gone already, and the
+  // sheet leaves it as it is: agy is not started there after the sign-in change (a hint on screen would have named a
+  // conversation to resume, a bare `agy` a new one).
+  it('types nothing to an agy already gone, says it was gone, and names the conversation its hint on screen holds', async () => {
     const t = new FakeTerminal(agy({ start: 'gone-hint' }))
-    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: ID })
+    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: ID, alreadyGone: true })
     expect(t.writes).toEqual([])
   })
 
   it('names no conversation when agy left no hint: gone by its prompt, or exited printing none', async () => {
-    expect(await step(new FakeTerminal(agy({ start: 'gone-quiet' })), {}).p).toEqual({ kind: 'exited', conversationId: null })
+    expect(await step(new FakeTerminal(agy({ start: 'gone-quiet' })), {}).p).toEqual({ kind: 'exited', conversationId: null, alreadyGone: true })
+    // Exited by Termpolis's own /exit, printing none: it was running, so it is no "already gone".
     expect(await step(new FakeTerminal(agy({ exit: 'no-hint' })), {}).p).toEqual({ kind: 'exited', conversationId: null })
   })
 
@@ -173,7 +177,7 @@ describe('exit: the OS has the last word on whether agy is gone', () => {
 
   it('types no /exit to an agy the OS says is gone, though its last frame is still on the screen', async () => {
     const t = new FakeTerminal(agy({ start: 'gone-quiet', reports: false, os: 'tells' }))
-    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: null })
+    expect(await step(t, {}).p).toEqual({ kind: 'exited', conversationId: null, alreadyGone: true })
     expect(t.writes).toEqual([])
   })
 

@@ -55,6 +55,11 @@ export interface OutputWindow {
   /** The screen this terminal's output draws, kept live for a terminal an agent runs in (watchScreen):
    *  every chunk appended is written to it. Absent for any other terminal, which costs nothing. */
   screen?: TerminalScreen
+  /** Which shells' prompt reports (OSC 7 from bash, zsh and fish; OSC 9;9 from PowerShell and cmd) this terminal has ever
+   *  printed, kept after the report itself left the window: the switch's nested-shell guard needs to know that the
+   *  terminal's own shell reported, and a minute of an agent's work pushes every report out of 32 KB (SW2-10). Absent
+   *  until one is seen. */
+  reported?: { posix: boolean; windows: boolean }
 }
 
 export type OutputBuffers = Map<string, OutputWindow>
@@ -83,6 +88,7 @@ export function appendOutput(
   win.chunks.push(data)
   win.bytes += data.length
   win.total += data.length
+  if (win.reported?.posix !== true || win.reported.windows !== true) noteReports(win, data)
   if (win.screen) drawOnScreen(win, data)
   if (win.bytes <= cap) return win.total
 
@@ -100,6 +106,23 @@ export function appendOutput(
     win.bytes -= overshoot
   }
   return win.total
+}
+
+/** Notes a prompt report in `data`. A chunk with no ESC costs one indexOf, as in noteEvicted. */
+function noteReports(win: OutputWindow, data: string): void {
+  if (data.indexOf('\x1b]') < 0) return
+  const posix = data.includes('\x1b]7;')
+  const windows = data.includes('\x1b]9;9;')
+  if (!posix && !windows) return
+  const r = (win.reported ??= { posix: false, windows: false })
+  if (posix) r.posix = true
+  if (windows) r.windows = true
+}
+
+/** Which shells have reported a prompt in this terminal, ever (OutputWindow.reported). */
+export function reportedFamilies(buffers: OutputBuffers, id: string): { posix: boolean; windows: boolean } {
+  const r = buffers.get(id)?.reported
+  return { posix: r?.posix === true, windows: r?.windows === true }
 }
 
 /** The retained tail as one string.

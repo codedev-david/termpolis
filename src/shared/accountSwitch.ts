@@ -90,8 +90,9 @@ function nextFilled(rows: readonly string[], from: number): number {
  * exited, not proof: an answer can quote one, which is why the caller also looks for the agent's
  * input box under it.
  */
-export function exitHintOf(rows: readonly string[], agent: AccountAgent): ExitHint | null {
-  const foot = Math.max(0, rows.length - HINT_FROM_FOOT_ROWS)
+export function exitHintOf(rows: readonly string[], agent: AccountAgent, whole = false): ExitHint | null {
+  // `whole`: the rows are only what the agent printed since its exit command, so any row of them is its own.
+  const foot = whole ? 0 : Math.max(0, rows.length - HINT_FROM_FOOT_ROWS)
   /** The last head in the foot's rows whose command (on its row, else the next one that holds
    *  something) matches. */
   const last = (head: RegExp, command: RegExp, sameRow: boolean): { m: RegExpExecArray; row: number } | null => {
@@ -258,7 +259,7 @@ export const AGY_SIGNED_IN = /Authentication successful!|Successfully authentica
  *  one-time "Try the new fullscreen renderer?" offer a profile never used before opens on, and the
  *  Windows sandbox set-up menu Codex opens on in a home it never ran in (its option rows draw a ›,
  *  so it reads as an input box, and no prompt poller answers it). */
-export const ASKS_USER = /Bypass Permissions mode|New MCP servers? found|Do you trust the (?:files|contents)|trust this folder|Try the new fullscreen renderer|Set up default sandbox/i
+export const ASKS_USER = /Bypass Permissions mode|New MCP servers? found|Do you trust the (?:files|contents)|trust this folder|Try the new fullscreen renderer|Set up default sandbox|Resume from summary|Resume full session as-is/i
 
 /** Codex's "still starting" rows: the header line it draws while it looks for the session to resume,
  *  and Codex 0.153's "model: loading". Its composer is already on screen under them, and the lookup
@@ -370,8 +371,9 @@ export interface AgyStepRequest {
 }
 
 export type AgyStepOutcome =
-  /** agy is out of the terminal: the conversation its hint named, or null for none. */
-  | { kind: 'exited'; conversationId: string | null }
+  /** agy is out of the terminal: the conversation its hint named, or null for none. `alreadyGone`: it was not running
+   *  when Termpolis looked (the user quit it by hand), so there is nothing to bring back after the sign-in change. */
+  | { kind: 'exited'; conversationId: string | null; alreadyGone?: true }
   /** agy is at work, or asks something: its turn is waited for. Nothing was typed. */
   | { kind: 'busy' }
   /** Termpolis can't tell whether agy still runs here. Nothing was typed. */
@@ -428,7 +430,8 @@ export function otherShellReported(output: string, family: ShellFamily): boolean
   return family === 'posix' ? WINDOWS_REPORT.test(output) : POSIX_REPORT.test(output)
 }
 
-const ownReport = (output: string, family: ShellFamily): boolean => (family === 'posix' ? POSIX_REPORT : WINDOWS_REPORT).test(output)
+/** Whether `output` holds a prompt report of this shell family's own kind. */
+export const ownReport = (output: string, family: ShellFamily): boolean => (family === 'posix' ? POSIX_REPORT : WINDOWS_REPORT).test(output)
 
 /** Whether a shell of another kind runs here now: another family reported, and the terminal's own did
  *  not. A prompt can write both (oh-my-posh's pwd=osc99 in Git Bash adds Windows Terminal's cwd marker to
@@ -436,8 +439,11 @@ const ownReport = (output: string, family: ShellFamily): boolean => (family === 
  *  of the wrong family is harmless anyway (it fails to parse and runs nothing, verified for all nine
  *  pairs), so only this clear case, a family heard from and the own one silent, refuses. `earlier` is
  *  the terminal's output from before this: a shell that never wrote its own family's report there
- *  (oh-my-posh in Git Bash writes only OSC 9;9) is not shown nested by writing the other's. */
-export function nestedShellReported(output: string, family: ShellFamily, earlier?: string): boolean {
+ *  (oh-my-posh in Git Bash writes only OSC 9;9) is not shown nested by writing the other's. It may be
+ *  given as the fact itself, whether the own family ever reported in this terminal (main keeps that after the
+ *  report has left the window it retains: SW2-10). */
+export function nestedShellReported(output: string, family: ShellFamily, earlier?: string | boolean): boolean {
   if (ownReport(output, family) || !otherShellReported(output, family)) return false
-  return earlier === undefined || ownReport(earlier, family)
+  if (earlier === undefined) return true
+  return typeof earlier === 'boolean' ? earlier : ownReport(earlier, family)
 }

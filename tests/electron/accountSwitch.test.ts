@@ -12,14 +12,15 @@
 //       --continue or resume --last.
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
-  ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, OUTCOME_MS, POLL_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
-  exitShown, hintAtFoot, look, ownScreen, plain, releaseModelHold, runAccountSwitch, typeAtPrompt,
+  ECHO_MAX_MS, ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, OUTCOME_MS, POLL_MS, PROMPT_REPORT_WAIT_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
+  exitShown, hintAtFoot, look, ownScreen, plain, releaseModelHold, runAccountSwitch, typeAtPrompt, watchOutcome,
 } from '../../src/main/accountSwitch'
 import type { Look, SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
 import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
 import { HINT_FROM_FOOT_ROWS, LINE_CLEAR, exitHintOf } from '../../src/shared/accountSwitch'
 import type { SwitchOutcome, SwitchRequest } from '../../src/shared/accountSwitch'
 import type { AgentAccount } from '../../src/shared/agentAccounts'
+import { AGY_CONVERSATION_ID, AGY_EXIT_AFTER_A_TURN } from '../fixtures/agentExitOutput'
 import { FakeTerminal, ID, ID2, keys } from './_switchTerminal'
 import type { TermScript } from './_switchTerminal'
 
@@ -473,6 +474,18 @@ describe('step 10: what the relaunch did', () => {
     expect((await run(codex({ relaunch: ['sign-in'] }))).outcome).toEqual({ kind: 'sign-in', sessionId: expect.any(String) })
   })
 
+  // SW2-2: a switch made at a usage limit resumes exactly the old, large sessions that make Claude Code ask how to resume
+  // them. The dialog is the user's to answer; without it among the questions the switch held the user's keys for the whole
+  // 30 s watch and ended with "nothing showed", with the dialog on screen.
+  it('stops at Claude Code\'s resume-size dialog and says it is the user\'s to answer, at once', async () => {
+    const r = await run(claude({ relaunch: ['resume-size'] }))
+    expect(r.outcome).toEqual({ kind: 'asks-user', what: 'Resume from summary' })
+    expect(r.t.clock).toBeLessThan(5000)
+    // Nothing was pressed on it: the line's own Enter is the last key, and an Enter on it would have chosen for the user.
+    expect(r.t.writes.slice(-1)).toEqual(['\r'])
+    expect(r.t.ran.filter(Boolean)).toHaveLength(1)
+  })
+
   it('gives up after 30 s with nothing shown', async () => {
     const r = await run(claude({ relaunch: ['nothing'] }))
     expect(r.outcome).toEqual({ kind: 'no-outcome' })
@@ -639,6 +652,21 @@ describe('Claude Code 2.1.316 as it really draws (SWITCH-R1 N1, H)', () => {
       const r = await run(claude({ history }))
       expect(r.outcome, history.join(' / ')).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
     }
+  })
+
+  // SW2-4: Claude Code prints "No conversation found with session ID" and EXITS, so no box is ever drawn under it. A healthy
+  // resume whose HISTORY quotes the line (a conversation about this feature) has its box under it: it is history, and the
+  // user is not offered "Start a new session" for a conversation that resumed.
+  it('is not taken in by a resumed conversation whose history quotes Claude Code\'s own "no such session" line (SW2-4)', async () => {
+    for (const history of [
+      ['● Claude prints: No conversation found with session ID: 3f2a9c1e-5b7d-4e8f-a012-3456789abcde'],
+      ['❯ what happens when the target cannot see the session?', '● It says "No conversation found with session ID" and exits.'],
+    ]) {
+      const r = await run(claude({ history }))
+      expect(r.outcome, history.join(' / ')).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    }
+    // The real thing is still read: no box under it, the shell back.
+    expect((await run(claude({ relaunch: ['not-found'] }))).outcome).toEqual({ kind: 'resume-not-found' })
   })
 
   it('still reads a sign-in expired in the target: its footer under the box, or its sign-in screen (H)', async () => {
@@ -1238,5 +1266,233 @@ describe('what on the screen is not this switch\'s own evidence', () => {
     }
     expect(look(io, 't1').cols).toBeUndefined()
     expect((await typeAtPrompt(io, 't1', 'powershell', line, raw.length)).outcome).toBe('entered')
+  })
+})
+
+// SW2-3: the words of a resumed conversation's history are not the target's own screen. The H fix reads a screen below the
+// agent's box, but a one-time dialog replaces the box, and the whole screen is judged then: real Claude Code 2.1.316 draws
+// "Try the new fullscreen renderer?" under the history on a profile never used before, and a history whose last message is
+// "Please run /login" (the switch was made from an account whose sign-in expired) read as the target's sign-in screen,
+// with a false "signed out" for a healthy account. These rows are the real frame.
+describe('a question drawn under the resumed history (SW2-3)', () => {
+  const E = '\u001b'
+  const RULE = '─'.repeat(100)
+  const HISTORY = [' ▐▛███▛█   Claude Code v2.1.316', '▝▜██████▀  Sonnet 4.5 · API Usage Billing', ' ▝▝   ▝▝   C:\\work', '', '❯ hi', '', '● Hello from the synthetic transcript.', '', '❯ and now?', '', '● Invalid API key - Please run /login', '']
+  const DIALOG = [RULE, '  Try the new fullscreen renderer?', '', '  · Flicker-free output — fixes the flashing you see during long responses', '  · Mouse support — click to move your cursor or expand results', '', '  ❯ 1. Yes, try it', '    2. Not now', '', '  Enter to confirm · Esc to cancel']
+  const SIGN_IN = ['  Select login method:', '', '  ❯ 1. Claude account with subscription', '    2. Anthropic Console account', '', '  Enter to confirm · Esc to cancel']
+  const frame = (rows: string[]): string => `${E}[H${E}[2J` + rows.map((r, i) => `${E}[${i + 1};1H${r}`).join('')
+  const LINE_ = 'claude --resume 8c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f'
+
+  /** What the terminal has shown by each moment: the frames in order, each from its time on. */
+  function io(frames: Array<[number, string]>): SwitchIO {
+    let now = 0
+    const raw = (): string => frames.filter(([at]) => at <= now).map(([, f]) => f).join('')
+    return {
+      output: () => ({ raw: raw(), end: raw().length }),
+      outputFrom: (_id, from) => raw().slice(Math.min(from, raw().length)),
+      end: () => raw().length,
+      size: () => ({ cols: 120, rows: 30 }),
+      write: () => undefined,
+      sleep: async (ms) => { now += ms },
+      now: () => now,
+    }
+  }
+
+  it('is a question for the user, not the target\'s sign-in screen, when the history holds login words', async () => {
+    const r = await watchOutcome(io([[0, frame([...HISTORY, ...DIALOG])]]), 'T', 'claude', 0, LINE_, Infinity)
+    expect(r.seen).toEqual({ asks: 'Try the new fullscreen renderer' })
+  })
+
+  it('is the same question where the history has no login words', async () => {
+    const r = await watchOutcome(io([[0, frame([...HISTORY.map((x) => x.replace('Invalid API key - Please run /login', 'Done.')), ...DIALOG])]]), 'T', 'claude', 0, LINE_, Infinity)
+    expect(r.seen).toEqual({ asks: 'Try the new fullscreen renderer' })
+  })
+
+  it('waits out the moment the history is drawn and the dialog is not yet, instead of calling the history a sign-in screen', async () => {
+    // The history first, the dialog 700 ms later: the look at 500 ms sees the history alone, the one at 1000 ms the dialog.
+    const r = await watchOutcome(io([[0, frame(HISTORY)], [700, frame([...HISTORY, ...DIALOG])]]), 'T', 'claude', 0, LINE_, Infinity)
+    expect(r.seen).toEqual({ asks: 'Try the new fullscreen renderer' })
+  })
+
+  it('still reads a real sign-in screen with no box, once it has stood for two looks', async () => {
+    const shown = io([[0, frame(SIGN_IN)]])
+    const r = await watchOutcome(shown, 'T', 'claude', 0, LINE_, Infinity)
+    expect(r.seen).toBe('sign-in')
+    // Not at the first look: that look could be a frame of the history on its way, which a second look clears.
+    expect(shown.now()).toBeGreaterThanOrEqual(POLL_MS * 4)
+  })
+
+  it('reads a sign-in footer under a drawn box at the first look', async () => {
+    const shown = io([[0, frame([...HISTORY, RULE, '❯ ', RULE, '  Not logged in · Run /login'])]])
+    const r = await watchOutcome(shown, 'T', 'claude', 0, LINE_, Infinity)
+    expect(r.seen).toBe('sign-in')
+    expect(shown.now()).toBe(POLL_MS * 2)
+  })
+})
+
+// SW2-6: agy prints its exit hint at the TOP of a block it repaints, 13 to 18 rows above the shell's prompt in the only
+// real capture main holds. The hint is read within HINT_FROM_FOOT_ROWS of the foot, so a pane tall enough to hold the
+// whole block (24 rows and more) lost the conversation's id, and each Gemini terminal came back with a NEW conversation
+// instead of `agy --conversation=<id>`. The id is read from what agy printed since the exit command as well.
+describe('the real agy exit, read at any pane size (SW2-6)', () => {
+  const ioOfRaw = (raw: string, cols: number, rows: number): SwitchIO => ({
+    output: () => ({ raw, end: raw.length }),
+    outputFrom: (_id, from) => raw.slice(Math.min(from, raw.length)),
+    end: () => raw.length,
+    size: () => ({ cols, rows }),
+    write: () => undefined,
+    sleep: async () => undefined,
+    now: () => 0,
+  })
+
+  it.each([[80, 24], [60, 25], [50, 30], [100, 30], [120, 45], [200, 80], [100, 14], [100, 20]])('names the conversation at %i columns by %i rows', (cols, rows) => {
+    const shown = exitShown(ioOfRaw(AGY_EXIT_AFTER_A_TURN, cols, rows), 't1', 'agy', 0)
+    expect(shown?.hint?.id).toBe(AGY_CONVERSATION_ID)
+  })
+
+  it('still names the conversation a hint at the foot names, and none where agy printed none', () => {
+    expect(exitShown(ioOfRaw(AGY_EXIT_AFTER_A_TURN, 100, 30), 't1', 'agy', 0)?.hint?.id).toBe(AGY_CONVERSATION_ID)
+    // A hint printed BEFORE the mark is no exit of this switch's: nothing since.
+    expect(exitShown(ioOfRaw(AGY_EXIT_AFTER_A_TURN, 80, 24), 't1', 'agy', AGY_EXIT_AFTER_A_TURN.length)).toBeNull()
+  })
+
+  it('does not take the hint of another agent from what was printed', () => {
+    expect(exitShown(ioOfRaw(AGY_EXIT_AFTER_A_TURN, 80, 24), 't1', 'claude', 0)?.hint ?? null).toBeNull()
+  })
+})
+
+// SW2-5: the account line's first part had a fixed 4.4 s to show, and the shell was taken to be back after 250 ms of
+// silence. Measured with real shells on this laptop (probe-out k2): right after a child exits, Git Bash with David's git-aware
+// PROMPT_COMMAND took 4.9 to 15.5 s to echo 16 characters, PowerShell 1.7 to 4.3 s with one sample that never echoed. Under
+// load that ended a healthy switch as "the account line never showed" (a safe failure, with Try again, but frequent). A shell
+// that is still PRINTING is not stalled, so the wait goes on while its output grows and ends after a quiet spell; and where the
+// terminal's shell reports its prompts, the prompt's report says when it is back, not 250 ms of silence.
+describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
+  const OSC = '\x1b]9;9;C:\repo\x07'
+  const ESC_KEY = '\x1b'
+  const LINE_SW = 'claude --resume 3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
+
+  interface Slow {
+    /** When the shell reads keys: those typed before are lost (ConPTY drops the first byte of what is typed too early). */
+    readyAt: number
+    /** How long after a key is read the shell draws it. */
+    echoMs: number
+    /** Prints a dot this often while a key waits to be drawn: a shell that is busy, not stalled. */
+    chatterMs?: number
+    /** After the Enter, the prompt (and its report) comes at readyAt; without it only a newline is drawn. */
+    report: boolean
+    /** The terminal has printed this family's reports before. */
+    knownReporting: boolean
+    /** A shell of the other family took the terminal's place: it reports as bash does (OSC 7). */
+    nested?: boolean
+  }
+
+  function slowShell(o: Slow) {
+    let now = 0
+    let raw = 'PS C:\repo> '
+    const writes: Array<{ at: number; d: string }> = []
+    const later: Array<{ at: number; text: string }> = []
+    const settle = (): void => {
+      later.sort((a, b) => a.at - b.at)
+      while (later.length > 0 && later[0].at <= now) raw += later.shift()!.text
+    }
+    const io: SwitchIO = {
+      output: () => { settle(); return { raw, end: raw.length } },
+      outputFrom: (_id, from) => { settle(); return raw.slice(Math.min(from, raw.length)) },
+      end: () => { settle(); return raw.length },
+      size: () => ({ cols: 120, rows: 30 }),
+      write: (_id, d) => {
+        settle()
+        writes.push({ at: now, d })
+        if (d === '\r') {
+          later.push({ at: now + 30, text: '\r\n' })
+          if (o.nested) later.push({ at: now + 30, text: '\x1b]7;file://host/c/repo\x07me@host $ ' })
+          else if (o.report) later.push({ at: Math.max(o.readyAt, now + 30), text: `${OSC}PS C:\repo> ` })
+        } else if (d !== ESC_KEY && now >= o.readyAt) {
+          later.push({ at: now + o.echoMs, text: d })
+          if (o.chatterMs) for (let t = o.chatterMs; t < o.echoMs; t += o.chatterMs) later.push({ at: now + t, text: '.' })
+        }
+      },
+      sleep: async (ms) => { now += ms },
+      now: () => now,
+      ...(o.knownReporting ? { reported: () => ({ posix: false, windows: true }) } : {}),
+    }
+    return { io, writes, clock: () => now }
+  }
+  const typed = (s: ReturnType<typeof slowShell>) => s.writes.map((w) => w.d)
+
+  it('goes on waiting while the shell is still printing, and enters the line once it shows', async () => {
+    // The shell reads at once and draws the key 8 s later, printing a dot a second meanwhile.
+    const s = slowShell({ readyAt: 0, echoMs: 8000, chatterMs: 1000, report: false, knownReporting: false })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    expect(r.outcome).toBe('entered')
+    expect(typed(s).slice(-1)).toEqual(['\r'])
+  })
+
+  it('gives up on a shell that draws nothing at all, after the same quiet spell as before', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 60_000, report: false, knownReporting: false })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    expect(r.outcome).toBe('didnt-start')
+    // The quiet spell is ECHO_MS plus the probe's characters at the slow shell's rate, as it always was.
+    const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
+    expect(s.clock() - probeAt).toBeGreaterThanOrEqual(ECHO_MS + ECHO_PROBE_CHARS * ECHO_SLOW_CHAR_MS)
+    expect(s.clock() - probeAt).toBeLessThan(ECHO_MS + ECHO_PROBE_CHARS * ECHO_SLOW_CHAR_MS + 1000)
+    expect(typed(s).slice(-1)).toEqual(['\x1b'])
+  })
+
+  it('does not wait for ever on a shell that keeps printing and never shows the line: ECHO_MAX_MS, or the lock, ends it', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 600_000, chatterMs: 1000, report: false, knownReporting: false })
+    expect((await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)).outcome).toBe('didnt-start')
+    const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
+    expect(s.clock() - probeAt).toBeGreaterThanOrEqual(ECHO_MAX_MS)
+    expect(s.clock() - probeAt).toBeLessThanOrEqual(ECHO_MAX_MS + POLL_MS)
+    // The lock the switch holds the terminal under ends it earlier, whatever it prints.
+    const held = slowShell({ readyAt: 0, echoMs: 600_000, chatterMs: 1000, report: false, knownReporting: false })
+    expect((await typeAtPrompt(held.io, 't1', 'powershell', LINE_SW, 0, held.io.now() + 20_000)).outcome).toBe('didnt-start')
+    expect(held.clock()).toBeLessThanOrEqual(20_000 + POLL_MS)
+  })
+
+  it('waits for the prompt\'s report where the terminal\'s shell reports, and types the line only once it is back', async () => {
+    // Silent for 3 s after the Enter (the prompt is being built), reading nothing until its report: keys typed before are lost.
+    const s = slowShell({ readyAt: 3000, echoMs: 40, report: true, knownReporting: true })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    expect(r.outcome).toBe('entered')
+    const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
+    expect(probeAt).toBeGreaterThanOrEqual(3000)
+  })
+
+  it('takes silence for the prompt where the terminal has never reported, as before', async () => {
+    const s = slowShell({ readyAt: 3000, echoMs: 40, report: true, knownReporting: false })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    // The probe went in at the first 250 ms of quiet, before the shell read: lost, so the line never showed.
+    expect(r.outcome).toBe('didnt-start')
+    const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
+    expect(probeAt).toBeLessThan(3000)
+  })
+
+  // SW2-10: the guard against a shell of another kind (one started inside this terminal's) needs to know that the terminal's
+  // OWN shell reported before. The window the engine reads holds the last 32 KB, and after an agent's work no report is in
+  // it, so the guard never fired and the switch ended as "nothing showed within 30 s" instead of the card that says why.
+  it('knows a nested shell by what main kept of the terminal\'s own reports, after the window lost them', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 40, report: false, knownReporting: true, nested: true })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    expect(r.outcome).toBe('mismatch')
+    // Nothing of the line was typed into the other shell.
+    expect(typed(s).filter((d) => d.includes('claude'))).toEqual([])
+  })
+
+  it('does not take a shell for nested that never reported as its own family, in the window or kept', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 40, report: false, knownReporting: false, nested: true })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    expect(r.outcome).not.toBe('mismatch')
+  })
+
+  it('gives up on a report that never comes, after the ceiling, and types the probe all the same', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 40, report: false, knownReporting: true })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    expect(r.outcome).toBe('entered')
+    const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
+    expect(probeAt).toBeGreaterThanOrEqual(PROMPT_REPORT_WAIT_MS)
+    expect(probeAt).toBeLessThanOrEqual(PROMPT_REPORT_WAIT_MS + POLL_MS * 2)
   })
 })

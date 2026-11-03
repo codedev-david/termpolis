@@ -119,6 +119,7 @@ import {
   clearOutput,
   replayPreamble,
   liveScreen,
+  reportedFamilies,
   resizeScreen,
   watchScreen,
   type OutputBuffers,
@@ -2945,6 +2946,8 @@ registerAccountsIpc(ipcMain, {
     // The screen kept for a terminal an agent runs in: the 32 KB window above loses its input box (F-R2-2).
     screen: (terminalId) => liveScreen(terminalOutputBuffers, terminalId),
     watch: (terminalId) => { watchScreen(terminalOutputBuffers, terminalId, getTerminalSize(terminalId)) },
+    // Which shells have ever reported a prompt here, though the window has lost the reports (SW2-10).
+    reported: (terminalId) => reportedFamilies(terminalOutputBuffers, terminalId),
     write: (terminalId, data) => writeToTerminal(terminalId, data),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),

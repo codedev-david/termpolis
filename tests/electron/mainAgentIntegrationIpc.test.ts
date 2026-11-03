@@ -980,6 +980,21 @@ describe('Settings ▸ Accounts wiring', () => {
     H.getTerminalSize.mockImplementation(() => null)
   })
 
+  it('tells the switch which shells have reported a prompt in a terminal, after the reports left the window (SW2-10)', async () => {
+    mockDetectAvailableShells.mockResolvedValue([{ type: 'powershell', executable: 'powershell.exe' }])
+    await invoke('terminal:create', { id: 't-rep', shellType: 'powershell', cwd: '/scratch/home' })
+    const onData = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const io = deps().switchIO
+    expect(io.reported!('t-rep')).toEqual({ posix: false, windows: false })
+    onData('\x1b]9;9;C:\\repo\x07PS C:\\repo> ')
+    expect(io.reported!('t-rep')).toEqual({ posix: false, windows: true })
+    // Far more than the window holds: the report is gone from it, and still known.
+    for (let i = 0; i < 40; i++) onData('x'.repeat(2000))
+    expect(io.outputFrom('t-rep', 0)).not.toContain('\x1b]9;9;')
+    expect(io.reported!('t-rep')).toEqual({ posix: false, windows: true })
+    expect(io.reported!('t-never')).toEqual({ posix: false, windows: false })
+  })
+
   it('trusts a folder in the launch\'s own profile, and refuses an account the user didn\'t connect (R9)', async () => {
     const target = H.profiles[0]
     H.resolveLaunchTarget.mockReturnValueOnce({ connected: false })

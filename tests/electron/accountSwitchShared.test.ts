@@ -36,7 +36,8 @@ describe('the keys and commands', () => {
 
   it('clears a box with twenty Ctrl+U, and a shell line with the family key', () => {
     expect(CLEAR_BOX_KEYS).toBe('\u0015'.repeat(20))
-    expect(LINE_CLEAR).toEqual({ posix: '\u0015', powershell: '\u001b', cmd: '\u001b' })
+    // bash, zsh and fish: the end of the line first, since Ctrl+U kills only what is left of the cursor (SW2-8).
+    expect(LINE_CLEAR).toEqual({ posix: '\u0005\u0015', powershell: '\u001b', cmd: '\u001b' })
   })
 })
 
@@ -172,6 +173,10 @@ describe('what a relaunch can land on', () => {
     expect(ASKS_USER.test('Do you trust the contents of this directory?')).toBe(true)
     // The one-time offer a profile never used before opens on (real Claude Code 2.1.316).
     expect(ASKS_USER.test('Try the new fullscreen renderer?  Enter to confirm / Esc to cancel')).toBe(true)
+    // Claude Code 2.1.316 asks how to resume a session that is old and large (SW2-2): both of its choices, and the sentence under it.
+    expect(ASKS_USER.test('❯ 1. Resume from summary (recommended)')).toBe(true)
+    expect(ASKS_USER.test('  2. Resume full session as-is')).toBe(true)
+    expect(ASKS_USER.test('We recommend resuming from a summary.')).toBe(false)
     expect(ASKS_USER.test('❯ ready')).toBe(false)
   })
 })
@@ -263,15 +268,15 @@ describe('otherShellReported (R1: a positive mismatch only)', () => {
 
 describe('nestedShellReported: another family heard from, and the own one silent', () => {
   it('is a shell of another kind when only its family reported', () => {
-    expect(nestedShellReported('x]9;9;C:\wy', 'posix')).toBe(true)
-    expect(nestedShellReported('x]7;file://h/w', 'powershell')).toBe(true)
-    expect(nestedShellReported('x]7;file://h/w', 'cmd')).toBe(true)
+    expect(nestedShellReported('x\x1b]9;9;C:\\w\x07y', 'posix')).toBe(true)
+    expect(nestedShellReported('x\x1b]7;file://h/w\x07', 'powershell')).toBe(true)
+    expect(nestedShellReported('x\x1b]7;file://h/w\x07', 'cmd')).toBe(true)
   })
 
   it('is none when the own family reported too: a prompt that writes both (oh-my-posh in Git Bash, OSC 7 from PowerShell)', () => {
-    expect(nestedShellReported(']7;file://h/w]9;9;C:\w', 'posix')).toBe(false)
-    expect(nestedShellReported(']9;9;C:\w]7;file://h/w', 'powershell')).toBe(false)
-    expect(nestedShellReported(']9;9;C:\w]7;file://h/w', 'cmd')).toBe(false)
+    expect(nestedShellReported('\x1b]7;file://h/w\x07\x1b]9;9;C:\\w\x07', 'posix')).toBe(false)
+    expect(nestedShellReported('\x1b]9;9;C:\\w\x07\x1b]7;file://h/w\x07', 'powershell')).toBe(false)
+    expect(nestedShellReported('\x1b]9;9;C:\\w\x07\x1b]7;file://h/w\x07', 'cmd')).toBe(false)
   })
 
   it('reads a family that was heard before and has gone silent as nested, and one never heard as no sign of it (SWITCH-R1 F2)', () => {
@@ -284,14 +289,19 @@ describe('nestedShellReported: another family heard from, and the own one silent
     expect(nestedShellReported(other, 'posix', '')).toBe(false)
     // With no earlier output given, as before: the clear case refuses.
     expect(nestedShellReported(other, 'posix')).toBe(true)
+    // Or the fact itself, kept by main after the report left its window (SW2-10): the own family did, or never did.
+    expect(nestedShellReported(other, 'posix', true)).toBe(true)
+    expect(nestedShellReported(other, 'posix', false)).toBe(false)
+    expect(nestedShellReported('\x1b]7;file://h/w\x07', 'powershell', true)).toBe(true)
+    expect(nestedShellReported(own, 'posix', true)).toBe(false)
     // The own family heard now settles it, whatever came before.
     expect(nestedShellReported(`${own}${other}`, 'posix', own)).toBe(false)
   })
 
   it('is none when nothing reported, or only the own family did', () => {
     expect(nestedShellReported('plain text', 'posix')).toBe(false)
-    expect(nestedShellReported(']7;file://h/w', 'posix')).toBe(false)
-    expect(nestedShellReported(']9;9;C:\w', 'powershell')).toBe(false)
+    expect(nestedShellReported('\x1b]7;file://h/w\x07', 'posix')).toBe(false)
+    expect(nestedShellReported('\x1b]9;9;C:\\w\x07', 'powershell')).toBe(false)
   })
 })
 

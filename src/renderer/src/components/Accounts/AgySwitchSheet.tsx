@@ -26,7 +26,7 @@ const ANNOUNCE: Readonly<Record<string, string>> = {
 /** How often a busy agy terminal is looked at again, while the switch waits for its turn. */
 export const AGY_WAIT_MS = 2000
 
-type Mark = 'waiting' | 'working' | 'exited' | 'resumed' | 'fresh' | 'failed'
+type Mark = 'waiting' | 'working' | 'exited' | 'left' | 'resumed' | 'fresh' | 'failed'
 interface Line {
   terminal: TerminalSession
   mark: Mark | null
@@ -137,6 +137,11 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
         mark(l.terminal.id, { mark: 'working' })
         const r = await step(l.terminal, 'exit', assume ? { assumeExited: true } : {})
         if (r.kind === 'exited') {
+          // agy was not running there (its user quit it by hand): nothing to bring back after the sign-in change (SW2-9).
+          if (r.alreadyGone) {
+            mark(l.terminal.id, { mark: 'left' })
+            break
+          }
           mark(l.terminal.id, { mark: 'exited', conversationId: r.conversationId })
           done.push({ ...l, conversationId: r.conversationId })
           break
@@ -200,6 +205,7 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
     waiting: 'agy is working: waiting for its turn to end',
     working: '…',
     exited: 'agy ended here',
+    left: 'agy wasn\'t running here: left as it is',
     resumed: 'Conversation resumed',
     fresh: 'A new conversation: agy couldn\'t find this one',
     failed: 'Couldn\'t switch here',
@@ -314,11 +320,13 @@ function SwitchAll({ target, close }: { target: AccountRowView; close: () => voi
       break
     default: {
       const back = lines.filter((l) => l.mark === 'resumed' || l.mark === 'fresh').length
+      // Terminals where agy was not running are not conversations to resume.
+      const ran = lines.filter((l) => l.mark !== 'left').length
       body = (
         <div className="flex flex-col gap-2" data-testid="agy-switch-done">
           <p className="text-[#7ee2a3]">
             {phase.email ? `Gemini CLI is on ${phase.email} now.` : 'Gemini CLI is back on its sign-in.'}
-            {n > 0 ? ` ${back} of ${n} conversation${n === 1 ? '' : 's'} resumed.` : ' New Gemini terminals start on it.'}
+            {ran > 0 ? ` ${back} of ${ran} conversation${ran === 1 ? '' : 's'} resumed.` : ' New Gemini terminals start on it.'}
           </p>
           {list}
           <div><button type="button" className={SHEET_PRIMARY} data-autofocus="" onClick={close} data-testid="agy-switch-done-close">Done</button></div>

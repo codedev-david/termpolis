@@ -2,7 +2,7 @@
 // once, so the last 32 KB of its output no longer draw one.
 import { describe, it, expect } from 'vitest'
 import {
-  appendOutput, liveScreen, readOutput, readOutputFrom, replayPreamble, resizeScreen, watchScreen, MAX_TERMINAL_BUFFER_CHARS,
+  appendOutput, liveScreen, readOutput, readOutputFrom, replayPreamble, reportedFamilies, resizeScreen, watchScreen, MAX_TERMINAL_BUFFER_CHARS,
   type OutputBuffers,
 } from '../../src/main/terminalOutputBuffer'
 import { screenOfReplay } from '../../src/shared/terminalScreen'
@@ -139,5 +139,42 @@ describe('the screen kept beside the window', () => {
     watchScreen(buffers, 't', SIZE)
     buffers.delete('t')
     expect(liveScreen(buffers, 't')).toBeNull()
+  })
+})
+
+// SW2-10: which shells have reported a prompt in a terminal, kept from the output the window has since lost. The switch's
+// nested-shell guard needs to know that THIS terminal's own shell reported; in the 32 KB window that is true only until an
+// agent has printed a minute's work, so after any real session the guard never fired.
+describe('the prompt reports a terminal has ever printed (SW2-10)', () => {
+  const POSIX = `${E}]7;file://host/c/repo${String.fromCharCode(7)}`
+  const WINDOWS = `${E}]9;9;C:\repo${String.fromCharCode(7)}`
+
+  it('knows nothing of a terminal that printed none, or that nobody asked about', () => {
+    const buffers: OutputBuffers = new Map()
+    expect(reportedFamilies(buffers, 'missing')).toEqual({ posix: false, windows: false })
+    appendOutput(buffers, 't', 'plain text, and an escape that is no report: \x1b[1mbold\x1b[0m and \x1b]0;a title\x07')
+    expect(reportedFamilies(buffers, 't')).toEqual({ posix: false, windows: false })
+    expect(buffers.get('t')!.reported).toBeUndefined()
+  })
+
+  it('notes each family the first time it reports, and keeps it after the report left the window', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', `${POSIX}me@host:~$ `)
+    expect(reportedFamilies(buffers, 't')).toEqual({ posix: true, windows: false })
+    // A minute of work: the report is long gone from the window.
+    for (let i = 0; i < 60; i++) appendOutput(buffers, 't', 'x'.repeat(1000))
+    expect(readOutput(buffers, 't')).not.toContain(POSIX)
+    expect(reportedFamilies(buffers, 't')).toEqual({ posix: true, windows: false })
+    appendOutput(buffers, 't', `${WINDOWS}PS C:\repo> `)
+    expect(reportedFamilies(buffers, 't')).toEqual({ posix: true, windows: true })
+  })
+
+  it('reads a report inside a larger chunk, and the other family alone', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 'a', `some output
+${WINDOWS}PS> more`)
+    expect(reportedFamilies(buffers, 'a')).toEqual({ posix: false, windows: true })
+    appendOutput(buffers, 'b', `${E}]9;1;a progress report is no prompt${String.fromCharCode(7)}`)
+    expect(reportedFamilies(buffers, 'b')).toEqual({ posix: false, windows: false })
   })
 })

@@ -180,6 +180,38 @@ describe('AgySwitchSheet', () => {
     expect(st().agySwitchSheet).toBeNull()
   })
 
+  // SW2-9: a Gemini terminal whose user had quit agy by hand has no agy to move: it is left as it is, never started again
+  // (a plain `agy` there is a new conversation nobody asked for), and the others go on as before.
+  it('leaves a terminal where agy was not running as it is, and resumes the others', async () => {
+    answers = {
+      't1:exit': [{ kind: 'exited', conversationId: 'conv-1' }],
+      't2:exit': [{ kind: 'exited', conversationId: 'conv-gone', alreadyGone: true }],
+      't1:resume': [{ kind: 'resumed', fresh: false, conversationId: 'conv-1' }],
+    }
+    open('g2')
+    click('agy-switch-go')
+    await screen.findByTestId('flow')
+    fireEvent.click(screen.getByText('flow-done'))
+    await waitFor(() => expect(screen.getByTestId('agy-switch-done')).toBeInTheDocument())
+    expect(agySwitch.mock.calls.filter((c) => c[0].step === 'resume').map((c) => c[0].terminalId)).toEqual(['t1'])
+    expect(mark('Gemini 1')).toBe('resumed')
+    expect(mark('Gemini 2')).toBe('left')
+    expect(screen.getByText('Gemini 2').closest('li')).toHaveTextContent('agy wasn\'t running here: left as it is')
+    expect(screen.getByTestId('agy-switch-done')).toHaveTextContent('Gemini CLI is on new@example.test now. 1 of 1 conversation resumed.')
+  })
+
+  it('does not start agy in a terminal it left, when the switch stops before the sign-out either', async () => {
+    answers = {
+      't1:exit': [{ kind: 'exited', conversationId: 'conv-1', alreadyGone: true }],
+      't2:exit': [{ kind: 'not-exited', why: 'its box never came back' }],
+    }
+    open('g2')
+    click('agy-switch-go')
+    expect(await screen.findByTestId('agy-switch-stopped')).toBeInTheDocument()
+    expect(agySwitch.mock.calls.filter((c) => c[0].step === 'resume')).toEqual([])
+    expect(mark('Gemini 1')).toBe('left')
+  })
+
   it('offers no close while it ends or resumes terminals, only Stop', async () => {
     let release!: () => void
     agySwitch.mockImplementationOnce(() => new Promise((resolve) => { release = () => resolve({ success: true, data: { kind: 'exited', conversationId: 'c' } }) }) as never)

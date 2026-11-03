@@ -73,7 +73,9 @@ async function exitAgy(io: SwitchIO, id: string, start: AgentStartRecord | undef
   const os: OsMemo = { known: false }
   const alive = await livenessNow(io, id, 'agy', start, os)
   if (alive.state === 'unknown') return { kind: 'unknown-exit' }
-  if (alive.state === 'gone') return { kind: 'exited', conversationId: alive.hint?.id ?? null }
+  // Gone before Termpolis typed anything: the user quit it. The conversation its hint names is still told, but nothing
+  // is brought back where agy was not running (SW2-9).
+  if (alive.state === 'gone') return { kind: 'exited', conversationId: alive.hint?.id ?? null, alreadyGone: true }
   // At work, or asking something: its turn is waited for, never stopped.
   const idle = atIdleBox(io, id)
   if (!idle) return { kind: 'busy' }

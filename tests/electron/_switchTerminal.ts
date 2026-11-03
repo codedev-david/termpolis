@@ -21,7 +21,7 @@ export type Agent = 'claude' | 'codex' | 'agy'
 export type Start = 'idle' | 'busy' | 'menu' | 'waiting' | 'typed' | 'question' | 'gone-hint' | 'gone-quiet' | 'blank'
 
 /** What the shell's run of the relaunch line shows. */
-export type Relaunch = 'box' | 'not-found' | 'sign-in' | 'asks' | 'nothing' | 'loading-then-not-found' | 'box-then-not-found' | 'flicker-then-not-found' | 'sandbox-menu'
+export type Relaunch = 'box' | 'not-found' | 'sign-in' | 'asks' | 'nothing' | 'loading-then-not-found' | 'box-then-not-found' | 'flicker-then-not-found' | 'sandbox-menu' | 'resume-size'
 
 export interface TermScript {
   agent: Agent
@@ -149,7 +149,7 @@ export class FakeTerminal {
   closed = false
   mode: 'agent' | 'shell'
   /** The agent's screen now: 'idle' with the box, or one of the states that hold it. */
-  agentState: Start | 'sign-in' | 'asks' | 'loading' | 'sandbox'
+  agentState: Start | 'sign-in' | 'asks' | 'loading' | 'sandbox' | 'resume-size'
   box = ''
   line = ''
   relaunches = 0
@@ -229,6 +229,8 @@ export class FakeTerminal {
     const st = this.agentState
     if (st === 'sign-in') return a === 'codex' ? ['  Sign in with ChatGPT to use Codex', '', '› 1. Sign in with ChatGPT', '  2. Provide your own API key', '', '  Press enter to continue'] : ['  Select login method:', '', '  ❯ 1. Claude account with subscription', '    2. Anthropic Console account', '', '  Enter to confirm · Esc to cancel']
     if (st === 'sign-in' && a === 'agy') return ['Welcome back! You are currently not signed in.', '', 'Select login method:', '', '> Continue with Google', '  Other sign-in options', '', '↑/↓ Navigate · enter Confirm']
+    // Claude Code 2.1.316's dialog for a resumed session that is old and large ("Resume from summary (recommended)"), as it draws it.
+    if (st === 'resume-size') return ['  This session is 12 days old and 91.2k tokens.', '', '  Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.', '', '  ❯ 1. Resume from summary (recommended)', '    2. Resume full session as-is', "    3. Don't ask me again", '', '  Enter to confirm · Esc to cancel']
     if (st === 'asks') return ['  WARNING: Claude Code running in Bypass Permissions mode', '', '  ❯ 1. No, exit', '    2. Yes, I accept', '', '  Enter to confirm · Esc to cancel']
     // Claude Code's permission dialog and its rate-limit menu, laid out as the real captures show
     // them (tests/fixtures/agentScreensInput.json rateLimitMenu): under a rule, the box gone.
@@ -376,7 +378,7 @@ export class FakeTerminal {
     }
     this.mode = 'agent'
     this.box = ''
-    this.agentState = what === 'sign-in' ? 'sign-in' : what === 'asks' ? 'asks' : what === 'sandbox-menu' ? 'sandbox' : 'idle'
+    this.agentState = what === 'sign-in' ? 'sign-in' : what === 'asks' ? 'asks' : what === 'resume-size' ? 'resume-size' : what === 'sandbox-menu' ? 'sandbox' : 'idle'
     this.redraw()
   }
 

@@ -29,7 +29,7 @@ import { isBusyOnScreen, inputBoxRow, inputBoxRows, emptyInputBox, detectAgentSt
 import type { ScreenSize } from '../shared/terminalScreen'
 import {
   ASKS_USER, CLEAR_BOX_KEYS, CODEX_STARTING, EXIT_COMMAND, LINE_CLEAR, RELAUNCH_HELD, RESUME_NOT_FOUND, SIGN_IN_SCREEN, carryForSwitch, exitHintOf,
-  nestedShellReported, relaunchCommand,
+  nestedShellReported, ownReport, relaunchCommand,
 } from '../shared/accountSwitch'
 import type { ExitHint, RelaunchHold, RelaunchSpec, SwitchOutcome, SwitchProgress, SwitchRequest } from '../shared/accountSwitch'
 import { PROMPT_SETTLE_MS, aloneNow, waitForExit } from '../shared/agentExit'
@@ -72,6 +72,12 @@ export const ECHO_PROBE_CHARS = 16
 export const ECHO_SLOW_CHAR_MS = 150
 /** How long the shell gets to answer the sacrificial Enter: its prompt report, or quiet. */
 export const PROMPT_WAIT_MS = 1500
+/** The same where the terminal's own shell reports its prompts: its report says when the prompt is drawn, and silence
+ *  does not (Git Bash with a git-aware PROMPT_COMMAND was silent for seconds while it built one, and read nothing typed
+ *  meanwhile), so the report is waited for this long, and the keys typed anyway at the end of it (SW2-5). */
+export const PROMPT_REPORT_WAIT_MS = 12_000
+/** The most the first part of the account line gets to show in all, while the shell keeps printing (SW2-5). */
+export const ECHO_MAX_MS = 30_000
 /** How long after the Enter the relaunch gets to show what it did (step 10). */
 export const OUTCOME_MS = 30_000
 /** How long Codex's composer must stand on screen, with no "Resuming session…" row over it, before the
@@ -111,6 +117,9 @@ export interface SwitchIO {
    *  the agent's process is gone, false while it runs, null where main can't tell. Absent: the
    *  screen alone decides. */
   shellAlone?(terminalId: string): Promise<boolean | null>
+  /** Which shells have printed a prompt report in this terminal, ever (terminalOutputBuffer.ts reportedFamilies), which
+   *  the 32 KB window the reads above replay does not keep. Absent: the window is all there is to go on. */
+  reported?(terminalId: string): { posix: boolean; windows: boolean }
 }
 
 /** Where a terminal's agent was started, and the line that started it (accountsIpc.ts). */
@@ -410,8 +419,13 @@ export async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Loo
  *  the shell's prompt since, with no box drawn after it. */
 export function exitShown(io: SwitchIO, id: string, agent: AccountAgent, mark: number): { hint: ExitHint | null } | null {
   const l = look(io, id)
-  const hint = hintAtFoot(l, agent)
-  if (hint && HINT_HEAD[agent].test(plain(io.outputFrom(id, mark)))) return { hint }
+  const printed = plain(io.outputFrom(id, mark))
+  let hint = hintAtFoot(l, agent)
+  // agy prints its hint at the top of a block it repaints, so a pane that holds the block has it above the foot's rows,
+  // and one that doesn't has scrolled it off (or wrapped its command row): it is read from the text agy printed since
+  // its exit command, which has neither problem (SW2-6). The text is its own: nothing but its exit follows the command.
+  if (!hint && agent === 'agy') hint = exitHintOf(printed.split(/\r\n|\r|\n/), agent, true)
+  if (hint && HINT_HEAD[agent].test(printed)) return { hint }
   return shellSince(io, id, l, mark) ? { hint: null } : null
 }
 
@@ -489,6 +503,14 @@ function heardBefore(io: SwitchIO, id: string): string {
   return io.output(id)?.raw ?? ''
 }
 
+/** Whether this terminal's own shell family has ever reported a prompt: what main kept of output the window lost, else
+ *  what the window holds. */
+function ownShellHeard(io: SwitchIO, id: string, family: ShellFamily): boolean {
+  const kept = io.reported?.(id)
+  if (kept && (family === 'posix' ? kept.posix : kept.windows)) return true
+  return ownReport(heardBefore(io, id), family)
+}
+
 /** Types an account line at the shell's prompt (step 8): the line cleared, a sacrificial Enter and
  *  the shell's answer to it, then the line without its Enter, which is pressed only once the line
  *  shows outside every agent box. `enterAt` is where the output ended before that Enter. */
@@ -500,16 +522,20 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   // agent's box and shows nothing of the shell: on a live agent with a draft that Enter would submit it, where Esc (the
   // PowerShell and cmd clear) does not empty the box. The first part of the line is typed and looked at instead
   // (SW2-7, MODELS-R2-1), and what lands in a box is taken back out of it.
+  // Whether this terminal's own shell reports its prompts: its report is then what says the prompt is drawn.
+  const reporting = ownShellHeard(io, id, family)
   if (sacrifice) {
     io.write(id, LINE_CLEAR[family])
     const before = io.end(id)
     io.write(id, '\r')
     // The prompt's report, or the shell gone quiet: input is being read (ConPTY can drop the first
-    // byte typed before that, aiProfiles.ts).
+    // byte typed before that, aiProfiles.ts). Where the shell reports, silence only means it is busy
+    // drawing its prompt, so the report is waited for (SW2-5).
     let last = -1
-    await waitFor(io, wait(PROMPT_WAIT_MS), () => {
+    await waitFor(io, wait(reporting ? PROMPT_REPORT_WAIT_MS : PROMPT_WAIT_MS), () => {
       const out = io.outputFrom(id, before)
       if (out.search(PROMPT_REPORT) >= 0) return true
+      if (reporting) return false
       const quiet = out.length > 0 && out.length === last
       last = out.length
       return quiet
@@ -517,12 +543,28 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   }
   // A shell of another family reported since: a shell started inside this one, which the line
   // built for this terminal's shell doesn't fit (R1: only such a positive mismatch refuses).
-  if (nestedShellReported(io.outputFrom(id, mark), family, heardBefore(io, id))) return { outcome: 'mismatch' }
+  if (nestedShellReported(io.outputFrom(id, mark), family, reporting)) return { outcome: 'mismatch' }
   const typedAt = io.end(id)
   const probe = line.slice(0, ECHO_PROBE_CHARS)
   const started = io.now()
   io.write(id, probe)
-  let where = await waitFor(io, wait(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS), () => landed(look(io, id), probe, io.outputFrom(id, typedAt)))
+  // The first part gets ECHO_MS and a slow shell's time a character, and while the shell is still PRINTING it is not stalled
+  // (Git Bash right after an agent exits, building a git-aware prompt, took 5 to 15 s to read what was typed): the wait
+  // goes on while the output grows, ends after that quiet spell, and ends at ECHO_MAX_MS in any case (SW2-5).
+  const quietMs = ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS
+  let seenEnd = io.end(id)
+  let movedAt = io.now()
+  const first = await waitFor(io, wait(ECHO_MAX_MS), () => {
+    const at = landed(look(io, id), probe, io.outputFrom(id, typedAt))
+    if (at) return at
+    const end = io.end(id)
+    if (end !== seenEnd) {
+      seenEnd = end
+      movedAt = io.now()
+    }
+    return io.now() - movedAt >= quietMs ? ('stalled' as const) : null
+  })
+  let where: 'box' | 'shell' | null = first === 'stalled' ? null : first
   if (where === 'shell' && line.length > probe.length) {
     // The shell reads what is typed (the first part is not in an agent's box): it took this long a
     // character, and the rest is given twice as long before it is given up on.
@@ -552,24 +594,37 @@ export type Watched = 'switched' | 'not-found' | 'sign-in' | 'no-outcome' | { as
 export async function watchOutcome(io: SwitchIO, id: string, agent: AccountAgent, mark: number, line: string, until: number): Promise<{ seen: Watched; notFound: boolean }> {
   let notFound = false
   let upSince: number | null = null
+  let signInLooks = 0
   for (let t = 0; t < OUTCOME_MS && io.now() < until; t += POLL_MS * 2) {
     await io.sleep(POLL_MS * 2)
     const since = io.outputFrom(id, mark)
     const rows = drawn(since, io.size(id)).lines
     const screen = rows.join('\n')
+    const l = look(io, id)
+    const drewBox = sinceStarted(l.raw, indexOf(l, mark), false, io.size(id), [line]).started
     if (RESUME_NOT_FOUND[agent].test(plain(since)) || RESUME_NOT_FOUND[agent].test(screen)) {
-      if (agent !== 'agy') return { seen: 'not-found', notFound: true }
-      notFound = true
+      // Claude Code prints its line and exits: no box is drawn since the Enter, in the program that said it. A box drawn
+      // since is a conversation that resumed, whose history quotes the line (SW2-4). Codex draws its composer first, so a
+      // box says nothing of it, and agy only warns.
+      if (!(agent === 'claude' && drewBox)) {
+        if (agent !== 'agy') return { seen: 'not-found', notFound: true }
+        notFound = true
+      }
     }
     // The words of a sign-in screen or a question are read where the target's own screen is: below the
     // box when one is drawn. A resumed conversation redraws its history above it, and that can hold the
     // CLI's own error text ("Please run /login") on a target that is fine (SWITCH-R1 H).
     const judged = ownScreen(rows, agent)
-    if (SIGN_IN_SCREEN[agent].test(judged)) return { seen: 'sign-in', notFound }
+    // A question is read before a sign-in screen: a one-time dialog replaces the box (so the whole screen is judged, the
+    // resumed history above it included), and a history that ends "Please run /login" is no word on the target (SW2-3).
     const asks = ASKS_USER.exec(judged)
     if (asks) return { seen: { asks: asks[0] }, notFound }
-    const l = look(io, id)
-    const up = l.box >= 0 && sinceStarted(l.raw, indexOf(l, mark), false, io.size(id), [line]).started
+    if (SIGN_IN_SCREEN[agent].test(judged)) {
+      // With a box drawn the words are the ones under it, at once. With none, they may be the history's own, drawn a
+      // moment before the dialog or the box that follows: a sign-in screen stands, and counts at the second look.
+      if (inputBoxRow(rows) >= 0 || ++signInLooks >= 2) return { seen: 'sign-in', notFound }
+    } else signInLooks = 0
+    const up = l.box >= 0 && drewBox
     // Codex draws its composer while it still looks for the session and then exits if it is not there:
     // its composer under "Resuming session…" is not up, and one with no such row gets a moment too.
     if (up && !(agent === 'codex' && CODEX_STARTING.test(screen))) {
