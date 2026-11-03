@@ -1251,7 +1251,11 @@ Agents get one MCP tool, `linked_machines`, with three actions:
 - **`cwd`** is a folder on the other machine, absolute or starting with `~`.
   It defaults to the home folder and must exist there. UNC network paths
   (`\\server\share`) are refused. A URL is refused before anything is sent (a
-  clone URL can carry a token). A folder's name is not screened for
+  clone URL can carry a token): one that starts with a scheme and two slashes
+  or backslashes (`https://…`, `ssh://…`) or with a user and a password before
+  an `@` (`user:token@host:repo`, `//user:token@host/org`), and a scheme with a
+  user and a password after a path (`/srv/work/https://user:token@host/org`);
+  zero-width characters in it are ignored. A folder's name is not screened for
   credentials; where a refusal repeats one, anything in it that looks like a
   credential is taken out first, and a name with a control character in it
   (one nobody types), or one that holds a credential once everything but its
@@ -1420,7 +1424,8 @@ audit log.
     or a newline constant, as `\n` escapes in a JSON string or one JSON string per
     line (with `/` or `+` escaped too, as PHP and .NET write them), behind comment
     or quote marks, in a diff (a coloured one too), behind `cat -n`, in grep or rg
-    output with paths and line numbers (Windows paths too), behind a `NAME=` (a
+    output with paths, with or without line numbers (Windows paths too, whatever
+    their folders are called), behind a `NAME=` (a
     properties file, journalctl's `MESSAGE=`), or behind log timestamps and container
     prefixes. A key file stored base64 encoded (a Kubernetes Secret's `tls.key`,
     a `.env` file's `TLS_KEY_B64=`) is removed the same way. So are a PuTTY
@@ -1480,10 +1485,13 @@ audit log.
   there, not in the prompt.
   Not recognised: a private key in a format Termpolis can't decode, or whose
   lines were re-wrapped to alternating widths, or to under 16 characters (all
-  reported, as above); the first line alone of an RSA, DSA, OpenSSH, OpenPGP,
-  SSH2 or encrypted private key, with no END line and nothing of the key under
-  that line (reported: only the first line of an EC, EdDSA or post-quantum key
-  is known to hold some of its private value); a key
+  reported, as above); the first line alone of an RSA, DSA, Diffie-Hellman,
+  OpenSSH, OpenPGP, SSH2 or encrypted private key, with no END line and nothing
+  of the key under that line (reported: it holds a modulus, parameters or a
+  salt, not the private value), and that of a PKCS#8 key on a brainpool curve
+  (reported: the curve's long identifier leaves 9 to 11 bytes of the private
+  value in the line, where 12 or more are removed, as for every other EC curve
+  and for an EdDSA or post-quantum key); a key
   written on one line with a `NAME=` in front of each of its lines (reported);
   a key written one `NAME=<line>` to a line when the name is 63 characters or
   more (64 for all but an armored OpenPGP key); a key written on one line
@@ -1491,13 +1499,23 @@ audit log.
   URL-encoded twice, or with its base64 characters written as HTML
   entities (`&#43;`); key lines that a few other layouts alter or break apart (a
   word diff, a `git diff` that alternates context and changed lines, email
-  quoted-printable, `cat -A` of a tab-indented key); key lines alone, with
+  quoted-printable, `cat -A` of a tab-indented key); relative Windows paths in
+  a JSON string (its line breaks written out), listed as context lines
+  (`path-12-`) or as indented lines with no line number (`grep -H`, `findstr`),
+  when a folder in the path has a name that starts with n or r (`repos`,
+  `notes`) and 16 characters or more stand in front of it (reported); key lines alone, with
   neither a BEGIN nor an END line (what `grep --color` prints for a match
   inside every key line: not reported); a key whose lines each start with a
-  token of 16 characters or more and a blank, such as a commit hash, a request
-  id or a log stream's name (reported); a private key stored as bare base64 DER
+  token and a blank, such as a request id or a log stream's name of 16
+  characters or more (reported), or a commit hash of 4 to 15 characters that
+  changes from line to line (what `git blame` prints for a file of many
+  commits: partly removed, and reported; the same hash on every line is
+  removed with the key); a private key stored as bare base64 DER
   with no BEGIN line (the value of a `.properties`, `.env`, YAML or JSON key:
-  reported when the name says it is a secret, and not otherwise); an SSH2, PuTTY
+  reported when its name has the word secret, password, token, credential, api
+  key or private key in it, or, in `NAME=value` form, is upper case and ends in
+  KEY, TOKEN, SECRET or PASSWORD, and not otherwise: not `ssh_key`, `tls.key`,
+  `auth_token` or `key_data`); an SSH2, PuTTY
   or OpenVPN key file URL-encoded whole; a PuTTY key's lines joined by colons
   (reported), or its private lines run together with no separator, when the
   first of them starts with a digit (which can read as part of the line count);
