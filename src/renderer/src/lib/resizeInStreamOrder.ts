@@ -12,9 +12,15 @@ import { reportFailure } from './reportFailure'
  * With a backlog of seconds (the lag this release is about) that is seconds of output at the wrong size.
  *
  * THE ORDER: (1) let go of output held back by a selection, so it joins the queue ahead of the resize;
- * (2) wait for the throttle to hand its backlog to xterm; (3) write an EMPTY string behind everything
+ * (2) wait for the pane's writer to hand its backlog to xterm; (3) write an EMPTY string behind everything
  * xterm holds and resize in its callback, the one moment at which every byte before the resize has been
  * parsed at the size it was drawn for. `apply` is the resize itself: fit, then tell the pty.
+ *
+ * The writer in (2) is the pane's output (paneOutput.ts): the renderer's write scheduler by default, whose
+ * `whenDrained` is `scheduler.drained(id)` (every char pushed before the call has been handed to xterm, and
+ * what xterm holds is bounded by the terminal's in-flight cap, so the barrier in (3) waits for a fraction
+ * of a second at worst), or the output throttle's `whenDrained` behind the kill switch. Both keep the same
+ * contract, so this module knows neither.
  *
  * Fast path: when nothing is queued anywhere (or xterm's queue cannot be read) `apply` runs at once,
  * with no timer and no write, which is exactly the timing of 1.54.4. The barrier only waits behind a
@@ -43,7 +49,10 @@ export const RESIZE_DRAIN_CAP_MS = 3000
 export interface StreamOrderDeps {
   /** Let go of output held back by a selection: it goes into the throttle, in order, ahead of the resize. */
   flushHold: () => void
-  /** The output throttle (or a double): how much it holds, and its drain hook. Either may be missing. */
+  /**
+   * The pane's output writer: how much it holds (`pending()`) and its drain hook (`whenDrained`), which for a
+   * scheduled pane is the write scheduler's `drained(id)`. Either may be missing.
+   */
   throttle?: {
     pending?: () => number
     whenDrained?: (cb: () => void, maxWaitMs: number) => () => void

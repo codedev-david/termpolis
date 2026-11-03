@@ -423,7 +423,7 @@ describe('priority', () => {
     expect(r.sch.stats().rationedPasses).toBe(1)
   })
 
-  it('a focused terminal that still has output queued, not yet in flight, takes the pool for itself', () => {
+  it('a focused terminal that was acked empty but has more queued refills first, and takes the pool for itself', () => {
     const r = makeRig({ ackTimeoutMs: Number.POSITIVE_INFINITY })
     const f = r.add('f', 'focused')
     const v = r.add('v', 'visible')
@@ -434,6 +434,21 @@ describe('priority', () => {
     v.w(text(100_000))
     r.clock.frame()
     expect(v.w.inflight()).toBe(0)
+  })
+
+  it('a focused terminal that only waits out a refusal does not ration the others: a stuck terminal must not punish them', () => {
+    const r = makeRig()
+    const f = r.add('f', 'focused')
+    const v = r.add('v', 'visible')
+    f.t.refuse = () => true // xterm refuses everything: the terminal is going away
+    f.w(text(500_000))
+    r.clock.frame() // refused: back-off
+    expect(f.w.pending()).toBe(500_000)
+    expect(f.w.inflight()).toBe(0)
+    v.w(text(100_000))
+    r.clock.frame()
+    expect(v.w.inflight()).toBe(D.inflight.visible) // handed its full cap, not rationed to nothing behind the stuck terminal
+    expect(r.sch.stats().rationedPasses).toBe(0)
   })
 
   it('NEGATIVE CONTROL: without the pool the same pass hands the others their full caps', () => {
@@ -495,15 +510,25 @@ describe('priority', () => {
       expect(handed).toBe(D.pool)
     })
 
-    it('while a key is going in a frame clock exists, so the scale is not applied', () => {
+    it('while a key is going in a frame clock exists, so the scale is not applied: the typing frame budget (32 KB) binds, not six passes\' worth', () => {
       const r = makeRig()
       const f = r.add('f', 'focused')
-      const h = r.add('h', 'hidden')
-      h.w(text(1_000_000))
+      const hidden = Array.from({ length: 12 }, (_, i) => r.add(`h${i}`, 'hidden'))
+      hidden.forEach((h) => h.w(text(200_000)))
       f.w.typed('k')
       r.clock.advance(D.watchdogMs) // only the timer ran, but a key is 100 ms old
-      expect(r.sch.stats().timerTicks).toBe(1)
-      expect(h.t.joined().length).toBe(D.sliceTyping.hidden) // typing rules: one 8 KB slice, not six frames' worth
+      expect(r.sch.stats().timerTicks).toBeGreaterThan(0)
+      const handed = hidden.reduce((n, h) => n + h.t.joined().length, 0)
+      expect(handed).toBe(D.frameBudgetTyping) // 4 hidden panes' typing slices (8 KB each) use up the 32 KB budget; scaled by 6 it would be all twelve
+    })
+
+    it('NEGATIVE CONTROL: the same twelve panes with nobody typing get the scaled pool on a timer pass: all of them, to their caps', () => {
+      const r = makeRig()
+      const hidden = Array.from({ length: 12 }, (_, i) => r.add(`h${i}`, 'hidden'))
+      hidden.forEach((h) => h.w(text(200_000)))
+      r.clock.advance(D.watchdogMs)
+      const handed = hidden.reduce((n, h) => n + h.t.joined().length, 0)
+      expect(handed).toBe(12 * D.inflight.hidden) // 12 x 32 KB = 384 KB, under the scaled pool (768 KB)
     })
   })
 
@@ -871,6 +896,46 @@ describe('drained', () => {
     expect(cb).not.toHaveBeenCalled()
   })
 
+  it('a wait that another wait cancels while they are being served is not served: it is already gone', () => {
+    const r = makeRig()
+    const v = r.add('v', 'visible')
+    v.w(text(50_000))
+    const second = vi.fn()
+    let cancelSecond: () => void = () => undefined
+    v.w.whenDrained(() => cancelSecond(), 60_000) // served first, and cancels the second
+    cancelSecond = v.w.whenDrained(second, 60_000)
+    r.clock.frame()
+    expect(second).not.toHaveBeenCalled()
+    r.clock.advance(120_000)
+    expect(second).not.toHaveBeenCalled()
+  })
+
+  it('a wait of 0 ms (or NaN) is answered at the next timer turn, not never', () => {
+    const r = makeRig({ ackTimeoutMs: Number.POSITIVE_INFINITY })
+    const v = r.add('v', 'visible')
+    v.w(text(500_000))
+    r.clock.frame() // a cap in flight, never acked: stuck
+    const zero = vi.fn()
+    const nan = vi.fn()
+    v.w.whenDrained(zero, 0)
+    v.w.whenDrained(nan, Number.NaN)
+    r.clock.advance(0)
+    expect(zero).toHaveBeenCalledTimes(1)
+    expect(nan).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancelling a wait that was already answered does nothing', () => {
+    const r = makeRig()
+    const v = r.add('v', 'visible')
+    v.w(text(50_000))
+    const cb = vi.fn()
+    const cancel = v.w.whenDrained(cb, 60_000)
+    r.clock.frame()
+    expect(cb).toHaveBeenCalledTimes(1)
+    expect(() => cancel()).not.toThrow()
+    expect(cb).toHaveBeenCalledTimes(1)
+  })
+
   it('a callback that throws is reported, not thrown into the scheduler', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     try {
@@ -908,6 +973,21 @@ describe('attach and detach', () => {
     expect(r.sch.pending('v')).toBe(0)
   })
 
+  it('detaching twice is harmless, and a writer that is detached after its pane was replaced does not disturb the new one', () => {
+    const r = makeRig()
+    const old = r.add('same', 'visible')
+    const fresh = r.add('same', 'visible')
+    old.w.detach()
+    old.w.detach()
+    fresh.w(text(20_000))
+    expect(r.sch.stats().panes).toBe(1)
+    r.clock.frame()
+    expect(fresh.t.joined()).toHaveLength(20_000)
+    fresh.w.detach()
+    fresh.w.detach()
+    expect(r.sch.stats().panes).toBe(0)
+  })
+
   it('a pane that mounts again under the same id takes over; the one it replaces goes quiet', () => {
     const r = makeRig()
     const old = r.add('same', 'visible')
@@ -919,6 +999,19 @@ describe('attach and detach', () => {
     r.clock.frame()
     expect(old.t.writes).toEqual([])
     expect(fresh.t.writes).toEqual(['kept'])
+  })
+
+  it('the pane a new one replaces gives its queue up and its waits are dropped: a resize waiting on a dead pane never runs', () => {
+    const r = makeRig()
+    const old = r.add('same', 'visible')
+    old.w(text(200_000))
+    const waited = vi.fn()
+    old.w.whenDrained(waited, 5_000)
+    expect(old.w.pending()).toBeGreaterThan(0)
+    r.add('same', 'visible') // the remount
+    expect(old.w.pending()).toBe(0) // the old queue is gone, not kept alive in a closure
+    r.clock.advance(60_000)
+    expect(waited).not.toHaveBeenCalled()
   })
 
   it('dispose detaches everything and stops the clocks', () => {
@@ -1000,6 +1093,297 @@ describe('failing open', () => {
     p.w(big) // take() throws inside push(): the chunk is queued first, then flushed by the fallback
     expect(r.sch.stats().bypassed).toBe(true)
     expect(p.t.joined()).toBe(big)
+  })
+})
+
+/** A chunk queue that behaves, except that `take` (and optionally `length`) are the test's. */
+function queueWith(take?: (n: number) => string, length?: () => number): ChunkQueue {
+  const q = createChunkQueue()
+  return {
+    get length() { return length ? length() : q.length },
+    get chunks() { return q.chunks },
+    get reads() { return q.reads },
+    get work() { return q.work },
+    push: (d) => q.push(d),
+    restore: (x) => q.restore(x),
+    takeAll: () => q.takeAll(),
+    clear: () => q.clear(),
+    take: take ?? ((n) => q.take(n)),
+  }
+}
+
+// =============================================================================================================
+// The clocks and the classifier: the defaults a real renderer has, and what happens when they misbehave
+// =============================================================================================================
+describe('the real clocks', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('without requestAnimationFrame the timer alone drives the passes (a page with no frame clock)', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', undefined)
+    vi.stubGlobal('cancelAnimationFrame', undefined)
+    const sch = createWriteScheduler() // the default clock
+    const t = makeFakeTerm('p')
+    const w = sch.attach('p', { write: t.write, classify: () => 'visible' })
+    w(text(20_000))
+    expect(t.writes).toEqual([])
+    vi.advanceTimersByTime(100)
+    expect(t.joined()).toHaveLength(20_000)
+    expect(sch.stats().timerTicks).toBe(1)
+    sch.dispose()
+  })
+
+  it('with requestAnimationFrame the frame wins the race and cancels the timer', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(cb, 16))
+    vi.stubGlobal('cancelAnimationFrame', (id: ReturnType<typeof setTimeout>) => clearTimeout(id))
+    const sch = createWriteScheduler()
+    const t = makeFakeTerm('p')
+    const w = sch.attach('p', { write: t.write, classify: () => 'visible' })
+    w(text(20_000))
+    vi.advanceTimersByTime(16)
+    expect(t.joined()).toHaveLength(20_000)
+    expect(sch.stats().timerTicks).toBe(0)
+    expect(vi.getTimerCount()).toBe(0) // the watchdog was cancelled with the frame
+    sch.dispose()
+  })
+
+  it('without performance.now the wall clock is read instead', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('performance', undefined)
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(cb, 16))
+    vi.stubGlobal('cancelAnimationFrame', (id: ReturnType<typeof setTimeout>) => clearTimeout(id))
+    const sch = createWriteScheduler()
+    const t = makeFakeTerm('v')
+    const v = sch.attach('v', { write: t.write, classify: () => 'visible' })
+    sch.noteKey('v', 'k')
+    v(text(100_000))
+    expect(t.writes.length).toBeGreaterThan(0) // typing is on (the typed pane is focused): handed at once, in typing slices
+    vi.advanceTimersByTime(400)
+    t.ack()
+    v(text(100_000))
+    vi.advanceTimersByTime(16)
+    expect(lens(t).slice(-1)[0]).toBe(D.slice.visible) // 400 ms on the wall clock: typing is over
+    sch.dispose()
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('the classifier', () => {
+  it('a classify that throws, or answers with something that is not a class, makes the pane a visible one', () => {
+    const r = makeRig()
+    const t1 = makeFakeTerm('throws')
+    const t2 = makeFakeTerm('weird')
+    const w1 = r.sch.attach('throws', { write: t1.write, classify: () => { throw new Error('store gone') } })
+    const w2 = r.sch.attach('weird', { write: t2.write, classify: () => 'banana' as unknown as PaneClass })
+    w1(text(200_000))
+    w2(text(200_000))
+    r.clock.frame()
+    expect(lens(t1)).toEqual([D.slice.visible])
+    expect(lens(t2)).toEqual([D.slice.visible])
+  })
+})
+
+describe('a writer that calls back into the scheduler', () => {
+  it('a write that pushes more output to its own pane (xterm answering a query) is queued behind, in order, once', () => {
+    const r = makeRig()
+    const seen: string[] = []
+    let once = true
+    let w!: PaneWriter
+    w = r.sch.attach('p', {
+      write: (d, ack) => {
+        seen.push(d)
+        if (once) { once = false; w('AFTER') } // re-entrant: while this very hand-over is running
+        ack()
+      },
+      classify: () => 'focused',
+    })
+    w(text(20_000))
+    r.clock.frame()
+    r.clock.frame()
+    expect(seen.join('')).toBe(text(20_000) + 'AFTER')
+    expect(w.pending()).toBe(0)
+    expect(w.inflight()).toBe(0)
+  })
+
+  it('a write that pushes to its own typed pane while the hand-over runs: queued behind it, and nothing is handed twice', () => {
+    const r = makeRig()
+    const seen: string[] = []
+    let once = true
+    let w!: PaneWriter
+    w = r.sch.attach('p', {
+      write: (d, ack) => {
+        seen.push(d)
+        if (once) { once = false; w('AFTER'.repeat(5_000)) } // re-entrant, and a key is going in: push() would serve the pane
+        ack()
+      },
+      classify: () => 'focused',
+    })
+    w.typed('k')
+    w(text(40_000))
+    r.clock.frame()
+    expect(seen.join('')).toBe(text(40_000) + 'AFTER'.repeat(5_000))
+    expect(w.pending()).toBe(0)
+  })
+
+  it('a refusal that detaches the pane first leaves no negative in-flight behind', () => {
+    const r = makeRig()
+    let w!: PaneWriter
+    w = r.sch.attach('p', {
+      write: () => { w.detach(); throw new Error('torn down') },
+      classify: () => 'visible',
+      onError: () => undefined,
+    })
+    w(text(20_000))
+    r.clock.frame()
+    expect(w.inflight()).toBe(0)
+    expect(r.sch.stats().panes).toBe(0)
+  })
+})
+
+describe('failing open, the other ways', () => {
+  function brokenClock(): { clock: ManualClock; breakNow: () => void; breakCancel: () => void } {
+    const clock = makeManualClock()
+    const realNow = clock.now
+    const realCancel = clock.cancelFrame
+    let nowBoom = false
+    let cancelBoom = false
+    clock.now = () => { if (nowBoom) { nowBoom = false; throw new Error('clock') } return realNow() }
+    clock.cancelFrame = (h) => { if (cancelBoom) throw new Error('cancelFrame'); realCancel(h) }
+    return { clock, breakNow: () => { nowBoom = true }, breakCancel: () => { cancelBoom = true } }
+  }
+
+  it('a clock that throws while a write arrives fails open and loses nothing: the chunk is queued first, then flushed', () => {
+    const { clock, breakNow } = brokenClock()
+    const internal: unknown[] = []
+    const sch = createWriteScheduler({ clock, onInternalError: (e) => internal.push(e) })
+    const t = makeFakeTerm('p')
+    const w = sch.attach('p', { write: t.write, classify: () => 'visible' })
+    breakNow()
+    w('data that must survive')
+    expect(sch.stats().bypassed).toBe(true)
+    expect(internal).toHaveLength(1)
+    expect(t.joined()).toBe('data that must survive')
+  })
+
+  it('an exception inside an ack (the refill of the focused terminal) fails open, and what was queued goes out in order', () => {
+    const r = makeRig()
+    const q = createChunkQueue()
+    let armed = false
+    const queue: ChunkQueue = {
+      get length() { return q.length }, get chunks() { return q.chunks }, get reads() { return q.reads }, get work() { return q.work },
+      push: (d) => q.push(d), restore: (x) => q.restore(x), takeAll: () => q.takeAll(), clear: () => q.clear(),
+      take: (n) => { if (armed) { armed = false; throw new Error('bug in the refill') } return q.take(n) },
+    }
+    const p = r.add('p', 'focused', { queue })
+    const input = text(400_000)
+    p.w(input)
+    r.clock.frame()
+    armed = true
+    p.t.ack(1) // xterm acks: the refill throws inside the ack wrapper
+    expect(r.sch.stats().bypassed).toBe(true)
+    p.w('')
+    p.t.ack()
+    expect(p.t.joined()).toBe(input) // everything, once, in order
+  })
+
+  it('a second failure after it has failed open (a clock that throws inside a late ack) is not reported or flushed again', () => {
+    const { clock, breakNow } = brokenClock()
+    const internal: unknown[] = []
+    const sch = createWriteScheduler({ clock, onInternalError: (e) => internal.push(e) })
+    const t = makeFakeTerm('p')
+    const w = sch.attach('p', { write: t.write, classify: () => 'visible' })
+    w(text(100_000))
+    clock.frame() // handed to xterm, never acked
+    expect(t.unacked.length).toBeGreaterThan(0)
+    breakNow()
+    w('x') // the clock throws inside push: fails open
+    expect(sch.stats().bypassed).toBe(true)
+    expect(internal).toHaveLength(1)
+    const writes = t.writes.length
+    breakNow()
+    expect(() => t.ack()).not.toThrow() // a late ack: the clock throws again inside it
+    expect(internal).toHaveLength(1) // not reported again
+    expect(t.writes.length).toBe(writes) // and nothing flushed again
+  })
+
+  it('with no reporter given the failure goes to reportError (or the console), as an uncaught error would', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { clock, breakNow } = brokenClock()
+    const sch = createWriteScheduler({ clock }) // no onInternalError
+    const t = makeFakeTerm('p')
+    const w = sch.attach('p', { write: t.write, classify: () => 'visible' })
+    breakNow()
+    w('x')
+    expect(t.joined()).toBe('x')
+    expect(spy.mock.calls.length + (typeof (globalThis as { reportError?: unknown }).reportError === 'function' ? 1 : 0)).toBeGreaterThan(0)
+    spy.mockRestore()
+  })
+
+  it('a reporter that throws does not stop it failing open', () => {
+    const { clock, breakNow } = brokenClock()
+    const sch = createWriteScheduler({ clock, onInternalError: () => { throw new Error('reporter') } })
+    const t = makeFakeTerm('p')
+    const w = sch.attach('p', { write: t.write, classify: () => 'visible' })
+    breakNow()
+    expect(() => w('x')).not.toThrow()
+    expect(t.joined()).toBe('x')
+  })
+
+  it('a cancelFrame that throws does not stop it failing open, and a frame that still fires afterwards does nothing', () => {
+    const { clock, breakCancel } = brokenClock()
+    const frames: Array<() => void> = []
+    const realRequest = clock.requestFrame
+    clock.requestFrame = (cb) => { frames.push(cb); return realRequest(cb) } // keep the callbacks: a real rAF could still deliver one
+    const internal: unknown[] = []
+    const sch = createWriteScheduler({ clock, onInternalError: (e) => internal.push(e) })
+    const t = makeFakeTerm('p')
+    const w = sch.attach('p', { write: t.write, classify: () => 'visible' })
+    w(text(200_000)) // armed: a frame and a timer are pending
+    const flaky = sch.attach('flaky', { write: t.write, classify: () => 'visible', queue: queueWith(() => { throw new Error('bug') }) })
+    flaky('boom')
+    breakCancel()
+    expect(() => clock.frame()).not.toThrow() // the pass throws, and so does disarm: it fails open, and the frame callback does not throw
+    expect(sch.stats().bypassed).toBe(true)
+    expect(internal.length).toBeGreaterThan(0)
+    const writes = t.writes.length
+    expect(frames.length).toBeGreaterThan(0)
+    for (const cb of frames) expect(() => cb()).not.toThrow() // frames that arrive late (the cancel failed)
+    expect(t.writes.length).toBe(writes) // and do nothing: it has failed open
+  })
+
+  it('in pass-through a write that xterm refuses is kept, and offered again with the next write, in order', () => {
+    const r = makeRig()
+    const q = createChunkQueue()
+    let boom = false
+    const queue: ChunkQueue = {
+      get length() { return q.length }, get chunks() { return q.chunks }, get reads() { return q.reads }, get work() { return q.work },
+      push: (d) => q.push(d), restore: (x) => q.restore(x), takeAll: () => q.takeAll(), clear: () => q.clear(),
+      take: (n) => { if (boom) { boom = false; throw new Error('bug') } return q.take(n) },
+    }
+    const p = r.add('p', 'visible', { queue })
+    p.w(text(100_000))
+    boom = true
+    r.clock.frame() // fails open
+    expect(r.sch.stats().bypassed).toBe(true)
+    p.t.refuse = (_d, attempt) => attempt < 1 // xterm refuses the next write once
+    p.w('first')
+    expect(p.w.pending()).toBeGreaterThan(0) // kept
+    p.t.refuse = null
+    p.w('second')
+    expect(p.t.joined()).toBe(text(100_000) + 'firstsecond')
+    expect(p.w.pending()).toBe(0)
+  })
+
+  it('a flush that throws while failing open is reported, and the other panes are still flushed', () => {
+    const r = makeRig()
+    r.add('bad', 'visible', { queue: queueWith(() => { throw new Error('bug in take') }, () => 1) }) // always "has" a char, and cannot give it
+    const good = r.add('good', 'visible')
+    good.w(text(100_000)) // queued for the frame
+    r.clock.frame() // the pass throws on `bad`: it fails open; flushing `bad` throws again
+    expect(r.sch.stats().bypassed).toBe(true)
+    expect(good.t.joined()).toBe(text(100_000))
+    expect(r.internal.length).toBeGreaterThanOrEqual(2)
   })
 })
 

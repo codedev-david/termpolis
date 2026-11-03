@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { Terminal } from '@xterm/headless'
 import { resizeInStreamOrder, RESIZE_DRAIN_CAP_MS, type ResizeHandle, type StreamOrderDeps } from '../../src/renderer/src/lib/resizeInStreamOrder'
 import { createOutputThrottle } from '../../src/renderer/src/lib/outputThrottle'
+import { createWriteScheduler, type PaneWriter } from '../../src/renderer/src/lib/writeScheduler'
 import { readXtermPending } from '../../src/renderer/src/lib/xtermPending'
 
 // Resizing in stream order (1.54.5, plan package P3).
@@ -825,5 +826,125 @@ describe('resize in stream order: randomized interleavings on a real xterm', () 
     let violations = 0
     for (const seed of [3, 7, 11, 19, 23, 29, 31, 37]) violations += (await run(seed, 'immediate')).violations
     expect(violations).toBeGreaterThan(0)
+  })
+})
+
+// =============================================================================================
+// 5. The same safety property with the WRITE SCHEDULER as the drain (1.54.5, plan package P8)
+// =============================================================================================
+//
+// The pane's writer is the scheduler's `drained(id)` now, not the throttle's `whenDrained`. The barrier does
+// not know the difference, and this proves it on a real xterm: whatever the interleaving of output, time,
+// acks and resize requests, every frame queued when a resize was REQUESTED has been parsed by the time that
+// resize RUNS. The control resizes at once, as 1.54.4 did, and breaks it.
+
+describe('resize in stream order: the scheduler\'s drained(id) as the drain, on a real xterm', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  function prng(seed: number): () => number {
+    let a = seed >>> 0
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0
+      let t = a
+      t = Math.imul(t ^ (t >>> 15), t | 1)
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+
+  const OSC = 9997
+
+  async function run(seed: number, mode: 'barrier' | 'immediate'): Promise<{ violations: number; requests: number; applied: number; frames: number }> {
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(() => cb(), 16))
+    vi.stubGlobal('cancelAnimationFrame', (id: ReturnType<typeof setTimeout>) => clearTimeout(id))
+    const rand = prng(seed)
+    const term = makeTerm({ cols: 100, rows: 30 })
+    const parsed = new Set<number>()
+    term.parser.registerOscHandler(OSC, (payload) => { parsed.add(Number(payload)); return true })
+    const scheduler = createWriteScheduler()
+    const writer: PaneWriter = scheduler.attach('p', { write: (d, ack) => term.write(d, ack), classify: () => 'visible' })
+    let pushed = 0
+    let violations = 0
+    let requests = 0
+    let applied = 0
+    let waiting: ResizeHandle | null = null
+
+    const push = (): void => {
+      const roll = rand()
+      const len = roll < 0.25 ? 1 + Math.floor(rand() * 200)
+        : roll < 0.4 ? (rand() < 0.5 ? 8192 : 8193)
+          : roll < 0.85 ? 1000 + Math.floor(rand() * 25_000)
+            : 60_000 + Math.floor(rand() * 90_000)
+      writer(`\x1b]${OSC};${pushed}\x07` + 'y'.repeat(len) + '\r\n')
+      pushed++
+    }
+
+    const request = (): void => {
+      if (waiting && !waiting.settled) return
+      const cols = 60 + Math.floor(rand() * 80)
+      const rows = 15 + Math.floor(rand() * 25)
+      const queuedBefore = pushed
+      requests++
+      const apply = (): void => {
+        applied++
+        for (let i = 0; i < queuedBefore; i++) if (!parsed.has(i)) violations++
+        term.resize(cols, rows)
+      }
+      if (mode === 'immediate') {
+        apply()
+        return
+      }
+      waiting = resizeInStreamOrder({ flushHold: () => undefined, throttle: writer, term, apply })
+    }
+
+    for (let step = 0; step < 60; step++) {
+      const r = rand()
+      if (r < 0.55) push()
+      else if (r < 0.7) request()
+      else await vi.advanceTimersByTimeAsync(Math.floor(rand() * 60))
+    }
+    for (let i = 0; i < 400 && (vi.getTimerCount() > 0 || (waiting && !waiting.settled)); i++) await vi.advanceTimersByTimeAsync(50)
+    let drained = false
+    term.write('', () => { drained = true })
+    for (let i = 0; i < 200 && !drained; i++) await vi.advanceTimersByTimeAsync(20)
+    expect(drained).toBe(true)
+    const out = { violations, requests, applied, frames: pushed }
+    scheduler.dispose()
+    term.dispose()
+    return out
+  }
+
+  for (const seed of [3, 7, 11, 19, 23, 29, 31, 37]) {
+    it(`seed ${seed}: every frame queued before a request is parsed before it runs, and each request runs exactly once`, async () => {
+      const o = await run(seed, 'barrier')
+      expect(o.requests).toBeGreaterThan(0)
+      expect(o.violations).toBe(0)
+      expect(o.applied).toBe(o.requests)
+    })
+  }
+
+  it('NEGATIVE CONTROL: resizing at once (1.54.4) breaks the property in at least one of the same schedules', async () => {
+    let violations = 0
+    for (const seed of [3, 7, 11, 19, 23, 29, 31, 37]) violations += (await run(seed, 'immediate')).violations
+    expect(violations).toBeGreaterThan(0)
+  })
+
+  it('a pane that goes away while the resize waits: the wait is dropped, apply never runs (the pty is going away too)', async () => {
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => setTimeout(() => cb(), 16))
+    vi.stubGlobal('cancelAnimationFrame', (id: ReturnType<typeof setTimeout>) => clearTimeout(id))
+    const term = makeTerm({ cols: 100, rows: 30 })
+    const scheduler = createWriteScheduler()
+    const writer = scheduler.attach('p', { write: (d, ack) => term.write(d, ack), classify: () => 'visible' })
+    writer('z'.repeat(500_000))
+    const apply = vi.fn()
+    const h = resizeInStreamOrder({ flushHold: () => undefined, throttle: writer, term, apply, capMs: 600_000 })
+    expect(h.settled).toBe(false)
+    h.cancel() // what the pane's cleanup does through the fitter
+    writer.detach()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(apply).not.toHaveBeenCalled()
+    scheduler.dispose()
+    term.dispose()
   })
 })

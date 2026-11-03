@@ -20,9 +20,11 @@ import { reportFailure } from './reportFailure'
  *   2. Priority: one pass per frame serves the focused terminal first, then the other visible panes, then the
  *      hidden ones. The focused terminal is bounded by its own cap only.
  *   3. The pool: what the others are handed is the leftover of two budgets, the chars in flight in ALL terminals
- *      (the pool: the focused terminal's own backlog comes off it, so the more the focused terminal has ahead of
- *      it the less anybody else may add in front of its slices) and the chars one frame may hand over. Nothing
+ *      (the pool: what the focused terminal has in flight comes off it, so the more it has ahead of its next
+ *      slices the less anybody else may add in front of them) and the chars one frame may hand over. Nothing
  *      is timed: a slow thread shows up as acks that come late, the pool stays full, and the others wait.
+ *      (A focused terminal that is only waiting out a refusal's back-off has little in flight and rations
+ *      nobody: a stuck terminal must not punish the others.)
  *   4. Typing: while a key was typed in the last 300 ms the slices, caps, pool and frame budget all shrink (the
  *      focused terminal hands over 16 KB at a time, so xterm yields often) and the focused terminal refills the
  *      moment xterm acks. A terminal with data waiting is still handed a starvation slice at least every
@@ -358,8 +360,8 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
    * is scaled up to match, so a window nobody is looking at does not drain a tenth as fast as one that is.
    */
   function onTick(viaTimer: boolean): void {
-    disarm()
     try {
+      disarm()
       counters.ticks++
       if (viaTimer) counters.timerTicks++
       serveAll(clock.now(), viaTimer)
@@ -500,7 +502,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
 
   /** Hand `p` up to `limit` chars, as far as its in-flight room goes. Returns the chars handed. */
   function servePane(p: PaneState, cls: PaneClass, typing: boolean, limit: number): number {
-    if (p.serving || p.detached || p.queue.length === 0) return 0
+    if (p.serving) return 0 // re-entrant: a write handler pushed to its own pane while this hand-over runs; the loop below picks it up
     const now = clock.now()
     if (p.retryAt > now) return 0
     const cap = (typing ? limits.inflightTyping : limits.inflight)[cls]
@@ -546,11 +548,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
     }
 
     let handedFocused = 0
-    let focusedWaiting = 0
-    for (const p of focusedList) {
-      handedFocused += servePane(p, 'focused', typing, Number.POSITIVE_INFINITY)
-      focusedWaiting += p.queue.length
-    }
+    for (const p of focusedList) handedFocused += servePane(p, 'focused', typing, Number.POSITIVE_INFINITY)
 
     if (visibleList.length === 0 && hiddenList.length === 0) return
     visibleList.sort(byLeastRecentlyServed)
@@ -559,7 +557,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
     // what is left of the pool once everything already in flight, the focused terminal's included, is counted.
     // (An ack that lands during the pass only makes `inflightTotal` an over-estimate.)
     let budget = Math.max(0, (typing ? limits.frameBudgetTyping : limits.frameBudget) * scale - handedFocused)
-    let pool = Math.max(0, (typing ? limits.poolTyping : limits.pool) * scale - inflightTotal - handedFocused - focusedWaiting)
+    let pool = Math.max(0, (typing ? limits.poolTyping : limits.pool) * scale - inflightTotal - handedFocused)
     let rationed = false
     for (let k = 0; k < 2; k++) {
       const list = k === 0 ? visibleList : hiddenList
@@ -682,10 +680,11 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
     if (p.detached) return
     p.detached = true
     p.epoch++
+    p.inflight = 0
     p.queue.clear()
     for (const w of p.waiters) clock.clearTimer(w.timer)
     p.waiters.length = 0
-    if (panes.get(p.id) === p) panes.delete(p.id)
+    panes.delete(p.id) // a pane is replaced by detaching it first (attach), so the entry is this pane's
     if (typedId === p.id) typedId = undefined
   }
 
