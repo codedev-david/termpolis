@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+import * as fs from 'fs'
+import * as path from 'path'
 import { FORGET_FROM, OutputFanout, formatGapMarker, type DrainedChunk } from '../../src/main/remoteBridge/outputFanout'
 import { ScreenFlattener } from '../../src/main/remoteBridge/screenFlattener'
 
@@ -687,6 +689,25 @@ describe('collapsing a lagging queue changes nothing the phone shows', () => {
   }
 
   const PHONE_CAP = 200_000
+
+  it('models the phone that ships, not a copy that has drifted from it', () => {
+    // `onPhone` below is the rule the 1.1.0 app in people's hands runs, copied because that module imports
+    // react-native. The property is only worth anything while the copy IS that rule, so the source is read
+    // and the lines it is made of are held against it -- the same guard remoteBlankTerminal.test.ts keeps.
+    const store = fs
+      .readFileSync(path.join(__dirname, '../../mobile/src/state/remoteStore.ts'), 'utf8')
+      .replace(/\s+/g, ' ')
+    expect(PHONE_CAP).toBe(200_000)
+    expect(store).toContain('export const MAX_OUTPUT_CHARS = 200_000')
+    expect(store).toContain("const gap = c.missed > 0 && c.marker !== null ? c.marker : ''")
+    expect(store).toContain(
+      'const keep = c.replaceFrom === null ? held.length : Math.min(held.length, Math.max(0, held.length - (heldEnd - c.replaceFrom)))',
+    )
+    expect(store).toContain('const joined = held.slice(0, keep) + gap + c.chunk')
+    expect(store).toContain(
+      'outputEnd[c.terminalId] = c.replaceFrom === null ? heldEnd + c.missed + c.chunk.length : c.replaceFrom + c.chunk.length',
+    )
+  })
 
   function onPhone(chunks: DrainedChunk[], from: Copy = { text: '', end: 0 }): Copy {
     let { text, end } = from

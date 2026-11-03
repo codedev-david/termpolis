@@ -2404,6 +2404,49 @@ describe('a phone that comes back', () => {
     expect(b.room.sent).toEqual([])
   })
 
+  it('leaves everything as it was when the emulator cannot give a screen, and throws nothing', async () => {
+    // Fail open: the screen is a better way to catch a phone up, never the only one.
+    const real = new ScreenFlattener()
+    let broken = false
+    const h = core([device('d1')], {
+      flattener: {
+        feed: (id, raw, size) => real.feed(id, raw, size),
+        snapshot: (id) => {
+          if (broken) throw new Error('emulator gave up')
+          return real.snapshot(id)
+        },
+        forget: (id) => real.forget(id),
+        forgetAll: () => real.forgetAll(),
+        liveRegion: (id) => real.liveRegion(id),
+      },
+    })
+    attach(h.rooms[0])
+    await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+    const tui = new Tui()
+    const send = async (lines: string[], reset = false): Promise<void> => {
+      h.c.handleHostMessage({
+        kind: 'terminalOutput',
+        terminalId: 't1',
+        slice: { output: tui.frame(lines), nextOffset: 0, missed: 0 },
+        size: { cols: 60, rows: 40 },
+        ...(reset ? { reset: true } : {}),
+      })
+      await h.c.settled()
+    }
+    await send(panel(0), true)
+    const kept = onPhone(chunksIn(h.rooms[0]))
+    h.rooms[0].state = 'offline'
+    h.rooms[0].sent.length = 0
+    broken = true
+    // More than the sixteen a queue is held to: the collapse asks for a screen, is refused, and the
+    // queue is what it always was.
+    for (let tick = 1; tick <= 20; tick += 1) await send(panel(tick))
+    expect(() => attach(h.rooms[0])).not.toThrow()
+    expect(chunksIn(h.rooms[0]).length).toBeGreaterThanOrEqual(20)
+    broken = false
+    expect(onPhone(chunksIn(h.rooms[0]), kept).text).toBe(real.snapshot('t1')!.text)
+  })
+
   it('loses the history above the screen, as a phone opening a watched terminal does today', async () => {
     // The honest limit: it keeps the 32 KB tail the bridge keeps, and no more. What it is shown is exactly
     // what a phone that opens the terminal NOW is shown.
@@ -2729,6 +2772,74 @@ describe('a frame the link lost', () => {
       b.clock.advance(QUIET_MS)
       expect(b.room.sent).toHaveLength(1)
     })
+  })
+})
+
+describe('the quiet watch is an extra: it comes after the pump', () => {
+  /** A clock that cannot give its first `refuse` intervals (a throw, as a timer that cannot be had would
+   *  be), noting how many payloads the phone had been sent each time it was asked for one. */
+  function wary(refuse: number) {
+    const clock = manualClock()
+    const give = clock.setInterval.bind(clock)
+    const asked: number[] = []
+    let phone: { sent: unknown[] } | null = null
+    clock.setInterval = (fn, ms) => {
+      asked.push(phone === null ? -1 : phone.sent.length)
+      if (asked.length <= refuse) throw new Error('no timer to be had')
+      return give(fn, ms)
+    }
+    return {
+      clock,
+      asked,
+      /** A phone watching t1, and the bridge it is on. */
+      async bridge(options: { resync?: boolean } = {}) {
+        const h = core([device('d1')], { clock, resync: options.resync })
+        phone = h.rooms[0]
+        attach(h.rooms[0])
+        await h.c.handleRemoteRequest('d1', { id: 1, request: { kind: 'subscribe', terminalId: 't1' } })
+        return h
+      },
+    }
+  }
+
+  async function slice(h: Awaited<ReturnType<ReturnType<typeof wary>['bridge']>>, output: string): Promise<void> {
+    h.c.handleHostMessage({ kind: 'terminalOutput', terminalId: 't1', slice: { output, nextOffset: output.length, missed: 0 } })
+    await h.c.settled()
+  }
+
+  it('sends the slice before it so much as asks the clock for an interval', async () => {
+    const w = wary(0)
+    const h = await w.bridge()
+    const before = h.rooms[0].sent.length
+    await slice(h, 'hello')
+    // Asked once -- and by then the phone had already been sent what the slice drew.
+    expect(w.asked).toHaveLength(1)
+    expect(w.asked[0]).toBeGreaterThan(before)
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello')
+  })
+
+  it('sends the slice even when the clock cannot give an interval, and asks again with the next one', async () => {
+    const w = wary(1)
+    const h = await w.bridge()
+    await slice(h, 'hello')
+    // The refusal went where every failure in that chain goes, and after the phone had its slice.
+    expect(w.asked).toHaveLength(1)
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello')
+    expect(w.clock.armed()).toBe(0)
+    // Nothing is left believing it is armed: the next slice asks again, and gets one.
+    await slice(h, ' world')
+    expect(w.asked).toHaveLength(2)
+    expect(w.clock.armed()).toBe(1)
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello world')
+  })
+
+  // NEGATIVE CONTROL: today's bridge never asks a clock for anything, so a clock that refuses cannot matter.
+  it('CONTROL: with the resync switched off the clock is never asked, and the slice is sent all the same', async () => {
+    const w = wary(1)
+    const h = await w.bridge({ resync: false })
+    await slice(h, 'hello')
+    expect(w.asked).toEqual([])
+    expect(onPhone(chunksIn(h.rooms[0])).text).toContain('hello')
   })
 })
 

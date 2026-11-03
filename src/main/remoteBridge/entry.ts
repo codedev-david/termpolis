@@ -1,7 +1,8 @@
 import { createHash } from 'crypto'
 import { DeviceRegistry } from './deviceRegistry'
 import { RequestDispatcher } from './dispatcher'
-import { OutputFanout, type DrainedChunk } from './outputFanout'
+import { OutputFanout, type DrainedChunk, type ScreenView } from './outputFanout'
+import { QuietWatch, phoneResyncDisabled, safeToRewriteLive, systemClock, type Clock } from './phoneResync'
 import { ScreenFlattener } from './screenFlattener'
 import { LocalMcpClient } from './mcpClient'
 import { localDesktopName } from './desktopName'
@@ -191,12 +192,22 @@ export interface BridgeCoreDeps {
    *  construction rather than per pairing, so a syscall cannot fail on the one
    *  code path where a phone is waiting. */
   desktopName?: string
+  /** Whether a phone is kept right when nothing tells the desktop it is wrong: one screen on
+   *  attach, one screen instead of a backlog, one rewrite once a terminal is quiet (see
+   *  phoneResync.ts). Defaults to on unless TERMPOLIS_DISABLE_PHONE_RESYNC says otherwise; `false`
+   *  is exactly the bridge as it was, which the tests keep as their control. */
+  resync?: boolean
+  /** What the quiet rewrite reads the time from. Injected in tests, which move it by hand. */
+  clock?: Clock
 }
 
 /** The part of ScreenFlattener this file uses. Named so a test can stand in for
  *  a real emulator -- there is no input that makes xterm throw on demand, and the
- *  handler's promise chain has to survive one that does. */
-export type FlattenerLike = Pick<ScreenFlattener, 'feed' | 'snapshot' | 'forget' | 'forgetAll'>
+ *  handler's promise chain has to survive one that does.
+ *
+ *  `liveRegion` is optional: a stand-in without one is simply never healed. */
+export type FlattenerLike = Pick<ScreenFlattener, 'feed' | 'snapshot' | 'forget' | 'forgetAll'> &
+  Partial<Pick<ScreenFlattener, 'liveRegion'>>
 
 export interface BridgeCore {
   handleHostMessage(msg: HostToBridge): void
@@ -278,10 +289,25 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
   const announcedSeenAt = new Map<string, number>()
   let expirySweep: ReturnType<typeof setInterval> | null = null
   let identitySecretKey = ''
-  const fanout = new OutputFanout()
+  /** See `BridgeCoreDeps.resync`. Decided once, when the bridge is built. */
+  const resyncOn = deps.resync ?? !phoneResyncDisabled()
+  const fanout = new OutputFanout(undefined, resyncOn ? { screenOf } : {})
   /** Keeps a real terminal grid per watched terminal so the phone does not have
    *  to. See screenFlattener.ts for why the phone cannot. */
   const flattener: FlattenerLike = deps.flattener ?? new ScreenFlattener()
+  /** A terminal that has printed nothing for a while has its live region written once more to every
+   *  phone watching it. Only built when the resync is on, and it arms nothing until a terminal prints. */
+  const quiet = resyncOn ? new QuietWatch(deps.clock ?? systemClock, healLive) : null
+
+  /** The whole screen of a terminal as it stands, or null when there is none to give -- or when the
+   *  emulator cannot give it, which is the same answer to every caller here: leave things as they were. */
+  function screenOf(terminalId: string): ScreenView | null {
+    try {
+      return flattener.snapshot(terminalId)
+    } catch {
+      return null
+    }
+  }
   /** Serialises flattening. Terminal bytes only mean anything in order, and
    *  xterm's write completes asynchronously, so overlapping two writes to one
    *  grid would interleave them. One chain is enough: it preserves order within
@@ -845,6 +871,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
     // Without this, output queued during an outage sits in the fan-out until the
     // next keystroke happens to flush it.
     if (state === 'attached') {
+      if (resyncOn) reseedOnAttach(deviceId)
       pump(deviceId)
       // Status is not queued the way output is -- it is a fact about the present,
       // and main only re-sends it when the answer CHANGES. A phone that spent the
@@ -853,6 +880,51 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
       // stays blank until the agent happens to move, which for an idle terminal
       // is never.
       for (const terminalId of fanout.terminalsOf(deviceId)) sendStatus(deviceId, terminalId)
+    }
+  }
+
+  /** A device that has come back is sent ONE screen per terminal it watches, and none of the edits it missed.
+   *
+   *  Nothing on the wire says what reached the phone, and a queue is a list of whole-region edits, each
+   *  measured against a copy the phone may not hold in the state it assumes -- after a tunnel, a cell
+   *  handoff or a socket that died half open. A screen replaces the copy whatever it was (it goes behind a
+   *  forget, see `FORGET_FROM`), is the same information once, and is a few KB where the backlog it stands
+   *  in for can be 262,144 chars.
+   *
+   *  The honest limit: the phone's copy is REPLACED, so the history above the screen it held is gone and it
+   *  keeps only the 32 KB tail the bridge keeps -- exactly what a phone opening a terminal somebody is
+   *  already watching is shown. No gap notice is drawn for it; a screen is not a stream with a hole in it.
+   *
+   *  A terminal the bridge holds no screen for keeps whatever is queued for it: there is nothing to draw it
+   *  from, and nothing has been flattened for it, so nothing is queued either. */
+  function reseedOnAttach(deviceId: string): void {
+    for (const terminalId of fanout.terminalsOf(deviceId)) {
+      const view = screenOf(terminalId)
+      if (view !== null) fanout.reseed(deviceId, terminalId, view)
+    }
+  }
+
+  /** The terminal has printed nothing for a while: write its live region once more to every phone watching
+   *  it that is here to take it.
+   *
+   *  A frame the link lost leaves a row wrong until something repaints it, and a terminal that has gone
+   *  quiet is by definition not going to. The rewrite is the viewport alone -- never the settled rows above
+   *  it, which are permanent and never re-sent -- anchored where it starts, so it replaces what the phone
+   *  holds of the live region and nothing before it. It heals a divergence confined to the live region.
+   *  A row the loss changed that has SINCE scrolled into the settled text is not reachable from here; that
+   *  heals at the next attach.
+   *
+   *  A device that is not attached is left for its attach, which sends a whole screen. And a copy that holds
+   *  a gap notice the rewrite would cut or misplace is left alone: the notice stays, and the copy is no worse
+   *  than it was (`safeToRewriteLive`). */
+  function healLive(terminalId: string): void {
+    const live = flattener.liveRegion?.(terminalId)
+    if (live === undefined || live === null) return
+    for (const deviceId of fanout.subscribersOf(terminalId)) {
+      if (rooms.get(deviceId)?.client.state !== 'attached') continue
+      if (!safeToRewriteLive(fanout.gapAt(deviceId, terminalId), live.replaceFrom)) continue
+      fanout.seed(deviceId, terminalId, live, false)
+      pump(deviceId)
     }
   }
 
@@ -1162,6 +1234,10 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
               replaceFrom: edit?.replaceFrom ?? (reset === true ? 0 : null),
             })
             for (const deviceId of rooms.keys()) pump(deviceId)
+            // Something went to the phones about this terminal: its quiet period starts here. AFTER the
+            // pump, so nothing the quiet watch does -- a clock that cannot be armed, say -- can keep this
+            // slice from the phones. The watch is an extra; the slice is the job.
+            quiet?.touch(terminalId)
           })
           .catch(() => {
             // A terminal whose emulator threw must not take the bridge with it.
@@ -1215,6 +1291,7 @@ export function createBridgeCore(deps: BridgeCoreDeps): BridgeCore {
         dispatcher = null
         if (expirySweep) clearInterval(expirySweep)
         expirySweep = null
+        quiet?.stop()
         closePairingRoom()
         endJoin()
         for (const deviceId of [...rooms.keys()]) closeRoom(deviceId)

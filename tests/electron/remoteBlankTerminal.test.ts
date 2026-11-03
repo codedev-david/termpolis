@@ -561,10 +561,12 @@ describe('the neighbours of that fix', () => {
     const shown = plain(phone.output.t1)
     expect(shown).toContain('burst 11 line 399')
     expect(count(shown, 'burst 11 line 399')).toBe(1)
-    // What it was sent when it came back is one payload holding a forget and the screen behind it, not
-    // the queue it missed. (Counters, not a clock: the queue held about thirty edits of 30 KB each.)
-    expect(onAttach).toHaveLength(1)
-    expect(onAttach[0].chunks).toHaveLength(2)
+    // What it was sent when it came back is one output payload holding a forget and the screen behind it,
+    // not the queue it missed. (Counters, not a clock: the queue held about thirty edits of 30 KB each.
+    // The status the bridge replays on attach is a frame of its own, and not output.)
+    const output = onAttach.filter((p) => p.kind === 'output')
+    expect(output).toHaveLength(1)
+    expect(output[0].chunks).toHaveLength(2)
     // Nothing went out in a frame the relay would cut the connection over...
     for (const payload of sent) {
       expect(utf8Encode(JSON.stringify(payload)).length).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES)
@@ -582,7 +584,7 @@ describe('the neighbours of that fix', () => {
     const shown = plain(phone.output.t1)
     expect(shown).toContain('burst 11 line 399')
     expect(count(shown, 'burst 11 line 399')).toBe(1)
-    expect(onAttach.flatMap((p) => p.chunks).length).toBeGreaterThan(2)
+    expect(onAttach.filter((p) => p.kind === 'output').flatMap((p) => p.chunks).length).toBeGreaterThan(2)
     expect(sent.some(reportsALoss)).toBe(true)
     for (const payload of sent) {
       expect(utf8Encode(JSON.stringify(payload)).length).toBeLessThanOrEqual(MAX_PAYLOAD_BYTES)
