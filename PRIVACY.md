@@ -197,7 +197,8 @@ can ask for it back; none of it is sent to Termpolis.
   comparison is computed locally and nothing about it is sent anywhere.
 - **What it reads of the answer.** The proxy also reads each answer as it
   streams back, for Anthropic's token counts and the names of the tools the
-  model called, which is how Termpolis counts the turns that only fetched
+  model called, and for a ToolSearch call whether its query asks for
+  `retrieve_full`. That is how Termpolis counts the turns that only fetched
   shortened text and the ToolSearch calls that led to them. It keeps counts
   only, and forwards the answer to Claude Code unchanged.
 

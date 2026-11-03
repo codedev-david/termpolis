@@ -256,7 +256,7 @@ describe('the first-sight policy, the holdout and what is kept about them are di
   it('says the proxy also reads the answer as it streams back, what for, that it keeps counts only, and forwards it unchanged', () => {
     for (const [name, text] of [['PRIVACY.md', privacyProxy], ['the guide', docsProxy]] as const) {
       expect(text, name).toContain('- **What it reads of the answer.** The proxy also reads each answer as it streams back')
-      expect(text, name).toContain('for Anthropic\'s token counts and the names of the tools the model called')
+      expect(text, name).toContain('for Anthropic\'s token counts and the names of the tools the model called, and for a ToolSearch call whether its query asks for `retrieve_full`')
       expect(text, name).toContain('the turns that only fetched shortened text')
       expect(text, name).toContain('the ToolSearch calls that led to them')
       expect(text, name).toContain('It keeps counts only, and forwards the answer to Claude Code unchanged')
