@@ -1474,6 +1474,15 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
   // A row filed with no project (one the back-tagging has not reached yet) is listed under "Other saved context" while the row it
   // pairs with sits in the project block. The passage is still said once, and by the project's row: a row that is not known to be
   // this project's never takes the place of one that is, whatever it adds.
+  // The claim predicate of the unscoped gate (a row this project claims folds only into a fuller row it claims too) is not for the project-scoped
+  // list: every row of that list is this project's by the store's own judgement (it matched by key), whatever slug it is filed under (another
+  // computer's clone of the repository), so a chunk folds into the fuller chunk that begins with it there whatever the two are filed under.
+  it('folds a chunk into the fuller chunk in the project-scoped list when the two are filed under different slugs', async () => {
+    const out = (await buildContextPrimer(asked([chunk('head', HEAD, { score: 0.9 }), chunk('full', FULL, { score: 0.7, project: 'termpolis-clone' })]), { query: 'q', project: proj, now: NOW, maxSnippetChars: 2000 }))!
+    expect(rows(out)).toHaveLength(1)
+    expect(out).toContain('the release workflow writes it') // the fuller chunk, with the head's better score
+  })
+
   describe('when the two rows are filed differently, one under the project and one under none', () => {
     const untagged = (id: string, content: string, over: Partial<PrimerHit> = {}) => chunk(id, content, { project: undefined, ...over })
     const ask = (projectList: PrimerHit[], globalList: PrimerHit[]) =>
@@ -1484,6 +1493,19 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
       expect(out.match(/how do I cut a release/g)).toHaveLength(1)
       expect(out).not.toContain('the release workflow writes it') // the unfiled row's tail does not displace the project's own
       expect(out).not.toContain('Other saved context')
+    })
+
+    // The passage stored three times as it grew: the head is the project's, the middle chunk and the fuller one are filed under none. The middle
+    // one (the best-scored) folds into the fuller one, which takes its score AND its place in the ranking, so that the diversity pass, which keeps
+    // the first of two near-duplicates, reads the project's head beside it as the second. Left in the place it was stored, the fuller chunk comes
+    // after the head, the diversity pass drops it, the 0.70 it carries goes with it, and the head's own 0.41 is under the relevance cut.
+    it('keeps the passage when the best-scored middle chunk folds into the fuller one and the project\'s own head is left beside it', async () => {
+      const MIDDLE = `${HEAD}\n\nuser: and the changelog?`
+      const others = [0.92, 0.74, 0.72].map((score, i) => chunk(`o${i}`, `unrelated passage ${i}: ${Array.from({ length: 12 }, (_, j) => `w${i}x${j}`).join(' ')}`, { score }))
+      const unscoped = [...others, untagged('middle', MIDDLE, { score: 0.7 }), chunk('head', HEAD, { score: 0.41 }), untagged('full', FULL, { score: 0.26 })]
+      const out = (await buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? [] : unscoped)), { query: 'q', project: proj, limit: 4, now: NOW, maxSnippetChars: 2000 }))!
+      expect(rows(out)).toHaveLength(4)
+      expect(out.match(/how do I cut a release/g)).toHaveLength(1)
     })
 
     it('says it once, by the project\'s row, when only the fuller chunk is filed under the project', async () => {
