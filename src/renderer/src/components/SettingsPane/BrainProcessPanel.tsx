@@ -17,22 +17,42 @@
 // bug report, and because the panel reads once and never again, it stayed on screen for the rest of
 // the session while the brain ran perfectly well in its own process the whole time.
 //
+// v1.54.5 — and a fourth state, 'unavailable'. Above a store-size limit a memory host that cannot serve
+// is NOT replaced by loading the store on the main thread (that load froze typing for seconds): memory
+// is simply unavailable and the host is retried in the background. That is neither "its own process"
+// nor "the main thread", and calling it either would be a lie, so it has its own plain sentence. It is
+// transitional like 'starting', so it is probed the same bounded way until memory is back.
+//
 // One IPC call on mount and on Refresh. Two in-memory reads in main. The ONLY timer is the bounded
-// re-probe below, which exists solely to leave the transitional state — it is not the v1.25.16
+// re-probe below, which exists solely to leave a transitional state — it is not the v1.25.16
 // steady-state poll this file was written to avoid, and it stops itself the moment the mode settles.
 import { useEffect, useState } from 'react'
 
-type Mode = 'host' | 'starting' | 'inproc' | 'unstarted'
+type Mode = 'host' | 'starting' | 'inproc' | 'unstarted' | 'unavailable'
 
 interface HostStatus {
   mode: Mode
   pid: number | null
+  // Present only while mode is 'unavailable'; every one is optional (an older main sends none of them).
+  attempt?: number
+  retrying?: boolean
+  retryInMs?: number | null
+  storeMB?: number | null
+  limitMB?: number
+  reason?: string
 }
 
-/** How often to re-ask while the child is still coming up, and for how long. The client gives the
- *  host 120 s to report ready and will respawn up to 3 times before giving up, so the probe has to
- *  outlast that or it would park on 'starting' and become a new, quieter lie. It ends immediately on
- *  any settled mode — the cap is only there so a wedged state can never poll forever. */
+/** A wait the way a person says it: "a moment", "45 s", "5 min". */
+function waitText(ms: number): string {
+  if (ms < 1000) return 'a moment'
+  if (ms <= 89_000) return `${Math.round(ms / 1000)} s`
+  return `${Math.round(ms / 60_000)} min`
+}
+
+/** How often to re-ask while the child is still coming up (or being retried), and for how long. The
+ *  client gives the host 120 s to report ready and will respawn up to 3 times before giving up, so the
+ *  probe has to outlast that or it would park on 'starting' and become a new, quieter lie. It ends
+ *  immediately on any settled mode — the cap is only there so a wedged state can never poll forever. */
 const PROBE_MS = 2000
 const MAX_PROBES = 300 // 10 minutes
 
@@ -59,7 +79,7 @@ export function BrainProcessPanel({ refreshToken }: { refreshToken: number }): J
         if (res.success && res.data) {
           setStatus(res.data)
           setError(null)
-          if (res.data.mode === 'starting' && probe < MAX_PROBES) {
+          if ((res.data.mode === 'starting' || res.data.mode === 'unavailable') && probe < MAX_PROBES) {
             timer = setTimeout(() => { if (!cancelled) setProbe((p) => p + 1) }, PROBE_MS)
           }
         } else setError(res.error ?? 'could not read the memory process status')
@@ -77,10 +97,42 @@ export function BrainProcessPanel({ refreshToken }: { refreshToken: number }): J
   }
   if (!status) return null
 
-  // Three states, not two. The fallback is the whole reason this panel exists, so it does not get to
-  // look like a footnote — but neither does a healthy launch get to wear the fallback's clothes.
+  // Four states, not two. The fallback is the whole reason this panel exists, so it does not get to
+  // look like a footnote — but neither does a healthy launch get to wear the fallback's clothes, and
+  // 'unavailable' (nothing is serving at all) must not be passed off as the main-thread fallback.
+  const unavailable = status.mode === 'unavailable'
   const starting = status.mode === 'starting'
-  const degraded = !starting && status.mode !== 'host'
+  const degraded = !starting && !unavailable && status.mode !== 'host'
+
+  if (unavailable) {
+    const next = status.retrying
+      ? 'Trying again now.'
+      : typeof status.retryInMs === 'number' ? `Next try in ${waitText(status.retryInMs)}.` : null
+    return (
+      <div
+        data-testid="brain-process-panel"
+        data-mode="unavailable"
+        className="rounded border px-3 py-2 border-[#f48771] bg-[#f4877114]"
+      >
+        <div className="flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-[#f48771] animate-pulse" />
+          <span className="text-xs font-semibold text-[#f48771]">Memory is unavailable, retrying</span>
+        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-[#999]">
+          Memory&rsquo;s own process is not running
+          {typeof status.storeMB === 'number' && typeof status.limitMB === 'number' ? (
+            <>, and your store ({status.storeMB} MB) is larger than the {status.limitMB} MB limit</>
+          ) : null}
+          . Loading a large store on the <strong className="text-[#ccc]">main thread</strong> would freeze this window
+          and your typing for seconds, so Termpolis keeps retrying in the background instead. Until it is back,
+          memory searches and saves report an error rather than an empty result. Your saved memories are untouched.
+          {typeof status.attempt === 'number' ? <> Attempt {status.attempt}.</> : null}
+          {next ? <> {next}</> : null}
+          {status.reason ? <> Last problem: {status.reason}</> : null}
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div

@@ -518,7 +518,18 @@ export interface TermpolisAPI {
   /** Where the memory store is running. Two in-memory reads in main — no work, no disk. Read on tab
    *  open and on Refresh; the ONLY timer allowed against it is the bounded re-probe that leaves the
    *  transitional 'starting' state, which stops itself as soon as the mode settles. */
-  memoryHostStatus: () => Promise<IpcResponse<{ mode: 'host' | 'starting' | 'inproc' | 'unstarted'; pid: number | null }>>
+  memoryHostStatus: () => Promise<IpcResponse<{
+    mode: 'host' | 'starting' | 'inproc' | 'unstarted' | 'unavailable'
+    pid: number | null
+    /** Only while mode is 'unavailable' (v1.54.5): the store is too big to load on the main thread, the
+     *  host is down, and a retry is pending or running. All of these are optional: an older main sends none. */
+    attempt?: number
+    retrying?: boolean
+    retryInMs?: number | null
+    storeMB?: number | null
+    limitMB?: number
+    reason?: string
+  }>>
   /** Vector count + what those vectors cost as float32 vs int8. One-shot: read on tab open and on
    *  Refresh, NEVER on a timer. Carries no process health — the instrument that did was the freeze. */
   memoryGetVectorRam: () => Promise<IpcResponse<VectorRamInfo>>

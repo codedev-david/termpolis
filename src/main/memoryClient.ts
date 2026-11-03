@@ -9,6 +9,14 @@
 // without a real fork, and any spawn/init failure degrades silently to the in-process module rather
 // than taking the app down.
 //
+// v1.54.5 — "degrades to the in-process module" has a limit. Loading the store on the main thread is
+// synchronous (4.3 s on a 475 MB store, up to 18.8 s with the index rebuild), on the thread that
+// paints the window and echoes every keystroke, and a CPU-starved machine makes a slow or failed host
+// start an ordinary event. So above a size limit (memoryFallbackGuard: 256 MB, tunable, with a kill
+// switch) the client stays OFF the main thread: mode 'unavailable', every call refused with an honest
+// error, and the host retried in the background on a capped exponential backoff. Below the limit
+// nothing changes.
+//
 // ── The three things that are NOT a mechanical port ───────────────────────────────────────────────
 //
 // 1. THE SCRUB BOUNDARY (security).  setMemoryScrubber(fn) installs a CALLBACK that redacts secrets
@@ -62,6 +70,10 @@ import type { ConsolEntry } from './mnemeConsolidate'
 import type { WeaveEntry, WeaveNeighbour } from './mnemeWeave'
 import type { CodeRef } from './codeGraph'
 import { killUtility } from './utilityKill'
+import {
+  resolveInprocGuard, measureMemoryStoreBytes, retryDelayMs, retryReadyTimeoutMs, RETRY_CAP_MS,
+  unavailableMessage, setMemoryUnavailableState,
+} from './memoryFallbackGuard'
 
 // ── Transport seam ───────────────────────────────────────────────────────────────────────────────
 // Deliberately NOT Electron's UtilityProcess type: keeping the surface to four methods is what lets
@@ -93,7 +105,9 @@ const CALL_TIMEOUT_MS = 60_000
 const MAX_RESTARTS = 3           // within RESTART_WINDOW_MS, then we stop flapping and go in-process
 const RESTART_WINDOW_MS = 60_000
 
-type Mode = 'unstarted' | 'starting' | 'host' | 'inproc'
+// 'unavailable' (v1.54.5): the host is not running, the store is too big to load on the main thread,
+// and a retry is pending or running. Calls are refused (never answered from an unloaded store).
+type Mode = 'unstarted' | 'starting' | 'host' | 'inproc' | 'unavailable'
 
 interface Pending {
   fn: string
@@ -117,10 +131,65 @@ let secretsRedacted = 0
 // nothing falls back to loading the store on the main thread, while the app is trying to exit.
 let stopped = false
 
+// ── v1.54.5: the in-process fallback guard ───────────────────────────────────────────────────────
+type StoreSizeProbe = (userDataPath: string, syncDir: string | null) => Promise<number | null> | number | null
+
+/** P13's hook: asked when a retry is due. Returns how many ms to wait before asking again; 0 (or
+ *  anything that is not a positive number) means go. See setMemoryRetryGovernor. */
+export type MemoryRetryGovernor = (ctx: { attempt: number }) => number
+
+/** A hung share (a sync folder that went offline) must not hold the verdict, and every call queued
+ *  behind it, hostage. */
+const STORE_PROBE_TIMEOUT_MS = 3_000
+
+let storeSizeProbe: StoreSizeProbe = measureMemoryStoreBytes
+let storeSize: { key: string; bytes: number | null } | undefined // the last answer, per store location
+let storeProbe: { key: string; promise: Promise<number | null> } | null = null
+let retryGovernor: MemoryRetryGovernor | null = null
+let retryTimer: ReturnType<typeof setTimeout> | null = null
+let nextRetryAt: number | null = null
+let retrying = false         // a retry's child is loading right now
+let startFailures = 0        // starts that failed in a row; drives the backoff
+let hostReadyAt = 0          // when the host last reported ready: tells a crash loop from a long run
+let unavailableSince = 0
+let lastReason = ''
+let lastStoreBytes: number | null = null
+let lastLimit = 0
+let clientGen = 0            // bumped by the test reset, so a continuation from a torn-down client cannot act
+
 /** Set the spawner (the app wires this to a real utilityProcess; tests inject a fake). Mirrors
  *  localEmbedder.setWorkerSpawner. With none set, startMemoryHost runs the store in-process. */
 export function setMemoryHostSpawner(fn: MemoryHostSpawner | null): void {
   spawner = fn
+}
+
+/**
+ * P13 HOOK (pull): the event-loop governor's say over WHEN an unavailable memory host is retried.
+ * When a retry is due the client calls `fn({ attempt })`; a positive answer is a number of ms to wait
+ * before it asks again (clamped to 5 minutes), anything else means "start now". A governor that
+ * throws or answers nonsense is treated as "start now": a broken governor must never be the reason
+ * memory stays down. With none set the capped exponential backoff alone decides.
+ */
+export function setMemoryRetryGovernor(fn: MemoryRetryGovernor | null): void {
+  retryGovernor = fn
+}
+
+/**
+ * P13 HOOK (push): start a retry right now, skipping the wait and the governor. Returns false, and
+ * does nothing, unless memory is unavailable with no retry already running (and the app not quitting).
+ */
+export function retryMemoryHostNow(): boolean {
+  if (stopped || mode !== 'unavailable' || retrying || !initParams) return false
+  clearRetryTimer()
+  void retryStart()
+  return true
+}
+
+/** How the size of the store on disk is measured. A seam for tests (and for a future caller with a
+ *  better answer); null restores the real probe. */
+export function setMemoryStoreSizeProbe(fn: StoreSizeProbe | null): void {
+  storeSizeProbe = fn ?? measureMemoryStoreBytes
+  storeSize = undefined
 }
 
 /** @internal test-only — tear the client back down to a virgin module. */
@@ -139,6 +208,21 @@ export function _resetMemoryClientForTests(): void {
   scrubbedWrites = 0
   secretsRedacted = 0
   stopped = false
+  // v1.54.5: a pending retry, a size already asked for, a governor — none may leak into the next test.
+  clientGen++
+  clearRetryTimer()
+  retrying = false
+  startFailures = 0
+  hostReadyAt = 0
+  unavailableSince = 0
+  lastReason = ''
+  lastStoreBytes = null
+  lastLimit = 0
+  storeSizeProbe = measureMemoryStoreBytes
+  storeSize = undefined
+  storeProbe = null
+  retryGovernor = null
+  setMemoryUnavailableState(null)
 }
 
 /** @internal test-only — undo stopMemoryHost()'s latch, for a suite that fires before-quit and
@@ -233,7 +317,14 @@ function failAllPending(reason: string): void {
 
 function fallBackToInProcess(why: string): void {
   if (stopped) return
+  // The cost of this move, in the one number that shows it: main's resident set before the load and after.
+  const rssBefore = mainRssMb()
   logLoud(`FALLBACK — running the memory store on the MAIN thread: ${why}`)
+  // Leaving 'unavailable' for good (the store turned out to be small enough after all): no retry loop
+  // may outlive the move, and the panel must stop reporting a state that no longer exists.
+  clearRetryTimer()
+  retrying = false
+  setMemoryUnavailableState(null)
   transport = null
   mode = 'inproc'
   if (!initParams) return
@@ -248,8 +339,177 @@ function fallBackToInProcess(why: string): void {
     // As in the host: a rewrite that fails (or a LOCKED store refusing it) must not cost the scrubber.
     if (encKey && initParams.encKeyMinted) { try { inprocAdoptKey(encKey) } catch { /* the key is in force regardless */ } }
     if (scrubber) inprocSetScrubber(scrubber)
+    logLoud(`in-process store loaded — main rss ${rssBefore} MB -> ${mainRssMb()} MB`)
   } catch (err) {
     logLoud(`in-process memory init FAILED too: ${(err as Error)?.message}`)
+  }
+}
+
+// ── v1.54.5: above a size limit, a host that cannot serve never moves the store onto the main thread ─
+
+/** Main's resident set in whole MB: one cheap read of THIS process, not an enumeration of any other. */
+function mainRssMb(): number {
+  try { return Math.round(process.memoryUsage.rss() / (1024 * 1024)) } catch { return -1 }
+}
+
+function clearRetryTimer(): void {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
+  nextRetryAt = null
+}
+
+const storeKey = (p: HostInitMsg): string => (p.syncDir ? `sync:${p.syncDir}` : `local:${p.userDataPath}`)
+
+/** What we already know of the store's size on the location we are running on: a number, null for
+ *  "could not tell", or undefined for "not asked yet". Answered from memory, never from disk. */
+function knownStoreBytes(): number | null | undefined {
+  return initParams && storeSize && storeSize.key === storeKey(initParams) ? storeSize.bytes : undefined
+}
+
+function probeWithTimeout(p: Promise<number | null>, ms: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms)
+    ;(timer as { unref?: () => void }).unref?.()
+    p.then(
+      (v) => { clearTimeout(timer); resolve(typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null) },
+      () => { clearTimeout(timer); resolve(null) },
+    )
+  })
+}
+
+/** Ask the disk how big the store is, once per store location. Never rejects and never takes longer
+ *  than STORE_PROBE_TIMEOUT_MS (null = could not tell, and the guard then fails open). Async: not one
+ *  synchronous file call lands on the main thread. */
+function ensureStoreSize(): Promise<number | null> {
+  const p = initParams
+  if (!p) return Promise.resolve(null)
+  const key = storeKey(p)
+  if (storeSize && storeSize.key === key) return Promise.resolve(storeSize.bytes)
+  if (storeProbe && storeProbe.key === key) return storeProbe.promise
+  const gen = clientGen
+  const promise = probeWithTimeout((async () => storeSizeProbe(p.userDataPath, p.syncDir))(), STORE_PROBE_TIMEOUT_MS)
+    .then((bytes) => {
+      if (gen === clientGen) {
+        storeSize = { key, bytes }
+        if (storeProbe && storeProbe.key === key) storeProbe = null
+      }
+      return bytes
+    })
+  storeProbe = { key, promise }
+  return promise
+}
+
+/** Let go of the current child, killing it: a failed start must not leave a hung process behind (a
+ *  retry loop would stack them). */
+function abandonChild(): void {
+  const dead = transport
+  transport = null
+  try { dead?.kill() } catch { /* already gone */ }
+}
+
+/**
+ * Every way the host can fail to serve ends here. Below the limit (or with the guard switched off, or
+ * when the size cannot be read) it is exactly what it always was: load the store on the main thread.
+ * Above the limit the main thread is never asked to: the client says so, honestly, and retries.
+ *
+ * Async only because the size may not be known yet; when it is (the normal case: it was asked for
+ * beside the first spawn) the whole verdict runs synchronously, in the same turn as the failure. Every
+ * caller keeps the client from answering in between, by holding readyPromise on this promise.
+ */
+async function fallBack(why: string): Promise<void> {
+  if (stopped) return
+  const gen = clientGen
+  const guard = resolveInprocGuard()
+  if (guard.enabled && initParams) {
+    let bytes = knownStoreBytes()
+    if (bytes === undefined) {
+      bytes = await ensureStoreSize()
+      if (stopped || gen !== clientGen) return
+    }
+    if (bytes !== null && bytes > guard.maxBytes) { enterUnavailable(why, bytes, guard.maxBytes); return }
+  }
+  fallBackToInProcess(why)
+}
+
+function enterUnavailable(why: string, bytes: number, limit: number): void {
+  if (stopped) return
+  const rssBefore = mainRssMb()
+  abandonChild()
+  readyPromise = null
+  retrying = false
+  mode = 'unavailable'
+  startFailures += 1
+  if (!unavailableSince) unavailableSince = Date.now()
+  lastReason = why
+  lastStoreBytes = bytes
+  lastLimit = limit
+  const delay = retryDelayMs(startFailures)
+  logLoud(
+    `UNAVAILABLE — ${why}. The store is ${Math.round(bytes / (1024 * 1024))} MB, above the ${Math.round(limit / (1024 * 1024))} MB limit for ` +
+    `loading it on the main thread, so it is NOT loaded there: memory calls are refused until the host is back ` +
+    `(main rss ${rssBefore} MB -> ${mainRssMb()} MB). Retry ${startFailures} in ${Math.round(delay / 1000)} s`,
+  )
+  scheduleRetry(delay)
+}
+
+/** Tell the Settings panel (through the guard module's small record) what state we are in. */
+function publishUnavailable(): void {
+  if (mode !== 'unavailable') { setMemoryUnavailableState(null); return }
+  setMemoryUnavailableState({
+    attempt: startFailures, nextRetryAt, retrying,
+    storeBytes: lastStoreBytes, limitBytes: lastLimit, reason: lastReason, since: unavailableSince,
+  })
+}
+
+function scheduleRetry(delayMs: number): void {
+  if (retryTimer) clearTimeout(retryTimer)
+  nextRetryAt = Date.now() + delayMs
+  const timer = setTimeout(onRetryTimer, delayMs)
+  // A pending retry must never be what keeps a quitting process (or a test worker) alive.
+  ;(timer as { unref?: () => void }).unref?.()
+  retryTimer = timer
+  publishUnavailable()
+}
+
+function onRetryTimer(): void {
+  retryTimer = null
+  nextRetryAt = null
+  if (stopped || mode !== 'unavailable' || retrying) return
+  // P13 hook: the governor may say "not now". A broken governor must never keep memory down.
+  let wait = 0
+  if (retryGovernor) {
+    try { wait = Number(retryGovernor({ attempt: startFailures })) } catch { wait = 0 }
+  }
+  if (Number.isFinite(wait) && wait > 0) { scheduleRetry(Math.min(wait, RETRY_CAP_MS)); return }
+  void retryStart()
+}
+
+/**
+ * One more try at the memory host, in the background. The mode stays 'unavailable' until the child
+ * reports ready, so calls keep failing fast instead of queuing behind a start that may take minutes.
+ * A retry is given longer than the last to load (a starved machine needs it); a failure goes back
+ * through fallBack(), which re-judges the store as it is now and schedules the next, longer, wait.
+ */
+async function retryStart(): Promise<void> {
+  if (stopped || mode !== 'unavailable' || retrying || !initParams) return
+  const gen = clientGen
+  const attemptNo = startFailures
+  retrying = true
+  nextRetryAt = null
+  storeSize = undefined // judge a failure of THIS try against the store as it is now
+  publishUnavailable()
+  logLoud(`retry ${attemptNo}: starting the memory host again`)
+  try {
+    await spawnAndInit({ timeoutMs: retryReadyTimeoutMs(READY_TIMEOUT_MS, attemptNo), keepMode: true })
+    if (stopped || gen !== clientGen) return
+    retrying = false
+    unavailableSince = 0
+    publishUnavailable() // the mode is 'host' now, so this clears the record
+    logLoud(`memory is back after ${attemptNo} failed start${attemptNo === 1 ? '' : 's'}: the store is OFF the main thread again`)
+  } catch (err) {
+    if (stopped || gen !== clientGen) return
+    abandonChild()
+    retrying = false
+    await fallBack(`retry ${attemptNo} failed: ${(err as Error)?.message}`)
   }
 }
 
@@ -264,7 +524,11 @@ function onChildMessage(msg: HostResponse): void {
   else p.reject(rehydrate(msg.error, `memory host: ${p.fn} failed`))
 }
 
-function onChildExit(code: number): void {
+function onChildExit(code: number, from?: MemoryHostTransport): void {
+  // v1.54.5: an exit from a child that is no longer THE child (a failed start we abandoned, whose exit
+  // lands after the next retry began) must not touch the child that replaced it: it would null the
+  // live transport and make the retry's own 'ready' look like a start that was stopped.
+  if (from && transport !== null && transport !== from) return
   const wasHost = mode === 'host'
   transport = null
   readyPromise = null
@@ -277,10 +541,16 @@ function onChildExit(code: number): void {
   // (b) respawn — but do not flap. A child that dies on init (bad key, corrupt store) would
   // otherwise restart forever, and the app would look alive while every call failed.
   const now = Date.now()
+  // A host that ran a full restart window before it died is a fresh episode, not a crash loop: the
+  // next failure starts the retry backoff over instead of climbing from where the last one stopped.
+  if (now - hostReadyAt >= RESTART_WINDOW_MS) startFailures = 0
   restartTimes.push(now)
   while (restartTimes.length > 0 && now - restartTimes[0] > RESTART_WINDOW_MS) restartTimes.shift()
   if (restartTimes.length > MAX_RESTARTS) {
-    fallBackToInProcess(`host crashed ${restartTimes.length}x in ${RESTART_WINDOW_MS / 1000}s`)
+    // 'starting' until the verdict is in, and readyPromise held on it: a call that arrives while the
+    // store's size is still being read waits for the answer instead of reaching a store nobody loaded.
+    mode = 'starting'
+    readyPromise = fallBack(`host crashed ${restartTimes.length}x in ${RESTART_WINDOW_MS / 1000}s`)
     return
   }
   logLoud(`host exited (code ${code}) — respawning (${restartTimes.length}/${MAX_RESTARTS})`)
@@ -288,13 +558,22 @@ function onChildExit(code: number): void {
   // child reloads the same store from disk. Only genuinely in-flight calls are lost, and those
   // rejected loudly in (a).
   readyPromise = spawnAndInit().catch((err) => {
-    fallBackToInProcess(`respawn failed: ${(err as Error)?.message}`)
+    abandonChild() // a respawn that hung is killed, not left running beside whatever takes over
+    return fallBack(`respawn failed: ${(err as Error)?.message}`)
   })
 }
 
-async function spawnAndInit(): Promise<void> {
+interface SpawnOptions {
+  /** How long this start may take to report ready (default READY_TIMEOUT_MS). */
+  timeoutMs?: number
+  /** Leave the mode alone until the child is really ready (a background retry stays 'unavailable'). */
+  keepMode?: boolean
+}
+
+async function spawnAndInit(opts: SpawnOptions = {}): Promise<void> {
   if (!initParams) throw new Error('memory client: no init params')
   if (!spawner) throw new Error('memory client: no spawner set')
+  const timeoutMs = opts.timeoutMs ?? READY_TIMEOUT_MS
   // v1.38.2 — 'starting' is NOT cosmetic. The child can take a minute to come up on a large store
   // (a 3.2 GB shard set is decrypted and parsed before it reports ready), and for that whole window
   // the mode used to read 'unstarted' — which the Memory & Learning panel renders with the copy
@@ -302,7 +581,11 @@ async function spawnAndInit(): Promise<void> {
   // thread". That is a lie told at exactly the moment a user opens the tab after launch, and the
   // panel never re-reads, so the lie sticks for the rest of the session. Startup and failure are
   // different states, so they get different names.
-  mode = 'starting'
+  //
+  // v1.54.5: a background RETRY keeps the mode at 'unavailable' until its child is really ready. That is
+  // the honest name for it (nothing can be served yet), and it keeps calls failing fast instead of
+  // queuing behind a start that is allowed several minutes.
+  if (!opts.keepMode) mode = 'starting'
   const t = spawner()
   if (!t) throw new Error('memory client: spawner returned null')
   transport = t
@@ -312,8 +595,8 @@ async function spawnAndInit(): Promise<void> {
     const timer = setTimeout(() => {
       if (settled) return
       settled = true
-      reject(new Error(`memory host did not report ready within ${READY_TIMEOUT_MS}ms`))
-    }, READY_TIMEOUT_MS)
+      reject(new Error(`memory host did not report ready within ${timeoutMs}ms`))
+    }, timeoutMs)
 
     t.onMessage((msg: HostResponse) => {
       if (!settled && msg?.kind === 'ready' && transport !== t) {
@@ -331,6 +614,7 @@ async function spawnAndInit(): Promise<void> {
         settled = true
         clearTimeout(timer)
         mode = 'host'
+        hostReadyAt = Date.now()
         logLoud(`store is OFF the main thread — utilityProcess pid ${msg.pid}, ${msg.entries} entries`)
         resolve()
         return
@@ -350,7 +634,7 @@ async function spawnAndInit(): Promise<void> {
         reject(new Error(`memory host exited during startup (code ${code})`))
         return
       }
-      onChildExit(code)
+      onChildExit(code, t)
     })
 
     try {
@@ -365,6 +649,9 @@ async function spawnAndInit(): Promise<void> {
  * Bring the memory store up. Resolves once it is serving — in the child if we could fork one, in
  * this process if we could not. Never rejects: a memory store that fails to start must not take the
  * terminal down with it.
+ *
+ * v1.54.5: "in this process" has a size limit. A store above it is NOT loaded on the main thread when
+ * the child cannot serve: this resolves 'unavailable' and the child is retried in the background.
  */
 export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mode> {
   if (stopped) return mode
@@ -385,17 +672,29 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
     osEncryptionAvailable: isOsEncryptionAvailable(),
   }
 
+  // A fresh start is a fresh episode: nothing from an earlier one (a retry timer, a backoff step) carries over.
+  clearRetryTimer()
+  retrying = false
+  startFailures = 0
+  unavailableSince = 0
+  setMemoryUnavailableState(null)
+
   if (opts.inProcess || !spawner) {
+    // Asked for, or nothing could ever start a host (and so nothing could ever retry one): in-process.
     fallBackToInProcess(opts.inProcess ? 'explicitly requested' : 'no utilityProcess spawner wired')
     return mode
   }
-  readyPromise = spawnAndInit()
-  try {
-    await readyPromise
-  } catch (err) {
-    try { transport?.kill() } catch { /* already gone */ }
-    fallBackToInProcess(`could not start the memory host: ${(err as Error)?.message}`)
-  }
+  // How big is the store? Asked for NOW, beside the spawn and not before it (the spawn below is still
+  // synchronous), so that if the child fails the verdict does not have to wait for the disk.
+  const sized = ensureStoreSize()
+  // Held on the verdict too (fallBack), not just on the spawn: a call that arrives while the size is
+  // still being read must wait for it, not be answered from a store nobody has loaded.
+  readyPromise = spawnAndInit().catch(async (err) => {
+    abandonChild()
+    await fallBack(`could not start the memory host: ${(err as Error)?.message}`)
+  })
+  try { await readyPromise } catch { /* fallBack does not throw; the mode below says what happened */ }
+  await sized // never rejects, and is bounded: a healthy start still returns once the size is known
   return mode
 }
 
@@ -405,6 +704,11 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
  */
 export function stopMemoryHost(): void {
   stopped = true
+  // v1.54.5: a pending retry must not start a child in the middle of the quit, and the panel's record
+  // must not outlive the thing it describes.
+  clearRetryTimer()
+  retrying = false
+  setMemoryUnavailableState(null)
   try { transport?.kill() } catch { /* already gone */ }
   transport = null
   readyPromise = null
@@ -441,6 +745,10 @@ async function call<T>(fn: string, args: unknown[] = []): Promise<T> {
   if (mode === 'unstarted') {
     throw new Error(`memory client: startMemoryHost() has not been called (fn "${fn}")`)
   }
+  // v1.54.5: the host is down and the store is too big to load here. REFUSE, with fixed text an agent
+  // can recognise: falling through to inprocCall would run the handler against a store nobody
+  // initialised and answer "0 memories" — the lie this whole module exists to prevent.
+  if (mode === 'unavailable') throw new Error(unavailableMessage())
   if (mode !== 'host' || !transport) return (await inprocCall(fn, args)) as T
 
   const t = transport
@@ -734,7 +1042,11 @@ export type {
  *  `import.meta.url`, not `__dirname`: package.json is `"type": "module"` and the built main bundle
  *  is real ESM, where __dirname does not exist. Same resolution embedWorker.resolveWorkerPath uses. */
 export function resolveMemoryHostPath(): string {
-  return fileURLToPath(new URL('./memoryHost.js', import.meta.url))
+  // e2e seam (v1.54.5, e2e/memory-host-unavailable.spec.ts): lets a real-Electron spec point the memory
+  // process at a script that dies at once, to watch the "unavailable" state in the real app. Unset in
+  // every real run, like TERMPOLIS_TEST_SHIM_DIR.
+  const override = process.env.TERMPOLIS_TEST_MEMORY_HOST_PATH
+  return override || fileURLToPath(new URL('./memoryHost.js', import.meta.url))
 }
 
 /**

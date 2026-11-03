@@ -164,10 +164,10 @@ type Probe = (userDataPath: string, syncDir: string | null) => Promise<number | 
 /** Make the store look `bytes` big to the client, with no disk involved (deterministic under fake
  *  time). The seam is new in 1.54.5; it is called through a guard ONLY so that this file also RUNS on
  *  the base commit, where what fails is the behaviour under test and not a TypeError. */
-function useProbe(probe: Probe): void {
+function probeReturns(probe: Probe): void {
   ;(setMemoryStoreSizeProbe as ((p: Probe | null) => void) | undefined)?.(probe)
 }
-const storeIs = (bytes: number | null): void => useProbe(async () => bytes)
+const storeIs = (bytes: number | null): void => probeReturns(async () => bytes)
 
 const FIRST_START_FAILURES: Array<{ name: string; step: Step; advance?: number }> = [
   { name: 'the spawner returns null', step: 'null' },
@@ -286,7 +286,7 @@ describe('above the limit — a memory host that cannot serve never loads the st
     // If mode were left at host/in-process-by-default during that wait, a call would reach a store
     // nobody initialised and answer "0 memories": the one lie this module exists to prevent.
     let release!: (n: number | null) => void
-    useProbe(() => new Promise<number | null>((r) => { release = r }))
+    probeReturns(() => new Promise<number | null>((r) => { release = r }))
     const s = scripted(['exit'])
     setMemoryHostSpawner(s.spawner)
 
@@ -332,7 +332,7 @@ describe('above the limit — a memory host that cannot serve never loads the st
 
   it('a size that never comes back (a hung share) is given 3 s, then the decision fails open', async () => {
     vi.useFakeTimers()
-    useProbe(() => new Promise<number | null>(() => { /* never settles */ }))
+    probeReturns(() => new Promise<number | null>(() => { /* never settles */ }))
     setMemoryHostSpawner(scripted(['exit']).spawner)
     const started = startMemoryHost({ userDataPath: tmp })
     await vi.advanceTimersByTimeAsync(2_999)
@@ -758,7 +758,7 @@ describe('CONTROL — below the limit, with the kill switch, or with no size at 
     expect(inproc.inits).toBe(1)
 
     freshClient()
-    useProbe(async () => { throw new Error('EPERM: the folder is locked') })
+    probeReturns(async () => { throw new Error('EPERM: the folder is locked') })
     setMemoryHostSpawner(scripted(['exit']).spawner)
     expect(await startMemoryHost({ userDataPath: tmp })).toBe('inproc')
     expect(inproc.inits).toBe(1)

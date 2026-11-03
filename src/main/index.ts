@@ -271,6 +271,7 @@ import {
   vectorRamStats,
   setVectorQuantization,
 } from './memoryClient'
+import { memoryUnavailableInfo } from './memoryFallbackGuard'
 import { setSafeStorage } from './secureKeyStore'
 import { runConversationIngest } from './conversationIngest'
 import { runCodeIngest, discoverRepoFiles } from './codeIngest'
@@ -2495,7 +2496,7 @@ ipcMain.handle('memory:set-primer-limit', async (_, opts: { value: number }) => 
 // thread? The fallback is DESIGNED to be invisible (the app keeps working), which means a user
 // could run for months paying the full main-thread cost with no way to know. Surface it.
 ipcMain.handle('memory:host-status', async () => {
-  try { return ok({ mode: memoryHostMode(), pid: memoryHostPid() ?? null }) } catch (e: any) { return err(e.message) }
+  try { return ok({ mode: memoryHostMode(), pid: memoryHostPid() ?? null, ...memoryUnavailableInfo() }) } catch (e: any) { return err(e.message) }
 })
 ipcMain.handle('memory:get-vector-ram', async () => {
   // await before the spread: spreading a Promise yields {} — the panel would show a store with no
@@ -4137,6 +4138,7 @@ async function semanticPoolOptions(
       // typing lag, so it must never be silent — this is the line that tells us the child died.
       if (m === 'host') console.log(`[termpolis][memory] brain is OFF the main thread (mode=${m})`)
       else if (m === 'unstarted') { /* the app quit before the host came up: nothing to report */ }
+      else if (m === 'unavailable') console.warn(`[termpolis][memory] UNAVAILABLE — the brain could not start and its store is too large to load on the main thread; retrying in the background (mode=${m})`)
       else console.warn(`[termpolis][memory] FALLBACK — the brain is running ON the main thread (mode=${m}); launch and typing will stall`)
     })
     // Memory-at-rest secret scrub. Redact secrets BEFORE a memory is hashed, embedded, or
