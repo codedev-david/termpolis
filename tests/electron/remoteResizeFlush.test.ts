@@ -554,6 +554,8 @@ interface Sweep {
   worstBottomQuarterBad: number
   phases: number
   ptyResizes: number
+  /** Slices main posted to the bridge, over the whole sweep. */
+  slices: number
 }
 
 /** The harness's phase sweep: the resize lands at ten offsets, 10 ms apart, against the TUI's repaint tick
@@ -561,7 +563,15 @@ interface Sweep {
  *  all that matters, are the same from 500 ms, and the sweep is six times shorter.) */
 async function sweep(c: { w1: number; w2: number; lat: number; tickMs: number }): Promise<Sweep> {
   const rows = 30
-  const out: Sweep = { rowPhases: 0, sizePhases: 0, worstBad: 0, worstBottomQuarterBad: 0, phases: 0, ptyResizes: 0 }
+  const out: Sweep = {
+    rowPhases: 0,
+    sizePhases: 0,
+    worstBad: 0,
+    worstBottomQuarterBad: 0,
+    phases: 0,
+    ptyResizes: 0,
+    slices: 0,
+  }
   for (let phase = 0; phase < 100; phase += 10) {
     const r = await simulate(scenario({ ...c, rows, resizeAt: 500 + phase, endAt: 1500 }), { w1: c.w1, rows })
     out.phases += 1
@@ -570,6 +580,7 @@ async function sweep(c: { w1: number; w2: number; lat: number; tickMs: number })
     out.worstBad = Math.max(out.worstBad, r.bad)
     out.worstBottomQuarterBad = Math.max(out.worstBottomQuarterBad, r.bottomQuarterBad)
     out.ptyResizes += r.ptyResizes
+    out.slices += r.slices
   }
   return out
 }
@@ -633,6 +644,25 @@ describe('a pane resized 120 -> 80 columns under a live TUI, ten phases against 
       expect(s.worstBad).toBeGreaterThan(0)
     })
   }
+
+  it('costs the main thread at most one more slice per resize: it moves a read earlier, it does not add reads', async () => {
+    // The counter that answers "what does it cost": slices posted across the process boundary over the
+    // same ten resizes, with the flush and without it. The flush sends what the next tick would have
+    // sent, so where that tick would have carried the old bytes AND the TUI's reply to the resize in
+    // one slice, the stream is split in two at the resize: never fewer slices, at most one more per
+    // resize. (Where the tick falls before the reply anyway, the flush only makes the same read earlier
+    // and adds none, which is why the exact difference is not pinned: it follows the tick phase.)
+    const c = CASES[0]
+    const withFlush = await sweep(c)
+    process.env[KILL_SWITCH] = '1'
+    const without = await sweep(c)
+    expect(without.slices).toBeGreaterThan(0)
+    expect(withFlush.slices).toBeGreaterThanOrEqual(without.slices)
+    expect(withFlush.slices - without.slices).toBeLessThanOrEqual(withFlush.phases)
+    // And it is not nothing: where bytes were waiting at the resize, the stream really is split, so
+    // this counter would read 0 if the flush did nothing.
+    expect(withFlush.slices - without.slices).toBeGreaterThan(0)
+  })
 
   it('a widening resize (120 -> 150) is clean with and without the flush, and the flush does not disturb it', async () => {
     const c = { w1: 120, w2: 150, lat: 15, tickMs: 100 }
