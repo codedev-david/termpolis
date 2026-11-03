@@ -397,9 +397,10 @@ function ensureStoreSize(p: HostInitMsg): Promise<number | null> {
   return probe
 }
 
-/** Start measuring the store now, if the guard is on (off means no extra file call at all). */
-function warmStoreSize(p: HostInitMsg): void {
-  if (resolveInprocGuard().enabled) void ensureStoreSize(p)
+/** Start measuring the store now, if the guard is on (off means no extra file call at all). Resolves
+ *  with the size, or null when it was not asked for or could not be read. */
+function warmStoreSize(p: HostInitMsg): Promise<number | null> {
+  return resolveInprocGuard().enabled ? ensureStoreSize(p) : Promise.resolve(null)
 }
 
 /** Let go of the current child, killing it: a failed start must not leave a hung process behind (a
@@ -566,6 +567,7 @@ function onChildExit(code: number, from?: MemoryHostTransport): void {
   // (c) no data loss: every write was appended to the JSONL before its RPC resolved, so the fresh
   // child reloads the same store from disk. Only genuinely in-flight calls are lost, and those
   // rejected loudly in (a).
+  mode = 'starting' // a respawn is a start: 'host' with no child would be a lie, and a call waits on readyPromise
   readyPromise = spawnAndInit().catch((err) => {
     abandonChild() // a respawn that hung is killed, not left running beside whatever takes over
     return fallBack(`respawn failed: ${(err as Error)?.message}`)
@@ -695,7 +697,7 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
   }
   // How big is the store? Asked for NOW, beside the spawn and not before it (the spawn below is still
   // synchronous), so that if the child fails the verdict does not have to wait for the disk.
-  warmStoreSize(initParams)
+  const sized = warmStoreSize(initParams)
   // Held on the verdict too (fallBack), not just on the spawn: a call that arrives while the size is
   // still being read must wait for it, not be answered from a store nobody has loaded.
   readyPromise = spawnAndInit().catch(async (err) => {
@@ -703,6 +705,11 @@ export async function startMemoryHost(opts: StartMemoryHostOptions): Promise<Mod
     await fallBack(`could not start the memory host: ${(err as Error)?.message}`)
   })
   try { await readyPromise } catch { /* fallBack does not throw; the mode below says what happened */ }
+  // Resolve only once the size is known (or was given up on after 3 s): the first failure is then judged
+  // without waiting for the disk. Nothing depends on this promise (calls wait on readyPromise, and the
+  // app does not await us), and in the real app the child takes far longer than the read, so it adds
+  // nothing; it keeps the verdict deterministic for a child that is ready at once.
+  await sized
   return mode
 }
 
@@ -907,7 +914,7 @@ export async function setSyncDir(dir: string | null): Promise<SyncStatus> {
   initParams = { ...(initParams as HostInitMsg), syncDir: status.syncing ? status.dir : null }
   // The store now lives somewhere else: have its size ready before a failure needs it, so that verdict
   // never waits on a disk read at the moment the machine is struggling (v1.54.5).
-  warmStoreSize(initParams)
+  void warmStoreSize(initParams)
   return status
 }
 

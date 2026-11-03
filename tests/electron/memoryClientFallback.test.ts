@@ -777,8 +777,9 @@ describe('the size of the store is known before a failure needs it (a starved ma
     probeReturns(() => (++calls === 1 ? new Promise<number | null>(() => { /* hangs */ }) : Promise.resolve(400 * MB)))
     const s = scripted(['ready'])
     setMemoryHostSpawner(s.spawner)
-    expect(await startMemoryHost({ userDataPath: tmp })).toBe('host')   // a healthy start does not wait for the size
-    await vi.advanceTimersByTimeAsync(3_000)       // the first read gives up
+    const started = startMemoryHost({ userDataPath: tmp })
+    await vi.advanceTimersByTimeAsync(3_000)       // the first read gives up (it never blocks the host itself)
+    expect(await started).toBe('host')
     expect(calls).toBe(1)
 
     for (let i = 0; i < 4; i++) { s.last().exit(1); await vi.advanceTimersByTimeAsync(0) }

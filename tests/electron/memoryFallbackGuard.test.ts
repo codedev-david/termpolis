@@ -19,7 +19,7 @@ import {
   setMemoryUnavailableState, memoryUnavailableInfo, isMemoryUnavailable, type MemoryUnavailableState,
 } from '../../src/main/memoryFallbackGuard'
 import {
-  initSwarmMemory, memoryWrite, _resetForTests, _setEmbeddingsAvailable, _setMaxShardBytesForTests,
+  initSwarmMemory, memoryWrite, memoryCount, _resetForTests, _setEmbeddingsAvailable, _setMaxShardBytesForTests,
 } from '../../src/main/swarmMemory'
 
 const MB = 1024 * 1024
@@ -149,6 +149,17 @@ describe('measureMemoryStoreBytes — exactly the files the store loads', () => 
     fs.writeFileSync(path.join(tmp, 'notes.txt'), 'x'.repeat(50_000))
 
     expect(await measureMemoryStoreBytes(tmp, null)).toBe(expected)
+  })
+
+  it('the fixture e2e/memory-host-unavailable.spec.ts seeds (a shard of blank lines) is measured, and loads as an empty store', async () => {
+    // That spec cannot run here, so its one assumption is pinned here: a 4 KB shard of blank lines is
+    // 4,000 bytes to the probe, and the real store reads it as having no memories rather than failing.
+    fs.writeFileSync(path.join(tmp, 'swarm-memory.jsonl'), '\n'.repeat(4_000))
+    expect(await measureMemoryStoreBytes(tmp, null)).toBe(4_000)
+    _resetForTests()
+    _setEmbeddingsAvailable(false)
+    initSwarmMemory(tmp, {})
+    expect(await memoryCount()).toBe(0)
   })
 
   it('in sync mode counts every shard in the sync folder, own and peers\', and nothing else', async () => {
