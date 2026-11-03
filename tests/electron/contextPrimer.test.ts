@@ -215,6 +215,37 @@ describe('buildContextPrimer — current-project precedence', () => {
     expect(out!.indexOf('we decided to use HNSW')).toBeLessThan(out!.indexOf('a code chunk from the repo'))
   })
 
+  // F21: a hit filed under another project is promoted into this one by a WHOLE-WORD mention of its slug, and only when the slug is at least four
+  // characters: 'api' or 'app' would promote anything that talks about an api.
+  describe('the slug rule of the promotion by mention', () => {
+    const NOW2 = 1_700_000_000_000
+    const hit = (id: string, content: string, over: Partial<PrimerHit> = {}): PrimerHit =>
+      ({ id, content, source: 'claude', kind: 'message', score: 0.5, ts: NOW2 - 3_600_000, ...over }) as PrimerHit
+    const ask2 = (slug: string, scoped: PrimerHit[], unscoped: PrimerHit[]) =>
+      buildContextPrimer(vi.fn(async (o: { project?: string }) => (o.project ? scoped : unscoped)), { query: 'q', project: slug, limit: 10, now: NOW2, maxSnippetChars: 400 })
+    // The lines of one titled section of the digest.
+    const under = (out: string | null, title: RegExp): string => {
+      const lines = (out ?? '').split('\n')
+      const at = lines.findIndex((l) => title.test(l))
+      if (at < 0) return ''
+      const body: string[] = []
+      for (const l of lines.slice(at + 1)) { if (!l.startsWith('- [')) break; body.push(l) }
+      return body.join('\n')
+    }
+
+    it('does not promote another project\'s hit that names a slug shorter than four characters', async () => {
+      const out = await ask2('api', [hit('own', 'api own conversation about routes', { project: 'api', score: 0.9 })], [hit('m', 'we call the api gateway only when the flag is set', { project: 'billing' })])
+      expect(under(out, /^This project \(api\)/)).not.toContain('api gateway')
+      expect(under(out, /^Other saved context/)).toContain('api gateway')
+    })
+
+    it('promotes it for a four-character slug named as a whole word, and not for a word that merely contains the slug', async () => {
+      const out = await ask2('memo', [hit('own', 'memo own conversation about routes', { project: 'memo', score: 0.9 })], [hit('m', 'we call the memo service only when the flag is set', { project: 'billing' }), hit('i', 'the memorandum template lives in the shared folder', { project: 'billing', score: 0.45 })])
+      expect(under(out, /^This project \(memo\)/)).toContain('memo service')
+      expect(under(out, /^This project \(memo\)/)).not.toContain('memorandum')
+    })
+  })
+
   it('promotes global hits that mention the project into the project section (legacy entries)', async () => {
     const search = vi.fn(async (opts: { project?: string }) => {
       if (opts.project === proj) return []
