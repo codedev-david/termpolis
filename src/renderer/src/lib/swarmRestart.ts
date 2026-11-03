@@ -392,6 +392,7 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
     const fresh = await deps.accounts.list()
     if (fresh.success) deps.store().setAccountsView(fresh.data)
   } catch { /* the view it had stands */ }
+  if (!stillOn()) return true
   const s = deps.store()
   const view = s.accountsView ?? view0
   if (openOffer(s, agent, own.id)) return joinOffer(worker, result.summary, agent, own.id, deps, stillOn)
@@ -399,6 +400,8 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
   // Asked only of the accounts that are a way out by what Termpolis knows already: none, no process.
   const candidates = restartTargets(view, agent, limited, now, {}, kind)
   const checks = await signedInNow(candidates, now, deps)
+  // The limit lifted while the accounts were asked: there is nothing to offer, and nothing to report of a worker at work.
+  if (!stillOn()) return true
   const targets = restartTargets(view, agent, limited, now, checks, kind)
   const signIn = signInTargets(view, agent, limited, now, checks, kind)
   // A worker's offer exists only when something can take it over NOW. An account that is signed out is not a way out

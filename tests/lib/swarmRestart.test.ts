@@ -997,6 +997,39 @@ describe('a worker whose limit lifted while its offer was open (R16)', () => {
     off()
   })
 
+  // The limit lifts while the accounts are asked and none turns out to be a way out: v1.54.0's report, which would tell the conductor
+  // to close a worker that is at work, is not sent either (the offer says it has nothing to say).
+  it('reports nothing of a worker at work when the limit lifted while the accounts were asked and none was a way out', async () => {
+    const off = installSwarmRestart(() => deps)
+    let answer!: () => void
+    ;(deps.accounts.check as ReturnType<typeof vi.fn>).mockImplementation((id: string) => new Promise((resolve) => {
+      answer = () => resolve({ success: true, data: { ...MAIN, id, identity: { email: null, signedIn: false, checkedAt: NOW, source: 'auth-status' } } })
+    }))
+    const stopping = noteSwarmStop(W1, LIMIT, () => WORDS)
+    await vi.advanceTimersByTimeAsync(10)
+    await noteSwarmStop(W1, WORKING)
+    answer()
+    await stopping
+    expect(groups()).toEqual([])
+    expect(messages()).toEqual([])
+    off()
+  })
+
+  it('reports nothing of a worker at work when the limit lifted while the limit was recorded', async () => {
+    const off = installSwarmRestart(() => deps)
+    let release!: () => void
+    ;(deps.accounts.noteLimit as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise((resolve) => { release = () => resolve({ success: true, data: undefined }) }))
+    const stopping = noteSwarmStop(W1, LIMIT, () => WORDS)
+    await vi.advanceTimersByTimeAsync(10)
+    await noteSwarmStop(W1, WORKING)
+    release()
+    await stopping
+    expect(groups()).toEqual([])
+    expect(messages()).toEqual([])
+    expect(deps.accounts.check).not.toHaveBeenCalled()
+    off()
+  })
+
   it('joins no open offer when the limit lifts while its task is looked up', async () => {
     const off = installSwarmRestart(() => deps)
     await noteSwarmStop(W1, LIMIT, () => WORDS)

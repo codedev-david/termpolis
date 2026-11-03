@@ -262,6 +262,22 @@ describe('step 2: what holds the box', () => {
   })
 })
 
+// SAFETY-R2-4: where the operating system itself showed a program running in the terminal earlier in this switch, a card that says
+// the agent could not be moved says that too, whichever step stopped it.
+describe('what the OS showed, carried to the outcome that stopped the switch (SAFETY-R2-4)', () => {
+  it('says it for a menu that does not close, and for a box that never shows the exit command', async () => {
+    const menu = await run(claude({ start: 'menu', escCloses: false, os: 'tells', teardownMs: 90_000 }))
+    expect(menu.outcome).toEqual({ kind: 'unknown-exit', osSees: true })
+    const noEcho = await run(claude({ exit: 'no-echo', os: 'tells', teardownMs: 90_000 }))
+    expect(noEcho.outcome).toEqual({ kind: 'exit-unconfirmed', osSees: true })
+  })
+
+  it('says nothing of it where the OS was not asked, or could not tell', async () => {
+    expect((await run(claude({ start: 'menu', escCloses: false }))).outcome).toEqual({ kind: 'unknown-exit' })
+    expect((await run(claude({ exit: 'no-echo', os: 'blind' }))).outcome).toEqual({ kind: 'exit-unconfirmed' })
+  })
+})
+
 describe('steps 3-4 (R3): the exit, shown', () => {
   it('stops when the agent ignores its exit command: nothing more is typed', async () => {
     const r = await run(claude({ exit: 'ignore' }))

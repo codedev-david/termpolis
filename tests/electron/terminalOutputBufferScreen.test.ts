@@ -147,7 +147,7 @@ describe('the screen kept beside the window', () => {
 // agent has printed a minute's work, so after any real session the guard never fired.
 describe('the prompt reports a terminal has ever printed (SW2-10)', () => {
   const POSIX = `${E}]7;file://host/c/repo${String.fromCharCode(7)}`
-  const WINDOWS = `${E}]9;9;C:\repo${String.fromCharCode(7)}`
+  const WINDOWS = `${E}]9;9;C:\\repo${String.fromCharCode(7)}`
 
   it('knows nothing of a terminal that printed none, or that nobody asked about', () => {
     const buffers: OutputBuffers = new Map()
@@ -165,7 +165,10 @@ describe('the prompt reports a terminal has ever printed (SW2-10)', () => {
     for (let i = 0; i < 60; i++) appendOutput(buffers, 't', 'x'.repeat(1000))
     expect(readOutput(buffers, 't')).not.toContain(POSIX)
     expect(reportedFamilies(buffers, 't')).toEqual({ posix: true, windows: false })
-    appendOutput(buffers, 't', `${WINDOWS}PS C:\repo> `)
+    appendOutput(buffers, 't', `${WINDOWS}PS C:\\repo> `)
+    expect(reportedFamilies(buffers, 't')).toEqual({ posix: true, windows: true })
+    // Both known: later output is not looked at again, and nothing it holds changes them.
+    appendOutput(buffers, 't', 'more output with no report in it')
     expect(reportedFamilies(buffers, 't')).toEqual({ posix: true, windows: true })
   })
 
