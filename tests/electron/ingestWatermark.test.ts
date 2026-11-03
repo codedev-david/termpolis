@@ -326,10 +326,12 @@ describe('writes: a mark made while a write is out is never lost', () => {
 
   it('a newer mark for the same file made while a write fails is the one kept', async () => {
     const io = slowIO()
-    const failing = { ...io, async write(text: string) { io.writes.push(text); await tick(); throw new Error('disk full') } }
+    const failing = { ...io, async write(text: string) { io.writes.push(text); await new Promise((r) => setTimeout(r, 40)); throw new Error('disk full') } }
     const wm = await openWatermark(failing as never, 's1')
     wm.markDone('/f', A, 'full', H(1))
     const first = wm.flush()
+    await tick() // the write is out now (it holds the first mark)
+    expect(io.writes).toHaveLength(1)
     wm.markDone('/f', { size: 9, mtimeMs: 9 }, 'sealed', H(2)) // the same file, newer, while the write is out
     expect(await first).toBe(false)
     expect(wm.isDone('/f', { size: 9, mtimeMs: 9 }, 'sealed')).toBe(true)
@@ -449,6 +451,21 @@ describe('the real file', () => {
     }
     expect(readFileSync(target, 'utf8')).toBe('new')
     expect(readdirSync(dir)).toEqual([WATERMARK_FILE])
+  })
+
+  it('a temp file that cannot be removed after the fallback write does not fail the write', async () => {
+    const dir = tmp()
+    const target = join(dir, WATERMARK_FILE)
+    writeFileSync(target, 'old')
+    const rename = vi.spyOn(fsPromises, 'rename').mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }))
+    const rm = vi.spyOn(fsPromises, 'rm').mockRejectedValueOnce(new Error('EPERM'))
+    try {
+      await expect(fileWatermarkIO(target).write('new')).resolves.toBeUndefined()
+    } finally {
+      rename.mockRestore()
+      rm.mockRestore()
+    }
+    expect(readFileSync(target, 'utf8')).toBe('new')
   })
 
   it('a path that runs through a file instead of a folder simply reads as "not there"', async () => {

@@ -547,6 +547,25 @@ describe('the paths a pass takes only when something goes wrong or something is 
     expect(stats).toMatchObject({ truncated: true, stop: 'stopped', filesScanned: 0 })
   })
 
+  it('a pass that throws (its own stopped() does) still reports its counters, keeps no marks, and lets the error through', async () => {
+    const c = corpus()
+    fill(c, 3)
+    const { io, wm } = await open()
+    const seen: unknown[] = []
+    let asks = 0
+    await expect(
+      ingestConversations(c.deps({
+        watermark: wm,
+        onPass: (m) => { seen.push(m) },
+        stopped: () => { if (++asks === 6) throw new Error('boom'); return false }, // asked 1 + 2 per file: it throws at the top of the third file
+      })),
+    ).rejects.toThrow('boom')
+    expect(seen).toHaveLength(1)
+    expect(c.reads).toHaveLength(2) // two files were done, marked in memory ...
+    expect(wm.pending).toBe(0) // ... and then not vouched for: the pass did not finish
+    expect(io.writes).toBe(0)
+  })
+
   it('a file that cannot be stat-ed (the call throws) is processed anyway and never marked', async () => {
     const c = corpus()
     fill(c, 1, 2)
