@@ -85,22 +85,37 @@ const CRLF_ESCAPED = /^(?:\\+r|\\+u000[dD]|\\+x0[dD]|%0[dD]|&#(?:x0?[dD]|13);|`r
  *  a marker (`-----BEGIN`, SSH2's `---- BEGIN`), an armor header (`Proc-Type: `) or the line's end follows, after a name that has an extension or a folder in it
  *  (`error:` is a word). */
 const PATH_AFTER_ESCAPE = /(?:[A-Za-z_.][A-Za-z0-9_.\-/\\]{0,95}?(?::\d{1,9}[:-]|-\d{1,9}-)|(?=[A-Za-z0-9_.\-/\\]{0,96}?[.\\/])[A-Za-z_.][A-Za-z0-9_.\-/\\]{0,95}?:(?=[A-Za-z0-9+/=]{4}|-{4}|[A-Z][A-Za-z-]{2,12}: |[\r\n]|$))/y
+/** The same for a name the expression above is too narrow for, read when the text is read as a Windows path with names of every kind (`pathReading` 2): one that starts with a digit, a dash
+ *  or a bracket (`\r123456`, `\n8n`, `\r-lib`, `\n(x86)`) or holds a blank or any other character a Windows name can (`\new project`, `\node_modules\@types`, a name in Unicode), up to
+ *  MAX_PATH (259) characters, or a folder named just `n` or `r` (`\n\a.pem`); and the listing's colon may be followed by the blanks of an indented line. A name counts only if it
+ *  holds a folder or file separator (a `.`, `\` or `/`): a clock time, a timestamp (`2026-11-02T10:11:10`) or a line of prose that follows a break has none before its first colon. It
+ *  does not start with another written-out break: a CR and LF written out (`\r\n`) are one break, not a folder. */
+const PATH_NAMED = /(?!\\+(?:[nr]|u000[aAdD]|x0[aAdD]))(?=[^\x00-\x1f"*:<>?|]{0,259}?[.\\/])[^\x00-\x1f"*:<>?|]{1,259}?(?::\d{1,9}[:-]|-\d{1,9}-|:(?=[ \t]*(?:[A-Za-z0-9+/=]{16}|-{4}|[A-Z][A-Za-z-]{2,12}: )|[A-Za-z0-9+/=]{4}|[\r\n]|$))/y
 /** A written-out CR or LF made of backslashes and the letter alone (not the Unicode or hex escape of one). */
 const BACKSLASH_BREAK = /^\\+[nr]$/
 /** Whether `c` can be in a piece of a path: a letter, a digit, `_`, `.` or `-`. */
 const isPathChar = (c: number): boolean => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 46 || c === 45
+/** Whether `c` can be in the piece of a path that stands in front of a backslash and letter: `isPathChar`, the characters a Windows name holds that no base64 line does (`@types`, `Files (x86)`,
+ *  `C#`, `{GUID}`: `@ ( ) [ ] { } ~ # $ % & ! ^`) and any character outside ASCII. */
+const isPieceChar = (c: number): boolean => isPathChar(c) || c >= 128 || c === 33 || (c >= 35 && c <= 38) || c === 40 || c === 41 || c === 64 || c === 91 || c === 93 || c === 94 || c === 123 || c === 125 || c === 126
 
 /** Whether the written-out CR or LF `m`, found at i, is the backslash and the letter of a Windows path in a listing (`...\AzurePipelineTool\rsa_key.pem:12:AAAA`,
  *  `\repos`, `\notes`, `\node_modules`): the text after it goes on as a path to a listing's separator, and a piece of a path ends right before it, one that
  *  starts the line or follows a backslash, a blank, a `>` or a quote. (A piece that follows a `:` or a `/` is the end of a key line, in a listing whose lines are joined by
  *  written-out breaks, and so is any text that goes on with a timestamp or a service name instead of a path.) Read as a break, such a backslash cut the path in two,
- *  and a piece of 16 characters or more before it was taken for a key line. */
-function pathEscape(text: string, i: number, escape: string): boolean {
+ *  and a piece of 16 characters or more before it was taken for a key line. `wide`: a name of any kind a Windows path can hold counts, after the escape (PATH_NAMED) and in the piece in front of it
+ *  (isPieceChar); not wide, only the usual names (PATH_AFTER_ESCAPE, isPathChar). */
+function pathEscape(text: string, i: number, escape: string, wide: boolean): boolean {
   if (!BACKSLASH_BREAK.test(escape)) return false
   PATH_AFTER_ESCAPE.lastIndex = i + escape.length
-  if (!PATH_AFTER_ESCAPE.test(text)) return false
+  if (!PATH_AFTER_ESCAPE.test(text)) {
+    if (!wide) return false
+    PATH_NAMED.lastIndex = i + escape.length
+    if (!PATH_NAMED.test(text)) return false
+  }
+  const inPiece = wide ? isPieceChar : isPathChar
   let k = i
-  while (k > 0 && i - k < 97 && isPathChar(text.charCodeAt(k - 1))) k--
+  while (k > 0 && i - k < 97 && inPiece(text.charCodeAt(k - 1))) k--
   if (i - k > 96) return false
   if (k === i) {
     // No piece in front of it: a path that opens with it (a UNC path's `\\repos`, a relative one's first folder, a cut that took the piece before it), or one that
@@ -110,6 +125,68 @@ function pathEscape(text: string, i: number, escape: string): boolean {
   }
   const c = k === 0 ? 10 : text.charCodeAt(k - 1)
   return c === 92 || c === 10 || c === 13 || c === 9 || c === 32 || c === 62 || c === 34 || c === 39
+}
+
+/** How a backslash and a letter (`\n`, `\r`) that may be a Windows path's are read: 0 as a written-out line break, 1 as a piece of a path of the usual kind (letters, digits, `_`, `.`, `-`) when the
+ *  text around it reads like a listing's path, 2 as that or as a piece of any path a Windows name can make (`pathEscape`'s `wide`). The text is ambiguous where a JSON string joins a listing's lines
+ *  (every MCP tool result): the next key line's own frame (`id.pem-2-`, `values.yaml:2:    `, a pod name with a number in it) is what a path goes on with, and the end of the line before it is a
+ *  piece of a path. So a text in which one reading kept an escape from being a break is read again with the reading below it (readEveryWay), 2 then 1 then 0, and what the readings find is joined: a
+ *  key is removed only for what its bytes decode to, whichever way its lines were read, so another reading adds no removal of text that is not one, and none finds less than the one above it left
+ *  to find. The two variables are module state, saved and restored by readEveryWay: keySpans calls itself on what a base64 key file decodes to, and the inner call must not clear the outer one's. */
+export type PathReading = 0 | 1 | 2
+let pathReading: PathReading = 2
+let pathSuppressed = false
+
+/** `find`, run at the reading it is called at and, while that reading kept an escape from being a break, at the one below it; `join` merges the results. (At 0 nothing is kept from being a
+ *  break, so a find called from there reads once.) */
+function readEveryWay<R>(find: () => R, join: (first: R, second: R) => R): R {
+  const outerReading = pathReading
+  const outerSuppressed = pathSuppressed
+  try {
+    pathSuppressed = false
+    let out = find()
+    while (pathSuppressed && pathReading > 0) {
+      pathReading = (pathReading - 1) as PathReading
+      pathSuppressed = false
+      out = join(out, find())
+    }
+    return out
+  } finally {
+    pathReading = outerReading
+    pathSuppressed = outerSuppressed
+  }
+}
+
+/** `f` at one reading (see PathReading), for tests: a text read at the usual reading or at none is what round 5 and the version before it read. */
+export function atReading<R>(reading: PathReading, f: () => R): R {
+  const outer = pathReading
+  pathReading = reading
+  try {
+    return f()
+  } finally {
+    pathReading = outer
+  }
+}
+
+const spanKey = (x: KeySpan): string => `${x.from}:${x.to}:${x.rule}:${x.cls}`
+/** `first` and what `second` finds that it does not, a span once. */
+function joinSpans<T extends KeySpan>(first: T[], second: T[]): T[] {
+  const seen = new Set(first.map(spanKey))
+  const out = first.slice()
+  for (const x of second) if (!seen.has(spanKey(x))) out.push(x)
+  return out
+}
+/** The key blocks of two readings, one for each BEGIN line and in the order of their BEGIN lines (headless walks them so): where both readings found one, the one that takes the key, else the
+ *  one that reaches further. */
+export function joinBlocks(first: KeyBlock[], second: KeyBlock[]): KeyBlock[] {
+  const takes = (x: KeyBlock): number => (x.cls === 'remove' ? 1 : 0)
+  const byBegin = new Map<number, KeyBlock>()
+  for (const b of first) byBegin.set(b.from, b)
+  for (const b of second) {
+    const a = byBegin.get(b.from)
+    if (a === undefined || takes(b) > takes(a) || (takes(b) === takes(a) && Math.max(b.to, b.scanEnd) > Math.max(a.to, a.scanEnd))) byBegin.set(b.from, b)
+  }
+  return [...byBegin.values()].sort((x, y) => x.from - y.from)
 }
 
 /** The written-out line break that starts at i, or null. PowerShell's `n and `r count only after the text they end: a base64
@@ -123,7 +200,10 @@ export function escapeAt(text: string, i: number): RegExpExecArray | null {
     const before = text.charCodeAt(i - 1)
     if (!isB64(before) && before !== 34 && before !== 39 && before !== 45) return null
   }
-  if (m !== null && pathEscape(text, i, m[0])) return null
+  if (m !== null && pathReading > 0 && pathEscape(text, i, m[0], pathReading === 2)) {
+    pathSuppressed = true
+    return null
+  }
   return m
 }
 
@@ -1466,7 +1546,10 @@ function splitBreaks(s: string): string[] {
   const re = new RegExp(BREAKS.source, 'g')
   let from = 0
   for (let m = re.exec(s); m !== null; m = re.exec(s)) {
-    if (m[0].charCodeAt(0) === 92 && pathEscape(s, m.index, m[0])) continue
+    if (m[0].charCodeAt(0) === 92 && pathReading > 0 && pathEscape(s, m.index, m[0], pathReading === 2)) {
+      pathSuppressed = true
+      continue
+    }
     out.push(s.slice(from, m.index))
     from = m.index + m[0].length
   }
@@ -1540,7 +1623,7 @@ function madeUp(text: string, runs: Run[]): boolean {
  *  own cut falls, nothing running through it). `screenedStart`: the text starts where another
  *  computer cut it after screening it with these detectors, which took whole any key the cut ran
  *  through: nothing at its start is a key's tail. */
-export function headless(text: string, blocks: readonly KeyBlock[], opts: { start?: number; cutAt?: number; screenedStart?: boolean } = {}): KeySpan[] {
+function headlessOnce(text: string, blocks: readonly KeyBlock[], opts: { start?: number; cutAt?: number; screenedStart?: boolean }): KeySpan[] {
   const out: KeySpan[] = []
   const start = opts.start ?? 0
   const re = new RegExp(END_RE.source, 'g')
@@ -2384,7 +2467,7 @@ export function jsonEscaped(text: string, start = 0): KeySpan[] {
  *  start together: key blocks, PuTTY, JWK, RSAKeyValue, base64, URL-encoded and JSON-escaped key
  *  files. The key blocks come back on their own too: headless needs them once the screen knows
  *  where its cut is. */
-export function keySpans(text: string, start = 0, cutText = false): { blocks: KeyBlock[]; spans: KeySpan[] } {
+function keySpansOnce(text: string, start: number, cutText: boolean): { blocks: KeyBlock[]; spans: KeySpan[] } {
   const blocks = keyBlocks(text, start)
   const spans: KeySpan[] = []
   // Appended one by one: `push(...found)` passes every span as an argument, and throws (call stack
@@ -2452,4 +2535,17 @@ export function detectorStart(input: string, from: number, lookback: number): nu
   const floor = Math.max(0, from - REACH_BASE64)
   while (b > floor && B64ISH[input.charCodeAt(b - 1)] === 1) b--
   return Math.min(s, b)
+}
+
+/** keySpans, reading a backslash and letter that may be a Windows path's every way its text allows (see readEveryWay). */
+export function keySpans(text: string, start = 0, cutText = false): { blocks: KeyBlock[]; spans: KeySpan[] } {
+  return readEveryWay(
+    () => keySpansOnce(text, start, cutText),
+    (a, b) => ({ blocks: joinBlocks(a.blocks, b.blocks), spans: joinSpans(a.spans, b.spans) }),
+  )
+}
+
+/** headless, read every way like keySpans. */
+export function headless(text: string, blocks: readonly KeyBlock[], opts: { start?: number; cutAt?: number; screenedStart?: boolean } = {}): KeySpan[] {
+  return readEveryWay(() => headlessOnce(text, blocks, opts), joinSpans)
 }

@@ -7,6 +7,7 @@ import { describe, it, expect, beforeAll, vi } from 'vitest'
 import * as crypto from 'crypto'
 import { createHash, generateKeyPairSync, randomBytes } from 'crypto'
 import {
+  atReading,
   decodeHead,
   DEK_REMNANT,
   detectorStart,
@@ -15,6 +16,7 @@ import {
   escapeAt,
   hasWords,
   headless,
+  joinBlocks,
   jwkKeys,
   keyBlocks,
   keySpans,
@@ -34,6 +36,7 @@ import {
   TRAILING_HEAD_JOINERS,
   TRAILING_LINE_BREAKS,
   TRAILING_NL_JOINERS,
+  type KeyBlock,
   type KeySpan,
 } from '../../src/main/keyMaterial'
 import { COST_SHAPES, within } from './fixtures/costShapes'
@@ -3378,6 +3381,32 @@ describe("where a key's private value is in its DER: the first line of an EC or 
     const text = ['-----BEGIN PRIVATE KEY-----', line].join('\n')
     expect(keyBlocks(text).map((b) => [b.cls, b.why])).toEqual([['flag', 'pkcs8-example']])
   })
+
+  it('the first line of a PKCS#8 key on a brainpool curve holds 9 to 11 bytes of its scalar and is only reported, where a prime curve holds 12 or more and is removed (the docs say so)', () => {
+    // The curve's OID is one byte longer than P-256's, and the key's own length is written in two bytes where the longer curves' are written in three: both push the scalar down the line.
+    // (Real keys, from node:crypto: the curves OpenSSL 3 has.)
+    const curves: Array<[string, boolean]> = [
+      ['prime256v1', true],
+      ['secp384r1', true],
+      ['secp521r1', true],
+      ['secp256k1', true],
+      ['brainpoolP256r1', false],
+      ['brainpoolP256t1', false],
+      ['brainpoolP320r1', false],
+      ['brainpoolP384r1', false],
+      ['brainpoolP512r1', false],
+    ]
+    for (const [name, removed] of curves) {
+      const { privateKey } = generateKeyPairSync('ec', { namedCurve: name })
+      const lines = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString().trim().split('\n')
+      const key = Buffer.from(lines.slice(1, -1).join(''), 'base64')
+      const [from] = priv(key) as [number, number]
+      const held = Math.floor((lines[1].length * 3) / 4) - from
+      expect(held >= 12, `${name}: ${held} bytes of the scalar in the line`).toBe(removed)
+      if (!removed) expect(held, name).toBeGreaterThanOrEqual(9)
+      expect(keyBlocks(lines.slice(0, 2).join('\n')).map((x) => [x.cls, x.why]), name).toEqual([removed ? ['remove', 'pkcs8-line'] : ['flag', 'pkcs8-example']])
+    }
+  })
 })
 
 describe('looksRandom and placeholderWhy', () => {
@@ -4445,6 +4474,14 @@ describe('T1 K1: a key in a grep or rg listing whose path holds a long run of ba
   })
 })
 
+/** A key's lines with no `+` or `/` in them (letters and digits only), under the first line of base64 (a header's magic holds one: SSH2's `P2/56w`) and the lines above it. A line like that is a
+ *  piece of a path at every written-out break: a key as it is meets the path reading only at the breaks after the lines that happen to have none (some of its lines, not all), and these take
+ *  both away so that every break meets it. */
+const plainOf = (ls: string[]): string[] => {
+  const first = ls.findIndex((l) => /^[A-Za-z0-9+/]{16,}=*$/.test(l))
+  return ls.map((l, i) => (i <= first || l.startsWith('-----') ? l : l.replace(/\+/g, 'A').replace(/\//g, 'B')))
+}
+
 describe('T1 K1: a key in a listing under a Windows path whose folder or file name starts with r or n, after a piece of 16 or more characters', () => {
   // `\repos`, `\notes`, `\node_modules` and `\rsa_key.pem` hold the backslash and the letter of a written-out CR or LF. Read as one, they cut the listing line in
   // two, and the piece of the path before them (`AzurePipelineTool`: 17 characters) stood alone on a line of its own as a key line of another width: the key was
@@ -4511,7 +4548,7 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
     const P = 'AbCdEfGhIjKlMnOpQrSt'
     const piece = 'AzurePipelineTool'
     const rest = `${BS}repos${BS}a.pem:12:${P}`
-    const rows: Array<[string, string, boolean]> = [
+    const rows: Array<[string, string, boolean, boolean?]> = [
       // what stands before the piece: a backslash, a line start, a blank, a tab, a `>`, a quote, a CR or an LF end a path's piece; nothing else does
       ['the text starts with the piece', `${piece}${rest}`, false],
       ['a backslash before it', `C:${BS}work${BS}${piece}${rest}`, false],
@@ -4522,10 +4559,16 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
       ['a single quote before it', `'${piece}${rest}`, false],
       ['a CR before it', `x\r${piece}${rest}`, false],
       ['an LF before it', `x\n${piece}${rest}`, false],
-      ...[':', '/', '+', '=', ',', '(', '@', '[', '`', '{', ';'].map((c): [string, string, boolean] => [`a ${c} before it: the end of a key line`, `x${c}${piece}${rest}`, true]),
+      ...[':', '/', '+', '=', ',', '`', ';'].map((c): [string, string, boolean] => [`a ${c} before it: the end of a key line`, `x${c}${piece}${rest}`, true]),
+      // (a name holds these, and no base64 line does: the piece goes back through them, `@types\react`, `Program Files (x86)\nodejs`)
+      ...['(', '@', '[', '{', ']', '}', ')', '~', '#', '$', '%', '&', '!', '^'].map((c): [string, string, boolean, boolean?] => [`a ${c} before it is part of the piece`, `x${c}${piece}${rest}`, false, true]),
+      ['a character outside ASCII in the piece', `x${String.fromCharCode(0xe9)}${piece}${rest}`, false, true],
       // the piece is made of letters, digits, `_`, `.` and `-`, and ends at anything else: what stands before THAT decides nothing
       ['every character of a piece', ` A0-9_.Zaz9${rest}`, false],
-      ...[':', '/', '+', '=', '@', '[', '`', '{', '}', ')', '~', '!'].map((c): [string, string, boolean] => [`a ${c} inside the piece stops it there`, ` ${piece}${c}${piece}${rest}`, true]),
+      ...[':', '/', '+', '=', '`'].map((c): [string, string, boolean] => [`a ${c} inside the piece stops it there`, ` ${piece}${c}${piece}${rest}`, true]),
+      ...['@', '[', '{', '}', ')', '~', '!', '#', '$', '%', '&', '^'].map((c): [string, string, boolean, boolean?] => [`a ${c} inside the piece is part of it`, ` ${piece}${c}${piece}${rest}`, false, true]),
+      ['a scoped package folder before it', `x ${piece}${BS}@types${BS}react${BS}a.pem:12:${P}`, false, true],
+      ['a folder with brackets and a blank in it before it', `x Program Files (x86)${BS}nodejs${BS}a.pem:12:${P}`, false, true],
       // the piece's length: 96 characters at the most
       ['a piece of 96', ` ${'a'.repeat(96)}${rest}`, false],
       ['a piece of 97', ` ${'a'.repeat(97)}${rest}`, true],
@@ -4570,7 +4613,30 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
       ['a colon and a header of 3 letters', `x ${piece}${BS}repos${BS}a.pem:Key: x`, false],
       ['a colon and a header with a lower-case start', `x ${piece}${BS}repos${BS}a.pem:abc: x`, true],
       ['a name that has its dot far from the colon', `x ${piece}${BS}rsa_key_with_a_long_name_before_any_dot_at_all${BS}x:${P}`, false],
-      ['a colon and a blank', `x ${piece}${BS}repos${BS}a.pem: ${P}`, true],
+      // (findstr and grep -H print an indented line's blanks after the colon)
+      ['a colon, a blank and a payload (an indented line)', `x ${piece}${BS}repos${BS}a.pem: ${P}`, false, true],
+      ['a colon, four blanks and a payload', `x ${piece}${BS}repos${BS}a.pem:    ${P}`, false, true],
+      ['a colon, a tab and a payload', `x ${piece}${BS}repos${BS}a.pem:${String.fromCharCode(9)}${P}`, false, true],
+      ['a colon, blanks and a marker', `x ${piece}${BS}repos${BS}a.pem:  -----BEGIN PRIVATE KEY-----`, false, true],
+      ['a colon, blanks and an armor header', `x ${piece}${BS}repos${BS}a.pem:  Proc-Type: 4,ENCRYPTED`, false, true],
+      ['a colon, a blank and a payload of 15', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 15)}`, true],
+      ['a colon, a blank and the end of the line', `x ${piece}${BS}repos${BS}a.pem: ${String.fromCharCode(10)}next`, true],
+      // a name the narrow expression does not take: it starts with a digit, a dash or a bracket, or holds a blank or any other character a Windows name can, and has a folder or an extension in it
+      ['a name of digits, a folder after it', `x ${piece}${BS}r123456${BS}a.pem:12:${P}`, false, true],
+      ['a name like n8n', `x ${piece}${BS}n8n${BS}a.pem:12:${P}`, false, true],
+      ['a name that starts with a dash after the letter', `x ${piece}${BS}r-lib${BS}a.pem:12:${P}`, false, true],
+      ['a name with brackets', `x ${piece}${BS}n(x86)${BS}a.pem:12:${P}`, false, true],
+      ['a name with blanks', `x ${piece}${BS}notes and ideas${BS}a.pem:12:${P}`, false, true],
+      ['a blank right after the letter', `x ${piece}${BS}n 1${BS}a.pem:12:${P}`, false, true],
+      ['a folder named just n', `x ${piece}${BS}n${BS}a.pem:12:${P}`, false, true],
+      ['a name in Unicode', `x ${piece}${BS}n${String.fromCharCode(0xf6)}te${String.fromCharCode(0x20ac)}${BS}a.pem:12:${P}`, false, true],
+      ['a name with an @ and a path after it', `x ${piece}${BS}node_modules${BS}@types${BS}react${BS}a.pem:12:${P}`, false, true],
+      ['a name of 246 characters with a folder in it', `x ${piece}${BS}r${'a'.repeat(240)}${BS}a.pem:12:${P}`, false, true],
+      ['a name of 266 characters with a folder in it', `x ${piece}${BS}r${'a'.repeat(260)}${BS}a.pem:12:${P}`, true],
+      ['a name with a character no name holds (*)', `x ${piece}${BS}rfoo*bar${BS}a.pem:12:${P}`, true],
+      ['a name with a character no name holds (a quote)', `x ${piece}${BS}rfoo"bar${BS}a.pem:12:${P}`, true],
+      ['a name that holds a blank and no folder or extension (a line of prose)', `x ${piece}${BS}note 3 and some words:12:${P}`, true],
+      ['a clock time after the break', `x ${piece}${BS}n12:30:45 started`, true],
       ['a name with a dot in it, a colon and a payload', `x ${piece}${BS}nodes.x:${P}`, false],
       ['a name with a slash in it', `x ${piece}${BS}nodes/x:${P}`, false],
       ['a name with a backslash in it', `x ${piece}${BS}nodes${BS}x:${P}`, false],
@@ -4586,12 +4652,20 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
       ['a doubled backslash and a CR', `x ${piece}${BS}${BS}rsa_key.pem:12:${P}`, false],
       ['three backslashes', `x ${piece}${BS}${BS}${BS}notes${BS}${BS}${BS}a.pem:12:${P}`, false],
     ]
-    for (const [label, text, isBreak] of rows) {
+    for (const [label, text, isBreak, usualBreak = isBreak] of rows) {
       const i = text.search(/\\+[nr]|\\u000a|\\x0a|%0A|<br>/)
       expect(i, label).toBeGreaterThanOrEqual(0)
+      // (the module reads at the wide reading, as a text is first)
       const m = escapeAt(text, i)
       expect(m !== null, label).toBe(isBreak)
       if (isBreak) expect(text.startsWith((m as RegExpExecArray)[0], i), label).toBe(true)
+      // the usual reading, which is round 5's: a row only the wide reading takes as a path's is a break there; and with none every one is
+      expect(atReading(1, () => escapeAt(text, i)) !== null, `${label}, the usual reading`).toBe(usualBreak)
+      expect(atReading(0, () => escapeAt(text, i)) !== null, `${label}, no reading`).toBe(true)
+    }
+    // whatever the usual reading takes as a path's the wide one does too
+    for (const [label, text, isBreak, usualBreak = isBreak] of rows) {
+      if (!usualBreak) expect(isBreak, label).toBe(false)
     }
   })
 
@@ -4636,6 +4710,345 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
         }
       }
     }
+  })
+
+  // What a Windows name holds, after the n or r that the written-out break reads: `r123456`, `n8n`, `r-lib`, `new project`, `nodejs` in `Program Files (x86)`, the `@types` of a package folder.
+  const nameClasses: Record<string, string> = {
+    'digits': 'r123456',
+    'a name like n8n': 'n8n',
+    'a dash': 'r-lib',
+    'one digit': 'r2',
+    'a dash and a word': 'n-gram',
+    'brackets': 'r(x86)',
+    'a tilde': 'n~1',
+    'an @': 'n@x',
+    'a plus': 'r+1',
+    'a blank': 'new project',
+    'blanks': 'release notes and ideas',
+    'a bracket and a blank': 'repos (old)',
+    'a blank right after the letter': 'n 1',
+    'a folder named n': 'n',
+    'a folder named r': 'r',
+    'Unicode': `n${String.fromCharCode(0xf6)}te${String.fromCharCode(0x20ac)}`,
+    'a package scope': `node_modules${BS}@types${BS}react`,
+    'a folder with brackets in front of it': `Program Files (x86)${BS}nodejs`,
+    'a name of 121 characters': `r${'a'.repeat(120)}`,
+  }
+  const namedModes: Record<string, (p: string, ls: string[]) => string> = {
+    ...modes,
+    'findstr, indented lines': (p, ls) => ls.map((l) => `${p}:    ${l}`).join('\n'),
+  }
+  const pathOf = (name: string): string => win('C:', 'Users', 'dev', 'AzurePipelineTool', name, 'deploy.pem')
+
+  it('removes a key listed under a folder whose name starts with n or r and goes on with anything a Windows name can hold, with its END line and without', () => {
+    for (const format of ['pkcs8_rsa', 'enc_pkcs8', 'openssh', 'pgp_rsa_hdr', 'ssh2_real'] as Format[]) {
+      for (const [className, name] of Object.entries(nameClasses)) {
+        for (const [mode, write] of Object.entries(namedModes)) {
+          for (const withEnd of [true, false]) {
+            const label = `${format}/${className}/${mode}/${withEnd ? 'END' : 'no END'}`
+            const ls = withEnd ? K.F[format] : K.F[format].slice(0, -1)
+            const r = screenKeys('Found:\n' + write(pathOf(name), ls) + '\nDone.')
+            expect(leakedWindows(r.text, secretLinesOf(K.F[format])), label).toBe(0)
+            expect(Object.keys(r.removed), label).toEqual([EXPECT[format][0]])
+          }
+        }
+      }
+    }
+  })
+
+  it('removes a key listed under a file whose name starts with n or r, with a line number between colons, dashes or none', () => {
+    for (const format of ['pkcs8_rsa', 'openssh'] as Format[]) {
+      for (const name of ['r123456.pem', 'n8n.key', 'r-lib.pem', 'new project.pem', 'n(x86).pem', 'r.pem']) {
+        for (const [mode, write] of Object.entries(namedModes)) {
+          const label = `${format}/${name}/${mode}`
+          const r = screenKeys('Found:\n' + write(win('C:', 'Users', 'dev', 'AzurePipelineTool', name), K.F[format]) + '\nDone.')
+          expect(leakedWindows(r.text, secretLinesOf(K.F[format])), label).toBe(0)
+        }
+      }
+    }
+  })
+
+  it('removes the tail of a key whose BEGIN line is out of view, and a key an older computer cut, listed under such folders as it is written plainly', () => {
+    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'enc_pkcs8', 'openssh'] as Format[]) {
+      const cut = Math.min(Math.floor(K.F[format].length * 0.5), K.F[format].length - 4)
+      const tail = K.F[format].slice(cut)
+      for (const cutStart of [false, true]) {
+        const plain = screenKeys(tail.join('\n'), { cutStart })
+        expect(Object.keys(plain.removed), `${format}, plain lines`).toEqual([EXPECT[format][0]])
+        for (const [className, name] of Object.entries(nameClasses)) {
+          for (const [mode, write] of Object.entries(namedModes).slice(0, 5)) {
+            const label = `${format}/${className}/${mode}/${cutStart ? 'cut start' : 'top of the text'}`
+            const r = screenKeys(write(pathOf(name), tail), { cutStart })
+            expect(leakedWindows(r.text, secretLinesOf(tail)), label).toBe(0)
+            expect(Object.keys(r.removed), label).toEqual([EXPECT[format][0]])
+          }
+        }
+      }
+    }
+  })
+
+  it('removes a key file stored base64 encoded (a Secret\'s tls.key) listed under such folders', () => {
+    const sources: Record<string, string> = { 'a key file': K.k8s.plain, 'EC PARAMETERS first': K.k8s.ecParamsFirst, 'Bag Attributes first': K.k8s.bagAttributes }
+    for (const [sname, plain] of Object.entries(sources)) {
+      for (const width of [64, 76]) {
+        const ls = wrap(plain, width)
+        for (const [className, name] of Object.entries(nameClasses)) {
+          for (const [mode, write] of Object.entries(namedModes).slice(0, 5)) {
+            const label = `${sname}/${width}/${className}/${mode}`
+            const r = screenKeys('Found:\n' + write(win('C:', 'Users', 'dev', 'AzurePipelineTool', name, 'tls.key'), ls) + '\nDone.')
+            expect(r.removed, label).toEqual({ private_key_b64: 1 })
+            // (the last line of a file may be 8 characters, the end of the encoded END line: no key material)
+            expect(leakedWindows(r.text, ls.slice(1).filter((l) => l.length >= 16)), label).toBe(0)
+          }
+        }
+      }
+    }
+  })
+
+  it('reads a path the usual way where the lenient reading and the break reading both fail: single backslashes in the names, breaks written out, a name that starts with a digit or a dash', () => {
+    // The line breaks written out (`\n`, `\\n`) are followed by the next line's name, and the names hold single backslashes (`\dev\repos`). Read leniently (any name a
+    // Windows path can hold), a name that starts with a digit or a dash makes the break a folder named n; read with every `\r` and `\n` a break, the `\repos` and `\notes` in each name cut it.
+    // Only the usual reading (letters, digits, `_ . -`, a name that starts with a letter, a path that goes on with a listing's separator) tells the breaks from the folders. A key as it
+    // is and one of letters and digits only (a piece of a path at every break) are read.
+    for (const format of ['pkcs8_rsa', 'enc_pkcs8', 'openssh', 'pgp_rsa_hdr', 'pkcs1_rsa', 'ssh2_real'] as Format[]) {
+      for (const file of [K.F[format], plainOf(K.F[format])]) {
+        for (const joiner of [BS + BS + 'n', BS + 'n']) {
+          for (const tail of [win('dev', 'repos', 'tls.key'), win('notes', 'k.pem')]) {
+            const cases: Array<[string, (n: string, i: number) => string]> = [
+              ...['0', '9', '-'].map((first): [string, (n: string, i: number) => string] => [first, (n, i) => `${n}-${i + 1}-`]),
+              ...['0', '9', '-', 'Y'].map((first): [string, (n: string, i: number) => string] => [first, (n, i) => `${n}:${i + 1}:`]),
+            ]
+            for (const [first, frame] of cases) {
+              const name = `${first}AbCdEfGhIjKlMnOpQrStUvWxYz01${BS}${tail}`
+              const label = `${format}/${file === K.F[format] ? 'as it is' : 'letters and digits'}/${JSON.stringify(joiner)}/${first}/${tail}/${frame('n', 0)}`
+              const r = screenKeys(file.map((l, i) => frame(name, i) + l).join(joiner))
+              expect(leakedWindows(r.text, secretLinesOf(K.F[format])), label).toBe(0)
+              expect(r.flagged, label).toEqual({})
+              expect(Object.keys(r.removed).length, label).toBeGreaterThan(0)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('finds one key block for each BEGIN line, in order, whichever readings found it', () => {
+    // The readings of a text that has an escape the first one kept from being a break each find the key blocks of it (a block that takes the key, or one that only looks like it): a BEGIN line stays one
+    // block, or headless, which walks them in order and takes the END line inside one for its own, sees two where there is one and finds the tail of the key a second time, under the wrong one.
+    let cells = 0
+    for (const format of ['pkcs8_rsa', 'enc_pkcs8', 'openssh', 'pgp_rsa_hdr', 'pkcs1_rsa', 'ssh2_real'] as Format[]) {
+      for (const file of [K.F[format], plainOf(K.F[format])]) {
+        for (const joiner of [BS + BS + 'n', BS + 'n']) {
+          for (const first of ['0', 'Y', '-']) {
+            for (const tail of [win('dev', 'repos', 'tls.key'), win('notes', 'k.pem')]) {
+              for (const frame of [(n: string, i: number): string => `${n}-${i + 1}-`, (n: string): string => `${n}:    `, (n: string, i: number): string => `${n}:${i + 1}:`]) {
+                const name = `${first}AbCdEfGhIjKlMnOpQrStUvWxYz01${BS}${tail}`
+                const text = file.map((l, i) => frame(name, i) + l).join(joiner)
+                const begins = keySpans(text).blocks.map((x) => x.from)
+                expect(new Set(begins).size, `${format}/${JSON.stringify(joiner)}/${first}/${tail}/${frame('n', 0)}`).toBe(begins.length)
+                expect(begins, 'in order').toEqual([...begins].sort((x, y) => x - y))
+                cells++
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(cells).toBe(432)
+  })
+
+  it('joins the key blocks of two readings: one for each BEGIN line, the one that takes the key, or the one that reaches further, in the order of the text', () => {
+    const block = (from: number, cls: 'remove' | 'flag', to: number, scanEnd = to): KeyBlock => ({ rule: 'private_key', cls, why: cls === 'remove' ? 'pkcs8-complete' : 'pkcs8-example', from, to, scanEnd })
+    // a block of one reading is the block of the other's BEGIN line, and a block only one of them found is kept
+    expect(joinBlocks([block(10, 'remove', 90)], [block(10, 'remove', 90)])).toEqual([block(10, 'remove', 90)])
+    expect(joinBlocks([block(10, 'remove', 90), block(500, 'remove', 600)], [block(300, 'flag', 320)]).map((x) => x.from)).toEqual([10, 300, 500])
+    // (order of the text, where the second reading found one the first did not, and it falls between)
+    expect(joinBlocks([block(500, 'remove', 600)], [block(10, 'flag', 20), block(300, 'flag', 320)]).map((x) => x.from)).toEqual([10, 300, 500])
+    // the block that takes the key wins, in either order
+    expect(joinBlocks([block(10, 'flag', 40)], [block(10, 'remove', 90)])).toEqual([block(10, 'remove', 90)])
+    expect(joinBlocks([block(10, 'remove', 90)], [block(10, 'flag', 400)])).toEqual([block(10, 'remove', 90)])
+    // of two of one kind, the one that reaches further (its scan, or its end)
+    expect(joinBlocks([block(10, 'flag', 40)], [block(10, 'flag', 60)])).toEqual([block(10, 'flag', 60)])
+    expect(joinBlocks([block(10, 'flag', 60)], [block(10, 'flag', 40)])).toEqual([block(10, 'flag', 60)])
+    expect(joinBlocks([block(10, 'remove', 40, 200)], [block(10, 'remove', 90, 90)])).toEqual([block(10, 'remove', 40, 200)])
+    // (equal: the first one stays)
+    const one = { ...block(10, 'flag', 40), why: 'first' }
+    expect(joinBlocks([one], [{ ...one, why: 'second' }])).toEqual([one])
+    expect(joinBlocks([], [])).toEqual([])
+  })
+
+  it('counts a flag that more than one reading found once', () => {
+    // A BEGIN line with no key under it, listed under a path whose `\notes` the first two readings keep from being a break: three readings find the same flag, and the note says one.
+    const path = win('C:', 'Users', 'dev', 'AzurePipelineTool', 'notes', 'a.pem')
+    const cases = [
+      [`${path}:1:-----BEGIN PRIVATE KEY-----`],
+      [`${path}:1:-----BEGIN PRIVATE KEY-----`, `${path}:2:-----END PRIVATE KEY-----`],
+      ['-----BEGIN PRIVATE KEY-----', ...Array.from({ length: 6 }, () => 'AbCd'.repeat(16)), '-----END PRIVATE KEY-----'].map((l, i) => `${path}:${i + 1}:${l}`),
+    ]
+    for (const lines of cases) {
+      const r = screenKeys(lines.join('\n'))
+      expect(r.flagged, lines[0]).toEqual({ private_key: 1 })
+      expect(r.removed, lines[0]).toEqual({})
+    }
+  })
+
+  it('keeps the breaks of a listing in a JSON string whose lines start with a clock time, a timestamp, a name and a number or a few words, when no path follows them', () => {
+    const frames: Record<string, (l: string, i: number) => string> = {
+      'a clock time': (l, i) => `12:${String(10 + (i % 50))}:07 ${l}`,
+      'a timestamp': (l, i) => `2026-11-02T10:11:${String(10 + (i % 50))}.123456789Z ${l}`,
+      'a word, a colon and a number': (l, i) => `line:${i + 1}: ${l}`,
+      'a few words': (l, i) => `step ${i + 1} of the run: ${l}`,
+    }
+    for (const format of ['pkcs8_rsa', 'openssh', 'pgp_rsa_hdr'] as Format[]) {
+      for (const [fname, frame] of Object.entries(frames)) {
+        const ls = K.F[format]
+        const r = screenKeys('{"stdout": "' + ls.map(frame).join('\\n') + '"}')
+        expect(Object.keys(r.removed), `${format}/${fname}`).toEqual([EXPECT[format][0]])
+        expect(r.flagged, `${format}/${fname}`).toEqual({})
+        expect(leakedWindows(r.text, secretLinesOf(ls)), `${format}/${fname}`).toBe(0)
+      }
+    }
+  })
+})
+
+describe('T1 K1: a listing whose lines are joined by written-out line breaks, whatever name its frame starts with', () => {
+  // `\n` is a line break in a JSON string (every MCP tool result) and the backslash and letter of a folder that starts with n in a Windows path (`\notes`). pathEscape reads
+  // it as the second when the text after it looks like a listing's prefix and the piece in front of it looks like the end of a path. In a listing joined by written-out breaks
+  // EVERY break meets both: the next key line's own frame follows it (`id.pem-2-`, `values.yaml:2:    `, a pod name with a number in it), and the end of a base64 line is a
+  // piece of a path (letters and digits) that stands after the backslash of the break before it. The breaks were read as a path's, the key's lines glued into one run, and the
+  // key only reported, with every line of it crossing. A text with an escape read as a path's is read the other way too, and what the two readings find is joined.
+  const BS = '\\'
+  const NL = BS + 'n'
+  const dbl = (s: string): string => s.split(BS).join(BS + BS)
+  const names: Record<string, string> = { 'a bare name': 'id.pem', 'a relative Windows name': `keys${BS}id.pem`, 'a dotted name': '.env', 'a name with a dash': 'my-key.pem' }
+  const frames: Record<string, (name: string, i: number, l: string) => string> = {
+    'rg -C context lines': (n, i, l) => `${n}-${i + 1}-${l}`,
+    'rg -n of an indented YAML key': (n, i, l) => `${n}:${i + 1}:    ${l}`,
+    'rg -n of a tab-indented key': (n, i, l) => `${n}:${i + 1}:\t${l}`,
+    'a pod name with a number in it, a container, then the line (stern, kubectl logs)': (_n, _i, l) => `cronjob-27890123-x7q2p app ${l}`,
+    'a job step with its number between dashes': (_n, i, l) => `step-${i + 1}-log ${l}`,
+    'a file, a line number and a word before the line': (n, i, l) => `${n}:${i + 1}: info ${l}`,
+  }
+  const joiners: Record<string, string> = { 'written out': NL, 'written out twice': BS + NL }
+  const formats: Format[] = ['pkcs8_rsa', 'pkcs1_rsa', 'enc_pkcs8', 'rsa_legacy_enc', 'openssh', 'dsa', 'pkcs8_ec', 'pkcs8_ed25519', 'pgp_rsa_hdr', 'ssh2_real']
+  const listing = (ls: string[], frame: (n: string, i: number, l: string) => string, name: string, sep: string): string => '{"stdout": "' + ls.map((l, i) => dbl(frame(name, i, l))).join(sep) + '"}'
+
+  it('removes the key whatever its first lines are, in a JSON string (one and two backslashes), with its END line and without', () => {
+    for (const format of formats) {
+      for (const file of [K.F[format], plainOf(K.F[format])]) {
+        for (const [nm, name] of Object.entries(names)) {
+          for (const [fname, frame] of Object.entries(frames)) {
+            for (const [jname, sep] of Object.entries(joiners)) {
+              for (const withEnd of [true, false]) {
+                const ls = withEnd ? file : file.slice(0, -1)
+                const label = `${format}${file === K.F[format] ? '' : ' (letters and digits only)'}/${nm}/${fname}/${jname}/${withEnd ? 'END' : 'no END'}`
+                const r = screenKeys(listing(ls, frame, name, sep))
+                expect(leakedWindows(r.text, secretLinesOf(file)), label).toBe(0)
+                expect(Object.keys(r.removed), label).toEqual([EXPECT[format][0]])
+              }
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('removes it once, with no flag left beside its marker, in the readings of both ways', () => {
+    for (const format of ['pkcs8_rsa', 'openssh', 'pgp_rsa_hdr'] as Format[]) {
+      for (const file of [K.F[format], plainOf(K.F[format])]) {
+        for (const [fname, frame] of Object.entries(frames)) {
+          const r = screenKeys(listing(file, frame, 'id.pem', NL))
+          expect(r.removed, `${format}/${fname}`).toEqual({ [EXPECT[format][0]]: 1 })
+          expect(r.flagged, `${format}/${fname}`).toEqual({})
+          expect(r.text.split('[REDACTED:').length - 1, `${format}/${fname}`).toBe(1)
+        }
+      }
+    }
+  })
+
+  it('removes the tail of a key whose BEGIN line is out of view, and a key an older computer cut inside such a listing, when its END line is in what arrived', () => {
+    for (const format of ['pkcs8_rsa', 'pkcs1_rsa', 'enc_pkcs8', 'openssh'] as Format[]) {
+      for (const ls of [K.F[format], plainOf(K.F[format])]) {
+        for (const [fname, frame] of Object.entries(frames)) {
+          for (const [jname, sep] of Object.entries(joiners)) {
+            const parts = ls.map((l, i) => dbl(frame('id.pem', i, l)))
+            const mid = Math.floor(ls.length / 2)
+            // (the text starts inside a line, 20 characters from its start, half way down)
+            const from = parts.slice(0, mid).join(sep).length + sep.length + 20
+            const full = parts.join(sep)
+            const secret = ls.slice(mid + 1).filter((l) => l.length >= 16 && !l.startsWith('-----'))
+            const r = screenKeys(full.slice(from), { cutStart: true })
+            expect(leakedWindows(r.text, secret), `${format}/${fname}/${jname}`).toBe(0)
+          }
+        }
+      }
+    }
+  })
+
+  it('removes a legacy encrypted PEM key an older computer cut inside its DEK-Info line or the blank line under it, listed like that: the lines above the key lines are split in both readings too', () => {
+    const lines = K.F.rsa_legacy_enc
+    for (const [fname, frame] of Object.entries(frames)) {
+      for (const [jname, sep] of Object.entries(joiners)) {
+        const listing = lines.map((l, i) => dbl(frame('id.pem', i, l))).join(sep)
+        const at = listing.indexOf('DEK-Info')
+        for (const off of [3, 12, 25, 40]) {
+          for (const prefix of ['', '\u2026']) {
+            const label = `${fname}/${jname}/${off} characters into the DEK-Info line`
+            const r = screenKeys(prefix + listing.slice(at + off), { cutStart: true })
+            expect(r.removed, label).toEqual({ private_key: 1 })
+            expect(leakedWindows(r.text, secretLinesOf(lines)), label).toBe(0)
+          }
+        }
+      }
+    }
+  })
+
+  it('removes a key the cut of an answer to its end ran through, whether the BEGIN line is in the kept end or not', () => {
+    const filler = Array.from({ length: 80 }, (_, i) => `src/app/service${i}.ts:${i + 3}:  const retries = ${i} // plain text before the listing`).join('\n') + '\n'
+    for (const format of ['pkcs8_rsa', 'enc_pkcs8', 'openssh'] as Format[]) {
+      for (const file of [K.F[format], plainOf(K.F[format])]) {
+        for (const [fname, frame] of Object.entries(frames)) {
+          const text = filler + listing(file, frame, 'id.pem', NL)
+          // the cut falls before the key, inside it (a third and two thirds of the way down), and the whole listing is kept
+          for (const keep of [text.length - filler.length + 100, Math.floor((text.length - filler.length) * 0.66), Math.floor((text.length - filler.length) * 0.33), 3999]) {
+            const r = screenKeys(text, { keep })
+            expect(leakedWindows(r.text, secretLinesOf(file)), `${format}/${fname}/keep ${keep}`).toBe(0)
+          }
+        }
+      }
+    }
+  })
+
+  it('removes a key file stored base64 encoded (a Secret\'s tls.key) listed like that: the file is judged on what it decodes to, in the same two readings', () => {
+    const encoded = wrap(K.k8s.plain, 64)
+    const forms: Record<string, (l: string, i: number) => string> = {
+      'tls.key-N-': (l, i) => `tls.key-${i + 1}-${l}`,
+      'values.yaml:N: and four blanks': (l, i) => `values.yaml:${i + 1}:    ${l}`,
+      'stern': (l) => `cronjob-27890123-x7q2p app ${l}`,
+    }
+    for (const [name, frame] of Object.entries(forms)) {
+      for (const sep of Object.values(joiners)) {
+        const body = encoded.map((l, i) => frame(l, i)).join(sep)
+        const bare = screenKeys(body)
+        expect(bare.removed, name).toEqual({ private_key_b64: 1 })
+        expect(leakedWindows(bare.text, encoded), name).toBe(0)
+        // in a JSON string the text before the first line is no frame of it, and the first line (the encoded BEGIN line and the DER header: nothing private) stays, as it did
+        // before the second reading (round 4): the rest of the file is removed
+        const json = screenKeys('{"stdout": "' + body + '"}')
+        expect(json.removed, name).toEqual({ private_key_b64: 1 })
+        expect(leakedWindows(json.text, encoded.slice(1)), name).toBe(0)
+      }
+    }
+  })
+
+  it('removes two keys of one text, one listed under a Windows path whose folder starts with n and one listed in a JSON string: neither reading alone finds both', () => {
+    const p = ['C:', 'Users', 'dev', 'AzurePipelineTool', 'notes', 'deploy.pem'].join(BS)
+    const a = K.F.pkcs8_rsa
+    const b = plainOf(K.F.pkcs1_rsa)
+    const text = 'Output:\n' + a.map((l, i) => `${p}:${i + 1}:${l}`).join('\n') + '\nThen:\n' + listing(b, frames['rg -C context lines'], 'id.pem', NL) + '\nDone.'
+    const r = screenKeys(text)
+    expect(r.removed).toEqual({ private_key: 2 })
+    expect(leakedWindows(r.text, [...secretLinesOf(a), ...secretLinesOf(b)])).toBe(0)
   })
 })
 
