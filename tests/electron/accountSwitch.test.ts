@@ -1568,3 +1568,80 @@ describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
     expect(probeAt).toBeLessThanOrEqual(PROMPT_REPORT_WAIT_MS + POLL_MS * 2)
   })
 })
+
+// SW2-7 / MODELS-R2-1, the other half: where no sacrificial key goes in because the screen still draws an agent's box, the
+// receiver can be the SHELL (ConPTY leaves an exited agent's last frame on screen), with text the user left on its line. The
+// first part of the line is then typed after it, so it is proven to be the shell that holds it, and only then is the line
+// cleared and the ordinary steps run: the line entered is the account line, never what was left joined to it.
+describe('the first part of the line typed at a shell that still shows the agent\'s last frame (SW2-7)', () => {
+  const E_ = '\u001b'
+  const LINE_S = `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --resume ${ID}`
+
+  function staleFrameShell(leftover: string, family: 'posix' | 'powershell' | 'cmd') {
+    let now = 0
+    const rule = '─'.repeat(80)
+    const frame = `${E_}[H${E_}[2J` + [rule, '❯ ', rule, '  ? for shortcuts'].map((r, i) => `${E_}[${i + 1};1H${r}`).join('')
+    let raw = frame + `${E_}[6;1H$ ${leftover}`
+    let typed = leftover
+    let row = 6
+    const ran: string[] = []
+    const writes: string[] = []
+    const clearKey = LINE_CLEAR[family]
+    const io: SwitchIO = {
+      output: () => ({ raw, end: raw.length }),
+      outputFrom: (_id, from) => raw.slice(Math.min(from, raw.length)),
+      end: () => raw.length,
+      size: () => ({ cols: 80, rows: 12 }),
+      write: (_id, d) => {
+        writes.push(d)
+        if (d === clearKey) {
+          typed = ''
+          raw += `${E_}[${row};1H$ ${E_}[K`
+        } else if (d === '\r') {
+          ran.push(typed)
+          typed = ''
+          row++
+          raw += `\r\n${E_}[${row};1H$ `
+        } else {
+          typed += d
+          raw += d
+        }
+      },
+      sleep: async (ms) => { now += ms },
+      now: () => now,
+    }
+    return { io, ran, writes }
+  }
+
+  it.each(['posix', 'powershell', 'cmd'] as const)('runs the account line clean, and the text left on the line is cleared first (%s)', async (family) => {
+    const s = staleFrameShell('rm -rf ', family)
+    const r = await typeAtPrompt(s.io, 't1', family, LINE_S, 0, Infinity, false)
+    expect(r.outcome).toBe('entered')
+    // The sacrificial Enter ran an empty line; the line that ran is the account line alone.
+    expect(s.ran).toEqual(['', LINE_S])
+    expect(s.ran.join('\n')).not.toContain('rm -rf')
+    // The probe went in first, alone, before any key that is not text.
+    expect(s.writes[0]).toBe(LINE_S.slice(0, ECHO_PROBE_CHARS))
+    expect(s.writes[1]).toBe(LINE_CLEAR[family])
+  })
+
+  it('takes the probe back out, and enters nothing, when no shell line ever shows it', async () => {
+    let now = 0
+    const writes: string[] = []
+    const rule = '─'.repeat(80)
+    const raw = `${E_}[H${E_}[2J` + [rule, '❯ ', rule, '  ? for shortcuts'].map((r, i) => `${E_}[${i + 1};1H${r}`).join('')
+    const io: SwitchIO = {
+      output: () => ({ raw, end: raw.length }),
+      outputFrom: (_id, from) => raw.slice(Math.min(from, raw.length)),
+      end: () => raw.length,
+      size: () => ({ cols: 80, rows: 12 }),
+      write: (_id, d) => { writes.push(d) },
+      sleep: async (ms) => { now += ms },
+      now: () => now,
+    }
+    const r = await typeAtPrompt(io, 't1', 'powershell', LINE_S, 0, Infinity, false)
+    expect(r.outcome).toBe('didnt-start')
+    expect(writes).toEqual([LINE_S.slice(0, ECHO_PROBE_CHARS), LINE_CLEAR.powershell])
+    expect(writes).not.toContain('\r')
+  })
+})

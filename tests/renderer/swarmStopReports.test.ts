@@ -289,6 +289,8 @@ describe('carryWorkerStop', () => {
     for (let i = 0; i < 4; i++) await noteWorkerStatus(w, IDLE)
     await noteWorkerStatus(w, { status: 'blocked', summary: 'usage limit reached (resets 4pm)' })
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(1)
+    // At work for two reads in a row ends it (CARRIED_WORKING_READS): one frame that reads as work is not enough (SWARM-R2 F6).
+    await noteWorkerStatus(w, WORKING)
     await noteWorkerStatus(w, WORKING)
     await noteWorkerStatus(w, LIMIT)
     expect(window.swarmAPI.sendMessage).toHaveBeenCalledTimes(2)

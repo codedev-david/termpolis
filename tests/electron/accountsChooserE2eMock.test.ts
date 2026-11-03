@@ -31,6 +31,7 @@ import { stopKind } from '../../src/shared/agentStatusDetector'
 import { _resetSignInSessionsForTest, endSignIns, signInInput, startSignInSession } from '../../src/main/signInSession'
 import type { PtyLike, SessionDeps } from '../../src/main/signInSession'
 import { killProcessTree } from '../../src/main/processTree'
+import { shellAlone } from '../../src/main/shellAlone'
 import type { SignInPhase, SignInState } from '../../src/shared/signInScreens'
 
 const pty = loadPty()
@@ -237,6 +238,53 @@ describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, rea
         const again = lookForLimit(t.io(), ID, { ...recorded!.start, agent: 'claude', time: Date.now() }, Date.now())
         expect(again).toMatchObject({ live: true, turned: false })
         expect(stopKind(again.status)).toBe('limit')
+      }, 120_000)
+
+      // SW2-10: no committed real-PTY test wired the OS's own word on whether the agent is gone (shellAlone.ts, node-pty's console list
+      // on Windows), which is the production switch's primary exit evidence: the cases here and above run on the screen's word alone.
+      // The same switch, with that word wired in as main wires it, and every answer it gave kept for a failure to be read by.
+      it.skipIf(process.platform !== 'win32')('Claude Code: the switch exits and resumes the session with the OS\'s own word on the exit wired in', async () => {
+        const { h, accounts } = world()
+        const t = await openShell(shell, h)
+        const A = accounts.claudeMain
+        const B = accounts.claudeSide
+        const built = accountLine(shell.family, accountEnv(A, 'claude'), `claude --session-id ${SESSION}`)
+        if ('refused' in built) throw new Error(built.refused)
+        const start = launch(t, built.line, 'claude')
+        await untilBox(t, 'the mock Claude Code box')
+        const answers: Array<boolean | null> = []
+        const writes: string[] = []
+        const io = {
+          ...t.io(writes),
+          shellAlone: async () => {
+            const alone = await shellAlone(t.pid, shell.file)
+            answers.push(alone)
+            return alone
+          },
+        }
+        const projectsA = join(h.home, '.claude', 'projects')
+        const projectsB = join(h.claudeSide, 'projects')
+        const outcome = await runAccountSwitch({ terminalId: ID, targetId: B.id, shellType: shell.shellType }, {
+          io,
+          target: B,
+          agent: 'claude',
+          source: A,
+          start,
+          sessionId: SESSION,
+          hasTranscript: (id) => findTranscript([projectsA, projectsB], id) !== null,
+          carry: (id) => {
+            const r = carryTranscript([projectsA], projectsB, id, Date.now())
+            return r.kind === 'carried' ? { carried: true, ...(r.kept ? { kept: r.kept } : {}) } : { carried: false }
+          },
+          newSessionId: () => randomUUID(),
+          record: () => undefined,
+        })
+        expect(outcome, `${debug(t)}\nOS answers: ${JSON.stringify(answers)}`).toMatchObject({ kind: 'switched', resumed: true, sessionId: SESSION })
+        // The OS was asked, and it said "still running" or "gone" (never nothing at all for every ask).
+        expect(answers.length).toBeGreaterThan(0)
+        expect(answers.some((a) => a !== null)).toBe(true)
+        expect(eventsOf(h, 'claude').find((e) => e.event === 'resume')).toMatchObject({ session: SESSION, profile: '.claude-b' })
+        expect(writes.join('')).not.toMatch(/[\u0003\u0004]/)
       }, 120_000)
 
       it('Claude Code: its rate-limit menu is read as a limit, and the switch closes the menu with Esc before it types the exit command', async () => {

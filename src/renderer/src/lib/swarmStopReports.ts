@@ -33,7 +33,12 @@ export interface SwarmWorker {
  *  the resumed session can draw again (R4). Only the worker read at work ends it, or the same stop
  *  seen once this says the worker took a turn since (a prompt the conductor sent it): then it is a
  *  new one. */
-const stopped = new Map<string, { key: string; clear: number; carried?: () => Promise<boolean> }>()
+const stopped = new Map<string, { key: string; clear: number; carried?: () => Promise<boolean>; working?: number }>()
+
+/** How many reads in a row at work end a stop carried across a restart. The resumed session draws a frame that reads as work
+ *  (its history half drawn, a repaint after the pane was resized) before it settles on the limit it stopped at, and one such
+ *  frame must not make that limit a new stop, which would tell the conductor to close the worker that was just restarted. */
+export const CARRIED_WORKING_READS = 2
 
 /** Who may take a new usage limit over from the report (the swarm restart offer, §9): true when it
  *  did, and told the conductor itself. `words` reads the CLI's own words for the limit off the
@@ -62,15 +67,21 @@ export async function noteWorkerStatus(worker: SwarmWorker, result: AgentStatusR
     // It got going, or showed no stop for long enough: a stop after this is another one. A stop
     // carried across a restart ends only once the worker is at work.
     if (last && result.status === 'working') {
+      if (last.carried && (last.working = (last.working ?? 0) + 1) < CARRIED_WORKING_READS) return
       stopped.delete(worker.terminalId)
       // An addition to v1.54.0's report: whatever goes wrong inside it, the stop has ended all the same.
       try { await workingAgain?.(worker) } catch { /* nothing waits on it */ }
-    } else if (last && !last.carried && ++last.clear >= READS_TO_CLEAR) stopped.delete(worker.terminalId)
+    } else if (last) {
+      // Not at work: a run of reads at work is broken.
+      last.working = 0
+      if (!last.carried && ++last.clear >= READS_TO_CLEAR) stopped.delete(worker.terminalId)
+    }
     return
   }
   const key = stopKey(result.summary)
   if (last && last.key === key && !(last.carried && (await last.carried()))) {
     last.clear = 0
+    last.working = 0
     return
   }
   stopped.set(worker.terminalId, { key, clear: 0 })

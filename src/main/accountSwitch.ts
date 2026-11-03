@@ -520,29 +520,41 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   // No wait here outlasts the lock the switch holds the terminal under: a shell that reads a long line
   // very slowly is given up on at its end, not minutes later (SWITCH-R1 G1).
   const wait = (ms: number): number => Math.min(ms, until - io.now())
-  // The line cleared and a sacrificial Enter, to learn that the shell reads input. Not where the screen still draws an
-  // agent's box and shows nothing of the shell: on a live agent with a draft that Enter would submit it, where Esc (the
-  // PowerShell and cmd clear) does not empty the box. The first part of the line is typed and looked at instead
-  // (SW2-7, MODELS-R2-1), and what lands in a box is taken back out of it.
+  // Where the screen still draws an agent's box and shows nothing of the shell (SW2-7, MODELS-R2-1), the receiver of a key is
+  // not known: a sacrificial Enter would submit a draft in a live agent's box, and the line clear PowerShell and cmd use (Esc)
+  // interrupts a turn at work. The first part of the line alone is typed and looked at. Where it lands in an agent's box it is
+  // taken back out of it (the draft with it, never submitted). Where it lands at the shell, the receiver is proven to be the
+  // shell, which a clear and an Enter are safe for: the line is cleared (what was left on it goes with the probe) and the
+  // ordinary steps run, from the start.
+  if (!sacrifice) {
+    const at = io.end(id)
+    const probe = line.slice(0, ECHO_PROBE_CHARS)
+    io.write(id, probe)
+    const where = await waitFor(io, wait(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS), () => landed(look(io, id), probe, io.outputFrom(id, at)))
+    if (where === 'box') {
+      io.write(id, CLEAR_BOX_KEYS)
+      return { outcome: 'agent-alive' }
+    }
+    io.write(id, LINE_CLEAR[family])
+    return where === 'shell' ? typeAtPrompt(io, id, family, line, mark, until, true) : { outcome: 'didnt-start' }
+  }
   // Whether this terminal's own shell reports its prompts: its report is then what says the prompt is drawn.
   const reporting = ownShellHeard(io, id, family)
-  if (sacrifice) {
-    io.write(id, LINE_CLEAR[family])
-    const before = io.end(id)
-    io.write(id, '\r')
-    // The prompt's report, or the shell gone quiet: input is being read (ConPTY can drop the first
-    // byte typed before that, aiProfiles.ts). Where the shell reports, silence only means it is busy
-    // drawing its prompt, so the report is waited for (SW2-5).
-    let last = -1
-    await waitFor(io, wait(reporting ? PROMPT_REPORT_WAIT_MS : PROMPT_WAIT_MS), () => {
-      const out = io.outputFrom(id, before)
-      if (out.search(PROMPT_REPORT) >= 0) return true
-      if (reporting) return false
-      const quiet = out.length > 0 && out.length === last
-      last = out.length
-      return quiet
-    })
-  }
+  io.write(id, LINE_CLEAR[family])
+  const before = io.end(id)
+  io.write(id, '\r')
+  // The prompt's report, or the shell gone quiet: input is being read (ConPTY can drop the first
+  // byte typed before that, aiProfiles.ts). Where the shell reports, silence only means it is busy
+  // drawing its prompt, so the report is waited for (SW2-5).
+  let last = -1
+  await waitFor(io, wait(reporting ? PROMPT_REPORT_WAIT_MS : PROMPT_WAIT_MS), () => {
+    const out = io.outputFrom(id, before)
+    if (out.search(PROMPT_REPORT) >= 0) return true
+    if (reporting) return false
+    const quiet = out.length > 0 && out.length === last
+    last = out.length
+    return quiet
+  })
   // A shell of another family reported since: a shell started inside this one, which the line
   // built for this terminal's shell doesn't fit (R1: only such a positive mismatch refuses).
   if (nestedShellReported(io.outputFrom(id, mark), family, reporting)) return { outcome: 'mismatch' }

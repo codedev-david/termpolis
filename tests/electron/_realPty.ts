@@ -127,6 +127,11 @@ export class RealTerminal {
     this.proc.onExit((e) => { this.exitCode = e.exitCode })
   }
 
+  /** The shell's process id: what the OS is asked about (shellAlone.ts). */
+  get pid(): number {
+    return this.proc.pid
+  }
+
   write(data: string): void {
     this.trace.push(`+${Date.now() - this.t0} W ${JSON.stringify(data.slice(0, 80))}`)
     if (!this.dead) this.proc.write(data)

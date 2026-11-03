@@ -3,7 +3,7 @@
 // restart, which only work ends (R4). The swarm bus is a stub: messages are what the conductor would read.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
-  READS_TO_CLEAR, _resetStopReportsForTest, carryIfStopped, carryWorkerStop, isStopCarried, noteWorkerStatus, reportWorkerStop, setSwarmWorkingAgain, stopMark,
+  CARRIED_WORKING_READS, READS_TO_CLEAR, _resetStopReportsForTest, carryIfStopped, carryWorkerStop, isStopCarried, noteWorkerStatus, reportWorkerStop, setSwarmWorkingAgain, stopMark,
 } from '../../src/renderer/src/lib/swarmStopReports'
 
 const W = { terminalId: 'w1', agentName: 'Claude', role: 'Build UI' }
@@ -79,12 +79,41 @@ describe('a stop carried across a restart (R4)', () => {
     expect(sent()).toHaveLength(1)
   })
 
-  it('is ended by the worker seen at work', async () => {
+  it('is ended by the worker seen at work for CARRIED_WORKING_READS reads in a row', async () => {
     carryWorkerStop('w1', 'usage limit reached (resets 3pm)', async () => false)
+    for (let i = 0; i < CARRIED_WORKING_READS - 1; i++) await noteWorkerStatus(W, WORKING)
+    expect(await isStopCarried('w1')).toBe(true)
     await noteWorkerStatus(W, WORKING)
     expect(await isStopCarried('w1')).toBe(false)
     await noteWorkerStatus(W, LIMIT)
     expect(sent()).toHaveLength(1)
+  })
+
+  // SWARM-R2 F6: the resumed session draws a frame that reads as work (its history half drawn, a repaint after a resize) before it
+  // settles on its old limit. One such frame is no turn, and the limit drawn after it is still the one carried: the conductor is
+  // not told to close the worker that was just restarted.
+  it('is not ended by one frame that reads as work between two of its limit', async () => {
+    carryWorkerStop('w1', 'usage limit reached (resets 3pm)', async () => false)
+    await noteWorkerStatus(W, LIMIT)
+    await noteWorkerStatus(W, WORKING)
+    await noteWorkerStatus(W, LIMIT)
+    expect(sent()).toEqual([])
+    expect(await isStopCarried('w1')).toBe(true)
+    // The run is counted afresh after it: one more frame at work, and still carried.
+    await noteWorkerStatus(W, WORKING)
+    expect(await isStopCarried('w1')).toBe(true)
+    await noteWorkerStatus(W, LIMIT)
+    expect(sent()).toEqual([])
+  })
+
+  it('does not count a quiet read between two at work as a run of them', async () => {
+    carryWorkerStop('w1', 'usage limit reached (resets 3pm)', async () => false)
+    await noteWorkerStatus(W, WORKING)
+    await noteWorkerStatus(W, IDLE)
+    await noteWorkerStatus(W, WORKING)
+    expect(await isStopCarried('w1')).toBe(true)
+    await noteWorkerStatus(W, WORKING)
+    expect(await isStopCarried('w1')).toBe(false)
   })
 
   it('is carried by a worker switched by hand only if it shows a stop', async () => {
