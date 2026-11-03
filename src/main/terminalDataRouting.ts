@@ -23,8 +23,9 @@
 //     this only matters to a developer's Ctrl+R (a wall clock stepped back by more than the time between two loads would
 //     make that reload's announcements look old: the kill switch below is the way out);
 //   * a window main is not tracking is sent everything;
-//   * ANY malformed announcement turns routing off for the rest of the process: the one thing that must never happen
-//     is a pane that is not sent its output, so a message that cannot be understood is never guessed at;
+//   * ANY malformed announcement, and a page that announces more than MAX_LISTENED_IDS terminals at once (no real window
+//     holds that many panes: such a page is broken), turns routing off for the rest of the process: the one thing that
+//     must never happen is a pane that is not sent its output, so a message that cannot be understood is never guessed at;
 //   * TERMPOLIS_TERMINAL_DATA_ROUTING=0 in the environment turns it off at start.
 
 export interface TerminalDataTarget {
@@ -58,6 +59,9 @@ export interface TerminalDataRouting {
 
 /** A terminal id is a uuid or a short name; anything longer is not one. */
 const MAX_ID_LENGTH = 512
+
+/** More terminals than this announced at once and routing gives up (see above). The app caps its own terminals far below it. */
+export const MAX_LISTENED_IDS = 4096
 
 /**
  * The first chunks of a terminal nothing has announced are sent anyway. A launch subscribes to every terminal a moment after
@@ -98,7 +102,7 @@ export function createTerminalDataRouting(opts: { enabled?: boolean } = {}): Ter
   let poisoned = false
   let sent = 0
   let skipped = 0
-  /** Chunks sent under the grace, per terminal never announced; GRACE_CHUNKS means used up (an announced id is marked so). */
+  /** Grace chunks used per terminal; GRACE_CHUNKS means used up (an announced id is marked so). Insertion order = recency of update. */
   const graced = new Map<string, number>()
 
   const wants = (sender: number | undefined, id: string): boolean => {
@@ -107,12 +111,18 @@ export function createTerminalDataRouting(opts: { enabled?: boolean } = {}): Ter
     return listening.all || listening.ids.has(id)
   }
 
+  /** Record how much of a terminal's grace is used, and forget the terminal that was updated longest ago past the bound. */
+  const remember = (id: string, used: number): void => {
+    graced.delete(id)
+    graced.set(id, used)
+    if (graced.size > MAX_GRACED_IDS) graced.delete(graced.keys().next().value as string)
+  }
+
   /** Spend one of the terminal's grace chunks, if it has any left. */
   const spendGrace = (id: string): boolean => {
     const used = graced.get(id) ?? 0
     if (used >= GRACE_CHUNKS) return false
-    graced.set(id, used + 1)
-    if (graced.size > MAX_GRACED_IDS) graced.delete(graced.keys().next().value as string)
+    remember(id, used + 1)
     return true
   }
 
@@ -138,9 +148,13 @@ export function createTerminalDataRouting(opts: { enabled?: boolean } = {}): Ter
       } else {
         const id = a.id as string
         // A terminal the page has spoken of has no grace left: it is listened to, or it was and is not any more.
-        graced.set(id, GRACE_CHUNKS)
+        remember(id, GRACE_CHUNKS)
         if (on) listening.ids.add(id)
         else listening.ids.delete(id)
+        if (listening.ids.size > MAX_LISTENED_IDS) {
+          poisoned = true
+          listening = null
+        }
       }
     },
     send(target, id, data, end) {

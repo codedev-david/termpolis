@@ -100,9 +100,13 @@ async function run(page: Page, command: string): Promise<void> {
   await page.keyboard.press('Enter')
 }
 
-/** Print numbered lines for `ms` milliseconds, then a sentinel (two strings, so the echo cannot match) that carries the line count. */
+/**
+ * Print numbered lines for `ms` milliseconds, 200 every 50 ms (about 4,000 a second, 430 KB/s: the same on a fast pty and a slow
+ * one, so the terminal is still printing when the spec hides it, and the renderer is not handed hundreds of MB), then a sentinel
+ * (two strings, so the echo cannot match) that carries the line count.
+ */
 const flood = (tag: string, ms: number): string =>
-  `node -e "const e=Date.now()+${ms};let i=0;while(Date.now()<e){console.log('${tag}'+i+' '+'x'.repeat(100));i++}console.log('${tag}-'+'DONE'+i)"`
+  `node -e "const e=Date.now()+${ms};let i=0;const t=setInterval(()=>{for(let k=0;k<200;k++){console.log('${tag}'+i+' '+'x'.repeat(100));i++}if(Date.now()>=e){clearInterval(t);console.log('${tag}-'+'DONE'+i)}},50)"`
 
 /** Count the mutations of every pane's DOM-renderer rows, by pane order (panes are mounted in creation order). Returns how many panes. */
 async function observeRows(page: Page): Promise<number> {
@@ -167,12 +171,11 @@ test.describe.serial('Hidden panes in the real app', () => {
   test('2. a pane hidden the way the app hides it gets no row paints while it prints, and it is right when shown', async () => {
     // C is in front. Print in it first, so the observer is proven against a pane that IS painting.
     const panes = await observeRows(page)
-    expect(panes).toBe(3)
+    test.skip(panes !== 3, 'a GPU renderer draws no rows into the DOM: nothing to count here (the unit and harness numbers stand)')
     await run(page, flood('V', 1500))
     await expect.poll(() => terminalText(page), { timeout: 60_000 }).toMatch(/V-DONE\d+/)
     const visibleMutations = (await rowMutations(page))[2]
-    test.skip(visibleMutations === 0, 'a GPU renderer draws no rows into the DOM: nothing to count here (the unit and harness numbers stand)')
-    expect(visibleMutations).toBeGreaterThan(0)
+    expect(visibleMutations, 'the observer must see the pane that IS painting, or "0 while hidden" proves nothing').toBeGreaterThan(0)
 
     // Now print in C for several seconds and bring A to the front while it prints: C is hidden for nearly all of it.
     await run(page, flood('H', 5000))
@@ -190,7 +193,9 @@ test.describe.serial('Hidden panes in the real app', () => {
     const count = Number(/H-DONE(\d+)/.exec(text)![1])
     const numbers = Array.from(text.matchAll(/H(\d+) x{100}/g), (m) => Number(m[1]))
     expect(count).toBeGreaterThan(100)
-    expect(numbers.length).toBeGreaterThanOrEqual(Math.min(count, 9000))
+    // The scrollback keeps the last 10,000 ROWS, and a 106-character line may wrap into two on a narrow pane: so the number
+    // that survives is not asserted exactly, only that a long run of them did, with no gap and no repeat, ending at the last.
+    expect(numbers.length).toBeGreaterThan(2000)
     for (let i = 1; i < numbers.length; i++) expect(numbers[i]).toBe(numbers[i - 1] + 1) // no gap, no repeat
     expect(numbers[numbers.length - 1]).toBe(count - 1)
 
@@ -214,11 +219,11 @@ test.describe.serial('Hidden panes in the real app', () => {
     await page.keyboard.press('Alt+4') // HideOffA: HideOffB is hidden while it prints
     await page.waitForTimeout(500)
     const panes = await observeRows(page)
+    test.skip(panes !== 5, 'a GPU renderer draws no rows into the DOM')
     const ids = Object.keys(await effects(page))
     const offBId = ids[ids.length - 1]
     await expect.poll(() => terminalText(page, offBId), { timeout: 120_000 }).toMatch(/K-DONE\d+/)
     const mutations = await rowMutations(page)
-    test.skip(mutations.every((n) => n === 0), 'a GPU renderer draws no rows into the DOM')
     expect(mutations[panes - 1]).toBeGreaterThan(0) // painted while hidden: what content-visibility removes
     await page.evaluate(() => localStorage.removeItem('termpolis.hiddenPanes'))
   })

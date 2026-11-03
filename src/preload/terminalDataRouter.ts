@@ -128,8 +128,11 @@ export function createTerminalDataRouter(ipcRenderer: RouterIpc, epoch: number =
         live = false
         panes--
         const entries = byId.get(id)
+        /* v8 ignore next -- unreachable by construction: an id's list is deleted only when its LAST entry has been removed,
+           and this entry is live until `live` flips above. Kept so a bug elsewhere can never make a pane's cleanup throw. */
         if (!entries) return
         const at = entries.indexOf(entry)
+        /* v8 ignore next -- the same invariant: a live entry is always in its list */
         if (at >= 0) entries.splice(at, 1)
         if (entries.length === 0) {
           byId.delete(id)

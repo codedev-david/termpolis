@@ -14,7 +14,9 @@
  *     is scheduled for when the window ends.
  *   - a pane that is not on screen: one pass a second, NOT none. Compaction re-priming, session reflection and agent
  *     detection are all about background agents, whose tabs are exactly the hidden ones. When the pane is shown the
- *     pending pass runs at once (flush), so what the user looks at is current.
+ *     pending pass runs at once (flush), so what the user looks at is current. The hidden window has to stay well under
+ *     compactionReprime's 3 s quiet timer (DEFAULT_REPRIME_QUIET_MS): a pane that streams steadily is heard from at least
+ *     once a second, so that timer is never left to fire in the middle of a compaction.
  *
  * What a pass receives is everything that arrived since the last one (the newest `maxFrameChars` of it: memory stays
  * bounded under a flood), and how many messages that was (the conversation parser counts messages). This is a throttle,

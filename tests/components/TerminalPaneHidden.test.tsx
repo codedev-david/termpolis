@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   terms: [] as Array<Terminal>, // every real Terminal a pane created, in creation order
   cell: { width: 9, height: 17 },
   detect: null as null | ((...a: unknown[]) => void), // processAgentDetection, shared by every pane
+  compaction: null as null | ((text: string) => void), // what a pane hands the compaction watcher
+  session: null as null | ((text: string) => void), // ... and the session-reflection watcher
   webgl: { enabled: false, created: 0, disposed: 0 },
   log: [] as string[], // the order of announcements and replay requests
 }))
@@ -95,6 +97,13 @@ vi.mock('../../src/renderer/src/hooks/useAgentDetection', () => ({
     processAgentDetection: (...a: unknown[]) => h.detect?.(...a),
     agentDetectedRef: { current: false },
   })),
+}))
+// The auto-primer, the compaction re-primer and the session reflector are what a pane feeds its output to; here they are
+// counters (what text did each get?), not the real memory-brain consumers.
+vi.mock('../../src/renderer/src/hooks/useAutoPrimer', () => ({
+  useAutoPrimer: vi.fn(),
+  useCompactionReprimer: () => (text: string) => h.compaction?.(text),
+  useSessionReflection: () => (text: string) => h.session?.(text),
 }))
 vi.mock('../../src/renderer/src/hooks/useSessionRecording', () => ({
   useSessionRecording: vi.fn(() => ({
@@ -234,6 +243,9 @@ afterAll(() => {
 import { TerminalPane } from '../../src/renderer/src/components/TerminalPane/TerminalPane'
 import { DEFAULT_KEYBINDINGS } from '../../src/renderer/src/lib/keybindings'
 import { resetWriteScheduler } from '../../src/renderer/src/lib/writeScheduler'
+import { appendOutput, readOutputFrom, type OutputBuffers } from '../../src/main/terminalOutputBuffer'
+import { createTerminalDataRouting, registerTerminalDataRouting } from '../../src/main/terminalDataRouting'
+import { prng } from '../renderer/helpers/schedulerHarness'
 import { resetWebglBudget } from '../../src/renderer/src/lib/webglBudget'
 import { SWITCH_HIDDEN_PANES, SWITCH_DATA_ROUTING, SWITCH_PANE_EFFECTS } from '../../src/renderer/src/lib/paneSwitches'
 
@@ -264,6 +276,8 @@ const bufferLines = (t: Terminal): string[] => {
 
 let activeId: string | undefined
 let detectCalls: unknown[][] = []
+let compactionCalls: string[] = []
+let sessionCalls: string[] = []
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -276,7 +290,11 @@ beforeEach(() => {
   router = createTerminalDataRouter(ipc, 1)
   paneRuns = 0
   detectCalls = []
+  compactionCalls = []
+  sessionCalls = []
   h.detect = (...a) => { detectCalls.push(a) }
+  h.compaction = (text) => { compactionCalls.push(text) }
+  h.session = (text) => { sessionCalls.push(text) }
   h.terms.length = 0
   h.log.length = 0
   h.webgl.enabled = false
@@ -307,6 +325,8 @@ afterEach(() => {
   resetWriteScheduler()
   resetWebglBudget()
   h.detect = null
+  h.compaction = null
+  h.session = null
 })
 
 /** One pane's side-effect counters, as an e2e spec reads them. */
@@ -481,32 +501,45 @@ describe('TerminalPane: side-effect passes per second', () => {
     await settle(400)
   }
 
-  it("a pass over more than the 4 KB window reads what arrived (up to 16 KB): a marker in the first half of a burst is not scrolled out of sight", async () => {
+  it('a pass longer than the 4 KB window: the conversation parser still reads the window, and what looks for a MARKER (an agent banner, the compaction notice) reads the whole pass', async () => {
     await mount(tabs(1, 0))
     await settle(500)
     detectCalls = []
-    await burst('t0', 'A'.repeat(10_000) + 'MARKER', 'B'.repeat(8_000))
-    const passes = detectCalls.map((c) => String(c[0]))
-    expect(passes).toHaveLength(2) // the lead chunk, then ONE pass for the two chunks of the burst
-    expect(passes[1]).toContain('MARKER') // 8,006 chars from the end: inside the 16 KB a pass reads, outside the 4 KB window
-    expect(passes[1].length).toBeLessThanOrEqual(16_384)
-    expect(detectCalls[1][4]).toBe(2) // two chunks, one pass
+    compactionCalls = []
+    sessionCalls = []
+    await burst('t0', 'A'.repeat(10_000) + 'Compacting conversation', 'B'.repeat(8_000))
+    expect(detectCalls).toHaveLength(2) // the lead chunk, then ONE pass for the two chunks of the burst
+    const pass = detectCalls[1]
+    expect(pass[4]).toBe(2) // two chunks, one pass
+    // What the conversation parser reads is the window, exactly as in 1.54.4: the last 4 KB, which has scrolled the marker out.
+    expect(String(pass[0]).length).toBeLessThanOrEqual(4096)
+    expect(String(pass[0])).not.toContain('Compacting conversation')
+    // What looks for a marker reads the whole pass (8,023 chars from its end), as it read every chunk of it before.
+    expect(String(pass[5])).toContain('Compacting conversation')
+    expect(String(pass[5]).length).toBeGreaterThan(18_000)
+    expect(compactionCalls.some((t) => t.includes('Compacting conversation'))).toBe(true)
+    // The session watcher only needs to hear that there was output; it gets the window.
+    expect(sessionCalls).toHaveLength(2)
+    expect(sessionCalls.every((t) => t.length <= 4096)).toBe(true)
   })
 
-  it('NEGATIVE CONTROL: per chunk (the kill switch) the window is all there is: the marker is seen only while it is still in the last 4 KB', async () => {
+  it('NEGATIVE CONTROL: per chunk (the kill switch) the window is all there is, and nothing reads more: the marker is seen only while it is still in the last 4 KB', async () => {
     window.localStorage.setItem(SWITCH_PANE_EFFECTS, '0')
     await mount(tabs(1, 0))
     await settle(500)
     detectCalls = []
-    await burst('t0', 'A'.repeat(10_000) + 'MARKER', 'B'.repeat(8_000))
-    const seen = detectCalls.map((c) => String(c[0]))
-    expect(seen).toHaveLength(3) // a pass per chunk
-    expect(seen[1]).toContain('MARKER') // right after its own chunk the marker is at the end of the window
-    expect(seen[2]).not.toContain('MARKER') // 8,000 B's later it has scrolled out of the 4 KB window
-    expect(seen[2].length).toBeLessThanOrEqual(4096)
+    compactionCalls = []
+    await burst('t0', 'A'.repeat(10_000) + 'Compacting conversation', 'B'.repeat(8_000))
+    expect(detectCalls).toHaveLength(3) // a pass per chunk
+    expect(String(detectCalls[1][0])).toContain('Compacting conversation') // right after its own chunk it is at the end of the window
+    expect(String(detectCalls[2][0])).not.toContain('Compacting conversation') // 8,000 B's later it has scrolled out
+    for (const c of detectCalls) expect(c[5]).toBe(c[0]) // no wide text: detection reads the window, as in 1.54.4
+    expect(compactionCalls).toHaveLength(3)
+    expect(compactionCalls[1]).toContain('Compacting conversation')
+    expect(compactionCalls[2]).not.toContain('Compacting conversation')
   })
 
-  it('an error pattern anywhere in a pass makes ONE suggestion lookup (the base: one per chunk that carried it), a pass bigger than 16 KB looks at its tail', async () => {
+  it('an error pattern anywhere in a pass makes ONE suggestion lookup (the base: one per chunk that carried it); a pass is capped at 64 KB, and what the cap dropped is not looked at', async () => {
     const { getSuggestion } = await import('../../src/renderer/src/corrections/correctionEngine')
     const lookups = vi.mocked(getSuggestion)
     await mount(tabs(1, 0))
@@ -516,10 +549,15 @@ describe('TerminalPane: side-effect passes per second', () => {
     await burst('t0', 'zsh: command not found: one\r\n' + 'x'.repeat(3_000), 'zsh: command not found: two\r\n' + 'y'.repeat(3_000))
     expect(lookups).toHaveBeenCalledTimes(1) // two chunks carried it, one pass looked once
     expect(lookups.mock.calls[0][0]).toBe('frobnicate')
-    // Too far back (more than 16 KB from the end of the pass) is not looked at: the pass scans its tail, like the window did.
+    // A pattern at the front of a pass longer than the 4 KB window is still seen: the base tested every chunk's own text.
     lookups.mockClear()
-    await burst('t0', 'command not found: old\r\n' + 'x'.repeat(20_000), 'y'.repeat(100))
+    await burst('t0', 'command not found: front\r\n' + 'x'.repeat(5_000), 'y'.repeat(100))
+    expect(lookups).toHaveBeenCalledTimes(1)
+    // A pass keeps its newest 64 KB: the pattern in the 24 chars at the very front of an 80 KB pass was dropped by the cap.
+    lookups.mockClear()
+    await burst('t0', 'command not found: old\r\n' + 'x'.repeat(40_000), 'y'.repeat(40_000))
     expect(lookups).toHaveBeenCalledTimes(0)
+    expect(paneStats('t0').droppedChars).toBeGreaterThan(14_000)
   })
 
   it('NEGATIVE CONTROL: per chunk (the kill switch) the same burst makes a lookup for EACH chunk that carried the pattern', async () => {
@@ -691,4 +729,102 @@ describe('TerminalPane: hiding does not thrash the WebGL budget', () => {
     expect(without).toEqual(withHiding)
     expect(withHiding[0]).toBeGreaterThanOrEqual(10) // 10 panes each took a context at least once
   }, 180_000)
+})
+
+describe("TerminalPane: output produced around a pane's mount reaches it once and in order (the real routing, the real replay, a wire with latency)", () => {
+  /**
+   * One terminal in a fake main process: the REAL output buffer, the REAL router and announcement handlers, the REAL preload
+   * router on the renderer side, and a wire with latency in each direction. Messages keep their order on each direction, like a
+   * Mojo pipe, so a subscribe sent before a replay request is read before it.
+   */
+  function fakeMain(latencyUp: number, latencyDown: number, subscribeExtraDelay = 0) {
+    const buffers: OutputBuffers = new Map()
+    const routing = createTerminalDataRouting()
+    const handlers = new Map<string, (e: unknown, msg: unknown) => void>()
+    registerTerminalDataRouting({ on: (c, hnd) => { handlers.set(c, hnd as (e: unknown, msg: unknown) => void) } }, routing)
+    const up = (fn: () => void, extra = 0): void => { setTimeout(fn, latencyUp + extra) }
+    const down = (fn: () => void): void => { setTimeout(fn, latencyDown) }
+    const mainWindow = { webContents: { id: 1, send: (channel: string, ...args: unknown[]) => { down(() => { ipc.emit(channel, ...args) }) } } }
+    // Another pane is mounted somewhere: routing is armed, so a terminal nobody announced gets only its grace.
+    routing.note(1, { id: 'another-terminal', epoch: 1 }, true)
+    // The renderer's announcements travel up the wire in order with the replay request (the control delays only the subscribe).
+    const send = ipc.send
+    ipc.send = (channel, ...args) => {
+      send(channel, ...args)
+      up(() => { handlers.get(channel)?.({ sender: { id: 1 } }, args[0]) }, channel === 'terminal:subscribe' ? subscribeExtraDelay : 0)
+    }
+    mockReadTerminalBuffer.mockImplementation((id: string) => new Promise((resolve) => {
+      up(() => {
+        // Served when it ARRIVES, from the buffer as it is then; the reply travels down.
+        const slice = readOutputFrom(buffers, id, 0)
+        down(() => { resolve({ success: true, data: { ...slice, length: slice.output.length } }) })
+      })
+    }))
+    let n = 0
+    return {
+      /** The terminal prints a line: buffered first, then sent if something listens (the order the real pump uses). */
+      print(id: string): string {
+        const line = `line-${String(n++).padStart(4, '0')}`
+        const data = line + '\r\n'
+        const end = appendOutput(buffers, id, data)
+        routing.send(mainWindow, id, data, end)
+        return line
+      },
+      routing,
+    }
+  }
+
+  /** One random interleaving: 70 lines printed with nobody listening, 40 more at random moments, the pane mounting at a random one. */
+  async function scenario(seed: number, subscribeExtraDelay = 0): Promise<{ printed: string[]; seen: string[]; missing: string[]; duplicated: string[] }> {
+    // A fresh renderer side for every interleaving.
+    ipc = fakeIpc()
+    router = createTerminalDataRouter(ipc, 1)
+    h.terms.length = 0
+    h.log.length = 0
+    resetWriteScheduler()
+    const rand = prng(seed)
+    const main = fakeMain(1 + Math.floor(rand() * 30), 1 + Math.floor(rand() * 30), subscribeExtraDelay)
+    const printed: string[] = []
+    for (let i = 0; i < 70; i++) printed.push(main.print('t0')) // the grace (64 chunks) is spent; the rest is only in main's buffer
+    const times = Array.from({ length: 40 }, () => Math.floor(rand() * 300)).sort((a, b) => a - b)
+    const mountAt = 20 + Math.floor(rand() * 200)
+    const events: Array<{ t: number; run: () => Promise<void> | void }> = [
+      ...times.map((t) => ({ t, run: () => { printed.push(main.print('t0')) } })),
+      { t: mountAt, run: () => mount(tabs(1, 0)) },
+    ].sort((a, b) => a.t - b.t) // stable: a print and the mount at the same moment keep their order
+    let now = 0
+    for (const ev of events) {
+      if (ev.t > now) { await settle(ev.t - now); now = ev.t }
+      await ev.run()
+    }
+    await settle(3000)
+    const seen = bufferLines(term(0)).map((l) => l.trim()).filter((l) => l.startsWith('line-'))
+    const counts = new Map<string, number>()
+    for (const l of seen) counts.set(l, (counts.get(l) ?? 0) + 1)
+    const missing = printed.filter((p) => !counts.has(p))
+    const duplicated = [...counts].filter(([, c]) => c > 1).map(([l]) => l)
+    act(() => { cleanup() })
+    view = null
+    await settle(300)
+    return { printed, seen, missing, duplicated }
+  }
+
+  it('12 random interleavings of prints, the subscribe, the replay request and its reply: every line arrives exactly once, in order', async () => {
+    const seeds = Array.from({ length: 12 }, (_, i) => 100 + i)
+    for (const seed of seeds) {
+      const r = await scenario(seed)
+      expect(r.missing, `seed ${seed}: lines lost`).toEqual([])
+      expect(r.duplicated, `seed ${seed}: lines drawn twice`).toEqual([])
+      expect(r.seen, `seed ${seed}: order`).toEqual(r.printed)
+    }
+  }, 600_000)
+
+  it('NEGATIVE CONTROL: if the subscribe reached main AFTER the replay was served (the wrong order), lines printed in between are lost', async () => {
+    let lostSomewhere = 0
+    for (const seed of [100, 101, 102, 103, 104, 105]) {
+      const r = await scenario(seed, 400)
+      lostSomewhere += r.missing.length
+    }
+    expect(lostSomewhere).toBeGreaterThan(0)
+  }, 600_000)
 })

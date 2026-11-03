@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { createPaneEffects, trackPaneEffects, paneEffectsSnapshot, type EffectsClock } from '../../src/renderer/src/lib/paneSideEffects'
+import { createPaneEffects, trackPaneEffects, paneEffectsSnapshot, EFFECTS_VISIBLE_MS, EFFECTS_HIDDEN_MS, type EffectsClock } from '../../src/renderer/src/lib/paneSideEffects'
+import { DEFAULT_REPRIME_QUIET_MS } from '../../src/renderer/src/lib/compactionReprime'
 
 // What a pane does for every chunk of its terminal's output besides writing it to xterm (1.54.5, plan package P9): the
 // 4 KB window, the diff test, the escape strips, the prompt parse, agent detection, the compaction and session
@@ -135,6 +136,18 @@ describe('the per-pass side effects: how often they run', () => {
     h.clock.advance(60_000)
     expect(h.passes).toHaveLength(0)
     expect(h.clock.timers()).toBe(0)
+  })
+})
+
+describe('the per-pass side effects: the windows against what consumes them', () => {
+  it("a pane that streams is heard from at least twice inside compaction's quiet timer, hidden or not (or the timer would fire in the middle of a compaction)", () => {
+    expect(EFFECTS_HIDDEN_MS * 2).toBeLessThanOrEqual(DEFAULT_REPRIME_QUIET_MS)
+    expect(EFFECTS_VISIBLE_MS).toBeLessThan(EFFECTS_HIDDEN_MS)
+  })
+
+  it('the window defaults are what the plan names: at most 4 passes a second on screen, about 1 a second behind it', () => {
+    expect(1000 / EFFECTS_VISIBLE_MS).toBeLessThanOrEqual(4)
+    expect(1000 / EFFECTS_HIDDEN_MS).toBeLessThanOrEqual(1)
   })
 })
 

@@ -10,8 +10,10 @@ interface AgentDetectionState {
   detectedAgent: AgentInfo | null
   /** Call from onData handler with stripped (ANSI-free) output. `messages` is how many chunks of output this call stands for
    *  (default 1): the side-effect pass of a pane covers every chunk since the last pass, and the conversation parse runs once
-   *  per CONVERSATION_PARSE_INTERVAL chunks however they are batched. */
-  processAgentDetection: (strippedOutput: string, dataLength: number, terminalId: string, terminalName: string, messages?: number) => void
+   *  per CONVERSATION_PARSE_INTERVAL chunks however they are batched. `detectText` is what the agent is looked for in, when
+   *  that is more than the window `strippedOutput` (a pass longer than the window: the agent's banner may sit in its first
+   *  half); the conversation parse always reads `strippedOutput`, the window, as it did when every chunk had its own call. */
+  processAgentDetection: (strippedOutput: string, dataLength: number, terminalId: string, terminalName: string, messages?: number, detectText?: string) => void
   /** Ref indicating if agent has been detected */
   agentDetectedRef: React.RefObject<boolean>
 }
@@ -33,11 +35,12 @@ export function useAgentDetection(): AgentDetectionState {
     terminalId: string,
     terminalName: string,
     messages = 1,
+    detectText = strippedOutput,
   ): void {
     // Agent detection: scan first ~2KB of output then stop
     if (!agentDetectedRef.current && agentScanBytesRef.current < AGENT_SCAN_LIMIT) {
       agentScanBytesRef.current += dataLength
-      const agent = detectAgent(strippedOutput)
+      const agent = detectAgent(detectText)
       if (agent) {
         agentDetectedRef.current = true
         setDetectedAgent(agent)

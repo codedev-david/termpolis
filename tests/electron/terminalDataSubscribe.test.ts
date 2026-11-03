@@ -3,6 +3,7 @@ import {
   createTerminalDataRouting,
   registerTerminalDataRouting,
   GRACE_CHUNKS,
+  MAX_LISTENED_IDS,
   type TerminalDataRouting,
   type TerminalDataTarget,
 } from '../../src/main/terminalDataRouting'
@@ -238,6 +239,24 @@ describe('terminal:data routing: a new page, an old page, two windows', () => {
     routing.send(win, 'a', '1')
     routing.send(win, 'b', '2')
     expect(win.sends.map((a) => a[2])).toEqual(['1'])
+  })
+})
+
+describe('terminal:data routing: bounded', () => {
+  it('a page that announces more terminals than any real window holds turns routing off (fail open) instead of growing without bound', () => {
+    const routing = createTerminalDataRouting()
+    const win = fakeWindow()
+    for (let i = 0; i < MAX_LISTENED_IDS; i++) routing.note(1, { id: `t${i}`, epoch: 1 }, true)
+    // NEGATIVE CONTROL, in the same test: AT the cap routing still filters.
+    expect(routing.stats()).toMatchObject({ armed: true, ids: MAX_LISTENED_IDS })
+    for (let i = 0; i < GRACE_CHUNKS + 5; i++) routing.send(win, 'unlistened', 'x')
+    expect(win.sends).toHaveLength(GRACE_CHUNKS) // only the grace got through
+    // One more and it gives up: everything is sent from here on.
+    win.sends.length = 0
+    routing.note(1, { id: 'one-too-many', epoch: 1 }, true)
+    expect(routing.stats()).toMatchObject({ armed: false, ids: 0 })
+    for (let i = 0; i < GRACE_CHUNKS + 5; i++) routing.send(win, 'unlistened', 'x')
+    expect(win.sends).toHaveLength(GRACE_CHUNKS + 5)
   })
 })
 

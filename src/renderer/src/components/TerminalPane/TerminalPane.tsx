@@ -296,9 +296,6 @@ if (typeof window !== 'undefined') {
   ;(window as unknown as { __termpolis_pane_effects?: typeof paneEffectsSnapshot }).__termpolis_pane_effects = paneEffectsSnapshot
 }
 
-/** How much of what arrived between two side-effect passes a pass reads, at most (paneSideEffects.ts). */
-const EFFECT_SCAN_CHARS = 16384
-
 /** The CSI and OSC sequences in a chunk of pty output, removed: what the prompt parser and the
  *  agent detector read. */
 function stripEscapes(output: string): string {
@@ -1195,6 +1192,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // reads the announcement ahead of the replay request, so whatever is produced from then on is in the reply or live
     // (or both, which the end offsets sort out), never in neither. `outputHandler` is assigned further down, in this same
     // synchronous effect, so no chunk can reach the stub before it.
+    /* v8 ignore next -- the placeholder is replaced before the effect returns, and an IPC message cannot be delivered in between */
     let outputHandler: (id: string, data: string, end?: number) => void = () => undefined
     const unsub = subscribeTerminalOutput(window.termpolis, terminalId, (id, data, end) => outputHandler(id, data, end))
     const replayRequest = window.termpolis.readTerminalBuffer(terminalId)
@@ -1706,20 +1704,24 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         if (!disposed) setDiffDetected(hasDiff)
       }
 
-      // Strip ANSI for processing. A pass that covers more than the window reads what arrived (up to a cap), not just
-      // the window's last 4 KB: a marker in the first half of a burst is not scrolled out of sight before it is looked at.
-      const stripped = stripEscapes(paneEffects && data.length > 4096 ? data.slice(-EFFECT_SCAN_CHARS) : outputBufferRef.current)
+      // Strip ANSI for processing: the window, as ever (the conversation parser reads it).
+      const stripped = stripEscapes(outputBufferRef.current)
+      // A pass can be longer than the window (up to 64 KB: paneSideEffects.ts), and a pass is one big chunk. What looks for a
+      // MARKER (an agent's banner, the compaction notice) reads all of it, as it read every chunk of it when each was handled on
+      // arrival; the window alone would have scrolled a marker in the first part of a long pass out of sight before anything looked.
+      // A pass no longer than the window is inside it, and with the pass switch off every chunk is its own pass.
+      const scanned = paneEffects && data.length > 4096 ? stripEscapes(data) : stripped
 
       // Parse prompt for cwd and git branch — at most once per 500ms, and never skipping
       // the last prompt of a burst (see parsePromptNow).
       promptParse.request()
 
       // Agent detection + cost tracking + conversation parsing
-      agent.processAgentDetection(stripped, data.length, terminalId, terminalName, messages)
+      agent.processAgentDetection(stripped, data.length, terminalId, terminalName, messages, scanned)
 
       // Re-prime memory after the agent compacts its conversation (settles, then
       // re-injects recalled context). Stable callback; internally gated + debounced.
-      onCompactionOutput(stripped)
+      onCompactionOutput(scanned)
 
       // Learn from this solo session: on a task pause / close, reflect the transcript
       // delta into the brain. Stable callback; internally gated + debounced.
@@ -1741,7 +1743,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       // Pattern-matching fallback: detect common error patterns in output
       // (using compiled combined pattern)
       if (lastCommandRef.current && !fixSuggestionRef.current) {
-        if (ERROR_PATTERN.test(paneEffects && data.length > EFFECT_SCAN_CHARS ? data.slice(-EFFECT_SCAN_CHARS) : data)) {
+        if (ERROR_PATTERN.test(data)) {
           const cmd = lastCommandRef.current
           const output = outputBufferRef.current
           getSuggestion(cmd, output).then(suggestion => {
@@ -1871,7 +1873,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       unsub()
       paneEffects?.cancel() // a pass still waiting for its window has nothing left to act on
       untrackEffects?.()
-      if (paneEffectsRef.current === paneEffects) paneEffectsRef.current = null
+      paneEffectsRef.current = null
       echo.detach()
       throttledWrite.detach() // the write scheduler stops handing output to this pane's xterm
       promptParse.cancel()

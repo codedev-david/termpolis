@@ -96,6 +96,29 @@ describe('useAgentDetection: the conversation parse cadence', () => {
     expect(mocks.state.addConversationTurn).toHaveBeenCalledWith('t', 'T', 'Claude Code', { n: 2 })
   })
 
+  it('detects the agent in the wide text when one is given (a pass longer than the window), and the conversation parse still reads the window', () => {
+    mocks.detectAgent.mockImplementation((text: unknown) => (String(text).includes('BANNER') ? AGENT : null))
+    const hook = renderHook(() => useAgentDetection())
+    // The banner is in the first half of a long pass: the 4 KB window (what the conversation parser reads) has scrolled it out.
+    act(() => { hook.result.current.processAgentDetection('the window, no banner', 6000, 't', 'T', 10, 'a long pass with a BANNER in its first half') })
+    expect(hook.result.current.agentDetectedRef.current).toBe(true)
+    expect(mocks.detectAgent).toHaveBeenCalledWith('a long pass with a BANNER in its first half')
+    expect(mocks.detectAgent).not.toHaveBeenCalledWith('the window, no banner')
+    // 10 chunks since detection began: the parse reads the WINDOW argument, not the wide text.
+    expect(mocks.parseConversation).toHaveBeenCalledTimes(1)
+    expect(mocks.parseConversation.mock.calls[0][0]).toBe('the window, no banner')
+  })
+
+  it('NEGATIVE CONTROL: with no wide text (one chunk per call, the 1.54.4 call shape) detection reads the text it is given, as it always did', () => {
+    mocks.detectAgent.mockImplementation((text: unknown) => (String(text).includes('BANNER') ? AGENT : null))
+    const hook = renderHook(() => useAgentDetection())
+    act(() => { hook.result.current.processAgentDetection('the window, no banner', 21, 't', 'T') })
+    expect(hook.result.current.agentDetectedRef.current).toBe(false)
+    expect(mocks.detectAgent).toHaveBeenCalledWith('the window, no banner')
+    act(() => { hook.result.current.processAgentDetection('a window with a BANNER', 22, 't', 'T') })
+    expect(hook.result.current.agentDetectedRef.current).toBe(true)
+  })
+
   it('does not count chunks before an agent is detected, and scans only the first 2 KB of output for one', () => {
     mocks.detectAgent.mockReturnValue(null)
     const hook = renderHook(() => useAgentDetection())
