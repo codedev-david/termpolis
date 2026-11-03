@@ -1704,6 +1704,31 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
       expect(out!.indexOf('how do I cut a release')).toBeLessThan(out!.indexOf('unrelated conversation 0')) // newest first, as the lane always is
     })
 
+    // The store lists the lane, so the fuller chunk that relevance chose, and the budget then cuts, can be in the lane list as well, ahead
+    // of its head. What relevance chose is left out of the lane BEFORE a head is folded into its fuller chunk: folded first, the head gives
+    // way to a chunk that is then skipped as "already chosen" and cut, and the passage is in the digest nowhere (1.54 showed the head).
+    const laneWithFull = () => vi.fn().mockResolvedValue([
+      chunk('full', FULL, { score: 0, ts: NOW - HOUR }),
+      chunk('head', HEAD, { score: 0, ts: NOW - 2 * HOUR }),
+      chunk('next', long('something else entirely from today'), { score: 0, ts: NOW - 3 * HOUR }),
+    ])
+
+    it('keeps the head in the lane when the lane lists the fuller chunk too, and relevance chose that chunk and then cut it', async () => {
+      const out = await buildContextPrimer(asked([...ranked(3), chunk('full', FULL, { score: 0.7 })]), { query: 'q', project: proj, recent: laneWithFull(), now: NOW, limit: 4 })
+      expect(out!.match(/how do I cut a release/g) ?? []).toHaveLength(1) // the head, in the lane
+      expect(out).not.toContain('the release workflow writes it') // the fuller chunk was cut, as it was in 1.54
+      expect(out).not.toContain('something else entirely from today') // the head took the lane's one slot
+      expect(rows(out)).toHaveLength(4)
+    })
+
+    it('still gives the head up when the lane lists the fuller chunk too and that chunk is sure to be shown', async () => {
+      const out = await buildContextPrimer(asked([...ranked(2), chunk('full', FULL, { score: 0.8 })]), { query: 'q', project: proj, recent: laneWithFull(), now: NOW, limit: 4 })
+      expect(out!.match(/how do I cut a release/g)).toHaveLength(1)
+      expect(out).toContain('the release workflow writes it') // the fuller chunk, in the relevance block
+      expect(out).toContain('something else entirely from today')
+      expect(rows(out)).toHaveLength(4)
+    })
+
     it('still gives the head up when the fuller chunk is sure to be shown, and the slot to the next entry', async () => {
       const out = await buildContextPrimer(asked([...ranked(2), chunk('full', FULL, { score: 0.8 })]), { query: 'q', project: proj, recent: headLane(), now: NOW, limit: 4 })
       expect(out!.match(/how do I cut a release/g)).toHaveLength(1)

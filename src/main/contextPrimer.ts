@@ -247,7 +247,10 @@ async function collectRecent(
   const noteLines = new Set<string>()
   // The newest chunks are where a live session's partial chunk and the fuller one that begins with it pile up: the
   // lane counts them once, whichever the lister gave first, and not at all when relevance already carries the fuller one.
-  for (const h of dropPrefixDuplicates(viable)) {
+  // What relevance already chose is left out BEFORE the pairs are folded: a head must not give way to a fuller chunk that is then
+  // skipped as "already chosen" and cut by the budget, or the passage is in the digest nowhere (the key check below stays: it also
+  // guards a row this loop itself adds, a lister that gives one id twice).
+  for (const h of dropPrefixDuplicates(viable.filter((v) => !o.exclude.has(hitKey(v))))) {
     if (out.length >= o.slots) break
     const key = hitKey(h)
     if (o.exclude.has(key)) continue
