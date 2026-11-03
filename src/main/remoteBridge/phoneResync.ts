@@ -21,6 +21,12 @@
 //     wrong until the next attach: settled rows are permanent by design and are never re-sent.
 //   - A rewrite is never sent to a copy that holds a gap notice it would cut or mis-align (see
 //     `safeToRewriteLive`), so the notice stays visible and the copy is no worse than before.
+//   - A lost frame that changed the LENGTH of the stream (a row grew, rows were added) leaves the phone's text
+//     shorter than its end mark says, and every edit after it -- the rewrite included -- cuts that much too
+//     early. The live region is put right all the same (the seeded scenarios in remoteBridgeEntry.test.ts find
+//     none left wrong, where without the rewrite about half stay wrong even after the agent draws again), but
+//     the hole above it, as many chars as the lost frame added, stays until the next attach replaces the copy.
+//     It is the hole the next edit would have cut anyway; the rewrite only brings it forward.
 
 /** Environment switch for everything in this file's header: attach, lag and quiet. Any value but empty, `0`
  *  or `false` puts the bridge back to exactly what it did before them (the whole backlog on attach, the

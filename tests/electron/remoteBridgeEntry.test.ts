@@ -31,7 +31,7 @@ import type {
 } from '../../src/main/remoteBridge/relayClient'
 import { MAX_PAYLOAD_BYTES, type OutputPayload } from '../../src/main/remoteBridge/outputChunker'
 import { FORGET_FROM, formatGapMarker } from '../../src/main/remoteBridge/outputFanout'
-import { PHONE_RESYNC_DISABLE_FLAG, QUIET_MS } from '../../src/main/remoteBridge/phoneResync'
+import { PHONE_RESYNC_DISABLE_FLAG, QUIET_MS, QUIET_TICK_MS } from '../../src/main/remoteBridge/phoneResync'
 import { manualClock, type ManualClock } from './fixtures/manualClock'
 
 // A real curve point: the core mints a Handshake against every paired device's
@@ -2822,6 +2822,123 @@ describe('a frame the link lost', () => {
       expect(b.room.sent).toHaveLength(1)
     })
   })
+})
+
+// Whatever frames the link loses, once the terminal is quiet the phone shows the bridge's live region. The
+// scenarios are random (a seeded generator, so a failure names the seed that reproduces it), made of the
+// frames an agent's TUI really sends -- panels that tick in place, and ones that grow and shrink -- and each
+// loses a few payloads at random while the phone stays attached.
+//
+// What it does NOT claim, and the test below it says out loud: that the whole copy is right. A lost frame that
+// changed the LENGTH of the stream leaves the phone's text shorter than its end mark says, so every later edit
+// (the rewrite included) cuts that much too early. The live region is put right all the same; the hole above it
+// stays until the next attach replaces the copy.
+describe('a frame the link lost, whatever it was', () => {
+  function seeded(seed: number): () => number {
+    let a = seed >>> 0
+    return () => {
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+
+  /** One scenario: history, then frames, a random few of whose payloads never reach the phone, then quiet. */
+  async function scenario(seed: number, resync: boolean) {
+    const next = seeded(seed)
+    const size: TerminalSize = { cols: 30 + Math.floor(next() * 50), rows: 6 + Math.floor(next() * 20) }
+    const b = bench({ resync, size })
+    attach(b.room)
+    await b.subscribe('d1')
+    let lose = false
+    let lost = 0
+    const carry = b.room.send.bind(b.room)
+    b.room.send = (payload: unknown) => {
+      if (lose) {
+        lose = false
+        lost += 1
+        return
+      }
+      carry(payload)
+    }
+    const history = Array.from({ length: Math.floor(next() * 40) }, (_, i) => `h${String(i).padStart(3, '0')} ${'x'.repeat(Math.floor(next() * 20))}\r\n`)
+    await b.print('t1', history.join(''), { reset: true })
+    const tui = new Tui()
+    const toggles = Array.from({ length: 2 + Math.floor(next() * 4) }, () => next() < 0.5)
+    const frames = 4 + Math.floor(next() * 12)
+    const pLose = 0.1 + next() * 0.3
+    for (let tick = 1; tick <= frames; tick += 1) {
+      const kind = next()
+      let lines: string[]
+      if (kind < 0.5) {
+        // A panel whose rows come and go: the frame that changes the length of the stream.
+        const agents = 2 + Math.floor(next() * 5)
+        lines = [
+          `Running ${agents} agents (${tick}s)`,
+          ...Array.from({ length: agents }, (_, a) => `  agent-${a} ${'#'.repeat((tick + a) % 12).padEnd(12, '.')} ${((tick + a) * 7) % 100}%`),
+          '> ',
+        ]
+      } else {
+        const flip = Math.floor(next() * toggles.length)
+        toggles[flip] = !toggles[flip]
+        lines = ['Select models', ...toggles.map((on, i) => `${on ? '[x]' : '[ ]'} option-${i}`), '-'.repeat(20), `status tick ${String(tick).padStart(5, '0')}`]
+      }
+      lose = next() < pLose
+      await b.print('t1', tui.frame(lines))
+      lose = false
+    }
+    const truth = b.real.snapshot('t1')!
+    const live = b.real.liveRegion('t1')!
+    const sentBefore = b.room.sent.length
+    const diverged = onPhone(chunksIn(b.room)).text !== truth.text
+    b.clock.advance(QUIET_MS + QUIET_TICK_MS)
+    const after = onPhone(chunksIn(b.room))
+    return {
+      lost,
+      diverged,
+      liveRight: after.text.endsWith(live.text) && after.end === truth.replaceFrom + truth.text.length,
+      exact: after.text === truth.text,
+      payloadsToHeal: b.room.sent.length - sentBefore,
+      armed: b.clock.armed(),
+    }
+  }
+
+  const SEEDS = Array.from({ length: 60 }, (_, i) => i + 1)
+
+  it('puts the live region right in every scenario, with one payload at most and nothing left running', async () => {
+    let lossy = 0
+    let wrongBefore = 0
+    let exact = 0
+    for (const seed of SEEDS) {
+      const s = await scenario(seed, true)
+      if (s.lost === 0) continue
+      lossy += 1
+      if (s.diverged) wrongBefore += 1
+      if (s.exact) exact += 1
+      // The seed is in the message: it is the whole reproduction.
+      expect(s.liveRight, `seed ${seed}`).toBe(true)
+      expect(s.payloadsToHeal, `seed ${seed}`).toBeLessThanOrEqual(1)
+      expect(s.armed, `seed ${seed}`).toBe(0)
+    }
+    // The scenarios are not vacuous: most lost something, and most of those left the copy wrong before the rewrite.
+    expect(lossy).toBeGreaterThanOrEqual(40)
+    expect(wrongBefore).toBeGreaterThanOrEqual(20)
+    expect(exact).toBeGreaterThan(0)
+  }, 120_000)
+
+  // NEGATIVE CONTROL: today. The same scenarios, the same lost payloads, nothing sent when the terminal is quiet:
+  // the live region is left wrong in a good share of them.
+  it('CONTROL: with the resync switched off the live region is left wrong in many of them', async () => {
+    let wrong = 0
+    for (const seed of SEEDS) {
+      const s = await scenario(seed, false)
+      if (s.lost === 0) continue
+      expect(s.payloadsToHeal, `seed ${seed}`).toBe(0)
+      if (!s.liveRight) wrong += 1
+    }
+    expect(wrong).toBeGreaterThanOrEqual(10)
+  }, 120_000)
 })
 
 describe('the quiet watch is an extra: it comes after the pump', () => {
