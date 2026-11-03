@@ -592,6 +592,7 @@ describe('lessonSubstance: a rule or a mechanism', () => {
         '1) Since `index.ts` passed review, the merge can go ahead on the next run of the pipeline.',
         '**Note:** Since the `main` build passed, the release branch can be created.',
         '# Fix: Since the `main` build passed, the release branch can be created.',
+        '12) Since the reviewer approved `LoginForm`, the merge is unblocked.', // a number of two digits
         '1) Problem: Since the `main` build passed, the release branch can be created.', // mark-up, then a label
         '- **Fix:** Since the reviewer approved `LoginForm`, the merge is unblocked.',
         '# Since the `main` build passed, the release branch can be created.', // each mark-up character on its own, in front of the "since"
