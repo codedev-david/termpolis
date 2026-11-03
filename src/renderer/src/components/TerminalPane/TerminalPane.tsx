@@ -6,8 +6,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
-import { createOutputThrottle } from '../../lib/outputThrottle'
-import { createChunkQueue, createStringQueue } from '../../lib/chunkQueue'
+import { createPaneOutput } from '../../lib/paneOutput'
+import { createChunkQueue } from '../../lib/chunkQueue'
 import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
 import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER } from '../../lib/paneSwitches'
 import { createPaneFitter, type PaneFitter } from '../../lib/paneFitter'
@@ -1449,6 +1449,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       if (historyParses.count > 0 && data === FOCUS_OUT) return
       // Pass data to PTY
       echo.write(data)
+      throttledWrite.typed(data) // a key is going in: the write scheduler serves this terminal first
 
       // Record input if recording
       recording.appendRecordingEntry('input', data)
@@ -1488,10 +1489,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // The backlog lives in a chunk list; localStorage 'termpolis.outputChunks' = '0' brings back the 1.54.4 string buffer.
     const chunkedOutput = switchEnabled(SWITCH_OUTPUT_CHUNKS)
     // With the switch off the whole 1.54.4 output path is back: the string buffer, the flush that loses a refused chunk,
-    // the 1,000,000 char hold and its overflow rule.
-    const throttledWrite = createOutputThrottle(echo.tap((data) => term.write(data)), {
-      queue: chunkedOutput ? createChunkQueue() : createStringQueue(),
-      retryRefused: chunkedOutput,
+    // the 1,000,000 char hold and its overflow rule. Otherwise the output goes through the renderer's write scheduler
+    // (the focused terminal first, a bound on what xterm holds); localStorage 'termpolis.writeScheduler' = '0' gives
+    // this pane its own output throttle again (paneOutput.ts).
+    const throttledWrite = createPaneOutput({
+      id: terminalId,
+      term,
+      tap: echo.tap,
+      chunked: chunkedOutput,
+      isVisible: () => isVisibleRef.current,
+      isActive: () => useTerminalStore.getState().activeTerminalId === terminalId,
     })
     // Until this mount's replay lands, live output goes straight into xterm's own (ordered)
     // write queue rather than through the throttle: if the replay then has to be laid in behind
@@ -1827,6 +1834,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       disposed = true
       unsub()
       echo.detach()
+      throttledWrite.detach() // the write scheduler stops handing output to this pane's xterm
       promptParse.cancel()
       selectionChangeDisposable.dispose()
       document.removeEventListener('mouseup', handleDocumentMouseUp)

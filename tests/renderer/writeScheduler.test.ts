@@ -579,6 +579,33 @@ describe('typing', () => {
     expect(lens(other.t).slice(2)).toEqual([65_536]) // typing is over
   })
 
+  it('a clock that goes backwards does not leave typing on', () => {
+    const clock = makeManualClock()
+    let offset = 0
+    const realNow = clock.now
+    clock.now = () => realNow() + offset // the scheduler copies the clock when it is made: set this first
+    const sch = createWriteScheduler({ clock })
+    const t = makeFakeTerm('v')
+    const v = sch.attach('v', { write: t.write, classify: () => 'visible' })
+    sch.noteKey('v', 'k')
+    offset = -10_000 // the clock restarted: "now" is before the last key
+    v(text(100_000))
+    clock.frame()
+    expect(lens(t)).toEqual([D.slice.visible]) // not the typing slice: nobody is typing
+  })
+
+  it('NEGATIVE CONTROL: with the clock going forward as usual the same terminal is still in the typing window', () => {
+    const clock = makeManualClock()
+    const sch = createWriteScheduler({ clock })
+    const t = makeFakeTerm('v')
+    const v = sch.attach('v', { write: t.write, classify: () => 'visible' })
+    sch.noteKey('v', 'k')
+    clock.advance(100)
+    v(text(100_000))
+    clock.frame(0)
+    expect(lens(t)[0]).toBe(D.sliceTyping.focused) // the terminal a key went into is treated as focused, with the typing slice
+  })
+
   it('does not start for what the terminal itself sends back', () => {
     const r = makeRig()
     const f = r.add('f', 'focused')
@@ -996,7 +1023,17 @@ describe('fuzz: 10 terminals, any interleaving', () => {
 
   const RANK: Record<PaneClass, number> = { focused: 0, visible: 1, hidden: 2 }
 
+  const memo = new Map<string, Outcome>()
   function fuzz(seed: number, o: { refusals?: boolean; steps?: number } = {}): Outcome {
+    const key = `${seed}:${o.refusals ? 'r' : ''}:${o.steps ?? ''}`
+    const hit = memo.get(key)
+    if (hit) return hit
+    const out = fuzzRun(seed, o)
+    memo.set(key, out)
+    return out
+  }
+
+  function fuzzRun(seed: number, o: { refusals?: boolean; steps?: number } = {}): Outcome {
     const rand = prng(seed)
     const T = 10
     const r = makeRig({ ackTimeoutMs: Number.POSITIVE_INFINITY })
@@ -1021,7 +1058,7 @@ describe('fuzz: 10 terminals, any interleaving', () => {
         if (p.w.inflight() > bound) out.overBound++
         if (i === 0) out.focusedMax = Math.max(out.focusedMax, p.w.inflight())
         // everything pushed is somewhere: queued here, in flight, or parsed
-        const parsed = p.t.joined().length - p.t.unackedChars()
+        const parsed = p.t.writtenChars - p.t.unackedChars()
         if (p.w.pending() + p.w.inflight() + parsed !== sent[i].length) out.unaccounted++
       })
     }
@@ -1066,7 +1103,7 @@ describe('fuzz: 10 terminals, any interleaving', () => {
           wait.fired = true
           out.waitsAnswered++
           // answered before its cap: everything pushed before the call has been handed to xterm
-          if (r.clock.now() - wait.reg < 5_000 && panes[i].t.joined().length < wait.need) out.waitViolations++
+          if (r.clock.now() - wait.reg < 5_000 && panes[i].t.writtenChars < wait.need) out.waitViolations++
         }, 5_000)
       }
       check()
@@ -1181,7 +1218,7 @@ describe('through the real @xterm/headless parser', () => {
   }
 
   function newTerm(): { term: Terminal; titles: string[] } {
-    const term = new Terminal({ cols: 40, rows: 12, scrollback: 200, allowProposedApi: true })
+    const term = new Terminal({ cols: 40, rows: 12, scrollback: 200, allowProposedApi: true, logLevel: 'off' })
     const titles: string[] = []
     term.onTitleChange((t) => titles.push(t))
     return { term, titles }
@@ -1225,6 +1262,30 @@ describe('through the real @xterm/headless parser', () => {
     return d
   }
 
+  /**
+   * The same as through(), parsed synchronously: xterm's own writeSync runs the same parser with no timers, so
+   * an exhaustive sweep over every split offset costs milliseconds instead of a settle per offset. The result is
+   * compared with the reference the ASYNCHRONOUS parser made, so the two are checked against each other too.
+   */
+  function throughSync(k: number, slice: number, cls: PaneClass, fast = false): string {
+    const limits: Partial<SchedulerLimits> = {
+      slice: { focused: slice, visible: slice, hidden: slice },
+      sliceTyping: { focused: slice, visible: slice, hidden: slice },
+      ...(fast ? {} : { smallWrite: 0 }),
+    }
+    const r = makeRig(limits)
+    const { term, titles } = newTerm()
+    const core = (term as unknown as { _core: { writeSync: (data: string) => void } })._core
+    const p = r.sch.attach('p', { write: (d, ack) => { core.writeSync(d); ack() }, classify: () => cls })
+    p(STREAM.slice(0, k))
+    p(STREAM.slice(k))
+    for (let i = 0; i < 4000 && (p.pending() > 0 || p.inflight() > 0); i++) r.clock.frame()
+    if (p.pending() !== 0) throw new Error('the scheduler did not drain')
+    const d = digest(term, titles)
+    term.dispose()
+    return d
+  }
+
   it('the stream really does exercise the parser (so equality below means something)', async () => {
     const { term, titles } = newTerm()
     term.write(STREAM)
@@ -1238,19 +1299,38 @@ describe('through the real @xterm/headless parser', () => {
     const want = await reference()
     const bad: number[] = []
     for (let k = 0; k <= STREAM.length; k++) {
-      if ((await through(k, 24, 'visible')) !== want) bad.push(k)
+      if (throughSync(k, 24, 'visible') !== want) bad.push(k)
     }
     expect(bad).toEqual([])
-  }, 120_000)
+  })
+
+  it('...at every slice size from 1 to 40 chars, at every 7th offset', async () => {
+    const want = await reference()
+    const bad: string[] = []
+    for (let slice = 1; slice <= 40; slice++) {
+      for (let k = 0; k <= STREAM.length; k += 7) {
+        if (throughSync(k, slice, 'hidden') !== want) bad.push(`${slice}@${k}`)
+      }
+    }
+    expect(bad).toEqual([])
+  })
 
   it('a split at EVERY offset through the echo fast path (two whole writes) ends in the same screen', async () => {
     const want = await reference()
     const bad: number[] = []
     for (let k = 0; k <= STREAM.length; k++) {
-      if ((await through(k, D.slice.focused, 'focused', undefined, true)) !== want) bad.push(k)
+      if (throughSync(k, D.slice.focused, 'focused', true) !== want) bad.push(k)
     }
     expect(bad).toEqual([])
-  }, 120_000)
+  })
+
+  it('NEGATIVE CONTROL: the synchronous sweep can fail too: a stream parsed without its last 5 chars differs', async () => {
+    const want = await reference()
+    const { term, titles } = newTerm()
+    ;(term as unknown as { _core: { writeSync: (data: string) => void } })._core.writeSync(STREAM.slice(0, STREAM.length - 5))
+    expect(digest(term, titles)).not.toBe(want)
+    term.dispose()
+  })
 
   it.each<[string, number, PaneClass]>([
     ['7-char slices, focused', 7, 'focused'],

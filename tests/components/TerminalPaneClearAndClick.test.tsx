@@ -339,6 +339,10 @@ const clearKeyEvent = (over: Partial<KeyboardEvent> = {}): KeyboardEvent =>
 
 describe('TerminalPane — click forwarding and clear (v1.39.1)', () => {
   beforeEach(() => {
+    // This suite drives the pane with a MOCK xterm whose write() never calls back, and asserts on write(data) with one
+    // argument: the output throttle's call shape. It stays on that path (the kill switch's). The write scheduler, which
+    // is the default and passes an ack callback, is tested against a REAL xterm in TerminalPaneScheduler.test.tsx.
+    window.localStorage.setItem('termpolis.writeScheduler', '0')
     vi.clearAllMocks()
     mockOnDataCb = null
     mockKeyHandlerCb = null

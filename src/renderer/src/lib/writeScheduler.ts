@@ -313,7 +313,11 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
   const visibleList: PaneState[] = []
   const hiddenList: PaneState[] = []
 
-  const isTyping = (now: number): boolean => now - lastKeyAt < limits.typingWindowMs
+  // A clock that went backwards (a test's fake timers restarting, a timer source swapped) must not leave "typing" on.
+  const isTyping = (now: number): boolean => {
+    const since = now - lastKeyAt
+    return since >= 0 && since < limits.typingWindowMs
+  }
 
   function classOf(p: PaneState, typing: boolean): PaneClass {
     // The terminal a key is going into is the focused one, whatever the store has caught up with.
@@ -410,7 +414,7 @@ export function createWriteScheduler(options: SchedulerOptions = {}): WriteSched
 
   function notify(p: PaneState, error: unknown, info: ThrottleErrorInfo): void {
     try {
-      ;(p.deps.onError ?? ((e: unknown) => reportFailure(e, 'write scheduler')))(error, info)
+      ;(p.deps.onError ?? ((e: unknown) => reportFailure(e, 'output throttle')))(error, info) // the label the throttle it replaces used
     } catch {
       // a reporter that throws must not take the scheduler down with it
     }

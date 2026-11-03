@@ -98,6 +98,8 @@ export interface FakeTerm {
   write(data: string, ack: () => void): void
   /** Everything written to it, in order. */
   readonly writes: string[]
+  /** Chars written so far (a running total: no need to join the writes to count them). */
+  writtenChars: number
   /** Written, not acked yet, oldest first. */
   readonly unacked: Array<{ data: string; ack: () => void }>
   unackedChars(): number
@@ -117,6 +119,7 @@ export function makeFakeTerm(id: string, shared?: WriteEvent[]): FakeTerm {
   const t: FakeTerm = {
     id,
     writes,
+    writtenChars: 0,
     unacked,
     mode: 'manual',
     refuse: null,
@@ -126,6 +129,7 @@ export function makeFakeTerm(id: string, shared?: WriteEvent[]): FakeTerm {
         throw new Error('write data discarded, use flow control to avoid losing data')
       }
       writes.push(data)
+      t.writtenChars += data.length
       shared?.push({ id, data })
       if (t.mode === 'sync') {
         ack()
