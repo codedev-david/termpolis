@@ -52,9 +52,13 @@ let state: ArmState = empty()
 /** No count here is a real count above this: the whole of a person's use is some billions of billed units at most.
  *  A figure past it is damaged (a hand-edited file), and kept as it is it prints with an exponent in the card. */
 const COUNT_CEILING = 1e15
+/** Nor is one real below this: requests, work and turns are whole numbers, and a billed amount is at least a tenth of a unit
+ *  (one cache-read token). A smaller figure is damaged too: as the divisor of a share or a cost per request it makes Infinity.
+ *  Between the two bounds no ratio of two counts reaches 1e21, so the shares and the costs per request print as plain figures. */
+const COUNT_FLOOR = 1e-3
 
-/** A finite number above zero and no more than the ceiling, else zero. */
-const count = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= COUNT_CEILING ? n : 0)
+/** A finite number from the floor to the ceiling, else zero. */
+const count = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) && n >= COUNT_FLOOR && n <= COUNT_CEILING ? n : 0)
 
 export interface ArmSample {
   /** Billed units of the request. */

@@ -121,6 +121,56 @@ describe('the arm ledger', () => {
     expect(s.legacy).toEqual({ ...at, units: 0, turns: 0 })
   })
 
+  // The other end. A count is a whole number (requests, work, turns) or a billed amount of at least a tenth of a unit (one
+  // cache-read token), so nothing real is smaller than a thousandth. A hand-edited 1e-320 passed as a usable count and, as the
+  // divisor of a share or a cost per request, made Infinity: the card printed "Infinity%". Zero is what such a number reads as.
+  it('reads a count below anything real as damaged, exactly at the floor and not under it', () => {
+    const at = { requests: 1e-3, work: 1e-3, units: 1e-3, turns: 1e-3, turnUnits: 1e-3 }
+    loadArmState({
+      late: [at],
+      holdout: [{ requests: 0.0009999, work: 1e-9, units: 1e-300, turns: Number.MIN_VALUE, turnUnits: 1e-320 }],
+      legacy: { ...at, units: 5e-324, turns: 1e-6 },
+    })
+    const s = armState()
+    expect(s.late[0]).toEqual(at)
+    expect(s.holdout[0]).toEqual({ requests: 0, work: 0, units: 0, turns: 0, turnUnits: 0 })
+    expect(s.legacy).toEqual({ ...at, units: 0, turns: 0 })
+  })
+
+  // The ledger is only ever written with whole requests and billed amounts, so the real range of a count is one thousandth
+  // to a quadrillion. A damaged file can hold anything between, and every figure must come out finite for every mixture of
+  // the sizes below in every field of every group (seeded: the same states on every run), and the per-arm summaries, where
+  // "Infinity%" was printed, must be plain figures. (The margin of the cost verdict is on the log scale and can be
+  // astronomically large for a ledger whose groups differ by a factor of 1e18, which the app cannot write; it is finite.)
+  it('compares to finite numbers, and summarizes each arm in figures a card can print, for any mixture of tiny, ordinary and huge counts', async () => {
+    const { compareArms } = await import('../../src/main/headroom/armCompare')
+    const SIZES = [0, 1e-320, Number.MIN_VALUE, 1e-300, 1e-9, 1e-3, 0.1, 1, 7, 1e4, 1e9, 1e15, 1e16, 1e21, 1e300, Number.MAX_VALUE]
+    let seed = 12345
+    const next = (): number => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 0x100000000 }
+    const pick = (): number => SIZES[Math.floor(next() * SIZES.length)]
+    const group = (): Record<string, number> => ({ requests: pick(), work: pick(), units: pick(), turns: pick(), turnUnits: pick() })
+    /** The numbers of a result that are not finite, by path; with `plain`, also those written with an exponent. */
+    const bad = (v: unknown, plain: boolean, at = ''): string[] => {
+      if (typeof v === 'number') return Number.isFinite(v) && !(plain && /e[+-]/.test(String(v))) ? [] : [`${at}=${String(v)}`]
+      if (v && typeof v === 'object') return Object.entries(v).flatMap(([k, x]) => bad(x, plain, `${at}.${k}`))
+      return []
+    }
+    for (let i = 0; i < 1500; i++) {
+      loadArmState({ late: Array.from({ length: 20 }, group), holdout: Array.from({ length: 20 }, group), legacy: group() })
+      const c = compareArms(armState())
+      expect(bad(c, false), `state ${i}`).toEqual([])
+      expect(bad({ late: c.late, holdout: c.holdout, legacy: c.legacy }, true), `state ${i}`).toEqual([])
+    }
+    // And the one the verifier found, by hand: a divisor that was not zero and was not a number a card can show.
+    loadArmState({ late: [{ requests: 1e-320, work: 1, units: 1, turns: 100, turnUnits: 1 }], holdout: [], legacy: { requests: 1e-300, work: 5, units: 5, turns: 5, turnUnits: 5 } })
+    expect(bad(compareArms(armState()), true)).toEqual([])
+    expect(armState().late[0].requests).toBe(0)
+    // The reader finds what it is looking for: an Infinity and a NaN always, an exponent when asked to look for one.
+    const sample = { a: { b: 1e21, c: 1e-7, d: Infinity, e: NaN, f: 5, g: 'x' } }
+    expect(bad(sample, false)).toEqual(['.a.d=Infinity', '.a.e=NaN'])
+    expect(bad(sample, true)).toEqual(['.a.b=1e+21', '.a.c=1e-7', '.a.d=Infinity', '.a.e=NaN'])
+  })
+
   it('never lets the card print an exponent: a damaged ledger compares as the same ledger without the damaged numbers', async () => {
     const { compareArms } = await import('../../src/main/headroom/armCompare')
     const group = { requests: 100, work: 100, units: 1e21, turns: 1.7857142857142858e21, turnUnits: 1e21 }
