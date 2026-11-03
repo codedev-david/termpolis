@@ -315,7 +315,7 @@ vi.mock('../../src/main/shellDetector', () => ({
 vi.mock('../../src/main/sessionStore', () => ({
   loadSession: M.loadSession, loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
 }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -367,6 +367,7 @@ vi.mock('../../src/main/importTrust', () => ({
 vi.mock('../../src/main/memorySettings', () => ({
   getPrimerLimit: M.getPrimerLimit, setPrimerLimit: M.setPrimerLimit,
   getVectorQuantize: M.getVectorQuantize, setVectorQuantize: M.setVectorQuantize,
+  initMemorySettings: vi.fn(),
 }))
 vi.mock('../../src/main/contextPinStore', () => ({
   initContextPinStore: vi.fn(),
@@ -424,6 +425,7 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 }))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: vi.fn(() => ['/opt/agent-bin']),
+  getAgentExtraPathsAsync: vi.fn(async () => ['/opt/agent-bin']),
   getExtendedPath: vi.fn(() => '/usr/bin:/opt/agent-bin'),
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),
@@ -1751,7 +1753,20 @@ describe('workflow orchestrator wiring', () => {
     const onData = vi.fn()
     spawnDeps.spawnTerminal('wf-1', 'bash', '/repo', onData, ['/extra'], { A: '1' })
     // node-pty needs a real path — bare 'bash' throws "File not found" on Windows.
-    expect(M.spawnTerminal).toHaveBeenCalledWith('wf-1', '/bin/bash', '/repo', onData, ['/extra'], { A: '1' }, undefined)
+    expect(M.spawnTerminal).toHaveBeenCalledWith('wf-1', '/bin/bash', '/repo', onData, ['/extra'], { A: '1' }, undefined, undefined)
+    // What the lookups found (made on the thread pool before the spawn) is handed on as the eighth argument.
+    const prep = { cwd: '/repo', integrationScript: null }
+    spawnDeps.spawnTerminal('wf-2', 'bash', '/repo', onData, undefined, undefined, undefined, prep)
+    expect(M.spawnTerminal).toHaveBeenLastCalledWith('wf-2', '/bin/bash', '/repo', onData, undefined, undefined, undefined, prep)
+  })
+
+  it('has the Command step and the Agent step ask for their terminal lookups on the thread pool (prepare), for the real executable', async () => {
+    const commandDeps = M.makeTerminalRunner.mock.calls.at(-1)![0] as any
+    const agentDeps = M.makeAgentRunner.mock.calls.at(-1)![0] as any
+    expect(typeof commandDeps.prepare).toBe('function')
+    expect(typeof agentDeps.prepare).toBe('function')
+    expect(await commandDeps.prepare('bash', '/repo')).toEqual(expect.objectContaining({ cwd: expect.any(String) }))
+    expect(await agentDeps.prepare('claude', '/repo')).toEqual(expect.objectContaining({ cwd: expect.any(String) }))
   })
 
   it('reads an unnamed agent as claude, and passes an explicit name straight through', async () => {
@@ -1825,6 +1840,26 @@ describe('workflow orchestrator wiring', () => {
     expect(deps.newRunId()).toBe('run-42')
     expect(deps.emit).toBe(emit)
     expect(typeof deps.now()).toBe('number')
+  })
+
+  it('a finished run is appended to its workflow history file on the thread pool, one line each, never throwing into the run', async () => {
+    const { offMainFiles } = await import('../../src/main/offMainFiles')
+    const fsMod = await import('fs')
+    const appendFile = fsMod.promises.appendFile as unknown as ReturnType<typeof vi.fn>
+    appendFile.mockClear()
+    const ipc = wfCaptured.ipcOpts
+    expect(typeof ipc.appendHistory).toBe('function')
+    const dir = join(tmpdir(), 'wf-hist-fake')
+    ipc.appendHistory(dir, { workflowId: 'wf-9', runId: 'r1', status: 'succeeded' })
+    ipc.appendHistory(dir, { workflowId: 'wf-9', runId: 'r2', status: 'failed' })
+    await offMainFiles.idle()
+    // Both lines were asked for before the first write started: they go out together, in order, one JSON line each.
+    const written = appendFile.mock.calls.filter((c) => String(c[0]) === join(dir, 'wf-9.jsonl')).map((c) => String(c[1])).join('')
+    expect(written.split('\n').filter(Boolean).map((l) => JSON.parse(l).runId)).toEqual(['r1', 'r2'])
+    // A write that fails is swallowed: a run's history is best-effort and must never take the run down.
+    appendFile.mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+    expect(() => ipc.appendHistory(dir, { workflowId: 'wf-9', runId: 'r3', status: 'succeeded' })).not.toThrow()
+    await offMainFiles.idle()
   })
 
   it('the demo-workflow sweep runs against the home store', () => {

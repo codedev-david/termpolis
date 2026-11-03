@@ -1,5 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { createRunGate, WATCH_MIN_INTERVAL_MS } from '../watchGuard'
+import { openSheddingWatch, type ShedFsWatcher, type ShedFsWatchFn } from '../shedWatch'
 
 /**
  * Base class for tailing a JSONL (or line-oriented) transcript file.
@@ -9,6 +11,14 @@ import * as path from 'path'
  * - MAX_READ_BYTES caps how much is read per poll — prevents DOS via giant file
  * - Path inputs go through resolvePathWithinRoot() to prevent traversal
  * - fs.watch + polling fallback keeps CPU low while still catching missed events
+ *
+ * Pacing (watchGuard.ts): a write to the transcript used to cost a synchronous stat + open + read +
+ * close on the MAIN thread for EVERY fs.watch event, and the main thread is the one that echoes
+ * keystrokes. A streaming agent writes many times a second and Defender can stall one open for over
+ * a second. Now an event only tells a run gate "something happened": the first one after quiet reads
+ * at once (async, off the main thread), the rest of that 2 s window collapses into one trailing read,
+ * two reads never overlap, and a flood backs off. The 1.5 s poll is the same request, not a second
+ * code path. Nothing here is synchronous, the pass at attach time included.
  */
 
 export const MAX_LINE_BYTES = 64 * 1024        // 64KB — any longer line is skipped
@@ -17,6 +27,12 @@ export const POLL_INTERVAL_MS = 1500           // polling fallback cadence
 
 export interface TailHandle {
   stop(): void
+  /** Resolves once the tail's start position is fixed (the file's end when it was asked to start there). A caller that
+   *  awaits it keeps the old guarantee of attaching: whatever is appended after that is delivered, never skipped. */
+  ready: Promise<void>
+  /** Resolves when no pass is running (the one at attach time included): what a pass found has been delivered. For
+   *  tests, and for a caller that must know the tail has caught up. */
+  settled: () => Promise<void>
 }
 
 /**
@@ -46,51 +62,22 @@ export function tailFile(
   let offset = 0
   let stopped = false
   let leftover = ''
-  let watcher: fs.FSWatcher | null = null
+  let watcher: ShedFsWatcher | null = null
   let poller: ReturnType<typeof setInterval> | null = null
 
-  // Initialize offset
-  try {
-    if (opts.startAtEnd) {
-      const stats = fs.statSync(filePath)
-      offset = stats.size
-    }
-  } catch {
-    // File may not exist yet — start at 0, tick will handle it
-  }
-
-  const tick = () => {
-    if (stopped) return
-    let stats: fs.Stats
+  // The offset a tail starts from: the end of the file when asked, else its first byte. Fixed on the thread pool,
+  // before the first read: attaching to a transcript used to stat and read it on the main thread.
+  const ready: Promise<void> = (async () => {
+    if (!opts.startAtEnd) return
     try {
-      stats = fs.statSync(filePath)
+      offset = (await fs.promises.stat(filePath)).size
     } catch {
-      return
+      // File may not exist yet — start at 0, the first pass will handle it
     }
+  })()
 
-    // File truncated / rotated — reset
-    if (stats.size < offset) {
-      offset = 0
-      leftover = ''
-    }
-
-    if (stats.size === offset) return
-
-    const toRead = Math.min(stats.size - offset, MAX_READ_BYTES)
-    let buf: Buffer
-    try {
-      const fd = fs.openSync(filePath, 'r')
-      try {
-        buf = Buffer.alloc(toRead)
-        fs.readSync(fd, buf, 0, toRead, offset)
-      } finally {
-        fs.closeSync(fd)
-      }
-    } catch {
-      return
-    }
-
-    offset += toRead
+  /** Newly read bytes -> complete lines -> the consumer. Shared by the attach-time pass and the gate. */
+  const deliver = (buf: Buffer): void => {
     const chunk = leftover + buf.toString('utf-8')
     const lines = chunk.split('\n')
     leftover = lines.pop() ?? ''
@@ -111,10 +98,68 @@ export function tailFile(
     }
   }
 
-  // fs.watch for change events
+  // Every pass, the first at attach time included, runs on the thread pool. The gate never starts one while the
+  // previous is still awaiting the disk.
+  const tickAsync = async (): Promise<void> => {
+    await ready
+    // (No `stopped` check up here: stop() disposes the gate first, so the gate never starts a pass on
+    // a stopped tail. The checks below are for a stop() that lands while a pass is awaiting the disk.)
+    let size: number
+    try {
+      size = (await fs.promises.stat(filePath)).size
+    } catch {
+      return
+    }
+    if (stopped) return
+
+    // File truncated / rotated — reset
+    if (size < offset) {
+      offset = 0
+      leftover = ''
+    }
+
+    if (size === offset) return
+
+    const toRead = Math.min(size - offset, MAX_READ_BYTES)
+    let buf: Buffer
+    let got: number
+    try {
+      const handle = await fs.promises.open(filePath, 'r')
+      try {
+        buf = Buffer.alloc(toRead)
+        got = (await handle.read(buf, 0, toRead, offset)).bytesRead
+      } finally {
+        await handle.close()
+      }
+    } catch {
+      return // the offset only advances after a read that worked, so the next pass retries
+    }
+    if (stopped || got === 0) return
+
+    offset += got
+    deliver(got === toRead ? buf : buf.subarray(0, got))
+  }
+
+  let lastPass: Promise<void> = Promise.resolve()
+  const gate = createRunGate({
+    mode: 'leading',
+    windowMs: WATCH_MIN_INTERVAL_MS,
+    label: `transcript ${path.basename(filePath)}`,
+    // (No log here: the shedding watch below caps what reaches this gate at 200 events a second, which is not
+    // a flood to the gate, so it has nothing to say; the shedding watch logs its own closing.)
+    run: () => (lastPass = tickAsync()),
+  })
+
+  // fs.watch for change events. A shedding watch: a transcript that is written to hundreds of times a second
+  // (every event costs the main thread about a millisecond and a half) is not listened to for a while, and the
+  // poll below reads it anyway, at most once per window as it always did. On reopening the gate is told once.
   try {
-    watcher = fs.watch(filePath, { persistent: false }, () => tick())
-    watcher.on('error', () => {
+    watcher = openSheddingWatch(fs.watch as unknown as ShedFsWatchFn, filePath, { persistent: false }, () => gate.note(), {
+      label: `transcript ${path.basename(filePath)}`,
+      log: (msg) => console.warn(msg),
+      onResume: () => gate.note(),
+    })
+    watcher.on?.('error', () => {
       try { watcher?.close() } catch {}
       watcher = null
     })
@@ -123,17 +168,27 @@ export function tailFile(
   }
 
   // Always run a slow poll as a safety net — fs.watch misses events on some platforms
-  poller = setInterval(tick, POLL_INTERVAL_MS)
+  poller = setInterval(() => gate.poke(), POLL_INTERVAL_MS)
 
-  // Immediate tick in case there's content
-  tick()
+  // Immediate pass in case there's content (the gate's leading edge: it runs at once, off the main thread)
+  gate.poke()
 
   return {
     stop() {
       stopped = true
+      gate.dispose()
       try { watcher?.close() } catch {}
       watcher = null
       if (poller) { clearInterval(poller); poller = null }
+    },
+    ready,
+    async settled() {
+      await ready
+      let seen: Promise<void>
+      do {
+        seen = lastPass
+        await seen.catch(() => { /* a failed pass is the gate's to report; this only waits */ })
+      } while (seen !== lastPass)
     },
   }
 }

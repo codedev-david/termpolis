@@ -9,16 +9,19 @@ import {
   competenceSummary,
   _resetCompetenceForTests,
 } from '../../src/main/mnemeCompetence'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 describe('mnemeCompetence — persistent self-competence store', () => {
   let dir: string
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mneme-comp-'))
     _resetCompetenceForTests()
+    await offMainFiles.idle()
     initCompetence(dir)
   })
-  afterEach(() => {
+  afterEach(async () => {
     _resetCompetenceForTests()
+    await offMainFiles.idle()
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
@@ -40,10 +43,11 @@ describe('mnemeCompetence — persistent self-competence store', () => {
     expect(assessCompetence('never-seen').known).toBe(false)
   })
 
-  it('persists across a reload (last-write-wins)', () => {
+  it('persists across a reload (last-write-wins)', async () => {
     recordOutcome('deploy', false, 1)
     recordOutcome('deploy', false, 2)
     _resetCompetenceForTests()
+    await offMainFiles.idle()
     initCompetence(dir)
     const a = assessCompetence('deploy')
     expect(a.attempts).toBe(2)
@@ -65,18 +69,20 @@ describe('mnemeCompetence — persistent self-competence store', () => {
     expect(assessCompetence('adhoc').attempts).toBe(1)
   })
 
-  it('tolerates corrupt / blank lines on load', () => {
+  it('tolerates corrupt / blank lines on load', async () => {
     const fp = path.join(dir, 'mneme-competence.jsonl')
+    await offMainFiles.idle()
     fs.writeFileSync(
       fp,
       'not json\n\n' + JSON.stringify({ domain: 'ok', attempts: 2, successes: 1, lastTs: 5, confidence: 0.1 }) + '\n',
     )
     _resetCompetenceForTests()
+    await offMainFiles.idle()
     initCompetence(dir)
     expect(assessCompetence('ok').attempts).toBe(2)
   })
 
-  it('purges the stale home-directory (account-name) domain on load, durably', () => {
+  it('purges the stale home-directory (account-name) domain on load, durably', async () => {
     // Before v1.26.2, opening a terminal in ~ normalized to the home basename — the user's ACCOUNT
     // NAME — as a "project", and a project is a competence domain (mnemeReflex). normalizeProjectSlug
     // now rejects home, but the record it already wrote replays forever: a dashboard bar labelled
@@ -85,12 +91,14 @@ describe('mnemeCompetence — persistent self-competence store', () => {
     const home = (os.homedir().replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '').toLowerCase()
     expect(home).not.toBe('') // sanity: the test box has a real home dir
     const fp = path.join(dir, 'mneme-competence.jsonl')
+    await offMainFiles.idle()
     fs.writeFileSync(
       fp,
       JSON.stringify({ domain: home, attempts: 1, successes: 1, lastTs: 5, confidence: 0.2065 }) + '\n' +
         JSON.stringify({ domain: 'termpolis', attempts: 4, successes: 3, lastTs: 6, confidence: 0.42 }) + '\n',
     )
     _resetCompetenceForTests()
+    await offMainFiles.idle()
     initCompetence(dir)
     expect(assessCompetence(home).known).toBe(false)       // the account-name domain is gone
     expect(assessCompetence('termpolis').known).toBe(true)  // real domains survive
@@ -98,6 +106,7 @@ describe('mnemeCompetence — persistent self-competence store', () => {
 
     // Durable: the dead line was rewritten out, so it does not resurrect on the next load.
     _resetCompetenceForTests()
+    await offMainFiles.idle()
     initCompetence(dir)
     expect(assessCompetence(home).known).toBe(false)
     expect(assessCompetence('termpolis').known).toBe(true)

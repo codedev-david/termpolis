@@ -108,6 +108,7 @@ import {
   type ModelCatalog,
 } from './modelCatalog'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
+import { prepareSpawn, type SpawnPrep } from './terminalSpawnPrep'
 import { createTerminalNameLookup } from './terminalNames'
 import { initAppLog, logToApp, readAppLog, clearAppLog, appLogFilePath, captureConsole } from './appLog'
 import { normalizeLevel } from '../shared/appLog'
@@ -121,6 +122,7 @@ import {
   type OutputBuffers,
 } from './terminalOutputBuffer'
 import { spawnTerminal, killTerminal, writeToTerminal, resizeTerminal, killAll, whenTerminalsExit, runningShellCount, getTerminalCwdAsync, getTerminalPid, getTerminalSize, terminalShellAlone, computeWindowsPty, primeBundledToolsCheck } from './terminalManager'
+import { primeShellAlone } from './shellAlone'
 import { getRecentEgress, recordEgress, clearEgress, pollAgentEgress, type EgressEndpoint } from './egressAudit'
 import { refreshAllowedIps, attributeEgress } from './egressAttribute'
 import {
@@ -172,7 +174,9 @@ import { readFileCoverage, summarizeCoverage } from './coverageReader'
 // (Its node path comes from resolveNodeCommand, imported with the agent-integration modules.)
 import { installHooks, uninstallHooks, hookStatus, type HookDeps, type HookPaths } from './gitHooks'
 import { loadSession, loadRestoreSession, saveSession } from './sessionStore'
-import { appendCommand, searchHistory, flushHistorySync } from './historyStore'
+import { appendCommand, searchHistory, flushHistorySync, primeHistory } from './historyStore'
+import { offMainFiles } from './offMainFiles'
+import { nodeAsyncFs } from './gitRefs'
 import { readConfigFile, writeConfigFile } from './configFileManager'
 import { listPathEntries, listPathCommands, listEnvVars } from './completionService'
 import { startMcpServer, stopMcpServer, getMcpAuthToken, getMcpPort, awaitMcpPortBound, initAuditLog, executeToolForWorkflow, type McpToolHandlers } from './mcpServer'
@@ -186,7 +190,7 @@ import { sessionProjectCwds, type SessionLike } from './workflow/sessionProjects
 import { startLearningSignals, stopLearningSignals } from './learningSignals'
 import { cleanupDemoWorkflows, oncePerVersion } from './workflow/demoCleanup'
 import type { FsLike as WorkflowFsLike } from './workflow/workflowStore'
-import type { WorkflowScope } from '../renderer/src/types'
+import type { WorkflowScope, WorkflowRun } from '../renderer/src/types'
 import { retrieveFull as headroomRetrieveFull } from './headroom/compressToolResult'
 import { getSettings as getHeadroomSettings, setSettings as setHeadroomSettings } from './headroom/config'
 import { buildInjectedInstruction } from './headroom/injectedInstruction'
@@ -509,7 +513,7 @@ async function reflectOnTask(
 // newly-appended turns. In-memory (terminal ids are per-session uuids); a lost cursor
 // just re-reads, and the content-addressed store dedups any overlap.
 import { buildContextPrimer, type PrimerRecent } from './contextPrimer'
-import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize } from './memorySettings'
+import { getPrimerLimit, setPrimerLimit, getVectorQuantize, setVectorQuantize, initMemorySettings } from './memorySettings'
 import { initAutoUpdater } from './autoUpdater'
 import { scheduleNoNewPrivsNotice } from './noNewPrivs'
 import { installSudoAskpass, sudoAskpassPath } from './sudoAskpass'
@@ -575,12 +579,14 @@ const terminalDisplayName = createTerminalNameLookup({
 const MAX_MCP_TERMINALS = 8 // Cap concurrent swarm agent terminals to limit memory
 
 import { sanitizeAgentCommand } from './agentCommandSanitizer'
-import { getAgentExtraPaths, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
+import { getAgentExtraPaths, getAgentExtraPathsAsync, getExtendedPath, primeInteractiveShellPath } from './agentPaths'
 import { safeGitAsync, isValidGitRef, parseSafeCommand, runSafeCommandAsync } from './gitCommand'
 import { setProcSpawner, execShellOffThread, execCaptureOffThread, shutdownProcHost } from './procClient'
 import { createProcHostTransport } from './procHostTransport'
 import { cachedGit, invalidateGitCache } from './gitCache'
 import { createGitWatcherRegistry } from './gitWatcher'
+import { WATCH_MIN_INTERVAL_MS } from './watchGuard'
+import { openScopedGitWatch, scopedTriggerWatch } from './scopedWatch'
 import { installApplicationMenu, globalHotkeys } from './appMenu'
 import { writeSecureFile } from './secureFile'
 import {
@@ -801,6 +807,13 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
     // an agent run in that folder unasked; Claude Code's own trust prompt stays the gate
     // unless the user connected the agents, and then only where Termpolis launches Claude
     // itself (`claude:trust-workspace`, via agentIntegrationManager).
+    // What spawnTerminal would look up synchronously, on the thread that echoes every keystroke (the folder
+    // that exists, the shell-integration script, NVM's folders), is looked up here, on the thread pool.
+    const agentPaths = await getAgentExtraPathsAsync()
+    const prep = await prepareSpawn(cwd, shell.executable)
+    // Whether the bundled jq/yq/nano are needed is answered before the first terminal opens (start-up primes it, on the
+    // proc host); waiting for that answer here is what keeps spawnTerminal from probing with execSync on this thread.
+    await primeBundledToolsCheck()
     await new Promise<void>((resolve, reject) => {
       // NOTE: a `setTimeout(() => reject('timeout'), 5000)` "hang guard" used to sit here. It was
       // DEAD CODE: the executor body below is fully SYNCHRONOUS, so clearTimeout always won the
@@ -808,7 +821,6 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
       // synchronous spawn blocks the event loop, so the timer still could not fire. It read like
       // a hang guard and provided none, which is worse than no guard at all.
       try {
-        const agentPaths = getAgentExtraPaths()
         const allExtraPaths = [...agentPaths, ...(extraPaths || [])]
         spawnTerminal(id, shell.executable, cwd, (data) => {
           // Buffer first, so the event can carry where this chunk ENDS in the stream: a pane
@@ -820,7 +832,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
           remoteNoteTerminalOutput(id)
-        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined)
+        }, allExtraPaths, claudeHeadroom ? (getProxyEnv() ?? undefined) : undefined, undefined, prep)
         resolve()
       } catch (e) {
         reject(e)
@@ -1471,12 +1483,12 @@ ipcMain.handle('dialog:pick-directory', async (_, { defaultPath }) => {
 })
 
 ipcMain.handle('completion:path-entries', async (_, { dirPath }) => {
-  try { return ok(listPathEntries(dirPath)) }
+  try { return ok(await listPathEntries(dirPath)) }
   catch (e: any) { return err(e.message) }
 })
 
 ipcMain.handle('completion:path-commands', async () => {
-  try { return ok(listPathCommands()) }
+  try { return ok(await listPathCommands()) }
   catch (e: any) { return err(e.message) }
 })
 
@@ -1821,7 +1833,13 @@ ipcMain.handle('git:find-root', async (_, { cwd }: { cwd: string }) => {
 // mechanism. Nothing here is load-bearing for correctness: if every watcher on the box fails to
 // open, the app behaves exactly like v1.47 with a slower poll.
 const gitWatchers = createGitWatcherRegistry({
-  watch: (target, opts, listener) => fsWatch(target, opts, listener),
+  // Scoped (scopedWatch.ts): the working tree is watched directory by directory, .git for refs/index/HEAD
+  // only, so nothing in .worktrees, node_modules, objects/ ... is ever delivered to this thread.
+  watch: (target, opts, listener) => openScopedGitWatch(fsWatch, target, opts, listener, (msg) => console.warn(msg)),
+  // At most one repaint per 2 s per repo (each one costs the renderer three git processes), and a
+  // flood backs off. The module's own default stays 1 s because its tests pin it.
+  throttleMs: WATCH_MIN_INTERVAL_MS,
+  log: (msg) => console.warn(msg),
   onChange: (root) => {
     invalidateGitCache(root)
     for (const win of BrowserWindow.getAllWindows()) {
@@ -2235,9 +2253,16 @@ ipcMain.handle('memory:ingest-code', async (_, opts: { repoRoot: string }) => {
       // re-index just the changed files (AST-first) with a full-sweep fallback — so edits show up in
       // seconds without re-parsing the whole tree. reindexWatchedChange owns the incremental-vs-full
       // logic (and is unit-tested); this callback just wires the real fs reader.
-      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(fsWatch, (root, files) => {
-        void reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8'))
-      }))
+      // The promise is RETURNED, not dropped: the watch gate (watchGuard.ts) waits for it, so two
+      // re-indexes never overlap however long one takes. reindexWatchedChange never rejects.
+      // The last two arguments: no custom nested-repo probe, and `scoped` (scopedWatch.ts) so that nothing
+      // under .worktrees, node_modules, dist ... is ever delivered to this thread by the OS.
+      ensureRepoWatch(opts.repoRoot, fsBackedWatchDeps(
+        fsWatch,
+        (root, files) => reindexWatchedChange(root, files, (f) => fsPromises.readFile(f, 'utf8')),
+        undefined,
+        true,
+      ))
     } catch { /* best effort */ }
     return ok({ ...stats, codeGraph })
   } catch (e: any) { return err(e.message) }
@@ -3334,7 +3359,8 @@ ipcMain.handle('contextPins:clear', async (_, { cwd }: { cwd: string }) => {
 // Renderer calls these when an agent is detected / terminal closes
 ipcMain.handle('agentWatcher:attach', async (_, { terminalId, cwd, agentType, sessionId }: { terminalId: string; cwd: string; agentType: DetectedAgent; sessionId?: string }) => {
   try {
-    const handle = attachWatcher(terminalId, cwd, agentType, sessionId)
+    // The transcript is looked for on the thread pool; the answer is the same, a moment later.
+    const handle = await attachWatcher(terminalId, cwd, agentType, sessionId)
     return ok({ attached: handle !== null })
   } catch (e: any) { return err(e.message) }
 })
@@ -3398,6 +3424,12 @@ if (!gotTheLock) {
     // asking it there means three CreateProcess calls on the main thread while the user waits for
     // the terminal to open. Answered here instead, long before the first terminal.
     void primeBundledToolsCheck()
+    // Windows: node-pty's folder and the console-list helper script, found and written now, so the first submit to an agent
+    // and the first close of a terminal make no file call on this thread.
+    void primeShellAlone().catch(() => { /* the first ask finds out */ })
+    // The shells installed here, probed once (on the thread pool), so a workflow step that opens a terminal
+    // reads them from memory instead of probing the disk on the main thread.
+    void Promise.resolve().then(() => detectAvailableShells()).catch(() => { /* none found: the next terminal asks again */ })
     // Refresh what each installed agent says its own models are, so the pickers offer
     // today's list rather than whatever was hardcoded at release. Fire-and-forget and
     // fully guarded: it reads Codex's own cache file and starts no agent CLI (Gemini's
@@ -3548,6 +3580,10 @@ async function semanticPoolOptions(
         const shells = await detectAvailableShells()
         const shellInfo = shells.find(s => s.type === shell) || shells[0]
         if (shellInfo) {
+          // The folder, the integration script and NVM's folders are looked up on the thread pool, not here.
+          const mcpAgentPaths = await getAgentExtraPathsAsync()
+          const mcpPrep = await prepareSpawn(resolvedCwd, shellInfo.executable)
+          await primeBundledToolsCheck()
           spawnTerminal(id, shellInfo.executable, resolvedCwd, (data) => {
             // Buffer first: the event carries the chunk's end offset (see terminal:create).
             const end = appendOutput(terminalOutputBuffers, id, data)
@@ -3558,7 +3594,7 @@ async function semanticPoolOptions(
           // Dev"), so a name check would miss it. ANTHROPIC_BASE_URL is inert for non-Anthropic agents
           // (codex/gemini read OPENAI_*/Google env), so this compresses every Claude worker and
           // no-ops the rest; getProxyEnv() is null when the proxy is unhealthy → direct launch.
-          }, getAgentExtraPaths(), getProxyEnv() ?? undefined)
+          }, mcpAgentPaths, getProxyEnv() ?? undefined, undefined, mcpPrep)
         }
         // Track as MCP-created (swarm) terminal for command enforcement
         mcpCreatedTerminals.add(id)
@@ -3633,8 +3669,8 @@ async function semanticPoolOptions(
       writeToTerminal: (terminalId, text) => {
         writeToTerminal(terminalId, text)
       },
-      getFileTree: (path) => {
-        return listPathEntries(path)
+      getFileTree: async (path) => {
+        return await listPathEntries(path)
       },
       // Three sequential safeGit calls used to run here, on the thread that pumps every
       // PTY. Agents invoke this, concurrently, from swarm — so a tool the user never
@@ -3975,6 +4011,10 @@ async function semanticPoolOptions(
     initRecallBench(app.getPath('userData'))
     initOutputEconomy(app.getPath('userData'))
     initAiSecurity()
+    // The memory settings and the command history are read now, at start-up (the history on the thread pool), so the
+    // first Enter and the first memory call of a session do not read a file on the thread that echoes keystrokes.
+    initMemorySettings()
+    void primeHistory().catch(() => { /* an empty history */ })
     // Back the memory sync-key cache with the OS keychain (safeStorage: DPAPI /
     // Keychain / libsecret) — no native module, ships in the one executable.
     setSafeStorage(safeStorage)
@@ -4185,7 +4225,14 @@ async function semanticPoolOptions(
       const crashMarkerPath = join(app.getPath('userData'), 'last-session.json')
       initCrashWatch({
         readMarker: () => { try { return readFileSync(crashMarkerPath, 'utf8') } catch { return null } },
-        writeMarker: (json) => { try { writeFileSync(crashMarkerPath, json) } catch { /* best effort */ } },
+        // The heartbeat writes this every minute: on the thread pool, not on the thread that echoes keystrokes. Once the
+        // app is quitting the write goes straight to disk (the clean-exit mark must land before the process ends).
+        writeMarker: (json) => {
+          try {
+            void offMainFiles.write(crashMarkerPath, json).catch(() => { /* best effort */ })
+            if (appQuitting) offMainFiles.flushSync()
+          } catch { /* best effort */ }
+        },
         now: () => Date.now(),
         version: app.getVersion(),
         pid: process.pid,
@@ -4436,7 +4483,10 @@ async function semanticPoolOptions(
     // fault can never fatal `whenReady`.
     try {
       const wfFs = { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } as unknown as WorkflowFsLike
-      const wfSpawn = { spawnTerminal, writeToTerminal, killTerminal }
+      // `prepare`: what opening a terminal looks up (the folder, the shell integration script, the bundled tools) is asked
+      // on the thread pool before the spawn, as terminal:create does for a click: a workflow step, an agent step and an
+      // agent's run_and_wait each open a terminal, and none of them may stall the thread that echoes the user's typing.
+      const wfSpawn = { spawnTerminal, writeToTerminal, killTerminal, prepare: (exe: string, cwd: string) => prepareSpawn(cwd, exe) }
       // Command steps store a logical shell TYPE ('bash'|'powershell'|...).
       // node-pty needs a concrete executable — bare 'bash' throws "File not
       // found" on Windows — so resolve the type to a real path before spawning.
@@ -4450,8 +4500,10 @@ async function semanticPoolOptions(
       const wfCommandSpawn = {
         ...wfSpawn,
         defaultShell: wfDefaultShellType,
-        spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void) =>
-          spawnTerminal(id, resolveShellExecutable(exe), cwd, onData, extraPaths, extraEnv, onExit),
+        // The shell TYPE becomes a real executable here, so the lookups are made for the executable that will run.
+        prepare: (exe: string, cwd: string) => prepareSpawn(cwd, resolveShellExecutable(exe)),
+        spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void, prep?: SpawnPrep) =>
+          spawnTerminal(id, resolveShellExecutable(exe), cwd, onData, extraPaths, extraEnv, onExit, prep),
       }
       const wfTerminal = makeTerminalRunner(wfCommandSpawn)
       // Same runner, same PTY plumbing, same exit-code semantics for the run_and_wait MCP tool.
@@ -4473,8 +4525,10 @@ async function semanticPoolOptions(
       let wfStartRun: ((cwd: string, id: string, opts?: { scope?: WorkflowScope }) => { ok: boolean; done?: Promise<void>; error?: string }) | null = null
       const wfTriggers = new TriggerSupervisor({
         fs: wfFs,
+        fsAsync: nodeAsyncFs, // the tick reads git refs on the thread pool, and writes its state there too
         readBytes: (p: string) => readFileSync(p),
-        watch: (dir, listener) => fsWatch(dir, { recursive: true }, listener),
+        // Scoped (scopedWatch.ts): nothing under .worktrees, node_modules, .termpolis ... reaches this thread.
+        watch: scopedTriggerWatch(fsWatch, (msg) => console.warn(msg)),
         setTimer: (fn, ms) => setTimeout(fn, ms),
         clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
         now: Date.now,
@@ -4497,6 +4551,8 @@ async function semanticPoolOptions(
         isTrusted: (cwd: string) => { try { return isWorkspaceTrusted(cwd) } catch { return false } },
         newRunId: () => randomUUID(),
         userDataDir: app.getPath('userData'),
+        // A run's record goes to the thread pool (a run a file-watch trigger started can finish while the user types).
+        appendHistory: (dir: string, run: WorkflowRun) => { void offMainFiles.append(join(dir, `${run.workflowId}.jsonl`), JSON.stringify(run) + '\n').catch(() => { /* history is best-effort */ }) },
         makeDeps: (emit, runId) => ({ terminal: wfTerminal, agent: wfAgent, tools: wfTools, timer: realTimer, now: Date.now, newRunId: () => runId, emit }),
       })
       wfStartRun = wfIpc.startRun
@@ -4542,6 +4598,7 @@ async function semanticPoolOptions(
           emit: recordWorkOutcome,
           subscribe: subscribeEvents,
           fs: { existsSync, readFileSync },
+          fsAsync: nodeAsyncFs, // the poll reads git on the thread pool
           readBytes: (rp: string) => readFileSync(rp),
         })
         app.on('before-quit', () => { try { stopLearningSignals() } catch { /* shutting down anyway */ } })
@@ -4806,6 +4863,9 @@ async function semanticPoolOptions(
       mcpServer = null
     }
     shutdownStep('mcp')
+    // What the thread-pool writers (offMainFiles) still hold goes to disk now: the one synchronous flush the app is allowed.
+    try { offMainFiles.flushSync() } catch { /* shutting down anyway */ }
+    shutdownStep('queued writes')
   })
   // The force-exit that ends a stalled shutdown lives in `window-all-closed` — and Electron never
   // emits that event for a quit we asked for. Cmd/Ctrl+Q, the menu, an update restart and

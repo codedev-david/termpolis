@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { CONSENT_VERSION } from '../../src/shared/telemetryConsent'
 import { normalizeUpdaterSignature } from '../../src/shared/sentryScrub'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 // Capture what Sentry receives without pulling in the native binding.
 // vi.mock can't intercept the lazy require() inside telemetry.ts, so we
@@ -26,6 +27,7 @@ const NOT_ASKED = { crash: false, usage: false, consentVersion: 0, needsReview: 
 let tmpDir: string
 
 async function loadWithProvider(provider: () => any) {
+  await offMainFiles.idle() // a restart: what the last run asked to be written is on disk before the next one reads it
   vi.resetModules()
   const mod = await import('../../src/main/telemetry')
   mod.__resetTelemetryForTests()
@@ -52,7 +54,8 @@ function writeTelemetryFile(content: unknown): void {
   writeFileSync(join(tmpDir, 'telemetry.json'), typeof content === 'string' ? content : JSON.stringify(content))
 }
 
-function readTelemetryFile(): any {
+async function readTelemetryFile(): Promise<any> {
+  await offMainFiles.idle() // the file is written on the thread pool
   return JSON.parse(readFileSync(join(tmpDir, 'telemetry.json'), 'utf-8'))
 }
 
@@ -208,7 +211,7 @@ describe('setConsent', () => {
     mod.initTelemetry(tmpDir)
     expect(mod.setConsent({ crash: true, usage: false }))
       .toEqual({ crash: true, usage: false, consentVersion: CONSENT_VERSION, needsReview: false })
-    expect(readTelemetryFile()).toEqual({ crash: true, usage: false, consentVersion: CONSENT_VERSION })
+    expect(await readTelemetryFile()).toEqual({ crash: true, usage: false, consentVersion: CONSENT_VERSION })
   })
 
   it('"Not now" — both off — is an answer too: the next launch does not ask again', async () => {
@@ -264,6 +267,7 @@ describe('setConsent', () => {
     const nestedDir = join(tmpDir, 'nested', 'data')
     mod.initTelemetry(nestedDir)
     mod.setConsent({ crash: true })
+    await offMainFiles.idle()
     expect(existsSync(join(nestedDir, 'telemetry.json'))).toBe(true)
   })
 
@@ -276,7 +280,7 @@ describe('setConsent', () => {
     mod.setConsent({ crash: false, usage: false })
     // setConsent rewrites the WHOLE file. Dropping the date would re-arm the ping, so a user who
     // flips the switch twice would send a second "launch" for the same day and inflate the count.
-    expect(readTelemetryFile()).toEqual({
+    expect(await readTelemetryFile()).toEqual({
       crash: false,
       usage: false,
       consentVersion: CONSENT_VERSION,
@@ -427,7 +431,7 @@ describe('recordUpdaterEvent', () => {
     mod.recordUpdaterEvent({ status: 'error', error: 'net::ERR_CONNECTION_RESET' })
     mod.recordUpdaterEvent({ status: 'error', error: 'sha512 checksum mismatch' })
     expect(mockCaptureMessage).toHaveBeenCalledTimes(2)
-    expect(readTelemetryFile().updaterReports).toEqual({
+    expect((await readTelemetryFile()).updaterReports).toEqual({
       version: '1.48.0',
       signatures: ['net::ERR_CONNECTION_RESET', 'sha<n> checksum mismatch'],
     })
@@ -451,7 +455,7 @@ describe('recordUpdaterEvent', () => {
     mod.initTelemetry(tmpDir, '1.48.1')
     mod.recordUpdaterEvent({ status: 'error', error: 'EPERM: operation not permitted' })
     expect(mockCaptureMessage).toHaveBeenCalledTimes(2)
-    expect(readTelemetryFile().updaterReports).toEqual({ version: '1.48.1', signatures: ['EPERM: operation not permitted'] })
+    expect((await readTelemetryFile()).updaterReports).toEqual({ version: '1.48.1', signatures: ['EPERM: operation not permitted'] })
   })
 
   it('caps the distinct failures one version may report', async () => {
@@ -459,7 +463,7 @@ describe('recordUpdaterEvent', () => {
     const letters = 'abcdefghijklmnopqrstuvwxyz'
     for (let i = 0; i < 21; i++) mod.recordUpdaterEvent({ status: 'error', error: `failure ${letters[i]}` })
     expect(mockCaptureMessage).toHaveBeenCalledTimes(20)
-    expect(readTelemetryFile().updaterReports.signatures).toHaveLength(20)
+    expect((await readTelemetryFile()).updaterReports.signatures).toHaveLength(20)
   })
 
   it.each([
@@ -475,7 +479,7 @@ describe('recordUpdaterEvent', () => {
     mod.initTelemetry(tmpDir, '1.48.0')
     mod.recordUpdaterEvent({ status: 'error', error: 'x' })
     expect(mockCaptureMessage).toHaveBeenCalledTimes(1)
-    expect(readTelemetryFile().updaterReports).toEqual({ version: '1.48.0', signatures: ['x'] })
+    expect((await readTelemetryFile()).updaterReports).toEqual({ version: '1.48.0', signatures: ['x'] })
   })
 
   it('honours well-formed updaterReports on disk', async () => {
@@ -498,7 +502,7 @@ describe('recordUpdaterEvent', () => {
     expect(breadcrumb.data).toEqual({ status: 'error', error: 'Not enough free disk space' })
     expect(mockCaptureMessage).not.toHaveBeenCalled()
     // ...and it does not use up one of the version's report slots.
-    expect(readTelemetryFile().updaterReports).toBeUndefined()
+    expect((await readTelemetryFile()).updaterReports).toBeUndefined()
   })
 
   it('an error status with NO error string breadcrumbs at error level but sends no captureMessage', async () => {
@@ -626,7 +630,7 @@ describe('dailyLaunchPing', () => {
     expect(mod.dailyLaunchPing('1.11.16')).toBe(false)
     expect(clients).toHaveLength(0)
     // Not even the day is marked: nothing was due.
-    expect(readTelemetryFile().lastLaunchPingDate).toBeUndefined()
+    expect((await readTelemetryFile()).lastLaunchPingDate).toBeUndefined()
   })
 
   it('returns false when nothing was ever answered', async () => {
@@ -733,7 +737,7 @@ describe('dailyLaunchPing', () => {
     const mod = await loadConsented({ usage: true })
     delete process.env.SENTRY_DSN
     expect(mod.dailyLaunchPing('1.11.16', new Date('2026-04-26T10:00:00Z'))).toBe(false)
-    expect(readTelemetryFile().lastLaunchPingDate).toBe('2026-04-26')
+    expect((await readTelemetryFile()).lastLaunchPingDate).toBe('2026-04-26')
   })
 
   it('a send that throws reports false but still marks the day, so it is not retried on every relaunch', async () => {
@@ -744,7 +748,7 @@ describe('dailyLaunchPing', () => {
     }
     const mod = await loadConsented({ usage: true }, '1.11.16', () => broken)
     expect(mod.dailyLaunchPing('1.11.16', new Date('2026-04-26T10:00:00Z'))).toBe(false)
-    expect(readTelemetryFile().lastLaunchPingDate).toBe('2026-04-26')
+    expect((await readTelemetryFile()).lastLaunchPingDate).toBe('2026-04-26')
     expect(mod.dailyLaunchPing('1.11.16', new Date('2026-04-26T11:00:00Z'))).toBe(false)
   })
 })
@@ -764,7 +768,7 @@ describe('persistence robustness', () => {
     mod.initTelemetry(tmpDir)
     // Hydration treats garbage as not asked, but writes should still work
     mod.setConsent({ crash: true })
-    expect(readTelemetryFile()).toEqual({ crash: true, usage: false, consentVersion: CONSENT_VERSION })
+    expect(await readTelemetryFile()).toEqual({ crash: true, usage: false, consentVersion: CONSENT_VERSION })
   })
 
   it('a userData path that is really a FILE cannot be written, and setConsent still updates in memory', async () => {
@@ -777,6 +781,7 @@ describe('persistence robustness', () => {
     // again next launch; throwing out of setConsent would take down the IPC handler that called it.
     expect(() => mod.setConsent({ crash: true })).not.toThrow()
     expect(mod.isCrashEnabled()).toBe(true)
+    await offMainFiles.idle()
     expect(existsSync(join(blocker, 'telemetry.json'))).toBe(false)
   })
 })
@@ -806,7 +811,7 @@ describe('sentryOrNull — the resolver is not trusted', () => {
     // ...and the launch ping still marks the day, so a resolver that is broken on this machine is
     // not retried on every single relaunch.
     expect(mod.dailyLaunchPing('1.2.3', new Date('2026-04-26T10:00:00Z'))).toBe(false)
-    expect(readTelemetryFile().lastLaunchPingDate).toBe('2026-04-26')
+    expect((await readTelemetryFile()).lastLaunchPingDate).toBe('2026-04-26')
   })
 
   it('uses the real lazy require() when no test provider was installed', async () => {
@@ -858,7 +863,7 @@ describe('a Sentry module that lacks the method being called', () => {
     // today would not change that.
     expect(mod.dailyLaunchPing('1.2.3', new Date('2026-04-26T10:00:00Z'))).toBe(false)
     expect(mod.dailyLaunchPing('1.2.3', new Date('2026-04-26T23:00:00Z'))).toBe(false)
-    expect(readTelemetryFile().lastLaunchPingDate).toBe('2026-04-26')
+    expect((await readTelemetryFile()).lastLaunchPingDate).toBe('2026-04-26')
   })
 })
 

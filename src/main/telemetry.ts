@@ -27,8 +27,9 @@
 // tests/electron/memoryHostImportGraph.test.ts, which fails the build if any electron named import
 // reappears in this graph. Need something from electron in main-only code? Inject it (setSafeStorage).
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
-import { dirname, join } from 'path'
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
+import { offMainFiles } from './offMainFiles'
 import { CONSENT_VERSION } from '../shared/telemetryConsent'
 import type { TelemetryConsentChoice } from '../shared/telemetryConsent'
 import { normalizeUpdaterSignature } from '../shared/sentryScrub'
@@ -97,8 +98,9 @@ function readPersisted(filePath: string): PersistedState {
 function writePersisted(): void {
   if (!telemetryFilePath) return
   try {
-    mkdirSync(dirname(telemetryFilePath), { recursive: true })
-    writeFileSync(telemetryFilePath, JSON.stringify(state, null, 2), 'utf-8')
+    // On the thread pool, coalesced: this runs on updater events (a download reports progress many times a second),
+    // on the user's choice, and once a day, and none of them may hold the thread that echoes keystrokes.
+    void offMainFiles.write(telemetryFilePath, JSON.stringify(state, null, 2)).catch(() => { /* best effort */ })
   } catch {
     // Best-effort — losing the file just means the user is asked again next
     // launch, with both tiers off until then. Worth not crashing for.

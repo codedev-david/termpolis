@@ -1,7 +1,9 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { promisify } from 'util'
 import { publish } from '../agentEventBus'
+import { mapLimit } from '../asyncPool'
 import { tailFile, resolvePathWithinRoot, POLL_INTERVAL_MS, type TailHandle } from './baseWatcher'
 import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../shared/conductorFiles'
 
@@ -33,6 +35,8 @@ export interface ClaudeCodeWatcherHandle {
   terminalId: string
   sessionFile: string
   stop(): void
+  /** Resolves when the tail has delivered what it found so far (for tests, and a caller that must know it caught up). */
+  settled(): Promise<void>
 }
 
 /** How long a folder name Claude Code makes from a working folder gets before it is cut short. */
@@ -72,11 +76,15 @@ function folderHash(text: string): number {
  *  the way resolved. Live, claude started in a junction kept its transcript under the junction's
  *  target, so nothing was found under the folder as given. It keeps the rest as it was given, a
  *  Windows short name too. A folder that can't be read is taken as given, and so is none at all,
- *  which Node's realpathSync reads as the folder the process runs in. */
-export function claudeCwd(cwd: string): string {
+ *  which Node's realpathSync reads as the folder the process runs in. Asked on the thread pool: this is the
+ *  JavaScript realpath (as realpathSync was), NOT fs.promises.realpath, which is the native one and would
+ *  spell a short name out. */
+let realpathJs: ((path: string) => Promise<string>) | undefined
+export async function claudeCwd(cwd: string): Promise<string> {
   if (!cwd) return cwd
   try {
-    return fs.realpathSync(cwd)
+    realpathJs ??= promisify(fs.realpath) // made on first use, so a module that only imports this file never reads fs.realpath
+    return await realpathJs(cwd)
   } catch {
     return cwd
   }
@@ -86,8 +94,8 @@ export function claudeCwd(cwd: string): string {
  * Find the most-recently-modified JSONL transcript for a given cwd.
  * Returns null if no matching directory or no JSONL files found.
  */
-export function findLatestSessionFile(cwd: string): string | null {
-  return listSessionFiles(cwd)[0] ?? null
+export async function findLatestSessionFile(cwd: string): Promise<string | null> {
+  return (await listSessionFiles(cwd))[0] ?? null
 }
 
 /**
@@ -95,47 +103,53 @@ export function findLatestSessionFile(cwd: string): string | null {
  * The newest can be a job another computer ran in this folder, which a reader then passes over
  * (liveTranscript); the watcher above only ever wants the newest.
  */
-export function listSessionFiles(cwd: string): string[] {
-  const mangled = mangleCwd(claudeCwd(cwd))
+export async function listSessionFiles(cwd: string): Promise<string[]> {
+  const mangled = mangleCwd(await claudeCwd(cwd))
   if (!mangled) return []
 
+  // On the thread pool, a bounded number of stats at a time: the folder of a project worked in for months holds
+  // hundreds or thousands of transcripts, and this was a stat each on the thread that echoes keystrokes.
   const dir = path.join(CLAUDE_PROJECTS_DIR, mangled)
-  let stat: fs.Stats
   try {
-    stat = fs.statSync(dir)
+    if (!(await fs.promises.stat(dir)).isDirectory()) return []
   } catch {
     return []
   }
-  if (!stat.isDirectory()) return []
 
   let entries: string[]
   try {
-    entries = fs.readdirSync(dir)
+    entries = await fs.promises.readdir(dir)
   } catch {
     return []
   }
 
-  const files = entries
+  const candidates = entries
     .filter((f) => f.endsWith('.jsonl'))
-    .map((f) => {
-      const full = path.join(dir, f)
+    .map((f) => path.join(dir, f))
+    .filter((full) => {
       // Security: refuse entries that escape the projects dir
       try {
         resolvePathWithinRoot(CLAUDE_PROJECTS_DIR, full)
+        return true
       } catch {
-        return null
-      }
-      try {
-        return { path: full, mtime: fs.statSync(full).mtimeMs }
-      } catch {
-        return null
+        return false
       }
     })
+  const stats = await mapLimit(candidates, STAT_CONCURRENCY, async (full) => {
+    try {
+      return { path: full, mtime: (await fs.promises.stat(full)).mtimeMs }
+    } catch {
+      return null
+    }
+  })
+  return stats
     .filter((x): x is { path: string; mtime: number } => x !== null)
     .sort((a, b) => b.mtime - a.mtime)
-
-  return files.map((f) => f.path)
+    .map((f) => f.path)
 }
+
+/** Transcript files looked at at once. */
+const STAT_CONCURRENCY = 16
 
 interface ClaudeEntry {
   type?: string
@@ -288,8 +302,8 @@ export function processClaudeLine(line: string, terminalId: string): void {
  * Attach a watcher to a terminal's working directory.
  * Tails the latest JSONL transcript and emits events.
  */
-export function attachClaudeCodeWatcher(terminalId: string, cwd: string): ClaudeCodeWatcherHandle | null {
-  const sessionFile = findLatestSessionFile(cwd)
+export async function attachClaudeCodeWatcher(terminalId: string, cwd: string): Promise<ClaudeCodeWatcherHandle | null> {
+  const sessionFile = await findLatestSessionFile(cwd)
   if (!sessionFile) return null
 
   // Security: sessionFile must be within CLAUDE_PROJECTS_DIR
@@ -310,11 +324,13 @@ export function attachClaudeCodeWatcher(terminalId: string, cwd: string): Claude
   // bounded 250-chunk bursts precisely so a first index "can't peg the main thread") owns the
   // backfill, and it is idempotent.
   const tail: TailHandle = tailFile(sessionFile, (line) => processClaudeLine(line, terminalId), { startAtEnd: true })
+  await tail.ready // attached means the start position is fixed: a line appended after this is delivered
 
   return {
     terminalId,
     sessionFile,
     stop: () => tail.stop(),
+    settled: () => tail.settled(),
   }
 }
 
@@ -328,6 +344,9 @@ const SCAN_POLLS = 200
 
 export interface ClaudeSessionWatcherHandle extends ClaudeCodeWatcherHandle {
   sessionId: string
+  /** Resolves once every look for the transcript that has been started so far has finished (a look is I/O on the
+   *  thread pool). For tests, and for a caller that wants to know the watcher has caught up. */
+  settled(): Promise<void>
 }
 
 /** The folder Claude Code keeps its sessions in, under its config home: CLAUDE_CONFIG_DIR when its
@@ -339,10 +358,10 @@ export function claudeProjectsDir(cwd: string, env: NodeJS.ProcessEnv = process.
 
 /** The CLAUDE_CONFIG_DIR the conductor's run script recorded for this session ('' for none), or
  *  null while the file holds another session's, or none (CONDUCTOR_CLAUDE_HOME_FILE). */
-function recordedConfigDir(file: string, sessionId: string): string | null {
+async function recordedConfigDir(file: string, sessionId: string): Promise<string | null> {
   let text: string
   try {
-    text = fs.readFileSync(file, 'utf8')
+    text = await fs.promises.readFile(file, 'utf8')
   } catch {
     return null
   }
@@ -354,9 +373,9 @@ function recordedConfigDir(file: string, sessionId: string): string | null {
 /** A working folder as PowerShell hands it to a program it starts: with a Windows short name
  *  spelled out (TERMPO~1 as TermpolisUser1, as seen live), and every link resolved, as Claude
  *  Code then does. Taken as given when it can't be read. */
-function spelledOut(cwd: string): string {
+async function spelledOut(cwd: string): Promise<string> {
   try {
-    return fs.realpathSync.native(cwd)
+    return await fs.promises.realpath(cwd) // the native one: it spells a short name out
   } catch {
     return cwd
   }
@@ -407,21 +426,26 @@ export function attachClaudeSessionWatcher(
 ): ClaudeSessionWatcherHandle | null {
   if (!SESSION_ID.test(sessionId)) return null
   const name = `${sessionId}.jsonl`
-  const folders = [...new Set([claudeCwd(cwd), spelledOut(cwd)].map(mangleCwd))]
+  // Which folders and which config home are asked on the thread pool, on the first look. Until then the file is
+  // assumed to be where Claude Code's own default puts it for the folder as given.
+  let folders: string[] | null = null
   const record = path.join(homeDir, CONDUCTOR_CLAUDE_HOME_FILE)
   let recorded: string | null = null
-  const projectsDir = (): string => {
-    if (recorded === null) recorded = recordedConfigDir(record, sessionId)
+  const projectsDir = async (): Promise<string> => {
+    if (recorded === null) recorded = await recordedConfigDir(record, sessionId)
     return claudeProjectsDir(cwd, recorded === null ? env : { CLAUDE_CONFIG_DIR: recorded }, homeDir)
   }
-  const expected = (): string[] => folders.map((folder) => path.join(projectsDir(), folder, name))
   let tail: TailHandle | null = null
   let stopped = false
   let polls = 0
+  // The looks run one after the other, none dropped: a look is one poll, and the polls are counted (every 4th looks
+  // through every project folder, for 200 of them).
+  let chain: Promise<void> = Promise.resolve()
   const handle: ClaudeSessionWatcherHandle = {
     terminalId,
     sessionId,
-    sessionFile: expected()[0],
+    settled: () => chain,
+    sessionFile: path.join(claudeProjectsDir(cwd, env, homeDir), mangleCwd(cwd), name),
     stop: () => {
       stopped = true
       clearInterval(locator)
@@ -434,15 +458,26 @@ export function attachClaudeSessionWatcher(
     handle.sessionFile = file
     tail = tailFile(file, (line) => processClaudeLine(line, terminalId))
   }
-  const locate = (): void => {
-    const file = expected().find((f) => fs.existsSync(f))
-    if (file) return follow(file)
-    polls += 1
-    if (polls % SCAN_EVERY_POLLS !== 0 || polls > SCAN_POLLS) return
-    void sessionFileIn(projectsDir(), name).then((found) => {
+  // One look at a time, all on the thread pool. This was a synchronous existsSync (and, until the first
+  // look found the record, a synchronous read of it) on the main thread, once per poll, per watched session.
+  const lookOnce = async (): Promise<void> => {
+    if (stopped || tail) return
+    try {
+      if (folders === null) folders = [...new Set([await claudeCwd(cwd), await spelledOut(cwd)].map(mangleCwd))]
+      const dir = await projectsDir()
+      for (const folder of folders) {
+        const file = path.join(dir, folder, name)
+        let there = true
+        try { await fs.promises.access(file) } catch { there = false }
+        if (there) return follow(file)
+      }
+      polls += 1
+      if (polls % SCAN_EVERY_POLLS !== 0 || polls > SCAN_POLLS) return
+      const found = await sessionFileIn(dir, name)
       if (found) follow(found)
-    })
+    } catch { /* the next look tries again */ }
   }
+  const locate = (): void => { chain = chain.then(lookOnce) }
   const locator = setInterval(locate, POLL_INTERVAL_MS)
   locate()
   return handle

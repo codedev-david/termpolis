@@ -190,7 +190,7 @@ vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: M.detect
 vi.mock('../../src/main/sessionStore', () => ({
   loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
 }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -236,6 +236,8 @@ vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: M.initAutoUpdate
 vi.mock('../../src/main/agentCommandSanitizer', () => ({ sanitizeAgentCommand: vi.fn((c: string) => c), isClaudeAgentName: (name: string) => /(^|[^a-z])claude/i.test(name || '') }))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: M.getAgentExtraPaths,
+  // Opening a terminal lists the version managers' folders on the thread pool: the same list, asynchronously.
+  getAgentExtraPathsAsync: vi.fn(async () => M.getAgentExtraPaths()),
   getExtendedPath: M.getExtendedPath,
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),
@@ -679,10 +681,15 @@ describe('aiSecurity:clear-audit', () => {
     expect(unlinked.length).toBe(2) // current + rotated .prev
   })
 
-  it('succeeds when there is no audit file to remove', async () => {
+  it('succeeds when there is no audit file to remove (a file that is not there is not an error)', async () => {
     M.fsUnlink.mockClear()
-    expect((await invoke('aiSecurity:clear-audit')).success).toBe(true)
-    expect(M.fsUnlink).not.toHaveBeenCalled()
+    M.fsUnlink.mockRejectedValue(Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }))
+    try {
+      expect((await invoke('aiSecurity:clear-audit')).success).toBe(true)
+    } finally {
+      M.fsUnlink.mockReset()
+      M.fsUnlink.mockResolvedValue(undefined)
+    }
   })
 })
 
@@ -1542,7 +1549,7 @@ describe('shutdown', () => {
       // `still open` and `in flight` describe the process at will-quit; the rest are the steps.
       expect(steps.filter(l => !/^\[shutdown\] (still open|in flight):/.test(l))).toEqual([
         '[shutdown] start', '[shutdown] terminals', '[shutdown] watchers', '[shutdown] history',
-        '[shutdown] hosts', '[shutdown] proxy', '[shutdown] mcp', '[shutdown] windows closed',
+        '[shutdown] hosts', '[shutdown] proxy', '[shutdown] mcp', '[shutdown] queued writes', '[shutdown] windows closed',
         '[shutdown] agent runs', '[shutdown] quit (exit code 0)',
       ])
       // What Node still holds open at will-quit, by kind: the request a stuck exit waits on.

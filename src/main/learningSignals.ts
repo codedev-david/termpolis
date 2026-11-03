@@ -23,7 +23,8 @@
 // Everything external is injected, so the whole module runs in plain Node with no
 // Electron, no clock and no git repo.
 
-import { gitDirOf, headRef, resolveRef, type ReadBytes } from './workflow/triggers'
+import type { ReadBytes } from './workflow/triggers'
+import { asAsync, gitDirOfAsync, headRefAsync, resolveRefAsync, type AsyncFsLike } from './gitRefs'
 import type { FsLike } from './workflow/workflowStore'
 import type { AgentEvent } from './agentEventBus'
 import type { WorkEvent } from './outcomeSignals'
@@ -48,10 +49,12 @@ export interface LearningSignalDeps {
   /** Only the two reads the git plumbing performs. Widened to FsLike at the call site so
    *  callers don't have to hand over a write-capable fs just to read a sha. */
   fs: Pick<FsLike, 'existsSync' | 'readFileSync'>
+  /** How the poll reads git: on the thread pool (gitRefs.nodeAsyncFs). Without it `fs` answers, one microtask later. */
+  fsAsync?: AsyncFsLike
   /** Raw byte reader for packed-refs — never a >512 MiB utf8 string (see fileLines.ts). */
   readBytes: ReadBytes
   tickMs?: number
-  setInterval?: (fn: () => void, ms: number) => TimerHandle
+  setInterval?: (fn: () => void | Promise<void>, ms: number) => TimerHandle
   clearInterval?: (h: TimerHandle) => void
 }
 
@@ -79,6 +82,8 @@ interface PendingTest {
 
 const heads = new Map<string, HeadState>()
 const pending = new Map<string, PendingTest>()
+/** Bumped by every stop: a poll that was reading git when the run ended must not write its answer into the next one. */
+let epoch = 0
 let stopTimer: (() => void) | null = null
 let unsubscribe: (() => void) | null = null
 
@@ -167,18 +172,20 @@ function onAgentEvent(d: LearningSignalDeps, ev: AgentEvent): void {
 
 // ── git HEAD watcher ─────────────────────────────────────────────────────────
 
-function checkHead(d: LearningSignalDeps, cwd: string): void {
+async function checkHead(d: LearningSignalDeps, cwd: string, mine: number): Promise<void> {
   const project = d.normalizeProject(cwd)
   if (!project) return
-  const fs = d.fs as FsLike
-  const gitDir = gitDirOf(cwd, fs)
+  const fs = d.fsAsync ?? asAsync(d.fs as FsLike, d.readBytes)
+  const gitDir = await gitDirOfAsync(cwd, fs)
   if (!gitDir) return
   // Follow HEAD's symbolic ref while attached. Detached, headRef is null and the literal
   // 'HEAD' resolves to the raw sha in the HEAD file, so a commit made on a detached HEAD
   // still counts instead of being invisible.
-  const ref = headRef(gitDir, fs) ?? 'HEAD'
-  const sha = resolveRef(gitDir, ref, fs, d.readBytes)
+  const ref = (await headRefAsync(gitDir, fs)) ?? 'HEAD'
+  const sha = await resolveRefAsync(gitDir, ref, fs)
   if (!sha) return
+  // Stopped (or restarted) while the refs were being read: this poll's answer belongs to a run that is over.
+  if (mine !== epoch) return
   const prev = heads.get(cwd)
   heads.set(cwd, { ref, sha })
   // Unseeded, or the ref itself changed (branch switch / checkout): adopt the new position
@@ -189,7 +196,8 @@ function checkHead(d: LearningSignalDeps, cwd: string): void {
   d.emit({ kind: 'git-commit', project, ok: true })
 }
 
-function pollGitHeads(d: LearningSignalDeps): void {
+async function pollGitHeads(d: LearningSignalDeps): Promise<void> {
+  const mine = epoch
   let open: string[]
   try {
     open = d.openProjects()
@@ -200,7 +208,7 @@ function pollGitHeads(d: LearningSignalDeps): void {
   for (const cwd of open) {
     seen.add(cwd)
     try {
-      checkHead(d, cwd)
+      await checkHead(d, cwd, mine)
     } catch {
       /* one unreadable repo must never stop the others */
     }
@@ -219,12 +227,19 @@ export function startLearningSignals(d: LearningSignalDeps): void {
   const every = d.tickMs ?? DEFAULT_TICK_MS
   const setTimer = d.setInterval ?? setInterval
   const clearTimer = d.clearInterval ?? clearInterval
-  const handle = setTimer(() => pollGitHeads(d), every)
+  // One poll at a time: the reads are on the thread pool, so a slow disk must not stack polls up behind it.
+  let inFlight: Promise<void> | null = null
+  const handle = setTimer(() => {
+    if (inFlight) return inFlight
+    inFlight = pollGitHeads(d).catch(() => { /* the next tick retries */ }).finally(() => { inFlight = null })
+    return inFlight
+  }, every)
   stopTimer = () => clearTimer(handle)
 }
 
 /** Disarm both watchers and forget all remembered state. Safe to call when not started. */
 export function stopLearningSignals(): void {
+  epoch++
   if (stopTimer) stopTimer()
   if (unsubscribe) unsubscribe()
   stopTimer = null

@@ -23,6 +23,10 @@ import { forEachBufferLine } from '../fileLines'
 import type { Workflow, WorkflowScope } from '../../renderer/src/types'
 import { workflowsDir, globalWorkflowsDir, listWorkflowsFull, type FsLike } from './workflowStore'
 import { parseCron, dueSince, MAX_CATCHUP_MS, type CronFields } from './cron'
+import { createIgnoreFilter, createRunGate, WATCH_MIN_INTERVAL_MS, type IgnoreFilter, type RunGate } from '../watchGuard'
+import { TRIGGER_SKIP_NAMES } from '../scopedWatch'
+import { asAsync, gitDirOfAsync, resolveRefAsync, targetRefAsync, type AsyncFsLike } from '../gitRefs'
+import { offMainFiles } from '../offMainFiles'
 
 export interface WatchHandle {
   close(): void
@@ -30,6 +34,9 @@ export interface WatchHandle {
 
 export interface TriggerDeps {
   fs: FsLike
+  /** How the tick reads git refs: on the thread pool. The app passes the real one (gitRefs.nodeAsyncFs); without it the
+   *  synchronous `fs` above answers (an older fake, a test), one microtask later, with the same answers. */
+  fsAsync?: AsyncFsLike
   /** Byte reader for packed-refs. Defaults to node's fs; tests back it with
    *  their fake filesystem so no real repo is needed. */
   readBytes?: (p: string) => Uint8Array
@@ -51,13 +58,20 @@ export interface TriggerDeps {
   log?: (msg: string) => void
   tickMs?: number
   defaultDebounceMs?: number
+  /** Async: is this directory a nested repository (own .git) or a link? Defaults to lstat + stat. */
+  probeNested?: (absDir: string) => Promise<boolean>
 }
 
 /** Dirs whose churn must never fire a fileWatch workflow. `.termpolis` is the
  *  load-bearing one: run history and this supervisor's own state file live
  *  there, so without it a fileWatch workflow retriggers itself forever. */
-const IGNORE =
-  /(^|[\\/])(node_modules|\.git|\.termpolis|dist|out|build|target|\.venv|Pods|\.next|coverage|\.turbo)([\\/]|$)/i
+// The shared rule (watchGuard.ts) already drops node_modules, .git, .worktrees, nested repositories,
+// dist, out, build, target, .venv, .next, coverage and the usual tool caches; these are this
+// supervisor's own on top of it (`.termpolis` is the one that matters: see above).
+const EXTRA_IGNORED = TRIGGER_SKIP_NAMES
+/** More distinct names than this in one window and the supervisor stops remembering them: a path
+ *  filter can no longer be answered exactly, so every fileWatch workflow runs (never a silent miss). */
+const MAX_PENDING_NAMES = 256
 
 const DEFAULT_TICK_MS = 15_000
 const DEFAULT_DEBOUNCE_MS = 2_000
@@ -87,7 +101,13 @@ interface Project {
   cwd: string
   armed: Map<string, Armed>
   watcher: WatchHandle | null
-  debounceTimer: unknown | null
+  /** Paces the file events (watchGuard.ts); exists exactly while `watcher` does. */
+  gate: RunGate | null
+  filter: IgnoreFilter | null
+  /** File names seen since the last run, so the run matches every one of them against each
+   *  workflow's path filter (not just whichever event happened to come last). */
+  pendingNames: Set<string>
+  pendingOverflow: boolean
   state: ProjectState
   stateDirty: boolean
   /** True once we've logged "untrusted, skipping" â€” keeps the log from
@@ -231,13 +251,13 @@ export class TriggerSupervisor {
     this.ticker = this.d.setTimer(() => {
       this.ticker = null
       // A throw here would kill the ticker and silently stop every trigger in
-      // the app, so the whole pass is guarded and we always re-arm.
-      try {
-        this.tick()
-      } catch (e) {
-        this.log(`tick failed: ${(e as Error)?.message}`)
-      }
-      this.scheduleTick()
+      // the app, so the whole pass is guarded and we always re-arm. The pass reads git on the thread pool, so the next
+      // tick is armed when it has finished: two never overlap.
+      let pass: Promise<void>
+      try { pass = Promise.resolve(this.tick()) } catch (e) { pass = Promise.reject(e) }
+      void pass
+        .catch((e) => { this.log(`tick failed: ${(e as Error)?.message}`) })
+        .finally(() => { this.scheduleTick() })
     }, this.tickMs)
   }
 
@@ -249,7 +269,10 @@ export class TriggerSupervisor {
         cwd,
         armed: new Map(),
         watcher: null,
-        debounceTimer: null,
+        gate: null,
+        filter: null,
+        pendingNames: new Set(),
+        pendingOverflow: false,
         state: {},
         stateDirty: false,
         warnedUntrusted: false,
@@ -272,8 +295,12 @@ export class TriggerSupervisor {
       /* a watcher that already died is fine */
     }
     p.watcher = null
-    if (p.debounceTimer !== null) this.d.clearTimer(p.debounceTimer)
-    p.debounceTimer = null
+    p.gate?.dispose()
+    p.gate = null
+    p.filter?.close()
+    p.filter = null
+    p.pendingNames.clear()
+    p.pendingOverflow = false
   }
 
   /** Re-arm every watched project. A GLOBAL workflow is armed in all of them,
@@ -361,34 +388,76 @@ export class TriggerSupervisor {
   private syncWatcher(p: Project): void {
     const wants = [...p.armed.values()].some(a => a.workflow.trigger.type === 'fileWatch')
     if (wants && !p.watcher) {
+      p.filter = createIgnoreFilter({ root: p.cwd, names: EXTRA_IGNORED, probeNested: this.d.probeNested })
+      p.gate = createRunGate({
+        mode: 'trailing',
+        // The longest debounce any armed fileWatch workflow asked for, but never under the shared
+        // once-per-window floor: a burst becomes one run, not one per event. A caller that injects a
+        // shorter default debounce (tests only) lowers the floor to it.
+        windowMs: () => Math.max(Math.min(WATCH_MIN_INTERVAL_MS, this.d.defaultDebounceMs ?? WATCH_MIN_INTERVAL_MS), this.fileWatchDebounceMs(p)),
+        setTimer: (fn, ms) => this.d.setTimer(fn, ms),
+        clearTimer: (t) => this.d.clearTimer(t),
+        now: this.d.now,
+        label: `fileWatch ${p.cwd}`,
+        log: (m) => this.log(m),
+        run: () => this.runFileWatch(p),
+      })
       try {
-        p.watcher = this.d.watch(p.cwd, (_ev, filename) => this.onFileEvent(p, filename))
+        p.watcher = this.d.watch(p.cwd, (ev, filename) => this.onFileEvent(p, filename, ev))
       } catch (e) {
         this.log(`could not watch ${p.cwd}: ${(e as Error)?.message}`)
         p.watcher = null
+        p.gate.dispose()
+        p.gate = null
+        p.filter.close()
+        p.filter = null
       }
     } else if (!wants && p.watcher) {
       this.teardown(p)
     }
   }
 
-  private onFileEvent(p: Project, filename: string | null): void {
-    if (!filename || IGNORE.test(filename)) return
-    if (p.debounceTimer !== null) this.d.clearTimer(p.debounceTimer)
-    const debounceMs = Math.max(
+  /** The longest debounce among the project's armed fileWatch workflows (their own `debounceMs`, else
+   *  the default), or 0 when none is armed. */
+  private fileWatchDebounceMs(p: Project): number {
+    return Math.max(
       ...[...p.armed.values()]
         .filter(a => a.workflow.trigger.type === 'fileWatch')
         .map(a => Number(a.workflow.trigger.config?.debounceMs) || (this.d.defaultDebounceMs ?? DEFAULT_DEBOUNCE_MS)),
       0,
     )
-    p.debounceTimer = this.d.setTimer(() => {
-      p.debounceTimer = null
-      for (const a of p.armed.values()) {
-        if (a.workflow.trigger.type !== 'fileWatch') continue
-        if (!this.pathMatches(a.workflow, filename)) continue
-        this.fire(p, a.workflow, `file change: ${filename}`)
-      }
-    }, debounceMs || DEFAULT_DEBOUNCE_MS)
+  }
+
+  private onFileEvent(p: Project, filename: string | null, event?: string): void {
+    if (!p.gate || !p.filter) return
+    if (event === 'overflow') {
+      // A storm closed an OS watch (shedWatch.ts) and it is back: files changed that were never heard.
+      p.pendingOverflow = true
+      p.gate.note()
+      return
+    }
+    if (!filename) return
+    const name = String(filename)
+    if (p.filter.shouldIgnore(name, event)) return
+    if (p.pendingNames.size < MAX_PENDING_NAMES) p.pendingNames.add(name)
+    else p.pendingOverflow = true
+    p.gate.note()
+  }
+
+  /** The gate's run: match every file name seen since the last one against each armed fileWatch
+   *  workflow. Runs at most once per window and never twice at once (the gate), so a burst of
+   *  thousands of events is one pass here. */
+  private runFileWatch(p: Project): void {
+    const names = [...p.pendingNames]
+    const overflow = p.pendingOverflow
+    p.pendingNames.clear()
+    p.pendingOverflow = false
+    for (const a of p.armed.values()) {
+      if (a.workflow.trigger.type !== 'fileWatch') continue
+      const hit = overflow ? '(many files)' : names.find(n => this.pathMatches(a.workflow, n))
+      if (hit === undefined) continue
+      this.fire(p, a.workflow, `file change: ${hit}`)
+    }
   }
 
   /** `paths` is a comma-separated list of path prefixes, matched against the
@@ -405,16 +474,22 @@ export class TriggerSupervisor {
   }
 
   /** One evaluation pass over every armed schedule and git trigger. */
-  tick(): void {
+  async tick(): Promise<void> {
     const now = this.d.now()
-    for (const p of this.projects.values()) {
-      for (const a of p.armed.values()) {
+    for (const p of [...this.projects.values()]) {
+      for (const a of [...p.armed.values()]) {
+        // A project closed, or a workflow disarmed, while an earlier read was awaiting the disk.
+        if (this.projects.get(p.cwd) !== p || p.armed.get(a.workflow.id) !== a) continue
         const type = a.workflow.trigger.type
         if (type === 'schedule') this.checkSchedule(p, a, now)
-        else if (type === 'gitCommit' || type === 'gitPush') this.checkGit(p, a)
+        else if (type === 'gitCommit' || type === 'gitPush') await this.checkGit(p, a)
       }
       this.flushState(p)
     }
+  }
+
+  private asyncFs(): AsyncFsLike {
+    return this.d.fsAsync ?? asAsync(this.d.fs, this.readBytes)
   }
 
   private checkSchedule(p: Project, a: Armed, now: number): void {
@@ -428,14 +503,17 @@ export class TriggerSupervisor {
     this.fire(p, a.workflow, `schedule: ${a.workflow.trigger.config?.cron ?? ''}`)
   }
 
-  private checkGit(p: Project, a: Armed): void {
+  private async checkGit(p: Project, a: Armed): Promise<void> {
     const wf = a.workflow
-    const gitDir = gitDirOf(p.cwd, this.d.fs)
+    const fs = this.asyncFs()
+    const gitDir = await gitDirOfAsync(p.cwd, fs)
     if (!gitDir) return
-    const ref = targetRef(wf, gitDir, this.d.fs)
+    const ref = await targetRefAsync(wf.trigger.type, wf.trigger.config ?? {}, gitDir, fs)
     if (!ref) return
-    const sha = resolveRef(gitDir, ref, this.d.fs, this.readBytes)
+    const sha = await resolveRefAsync(gitDir, ref, fs)
     if (!sha) return
+    // The project was closed, or this workflow disarmed, while the refs were being read.
+    if (this.projects.get(p.cwd) !== p || p.armed.get(wf.id) !== a) return
     const st = (p.state[wf.id] ??= {})
     // Unseeded, or the ref itself changed (branch switch / checkout): adopt the
     // new position silently. Only movement OF THE SAME ref is a commit/push.
@@ -526,9 +604,16 @@ export class TriggerSupervisor {
     if (!p.stateDirty) return
     p.stateDirty = false
     try {
-      const dir = workflowsDir(p.cwd)
-      if (!this.d.fs.existsSync(dir)) this.d.fs.mkdirSync(dir, { recursive: true })
-      this.d.fs.writeFileSync(this.stateFile(p.cwd), JSON.stringify(p.state, null, 2))
+      const file = this.stateFile(p.cwd)
+      const text = JSON.stringify(p.state, null, 2)
+      // The app writes it on the thread pool (offMainFiles makes the folder too); a fake fs, as before.
+      if (this.d.fsAsync) {
+        void offMainFiles.write(file, text).catch((e) => { this.log(`could not persist trigger state for ${p.cwd}: ${(e as Error)?.message}`) })
+      } else {
+        const dir = workflowsDir(p.cwd)
+        if (!this.d.fs.existsSync(dir)) this.d.fs.mkdirSync(dir, { recursive: true })
+        this.d.fs.writeFileSync(file, text)
+      }
     } catch (e) {
       this.log(`could not persist trigger state for ${p.cwd}: ${(e as Error)?.message}`)
     }

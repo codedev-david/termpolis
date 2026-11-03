@@ -162,55 +162,55 @@ describe('global workflows arm in every watched project', () => {
     expect(h.sup.armedCount).toBe(2)
   })
 
-  it('fires once per project, each run standing in its OWN cwd', () => {
+  it('fires once per project, each run standing in its OWN cwd', async () => {
     const h = harness()
     installGlobal(h.fs, wf('g', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
     h.sup.watchProject(BETA)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.cwd).sort()).toEqual([ALPHA, BETA].sort())
     // Never the global store itself — the definition is shared, the run is not.
     expect(h.fires.some(f => f.cwd === USER_DATA)).toBe(false)
   })
 
-  it('tells the run which store the definition came from', () => {
+  it('tells the run which store the definition came from', async () => {
     const h = harness()
     installGlobal(h.fs, wf('g', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([expect.objectContaining({ id: 'g', cwd: ALPHA, scope: 'global' })])
   })
 
-  it('a project workflow still reports the project scope', () => {
+  it('a project workflow still reports the project scope', async () => {
     const h = harness()
     installProject(h.fs, ALPHA, wf('p', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([expect.objectContaining({ id: 'p', scope: 'project' })])
   })
 
-  it('arms global and project workflows side by side in the same project', () => {
+  it('arms global and project workflows side by side in the same project', async () => {
     const h = harness()
     installGlobal(h.fs, wf('g', 'schedule', { cron: '* * * * *' }))
     installProject(h.fs, ALPHA, wf('p', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
     expect(h.sup.armedCount).toBe(2)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.id).sort()).toEqual(['g', 'p'])
   })
 
-  it('with no globalDir wired, global workflows are simply not armed', () => {
+  it('with no globalDir wired, global workflows are simply not armed', async () => {
     const h = harness({ globalDir: undefined })
     installGlobal(h.fs, wf('g', 'schedule', { cron: '* * * * *' }))
     installProject(h.fs, ALPHA, wf('p', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
     expect(h.sup.armedCount).toBe(1)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.id)).toEqual(['p'])
   })
 
@@ -242,23 +242,23 @@ describe('global workflows arm in every watched project', () => {
 // ── per-project state ───────────────────────────────────────────────────────
 
 describe('global trigger state stays per project', () => {
-  it('a global gitCommit fires only for the repo that actually committed', () => {
+  it('a global gitCommit fires only for the repo that actually committed', async () => {
     const h = harness()
     installGlobal(h.fs, wf('g', 'gitCommit'))
     installRepo(h.fs, ALPHA)
     installRepo(h.fs, BETA)
     h.sup.watchProject(ALPHA)
     h.sup.watchProject(BETA)
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     // Only alpha moves.
     h.fs.put(join(ALPHA, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.cwd)).toEqual([ALPHA])
   })
 
-  it('each project keeps its own last-seen sha, so beta fires later on its own commit', () => {
+  it('each project keeps its own last-seen sha, so beta fires later on its own commit', async () => {
     const h = harness()
     installGlobal(h.fs, wf('g', 'gitCommit'))
     installRepo(h.fs, ALPHA)
@@ -266,9 +266,9 @@ describe('global trigger state stays per project', () => {
     h.sup.watchProject(ALPHA)
     h.sup.watchProject(BETA)
     h.fs.put(join(ALPHA, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
-    h.sup.tick()
+    await h.sup.tick()
     h.fs.put(join(BETA, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.cwd)).toEqual([ALPHA, BETA])
   })
 
@@ -282,7 +282,7 @@ describe('global trigger state stays per project', () => {
     expect(h.fs.files.has(join(globalWorkflowsDir(USER_DATA), '.triggers.json'))).toBe(false)
   })
 
-  it('an in-flight run in one project does not block the same workflow in another', () => {
+  it('an in-flight run in one project does not block the same workflow in another', async () => {
     let release!: () => void
     const gate = new Promise<void>(r => { release = r })
     const h = harness({ fireResult: () => gate })
@@ -290,18 +290,18 @@ describe('global trigger state stays per project', () => {
     h.sup.watchProject(ALPHA)
     h.sup.watchProject(BETA)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(2)
     release()
   })
 
-  it('untrusting one project holds only that project — the other still fires', () => {
+  it('untrusting one project holds only that project — the other still fires', async () => {
     const h = harness({ trusted: (cwd) => cwd !== BETA })
     installGlobal(h.fs, wf('g', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
     h.sup.watchProject(BETA)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.cwd)).toEqual([ALPHA])
     expect(h.logs.join('\n')).toContain('not a trusted workspace')
   })
@@ -321,7 +321,7 @@ describe('rearmAll — saving a global workflow reaches every project', () => {
     expect(h.sup.armedCount).toBe(2)
   })
 
-  it('disarms everywhere when the global workflow is deleted', () => {
+  it('disarms everywhere when the global workflow is deleted', async () => {
     const h = harness()
     installGlobal(h.fs, wf('g', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
@@ -332,7 +332,7 @@ describe('rearmAll — saving a global workflow reaches every project', () => {
     h.sup.rearmAll()
     expect(h.sup.armedCount).toBe(0)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
   })
 
@@ -352,7 +352,7 @@ describe('rearmAll — saving a global workflow reaches every project', () => {
     expect(h.sup.armedCount).toBe(2)
   })
 
-  it('unwatching a project stops its copy firing but leaves the others armed', () => {
+  it('unwatching a project stops its copy firing but leaves the others armed', async () => {
     const h = harness()
     installGlobal(h.fs, wf('g', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ALPHA)
@@ -360,7 +360,7 @@ describe('rearmAll — saving a global workflow reaches every project', () => {
     h.sup.unwatchProject(BETA)
     expect(h.sup.armedCount).toBe(1)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.cwd)).toEqual([ALPHA])
   })
 })

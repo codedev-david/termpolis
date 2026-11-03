@@ -82,10 +82,11 @@ describe('transcript watchers do not replay history on attach', () => {
     const cwd = '/test-no-replay'
     seedClaudeSession(watcher.mangleCwd(cwd), [claudeLine('one'), claudeLine('two'), claudeLine('three')])
 
-    const handle = watcher.attachClaudeCodeWatcher('t1', cwd)
+    const handle = await watcher.attachClaudeCodeWatcher('t1', cwd)
     expect(handle).not.toBeNull()
 
-    // tailFile ticks synchronously inside attach, so by here the replay would already have happened.
+    // The first pass runs on the thread pool: wait until it has finished, so a replay would already have happened.
+    await handle?.settled()
     expect(bus.query()).toHaveLength(0)
     handle?.stop()
   })
@@ -95,7 +96,8 @@ describe('transcript watchers do not replay history on attach', () => {
     const cwd = '/test-live'
     const file = seedClaudeSession(watcher.mangleCwd(cwd), [claudeLine('old, must be ignored')])
 
-    const handle = watcher.attachClaudeCodeWatcher('t1', cwd)
+    const handle = await watcher.attachClaudeCodeWatcher('t1', cwd)
+    await handle?.settled()
     expect(bus.query()).toHaveLength(0)          // the seeded line stays unread...
 
     fs.appendFileSync(file, claudeLine('brand new') + '\n')
@@ -122,7 +124,9 @@ describe('the codex and gemini watchers attach the same way', () => {
       JSON.stringify({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }) + '\n',
     )
 
-    const handle = attachCodexWatcher('t1', '/x')
+    const handle = await attachCodexWatcher('t1')
+    expect(handle).not.toBeNull()
+    await handle?.settled() // the first pass ran on the thread pool and has finished: a replay would be on the bus
     expect(bus.query()).toHaveLength(0)
     handle?.stop()
   })
@@ -134,9 +138,12 @@ describe('the codex and gemini watchers attach the same way', () => {
 
     const dir = path.join(tmpHome, '.gemini', 'tmp')
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'logs.json'), JSON.stringify({ role: 'user', parts: [{ text: 'hi' }] }) + '\n')
+    // .jsonl: the finder only takes those (a logs.json here attached to nothing, and the no-replay check below was empty)
+    fs.writeFileSync(path.join(dir, 'logs.jsonl'), JSON.stringify({ role: 'user', parts: [{ text: 'hi' }] }) + '\n')
 
-    const handle = attachGeminiWatcher('t1', '/x')
+    const handle = await attachGeminiWatcher('t1')
+    expect(handle).not.toBeNull()
+    await handle?.settled() // the first pass ran on the thread pool and has finished: a replay would be on the bus
     expect(bus.query()).toHaveLength(0)
     handle?.stop()
   })

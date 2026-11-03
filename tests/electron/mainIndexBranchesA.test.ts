@@ -188,7 +188,7 @@ vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: M.detect
 vi.mock('../../src/main/sessionStore', () => ({
   loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
 }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -234,6 +234,7 @@ vi.mock('../../src/main/autoUpdater', () => ({ initAutoUpdater: M.initAutoUpdate
 vi.mock('../../src/main/agentCommandSanitizer', () => ({ sanitizeAgentCommand: vi.fn((c: string) => c), isClaudeAgentName: (name: string) => /(^|[^a-z])claude/i.test(name || '') }))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: M.getAgentExtraPaths,
+  getAgentExtraPathsAsync: vi.fn(async () => M.getAgentExtraPaths()),
   getExtendedPath: M.getExtendedPath,
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),

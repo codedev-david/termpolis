@@ -11,6 +11,7 @@ import {
   _resetMetricsForTests,
   type MetricEvent,
 } from '../../src/main/metricsLedger'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 describe('metricsLedger — summarizeMetrics (pure aggregation)', () => {
   it('returns safe zero/healthy defaults for no events', () => {
@@ -132,35 +133,41 @@ describe('metricsLedger — summarizeMetrics (pure aggregation)', () => {
 
 describe('metricsLedger — persistence (device-local JSONL)', () => {
   let dir: string
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mneme-metrics-'))
     _resetMetricsForTests()
+    await offMainFiles.idle()
     initMetrics(dir)
   })
-  afterEach(() => {
+  afterEach(async () => {
     _resetMetricsForTests()
+    await offMainFiles.idle()
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('writes events to memory-metrics.jsonl in the given dir', () => {
+  it('writes events to memory-metrics.jsonl in the given dir', async () => {
     recordMetric({ t: 'reflect', ts: 1, lessons: 1 })
+    await offMainFiles.idle()
     expect(fs.existsSync(path.join(dir, 'memory-metrics.jsonl'))).toBe(true)
   })
 
-  it('replays persisted events on re-init', () => {
+  it('replays persisted events on re-init', async () => {
     recordMetric({ t: 'recall', ts: 1, hits: 3, topScore: 0.7, path: 'vector', ms: 5 })
     recordMetric({ t: 'reflect', ts: 2, lessons: 4 })
     _resetMetricsForTests()
+    await offMainFiles.idle()
     initMetrics(dir)
     const s = metricsSummary(100)
     expect(s.recalls).toBe(1)
     expect(s.lessonsLearned).toBe(4)
   })
 
-  it('tolerates corrupt / blank lines on load', () => {
+  it('tolerates corrupt / blank lines on load', async () => {
     const fp = path.join(dir, 'memory-metrics.jsonl')
+    await offMainFiles.idle()
     fs.writeFileSync(fp, 'not json\n\n' + JSON.stringify({ t: 'reflect', ts: 9, lessons: 2 }) + '\n')
     _resetMetricsForTests()
+    await offMainFiles.idle()
     initMetrics(dir)
     expect(metricsSummary(100).lessonsLearned).toBe(2)
   })

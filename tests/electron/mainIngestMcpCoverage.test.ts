@@ -77,6 +77,7 @@ const audit = vi.hoisted(() => ({
   redactPreview: vi.fn((s: string) => `RP:${s}`),
   readMemoryAudit: vi.fn((limit: number) => [{ event: 'recall', limit }]),
   memoryAuditSummary: vi.fn(() => ({ recall: 2, write: 1 })),
+  flushMemoryAudit: vi.fn(async () => {}),
 }))
 vi.mock('../../src/main/memoryAudit', () => audit)
 
@@ -814,9 +815,45 @@ describe('MCP HTTP server — audit log rotation, sanitized tool errors, malform
 
   it('replaces the previous backup on the next rotation — there is only ever ONE .old', async () => {
     realFs.appendFileSync(logPath, 'B'.repeat(MAX_LOG_SIZE)) // push the live log back over the cap
+    // The server counts what it writes instead of asking the file system on every request; something else growing the
+    // file is noticed at the next start (initAuditLog), which is what this does.
+    initAuditLog(logDir)
     await rpc({ jsonrpc: '2.0', method: 'ping', id: 3 })
-    await waitFor(() => realFs.readFileSync(backupPath, 'utf-8').includes('BBBB'))
+    await waitFor(() => realFs.existsSync(backupPath) && realFs.readFileSync(backupPath, 'utf-8').includes('BBBB'))
     expect(realFs.existsSync(backupPath + '.old')).toBe(false) // no chain of backups accumulates
+  })
+
+  const pingLines = (text: string): number => (text.match(/"method":"ping"/g) ?? []).length
+
+  it('lines that arrive while the log is being rotated are held and land in the fresh log: none is lost', async () => {
+    realFs.appendFileSync(logPath, 'D'.repeat(MAX_LOG_SIZE)) // over the cap again
+    initAuditLog(logDir) // the counter starts from the file, as at launch
+    // What is in the live log now moves to the backup, and the old backup is replaced: only the live one's lines survive.
+    const before = pingLines(realFs.readFileSync(logPath, 'utf-8'))
+    await Promise.all(Array.from({ length: 8 }, (_, i) => rpc({ jsonrpc: '2.0', method: 'ping', id: 300 + i })))
+    await waitFor(() => realFs.existsSync(backupPath) && realFs.readFileSync(backupPath, 'utf-8').includes('DDDD'))
+    // Eight more audit lines exist across the two files (the one that tipped it over, the ones held meanwhile, the ones after).
+    await waitFor(() => pingLines(realFs.readFileSync(logPath, 'utf-8')) + pingLines(realFs.readFileSync(backupPath, 'utf-8')) === before + 8)
+    const live = realFs.readFileSync(logPath, 'utf-8').split('\n').filter(Boolean)
+    expect(live.length).toBeGreaterThan(0)
+    for (const l of live) expect(() => JSON.parse(l)).not.toThrow() // every line in the fresh log is whole
+  })
+
+  it('a log that cannot be reopened after a rotation drops the held lines instead of failing, and the next start works again', async () => {
+    realFs.appendFileSync(logPath, 'E'.repeat(MAX_LOG_SIZE))
+    initAuditLog(logDir)
+    fsCtl.rules.push({ op: 'stream', match: 'mcp-audit', err: new Error('EMFILE: too many open files') })
+    try {
+      await rpc({ jsonrpc: '2.0', method: 'ping', id: 400 }) // tips it over: the rotation ends, renames, and cannot reopen
+      await waitFor(() => realFs.existsSync(backupPath) && realFs.readFileSync(backupPath, 'utf-8').includes('EEEE'))
+      const r = await rpc({ jsonrpc: '2.0', method: 'ping', id: 401 }) // the server still answers with its audit stream gone
+      expect(r.statusCode).toBe(200)
+    } finally {
+      fsCtl.rules.length = 0
+    }
+    initAuditLog(logDir) // the next start opens it again
+    await rpc({ jsonrpc: '2.0', method: 'tools/list', id: 402 })
+    await waitFor(() => realFs.readFileSync(logPath, 'utf-8').includes('tools/list'))
   })
 
   // --- tool errors are sanitized on the way out ---

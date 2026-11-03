@@ -24,14 +24,29 @@
 // The window is a second rather than the 400 ms this first shipped with. The leading edge is what
 // makes the UI feel instant, so widening the window costs nothing there — it only decides how
 // often a SUSTAINED storm is allowed to re-ask, and each re-ask is three git processes per repo.
+//
+// STORM GUARD (watchGuard.ts). The window above paces an ordinary storm; it does not know what the
+// events are ABOUT. David's repo roots hold `.worktrees/` where agent swarms edit thousands of files
+// and run git constantly, and none of that can change THIS repo's status. So the working-tree watch
+// drops events inside nested worktrees and nested repositories (git submodules are the one exception:
+// a dirty submodule IS part of the parent's status), the `.git` watch drops `worktrees/` (the other
+// checkouts' private HEAD and index), and one shared limiter holds the repaint to once per window,
+// and, when more than 200 events/s arrive for 3 s, to one repaint per back-off (4 s .. 60 s). A ref
+// that moves in `.git` (a commit, a checkout) is the answer changing, not noise, so it does not wait
+// out a flood's back-off: it repaints as soon as the window since the last repaint allows.
 
-import type { FSWatcher } from 'fs'
+/** What a watch hands back: an fs.FSWatcher, or a scoped watch (scopedWatch.ts). Only close() is used. */
+export interface WatchHandle {
+  close(): void
+}
+import { promises as fsp } from 'fs'
+import { createIgnoreFilter, createRunGate, isIgnoredWatchPath, type IgnoreFilter, type RunGate } from './watchGuard'
 
 export type WatchFn = (
   path: string,
   opts: { recursive?: boolean; persistent?: boolean },
   listener: (event: string, filename: string | Buffer | null) => void,
-) => FSWatcher
+) => WatchHandle
 
 export interface GitWatcherDeps {
   watch: WatchFn
@@ -41,37 +56,49 @@ export interface GitWatcherDeps {
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   throttleMs?: number
+  /** Clock for the flood meter. Defaults to Date.now. */
+  now?: () => number
+  /** One line when a flood starts and one when it is over. */
+  log?: (msg: string) => void
+  /** Async: is this directory a nested repository (own .git) or a link? Defaults to lstat + stat. */
+  probeNested?: (absDir: string) => Promise<boolean>
+  /** Async: the submodule paths (relative to the root) declared in `.gitmodules`. A submodule is a
+   *  nested repository whose edits DO show in the parent's status, so it stays watched. */
+  readSubmodulePaths?: (root: string) => Promise<string[]>
 }
 
 export const DEFAULT_THROTTLE_MS = 1000
 
 /** Paths whose churn says nothing about the repo's git status but can produce thousands of events a
- *  second. `.git` is here too: it has its own dedicated watcher, and letting the recursive tree
- *  watcher see it as well would double every event. */
-const IGNORED = ['.git/', 'node_modules/', '.venv/', '__pycache__/', 'dist/', 'out/', 'build/', 'target/', '.next/', 'coverage/']
-
+ *  second: dependency and build folders, `.git` (it has its own dedicated watcher, and letting the
+ *  recursive tree watcher see it as well would double every event), and nested worktrees. The rule is
+ *  shared with every other watcher (watchGuard.ts). */
 export function isIgnoredPath(filename: string): boolean {
-  const p = filename.replace(/\\/g, '/')
-  return IGNORED.some((seg) => p === seg.slice(0, -1) || p.startsWith(seg) || p.includes('/' + seg))
+  return isIgnoredWatchPath(filename)
 }
 
 /** The `.git` watcher is the amplifier in this design: every event it passes costs three git
  *  processes, and git rewrites far more of `.git` than the status answer depends on. Loose objects
  *  and packs (`objects/`), the reflog (`logs/`) and every `*.lock` are noise — a lock file is
- *  created and then RENAMED onto its target, so the target fires on its own — while a change that
- *  really moves the needle always lands on `index`, `HEAD`, `refs/**`, `packed-refs` or a
- *  MERGE/REBASE head, none of which are dropped here. */
+ *  created and then RENAMED onto its target, so the target fires on its own — and so is `worktrees/`,
+ *  where every OTHER checkout of this repo keeps its own HEAD, index and logs and rewrites them on
+ *  every `git add` and `git status` it runs. A change that really moves the needle always lands on
+ *  `index`, `HEAD`, `refs/**`, `packed-refs` or a MERGE/REBASE head, none of which are dropped here. */
 export function isIgnoredGitPath(filename: string): boolean {
   const p = filename.replace(/\\/g, '/')
-  return p.endsWith('.lock') || p === 'objects' || p.startsWith('objects/') || p === 'logs' || p.startsWith('logs/')
+  return (
+    p.endsWith('.lock') ||
+    p === 'objects' || p.startsWith('objects/') ||
+    p === 'logs' || p.startsWith('logs/') ||
+    p === 'worktrees' || p.startsWith('worktrees/')
+  )
 }
 
 interface RepoWatch {
   refs: number
-  watchers: FSWatcher[]
-  timer: ReturnType<typeof setTimeout> | null
-  /** An event arrived while the throttle window was open — fire once more when it closes. */
-  dirty: boolean
+  watchers: WatchHandle[]
+  gate: RunGate
+  filter: IgnoreFilter
 }
 
 export interface GitWatcherRegistry {
@@ -85,38 +112,45 @@ export interface GitWatcherRegistry {
   isWatching(root: string): boolean
 }
 
+/** The `path = ...` lines of a `.gitmodules` file (LF or CRLF). Bounded: a file this big is not a real one. */
+async function readGitmodulePaths(root: string): Promise<string[]> {
+  try {
+    const text = await fsp.readFile(joinPath(root, '.gitmodules'), 'utf8')
+    if (text.length > 256 * 1024) return []
+    const out: string[] = []
+    for (const m of text.matchAll(/^[ \t]*path[ \t]*=[ \t]*(.+?)[ \t\r]*$/gm)) out.push(m[1])
+    return out
+  } catch {
+    return [] // no .gitmodules: nearly every repo
+  }
+}
+
 export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegistry {
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms))
   const clearTimer = deps.clearTimer ?? ((t) => clearTimeout(t))
   const throttleMs = deps.throttleMs ?? DEFAULT_THROTTLE_MS
+  const readSubmodules = deps.readSubmodulePaths ?? readGitmodulePaths
   const repos = new Map<string, RepoWatch>()
 
   function fire(root: string): void {
     try { deps.onChange(root) } catch { /* a listener must not take the watcher down */ }
   }
 
-  function bump(root: string): void {
-    const w = repos.get(root)
-    if (!w) return
-    if (w.timer) { w.dirty = true; return }
-    fire(root)
-    w.timer = setTimer(() => {
-      const live = repos.get(root)
-      if (!live) return
-      live.timer = null
-      if (live.dirty) { live.dirty = false; bump(root) }
-    }, throttleMs)
-  }
-
-  function open(root: string, target: string, recursive: boolean, ignore: (name: string) => boolean): FSWatcher | null {
+  function open(
+    gate: RunGate,
+    target: string,
+    recursive: boolean,
+    ignore: (name: string, event: string) => boolean,
+    priority: boolean,
+  ): WatchHandle | null {
     try {
       // persistent:false — a file watcher must never be the reason the process stays alive.
-      return deps.watch(target, { recursive, persistent: false }, (_event, filename) => {
+      return deps.watch(target, { recursive, persistent: false }, (event, filename) => {
         if (filename) {
           const name = typeof filename === 'string' ? filename : filename.toString()
-          if (ignore(name)) return
+          if (ignore(name, event)) return
         }
-        bump(root)
+        gate.note({ priority })
       })
     } catch {
       // ENOSPC (inotify limit), ENOENT (not a repo), EPERM, or a platform without recursive watch.
@@ -129,19 +163,37 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
     add(root) {
       const existing = repos.get(root)
       if (existing) { existing.refs++; return }
-      const watchers: FSWatcher[] = []
-      const gitDir = open(root, joinPath(root, '.git'), true, isIgnoredGitPath)
+      const filter = createIgnoreFilter({ root, probeNested: deps.probeNested })
+      const gate = createRunGate({
+        mode: 'leading',
+        windowMs: throttleMs,
+        setTimer,
+        clearTimer: (t) => clearTimer(t as ReturnType<typeof setTimeout>),
+        now: deps.now,
+        label: `git ${root}`,
+        log: deps.log,
+        run: () => fire(root),
+      })
+      const watchers: WatchHandle[] = []
+      // `.git` events are the low-volume ones that say the answer changed: they get priority.
+      const gitDir = open(gate, joinPath(root, '.git'), true, isIgnoredGitPath, true)
       if (gitDir) watchers.push(gitDir)
-      const tree = open(root, root, true, isIgnoredPath)
+      const tree = open(gate, root, true, (name, event) => filter.shouldIgnore(name, event), false)
       if (tree) watchers.push(tree)
-      repos.set(root, { refs: 1, watchers, timer: null, dirty: false })
+      repos.set(root, { refs: 1, watchers, gate, filter })
+      // Submodules stay watched. Asked once, async, and only matters once a nested repo is learned.
+      void readSubmodules(root).then(
+        (paths) => { if (repos.get(root)?.filter === filter) filter.setKeep(paths) },
+        () => { /* no list: every nested repository is ignored */ },
+      )
     },
     remove(root) {
       const w = repos.get(root)
       if (!w) return
       w.refs--
       if (w.refs > 0) return
-      if (w.timer) clearTimer(w.timer)
+      w.gate.dispose()
+      w.filter.close()
       for (const fsw of w.watchers) { try { fsw.close() } catch { /* already closed */ } }
       repos.delete(root)
     },
@@ -158,7 +210,7 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
 }
 
 /** Deliberately not `path.join`: the root is already absolute and in the platform's own spelling,
- *  and this keeps the module free of node built-ins so it tests as a plain function. */
+ *  so a child is only appended to it, in the separator it already uses. */
 function joinPath(root: string, child: string): string {
   const sep = root.includes('\\') && !root.includes('/') ? '\\' : '/'
   return root.endsWith(sep) ? root + child : root + sep + child

@@ -31,10 +31,18 @@ function candidateDirs(): string[] {
   return dirs
 }
 
+/** Where each grammar file that IS on disk is, asked once. treeSitterSupports() is asked for every file a code index walks,
+ *  on the thread that echoes keystrokes when the index is built by a re-index after a file change: it was an existsSync
+ *  per candidate folder per file. The grammars ship with the app, so a found one stays where it is. A MISSING one is not
+ *  remembered here (a file planted later is seen at once, as before; loadGrammar keeps its own cached miss). */
+const wasmLocations = new Map<string, string>()
+
 function findWasm(fileName: string): string | null {
+  const known = wasmLocations.get(fileName)
+  if (known !== undefined) return known
   for (const dir of candidateDirs()) {
     const p = path.join(dir, fileName)
-    if (fs.existsSync(p)) return p
+    if (fs.existsSync(p)) { wasmLocations.set(fileName, p); return p }
   }
   return null
 }
@@ -108,4 +116,5 @@ export function grammarAvailable(grammar: string): boolean {
 /** Test seam: drop cached grammars (the one-time runtime init is intentionally NOT reset). */
 export function _resetGrammarCacheForTests(): void {
   tsStore().cache?.clear()
+  wasmLocations.clear()
 }

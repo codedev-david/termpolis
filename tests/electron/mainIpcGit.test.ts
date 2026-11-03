@@ -201,7 +201,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   getTerminalPid: vi.fn(), computeWindowsPty: vi.fn(),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => null), loadRestoreSession: vi.fn(() => null), saveSession: vi.fn() }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -1561,3 +1561,27 @@ describe('outcome grounding — a work outcome reaches the memories that informe
   })
 })
 
+
+// ---------------------------------------------------------------------------
+// git:watch — the OS watches it opens are SCOPED (src/main/scopedWatch.ts)
+// ---------------------------------------------------------------------------
+// A recursive watch of a repo root hands every change below it to this thread, and on the app's main
+// platform that cost 1.79 ms of CPU per event while agents wrote into `.worktrees/`. So the handler must
+// open the working tree and `.git` NON-recursively (the directories below are subscribed one by one,
+// without the ones nobody wants). If this wiring were reverted to `fs.watch(dir, {recursive: true})`,
+// every storm in a nested worktree would reach the thread that echoes keystrokes again.
+describe('git:watch', () => {
+  it('opens the working tree and .git as scoped watches: non-recursive at the root, persistent:false', async () => {
+    gitAsync((argv) => (argv[0] === 'rev-parse' ? '/scoped-repo\n' : ''))
+    H.fs.watch.mockClear()
+    const r = await invoke('git:watch', { cwd: '/scoped-repo/sub' })
+    expect(r.success).toBe(true)
+    const calls = H.fs.watch.mock.calls as unknown as Array<[string, { recursive?: boolean; persistent?: boolean }]>
+    const norm = (p: string): string => p.split('\\').join('/')
+    const git = calls.find((c) => norm(c[0]) === '/scoped-repo/.git')
+    const tree = calls.find((c) => norm(c[0]) === '/scoped-repo')
+    expect(git?.[1]).toEqual({ recursive: false, persistent: false })
+    expect(tree?.[1]).toEqual({ recursive: false, persistent: false })
+    await invoke('git:unwatch', { cwd: '/scoped-repo/sub' })
+  })
+})

@@ -45,6 +45,11 @@ function settingsPath(): string {
   return join(app.getPath('userData'), 'memory-settings.json')
 }
 
+/** Start-up reads the file, so the first memory call a person's click or an agent's launch makes finds it in memory. */
+export function initMemorySettings(): void {
+  init()
+}
+
 function init(): void {
   if (initialized) return
   try {

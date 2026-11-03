@@ -2,7 +2,7 @@ import * as http from 'http'
 import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
-import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary } from './memoryAudit'
+import { auditMemory, redactPreview, readMemoryAudit, memoryAuditSummary, flushMemoryAudit } from './memoryAudit'
 import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
@@ -61,8 +61,18 @@ const MAX_LOG_SIZE = 1024 * 1024 // 1MB max log file size
 let auditLogPath: string | null = null
 let auditStream: fs.WriteStream | null = null
 
+/** Bytes in the live log, counted in this process (every line is written here). rotateLogIfNeeded used to statSync the
+ *  file on EVERY request, on the thread that echoes keystrokes, to ask the file system what it already knew; a swarm
+ *  calls this server constantly. One stat at start-up, then arithmetic; the rename runs on the thread pool. */
+let auditBytes = 0
+/** Lines that arrived while the log was being moved aside: written to the fresh one, in order. */
+let heldWhileRotating: string[] | null = null
+const MAX_HELD_LINES = 1000
+
 export function initAuditLog(userDataPath: string): void {
   auditLogPath = path.join(userDataPath, 'mcp-audit.log')
+  heldWhileRotating = null
+  try { auditBytes = fs.statSync(auditLogPath).size } catch { auditBytes = 0 } // start-up: the one stat
   openAuditStream()
 }
 
@@ -77,18 +87,26 @@ function openAuditStream(): void {
 }
 
 function rotateLogIfNeeded(): void {
-  if (!auditLogPath) return
-  try {
-    const stats = fs.statSync(auditLogPath)
-    if (stats.size >= MAX_LOG_SIZE) {
-      // Keep one backup
-      const backupPath = auditLogPath + '.old'
-      if (auditStream) { auditStream.end(); auditStream = null }
-      try { fs.unlinkSync(backupPath) } catch {}
-      fs.renameSync(auditLogPath, backupPath)
+  if (!auditLogPath || !auditStream || auditBytes < MAX_LOG_SIZE || heldWhileRotating) return
+  // Keep one backup. The stream is ended (it flushes what it holds), then the old backup is dropped and the live log
+  // renamed on the thread pool, then a fresh stream is opened and the lines that came meanwhile go into it.
+  const live = auditLogPath
+  const backupPath = live + '.old'
+  const ending = auditStream
+  auditStream = null
+  auditBytes = 0
+  const held: string[] = []
+  heldWhileRotating = held
+  ending.end(() => {
+    void (async () => {
+      try { await fs.promises.unlink(backupPath) } catch { /* none yet */ }
+      try { await fs.promises.rename(live, backupPath) } catch { /* locked: the live log keeps growing; the next lines rotate it again */ }
+    })().finally(() => {
       openAuditStream()
-    }
-  } catch {}
+      heldWhileRotating = null
+      if (auditStream) for (const l of held) { auditStream.write(l); auditBytes += l.length }
+    })
+  })
 }
 
 /** The id of the paired phone a request came in on behalf of, if any.
@@ -134,8 +152,11 @@ function logMcpRequest(
   const line = JSON.stringify(entry) + '\n'
   console.log(`[MCP audit] ${line.trimEnd()}`)
 
-  if (auditStream) {
+  if (heldWhileRotating) {
+    if (heldWhileRotating.length < MAX_HELD_LINES) heldWhileRotating.push(line)
+  } else if (auditStream) {
     auditStream.write(line)
+    auditBytes += line.length
     rotateLogIfNeeded()
   }
 }
@@ -651,7 +672,7 @@ export interface McpToolHandlers {
   shellAlone?: (terminalId: string) => Promise<boolean | null>
   closeTerminal: (terminalId: string) => void
   writeToTerminal: (terminalId: string, text: string) => void
-  getFileTree: (path: string) => { name: string; isDir: boolean }[]
+  getFileTree: (path: string) => { name: string; isDir: boolean }[] | Promise<{ name: string; isDir: boolean }[]>
   getGitStatus: (cwd: string) => Promise<{ status: string; recentCommits: string; branch: string }>
   swarmSendMessage: (from: string, to: string, type: string, content: string) => any
   swarmReadMessages: (terminalId: string) => any
@@ -1361,7 +1382,7 @@ export async function executeTool(
       handlers.writeToTerminal(args.terminalId, args.text)
       return { success: true }
     case 'get_file_tree':
-      return handlers.getFileTree(args.path)
+      return await handlers.getFileTree(args.path)
     case 'get_git_status':
       return await handlers.getGitStatus(args.cwd)
     case 'swarm_send_message':
@@ -1433,6 +1454,7 @@ export async function executeTool(
     }
     case 'memory_audit': {
       const limit = Math.min(Math.max(Number(args.limit ?? 50) || 50, 1), 1000)
+      await flushMemoryAudit() // the events recorded a moment ago are written on the thread pool: wait for this file's queue
       return { events: readMemoryAudit(limit), summary: memoryAuditSummary() } // WP-E: inspectable, local
     }
     case 'memory_link':

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { offMainFiles } from '../../src/main/offMainFiles'
 const { ccrStash, ccrPut, ccrRetrieve, ccrRetrieveRecord, ccrNoteMiss, ccrStats, resetCcr, setCcrDir, _setCcrLimits, CCR_MAX_ENTRIES, CCR_MAX_BYTES, CCR_MAX_ENTRY_BYTES } =
   await import('../../src/main/headroom/ccrStore')
 
@@ -15,12 +16,15 @@ const { ccrStash, ccrPut, ccrRetrieve, ccrRetrieveRecord, ccrNoteMiss, ccrStats,
 describe('ccr store — durable disk tier', () => {
   let dir: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await offMainFiles.idle()
     resetCcr()
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccr-'))
+    await offMainFiles.idle()
     setCcrDir(dir)
   })
-  afterEach(() => {
+  afterEach(async () => {
+    await offMainFiles.idle()
     resetCcr()
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
   })
@@ -32,19 +36,22 @@ describe('ccr store — durable disk tier', () => {
     expect(ccrRetrieve(token)).toEqual({ big: 'x'.repeat(500) }) // came back off disk
   })
 
-  it('survives a full restart — a token issued before the restart still resolves', () => {
+  it('survives a full restart — a token issued before the restart still resolves', async () => {
     const token = ccrStash({ note: 'issued before restart' })
+    await offMainFiles.idle()
     resetCcr()                 // simulate process exit: every in-memory tier is gone
     expect(ccrRetrieve(token)).toBeUndefined() // and with no dir set, nothing resolves
+    await offMainFiles.idle()
     setCcrDir(dir)             // ...startup re-adopts the directory
     expect(ccrRetrieve(token)).toEqual({ note: 'issued before restart' })
   })
 
-  it('remembers which layer issued a token across the restart', () => {
+  it('remembers which layer issued a token across the restart', async () => {
     // The origin is what routes a give-back to the right ledger. Losing it on restart would
     // re-introduce the mis-attribution that made the receipt read -4.6M.
     ccrPut('hr_fromproxy', { v: 1 }, 'proxy')
     const mcpToken = ccrStash({ v: 2 }, 'mcp')
+    await offMainFiles.idle()
     resetCcr(); setCcrDir(dir)
     expect(ccrRetrieveRecord('hr_fromproxy')?.origin).toBe('proxy')
     expect(ccrRetrieveRecord(mcpToken)?.origin).toBe('mcp')
@@ -70,7 +77,8 @@ describe('ccr store — durable disk tier', () => {
     }
   })
 
-  it('degrades to memory-only when the directory is unusable, never throwing', () => {
+  it('degrades to memory-only when the directory is unusable, never throwing', async () => {
+    await offMainFiles.idle()
     resetCcr()
     // A FILE where the directory should be: mkdirSync fails, so dir is left null.
     const asFile = path.join(dir, 'not-a-dir')
@@ -99,26 +107,30 @@ describe('ccr store — durable disk tier', () => {
     expect(ccrStats().diskEntries).toBe(0) // JSON.stringify would throw → never written
   })
 
-  it('adopts files already on disk, oldest first, and reports them in stats', () => {
+  it('adopts files already on disk, oldest first, and reports them in stats', async () => {
     ccrStash({ one: 1 })
     ccrStash({ two: 2 })
     const before = ccrStats().diskEntries
     expect(before).toBe(2)
+    await offMainFiles.idle()
     resetCcr(); setCcrDir(dir)
     expect(ccrStats().diskEntries).toBe(2)
     expect(ccrStats().diskBytes).toBeGreaterThan(0)
   })
 
-  it('ignores foreign files in the ccr directory', () => {
+  it('ignores foreign files in the ccr directory', async () => {
     fs.writeFileSync(path.join(dir, 'notes.txt'), 'hello', 'utf8')
     fs.writeFileSync(path.join(dir, 'bogus.json'), '{}', 'utf8') // no hr_ prefix
+    await offMainFiles.idle()
     resetCcr(); setCcrDir(dir)
     expect(ccrStats().diskEntries).toBe(0)
   })
 
-  it('returns undefined when the on-disk file is corrupt rather than throwing', () => {
+  it('returns undefined when the on-disk file is corrupt rather than throwing', async () => {
     const token = ccrStash({ ok: true })
+    await offMainFiles.idle()
     fs.writeFileSync(path.join(dir, `${token}.json`), '{ not json', 'utf8')
+    await offMainFiles.idle()
     resetCcr(); setCcrDir(dir) // memory tier cleared, so this must come off disk
     expect(ccrRetrieve(token)).toBeUndefined()
   })
@@ -127,12 +139,15 @@ describe('ccr store — durable disk tier', () => {
 describe('ccr store — byte cap', () => {
   let dir: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await offMainFiles.idle()
     resetCcr()
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccr-cap-'))
+    await offMainFiles.idle()
     setCcrDir(dir)
   })
-  afterEach(() => {
+  afterEach(async () => {
+    await offMainFiles.idle()
     resetCcr()
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
   })
@@ -145,38 +160,44 @@ describe('ccr store — byte cap', () => {
     expect(CCR_MAX_ENTRIES).toBe(512)
   })
 
-  it('evicts OLDEST-first once the directory exceeds the byte cap, and deletes the files', () => {
+  it('evicts OLDEST-first once the directory exceeds the byte cap, and deletes the files', async () => {
     _setCcrLimits(4000, 8 * 1024 * 1024) // ~3 entries' worth
     const tokens = Array.from({ length: 8 }, (_, i) => ccrStash({ i, pad: `${i}`.repeat(1200) }))
     const stats = ccrStats()
     expect(stats.diskBytes).toBeLessThanOrEqual(4000)
     expect(stats.diskEntries).toBeLessThan(8)
     // Oldest gone from disk, newest still there. (Memory still holds all 8 — the cap is a DISK cap.)
+    await offMainFiles.idle()
     expect(fs.existsSync(path.join(dir, `${tokens[0]}.json`))).toBe(false)
+    await offMainFiles.idle()
     expect(fs.existsSync(path.join(dir, `${tokens[7]}.json`))).toBe(true)
+    await offMainFiles.idle()
     resetCcr(); setCcrDir(dir)
     expect(ccrRetrieve(tokens[0])).toBeUndefined()   // evicted → the agent re-runs the tool
     expect(ccrRetrieve(tokens[7])).toBeDefined()     // recent work is what actually gets redeemed
   })
 
-  it('re-evicts on adoption, so a directory over the cap is trimmed at startup too', () => {
+  it('re-evicts on adoption, so a directory over the cap is trimmed at startup too', async () => {
     for (let i = 0; i < 8; i++) ccrStash({ i, pad: `${i}`.repeat(1200) })
     expect(ccrStats().diskEntries).toBe(8) // written under the full-size cap
+    await offMainFiles.idle()
     resetCcr(); setCcrDir(dir)
     _setCcrLimits(4000, 8 * 1024 * 1024)
     expect(ccrStats().diskBytes).toBeLessThanOrEqual(4000)
     // Entry files only: the store also keeps a _forgotten.json sidecar beside them.
+    await offMainFiles.idle()
     expect(fs.readdirSync(dir).filter((n) => n.startsWith('hr_')).length).toBe(ccrStats().diskEntries)
     // The trim destroyed content that existed nowhere else, and the store records exactly that —
     // so redeeming one of these tokens later is a real miss, not an unrecognised handle.
     expect(ccrStats().forgottenEntries).toBeGreaterThan(0)
   })
 
-  it('keeps an oversized entry in MEMORY only rather than stalling the hot path on it', () => {
+  it('keeps an oversized entry in MEMORY only rather than stalling the hot path on it', async () => {
     _setCcrLimits(CCR_MAX_BYTES, 1000)
     const token = ccrStash({ huge: 'z'.repeat(5000) })
     expect(ccrStats().diskEntries).toBe(0)
     expect(ccrRetrieve(token)).toEqual({ huge: 'z'.repeat(5000) }) // memory tier still serves it
+    await offMainFiles.idle()
     expect(fs.existsSync(path.join(dir, `${token}.json`))).toBe(false)
   })
 
@@ -189,21 +210,23 @@ describe('ccr store — byte cap', () => {
     expect(ccrStats().diskEntries).toBe(1)
   })
 
-  it('performs NO second write when the same hash token is already on disk', () => {
+  it('performs NO second write when the same hash token is already on disk', async () => {
     // v1.36.0 — every API request re-stashed originals that were already there: 65 synchronous
     // writeFileSync calls and ~101 KB per request on the Electron MAIN thread, growing with the
     // conversation. A sentinel in the file is the only honest proof that no write happened.
     const token = ccrStash({ same: 'x'.repeat(2000) })
     const f = path.join(dir, `${token}.json`)
+    await offMainFiles.idle()
     fs.writeFileSync(f, 'SENTINEL', 'utf8')
     const before = ccrStats()
     expect(ccrStash({ same: 'x'.repeat(2000) })).toBe(token)
+    await offMainFiles.idle()
     expect(fs.readFileSync(f, 'utf8')).toBe('SENTINEL')
     expect(ccrStats().diskBytes).toBe(before.diskBytes)   // accounting untouched by the skip
     expect(ccrStats().diskEntries).toBe(before.diskEntries)
   })
 
-  it('still re-writes a caller-supplied token that is not a content hash', () => {
+  it('still re-writes a caller-supplied token that is not a content hash', async () => {
     // Only a sha1 token guarantees the file already holds these exact bytes. The proxy may hand
     // us any token shape, so the skip must never apply to one — it would pin stale content.
     ccrPut('hr_manual', { v: 1 }, 'proxy')
@@ -211,17 +234,20 @@ describe('ccr store — byte cap', () => {
     ccrPut('hr_manual', { v: 2, pad: 'p'.repeat(200) }, 'proxy')
     expect(ccrStats().diskEntries).toBe(1)
     expect(ccrStats().diskBytes).toBeGreaterThan(after1) // re-indexed, old bytes subtracted once
+    await offMainFiles.idle()
     resetCcr(); setCcrDir(dir)                           // force the read to come off disk
     expect(ccrRetrieve('hr_manual')).toEqual({ v: 2, pad: 'p'.repeat(200) })
   })
 
-  it('keeps the index and the directory in step when a repeat stash is skipped', () => {
+  it('keeps the index and the directory in step when a repeat stash is skipped', async () => {
     _setCcrLimits(4000, 8 * 1024 * 1024)
     const first = ccrStash({ i: 0, pad: '0'.repeat(1200) })
     ccrStash({ i: 0, pad: '0'.repeat(1200) }) // skipped — must not inflate diskBytes or re-seq
     for (let i = 1; i < 8; i++) ccrStash({ i, pad: `${i}`.repeat(1200) })
     expect(ccrStats().diskBytes).toBeLessThanOrEqual(4000)
+    await offMainFiles.idle()
     expect(fs.readdirSync(dir).length).toBe(ccrStats().diskEntries)
+    await offMainFiles.idle()
     expect(fs.existsSync(path.join(dir, `${first}.json`))).toBe(false) // still evicted oldest-first
   })
 
@@ -253,20 +279,22 @@ describe('ccr store — byte cap', () => {
     expect(ccrStats().unknownTokens).toBe(1)
   })
 
-  it('remembers what it destroyed across a restart', () => {
+  it('remembers what it destroyed across a restart', async () => {
     // A forgotten token that stops being forgotten at the next launch would let the one honest
     // alarm this store can raise evaporate on restart.
     _setCcrLimits(CCR_MAX_BYTES, 8)
     const doomed = ccrStash({ v: 'the only copy' })
     for (let i = 0; i <= CCR_MAX_ENTRIES; i++) ccrStash({ filler: i })
     expect(ccrNoteMiss(doomed)).toBe('forgotten')
+    await offMainFiles.idle()
     setCcrDir(dir) // relaunch against the same directory
     expect(ccrNoteMiss(doomed)).toBe('forgotten')
   })
 
-  it('heals an indexed file it cannot read back, and counts the loss', () => {
+  it('heals an indexed file it cannot read back, and counts the loss', async () => {
     const t = ccrStash({ v: 'truncated by a hard kill' })
     for (let i = 0; i < CCR_MAX_ENTRIES + 5; i++) ccrPut(`hr_${i.toString(16).padStart(16, '0')}`, i)
+    await offMainFiles.idle()
     fs.writeFileSync(path.join(dir, `${t}.json`), '{ truncated', 'utf8')
     expect(ccrRetrieve(t)).toBeUndefined()
     expect(ccrNoteMiss(t)).toBe('forgotten')
@@ -288,22 +316,28 @@ describe('ccr store — byte cap', () => {
     expect(ccrStats().badTokens).toBe(0)
   })
 
-  it('ignores a forgotten-set file it cannot make sense of, rather than failing the launch', () => {
+  it('ignores a forgotten-set file it cannot make sense of, rather than failing the launch', async () => {
     // The sidecar sits in a directory users can open. A hand-edited or half-written file must cost
     // at most the memory of what was destroyed — never the ability to start the durable tier.
     _setCcrLimits(CCR_MAX_BYTES, 8) // 8-byte entry cap: nothing reaches disk, so the LRU destroys
     const doomed = ccrStash({ v: 'the only copy' })
     for (let i = 0; i <= CCR_MAX_ENTRIES; i++) ccrStash({ filler: i })
     expect(ccrNoteMiss(doomed)).toBe('forgotten')
+    await offMainFiles.idle()
     fs.writeFileSync(path.join(dir, '_forgotten.json'), '{ not an array', 'utf8')
+    await offMainFiles.idle()
     setCcrDir(dir)
     expect(ccrStats().forgottenEntries).toBe(0)
     expect(ccrStats().dir).toBe(dir) // the tier still came up
+    await offMainFiles.idle()
     fs.writeFileSync(path.join(dir, '_forgotten.json'), JSON.stringify(['hr_aaaaaaaaaaaaaaaa']), 'utf8')
+    await offMainFiles.idle()
     setCcrDir(dir)
     expect(ccrStats().forgottenEntries).toBe(0) // an array is the pre-cause shape: no causes in it
     const map = { hr_aaaaaaaaaaaaaaaa: 'evicted', hr_bbbbbbbbbbbbbbbb: 'expired', hr_cccccccccccccccc: 'gibberish' }
+    await offMainFiles.idle()
     fs.writeFileSync(path.join(dir, '_forgotten.json'), JSON.stringify(map), 'utf8')
+    await offMainFiles.idle()
     setCcrDir(dir)
     expect(ccrStats().forgottenEntries).toBe(3)
     expect(ccrNoteMiss('hr_aaaaaaaaaaaaaaaa')).toBe('forgotten')
@@ -344,7 +378,7 @@ describe('ccr store — byte cap', () => {
     expect(ccrStats().unbackedEvictions).toBe(0)
   })
 
-  it('files a disk-cap trim as expiry, not as a defect anyone should report', () => {
+  it('files a disk-cap trim as expiry, not as a defect anyone should report', async () => {
     // Measured on the reporting install: 85.5 MB of the 200 MB cap and climbing. Once it fills,
     // every ordinary trim would have raised "Report this; it should never happen" — the same false
     // alarm that started all this, arriving through a different door.
@@ -352,6 +386,7 @@ describe('ccr store — byte cap', () => {
     for (let i = 0; i < CCR_MAX_ENTRIES + 5; i++) ccrPut(`hr_${i.toString(16).padStart(16, '0')}`, i)
     // Checked on disk, not through ccrRetrieve: a retrieve would pull it back into memory and the
     // memory copy would then answer after the trim, hiding the very loss this test is about.
+    await offMainFiles.idle()
     expect(fs.existsSync(path.join(dir, `${doomed}.json`))).toBe(true)
 
     // A cap just under what is already stored, so the next write trims the oldest entry and stops.

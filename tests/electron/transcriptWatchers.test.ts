@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -135,10 +135,10 @@ describe('processCodexLine', () => {
 })
 
 describe('findLatestCodexSessionFile', () => {
-  it('returns null when sessions dir missing', () => {
+  it('returns null when sessions dir missing', async () => {
     // Unless the real dir exists on this machine; guard accordingly
     const existed = fs.existsSync(CODEX_SESSIONS_DIR)
-    const result = findLatestCodexSessionFile()
+    const result = await findLatestCodexSessionFile()
     if (!existed) {
       expect(result).toBeNull()
     } else {
@@ -148,10 +148,10 @@ describe('findLatestCodexSessionFile', () => {
 })
 
 describe('attachCodexWatcher', () => {
-  it('returns null when no session file found', () => {
+  it('returns null when no session file found', async () => {
     // Assume no sessions in default locations for clean test env
     const existed = fs.existsSync(CODEX_SESSIONS_DIR)
-    const handle = attachCodexWatcher('t1')
+    const handle = await attachCodexWatcher('t1')
     if (!existed) {
       expect(handle).toBeNull()
     } else {
@@ -199,9 +199,9 @@ describe('processGeminiLine', () => {
 })
 
 describe('findLatestGeminiSessionFile', () => {
-  it('returns null when gemini dir missing', () => {
+  it('returns null when gemini dir missing', async () => {
     const existed = fs.existsSync(GEMINI_DIR)
-    const result = findLatestGeminiSessionFile()
+    const result = await findLatestGeminiSessionFile()
     if (!existed) {
       expect(result).toBeNull()
     } else {
@@ -211,9 +211,9 @@ describe('findLatestGeminiSessionFile', () => {
 })
 
 describe('attachGeminiWatcher', () => {
-  it('returns null when no session file found', () => {
+  it('returns null when no session file found', async () => {
     const existed = fs.existsSync(GEMINI_DIR)
-    const handle = attachGeminiWatcher('t1')
+    const handle = await attachGeminiWatcher('t1')
     if (!existed) {
       expect(handle).toBeNull()
     } else {
@@ -225,16 +225,16 @@ describe('attachGeminiWatcher', () => {
 // ---- Manager ----
 
 describe('watcher manager', () => {
-  it('returns null for unknown agent type', () => {
-    expect(attachWatcher('t1', tmpDir, 'unknown' as any)).toBeNull()
+  it('returns null for unknown agent type', async () => {
+    expect(await attachWatcher('t1', tmpDir, 'unknown' as any)).toBeNull()
   })
 
-  it('returns null for empty terminalId', () => {
-    expect(attachWatcher('', tmpDir, 'claude')).toBeNull()
+  it('returns null for empty terminalId', async () => {
+    expect(await attachWatcher('', tmpDir, 'claude')).toBeNull()
   })
 
-  it('returns null for empty cwd', () => {
-    expect(attachWatcher('t1', '', 'claude')).toBeNull()
+  it('returns null for empty cwd', async () => {
+    expect(await attachWatcher('t1', '', 'claude')).toBeNull()
   })
 
   it('detachWatchers is idempotent', () => {
@@ -249,20 +249,20 @@ describe('watcher manager', () => {
     expect(getActiveWatcherCount()).toBe(0)
   })
 
-  it('handles claude without session file', () => {
+  it('handles claude without session file', async () => {
     // Claude projects dir almost certainly has no entry for our tmpDir
     const nonExistentCwd = path.join(tmpDir, 'no-claude-session')
-    expect(attachWatcher('t1', nonExistentCwd, 'claude')).toBeNull()
+    expect(await attachWatcher('t1', nonExistentCwd, 'claude')).toBeNull()
   })
 
-  it('handles codex when no sessions exist', () => {
+  it('handles codex when no sessions exist', async () => {
     // May be null if user has no codex sessions; skip if they do
-    const handle = attachWatcher('t1', tmpDir, 'codex')
+    const handle = await attachWatcher('t1', tmpDir, 'codex')
     if (handle) handle.stop()
   })
 
-  it('handles gemini when no sessions exist', () => {
-    const handle = attachWatcher('t1', tmpDir, 'gemini')
+  it('handles gemini when no sessions exist', async () => {
+    const handle = await attachWatcher('t1', tmpDir, 'gemini')
     if (handle) handle.stop()
   })
 })
@@ -284,43 +284,44 @@ describe('watcher manager — a Claude Code session named by its id', () => {
     else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
   })
 
-  it("follows that session's transcript, written yet or not, and once however often it is asked for", () => {
-    const first = attachWatcher('c1', tmpDir, 'claude', SID)
+  it("follows that session's transcript, written yet or not, and once however often it is asked for", async () => {
+    const first = await attachWatcher('c1', tmpDir, 'claude', SID)
     expect(first).not.toBeNull()
-    expect(attachWatcher('c1', tmpDir, 'claude', SID)).toBe(first)
+    expect(await attachWatcher('c1', tmpDir, 'claude', SID)).toBe(first)
     expect(getActiveWatcherCount()).toBe(1)
   })
 
-  it("reads the session's transcript under the config home of Termpolis's environment, for its terminal", () => {
+  it("reads the session's transcript under the config home of Termpolis's environment, for its terminal", async () => {
     const dir = path.join(tmpDir, 'config', 'projects', mangleCwd(fs.realpathSync(tmpDir)))
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, `${SID}.jsonl`), JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'swarm_create_task', input: {} }] } }) + '\n')
-    attachWatcher('c1', tmpDir, 'claude', SID)
-    expect(query({ terminalId: 'c1', kind: 'tool_call' }).map((e) => e.summary)).toEqual(['swarm_create_task'])
+    await attachWatcher('c1', tmpDir, 'claude', SID)
+    // The watcher looks for the transcript and reads it on the thread pool.
+    await vi.waitFor(() => expect(query({ terminalId: 'c1', kind: 'tool_call' }).map((e) => e.summary)).toEqual(['swarm_create_task']), { timeout: 15_000, interval: 25 })
   })
 
-  it('gives another session its own watcher, and another terminal its own, and detaching a terminal stops its own', () => {
-    attachWatcher('c1', tmpDir, 'claude', SID)
-    attachWatcher('c1', tmpDir, 'claude', OTHER)
-    attachWatcher('c2', tmpDir, 'claude', SID)
+  it('gives another session its own watcher, and another terminal its own, and detaching a terminal stops its own', async () => {
+    await attachWatcher('c1', tmpDir, 'claude', SID)
+    await attachWatcher('c1', tmpDir, 'claude', OTHER)
+    await attachWatcher('c2', tmpDir, 'claude', SID)
     expect(getActiveWatcherCount()).toBe(3)
     detachWatchers('c1')
     expect(getActiveWatcherCount()).toBe(1)
   })
 
-  it('gives no watcher for an id that is no session id, and leaves a call without one to the newest transcript', () => {
-    expect(attachWatcher('c1', tmpDir, 'claude', '../../x')).toBeNull()
-    expect(attachWatcher('c1', path.join(tmpDir, 'no-claude-session'), 'claude', undefined)).toBeNull()
+  it('gives no watcher for an id that is no session id, and leaves a call without one to the newest transcript', async () => {
+    expect(await attachWatcher('c1', tmpDir, 'claude', '../../x')).toBeNull()
+    expect(await attachWatcher('c1', path.join(tmpDir, 'no-claude-session'), 'claude', undefined)).toBeNull()
     expect(getActiveWatcherCount()).toBe(0)
   })
 
-  it("follows no other session for an empty id, though the folder's newest transcript is there", () => {
+  it("follows no other session for an empty id, though the folder's newest transcript is there", async () => {
     // Where a pane's call, which names no session, would find the folder's newest transcript.
     const dir = path.join(os.homedir(), '.claude', 'projects', mangleCwd(fs.realpathSync(tmpDir)))
     fs.mkdirSync(dir, { recursive: true })
     try {
       fs.writeFileSync(path.join(dir, `${OTHER}.jsonl`), '{}\n')
-      expect(attachWatcher('c1', tmpDir, 'claude', '')).toBeNull()
+      expect(await attachWatcher('c1', tmpDir, 'claude', '')).toBeNull()
       expect(getActiveWatcherCount()).toBe(0)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -432,14 +433,14 @@ describe('processGeminiLine additional branches', () => {
 })
 
 describe('watcher manager — all codex/gemini branches', () => {
-  it('handles codex attachment returning null', () => {
+  it('handles codex attachment returning null', async () => {
     // Codex sessions dir may not exist — this exercises the null branch
-    const handle = attachWatcher('t-codex', tmpDir, 'codex')
+    const handle = await attachWatcher('t-codex', tmpDir, 'codex')
     if (handle) handle.stop()
   })
 
-  it('handles gemini attachment returning null', () => {
-    const handle = attachWatcher('t-gem', tmpDir, 'gemini')
+  it('handles gemini attachment returning null', async () => {
+    const handle = await attachWatcher('t-gem', tmpDir, 'gemini')
     if (handle) handle.stop()
   })
 

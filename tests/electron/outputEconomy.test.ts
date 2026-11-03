@@ -33,6 +33,7 @@ import {
   outputEconomyState,
   resetOutputEconomy,
 } from '../../src/main/headroom/outputEconomyStore'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 /** Fill an arm with n samples alternating around `centre` so variance is non-zero and
  *  the t-test is exercised rather than short-circuited by a zero standard error. */
@@ -361,10 +362,11 @@ describe('outputEconomyStore', () => {
     expect(b).toEqual({ requests: 1, outputTokens: 100, turns: 0, prefixTokens: 0 })
   })
 
-  it('survives a restart with the experiment intact', () => {
+  it('survives a restart with the experiment intact', async () => {
     recordProxyOutput(true, 500, 4096, 3, 1000)
     recordProxyOutput(false, 900, 4096, 3, 1000)
     flushOutputEconomy()
+    await offMainFiles.idle()
     expect(fs.existsSync(stateFile())).toBe(true)
     resetOutputEconomy()
     initOutputEconomy(tmp)
@@ -372,11 +374,13 @@ describe('outputEconomyStore', () => {
     expect(outputEconomyState().bands['4096'].requests).toBe(2)
   })
 
-  it('does not rewrite the file when nothing changed', () => {
+  it('does not rewrite the file when nothing changed', async () => {
     recordProxyOutput(true, 500)
     flushOutputEconomy()
+    await offMainFiles.idle()
     const first = fs.statSync(stateFile()).mtimeMs
     flushOutputEconomy()
+    await offMainFiles.idle()
     expect(fs.statSync(stateFile()).mtimeMs).toBe(first)
   })
 

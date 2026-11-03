@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'fs'
+import { readFileSync, mkdirSync, readdirSync, statSync, promises as fsp } from 'fs'
 import { join } from 'path'
 import * as crypto from 'crypto'
+import { offMainFiles } from '../offMainFiles'
 
 /** Which compression layer issued a token — so its give-back is charged to the right ledger. */
 export type CcrOrigin = 'mcp' | 'proxy'
@@ -120,7 +121,8 @@ const recentFailures: CcrFailure[] = []
 
 function saveForgotten(): void {
   if (!dir) return
-  try { writeFileSync(join(dir, FORGOTTEN_FILE), JSON.stringify(Object.fromEntries(forgotten)), 'utf8') } catch { /* best effort */ }
+  // On the thread pool (coalesced: a burst of evictions is one write). This runs when a proxied request evicts a record.
+  try { void offMainFiles.write(join(dir, FORGOTTEN_FILE), JSON.stringify(Object.fromEntries(forgotten))).catch(() => { /* best effort */ }) } catch { /* best effort */ }
 }
 
 function loadForgotten(): void {
@@ -187,6 +189,15 @@ function fileFor(token: string): string | null {
   return join(dir, `${token}.json`)
 }
 
+/** What has been handed to the writer and may not be on disk yet, by token: a read in that window answers from here,
+ *  so a record is never "indexed but missing". Emptied as each write lands. */
+const inFlight = new Map<string, string>()
+
+/** Delete a record's file on the thread pool, after any write still pending for it (same key). A missing file is fine. */
+function removeFile(f: string): void {
+  void offMainFiles.run(f, async () => { try { await fsp.unlink(f) } catch { /* already gone */ } }).catch(() => { /* queue full: the file is left for the next start-up scan */ })
+}
+
 /** Drop oldest-indexed files until the disk tier is back under the byte cap. */
 function evictDisk(): void {
   let dirty = false
@@ -195,8 +206,9 @@ function evictDisk(): void {
   for (const [token, entry] of bySeq) {
     if (diskBytes <= diskCapBytes) break
     const f = fileFor(token)
-    if (f) { try { unlinkSync(f) } catch { /* already gone */ } }
+    if (f) removeFile(f)
     diskIndex.delete(token)
+    inFlight.delete(token)
     diskBytes -= entry.bytes
     // The durable copy is gone. Any resident copy is now the ONLY one, so pin it against the LRU —
     // leaving it unpinned would let the next eviction pass pick it as a cheap, "backed" victim and
@@ -222,11 +234,19 @@ function diskPut(token: string, rec: CcrRecord): boolean {
   const bytes = Buffer.byteLength(payload, 'utf8')
   if (bytes > entryCapBytes) return false
   try {
-    writeFileSync(f, payload, 'utf8')
+    // The write goes to the thread pool (this runs for every request the proxy stashes, on the thread that echoes
+    // keystrokes: it used to be a writeFileSync here). The record is indexed and answered from `inFlight` at once,
+    // and if the write FAILS it is taken back out of the index and its memory copy is pinned, which is what the
+    // synchronous version did when its write threw.
     const prev = diskIndex.get(token)
     if (prev) diskBytes -= prev.bytes
     diskIndex.set(token, { bytes, seq: ++seq })
     diskBytes += bytes
+    inFlight.set(token, payload)
+    void offMainFiles.write(f, payload).then(
+      () => { if (inFlight.get(token) === payload) inFlight.delete(token) },
+      () => writeFailed(token, bytes),
+    )
     evictDisk()
     // evictDisk may have just evicted THIS entry (a single write bigger than the whole cap).
     return diskIndex.has(token)
@@ -247,11 +267,19 @@ function put(token: string, rec: CcrRecord): void {
   memPut(token, rec)
 }
 
+/** A write failed after the record was already counted as durable: take it back, and pin what memory still holds. */
+function writeFailed(token: string, bytes: number): void {
+  inFlight.delete(token)
+  if (diskIndex.delete(token)) { diskBytes -= bytes; if (diskBytes < 0) diskBytes = 0 }
+  if (store.has(token)) memoryOnly.add(token)
+  else if (forgetOnly(token, 'expired')) saveForgotten()
+}
+
 function diskGet(token: string): CcrRecord | undefined {
   const f = fileFor(token)
   if (!f || !diskIndex.has(token)) return undefined
   try {
-    const rec = JSON.parse(readFileSync(f, 'utf8')) as CcrRecord
+    const rec = JSON.parse(inFlight.get(token) ?? readFileSync(f, 'utf8')) as CcrRecord
     if (!rec || typeof rec !== 'object' || !('value' in rec)) throw new Error('not a record')
     return { value: rec.value, origin: rec.origin === 'proxy' ? 'proxy' : 'mcp' }
   } catch {
@@ -261,7 +289,8 @@ function diskGet(token: string): CcrRecord | undefined {
     // the index entry and the file so the next stash heals it, and count what was lost.
     const entry = diskIndex.get(token)
     if (entry) { diskIndex.delete(token); diskBytes -= entry.bytes; if (diskBytes < 0) diskBytes = 0 }
-    try { unlinkSync(f) } catch { /* already gone */ }
+    inFlight.delete(token)
+    removeFile(f)
     if (!store.has(token)) forget(token, 'evicted')
     return undefined
   }
@@ -431,6 +460,7 @@ export function ccrStats(): CcrStats {
 }
 
 export function resetCcr(): void {
+  inFlight.clear()
   store.clear(); diskIndex.clear(); redeemed.clear(); diskBytes = 0; seq = 0; fallbackCounter = 0; dir = null
   diskCapBytes = CCR_MAX_BYTES; entryCapBytes = CCR_MAX_ENTRY_BYTES
   memHits = 0; diskHits = 0; misses = 0; badTokens = 0; unknownTokens = 0; expiredTokens = 0; unbackedEvictions = 0

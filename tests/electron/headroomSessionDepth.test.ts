@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 const {
   bandFor, recordDepthSample, depthAdvice, currentDepthCurve, loadDepthCurve,
@@ -138,12 +139,13 @@ describe('headroom session depth', () => {
     expect(n).toBe(2)
   })
 
-  it('round-trips through disk so the curve survives a relaunch', () => {
+  it('round-trips through disk so the curve survives a relaunch', async () => {
     const d = mkdir()
     fill(15, 67000, 10000)
     fill(300, 320000, 7500)
     const before = depthAdvice()
     saveDepthCurveToDisk(d)
+    await offMainFiles.idle()
     resetDepthCurveAll()
     expect(depthAdvice()).toBeNull()
     loadDepthCurveFromDisk(d)

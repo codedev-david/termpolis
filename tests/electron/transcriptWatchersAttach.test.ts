@@ -45,7 +45,7 @@ describe('claudeCodeWatcher attach (success path)', () => {
     const pastMs = Date.now() - 10000
     fs.utimesSync(a, pastMs / 1000, pastMs / 1000)
     fs.writeFileSync(b, '{}\n')
-    const result = findLatestSessionFile(cwd)
+    const result = await findLatestSessionFile(cwd)
     expect(result).toBe(b)
   })
 
@@ -57,7 +57,7 @@ describe('claudeCodeWatcher attach (success path)', () => {
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'session.txt'), 'nope')
     fs.writeFileSync(path.join(dir, 'a.jsonl'), '{}\n')
-    const result = findLatestSessionFile(cwd)
+    const result = await findLatestSessionFile(cwd)
     expect(result).toMatch(/a\.jsonl$/)
   })
 
@@ -68,7 +68,7 @@ describe('claudeCodeWatcher attach (success path)', () => {
     const fileInsteadOfDir = path.join(tmpHome, '.claude', 'projects', mangled)
     fs.mkdirSync(path.dirname(fileInsteadOfDir), { recursive: true })
     fs.writeFileSync(fileInsteadOfDir, 'file not dir')
-    expect(findLatestSessionFile(cwd)).toBeNull()
+    expect(await findLatestSessionFile(cwd)).toBeNull()
   })
 
   it('findLatestSessionFile returns null when dir exists but is empty', async () => {
@@ -77,7 +77,7 @@ describe('claudeCodeWatcher attach (success path)', () => {
     const mangled = mangleCwd(cwd)
     const dir = path.join(tmpHome, '.claude', 'projects', mangled)
     fs.mkdirSync(dir, { recursive: true })
-    expect(findLatestSessionFile(cwd)).toBeNull()
+    expect(await findLatestSessionFile(cwd)).toBeNull()
   })
 
   it('attachClaudeCodeWatcher returns handle when session file exists', async () => {
@@ -87,7 +87,7 @@ describe('claudeCodeWatcher attach (success path)', () => {
     const dir = path.join(tmpHome, '.claude', 'projects', mangled)
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'session.jsonl'), '')
-    const handle = attachClaudeCodeWatcher('t1', cwd)
+    const handle = await attachClaudeCodeWatcher('t1', cwd)
     expect(handle).not.toBeNull()
     handle?.stop()
   })
@@ -104,7 +104,7 @@ describe('claudeCodeWatcher attach (success path)', () => {
     fs.mkdirSync(dir, { recursive: true })
     const file = path.join(dir, 'session.jsonl')
     fs.writeFileSync(file, '{}\n')
-    expect(findLatestSessionFile(link)).toBe(file)
+    expect(await findLatestSessionFile(link)).toBe(file)
     fs.unlinkSync(link)
   })
 
@@ -115,7 +115,7 @@ describe('claudeCodeWatcher attach (success path)', () => {
     const dir = path.join(tmpHome, '.claude', 'projects', mangleCwd(fs.realpathSync(process.cwd())))
     fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(path.join(dir, 'session.jsonl'), '{}\n')
-    expect(findLatestSessionFile('')).toBeNull()
+    expect(await findLatestSessionFile('')).toBeNull()
   })
 
   it('mangleCwd returns empty string for empty input', async () => {
@@ -140,7 +140,7 @@ describe('codexWatcher attach (success path)', () => {
     const past = Date.now() - 20000
     fs.utimesSync(a, past / 1000, past / 1000)
     fs.writeFileSync(b, '')
-    const result = findLatestCodexSessionFile()
+    const result = await findLatestCodexSessionFile()
     expect(result).toBe(b)
   })
 
@@ -149,13 +149,13 @@ describe('codexWatcher attach (success path)', () => {
     const sub = path.join(CODEX_SESSIONS_DIR, '2026-04-19')
     fs.mkdirSync(sub, { recursive: true })
     fs.writeFileSync(path.join(sub, 'session.jsonl'), '')
-    const result = findLatestCodexSessionFile()
+    const result = await findLatestCodexSessionFile()
     expect(result).toMatch(/session\.jsonl$/)
   })
 
   it('findLatestCodexSessionFile returns null when sessions dir missing', async () => {
     const { findLatestCodexSessionFile } = await import('../../src/main/transcriptWatchers/codexWatcher')
-    expect(findLatestCodexSessionFile()).toBeNull()
+    expect(await findLatestCodexSessionFile()).toBeNull()
   })
 
   it('findLatestCodexSessionFile filters non-jsonl files', async () => {
@@ -163,7 +163,7 @@ describe('codexWatcher attach (success path)', () => {
     fs.mkdirSync(CODEX_SESSIONS_DIR, { recursive: true })
     fs.writeFileSync(path.join(CODEX_SESSIONS_DIR, 'ignore.txt'), 'nope')
     fs.writeFileSync(path.join(CODEX_SESSIONS_DIR, 'a.jsonl'), '')
-    const result = findLatestCodexSessionFile()
+    const result = await findLatestCodexSessionFile()
     expect(result).toMatch(/a\.jsonl$/)
   })
 
@@ -171,7 +171,7 @@ describe('codexWatcher attach (success path)', () => {
     const { attachCodexWatcher, CODEX_SESSIONS_DIR } = await import('../../src/main/transcriptWatchers/codexWatcher')
     fs.mkdirSync(CODEX_SESSIONS_DIR, { recursive: true })
     fs.writeFileSync(path.join(CODEX_SESSIONS_DIR, 'session.jsonl'), '')
-    const handle = attachCodexWatcher('t1')
+    const handle = await attachCodexWatcher('t1')
     expect(handle).not.toBeNull()
     handle?.stop()
   })
@@ -182,7 +182,7 @@ describe('geminiWatcher attach (success path)', () => {
     const { findLatestGeminiSessionFile, GEMINI_DIR } = await import('../../src/main/transcriptWatchers/geminiWatcher')
     fs.mkdirSync(GEMINI_DIR, { recursive: true })
     fs.writeFileSync(path.join(GEMINI_DIR, 'session.jsonl'), '')
-    const result = findLatestGeminiSessionFile()
+    const result = await findLatestGeminiSessionFile()
     expect(result).toMatch(/session\.jsonl$/)
   })
 
@@ -191,7 +191,7 @@ describe('geminiWatcher attach (success path)', () => {
     const sub = path.join(GEMINI_DIR, 'tmp', 'sessions')
     fs.mkdirSync(sub, { recursive: true })
     fs.writeFileSync(path.join(sub, 'chat.jsonl'), '')
-    const result = findLatestGeminiSessionFile()
+    const result = await findLatestGeminiSessionFile()
     expect(result).toMatch(/chat\.jsonl$/)
   })
 
@@ -204,20 +204,20 @@ describe('geminiWatcher attach (success path)', () => {
     const past = Date.now() - 20000
     fs.utimesSync(a, past / 1000, past / 1000)
     fs.writeFileSync(b, '')
-    const result = findLatestGeminiSessionFile()
+    const result = await findLatestGeminiSessionFile()
     expect(result).toBe(b)
   })
 
   it('findLatestGeminiSessionFile returns null when dir missing', async () => {
     const { findLatestGeminiSessionFile } = await import('../../src/main/transcriptWatchers/geminiWatcher')
-    expect(findLatestGeminiSessionFile()).toBeNull()
+    expect(await findLatestGeminiSessionFile()).toBeNull()
   })
 
   it('attachGeminiWatcher returns handle when session file exists', async () => {
     const { attachGeminiWatcher, GEMINI_DIR } = await import('../../src/main/transcriptWatchers/geminiWatcher')
     fs.mkdirSync(GEMINI_DIR, { recursive: true })
     fs.writeFileSync(path.join(GEMINI_DIR, 'session.jsonl'), '')
-    const handle = attachGeminiWatcher('t1')
+    const handle = await attachGeminiWatcher('t1')
     expect(handle).not.toBeNull()
     handle?.stop()
   })
@@ -241,8 +241,8 @@ describe('watcher manager — multi-watcher per terminal + stop() error swallow'
     fs.mkdirSync(CODEX_SESSIONS_DIR, { recursive: true })
     fs.writeFileSync(path.join(CODEX_SESSIONS_DIR, 'session.jsonl'), '')
 
-    const h1 = attachWatcher('t-multi', cwd, 'claude')
-    const h2 = attachWatcher('t-multi', cwd, 'codex')
+    const h1 = await attachWatcher('t-multi', cwd, 'claude')
+    const h2 = await attachWatcher('t-multi', cwd, 'codex')
     expect(h1).not.toBeNull()
     expect(h2).not.toBeNull()
     expect(getActiveWatcherCount()).toBeGreaterThanOrEqual(2)
@@ -261,7 +261,7 @@ describe('watcher manager — multi-watcher per terminal + stop() error swallow'
     fs.mkdirSync(claudeDir, { recursive: true })
     fs.writeFileSync(path.join(claudeDir, 'session.jsonl'), '')
 
-    const handle = attachWatcher('t-throw', cwd, 'claude') as any
+    const handle = await attachWatcher('t-throw', cwd, 'claude') as any
     if (handle) {
       const origStop = handle.stop.bind(handle)
       handle.stop = (): void => {

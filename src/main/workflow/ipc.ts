@@ -1,5 +1,5 @@
 import { basename } from 'path'
-import type { Workflow, WorkflowScope } from '../../renderer/src/types'
+import type { Workflow, WorkflowRun, WorkflowScope } from '../../renderer/src/types'
 import type { EngineDeps, WorkflowRunEvent, ExprScope } from './contracts'
 import type { FsLike, WorkflowSummary } from './workflowStore'
 import {
@@ -23,6 +23,9 @@ type Wiring = {
   onWorkflowsChanged?: (cwd: string, scope: WorkflowScope) => void
   /** Called when the renderer reports which project directory it's showing. */
   onWatchProject?: (cwd: string) => void
+  /** Where a finished run's record goes. The app appends it on the thread pool (a run a trigger started can finish while
+   *  the user types); without it `fs` appends it, as before (tests). */
+  appendHistory?: (dir: string, run: WorkflowRun) => void
 }
 const ok = (data?: any) => ({ success: true, data })
 const err = (e: string) => ({ success: false, error: e })
@@ -100,7 +103,11 @@ export function registerWorkflowIpc(ipcMain: { handle: (ch: string, fn: (ev: any
     depsByRun.set(runId, deps)
     const done = Promise.resolve(w.engine.runWorkflow(r.workflow, deps))
       .then((run) => {
-        try { appendRunHistory(runsDirForScope(scope, cwd, w.userDataDir), { ...run, cwd, inputs }, w.fs) } catch { /* history is best-effort */ }
+        try {
+          const dir = runsDirForScope(scope, cwd, w.userDataDir)
+          if (w.appendHistory) w.appendHistory(dir, { ...run, cwd, inputs })
+          else appendRunHistory(dir, { ...run, cwd, inputs }, w.fs)
+        } catch { /* history is best-effort */ }
       })
       .catch(() => { /* engine already emitted a terminal event */ })
       .finally(() => { depsByRun.delete(runId) })

@@ -13,7 +13,9 @@
 //   - BOUNDED — the log is capped and rotated (one previous generation kept), so it can't grow
 //     without limit.
 //   - BEST-EFFORT — auditing never throws into the caller; a failed append must not break a memory op.
-import { appendFileSync, existsSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs'
+import { appendFile, stat, rename, unlink } from 'fs/promises'
+import { existsSync, readFileSync } from 'fs'
+import { offMainFiles } from './offMainFiles'
 import { join, dirname } from 'path'
 import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
 import { scanText } from './aiSecurity'
@@ -65,16 +67,29 @@ export function auditMemory(ev: MemoryAuditEvent, now: number = Date.now()): voi
   if (!p) return
   const line = JSON.stringify({ ts: now, ...ev }) + '\n'
   try {
-    if (liveBytes < 0) { try { liveBytes = existsSync(p) ? statSync(p).size : 0 } catch { liveBytes = 0 } }
-    if (liveBytes + line.length >= maxBytes) {
-      const prev = join(dirname(p), PREV)
-      if (existsSync(prev)) { try { unlinkSync(prev) } catch { /* ignore */ } }
-      if (existsSync(p)) renameSync(p, prev) // keep one previous generation
-      liveBytes = 0
-    }
-    appendFileSync(p, line)
-    liveBytes += line.length
+    // On the thread pool, one operation at a time per file and in the order asked (offMainFiles): this is called for
+    // every memory recall an agent makes and every commit, on the thread that echoes keystrokes, and each used to be
+    // up to five synchronous file calls. The folder is not created here (see initMemoryAudit): a missing one makes the
+    // append fail, which is swallowed.
+    void offMainFiles.run(p, async () => {
+      if (liveBytes < 0) { try { liveBytes = (await stat(p)).size } catch { liveBytes = 0 } }
+      if (liveBytes + line.length >= maxBytes) {
+        const prev = join(dirname(p), PREV)
+        try { await unlink(prev) } catch { /* none to replace */ }
+        try { await rename(p, prev) } catch { /* none to keep */ } // keep one previous generation
+        liveBytes = 0
+      }
+      await appendFile(p, line)
+      liveBytes += line.length
+    }).catch(() => { /* best-effort — auditing must never break a memory operation */ })
   } catch { /* best-effort — auditing must never break a memory operation */ }
+}
+
+/** Resolves once every event recorded so far has been written (they go to the thread pool): for a reader that must
+ *  see what was just recorded, the memory_audit tool and the tests. Waits for this file's queue only. */
+export function flushMemoryAudit(): Promise<void> {
+  const p = auditPath()
+  return p ? offMainFiles.run(p, async () => { /* the queue ahead of this has drained */ }).catch(() => { /* nothing to wait for */ }) : Promise.resolve()
 }
 
 /** The most recent `limit` audit records, newest first. */

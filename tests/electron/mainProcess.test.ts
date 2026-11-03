@@ -126,6 +126,7 @@ const mockSearchHistory = vi.fn()
 vi.mock('../../src/main/historyStore', () => ({
   appendCommand: (...args: any[]) => mockAppendCommand(...args),
   searchHistory: (...args: any[]) => mockSearchHistory(...args),
+  primeHistory: async () => {},
 }))
 
 const mockReadConfigFile = vi.fn()
@@ -412,6 +413,8 @@ describe('terminal:create', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (only injected for Claude launches)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
   })
 
@@ -432,6 +435,8 @@ describe('terminal:create', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (only injected for Claude launches)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
   })
 
@@ -2152,9 +2157,9 @@ describe('MCP handler callbacks', () => {
     expect(mockWriteToTerminal).toHaveBeenCalledWith('t1', 'hello')
   })
 
-  it('getFileTree returns directory entries', () => {
+  it('getFileTree returns directory entries', async () => {
     mockListPathEntries.mockReturnValue([{ name: 'src', isDir: true }])
-    const result = capturedMcpHandlers.getFileTree('/project')
+    const result = await capturedMcpHandlers.getFileTree('/project') // the listing is asked on the thread pool now
     expect(result).toEqual([{ name: 'src', isDir: true }])
     expect(mockListPathEntries).toHaveBeenCalledWith('/project')
   })
@@ -2273,6 +2278,8 @@ describe('MCP handler callbacks', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (non-Claude agent name → none)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })
@@ -2292,6 +2299,8 @@ describe('MCP handler callbacks', () => {
       expect.any(Function),
       expect.any(Array),
       undefined, // claudeHeadroom env (non-Claude agent name → none)
+      undefined, // onExit
+      expect.objectContaining({ cwd: expect.any(String) }), // the folder and script, looked up on the thread pool
     )
     try { capturedMcpHandlers.closeTerminal(id) } catch {}
   })

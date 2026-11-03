@@ -23,7 +23,7 @@
 
 import { execSync } from 'child_process'
 import { execShellOffThread } from './procClient'
-import { readdirSync } from 'fs'
+import { readdirSync, promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -66,20 +66,18 @@ export function getInteractiveShellPath(): string {
   return _cachedShellPath
 }
 
-// Static + dynamic install dirs for agent CLIs. Order matters — Homebrew
-// first so brew-installed binaries win over older system copies, then
-// user-local, then version managers.
-export function getAgentExtraPaths(): string[] {
-  const home = homedir()
-  if (process.platform === 'win32') {
-    return [
-      join(home, 'AppData', 'Roaming', 'npm'),                      // npm global (claude, codex)
-      join(home, 'AppData', 'Local', 'pnpm'),                       // pnpm global
-      join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin'), // gemini via gcloud
-      join(home, 'AppData', 'Local', 'agy', 'bin'),                 // Antigravity CLI (agy) — Gemini's headless access; its installer only adds this to .bashrc
-    ]
-  }
-  const paths: string[] = [
+function windowsExtraPaths(home: string): string[] {
+  return [
+    join(home, 'AppData', 'Roaming', 'npm'),                      // npm global (claude, codex)
+    join(home, 'AppData', 'Local', 'pnpm'),                       // pnpm global
+    join(home, 'AppData', 'Local', 'Google', 'Cloud SDK', 'bin'), // gemini via gcloud
+    join(home, 'AppData', 'Local', 'agy', 'bin'),                 // Antigravity CLI (agy) — Gemini's headless access; its installer only adds this to .bashrc
+  ]
+}
+
+/** The static part of the Unix list. */
+function unixStaticPaths(home: string): string[] {
+  return [
     '/opt/homebrew/bin',                // macOS Apple Silicon Homebrew
     '/usr/local/bin',                   // macOS Intel Homebrew / generic
     join(home, '.local', 'bin'),        // pip --user, cargo, generic
@@ -90,28 +88,51 @@ export function getAgentExtraPaths(): string[] {
     join(home, '.npm-global', 'bin'),   // common `npm config set prefix` target
     join(home, '.bun', 'bin'),          // bun
   ]
-  // NVM lives at ~/.nvm/versions/node/<v>/bin per installed Node version.
-  // Gemini installed via `npm i -g` under NVM was the core of issue #8.
-  try {
-    const nvmRoot = process.env.NVM_DIR || join(home, '.nvm')
-    const versionsDir = join(nvmRoot, 'versions', 'node')
-    for (const ver of readdirSync(versionsDir)) {
-      paths.push(join(versionsDir, ver, 'bin'))
-    }
-  } catch {
-    // No NVM installed, or versions dir doesn't exist — just skip.
-  }
+}
+
+/** Where the per-version bin folders of NVM and fnm are listed from, and how each one is named. */
+function versionManagerRoots(home: string): Array<{ dir: string; suffix: string[] }> {
+  const roots = [{ dir: join(process.env.NVM_DIR || join(home, '.nvm'), 'versions', 'node'), suffix: ['bin'] }]
   // fnm exports FNM_DIR with the install root; per-version dirs live under
   // node-versions/<v>/installation/bin. We can only see this when fnm has
   // exported into the shell that launched Electron.
-  if (process.env.FNM_DIR) {
+  if (process.env.FNM_DIR) roots.push({ dir: join(process.env.FNM_DIR, 'node-versions'), suffix: ['installation', 'bin'] })
+  return roots
+}
+
+// Static + dynamic install dirs for agent CLIs. Order matters — Homebrew
+// first so brew-installed binaries win over older system copies, then
+// user-local, then version managers.
+export function getAgentExtraPaths(): string[] {
+  const home = homedir()
+  if (process.platform === 'win32') return windowsExtraPaths(home)
+  const paths = unixStaticPaths(home)
+  // NVM lives at ~/.nvm/versions/node/<v>/bin per installed Node version.
+  // Gemini installed via `npm i -g` under NVM was the core of issue #8.
+  for (const { dir, suffix } of versionManagerRoots(home)) {
     try {
-      const versionsDir = join(process.env.FNM_DIR, 'node-versions')
-      for (const ver of readdirSync(versionsDir)) {
-        paths.push(join(versionsDir, ver, 'installation', 'bin'))
-      }
+      for (const ver of readdirSync(dir)) paths.push(join(dir, ver, ...suffix))
     } catch {
-      // FNM_DIR set but layout doesn't match — skip.
+      // No NVM / fnm installed, or the layout does not match — just skip.
+    }
+  }
+  return paths
+}
+
+/**
+ * getAgentExtraPaths() with the version folders listed on the thread pool. Opening a terminal asks for this
+ * list, and it used to list NVM's and fnm's folders with readdirSync on the thread that echoes keystrokes.
+ * Same list, same order; Windows has nothing to list.
+ */
+export async function getAgentExtraPathsAsync(): Promise<string[]> {
+  const home = homedir()
+  if (process.platform === 'win32') return windowsExtraPaths(home)
+  const paths = unixStaticPaths(home)
+  for (const { dir, suffix } of versionManagerRoots(home)) {
+    try {
+      for (const ver of await fsp.readdir(dir)) paths.push(join(dir, ver, ...suffix))
+    } catch {
+      // No NVM / fnm installed, or the layout does not match — just skip.
     }
   }
   return paths

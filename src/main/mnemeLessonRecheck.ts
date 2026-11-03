@@ -124,17 +124,34 @@ export async function recheckStoredLessons(deps: RecheckDeps): Promise<RecheckRe
 /** Whether the pass has run, kept in userData under `name`. Unreadable counts as not run: running
  *  a pass twice only re-judges what it judged, and an already-demoted entry is skipped as corrected.
  *  The linked-history pass keeps its own marker the same way (linkedHistoryRecheck). */
+/** What the disk said about each marker file, at the first look this launch. Module-level because the indexer builds a
+ *  fresh marker object on every pass (index.ts), so a memo inside the object would be thrown away with it. */
+const markerKnown = new Map<string, boolean>()
+
+/** @internal test-only */
+export function _resetRecheckMarkersForTests(): void {
+  markerKnown.clear()
+}
+
 export function recheckMarker(userDataPath: string, fs: {
   exists: (p: string) => boolean
   write: (p: string, text: string) => void
 }, join: (...parts: string[]) => string, name = 'mneme-lesson-recheck.json'): Pick<RecheckDeps, 'done' | 'markDone'> {
   const file = join(userDataPath, name)
+  // The disk is asked ONCE per launch. The indexer asks on every pass (every 30 minutes, on the main thread), and only
+  // markDone() below changes the answer afterwards (one Termpolis per profile writes this file), so a second look at the
+  // disk could only repeat the first. An unreadable disk is not remembered: it is asked again on the next pass.
   return {
     done: () => {
-      try { return fs.exists(file) } catch { return false }
+      let known = markerKnown.get(file)
+      if (known === undefined) {
+        try { known = fs.exists(file) } catch { return false }
+        markerKnown.set(file, known)
+      }
+      return known
     },
     markDone: () => {
-      try { fs.write(file, JSON.stringify({ version: 1 })) } catch { /* runs again next launch */ }
+      try { fs.write(file, JSON.stringify({ version: 1 })); markerKnown.set(file, true) } catch { /* runs again next launch */ }
     },
   }
 }

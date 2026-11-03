@@ -161,8 +161,11 @@ function ensureTransport(): ProcTransport | null {
 async function send(req: Omit<ProcExecRequest, 'id'> | Omit<ProcShellRequest, 'id'>, timeout: number): Promise<ProcOutcome> {
   const t = ensureTransport()
   if (!t) {
-    // No host: do it here. Note this is the ONLY path in main that spawns, and it exists so the
-    // app degrades to "as slow as v1.47" rather than to "git does not work".
+    // No host: do it here. This is the fallback, taken only while the host is down or after it has used up
+    // its restart budget: it exists so the app degrades to "as slow as v1.47" rather than to "git does not
+    // work". It is NOT the only place main creates a process (terminals, the host forks themselves, a quit-time
+    // taskkill and a few user-started actions are others): tests/electron/main-thread-allowlist.json lists every
+    // one and why it may stay, and tests/electron/mainThreadScan.test.ts fails on a new one.
     const r = req.kind === 'exec'
       ? await runExec(req.bin, req.args, req.opts)
       : await runShell(req.cmd, req.opts)

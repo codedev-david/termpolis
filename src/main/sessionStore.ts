@@ -1,6 +1,7 @@
 import { app } from 'electron'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
+import { offMainFiles } from './offMainFiles'
 import type { SessionData, CustomKeybinding } from './types'
 
 const MAX_KB_FIELD = 4096
@@ -52,11 +53,37 @@ function getAppVersion(): string {
   try { return app.getVersion() } catch { return '0.0.0' }
 }
 
+/** What the file holds, as loadSession returns it. Kept in memory once read or written, so a caller on a busy path
+ *  (the MCP list_terminals tool, an agent's swarm calls) never goes back to the disk for it: the file is read once,
+ *  at start-up, and only this process writes it. */
+let cached: SessionData | null = null
+
+const copyOf = (s: SessionData): SessionData => JSON.parse(JSON.stringify(s)) as SessionData
+
 export function loadSession(): SessionData {
+  if (cached) return copyOf(cached)
+  cached = readSession()
+  return copyOf(cached)
+}
+
+/** @internal test-only */
+export function _resetSessionCacheForTests(): void {
+  cached = null
+}
+
+function readSession(): SessionData {
   const path = getSessionPath()
   if (!existsSync(path)) return { ...DEFAULT_SESSION }
   try {
     const raw = readFileSync(path, 'utf-8')
+    return parseSession(raw)
+  } catch {
+    return { ...DEFAULT_SESSION }
+  }
+}
+
+function parseSession(raw: string): SessionData {
+  try {
     const parsed = { ...DEFAULT_SESSION, ...JSON.parse(raw) }
     // Migrate old 'grid' viewMode to 'split'
     if (parsed.viewMode === 'grid') parsed.viewMode = 'split'
@@ -101,5 +128,10 @@ export function loadRestoreSession(): SessionData {
 
 export function saveSession(data: SessionData): void {
   const withVersion = { ...data, appVersion: getAppVersion() }
-  writeFileSync(getSessionPath(), JSON.stringify(withVersion, null, 2), 'utf-8')
+  const json = JSON.stringify(withVersion, null, 2)
+  // What a load would return from this file, kept in memory (see above).
+  cached = parseSession(json)
+  // The renderer saves after every change to its state (debounced to a moment): the write goes to the thread pool,
+  // coalesced, at most one per half second, and the quit handler flushes what is still waiting.
+  offMainFiles.writeSoon(getSessionPath(), json, { delayMs: 500 })
 }

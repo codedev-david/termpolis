@@ -107,7 +107,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   computeWindowsPty: vi.fn(() => ({})),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -367,6 +367,7 @@ let eventFeed: Function
 // index.ts registers these ONCE at startup, so they are captured here rather than
 // read from mock.calls (which every test's clearAllMocks() wipes).
 let recalls: typeof import('../../src/main/recallLedger')
+let recheckModule: typeof import('../../src/main/mnemeLessonRecheck')
 
 beforeAll(async () => {
   vi.resetModules()
@@ -374,6 +375,8 @@ beforeAll(async () => {
   // Same post-reset registry index.ts loaded from — a statically imported ledger would be a
   // different module object holding a different Map.
   recalls = await import('../../src/main/recallLedger')
+  // The recheck markers remember what the disk said at the first look of a launch; each test here is a new launch.
+  recheckModule = await import('../../src/main/mnemeLessonRecheck')
   await new Promise((resolve) => setTimeout(resolve, 50))
   mcp = mockStartMcpServer.mock.calls[0]?.[0]
   indexer = mockStartIndexer.mock.calls[0]?.[0]
@@ -398,6 +401,7 @@ it('registers the memory brain with the MCP server, the indexer and the event bu
 })
 
 beforeEach(() => {
+  recheckModule._resetRecheckMarkersForTests()
   vi.clearAllMocks()
   // Re-arm the defaults vi.clearAllMocks() strips (it clears implementations set via
   // the vi.fn(impl) constructor form only for *Once* impls, but resets call history —
@@ -865,8 +869,12 @@ describe('memory:ingest-code', () => {
     // A watcher that is wired but never re-indexes leaves a silently stale graph, so pin
     // the callback itself: it must forward the changed files AND a real file reader.
     await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
-    const [watchImpl, onChange] = mneme.fsBackedWatchDeps.mock.calls[0]
+    const [watchImpl, onChange, , scoped] = mneme.fsBackedWatchDeps.mock.calls[0]
     expect(watchImpl).toBe(fsMock.watch) // the REAL fs watcher, not a stub
+    // And scoped (scopedWatch.ts): subscribed directory by directory, so nothing under .worktrees,
+    // node_modules, dist ... is ever delivered to the main thread by the OS. A plain recursive watch of the
+    // root cost 1.79 ms of CPU per event while agents wrote there.
+    expect(scoped).toBe(true)
 
     onChange('/repos/x', ['a.ts', 'b.ts'])
     expect(cg.reindexWatchedChange).toHaveBeenCalledWith('/repos/x', ['a.ts', 'b.ts'], expect.any(Function))
@@ -875,6 +883,16 @@ describe('memory:ingest-code', () => {
     // Async read, not readFileSync — the watch path starves the loop exactly like the full sweep.
     expect(fsMock.promises.readFile).toHaveBeenCalledWith('a.ts', 'utf8')
     expect(fsMock.readFileSync).not.toHaveBeenCalledWith('a.ts', 'utf8')
+  })
+
+  it('hands the re-index promise back to the watch gate, so two re-indexes never overlap', async () => {
+    // The gate (watchGuard.ts) waits for what the callback returns. A callback that dropped the
+    // promise (`void ...`) would let a slow re-index and the next one run at the same time.
+    await invoke('memory:ingest-code', { repoRoot: '/repos/x' })
+    const onChange = mneme.fsBackedWatchDeps.mock.calls[0][1]
+    const pending = Promise.resolve()
+    cg.reindexWatchedChange.mockReturnValueOnce(pending)
+    expect(onChange('/repos/x', ['a.ts'])).toBe(pending)
   })
 
   it('still succeeds when the code graph blows up — a graph hiccup never fails a good ingest', async () => {

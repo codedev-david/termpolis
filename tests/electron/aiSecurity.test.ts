@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, promises as fsPromises } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -402,6 +402,27 @@ describe('aiSecurity audit log', () => {
     const after = readFileSync(path, 'utf8')
     expect(after.length).toBeLessThan(1024)
     expect(after).toContain('terminal_open')
+  })
+
+  it('does not move the log aside when its counted size was over the cap but the disk says it is not (confirm before moving)', async () => {
+    const m = await freshModule()
+    m.setAuditEnabled(true)
+    const path = m.getAuditPath()
+    const prev = path.replace(/\.jsonl$/, '.prev.jsonl')
+    writeFileSync(path, '{"ts":"small"}\n')
+    const realStat = fsPromises.stat.bind(fsPromises)
+    const spy = vi.spyOn(fsPromises, 'stat')
+    // The first look (the counter starts from the disk) is told the file is 11 MB; the confirming look sees the real, small file.
+    spy.mockResolvedValueOnce({ size: 11 * 1024 * 1024 } as never)
+    spy.mockImplementation(((p: string) => realStat(p)) as never)
+    try {
+      await m.appendAudit({ agent: 'claude', event: 'terminal_open' })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(existsSync(prev)).toBe(false) // nothing was moved
+    expect(readFileSync(path, 'utf8')).toContain('terminal_open')
+    expect(readFileSync(path, 'utf8')).toContain('small') // and nothing was lost
   })
 
   it('returns [] when reading the audit file throws', async () => {

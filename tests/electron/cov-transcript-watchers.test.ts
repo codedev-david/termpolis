@@ -82,7 +82,28 @@ vi.mock('fs', async (importOriginal) => {
       return call(actual.watch, args)
     },
   }
-  return { ...patched, default: patched }
+  // The watchers read on the thread pool now: the same two hooks, for the asynchronous calls.
+  const promises = {
+    ...actual.promises,
+    open: async (...args: unknown[]): Promise<unknown> => {
+      if (hooks.failOpenFor !== null && String(args[0]) === hooks.failOpenFor) {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+      }
+      return call(actual.promises.open, args)
+    },
+    readdir: async (...args: unknown[]): Promise<unknown> => {
+      const dir = String(args[0])
+      const override = hooks.readdir?.(dir)
+      if (override === undefined) return call(actual.promises.readdir, args)
+      if (!(args[1] as { withFileTypes?: boolean } | undefined)?.withFileTypes) return override
+      return override.map((name) => {
+        let isDir = false
+        try { isDir = actual.statSync(nodePath.join(dir, name)).isDirectory() } catch { /* vanished */ }
+        return { name, isFile: () => !isDir, isDirectory: () => isDir }
+      })
+    },
+  }
+  return { ...patched, promises, default: { ...patched, promises } }
 })
 
 import * as fs from 'fs'
@@ -321,7 +342,7 @@ describe('codexWatcher — session scan resilience', () => {
       return undefined
     }
 
-    const result = findLatestCodexSessionFile()
+    const result = await findLatestCodexSessionFile()
     expect(result).toBe(path.join(day, 'inner.jsonl'))
     expect(result).not.toContain('outside.jsonl')
   })
@@ -335,7 +356,7 @@ describe('codexWatcher — session scan resilience', () => {
     const file = path.join(CODEX_SESSIONS_DIR, 'rollout.jsonl')
     fs.writeFileSync(file, JSON.stringify({ type: 'message', role: 'user', content: 'old history' }) + '\n')
 
-    const handle = attachCodexWatcher('t-codex-live')
+    const handle = await attachCodexWatcher('t-codex-live')
     expect(handle?.sessionFile).toBe(file)
     expect(handle?.terminalId).toBe('t-codex-live')
     expect(bus.query()).toHaveLength(0)
@@ -374,7 +395,7 @@ describe('codexWatcher — session scan resilience', () => {
       fs.mkdirSync(CODEX_SESSIONS_DIR, { recursive: true })
       fs.writeFileSync(path.join(CODEX_SESSIONS_DIR, 'session.jsonl'), '')
 
-      expect(attachCodexWatcher('t-codex-reject')).toBeNull()
+      expect(await attachCodexWatcher('t-codex-reject')).toBeNull()
       expect(calls).toBe(2)
     } finally {
       vi.doUnmock(BASE_WATCHER)
@@ -480,7 +501,7 @@ describe('geminiWatcher — session scan', () => {
     fs.writeFileSync(real, '')
     setMtime(real, 60_000)
 
-    expect(findLatestGeminiSessionFile()).toBe(real)
+    expect(await findLatestGeminiSessionFile()).toBe(real)
   })
 
   it('caps recursion: a transcript nested four levels deep is not picked up', async () => {
@@ -494,7 +515,7 @@ describe('geminiWatcher — session scan', () => {
     fs.writeFileSync(reachable, '')
     setMtime(reachable, 60_000)
 
-    expect(findLatestGeminiSessionFile()).toBe(reachable)
+    expect(await findLatestGeminiSessionFile()).toBe(reachable)
   })
 
   it('skips vanished files, traversal names and unreadable sub-directories', async () => {
@@ -518,7 +539,7 @@ describe('geminiWatcher — session scan', () => {
       return undefined
     }
 
-    const result = findLatestGeminiSessionFile()
+    const result = await findLatestGeminiSessionFile()
     expect(result).toBe(real)
     expect(result).not.toContain('outside.jsonl')
   })
@@ -532,7 +553,7 @@ describe('geminiWatcher — session scan', () => {
     const file = path.join(GEMINI_DIR, 'session.jsonl')
     fs.writeFileSync(file, JSON.stringify({ role: 'user', content: 'old history' }) + '\n')
 
-    const handle = attachGeminiWatcher('t-gemini-live')
+    const handle = await attachGeminiWatcher('t-gemini-live')
     expect(handle?.sessionFile).toBe(file)
     expect(handle?.terminalId).toBe('t-gemini-live')
     expect(bus.query()).toHaveLength(0)
@@ -566,7 +587,7 @@ describe('geminiWatcher — session scan', () => {
       fs.mkdirSync(GEMINI_DIR, { recursive: true })
       fs.writeFileSync(path.join(GEMINI_DIR, 'session.jsonl'), '')
 
-      expect(attachGeminiWatcher('t-gemini-reject')).toBeNull()
+      expect(await attachGeminiWatcher('t-gemini-reject')).toBeNull()
       expect(calls).toBe(2)
     } finally {
       vi.doUnmock(BASE_WATCHER)

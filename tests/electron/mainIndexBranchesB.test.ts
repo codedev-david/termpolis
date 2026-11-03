@@ -177,7 +177,7 @@ vi.mock('../../src/main/shellDetector', () => ({
 vi.mock('../../src/main/sessionStore', () => ({
   loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
 }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -301,6 +301,7 @@ vi.mock('../../src/main/agentCommandSanitizer', () => ({
 }))
 vi.mock('../../src/main/agentPaths', () => ({
   getAgentExtraPaths: vi.fn(() => ['/opt/agent-bin']),
+  getAgentExtraPathsAsync: vi.fn(async () => ['/opt/agent-bin']),
   getExtendedPath: vi.fn(() => '/usr/bin:/opt/agent-bin'),
   getInteractiveShellPath: vi.fn(() => ''),
   __resetShellPathCacheForTests: vi.fn(),

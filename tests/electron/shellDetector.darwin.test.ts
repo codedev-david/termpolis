@@ -11,10 +11,14 @@ vi.mock('os', () => ({
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>()
   const existsSync = (p: unknown) => p === '/bin/zsh' || p === '/bin/bash'
+  // The async probe (detectAvailableShells) asks the thread pool; it answers from the same stub. It must be on
+  // `default` too: that is where the module under test reads it.
+  const promises = { ...actual.promises, access: async (p: unknown) => { if (!existsSync(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } }
   return {
     ...actual,
-    default: { ...actual, existsSync },
+    default: { ...actual, existsSync, promises },
     existsSync,
+    promises,
   }
 })
 

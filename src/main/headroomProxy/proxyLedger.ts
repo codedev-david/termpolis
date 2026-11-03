@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
+import { offMainFiles } from '../offMainFiles'
 import { ccrPut } from '../headroom/ccrStore'
 import { recordDepthSample } from '../headroom/sessionDepth'
 import type { ProxyResultMsg } from './proxySupervisor'
@@ -176,7 +177,7 @@ export function loadProxyBaseFromDisk(dir: string): void {
   try { loadProxyBase(JSON.parse(readFileSync(join(dir, 'proxy-totals.json'), 'utf8'))) } catch { /* start at zero */ }
 }
 export function saveProxyTotalsToDisk(dir: string): void {
-  try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'proxy-totals.json'), JSON.stringify(currentProxyTotals()), 'utf8') } catch { /* best effort */ }
+  try { void offMainFiles.write(join(dir, 'proxy-totals.json'), JSON.stringify(currentProxyTotals())).catch(() => { /* best effort */ }) } catch { /* best effort */ }
 }
 /** Zero the lifetime meter (session + on-disk base) WITHOUT dropping the flush wiring, so the
  *  ledger keeps persisting afterward. Used for a live "reset lifetime savings" (e.g. after a

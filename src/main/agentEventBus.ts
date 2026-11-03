@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { offMainFiles } from './offMainFiles'
 
 /**
  * Agent Event Bus — in-process aggregation of all AI agent activity.
@@ -76,25 +77,20 @@ let droppedCount = 0
 // something we already know: we did every write. memoryAudit.ts:59-67 already does it this way
 // ("one statSync total, not per append"). One stat at init, then arithmetic.
 let logBytes = 0
-// A held append fd. publish() used fs.appendFileSync, which is open() + write() + close() on EVERY
-// event — measured here at 447 us per line, so at PUBLISH_RATE_LIMIT (500/s) roughly 224 ms of dead
-// main thread per second, on the thread that pumps every PTY. Holding the fd open costs 3.3 us per
-// line, a 135x cut, and keeps the write SYNCHRONOUS.
-//
-// Synchronous is the requirement, not an accident. A WriteStream is marginally faster still (1.0 us)
-// but buffers: measured here, 2,000 stream writes left the log file not merely stale but NONEXISTENT.
-// rotateIfNeeded renames this very file, so a buffered writer would rename away bytes that were
-// still in memory, and every reader that looks immediately after a publish would miss them.
-let logFd: number | null = null
+// Whether events are being written to disk (initEventBus succeeded and shutdownEventBus has not run).
+// publish() used to write each line SYNCHRONOUSLY through a held file handle (3.3 us a line, after an earlier
+// version that opened and closed the file per event cost 447 us a line), and at PUBLISH_RATE_LIMIT (500/s) that
+// is a write system call on the thread that pumps every PTY, every 2 ms, in the middle of an agent's output,
+// where one write has been measured at up to 105 ms on a busy Windows laptop (the endpoint scanner inspects it).
+// Now the line joins the batch that offMainFiles writes on the thread pool: lines asked for while one write
+// is under way go out together, in order, through a bounded queue, and the rotation below is queued behind the
+// writes that came before it on the same key, so no line is renamed away unwritten. Nothing reads this file back
+// (query() answers from the ring); it is an after-the-fact record.
+let persisting = false
 
-function openLog(target: string): void {
-  try { logFd = fs.openSync(target, 'a') } catch { logFd = null }
-}
-
-function closeLog(): void {
-  if (logFd === null) return
-  try { fs.closeSync(logFd) } catch {}
-  logFd = null
+/** Resolves when every line published so far has been written. For tests and for a polite quit. */
+export function flushEventBus(): Promise<void> {
+  return offMainFiles.idle()
 }
 
 export function initEventBus(userDataPath: string): void {
@@ -105,7 +101,7 @@ export function initEventBus(userDataPath: string): void {
   if (!path.isAbsolute(userDataPath)) {
     throw new Error('initEventBus: userDataPath must be absolute')
   }
-  closeLog() // a re-init must not leak the previous handle
+  persisting = false
   const resolved = path.resolve(userDataPath)
   logPath = path.join(resolved, 'agent-events.jsonl')
   // Ensure the file exists so callers can observe it immediately
@@ -116,7 +112,7 @@ export function initEventBus(userDataPath: string): void {
     } else {
       logBytes = fs.statSync(logPath).size // the ONLY stat of this file — publish() does arithmetic
     }
-    openLog(logPath)
+    persisting = true
   } catch {
     logPath = null
     logBytes = 0
@@ -124,27 +120,25 @@ export function initEventBus(userDataPath: string): void {
 }
 
 /** Rotate once the log passes MAX_LOG_SIZE. Takes the size as an argument rather than asking the
- *  filesystem: the caller just wrote every byte in it. */
+ *  filesystem: the caller just wrote every byte in it. The rename runs on the thread pool, queued behind the
+ *  lines already asked for (same key), so none of them is renamed away unwritten; lines published after this
+ *  call queue behind the rename and start the fresh file. */
 function rotateIfNeeded(): void {
   if (!logPath || logBytes < MAX_LOG_SIZE) return
-  try {
-    const backup = logPath + '.old'
-    // Close BEFORE renaming. An open fd follows the INODE, so every write after the rename would
-    // land in the .old file while the live log stayed empty forever — the rotation that exists to
-    // bound growth would instead guarantee it. On Windows the rename fails outright while a handle
-    // is open. Reopened on the fresh live file in the finally below.
-    closeLog()
-    try { fs.unlinkSync(backup) } catch {}
-    fs.renameSync(logPath, backup)
-    fs.writeFileSync(logPath, '')
-    logBytes = 0
-  } catch {
-    // Rotation failed (file locked, disk full). Re-sync from the filesystem rather than let the
-    // counter drift forever — a wrong counter means we either never rotate or rotate every event.
-    try { logBytes = fs.statSync(logPath).size } catch { logBytes = 0 }
-  } finally {
-    openLog(logPath) // reopen whether or not rotation worked — never leave the bus handle-less
-  }
+  const live = logPath
+  logBytes = 0 // the lines from here on belong to the fresh file
+  void offMainFiles.run(live, async () => {
+    try {
+      const backup = live + '.old'
+      try { await fs.promises.unlink(backup) } catch {}
+      await fs.promises.rename(live, backup)
+      await fs.promises.writeFile(live, '') // the live log restarts empty, as readers have always found it
+    } catch {
+      // Rotation failed (file locked, disk full). Re-sync from the filesystem rather than let the
+      // counter drift forever — a wrong counter means we either never rotate or rotate every event.
+      try { logBytes = (await fs.promises.stat(live)).size } catch { logBytes = 0 }
+    }
+  }).catch(() => { /* queue full: the next publish past the cap tries again */ })
 }
 
 function truncatePayload(payload: Record<string, unknown>): Record<string, unknown> {
@@ -195,12 +189,11 @@ export function publish(event: Omit<AgentEvent, 'id' | 'ts'> & { ts?: number }):
     ring.splice(0, ring.length - MAX_RING)
   }
 
-  // Persist synchronously through the held fd — crash-safe, and the bytes are on disk before this
-  // returns, which rotateIfNeeded (it renames this file) and any immediate reader both depend on.
-  if (logFd !== null) {
+  // Persist through offMainFiles: the line joins the batch written on the thread pool (see persisting above).
+  if (persisting && logPath !== null) {
     try {
       const line = JSON.stringify(full) + '\n'
-      fs.writeSync(logFd, line)
+      offMainFiles.append(logPath, line).catch(() => { /* shed (queue full) or a failed write: the ring still has it */ })
       logBytes += Buffer.byteLength(line, 'utf8') // byteLength, not .length: JSON can hold non-ASCII
       rotateIfNeeded()
     } catch {}
@@ -252,15 +245,16 @@ export function clearRing(): void {
   rateCount = 0
 }
 
-/** Release the log handle. Writes are synchronous, so there is nothing buffered to flush — this
- *  closes the fd. The bus stops persisting until initEventBus runs again. */
+/** Quit: put the lines still waiting on the disk now (synchronously, the one place that is allowed) and stop
+ *  persisting until initEventBus runs again. */
 export function shutdownEventBus(): void {
-  closeLog()
+  if (persisting) offMainFiles.flushSync()
+  persisting = false
 }
 
 /** Test-only: reset all internal state */
 export function _resetForTests(): void {
-  closeLog()
+  persisting = false
   ring.length = 0
   subscribers.clear()
   logPath = null

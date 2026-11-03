@@ -37,7 +37,7 @@ export interface LiveTurn {
 
 export interface TranscriptDeps {
   /** cwd → its session JSONL paths, newest first. */
-  findFiles: (cwd: string) => string[]
+  findFiles: (cwd: string) => string[] | Promise<string[]>
   /** Read a transcript file's UTF-8 content. */
   readFile: (file: string) => Promise<string>
   /** Parse JSONL content into clean turns (ts optional — missing on older lines). */
@@ -87,7 +87,7 @@ export async function readActiveTranscript(
   deps: TranscriptDeps = defaultDeps,
 ): Promise<LiveTurn[]> {
   if (!cwd || agentType !== 'claude') return []
-  const turns = await newestOwn(deps.findFiles(cwd), deps.readFile, deps.parse)
+  const turns = await newestOwn(await deps.findFiles(cwd), deps.readFile, deps.parse)
   return turns.map((t) => ({ role: t.role, text: t.text, ts: t.ts ?? 0 }))
 }
 

@@ -1,5 +1,6 @@
-import { writeFileSync, readFileSync, mkdirSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
+import { offMainFiles } from '../offMainFiles'
 import { getSettings, setSettings, type HeadroomSettings } from './config'
 import { summarizeSavings, loadCumulativeBase, type SavingsTotals } from './savingsLedger'
 
@@ -15,8 +16,7 @@ export function loadSettingsFromDisk(dir: string): void {
 
 export function saveSettingsToDisk(dir: string): void {
   try {
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, SETTINGS_FILE), JSON.stringify(getSettings()), 'utf8')
+    void offMainFiles.write(join(dir, SETTINGS_FILE), JSON.stringify(getSettings())).catch(() => { /* best effort */ })
   } catch { /* best effort */ }
 }
 
@@ -29,7 +29,6 @@ export function loadLedgerBaseFromDisk(dir: string): void {
 
 export function saveLedgerToDisk(dir: string): void {
   try {
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, LEDGER_FILE), JSON.stringify(summarizeSavings().cumulative), 'utf8')
+    void offMainFiles.write(join(dir, LEDGER_FILE), JSON.stringify(summarizeSavings().cumulative)).catch(() => { /* best effort */ })
   } catch { /* best effort */ }
 }

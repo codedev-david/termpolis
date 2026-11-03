@@ -50,7 +50,6 @@ const {
   runningShellCount,
   _resetTerminalExitsForTests,
   getTerminalPid,
-  getTerminalCwd,
   getTerminalSize,
   terminalShellAlone,
   computeWindowsPty,
@@ -353,17 +352,6 @@ describe('terminalManager', () => {
     expect(getTerminalPid('missing')).toBeNull()
   })
 
-  // 12. getTerminalCwd returns null on Windows
-  it('getTerminalCwd returns null on Windows', () => {
-    const originalPlatform = process.platform
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
-
-    spawnTerminal('t12', 'cmd.exe', 'C:\\Users', vi.fn())
-    expect(getTerminalCwd('t12')).toBeNull()
-
-    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
-  })
-
   // 13. onData callback is wired up correctly
   it('spawnTerminal wires up the onData callback via pty.onData', () => {
     const onData = vi.fn()
@@ -396,11 +384,6 @@ describe('terminalManager', () => {
     expect(mockPty.resize).not.toHaveBeenCalled()
   })
 
-  // 16. getTerminalCwd returns null when terminal does not exist
-  it('getTerminalCwd returns null for a non-existent terminal', () => {
-    expect(getTerminalCwd('nope')).toBeNull()
-  })
-
   // 17. spawnTerminal falls back to homedir when existsSync throws
   it('spawnTerminal falls back to homedir when existsSync throws', () => {
     vi.mocked(existsSync).mockImplementation(() => { throw new Error('EPERM') })
@@ -428,48 +411,6 @@ describe('terminalManager', () => {
     const call = vi.mocked(pty.spawn).mock.calls[0]
     const env = call[2]?.env as Record<string, string>
     expect(env?.BASH_SILENCE_DEPRECATION_WARNING).toBe('1')
-  })
-
-  // 20. getTerminalCwd — exercise the non-windows path via dynamic import after platform change
-  it('getTerminalCwd returns cwd when execSync succeeds on non-windows', async () => {
-    const originalPlatform = process.platform
-    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')
-    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true, writable: true })
-
-    vi.mocked(execSync).mockReturnValue(Buffer.from('/home/user/project\n') as any)
-    spawnTerminal('t20', '/bin/bash', '/tmp', vi.fn())
-    const result = getTerminalCwd('t20')
-    // Platform might still be win32 on Windows runs — accept either null or the path
-    expect(result === null || result === '/home/user/project').toBe(true)
-
-    if (descriptor) Object.defineProperty(process, 'platform', descriptor)
-    else Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
-  })
-
-  // 21. getTerminalCwd returns null when execSync throws on non-windows
-  it('getTerminalCwd returns null when execSync fails on non-windows', () => {
-    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')
-    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true, writable: true })
-
-    vi.mocked(execSync).mockImplementation(() => {
-      throw new Error('no such process')
-    })
-    spawnTerminal('t21', '/bin/bash', '/tmp', vi.fn())
-    expect(getTerminalCwd('t21')).toBeNull()
-
-    if (descriptor) Object.defineProperty(process, 'platform', descriptor)
-  })
-
-  // 22. getTerminalCwd returns null when execSync returns empty string
-  it('getTerminalCwd returns null when execSync returns empty', () => {
-    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')
-    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true, writable: true })
-
-    vi.mocked(execSync).mockReturnValue(Buffer.from('\n') as any)
-    spawnTerminal('t22', '/bin/bash', '/tmp', vi.fn())
-    expect(getTerminalCwd('t22')).toBeNull()
-
-    if (descriptor) Object.defineProperty(process, 'platform', descriptor)
   })
 
   // 23. spawnTerminal accepts extra PATH entries
