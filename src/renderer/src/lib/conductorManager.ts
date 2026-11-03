@@ -719,7 +719,6 @@ async function endOnConductorExit(
   // `claude -p --resume <id>` of a conversation that is not there prints "No conversation found with session ID" and exits 1 before any
   // login check: a run again that resumed such a one is run once more as a new session on the same account, once (SWARM-R3-5).
   if (conductorState.resumed && conductorState.accountId && NO_CONVERSATION.test(exit.lastLines.join('\n'))) {
-    conductorState = { ...conductorState, resumed: false }
     if ((await relaunchConductor(conductorState.accountId, true)) === null) return
   }
   store.setSwarmNotification({

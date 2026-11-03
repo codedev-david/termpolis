@@ -320,6 +320,9 @@ describe('the login in a profile decides which account it is (SWARM-R3-1)', () =
     it('knows no login of an agy account, a Codex one without a read login, or an agent that is not the account\'s', () => {
       const agy = row('g', { agent: 'agy', profile: null, email: 'me@corp.test', lastEmail: null })
       expect(unofferedLoginOwner([agy, work], agy)).toBeUndefined()
+      // agy keeps one Google sign-in for the computer user, so two of its accounts naming one address share nothing a profile holds.
+      const agyKept = row('gk', { agent: 'agy', profile: null, email: 'me@corp.test', lastEmail: null, autoOffer: false, order: 5 })
+      expect(unofferedLoginOwner([agy, agyKept], agy)).toBeUndefined()
       expect(unofferedLoginOwner([{ ...work, agent: 'codex' }, personal], personal)).toBeUndefined()
     })
 

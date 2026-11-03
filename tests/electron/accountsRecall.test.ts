@@ -8,8 +8,8 @@
 //   SAFETY-R3-1, MODELS-R3-3  a line the shell ran that the keys do not say (a recall, a completion)
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
-  _gatherLinesForTest, _resetTerminalAccountsForTest, noteSwarmWorker, noteTerminalSession, noteTypedInput, noteWorkerCommand, registerAccountsIpc,
-  terminalAgentStart, terminalSessionId,
+  _gatherLinesForTest, _resetTerminalAccountsForTest, noteAgentStart, noteSwarmWorker, noteTerminalSession, noteTypedInput, noteWorkerCommand,
+  registerAccountsIpc, terminalAgentStart, terminalSessionId,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { _resetSwitchLocksForTest } from '../../src/main/accountSwitch'
@@ -262,6 +262,19 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     expect(terminalAgentStart('t1')).toBe(before)
     expect(before.unsure).toBeUndefined()
     expect(terminalSessionId('t1')).toBe(SESSION)
+  })
+
+  it('leaves a record that names no agent alone: it is no agent whose start could be unseen', async () => {
+    noteAgentStart('t1', { at: 0, commands: ['some-wrapper --flag'] }, clock)
+    const before = terminalAgentStart('t1')!
+    expect(before.agent).toBeUndefined()
+    term.mode = 'shell'
+    term.out += term.prompt()
+    clock += 5000
+    noteTypedInput('t1', `${E}[A\r`, clock)
+    noteTypedInput('t1', 'cd src/ma\t\r', clock)
+    expect(terminalAgentStart('t1')).toBe(before)
+    expect(before.unsure).toBeUndefined()
   })
 
   it('a line typed whole that starts the agent again replaces the record and the conversation with its own', async () => {

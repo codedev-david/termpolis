@@ -1303,6 +1303,16 @@ PS C:\proj> `
         expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
       })
 
+      it('does not run it again for another "No conversation found" of Claude Code, which is no missing resume', async () => {
+        await atLimit()
+        await runConductorOn(offer().id, 'acc_b')
+        expect(written('.termpolis-conductor-run.sh')).toContain("--resume 'conductor-uuid-1'")
+        screen(`${launchEcho}x\r\nNo conversation found to continue\r\n[termpolis-conductor-exited] 1\r\n`, 9999)
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+        expect(written('.termpolis-conductor-run.sh')).toContain("--resume 'conductor-uuid-1'")
+      })
+
       it('does not run it again for those words from a run that was not a resume', async () => {
         await atLimit()
         vi.mocked(uuidV4).mockReturnValueOnce('fresh-session' as never)

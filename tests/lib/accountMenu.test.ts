@@ -197,6 +197,12 @@ describe('confirmFor, with the logins that sit in the profiles (SWARM-R3-1)', ()
     })
   })
 
+  it('keeps the work row\'s own question for the work row, though another account kept from the offers holds the login its profile holds', () => {
+    const work = { ...W, email: 'w@example.test', lastEmail: 'w@example.test' }
+    const copy = { ...W, id: 'acc_w2', label: 'work copy', email: 'w@example.test', lastEmail: 'w@example.test', order: 5 }
+    expect(confirmFor(B, work, undefined, [A, B, work, copy])).toEqual({ question: 'work isn\'t offered automatically. Switch this terminal to work?', newTerminal: false })
+  })
+
   it('asks nothing for the layout the registry was imported with, or when the rows are not given', () => {
     const nominal = [{ ...A, email: 'a@example.test', lastEmail: 'a@example.test' }, rows[1], { ...W, email: 'w@example.test', lastEmail: 'w@example.test' }]
     expect(confirmFor(nominal[0], nominal[1], undefined, nominal)).toBeNull()
