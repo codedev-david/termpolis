@@ -87,10 +87,10 @@ const CRLF_ESCAPED = /^(?:\\+r|\\+u000[dD]|\\+x0[dD]|%0[dD]|&#(?:x0?[dD]|13);|`r
 const PATH_AFTER_ESCAPE = /(?:[A-Za-z_.][A-Za-z0-9_.\-/\\]{0,95}?(?::\d{1,9}[:-]|-\d{1,9}-)|(?=[A-Za-z0-9_.\-/\\]{0,96}?[.\\/])[A-Za-z_.][A-Za-z0-9_.\-/\\]{0,95}?:(?=[A-Za-z0-9+/=]{4}|-{4}|[A-Z][A-Za-z-]{2,12}: |[\r\n]|$))/y
 /** The same for a name the expression above is too narrow for, read when the text is read as a Windows path with names of every kind (`pathReading` 2): one that starts with a digit, a dash
  *  or a bracket (`\r123456`, `\n8n`, `\r-lib`, `\n(x86)`) or holds a blank or any other character a Windows name can (`\new project`, `\node_modules\@types`, a name in Unicode), up to
- *  MAX_PATH (259) characters, or a folder named just `n` or `r` (`\n\a.pem`); and the listing's colon may be followed by the blanks of an indented line. A name counts only if it
+ *  MAX_PATH (259) characters, or a folder named just `n` or `r` (`\n\a.pem`); and the listing's colon may be followed by the blanks of an indented line and a payload of 16 characters or more, or a short one that ends its line (a key's last line, its checksum line). A name counts only if it
  *  holds a folder or file separator (a `.`, `\` or `/`): a clock time, a timestamp (`2026-11-02T10:11:10`) or a line of prose that follows a break has none before its first colon. It
  *  does not start with another written-out break: a CR and LF written out (`\r\n`) are one break, not a folder. */
-const PATH_NAMED = /(?!\\+(?:[nr]|u000[aAdD]|x0[aAdD]))(?=[^\x00-\x1f"*:<>?|]{0,259}?[.\\/])[^\x00-\x1f"*:<>?|]{1,259}?(?::\d{1,9}[:-]|-\d{1,9}-|:(?=[ \t]*(?:[A-Za-z0-9+/=]{16}|-{4}|[A-Z][A-Za-z-]{2,12}: )|[A-Za-z0-9+/=]{4}|[\r\n]|$))/y
+const PATH_NAMED = /(?!\\+(?:[nr]|u000[aAdD]|x0[aAdD]))(?=[^\x00-\x1f"*:<>?|]{0,259}?[.\\/])[^\x00-\x1f"*:<>?|]{1,259}?(?::\d{1,9}[:-]|-\d{1,9}-|:(?=[ \t]*(?:[A-Za-z0-9+/=]{16}|-{4}|[A-Z][A-Za-z-]{2,12}: )|[ \t]+[A-Za-z0-9+/=]{1,15}[ \t]*(?:[\r\n"'\\]|$)|[A-Za-z0-9+/=]{4}|[\r\n]|$))/y
 /** A written-out CR or LF made of backslashes and the letter alone (not the Unicode or hex escape of one). */
 const BACKSLASH_BREAK = /^\\+[nr]$/
 /** Whether `c` can be in a piece of a path: a letter, a digit, `_`, `.` or `-`. */

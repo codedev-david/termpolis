@@ -4619,7 +4619,16 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
       ['a colon, a tab and a payload', `x ${piece}${BS}repos${BS}a.pem:${String.fromCharCode(9)}${P}`, false, true],
       ['a colon, blanks and a marker', `x ${piece}${BS}repos${BS}a.pem:  -----BEGIN PRIVATE KEY-----`, false, true],
       ['a colon, blanks and an armor header', `x ${piece}${BS}repos${BS}a.pem:  Proc-Type: 4,ENCRYPTED`, false, true],
-      ['a colon, a blank and a payload of 15', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 15)}`, true],
+      // (a short payload ends an indented line: a key's last line, its checksum line)
+      ['a colon, a blank and a payload of 15, then the end of the text', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 15)}`, false, true],
+      ['a colon, a blank and a payload of 1, then the end of the text', `x ${piece}${BS}repos${BS}a.pem: A`, false, true],
+      ['a colon, four blanks and a checksum line, then a line feed', `x ${piece}${BS}repos${BS}a.pem:    =91ci${String.fromCharCode(10)}next`, false, true],
+      ['a colon, a blank and a short payload, then a CR', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 12)}${String.fromCharCode(13)}${String.fromCharCode(10)}next`, false, true],
+      ['a colon, a blank and a short payload, then a break written out', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 12)}${BS}nC:${BS}x`, false, true],
+      ['a colon, a blank and a short payload, then a quote', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 12)}"`, false, true],
+      ['a colon, a blank and a short payload, then trailing blanks', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 12)}   ${String.fromCharCode(10)}next`, false, true],
+      ['a colon, a blank and a short word, then more words (prose)', `x ${piece}${BS}repos${BS}a.pem: started the run`, true],
+      ['a colon, a blank and a payload of 16, then more words', `x ${piece}${BS}repos${BS}a.pem: ${P.slice(0, 16)} and more`, false, true],
       ['a colon, a blank and the end of the line', `x ${piece}${BS}repos${BS}a.pem: ${String.fromCharCode(10)}next`, true],
       // a name the narrow expression does not take: it starts with a digit, a dash or a bracket, or holds a blank or any other character a Windows name can, and has a folder or an extension in it
       ['a name of digits, a folder after it', `x ${piece}${BS}r123456${BS}a.pem:12:${P}`, false, true],
@@ -4854,6 +4863,31 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
                 expect(r.removed, label).toEqual({ private_key: 1 })
               }
             }
+          }
+        }
+      }
+    }
+  })
+
+  it('removes the short last line of a key too, and its checksum line, listed by findstr or grep -H with indented lines under such a path', () => {
+    // A key's last line is 1 to 15 characters when it is not a full line, and under a payload run: with 16 characters or more of payload after the colon and the blanks the escape was a path's,
+    // and a last line shorter than that read as a break, which left the piece of the path before it (`AzurePipelineTool`, 17 characters) as a line of its own, in another frame.
+    for (const format of ['pgp_rsa_hdr', 'pgp_ed_hdr', 'openssh', 'pkcs8_rsa', 'pkcs1_rsa'] as Format[]) {
+      for (const cut of [1, 3, 4, 8, 11, 12, 13, 15]) {
+        for (const name of ['repos', 'notes', 'r123456', 'new project', win('node_modules', '@types', 'react'), 'dev']) {
+          for (const withEnd of [true, false]) {
+            const file = K.F[format]
+            const body = file.slice(0, -1)
+            const at = body.reduce((n, l, i) => (/^[A-Za-z0-9+/]+=*$/.test(l) && !l.startsWith('=') ? i : n), -1)
+            const last = body[at].slice(0, cut)
+            const lines = [...body.slice(0, at), last, ...body.slice(at + 1), ...(withEnd ? [file[file.length - 1]] : [])]
+            const p = win('C:', 'Users', 'dev', 'AzurePipelineTool', name, 'deploy.pem')
+            const label = `${format}/${cut}/${name}/${withEnd ? 'END' : 'no END'}`
+            const r = screenKeys('Found:\n' + lines.map((l) => `${p}:    ${l}`).join('\n') + '\nDone.')
+            // (the line with its frame: a last line of one character is in any text)
+            expect(r.text.includes(`${p}:    ${last}`), label).toBe(false)
+            expect(leakedWindows(r.text, secretLinesOf(file.slice(0, at))), label).toBe(0)
+            expect(r.flagged, label).toEqual({})
           }
         }
       }
