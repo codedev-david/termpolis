@@ -332,6 +332,10 @@ describe('listSessionFilesAsync', () => {
       const p = project()
       session(p.dir, 'ok', 10)
       p.pin()
+      // The file it points at EXISTS (one level above the projects folder), so only the check can keep it out.
+      const outside = path.join(path.dirname(watcher.CLAUDE_PROJECTS_DIR), 'escape.jsonl')
+      fs.writeFileSync(outside, '{}\n')
+      expect(fs.existsSync(path.join(p.dir, '..', '..', 'escape.jsonl'))).toBe(true)
       const out = await list.listSessionFilesAsync(p.cwd, { fs: io({ readdir: async () => ['../../escape.jsonl', 'ok.jsonl'] }) })
       expect(out.map((f) => path.basename(f))).toEqual(['ok.jsonl'])
       expect(out.every((f) => list.entryWithinRoot(watcher.CLAUDE_PROJECTS_DIR, f))).toBe(true)

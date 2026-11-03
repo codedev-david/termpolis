@@ -414,6 +414,20 @@ describe('delegated sessions (another computer ran them here)', () => {
     expect(c.bytes).toBe(before.bytes)
   })
 
+  it('stops reading a delegated session as soon as its opening prompt is in, even when preambles come first', async () => {
+    const p = newProject()
+    const job = write(p.dir, 'job', lines(userLine(PREAMBLE), userLine(delegated()), ...Array.from({ length: 300 }, (_, i) => assistantLine(`${'x'.repeat(100)}${i}`))), 20)
+    // A chunk smaller than the preamble line: the preamble and the prompt complete in DIFFERENT chunks, so the
+    // first look at the turns so far sees only a preamble and must NOT judge the session yet.
+    const chunk = 128
+    expect(fs.statSync(job).size).toBeGreaterThan(30_000)
+    expect(userLine(PREAMBLE).length).toBeGreaterThan(chunk)
+    const { deps, c } = makeDeps({}, chunk)
+    const res = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    expect(res).toEqual(mneme.sessionDelta([], mneme.EMPTY_CURSOR))
+    expect(c.bytes).toBeLessThan(2000) // the head, not the 30 KB
+  })
+
   it('CONTROL: the whole-transcript reader reads the entire delegated file on every pass', async () => {
     const p = newProject()
     const own = write(p.dir, 'own', lines(userLine('Fix the build'), assistantLine('ok')), 10)
@@ -585,6 +599,63 @@ describe('anything it cannot be sure of is a full read, never a guess', () => {
     const again = await delta.readSessionDelta(p.cwd, 'claude', first!.cursor, deps)
     expect(again!.fresh).toEqual([])
     expect(c.opens).toBe(before.opens) // and from here on it is a stat
+  })
+
+  describe('a position whose size or mtime is not a number', () => {
+    // A file big enough that the cost tells the two paths apart: carrying on from the offset reads the
+    // 256 anchor bytes; the full read reads all of it. The recorded size is one MORE than the real one, so
+    // the unchanged gate does not fire and the offset is not past it: only the type of the field is in question.
+    async function craft(bad: (size: number) => Record<string, unknown>) {
+      const p = newProject()
+      const body = lines(...Array.from({ length: 24 }, (_, i) => (i % 2 ? assistantLine : userLine)(`turn ${i} ${'w'.repeat(30)}`)))
+      const file = write(p.dir, 's1', body)
+      const { deps: d0 } = makeDeps()
+      const first = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, d0)
+      const real = fs.statSync(file)
+      expect(real.size).toBeGreaterThan(1500)
+      const crafted = { ...first!.cursor.pos!, mtimeMs: 1, size: real.size + 1, ...bad(real.size + 1) }
+      const { deps, c } = makeDeps()
+      const got = await delta.readSessionDelta(p.cwd, 'claude', { ...first!.cursor, pos: crafted as never }, deps)
+      return { got, c, size: real.size }
+    }
+
+    it('CONTROL: the same position with numbers is trusted, and only the anchor is read', async () => {
+      const { got, c } = await craft(() => ({}))
+      expect(c.bytes).toBe(delta.ANCHOR_BYTES)
+      expect(got!.fresh).toEqual([])
+    })
+
+    it.each([
+      ['size', (n: number) => ({ size: String(n) })],
+      ['mtimeMs', () => ({ mtimeMs: 'yesterday' })],
+    ])('%s: not trusted, so the whole file is read', async (_field, bad) => {
+      const { got, c, size } = await craft(bad)
+      expect(c.bytes).toBe(size)
+      expect(got!.fresh).toEqual([])
+    })
+  })
+
+  it('a position whose offset is past its own recorded size is not trusted, even when its anchor matches the real file', async () => {
+    const { p, file, first, deps, c } = await grown()
+    const real = fs.readFileSync(file)
+    const fnvHex = (b: Buffer): string => {
+      let h = 0x811c9dc5
+      for (const x of b) {
+        h ^= x
+        h = Math.imul(h, 0x01000193)
+      }
+      return (h >>> 0).toString(16)
+    }
+    expect(real.length).toBeGreaterThan(99)
+    // consistent in every way but one: it claims to have consumed 99 bytes of a file it recorded as 10 long
+    const pos = { file, size: 10, mtimeMs: 1, offset: 99, anchor: fnvHex(real.subarray(0, 99)), anchorLen: 99 }
+    const before = { ...c }
+    const got = await delta.readSessionDelta(p.cwd, 'claude', { ...first, pos }, deps)
+    expect(c.bytes - before.bytes).toBe(real.length) // the whole file: no carrying on from byte 99
+    expect(got!.fresh).toEqual([])
+    expect(got!.cursor.count).toBe(first.count)
+    expect(got!.cursor.hash).toBe(first.hash)
+    expect(got!.cursor.pos!.offset).toBe(real.length)
   })
 
   it('a hash it cannot continue (a cursor not written by this code) is a full read', async () => {
