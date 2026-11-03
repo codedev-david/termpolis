@@ -285,6 +285,24 @@ describe('the pause switch at the scheduler (P4)', () => {
     expect(drainRun).not.toHaveBeenCalled()
   })
 
+  it('a pass in flight that reports more arms no drain timer at all once the switch has gone off (the timer count, not just the missing run)', async () => {
+    const flag = { paused: false }
+    const run = vi.fn(async () => { flag.paused = true; return { written: 3, more: true } })
+    startIndexer({ run, paused: () => flag.paused, initialDelayMs: 0, intervalMs: 1e9, drainDelayMs: 100 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1) // only the 30-minute interval is left
+  })
+
+  // NEGATIVE CONTROL: with the switch on, the same "more" arms the drain timer.
+  it('control: with the switch on the same pass arms one drain timer', async () => {
+    const run = vi.fn(async () => ({ written: 3, more: true }))
+    startIndexer({ run, initialDelayMs: 0, intervalMs: 1e9, drainDelayMs: 100 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(2) // the interval and the armed drain
+  })
+
   it('a drain already waiting on its timer when the switch goes off does nothing when it fires', async () => {
     const flag = { paused: false }
     const run = vi.fn().mockResolvedValue({ written: 3, more: true })

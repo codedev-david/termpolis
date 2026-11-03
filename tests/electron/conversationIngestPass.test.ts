@@ -902,18 +902,23 @@ describe('synchronous slices', () => {
     const { io, wm } = await open()
     const clock = fakeClock()
     let yields = 0
+    let gateAsks = 0
     const parse = vi.spyOn(JSON, 'parse')
     const stats = await ingestConversations(c.deps({
       watermark: wm,
       now: clock.now,
       sliceMs: 25,
       yield: async () => { yields++ },
+      quiet: async () => { gateAsks++ },
       stopped: () => yields >= 2,
     }))
     const parsed = parse.mock.calls.length
     parse.mockRestore()
     expect(stats).toMatchObject({ truncated: true, stop: 'stopped', chunksWritten: 0 })
     expect(yields).toBe(2)
+    // A pass that has been stopped does not wait (up to 2 s) for the user to stop typing: the gate was asked before
+    // the file and after the first slice, and NOT at the boundary where the pass was stopped.
+    expect(gateAsks).toBe(2)
     expect(parsed).toBeLessThanOrEqual(3 * 2_600) // two full slices plus the start of the third: not the whole file
     expect(io.writes).toBe(0)
     expect(wm.isDone(path, { size: c.files.get(path)!.size, mtimeMs: c.files.get(path)!.mtimeMs }, 'full')).toBe(false)

@@ -458,7 +458,8 @@ export interface IngestDeps {
    *  under way is one more request its exit has to wait out. */
   stopped?: () => boolean
   /** Told the chunk hashes a delegated session would have had, for the one-time pass that finds
-   *  the ones an earlier version stored (linkedHistoryRecheck). */
+   *  the ones an earlier version stored (linkedHistoryRecheck). A pass that gives none wants no
+   *  such hashes, so with a watermark it passes over a delegated session already known (unread). */
   onDelegated?: (hashes: string[]) => void
 
   // ---- P4: everything below is optional, and with none of it given a pass is exactly what it was in 1.54.4 ----
