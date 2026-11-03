@@ -10,7 +10,8 @@
 //   - a step Termpolis can't drive says why and types nothing more: no command handed to the user.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { AGY_ENV_AUTH, agyEnvAuth, runAgyStep, shownEmail } from '../../src/main/agySwitch'
-import { _resetSwitchLocksForTest, locks, relaunchLockReason } from '../../src/main/accountSwitch'
+import { LOCK_MS, _resetSwitchLocksForTest, locks, relaunchLockReason } from '../../src/main/accountSwitch'
+import type { SwitchIO } from '../../src/main/accountSwitch'
 import type { AgyStepRequest } from '../../src/shared/accountSwitch'
 import { FakeTerminal, ID, keys } from './_switchTerminal'
 import type { TermScript } from './_switchTerminal'
@@ -270,5 +271,108 @@ describe('agy: the terminal is held for every key a step types', () => {
     )
     expect(out).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
     expect(t.writes).toEqual([])
+  })
+})
+
+// SW3-2, MODELS-R3-2: the resume step types the conversation's line after minutes of sign-in, in a terminal anything may have happened to.
+// Where agy runs again (the user started it by hand), a sacrificial Enter submits the draft in its box and Esc declines a dialog of its
+// own, so the receiver of a key is not taken to be the shell until the first part of the line shows there.
+describe('resume: no key goes to an agy that may be running in the terminal before the line shows at the shell (SW3-2)', () => {
+  const DRAFT = 'delete the build folder and push'
+
+  describe.each([['powershell'], ['cmd'], ['posix']] as const)('(%s)', (family) => {
+    it('submits no draft of a live agy, and takes the first part of the line back out of its box', async () => {
+      const t = new FakeTerminal(agy({ family }))
+      t.box = DRAFT
+      const out = await step(t, { step: 'resume', conversationId: ID, shellType: family === 'posix' ? 'gitbash' : family }).p
+      expect(out).toEqual({ kind: 'not-resumed', why: 'agy is running in this terminal again' })
+      expect(t.sentPrompts).toEqual([])
+      expect(t.writes).not.toContain('\r')
+      expect(t.writes).not.toContain('\x1b')
+      expect(t.writes[0]).toHaveLength(16)
+    })
+
+    it('declines no dialog of a live agy with Esc: a question it asks stays unanswered', async () => {
+      const t = new FakeTerminal(agy({ family, start: 'question', exit: 'no-echo' }))
+      const out = await step(t, { step: 'resume', conversationId: ID, shellType: family === 'posix' ? 'gitbash' : family }).p
+      expect(out.kind).toBe('not-resumed')
+      expect(t.agentState).toBe('question')
+      expect(t.writes).not.toContain('\x1b')
+      expect(t.writes).not.toContain('\r')
+      expect(t.sentPrompts).toEqual([])
+    })
+
+    it('still resumes where the shell is back: the first part shows there, the line is cleared and typed from the start', async () => {
+      const t = new FakeTerminal(agy({ family }))
+      await step(t, { shellType: family === 'posix' ? 'gitbash' : family }).p
+      t.writes.length = 0
+      const out = await step(t, { step: 'resume', conversationId: ID, shellType: family === 'posix' ? 'gitbash' : family }).p
+      expect(out).toMatchObject({ kind: 'resumed', fresh: false, conversationId: ID })
+      expect(t.ran).toContain(`agy --conversation=${ID}`)
+      expect(t.writes[0]).toHaveLength(16)
+    })
+  })
+})
+
+// MODELS-R3-4: Claude Code's and Codex's switch hand every wait the lock it holds the terminal under; agy's resume step did not, so a
+// very slow shell's typing could outlast the lock and leave the terminal free while a line was half typed.
+describe('resume: no wait outlasts the lock the step holds the terminal under (MODELS-R3-4)', () => {
+  const LINE = `agy --conversation=${ID}`
+  const PROBE = LINE.slice(0, 16)
+  const REST = LINE.slice(16)
+
+  /** A shell that reports nothing, reads at once and draws what it was sent late, printing a dot every 4 s meanwhile: the first part
+   *  `probeMs[0]` after it was typed (the probe-first look at where it lands) and `probeMs[1]` the second time (the ordinary steps), and
+   *  the rest `restMs` after that (never, when it is Infinity). agy itself never comes back. */
+  function slowest(probeMs: [number, number], restMs: number) {
+    let now = 0
+    let raw = 'me@host MINGW64 /c/repo\r\n$ '
+    let probes = 0
+    const later: Array<{ at: number; text: string }> = []
+    const settle = (): void => {
+      later.sort((a, b) => a.at - b.at)
+      while (later.length > 0 && later[0].at <= now) raw += later.shift()!.text
+    }
+    const echo = (d: string, after: number): void => {
+      for (let t = 4000; t < after && t < 200_000; t += 4000) later.push({ at: now + t, text: '.' })
+      if (after !== Infinity) later.push({ at: now + after, text: d })
+    }
+    const io: SwitchIO = {
+      output: () => { settle(); return { raw, end: raw.length } },
+      outputFrom: (_id, from) => { settle(); return raw.slice(Math.min(from, raw.length)) },
+      end: () => { settle(); return raw.length },
+      size: () => ({ cols: 120, rows: 30 }),
+      write: (_id, d) => {
+        settle()
+        if (d === '\r') later.push({ at: now + 30, text: '\r\n$ ' })
+        else if (d === PROBE) echo(d, probeMs[Math.min(probes++, 1)])
+        else if (d === REST) echo(d, restMs)
+      },
+      sleep: async (ms) => { now += ms },
+      now: () => now,
+    }
+    return { io, clock: () => now }
+  }
+
+  const resume = (s: ReturnType<typeof slowest>) => runAgyStep(
+    { terminalId: 't1', targetId: 'g2', shellType: 'gitbash', step: 'resume', conversationId: ID },
+    { io: s.io, env: {}, record: () => undefined },
+  )
+
+  it('ends the typing at the lock, not after it, and lets the terminal go', async () => {
+    const s = slowest([5000, 29_000], Infinity)
+    expect(await resume(s)).toEqual({ kind: 'not-resumed', why: 'the line never showed in the terminal, so nothing was entered' })
+    expect(s.clock()).toBeLessThanOrEqual(LOCK_MS)
+    expect(relaunchLockReason('t1', s.clock())).toBeNull()
+  })
+
+  it('ends the wait for agy at the lock too, though the Enter went in late: 30 s after it would be past it', async () => {
+    // The first look shows the first part 5 s in (the shell is at its prompt), the ordinary steps then take 29 s to show it and 62 s more
+    // to show the rest: the Enter at about 98 s, and 30 s after it is 128 s, past the lock.
+    const s = slowest([5000, 29_000], 62_000)
+    expect(await resume(s)).toEqual({ kind: 'not-resumed', why: 'agy didn\'t come back within 30 seconds' })
+    expect(s.clock()).toBeGreaterThan(97_000)
+    expect(s.clock()).toBeLessThanOrEqual(LOCK_MS)
+    expect(relaunchLockReason('t1', s.clock())).toBeNull()
   })
 })

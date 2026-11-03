@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   ECHO_MAX_MS, ECHO_MS, ECHO_PROBE_CHARS, ECHO_SLOW_CHAR_MS, EXIT_CONFIRM_MS, LOCK_MS, MODEL_HOLD_MS, OUTCOME_MS, POLL_MS, PROMPT_REPORT_WAIT_MS, _resetSwitchLocksForTest, holdForModel, holdsModelKey, relaunchLockReason,
-  exitShown, hintAtFoot, look, ownScreen, plain, releaseModelHold, runAccountSwitch, typeAtPrompt, watchOutcome,
+  exitConfirmed, exitShown, hintAtFoot, look, ownScreen, plain, releaseModelHold, runAccountSwitch, typeAtPrompt, watchOutcome,
 } from '../../src/main/accountSwitch'
 import type { Look, SwitchContext, SwitchIO } from '../../src/main/accountSwitch'
 import { BLIND_EXIT_WAIT_MS, EXIT_CEILING_MS, PROMPT_SETTLE_MS, RESUME_PROBE_MS } from '../../src/renderer/src/lib/modelRelaunch'
@@ -389,7 +389,8 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
   it('enters nothing when the line never shows', async () => {
     const r = await run(claude({ start: 'gone-hint', shellDead: true }))
     expect(r.outcome).toEqual({ kind: 'didnt-start', line: `export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --resume ${ID}` })
-    expect(r.t.writes.slice(-1)).toEqual(['\u0005\u0015'])
+    // Nothing proved the shell was the receiver, so what was typed is taken back with Backspaces and no key that does more (SW3-8).
+    expect(r.t.writes.slice(-1)).toEqual(['\x7f'.repeat(ECHO_PROBE_CHARS)])
     expect(r.recorded).toEqual([])
   })
 
@@ -439,8 +440,10 @@ describe('step 8 (R3, R7, R1): the line, typed, looked at, then entered', () => 
   it('gives up on a shell that read the first part and stopped, after a wait that follows how long that took', async () => {
     const r = await run(claude({ shellCharMs: 40, shellStallsAfter: ECHO_PROBE_CHARS }))
     expect(r.outcome).toMatchObject({ kind: 'didnt-start' })
-    // The rest was typed, never shown, and taken back out with the line's clear: nothing ran.
+    // The rest was typed, never shown, and taken back out with the line's clear: nothing ran. The first part showed at the shell, so
+    // it is the shell that holds all of it and its own clear takes all of it (a Backspace for each character would be as long).
     expect(r.t.writes).toContain(LINE.slice(ECHO_PROBE_CHARS))
+    expect(r.t.writes.slice(-1)).toEqual([LINE_CLEAR.posix])
     expect(r.t.ran.filter(Boolean)).toEqual([])
     const typedAt = r.t.writeClocks[r.t.writes.indexOf(LINE.slice(ECHO_PROBE_CHARS))]
     // ECHO_MS, and for each of the rest twice the time the first part took a character (as the
@@ -1521,15 +1524,50 @@ describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
     expect(typed(s).slice(-1)).toEqual(['\r'])
   })
 
-  it('gives up on a shell that draws nothing at all, after the same quiet spell as before', async () => {
-    const s = slowShell({ readyAt: 0, echoMs: 60_000, report: false, knownReporting: false })
+  it('gives up on a shell that draws nothing at all, after the same quiet spell as before, where its prompt reports', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 60_000, report: true, knownReporting: true })
     const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
     expect(r.outcome).toBe('didnt-start')
     // The quiet spell is ECHO_MS plus the probe's characters at the slow shell's rate, as it always was.
     const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
     expect(s.clock() - probeAt).toBeGreaterThanOrEqual(ECHO_MS + ECHO_PROBE_CHARS * ECHO_SLOW_CHAR_MS)
     expect(s.clock() - probeAt).toBeLessThan(ECHO_MS + ECHO_PROBE_CHARS * ECHO_SLOW_CHAR_MS + 1000)
-    expect(typed(s).slice(-1)).toEqual(['\x1b'])
+    // Nothing showed where the line went, so it is taken back with Backspaces, never with Esc (SW3-8).
+    const after = typed(s).slice(typed(s).indexOf(LINE_SW.slice(0, ECHO_PROBE_CHARS)) + 1)
+    expect(after).toEqual(['\x7f'.repeat(ECHO_PROBE_CHARS)])
+  })
+
+  // SW3-5: a shell that reports nothing (David's Git Bash, whose rc drops the report) can be busy and silent for seconds right after an
+  // agent exits, and echo what it was sent only then (4.9 to 15.5 s measured); the 4.4 s of quiet it was given ended healthy switches as
+  // "never showed". It is given the ceiling a reporting shell's report is given.
+  it('gives a shell that reports nothing the ceiling a reporting shell gets, and no less', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 60_000, report: false, knownReporting: false })
+    expect((await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)).outcome).toBe('didnt-start')
+    const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
+    expect(s.clock() - probeAt).toBeGreaterThanOrEqual(PROMPT_REPORT_WAIT_MS)
+    expect(s.clock() - probeAt).toBeLessThanOrEqual(PROMPT_REPORT_WAIT_MS + 2 * POLL_MS)
+    expect(typed(s).slice(-1)).toEqual(['\x7f'.repeat(ECHO_PROBE_CHARS)])
+  })
+
+  it.each([6000, 9000, 11_000])('and enters the line of a shell that reports nothing and echoes its first part only %i ms after it was typed', async (echoMs) => {
+    const s = slowShell({ readyAt: 0, echoMs, report: false, knownReporting: false })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0)
+    expect(r.outcome).toBe('entered')
+    expect(typed(s).slice(-1)).toEqual(['\r'])
+    // The shell that reports gets the 4.4 s it always did, and no more.
+    const reporting = slowShell({ readyAt: 0, echoMs, report: true, knownReporting: true })
+    expect((await typeAtPrompt(reporting.io, 't1', 'powershell', LINE_SW, 0)).outcome).toBe('didnt-start')
+  })
+
+  it('and in the probe-first path too, where the receiver is not known: a quiet shell is waited for as long', async () => {
+    const s = slowShell({ readyAt: 0, echoMs: 9000, report: false, knownReporting: false })
+    const r = await typeAtPrompt(s.io, 't1', 'powershell', LINE_SW, 0, Infinity, false)
+    expect(r.outcome).toBe('entered')
+    // The first part showed at the shell, so the line was cleared and typed again from the start.
+    expect(typed(s).slice(-1)).toEqual(['\r'])
+    expect(typed(s).filter((d) => d === '\x1b').length).toBeGreaterThanOrEqual(1)
+    const reporting = slowShell({ readyAt: 0, echoMs: 9000, report: true, knownReporting: true })
+    expect((await typeAtPrompt(reporting.io, 't1', 'powershell', LINE_SW, 0, Infinity, false)).outcome).toBe('didnt-start')
   })
 
   it('does not wait for ever on a shell that keeps printing and never shows the line: ECHO_MAX_MS, or the lock, ends it', async () => {
@@ -1688,7 +1726,146 @@ describe('the first part of the line typed at a shell that still shows the agent
     }
     const r = await typeAtPrompt(io, 't1', 'powershell', LINE_S, 0, Infinity, false)
     expect(r.outcome).toBe('didnt-start')
-    expect(writes).toEqual([LINE_S.slice(0, ECHO_PROBE_CHARS), LINE_CLEAR.powershell])
+    // Nothing proved the receiver was the shell: a Backspace for each character typed, and never the Esc that stops a turn (SW3-8).
+    expect(writes).toEqual([LINE_S.slice(0, ECHO_PROBE_CHARS), '\x7f'.repeat(ECHO_PROBE_CHARS)])
     expect(writes).not.toContain('\r')
+    expect(writes).not.toContain(LINE_CLEAR.powershell)
+  })
+})
+
+// SW3-8, SAFETY-R3-2, MODELS-R3-2: at the user's word that the agent exited, with nothing on screen that shows the shell is back, the
+// receiver of a key is not known. The line clear PowerShell and cmd use is Esc, which stops a turn at work, closes a menu and declines a
+// question; so where the first part of the line shows nowhere, it is taken back with Backspaces, and the user's own word is no reason to
+// press a key that does more than that. A screen no detector knows (a dialog, a blank one) is not a screen that shows the shell back.
+describe("the user's word that the agent exited, and nothing proves it (SW3-8, MODELS-R3-2)", () => {
+  const ESC = '\x1b'
+  const DEL = '\x7f'.repeat(ECHO_PROBE_CHARS)
+
+  describe.each([['powershell'], ['cmd'], ['posix']] as const)('a live agent that echoes nothing of what is typed (%s)', (family) => {
+    it.each([
+      ['a turn at work', { start: 'busy', escStops: true }],
+      ['a rate-limit menu', { start: 'menu' }],
+      ['a permission question', { start: 'question' }],
+    ] as const)('%s: only the first part of the line and its Backspaces reach it, no Esc, no Enter, no line clear', async (_what, over) => {
+      const r = await run(claude({ family, exit: 'no-echo', ...over }), { start: undefined }, { assumeExited: true })
+      expect(r.outcome).toEqual({ kind: 'didnt-start', line: expect.any(String) })
+      expect(r.t.writes).toEqual([r.t.writes[0], DEL])
+      expect(r.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
+      for (const w of r.t.writes) expect(w).not.toMatch(/[\r\u001b\u0005\u0015]/)
+      // The turn is still at work, the menu still open, the question still unanswered.
+      expect(r.t.agentState).toBe(over.start)
+      expect(r.t.sentPrompts).toEqual([])
+      expect(r.t.closed).toBe(false)
+      expect(r.recorded).toEqual([])
+    })
+
+    it('a live agent that does echo it takes the first part back out of its box, with no Enter and no Esc', async () => {
+      const r = await run(claude({ family }), { start: undefined }, { assumeExited: true }, (t) => { t.box = 'half a prompt' })
+      expect(r.outcome).toEqual({ kind: 'agent-alive' })
+      expect(r.t.sentPrompts).toEqual([])
+      expect(r.t.writes).not.toContain('\r')
+      expect(r.t.writes).not.toContain(ESC)
+    })
+  })
+
+  describe.each([['powershell'], ['cmd'], ['posix']] as const)('a screen that shows neither the agent nor the shell (%s)', (family) => {
+    it.each([
+      ['a blank one', undefined],
+      ['an agent dialog no detector knows (the resume-size question)', 'resume-size' as const],
+    ])('%s: the first part of the line is typed alone, before any key that is not text', async (_what, dialog) => {
+      const prep = dialog ? (t: FakeTerminal): void => { t.agentState = dialog; t.out += t.frame() } : undefined
+      const r = await run(claude({ family, start: dialog ? 'idle' : 'blank' }), { start: undefined }, { assumeExited: true }, prep)
+      expect(r.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
+      expect(r.t.writes[0]).toBe(r.t.writes[0].replace(/[\r\u001b\u0005\u0015]/g, ''))
+      expect(r.t.writes).not.toContain('\r')
+      expect(r.t.writes).not.toContain(ESC)
+      expect(r.t.sentPrompts).toEqual([])
+    })
+
+    it('a screen that shows the shell back (a prompt since the start) still gets the ordinary steps, sacrificial Enter and all', async () => {
+      const r = await run(claude({ family, start: 'gone-quiet' }), {}, { assumeExited: true })
+      expect(r.outcome).toMatchObject({ kind: 'fresh', why: 'no-session' })
+      expect(r.t.writes.slice(0, 2)).toEqual([family === 'posix' ? '\u0005\u0015' : ESC, '\r'])
+    })
+  })
+
+  it('a shell that is back behind a screen nothing proves it on is found by the first part, and the ordinary steps then run', async () => {
+    const r = await run(claude({ family: 'powershell', start: 'blank' }), { start: undefined }, { assumeExited: true }, (t) => {
+      // The agent exited long ago and the screen was cleared: the shell's prompt is on a line of its own, and reads what is typed.
+      t.mode = 'shell'
+      t.out = `${t.prompt()}`
+    })
+    expect(r.outcome).toMatchObject({ kind: 'fresh', why: 'no-session' })
+    // The probe first, then the clear, then the sacrificial Enter, then the line, as the ordinary steps type it.
+    expect(r.t.writes[0]).toHaveLength(ECHO_PROBE_CHARS)
+    expect(r.t.writes.slice(1, 3)).toEqual([ESC, ESC])
+    expect(r.t.ran.filter(Boolean)).toHaveLength(1)
+  })
+})
+
+// SW3-4: the agy hint read from what agy printed since its exit command (SW2-6) has no row to be above or below a box, so a quoted
+// hint in an answer of an agy that ignored /exit and repainted its frame read as an exit. R3: a hint with the agent's box drawn
+// after it doesn't count.
+describe("an agy hint that is quoted, with agy's box drawn under it, is no exit (SW3-4)", () => {
+  const RULE80 = '─'.repeat(80)
+  const ioOf = (raw: string): SwitchIO => ({
+    output: () => ({ raw, end: raw.length }),
+    outputFrom: (_id, from) => raw.slice(Math.min(from, raw.length)),
+    end: () => raw.length,
+    size: () => ({ cols: 80, rows: 24 }),
+    write: () => undefined,
+    sleep: async () => undefined,
+    now: () => 0,
+  })
+  const QUOTED = ['● To resume later it prints:', '', 'Resume with -c (or command below):', `agy --conversation=${ID}`, '', RULE80, '> ', RULE80, '  ? for shortcuts'].join('\r\n')
+  const PRINTED = ['', 'Resume with -c (or command below):', `agy --conversation=${ID}`, '', '', 'me@host MINGW64 /c/repo', '$ '].join('\r\n')
+
+  it('reads nothing of an answer that quotes the hint above the box agy repainted', () => {
+    expect(exitShown(ioOf(QUOTED), 't1', 'agy', 0)).toBeNull()
+  })
+
+  it('reads the hint agy printed as it exited, with nothing of its box drawn after it', () => {
+    expect(exitShown(ioOf(PRINTED), 't1', 'agy', 0)?.hint?.id).toBe(ID)
+  })
+
+  it('reads a hint with the last frame of agy left drawn above it, when the pane holds the whole block and the row-based read misses it', () => {
+    // The hint is more than HINT_FROM_FOOT_ROWS above the foot (SW2-6), so the text agy printed is what names it: the box before it is
+    // the frame it left, not a repaint under a quote.
+    const frame = [RULE80, '> ', RULE80, '  ? for shortcuts', '', 'Resume with -c (or command below):', `agy --conversation=${ID}`, ...Array(16).fill('agy banner row'), 'me@host $ '].join('\r\n')
+    expect(frame.split('\r\n')).toHaveLength(24)
+    expect(exitShown(ioOf(frame), 't1', 'agy', 0)?.hint?.id).toBe(ID)
+  })
+
+  it('reads the hint printed with the last frame of agy left drawn above it, as the real capture has it', () => {
+    const left = `${QUOTED.split('\r\n').slice(4).join('\r\n')}\r\n${PRINTED}`
+    expect(exitShown(ioOf(left), 't1', 'agy', 0)?.hint?.id).toBe(ID)
+  })
+
+  it('takes a hint with a box after it where the OS says the process is gone', () => {
+    expect(exitShown(ioOf(QUOTED), 't1', 'agy', 0, true)?.hint?.id).toBe(ID)
+  })
+
+  it('and the exit is confirmed with it once the OS says only the shell is left', async () => {
+    const io: SwitchIO = { ...ioOf(QUOTED), shellAlone: async () => true }
+    const shown = await exitConfirmed(io, 't1', 'agy', 0, { known: false })
+    expect(shown?.hint?.id).toBe(ID)
+    // Where it cannot tell, the screen's word stands, and the screen shows a box under a quote: not confirmed.
+    expect(await exitConfirmed({ ...ioOf(QUOTED), shellAlone: async () => null }, 't1', 'agy', 0, { known: false })).toBeNull()
+  })
+
+  it('where the hint names no id to find, the box on the screen now is what there is to go on', () => {
+    const cut = ['Resume with -c (or command below):', 'agy --conversation=not-an-id', '', RULE80, '> ', RULE80].join('\r\n')
+    expect(exitShown(ioOf(cut), 't1', 'agy', 0)).toBeNull()
+    expect(exitShown(ioOf('Resume with -c (or command below):\r\nagy --conversation=not-an-id\r\n\r\nme@host $ '), 't1', 'agy', 0)?.hint).toEqual({ id: null, row: 0 })
+  })
+
+  it('an agy that ignores /exit and repaints is not confirmed as exited: the quote stays no proof', async () => {
+    const t = new FakeTerminal({ agent: 'agy', family: 'posix', start: 'idle', exit: 'ignore', quoteHint: true })
+    const outcome = await runAccountSwitch(
+      { terminalId: 't1', targetId: 'acc_b', shellType: 'gitbash' },
+      { io: t.io(), target: { ...B, agent: 'agy' }, agent: 'agy', start: { at: t.launchedAt, commands: [t.launchLine()] }, newSessionId: () => NEW_ID, record: () => undefined },
+    )
+    expect(outcome.kind).toBe('exit-unconfirmed')
+    expect(t.writes).toEqual(['/exit', '\r'])
   })
 })

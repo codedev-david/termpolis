@@ -116,10 +116,17 @@ export async function runAgyStep(req: AgyStepRequest, ctx: AgyContext): Promise<
     if (!carry.ok) return { kind: 'refused', why: carry.why }
     const line = relaunchCommand({ agent: 'agy', id: conversationId, ...(carry.model ? { model: carry.model } : {}), extra: carry.extra })
     const at = io.end(id)
-    const typed = await typeAtPrompt(io, id, family, line, at)
+    // No wait outlasts the lock this step holds the terminal under (a very slow shell is given up on at its end, as the account
+    // switch's is: MODELS-R3-4).
+    const until = io.now() + LOCK_MS - 1000
+    // The sign-in change between the two steps can take minutes, and anything may have happened to the terminal meanwhile: the user
+    // quit agy by hand and started it again, or left a draft in a box that is still there. Where the receiver of a key is not proven to
+    // be the shell, no sacrificial Enter is sent (it submits a draft), and no Esc (it declines a dialog): the first part of the line
+    // is typed alone and looked at, as the account switch does where the user said the agent had exited (SW3-2).
+    const typed = await typeAtPrompt(io, id, family, line, at, until, false)
     if (typed.outcome !== 'entered') return { kind: 'not-resumed', why: NOT_TYPED[typed.outcome] }
     ctx.record({ start: { at, commands: [line] } })
-    const watched = await watchOutcome(io, id, 'agy', typed.enterAt, line, io.now() + OUTCOME_MS)
+    const watched = await watchOutcome(io, id, 'agy', typed.enterAt, line, Math.min(until, io.now() + OUTCOME_MS))
     if (watched.seen === 'sign-in') return { kind: 'not-resumed', why: 'agy shows its sign-in in the terminal: it isn\'t signed in' }
     if (watched.seen !== 'switched') return { kind: 'not-resumed', why: 'agy didn\'t come back within 30 seconds' }
     const email = shownEmail(look(io, id).lines)

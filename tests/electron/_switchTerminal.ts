@@ -408,6 +408,13 @@ export class FakeTerminal {
           this.out += `\r${E}[K${this.prompt().split('\r\n').pop()}`
         } else if (c === '\u0004') {
           if (this.s.family === 'posix' && this.line === '') this.closed = true
+        } else if (c === '\x7f') {
+          // Backspace: the character before the cursor goes, from the line and from what a slow shell has read and not drawn.
+          if (this.line !== '') {
+            this.line = this.line.slice(0, -1)
+            if (this.slowEcho) this.slowEcho = { ...this.slowEcho, text: this.slowEcho.text.slice(0, -1) }
+            else this.out += '\b \b'
+          }
         } else if (c >= ' ') {
           this.line += c
           if (this.s.shellCharMs) {
@@ -449,6 +456,12 @@ export class FakeTerminal {
         }
       } else if (c === '\u0003' || c === '\u0004') {
         // Recorded in writes; the switch never sends either.
+      } else if (c === '\x7f') {
+        // Backspace in the agent's box takes the character before the cursor, and does nothing to a turn at work or a dialog.
+        if (this.s.exit !== 'no-echo' && this.agentState !== 'menu' && this.agentState !== 'question' && this.box !== '') {
+          this.box = this.box.slice(0, -1)
+          this.redraw()
+        }
       } else if (c >= ' ' && this.s.exit !== 'no-echo' && this.agentState !== 'menu' && this.agentState !== 'question') {
         this.box += c
         this.redraw()

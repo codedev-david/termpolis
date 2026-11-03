@@ -423,16 +423,31 @@ export async function typeIntoBox(io: SwitchIO, id: string, text: string, l: Loo
 
 /** What shows the exit, from `mark` on (step 4): the hint at the screen's foot, printed since; or
  *  the shell's prompt since, with no box drawn after it. */
-export function exitShown(io: SwitchIO, id: string, agent: AccountAgent, mark: number): { hint: ExitHint | null } | null {
+export function exitShown(io: SwitchIO, id: string, agent: AccountAgent, mark: number, osGone = false): { hint: ExitHint | null } | null {
   const l = look(io, id)
-  const printed = plain(io.outputFrom(id, mark))
+  const raw = io.outputFrom(id, mark)
+  const printed = plain(raw)
   let hint = hintAtFoot(l, agent)
   // agy prints its hint at the top of a block it repaints, so a pane that holds the block has it above the foot's rows,
   // and one that doesn't has scrolled it off (or wrapped its command row): it is read from the text agy printed since
-  // its exit command, which has neither problem (SW2-6). The text is its own: nothing but its exit follows the command.
-  if (!hint && agent === 'agy') hint = exitHintOf(printed.split(/\r\n|\r|\n/), agent, true)
+  // its exit command, which has neither problem (SW2-6). It has the row's problem the other way: an agy that ignored the
+  // command and repainted its frame, its last answer quoting the hint, has its box drawn after it, which is no exit (R3), so
+  // the text counts only where none is, or where the OS says the process is gone (SW3-4).
+  if (!hint && agent === 'agy') {
+    const text = exitHintOf(printed.split(/\r\n|\r|\n/), agent, true)
+    if (text && (osGone || !boxDrawnAfter(raw, text, l, io.size(id)))) hint = text
+  }
   if (hint && HINT_HEAD[agent].test(printed)) return { hint }
   return shellSince(io, id, l, mark) ? { hint: null } : null
+}
+
+/** Is an agent's input box drawn after the hint `hint` names in `raw`, the output since its exit command? The stream after the
+ *  conversation's id is drawn alone, and a box in it is a repaint of the agent's frame under what it printed; where the hint names no
+ *  id to find (or `raw` does not hold it as one piece), the screen as it is now is what there is to go on. */
+function boxDrawnAfter(raw: string, hint: ExitHint, l: Look, size: ScreenSize | null): boolean {
+  const at = hint.id ? raw.lastIndexOf(hint.id) : -1
+  if (!hint.id || at < 0) return l.box >= 0
+  return inputBoxRow(drawn(raw.slice(at + hint.id.length), size).lines) >= 0
 }
 
 /** How long the shell must be the PTY's foreground, with no hint on screen, before that counts as
@@ -473,7 +488,7 @@ export async function exitConfirmed(io: SwitchIO, id: string, agent: AccountAgen
   // What would be typed next reaches whatever holds the terminal; "It has exited" is the user's word for it.
   if (alone === false && !(await processGone(io, id))) return null
   // Gone by the OS's word: what the screen shows now names the session, if it names one.
-  return screen ?? exitShown(io, id, agent, mark) ?? { hint: null }
+  return screen ?? exitShown(io, id, agent, mark, true) ?? { hint: null }
 }
 
 /** Where a typed line shows: inside the agent's box (it is live), on the screen's last rows outside
@@ -517,6 +532,11 @@ function ownShellHeard(io: SwitchIO, id: string, family: ShellFamily): boolean {
   return ownReport(heardBefore(io, id), family)
 }
 
+/** What takes back `text` that was typed at a receiver Termpolis has not proven to be the shell: a Backspace for each character. It
+ *  removes what was typed and nothing else (a draft, a menu's choice), and does nothing an agent's box, a dialog or a turn at work would
+ *  act on, where the line clear PowerShell and cmd use (Esc) stops a turn, closes a menu and declines a question (SW3-8). */
+const takeBack = (text: string): string => '\x7f'.repeat(text.length)
+
 /** Types an account line at the shell's prompt (step 8): the line cleared, a sacrificial Enter and
  *  the shell's answer to it, then the line without its Enter, which is pressed only once the line
  *  shows outside every agent box. `enterAt` is where the output ended before that Enter. */
@@ -524,26 +544,34 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   // No wait here outlasts the lock the switch holds the terminal under: a shell that reads a long line
   // very slowly is given up on at its end, not minutes later (SWITCH-R1 G1).
   const wait = (ms: number): number => Math.min(ms, until - io.now())
+  // Whether this terminal's own shell reports its prompts: its report is then what says the prompt is drawn.
+  const reporting = ownShellHeard(io, id, family)
+  const probe = line.slice(0, ECHO_PROBE_CHARS)
+  // A shell that reports its prompts answers within moments of the agent's exit; one that does not (David's Git Bash, whose rc drops
+  // the report) may be busy drawing a git-aware prompt for seconds, silent, and then echoes what it was sent (4.9 to 15.5 s, SW2-5).
+  // It is given the same ceiling a reporting one is given for its report, whatever the output does (SW3-5).
+  const silentFor = reporting ? 0 : PROMPT_REPORT_WAIT_MS
   // Where the screen still draws an agent's box and shows nothing of the shell (SW2-7, MODELS-R2-1), the receiver of a key is
   // not known: a sacrificial Enter would submit a draft in a live agent's box, and the line clear PowerShell and cmd use (Esc)
   // interrupts a turn at work. The first part of the line alone is typed and looked at. Where it lands in an agent's box it is
   // taken back out of it (the draft with it, never submitted). Where it lands at the shell, the receiver is proven to be the
   // shell, which a clear and an Enter are safe for: the line is cleared (what was left on it goes with the probe) and the
-  // ordinary steps run, from the start.
+  // ordinary steps run, from the start. Where it lands nowhere, it is taken back out with Backspaces and nothing more (SW3-8).
   if (!sacrifice) {
     const at = io.end(id)
-    const probe = line.slice(0, ECHO_PROBE_CHARS)
     io.write(id, probe)
-    const where = await waitFor(io, wait(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS), () => landed(look(io, id), probe, io.outputFrom(id, at)))
+    const where = await waitFor(io, wait(Math.max(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS, silentFor)), () => landed(look(io, id), probe, io.outputFrom(id, at)))
     if (where === 'box') {
       io.write(id, CLEAR_BOX_KEYS)
       return { outcome: 'agent-alive' }
     }
-    io.write(id, LINE_CLEAR[family])
-    return where === 'shell' ? typeAtPrompt(io, id, family, line, mark, until, true) : { outcome: 'didnt-start' }
+    if (where === 'shell') {
+      io.write(id, LINE_CLEAR[family])
+      return typeAtPrompt(io, id, family, line, mark, until, true)
+    }
+    io.write(id, takeBack(probe))
+    return { outcome: 'didnt-start' }
   }
-  // Whether this terminal's own shell reports its prompts: its report is then what says the prompt is drawn.
-  const reporting = ownShellHeard(io, id, family)
   io.write(id, LINE_CLEAR[family])
   const before = io.end(id)
   const askedAt = io.now()
@@ -566,14 +594,14 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
   // built for this terminal's shell doesn't fit (R1: only such a positive mismatch refuses).
   if (nestedShellReported(io.outputFrom(id, mark), family, reporting)) return { outcome: 'mismatch' }
   const typedAt = io.end(id)
-  const probe = line.slice(0, ECHO_PROBE_CHARS)
   const started = io.now()
   io.write(id, probe)
   // The first part gets ECHO_MS and a slow shell's time a character, and while the shell is still PRINTING it is not stalled
   // (Git Bash right after an agent exits, building a git-aware prompt, took 5 to 15 s to read what was typed): the wait
   // goes on while the output grows, ends after a quiet spell, and ends at ECHO_MAX_MS in any case (SW2-5). The quiet spell
-  // is that long, or three times the time the shell took to answer its Enter, when that is more (a loaded machine's shell).
-  const quietMs = Math.max(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS, Math.min(ECHO_MAX_MS, answeredIn * 3))
+  // is that long, or three times the time the shell took to answer its Enter, when that is more (a loaded machine's shell),
+  // or, for a shell that reports nothing, the ceiling a reporting shell's report is given (SW3-5).
+  const quietMs = Math.max(ECHO_MS + probe.length * ECHO_SLOW_CHAR_MS, Math.min(ECHO_MAX_MS, answeredIn * 3), silentFor)
   let seenEnd = io.end(id)
   let movedAt = io.now()
   const first = await waitFor(io, wait(ECHO_MAX_MS), () => {
@@ -587,13 +615,20 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
     return io.now() - movedAt >= quietMs ? ('stalled' as const) : null
   })
   let where: 'box' | 'shell' | null = first === 'stalled' ? null : first
+  // What has been typed since the Enter, to take back out if the line does not show whole.
+  let typedText = probe
   if (where === 'shell' && line.length > probe.length) {
     // The shell reads what is typed (the first part is not in an agent's box): it took this long a
     // character, and the rest is given twice as long before it is given up on.
     const perChar = Math.max(1, Math.ceil((io.now() - started) / probe.length))
     io.write(id, line.slice(probe.length))
+    typedText = line
     const whole = await waitFor(io, wait(ECHO_MS + (line.length - probe.length) * perChar * 2), () => lineShown(look(io, id), line, io.outputFrom(id, typedAt)))
-    if (!whole) where = null
+    if (!whole) {
+      // The first part showed at the shell, so it is the shell that holds the rest, and its own clear takes all of it.
+      io.write(id, LINE_CLEAR[family])
+      return { outcome: 'didnt-start' }
+    }
   }
   if (where === 'box') {
     io.write(id, CLEAR_BOX_KEYS)
@@ -604,7 +639,9 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
     io.write(id, '\r')
     return { outcome: 'entered', enterAt }
   }
-  io.write(id, LINE_CLEAR[family])
+  // Nothing showed it anywhere in time: not at the shell, and not in an agent's box. What was typed is taken back out with
+  // Backspaces, and no key that does more than that goes to a receiver that may be a live agent (SW3-8).
+  io.write(id, takeBack(typedText))
   return { outcome: 'didnt-start' }
 }
 
@@ -736,8 +773,8 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   const mark = io.end(id)
   const os: OsMemo = { known: false }
   let hint: ExitHint | null = null
-  // The user's word that it exited, with an agent's box still drawn and nothing on screen that shows the shell is back
-  // (see typeAtPrompt): no sacrificial key goes in there.
+  // The user's word that it exited, with nothing on screen that shows the shell is back (see typeAtPrompt): no sacrificial key
+  // goes in there, an agent's box drawn or not.
   let boxStillDrawn = false
 
   // What the agent was started with is decided before anything is typed: a relaunch that could not
@@ -759,7 +796,10 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
     // OS is not asked, and not waited for), not the screen: a box still drawn with no hint, no prompt since the start
     // and no foreground word for the shell is an agent that may be live (SW2-7, MODELS-R2-1).
     hint = hintAtFoot(look(io, id), agent)
-    boxStillDrawn = liveness(io, id, agent, ctx.start).state === 'live'
+    // Not proven gone is not gone: a dialog the detector does not know (Claude's /theme picker, /model, a plan to approve, agy's
+    // permission prompts) reads as neither live nor gone, and the same few keys that submit a draft or answer a dialog go there
+    // (MODELS-R3-2). Only a screen that shows the shell is back is sent a sacrificial Enter.
+    boxStillDrawn = liveness(io, id, agent, ctx.start).state !== 'gone'
   } else {
     const alive = await livenessNow(io, id, agent, ctx.start, os)
     if (alive.state === 'unknown') return { kind: 'unknown-exit', ...(alive.os ? { osSees: true as const } : {}) }
