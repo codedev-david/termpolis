@@ -81,10 +81,10 @@ export function setSessionCursor(key: string, cursor: SessionCursor): void {
 export function flushSessionCursors(): void {
   if (!dir || !dirty) return
   try {
-    while (cursors.size > MAX_ENTRIES) {
-      const oldest = cursors.keys().next()
-      if (oldest.done) break
-      cursors.delete(oldest.value)
+    // A Map iterates in insertion order, so the first keys are the coldest.
+    for (const oldest of cursors.keys()) {
+      if (cursors.size <= MAX_ENTRIES) break
+      cursors.delete(oldest)
     }
     // Write-then-rename: a quit landing mid-write leaves the previous good file, not a
     // truncated one that the next boot would throw away entirely.

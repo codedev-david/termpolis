@@ -9,7 +9,7 @@
 //   grown       (Claude Code) only the bytes from the first one not yet consumed are read and parsed, after
 //               checking that the 256 bytes before it are still what the cursor saw;
 //   anything else (first look, another file, a rewrite, a truncation, a position it cannot trust): the file
-//               is read in full, in chunks that yield to the event loop, and diffed against the cursor
+//               is read in full, in 1 MiB chunks that yield to the event loop, and diffed against the cursor
 //               exactly as the old path did.
 //
 // Why carrying on from a byte offset says what a whole read would say, for a Claude Code transcript:
@@ -50,8 +50,13 @@ import { recordPass } from './passCounters'
 export const CANDIDATES = 5
 /** Bytes before the offset that tell a file that was appended to from one that was replaced. */
 export const ANCHOR_BYTES = 256
-/** The most read and parsed at once. 4 MiB of JSONL is ~15 ms of parsing: a slice, not a stall. */
-export const CHUNK_BYTES = 4 * 1024 * 1024
+/**
+ * The most read and parsed at once, then the event loop gets a turn. Measured on a loaded 22-thread Windows
+ * laptop with synthetic Claude Code transcripts (parseClaudeTranscript, 32 MiB cut into whole-line slices):
+ * a 1 MiB slice parses in 2.0 ms (p50), 14 ms at worst; a 4 MiB slice in 9 ms, 30 ms at worst; the total is
+ * the same (~3 ms/MiB). An echoed keystroke has about 16 ms, so the slice is 1 MiB: a slice, not a stall.
+ */
+export const CHUNK_BYTES = 1024 * 1024
 /** Delegated sessions remembered (their opening never changes, so neither does the verdict). */
 export const DELEGATED_MAX = 256
 
@@ -255,7 +260,11 @@ async function scanLines(
 ): Promise<Scan> {
   const turns: Turn[] = []
   let at = from
-  let carry: Buffer = EMPTY
+  // What follows the last newline seen: a line still being read. It is kept as the pieces it arrived in and
+  // joined only when its end arrives, so a line of many chunks (a multi-MB tool result is one line) is copied
+  // once, not once per chunk.
+  let pieces: Buffer[] = []
+  let pending = 0
   let tail = tail0
   while (at < to) {
     const want = Math.min(deps.chunkBytes, to - at)
@@ -263,22 +272,27 @@ async function scanLines(
     const got = await readFully(fh, buf, want, at, m, false)
     if (got === 0) break
     at += got
-    const joined = carry.length === 0 ? buf.subarray(0, got) : Buffer.concat([carry, buf.subarray(0, got)])
-    const nl = joined.lastIndexOf(0x0a)
+    const chunk = buf.subarray(0, got)
+    const nl = chunk.lastIndexOf(0x0a)
     if (nl < 0) {
-      carry = joined // a line longer than the chunk: carry on reading it
+      pieces.push(chunk) // a line longer than the chunk: carry on reading it
+      pending += got
       continue
     }
-    const whole = joined.subarray(0, nl + 1)
+    const end = chunk.subarray(0, nl + 1)
+    const whole = pieces.length === 0 ? end : Buffer.concat([...pieces, end])
+    const rest = chunk.subarray(nl + 1)
+    pieces = rest.length > 0 ? [rest] : []
+    pending = rest.length
     addTurns(turns, deps.parse(agent, whole.toString('utf8')), m)
     tail = lastBytes(tail, whole)
-    carry = joined.subarray(nl + 1)
-    if (inspect?.(turns)) return { turns, consumedEnd: at - carry.length, tail }
+    if (inspect?.(turns)) return { turns, consumedEnd: at - pending, tail }
     if (at < to) await deps.yieldToLoop()
   }
 
-  let consumedEnd = at - carry.length
-  if (carry.length > 0) {
+  let consumedEnd = at - pending
+  if (pending > 0) {
+    const carry = pieces.length === 1 ? pieces[0] : Buffer.concat(pieces)
     const text = carry.toString('utf8')
     const trimmed = text.trim()
     if (trimmed === '') {

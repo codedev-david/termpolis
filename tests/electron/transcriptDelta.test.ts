@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -127,7 +127,7 @@ interface Counts {
 }
 
 /** Deps over the REAL fs, every call counted. */
-function makeDeps(over: Partial<DeltaDeps> = {}, chunkBytes = 4 * 1024 * 1024): { deps: DeltaDeps; c: Counts } {
+function makeDeps(over: Partial<DeltaDeps> = {}, chunkBytes = 1024 * 1024): { deps: DeltaDeps; c: Counts } {
   const c: Counts = { lists: 0, stats: 0, opens: 0, reads: 0, bytes: 0, readFiles: 0, parseCalls: 0, parseChars: 0, maxParseChars: 0, yields: 0 }
   const deps: DeltaDeps = {
     listFiles: async (cwd, agent) => {
@@ -387,6 +387,46 @@ describe('a cold read is chunked', () => {
     const res = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
     expect(texts(res!.fresh)).toEqual(['short', long, 'after'])
     expect(c.bytes).toBe(fs.statSync(file).size)
+  })
+
+  // A multi-MB tool result is ONE line of a transcript. Carrying it forward by joining it to the next chunk
+  // each time copies it once per chunk: quadratic, with a fresh multi-MB buffer for every chunk. Joined once,
+  // when its end arrives, it is copied once. Counter: the bytes Buffer.concat produced during the read.
+  it('copies a line that spans many chunks once, not once per chunk', async () => {
+    const p = newProject()
+    const long = 'L'.repeat(6400)
+    const file = write(p.dir, 's1', lines(userLine('short'), assistantLine(long), userLine('after')))
+    const size = fs.statSync(file).size
+    const chunk = 64
+    const { deps } = makeDeps({}, chunk)
+
+    const copied: number[] = []
+    const real = Buffer.concat
+    const spy = vi.spyOn(Buffer, 'concat').mockImplementation(((list: readonly Uint8Array[], total?: number) => {
+      const out = real.call(Buffer, list, total)
+      copied.push(out.length)
+      return out
+    }) as typeof Buffer.concat)
+    let res: Awaited<ReturnType<typeof delta.readSessionDelta>>
+    try {
+      res = await delta.readSessionDelta(p.cwd, 'claude', mneme.EMPTY_CURSOR, deps)
+    } finally {
+      spy.mockRestore()
+    }
+    expect(texts(res!.fresh)).toEqual(['short', long, 'after'])
+
+    const total = copied.reduce((a, b) => a + b, 0)
+    expect(total).toBeLessThan(3 * size)
+
+    // CONTROL: what re-joining the partial line to every chunk costs on the same bytes. The bound above
+    // tells the two apart (if it did not, the assertion would pass for the wrong reason).
+    let carried = 0
+    let rejoined = 0
+    for (let at = 0; at < long.length; at += chunk) {
+      carried += chunk
+      rejoined += carried
+    }
+    expect(rejoined).toBeGreaterThan(10 * size)
   })
 })
 
