@@ -1424,8 +1424,8 @@ audit log.
     or a newline constant, as `\n` escapes in a JSON string or one JSON string per
     line (with `/` or `+` escaped too, as PHP and .NET write them), behind comment
     or quote marks, in a diff (a coloured one too), behind `cat -n`, in grep or rg
-    output with paths, with or without line numbers (Windows paths too, whatever
-    their folders are called), behind a `NAME=` (a
+    output with paths, with or without line numbers (Windows paths too: a
+    folder named like `repos` or `r123456` is no line break), behind a `NAME=` (a
     properties file, journalctl's `MESSAGE=`), or behind log timestamps and container
     prefixes. A key file stored base64 encoded (a Kubernetes Secret's `tls.key`,
     a `.env` file's `TLS_KEY_B64=`) is removed the same way. So are a PuTTY
@@ -1487,8 +1487,8 @@ audit log.
   lines were re-wrapped to alternating widths, or to under 16 characters (all
   reported, as above); the first line alone of an RSA, DSA, Diffie-Hellman,
   OpenSSH, OpenPGP, SSH2 or encrypted private key, with no END line and nothing
-  of the key under that line (reported: it holds a modulus, parameters or a
-  salt, not the private value), and that of a PKCS#8 key on a brainpool curve
+  of the key under that line (reported: it holds public numbers, parameters or
+  a salt, not the private value), and that of a PKCS#8 key on a brainpool curve
   (reported: the curve's long identifier leaves 9 to 11 bytes of the private
   value in the line, where 12 or more are removed, as for every other EC curve
   and for an EdDSA or post-quantum key); a key
