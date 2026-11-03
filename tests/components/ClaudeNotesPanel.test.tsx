@@ -179,6 +179,7 @@ describe('ClaudeNotesPanel: what is shown', () => {
     mockApi(view({}, { notes: 4, chunks: 4, projects: 1, lastAt: 1, noProject: 2, secretsRedacted: 1, pending: 3 }))
     await open()
     expect(screen.getByTestId('claude-notes-noproject').textContent).toContain('2 notes were left out')
+    expect(screen.getByTestId('claude-notes-noproject').textContent).toContain('because Claude Code has no session recorded for its project folder yet')
     expect(screen.getByTestId('claude-notes-redacted').textContent).toContain('1 secret was redacted')
     expect(screen.getByTestId('claude-notes-pending').textContent).toContain('3 removals are waiting')
     cleanup()
@@ -382,9 +383,21 @@ describe('ClaudeNotesPanel: Remove imported notes', () => {
     fireEvent.click(screen.getByTestId('claude-notes-remove'))
     fireEvent.click(screen.getByTestId('claude-notes-remove-confirm'))
     const notice = (await screen.findByTestId('claude-notes-notice')).textContent!
-    expect(notice).toContain('Removed 1 note chunk.')
-    expect(notice).toContain('2 chunks could not be removed yet')
+    expect(notice).toBe('Removed 1 note chunk. 2 chunks could not be removed yet (memory may be locked) and will be retried.')
     expect(screen.getByTestId('claude-notes-pending').textContent).toContain('2 removals are waiting')
+  })
+
+  // One chunk that could not be removed is still not a success, and the notice that says so does not close with "turn it on to bring
+  // them back" (that sentence says everything went). The words are the user's, so they are pinned to the letter.
+  it.each<[string, { removed: number; failed: number }, string]>([
+    ['one chunk left', { removed: 3, failed: 1 }, 'Removed 3 note chunks. 1 chunk could not be removed yet (memory may be locked) and will be retried.'],
+    ['two chunks left', { removed: 1, failed: 2 }, 'Removed 1 note chunk. 2 chunks could not be removed yet (memory may be locked) and will be retried.'],
+  ])('says exactly what could not be removed, and that it will be retried: %s', async (_label, counts, expected) => {
+    removeNotes.mockImplementationOnce(async () => ({ success: true, data: { ...counts, settings: view({ indexClaudeNotes: false }) } }))
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    fireEvent.click(screen.getByTestId('claude-notes-remove-confirm'))
+    expect((await screen.findByTestId('claude-notes-notice')).textContent).toBe(expected)
   })
 
   // Memory could not be looked through (the host was busy): "Removed 0" must not read as a success while copies may remain.
@@ -631,6 +644,7 @@ describe('ClaudeNotesPanel: memory is locked', () => {
     expect(banner.textContent).toContain('Memory is locked')
     expect(banner.textContent).toContain('nothing is read or removed')
     expect(banner.textContent).toContain('Memory panel')
+    expect(banner.textContent).toContain('The switches still keep what you choose') // the choice is not lost while memory is locked
   })
 
   it('says nothing when memory is open, or when the answer does not say', async () => {

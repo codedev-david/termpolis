@@ -46,7 +46,11 @@ describe('AgentWritesList', () => {
     const note = screen.getByTestId('agent-reads-note')
     expect(note).toBeVisible() // a disclosure that is in the page but hidden from the person reading it is not one
     expect(note.textContent).toContain('also lets Termpolis read Claude Code’s saved notes')
+    expect(note.textContent).toContain('for each project')
     expect(note.textContent).toContain('~/.claude/projects/')
+    // What the copies become, and who can then read them: the exposure the user is agreeing to, not a detail of how it works.
+    expect(note.textContent).toContain('keep a copy in its memory')
+    expect(note.textContent).toContain('Codex and Gemini can find them too')
     expect(note.textContent).toContain('Nothing is written back into Claude’s folders')
     expect(note.textContent).toContain('Settings')
     expect(note.textContent).toContain('Memory & Learning')

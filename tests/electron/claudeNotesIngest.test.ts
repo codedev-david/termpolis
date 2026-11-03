@@ -1131,6 +1131,18 @@ describe('Remove imported notes', () => {
     expect(manifestJson().dirty).toBe(true)
   })
 
+  // Memory that cannot be looked through and a record that cannot be saved: nothing is removed, the one copy the record knows is
+  // counted as failed, and the panel is still told that memory was not seen whole.
+  it('says it could not look, and counts the copy it knew as failed, when it can neither list memory nor save the record', async () => {
+    note(FOLDER, 'a.md', '---\nname: a\n---\nAlpha.')
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    store.failList(new Error('host busy'))
+    expect(await removeImportedNotes(deps(store, { manifest: flakyManifest(0) }))).toEqual({ removed: 0, failed: 1, unchecked: true })
+    expect(store.rows.size).toBe(1)
+  })
+
   // Memory could not be looked through, and the record no longer knows the copies (it was lost): nothing was removed, and saying
   // "removed 0 note chunks" would read as a success while every agent can still find and lend them. The result says it could not look.
   describe('when the record has lost the copies and memory cannot be looked through', () => {
