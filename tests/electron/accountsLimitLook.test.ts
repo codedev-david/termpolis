@@ -609,6 +609,92 @@ describe('how the keys of one write are gathered into lines (CHOOSER-R1-5)', () 
     expect(lines).toEqual([expected])
   })
 
+  // MODELS-R2-4: a shell's own editing (a history recall, Tab completion, a reverse search, a cursor move) changes the line in
+  // ways the keys typed do not say, so a line made with any of them is read as unsure: what the shell holds can differ.
+  it.each([
+    ['Tab completion', 'claude --dang\t --model opus\r'],
+    ['an arrow key (history recall, a cursor move)', 'claude\x1b[A\r'],
+    ['Home', 'claude\x1b[H --model opus\r'],
+    ['a Delete key', 'claude\x1b[3~ --model opus\r'],
+    ['an SS3 key', 'claude\x1bOD --model opus\r'],
+    ['Ctrl+R, a reverse search', '\x12claude\r'],
+    ['Ctrl+A, to the start of the line', 'x\x01claude\r'],
+    ['Ctrl+E', 'claude\x05 --model opus\r'],
+    ['Ctrl+K', 'claude --a\x0b --model opus\r'],
+    ['Ctrl+W', 'claude --model\x17 opus\r'],
+    ['Ctrl+Y', 'claude\x19\r'],
+    ['Ctrl+T', 'claude\x14\r'],
+    ['Ctrl+B and Ctrl+F', 'claude\x02\x06\r'],
+    ['Ctrl+D', 'claude\x04\r'],
+  ])('marks a line made with %s as edited', (_what, written) => {
+    const seen: Array<[string, boolean]> = []
+    _gatherLinesForTest('t6', written, (l, edited) => seen.push([l, edited]))
+    expect(seen).toHaveLength(1)
+    expect(seen[0][1]).toBe(true)
+  })
+
+  it.each([
+    ['plain typing', 'claude --model opus\r'],
+    ['Backspace', 'claudee\x7f --model opus\r'],
+    ['Ctrl+H', 'claudee\b\r'],
+    ['a bracketed paste', `${E}[200~claude --model opus${E}[201~\r`],
+    ['Shift+Enter (Esc and Enter)', `foo${E}\nbar\r`],
+    ['Ctrl+U and then typing', 'foo\x15claude\r'],
+    ['Ctrl+C and then typing', 'foo\x03claude\r'],
+    // Cleared, the line starts over: what was edited before is gone with it.
+    ['a Tab, then Ctrl+U and the line typed again', 'cla\t\x15claude\r'],
+    ['an arrow key, then Ctrl+C and the line typed again', 'x\x1b[A\x03claude\r'],
+  ])('does not mark a line made with %s as edited', (_what, written) => {
+    const seen: Array<[string, boolean]> = []
+    _gatherLinesForTest('t5', written, (l, edited) => seen.push([l, edited]))
+    expect(seen).toHaveLength(1)
+    expect(seen[0][1]).toBe(false)
+  })
+
+  it('keeps a line edited across writes until its Enter, and the next line is its own', () => {
+    const seen: Array<[string, boolean]> = []
+    const on = (l: string, edited: boolean): void => { seen.push([l, edited]) }
+    _gatherLinesForTest('t4', 'claude', on)
+    _gatherLinesForTest('t4', '\t', on)
+    _gatherLinesForTest('t4', ' --model opus\rcodex\r', on)
+    expect(seen).toEqual([['claude --model opus', true], ['codex', false]])
+    // An Enter with nothing but a recall is an empty edited line.
+    _gatherLinesForTest('t3', '\x1b[A\r', on)
+    expect(seen[2]).toEqual(['', true])
+  })
+
+  describe('a launch line made with the shell\'s own editing', () => {
+    it('is recorded for what it is, an agent started, with its flags left as unknown, never as the half the keys said', () => {
+      noteTypedInput('t1', 'claude --dang\t --model opus\r', clock)
+      expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', commands: ['claude'], unsure: true })
+    })
+
+    it('is recorded whole when typed whole', () => {
+      noteTypedInput('t1', 'claude --model opus\r', clock)
+      expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', commands: ['claude --model opus'] })
+      expect(terminalAgentStart('t1')?.unsure).toBeUndefined()
+    })
+
+    it('leaves a recall that reaches the shell as nothing: no record, no wrong one', () => {
+      noteTypedInput('t1', '\x1b[A\r', clock)
+      expect(terminalAgentStart('t1')).toBeUndefined()
+    })
+
+    it('still sees a change of account by hand in a line made with editing', () => {
+      noteTypedInput('t1', `export CLAUDE_CONFIG_DIR=/x\t\r`, clock)
+      expect(isAccountChangedByHand('t1')).toBe(true)
+    })
+
+    it('does not read an edited line as a prompt that was not one: a prompt typed in an agent\'s box still counts as a turn', () => {
+      // The agent started whole, then a prompt is entered with an arrow key in it (a history recall inside its box).
+      noteTypedInput('t1', 'claude\r', clock)
+      const start = terminalAgentStart('t1')
+      expect(start?.unsure).toBeUndefined()
+      noteTypedInput('t1', 'go on\x1b[D\x1b[C\r', clock)
+      expect(terminalAgentStart('t1')?.commands).toEqual(['claude'])
+    })
+  })
+
   // F-R2-4: a line is kept to 4096 characters. A longer one is a paste or a runaway, whose first 4096 are the line (the rest is
   // not held, so a flood of typed text costs a terminal no more than that), and what is typed after it still reaches its Enter.
   it('keeps no more than 4096 characters of a line, and still ends it at its Enter', () => {

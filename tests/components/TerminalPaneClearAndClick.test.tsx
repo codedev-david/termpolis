@@ -1206,6 +1206,24 @@ describe('TerminalPane — the account switch', () => {
     expect(noteHeldKey).not.toHaveBeenCalled()
   })
 
+  // MODELS-R2-5 (D13): a user who added no account sees no change from this feature. The model change holds the terminal's keys for
+  // every user (the picker's lock, §7.5: keys typed while it types would sit on the shell's line), but its overlay is drawn only
+  // for one who has accounts; v1.54.4's own word, "Restarting on …" in the picker, is all the others see.
+  it('draws no overlay for a model change when no account is registered, and still holds the keys', async () => {
+    const noteHeldKey = vi.fn()
+    for (const accountsView of [{ accounts: [], home: '/h' }, null]) {
+      mocks.mockGetState.mockImplementation(() => state({ relaunching: { 'term-1': 'model' }, noteHeldKey, accountsView }))
+      const { unmount } = await renderPane({ agentCommand: 'claude' } as never)
+      expect(screen.queryByTestId('relaunch-overlay')).toBeNull()
+      const e = switchKey({ key: 'a', ctrlKey: false, shiftKey: false })
+      let handled!: boolean
+      await act(async () => { handled = mockKeyHandlerCb!(e) })
+      expect(handled).toBe(false)
+      expect(e.preventDefault).toHaveBeenCalled()
+      unmount()
+    }
+  })
+
   it('offers Switch account… in the context menu of an agent terminal whose agent has accounts', async () => {
     const { container } = await renderPane()
     fireEvent.contextMenu(paneOf(container), { clientX: 20, clientY: 20 })

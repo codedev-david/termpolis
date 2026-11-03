@@ -30,7 +30,7 @@ import { AccountChip } from '../Accounts/AccountChip'
 import { SwitchOverlay } from '../Accounts/SwitchOverlay'
 import { LimitCard } from '../Accounts/LimitCard'
 import { SwarmRestartPaneCard } from '../Accounts/SwarmRestartOffers'
-import { agentOfCommand, canSwitchAccount } from '../../lib/accountsView'
+import { agentOfCommand, canSwitchAccount, hasAccounts } from '../../lib/accountsView'
 import { VoiceGroqGate } from './VoiceGroqGate'
 import { useTerminalStore } from '../../store/terminalStore'
 import { setPendingSettingsTab } from '../../lib/settingsNav'
@@ -489,6 +489,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   })
   // A relaunch typing into this terminal: the pane says so and takes no keys.
   const relaunching = useTerminalStore((s) => s.relaunching?.[terminalId])
+  // The model change's overlay is drawn only for a user who has accounts: its keys are held for everyone (the picker's lock),
+  // but one who added none sees no change from this feature (D13), and the picker's own "Restarting on …" is what they had.
+  const anyAccount = useTerminalStore((s) => !!s.accountsView && hasAccounts(s.accountsView.accounts))
   useTranscriptWatcher(terminalId, cwd, agent.detectedAgent)
   // Seed a launched agent with recalled context (opt-out in Settings). The gate is what keeps
   // the pointer out of a line the user is still typing: output detection fires on the ECHO of
@@ -1909,7 +1912,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       <SwitchOverlay terminalId={terminalId} />
       <LimitCard terminalId={terminalId} />
       <SwarmRestartPaneCard terminalId={terminalId} />
-      {relaunching === 'model' && (
+      {relaunching === 'model' && anyAccount && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 pointer-events-none" data-testid="relaunch-overlay">
           <span className="text-xs text-[#e0e0e0] bg-[#2d2d2d] border border-[#3c3c3c] rounded px-3 py-1.5">
             Changing model…

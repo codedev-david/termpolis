@@ -114,6 +114,30 @@ describe('the words', () => {
     expect(toastFor({ kind: 'fresh', why: 'no-session' }, run)).toBe('Claude Code is on codedev now, in a new session: it named no conversation to resume.')
     expect(toastFor({ kind: 'fresh', why: 'asked' }, run)).toBe('Claude Code is on codedev now, in a new session.')
   })
+
+  // MODELS-R2-3: a worktree the new session did not go back into is said, whatever made the session new.
+  it('says the worktree a new session did not go back into', () => {
+    const run = { agent: 'claude' as const, to: endpoint(B), from: endpoint(A) }
+    expect(toastFor({ kind: 'fresh', why: 'no-session', leftWorktree: 'feat-x' }, run)).toBe('Claude Code is on codedev now, in a new session: it named no conversation to resume. It started in the main folder, not in the worktree feat-x.')
+    expect(toastFor({ kind: 'fresh', why: 'asked', leftWorktree: 'feat-x' }, run)).toBe('Claude Code is on codedev now, in a new session. It started in the main folder, not in the worktree feat-x.')
+    expect(toastFor({ kind: 'fresh', why: 'not-found', leftWorktree: 'feat-x' }, run)).toContain('It started in the main folder, not in the worktree feat-x.')
+    // Not for a conversation that was resumed.
+    expect(toastFor({ kind: 'switched', resumed: true, sessionId: 's' }, run)).not.toContain('worktree')
+  })
+
+  // MODELS-R2-4: where Termpolis did not see how the agent was started, its model and options were not carried, and it says so.
+  it('says the model and options were not carried when Termpolis did not see how the agent was started', () => {
+    const run = { agent: 'claude' as const, to: endpoint(B), from: endpoint(A) }
+    const SAID = ' Its model and options were not carried: Termpolis didn\'t see how Claude Code was started.'
+    expect(toastFor({ kind: 'switched', resumed: true, unseenStart: true }, run)).toBe(`Claude Code is on codedev now. Conversation resumed.${SAID}`)
+    expect(toastFor({ kind: 'fresh', why: 'asked', unseenStart: true }, run)).toBe(`Claude Code is on codedev now, in a new session.${SAID}`)
+    expect(toastFor({ kind: 'fresh', why: 'no-session', leftWorktree: 'feat-x', unseenStart: true }, run)).toBe(
+      `Claude Code is on codedev now, in a new session: it named no conversation to resume. It started in the main folder, not in the worktree feat-x.${SAID}`,
+    )
+    expect(toastFor({ kind: 'fresh', why: 'not-found', unseenStart: true }, { ...run, from: null })).toContain(SAID)
+    expect(toastFor({ kind: 'switched', resumed: true }, run)).not.toContain('not carried')
+    expect(toastFor({ kind: 'switched', resumed: true, unseenStart: true }, { ...run, agent: 'codex' as const })).toContain('how Codex was started')
+  })
 })
 
 describe('cardFor: what a switch that didn\'t finish says, and what comes next', () => {

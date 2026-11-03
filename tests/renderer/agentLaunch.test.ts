@@ -334,4 +334,65 @@ describe('agentLaunch', () => {
       expect(useTerminalStore.getState().memoryNotice).toMatch(/Antigravity CLI no longer offers your default model "gemini-9"/)
     })
   })
+
+  // MODELS-R2-2: the same defaults on the account-aware path (Welcome, the palette, workspace restore, "New terminal on
+  // <account>"). Main builds the line the shell is typed, around the command the renderer hands it, so the default has to be
+  // IN that command: nothing else carries it onto an account launch.
+  describe('default models on an account launch (MODELS-R2-2)', () => {
+    const CATALOG = {
+      claude: { provider: 'claude', models: [], source: 'builtin', fetchedAt: 0 },
+      codex: { provider: 'codex', models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }], source: 'cli', fetchedAt: 1 },
+      gemini: { provider: 'gemini', models: [{ id: 'gemini-3.8-flash-high', label: 'Flash' }], source: 'cli', fetchedAt: 1 },
+    }
+    const bridge = () => ({
+      launchAccount: vi.fn(async (_agent: string, id: string | null) => ({ success: true, data: { accountId: id ?? 'acc_pref' } })),
+      launchLine: vi.fn(async (req: { command: string; accountId: string | null }) => ({
+        success: true, data: { line: `unset X && ${req.command}`, accountId: req.accountId, explicit: true },
+      })),
+    })
+    const typedLines = (write: ReturnType<typeof vi.fn>): string[] => write.mock.calls.map((c) => c[1] as string).filter((d) => d !== '\r')
+    beforeEach(() => {
+      localStorage.clear()
+      ;(window as any).termpolis = { getModelCatalog: vi.fn(async () => ({ success: true, data: CATALOG })) }
+      useTerminalStore.getState().setMemoryNotice(null)
+    })
+
+    it('hands main the command with the saved default, and types the line main built from it', async () => {
+      setAgentModelDefault('claude', 'haiku')
+      setAgentModelDefault('codex', 'gpt-5.5')
+      setAgentModelDefault('gemini', 'gemini-3.8-flash-high')
+      const write = vi.fn()
+      const accounts = bridge()
+      launchAgents([
+        { id: 'a', agentCommand: 'claude', shellType: 'bash', agentAccountId: 'acc_b' },
+        { id: 'b', agentCommand: 'codex', shellType: 'bash' },
+        { id: 'c', agentCommand: 'agy', shellType: 'bash' },
+      ], { write, accounts: accounts as never })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(accounts.launchLine.mock.calls.map((c) => c[0].command)).toEqual(['claude --model haiku', 'codex --model gpt-5.5', 'agy --model gemini-3.8-flash-high'])
+      expect(typedLines(write)).toEqual(['unset X && claude --model haiku\r', 'unset X && codex --model gpt-5.5\r', 'unset X && agy --model gemini-3.8-flash-high\r'])
+    })
+
+    it('leaves a command that already names its model, or resumes a session, as it is', async () => {
+      setAgentModelDefault('claude', 'haiku')
+      const write = vi.fn()
+      const accounts = bridge()
+      launchAgents([
+        { id: 'a', agentCommand: 'claude --model opus', shellType: 'bash', agentAccountId: 'acc_b' },
+        { id: 'b', agentCommand: 'claude --resume abc', shellType: 'bash', agentAccountId: 'acc_b' },
+      ], { write, accounts: accounts as never })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(accounts.launchLine.mock.calls.map((c) => c[0].command)).toEqual(['claude --model opus', 'claude --resume abc'])
+    })
+
+    it('drops a saved default the agent no longer lists, and says so, on an account launch too', async () => {
+      setAgentModelDefault('gemini', 'gemini-9')
+      const write = vi.fn()
+      const accounts = bridge()
+      launchAgents([{ id: 'c', agentCommand: 'agy', shellType: 'bash' }], { write, accounts: accounts as never })
+      await vi.advanceTimersByTimeAsync(SHELL_SETTLE_MS + COMMAND_DELAY_MS)
+      expect(accounts.launchLine.mock.calls.map((c) => c[0].command)).toEqual(['agy'])
+      expect(useTerminalStore.getState().memoryNotice).toMatch(/Antigravity CLI no longer offers your default model "gemini-9"/)
+    })
+  })
 })

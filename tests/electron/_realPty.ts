@@ -79,6 +79,26 @@ export function prependPath(dir: string, env: Record<string, string>): Record<st
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+/** How many times longer than on an idle machine a wait on a real shell is given, from how late a 10 ms timer fires: on a
+ *  laptop other processes keep busy, Git Bash took about a second a character to echo (MODELS-R2-6), and every wait of this
+ *  harness would give up first. One for an idle machine, four at most. */
+export const loadScale = (lagMs: number): number => Math.min(4, Math.max(1, 1 + lagMs / 10))
+
+let measured: Promise<number> | null = null
+/** The scale for this machine now, measured once per process: the average lateness of twenty 10 ms timers. */
+export function machineScale(): Promise<number> {
+  measured ??= (async () => {
+    let late = 0
+    for (let i = 0; i < 20; i++) {
+      const at = Date.now()
+      await sleep(10)
+      late += Math.max(0, Date.now() - at - 10)
+    }
+    return loadScale(late / 20)
+  })()
+  return measured
+}
+
 const KEEP = 400_000
 
 export class RealTerminal {
@@ -131,6 +151,9 @@ export class RealTerminal {
   }
 
   async until(test: () => boolean, ms: number, what: string): Promise<void> {
+    // The same wait as before on an idle machine, longer on a busy one (machineScale): a wait that gave up on a slow
+    // shell said nothing of the engine under test.
+    ms = Math.round(ms * await machineScale())
     const end = Date.now() + ms
     while (Date.now() < end) {
       if (test()) return

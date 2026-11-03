@@ -126,6 +126,8 @@ export interface SwitchIO {
 export interface AgentStartRecord {
   at: number
   commands: string[]
+  /** The line was edited by the shell as it was typed, so `commands` name only the agent (limitLook.ts LiveStart.unsure). */
+  unsure?: boolean
 }
 
 export interface SwitchContext {
@@ -721,6 +723,10 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
   // What the agent was started with is decided before anything is typed: a relaunch that could not
   // repeat it would come back without it, and some of it is a restriction (carryForSwitch).
   const carry = carryForSwitch(agent, ctx.start?.commands[0])
+  // Where Termpolis saw no line start the agent (a start by a history recall or a reverse search), or one the shell edited as
+  // it was typed (Tab completion, which names only the agent), the relaunch is bare, and the outcome says its model and options
+  // were not carried (MODELS-R2-4).
+  const unseen = !ctx.start || ctx.start.unsure === true ? { unseenStart: true as const } : {}
   if (!carry.ok) return { kind: 'refused', why: carry.why }
   // The same goes for the line itself: this shell must be able to take it with everything the relaunch
   // adds (cmd would expand a % in a carried flag), or the agent would be exited for nothing (SWITCH-R1 G2).
@@ -814,15 +820,18 @@ async function switchLocked(req: SwitchRequest, ctx: SwitchContext, family: Shel
     ctx.record({ accountId: target.id, start: { at: typed.at, commands: [typed.line] }, sessionId: null })
     relaunched = null
     watched = await watchOutcome(io, id, agent, typed.enterAt, typed.line, until)
-    if (watched.seen === 'switched') return { kind: 'fresh', why: 'not-found' }
+    if (watched.seen === 'switched') return { kind: 'fresh', why: 'not-found', ...unseen }
   }
   if (watched.seen === 'not-found') return { kind: 'resume-not-found' }
   if (watched.seen === 'sign-in') return { kind: 'sign-in', ...(relaunched ? { sessionId: relaunched } : {}) }
   if (watched.seen === 'no-outcome') return { kind: 'no-outcome' }
   if (typeof watched.seen === 'object') return { kind: 'asks-user', what: watched.seen.asks }
-  if (watched.notFound) return { kind: 'fresh', why: 'not-found' }
-  if (!sessionId) return { kind: 'fresh', why: req.fresh ? 'asked' : 'no-session' }
-  const switched: SwitchOutcome = { kind: 'switched', resumed: true, sessionId }
+  if (watched.notFound) return { kind: 'fresh', why: 'not-found', ...unseen }
+  // A worktree the line named and the relaunch did not go back into: the exit named none (a session with no turns prints
+  // no hint) or a new session was asked for. It is not re-added on a guess (an orphan directory EBUSYs Claude Code on
+  // Windows), so the outcome says so (MODELS-R2-3).
+  if (!sessionId) return { kind: 'fresh', why: req.fresh ? 'asked' : 'no-session', ...(carry.worktree && !worktree ? { leftWorktree: carry.worktree } : {}), ...unseen }
+  const switched: SwitchOutcome = { kind: 'switched', resumed: true, sessionId, ...unseen }
   if (carried.carried) switched.carried = true
   if (carried.kept) switched.kept = carried.kept
   return switched

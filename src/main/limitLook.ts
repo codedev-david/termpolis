@@ -30,6 +30,9 @@ export interface LiveStart {
   agent?: AccountAgent
   /** When main saw the line entered (epoch ms). */
   time?: number
+  /** The line was made with the shell's own editing (a history recall, Tab completion, a cursor move), so what ran can differ
+   *  from the keys Termpolis saw: `commands` name only the agent, and its model and flags are not known (MODELS-R2-4). */
+  unsure?: boolean
   /** Seen gone since: latched until the next start. */
   ended?: boolean
   /** Took a turn since: a prompt entered in its box, or seen at work. */
@@ -118,7 +121,7 @@ export function lookForLimit(io: SwitchIO, id: string, start: LiveStart | undefi
  * something: a pasted block of lines is no replay per line on main's thread.
  */
 export function noteEnteredLine(
-  io: SwitchIO, id: string, start: LiveStart | undefined, line: string, at: number, now: number, lookNow: () => Look = () => look(io, id),
+  io: SwitchIO, id: string, start: LiveStart | undefined, line: string, at: number, now: number, lookNow: () => Look = () => look(io, id), edited = false,
 ): LiveStart | null {
   const launched = agentOfLaunch(line)
   // /resume and /continue put another conversation on screen: like a relaunch, it may end in an old
@@ -134,7 +137,8 @@ export function noteEnteredLine(
   const l = lookNow()
   const gone = !start || agentGone(io, id, start, now, l)
   if (start && gone) start.ended = true
-  if (launched && gone) return { at, commands: [line], agent: launched, time: now }
+  // A line the shell edited is an agent started, but not the one the keys say: its flags are left as unknown.
+  if (launched && gone) return edited ? { at, commands: [launched], agent: launched, time: now, unsure: true } : { at, commands: [line], agent: launched, time: now }
   if (start && !gone && l.box >= 0) {
     start.turned = true
     start.turnedAt = at

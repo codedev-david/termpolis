@@ -176,7 +176,9 @@ describe('the e2e fixture', () => {
 
 // A real shell, a real PTY and processes of their own run against the clock: on a loaded runner a
 // rare slow start is a flake, not a defect (a real defect fails twice).
-describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, read and switched by the real engine', { retry: 1 }, () => {
+// Real shells on a busy laptop are slow, and some of these cases wait on them (MODELS-R2-6): every wait is scaled by how loaded
+// the machine is (RealTerminal.until), and a case that still gave up is run again, twice, before it counts as red.
+describe.skipIf(!pty || shells.length === 0)('the mock agents on a real PTY, read and switched by the real engine', { retry: 2 }, () => {
   for (const shell of shells) {
     describe(shell.shellType, () => {
       it('Claude Code: a limit is read as one, and the switch exits it, resumes the exact session on the second account and carries the transcript', async () => {

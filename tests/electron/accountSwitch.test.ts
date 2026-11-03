@@ -203,7 +203,8 @@ describe('R2: nothing goes to an agent that is gone', () => {
     expect(quiet.t.writes).toEqual([])
     // Their word: the hint on screen still names the session.
     const said = await run(claude({ start: 'gone-hint' }), { start: undefined }, { assumeExited: true })
-    expect(said.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    // No record of how it was started: the conversation is resumed, and the outcome says its flags were not carried.
+    expect(said.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID, unseenStart: true })
     expect(keys(said.t)).not.toContain('/exit')
   })
 
@@ -838,6 +839,77 @@ describe('G2: a flag the shell cannot carry is refused before the agent is asked
       const r = await run(claude({ family, launch: 'claude --add-dir %USERPROFILE%\\docs' }))
       expect(r.outcome.kind, family).toBe('switched')
     }
+  })
+})
+
+// MODELS-R2-4: Termpolis carries a relaunch's model and options from the line it saw the agent started with. Where it saw none
+// (a start by a history recall, a reverse search), or saw one the shell edited as it was typed (Tab completion), the relaunch is
+// bare and the user is told so, since a restriction (Codex's -s read-only, a permission mode) is among what is not carried.
+describe('a start Termpolis did not follow (MODELS-R2-4)', () => {
+  it('flags a switch that had no record of the start, whether it resumed or began anew', async () => {
+    const resumed = await run(claude({ start: 'gone-hint' }), { start: undefined })
+    expect(resumed.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID, unseenStart: true })
+    const fresh = await run(claude({ start: 'gone-hint' }), { start: undefined }, { fresh: true })
+    expect(fresh.outcome).toEqual({ kind: 'fresh', why: 'asked', unseenStart: true })
+    const none = await run(claude({ exit: 'no-hint' }), { start: undefined })
+    expect(none.outcome).toEqual({ kind: 'fresh', why: 'no-session', unseenStart: true })
+  })
+
+  it('flags a start the shell edited, which names only the agent, and carries none of what the keys said', async () => {
+    const r = await run(claude(), { start: { at: 0, commands: ['claude'], unsure: true } })
+    expect(r.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID, unseenStart: true })
+    expect(r.recorded[0].start.commands[0]).toBe(`export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --resume ${ID}`)
+  })
+
+  it('flags nothing of a start it followed: its flags came back, and a bare one has none to lose', async () => {
+    const withFlags = await run(claude({ launch: 'claude --model opus' }))
+    expect(withFlags.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    const bare = await run(claude({ launch: 'claude' }))
+    expect(bare.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+  })
+
+  it('says so for Codex too, whose -s read-only is a restriction that would be dropped', async () => {
+    const r = await run(codex(), { start: undefined })
+    expect(r.outcome).toMatchObject({ unseenStart: true })
+  })
+})
+
+// MODELS-R2-3: a Claude Code session in a worktree that ended with NO hint (zero turns print none) comes back in the main
+// folder, as it always did: re-adding `--worktree` is not safe (exiting a zero-turn worktree session on Windows leaves an
+// orphan directory, and `claude --worktree <name>` over it stops with "Cannot self-heal orphaned worktree … EBUSY"). So the
+// outcome says which worktree it did not go back into, and the toast says so.
+describe('a worktree session that exited with no hint (MODELS-R2-3)', () => {
+  it.each([
+    ['--worktree "feat-x"', 'claude --worktree "feat-x" --model opus'],
+    ['--worktree feat-x', 'claude --worktree feat-x --model opus'],
+    ['-w feat-x', 'claude -w feat-x --model opus'],
+    ['--worktree=feat-x', 'claude --worktree=feat-x --model opus'],
+  ])('says it started in the main folder, not in the worktree named by %s', async (_what, launch) => {
+    const r = await run(claude({ exit: 'no-hint', launch }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'no-session', leftWorktree: 'feat-x' })
+    // As before: the model comes back, the worktree does not (nothing is re-added on a guess).
+    expect(r.recorded[0].start.commands[0]).toBe(`export CLAUDE_CONFIG_DIR='C:\\Users\\me\\.claude-b' && claude --model opus --session-id ${NEW_ID}`)
+  })
+
+  it('says the same when the user asked for a new session, which leaves the worktree behind too', async () => {
+    const r = await run(claude({ worktree: 'feat-x', launch: `claude --worktree "feat-x" --model opus --session-id ${ID}` }), {}, { fresh: true })
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'asked', leftWorktree: 'feat-x' })
+  })
+
+  it('says nothing of a worktree the exit named, though it named no session id to resume in it', async () => {
+    // An id that is no session id is none, and the worktree it named is still gone back into, in a new session.
+    const r = await run(claude({ worktree: 'feat-x', id: 'not-an-id', launch: 'claude --worktree "feat-x" --model opus' }))
+    expect(r.outcome).toEqual({ kind: 'fresh', why: 'no-session' })
+    expect(r.recorded[0].start.commands[0]).toContain('claude --worktree "feat-x" --model opus --session-id')
+  })
+
+  it('says nothing of one when the exit named it, the session had none, or the worktree has no name', async () => {
+    const named = await run(claude({ worktree: 'feat-x', launch: `claude --worktree "feat-x" --session-id ${ID}` }))
+    expect(named.outcome).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    const none = await run(claude({ exit: 'no-hint', launch: 'claude --model opus' }))
+    expect(none.outcome).toEqual({ kind: 'fresh', why: 'no-session' })
+    const generated = await run(claude({ exit: 'no-hint', launch: 'claude -w --model opus' }))
+    expect(generated.outcome).toEqual({ kind: 'fresh', why: 'no-session' })
   })
 })
 

@@ -155,7 +155,7 @@ describe('accounts:switch, the run', () => {
     mkdirSync(join(bDir, 'projects', 'C--repo'), { recursive: true })
     writeFileSync(join(bDir, 'projects', 'C--repo', `${ID}.jsonl`), '{"a much longer copy":true}\n')
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
-    expect(await switchTo(b)).toEqual({ kind: 'switched', resumed: true, sessionId: ID, carried: true, kept: `${ID}.jsonl.bak-42` })
+    expect(await switchTo(b)).toEqual({ kind: 'switched', resumed: true, sessionId: ID, carried: true, kept: `${ID}.jsonl.bak-42`, unseenStart: true })
     // Back to main, asking for a new session: an id of main's own making.
     term = new FakeTerminal(claude())
     const fresh = await switchTo(main, { fresh: true })
@@ -180,7 +180,7 @@ describe('accounts:switch, the run', () => {
     mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'))
     writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
-    expect(await switchTo(b)).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(await switchTo(b)).toEqual({ kind: 'switched', resumed: true, sessionId: ID, unseenStart: true })
     log.mockRestore()
   })
 
@@ -217,7 +217,7 @@ describe('accounts:switch, the run', () => {
     noteTerminalAccount('t1', main)
     noteTypedInput('t1', 'export CLAUDE_CONFIG_DIR=/x\r')
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
-    expect(await switchTo(main)).toEqual({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(await switchTo(main)).toEqual({ kind: 'switched', resumed: true, sessionId: ID, unseenStart: true })
     // No start recorded for this terminal: no flags carried, and the default profile unset.
     expect(term.ran[1]).toBe(`unset CLAUDE_CONFIG_DIR && claude --resume ${ID}`)
     log.mockRestore()

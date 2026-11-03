@@ -184,7 +184,7 @@ export function relaunchCommand(spec: RelaunchSpec): string {
 }
 
 /** What a switch repeats of the line the agent was started with (carryForSwitch). */
-export type SwitchCarry = { ok: true; model?: string; extra: string[] } | { ok: false; why: string }
+export type SwitchCarry = { ok: true; model?: string; extra: string[]; worktree?: string } | { ok: false; why: string }
 
 /**
  * The flags a relaunch keeps from the line that started the agent, read by the rule the model switcher
@@ -206,30 +206,44 @@ export function carryForSwitch(agent: AccountAgent, line: string | undefined): S
   const provider: LaunchProvider = agent === 'agy' ? 'gemini' : agent
   const command = withoutInjected(found)
   if (providerForCommand(command) !== provider) return { ok: true, extra: [] }
+  // The worktree an earlier switch typed (inside double quotes) is among what withoutInjected takes out, so it is read first.
+  const typedWorktree = agent === 'claude' ? /\s--worktree\s+"([A-Za-z0-9._-]{1,64})"/.exec(found)?.[1] : undefined
   const name = agent === 'agy' ? 'agy' : agent === 'codex' ? 'Codex' : 'Claude Code'
   const refuse = (what: string): SwitchCarry => ({ ok: false, why: `${name} was started with ${what}, which switching in place would not repeat faithfully, so it would come back without it` })
   const model = modelOfCommand(provider, command)
   if (model !== undefined && !isSafeModelName(model)) return refuse('a model name Termpolis cannot repeat')
   const carry = carryLaunchArgs(provider, command)
   if (!carry.complete) return refuse('options it cannot repeat (a prompt, a quote, an operator, or a flag with several values)')
-  // Claude Code's worktree is the exit hint's to name (ExitHint.worktree), once.
-  const extra = agent === 'claude' ? withoutWorktree(carry.args) : carry.args
-  return { ok: true, ...(model ? { model } : {}), extra }
+  // Claude Code's worktree is the exit hint's to name (ExitHint.worktree), once. `worktree` says which one the line named,
+  // for a switch whose exit named none to say it did not go back into it (MODELS-R2-3).
+  const split: { args: string[]; worktree?: string } = agent === 'claude' ? withoutWorktree(carry.args) : { args: carry.args }
+  const worktree = split.worktree ?? typedWorktree
+  return { ok: true, ...(model ? { model } : {}), extra: split.args, ...(worktree !== undefined ? { worktree } : {}) }
 }
 
-/** `--worktree [name]` and `-w [name]` out of `args`: the relaunch passes the one the exit hint names. */
-function withoutWorktree(args: readonly string[]): string[] {
+/** `--worktree [name]` and `-w [name]` out of `args`: the relaunch passes the one the exit hint names. The name the line
+ *  gave (a worktree name Termpolis would type back, WORKTREE_NAME) is returned beside what is left. */
+function withoutWorktree(args: readonly string[]): { args: string[]; worktree?: string } {
   const out: string[] = []
+  let worktree: string | undefined
+  // The line Termpolis itself typed on an earlier switch names it inside double quotes (relaunchCommand).
+  const named = (name: string): void => {
+    const bare = /^"([^"]*)"$/.exec(name)?.[1] ?? name
+    if (WORKTREE_NAME.test(bare)) worktree = bare
+  }
   for (let i = 0; i < args.length; i++) {
     const w = args[i]
     if (w === '--worktree' || w === '-w') {
-      if (args[i + 1] !== undefined && !args[i + 1].startsWith('-')) i++
+      if (args[i + 1] !== undefined && !args[i + 1].startsWith('-')) named(args[++i])
       continue
     }
-    if (w.startsWith('--worktree=')) continue
+    if (w.startsWith('--worktree=')) {
+      named(w.slice('--worktree='.length))
+      continue
+    }
     out.push(w)
   }
-  return out
+  return worktree === undefined ? { args: out } : { args: out, worktree }
 }
 
 /** What each CLI says when the session it was told to resume isn't there (F6). Claude Code and
@@ -322,10 +336,10 @@ export interface SwitchRequest {
 export type SwitchOutcome =
   /** On the target, with this conversation (`resumed`) or the session id said. `kept` names the
    *  older copy of a carried transcript that was kept beside it (R25). */
-  | { kind: 'switched'; resumed: boolean; sessionId?: string; carried?: boolean; kept?: string }
+  | { kind: 'switched'; resumed: boolean; sessionId?: string; carried?: boolean; kept?: string; unseenStart?: true }
   /** On the target with a new session: the agent printed no id, the target can't see this one
    *  (Codex's path (c), agy's not-found warning), or the user asked for one. */
-  | { kind: 'fresh'; why: 'no-session' | 'not-found' | 'asked' }
+  | { kind: 'fresh'; why: 'no-session' | 'not-found' | 'asked'; leftWorktree?: string; unseenStart?: true }
   /** The agent is at work: stop it first? Nothing was typed. */
   | { kind: 'busy' }
   /** Termpolis can't tell whether the agent still runs: has it exited? Nothing was typed. `osSees`: the operating system

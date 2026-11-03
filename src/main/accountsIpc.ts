@@ -114,6 +114,7 @@ export function forgetTerminalAccount(terminalId: string): void {
   sessionIds.delete(terminalId)
   ownLines.delete(terminalId)
   typedLines.delete(terminalId)
+  editedLines.delete(terminalId)
   byHand.delete(terminalId)
   unsettled.delete(terminalId)
   agentStarts.delete(terminalId)
@@ -341,19 +342,19 @@ const ESCAPE_SEQUENCE = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O.|.)?/
 /** A line typed by hand, for the agent's lifecycle (limitLook.ts): an agent started at the shell, or
  *  a prompt entered in the agent's box. A look that fails changes nothing, and never stops the
  *  line's other checks. */
-function noteLife(terminalId: string, typed: string, now: number, lookNow: () => Look): void {
+function noteLife(terminalId: string, typed: string, now: number, lookNow: () => Look, edited = false): void {
   const io = wiring.io
   const end = wiring.outputEnd?.(terminalId)
   if (!io || end === undefined) return
   try {
-    const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now, lookNow)
+    const started = noteEnteredLine(io, terminalId, agentStarts.get(terminalId), typed, end, now, lookNow, edited)
     if (started) setStart(terminalId, started)
   } catch { /* the next look reads it */ }
 }
 
 /** A whole line was typed into a terminal: Termpolis's own (one main built), or one that changes
  *  the account by hand, which marks the terminal so (§6.1) and tells the renderer. */
-function noteLine(terminalId: string, line: string, now: number, lookNow: () => Look, held = false): 'own' | 'by-hand' | null {
+function noteLine(terminalId: string, line: string, now: number, lookNow: () => Look, held = false, edited = false): 'own' | 'by-hand' | null {
   const typed = line.trim()
   if (!typed) return null
   const mine = (ownLines.get(terminalId) ?? []).filter((l) => l.until > now)
@@ -374,7 +375,7 @@ function noteLine(terminalId: string, line: string, now: number, lookNow: () => 
     if (end !== undefined) setStart(terminalId, startRecord({ at: end, commands: [typed], agent: own.agent }, now))
     return 'own'
   }
-  noteLife(terminalId, typed, now, lookNow)
+  noteLife(terminalId, typed, now, lookNow, edited)
   if (!changesAccountByHand(typed)) return null
   byHand.add(terminalId)
   wiring.send?.(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: terminalAccounts.get(terminalId) ?? null, byHand: true })
@@ -392,7 +393,7 @@ export function noteTypedInput(terminalId: string, typed: string, now: number = 
   const lookNow = oneLook(terminalId)
   // `key`: the one the write carried, which opens the model picker's hold only while that is live.
   const held = holdsModelKey(terminalId, key, now)
-  gatherLines(terminalId, typed, (line) => { result = noteLine(terminalId, line, now, lookNow, held) })
+  gatherLines(terminalId, typed, (line, edited) => { result = noteLine(terminalId, line, now, lookNow, held, edited) })
   return result
 }
 
@@ -403,10 +404,20 @@ function oneLook(terminalId: string): () => Look {
   return () => (seen ??= look(wiring.io as Omit<SwitchIO, 'progress'>, terminalId))
 }
 
+/** Keys a shell edits a line with beyond what the gatherer follows (readline's and PSReadLine's): Tab completes, Ctrl+R
+ *  searches the history, and Ctrl+A/E/B/F/K/W/Y/T/D move, kill, yank, transpose or delete. A line made with one of them, or
+ *  with an escape sequence (the arrow keys recall and move, Home, End and Delete edit), is not the text the keys typed say
+ *  (MODELS-R2-4). Backspace, Ctrl+U and Ctrl+C are followed, so they are not among them. */
+const EDITING_KEYS = '\t\x12\x01\x05\x02\x06\x0b\x17\x19\x14\x04'
+/** The lines whose pending text has been edited so far (by terminal), carried across the writes that make one line. */
+const editedLines = new Set<string>()
+
 /** Keystrokes gathered into the line they make until its Enter, with Backspace, Ctrl+U and Ctrl+C
- *  taken into account and escape sequences left out; `onLine` gets each whole line. */
-function gatherLines(terminalId: string, typed: string, onLine: (line: string) => void): void {
+ *  taken into account and escape sequences left out; `onLine` gets each whole line, and whether the shell's own editing
+ *  (EDITING_KEYS, an arrow key) took part in making it. */
+function gatherLines(terminalId: string, typed: string, onLine: (line: string, edited: boolean) => void): void {
   let line = typedLines.get(terminalId) ?? ''
+  let edited = editedLines.has(terminalId)
   for (let i = 0; i < typed.length; i++) {
     const c = typed[i]
     if (c === '\x1b' && typed.startsWith('\x1b[200~', i)) {
@@ -422,15 +433,23 @@ function gatherLines(terminalId: string, typed: string, onLine: (line: string) =
       line += ' '
       i++
     } else if (c === '\r' || c === '\n') {
-      onLine(line)
+      onLine(line, edited)
       line = ''
+      edited = false
     } else if (c === '\x7f' || c === '\b') line = line.slice(0, -1)
-    else if (c === '\x15' || c === '\x03') line = ''
-    else if (c === '\x1b') i += (ESCAPE_SEQUENCE.exec(typed.slice(i)) as RegExpExecArray)[0].length - 1
+    else if (c === '\x15' || c === '\x03') {
+      line = ''
+      edited = false
+    } else if (c === '\x1b') {
+      i += (ESCAPE_SEQUENCE.exec(typed.slice(i)) as RegExpExecArray)[0].length - 1
+      edited = true
+    } else if (EDITING_KEYS.includes(c)) edited = true
     else if (c >= ' ' && line.length < TYPED_LINE_MAX) line += c
   }
-  if (line) typedLines.set(terminalId, line)
+  if (line || edited) typedLines.set(terminalId, line)
   else typedLines.delete(terminalId)
+  if (edited) editedLines.add(terminalId)
+  else editedLines.delete(terminalId)
 }
 
 /**
@@ -479,6 +498,7 @@ export function _resetTerminalAccountsForTest(): void {
   sessionIds.clear()
   ownLines.clear()
   typedLines.clear()
+  editedLines.clear()
   byHand.clear()
   unsettled.clear()
   agentStarts.clear()
@@ -1358,9 +1378,10 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
       record: (r) => {
         noteTerminalAccount(terminalId, r.accountId)
         if (workers.has(terminalId)) shellAccounts.set(terminalId, { ...shellAccounts.get(terminalId), [agent]: r.accountId })
-        noteAgentStart(terminalId, r.start, now())
-        const relaunched = agentStarts.get(terminalId)
-        if (relaunched) relaunched.relaunched = true
+        // Termpolis relaunched the agent here: the conversation it resumed draws its old limit again (R4).
+        const relaunched = startRecord(r.start, now())
+        relaunched.relaunched = true
+        setStart(terminalId, relaunched)
         if (agent === 'claude') noteTerminalSession(terminalId, r.sessionId)
         deps.send(ACCOUNTS_IPC.terminalAccount, { terminalId, accountId: r.accountId, byHand: false })
       },

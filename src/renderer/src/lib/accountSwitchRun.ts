@@ -181,10 +181,15 @@ export function cardFor(o: SwitchOutcome, run: Pick<SwitchRun, 'agent' | 'to' | 
 export function toastFor(o: Extract<SwitchOutcome, { kind: 'switched' | 'fresh' }>, run: Pick<SwitchRun, 'agent' | 'to' | 'from'>): string {
   const name = ACCOUNT_AGENT_LABEL[run.agent]
   const to = run.to.label
-  if (o.kind === 'switched') return `${name} is on ${to} now. Conversation resumed.`
-  if (o.why === 'not-found') return `${name} is on ${to} now, in a new session: ${to} can't see this conversation. The old one is still in Past AI Sessions${run.from ? `, on ${run.from.label}` : ''}.`
-  if (o.why === 'no-session') return `${name} is on ${to} now, in a new session: it named no conversation to resume.`
-  return `${name} is on ${to} now, in a new session.`
+  // Where Termpolis saw no line start the agent (a history recall, a reverse search) or one the shell edited as it was typed,
+  // its model and options could not be repeated: said, since a restriction can be among them (MODELS-R2-4).
+  const unseen = o.unseenStart ? ` Its model and options were not carried: Termpolis didn't see how ${name} was started.` : ''
+  if (o.kind === 'switched') return `${name} is on ${to} now. Conversation resumed.${unseen}`
+  // A worktree the agent was started in that the new session did not go back into: said, since its files are not here (MODELS-R2-3).
+  const left = (o.leftWorktree ? ` It started in the main folder, not in the worktree ${o.leftWorktree}.` : '') + unseen
+  if (o.why === 'not-found') return `${name} is on ${to} now, in a new session: ${to} can't see this conversation. The old one is still in Past AI Sessions${run.from ? `, on ${run.from.label}` : ''}.${left}`
+  if (o.why === 'no-session') return `${name} is on ${to} now, in a new session: it named no conversation to resume.${left}`
+  return `${name} is on ${to} now, in a new session.${left}`
 }
 
 export function liveRunDeps(): RunDeps {

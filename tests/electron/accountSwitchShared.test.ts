@@ -403,10 +403,14 @@ describe('carryForSwitch: what a switch repeats of the line the agent was starte
     expect(carryForSwitch('agy', `agy --conversation=${ID}`)).toEqual({ ok: true, extra: [] })
   })
 
-  it('leaves out a worktree, which the exit hint names', () => {
-    expect(carryForSwitch('claude', 'claude --worktree feat-x --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
+  it('leaves out a worktree, which the exit hint names, and says which it left out (MODELS-R2-3)', () => {
+    expect(carryForSwitch('claude', 'claude --worktree feat-x --verbose')).toEqual({ ok: true, extra: ['--verbose'], worktree: 'feat-x' })
+    // `-w` with no name asks Claude Code for a generated one: there is none to name.
     expect(carryForSwitch('claude', 'claude -w --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
-    expect(carryForSwitch('claude', 'claude --worktree=feat-x --verbose')).toEqual({ ok: true, extra: ['--verbose'] })
+    expect(carryForSwitch('claude', 'claude --worktree=feat-x --verbose')).toEqual({ ok: true, extra: ['--verbose'], worktree: 'feat-x' })
+    expect(carryForSwitch('claude', 'claude -w feat-y --model opus')).toEqual({ ok: true, model: 'opus', extra: [], worktree: 'feat-y' })
+    // A name it could not type back safely is not offered as one to say.
+    expect(carryForSwitch('claude', 'claude --worktree=a;b')).toMatchObject({ ok: false })
   })
 
   it("has nothing to repeat when nothing was recorded, or the line is another agent's", () => {

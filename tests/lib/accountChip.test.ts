@@ -33,6 +33,16 @@ describe('accountChipFor', () => {
     expect(accountChipFor({ agentCommand: 'codex' }, two, false)).toBeNull()
   })
 
+  // W2-1 (D13): main marks a terminal by hand whenever its account variable is typed, whether or not the registry holds accounts
+  // (accountsIpc noteLine), so only the agent having no account at all keeps a user with their own profile scripts, who added
+  // none, from a red "?" chip.
+  it('shows no chip, even for a terminal changed by hand, when its agent has no account (D13)', () => {
+    expect(accountChipFor({ agentCommand: 'claude' }, view([]), true)).toBeNull()
+    expect(accountChipFor({ agentCommand: 'claude', agentAccountId: 'acc_a' }, view([]), true)).toBeNull()
+    // Accounts for another agent only: Claude Code still has none.
+    expect(accountChipFor({ agentCommand: 'claude' }, view([row({ id: 'c1', agent: 'codex', label: 'second' }), row({ id: 'c2', agent: 'codex', label: 'third' })]), true)).toBeNull()
+  })
+
   it('shows nothing with one account and nothing wrong (D13)', () => {
     expect(accountChipFor({ agentCommand: 'claude', agentAccountId: 'acc_a' }, view([a]), false)).toBeNull()
     expect(accountChipFor({ agentCommand: 'claude' }, view([a]), false)).toBeNull()
