@@ -413,6 +413,43 @@ describe('lessonSubstance: a rule or a mechanism', () => {
         },
       )
 
+      // More irregular pasts, the ones that no other word is spelled like. Left out on purpose: "set", "put", "read", "cut" and "hit", which
+      // are as often an instruction ("set the flag") as a report, and "could", "would" and "should", which are no event.
+      it.each([
+        'broke', 'lost', 'chose', 'held', 'threw', 'spent', 'fell', 'drew', 'drove', 'became', 'met', 'paid', 'said', 'sat', 'stood', 'thought',
+        'caught', 'brought', 'bought', 'felt', 'heard', 'understood', 'forgot', 'knew', 'grew', 'rebuilt', 'reran', 'rewrote', 'redid',
+      ])('takes "%s" for a past tense too', (word) => {
+        expect(credited(`Tune ${word} in \`limits.ts\`, so debounce the handler`)).toBe(false)
+        expect(credited(`Tune ${word.toUpperCase()} in \`limits.ts\`, so debounce the handler`)).toBe(false)
+      })
+
+      it.each(['could', 'would', 'should', 'set', 'put', 'read', 'cut', 'hit', 'break', 'lose', 'hold', 'meet', 'pay', 'know', 'grow'])(
+        'does not take "%s" for a past tense',
+        (word) => {
+          expect(credited(`Tune ${word} in \`limits.ts\`, so debounce the handler`)).toBe(true)
+        },
+      )
+
+      // The new words hold in a report as the older ones do, and a past participle after a determiner or "is" is still no report.
+      it.each([
+        'The build broke on `main`, so the release branch is blocked until the fix is in.',
+        'We lost the cache in `store.ts`, so every request hits the origin until it is rebuilt.',
+        'The reviewer held the change to `index.ts`, so the merge waits for the next round.',
+        'Broke the build in `webpack.config.js` on Monday, so the whole team waited for a fix.',
+        'Chose `pnpm` over the old tool for the monorepo, since the lockfile is smaller and installs are faster.',
+      ])('does not count a report with an irregular past: %s', (text) => {
+        expect(credited(text)).toBe(false)
+        expect(kept(text)).toBe(false)
+      })
+
+      it.each([
+        'A lost update in `rows.ts` needs a version column, so add one before the second writer.',
+        'The lock is held across the await in `queue.ts`, so release it before the next call.',
+        'The condition is met when `init` returns, so wait for that call before reading the flag.',
+      ])('still counts a rule that holds the same word as an adjective or a present passive: %s', (text) => {
+        expect(credited(text)).toBe(true)
+      })
+
       it.each(['fixed', 'merged', 'pushed', 'approved', 'committed', 'deployed', 'applied', 'queued', 'passed'])('takes the -ed word "%s" for a past tense', (word) => {
         expect(credited(`Tune ${word} in \`limits.ts\`, so debounce the handler`)).toBe(false)
       })

@@ -185,6 +185,8 @@ const WEAK_CONNECTIVE_RE = new RegExp(
 // since the lockfile is smaller.") back with the reports: a score of 1, stored and not shown, never a deletion.
 const PAST_IRREGULAR = new Set([
   'was', 'were', 'did', 'ran', 'went', 'came', 'wrote', 'got', 'made', 'took', 'found', 'saw', 'left', 'kept', 'built', 'sent', 'began', 'gave', 'told',
+  'broke', 'lost', 'chose', 'held', 'threw', 'spent', 'fell', 'drew', 'drove', 'became', 'met', 'paid', 'said', 'sat', 'stood', 'thought',
+  'caught', 'brought', 'bought', 'felt', 'heard', 'understood', 'forgot', 'knew', 'grew', 'rebuilt', 'reran', 'rewrote', 'redid',
 ])
 const NOT_PAST = new Set(['speed', 'embed', 'indeed', 'proceed', 'succeed', 'exceed', 'hundred', 'named'])
 const ADJECTIVE_AFTER = new Set(['a', 'an', 'the', 'this', 'that', 'its', 'their', 'each', 'every'])
