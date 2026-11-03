@@ -8,6 +8,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   INGEST_FORMAT_VERSION,
+  MAX_PROBES,
   WATERMARK_FILE,
   fileWatermarkIO,
   ingestFastEnabled,
@@ -186,6 +187,145 @@ describe('persistence', () => {
     for (let i = 0; i < 2_000; i++) wm.markDone(`C:\\Users\\someone\\.claude\\projects\\C--Users-someone-repos-project\\${'0'.repeat(8)}-${i}-aaaa-bbbb-cccc.jsonl`, { size: 123_456 + i, mtimeMs: 1_762_000_000_000.5 + i }, 'full')
     await wm.flush()
     expect((io.text as string).length / 2_000).toBeLessThan(200)
+  })
+})
+
+const H = (n: number): string => n.toString(16).padStart(64, '0') // a chunk hash is 64 hex characters
+
+describe('probes: a few chunk hashes to ask the store about before a mark is trusted', () => {
+  it('keeps the hash given with each mark, newest last, at most 8, each once', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    expect(wm.probes()).toEqual([])
+    for (let i = 1; i <= 12; i++) wm.markDone(`/f${i}`, { size: i, mtimeMs: i }, 'full', H(i))
+    expect(wm.probes()).toEqual([5, 6, 7, 8, 9, 10, 11, 12].map(H))
+    wm.markDone('/g', A, 'full', H(6)) // seen again: it becomes the newest, not a duplicate
+    expect(wm.probes()).toEqual([5, 7, 8, 9, 10, 11, 12, 6].map(H))
+    expect(MAX_PROBES).toBe(8)
+  })
+
+  it('refuses anything that is not a chunk hash, and a mark without a probe adds none', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    for (const bad of ['', 'xyz', 'G'.repeat(64), 'a'.repeat(129), 'abc', '../../etc/passwd', 42 as unknown as string]) wm.markDone('/x', A, 'full', bad)
+    wm.markDone('/y', { size: 2, mtimeMs: 2 }, 'full')
+    expect(wm.probes()).toEqual([])
+    expect(wm.isDone('/y', { size: 2, mtimeMs: 2 }, 'full')).toBe(true) // the marks themselves are fine
+  })
+
+  it('are written with the marks and come back after a restart; damaged ones are dropped, the good ones kept', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/a', A, 'full', H(1))
+    wm.markDone('/b', { size: 5, mtimeMs: 6 }, 'full', H(2))
+    await wm.flush()
+    expect((await openWatermark(io, 's1')).probes()).toEqual([H(1), H(2)])
+    const doc = JSON.parse(io.text as string)
+    doc.probes = [H(3), 'not a hash', 7, null, H(4), H(3)]
+    io.text = JSON.stringify(doc)
+    expect((await openWatermark(io, 's1')).probes()).toEqual([H(4), H(3)]) // the repeat of H(3) is the newer place
+    delete doc.probes
+    io.text = JSON.stringify(doc)
+    expect((await openWatermark(io, 's1')).probes()).toEqual([]) // an older file without any
+  })
+
+  it('discard forgets the probes made since the last flush too; a failed write keeps them for the next try', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/kept', A, 'full', H(1))
+    await wm.flush()
+    wm.markDone('/lost', { size: 2, mtimeMs: 2 }, 'full', H(2))
+    wm.discard()
+    expect(wm.probes()).toEqual([H(1)])
+    wm.markDone('/again', { size: 3, mtimeMs: 3 }, 'full', H(3))
+    ;(io as unknown as { failWrites: boolean }).failWrites = true
+    expect(await wm.flush()).toBe(false)
+    expect(wm.probes()).toEqual([H(1), H(3)])
+    ;(io as unknown as { failWrites: boolean }).failWrites = false
+    expect(await wm.flush()).toBe(true)
+    expect(JSON.parse(io.text as string).probes).toEqual([H(1), H(3)])
+  })
+
+  it('clear() forgets every mark and probe (the store was wiped); the next flush writes the empty store, and new marks work after it', async () => {
+    const io = memoryIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/a', A, 'full', H(1))
+    await wm.flush()
+    wm.markDone('/b', { size: 2, mtimeMs: 2 }, 'full', H(2)) // not flushed yet
+    wm.clear()
+    expect(wm.size).toBe(0)
+    expect(wm.probes()).toEqual([])
+    expect(wm.isDone('/a', A, 'full')).toBe(false)
+    expect(await wm.flush()).toBe(true) // something left the store: the file must say so
+    expect(JSON.parse(io.text as string)).toMatchObject({ files: {}, probes: [] })
+    wm.markDone('/c', A, 'full', H(3))
+    await wm.flush()
+    const again = await openWatermark(io, 's1')
+    expect(again.size).toBe(1)
+    expect(again.probes()).toEqual([H(3)])
+    expect(await wm.flush()).toBe(false) // and then quiet again
+  })
+})
+
+describe('writes: a mark made while a write is out is never lost', () => {
+  /** An io whose writes wait until released, so the timing is the test's. */
+  function slowIO() {
+    const io = {
+      text: null as string | null,
+      writes: [] as string[],
+      inFlight: 0,
+      maxInFlight: 0,
+      release: [] as Array<() => void>,
+      async read() { return io.text },
+      async write(text: string) {
+        io.inFlight++
+        io.maxInFlight = Math.max(io.maxInFlight, io.inFlight)
+        io.writes.push(text)
+        await new Promise<void>((resolve) => io.release.push(resolve))
+        io.text = text
+        io.inFlight--
+      },
+    }
+    return io
+  }
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
+
+  it('the mark is still vouched for while its write is out, and a mark made meanwhile goes out with the NEXT write', async () => {
+    const io = slowIO()
+    const wm = await openWatermark(io, 's1')
+    wm.markDone('/one', A, 'full', H(1))
+    const first = wm.flush()
+    await tick()
+    expect(io.writes).toHaveLength(1)
+    expect(wm.isDone('/one', A, 'full')).toBe(true) // out on its way, still good
+    expect(wm.size).toBe(1)
+    wm.markDone('/two', { size: 2, mtimeMs: 2 }, 'full', H(2)) // made while the first write is out
+    const second = wm.flush()
+    await tick()
+    expect(io.writes).toHaveLength(1) // writes go one at a time
+    io.release.shift()!()
+    expect(await first).toBe(true)
+    await tick()
+    expect(io.writes).toHaveLength(2)
+    io.release.shift()!()
+    expect(await second).toBe(true)
+    expect(io.maxInFlight).toBe(1)
+    const stored = JSON.parse(io.text as string)
+    expect(Object.keys(stored.files).sort()).toEqual(['/one', '/two'])
+    expect(stored.probes).toEqual([H(1), H(2)])
+    expect(await wm.flush()).toBe(false) // nothing was left behind in memory only
+  })
+
+  it('a write that fails while another mark is pending keeps both for the next try', async () => {
+    const io = slowIO()
+    const failing = { ...io, async write(text: string) { io.writes.push(text); await tick(); throw new Error('disk full') } }
+    const wm = await openWatermark(failing as never, 's1')
+    wm.markDone('/one', A, 'full', H(1))
+    const first = wm.flush()
+    wm.markDone('/two', { size: 2, mtimeMs: 2 }, 'full', H(2))
+    expect(await first).toBe(false)
+    expect(wm.isDone('/one', A, 'full')).toBe(true)
+    expect(wm.isDone('/two', { size: 2, mtimeMs: 2 }, 'full')).toBe(true)
+    expect(wm.probes()).toEqual([H(1), H(2)])
+    expect(wm.pending).toBe(2)
   })
 })
 

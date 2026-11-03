@@ -235,6 +235,97 @@ describe('only a COMPLETE ingest is marked', () => {
   })
 })
 
+describe('a mark is a claim about the store (it was cleared, restored or re-keyed behind the watermark)', () => {
+  it('a wiped store makes the next pass learn everything again, and the pass after it skips again', async () => {
+    const c = corpus()
+    fill(c, 6, 3)
+    const { io, wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    const stored = c.known.size
+    expect(stored).toBeGreaterThan(6)
+
+    c.known.clear() // memory:clear, a restore, a new memory key: the store holds nothing now
+    c.clearCounters()
+    const again = await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toHaveLength(6) // every file is read again
+    expect(again.chunksWritten).toBe(stored)
+    expect(again.unchanged).toBe(0)
+    expect(c.known.size).toBe(stored)
+
+    c.clearCounters()
+    const steady = await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([])
+    expect(steady.unchanged).toBe(6)
+    expect(JSON.parse(io.text as string).probes.length).toBeGreaterThan(0)
+  })
+
+  // NEGATIVE CONTROL: the same second pass over an intact store reads nothing.
+  it('control: with the store intact the second pass reads nothing, and asks about at most 8 probe chunks, once', async () => {
+    const c = corpus()
+    fill(c, 6, 3)
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([])
+    expect(c.hashAsks).toHaveLength(1)
+    expect(c.hashAsks[0].length).toBeLessThanOrEqual(8)
+  })
+
+  it('a store that has lost SOME of what the marks vouch for (a few memories deleted) is still a store: the marks stay', async () => {
+    const c = corpus()
+    fill(c, 6, 3)
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    for (const h of wm.probes().slice(0, 3)) c.known.delete(h)
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([])
+  })
+
+  it('a store that cannot answer is not evidence of anything: the marks stay (and the pass reads nothing)', async () => {
+    const c = corpus()
+    fill(c, 6, 3)
+    const { wm } = await open()
+    await ingestConversations(c.deps({ watermark: wm }))
+    c.clearCounters()
+    const s = await ingestConversations(c.deps({ watermark: wm, hasHashes: async () => { throw new Error('memory host down') } }))
+    expect(c.reads).toEqual([])
+    expect(s.unchanged).toBe(6)
+    expect(wm.size).toBe(6)
+  })
+
+  it('works through the synchronous per-chunk predicate too; with no way to ask the store at all the marks stay', async () => {
+    const c = corpus()
+    fill(c, 4, 3)
+    const { wm } = await open()
+    const syncDeps = (): Partial<Parameters<typeof ingestConversations>[0]> => ({ hasHashes: undefined, hasHash: (h: string) => c.known.has(h) })
+    await ingestConversations(c.deps({ watermark: wm, ...syncDeps() }))
+    c.known.clear()
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm, ...syncDeps() }))
+    expect(c.reads).toHaveLength(4) // the wipe was seen through hasHash
+
+    c.known.clear()
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: wm, hasHashes: undefined, hasHash: undefined }))
+    expect(c.reads).toEqual([]) // nothing to ask: the marks are all there is, and they stay
+  })
+
+  it('a store wiped while its marks were never confirmed (a first pass after a restart) is seen at the start of that pass', async () => {
+    const c = corpus()
+    fill(c, 5, 3)
+    const io = memoryIO()
+    const first = await openWatermark(io, 'test-stamp')
+    await ingestConversations(c.deps({ watermark: first }))
+    c.known.clear()
+    const restarted = await openWatermark(io, 'test-stamp') // the app was restarted over a wiped store
+    c.clearCounters()
+    await ingestConversations(c.deps({ watermark: restarted }))
+    expect(c.reads).toHaveLength(5)
+  })
+})
+
 describe('the two tiers (the fast pass emits only sealed chunks)', () => {
   it('a sealed pass marks "sealed": the next FULL pass still reads the file for its trailing partial chunk, the next sealed one does not', async () => {
     const c = corpus()
@@ -331,6 +422,57 @@ describe('when the marks are kept', () => {
     await ingestConversations(c.deps({ watermark: wm, fullListing: true }))
     expect(wm.size).toBe(1)
     expect(a).toBeDefined()
+  })
+})
+
+describe('forgetting files that are gone (only from a listing that was complete)', () => {
+  const setup = async () => {
+    const c = corpus()
+    const a = c.add('/claude/a.jsonl', sessionText('a', 2))
+    const b = c.add('/claude/b.jsonl', sessionText('b', 2))
+    const r1 = c.add('/codex/r1.jsonl', 'not a rollout')
+    const r2 = c.add('/codex/r2.jsonl', 'nor is this')
+    const { wm } = await open()
+    const deps = (over: Record<string, unknown> = {}) =>
+      c.deps({
+        watermark: wm,
+        sources: ['claude', 'codex'],
+        listFiles: async (src) => (src === 'claude' ? [a, b] : [r1, r2]),
+        fullListing: true,
+        ...over,
+      })
+    return { c, a, b, r1, r2, wm, deps }
+  }
+
+  it('a pass cut short before it listed every source does not forget the marks of the sources it never reached', async () => {
+    const { c, a, b, r1, r2, wm, deps } = await setup()
+    await ingestConversations(deps())
+    expect(wm.size).toBe(4)
+    c.append(a, lines(userLine('more', { sessionId: 'sess-a', cwd: '/r' })))
+    c.append(b, lines(userLine('more', { sessionId: 'sess-b', cwd: '/r' })))
+    const cut = await ingestConversations(deps({ maxBytes: 1 })) // stops in claude: codex is never listed this pass
+    expect(cut).toMatchObject({ truncated: true, stop: 'bytes' })
+    expect(wm.size).toBe(4)
+    for (const f of [r1, r2]) {
+      const st = c.files.get(f)!
+      expect(wm.isDone(f, { size: st.size, mtimeMs: st.mtimeMs }, 'full')).toBe(true)
+    }
+  })
+
+  // NEGATIVE CONTROL: a COMPLETE pass over a listing without r2 does forget it, and only it.
+  it('control: a complete pass whose listing lacks a file forgets that file and keeps the rest', async () => {
+    const { r1, r2, wm, deps } = await setup()
+    await ingestConversations(deps())
+    await ingestConversations(deps({ listFiles: async (src: string) => (src === 'claude' ? ['/claude/a.jsonl', '/claude/b.jsonl'] : [r1]) }))
+    expect(wm.size).toBe(3)
+    expect(wm.isDone(r2, { size: 11, mtimeMs: 0 }, 'full')).toBe(false)
+  })
+
+  it('a source whose listing fails makes the listing incomplete: nothing is forgotten from it', async () => {
+    const { wm, deps } = await setup()
+    await ingestConversations(deps())
+    await ingestConversations(deps({ listFiles: async (src: string) => { if (src === 'codex') throw new Error('EACCES'); return ['/claude/a.jsonl', '/claude/b.jsonl'] } }))
+    expect(wm.size).toBe(4) // codex could not be listed, so its files are not "gone"
   })
 })
 

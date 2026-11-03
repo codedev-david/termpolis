@@ -121,6 +121,23 @@ describe('the first pass and the steady pass', () => {
     k.restore()
   })
 
+  it('memory:clear (a wiped store) is seen by the next pass, which learns everything again through the real files', async () => {
+    sessions(8)
+    configure()
+    const m = store()
+    await run(m)
+    const had = m.known.size
+    m.known.clear()
+    const k = counters()
+    const s = await run(m)
+    expect(k.c.open).toBe(8)
+    expect(s).toMatchObject({ filesScanned: 8, unchanged: 0 })
+    expect(m.known.size).toBe(had)
+    k.reset()
+    expect((await run(m)).unchanged).toBe(8) // and quiet again
+    k.restore()
+  })
+
   it('another app version means a fresh start: one budgeted re-scan, never a wrong skip', async () => {
     sessions(4)
     configure()
