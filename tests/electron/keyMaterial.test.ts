@@ -1041,14 +1041,16 @@ describe('T1 K6: a PuTTY key file', () => {
     expect(leakedWindows(r.text, priv)).toBe(0)
   })
 
-  // The five kinds of key PuTTYgen writes, each with the size of its public and private blobs: an Ed25519 key's private part is one line of 48
-  // characters (PuTTYgen's default), an ECDSA P-256 key's one of 52, P-521's two (64 and 32), a DSA key's one of 36. Built from a fixed stream of
-  // bytes, so what is asserted of a short line's randomness is the same every run (3 in 100 of them fail the test); a stream is taken whose
-  // private part passes it and does not start with a digit (a file with no line breaks reads the digits after `Private-Lines: ` as its count).
+  // The six kinds of key PuTTYgen writes, each with the size of its public and private blobs: an Ed25519 key's private part is one line of 48
+  // characters (PuTTYgen's default), an ECDSA P-256 key's one of 52, P-384's two (64 and 8: the private value is 48 bytes, so 52 or 53 with its
+  // length, and the second line is shorter than a payload run and ends in padding), P-521's two (64 and 32), a DSA key's one of 36. Built from a
+  // fixed stream of bytes, so what is asserted of a short line's randomness is the same every run (3 in 100 of them fail the test); a stream is
+  // taken whose private part passes it and does not start with a digit (a file with no line breaks reads the digits after `Private-Lines: ` as its count).
   const PPK_KINDS: Record<string, [string, number, number]> = {
     rsa: ['ssh-rsa', 279, 880],
     ed25519: ['ssh-ed25519', 51, 36],
     p256: ['ecdsa-sha2-nistp256', 104, 37],
+    p384: ['ecdsa-sha2-nistp384', 137, 52],
     p521: ['ecdsa-sha2-nistp521', 172, 70],
     dsa: ['ssh-dss', 435, 25],
   }
@@ -1198,6 +1200,102 @@ describe('T1 K6: a PuTTY key file', () => {
       expect(leakedWindows(r.text, secret), dir).toBe(0)
       expect(r.text, dir).toContain(piece)
     }
+  })
+
+  it('takes the private lines of an ECDSA P-384 file, whose second private line is 8 characters and ends in padding, in every joining of the fixtures', () => {
+    // The private value is 48 bytes, the blob 52 or 53, so the file says `Private-Lines: 2` and its second line is shorter than a payload run (16),
+    // which no run counted: the first line was only reported, and 64 of the key's 72 characters crossed.
+    for (const version of [2, 3] as const) {
+      for (const mac of [true, false]) {
+        const { lines, secret } = ppkOf('p384', { version, mac })
+        expect(secret.map((l) => l.length), 'the shape of the private part').toEqual([64, 8])
+        expect(secret[1].endsWith('='), 'it ends in padding').toBe(true)
+        for (const [name, join] of Object.entries(JOIN)) {
+          const label = `version ${version}, ${mac ? 'with' : 'without'} the MAC line, ${name}`
+          const r = screenKeys(`Here is the file:\n${join(lines)}\nDone.`)
+          expect(r.removed, label).toEqual({ putty_private_key: 1 })
+          expect(leakedWindows(r.text, secret), label).toBe(0)
+          expect(shownWhole(r.text, secret[1]), `${label}: the second line`).toBe(false)
+        }
+      }
+    }
+  })
+
+  it('takes the second of two private lines when it is 4, 8 or 12 characters and padded, in the forms of a literal, a listing and a log', () => {
+    // The first line is a real P-384 key's; the second is what the file counts (`Private-Lines: 2`), ends in padding, and is the last thing on its line:
+    // the quote that closes its string (with more text after it), a MAC line (joined to it by a few characters of punctuation), or the end of the line.
+    const { lines: base, secret: priv } = ppkOf('p384', { mac: false })
+    const head = base.slice(0, base.length - 1)
+    const padded = (bytes: number): string => randomBytes(bytes).toString('base64')
+    for (const [bytes, size] of [[2, 4], [5, 8], [8, 12]] as Array<[number, number]>) {
+      const last = padded(bytes)
+      expect(last.length, `${size} characters`).toBe(size)
+      expect(last.endsWith('='), `${size} characters, padded`).toBe(true)
+      const file = [...head, last]
+      for (const [name, text] of Object.entries({
+        'in its own lines, the text ending with it': file.join('\n'),
+        'in a JSON object': `{"ppk":${JSON.stringify(file.join('\n'))},"ok":true}`,
+        'in a JSON string whose last line ends in a break written out': `{"ppk":${JSON.stringify(file.join('\n') + '\n')},"ok":true}`,
+        'in a Python dict': `{'ppk': '${file.join(BS + 'n')}', 'ok': True}`,
+        'followed by a CR': `${file.join('\r')}\rDone.`,
+        'in a template literal': `const key = \`${file.join('\n')}\`; deploy(key)`,
+        'with a MAC line joined to it by a dash': `${file.join('-')}-Private-MAC: ${'a1'.repeat(32)}`,
+        'in a listing': file.map((l, i) => `config/deploy/key.ppk:${i + 1}:${l}`).join('\n'),
+        'behind a padded request id on each line': file.map((l) => `ZmFrZQ== ${l}`).join('\n'),
+        'behind blanks and a carriage return': file.map((l) => `${l}   `).join('\r'),
+      })) {
+        const r = screenKeys(text)
+        expect(r.removed, `${size} characters, ${name}`).toEqual({ putty_private_key: 1 })
+        expect(leakedWindows(r.text, [priv[0]]), `${size} characters, ${name}`).toBe(0)
+        expect(shownWhole(r.text, last), `${size} characters, ${name}: the last line`).toBe(false)
+        if (name.includes('request id')) expect(r.text, name).toContain('ZmFrZQ==')
+      }
+    }
+  })
+
+  it('reads at most 32 characters after a padded second line to tell it from a frame token', () => {
+    const { lines } = ppkOf('p384', { mac: false })
+    const secret = lines.slice(-2)
+    // 31 blanks and the break are in the 32 characters read; 32 blanks put the break outside them, and the line goes on as far as the read can tell
+    for (const blanks of [0, 1, 31]) {
+      const r = screenKeys(`${lines.join('\n')}${' '.repeat(blanks)}\nDone.`)
+      expect(r.removed, `${blanks} blanks`).toEqual({ putty_private_key: 1 })
+      expect(leakedWindows(r.text, secret), `${blanks} blanks`).toBe(0)
+    }
+    const long = `${lines.join('\n')}${' '.repeat(32)}\nDone.`
+    const r = screenKeys(long)
+    expect(r.text).toBe(long)
+    expect(r.removed).toEqual({})
+    expect(r.flagged).toEqual({ putty_private_key: 1 })
+  })
+
+  it('leaves the first of the lines a file names alone when what follows it is not the last line: unpadded, too short, a word, an assignment or one line too few', () => {
+    // A key with one line in view has only been reported (a file cut short keeps its first line: the design's excerpt). The second line takes the
+    // last of the n lines the file names, padded, as the last thing on its line; anything else short after the first line is a word of the frame.
+    const { lines: base, secret: priv } = ppkOf('p384', { mac: false })
+    const head = base.slice(0, base.length - 1)
+    const three = head.map((l) => (l === 'Private-Lines: 2' ? 'Private-Lines: 3' : l))
+    const tails: Record<string, string> = {
+      'a word with no padding': 'Zm9vYmFy',
+      'two characters and padding': 'A=',
+      'three characters and padding': 'AB=',
+      'a padded word, then words': 'Zm9vYg== and then some words',
+      'an assignment with a space after the equals sign': 'name= value',
+      'a padded word, then a word of the frame': 'Zm9vYmE= trailing',
+    }
+    for (const [name, tail] of Object.entries(tails)) {
+      const text = `${head.join('\n')}\n${tail}\n`
+      const r = screenKeys(text)
+      expect(r.text, name).toBe(text)
+      expect(r.removed, name).toEqual({})
+      expect(r.flagged, name).toEqual({ putty_private_key: 1 })
+    }
+    // one line too few: three lines are named, and the file stops after its first and a padded word
+    const cut = `${three.join('\n')}\nZm9vYg==\n`
+    const r = screenKeys(cut)
+    expect(r.text).toBe(cut)
+    expect(r.removed).toEqual({})
+    expect(leakedWindows(r.text, [priv[0]])).toBeGreaterThan(0)
   })
 
   it('takes the private lines of a PuTTY file written with no line break at all, with its MAC line behind and without it', () => {

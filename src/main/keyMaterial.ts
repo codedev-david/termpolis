@@ -1696,6 +1696,20 @@ export function proseEnds(text: string, start = 0): (from: number) => number {
   }
 }
 
+/** Whether the base64 run that ends at `e` is the last thing in its line or in the string it is written in: a break follows it (a real one, or one
+ *  written out), or the quote that closes the string, with nothing but blanks and a literal's joiners between. A word, a digit or a colon comes
+ *  first when the run is only a frame's (a request id in front of each line's payload). Reads 32 characters at the most. */
+function endsItsLine(text: string, e: number): boolean {
+  const stop = Math.min(text.length, e + 32)
+  for (let i = e; i < stop; i++) {
+    const c = text.charCodeAt(i)
+    if (c === 10 || c === 13 || c === 34 || c === 39 || c === 96 || escapeAt(text, i) !== null) return true
+    // (a backslash that is no escape: the one in front of a quote that JSON written in JSON escapes, or a line continuation)
+    if (c !== 92 && !PARTIAL_JOINERS.includes(text[i])) return false
+  }
+  return stop === text.length
+}
+
 export function puttyKeys(text: string, start = 0): KeySpan[] {
   const out: KeySpan[] = []
   const heads: number[] = []
@@ -1743,7 +1757,11 @@ export function puttyKeys(text: string, start = 0): KeySpan[] {
       i = e
       at = e
       const len = e - a
-      if (len <= 12) {
+      // (the line the file still lacks can be this short: an ECDSA P-384 key's blob is 52 or 53 bytes, 72 characters, so the file says
+      // `Private-Lines: 2` and its second line is 8, ending in padding. A frame's word is as short, but is not padded and is not the last thing on its
+      // line: a clock time or a path's piece comes before the payload.)
+      const lastShort = len >= 4 && runs.length === n - 1 && text.charCodeAt(e - 1) === 61 && (beforeMac || endsItsLine(text, e))
+      if (len <= 12 && !lastShort) {
         if (text.startsWith('Private', a) && text.startsWith('-MAC', e)) break
         continue
       }
