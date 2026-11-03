@@ -1601,6 +1601,14 @@ describe('a record that a killed write left a temporary copy of', () => {
     expect(fs.existsSync(manifestFile())).toBe(false)
   })
 
+  it('goes on to the next copy when one cannot be deleted, and the removal still succeeds', async () => {
+    const store = await imported()
+    fs.mkdirSync(path.join(data, `${NOTES_MANIFEST_FILE}.termpolis-1.tmp`)) // a folder of that name cannot be unlinked
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-2.tmp`)
+    expect(await removeImportedNotes(deps(store))).toMatchObject({ removed: 1, failed: 0 })
+    expect(left()).toEqual([`${NOTES_MANIFEST_FILE}.termpolis-1.tmp`]) // the one that could not go stays, the other one is gone
+  })
+
   it('never throws for a folder it cannot read, and never stops a removal or a clear', async () => {
     expect(() => fileManifest(path.join(data, 'no-such-folder')).tidy?.()).not.toThrow()
     const bare: NotesManifestIO = { read: () => null, write: () => {} } // no tidy: the record is not a file
