@@ -174,8 +174,7 @@ describe('the prompt reports a terminal has ever printed (SW2-10)', () => {
 
   it('reads a report inside a larger chunk, and the other family alone', () => {
     const buffers: OutputBuffers = new Map()
-    appendOutput(buffers, 'a', `some output
-${WINDOWS}PS> more`)
+    appendOutput(buffers, 'a', `some output\r\n${WINDOWS}PS> more`)
     expect(reportedFamilies(buffers, 'a')).toEqual({ posix: false, windows: true })
     appendOutput(buffers, 'b', `${E}]9;1;a progress report is no prompt${String.fromCharCode(7)}`)
     expect(reportedFamilies(buffers, 'b')).toEqual({ posix: false, windows: false })
