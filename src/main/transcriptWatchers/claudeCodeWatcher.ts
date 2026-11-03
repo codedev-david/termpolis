@@ -35,6 +35,8 @@ export interface ClaudeCodeWatcherHandle {
   terminalId: string
   sessionFile: string
   stop(): void
+  /** Resolves when the tail has delivered what it found so far (for tests, and a caller that must know it caught up). */
+  settled(): Promise<void>
 }
 
 /** How long a folder name Claude Code makes from a working folder gets before it is cut short. */
@@ -77,10 +79,11 @@ function folderHash(text: string): number {
  *  which Node's realpathSync reads as the folder the process runs in. Asked on the thread pool: this is the
  *  JavaScript realpath (as realpathSync was), NOT fs.promises.realpath, which is the native one and would
  *  spell a short name out. */
-const realpathJs = promisify(fs.realpath)
+let realpathJs: ((path: string) => Promise<string>) | undefined
 export async function claudeCwd(cwd: string): Promise<string> {
   if (!cwd) return cwd
   try {
+    realpathJs ??= promisify(fs.realpath) // made on first use, so a module that only imports this file never reads fs.realpath
     return await realpathJs(cwd)
   } catch {
     return cwd
@@ -321,11 +324,13 @@ export async function attachClaudeCodeWatcher(terminalId: string, cwd: string): 
   // bounded 250-chunk bursts precisely so a first index "can't peg the main thread") owns the
   // backfill, and it is idempotent.
   const tail: TailHandle = tailFile(sessionFile, (line) => processClaudeLine(line, terminalId), { startAtEnd: true })
+  await tail.ready // attached means the start position is fixed: a line appended after this is delivered
 
   return {
     terminalId,
     sessionFile,
     stop: () => tail.stop(),
+    settled: () => tail.settled?.() ?? Promise.resolve(),
   }
 }
 

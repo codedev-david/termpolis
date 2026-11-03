@@ -19,6 +19,8 @@ export interface GeminiWatcherHandle {
   terminalId: string
   sessionFile: string
   stop(): void
+  /** Resolves when the tail has delivered what it found so far (for tests, and a caller that must know it caught up). */
+  settled(): Promise<void>
 }
 
 export async function findLatestGeminiSessionFile(): Promise<string | null> {
@@ -102,10 +104,12 @@ export async function attachGeminiWatcher(terminalId: string): Promise<GeminiWat
   // startAtEnd — live events only. See claudeCodeWatcher: opening at byte 0 replayed the entire
   // transcript through the event bus on the main thread. runConversationIngest owns the backfill.
   const tail: TailHandle = tailFile(sessionFile, (line) => processGeminiLine(line, terminalId), { startAtEnd: true })
+  await tail.ready // attached means the start position is fixed: a line appended after this is delivered
 
   return {
     terminalId,
     sessionFile,
     stop: () => tail.stop(),
+    settled: () => tail.settled?.() ?? Promise.resolve(),
   }
 }

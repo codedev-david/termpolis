@@ -132,6 +132,31 @@ describe('tailFile: the asynchronous pass', () => {
     t.stop()
   })
 
+  it('ready: once it resolves the start position is fixed, so a line appended after it is delivered and the old ones are not', async () => {
+    fs.writeFileSync(file, 'old1\nold2\n')
+    const seen: string[] = []
+    const t = tailFile(file, (l) => { seen.push(l) }, { startAtEnd: true })
+    await t.ready
+    fs.appendFileSync(file, 'live\n')
+    await t.settled?.()
+    await until(() => seen.length >= 1, 'the live line') // the first pass may have run before the append: the poll finds it
+    expect(seen).toEqual(['live']) // nothing of the history, the line appended after attach once
+    t.stop()
+  })
+
+  it('settled: resolves only after the attach-time pass has delivered what it found (a tail from byte 0 reads the whole file)', async () => {
+    fs.writeFileSync(file, 'a\nb\nc\n')
+    const seen: string[] = []
+    const t = tailFile(file, (l) => { seen.push(l) })
+    expect(seen).toEqual([]) // nothing is read on the calling thread
+    await t.settled?.()
+    expect(seen).toEqual(['a', 'b', 'c'])
+    const reads = H.opens
+    await t.settled?.() // idle: it settles at once and starts no pass of its own
+    expect(H.opens).toBe(reads)
+    t.stop()
+  })
+
   it('survives a stat that fails (the file is gone) and picks the file up when it is back', async () => {
     const seen: string[] = []
     const t = tailFile(file, (l) => { seen.push(l) })

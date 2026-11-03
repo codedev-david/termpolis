@@ -27,6 +27,12 @@ export const POLL_INTERVAL_MS = 1500           // polling fallback cadence
 
 export interface TailHandle {
   stop(): void
+  /** Resolves once the tail's start position is fixed (the file's end when it was asked to start there). A caller that
+   *  awaits it keeps the old guarantee of attaching: whatever is appended after that is delivered, never skipped. */
+  ready?: Promise<void>
+  /** Resolves when no pass is running (the one at attach time included): what a pass found has been delivered. For
+   *  tests, and for a caller that must know the tail has caught up. */
+  settled?: () => Promise<void>
 }
 
 /**
@@ -134,13 +140,14 @@ export function tailFile(
     deliver(got === toRead ? buf : buf.subarray(0, got))
   }
 
+  let lastPass: Promise<void> = Promise.resolve()
   const gate = createRunGate({
     mode: 'leading',
     windowMs: WATCH_MIN_INTERVAL_MS,
     label: `transcript ${path.basename(filePath)}`,
     // (No log here: the shedding watch below caps what reaches this gate at 200 events a second, which is not
     // a flood to the gate, so it has nothing to say; the shedding watch logs its own closing.)
-    run: tickAsync,
+    run: () => (lastPass = tickAsync()),
   })
 
   // fs.watch for change events. A shedding watch: a transcript that is written to hundreds of times a second
@@ -173,6 +180,15 @@ export function tailFile(
       try { watcher?.close() } catch {}
       watcher = null
       if (poller) { clearInterval(poller); poller = null }
+    },
+    ready,
+    async settled() {
+      await ready
+      let seen: Promise<void>
+      do {
+        seen = lastPass
+        await seen.catch(() => { /* a failed pass is the gate's to report; this only waits */ })
+      } while (seen !== lastPass)
     },
   }
 }
