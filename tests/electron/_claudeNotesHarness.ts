@@ -166,6 +166,7 @@ export function flakyManifest(ok: number): NotesManifestIO & { writes: () => num
   return {
     read: () => real.read(),
     write: (text) => { if (++n > ok) throw new Error('disk full'); real.write(text) },
+    tidy: () => real.tidy?.(), // a full disk does not stop a file from being unlinked
     writes: () => n,
   }
 }

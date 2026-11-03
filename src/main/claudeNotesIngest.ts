@@ -29,7 +29,7 @@
 // account for (the ones a killed pass wrote before it could record them).
 
 import { createHash, randomBytes } from 'crypto'
-import { promises as fsp, readFileSync } from 'fs'
+import { promises as fsp, readdirSync, readFileSync, unlinkSync } from 'fs'
 import { homedir } from 'os'
 import { isAbsolute, join, relative } from 'path'
 import { atomicWriteText } from './agentConfigIO'
@@ -295,14 +295,31 @@ export interface NotesManifestIO {
   read(): string | null
   /** Replace the saved text, atomically. Throws when it cannot. */
   write(text: string): void
+  /** Take away what a write that was killed half way left beside the record (its temporary copy holds every note's file name and
+   *  working directory, so the record is not all gone while that stays). Best effort; the callers do not let it throw. */
+  tidy?(): void
 }
 
 export function fileManifest(dir: string): NotesManifestIO {
   const file = join(dir, NOTES_MANIFEST_FILE)
+  // atomicWriteText saves to `<file>.termpolis-<pid>.tmp` and renames it: this is what a kill between the two leaves.
+  const leftover = (name: string): boolean => name.startsWith(`${NOTES_MANIFEST_FILE}.termpolis-`) && name.endsWith('.tmp')
   return {
     read: () => { try { return readFileSync(file, 'utf8') } catch { return null } },
     write: (text) => atomicWriteText(file, text),
+    tidy: () => {
+      let names: string[]
+      try { names = readdirSync(dir) } catch { return }
+      for (const name of names.filter(leftover)) {
+        try { unlinkSync(join(dir, name)) } catch { /* another try at the next removal */ }
+      }
+    },
   }
+}
+
+/** The record's own housekeeping must never be the reason a removal or a clear fails. */
+function tidyRecord(io: Pick<NotesManifestIO, 'tidy'>): void {
+  try { io.tidy?.() } catch { /* best effort */ }
 }
 
 const isRec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -840,6 +857,7 @@ export function removeImportedNotes(deps: NotesDeps): Promise<RemoveResult> {
     // Not clean until every id is gone and the store was seen whole; the next pass then checks.
     m.dirty = !swept || m.stale.length > 0
     ledger.save()
+    tidyRecord(deps.manifest) // the record starts over, and no earlier copy of it is left beside it
     // A store that could not be looked through says so: a record that had lost its copies removes nothing then, and "removed 0" would
     // read as a success while every agent can still find them.
     return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : ids.size, ...(listed ? {} : { unchecked: true }) }
@@ -877,6 +895,7 @@ export function finishQueuedRemovals(deps: NotesDeps): Promise<RemoveResult> {
 export function clearNotesRecord(deps: Pick<NotesDeps, 'manifest'>, clear: () => Promise<unknown>): Promise<void> {
   return exclusive(async () => {
     await clear()
+    tidyRecord(deps.manifest) // a killed write's temporary copy goes too, whether or not a record survived
     try {
       const text = deps.manifest.read()
       if (text === null) return // no record: nothing was ever imported here, so there is nothing to empty and no file to make

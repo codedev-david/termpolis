@@ -1498,6 +1498,82 @@ describe('Clear memory and the record of imported notes', () => {
   })
 })
 
+// A write of the record that is killed half way leaves its temporary copy beside it (`claude-notes-manifest.json.termpolis-<pid>.tmp`),
+// with every note's file name and working directory in it. The live record is never torn, but "Remove imported notes" and "Clear
+// memory" must not leave another copy of it behind them.
+describe('a record that a killed write left a temporary copy of', () => {
+  const stray = (name: string, mode?: number): string => {
+    const file = path.join(data, name)
+    fs.writeFileSync(file, '{"files":{"C--work-app/a.md":{}}}')
+    if (mode !== undefined) fs.chmodSync(file, mode)
+    return file
+  }
+  const imported = async (): Promise<ReturnType<typeof fakeStore>> => {
+    note(FOLDER, 'a.md', '---\nname: a\n---\nAlpha.')
+    session(FOLDER, CWD)
+    const store = fakeStore()
+    await runClaudeNotesIngest(deps(store))
+    return store
+  }
+  const left = (): string[] => fs.readdirSync(data).filter((f) => f.endsWith('.tmp')).sort()
+
+  it('is taken away by "Remove imported notes", and nothing else beside the record is touched', async () => {
+    const store = await imported()
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-4242.tmp`)
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-9.tmp`)
+    stray('memory-metrics.jsonl.termpolis-4242.tmp') // another file's temporary copy is not this record's
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-4242.tmp.keep`)
+    stray(`${NOTES_MANIFEST_FILE}.other.tmp`) // a temporary file of the record's name, but not one that a write of the record makes
+    stray(`${NOTES_MANIFEST_FILE}.bak`)
+    await removeImportedNotes(deps(store))
+    expect(left()).toEqual([`${NOTES_MANIFEST_FILE}.other.tmp`, 'memory-metrics.jsonl.termpolis-4242.tmp'])
+    expect(fs.existsSync(`${manifestFile()}.bak`)).toBe(true)
+    expect(fs.existsSync(path.join(data, `${NOTES_MANIFEST_FILE}.termpolis-4242.tmp.keep`))).toBe(true)
+    expect(fs.existsSync(manifestFile())).toBe(true) // the record itself starts over, it is not deleted
+  })
+
+  it('is taken away by "Clear memory" too', async () => {
+    const store = await imported()
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-4242.tmp`)
+    await clearNotesRecord(deps(store), async () => { store.rows.clear() })
+    expect(left()).toEqual([])
+  })
+
+  it('is taken away even when memory cannot be looked through, and when the record cannot be saved', async () => {
+    const store = await imported()
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-1.tmp`)
+    store.failList(new Error('host busy'))
+    await removeImportedNotes(deps(store, { manifest: flakyManifest(0) }))
+    expect(left()).toEqual([])
+  })
+
+  it('is taken away when it is read-only, as a killed write leaves a file with the mode of the record (Windows unlinks it all the same)', async () => {
+    const store = await imported()
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-1.tmp`, 0o444)
+    await removeImportedNotes(deps(store))
+    expect(left()).toEqual([])
+  })
+
+  // The first write of a record can be the one that is killed: then there is only the temporary copy, and no record to empty.
+  it('is taken away by "Clear memory" when no record was left at all, and no record is made', async () => {
+    stray(`${NOTES_MANIFEST_FILE}.termpolis-1.tmp`)
+    expect(fs.existsSync(manifestFile())).toBe(false)
+    await clearNotesRecord(deps(fakeStore()), async () => {})
+    expect(left()).toEqual([])
+    expect(fs.existsSync(manifestFile())).toBe(false)
+  })
+
+  it('never throws for a folder it cannot read, and never stops a removal or a clear', async () => {
+    expect(() => fileManifest(path.join(data, 'no-such-folder')).tidy?.()).not.toThrow()
+    const bare: NotesManifestIO = { read: () => null, write: () => {} } // no tidy: the record is not a file
+    expect(await removeImportedNotes(deps(fakeStore(), { manifest: bare }))).toEqual({ removed: 0, failed: 0 })
+    await clearNotesRecord(deps(fakeStore(), { manifest: bare }), async () => {})
+    const breaking: NotesManifestIO = { read: () => null, write: () => {}, tidy: () => { throw new Error('access denied') } }
+    expect(await removeImportedNotes(deps(fakeStore(), { manifest: breaking }))).toEqual({ removed: 0, failed: 0 })
+    await expect(clearNotesRecord(deps(fakeStore(), { manifest: breaking }), async () => {})).resolves.toBeUndefined()
+  })
+})
+
 // What the manifest carries from one pass to the next, and the guards the documents promise.
 describe('what a pass keeps between runs, and what it will not follow', () => {
   const alpha = '---\nname: a\n---\nAlpha.'
