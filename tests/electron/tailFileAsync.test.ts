@@ -20,6 +20,8 @@ const H = vi.hoisted(() => ({
   open: null as null | ((p: string) => Promise<unknown>),
   opens: 0,
   stats: 0,
+  /** When set, fs.watch hands out these instead of throwing: every call is recorded. */
+  watch: null as null | { calls: Array<{ path: string; listener: (event: string, filename: string | null) => void; closed: number; errors: Array<(e: unknown) => void> }> },
 }))
 
 vi.mock('fs', async (importOriginal) => {
@@ -38,7 +40,15 @@ vi.mock('fs', async (importOriginal) => {
   const patched = {
     ...actual,
     promises,
-    watch: () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) },
+    watch: (...a: unknown[]) => {
+      if (!H.watch) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' })
+      const rec = { path: String(a[0]), listener: a[2] as (event: string, filename: string | null) => void, closed: 0, errors: [] as Array<(e: unknown) => void> }
+      H.watch.calls.push(rec)
+      return {
+        close() { rec.closed++ },
+        on(ev: string, cb: (e: unknown) => void) { if (ev === 'error') rec.errors.push(cb); return this },
+      }
+    },
   }
   return { ...patched, default: patched }
 })
@@ -91,6 +101,7 @@ beforeEach(() => {
   H.open = null
   H.opens = 0
   H.stats = 0
+  H.watch = null
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-tail-'))
   file = path.join(dir, 'session.jsonl')
   fs.writeFileSync(file, '')
@@ -250,6 +261,40 @@ describe('tailFile: the asynchronous pass', () => {
     setWatchGatesPaused(false)
     await until(() => seen.length === 2, 'the lines after resume')
     expect(seen).toEqual(['a', 'b'])
+    t.stop()
+  })
+
+  it('a transcript written hundreds of times a second: the OS watch is closed after 200 events, the poll still reads it, and the reopening asks for ONE read', async () => {
+    H.watch = { calls: [] }
+    const seen: string[] = []
+    const t = tailFile(file, (l) => { seen.push(l) })
+    expect(H.watch.calls).toHaveLength(1)
+    const first = H.watch.calls[0]
+    // 100,000 write notifications in one instant: the listener hears 200 of them
+    fs.appendFileSync(file, 'one\n')
+    for (let i = 0; i < 100_000; i++) first.listener('change', null)
+    expect(first.closed).toBe(1)
+    // the poll reads the file regardless (it is the safety net the watch never replaced)
+    await until(() => seen.length === 1, 'the poll read the line while the watch was shut')
+    expect(seen).toEqual(['one'])
+    // after the back-off a new watch is opened (the owner is told once), and it listens again
+    await until(() => H.watch!.calls.length === 2, 'the reopening')
+    expect(H.watch.calls[1].closed).toBe(0)
+    fs.appendFileSync(file, 'two\n')
+    H.watch.calls[1].listener('change', null)
+    await until(() => seen.length === 2, 'the line after the reopening')
+    t.stop()
+    expect(H.watch.calls[1].closed).toBe(1)
+  })
+
+  it('an error from the OS watch closes it and leaves the poll to do the reading', async () => {
+    H.watch = { calls: [] }
+    const seen: string[] = []
+    const t = tailFile(file, (l) => { seen.push(l) })
+    H.watch.calls[0].errors.forEach((cb) => cb(new Error('EPERM')))
+    expect(H.watch.calls[0].closed).toBeGreaterThanOrEqual(1)
+    fs.appendFileSync(file, 'polled\n')
+    await until(() => seen.length === 1, 'the polled line')
     t.stop()
   })
 

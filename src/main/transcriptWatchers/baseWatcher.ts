@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { createRunGate, WATCH_MIN_INTERVAL_MS } from '../watchGuard'
+import { openSheddingWatch, type ShedFsWatcher, type ShedFsWatchFn } from '../shedWatch'
 
 /**
  * Base class for tailing a JSONL (or line-oriented) transcript file.
@@ -55,7 +56,7 @@ export function tailFile(
   let offset = 0
   let stopped = false
   let leftover = ''
-  let watcher: fs.FSWatcher | null = null
+  let watcher: ShedFsWatcher | null = null
   let poller: ReturnType<typeof setInterval> | null = null
 
   // Initialize offset
@@ -171,10 +172,16 @@ export function tailFile(
     run: tickAsync,
   })
 
-  // fs.watch for change events
+  // fs.watch for change events. A shedding watch: a transcript that is written to hundreds of times a second
+  // (every event costs the main thread about a millisecond and a half) is not listened to for a while, and the
+  // poll below reads it anyway, at most once per window as it always did. On reopening the gate is told once.
   try {
-    watcher = fs.watch(filePath, { persistent: false }, () => gate.note())
-    watcher.on('error', () => {
+    watcher = openSheddingWatch(fs.watch as unknown as ShedFsWatchFn, filePath, { persistent: false }, () => gate.note(), {
+      label: `transcript ${path.basename(filePath)}`,
+      log: (msg) => console.warn(msg),
+      onResume: () => gate.note(),
+    })
+    watcher.on?.('error', () => {
       try { watcher?.close() } catch {}
       watcher = null
     })
