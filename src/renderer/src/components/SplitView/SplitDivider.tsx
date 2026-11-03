@@ -1,12 +1,15 @@
 import React, { useCallback, useRef } from 'react'
+import { clampSplitRatio } from '../../lib/splitRatio'
 
 interface Props {
   direction: 'horizontal' | 'vertical'
   onDrag: (ratio: number) => void
   parentRef: React.RefObject<HTMLDivElement | null>
+  /** The least, in pixels, either side may be dragged down to (1.54.5). Omitted: the plain 10% / 90% clamp. */
+  minPx?: number
 }
 
-export function SplitDivider({ direction, onDrag, parentRef }: Props) {
+export function SplitDivider({ direction, onDrag, parentRef, minPx }: Props) {
   const dragging = useRef(false)
 
   const handleMouseDown = useCallback(
@@ -24,8 +27,8 @@ export function SplitDivider({ direction, onDrag, parentRef }: Props) {
         } else {
           ratio = (ev.clientX - rect.left) / rect.width
         }
-        // Clamp between 10% and 90%
-        ratio = Math.max(0.1, Math.min(0.9, ratio))
+        // Clamp between 10% and 90%, and (with a minimum) keep both sides a usable terminal
+        ratio = clampSplitRatio(ratio, direction === 'horizontal' ? rect.height : rect.width, minPx)
         onDrag(ratio)
       }
 
@@ -42,7 +45,7 @@ export function SplitDivider({ direction, onDrag, parentRef }: Props) {
       document.addEventListener('mousemove', onMouseMove)
       document.addEventListener('mouseup', onMouseUp)
     },
-    [direction, onDrag, parentRef]
+    [direction, onDrag, parentRef, minPx]
   )
 
   const isHorizontal = direction === 'horizontal'

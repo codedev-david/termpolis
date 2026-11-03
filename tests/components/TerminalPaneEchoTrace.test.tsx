@@ -432,6 +432,8 @@ describe('TerminalPane: echo trace wiring', () => {
     vi.useFakeTimers()
     try {
       await renderPane()
+      vi.advanceTimersByTime(10) // the mount's own fits (after its replay reply, and on becoming visible) are done
+      mocks.mockEchoPane.resize.mockClear() // ...and they read the queue too: count from here
       resizeObserverCb!()
       vi.advanceTimersByTime(100) // the refit is debounced 100 ms
       expect(mocks.mockEchoPane.resize).toHaveBeenCalledTimes(1)
@@ -442,6 +444,8 @@ describe('TerminalPane: echo trace wiring', () => {
     vi.useFakeTimers()
     try {
       await renderPane()
+      vi.advanceTimersByTime(10) // the mount's own fits are done
+      mocks.mockEchoPane.resize.mockClear() // ...and they read the queue too: count from here
       mocks.mockTerminal.hasSelection.mockReturnValue(true)
       resizeObserverCb!()
       vi.advanceTimersByTime(100)

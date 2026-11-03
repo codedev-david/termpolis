@@ -3467,11 +3467,12 @@ describe('TerminalPane', () => {
   // while selecting and runs once released.
   // =====================================================
   describe('resize reflow guard (doFit)', () => {
-    it('fits when idle, defers the reflow while selecting, then fits on release', () => {
+    it('fits when idle, defers the reflow while selecting, then fits on release', async () => {
       vi.useFakeTimers()
       try {
         mocks.mockTerminal.hasSelection.mockReturnValue(false)
         render(<TerminalPane {...defaultProps} />)
+        await act(async () => {}) // the mount's replay reply lands: until it has, every fit is held (1.54.5)
         vi.advanceTimersByTime(200) // flush any mount-scheduled work
         mockResizeTerminal.mockClear()
 
@@ -4144,13 +4145,21 @@ describe('TerminalPane', () => {
   // 20. Visibility change triggers fit
   // =====================================================
   describe('visibility changes', () => {
-    it('triggers fit and resize when becoming visible', () => {
+    it('triggers fit and resize when becoming visible', async () => {
       vi.useFakeTimers()
-      const { rerender } = render(<TerminalPane {...defaultProps} isVisible={false} />)
-      rerender(<TerminalPane {...defaultProps} isVisible={true} />)
-      vi.advanceTimersByTime(10)
-      expect(mockResizeTerminal).toHaveBeenCalledWith('term-1', 80, 24)
-      vi.useRealTimers()
+      try {
+        const { rerender } = render(<TerminalPane {...defaultProps} isVisible={false} />)
+        // The mount's replay reply lands first (the pane holds every fit until it has: 1.54.5), and a
+        // hidden pane is not fitted or resized at all: the pty is told nothing until it is shown.
+        await act(async () => {})
+        vi.advanceTimersByTime(200)
+        expect(mockResizeTerminal).not.toHaveBeenCalled()
+        rerender(<TerminalPane {...defaultProps} isVisible={true} />)
+        vi.advanceTimersByTime(10)
+        expect(mockResizeTerminal).toHaveBeenCalledWith('term-1', 80, 24)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

@@ -9,7 +9,8 @@ import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
 import { createChunkQueue, createStringQueue } from '../../lib/chunkQueue'
 import { holdOutput, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
-import { switchEnabled, SWITCH_OUTPUT_CHUNKS } from '../../lib/paneSwitches'
+import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER } from '../../lib/paneSwitches'
+import { createPaneFitter, type PaneFitter } from '../../lib/paneFitter'
 import { echoTraceAttach } from '../../lib/echoTrace'
 import { registerWebglPane, setWebglPaneVisible } from '../../lib/webglBudget'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm, formatAsMessagePlainTextFromTerm } from '../../lib/exportTerminal'
@@ -342,6 +343,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // the replay at the pane's size after all. It points at the CURRENT mount's hold, so a late
   // callback from an earlier mount can never release a later one's.
   const replaySizeHoldRef = useRef<{ active: boolean } | null>(null)
+  // The mount's fitter (paneFitter.ts: fits in stream order, only while visible, never to a collapsed
+  // grid). Null with the resize kill switch off: the effects below then fit as 1.54.4 did.
+  const fitterRef = useRef<PaneFitter | null>(null)
+  // The fitter reads visibility live: the mount effect only ever sees the value it was created with.
+  const isVisibleRef = useRef(isVisible)
+  isVisibleRef.current = isVisible
   // The current mount's count of history writes still being parsed (see writeHistory) — so a
   // Clear's mode restore, made outside the mount effect, is counted where onData looks.
   const historyParsesRef = useRef<HistoryParses>({ count: 0 })
@@ -913,7 +920,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // This mount's hold on fits while its replay parses at the pty's size (landReplay). Published
     // through the ref so the font and visibility effects respect it too. Declared first: the
     // mount's own fit below may run synchronously.
-    const sizeHold = { active: false }
+    // Armed from the start (1.54.5): the mount-time font effect used to resize the pty BEFORE the
+    // replay reply, so conhost's new-size repaint was parsed at the replay's old size. It is released
+    // on every exit of landReplay (the replay's parse, a missing reply, an error), with a timer only
+    // as the bound. Off with the resize kill switch: the hold is then armed inside landReplay, as before.
+    const ordered = switchEnabled(SWITCH_RESIZE_ORDER)
+    const sizeHold = { active: ordered }
     replaySizeHoldRef.current = sizeHold
     // This mount's history writes still being parsed (writeHistory); onData reads it. Per mount,
     // so a parse that never reports back from a torn-down pane cannot mute a later mount's.
@@ -1137,8 +1149,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     // 7. Fit (deferred to avoid layout thrashing when multiple terminals mount at once) — unless
     // the replay is being parsed at the pty's size by then; it refits when it is done.
+    // (With the resize order on, the fit that follows the replay does this, in stream order, and only
+    // for a visible pane: a hidden one would otherwise be left with a grid its pty was never told about.)
     requestAnimationFrame(() => {
-      if (!disposed && !sizeHold.active) fitAddon.fit()
+      if (!disposed && !sizeHold.active && !ordered) fitAddon.fit()
     })
 
     termRef.current = term
@@ -1687,8 +1701,27 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       }
     })
 
+    // 1.54.5: the fit happens in stream order (the output ahead of it is parsed at the size it was
+    // drawn for), only while the pane is visible, never to a collapsed grid, and the pty is told even
+    // if fit() throws. The body below is the 1.54.4 fit, kept for the kill switch.
+    const fitter = ordered
+      ? createPaneFitter({
+          isDisposed: () => disposed,
+          isHeld: () => sizeHold.active,
+          isVisible: () => isVisibleRef.current,
+          isSelectionActive,
+          onFit: () => echo.resize(),
+          flushHold: flushPendingWrite,
+          throttle: throttledWrite,
+          term,
+          addon: fitAddon,
+          send: (cols, rows) => window.termpolis.resizeTerminal(terminalId, cols, rows),
+        })
+      : null
+    fitterRef.current = fitter
     let resizeTimer: ReturnType<typeof setTimeout> | null = null
     const doFit = (): void => {
+      if (fitter) { fitter.request(); return }
       if (disposed) return
       // A replay still being parsed at the pty's size refits when it is done (landReplay).
       if (sizeHold.active) return
@@ -1736,13 +1769,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       doFit()
     }
     const landReplay = (reply: ReplayReply | undefined): void => {
-      if (!replayPending) return
+      // Every exit below releases the mount's hold on fits (releaseSizeHold is a no-op once released).
+      if (!replayPending) { releaseSizeHold(); return }
       replayPending = false
       const early = earlyLive.splice(0)
-      if (disposed || !reply) return
+      if (disposed || !reply) { releaseSizeHold(); return }
       const skip = typeof reply.skip === 'number' && reply.skip > 0 ? reply.skip : 0
       let replay = (reply.preamble ?? '') + (reply.output ?? '').slice(skip)
-      if (!replay) return // nothing to replay: whatever arrived early already stands, in order
+      if (!replay) { releaseSizeHold(); return } // nothing to replay: whatever arrived early already stands, in order
       if (early.length > 0) {
         const covered = reply.nextOffset
         const uncovered = early.filter((c) => c.end === undefined || covered === undefined || c.end > covered)
@@ -1762,12 +1796,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         // (which tells the pty, if the pane is a different size). The timer only bounds a parse
         // that never reports back.
         sizeHold.active = true
+        clearTimeout(sizeHoldTimer) // the mount's own bound must not cut this parse short
         sizeHoldTimer = setTimeout(releaseSizeHold, REPLAY_PARSE_GRACE_MS)
         writeHistory(term, historyParses, replay, releaseSizeHold)
         return
       }
       writeHistory(term, historyParses, replay)
+      releaseSizeHold() // the fit waits for the replay's parse (resizeInStreamOrder), so it runs in stream order
     }
+    // The mount's hold is bounded too, in case the reply never comes.
+    if (sizeHold.active) sizeHoldTimer = setTimeout(releaseSizeHold, REPLAY_PARSE_GRACE_MS)
     replayRequest
       .then((res) => landReplay(res?.success ? res.data : undefined))
       .catch(() => landReplay(undefined)) // the terminal may have been killed before the replay
@@ -1780,6 +1818,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       selectionChangeDisposable.dispose()
       document.removeEventListener('mouseup', handleDocumentMouseUp)
       if (resizeTimer) clearTimeout(resizeTimer)
+      fitter?.cancel() // a resize waiting for output, or a retry behind a selection, must not reach a pty that is going away
       // A hold that outlives its mount would freeze the next one's fits; the next mount
       // publishes its own hold through the ref, and this one now reads as released.
       clearTimeout(sizeHoldTimer)
@@ -1820,6 +1859,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     termRef.current.options.theme = getTheme(theme)
     // A replay still being parsed at the pty's size refits once it has (landReplay).
     if (replaySizeHoldRef.current?.active) return
+    if (fitterRef.current) { fitterRef.current.request(); return }
     fitRef.current?.fit()
     window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
   }, [fontSize, theme, fontFamily])
@@ -1830,6 +1870,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         if (!fitRef.current || !termRef.current) return
         if (typeof window === 'undefined' || !window.termpolis?.resizeTerminal) return
         if (replaySizeHoldRef.current?.active) return // the replay refits once it has parsed
+        if (fitterRef.current) { fitterRef.current.request(); return }
         fitRef.current.fit()
         window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
       }, 0)

@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react'
 import { useTerminalStore } from '../../store/terminalStore'
 import { TerminalPane } from '../TerminalPane/TerminalPane'
 import { SplitDivider } from './SplitDivider'
+import { paneMinPx } from '../../lib/splitRatio'
 import { extractBuffer, generateFilename } from '../../lib/exportTerminal'
 import type { PaneNode } from '../../types'
 
@@ -166,6 +167,7 @@ export function PaneRenderer({ node, onSplitRatioChange, path = [] }: Props) {
         direction={node.direction}
         onDrag={handleDrag}
         parentRef={splitContainerRef}
+        minPx={paneMinPx(node.direction)}
       />
       <div style={{ flex: `${1 - node.ratio} 1 0%`, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
         <PaneRenderer
