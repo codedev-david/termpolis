@@ -362,11 +362,22 @@ function rowsNeeded(
  *     bottom: xterm adds the new rows first and does not let the rewrap use them (see `pad`).
  *
  *  What it does not follow, because the phone's settled rows are permanent by design: rows xterm pulls back out
- *  of its scrollback when a widened screen un-wraps them, and history it reflows. Nor does it model xterm's
- *  cursor bookkeeping for rows added or removed BELOW a cursor parked above content (the pane's cursor lands on
- *  a different cell than its content, until the repaint that follows a resize puts it back), nor a double-width
- *  glyph left sticking out of a held line that is cut. Measured against the real emulator with the fuzz in the
- *  tests, and by hand against this machine's real ConPTY capture. */
+ *  of its scrollback when a widened screen un-wraps them, and history it reflows. Nor does it follow a
+ *  double-width glyph left sticking out of a held line that is cut.
+ *
+ *  Nor does it model xterm's cursor bookkeeping when a narrowing rewraps rows BELOW a cursor parked above content
+ *  (a TUI with its input box above its status rows). xterm reflows from the bottom up and moves its cursor row
+ *  down for every row it adds, wherever that row is, so by the time it reaches the cursor's own line the cursor
+ *  has been carried onto another one: THAT line is left unreflowed (cut at the new width) and the cursor ends up
+ *  below its content. A TUI that then redraws relative to the cursor lands a row or more off, on the pane and
+ *  differently on the phone. Measured against a real pane: a six-row frame like that, 120 to 80 columns, with no
+ *  repaint after the resize: the phone shows a row more than the pane (12 against 11) and nine of the twelve
+ *  bottom rows are out of step with it (moving the cursor alone, tried, got that to six, not to none). With
+ *  ConPTY's repaint the live region matched in every case measured; what is left is one stale row in the
+ *  phone's history. Doing it properly means running xterm's whole bottom-up pass here, which is its own change.
+ *
+ *  Measured against the real emulator with the fuzz in the tests, and by hand against this machine's real
+ *  ConPTY capture. */
 function parityReplay(
   buf: IBuffer,
   cell: IBufferCell,
@@ -642,15 +653,19 @@ export class ScreenFlattener {
       // The cursor's own wrapped line is replayed as the rows it is (see
       // parityReplay), and cut where the new grid ends.
       const held = y >= heldFrom && y <= heldTo
-      // Rejoined, unlike anything sent to the phone: a wrap is a break the OLD
-      // width imposed, and replaying it would freeze that break into a grid that
-      // may no longer have it.
-      const continues = !held && y < last && wraps(buf, y + 1)
-      // Held rows are cut where the new grid ends. A row that is joined to the next one leaves out the pad cell a
-      // double-width glyph left behind at its end.
       let to = line.length
       if (held) to = Math.min(to, cols)
-      else if (this.parity && continues && endsInWidePad(buf, y, cell)) to -= 1
+      // Rejoined, unlike anything sent to the phone: a wrap is a break the OLD
+      // width imposed, and replaying it would freeze that break into a grid that
+      // may no longer have it. A held row is joined too when the cut leaves it
+      // filling the new width: that is not a reflow, it keeps the wrap mark xterm
+      // keeps on those rows, so the NEXT resize -- a window being dragged is a run
+      // of them -- reflows the line like any other once the cursor has left it. A
+      // held row narrower than the grid (a widening) stays a row of its own.
+      const continues = y < last && wraps(buf, y + 1) && (!held || to === cols)
+      // A row that is joined to the next one leaves out the pad cell a double-width
+      // glyph left behind at its end.
+      if (!held && this.parity && continues && endsInWidePad(buf, y, cell)) to -= 1
       if (y === cursorRow) {
         // Split at the cursor's own cell and mark the spot, so the emulator is
         // the one that works out where the cursor lands at the new width -- the
