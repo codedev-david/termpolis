@@ -203,7 +203,7 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     'escaped line breaks between runs of letters and digits': (n) => fill(`${rb(96).toString('base64').replace(/[+/=]/g, 'x')}${BS}n`, n),
     'escaped line breaks and Windows paths': (n) => fill(`${rb(96).toString('base64').replace(/[+/=]/g, 'x').slice(0, 64)}${BS}n${BS}repos${BS}${rb(15).toString('hex')}.pem:7:`, n),
     // (a name that a path can hold, after each of the breaks, and a listing joined by breaks that meets the path reading at each: read three times)
-    'escaped line breaks followed by names of 250 characters with blanks and slashes': (n) => fill(`${BS}n${'ab cd/'.repeat(41)}`, n),
+    'escaped line breaks followed by names of 250 characters with blanks and slashes': (n) => fill(`${rb(96).toString('base64').replace(/[+/=]/g, 'x').slice(0, 64)}${BS}n${'ab cd/'.repeat(41)}`, n),
     'a listing of key lines joined by written-out breaks, a name and a line number in front of each': (n) => fill(`id.pem-7-${r64()}${BS}n`, n),
     // (the line under a key of one line with no END line is read for the characters its DER says the key lacks: lackedLine, which nothing above reaches)
     'blocks of a key of one line with no END line': (n) =>
