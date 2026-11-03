@@ -1440,7 +1440,7 @@ describe('the real agy exit, read at any pane size (SW2-6)', () => {
 // that is still PRINTING is not stalled, so the wait goes on while its output grows and ends after a quiet spell; and where the
 // terminal's shell reports its prompts, the prompt's report says when it is back, not 250 ms of silence.
 describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
-  const OSC = '\x1b]9;9;C:\repo\x07'
+  const OSC = '\x1b]9;9;C:\\repo\x07'
   const ESC_KEY = '\x1b'
   const LINE_SW = 'claude --resume 3f2a9c1e-5b7d-4e8f-a012-3456789abcde'
 
@@ -1457,11 +1457,15 @@ describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
     knownReporting: boolean
     /** A shell of the other family took the terminal's place: it reports as bash does (OSC 7). */
     nested?: boolean
+    /** The reports main has kept of this terminal (default: PowerShell's, OSC 9;9). */
+    kept?: { posix: boolean; windows: boolean }
+    /** What the shell's prompt report is (default: PowerShell's, OSC 9;9). */
+    osc?: string
   }
 
   function slowShell(o: Slow) {
     let now = 0
-    let raw = 'PS C:\repo> '
+    let raw = 'PS C:\\repo> '
     const writes: Array<{ at: number; d: string }> = []
     const later: Array<{ at: number; text: string }> = []
     const settle = (): void => {
@@ -1479,7 +1483,7 @@ describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
         if (d === '\r') {
           later.push({ at: now + 30, text: '\r\n' })
           if (o.nested) later.push({ at: now + 30, text: '\x1b]7;file://host/c/repo\x07me@host $ ' })
-          else if (o.report) later.push({ at: Math.max(o.readyAt, now + 30), text: `${OSC}PS C:\repo> ` })
+          else if (o.report) later.push({ at: Math.max(o.readyAt, now + 30), text: `${o.osc ?? OSC}PS C:\\repo> ` })
         } else if (d !== ESC_KEY && now >= o.readyAt) {
           later.push({ at: now + o.echoMs, text: d })
           if (o.chatterMs) for (let t = o.chatterMs; t < o.echoMs; t += o.chatterMs) later.push({ at: now + t, text: '.' })
@@ -1487,7 +1491,7 @@ describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
       },
       sleep: async (ms) => { now += ms },
       now: () => now,
-      ...(o.knownReporting ? { reported: () => ({ posix: false, windows: true }) } : {}),
+      ...(o.knownReporting ? { reported: () => o.kept ?? { posix: false, windows: true } } : {}),
     }
     return { io, writes, clock: () => now }
   }
@@ -1531,6 +1535,17 @@ describe('a shell that is slow to draw its prompt and to echo (SW2-5)', () => {
     expect(r.outcome).toBe('entered')
     const probeAt = s.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at
     expect(probeAt).toBeGreaterThanOrEqual(3000)
+  })
+
+  it("reads a bash terminal's kept reports as its own: it waits for the report there, and a PowerShell report is another shell's", async () => {
+    const OSC7 = '\x1b]7;file://host/c/repo\x07'
+    const waits = slowShell({ readyAt: 3000, echoMs: 40, report: true, knownReporting: true, kept: { posix: true, windows: false }, osc: OSC7 })
+    expect((await typeAtPrompt(waits.io, 't1', 'posix', LINE_SW, 0)).outcome).toBe('entered')
+    expect(waits.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at).toBeGreaterThanOrEqual(3000)
+    // What main kept is the other family's only: it is no report of this terminal's own shell, so it is not waited for.
+    const silent = slowShell({ readyAt: 3000, echoMs: 40, report: true, knownReporting: true, kept: { posix: false, windows: true }, osc: OSC7 })
+    expect((await typeAtPrompt(silent.io, 't1', 'posix', LINE_SW, 0)).outcome).toBe('didnt-start')
+    expect(silent.writes.find((w) => w.d === LINE_SW.slice(0, ECHO_PROBE_CHARS))!.at).toBeLessThan(3000)
   })
 
   it('takes silence for the prompt where the terminal has never reported, as before', async () => {
