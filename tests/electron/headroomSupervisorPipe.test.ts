@@ -101,10 +101,12 @@ beforeEach(() => {
 afterEach(() => { stopProxy() })
 
 const BIG = Array.from({ length: 600 }, (_, i) => `line ${String(i).padStart(4, '0')} ${'abcdefghij'.repeat(5)}`).join('\n')
-function post(messages: object[]): Promise<void> {
+const TOOLS = [{ name: 'ToolSearch', description: 'd', input_schema: { type: 'object' } }, { name: 'Bash', description: 'd', input_schema: { type: 'object' } }]
+/** `tools` is the request's tools list; null sends none at all (a request with no `tools` key). */
+function post(messages: object[], tools: object[] | null = TOOLS): Promise<void> {
   return new Promise((resolve, reject) => {
     done = resolve
-    const body = JSON.stringify({ model: 'claude-opus-5-5', max_tokens: 100, stream: true, tools: [{ name: 'ToolSearch', description: 'd', input_schema: { type: 'object' } }, { name: 'Bash', description: 'd', input_schema: { type: 'object' } }], messages })
+    const body = JSON.stringify({ model: 'claude-opus-5-5', max_tokens: 100, stream: true, ...(tools === null ? {} : { tools }), messages })
     const req = http.request({ hostname: '127.0.0.1', port: proxyPort, path: '/v1/messages', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, (res) => { res.on('data', () => undefined); res.on('end', () => undefined) })
     req.on('error', reject)
     req.end(body)
@@ -203,6 +205,30 @@ describe('child server -> real supervisor dispatch -> the callbacks index.ts ins
     const filed = Object.entries(elisionState().classes).filter(([key]) => key.startsWith('compact|Read'))
     expect(filed).toHaveLength(1)
     expect(filed[0][1].redeemed).toBe(1)
+  })
+
+  // R1 criterion 10 through the whole pipe: the request's tools list says whether the model could ask for text back
+  // (retrieve_full listed in any namespace, or a ToolSearch tool to load it through, or neither). The proxy child notes it
+  // on the request's stats, the result frame carries it through the real supervisor dispatch, and the ledger tallies the
+  // answered requests by it: the denominator the Elision health card divides by. It was the one field of the frame that
+  // nothing here read, so a supervisor that rebuilt the frame without it (or forced it) would zero or misfile the
+  // "could the model ask" count with every test green.
+  it('carries whether the request could ask for text back, so the ledger tallies it as listed, loadable or absent', async () => {
+    const tool = (name: string): object => ({ name, description: 'd', input_schema: { type: 'object' } })
+    reply = stream({ read: 10_000, create: 0, input: 5, out: 20, blocks: [text('ok')] })
+    await post([FIRST], [tool('Bash'), tool(RF)])
+    await post([FIRST], [tool('Bash'), tool('mcp__plugin_termpolis_termpolis__retrieve_full'), tool('ToolSearch')]) // listed beats loadable
+    await post([FIRST], [tool('Bash'), tool('ToolSearch')])
+    await post([FIRST], [tool('Bash'), tool('ToolSearch')])
+    await post([FIRST], [tool('Bash'), tool('Read')])
+    await post([FIRST], null)
+    const t = currentProxyTotals()
+    expect(t.turnRequests).toBe(6)
+    expect(t.offerDirect).toBe(2)
+    expect(t.offerDeferred).toBe(2)
+    expect(t.offerAbsent).toBe(2)
+    // The three tallies are the whole of the answered requests: none is dropped and none counted twice.
+    expect(t.offerDirect + t.offerDeferred + t.offerAbsent).toBe(t.turnRequests)
   })
 
   it('does not pass a frame on once no callback is registered, and does not throw into the transport when a callback does', () => {
