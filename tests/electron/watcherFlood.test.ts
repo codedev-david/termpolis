@@ -340,6 +340,25 @@ describe('gitWatcher under a 100,000-event storm', () => {
     h.reg.closeAll()
   })
 
+  it("also ignores the `change` events Windows reports for a nested repository's OWN directory entries", async () => {
+    // The shape of the real stream: a write to vendor/lib/src/x.ts is followed by `change` events for
+    // vendor/lib/src and vendor/lib (a directory's modification time moves when anything inside it
+    // does). Those are not under any ignored NAME, and before the filter was told the event type they
+    // made it forget the nested repository and let the next events through.
+    const probe = async (dir: string): Promise<boolean> => dir.replace(/\\/g, '/').endsWith('/vendor/lib')
+    const h = gitHarness({ probe })
+    h.tree('change', 'vendor/lib/src/first.ts')
+    await vi.advanceTimersByTimeAsync(2500)
+    const before = h.changes.length
+    C.armed = true
+    await drive(h.tree, { ...BURST, name: (n) => (n % 3 === 0 ? `vendor/lib/src/f${n % 500}.ts` : n % 3 === 1 ? 'vendor\\lib\\src' : 'vendor\\lib') })
+    await vi.advanceTimersByTimeAsync(130_000)
+    expect(h.changes.length).toBe(before)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(syncCalls()).toBe(0)
+    h.reg.closeAll()
+  })
+
   it('collapses a sustained flood to a handful of repaints, never closer than 2 s, and ends calm', async () => {
     const h = gitHarness()
     C.armed = true

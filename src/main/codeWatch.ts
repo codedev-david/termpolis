@@ -81,11 +81,11 @@ export function watchRepo(root: string, deps: WatchDeps): RepoWatcher {
     },
   })
   try {
-    handle = deps.watch(root, (_event, filename) => {
+    handle = deps.watch(root, (event, filename) => {
       if (!filename) return
       const name = String(filename)
       // The filter first, on EVERY event: a `.git` event below the root is how it learns a nested repo.
-      if (filter.shouldIgnore(name) || !SRC_EXT.test(name)) return // ignore noise + non-source churn
+      if (filter.shouldIgnore(name, event) || !SRC_EXT.test(name)) return // ignore noise + non-source churn
       if (changed.size < MAX_PENDING_FILES) changed.add(name)
       else overflowed = true
       gate.note()

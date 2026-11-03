@@ -1,11 +1,12 @@
 // fileWatch workflow triggers under the storm guard (src/main/workflow/triggers.ts + watchGuard.ts).
 // The 100,000-event runs are in watcherFlood.test.ts; these are the single cases, on counters:
 // workflow starts, the timer delay asked for, the reason string each start carries.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { join, dirname } from 'path'
 import { TriggerSupervisor, type TriggerDeps } from '../../src/main/workflow/triggers'
 import { workflowsDir, serializeWorkflow } from '../../src/main/workflow/workflowStore'
 import type { Workflow } from '../../src/renderer/src/types'
+import { setWatchGatesPaused } from '../../src/main/watchGuard'
 
 const ROOT = join('/repo')
 
@@ -68,7 +69,23 @@ function setup(config: Record<string, string> = {}, deps: Partial<TriggerDeps> =
   }
 }
 
+afterEach(() => { setWatchGatesPaused(false) })
+
 describe('fileWatch trigger storm guard', () => {
+  it('the governor can pause it: no workflow starts while paused, and ONE pass runs after resume', () => {
+    const h = setup()
+    h.emit('src/a.ts') // a window is open
+    setWatchGatesPaused(true)
+    expect(h.armed).toBe(0)
+    for (let i = 0; i < 1000; i++) h.emit(`src/f${i % 20}.ts`)
+    h.flush()
+    expect(h.fires).toEqual([])
+    setWatchGatesPaused(false)
+    h.flush()
+    expect(h.fires).toHaveLength(1)
+    h.sup.stop()
+  })
+
   it.each([
     '.termpolis/workflows/.triggers.json', 'Pods/x/y.swift', '.turbo/x', 'node_modules/x/i.js', '.worktrees/wt1/src/a.ts',
     '.Worktrees\\wt1\\src\\a.ts', '.claude/worktrees/x/a.ts', 'dist/a.js', '.git/index',

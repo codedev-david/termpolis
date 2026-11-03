@@ -3,6 +3,7 @@
 // behaviours, each on counters: re-index calls, the files named in each, timers armed.
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { watchRepo, fsBackedWatchDeps, type WatchDeps } from '../../src/main/codeWatch'
+import { setWatchGatesPaused } from '../../src/main/watchGuard'
 
 type Listener = (event: string, filename: string | null) => void
 
@@ -29,7 +30,10 @@ function harness(over: Partial<WatchDeps> = {}) {
   }
 }
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => {
+  vi.restoreAllMocks()
+  setWatchGatesPaused(false)
+})
 
 describe('codeWatch storm guard', () => {
   it('a mass change (more than 2048 distinct files in one window) asks for a re-sweep instead of naming them', () => {
@@ -120,6 +124,23 @@ describe('codeWatch storm guard', () => {
     h.flush()
     expect(reindex).toHaveBeenCalledTimes(2)
     expect(reindex).toHaveBeenLastCalledWith('/repo', ['b.ts'])
+  })
+
+  it('the governor can pause it: nothing is re-indexed while paused, and ONE re-index names everything on resume', () => {
+    const h = harness()
+    watchRepo('/repo', h.deps)
+    h.emit('src/a.ts') // a window is open
+    setWatchGatesPaused(true)
+    expect(h.armed).toBe(0) // the pending timer was cancelled
+    for (let i = 0; i < 1000; i++) h.emit(`src/f${i % 20}.ts`)
+    expect(h.armedTotal).toBe(1) // nothing was armed while paused
+    h.flush()
+    expect(h.deps.reindex).not.toHaveBeenCalled()
+    setWatchGatesPaused(false)
+    h.flush()
+    expect(h.deps.reindex).toHaveBeenCalledTimes(1)
+    // src/a.ts (before the pause) + src/f0..f19 (during it): every name, none lost, none repeated.
+    expect((h.deps.reindex as ReturnType<typeof vi.fn>).mock.calls[0][1]).toHaveLength(21)
   })
 
   it('close() stops the OS watch, cancels the pending timer, and ignores an event that arrives late', () => {

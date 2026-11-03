@@ -137,15 +137,15 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
     gate: RunGate,
     target: string,
     recursive: boolean,
-    ignore: (name: string) => boolean,
+    ignore: (name: string, event: string) => boolean,
     priority: boolean,
   ): FSWatcher | null {
     try {
       // persistent:false — a file watcher must never be the reason the process stays alive.
-      return deps.watch(target, { recursive, persistent: false }, (_event, filename) => {
+      return deps.watch(target, { recursive, persistent: false }, (event, filename) => {
         if (filename) {
           const name = typeof filename === 'string' ? filename : filename.toString()
-          if (ignore(name)) return
+          if (ignore(name, event)) return
         }
         gate.note({ priority })
       })
@@ -175,7 +175,7 @@ export function createGitWatcherRegistry(deps: GitWatcherDeps): GitWatcherRegist
       // `.git` events are the low-volume ones that say the answer changed: they get priority.
       const gitDir = open(gate, joinPath(root, '.git'), true, isIgnoredGitPath, true)
       if (gitDir) watchers.push(gitDir)
-      const tree = open(gate, root, true, (name) => filter.shouldIgnore(name), false)
+      const tree = open(gate, root, true, (name, event) => filter.shouldIgnore(name, event), false)
       if (tree) watchers.push(tree)
       repos.set(root, { refs: 1, watchers, gate, filter })
       // Submodules stay watched. Asked once, async, and only matters once a nested repo is learned.

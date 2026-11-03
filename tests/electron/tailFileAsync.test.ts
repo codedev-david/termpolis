@@ -44,6 +44,7 @@ vi.mock('fs', async (importOriginal) => {
 })
 
 import { tailFile, MAX_READ_BYTES } from '../../src/main/transcriptWatchers/baseWatcher'
+import { setWatchGatesPaused } from '../../src/main/watchGuard'
 
 let dir: string
 let file: string
@@ -95,6 +96,7 @@ beforeEach(() => {
   fs.writeFileSync(file, '')
 })
 afterEach(() => {
+  setWatchGatesPaused(false)
   vi.useRealTimers()
   try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* temp */ }
 })
@@ -232,6 +234,22 @@ describe('tailFile: the asynchronous pass', () => {
     fs.appendFileSync(file, 'bad\ngood\n')
     await until(() => seen.length === 2, 'both lines')
     expect(seen).toEqual(['bad', 'good'])
+    t.stop()
+  })
+
+  it('reads nothing while the governor has the gates paused, then catches up with the lines it missed', async () => {
+    const seen: string[] = []
+    const t = tailFile(file, (l) => { seen.push(l) })
+    setWatchGatesPaused(true)
+    fs.appendFileSync(file, 'a\nb\n')
+    H.stats = 0
+    await vi.advanceTimersByTimeAsync(20_000) // a dozen polls
+    await drain()
+    expect(H.stats).toBe(0)
+    expect(seen).toEqual([])
+    setWatchGatesPaused(false)
+    await until(() => seen.length === 2, 'the lines after resume')
+    expect(seen).toEqual(['a', 'b'])
     t.stop()
   })
 

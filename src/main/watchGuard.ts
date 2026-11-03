@@ -144,8 +144,11 @@ export interface IgnoreFilterStats {
 
 export interface IgnoreFilter {
   /** True when this event is not about this tree and must be dropped. Synchronous and cheap; may
-   *  start a background probe for a directory it has not seen. */
-  shouldIgnore(rel: string | null | undefined): boolean
+   *  start a background probe for a directory it has not seen. `event` is fs.watch's event type: a
+   *  `rename` on a directory entry (created, removed, renamed) makes the filter forget what it knew
+   *  about it, while a `change` on a nested repository's own entry (a child came or went inside it)
+   *  is that repository's business, not ours. */
+  shouldIgnore(rel: string | null | undefined, event?: string): boolean
   /** Directories (relative, any case) that are nested repositories but must STAY watched: git
    *  submodules, whose dirty state is part of the parent's `git status`. */
   setKeep(dirs: Iterable<string>): void
@@ -170,12 +173,21 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
   const verdicts = new Map<string, { ignore: boolean; at: number }>()
   const queued = new Set<string>() // waiting or in flight, so a directory is never asked twice at once
   const queue: string[] = []
+  /** key -> the directory spelled as the OS gave it (the cache key is lower-cased where the disk is
+   *  case-insensitive, but a macOS volume can be case-sensitive, so the probe is asked in the real case). */
+  const spelled = new Map<string, string>()
   let keep: ReadonlySet<string> = new Set()
   let active = 0
   let closed = false
   const stats = { probes: 0, learned: 0, dropped: 0 }
 
-  const keyOf = (s: string, lower: string): string => (ci ? lower : s)
+  const keyOf = (s: string, lower: string): string => (ci || lower.length !== s.length ? lower : s)
+  /** The first `n` slash-separated segments of `s`, spelled as the OS gave them: what a probe asks the disk about. */
+  const spellPrefix = (s: string, n: number): string => {
+    let end = -1
+    for (let i = 0; i < n; i++) end = s.indexOf('/', end + 1)
+    return end === -1 ? s : s.slice(0, end)
+  }
   const absOf = (key: string): string => (o.root.endsWith(sep) ? o.root : o.root + sep) + key.split('/').join(sep)
 
   function invalidate(prefix: string): void {
@@ -217,6 +229,7 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
   function settle(key: string, nested: boolean): void {
     active--
     queued.delete(key)
+    spelled.delete(key)
     if (!closed) {
       const changed = setKind(key, nested)
       if (nested && !changed) { stats.learned++; o.onLearn?.(key) }
@@ -232,7 +245,7 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
       stats.probes++
       let p: Promise<boolean>
       try {
-        p = Promise.resolve(probe(absOf(key)))
+        p = Promise.resolve(probe(absOf(spelled.get(key) ?? key)))
       } catch {
         p = Promise.resolve(false)
       }
@@ -240,10 +253,11 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
     }
   }
 
-  function request(key: string): void {
+  function request(key: string, rel: string, segments: number): void {
     if (closed || queued.has(key)) return
     if (queue.length >= maxQueue) { stats.dropped++; return }
     queued.add(key)
+    spelled.set(key, spellPrefix(rel, segments))
     queue.push(key)
     pump()
   }
@@ -260,7 +274,7 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
   }
 
   return {
-    shouldIgnore(rel) {
+    shouldIgnore(rel, event) {
       if (!rel) return false
       const s = toSlashes(String(rel))
       if (!s) return false
@@ -277,9 +291,18 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
       }
 
       const key = keyOf(s, lower)
-      // An event for a directory ENTRY itself (created, removed, renamed): whatever we knew about it
-      // may have changed, so forget it and let the next event below it ask again.
-      if (kinds.has(key)) { kinds.delete(key); invalidate(key) }
+      // An event for a directory ENTRY we know something about.
+      const own = kinds.get(key)
+      if (own) {
+        // `change` on a nested repository's own entry is only its modification time moving because
+        // something INSIDE it changed (Windows reports that for the directory and its parents). That
+        // is the nested repository's business, and it must not make us forget what we know about it:
+        // doing so let every other event through while the probe was out again.
+        if (event === 'change' && own.nested && !keep.has(key)) return true
+        // Anything else (`rename`: created, removed, renamed; or no type given): what we knew may no
+        // longer be true, so forget it and let the next event below it ask again.
+        if (event !== 'change') { kinds.delete(key); invalidate(key) }
+      }
 
       // 2. A nested repository or link somewhere on the way down.
       const lastSlash = key.lastIndexOf('/')
@@ -293,15 +316,17 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
         verdicts.delete(dir)
       }
       let unresolved = false
+      let segments = 0
       let p = key.indexOf('/')
       while (p !== -1 && p <= lastSlash) {
+        segments++
         const prefix = key.slice(0, p)
         const k = kinds.get(prefix)
         if (k === undefined) {
           unresolved = true
-          request(prefix)
+          request(prefix, s, segments)
         } else {
-          if (now() - k.at > ttl) request(prefix) // stale: answer with what we know, re-check quietly
+          if (now() - k.at > ttl) request(prefix, s, segments) // stale: answer with what we know, re-check quietly
           if (k.nested && !keep.has(prefix)) {
             remember(dir, true)
             return true
@@ -327,6 +352,7 @@ export function createIgnoreFilter(o: IgnoreFilterOptions): IgnoreFilter {
       closed = true
       queue.length = 0
       queued.clear()
+      spelled.clear()
       kinds.clear()
       verdicts.clear()
     },
@@ -398,6 +424,34 @@ class FloodMeter {
   }
 }
 
+// ── the governor's switch ─────────────────────────────────────────────────────────────────────
+// The main-thread event-loop governor (SHED mode) must be able to say "background work stops now"
+// without knowing which watcher owns which gate. Every live gate registers here; one call pauses or
+// resumes them all, and a gate created while paused starts paused.
+const liveGates = new Set<{ pause(): void; resume(): void }>()
+let allPaused = false
+
+/** Pause (true) or resume (false) EVERY run gate in the process. Idempotent. While paused no watcher
+ *  starts a handler (re-index, repaint, trigger pass, transcript read); events are counted and the
+ *  gate remembers that something arrived, so resuming runs each handler once, not once per event. */
+export function setWatchGatesPaused(paused: boolean): void {
+  if (allPaused === paused) return
+  allPaused = paused
+  for (const g of [...liveGates]) {
+    if (paused) g.pause()
+    else g.resume()
+  }
+}
+
+export function watchGatesPaused(): boolean {
+  return allPaused
+}
+
+/** Gates currently alive (created and not disposed): what the governor would pause. */
+export function liveWatchGateCount(): number {
+  return liveGates.size
+}
+
 export interface RunGateOptions {
   /** The work. If it returns a promise the gate starts nothing else until that settles. */
   run: () => unknown
@@ -428,7 +482,14 @@ export interface RunGate {
   note(opts?: { priority?: boolean }): void
   /** A poll or safety-net request: "check once". Marks the gate dirty without counting as an event. */
   poke(): void
+  /** Stop starting handlers (timers are cancelled, events still count and mark the gate dirty). A
+   *  handler already running is left to finish. Used by the event-loop governor, see setWatchGatesPaused. */
+  pause(): void
+  /** Start again: if anything arrived meanwhile the handler runs ONCE, no sooner than one window
+   *  after the previous run started. */
+  resume(): void
   dispose(): void
+  readonly paused: boolean
   readonly flooding: boolean
   readonly running: boolean
   readonly runs: number
@@ -456,6 +517,7 @@ export function createRunGate(o: RunGateOptions): RunGate {
   let runStartedAt = -Infinity
   let dirty = false
   let disposed = false
+  let paused = allPaused
   let floodActive = false
   let backoffMs = base
   let runs = 0
@@ -523,6 +585,7 @@ export function createRunGate(o: RunGateOptions): RunGate {
   }
 
   function startWindow(): void {
+    if (paused) return
     clear()
     arm('window', windowMs(), onTimer)
   }
@@ -590,7 +653,7 @@ export function createRunGate(o: RunGateOptions): RunGate {
   }
 
   function schedule(expedite = false): void {
-    if (disposed) return
+    if (disposed || paused) return
     if (running) {
       if (now() - runStartedAt <= runTimeout) return
       running = false // hung: abandon it so this root can run again
@@ -619,24 +682,51 @@ export function createRunGate(o: RunGateOptions): RunGate {
     }
   }
 
+  function pause(): void {
+    if (paused || disposed) return
+    paused = true
+    clear() // a window, a back-off or a priority timer: none of them may start a handler now
+  }
+
+  function resume(): void {
+    if (!paused || disposed) return
+    paused = false
+    if (!dirty || running) return // nothing arrived, or the running handler's completion reschedules
+    const wait = gapLeft()
+    if (wait > 0 && !flooding()) {
+      arm('window', wait, onTimer) // once per window holds across a pause too
+      return
+    }
+    schedule()
+  }
+
+  const control = { pause, resume }
+  liveGates.add(control)
+
   return {
     note(opts) {
       if (disposed) return
       const priority = opts?.priority === true
       meters[priority ? 1 : 0].tick(now())
       dirty = true
+      if (paused) return
       schedule(priority && !meters[1].flooding)
     },
     poke() {
       if (disposed) return
       dirty = true
+      if (paused) return
       schedule()
     },
+    pause,
+    resume,
     dispose() {
       disposed = true
       dirty = false
+      liveGates.delete(control)
       clear()
     },
+    get paused(): boolean { return paused },
     get flooding(): boolean { return flooding() },
     get running(): boolean { return running },
     get runs(): number { return runs },

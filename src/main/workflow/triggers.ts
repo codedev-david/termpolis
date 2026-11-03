@@ -397,7 +397,7 @@ export class TriggerSupervisor {
         run: () => this.runFileWatch(p),
       })
       try {
-        p.watcher = this.d.watch(p.cwd, (_ev, filename) => this.onFileEvent(p, filename))
+        p.watcher = this.d.watch(p.cwd, (ev, filename) => this.onFileEvent(p, filename, ev))
       } catch (e) {
         this.log(`could not watch ${p.cwd}: ${(e as Error)?.message}`)
         p.watcher = null
@@ -422,10 +422,10 @@ export class TriggerSupervisor {
     )
   }
 
-  private onFileEvent(p: Project, filename: string | null): void {
+  private onFileEvent(p: Project, filename: string | null, event?: string): void {
     if (!filename || !p.gate || !p.filter) return
     const name = String(filename)
-    if (p.filter.shouldIgnore(name)) return
+    if (p.filter.shouldIgnore(name, event)) return
     if (p.pendingNames.size < MAX_PENDING_NAMES) p.pendingNames.add(name)
     else p.pendingOverflow = true
     p.gate.note()

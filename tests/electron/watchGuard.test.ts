@@ -11,6 +11,9 @@ import {
   createRunGate,
   isIgnoredWatchPath,
   probeNestedRepo,
+  setWatchGatesPaused,
+  watchGatesPaused,
+  liveWatchGateCount,
   WATCH_MIN_INTERVAL_MS,
   FLOOD_EVENTS_PER_SECOND,
   FLOOD_SECONDS,
@@ -219,6 +222,80 @@ describe('createIgnoreFilter', () => {
     expect(f.shouldIgnore('vendor/lib/a.ts')).toBe(false)
   })
 
+  it('a `rename` on the directory entry forgets it; a `change` on it (its mtime moved because of something inside) does NOT', async () => {
+    let nested = true
+    const probe = vi.fn(async (abs: string) => nested && slashes(abs).endsWith('/vendor/lib'))
+    const f = createIgnoreFilter({ root: '/repo', probeNested: probe, caseInsensitive: false })
+    f.shouldIgnore('vendor/lib/a.ts')
+    await microtasks()
+    const asked = probe.mock.calls.length
+    // Windows reports a directory's own `change` whenever something inside it changed, for the
+    // directory and its parents. Those are the nested repository's business: ignored, and not a
+    // reason to forget it (forgetting let every other event through while the probe was out again).
+    for (let i = 0; i < 1000; i++) {
+      expect(f.shouldIgnore('vendor/lib', 'change')).toBe(true)
+      expect(f.shouldIgnore('vendor/lib/src', 'change')).toBe(true)
+    }
+    expect(f.shouldIgnore('vendor/lib/a.ts', 'change')).toBe(true)
+    expect(probe.mock.calls.length).toBe(asked)
+    // The parent's own `change` is a real event of THIS tree (something in `vendor` itself changed).
+    expect(f.shouldIgnore('vendor', 'change')).toBe(false)
+    // Created, removed or renamed: that is a different directory now. Forget, and pass the event.
+    nested = false
+    expect(f.shouldIgnore('vendor/lib', 'rename')).toBe(false)
+    expect(f.shouldIgnore('vendor/lib/a.ts', 'change')).toBe(false)
+    await microtasks()
+    expect(f.shouldIgnore('vendor/lib/a.ts', 'change')).toBe(false)
+  })
+
+  it('a `change` on a directory known to be ordinary is just an event: nothing is forgotten, nothing is asked again', async () => {
+    const p = probeOf([])
+    const f = make(p)
+    f.shouldIgnore('src/app/a.ts')
+    await microtasks()
+    const asked = p.fn.mock.calls.length
+    for (let i = 0; i < 100; i++) expect(f.shouldIgnore('src/app', 'change')).toBe(false)
+    expect(f.shouldIgnore('src/app/b.ts', 'change')).toBe(false)
+    expect(p.fn.mock.calls.length).toBe(asked)
+  })
+
+  it('a `change` on a submodule\'s own entry is NOT ignored: the parent\'s status shows a dirty submodule', async () => {
+    const p = probeOf(['libs/sub'])
+    const f = make(p)
+    f.setKeep(['libs/sub'])
+    f.shouldIgnore('libs/sub/a.ts')
+    await microtasks()
+    expect(f.shouldIgnore('libs/sub', 'change')).toBe(false)
+  })
+
+  it('asks the disk in the spelling the OS gave, even though it remembers directories in lower case', async () => {
+    const asked: string[] = []
+    const probe = vi.fn(async (abs: string) => { asked.push(slashes(abs)); return false })
+    const f = createIgnoreFilter({ root: '/repo', probeNested: probe, caseInsensitive: true })
+    f.shouldIgnore('Vendor/LIB/Src/A.ts')
+    await microtasks()
+    expect(asked).toEqual(['/repo/Vendor', '/repo/Vendor/LIB', '/repo/Vendor/LIB/Src'])
+    // ... and the same directory in another spelling is the same directory: no second round of probes.
+    f.shouldIgnore('vendor/lib/src/b.ts')
+    await microtasks()
+    expect(asked).toHaveLength(3)
+  })
+
+  it('survives a name whose lower-case form is a different length (U+0130), on either kind of disk', async () => {
+    const dotted = 'İstanbul' // lower-cases to 2 + 7 code units
+    for (const ci of [true, false]) {
+      const probe = vi.fn(async (abs: string) => slashes(abs).endsWith(`/${dotted}/lib`))
+      const f = createIgnoreFilter({ root: '/repo', probeNested: probe, caseInsensitive: ci })
+      f.shouldIgnore(`${dotted}/lib/src/a.ts`)
+      await microtasks()
+      // Whatever the spelling used for the cache, the answer must not throw and must be stable.
+      const first = f.shouldIgnore(`${dotted}/lib/src/b.ts`)
+      expect(f.shouldIgnore(`${dotted}/lib/src/c.ts`)).toBe(first)
+      expect(() => f.shouldIgnore(`${dotted}/lib/.git/HEAD`)).not.toThrow()
+      expect(f.shouldIgnore(`${dotted}/lib/src/d.ts`)).toBe(true) // taught by the .git event, in any case
+    }
+  })
+
   it('keeps submodules (and only them) watched, in any case and with a trailing slash', async () => {
     const p = probeOf(['libs/sub', 'libs/other'])
     const f = make(p, { caseInsensitive: true })
@@ -235,7 +312,9 @@ describe('createIgnoreFilter', () => {
   })
 
   it('matches directories case-insensitively where the file system is, and exactly where it is not', async () => {
-    const ci = make(probeOf(['vendor/lib']), { caseInsensitive: true })
+    // A case-insensitive disk answers for ANY spelling of the directory, as Windows does.
+    const probeCi = vi.fn(async (abs: string) => slashes(abs).toLowerCase().endsWith('/vendor/lib'))
+    const ci = createIgnoreFilter({ root: '/repo', probeNested: probeCi, caseInsensitive: true })
     ci.shouldIgnore('Vendor/LIB/a.ts')
     await microtasks()
     expect(ci.shouldIgnore('vendor/lib/b.ts')).toBe(true)
@@ -818,5 +897,147 @@ describe('createRunGate: priority events', () => {
     await s.clock.advance(60_000)
     expect(Math.min(...gaps(s.starts))).toBeGreaterThanOrEqual(10_000)
     expect(s.starts.length).toBeGreaterThan(before)
+  })
+})
+
+// ── the governor's switch ────────────────────────────────────────────────────
+
+describe('createRunGate: pause and resume (the event-loop governor\'s switch)', () => {
+  afterEach(() => { setWatchGatesPaused(false) })
+
+  it('while paused, events arm nothing and run nothing; resume runs the handler ONCE for all of them', async () => {
+    const s = setup()
+    s.gate.pause()
+    expect(s.gate.paused).toBe(true)
+    for (let i = 0; i < 10_000; i++) s.gate.note()
+    s.gate.poke()
+    expect(s.starts).toHaveLength(0)
+    expect(s.clock.setCalls).toBe(0)
+    await s.clock.advance(60_000)
+    expect(s.starts).toHaveLength(0)
+    s.gate.resume()
+    expect(s.gate.paused).toBe(false)
+    expect(s.starts).toHaveLength(1) // leading, and nothing has run for a long time: at once
+    await s.clock.advance(60_000)
+    expect(s.starts).toHaveLength(1) // once, not once per event
+  })
+
+  it('trailing: resume runs once, one window later, like any burst', async () => {
+    const s = setup({ mode: 'trailing' })
+    s.gate.pause()
+    for (let i = 0; i < 1000; i++) s.gate.note()
+    s.gate.resume()
+    expect(s.starts).toHaveLength(0)
+    await s.clock.advance(1999)
+    expect(s.starts).toHaveLength(0)
+    await s.clock.advance(1)
+    expect(s.starts).toHaveLength(1)
+    await s.clock.advance(60_000)
+    expect(s.starts).toHaveLength(1)
+  })
+
+  it('pause cancels the pending window, and resume still honours one window since the last run', async () => {
+    const s = setup()
+    s.gate.note() // runs at once, opens a 2 s window
+    s.gate.note() // dirty
+    expect(s.clock.pending).toBe(1)
+    s.gate.pause()
+    expect(s.clock.pending).toBe(0)
+    await s.clock.advance(500)
+    s.gate.resume()
+    expect(s.starts).toHaveLength(1) // 1.5 s of the window is left
+    await s.clock.advance(1499)
+    expect(s.starts).toHaveLength(1)
+    await s.clock.advance(1)
+    expect(s.starts).toHaveLength(2)
+    expect(s.starts[1] - s.starts[0]).toBe(2000)
+  })
+
+  it('resume with nothing pending starts nothing, and pause and resume are idempotent', async () => {
+    const s = setup()
+    s.gate.resume() // not paused: no-op
+    s.gate.pause()
+    s.gate.pause()
+    s.gate.resume()
+    s.gate.resume()
+    await s.clock.advance(10_000)
+    expect(s.starts).toHaveLength(0)
+    expect(s.clock.setCalls).toBe(0)
+  })
+
+  it('a handler already running is left to finish; its follow-up waits for resume', async () => {
+    const s = setup({ handler: () => s.clock.delay(5000) })
+    s.gate.note()
+    s.gate.note() // dirty
+    s.gate.pause()
+    await s.clock.advance(5000) // the run ends
+    expect(s.gate.running).toBe(false)
+    await s.clock.advance(60_000)
+    expect(s.starts).toHaveLength(1)
+    s.gate.resume()
+    expect(s.starts).toHaveLength(2)
+    expect(s.maxActive()).toBe(1)
+  })
+
+  it('resume while the handler is still running starts nothing; its completion picks the follow-up up', async () => {
+    const s = setup({ handler: () => s.clock.delay(5000) })
+    s.gate.note()
+    s.gate.note()
+    s.gate.pause()
+    s.gate.resume()
+    expect(s.starts).toHaveLength(1)
+    await s.clock.advance(5000)
+    expect(s.starts).toHaveLength(2)
+    expect(s.maxActive()).toBe(1)
+  })
+
+  it('events keep being counted while paused, so a flood that went on through a pause still meets a back-off', async () => {
+    const s = setup({ mode: 'trailing' })
+    s.gate.pause()
+    for (let sec = 0; sec < 6; sec++) await second(s, 500)
+    expect(s.gate.flooding).toBe(true)
+    expect(s.logs).toEqual([]) // nothing was scheduled, so nothing was said
+    s.gate.resume()
+    expect(s.logs).toHaveLength(1)
+    expect(s.starts).toHaveLength(0)
+    await s.clock.advance(4000)
+    expect(s.starts).toHaveLength(1)
+  })
+
+  it('a disposed gate cannot be paused or resumed back to life', async () => {
+    const s = setup()
+    s.gate.dispose()
+    s.gate.pause()
+    s.gate.resume()
+    s.gate.note()
+    await s.clock.advance(10_000)
+    expect(s.starts).toHaveLength(0)
+  })
+
+  it('the process-wide switch pauses every live gate, a gate born while paused starts paused, and a disposed gate is forgotten', async () => {
+    const base = liveWatchGateCount()
+    const a = setup()
+    const b = setup({ mode: 'trailing' })
+    expect(liveWatchGateCount()).toBe(base + 2)
+    expect(watchGatesPaused()).toBe(false)
+    setWatchGatesPaused(true)
+    expect(watchGatesPaused()).toBe(true)
+    expect(a.gate.paused && b.gate.paused).toBe(true)
+    const c = setup() // born while paused
+    expect(c.gate.paused).toBe(true)
+    c.gate.note()
+    expect(c.starts).toHaveLength(0)
+    setWatchGatesPaused(true) // idempotent
+    expect(liveWatchGateCount()).toBe(base + 3)
+    b.gate.dispose()
+    expect(liveWatchGateCount()).toBe(base + 2)
+    setWatchGatesPaused(false)
+    expect(watchGatesPaused()).toBe(false)
+    expect(a.gate.paused || c.gate.paused).toBe(false)
+    expect(c.starts).toHaveLength(1) // it had been told something arrived: runs once on resume
+    expect(a.starts).toHaveLength(0) // it had not
+    a.gate.dispose()
+    c.gate.dispose()
+    expect(liveWatchGateCount()).toBe(base)
   })
 })

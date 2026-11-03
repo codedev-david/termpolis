@@ -7,6 +7,7 @@ import * as os from 'os'
 import * as path from 'path'
 import type { FSWatcher } from 'fs'
 import { createGitWatcherRegistry, isIgnoredGitPath, isIgnoredPath, type GitWatcherDeps } from '../../src/main/gitWatcher'
+import { setWatchGatesPaused } from '../../src/main/watchGuard'
 
 type Listener = (event: string, filename: string | Buffer | null) => void
 
@@ -44,7 +45,10 @@ function harness(extra: Partial<GitWatcherDeps> = {}) {
   }
 }
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => {
+  vi.restoreAllMocks()
+  setWatchGatesPaused(false)
+})
 
 describe('what the .git watch passes', () => {
   it.each([
@@ -68,6 +72,20 @@ describe('what the .git watch passes', () => {
     expect(h.onChange).not.toHaveBeenCalled()
     expect(h.armedTotal).toBe(0)
     h.gitDir().listener('change', 'refs/heads/main') // a branch tip moved: that one is real
+    expect(h.onChange).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the governor can pause it', () => {
+  it('no repaint while paused; ONE repaint on resume however many events arrived', () => {
+    const h = harness()
+    h.reg.add('/repo')
+    setWatchGatesPaused(true)
+    for (let i = 0; i < 5000; i++) h.tree().listener('change', `src/f${i % 50}.ts`)
+    h.gitDir().listener('change', 'refs/heads/main')
+    expect(h.onChange).not.toHaveBeenCalled()
+    expect(h.armedTotal).toBe(0)
+    setWatchGatesPaused(false)
     expect(h.onChange).toHaveBeenCalledTimes(1)
   })
 })
