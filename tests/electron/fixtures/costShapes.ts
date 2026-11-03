@@ -141,6 +141,13 @@ export const COST_SHAPES: Record<string, [string, CostAsk, number]> = {
   // with a `+` in it stops the look at once): 1 MB took 22 s. A unit of base64 holds no `+` 37 times in 100, so this one is made so)
   'letters and digits with an escaped line break after each 64': [fill(`${alnum(64)}${BS}n`, 465_000), ANSWER, 300],
   'the same with a Windows path after each break': [fill(`${alnum(64)}${BS}n${BS}repos${BS}${alnum(20)}.pem:7:`, 465_000), ANSWER, 300],
+  // (a text with an escape the path reading kept from being a break is read again, at a reading of fewer names, and again with every one a break: three passes, each linear. A name
+  // that a path can hold, of up to 259 characters and with a separator in it, is looked at after each of 1,800 breaks: a look that read to the end of the text each time would be the quadratic)
+  'escaped line breaks, each followed by a name of 250 characters with blanks and slashes and no colon': [fill(`${BS}n${'ab cd/'.repeat(41)}`, 465_000), ANSWER, 300],
+  'escaped line breaks, each followed by a name of 259 characters and no separator': [fill(`${BS}n${'x'.repeat(259)}`, 465_000), ANSWER, 300],
+  'a listing of key lines joined by written-out breaks, a name and a line number between dashes in front of each': [fill(`id.pem-7-${r64()}${BS}n`, 465_000), ANSWER, 300],
+  'the same with a name, a line number and four blanks': [fill(`values.yaml:7:    ${r64()}${BS}n`, 465_000), ANSWER, 300],
+  'a Windows listing with folders named like a number, a word and a blank': [fill(`${alnum(24)}${BS}notes${BS}new project${BS}r123456${BS}a.pem:7:${alnum(40)}\n`, 465_000), ANSWER, 300],
   // (a key file stored base64 encoded, wrapped, with the CR and the LF of each of its line ends written out in the JSON string it is in, once or twice: a CR and
   // an LF right behind it are read as one break. 465,000 characters of them took 50 ms to screen and 110 to mask)
   'a base64 key file in JSON with its CR LF written out': [fill(`{"tls.key":"${K5_LINES.join(`${BS}r${BS}n`)}"}\n`, 465_000), ANSWER, 300],

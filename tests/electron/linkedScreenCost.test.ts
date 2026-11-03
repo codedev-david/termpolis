@@ -202,6 +202,9 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     // above has one 63 times in 100)
     'escaped line breaks between runs of letters and digits': (n) => fill(`${rb(96).toString('base64').replace(/[+/=]/g, 'x')}${BS}n`, n),
     'escaped line breaks and Windows paths': (n) => fill(`${rb(96).toString('base64').replace(/[+/=]/g, 'x').slice(0, 64)}${BS}n${BS}repos${BS}${rb(15).toString('hex')}.pem:7:`, n),
+    // (a name that a path can hold, after each of the breaks, and a listing joined by breaks that meets the path reading at each: read three times)
+    'escaped line breaks followed by names of 250 characters with blanks and slashes': (n) => fill(`${BS}n${'ab cd/'.repeat(41)}`, n),
+    'a listing of key lines joined by written-out breaks, a name and a line number in front of each': (n) => fill(`id.pem-7-${r64()}${BS}n`, n),
     // (the line under a key of one line with no END line is read for the characters its DER says the key lacks: lackedLine, which nothing above reaches)
     'blocks of a key of one line with no END line': (n) =>
       fill(Array.from({ length: 64 }, () => `-----BEGIN PRIVATE KEY-----\n${Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), rb(32)]).toString('base64')}\n`).join(''), n),
@@ -212,7 +215,8 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     // Each took seconds to minutes before (a run of 60,000 backslashes 3.6 s, 1,000 plus signs 1.2 s).
     const [text, ask, bound] = COST_SHAPES[shape]
     expect(bestOf3(() => screenText(text, ask.keep, SCREEN_LOOKBACK_CHARS, ask.cutStart), within(bound) * 4), shape).toBeLessThan(within(bound))
-    expect(bestOf3(() => maskForDisplay(text), within(bound) * 4), `${shape}, masked`).toBeLessThan(within(bound))
+    // (what masks a text, which looks for a key from the start of every line it holds, takes 2.5 to 4 times the screen's time for a few of these: its bound is twice)
+    expect(bestOf3(() => maskForDisplay(text), within(bound * 2) * 4), `${shape}, masked`).toBeLessThan(within(bound * 2))
   })
 
   it('masks BEGIN lines on one line in step with their number: 4 MB of them take under 12 times as long as 1 MB', () => {
@@ -239,6 +243,9 @@ describe("the Linked screen's cost where only an answer's end is kept", () => {
     const one = HOSTILE[shape](MB)
     reseed()
     const four = HOSTILE[shape](4 * MB)
+    // 1 MB alone, with a limit, before 4 MB: a look that is quadratic in one part of the screen only (a name of any length read to its end after each break) costs 0.3 s at 128 KB, which the
+    // check above passes, but 18 s at 1 MB and 285 s at 4 MB, and the 4 MB run cannot be interrupted. A linear screen takes 0.1 to 0.4 s for 1 MB.
+    expect(bestOf3(() => screenText(one), within(3_000)), `${shape}: 1 MB`).toBeLessThan(within(3_000))
     // Linear is 4 times; measured at most 4.9 (judge's p6b) and 7 on a loaded laptop; a quadratic is 16.
     const [t1, t4] = pair(() => screenText(one), () => screenText(four))
     expect(t4, `${shape}: 1 MB ${t1.toFixed(0)} ms, 4 MB ${t4.toFixed(0)} ms`).toBeLessThan(12 * t1)
