@@ -655,6 +655,8 @@ const REVIEW = {
   'r6 cwd URL: the word joiner is not a zero-width character': [TOOL, ' + String.fromCharCode(0x2060) + String.fromCharCode(0xfeff)', ' + String.fromCharCode(0xfeff)'],
   'r6 cwd URL: the zero-width joiners are not zero-width characters': [TOOL, '\'-\' + String.fromCharCode(0x200d)', '\'-\' + String.fromCharCode(0x200b)'],
   'r6 cost: a name read after a break has no length': [KEY, '[^\\x00-\\x1f"*:<>?|]{1,259}?(?::', '[^\\x00-\\x1f"*:<>?|]+?(?::', 'tests/electron/linkedScreenCost.test.ts'],
+  // (round 6, C5-2) one part of the screen quadratic alone: the growth test screens 1 MB by itself, with a limit, and fails after one run (about 18 s), not after the 4 MB run (about 285 s)
+  'r6 cost: the first alternative of PATH_AFTER_ESCAPE has no cap': [KEY, '[A-Za-z_.][A-Za-z0-9_.\\-/\\\\]{0,95}?(?::\\d{1,9}[:-]|-\\d{1,9}-)', '[A-Za-z_.][A-Za-z0-9_.\\-/\\\\]*?(?::\\d{1,9}[:-]|-\\d{1,9}-)', 'tests/electron/linkedScreenCost.test.ts'],
   'r6 cost: the separator a name must hold is looked for to the end of the text': [KEY, '(?=[^\\x00-\\x1f"*:<>?|]{0,259}?[.\\\\/])', '(?=[^\\x00-\\x1f"*:<>?|]*?[.\\\\/])', 'tests/electron/linkedScreenCost.test.ts'],
   'r6 J12: keySpans appends a detector\'s spans as arguments': [KEY, '    for (const s of found) spans.push(s)', '    spans.push(...found)', 'tests/electron/linkedScreenCost.test.ts'],
   'r6 J12: screenText appends the key spans as arguments': [SCREEN, '  for (const span of keys.spans) found.push(span)', '  found.push(...keys.spans)', 'tests/electron/linkedScreenCost.test.ts'],
