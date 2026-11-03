@@ -112,6 +112,16 @@ describe('Claude Code\'s saved notes: the settings IPC', () => {
     expect(state.index).toBe(false)
   })
 
+  // A removal that could not look through memory says so, and the answer carries that to the panel as it came (it is not summed up).
+  it('remove passes on that memory could not be looked through, and only then', async () => {
+    d.remove = vi.fn(async () => ({ removed: 0, failed: 0, unchecked: true }))
+    registerClaudeNotesIpc({ handle: (c, fn) => { handlers.set(c, fn) } }, d)
+    expect((await call(NOTES_IPC.remove)).data).toMatchObject({ removed: 0, failed: 0, unchecked: true })
+    d.remove = vi.fn(async () => ({ removed: 4, failed: 0 }))
+    registerClaudeNotesIpc({ handle: (c, fn) => { handlers.set(c, fn) } }, d)
+    expect('unchecked' in (await call(NOTES_IPC.remove)).data).toBe(false)
+  })
+
   // The settings module refuses to say a switch was changed when it could not save it (it throws). Both channels have to
   // pass that on as an error, or the panel would show a choice that was never kept.
   it('set answers a switch that could not be saved with the error, and the panel is left with the state main holds', async () => {

@@ -387,6 +387,33 @@ describe('ClaudeNotesPanel: Remove imported notes', () => {
     expect(screen.getByTestId('claude-notes-pending').textContent).toContain('2 removals are waiting')
   })
 
+  // Memory could not be looked through (the host was busy): "Removed 0" must not read as a success while copies may remain.
+  it.each<[string, { removed: number; failed: number }, string]>([
+    ['nothing removed', { removed: 0, failed: 0 }, 'Removed 0 note chunks from memory.'],
+    ['something removed', { removed: 2, failed: 0 }, 'Removed 2 note chunks from memory.'],
+    ['something that could not be removed yet', { removed: 1, failed: 2 }, '2 chunks could not be removed yet'],
+  ])('says memory could not be searched all the way through, and to try again: %s', async (_label, counts, start) => {
+    removeNotes.mockImplementationOnce(async () => ({ success: true, data: { ...counts, unchecked: true, settings: view({ indexClaudeNotes: false }) } }))
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    fireEvent.click(screen.getByTestId('claude-notes-remove-confirm'))
+    const notice = (await screen.findByTestId('claude-notes-notice')).textContent!
+    expect(notice).toContain(start)
+    expect(notice).toContain('Memory could not be searched all the way through, so some copies may remain. Choose Remove imported notes again to finish.')
+    expect(notice).not.toContain('turn it on to bring them back') // that sentence says it all went
+  })
+
+  it.each<[string, { unchecked?: boolean }]>([
+    ['the answer has no such field', {}],
+    ['the answer says false', { unchecked: false }],
+  ])('does not say it when memory was seen whole: %s', async (_label, extra) => {
+    removeNotes.mockImplementationOnce(async () => ({ success: true, data: { removed: 4, failed: 0, ...extra, settings: view({ indexClaudeNotes: false }) } }))
+    await open()
+    fireEvent.click(screen.getByTestId('claude-notes-remove'))
+    fireEvent.click(screen.getByTestId('claude-notes-remove-confirm'))
+    expect((await screen.findByTestId('claude-notes-notice')).textContent).toBe('Removed 4 note chunks from memory. The import is off; turn it on to bring them back.')
+  })
+
   it.each<[string, () => unknown, string]>([
     ['an error from main', async () => ({ success: false, error: 'memory is locked' }), 'memory is locked'],
     ['an answer with no error text', async () => ({ success: false }), 'Could not remove the imported notes'],

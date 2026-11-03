@@ -532,7 +532,7 @@ export interface TermpolisAPI {
   /** Change either switch (only a real boolean counts). Answers with the new state. */
   memorySetNotesSettings: (p: { indexClaudeNotes?: boolean; shareNotesAcrossProjects?: boolean }) => Promise<IpcResponse<ClaudeNotesSettings>>
   /** Take every imported note out of memory and turn the import off. */
-  memoryRemoveImportedNotes: () => Promise<IpcResponse<{ removed: number; failed: number; settings: ClaudeNotesSettings }>>
+  memoryRemoveImportedNotes: () => Promise<IpcResponse<{ removed: number; failed: number; unchecked?: boolean; settings: ClaudeNotesSettings }>>
   /** The record of what memory did, in the app-data folder: how many of its files exist and their size together. */
   memoryAuditSize: () => Promise<IpcResponse<{ files: number; bytes: number }>>
   /** Forget the record. `failed` counts files that exist and could not be removed. */

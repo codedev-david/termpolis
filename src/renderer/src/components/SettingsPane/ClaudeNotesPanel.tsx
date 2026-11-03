@@ -110,11 +110,16 @@ export function ClaudeNotesPanel({ refreshToken = 0 }: { refreshToken?: number }
       if (!mounted.current) return
       if (res?.success && res.data) {
         setS(res.data.settings)
-        const { removed, failed } = res.data
+        const { removed, failed, unchecked } = res.data
+        const done = failed > 0
+          ? `Removed ${plural(removed, 'note chunk', 'note chunks')}. ${plural(failed, 'chunk', 'chunks')} could not be removed yet (memory may be locked) and will be retried.`
+          : `Removed ${plural(removed, 'note chunk', 'note chunks')} from memory.`
+        // Memory that could not be searched all the way through may still hold copies the record lost track of: say so, and what to do,
+        // instead of closing with "turn it on to bring them back", which says they all went.
         setNotice(
-          failed > 0
-            ? `Removed ${plural(removed, 'note chunk', 'note chunks')}. ${plural(failed, 'chunk', 'chunks')} could not be removed yet (memory may be locked) and will be retried.`
-            : `Removed ${plural(removed, 'note chunk', 'note chunks')} from memory. The import is off; turn it on to bring them back.`,
+          unchecked
+            ? `${done} Memory could not be searched all the way through, so some copies may remain. Choose Remove imported notes again to finish.`
+            : failed > 0 ? done : `${done} The import is off; turn it on to bring them back.`,
         )
       } else setActionErr(res?.error || 'Could not remove the imported notes')
     } catch (e) {

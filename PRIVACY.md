@@ -451,7 +451,10 @@ this: it starts when you answer yes.
   cannot read its settings file (a write cut short by a crash, say), it leaves
   the import off until you turn it on again, and a switch it could not save is
   reported as an error, not shown as changed (*Remove imported notes* then
-  removes nothing, and says so).
+  removes nothing, and says so). When memory cannot be searched all the way
+  through at that moment (the memory process is busy, say), a copy this
+  computer had lost track of may be missed; Settings says so, and choosing
+  *Remove imported notes* again finds it.
 
 ## Your Choices
 

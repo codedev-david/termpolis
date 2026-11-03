@@ -808,6 +808,9 @@ export interface RemoveResult {
   removed: number
   /** Not removed (memory locked, say); they stay on the manifest's list, and another try finishes them. */
   failed: number
+  /** Set only when memory could not be looked through (the host was busy, say): a copy this computer had lost track of may remain,
+   *  and another "Remove imported notes" finds it. Absent when memory was seen whole. */
+  unchecked?: boolean
 }
 
 /**
@@ -837,7 +840,9 @@ export function removeImportedNotes(deps: NotesDeps): Promise<RemoveResult> {
     // Not clean until every id is gone and the store was seen whole; the next pass then checks.
     m.dirty = !swept || m.stale.length > 0
     ledger.save()
-    return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : ids.size }
+    // A store that could not be looked through says so: a record that had lost its copies removes nothing then, and "removed 0" would
+    // read as a success while every agent can still find them.
+    return { removed: stats.chunksDeleted, failed: wroteAhead ? stats.deleteFailed : ids.size, ...(listed ? {} : { unchecked: true }) }
   })
 }
 

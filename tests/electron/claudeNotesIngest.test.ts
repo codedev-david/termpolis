@@ -1127,8 +1127,44 @@ describe('Remove imported notes', () => {
     const store = fakeStore()
     await runClaudeNotesIngest(deps(store))
     store.failList(new Error('host down'))
-    expect(await removeImportedNotes(deps(store))).toEqual({ removed: 1, failed: 0 })
+    expect(await removeImportedNotes(deps(store))).toEqual({ removed: 1, failed: 0, unchecked: true })
     expect(manifestJson().dirty).toBe(true)
+  })
+
+  // Memory could not be looked through, and the record no longer knows the copies (it was lost): nothing was removed, and saying
+  // "removed 0 note chunks" would read as a success while every agent can still find and lend them. The result says it could not look.
+  describe('when the record has lost the copies and memory cannot be looked through', () => {
+    const lostRecord = async (): Promise<ReturnType<typeof fakeStore>> => {
+      for (const n of ['a', 'b', 'c']) note(FOLDER, `${n}.md`, `---\nname: ${n}\n---\nBody ${n}.`)
+      session(FOLDER, CWD)
+      const store = fakeStore()
+      await runClaudeNotesIngest(deps(store))
+      expect(store.rows.size).toBe(3)
+      fs.rmSync(manifestFile()) // the record is lost, the copies are not
+      return store
+    }
+
+    it('says it could not look, when the listing fails, and leaves the copies where they are', async () => {
+      const store = await lostRecord()
+      store.failList(new Error('host busy'))
+      expect(await removeImportedNotes(deps(store))).toEqual({ removed: 0, failed: 0, unchecked: true })
+      expect(store.rows.size).toBe(3)
+      expect(manifestJson().dirty).toBe(true) // and a pass that is let finish checks again
+    })
+
+    it('says it could not look, when the computer cannot be asked what its own id is', async () => {
+      const store = await lostRecord()
+      expect(await removeImportedNotes(deps(store, { ownOrigin: async () => { throw new Error('host busy') } }))).toEqual({ removed: 0, failed: 0, unchecked: true })
+      expect(store.rows.size).toBe(3)
+    })
+
+    it('removes them, and says nothing of the kind, once memory can be looked through', async () => {
+      const store = await lostRecord()
+      const res = await removeImportedNotes(deps(store))
+      expect(res).toEqual({ removed: 3, failed: 0 })
+      expect('unchecked' in res).toBe(false)
+      expect(store.rows.size).toBe(0)
+    })
   })
 
   it('leaves another computer\'s notes alone', async () => {
@@ -1146,7 +1182,7 @@ describe('Remove imported notes', () => {
     await runClaudeNotesIngest(deps(store))
     store.rows.set('peer', { id: 'peer', ts: 1, agentId: 'claude-notes', source: 'claude-notes', content: 'x', origin: 'laptop' } as never)
     const res = await removeImportedNotes(deps(store, { ownOrigin: async () => { throw new Error('host busy') } }))
-    expect(res).toEqual({ removed: 1, failed: 0 })
+    expect(res).toEqual({ removed: 1, failed: 0, unchecked: true })
     expect([...store.rows.keys()]).toEqual(['peer'])
     expect(manifestJson().dirty).toBe(true) // what the store holds was not seen whole: the next pass checks
   })
