@@ -250,6 +250,21 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
     expectToldTheGrid('a', t)
   })
 
+  it('the e2e size hook reports the grid xterm has, by id and for the active terminal, and null for none', async () => {
+    const size = (id?: string): { cols: number; rows: number } | null =>
+      (window as unknown as { __termpolis_terminal_size: (id?: string) => { cols: number; rows: number } | null }).__termpolis_terminal_size(id)
+    await mount([['a', true], ['b', false]])
+    await settle(500)
+    expect(size('a')).toEqual({ cols: term(0).cols, rows: term(0).rows })
+    expect(size('b')).toEqual({ cols: 80, rows: 24 }) // never fitted: hidden
+    expect(size('nope')).toBeNull()
+    expect(size()).not.toBeNull() // no id: the terminal on screen (jsdom has no visibility API: the first live one)
+    act(() => { cleanup() })
+    await settle(200) // the panes are gone: nothing is live to answer for
+    expect(size('a')).toBeNull()
+    expect(size()).toBeNull()
+  })
+
   // ---------------------------------------------------------------------------------------------
   describe('mount: the pty is not moved under an in-flight replay', () => {
     it('does not resize the pty before the replay reply lands, then fits once, after the replay was parsed at the pty size', async () => {

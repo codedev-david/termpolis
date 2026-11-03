@@ -276,7 +276,15 @@ function readTerminalText(terminalId?: string): string {
   return lines.join('\n')
 }
 
+/** A terminal's grid as xterm has it, for an e2e spec to compare with the size the shell child
+ *  reports (the two disagreeing is the persistent garble a resize must never leave). */
+function readTerminalSize(terminalId?: string): { cols: number; rows: number } | null {
+  const term = (terminalId ? liveTerminals.get(terminalId) : activeTerminal())?.term
+  return term ? { cols: term.cols, rows: term.rows } : null
+}
+
 if (typeof window !== 'undefined') {
+  ;(window as unknown as { __termpolis_terminal_size?: typeof readTerminalSize }).__termpolis_terminal_size = readTerminalSize
   // Read-only test inspection hook — used by e2e terminal tests.
   ;(window as unknown as { __termpolis_terminal_text?: typeof readTerminalText }).__termpolis_terminal_text =
     readTerminalText
