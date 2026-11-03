@@ -152,6 +152,8 @@ export interface EchoMinute {
   rttMax: number
   resizes: number
   maxQueuedAtResize: number
+  /** JS heap of the newest window, or null when the browser does not say. */
+  heapUsedMB: number | null
 }
 
 export interface EchoTraceSnapshot {
@@ -327,13 +329,15 @@ export function createEchoTrace(deps: EchoTraceDeps = {}): EchoTrace {
     win = newWindow()
   }
 
-  function minute(): EchoMinute | null {
-    if (ring.length === 0) return null
+  /** The ring folded into one record. An empty ring folds to zeros. */
+  function aggregate(): EchoMinute {
     const m: EchoMinute = {
       windows: ring.length, keys: 0, sampled: 0, longTasks: 0, longTaskMs: 0, maxLongTaskMs: 0, frameGaps: 0, maxFrameGapMs: 0,
       maxQueued: 0, received: 0, parsed: 0, echoAheadMax: 0, echoAheadOver64k: 0, rttMax: 0, resizes: 0, maxQueuedAtResize: 0,
+      heapUsedMB: null,
     }
     for (const w of ring) {
+      m.heapUsedMB = w.heapUsedMB // the newest window wins
       m.keys += w.keys
       m.sampled += w.sampled
       m.longTasks += w.longTasks.count
@@ -356,12 +360,15 @@ export function createEchoTrace(deps: EchoTraceDeps = {}): EchoTrace {
     return m
   }
 
+  function minute(): EchoMinute | null {
+    return ring.length === 0 ? null : aggregate()
+  }
+
   function logMinute(): void {
-    const m = minute()
-    if (m === null) return
+    const m = aggregate()
     const active = m.keys > 0 || m.longTasks > 0 || m.resizes > 0 || m.frameGaps > 0 || m.maxQueued >= QUEUE_LOG_CHARS
     if (!active) return // an idle minute stays out of the app log
-    const heap = last !== null && last.heapUsedMB !== null ? ` | heap=${last.heapUsedMB}MB` : ''
+    const heap = m.heapUsedMB !== null ? ` | heap=${m.heapUsedMB}MB` : ''
     log(
       `[echo-trace] 60s keys=${m.keys} sampled=${m.sampled}` +
       ` | ahead max=${m.echoAheadMax} over64k=${m.echoAheadOver64k}` +

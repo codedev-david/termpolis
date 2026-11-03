@@ -242,6 +242,7 @@ const newAcc = (): Acc => ({ n: 0, sum: 0, max: 0 })
 const addAcc = (a: Acc, v: number): void => { a.n++; a.sum += v; if (v > a.max) a.max = v }
 const viewAcc = (a: Acc): LatencyStat => ({ n: a.n, avg: a.n === 0 ? 0 : round1(a.sum / a.n), max: round1(a.max) })
 const isOff = (v: string | undefined): boolean => typeof v === 'string' && ['0', 'off', 'false', 'no'].includes(v.trim().toLowerCase())
+const safe = <T>(read: () => T, fallback: T): T => { try { return read() } catch { return fallback } }
 const isThenable = (x: unknown): x is PromiseLike<unknown> =>
   x !== null && (typeof x === 'object' || typeof x === 'function') && typeof (x as { then?: unknown }).then === 'function'
 
@@ -498,7 +499,7 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
   function start(): void {
     if (!enabled || started) return
     started = true
-    startedAt = wallNow()
+    startedAt = safe(now, 0)
     tick = 0
     try { loop = openLoop() } catch { loop = null }
     try { stopGc = observeGcFn(onGc) } catch { stopGc = null }
@@ -528,7 +529,7 @@ export function createTypingTrace(deps: TypingTraceDeps = {}): TypingTrace {
     return {
       enabled,
       started,
-      uptimeMs: started ? Math.max(0, Math.round(wallNow() - startedAt)) : 0,
+      uptimeMs: started ? Math.max(0, Math.round(safe(now, startedAt) - startedAt)) : 0,
       loopDelay: {
         last: lastWindow === null ? null : { count: lastWindow.count, p50: round1(lastWindow.p50), p99: round1(lastWindow.p99), max: round1(lastWindow.max) },
         minute: minuteLoop(),

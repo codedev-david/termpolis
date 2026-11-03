@@ -618,3 +618,109 @@ describe('echoTrace: the shared instance TerminalPane calls', () => {
     pane.detach()
   })
 })
+
+// ---------------------------------------------------------------------------------------------
+describe('echoTrace: the defaults and the edges', () => {
+  const quiet = (clock: FakeClock) => ({ enabled: () => true, now: clock.now, wallNow: clock.wall, setInterval: clock.setInterval, clearInterval: clock.clearInterval, raf: clock.raf })
+
+  it('reads the real heap counter when the browser has one, and null when it does not', () => {
+    const had = Object.getOwnPropertyDescriptor(performance, 'memory')
+    try {
+      Object.defineProperty(performance, 'memory', { value: { usedJSHeapSize: 5 * 1024 * 1024 }, configurable: true })
+      const a = new FakeClock()
+      const withHeap = createEchoTrace({ ...quiet(a), PerformanceObserverCtor: undefined })
+      withHeap.attach('t1', fakeTerm())
+      a.advance(5_000)
+      expect(withHeap.snapshot().last!.heapUsedMB).toBe(5)
+
+      Object.defineProperty(performance, 'memory', { value: undefined, configurable: true })
+      const b = new FakeClock()
+      const without = createEchoTrace({ ...quiet(b), PerformanceObserverCtor: undefined })
+      without.attach('t1', fakeTerm())
+      b.advance(5_000)
+      expect(without.snapshot().last!.heapUsedMB).toBeNull()
+    } finally {
+      if (had) Object.defineProperty(performance, 'memory', had)
+      else delete (performance as unknown as Record<string, unknown>).memory
+    }
+  })
+
+  it('logs through console.info by default, and leaves the heap out of the line when unknown', () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    try {
+      const clock = new FakeClock()
+      const trace = createEchoTrace({ ...quiet(clock), PerformanceObserverCtor: undefined, heapUsed: () => null })
+      const pane = trace.attach('t1', fakeTerm())
+      for (let i = 0; i < SAMPLE_EVERY_KEYS; i++) pane.write('a')
+      clock.advance(60_000)
+      expect(info).toHaveBeenCalledTimes(1)
+      const line = String(info.mock.calls[0][0])
+      expect(line.startsWith('[echo-trace]')).toBe(true)
+      expect(line).not.toContain('heap=')
+    } finally { info.mockRestore() }
+  })
+
+  it('NEGATIVE CONTROL: with a heap reading the line carries it', () => {
+    const r = rig()
+    const pane = r.trace.attach('t1', fakeTerm())
+    for (let i = 0; i < SAMPLE_EVERY_KEYS; i++) pane.write('a')
+    r.clock.advance(60_000)
+    expect(r.lines[0]).toContain('heap=50MB')
+  })
+
+  it('uses a PerformanceObserver global when none is injected, and copes when there is none', () => {
+    const clock = new FakeClock()
+    const seen: unknown[] = []
+    class Seen { constructor() { seen.push(this) } observe(): void { /* ok */ } disconnect(): void { /* ok */ } }
+    vi.stubGlobal('PerformanceObserver', Seen)
+    try {
+      const withGlobal = createEchoTrace(quiet(clock))
+      withGlobal.attach('t1', fakeTerm()).detach()
+      expect(seen.length).toBe(1)
+      vi.stubGlobal('PerformanceObserver', undefined)
+      const without = createEchoTrace(quiet(clock))
+      const pane = without.attach('t1', fakeTerm())
+      clock.advance(5_000)
+      expect(without.snapshot().last!.longTasks.count).toBe(0)
+      pane.detach()
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('a second, shorter frame gap does not lower the longest', () => {
+    const r = rig()
+    const pane = r.trace.attach('t1', fakeTerm())
+    for (let i = 0; i < SAMPLE_EVERY_KEYS; i++) pane.write('a')
+    r.clock.advance(32)
+    r.clock.block(450)
+    r.clock.advance(48)
+    r.clock.block(200)
+    r.clock.advance(5_000)
+    const gaps = r.trace.snapshot().last!.frameGaps
+    expect(gaps.count).toBe(2)
+    expect(gaps.maxMs).toBeGreaterThanOrEqual(440)
+    expect(gaps.maxMs).toBeLessThan(500)
+  })
+
+  it('detach survives a clearInterval that throws, and an observer that throws on disconnect', () => {
+    class Throws { observe(): void { /* ok */ } disconnect(): void { throw new Error('x') } }
+    const clock = new FakeClock()
+    const trace = createEchoTrace({ ...quiet(clock), clearInterval: () => { throw new Error('gone') }, PerformanceObserverCtor: Throws as never })
+    const pane = trace.attach('t1', fakeTerm())
+    expect(() => pane.detach()).not.toThrow()
+    expect(trace.snapshot().panes).toBe(0)
+  })
+
+  it('a terminal whose private field throws reads as unknown, not as a crash', () => {
+    const hostile = { get _core(): never { throw new Error('no') } }
+    expect(readXtermPending(hostile)).toBeNull()
+  })
+
+  it('a frame probe that cannot get a frame ends instead of leaking its running flag', () => {
+    let calls = 0
+    const r = rig({ raf: () => { if (calls++ === 0) throw new Error('rAF unavailable'); return 1 } })
+    const pane = r.trace.attach('t1', fakeTerm())
+    for (let i = 0; i < SAMPLE_EVERY_KEYS * 2; i++) pane.write('a') // two sampled keys: the second may arm again
+    expect(calls).toBe(2)
+    expect(r.writes.length).toBe(SAMPLE_EVERY_KEYS * 2)
+  })
+})

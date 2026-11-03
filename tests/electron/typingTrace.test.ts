@@ -853,3 +853,104 @@ describe('typingTrace: the module-level entry points index.ts calls', () => {
     expect(getTypingTraceSnapshot().started).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------------------------
+describe('typingTrace: the defaults and the edges', () => {
+  it('opens the real sensors and logs through console.info when only the timers are faked', () => {
+    const clock = new FakeClock()
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    try {
+      const trace = createTypingTrace({ env: {}, setInterval: clock.setInterval, clearInterval: clock.clearInterval })
+      trace.start()
+      trace.traceTerminalWrite((_e: unknown, _p: unknown) => undefined)({}, { id: 't1', data: 'x' })
+      clock.advance(60_000)
+      const s = trace.snapshot()
+      const m = s.memory!
+      expect(m.rssMB).toBeGreaterThan(10) // a real Node process is more than 10 MB
+      expect(m.heapUsedMB).toBeGreaterThan(1)
+      expect(m.heapLimitMB).toBeGreaterThan(m.heapUsedMB)
+      expect(m.freeMB).toBeGreaterThanOrEqual(0)
+      expect(s.loopDelay.last).not.toBeNull() // the real histogram answered, even if nothing was slow
+      expect(s.uptimeMs).toBeGreaterThanOrEqual(0)
+      expect(info).toHaveBeenCalledTimes(1)
+      expect(String(info.mock.calls[0][0]).startsWith('[typing-trace]')).toBe(true)
+      trace.stop()
+    } finally { info.mockRestore() }
+  })
+
+  it('a histogram that has no count field reads as an empty window', () => {
+    const h = { max: 0, enable: () => true, disable: () => true, reset: () => undefined, percentile: () => 511 }
+    expect(openLoopDelay({ monitorEventLoopDelay: () => h } as never)!.readAndReset()).toEqual({ count: 0, p50: 0, p99: 0, max: 0 })
+  })
+
+  it('past the name cap every other handler lands in one shared bucket', () => {
+    const r = rig()
+    r.trace.start()
+    for (let i = 0; i < 80; i++) r.trace.timedIpc(`chan:${i}`, () => undefined)()
+    const ipc = r.trace.snapshot().ipc
+    expect(Object.keys(ipc).length).toBe(65) // 64 named plus the shared bucket
+    expect(ipc.other.count).toBe(16)
+  })
+
+  it('a valid stamp on a payload without a string id records T1 but starts no T2', () => {
+    const r = rig()
+    r.trace.start()
+    r.trace.traceTerminalWrite((_e: unknown, _p: unknown) => undefined)({}, { id: 7, data: 'x', t: r.clock.wall() - 3 })
+    r.trace.noteTerminalOutput('7')
+    const s = r.trace.snapshot()
+    expect(s.t1.n).toBe(1)
+    expect(s.t2.n).toBe(0)
+  })
+
+  it('a wall clock that throws while stamping leaves the write alone', () => {
+    const r = rig({ wallNow: () => { throw new Error('clock') } })
+    r.trace.start() // start() reads the clock too, and must survive it
+    const handler = vi.fn(() => 'wrote')
+    expect(r.trace.traceTerminalWrite(handler)({}, { id: 't1', data: 'x', t: 5 })).toBe('wrote')
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(r.trace.snapshot().ipc['terminal:write'].count).toBe(1)
+    expect(r.trace.snapshot().t1.n).toBe(0)
+  })
+
+  it('a shorter collection never lowers the longest pause', () => {
+    const r = rig()
+    r.trace.start()
+    r.emitGc('major', 80)
+    r.emitGc('major', 20)
+    r.emitGc('incremental', 9)
+    r.emitGc('incremental', 3)
+    expect(r.trace.snapshot().gc).toMatchObject({ majorCount: 2, majorMaxMs: 80, incrementalCount: 2, incrementalMaxMs: 9 })
+  })
+
+  it('ELU stays unknown until two readings exist, and when no time passed between them', () => {
+    let calls = 0
+    const readings: Array<{ idle: number; active: number } | null> = [null, { idle: 100, active: 50 }, { idle: 100, active: 50 }, { idle: 200, active: 150 }]
+    const r = rig({ readElu: () => readings[Math.min(calls++, readings.length - 1)] })
+    r.trace.start() // reading 0: null, so there is no baseline
+    r.clock.advance(5_000) // reading 1: becomes the baseline
+    expect(r.trace.snapshot().elu).toBeNull()
+    r.clock.advance(5_000) // reading 2: identical to the baseline, so no time elapsed
+    expect(r.trace.snapshot().elu).toBeNull()
+    r.clock.advance(5_000) // reading 3: 100 busy over 200 elapsed
+    expect(r.trace.snapshot().elu).toBe(0.5)
+  })
+
+  it('handlers with the same total time are listed by how often they ran', () => {
+    const r = rig()
+    r.trace.start()
+    for (let i = 0; i < 3; i++) r.trace.timedIpc('rare', () => undefined)()
+    for (let i = 0; i < 9; i++) r.trace.timedIpc('common', () => undefined)()
+    r.trace.traceTerminalWrite((_e: unknown, _p: unknown) => undefined)({}, { id: 't1', data: 'x' })
+    r.clock.advance(60_000)
+    const line = r.lines[0]
+    expect(line.indexOf('common n=9')).toBeGreaterThan(-1)
+    expect(line.indexOf('common n=9')).toBeLessThan(line.indexOf('rare n=3'))
+  })
+
+  it('stop() survives a clearInterval that throws', () => {
+    const r = rig({ clearInterval: () => { throw new Error('gone') } })
+    r.trace.start()
+    expect(() => r.trace.stop()).not.toThrow()
+    expect(r.trace.snapshot().started).toBe(false)
+  })
+})
