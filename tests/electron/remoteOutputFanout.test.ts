@@ -824,13 +824,14 @@ describe('collapsing a lagging queue changes nothing the phone shows', () => {
     }
   }, 240_000)
 
-  it('keeps the tail the bridge keeps, and no more, when the stream is longer than it', async () => {
-    // The honest limit: past 32 KB of settled text the phone is left with the NEWEST of it, which is what a
-    // phone opening the terminal is shown. Its copy ends where the whole copy does, and is the end of it.
+  it('keeps the newest of a stream longer than the tail the bridge keeps, and none of the history above it', async () => {
+    // The honest limit: past 32 KB of settled text the phone is left with the NEWEST of it -- what a phone
+    // opening the terminal is shown, plus whatever settled since the last time its queue collapsed. Its
+    // copy ends where the whole copy does, and is the end of it.
     const r = await run(11, { wide: true })
     expect(r.truth.replaceFrom).toBeGreaterThan(0)
-    expect(r.collapsed.text).toBe(r.truth.text)
     expect(r.collapsed.end).toBe(r.whole.end)
+    expect(r.collapsed.text.endsWith(r.truth.text)).toBe(true)
     expect(r.whole.text.endsWith(r.collapsed.text)).toBe(true)
     expect(r.whole.text.length).toBeGreaterThan(r.collapsed.text.length)
     expect(r.longest).toBeLessThanOrEqual(LIMIT)
