@@ -2092,6 +2092,85 @@ describe('T2: what only looks like a key is left byte for byte', () => {
     expect(screenKeys(['-----BEGIN PGP PRIVATE KEY BLOCK-----', '', ...p8.slice(1, -1), '-----END PGP PRIVATE KEY BLOCK-----'].join('\n')).removed).toEqual({})
     expect(screenKeys(['-----BEGIN OPENSSH PRIVATE KEY-----', ...p8.slice(1, -1), '-----END OPENSSH PRIVATE KEY-----'].join('\n')).removed).toEqual({})
   })
+
+  // The four tests below pin the randomness guards of puttyKeys and scanBlock. Each header is complete and each body is made up (a fill, not a key): a test suite,
+  // a document or a mock writes such fixtures, and a guard that went missing would take every one of them for a key. (A test of a guard needs a made-up body that
+  // the rest of the checks pass: here the PuTTY line count is right, the PKCS#8 structure is valid, the SSH2 magic is there, the DEK-Info IV has its cipher's size.)
+  it("leaves the made-up private lines of a PuTTY file alone: `Private-Lines: 3` and three lines of 'A', 'AbCd', 'x' or hex, in three joinings", () => {
+    for (const fill of ['A', 'AbCd', 'x', '0123456789abcdef']) {
+      const line = fill.repeat(64).slice(0, 64)
+      for (const join of ['\n', '\\n', ' ']) {
+        const text = ['PuTTY-User-Key-File-3: ssh-rsa', 'Encryption: none', 'Comment: test', 'Public-Lines: 2', line, line, 'Private-Lines: 3', line, line, line, 'Private-MAC: ' + '0'.repeat(64)].join(join)
+        const r = screenKeys(text)
+        expect(r.text, `${fill} ${JSON.stringify(join)}`).toBe(text)
+        expect(r.removed, `${fill} ${JSON.stringify(join)}`).toEqual({})
+        expect(r.flagged, `${fill} ${JSON.stringify(join)}`).toEqual({ putty_private_key: 1 })
+      }
+    }
+  })
+
+  it('leaves a private key with a valid PKCS#8 RSA structure and made-up integers alone when it is cut short: no END line, all of it, ten lines or three', () => {
+    const int = (b: Buffer): Buffer => der(0x02, b[0] & 0x80 ? Buffer.concat([Buffer.from([0]), b]) : b)
+    const rsaPkcs8 = (fill: (n: number) => Buffer, bits: number): Buffer => {
+      const n = bits / 8
+      const h = n / 2
+      const parts = [Buffer.from('020100', 'hex'), int(fill(n)), int(Buffer.from([1, 0, 1])), int(fill(n)), int(fill(h)), int(fill(h)), int(fill(h)), int(fill(h)), int(fill(h))]
+      const alg = der(0x30, Buffer.concat([Buffer.from('06092a864886f70d010101', 'hex'), Buffer.from('0500', 'hex')]))
+      return der(0x30, Buffer.concat([Buffer.from('020100', 'hex'), alg, der(0x04, der(0x30, Buffer.concat(parts)))]))
+    }
+    const fills: Record<string, (n: number) => Buffer> = {
+      'all 0x41': (n) => Buffer.alloc(n, 0x41),
+      'one then zeros': (n) => Buffer.concat([Buffer.from([1]), Buffer.alloc(n - 1, 0)]),
+      'all 0xff': (n) => Buffer.alloc(n, 0xff),
+      deadbeef: (n) => Buffer.from('deadbeef'.repeat(Math.ceil(n / 4)), 'hex').subarray(0, n),
+    }
+    for (const [name, fill] of Object.entries(fills)) {
+      for (const bits of [1024, 2048]) {
+        const lines = wrap(rsaPkcs8(fill, bits).toString('base64'))
+        for (const shown of [lines.length, 10, 3]) {
+          const text = ['-----BEGIN PRIVATE KEY-----', ...lines.slice(0, shown)].join('\n') + '\nok'
+          const r = screenKeys(text)
+          expect(r.text, `${name} ${bits} ${shown} lines`).toBe(text)
+          expect(r.removed, `${name} ${bits} ${shown} lines`).toEqual({})
+        }
+      }
+    }
+  })
+
+  it("leaves an SSH2 block alone whose body has the format's magic and made-up bytes after it, with its END line and without", () => {
+    for (const [name, fill] of Object.entries<number>({ zeros: 0, '0x41': 0x41, '0xff': 0xff })) {
+      for (const size of [160, 400, 900]) {
+        const body = Buffer.concat([Buffer.from('3f6ff9eb', 'hex'), Buffer.from([0, 0, size >> 8, size & 255]), Buffer.from([0, 0, 0, 4]), Buffer.from('none'), Buffer.alloc(size, fill)])
+        for (const withEnd of [true, false]) {
+          const text = ['---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----', 'Comment: "made up"', ...wrap(body.toString('base64'), 70), ...(withEnd ? ['---- END SSH2 ENCRYPTED PRIVATE KEY ----'] : [])].join('\n') + '\nok'
+          const r = screenKeys(text)
+          expect(r.text, `${name} ${size} end=${withEnd}`).toBe(text)
+          expect(r.removed, `${name} ${size} end=${withEnd}`).toEqual({})
+        }
+      }
+    }
+  })
+
+  it('leaves a legacy encrypted PEM fixture alone whose body is made up: Proc-Type, DEK-Info and lines of A, AbCd or the alphabet', () => {
+    const fills: Record<string, (n: number) => string> = {
+      A: (n) => 'A'.repeat(n),
+      AbCd: (n) => 'AbCd'.repeat(Math.ceil(n / 4)).slice(0, n),
+      alphabet: (n) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.repeat(Math.ceil(n / 64)).slice(0, n),
+      x: (n) => 'x'.repeat(n),
+    }
+    for (const [name, fill] of Object.entries(fills)) {
+      for (const kind of ['RSA PRIVATE KEY', 'EC PRIVATE KEY']) {
+        for (const cipher of ['AES-128-CBC,0123456789ABCDEF0123456789ABCDEF', 'DES-EDE3-CBC,0123456789ABCDEF']) {
+          for (const lines of [2, 12]) {
+            const text = [`-----BEGIN ${kind}-----`, 'Proc-Type: 4,ENCRYPTED', `DEK-Info: ${cipher}`, '', ...wrap(fill(64 * lines)), `-----END ${kind}-----`].join('\n') + '\nok'
+            const r = screenKeys(text)
+            expect(r.text, `${name} ${kind} ${cipher} ${lines}`).toBe(text)
+            expect(r.removed, `${name} ${kind} ${cipher} ${lines}`).toEqual({})
+          }
+        }
+      }
+    }
+  })
 })
 
 describe('T5: the recall bugs the probes found stay fixed', () => {
