@@ -263,6 +263,17 @@ describe('the first-sight policy, the holdout and what is kept about them are di
     }
   })
 
+  // The paragraph on third-party services said the proxy "only shrinks what is sent and forwards it to Anthropic". It
+  // also reads each answer as it streams back (the bullet above), so a person who read that paragraph alone was told
+  // less than the code does. It says what the proxy does in the same terms as the bullet, and points nowhere else.
+  it('does not say in the third-party paragraph that the proxy only shrinks what is sent, and says what it reads', () => {
+    const third = flat(section(privacy, '## Third-Party Services'))
+    expect(third).toContain('apart from the optional Claude Code compression proxy described above, which shrinks what is sent, reads the token counts and tool names of each answer as it streams back (counts only), and forwards the request to Anthropic and nowhere else')
+    for (const [name, text] of [['PRIVACY.md', flat(privacy)], ['the guide', flat(docs)], ['README.md', flat(readFileSync(join(ROOT, 'README.md'), 'utf8'))]] as const) {
+      expect(text, name).not.toMatch(/only shrinks/i)
+    }
+  })
+
   // The Activity Feed's event log is built from the transcripts of the agents a person runs and holds a compaction
   // event; v1.55 adds the size at which Claude Code compacted and whether it chose to. Local only, described once.
   it('names the Activity Feed event log, what a compaction event holds in it, and that it never leaves the machine', () => {

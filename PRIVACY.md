@@ -336,9 +336,10 @@ Codex, Gemini CLI) that you choose to install and run
 independently. These tools have their own privacy policies and may
 communicate with their respective cloud services. Termpolis does not control
 these communications and intercepts none of them, apart from the optional
-Claude Code compression proxy described above, which only shrinks what is
-sent and forwards it to Anthropic. Otherwise it simply provides a terminal
-environment in which these tools run.
+Claude Code compression proxy described above, which shrinks what is sent,
+reads the token counts and tool names of each answer as it streams back
+(counts only), and forwards the request to Anthropic and nowhere else.
+Otherwise it simply provides a terminal environment in which these tools run.
 
 Any data exchanged between AI tools and their cloud services is governed by
 the respective provider's privacy policy:
