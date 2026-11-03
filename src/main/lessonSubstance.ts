@@ -149,8 +149,9 @@ const CONNECTIVE_RE = new RegExp(
 // A bare "so" or "since" is as common in narration ("so I can put them back", "since this morning", "The deploy finished, so the
 // new version is live.") as in explanation, so each counts only where it joins a cause to what follows, and only in a lesson that
 // also names something a reader can search for (a lesson with one identifier and a "so" is what the extractor's own templates
-// end on: "Watch out: `fs.watch` fires twice, so debounce the handler"). A "so" counts after a comma, semicolon or colon and white
-// space (a space, or a line break in wrapped text), and not when the clause goes on about the speaker or the story so far (", so I", ", so we", ", so let's", ", so my", ", so our",
+// end on: "Watch out: `fs.watch` fires twice, so debounce the handler"). A "so" counts after a comma or semicolon and white space (a
+// space, or a line break in wrapped text), not after a colon (that is how a label ends, and "Problem: So ..." is a filler, not a cause),
+// and not when the clause goes on about the speaker or the story so far (", so I", ", so we", ", so let's", ", so my", ", so our",
 // ", so far"); a "since" counts when it is not about when (this, last, then, yesterday, today, tonight, tomorrow, a number or
 // a version, the morning, a day, a month, "ever since"). The whitespace is asked for and then looked past, not matched before the
 // lookahead, so two spaces after "so" cannot slip by it; and neither word is inside the group above, so what follows it may start
@@ -159,7 +160,7 @@ const CONNECTIVE_RE = new RegExp(
 // extractor wrote) and no more of the others, and let through none of 28 invented status lines; with no identifier needed it let
 // through 13 of those 28 ("The tests passed, so the PR is ready for review.").
 const WEAK_CONNECTIVE_RE = new RegExp(
-  '(?<=[,;:]\\s+)so(?=\\s)(?!\\s+(?:i|we|let|my|our|far)\\b)' +
+  '(?<=[,;]\\s+)so(?=\\s)(?!\\s+(?:i|we|let|my|our|far)\\b)' +
     '|(?<!ever )\\bsince(?=\\s)(?!\\s+(?:(?:this|last|then|yesterday|today|tonight|tomorrow|the (?:morning|afternoon|evening|start|beginning)|' +
     '(?:mon|tues|wednes|thurs|fri|satur|sun)day|january|february|march|april|may|june|july|august|september|october|november|december)\\b|v?\\d))',
   'i',

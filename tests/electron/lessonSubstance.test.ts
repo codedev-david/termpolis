@@ -214,7 +214,6 @@ describe('lessonSubstance: a rule or a mechanism', () => {
     it.each([
       'the watcher fires twice, so debounce the handler',
       'the watcher fires twice; so debounce the handler',
-      'the watcher fires twice: so debounce the handler',
       'the watcher fires twice, so `debounce` the handler', // what follows may start with a backtick
       'the watcher fires twice, so (debounce it)',
       'the watcher fires twice, so  debounce the handler', // two spaces after "so"
@@ -247,7 +246,12 @@ describe('lessonSubstance: a rule or a mechanism', () => {
       'it works, so far',
       'it works, so  far',
       'we kept it, so I',
-      'So the handler runs', // not after a comma, a semicolon or a colon
+      'So the handler runs', // not after a comma or a semicolon
+      // a colon is how a label ends ("Problem:", "Gotcha:", "Step 1:"), and a "So" after a label is a filler, not a cause
+      'the watcher fires twice: so debounce the handler',
+      'Problem: So `ci.yml` failed on the runner.',
+      'Gotcha: so the build crashed with `ENOSPC`',
+      'Step 1: so install the tool',
       'it works so the handler runs',
       'we kept it - so the handler runs',
       'the watcher fires twice,so debounce the handler', // nothing between the comma and "so"
@@ -293,6 +297,18 @@ describe('lessonSubstance: a rule or a mechanism', () => {
       'it broke ever since the update',
     ])('does not count: %s', (clause) => {
       expect(named(clause)).toBe(false)
+    })
+
+    // The heuristic distiller writes "Problem: <sentence> -> Fix: <sentence>", and a turn that opens with "So" gives "Problem: So ...".
+    // Neither lesson says anything, and neither is a cause joined to a consequence.
+    it('does not lift the lessons the distiller writes after a filler "So" past the bar', () => {
+      for (const text of [
+        'Problem: So `ci.yml` failed on the runner. → Fix: Fixed by pushing again.',
+        'Problem: So the build crashed with `ENOSPC`. → Fix: I fixed it.',
+      ]) {
+        expect(connective(text)).toBe(false)
+        expect(lessonSubstance(text).score).toBeLessThan(KEEP_SCORE)
+      }
     })
 
     it('does not count a "so" or "since" that ends the lesson (nothing follows it to join)', () => {
