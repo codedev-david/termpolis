@@ -13,6 +13,9 @@ import type {
   McpServerSpecView,
   McpGatewayPolicyView,
 } from '../renderer/src/types'
+import { createTerminalDataRouter } from './terminalDataRouter'
+
+const terminalData = createTerminalDataRouter(ipcRenderer)
 
 const api: TermpolisAPI = {
   createTerminal: (id, shellType, cwd, extraPaths, claudeHeadroom) =>
@@ -41,13 +44,9 @@ const api: TermpolisAPI = {
   resizeTerminal: (id, cols, rows) =>
     ipcRenderer.send('terminal:resize', { id, cols, rows }),
 
-  onTerminalData: (cb) => {
-    // `end` is where the chunk ends in the terminal's output stream (absent for output main
-    // never buffered). TerminalPane compares it with a mount replay's nextOffset.
-    const handler = (_: Electron.IpcRendererEvent, id: string, data: string, end?: number) => cb(id, data, end)
-    ipcRenderer.on('terminal:data', handler)
-    return () => ipcRenderer.removeListener('terminal:data', handler)
-  },
+  // One shared listener for every pane (onTerminalDataFor), the all-terminal listener it always was (onTerminalData).
+  onTerminalData: terminalData.onAll,
+  onTerminalDataFor: terminalData.onFor,
 
   getAvailableShells: () =>
     ipcRenderer.invoke('shell:available'),
