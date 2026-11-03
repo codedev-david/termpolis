@@ -121,6 +121,16 @@ describe('the screen kept beside the window', () => {
     expect(liveScreen(buffers, 't')!.lines.join('')).toBe('')
   })
 
+  it('starts after the rest of an escape sequence the eviction cut into, which is not text on the screen', () => {
+    const buffers: OutputBuffers = new Map()
+    appendOutput(buffers, 't', `AB${E}[?1049h`, 10)
+    appendOutput(buffers, 't', 'CDEFG', 10)
+    // The window opens on `1049hCDEFG`: the head of the mode switch was evicted, and its tail is five chars.
+    expect(readOutput(buffers, 't')).toBe('1049hCDEFG')
+    watchScreen(buffers, 't', SIZE)
+    expect(liveScreen(buffers, 't')!.lines[0]).toBe('CDEFG')
+  })
+
   it('drops a screen that cannot draw a chunk, and the window carries on', () => {
     const buffers: OutputBuffers = new Map()
     watchScreen(buffers, 't', SIZE)
