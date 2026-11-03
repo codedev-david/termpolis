@@ -240,17 +240,38 @@ function initializerInScope(node: ts.Node, name: string, sf: ts.SourceFile): str
   return null
 }
 
-/** The files that build an account-switch line (they pass `extraUnset`) and say nothing about the window variable. */
-/** Whether a source text uses the window variable's constant in CODE: an identifier named CONTEXT_WINDOW_VAR. A comment that
- *  names the variable, or a string that spells it (which the one-place guard below refuses anywhere but the helper), is not it. */
-const namesTheWindowInCode = (text: string): boolean => {
+/** An expression without the casts and brackets around it: `(['A'] as const)` is the list `['A']`. */
+const unwrapped = (e: ts.Expression): ts.Expression => {
+  let x = e
+  while (ts.isParenthesizedExpression(x) || ts.isAsExpression(x) || ts.isSatisfiesExpression(x) || ts.isNonNullExpression(x) || ts.isTypeAssertionExpression(x)) x = x.expression
+  return x
+}
+/** The `extraUnset` lists a source BUILDS, as the array each is written as: `extraUnset: [...]` in an object literal (the key
+ *  plain or quoted), or a `const extraUnset = [...]` handed on as a shorthand. A type member, `ctx.extraUnset ?? []`, a
+ *  destructuring and a shorthand that only carries a list on are the forwarding side and build nothing; a list made by a call
+ *  cannot be read, and is the integrator's to put in this test (see the canary). */
+const unsetLists = (text: string): ts.Node[] => {
   const sf = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const lists: ts.Node[] = []
+  walk(sf, (n) => {
+    const keyed = ts.isPropertyAssignment(n) && (ts.isIdentifier(n.name) || ts.isStringLiteral(n.name)) && n.name.text === 'extraUnset'
+    const named = ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === 'extraUnset'
+    const init = keyed ? (n as ts.PropertyAssignment).initializer : named ? (n as ts.VariableDeclaration).initializer : undefined
+    if (init !== undefined && ts.isArrayLiteralExpression(unwrapped(init))) lists.push(unwrapped(init))
+  })
+  return lists
+}
+/** Whether a node uses the window variable's constant in CODE: an identifier named CONTEXT_WINDOW_VAR inside it. A comment that
+ *  names the variable, or a string that spells it (which the one-place guard below refuses anywhere but the helper), is not it,
+ *  and neither is an import nobody uses, which is not inside the list. */
+const namesTheWindowInCode = (node: ts.Node): boolean => {
   let found = false
-  walk(sf, (n) => { if (ts.isIdentifier(n) && n.text === 'CONTEXT_WINDOW_VAR') found = true })
+  walk(node, (n) => { if (ts.isIdentifier(n) && n.text === 'CONTEXT_WINDOW_VAR') found = true })
   return found
 }
+/** The files that build an account-switch line's list of names to take off (`extraUnset`) with no use of the window variable in it. */
 const blindToTheWindow = (sources: ReadonlyArray<{ file: string; text: string }>): string[] =>
-  sources.filter((s) => s.text.includes('extraUnset') && !namesTheWindowInCode(s.text)).map((s) => s.file)
+  sources.filter((s) => unsetLists(s.text).some((list) => !namesTheWindowInCode(list))).map((s) => s.file)
 
 describe('every spawn site that carries the proxy env also carries the window (R3 criterion 4)', () => {
   const indexFile = join(MAIN, 'index.ts')
@@ -410,5 +431,71 @@ describe('every spawn site that carries the proxy env also carries the window (R
     ]
     expect(blindToTheWindow(sources)).toEqual(['accountsIpc.ts', 'accountsNamed.ts', 'accountsComment.ts', 'accountsBlock.ts'])
     expect(blindToTheWindow([])).toEqual([])
+  })
+
+  // The canary is about the file that BUILDS the list of names a typed account-switch line takes off, not every file that
+  // mentions the word. On the real account branch two files do: accountsIpc.ts builds `extraUnset: ['ANTHROPIC_BASE_URL',
+  // 'TERMPOLIS_HEADROOM_PROXY']` and accountSwitch.ts only carries it (a type member and `ctx.extraUnset ?? []`). The minimal
+  // correct merge uses CONTEXT_WINDOW_VAR in the list and nowhere else; it must pass, and an import nobody uses must not.
+  describe('reads which file builds the list, and what is in it', () => {
+    const builder = (list: string): string => `export function run(profile: string) { return accountLine({ set: { CLAUDE_CONFIG_DIR: profile }, extraUnset: ${list} }) }`
+    // The forwarding side, as it stands on the account branch: a type member, a read of the context, a destructuring and a shorthand.
+    const FORWARDER = [
+      'export interface LineContext { extraUnset?: readonly string[] }',
+      'export function accountLine(ctx: LineContext) {',
+      '  const names = ctx.extraUnset ?? []',
+      '  const { extraUnset } = ctx',
+      '  return inner({ extraUnset }) + names.join(" ")',
+      '}',
+    ].join('\n')
+
+    it('does not flag a file that only forwards the list: a type member, a read of the context, a destructuring, a shorthand', () => {
+      expect(blindToTheWindow([{ file: 'accountSwitch.ts', text: FORWARDER }])).toEqual([])
+    })
+
+    it('passes the minimal correct merge: the window named in the list, in the builder alone, with the forwarder untouched', () => {
+      const sources = [
+        { file: 'accountsIpc.ts', text: builder("['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY', CONTEXT_WINDOW_VAR]") },
+        { file: 'accountSwitch.ts', text: FORWARDER },
+      ]
+      expect(blindToTheWindow(sources)).toEqual([])
+      // And the half merge, which is what this exists for: the same two files with the list as it is on the branch today.
+      sources[0] = { file: 'accountsIpc.ts', text: builder("['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY']") }
+      expect(blindToTheWindow(sources)).toEqual(['accountsIpc.ts'])
+    })
+
+    it('does not take an import nobody uses for dealing with the window', () => {
+      const text = `import { CONTEXT_WINDOW_VAR } from './headroom/shapingEnv'\n${builder("['ANTHROPIC_BASE_URL']")}`
+      expect(blindToTheWindow([{ file: 'accountsImportOnly.ts', text }])).toEqual(['accountsImportOnly.ts'])
+    })
+
+    it('takes the window named in the list however the list is written: a conditional spread, a cast, a quoted key', () => {
+      const ok = [
+        builder("['ANTHROPIC_BASE_URL', ...(holdsWindow ? [CONTEXT_WINDOW_VAR] : [])]"),
+        builder("['ANTHROPIC_BASE_URL', CONTEXT_WINDOW_VAR] as const"),
+        builder("(['ANTHROPIC_BASE_URL', CONTEXT_WINDOW_VAR])"),
+        builder("['ANTHROPIC_BASE_URL', CONTEXT_WINDOW_VAR] satisfies string[]"),
+        "export const x = accountLine({ 'extraUnset': ['A', CONTEXT_WINDOW_VAR] })",
+        "const extraUnset = ['A', CONTEXT_WINDOW_VAR]\nexport const y = accountLine({ extraUnset })",
+      ]
+      for (const [i, text] of ok.entries()) expect(blindToTheWindow([{ file: `ok${i}.ts`, text }]), text).toEqual([])
+    })
+
+    it('reports the list that leaves the window out however it is written', () => {
+      const bad = [
+        builder("['ANTHROPIC_BASE_URL'] as const"),
+        builder("(['ANTHROPIC_BASE_URL'])"),
+        builder("[...base, 'X']"),
+        "export const x = accountLine({ 'extraUnset': ['A'] })",
+        "const extraUnset = ['A', 'B']\nexport const y = accountLine({ extraUnset })",
+        // The name only in a comment or a string in the list, and used in code somewhere else in the file: not in the list.
+        `const unrelated = CONTEXT_WINDOW_VAR\n${builder("['ANTHROPIC_BASE_URL', 'CONTEXT_WINDOW_VAR']")}`,
+      ]
+      for (const [i, text] of bad.entries()) expect(blindToTheWindow([{ file: `bad${i}.ts`, text }]), text).toEqual([`bad${i}.ts`])
+    })
+
+    it('says nothing of a list it cannot read: one built by a call, which the integrator edits this test for', () => {
+      expect(blindToTheWindow([{ file: 'built.ts', text: builder('namesToUnset(profile)') }])).toEqual([])
+    })
   })
 })
