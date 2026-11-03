@@ -17,6 +17,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
+import { offMainFiles } from './offMainFiles'
 
 type IdentityKind = 'goal' | 'milestone'
 
@@ -54,7 +55,7 @@ function mostRecent(list: IdentityRecord[], n: number): IdentityRecord[] {
 function append(rec: IdentityRecord): void {
   if (!filePath) return
   try {
-    fs.appendFileSync(filePath, JSON.stringify(rec) + '\n')
+    void offMainFiles.append(filePath, JSON.stringify(rec) + '\n').catch(() => { /* best effort */ })
   } catch {
     /* best effort — the in-memory state is still updated */
   }

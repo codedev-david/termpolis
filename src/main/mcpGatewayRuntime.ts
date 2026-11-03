@@ -8,7 +8,8 @@
 // therefore the part that cannot be. Keeping the boundary sharp is what lets the
 // interesting logic — decide/scan/redact/audit — be tested without a filesystem.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { offMainFiles } from './offMainFiles'
 import { join } from 'path'
 import { createGateway, defaultPolicy, type GatewayPolicy, type Transport } from './mcpGateway'
 import type { GateDecision } from './mcpGateway/policy'
@@ -58,7 +59,8 @@ export function initMcpGateway(userDataPath: string): void {
 
   setGatewayAuditSink((entry: GatewayAuditEntry) => {
     try {
-      appendFileSync(join(dir as string, 'gateway-audit.jsonl'), `${JSON.stringify(entry)}\n`, 'utf8')
+      // One line per tool call an agent makes through the gateway: on the thread pool, not on the thread that echoes keystrokes.
+      void offMainFiles.append(join(dir as string, 'gateway-audit.jsonl'), `${JSON.stringify(entry)}\n`).catch(() => { /* best effort */ })
     } catch {
       /* best effort — see recordGatewayCall */
     }

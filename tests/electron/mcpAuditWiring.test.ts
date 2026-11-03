@@ -6,6 +6,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { executeTool, executeToolForWorkflow, initAuditLog } from '../../src/main/mcpServer'
 import { initMemoryAudit, readMemoryAudit, _resetMemoryAuditForTests } from '../../src/main/memoryAudit'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
@@ -31,6 +32,7 @@ describe('MCP recall/inject audit (WP-E)', () => {
   it('audits an agent-facing recall with a redacted query, count, and top ids', async () => {
     const secret = 'sk-' + 'a'.repeat(40)
     await executeTool('memory_search', { query: 'find ' + secret, agentId: 'agentZ' }, handlers)
+    await offMainFiles.idle()
     const rec = readMemoryAudit().find((e) => e.event === 'recall') as
       | { event: 'recall'; agentId?: string; query: string; results: number; topIds: string[] } | undefined
     expect(rec).toMatchObject({ event: 'recall', agentId: 'agentZ', results: 3 })
@@ -40,6 +42,7 @@ describe('MCP recall/inject audit (WP-E)', () => {
 
   it('audits primer injection with an approximate token count', async () => {
     await executeTool('memory_primer', { cwd: '/x' }, handlers)
+    await offMainFiles.idle()
     const inj = readMemoryAudit().find((e) => e.event === 'inject') as
       | { event: 'inject'; target: string; approxTokens: number } | undefined
     expect(inj).toMatchObject({ event: 'inject', target: 'primer' })
@@ -64,6 +67,7 @@ describe("a workflow step's tool call", () => {
     initAuditLog(tmp)
     try {
       await executeToolForWorkflow('memory_search', { query: 'alpha', agentId: 'wf' }, handlers)
+      await offMainFiles.idle()
       expect(readMemoryAudit().find((e) => e.event === 'recall')).toMatchObject({ agentId: 'wf', results: 3 })
       // The audit stream writes asynchronously.
       await vi.waitFor(() => {

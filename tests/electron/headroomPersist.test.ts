@@ -6,23 +6,26 @@ const { loadSettingsFromDisk, saveSettingsToDisk, loadLedgerBaseFromDisk, saveLe
   await import('../../src/main/headroom/persist')
 import { getSettings, setSettings, resetSettings } from '../../src/main/headroom/config'
 import { recordEvent, summarizeSavings, resetLedger } from '../../src/main/headroom/savingsLedger'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 describe('headroom persist', () => {
   beforeEach(() => { resetSettings(); resetLedger() })
 
-  it('round-trips settings through disk', () => {
+  it('round-trips settings through disk', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hr-'))
     setSettings({ mode: 'aggressive', steering: false })
     saveSettingsToDisk(dir)
+    await offMainFiles.idle()
     resetSettings()
     loadSettingsFromDisk(dir)
     expect(getSettings()).toEqual({ enabled: true, wireProxy: true, mode: 'aggressive', steering: false, thinkingCap: 0, adaptiveSteering: true, floorControl: true, prefixDecay: true })
   })
 
-  it('round-trips the cumulative ledger baseline through disk', () => {
+  it('round-trips the cumulative ledger baseline through disk', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hr-'))
     recordEvent({ tool: 'code_search', kind: 'compress', savedTokens: 4321 })
     saveLedgerToDisk(dir)
+    await offMainFiles.idle()
     resetLedger()
     loadLedgerBaseFromDisk(dir)
     expect(summarizeSavings().cumulative.netSaved).toBe(4321)

@@ -13,6 +13,7 @@ import {
   _setEmbeddingsAvailable,
 } from '../../src/main/swarmMemory'
 import { readMemoryAudit, _resetMemoryAuditForTests } from '../../src/main/memoryAudit'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 vi.mock('electron', () => ({ app: { getPath: () => '/fake' } }))
 
@@ -36,6 +37,7 @@ describe('memory audit wiring (WP-E)', () => {
     const e = await memoryWrite({ agentId: 'agentX', kind: 'fact', content: 'the deploy token is ' + secret })
     memoryFeedback({ id: e.id, helpful: true })
 
+    await offMainFiles.idle()
     const ev = readMemoryAudit()
     const write = ev.find((x) => x.event === 'write') as { event: 'write'; id: string; kind: string; agentId?: string; preview: string } | undefined
     const learn = ev.find((x) => x.event === 'learn') as { event: 'learn'; kind: string; detail: string } | undefined
@@ -45,6 +47,7 @@ describe('memory audit wiring (WP-E)', () => {
     expect(learn).toMatchObject({ event: 'learn', kind: 'feedback' })
     expect(learn!.detail).toContain(e.id)
     // nothing secret anywhere in the audit file
+    await offMainFiles.idle()
     expect(fs.readFileSync(path.join(tmp, 'memory-audit.jsonl'), 'utf8')).not.toContain(secret)
   })
 })

@@ -8,7 +8,8 @@
 // cross-machine sync as the memories they annotate, and an append-only line format is
 // the only shape that merges without a conflict resolver.
 
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { offMainFiles } from './offMainFiles'
 import { join } from 'path'
 import {
   applyCorrection,
@@ -65,7 +66,7 @@ export function initMemoryCorrections(userDataPath: string): void {
 function append(correction: Correction): void {
   if (!dir) return
   try {
-    appendFileSync(logPath(), `${JSON.stringify(correction)}\n`, 'utf8')
+    void offMainFiles.append(logPath(), `${JSON.stringify(correction)}\n`).catch(() => { /* best effort */ })
   } catch {
     /* best effort; the in-memory overlay still applies this session */
   }

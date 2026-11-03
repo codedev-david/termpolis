@@ -8,7 +8,8 @@
 // and persists, so the statistics can be tested without a filesystem and the persistence
 // can fail without corrupting a conclusion.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { offMainFiles } from '../offMainFiles'
 import { join } from 'path'
 import {
   assignArm,
@@ -105,7 +106,7 @@ export function recordProxyOutput(
 export function flushOutputEconomy(): void {
   if (!dir || !dirty) return
   try {
-    writeFileSync(statePath(), JSON.stringify(state), 'utf8')
+    void offMainFiles.write(statePath(), JSON.stringify(state)).catch(() => { dirty = true /* the next flush writes it again */ })
     dirty = false
   } catch {
     /* best effort — the in-memory experiment is still valid this session */

@@ -18,6 +18,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
+import { offMainFiles } from './offMainFiles'
 
 export interface RecallEvent { t: 'recall'; ts: number; hits: number; topScore: number; path: 'vector' | 'keyword' | 'cache'; ms: number; agent?: string }
 export interface InjectEvent { t: 'inject'; ts: number; tokens: number; agent?: string }
@@ -219,7 +220,7 @@ export function recordMetric(ev: MetricEvent): void {
   if (events.length > MAX_EVENTS) events.shift()
   if (filePath) {
     try {
-      fs.appendFileSync(filePath, JSON.stringify(ev) + '\n')
+      void offMainFiles.append(filePath, JSON.stringify(ev) + '\n').catch(() => { /* best effort */ })
     } catch {
       /* best effort — the in-memory event is still counted */
     }

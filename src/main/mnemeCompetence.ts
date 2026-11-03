@@ -12,6 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { forEachBufferLine } from './fileLines' // byte-safe JSONL reader (never a >512 MiB string; see fileLines.ts)
 import { updateCompetence, assessDomain, summarizeCompetence, type CompetenceRecord } from './mnemeMeta'
+import { offMainFiles } from './offMainFiles'
 
 let records = new Map<string, CompetenceRecord>()
 let filePath: string | null = null
@@ -77,7 +78,7 @@ export function recordOutcome(domain: string, success: boolean, now: number): Co
   records.set(domain, next)
   if (filePath) {
     try {
-      fs.appendFileSync(filePath, JSON.stringify(next) + '\n')
+      void offMainFiles.append(filePath, JSON.stringify(next) + '\n').catch(() => { /* best effort */ })
     } catch {
       /* best effort — the in-memory record is still updated */
     }

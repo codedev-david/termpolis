@@ -23,6 +23,7 @@ import {
   memoryCorrectionStats,
   resetMemoryCorrections,
 } from '../../src/main/memoryCorrectionStore'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 const cand = (id: string, score: number, content = `content ${id}`) => ({ id, content, score })
 
@@ -217,9 +218,10 @@ describe('memoryCorrectionStore', () => {
   let tmp: string
   const logFile = () => path.join(tmp, 'memory-corrections.jsonl')
 
-  beforeEach(() => {
+  beforeEach(async () => {
     resetMemoryCorrections()
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'termpolis-corr-'))
+    await offMainFiles.idle()
     initMemoryCorrections(tmp)
   })
 
@@ -232,22 +234,25 @@ describe('memoryCorrectionStore', () => {
     expect(() => initMemoryCorrections('')).toThrow('userDataPath required')
   })
 
-  it('appends one JSONL line per correction', () => {
+  it('appends one JSONL line per correction', async () => {
     correctMemory({ id: 'a', kind: 'retract', reason: 'wrong', ts: 1 })
     correctMemory({ id: 'b', kind: 'demote', reason: 'flaky', ts: 2 })
+    await offMainFiles.idle()
     const lines = fs.readFileSync(logFile(), 'utf8').trim().split('\n')
     expect(lines).toHaveLength(2)
     expect(JSON.parse(lines[0])).toMatchObject({ id: 'a', kind: 'retract', reason: 'wrong' })
   })
 
-  it('does not write a rejected correction', () => {
+  it('does not write a rejected correction', async () => {
     expect(correctMemory({ id: 'a', kind: 'amend' }).ok).toBe(false)
+    await offMainFiles.idle()
     expect(fs.existsSync(logFile())).toBe(false)
   })
 
-  it('survives a restart with the correction still in force', () => {
+  it('survives a restart with the correction still in force', async () => {
     correctMemory({ id: 'a', kind: 'retract', reason: 'wrong', ts: 1 })
     resetMemoryCorrections()
+    await offMainFiles.idle()
     initMemoryCorrections(tmp)
     expect(applyCorrections([cand('a', 1), cand('b', 1)]).map(c => c.id)).toEqual(['b'])
   })
@@ -258,34 +263,41 @@ describe('memoryCorrectionStore', () => {
     expect(applyCorrections([cand('a', 1)])).toHaveLength(0)
   })
 
-  it('persists a revocation as its own line and replays it on restart', () => {
+  it('persists a revocation as its own line and replays it on restart', async () => {
     correctMemory({ id: 'a', kind: 'retract', reason: 'wrong', ts: 1 })
     expect(revokeMemoryCorrection('a').ok).toBe(true)
     resetMemoryCorrections()
+    await offMainFiles.idle()
     initMemoryCorrections(tmp)
     expect(applyCorrections([cand('a', 1)])).toHaveLength(1)
     expect(memoryCorrectionStats()).toMatchObject({ live: 0, revoked: 1 })
   })
 
-  it('reports a failed revocation without writing anything', () => {
+  it('reports a failed revocation without writing anything', async () => {
+    await offMainFiles.idle()
     const before = fs.existsSync(logFile()) ? fs.readFileSync(logFile(), 'utf8') : ''
     expect(revokeMemoryCorrection('ghost')).toEqual({ ok: false, error: 'no live correction for ghost' })
+    await offMainFiles.idle()
     expect(fs.existsSync(logFile()) ? fs.readFileSync(logFile(), 'utf8') : '').toBe(before)
   })
 
-  it('loses exactly one entry to a truncated final write, not the whole file', () => {
+  it('loses exactly one entry to a truncated final write, not the whole file', async () => {
     correctMemory({ id: 'a', kind: 'retract', reason: 'r', ts: 1 })
     correctMemory({ id: 'b', kind: 'demote', reason: 'r', ts: 2 })
+    await offMainFiles.idle()
     fs.appendFileSync(logFile(), '{"id":"c","kind":"retr')
     resetMemoryCorrections()
+    await offMainFiles.idle()
     initMemoryCorrections(tmp)
     expect(memoryCorrectionStats().live).toBe(2)
   })
 
-  it('ignores blank lines from a sync merge', () => {
+  it('ignores blank lines from a sync merge', async () => {
     correctMemory({ id: 'a', kind: 'retract', reason: 'r', ts: 1 })
+    await offMainFiles.idle()
     fs.appendFileSync(logFile(), '\n\n  \n')
     resetMemoryCorrections()
+    await offMainFiles.idle()
     initMemoryCorrections(tmp)
     expect(memoryCorrectionStats().live).toBe(1)
   })
@@ -300,10 +312,11 @@ describe('memoryCorrectionStore', () => {
     expect(correctionForMemory('a')).toMatchObject({ kind: 'demote', reason: 'flaky' })
   })
 
-  it('still applies corrections in memory when the log cannot be written', () => {
+  it('still applies corrections in memory when the log cannot be written', async () => {
     resetMemoryCorrections()
     // A path whose parent is a FILE: mkdirSync and appendFileSync both fail.
     const blocked = path.join(tmp, 'blocker', 'sub')
+    await offMainFiles.idle()
     fs.writeFileSync(path.join(tmp, 'blocker'), 'x', 'utf8')
     expect(() => initMemoryCorrections(blocked)).not.toThrow()
     expect(correctMemory({ id: 'a', kind: 'retract', reason: 'r' }).ok).toBe(true)

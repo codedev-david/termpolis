@@ -42,8 +42,9 @@
  * answer quality, not about tokens. So this module only ever ADVISES. It never ends a session,
  * and it is deliberately not wired to anything that could.
  */
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { join } from 'path'
+import { offMainFiles } from '../offMainFiles'
 import { W_CACHE_READ, W_CACHE_WRITE } from './effectiveUnits'
 
 /** Exclusive upper edge of each depth band, in messages on the request. */
@@ -201,7 +202,7 @@ export function loadDepthCurveFromDisk(dir: string): void {
 }
 
 export function saveDepthCurveToDisk(dir: string): void {
-  try { writeFileSync(join(dir, 'depth-curve.json'), JSON.stringify(curve), 'utf8') } catch { /* best effort */ }
+  try { void offMainFiles.write(join(dir, 'depth-curve.json'), JSON.stringify(curve)).catch(() => { /* best effort */ }) } catch { /* best effort */ }
 }
 
 export function resetDepthCurve(): void { curve = emptyCurve() }

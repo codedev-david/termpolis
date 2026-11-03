@@ -77,6 +77,7 @@ const audit = vi.hoisted(() => ({
   redactPreview: vi.fn((s: string) => `RP:${s}`),
   readMemoryAudit: vi.fn((limit: number) => [{ event: 'recall', limit }]),
   memoryAuditSummary: vi.fn(() => ({ recall: 2, write: 1 })),
+  flushMemoryAudit: vi.fn(async () => {}),
 }))
 vi.mock('../../src/main/memoryAudit', () => audit)
 
@@ -814,8 +815,11 @@ describe('MCP HTTP server — audit log rotation, sanitized tool errors, malform
 
   it('replaces the previous backup on the next rotation — there is only ever ONE .old', async () => {
     realFs.appendFileSync(logPath, 'B'.repeat(MAX_LOG_SIZE)) // push the live log back over the cap
+    // The server counts what it writes instead of asking the file system on every request; something else growing the
+    // file is noticed at the next start (initAuditLog), which is what this does.
+    initAuditLog(logDir)
     await rpc({ jsonrpc: '2.0', method: 'ping', id: 3 })
-    await waitFor(() => realFs.readFileSync(backupPath, 'utf-8').includes('BBBB'))
+    await waitFor(() => realFs.existsSync(backupPath) && realFs.readFileSync(backupPath, 'utf-8').includes('BBBB'))
     expect(realFs.existsSync(backupPath + '.old')).toBe(false) // no chain of backups accumulates
   })
 

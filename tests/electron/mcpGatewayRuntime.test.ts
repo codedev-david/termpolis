@@ -38,6 +38,7 @@ import {
 } from '../../src/main/mcpGatewayRuntime'
 import { defaultPolicy } from '../../src/main/mcpGateway'
 import { clearGatewayAudit, recentGatewayCalls, setGatewayAuditSink } from '../../src/main/mcpGateway/audit'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 let tmp: string
 const configFile = () => path.join(tmp, 'gateway', 'gateway.json')
@@ -247,6 +248,7 @@ describe('mcpGatewayRuntime/calls', () => {
     addGatewayServer({ id: 'files', command: 'srv' })
     setGatewayPolicy(allowAll)
     await gatewayCall({ tool: 'files/echo', arguments: { token: `sk-ant-${'a'.repeat(64)}` } })
+    await offMainFiles.idle()
     const log = fs.readFileSync(auditFile(), 'utf8')
     expect(log.trim().split('\n')).toHaveLength(1)
     expect(log).not.toContain('a'.repeat(64))

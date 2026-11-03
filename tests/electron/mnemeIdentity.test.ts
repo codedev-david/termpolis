@@ -9,18 +9,21 @@ import {
   identitySummary,
   _resetIdentityForTests,
 } from '../../src/main/mnemeIdentity'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 describe('mnemeIdentity — persistent continuous-identity store', () => {
   let dir: string
   const sidecar = () => path.join(dir, 'mneme-identity.jsonl')
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mneme-id-'))
     _resetIdentityForTests()
+    await offMainFiles.idle()
     initIdentity(dir)
   })
-  afterEach(() => {
+  afterEach(async () => {
     _resetIdentityForTests()
+    await offMainFiles.idle()
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
@@ -68,30 +71,34 @@ describe('mnemeIdentity — persistent continuous-identity store', () => {
   })
 
   describe('persistence (append-and-replay across a reload)', () => {
-    it('replays goals and milestones from the sidecar', () => {
+    it('replays goals and milestones from the sidecar', async () => {
       setGoal('north star', 1)
       recordMilestone('milestone one', 2)
       _resetIdentityForTests()
+      await offMainFiles.idle()
       initIdentity(dir)
       const s = identitySummary()
       expect(s).toContain('Active goals: north star')
       expect(s).toContain('Recent milestones: milestone one')
     })
 
-    it('appends one JSONL line per write', () => {
+    it('appends one JSONL line per write', async () => {
       setGoal('g1', 1)
       recordMilestone('m1', 2)
+      await offMainFiles.idle()
       const lines = fs.readFileSync(sidecar(), 'utf8').trim().split('\n')
       expect(lines).toHaveLength(2)
       expect(JSON.parse(lines[0])).toMatchObject({ type: 'goal', text: 'g1', ts: 1 })
       expect(JSON.parse(lines[1])).toMatchObject({ type: 'milestone', text: 'm1', ts: 2 })
     })
 
-    it('keeps only the latest 10 goals across a reload (older ones drop out)', () => {
+    it('keeps only the latest 10 goals across a reload (older ones drop out)', async () => {
       for (let i = 1; i <= 13; i++) setGoal(`goal-${i}`, i)
       _resetIdentityForTests()
+      await offMainFiles.idle()
       initIdentity(dir)
       // all 13 lines are on disk (append-only) but only the latest 10 replay
+      await offMainFiles.idle()
       expect(fs.readFileSync(sidecar(), 'utf8').trim().split('\n')).toHaveLength(13)
       const s = identitySummary(20)
       expect(s).toContain('goal-13')
@@ -99,18 +106,21 @@ describe('mnemeIdentity — persistent continuous-identity store', () => {
       expect(s).not.toContain('goal-3') // dropped by the cap
     })
 
-    it('starts empty when the sidecar is missing', () => {
+    it('starts empty when the sidecar is missing', async () => {
       const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'mneme-id-empty-'))
       try {
         _resetIdentityForTests()
+        await offMainFiles.idle()
         initIdentity(fresh)
         expect(identitySummary()).toBe('')
       } finally {
+        await offMainFiles.idle()
         fs.rmSync(fresh, { recursive: true, force: true })
       }
     })
 
-    it('tolerates corrupt / blank / malformed lines on load', () => {
+    it('tolerates corrupt / blank / malformed lines on load', async () => {
+      await offMainFiles.idle()
       fs.writeFileSync(
         sidecar(),
         [
@@ -123,14 +133,16 @@ describe('mnemeIdentity — persistent continuous-identity store', () => {
         ].join('\n') + '\n',
       )
       _resetIdentityForTests()
+      await offMainFiles.idle()
       initIdentity(dir)
       const s = identitySummary()
       expect(s).toContain('Active goals: valid goal')
       expect(s).toContain('Recent milestones: valid milestone')
     })
 
-    it('is idempotent — re-initing the same dir does not double-count', () => {
+    it('is idempotent — re-initing the same dir does not double-count', async () => {
       setGoal('only goal', 1)
+      await offMainFiles.idle()
       initIdentity(dir) // reload without reset
       const s = identitySummary()
       expect(s).toBe('Active goals: only goal')
@@ -138,7 +150,7 @@ describe('mnemeIdentity — persistent continuous-identity store', () => {
   })
 
   describe('in-memory operation without initialization', () => {
-    it('updates state but writes nothing when uninitialized', () => {
+    it('updates state but writes nothing when uninitialized', async () => {
       _resetIdentityForTests() // filePath = null
       setGoal('ephemeral', 1)
       recordMilestone('ephemeral ms', 2)
@@ -146,6 +158,7 @@ describe('mnemeIdentity — persistent continuous-identity store', () => {
       expect(s).toContain('Active goals: ephemeral')
       expect(s).toContain('Recent milestones: ephemeral ms')
       // nothing persisted to the previous dir
+      await offMainFiles.idle()
       expect(fs.existsSync(sidecar())).toBe(false)
     })
   })
