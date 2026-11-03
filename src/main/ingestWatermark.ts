@@ -227,8 +227,9 @@ export async function openWatermark(io: WatermarkIO, stamp: string): Promise<Ing
       changed.set(path, { size: stamp2.size, mtimeMs: stamp2.mtimeMs, bits })
     },
     flush() {
+      // writeOnce never rejects (its I/O is inside a try), so the chain needs no catch of its own.
       const run = writes.then(writeOnce, writeOnce)
-      writes = run.catch(() => undefined)
+      writes = run
       return run
     },
     discard() {

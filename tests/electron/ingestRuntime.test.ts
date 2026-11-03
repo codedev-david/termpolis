@@ -74,6 +74,16 @@ afterEach(() => {
 const configure = (over: Record<string, unknown> = {}) =>
   configureConversationIngest({ userData, appVersion: '1.54.5', isLocked: async () => false, paused: () => false, env: {}, ...over })
 
+describe('configuring with the defaults', () => {
+  it('without an env or a switch given it reads the real environment and is never paused', () => {
+    configureConversationIngest({ userData, appVersion: '1.54.5', isLocked: async () => false })
+    const rt = getIngestRuntime()
+    expect(rt).not.toBeNull()
+    expect(rt!.legacy).toBe(false) // TERMPOLIS_INGEST_FAST is not set in the test environment
+    expect(rt!.paused()).toBe(false)
+  })
+})
+
 describe('the first pass and the steady pass', () => {
   it('reads every file once, keeps a watermark file, and the next pass opens no file at all', async () => {
     const files = sessions(10)
@@ -358,6 +368,11 @@ describe('the counters of a pass', () => {
 })
 
 describe('passResult and makeDrainRun', () => {
+  it('passResult leaves the size out of the note when the pass did not look at file sizes', () => {
+    const r = passResult({ filesScanned: 2, chunksWritten: 1, chunksSkipped: 0, truncated: false, unchanged: 3 })
+    expect(r.note).toBe('files 2 skipped 3')
+  })
+
   it('passResult turns stats into the scheduler result; the note appears only when the pass did real work', () => {
     expect(passResult({ filesScanned: 0, chunksWritten: 0, chunksSkipped: 0, truncated: false, unchanged: 41 })).toEqual({ written: 0, more: false, note: undefined })
     const busy = passResult({ filesScanned: 9, chunksWritten: 12, chunksSkipped: 3, truncated: true, unchanged: 40, bytesRead: 8 * 1024 * 1024, stop: 'bytes' })

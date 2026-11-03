@@ -2,8 +2,8 @@
 // Skipping a file on a wrong mark loses memory silently, so everything that is not a clean yes is a no:
 // a different size, a different mtime, a different tier, a different stamp, a damaged file.
 
-import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync, writeFileSync } from 'fs'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync, writeFileSync, promises as fsPromises } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -167,6 +167,16 @@ describe('persistence', () => {
     expect(await wm.flush()).toBe(false)
   })
 
+  it('forgetMissing also drops the marks made since the last flush for files that are gone', async () => {
+    const wm = await openWatermark(memoryIO(), 's1')
+    wm.markDone('/gone', A, 'full')
+    wm.markDone('/here', A, 'full')
+    expect(wm.forgetMissing(new Set(['/here']))).toBe(1)
+    expect(wm.isDone('/gone', A, 'full')).toBe(false)
+    expect(wm.isDone('/here', A, 'full')).toBe(true)
+    expect(wm.pending).toBe(1)
+  })
+
   it('forgetMissing drops the files that are gone, so the file stays the size of the corpus', async () => {
     const io = memoryIO()
     const wm = await openWatermark(io, 's1')
@@ -314,6 +324,18 @@ describe('writes: a mark made while a write is out is never lost', () => {
     expect(await wm.flush()).toBe(false) // nothing was left behind in memory only
   })
 
+  it('a newer mark for the same file made while a write fails is the one kept', async () => {
+    const io = slowIO()
+    const failing = { ...io, async write(text: string) { io.writes.push(text); await tick(); throw new Error('disk full') } }
+    const wm = await openWatermark(failing as never, 's1')
+    wm.markDone('/f', A, 'full', H(1))
+    const first = wm.flush()
+    wm.markDone('/f', { size: 9, mtimeMs: 9 }, 'sealed', H(2)) // the same file, newer, while the write is out
+    expect(await first).toBe(false)
+    expect(wm.isDone('/f', { size: 9, mtimeMs: 9 }, 'sealed')).toBe(true)
+    expect(wm.isDone('/f', A, 'full')).toBe(false)
+  })
+
   it('a write that fails while another mark is pending keeps both for the next try', async () => {
     const io = slowIO()
     const failing = { ...io, async write(text: string) { io.writes.push(text); await tick(); throw new Error('disk full') } }
@@ -403,6 +425,30 @@ describe('the real file', () => {
     expect(await wm.flush()).toBe(true)
     expect(existsSync(join(dir, WATERMARK_FILE))).toBe(true)
     expect((await openWatermark(fileWatermarkIO(join(dir, WATERMARK_FILE)), 's1')).isDone('/a', A, 'full')).toBe(true)
+  })
+
+  it('a read error other than "no such file" reaches the caller (openWatermark then starts empty)', async () => {
+    const dir = tmp()
+    const spy = vi.spyOn(fsPromises, 'readFile').mockRejectedValueOnce(Object.assign(new Error('denied'), { code: 'EACCES' }))
+    try {
+      await expect(fileWatermarkIO(join(dir, WATERMARK_FILE)).read()).rejects.toThrow('denied')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('when the rename onto an existing file is refused the text is written in place and the temp file is removed', async () => {
+    const dir = tmp()
+    const target = join(dir, WATERMARK_FILE)
+    writeFileSync(target, 'old')
+    const spy = vi.spyOn(fsPromises, 'rename').mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'EBUSY' }))
+    try {
+      await fileWatermarkIO(target).write('new')
+    } finally {
+      spy.mockRestore()
+    }
+    expect(readFileSync(target, 'utf8')).toBe('new')
+    expect(readdirSync(dir)).toEqual([WATERMARK_FILE])
   })
 
   it('a path that runs through a file instead of a folder simply reads as "not there"', async () => {

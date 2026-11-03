@@ -39,8 +39,8 @@ export interface QuietOptions {
 
 const realSleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms)
-    if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref()
+    const t = setTimeout(resolve, ms) as unknown as { unref?: () => void }
+    t.unref?.()
   })
 
 /**

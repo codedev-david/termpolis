@@ -1068,13 +1068,9 @@ async function runtimeDeps(
 ): Promise<Partial<IngestDeps>> {
   const base: Partial<IngestDeps> = { onPass: (m) => rt.record(m), drainPass: opts.drainPass }
   if (rt.legacy) return base
-  let watermark: IngestWatermark | undefined
-  try {
-    // Switched OFF: the pass ends before it touches anything, and that includes our own state file.
-    watermark = rt.openWatermark && !pausedNow ? await rt.openWatermark() : undefined
-  } catch {
-    watermark = undefined
-  }
+  // Switched OFF: the pass ends before it touches anything, and that includes our own state file.
+  // (openWatermark never rejects: whatever cannot be read is an empty store.)
+  const watermark: IngestWatermark | undefined = rt.openWatermark && !pausedNow ? await rt.openWatermark() : undefined
   return {
     ...base,
     statFile: rt.statFile,

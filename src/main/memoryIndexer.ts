@@ -76,7 +76,7 @@ let running = false
 let drainPasses = 0
 
 const unref = (t: unknown): void => {
-  if (t && typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref()
+  (t as { unref?: () => void } | null)?.unref?.()
 }
 
 /** Whether the switch is OFF. One that cannot be read is not "off": indexing is what it always was. */
@@ -94,8 +94,8 @@ async function runTier(tier: Tier): Promise<IndexRunResult> {
   if (!cfg) return { ranAt: Date.now(), written: 0, error: 'not started' }
   if (isPaused()) return { ranAt: Date.now(), written: 0, skipped: 'paused' }
   if (running) return { ranAt: Date.now(), written: 0, error: 'busy' }
-  const runner = tier === 'fast' ? cfg.fastRun : tier === 'drain' ? undefined : cfg.run
-  if (tier !== 'drain' && !runner) return { ranAt: Date.now(), written: 0, error: 'no runner' }
+  const runner = tier === 'fast' ? cfg.fastRun : tier === 'drain' ? cfg.drainRun : cfg.run
+  if (!runner) return { ranAt: Date.now(), written: 0, error: 'no runner' }
   running = true
   const label = tier === 'fast' ? ' (fast)' : tier === 'drain' ? ' (drain)' : ''
   const startedAt = Date.now()
@@ -113,7 +113,7 @@ async function runTier(tier: Tier): Promise<IndexRunResult> {
     let r: RunResult
     if (tier === 'drain') {
       drainPasses++
-      r = cfg.drainRun ? await cfg.drainRun({ drainPass: drainPasses }) : await cfg.run()
+      r = await (runner as NonNullable<IndexerConfig['drainRun']>)({ drainPass: drainPasses })
     } else {
       r = await (runner as () => Promise<RunResult>)()
     }
@@ -148,12 +148,12 @@ export async function tick(fast = false): Promise<IndexRunResult> {
 // tests/callers don't get surprise timers.
 async function scheduledTick(tier: Tier = 'full'): Promise<void> {
   const r = await runTier(tier)
-  if (r.more && config && !isPaused()) scheduleDrain()
+  if (r.more && config && !isPaused()) scheduleDrain(config)
 }
 
-function scheduleDrain(): void {
+function scheduleDrain(cfg: IndexerConfig): void {
   if (drain) clearTimeout(drain)
-  drain = setTimeout(() => void scheduledTick(config?.drainRun ? 'drain' : 'full'), config?.drainDelayMs ?? DEFAULT_DRAIN_DELAY_MS)
+  drain = setTimeout(() => void scheduledTick(cfg.drainRun ? 'drain' : 'full'), cfg.drainDelayMs)
   unref(drain)
 }
 

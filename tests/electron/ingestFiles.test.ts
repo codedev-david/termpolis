@@ -1,8 +1,8 @@
 // The real-file side of a pass: stat a file, read its text in pieces (1 MiB in the app), read the head of a
 // parent session. The decode is the delicate part: a multi-byte character may straddle two reads.
 
-import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, promises as fsPromises } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { fileHead, filePieces, fileStamp, READ_PIECE_BYTES } from '../../src/main/ingestFiles'
@@ -93,6 +93,43 @@ describe('filePieces', () => {
     // on Windows an open handle would block deleting the file
     rmSync(p, { force: true })
     expect(await fileStamp(p)).toBeNull()
+  })
+})
+
+describe('a handle that will not close', () => {
+  afterEach(() => { vi.restoreAllMocks() })
+  const fakeHandle = (text: string) => {
+    let served = false
+    return {
+      read: vi.fn(async (buf: Buffer, offset: number) => {
+        if (served) return { bytesRead: 0 }
+        served = true
+        return { bytesRead: buf.write(text, offset) }
+      }),
+      close: vi.fn(async () => { throw new Error('EIO') }),
+    }
+  }
+
+  it('does not turn a good read of the pieces into a failure', async () => {
+    const h = fakeHandle('hi')
+    vi.spyOn(fsPromises, 'open').mockResolvedValue(h as never)
+    expect(await collect(filePieces('whatever.jsonl', 64))).toEqual(['hi'])
+    expect(h.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not turn a good read of the head into a failure', async () => {
+    const h = fakeHandle('hi')
+    vi.spyOn(fsPromises, 'open').mockResolvedValue(h as never)
+    expect(await fileHead('whatever.jsonl', 64)).toEqual({ text: 'hi', eof: true })
+    expect(h.close).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a file that ends in the middle of a character', () => {
+  it('comes out as readFile gives it: the cut character is the replacement character, at every piece size', async () => {
+    const bytes = Buffer.from([0x61, 0x62, 0xe6]) // "ab" and the first byte of a three-byte character that never finishes
+    const p = tmpFile(bytes)
+    for (const n of [1, 2, 3, 8]) expect((await collect(filePieces(p, n))).join(''), `piece size ${n}`).toBe(bytes.toString('utf8'))
   })
 })
 

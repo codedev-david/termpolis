@@ -153,6 +153,16 @@ describe('vectorQuantize', () => {
 // The DEFAULT is the point: it is ON, and anything that is not an explicit `false` reads as ON, so
 // upgrading, a damaged file or a hand-edited value can never silently stop Termpolis from learning.
 // --------------------------------------------------------------------------------------------
+describe('a settings file that is valid JSON but not an object', () => {
+  it('reads as the defaults (null, a number, a string)', async () => {
+    for (const text of ['null', '7', '"x"']) {
+      writeFileSync(settingsFile(), text)
+      const m = await freshModule()
+      expect(m.getMemorySettings(), text).toEqual({ primerLimit: 10, vectorQuantize: false, learnFromConversations: true })
+    }
+  })
+})
+
 describe('learnFromConversations', () => {
   it('is ON when nothing is persisted', async () => {
     const m = await freshModule()

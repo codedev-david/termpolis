@@ -8,8 +8,9 @@ import { openWatermark } from '../../src/main/ingestWatermark'
 import { passResult } from '../../src/main/ingestRuntime'
 import { ownDialogue, delegationHeader } from '../../src/shared/headlessPrompt'
 import { corpus, memoryIO, MIB, sessionText } from './_ingestCorpus'
+import { codexGolden, GEMINI_GOLDEN_PATH, geminiGolden } from './_ingestGolden'
 import { referenceChunkTurns, referenceParseClaude } from './_ingestOracle'
-import { assistantLine, delegated, lines, metaLine, mulberry32, noiseLine, userLine } from './_transcriptFixture'
+import { assistantLine, delegated, lines, metaLine, mulberry32, noiseLine, primed, userLine } from './_transcriptFixture'
 
 afterEach(() => { vi.restoreAllMocks() })
 
@@ -536,6 +537,119 @@ describe('a pass that gets nowhere asks for no follow-up (the memory host is dow
   })
 })
 
+describe('the paths a pass takes only when something goes wrong or something is not Claude', () => {
+  it('a stop that arrives while the pass waits for the user to stop typing ends it before it reads anything', async () => {
+    const c = corpus()
+    fill(c, 3)
+    let stop = false
+    const stats = await ingestConversations(c.deps({ quiet: async () => { stop = true }, stopped: () => stop }))
+    expect(c.reads).toEqual([])
+    expect(stats).toMatchObject({ truncated: true, stop: 'stopped', filesScanned: 0 })
+  })
+
+  it('a file that cannot be stat-ed (the call throws) is processed anyway and never marked', async () => {
+    const c = corpus()
+    fill(c, 1, 2)
+    const { wm } = await open()
+    const stats = await ingestConversations(c.deps({ watermark: wm, statFile: async () => { throw new Error('EPERM') } }))
+    expect(stats.filesScanned).toBe(1)
+    expect(wm.size).toBe(0)
+  })
+
+  it('Codex and Gemini transcripts read in pieces and cut into slices give the very chunks the whole file gives', async () => {
+    const cases = [
+      ['codex', '/codex/sessions/rollout-1.jsonl', codexGolden()],
+      ['gemini', GEMINI_GOLDEN_PATH, geminiGolden()],
+    ] as const
+    for (const [source, path, text] of cases) {
+      const base = (c: ReturnType<typeof corpus>, over: Record<string, unknown> = {}) => c.deps({ sources: [source], listFiles: async () => [path], ...over })
+      const whole = corpus()
+      whole.add(path, text)
+      await ingestConversations(base(whole))
+      const expected = whole.written.map((w) => w.hash)
+      expect(expected.length, source).toBeGreaterThan(0)
+      for (const piece of [1, 97, text.length]) {
+        const c = corpus()
+        c.add(path, text)
+        const tick = { t: 0, now: () => (tick.t += 0.5) }
+        await ingestConversations(base(c, {
+          sliceMs: 25,
+          now: tick.now,
+          readText: async function* () { for (let i = 0; i < text.length; i += piece) yield text.slice(i, i + piece) },
+        }))
+        expect(c.written.map((w) => w.hash), `${source} in pieces of ${piece}`).toEqual(expected)
+      }
+    }
+  })
+
+  it('a session with nothing sealed yet (the fast tier) is marked sealed: the next fast pass skips it, the full pass reads it once', async () => {
+    const c = corpus()
+    const a = c.add('/proj/small.jsonl', sessionText('small', 1, 200)) // one pair, far under one 2,000-character chunk
+    const { wm } = await open()
+    const fast = (): Promise<IngestStats> => ingestConversations(c.deps({ watermark: wm, chunkOptions: { sealedOnly: true } }))
+    const first = await fast()
+    expect(first).toMatchObject({ filesScanned: 1, chunksWritten: 0 })
+    const st = c.files.get(a)!
+    expect(wm.isDone(a, { size: st.size, mtimeMs: st.mtimeMs }, 'sealed')).toBe(true)
+    expect(wm.isDone(a, { size: st.size, mtimeMs: st.mtimeMs }, 'full')).toBe(false)
+    c.clearCounters()
+    await fast()
+    expect(c.reads).toEqual([])
+    const full = await ingestConversations(c.deps({ watermark: wm }))
+    expect(c.reads).toEqual([a])
+    expect(full.chunksWritten).toBe(1)
+  })
+
+  // A Gemini file is one JSON document: it parses in one stretch, so every slice boundary below belongs to building
+  // (and hashing) its chunks, which is what these stops land in.
+  const geminiBig = (first: string): string =>
+    JSON.stringify({
+      sessionId: 'gem-big',
+      messages: [{ type: 'user', content: first }, ...Array.from({ length: 4_000 }, (_, i) => ({ type: i % 2 ? 'gemini' : 'user', content: 'x'.repeat(900) + i }))],
+    })
+  const geminiDeps = (c: ReturnType<typeof corpus>, over: Record<string, unknown>) => {
+    const clock = { t: 0, now: () => (clock.t += 0.05) }
+    return c.deps({ sources: ['gemini'], listFiles: async () => [GEMINI_GOLDEN_PATH], now: clock.now, sliceMs: 25, ...over })
+  }
+
+  it('a stop that arrives while the chunks of a long file are being built ends the pass with nothing stored and nothing marked', async () => {
+    const c = corpus()
+    c.add(GEMINI_GOLDEN_PATH, geminiBig('how do I build this'))
+    const { io, wm } = await open()
+    let yields = 0
+    const stats = await ingestConversations(geminiDeps(c, { watermark: wm, yield: async () => { yields++ }, stopped: () => yields >= 1 }))
+    expect(stats).toMatchObject({ truncated: true, stop: 'stopped', chunksWritten: 0 })
+    expect(yields).toBe(1)
+    expect(io.writes).toBe(0)
+    expect(wm.size).toBe(0)
+  })
+
+  it("a stop that arrives while another computer's session is being hashed for the recheck ends the pass", async () => {
+    const c = corpus()
+    c.add(GEMINI_GOLDEN_PATH, geminiBig(delegated('Review it.')))
+    let yields = 0
+    const seen: string[][] = []
+    const stats = await ingestConversations(geminiDeps(c, { onDelegated: (h: string[]) => { seen.push(h) }, yield: async () => { yields++ }, stopped: () => yields >= 1 }))
+    expect(stats).toMatchObject({ truncated: true, stop: 'stopped' })
+    expect(seen).toEqual([]) // the hashes were never completed, so none is reported
+  })
+
+  it('a stop that arrives while the legacy cut of a primed session is being built ends the pass (nothing stored under either cut)', async () => {
+    const c = corpus()
+    c.add(GEMINI_GOLDEN_PATH, geminiBig(primed('how do I build this')))
+    let yields = 0
+    let asked = false
+    const stats = await ingestConversations(geminiDeps(c, {
+      hasHashes: async (hs: string[]) => { asked = true; return hs.filter((h) => c.known.has(h)) },
+      yield: async () => { yields++ },
+      // not before the first cut is built and the store has been asked about it; then at the first boundary of the second cut
+      stopped: () => asked,
+    }))
+    expect(stats).toMatchObject({ truncated: true, stop: 'stopped', chunksWritten: 0 })
+    expect(asked).toBe(true)
+  })
+})
+
 describe('the two tiers (the fast pass emits only sealed chunks)', () => {
   it('a sealed pass marks "sealed": the next FULL pass still reads the file for its trailing partial chunk, the next sealed one does not', async () => {
     const c = corpus()
@@ -883,6 +997,23 @@ describe('synchronous slices', () => {
     expect(Math.max(...slices)).toBeLessThanOrEqual(25 + 0.5 + 0.2)
   })
 
+  it('a stop that arrives while a slice boundary waits for the typing gate ends the pass there', async () => {
+    const c = corpus()
+    c.add('/proj/long.jsonl', longFile(6_000))
+    await ingestConversations(c.deps()) // stored
+    const clock = fakeClock()
+    let gateAsks = 0
+    let stop = false
+    const stats = await ingestConversations(c.deps({
+      now: clock.now,
+      sliceMs: 25,
+      quiet: async () => { if (++gateAsks === 2) stop = true }, // the second ask is the first slice boundary
+      stopped: () => stop,
+    }))
+    expect(stats).toMatchObject({ truncated: true, stop: 'stopped' })
+    expect(gateAsks).toBe(2)
+  })
+
   it('the typing gate is asked at every slice boundary too, not only before a file', async () => {
     const c = corpus()
     c.add('/proj/long.jsonl', longFile(6_000))
@@ -1075,6 +1206,16 @@ describe('a subagent file and its parent', () => {
     expect(c.written).toHaveLength(0)
     expect(c.heads).toEqual([PARENT])
     expect(c.reads.filter((p) => p === PARENT)).toHaveLength(1) // read once as its own transcript, never again for the verdict
+  })
+
+  it('a parent whose first line is longer than the whole head has no complete line in it: it is read whole, and found delegated', async () => {
+    const c = corpus()
+    const huge = JSON.stringify({ type: 'summary', summary: 'x'.repeat(PARENT_HEAD_BYTES + 100) })
+    tree(c, huge + '\n' + lines(userLine(delegated('Review it.'), { sessionId: 'sess-A' }), assistantLine('ok')))
+    const stats = await ingestConversations(c.deps({ readHead: head(c) }))
+    expect(stats.delegatedSkipped).toBe(2) // the delegated parent itself, and its subagent with it
+    expect(c.written).toHaveLength(0)
+    expect(c.reads.filter((p) => p === PARENT)).toHaveLength(2) // once as its own transcript, once for the verdict
   })
 
   it('a parent that cannot be read is "not delegated", as before', async () => {

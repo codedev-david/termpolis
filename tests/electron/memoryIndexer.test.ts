@@ -343,6 +343,49 @@ describe('the pause switch at the scheduler (P4)', () => {
 describe('the typing gate at the scheduler (P4)', () => {
   beforeEach(() => { resetPasses() })
 
+  it('a pass that was waiting for the gate when the switch went off is skipped, and says so', async () => {
+    const flag = { paused: false }
+    const run = vi.fn().mockResolvedValue({ written: 0 })
+    startIndexer({ run, paused: () => flag.paused, quiet: async () => { flag.paused = true }, initialDelayMs: 1e9, intervalMs: 1e9 })
+    expect(await tick()).toMatchObject({ written: 0, skipped: 'paused' })
+    expect(run).not.toHaveBeenCalled()
+    expect(isIndexing()).toBe(false)
+  })
+
+  it('stopIndexer cancels a pending nudge', async () => {
+    const run = vi.fn().mockResolvedValue({ written: 0 })
+    startIndexer({ run, initialDelayMs: 1e9, intervalMs: 1e9 })
+    nudgeIndexer(1_000)
+    stopIndexer()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it('a pass that rejects with something that is not an Error is reported by its text', async () => {
+    const log = vi.fn()
+    startIndexer({ run: () => Promise.reject('plain text'), log, initialDelayMs: 1e9, intervalMs: 1e9 })
+    expect((await tick()).error).toBe('plain text')
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('plain text'))
+  })
+
+  it('with no delays given the first pass is 10 s after start, then one every 30 minutes, and a follow-up comes 3 s after a pass that reports more', async () => {
+    const run = vi.fn().mockResolvedValue({ written: 0 })
+    startIndexer({ run })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(run).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(30 * 60_000)
+    expect(run).toHaveBeenCalledTimes(2)
+    _resetIndexerForTests()
+    const more = vi.fn().mockResolvedValueOnce({ written: 1, more: true }).mockResolvedValue({ written: 0 })
+    startIndexer({ run: more, initialDelayMs: 0, intervalMs: 1e9 })
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(more).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(more).toHaveBeenCalledTimes(2)
+  })
+
   it('a pass does not start while the gate is held, and does start when it is released; a second tick meanwhile is busy', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
