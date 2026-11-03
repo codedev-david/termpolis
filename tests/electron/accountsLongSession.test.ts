@@ -112,7 +112,7 @@ describe('a long-running Claude Code terminal (its box scrolled out of the 32 KB
 // The switch itself, end to end on a scripted terminal that reads as main hands it over: its rolling 32 KB
 // window, and (the fix) the screen main keeps beside it.
 describe('switching an agent that has worked past the window (F-R2-2)', () => {
-  const B: AgentAccount = { id: 'acc_b', agent: 'claude', label: 'codedev', profile: 'C:\Users\me\.claude-b', autoOffer: true, order: 1, connect: true, origin: 'created', links: [] }
+  const B: AgentAccount = { id: 'acc_b', agent: 'claude', label: 'codedev', profile: 'C:\\Users\\me\\.claude-b', autoOffer: true, order: 1, connect: true, origin: 'created', links: [] }
   const NEW_ID = '9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f'
 
   async function switchIt(main: 'window' | 'kept') {
@@ -142,8 +142,8 @@ describe('switching an agent that has worked past the window (F-R2-2)', () => {
 // (every switch scenario's output is far under 32 KB): the engine's decisions, and the keys it types, are
 // the same through either.
 describe('the kept screen changes nothing while the window holds everything', () => {
-  const B: AgentAccount = { id: 'acc_b', agent: 'claude', label: 'codedev', profile: 'C:\Users\me\.claude-b', autoOffer: true, order: 1, connect: true, origin: 'created', links: [] }
-  const CODEX_B: AgentAccount = { ...B, id: 'acc_cb', agent: 'codex', profile: 'C:\Users\me\.codex-b' }
+  const B: AgentAccount = { id: 'acc_b', agent: 'claude', label: 'codedev', profile: 'C:\\Users\\me\\.claude-b', autoOffer: true, order: 1, connect: true, origin: 'created', links: [] }
+  const CODEX_B: AgentAccount = { ...B, id: 'acc_cb', agent: 'codex', profile: 'C:\\Users\\me\\.codex-b' }
   const starts = ['idle', 'busy', 'menu', 'waiting', 'typed', 'question', 'gone-hint', 'gone-quiet', 'blank'] as const
 
   async function outcomeOf(script: ConstructorParameters<typeof FakeTerminal>[0]) {

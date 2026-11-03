@@ -366,7 +366,7 @@ describe('the limit message a CLI ends its turn with, right above its input box'
 
   it.each([
     ['another message under it', ['  Ran 1 shell command'], `${REPLY}Request interrupted by user`],
-    ['the reply quoted at four spaces', ['  Ran 1 shell command'], `    ⎿  You've hit your session limit · resets 3pm (America/New_York)`],
+    ['the reply quoted at four spaces', ['  Ran 1 shell command'], `    ⎿ \u00a0You've hit your session limit · resets 3pm (America/New_York)`],
     ['the reply with plain spaces, a quoted screen', ['  Ran 1 shell command'], "  ⎿  You've hit your session limit · resets 3pm (America/New_York)"],
     ['a sentence that only starts like a group', ['  Ran 1 shell command in the repo and found nothing'], LIMIT_REPLY],
     ['a group the user prompt quotes', ['  Read 1 file, said the user'], LIMIT_REPLY],
@@ -398,7 +398,7 @@ describe('the limit message a CLI ends its turn with, right above its input box'
 
   // F-R2-4: the prompt Claude Code echoes starts at the screen's left edge; a screen an answer quotes is indented. Whatever the
   // indent and whichever space the reply keeps after its ⎿, a screen quoted in an answer is no stop of this run (R5).
-  it.each([2, 3, 4].flatMap((indent) => [[indent, ' '], [indent, ' ']] as const))('does not read a quoted screen indented by %i, its reply keeping %j, as a limit (F-R2-4)', (indent, gap) => {
+  it.each([2, 3, 4].flatMap((indent) => [[indent, '\u00a0'], [indent, ' ']] as const))('does not read a quoted screen indented by %i, its reply keeping %j, as a limit (F-R2-4)', (indent, gap) => {
     const sp = ' '.repeat(indent)
     const rows = ['> quote the error', '', '● It said:', '', `${sp}> Build the page`, `${sp}⎿ ${gap}You've hit your session limit · resets 3pm (America/New_York)`, ...CLAUDE_IDLE]
     expect(onScreen(rows, 'Claude').status).not.toBe('blocked')

@@ -39,7 +39,7 @@ import { _resetLimitWatchForTest } from '../../src/renderer/src/lib/limitWatch'
 import { _resetStopReportsForTest, carryWorkerStop } from '../../src/renderer/src/lib/swarmStopReports'
 
 const PICKER = 'Select login method:\r\n❯ 1. Claude account with subscription\r\n  2. Anthropic Console account\r\n'
-const LIMIT_ROWS = ['❯ Build the login page.', "  ⎿  You've hit your session limit · resets 3pm (America/New_York)", '', '─'.repeat(80), '❯ ', '─'.repeat(80)]
+const LIMIT_ROWS = ['❯ Build the login page.', "  ⎿ \u00a0You've hit your session limit · resets 3pm (America/New_York)", '', '─'.repeat(80), '❯ ', '─'.repeat(80)]
 const LIMIT_SCREEN = `\x1b[H\x1b[2J${LIMIT_ROWS.map((r, i) => `\x1b[${i + 1};1H${r}`).join('')}`
 
 function bridge(output: string) {
