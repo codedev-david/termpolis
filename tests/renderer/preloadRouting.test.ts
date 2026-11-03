@@ -168,6 +168,21 @@ describe('preload routing: one listener for every pane', () => {
     ipc.emit('terminal:data', 'a', 'x', 1)
     expect(other).toHaveBeenCalledTimes(1)
     expect(announcements(ipc).filter((s) => s.channel === 'terminal:unsubscribe')).toEqual([])
+    expect(router.stats()).toMatchObject({ panes: 1, ids: 1 }) // the second call did not take another pane off the count
+  })
+
+  it('an unsubscribe removes ITS OWN callback, not the first one registered', () => {
+    const ipc = fakeIpc()
+    const router = createTerminalDataRouter(ipc, 1)
+    const first = vi.fn()
+    const second = vi.fn()
+    router.onFor('a', first)
+    const unsubSecond = router.onFor('a', second)
+    unsubSecond()
+    ipc.emit('terminal:data', 'a', 'x', 1)
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).not.toHaveBeenCalled()
+    expect(router.stats()).toMatchObject({ panes: 1, ids: 1 })
   })
 })
 

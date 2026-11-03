@@ -216,20 +216,23 @@ describe('terminal:data routing: a new page, an old page, two windows', () => {
     expect(sentIds(win).filter((id) => id === 'z')).toHaveLength(GRACE_CHUNKS)
   })
 
-  it('a window main is not tracking is sent everything (fail open), and a newer sender takes over the tracking', () => {
+  it('a window main is not tracking is sent everything (fail open), not just its first chunks, and a newer sender takes over the tracking', () => {
     const routing = createTerminalDataRouting()
     const first = fakeWindow(1)
     const second = fakeWindow(2)
     routing.note(1, { id: 'a', epoch: 1 }, true)
-    routing.send(second, 'unlisted', 'x')
-    expect(second.sends).toHaveLength(1)
-    routing.note(2, { id: 'b', epoch: 1 }, true)
+    // Window 2 has announced nothing: EVERY chunk goes to it, far past any grace.
+    for (let i = 0; i < GRACE_CHUNKS + 20; i++) routing.send(second, 'unlisted', 'x')
+    expect(second.sends).toHaveLength(GRACE_CHUNKS + 20)
+    second.sends.length = 0
+    routing.note(2, { id: 'b', epoch: 1 }, true) // window 2's page announces: it is the tracked one now
     spokenOf(routing, 2, 'old')
     routing.send(second, 'old', 'y')
     routing.send(second, 'b', 'z')
-    expect(second.sends.map((a) => a[2])).toEqual(['x', 'z'])
-    routing.send(first, 'unlisted', 'q')
-    expect(first.sends).toHaveLength(1)
+    expect(second.sends.map((a) => a[2])).toEqual(['z'])
+    // ... and window 1 is the untracked one: everything goes to it.
+    for (let i = 0; i < GRACE_CHUNKS + 20; i++) routing.send(first, 'unlisted', 'q')
+    expect(first.sends).toHaveLength(GRACE_CHUNKS + 20)
   })
 
   it('treats a window without an id (a test double) as one consistent sender', () => {
@@ -257,6 +260,12 @@ describe('terminal:data routing: bounded', () => {
     routing.note(1, { id: 'one-too-many', epoch: 1 }, true)
     expect(routing.stats()).toMatchObject({ armed: false, ids: 0 })
     for (let i = 0; i < GRACE_CHUNKS + 5; i++) routing.send(win, 'unlistened', 'x')
+    expect(win.sends).toHaveLength(GRACE_CHUNKS + 5)
+    // It stays given up: a valid subscribe afterwards does not bring filtering back (the page that overflowed is broken).
+    win.sends.length = 0
+    routing.note(1, { id: 'later-valid', epoch: 1 }, true)
+    expect(routing.stats().armed).toBe(false)
+    for (let i = 0; i < GRACE_CHUNKS + 5; i++) routing.send(win, 'unlistened-too', 'x')
     expect(win.sends).toHaveLength(GRACE_CHUNKS + 5)
   })
 })
@@ -300,6 +309,17 @@ describe('terminal:data routing: fails open', () => {
     routing.reset()
     routing.send(win, 'other', 'x')
     expect(win.sends).toHaveLength(1)
+  })
+
+  it('reset() also forgets that routing gave up: after it the router filters again', () => {
+    const routing = createTerminalDataRouting()
+    routing.note(1, { id: 'a', epoch: 1 }, true)
+    routing.note(1, 'not an announcement', true) // gives up
+    routing.note(1, { id: 'b', epoch: 1 }, true)
+    expect(routing.stats().armed).toBe(false)
+    routing.reset()
+    routing.note(1, { id: 'a', epoch: 1 }, true)
+    expect(routing.stats().armed).toBe(true)
   })
 })
 

@@ -143,6 +143,23 @@ describe('the per-pass side effects: how often they run', () => {
     expect(h.passes[1]).toMatchObject({ frame: 'b', messages: 1 })
   })
 
+  it('a message exactly one window after the last pass runs at once (the window is "at least", not "more than")', () => {
+    const h = setup()
+    h.effects.push('a')
+    expect(h.passes).toHaveLength(1)
+    h.clock.advance(EFFECTS_VISIBLE_MS) // exactly one window
+    h.effects.push('b')
+    expect(h.passes).toHaveLength(2)
+    expect(h.clock.timers()).toBe(0)
+    // ... and one millisecond short of it is deferred, to the end of the window.
+    h.clock.advance(EFFECTS_VISIBLE_MS - 1)
+    h.effects.push('c')
+    expect(h.passes).toHaveLength(2)
+    expect(h.clock.timers()).toBe(1)
+    h.clock.advance(1)
+    expect(h.passes).toHaveLength(3)
+  })
+
   it('nothing runs and nothing is armed while nothing arrives', () => {
     const h = setup()
     h.clock.advance(60_000)
@@ -346,11 +363,12 @@ describe('the per-pass side effects: the real clock', () => {
     const passes: string[] = []
     const effects = createPaneEffects({ run: (frame) => { passes.push(frame) }, isVisible: () => true })
     effects.push('a')
+    vi.advanceTimersByTime(100) // the clock under test moves: a Date.now captured before the fake timers were installed would not
     effects.push('b')
     expect(passes).toEqual(['a'])
-    vi.advanceTimersByTime(249)
+    vi.advanceTimersByTime(149) // 249 ms after 'a'
     expect(passes).toEqual(['a'])
-    vi.advanceTimersByTime(2)
+    vi.advanceTimersByTime(2) // 251 ms after 'a'
     expect(passes).toEqual(['a', 'b'])
   })
 })
