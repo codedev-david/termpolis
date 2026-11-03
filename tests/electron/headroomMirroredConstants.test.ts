@@ -20,6 +20,7 @@ import { CCR_MAX_BYTES } from '../../src/main/headroom/ccrStore'
 const RENDERER = join(__dirname, '..', '..', 'src', 'renderer', 'src', 'components', 'SettingsPane')
 const card = readFileSync(join(RENDERER, 'ElisionHealthCard.tsx'), 'utf8')
 const pane = readFileSync(join(RENDERER, 'TokenSavingsSettings.tsx'), 'utf8')
+const privacyChoices = readFileSync(join(__dirname, '..', '..', 'src', 'renderer', 'src', 'components', 'Onboarding', 'PrivacyChoices.tsx'), 'utf8')
 
 /** The literal a renderer file gives a top-level `const NAME = <literal>`. */
 function literal(src: string, name: string): string {
@@ -33,10 +34,11 @@ const num = (src: string, name: string): number => Number(literal(src, name))
 describe('the renderer quotes the numbers the main process uses', () => {
   const thousands = LATE_FLOOR_CHARS.toLocaleString('en-US')
 
-  it('the size from which Late shortens a result, in the card and in the pane', () => {
+  it('the size from which Late shortens a result, in the card, in the pane and in the first-run privacy blurb', () => {
     expect(thousands).toBe('40,000')
     expect(text(card, 'LATE_FLOOR')).toBe(thousands)
     expect(text(pane, 'LATE_FLOOR')).toBe(thousands)
+    expect(text(privacyChoices, 'LATE_FLOOR')).toBe(thousands)
   })
 
   it('the samples a class needs, the price of a kept token and the groups a comparison needs', () => {
