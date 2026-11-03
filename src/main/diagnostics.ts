@@ -5,12 +5,15 @@
 // without demanding a separate round-trip for "what version are you on".
 
 import { app } from 'electron'
+import { getGovernorSnapshot, type GovernorSnapshot } from './loopGovernor'
 import { arch, release } from 'os'
 
 export interface Diagnostics {
   appVersion: string
   platform: NodeJS.Platform
   osRelease: string
+  /** The event-loop governor's state (SHED or not, how often, the last p99): plain numbers, not in the issue text. */
+  governor?: GovernorSnapshot
   arch: string
   electronVersion: string
   nodeVersion: string
@@ -24,6 +27,7 @@ export function collectDiagnostics(): Diagnostics {
     appVersion,
     platform: process.platform,
     osRelease: release(),
+    governor: getGovernorSnapshot(),
     arch: arch(),
     electronVersion: process.versions.electron || 'n/a',
     nodeVersion: process.versions.node || 'n/a',

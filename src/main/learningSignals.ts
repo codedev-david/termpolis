@@ -28,6 +28,7 @@ import { asAsync, gitDirOfAsync, headRefAsync, resolveRefAsync, type AsyncFsLike
 import type { FsLike } from './workflow/workflowStore'
 import type { AgentEvent } from './agentEventBus'
 import type { WorkEvent } from './outcomeSignals'
+import { createShedGate, type ShedGate } from './loopGovernor'
 
 /** setInterval's handle type differs between the DOM and Node libs — it travels opaquely. */
 type TimerHandle = ReturnType<typeof setInterval>
@@ -86,6 +87,9 @@ const pending = new Map<string, PendingTest>()
 let epoch = 0
 let stopTimer: (() => void) | null = null
 let unsubscribe: (() => void) | null = null
+/** While the event loop is struggling (loopGovernor SHED) a tick does nothing: the next calm tick compares HEAD with
+ *  the remembered sha, so a commit made meanwhile is still seen. */
+let gate: ShedGate | null = null
 
 // ── test-run classification ──────────────────────────────────────────────────
 
@@ -229,7 +233,11 @@ export function startLearningSignals(d: LearningSignalDeps): void {
   const clearTimer = d.clearInterval ?? clearInterval
   // One poll at a time: the reads are on the thread pool, so a slow disk must not stack polls up behind it.
   let inFlight: Promise<void> | null = null
+  gate = createShedGate('learningSignals.gitPoll')
   const handle = setTimer(() => {
+    // Shed first: while the loop struggles a tick does nothing, and the next calm tick compares HEAD with the
+    // remembered sha. A poll already reading on the thread pool finishes by itself.
+    if (gate?.skip()) return
     if (inFlight) return inFlight
     inFlight = pollGitHeads(d).catch(() => { /* the next tick retries */ }).finally(() => { inFlight = null })
     return inFlight
@@ -242,6 +250,8 @@ export function stopLearningSignals(): void {
   epoch++
   if (stopTimer) stopTimer()
   if (unsubscribe) unsubscribe()
+  gate?.dispose()
+  gate = null
   stopTimer = null
   unsubscribe = null
   heads.clear()

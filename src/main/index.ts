@@ -1,3 +1,6 @@
+// FIRST, and it must stay first: it sets UV_THREADPOOL_SIZE before anything can start libuv's thread pool (see
+// threadpoolEnv.ts; tests/electron/threadpoolEnv.test.ts pins this line). Kill switch TERMPOLIS_NO_GOVERNOR=1.
+import './threadpoolEnv'
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, safeStorage, shell } from 'electron'
 import { initMainSentry } from './sentry'
 import { gpuPolicy } from './gpuPolicy'
@@ -10,6 +13,7 @@ import {
   recordUncleanExit,
 } from './telemetry'
 import { initCrashWatch, heartbeat as crashHeartbeat, markCleanExit, installCleanExitGuards } from './crashWatch'
+import { installLoopGovernor } from './loopGovernor'
 // Up here, above the `--disconnect-agents` block that calls homedir(), and not with the other
 // builtins further down: under Vitest's jsdom environment a builtin's names are bound where its
 // import is written, so from down there the block failed with "Cannot access 'homedir' before
@@ -3977,6 +3981,9 @@ async function semanticPoolOptions(
     initAuditLog(app.getPath('userData'))
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))
+    // The event-loop governor (1.54.5): background timers that registered with it stand down while the loop is
+    // struggling. Started here, stopped at will-quit. Kill switch TERMPOLIS_NO_GOVERNOR=1.
+    installLoopGovernor(app)
     initMcpGateway(app.getPath('userData'))
     registerMcpIpc(ipcMain)
     registerStuckProcessIpc(ipcMain)

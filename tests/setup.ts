@@ -48,3 +48,11 @@ for (const k of ['ANTHROPIC_BASE_URL', 'TERMPOLIS_HEADROOM_PROXY', 'HTTPS_PROXY'
 // ~/.codex/config.toml or ~/.gemini/settings.json. resolveAgentIntegrationPaths()
 // honors this scratch home over homedir(), CLAUDE_CONFIG_DIR and CODEX_HOME.
 process.env.TERMPOLIS_TEST_AGENT_HOME = mkdtempSync(join(tmpdir(), 'termpolis-agent-home-'))
+
+// The 1.54.5 hotfix kill switches, on for the whole unit suite. A test that boots src/main/index.ts must not
+// start a real event-loop watchdog (a native histogram plus a timer per test file), must not change the test
+// worker's UV_THREADPOOL_SIZE, and a test that imports a background host as a forked child must not lower the
+// worker's own priority. The tests of those mechanisms inject their environment (and a fake os module)
+// instead, so they never depend on, or mutate, the real process.env.
+process.env.TERMPOLIS_NO_GOVERNOR = '1'
+process.env.TERMPOLIS_NO_HOST_PRIORITY = '1'
