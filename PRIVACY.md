@@ -391,10 +391,11 @@ notes in memory** is on (Settings → Memory & Learning; on by default), the
 indexer that already reads your agents' session history every 30 minutes reads
 these notes too. An install that an older version connected, and that you have
 not yet been asked about (the one-time review), does not count as connected for
-this: it starts when you answer yes. An install that you did answer before
-1.55.0 is not asked again: it starts with the first pass after the update
-(about ten seconds after Termpolis starts, while memory is unlocked). Turn the
-switch off to stop it, and use *Remove imported notes* to take out the copies.
+this: it starts when you answer yes. An install that you had connected with a
+yes before 1.55.0 is not asked again: it starts with the first pass after the
+update (about ten seconds after Termpolis starts, while memory is unlocked).
+Turn the switch off to stop it, and use *Remove imported notes* to take out the
+copies.
 
 - **What it reads.** The project folders under `~/.claude/projects`; in each,
   the names, sizes and modified times of the `.md` files in its `memory`
