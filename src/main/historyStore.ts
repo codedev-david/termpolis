@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
-import { writeFile, rename } from 'fs/promises'
+import { writeFile, rename, readFile } from 'fs/promises'
 import { join } from 'path'
 import type { HistoryEntry } from './types'
 
@@ -28,20 +28,58 @@ let flushTimer: ReturnType<typeof setTimeout> | null = null
 let writerLoop: Promise<void> | null = null
 let dirty = false
 
+/** A file containing `null` or an array parses fine but is not a history map; treating it as one would make `cache`
+ *  falsy forever and re-read the file on every append. */
+function asHistory(parsed: unknown): HistoryFile {
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as HistoryFile) : {}
+}
+
+/** Commands entered while the file is still being read (see primeHistory): merged in when it has been. */
+let pendingAppends: HistoryEntry[] | null = null
+
+/**
+ * Read the history file on the thread pool, once, at start-up. The first Enter of a session used to read and parse the
+ * whole file (1.26 MiB on a real profile) synchronously, on the thread that echoes keystrokes; now it has been read
+ * long before, and an Enter that comes sooner is kept and merged in when the read finishes.
+ */
+export function primeHistory(): Promise<void> {
+  if (cache) return Promise.resolve()
+  pendingAppends = pendingAppends ?? []
+  return (async () => {
+    let loaded: HistoryFile = {}
+    try {
+      loaded = asHistory(JSON.parse(await readFile(getHistoryPath(), 'utf-8')))
+    } catch { /* no file yet, or a damaged one: an empty history rather than taking the app down */ }
+    if (!cache) {
+      cache = loaded
+      for (const e of pendingAppends ?? []) pushEntry(cache, e)
+      if ((pendingAppends ?? []).length > 0) scheduleFlush()
+    }
+    pendingAppends = null
+  })()
+}
+
 function ensureLoaded(): HistoryFile {
   if (cache) return cache
   const path = getHistoryPath()
   let loaded: HistoryFile = {}
   if (existsSync(path)) {
     try {
-      const parsed = JSON.parse(readFileSync(path, 'utf-8'))
-      // A file containing `null` or an array parses fine but is not a history map; treating
-      // it as one would make `cache` falsy forever and re-read the file on every append.
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) loaded = parsed
+      loaded = asHistory(JSON.parse(readFileSync(path, 'utf-8')))
     } catch { /* a damaged file reads as empty history rather than taking the app down */ }
   }
   cache = loaded
+  for (const e of pendingAppends ?? []) pushEntry(cache, e)
+  pendingAppends = null
   return loaded
+}
+
+function pushEntry(history: HistoryFile, entry: HistoryEntry): void {
+  if (!history[entry.terminalId]) history[entry.terminalId] = []
+  history[entry.terminalId].push(entry)
+  if (history[entry.terminalId].length > MAX_PER_TERMINAL) {
+    history[entry.terminalId] = history[entry.terminalId].slice(-MAX_PER_TERMINAL)
+  }
 }
 
 /**
@@ -127,12 +165,11 @@ export function resetHistoryCache(): void {
 export function appendCommand(terminalId: string, terminalName: string, command: string): void {
   const trimmed = command.trim()
   if (!trimmed) return
-  const history = ensureLoaded()
-  if (!history[terminalId]) history[terminalId] = []
-  history[terminalId].push({ terminalId, terminalName, command: trimmed, timestamp: Date.now() })
-  if (history[terminalId].length > MAX_PER_TERMINAL) {
-    history[terminalId] = history[terminalId].slice(-MAX_PER_TERMINAL)
-  }
+  const entry: HistoryEntry = { terminalId, terminalName, command: trimmed, timestamp: Date.now() }
+  // The history is still being read on the thread pool (start-up asked for it): keep the command, merge it in when
+  // the read finishes. Without a prime (a test), the file is read here, as it always was.
+  if (!cache && pendingAppends) { pendingAppends.push(entry); return }
+  pushEntry(ensureLoaded(), entry)
   scheduleFlush()
 }
 

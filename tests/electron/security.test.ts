@@ -195,7 +195,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   resizeTerminal: vi.fn(), killAll: vi.fn(), whenTerminalsExit: vi.fn(() => Promise.resolve()), runningShellCount: vi.fn(() => 0), getTerminalCwd: vi.fn(),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => null), loadRestoreSession: vi.fn(() => null), saveSession: vi.fn() }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),

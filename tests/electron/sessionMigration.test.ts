@@ -4,10 +4,11 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 vi.mock('fs')
 vi.mock('electron', () => ({ app: { getPath: () => '/fake/userData', getVersion: () => '1.0.0' } }))
 
-const { loadSession } = await import('../../src/main/sessionStore')
+const { loadSession, _resetSessionCacheForTests } = await import('../../src/main/sessionStore')
 
 describe('session migration', () => {
-  beforeEach(() => vi.clearAllMocks())
+  // loadSession answers from memory after the first read (the disk is read once, at start-up): each case is a fresh start.
+  beforeEach(() => { vi.clearAllMocks(); _resetSessionCacheForTests() })
 
   it('migrates the defaults of loose AND workspace terminals in an old session', () => {
     // Loose terminals are no longer RESTORED at boot (see loadRestoreSession), but

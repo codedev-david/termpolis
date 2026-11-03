@@ -9,7 +9,7 @@ import type { ShellType } from './types'
 import { createOutputCoalescer, type OutputCoalescer } from './ptyCoalescer'
 import { sudoAskpassEnv } from './sudoAskpass'
 import { integrationScriptState, INTEGRATION_SCRIPT_NAME, type SpawnPrep } from './terminalSpawnPrep'
-import { shellAlone } from './shellAlone'
+import { shellAlone, readConsoleProcessList } from './shellAlone'
 import {
   detectShellKind,
   integrationArgs,
@@ -237,6 +237,7 @@ export function spawnTerminal(
     throw new Error(`Failed to open terminal: ${msg}`)
   }
 
+  if (process.platform === 'win32') endConsoleOffThread(proc)
   const coalescer = createOutputCoalescer(onData)
   proc.onData((chunk) => coalescer.push(chunk))
   const pid = proc.pid
@@ -251,6 +252,25 @@ export function spawnTerminal(
     try { onExit?.(e.exitCode) } finally { processes.delete(id) }
   })
   processes.set(id, { pty: proc, coalescer, cols: SPAWN_COLS, rows: SPAWN_ROWS, executable })
+}
+
+/**
+ * Closing a terminal on Windows, without a process created on this thread.
+ *
+ * node-pty's kill() lists the programs on the shell's console, to end them with it, by FORKING its helper script
+ * (WindowsPtyAgent._getConsoleProcessList) from the process it runs in: this one. That is a process creation on the
+ * thread that echoes every keystroke, on every close (0.1-0.3 s on a busy laptop with Defender; a swarm closes many
+ * terminals). This answers the same question, for this terminal's agent only, through the proc host: the same list, the
+ * same ending of every program in it, and the shell alone when the host cannot say (node-pty does the same when its
+ * helper times out). Nothing happens for a pty that is not node-pty's Windows terminal.
+ */
+function endConsoleOffThread(proc: pty.IPty): void {
+  const agent = (proc as unknown as { _agent?: { innerPid?: number; _getConsoleProcessList?: () => Promise<number[]> } })._agent
+  if (!agent || typeof agent._getConsoleProcessList !== 'function') return
+  agent._getConsoleProcessList = async () => {
+    const pid = agent.innerPid ?? proc.pid
+    return (await readConsoleProcessList(pid)) ?? [pid]
+  }
 }
 
 export function killTerminal(id: string): void {
@@ -344,36 +364,10 @@ function cwdProbeCommand(pid: number): string {
 }
 
 /**
- * @deprecated No production caller since v1.47.1 — use getTerminalCwdAsync.
- *
- * Kept only because it is the one probe with a meaningful sync contract, and deleting a public
- * export is not worth the churn. Do NOT wire it back up: `lsof` takes 50-500 ms and this blocks the
- * thread that pumps every PTY for all of it.
- */
-export function getTerminalCwd(id: string): string | null {
-  // Windows: no reliable way to get a child process's working directory
-  // without shell integration. Return null to use the fallback cwd.
-  if (process.platform === 'win32') return null
-
-  const pid = getTerminalPid(id)
-  if (!pid) return null
-  try {
-    // Linux: /proc/PID/cwd, macOS: lsof
-    const cwd = execSync(cwdProbeCommand(pid), { stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }).toString().trim()
-    return cwd || null
-  } catch {
-    return null
-  }
-}
-
-/**
- * getTerminalCwd, but async so it never blocks the main thread.
- *
- * On macOS there is no /proc, so the probe ALWAYS falls through to `lsof`, which takes 50-500 ms.
- * getTerminalCwd is called from the `terminal:status` handler, which the status bar polls every 5 s
- * PER terminal — so the sync version froze the PTY-pumping thread for a few hundred ms every 5 s per
- * open terminal, on exactly the machines (Macs) where lsof is slowest. This runs the same probe in
- * the proc host, so neither the spawn nor the wait costs the main thread anything.
+ * The working directory of a terminal's shell, asked of the proc host so that neither the spawn nor the wait costs the
+ * main thread anything. (There was a synchronous twin once; nothing called it after v1.47.1 and it is gone: `lsof`
+ * takes 50-500 ms on macOS, which is where there is no /proc, and the `terminal:status` handler asks every 5 s per
+ * open terminal.)
  */
 export async function getTerminalCwdAsync(id: string): Promise<string | null> {
   if (process.platform === 'win32') return null

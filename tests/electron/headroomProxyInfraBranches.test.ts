@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 /* The supervisor's pickFreePort() talks to a real OS socket, so the only way to exercise its
  * failure shapes (bind error, a non-TCP address) is to stand in for `net`. Nothing else in this
@@ -394,9 +395,10 @@ describe('proxy ledger — malformed results, flush wiring and on-disk baseline'
     expect(flush).toHaveBeenCalledTimes(1)
   })
 
-  it('round-trips the cumulative total through disk, leaving the new session at zero', () => {
+  it('round-trips the cumulative total through disk, leaving the new session at zero', async () => {
     recordProxyResult(result())
     saveProxyTotalsToDisk(dir)
+    await offMainFiles.idle() // the write is queued on the thread pool
     const onDisk = JSON.parse(readFileSync(join(dir, 'proxy-totals.json'), 'utf8')) as Record<string, number>
     expect(onDisk.requests).toBe(1)
     expect(onDisk.textSavedTokens).toBe(1500)
@@ -434,19 +436,21 @@ describe('proxy ledger — malformed results, flush wiring and on-disk baseline'
     expect(summarizeProxySavings().cumulative.savedPct).toBe(0) // no orig tokens recorded back then
   })
 
-  it('a save onto a path occupied by a file is swallowed and does not clobber it', () => {
+  it('a save onto a path occupied by a file is swallowed and does not clobber it', async () => {
     const notADir = join(dir, 'occupied')
     writeFileSync(notADir, 'someone else owns this', 'utf8')
     recordProxyResult(result())
     expect(() => saveProxyTotalsToDisk(notADir)).not.toThrow()
+    await offMainFiles.idle() // the failing write has been attempted (and swallowed) before the file is looked at
     expect(readFileSync(notADir, 'utf8')).toBe('someone else owns this')
   })
 
-  it('a save into a not-yet-created nested directory creates it', () => {
+  it('a save into a not-yet-created nested directory creates it', async () => {
     const nested = join(dir, 'a', 'b', 'headroom') // userData/headroom on a fresh install
     mkdirSync(join(dir, 'a'), { recursive: true })
     recordProxyResult(result())
     saveProxyTotalsToDisk(nested)
+    await offMainFiles.idle()
     expect(JSON.parse(readFileSync(join(nested, 'proxy-totals.json'), 'utf8')).requests).toBe(1)
   })
 })

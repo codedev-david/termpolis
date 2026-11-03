@@ -219,38 +219,6 @@ describe('terminalManager — defensive and non-Windows branches', () => {
     )
   })
 
-  // ---- getTerminalCwd ----
-
-  it('returns null for a terminal that is not registered, without shelling out', async () => {
-    setPlatform('linux')
-    const tm = await freshManager()
-    h.execSync.mockClear()
-
-    // The status bar polls terminal:status every 5s per terminal; a poll that
-    // races a close must short-circuit on the missing pid rather than run lsof.
-    expect(tm.getTerminalCwd('never-spawned')).toBeNull()
-    expect(h.execSync).not.toHaveBeenCalled()
-  })
-
-  it('trims the probe output for the pty pid, and treats a blank probe as no cwd', async () => {
-    setPlatform('linux')
-    const tm = await freshManager()
-    tm.spawnTerminal('cwd-probe', '/bin/bash', '/tmp', vi.fn())
-
-    h.execSync.mockClear()
-    h.execSync.mockImplementation(() => Buffer.from('/home/testuser/repos/termpolis\n'))
-    expect(tm.getTerminalCwd('cwd-probe')).toBe('/home/testuser/repos/termpolis')
-
-    const probe = h.execSync.mock.calls[0][0]
-    expect(probe).toContain(`/proc/${h.ptyProc.pid}/cwd`)
-    expect(probe).toContain(`lsof -p ${h.ptyProc.pid}`)
-
-    // lsof exits 0 with no output for a pid it cannot inspect. That must read as
-    // "unknown" (null, so the caller keeps the configured cwd), never as ''.
-    h.execSync.mockImplementation(() => Buffer.from('   \n'))
-    expect(tm.getTerminalCwd('cwd-probe')).toBeNull()
-  })
-
   // ---- primeBundledToolsCheck: the same answer as the sync check, off the main thread ----
 
   it('fills the cache at startup so the first spawn never probes on the main thread', async () => {

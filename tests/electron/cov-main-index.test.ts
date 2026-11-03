@@ -315,7 +315,7 @@ vi.mock('../../src/main/shellDetector', () => ({
 vi.mock('../../src/main/sessionStore', () => ({
   loadSession: M.loadSession, loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
 }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -367,6 +367,7 @@ vi.mock('../../src/main/importTrust', () => ({
 vi.mock('../../src/main/memorySettings', () => ({
   getPrimerLimit: M.getPrimerLimit, setPrimerLimit: M.setPrimerLimit,
   getVectorQuantize: M.getVectorQuantize, setVectorQuantize: M.setVectorQuantize,
+  initMemorySettings: vi.fn(),
 }))
 vi.mock('../../src/main/contextPinStore', () => ({
   initContextPinStore: vi.fn(),

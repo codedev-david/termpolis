@@ -87,7 +87,7 @@ vi.mock('../../src/main/terminalManager', () => ({
   setMouseModeGuard: vi.fn(), onTerminalData: vi.fn(), onTerminalExit: vi.fn(),
 }))
 vi.mock('../../src/main/sessionStore', () => ({ loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn() }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({ listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []) }))
 vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: vi.fn(async () => []) }))

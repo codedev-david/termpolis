@@ -61,7 +61,6 @@ describe('ccr store writes on the thread pool', () => {
   })
 
   it('evicting past the byte cap deletes the oldest files on the pool, after their writes', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { _setCcrLimits } = await import('../../src/main/headroom/ccrStore')
     _setCcrLimits(2000, 1500)
     const tokens: string[] = []

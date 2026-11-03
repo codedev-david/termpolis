@@ -190,7 +190,7 @@ vi.mock('../../src/main/shellDetector', () => ({ detectAvailableShells: M.detect
 vi.mock('../../src/main/sessionStore', () => ({
   loadSession: vi.fn(() => ({ terminals: [] })), loadRestoreSession: vi.fn(() => ({ terminals: [] })), saveSession: vi.fn(),
 }))
-vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []) }))
+vi.mock('../../src/main/historyStore', () => ({ appendCommand: vi.fn(), searchHistory: vi.fn(() => []), primeHistory: vi.fn(async () => {}) }))
 vi.mock('../../src/main/configFileManager', () => ({ readConfigFile: vi.fn(), writeConfigFile: vi.fn() }))
 vi.mock('../../src/main/completionService', () => ({
   listPathEntries: vi.fn(() => []), listPathCommands: vi.fn(() => []), listEnvVars: vi.fn(() => []),
@@ -1549,7 +1549,7 @@ describe('shutdown', () => {
       // `still open` and `in flight` describe the process at will-quit; the rest are the steps.
       expect(steps.filter(l => !/^\[shutdown\] (still open|in flight):/.test(l))).toEqual([
         '[shutdown] start', '[shutdown] terminals', '[shutdown] watchers', '[shutdown] history',
-        '[shutdown] hosts', '[shutdown] proxy', '[shutdown] mcp', '[shutdown] windows closed',
+        '[shutdown] hosts', '[shutdown] proxy', '[shutdown] mcp', '[shutdown] queued writes', '[shutdown] windows closed',
         '[shutdown] agent runs', '[shutdown] quit (exit code 0)',
       ])
       // What Node still holds open at will-quit, by kind: the request a stuck exit waits on.

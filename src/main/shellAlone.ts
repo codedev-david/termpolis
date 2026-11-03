@@ -63,9 +63,23 @@ async function aloneOnConsole(pid: number, executable: string): Promise<boolean 
 }
 
 /** node-pty's lib folder, from where the package keeps it on disk (package.json asarUnpack): a script outside
- *  app.asar loads node-pty's native module the same way in or out of a packaged build. */
+ *  app.asar loads node-pty's native module the same way in or out of a packaged build. Found ONCE: resolving a module
+ *  walks the file system with synchronous calls (realpathSync, stat), and this is asked on every submit to an agent. */
+let libDir: string | null = null
 function nodePtyLibDir(): string {
-  return dirname(createRequire(import.meta.url).resolve('node-pty')).replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2')
+  libDir ??= dirname(createRequire(import.meta.url).resolve('node-pty')).replace(/([\\/])app\.asar([\\/])/, '$1app.asar.unpacked$2')
+  return libDir
+}
+
+/**
+ * Start-up, Windows: find node-pty's folder and write the helper script now, so the first submit to an agent (and the
+ * first close of a terminal) makes no file call on the main thread: finding a module's folder walks the file system with
+ * synchronous calls, and writing the script is a file write.
+ */
+export async function primeShellAlone(): Promise<void> {
+  if (process.platform !== 'win32') return
+  try { nodePtyLibDir() } catch { /* the first ask finds out */ }
+  await ensureConsoleListHelper()
 }
 
 /** What the helper prints: {"self": its own pid, "list": [pid, ...]}; null for anything else. */
@@ -79,6 +93,12 @@ export function parseConsoleList(stdout: string): number[] | null {
 
 const consoleLists = createSingleFlight()
 
+/** The programs on the console of the shell `pid`, read now (never shared with another ask); null where the helper
+ *  failed. For closing a terminal, which must see what runs in it at that moment. */
+export function readConsoleProcessList(pid: number): Promise<number[] | null> {
+  return readConsole(pid)
+}
+
 /** @internal test-only */
 export function _resetShellAloneForTests(): void {
   consoleLists.clear()
@@ -88,21 +108,23 @@ export function _resetShellAloneForTests(): void {
  *  failed. node-pty's own use of it (WindowsPtyAgent._getConsoleProcessList) answers the shell
  *  alone when it fails, which would read here as the shell being alone. */
 function consoleProcesses(pid: number): Promise<number[] | null> {
-  return consoleLists.run(`shellAlone:${pid}`, CONSOLE_LIST_SHARE_MS, async () => {
-    try {
-      const helper = await ensureConsoleListHelper()
-      if (!helper) return null
-      // Termpolis run as Node (ELECTRON_RUN_AS_NODE), by the proc host. A failure of any kind (the host is down, the
-      // helper could not load node-pty, the time ran out and it was killed) is "cannot tell", never "alone".
-      const r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-        timeout: CONSOLE_LIST_TIMEOUT_MS,
-      })
-      return r.error ? null : parseConsoleList(r.stdout)
-    } catch {
-      return null
-    }
-  }, (list) => list !== null)
+  return consoleLists.run(`shellAlone:${pid}`, CONSOLE_LIST_SHARE_MS, () => readConsole(pid), (list) => list !== null)
+}
+
+async function readConsole(pid: number): Promise<number[] | null> {
+  try {
+    const helper = await ensureConsoleListHelper()
+    if (!helper) return null
+    // Termpolis run as Node (ELECTRON_RUN_AS_NODE), by the proc host. A failure of any kind (the host is down, the
+    // helper could not load node-pty, the time ran out and it was killed) is "cannot tell", never "alone".
+    const r = await execCaptureOffThread(process.execPath, [helper, String(pid), nodePtyLibDir()], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      timeout: CONSOLE_LIST_TIMEOUT_MS,
+    })
+    return r.error ? null : parseConsoleList(r.stdout)
+  } catch {
+    return null
+  }
 }
 
 /** The shells that give each program they run the terminal, in a process group of its own (job

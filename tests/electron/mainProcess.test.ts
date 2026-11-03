@@ -126,6 +126,7 @@ const mockSearchHistory = vi.fn()
 vi.mock('../../src/main/historyStore', () => ({
   appendCommand: (...args: any[]) => mockAppendCommand(...args),
   searchHistory: (...args: any[]) => mockSearchHistory(...args),
+  primeHistory: async () => {},
 }))
 
 const mockReadConfigFile = vi.fn()
@@ -2156,9 +2157,9 @@ describe('MCP handler callbacks', () => {
     expect(mockWriteToTerminal).toHaveBeenCalledWith('t1', 'hello')
   })
 
-  it('getFileTree returns directory entries', () => {
+  it('getFileTree returns directory entries', async () => {
     mockListPathEntries.mockReturnValue([{ name: 'src', isDir: true }])
-    const result = capturedMcpHandlers.getFileTree('/project')
+    const result = await capturedMcpHandlers.getFileTree('/project') // the listing is asked on the thread pool now
     expect(result).toEqual([{ name: 'src', isDir: true }])
     expect(mockListPathEntries).toHaveBeenCalledWith('/project')
   })

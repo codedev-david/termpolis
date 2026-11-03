@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, existsSync, promises as fsp } from 'fs'
+import { offMainFiles } from '../../src/main/offMainFiles'
 
 vi.mock('fs')
 vi.mock('electron', () => ({ app: { getPath: () => '/fake/userData', getVersion: () => '1.0.0' } }))
 
-const { loadSession, loadRestoreSession, saveSession } = await import('../../src/main/sessionStore')
+const { loadSession, loadRestoreSession, saveSession, _resetSessionCacheForTests } = await import('../../src/main/sessionStore')
 
 const defaultSession = {
   terminals: [],
@@ -14,7 +15,7 @@ const defaultSession = {
 }
 
 describe('loadSession', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => { vi.clearAllMocks(); _resetSessionCacheForTests() })
 
   it('returns default session when file does not exist', () => {
     vi.mocked(existsSync).mockReturnValue(false)
@@ -151,7 +152,7 @@ describe('loadSession', () => {
 })
 
 describe('loadRestoreSession', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => { vi.clearAllMocks(); _resetSessionCacheForTests() })
 
   it('drops the loose terminals so every launch starts clean', () => {
     // Restoring open terminals resurrected dead shells and fought workspaces for
@@ -195,12 +196,28 @@ describe('loadRestoreSession', () => {
 })
 
 describe('saveSession', () => {
-  it('writes session to disk with appVersion', () => {
+  beforeEach(() => { vi.clearAllMocks(); _resetSessionCacheForTests() })
+
+  it('writes session to disk with appVersion (on the thread pool, once, with the last content)', async () => {
+    vi.mocked(fsp.writeFile).mockResolvedValue(undefined)
+    vi.mocked(fsp.mkdir).mockResolvedValue(undefined)
+    saveSession({ ...defaultSession, defaultShell: 'zsh' })
     saveSession(defaultSession)
-    expect(writeFileSync).toHaveBeenCalledWith(
+    await offMainFiles.idle()
+    expect(fsp.writeFile).toHaveBeenCalledTimes(1)
+    expect(fsp.writeFile).toHaveBeenCalledWith(
       expect.stringContaining('session.json'),
       JSON.stringify({ ...defaultSession, appVersion: '1.0.0' }, null, 2),
-      'utf-8'
+      undefined,
     )
+  })
+
+  it('keeps what it saved in memory, so a later load does not read the file', () => {
+    saveSession(defaultSession)
+    vi.mocked(existsSync).mockClear()
+    vi.mocked(readFileSync).mockClear()
+    expect(loadSession()).toMatchObject(defaultSession)
+    expect(existsSync).not.toHaveBeenCalled()
+    expect(readFileSync).not.toHaveBeenCalled()
   })
 })

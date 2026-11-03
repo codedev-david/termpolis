@@ -15,7 +15,7 @@
 // process (perf155 P14). Nothing else may be counted.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest'
 // FIRST: it patches fs and child_process, and a module loaded before it keeps the original functions.
-import { uninstall, arm, disarm, snapshot, describeCounts, setAttribution, countSpawn, type Counts } from '../helpers/mainThreadCounters'
+import { uninstall, arm, disarm, snapshot, describeCounts, describeSites, setAttribution, countSpawn, type Counts } from '../helpers/mainThreadCounters'
 
 const H = vi.hoisted(() => {
   const os = require('os') as typeof import('os')
@@ -84,11 +84,16 @@ vi.mock('node-pty', async () => {
   const spawn = vi.fn((file: string, args: string[], opts: any) => {
     count('pty.spawn')
     const listeners = { data: [] as Array<(d: string) => void>, exit: [] as Array<(e: { exitCode: number }) => void> }
+    const pid = 40_000 + H.ptys.length
+    // node-pty's WindowsTerminal: its kill() lists the console's programs by FORKING a helper. spawnTerminal must have
+    // replaced that, per terminal, on Windows: a call of this original is a fork on the main thread, and it is counted.
+    const agent = { innerPid: pid, _getConsoleProcessList: () => { count('fork(node-pty console list)'); return Promise.resolve([pid]) } }
     const p = {
-      pid: 40_000 + H.ptys.length, cols: opts?.cols ?? 80, rows: opts?.rows ?? 24, file, args, opts,
+      pid, cols: opts?.cols ?? 80, rows: opts?.rows ?? 24, file, args, opts,
+      ...(process.platform === 'win32' ? { _agent: agent } : {}),
       onData: (cb: (d: string) => void) => { listeners.data.push(cb); return { dispose() {} } },
       onExit: (cb: (e: { exitCode: number }) => void) => { listeners.exit.push(cb); return { dispose() {} } },
-      write: vi.fn(), resize: vi.fn(), kill: vi.fn(() => { for (const cb of listeners.exit) cb({ exitCode: 0 }) }),
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(() => { void (p as { _agent?: typeof agent })._agent?._getConsoleProcessList(); for (const cb of listeners.exit) cb({ exitCode: 0 }) }),
       emit: (d: string) => { for (const cb of listeners.data) cb(d) },
     }
     H.ptys.push(p)
@@ -167,7 +172,7 @@ function expectNothing(c: Counts, allow: Record<string, number> = {}): void {
     rest.spawn[name] = (rest.spawn[name] ?? 0) - n
     if (rest.spawn[name] === 0) delete rest.spawn[name]
   }
-  expect(describeCounts(rest), `main thread did: ${describeCounts(c)}`).toBe('')
+  expect(describeCounts(rest), `main thread did: ${describeCounts(c)} (${describeSites(c)})`).toBe('')
 }
 
 let ID = 'hot-term-1'
@@ -288,5 +293,66 @@ describe('typing hot paths of the real main entry', () => {
     })
     expect(H.ptys.length - before).toBe(20)
     expectNothing(c, { 'pty.spawn': 20 })
+  })
+})
+
+describe('what a person does while typing, and what the app does behind it', () => {
+  // Windows asks the terminal's console (one run of a helper script, by the proc host); Unix asks ps and pgrep (also by the
+  // proc host). Either way main creates no process; the exact shape of the question is Windows-specific.
+  it('(b) a submit: the shellAlone question goes to the proc host, and main creates no process', async () => {
+    await invoke('terminal:create', { id: 'alone-1', shellType: process.platform === 'win32' ? 'powershell' : 'bash', cwd: process.cwd(), extraPaths: [], claudeHeadroom: false })
+    H.hostRequests.length = 0
+    let res: any
+    const c = await measure(async () => { res = await invoke('terminal:shell-alone', { id: 'alone-1' }) })
+    expect(res.success).toBe(true)
+    expect(H.hostRequests.length).toBeGreaterThan(0)
+    expect(H.hostRequests.every((r) => r.kind === 'exec')).toBe(true)
+    if (process.platform === 'win32') {
+      // Termpolis run as Node on the helper script, ONCE; main did not fork anything.
+      expect(H.hostRequests).toHaveLength(1)
+      expect(H.hostRequests[0].opts.env.ELECTRON_RUN_AS_NODE).toBe('1')
+    }
+    expectNothing(c)
+  })
+
+  it.runIf(process.platform === 'win32')('(b) a submit and a prime that ask together cost one host exec', async () => {
+    H.hostRequests.length = 0
+    // Past the 1.5 s the first answer is kept for, so these two are a fresh look, asked together.
+    await new Promise<void>((r) => setTimeout(r, 1700))
+    const c = await measure(async () => { await Promise.all([invoke('terminal:shell-alone', { id: 'alone-1' }), invoke('terminal:shell-alone', { id: 'alone-1' })]) })
+    expect(H.hostRequests).toHaveLength(1)
+    expectNothing(c)
+  })
+
+  it('pressing Enter in a terminal: the command history takes the line without reading its file', async () => {
+    const c = await measure(() => { for (let i = 0; i < 40; i++) fire('history:append', { terminalId: 'alone-1', terminalName: 'T', command: `echo ${i}` }) })
+    expectNothing(c)
+  })
+
+  it('the renderer saving its session after a change: no synchronous write, however many times', async () => {
+    const data = { terminals: [], workspaces: [], defaultShell: 'bash', viewMode: 'tabs' }
+    const c = await measure(() => { for (let i = 0; i < 40; i++) fire('session:save', data) })
+    expectNothing(c)
+  })
+
+  it('autocomplete while typing a path: the listing is made on the thread pool', async () => {
+    let res: any
+    const c = await measure(async () => { res = await invoke('completion:path-entries', { dirPath: H.home }) })
+    expect(res.success).toBe(true)
+    expectNothing(c)
+  })
+
+  it('attaching the transcript watcher of a codex terminal looks on the thread pool', async () => {
+    let res: any
+    const c = await measure(async () => { res = await invoke('agentWatcher:attach', { terminalId: 'alone-1', cwd: H.home, agentType: 'codex' }) })
+    expect(res.success).toBe(true)
+    expectNothing(c)
+  })
+
+  it('the git panel reading a diff goes to the proc host, not a process of main', async () => {
+    H.hostRequests.length = 0
+    const c = await measure(async () => { await invoke('terminal:git-diff', { cwd: process.cwd() }) })
+    expect(H.hostRequests.length).toBeGreaterThan(0)
+    expectNothing(c)
   })
 })
