@@ -42,7 +42,7 @@ function stream(o: { read: number; create: number; input: number; out: number; b
     }
     s += ev('content_block_stop', { index: i })
   })
-  return s + ev('message_delta', { delta: { stop_reason: o.blocks.some((b) => b.tool) ? 'tool_use' : 'end_turn' }, usage: { output_tokens: o.out } })
+  return s + ev('message_delta', { delta: { stop_reason: o.blocks.some((b) => b.tool) ? 'tool_use' : 'end_turn' }, usage: { output_tokens: o.out } }) + ev('message_stop', {})
 }
 const search = (query: string): Block => ({ tool: { id: 'toolu_S', name: 'ToolSearch', input: { query } } })
 const rf = (token: string): Block => ({ tool: { id: 'toolu_R', name: RF, input: { token } } })

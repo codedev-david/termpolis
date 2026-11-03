@@ -187,7 +187,8 @@ describe('the server keeps the usage of an answer whose turn it cannot read', ()
     ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 't', name: 'mcp__termpolis__retrieve_full', input: {} } }) +
     ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: '{"token":"hr_0123456789abcdef"}' } }) +
     ev('content_block_stop', { index: 0 }) +
-    ev('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 90 } })
+    ev('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 90 } }) +
+    ev('message_stop', {})
 
   beforeAll(async () => {
     stub = http.createServer((req, res) => {

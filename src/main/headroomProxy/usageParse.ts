@@ -88,15 +88,27 @@ const SERVER_TOOL_SEARCH = 'tool_search'
  *  `not_retrieve_full`) is another tool and does not. */
 const NAMES_RETRIEVE_FULL = /(?:(?<![A-Za-z0-9_])|(?<=__))retrieve_full(?![A-Za-z0-9_])/
 
+/** The two events that decide whether an answer finished, matched on the front of a data line without parsing it:
+ *  the API writes the type first, `{"type":"message_stop"}` (the error event has spaces, `{"type": "error", ...}`).
+ *  Anchored, so a delta line, which is nearly every line of a long answer, fails the match within a few characters;
+ *  and a text that is merely the word error, or that quotes an event, is a string inside a line and never its start. */
+const STREAM_END = /^\{\s*"type"\s*:\s*"(message_stop|error)"/
+
 /**
  * Read which tools an Anthropic Messages SSE stream (already decoded) called. Total by design: a
  * body it cannot read counts as no call, so a damaged or foreign one is never taken for a
- * retrieval turn and can never be charged as one. Never throws.
+ * retrieval turn and can never be charged as one. An answer counts as a turn only if it finished:
+ * the API ends one with message_stop, and an overloaded one is an HTTP 200 whose stream breaks off
+ * with an `error` event, after which the client asks again, so charging the broken answer would
+ * count one ask twice. Its tool calls are still reported (they were made); it is never `pure` and
+ * never a `hop`. Never throws.
  */
 export function parseTurnShapeFromSse(sse: string): TurnShape {
   let toolCalls = 0
   let retrieveCalls = 0
   let searchCalls = 0
+  let completed = false
+  let errored = false
   // What each ToolSearch call is being asked, by content-block index, assembled from its input
   // deltas. Created by the first ToolSearch call, so an answer without one never pays for it.
   let searchInput: Map<number, string> | null = null
@@ -106,6 +118,8 @@ export function parseTurnShapeFromSse(sse: string): TurnShape {
     for (const line of sse.split('\n')) {
       if (!line.startsWith('data:')) continue
       const j = line.slice(5).trim()
+      const end = STREAM_END.exec(j)
+      if (end !== null) { if (end[1] === 'message_stop') completed = true; else errored = true; continue }
       // A tool call announces itself on one event type only. Skipping the many delta lines before
       // the parse keeps this cheap on a long answer, which parseUsageFromSse already walks once. The
       // one exception is the input of a ToolSearch call, wanted from its start to its stop and no
@@ -141,9 +155,10 @@ export function parseTurnShapeFromSse(sse: string): TurnShape {
   } catch {
     return { toolCalls: 0, retrieveCalls: 0, pure: false }
   }
-  const shape: TurnShape = { toolCalls, retrieveCalls, pure: toolCalls > 0 && retrieveCalls === toolCalls }
+  const finished = completed && !errored
+  const shape: TurnShape = { toolCalls, retrieveCalls, pure: finished && toolCalls > 0 && retrieveCalls === toolCalls }
   // A hop is a turn made of ToolSearch calls and nothing else, one of which asks for retrieve_full.
-  if (searchCalls > 0 && searchCalls === toolCalls && searchInput !== null) {
+  if (finished && searchCalls > 0 && searchCalls === toolCalls && searchInput !== null) {
     for (const q of searchInput.values()) if (NAMES_RETRIEVE_FULL.test(q)) { shape.hop = true; break }
   }
   return shape

@@ -182,7 +182,8 @@ const answer = (call: { name: string; input: string }): string =>
   ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 't', name: call.name, input: {} } }) +
   ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: call.input } }) +
   ev('content_block_stop', { index: 0 }) +
-  ev('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 90 } })
+  ev('message_delta', { delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 90 } }) +
+  ev('message_stop', {})
 const RETRIEVE_CALL = { name: 'mcp__termpolis__retrieve_full', input: '{"token":"hr_0123456789abcdef"}' }
 const SEARCH_CALL = { name: 'ToolSearch', input: '{"query":"select:mcp__termpolis__retrieve_full","max_results":1}' }
 const USAGE = { input_tokens: 3, cache_read_input_tokens: 52_000, cache_creation_input_tokens: 10, output_tokens: 90 }

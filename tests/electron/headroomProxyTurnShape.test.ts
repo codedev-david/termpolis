@@ -122,10 +122,13 @@ describe('parseTurnShapeFromSse — golden streams', () => {
 })
 
 describe('parseTurnShapeFromSse — damaged streams', () => {
-  it('a stream cut off after the call started still counts the call', () => {
+  // The call was made, so it is counted. An answer cut off where it stood is not a finished turn, so it is not a retrieval
+  // turn: the client asks again and the retry is the one that counts (headroomToolSearchHop: an answer the API broke off).
+  it('a stream cut off after the call started still counts the call, and is not a retrieval turn', () => {
     const full = stream([retrieve()])
     const cut = full.slice(0, full.indexOf('event: content_block_delta'))
-    expect(parseTurnShapeFromSse(cut)).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
+    expect(parseTurnShapeFromSse(cut)).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: false })
+    expect(parseTurnShapeFromSse(full)).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
   })
 
   it('a stream cut off INSIDE the line that starts the call sees no call', () => {

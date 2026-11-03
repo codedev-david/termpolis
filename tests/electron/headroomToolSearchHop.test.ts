@@ -57,6 +57,11 @@ function stream(items: Item[], usage = { input: 6, read: 52_000, create: 300, ou
   return parts.join('\n')
 }
 
+/** A stream built by hand for the way a call's input is read has no ending. The API ends a finished answer with
+ *  message_stop and only a finished answer is read as a turn, so each of those is finished with the real one: a
+ *  test that expects NO hop would otherwise pass for want of an ending, and stop testing what it names. */
+const finished = (s: string): string => s + '\nevent: message_stop\ndata: {"type":"message_stop"}\n'
+
 /** Where a line can go to arrive after the first content block has started: just past the `data:` line
  *  that starts it. The `event:` line before it names the same type, so matching on the name alone lands
  *  between the two and the added line is read before any block exists (and ignored). */
@@ -65,6 +70,61 @@ function afterBlockStart(lines: string[]): number {
   expect(at).toBeGreaterThan(0)
   return at + 1
 }
+
+/**
+ * A turn is read only if the answer finished. The API ends a finished answer with message_stop, and an overloaded one
+ * is an HTTP 200 whose stream breaks off with an `error` event: the client then asks again, so charging the broken
+ * answer would count one ask twice. What was seen of a broken answer still reports its tool calls (they were made),
+ * and it is never a retrieval turn and never a hop.
+ */
+describe('parseTurnShapeFromSse: an answer counts as a turn only when it finished', () => {
+  const END = 'event: message_delta'
+  /** The stream without its closing events: the answer cut off where it stood. */
+  const cutBeforeEnd = (s: string): string => s.slice(0, s.indexOf(END))
+  /** The stream cut after message_delta and before message_stop. */
+  const cutBeforeStop = (s: string): string => s.slice(0, s.indexOf('event: message_stop'))
+  const ERROR_SPACED = 'event: error\ndata: {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}\n'
+  const ERROR_COMPACT = 'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n'
+
+  it('reads a finished retrieve_full answer as a pure retrieval turn, and a finished ToolSearch one as a hop', () => {
+    expect(parseTurnShapeFromSse(stream([RETRIEVE]))).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
+    expect(parseTurnShapeFromSse(stream([search('select:retrieve_full')]))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false, hop: true })
+  })
+
+  it('does not read an answer cut off before it finished as a retrieval turn or a hop, and still reports the calls', () => {
+    expect(parseTurnShapeFromSse(cutBeforeEnd(stream([RETRIEVE])))).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: false })
+    expect(parseTurnShapeFromSse(cutBeforeEnd(stream([search('select:retrieve_full')])))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+    expect(parseTurnShapeFromSse(cutBeforeStop(stream([RETRIEVE])))).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: false })
+    expect(parseTurnShapeFromSse(cutBeforeStop(stream([search('select:retrieve_full')])))).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+  })
+
+  it('does not read an answer the API broke off with an error event as one, in either spacing the event is written in', () => {
+    for (const err of [ERROR_SPACED, ERROR_COMPACT]) {
+      expect(parseTurnShapeFromSse(cutBeforeEnd(stream([RETRIEVE])) + '\n' + err)).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: false })
+      expect(parseTurnShapeFromSse(cutBeforeEnd(stream([search('select:retrieve_full')])) + '\n' + err)).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false })
+      // An error that arrives after the stream was closed does not make it a finished turn.
+      expect(parseTurnShapeFromSse(stream([RETRIEVE]) + '\n' + err)).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: false })
+    }
+  })
+
+  it('is not moved by the words of the answer: a text that is the word error, or that quotes the end of a stream', () => {
+    // A finished answer whose text is exactly "error" is not an error event: the event is a line that STARTS with the type.
+    expect(parseTurnShapeFromSse(stream([{ text: 'error' }, RETRIEVE]))).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
+    // And a cut answer that quotes message_stop in its text has not stopped.
+    const quoting = stream([{ text: '{"type":"message_stop"}' }, RETRIEVE])
+    expect(parseTurnShapeFromSse(quoting)).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
+    expect(parseTurnShapeFromSse(cutBeforeEnd(quoting))).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: false })
+    // A tool call's own input that quotes an error event does not break the answer either.
+    expect(parseTurnShapeFromSse(stream([{ name: 'Write', fragments: ['{"content":"data: {\\"type\\": \\"error\\"}"}'] }, RETRIEVE]))).toEqual({ toolCalls: 2, retrieveCalls: 1, pure: false })
+  })
+
+  it('an answer with no tool call stays a plain answer whether or not it finished, and a body that is not a stream reads as nothing', () => {
+    expect(parseTurnShapeFromSse(stream([{ text: 'done' }]))).toEqual({ toolCalls: 0, retrieveCalls: 0, pure: false })
+    expect(parseTurnShapeFromSse(cutBeforeEnd(stream([{ text: 'done' }])))).toEqual({ toolCalls: 0, retrieveCalls: 0, pure: false })
+    expect(parseTurnShapeFromSse('{"type":"error","error":{"type":"overloaded_error"}}')).toEqual({ toolCalls: 0, retrieveCalls: 0, pure: false })
+    expect(parseTurnShapeFromSse('')).toEqual({ toolCalls: 0, retrieveCalls: 0, pure: false })
+  })
+})
 
 describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
   it('a ToolSearch that selects retrieve_full is a hop, and not a retrieval turn itself', () => {
@@ -160,7 +220,7 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     const delta = (i: number, piece: string): string => ev('content_block_delta', { index: i, delta: { type: 'input_json_delta', partial_json: piece } })
     const stop = (i: number): string => ev('content_block_stop', { index: i })
     // Block 1 is still open, so the stray piece for block 0 reaches the parser; it must not be added to a query that is complete.
-    const straggler = [start(0), start(1), delta(0, '{"query":"select:Read"}'), stop(0), delta(0, '{"query":"select:retrieve_full"}'), delta(1, '{"query":"select:Grep"}'), stop(1)].join('\n')
+    const straggler = finished([start(0), start(1), delta(0, '{"query":"select:Read"}'), stop(0), delta(0, '{"query":"select:retrieve_full"}'), delta(1, '{"query":"select:Grep"}'), stop(1)].join('\n'))
     expect(parseTurnShapeFromSse(straggler)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false })
   })
 
@@ -168,7 +228,7 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     const ev = (type: string, data: object): string => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n`
     const start = ev('content_block_start', { index: 0, content_block: { type: 'tool_use', id: 't0', name: 'ToolSearch', input: {} } })
     const delta = (piece: string): string => ev('content_block_delta', { index: 0, delta: { type: 'input_json_delta', partial_json: piece } })
-    const s = [start, delta('{"query":"select:retr'), ev('content_block_stop', {}), ev('content_block_stop', { index: '0' }), delta('ieve_full"}'), ev('content_block_stop', { index: 0 })].join('\n')
+    const s = finished([start, delta('{"query":"select:retr'), ev('content_block_stop', {}), ev('content_block_stop', { index: '0' }), delta('ieve_full"}'), ev('content_block_stop', { index: 0 })].join('\n'))
     expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 1, retrieveCalls: 0, pure: false, hop: true })
   })
 
@@ -182,10 +242,10 @@ describe('parseTurnShapeFromSse: the ToolSearch hop, golden streams', () => {
     const start = (i: number): string => ev('content_block_start', { index: i, content_block: { type: 'tool_use', id: `t${i}`, name: 'ToolSearch', input: {} } })
     const delta = (i: number, piece: string): string => ev('content_block_delta', { index: i, delta: { type: 'input_json_delta', partial_json: piece } })
     const stop = (i: number): string => ev('content_block_stop', { index: i })
-    const s = [start(0), start(1), delta(0, '{"query":"select:mcp__term'), delta(1, '{"query":"select:Read"}'), delta(0, 'polis__retrieve_full"}'), stop(0), stop(1)].join('\n')
+    const s = finished([start(0), start(1), delta(0, '{"query":"select:mcp__term'), delta(1, '{"query":"select:Read"}'), delta(0, 'polis__retrieve_full"}'), stop(0), stop(1)].join('\n'))
     expect(parseTurnShapeFromSse(s)).toEqual({ toolCalls: 2, retrieveCalls: 0, pure: false, hop: true })
     // The input that names the tool belongs to the block that closed last: it is still being read.
-    const late = [start(0), start(1), delta(0, '{"query":"select:Read"}'), stop(0), delta(1, '{"query":"select:retrieve_full"}'), stop(1)].join('\n')
+    const late = finished([start(0), start(1), delta(0, '{"query":"select:Read"}'), stop(0), delta(1, '{"query":"select:retrieve_full"}'), stop(1)].join('\n'))
     expect(parseTurnShapeFromSse(late).hop).toBe(true)
   })
 
@@ -693,6 +753,27 @@ describe('through the real proxy server and the result frame', () => {
     expect(s.retrievalTurns).toBe(1)
     expect(s.retrievalHops).toBe(1)
     expect(s.retrievalTurnUnits).toBeCloseTo(5_650 + 5_950, 6)
+  })
+
+  // An overloaded answer is an HTTP 200 that breaks off with an error event, and the client asks again. Charged, the one
+  // ask would be counted twice: the broken answer and its retry. Only the retry is a turn. (The broken answer's usage
+  // still reaches the ledger: the tokens it read were billed.)
+  it('charges the retry of an answer the API broke off with an error, and not the broken answer', async () => {
+    const usage = { input: 10, read: 52_500, create: 500, output: 140 }
+    const broken = stream([RETRIEVE], usage)
+    answer = broken.slice(0, broken.indexOf('event: message_delta')) + '\nevent: error\ndata: {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}\n'
+    const request = { model: 'claude-opus-5-5', tools: [toolSearchTool, retrieveTool], messages: [first, { role: 'assistant', content: 'x' }, { role: 'user', content: 'y' }] }
+    await post(request)
+    expect(results[0].turn).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: false })
+    expect(results[0].usage.cache_read_input_tokens).toBe(52_500)
+    answer = stream([RETRIEVE], usage)
+    await post(request)
+    expect(results[1].turn).toEqual({ toolCalls: 1, retrieveCalls: 1, pure: true })
+    for (const r of results) recordProxyResult(resultFrame(r) as unknown as ProxyResultMsg)
+    const s = summarizeProxySavings().session
+    expect(s.retrievalTurns).toBe(1)
+    expect(s.retrievalTurnUnits).toBeCloseTo(5_950, 6)
+    expect(s.turnRequests).toBe(2)
   })
 
   it('charges nothing for a ToolSearch that loads another tool', async () => {

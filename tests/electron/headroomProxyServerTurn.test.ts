@@ -21,6 +21,10 @@ const sse = (name: string | null): string => [
   'event: message_delta',
   'data: {"type":"message_delta","usage":{"output_tokens":137}}',
   '',
+  // The API ends a finished answer with message_stop, and only a finished answer is read as a turn.
+  'event: message_stop',
+  'data: {"type":"message_stop"}',
+  '',
 ].join('\n')
 
 let answer = sse('mcp__termpolis__retrieve_full')
