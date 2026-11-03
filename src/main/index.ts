@@ -108,7 +108,7 @@ import {
   type ModelCatalog,
 } from './modelCatalog'
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
-import { prepareSpawn } from './terminalSpawnPrep'
+import { prepareSpawn, type SpawnPrep } from './terminalSpawnPrep'
 import { createTerminalNameLookup } from './terminalNames'
 import { initAppLog, logToApp, readAppLog, clearAppLog, appLogFilePath, captureConsole } from './appLog'
 import { normalizeLevel } from '../shared/appLog'
@@ -4483,7 +4483,10 @@ async function semanticPoolOptions(
     // fault can never fatal `whenReady`.
     try {
       const wfFs = { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } as unknown as WorkflowFsLike
-      const wfSpawn = { spawnTerminal, writeToTerminal, killTerminal }
+      // `prepare`: what opening a terminal looks up (the folder, the shell integration script, the bundled tools) is asked
+      // on the thread pool before the spawn, as terminal:create does for a click: a workflow step, an agent step and an
+      // agent's run_and_wait each open a terminal, and none of them may stall the thread that echoes the user's typing.
+      const wfSpawn = { spawnTerminal, writeToTerminal, killTerminal, prepare: (exe: string, cwd: string) => prepareSpawn(cwd, exe) }
       // Command steps store a logical shell TYPE ('bash'|'powershell'|...).
       // node-pty needs a concrete executable — bare 'bash' throws "File not
       // found" on Windows — so resolve the type to a real path before spawning.
@@ -4497,8 +4500,10 @@ async function semanticPoolOptions(
       const wfCommandSpawn = {
         ...wfSpawn,
         defaultShell: wfDefaultShellType,
-        spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void) =>
-          spawnTerminal(id, resolveShellExecutable(exe), cwd, onData, extraPaths, extraEnv, onExit),
+        // The shell TYPE becomes a real executable here, so the lookups are made for the executable that will run.
+        prepare: (exe: string, cwd: string) => prepareSpawn(cwd, resolveShellExecutable(exe)),
+        spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void, prep?: SpawnPrep) =>
+          spawnTerminal(id, resolveShellExecutable(exe), cwd, onData, extraPaths, extraEnv, onExit, prep),
       }
       const wfTerminal = makeTerminalRunner(wfCommandSpawn)
       // Same runner, same PTY plumbing, same exit-code semantics for the run_and_wait MCP tool.

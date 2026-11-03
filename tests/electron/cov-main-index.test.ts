@@ -1753,7 +1753,20 @@ describe('workflow orchestrator wiring', () => {
     const onData = vi.fn()
     spawnDeps.spawnTerminal('wf-1', 'bash', '/repo', onData, ['/extra'], { A: '1' })
     // node-pty needs a real path — bare 'bash' throws "File not found" on Windows.
-    expect(M.spawnTerminal).toHaveBeenCalledWith('wf-1', '/bin/bash', '/repo', onData, ['/extra'], { A: '1' }, undefined)
+    expect(M.spawnTerminal).toHaveBeenCalledWith('wf-1', '/bin/bash', '/repo', onData, ['/extra'], { A: '1' }, undefined, undefined)
+    // What the lookups found (made on the thread pool before the spawn) is handed on as the eighth argument.
+    const prep = { cwd: '/repo', integrationScript: null }
+    spawnDeps.spawnTerminal('wf-2', 'bash', '/repo', onData, undefined, undefined, undefined, prep)
+    expect(M.spawnTerminal).toHaveBeenLastCalledWith('wf-2', '/bin/bash', '/repo', onData, undefined, undefined, undefined, prep)
+  })
+
+  it('has the Command step and the Agent step ask for their terminal lookups on the thread pool (prepare), for the real executable', async () => {
+    const commandDeps = M.makeTerminalRunner.mock.calls.at(-1)![0] as any
+    const agentDeps = M.makeAgentRunner.mock.calls.at(-1)![0] as any
+    expect(typeof commandDeps.prepare).toBe('function')
+    expect(typeof agentDeps.prepare).toBe('function')
+    expect(await commandDeps.prepare('bash', '/repo')).toEqual(expect.objectContaining({ cwd: expect.any(String) }))
+    expect(await agentDeps.prepare('claude', '/repo')).toEqual(expect.objectContaining({ cwd: expect.any(String) }))
   })
 
   it('reads an unnamed agent as claude, and passes an explicit name straight through', async () => {

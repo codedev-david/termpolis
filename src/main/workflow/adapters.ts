@@ -1,8 +1,13 @@
 import type { TerminalRunner, AgentRunner, ToolInvoker, Timer, CommandRunSpec, CommandRunResult } from './contracts'
 import type { McpToolHandlers } from '../mcpServer'
+import type { SpawnPrep } from '../terminalSpawnPrep'
 
 type SpawnDeps = {
-  spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void) => void
+  spawnTerminal: (id: string, exe: string, cwd: string, onData: (s: string) => void, extraPaths?: string[], extraEnv?: Record<string, string>, onExit?: (code: number) => void, prep?: SpawnPrep) => void
+  // What opening a terminal looks up (does the folder exist, is the shell integration script written, which tools are
+  // bundled) asked on the thread pool BEFORE the spawn, and handed to it. Optional: without it the spawn does the
+  // lookups itself, synchronously (a caller with no preparation, and the unit tests).
+  prepare?: (exe: string, cwd: string) => Promise<SpawnPrep>
   writeToTerminal: (id: string, data: string) => void
   killTerminal: (id: string) => void
   // OS default shell TYPE (e.g. 'zsh' on macOS, 'bash' on Linux). A Command
@@ -34,11 +39,16 @@ export function makeTerminalRunner(sp: SpawnDeps): TerminalRunner {
         // on *some* shell rather than hard-fail because the chosen one can't be
         // spawned here. Only a spawn *throw* falls back — a shell that spawns and
         // exits non-zero is a real command failure and is reported as-is.
-        const attempt = (shell: string, isFallback: boolean) => {
+        const attempt = async (shell: string, isFallback: boolean): Promise<void> => {
+          let prep: SpawnPrep | undefined
+          if (sp.prepare) {
+            try { prep = await sp.prepare(shell, spec.cwd) } catch { /* the spawn looks things up itself */ }
+            if (done) return // cancelled or timed out while the lookups ran: there is nothing to start
+          }
           try {
             sp.spawnTerminal(spec.stepId, shell, spec.cwd, onData,
               undefined, undefined,
-              (code) => finish({ exitCode: code, output: buf }))
+              (code) => finish({ exitCode: code, output: buf }), prep)
             // Non-interactive: write the command + newline, then signal EOF via `exit`.
             sp.writeToTerminal(spec.stepId, `${spec.command}\n`)
             if (!spec.visible) sp.writeToTerminal(spec.stepId, `exit $?\n`)
@@ -46,7 +56,7 @@ export function makeTerminalRunner(sp: SpawnDeps): TerminalRunner {
             const note = `\n[spawn error] ${e?.message ?? e}`
             if (!isFallback && sp.defaultShell && sp.defaultShell !== shell) {
               buf = (buf + note + `\n[retry] falling back to default shell "${sp.defaultShell}"`).slice(-CAP)
-              attempt(sp.defaultShell, true)
+              void attempt(sp.defaultShell, true)
               return
             }
             // Terminal: turn the spawn failure into a failed step (exit 127 =
@@ -55,7 +65,7 @@ export function makeTerminalRunner(sp: SpawnDeps): TerminalRunner {
             finish({ exitCode: 127, output: (buf + note).slice(-CAP) })
           }
         }
-        attempt(spec.shell, false)
+        void attempt(spec.shell, false)
       })
     },
     cancel(stepId) { live.get(stepId)?.() },
@@ -112,26 +122,36 @@ export function makeAgentRunner(
   const live = new Map<string, () => void>()
   return {
     run(spec, onChunk): Promise<{ output: string; ok: boolean; error?: string }> {
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         let buf = ''; let done = false; let idleSince = 0
-        const finish = (r: { output: string; ok: boolean; error?: string }) => { if (done) return; done = true; clearInterval(poll); clearTimeout(hard); live.delete(spec.stepId); resolve(r) }
+        let poll: ReturnType<typeof setInterval> | undefined // made once the agent has started: finish() may run before that
+        const finish = (r: { output: string; ok: boolean; error?: string }) => { if (done) return; done = true; if (poll) clearInterval(poll); clearTimeout(hard); live.delete(spec.stepId); resolve(r) }
         const hard = setTimeout(() => { try { sp.killTerminal(spec.stepId) } catch {}; finish({ output: buf, ok: false, error: `agent timed out after ${spec.timeoutMs}ms` }) }, spec.timeoutMs)
         live.set(spec.stepId, () => finish({ output: buf, ok: false, error: 'cancelled' }))
-        sp.spawnTerminal(spec.stepId, launch(spec.agent), spec.cwd,
-          (d) => {
-            buf = (buf + d).slice(-CAP); onChunk?.(d)
-            if (spec.doneMarker && buf.includes(spec.doneMarker)) return finish({ output: buf, ok: true })
-          })
-        sp.writeToTerminal(spec.stepId, `${spec.prompt}\n`)
-        const poll = setInterval(() => {
-          const st = detect(buf, spec.agent).status
-          if (st === 'errored' || st === 'blocked') return finish({ output: buf, ok: false, error: `agent ${st}` })
-          const now = Date.now()
-          if (st === 'idle' || st === 'completed' || st === 'waiting_for_input') {
-            if (!idleSince) idleSince = now
-            else if (now - idleSince >= spec.idleMs) return finish({ output: buf, ok: true })
-          } else { idleSince = 0 }
-        }, 500)
+        const start = async (): Promise<void> => {
+          let prep: SpawnPrep | undefined
+          if (sp.prepare) {
+            try { prep = await sp.prepare(launch(spec.agent), spec.cwd) } catch { /* the spawn looks things up itself */ }
+            if (done) return // cancelled or timed out while the lookups ran: there is nothing to start
+          }
+          sp.spawnTerminal(spec.stepId, launch(spec.agent), spec.cwd,
+            (d) => {
+              buf = (buf + d).slice(-CAP); onChunk?.(d)
+              if (spec.doneMarker && buf.includes(spec.doneMarker)) return finish({ output: buf, ok: true })
+            }, undefined, undefined, undefined, prep)
+          sp.writeToTerminal(spec.stepId, `${spec.prompt}\n`)
+          poll = setInterval(() => {
+            const st = detect(buf, spec.agent).status
+            if (st === 'errored' || st === 'blocked') return finish({ output: buf, ok: false, error: `agent ${st}` })
+            const now = Date.now()
+            if (st === 'idle' || st === 'completed' || st === 'waiting_for_input') {
+              if (!idleSince) idleSince = now
+              else if (now - idleSince >= spec.idleMs) return finish({ output: buf, ok: true })
+            } else { idleSince = 0 }
+          }, 500)
+        }
+        // A spawn that throws rejects the run, as it did when the spawn was made inside this executor.
+        void start().catch(reject)
       })
     },
     cancel(stepId) { live.get(stepId)?.() },
