@@ -7,6 +7,7 @@ import {
   type TerminalDataRouting,
   type TerminalDataTarget,
 } from '../../src/main/terminalDataRouting'
+import { getTypingTraceSnapshot } from '../../src/main/typingTrace'
 
 // Which terminals' output main pushes to the renderer as `terminal:data` (1.54.5, plan package P9).
 //
@@ -385,5 +386,44 @@ describe('terminal:data routing: wiring in src/main/index.ts', () => {
     // 3-argument events straight to a pane that is listening, on purpose.)
     expect(src).not.toMatch(/webContents\.send\('terminal:data', id, data, end\)/)
     expect(src).toMatch(/registerTerminalDataRouting\(ipcMain\)/)
+  })
+})
+
+describe('terminal:data routing: what the typing trace carries', () => {
+  const traced = (): Record<string, number> => getTypingTraceSnapshot().extra.terminalData as Record<string, number>
+
+  it('registering the handlers puts the counters in the typing trace (numbers only), and they follow the traffic', () => {
+    const routing = createTerminalDataRouting()
+    registerTerminalDataRouting({ on: () => undefined }, routing)
+    expect(traced()).toEqual({ sent: 0, skipped: 0, ids: 0, armed: 0, all: 0, graced: 0 })
+    const win = fakeWindow()
+    routing.note(1, { id: 'pane', epoch: 1 }, true)
+    for (let i = 0; i < GRACE_CHUNKS + 10; i++) routing.send(win, 'worker', 'x')
+    routing.send(win, 'pane', 'y')
+    expect(traced()).toEqual({ sent: GRACE_CHUNKS + 1, skipped: 10, ids: 1, armed: 1, all: 0, graced: 2 })
+    routing.note(1, { all: true, epoch: 1 }, true)
+    expect(traced().all).toBe(1)
+    for (const v of Object.values(traced())) expect(typeof v).toBe('number')
+  })
+
+  it('NEGATIVE CONTROL: the trace reads the router that was registered LAST, not a fixed one', () => {
+    const first = createTerminalDataRouting()
+    const second = createTerminalDataRouting()
+    registerTerminalDataRouting({ on: () => undefined }, first)
+    first.send(fakeWindow(), 'a', 'x')
+    expect(traced().sent).toBe(1)
+    registerTerminalDataRouting({ on: () => undefined }, second)
+    expect(traced().sent).toBe(0)
+    second.send(fakeWindow(), 'a', 'x')
+    second.send(fakeWindow(), 'b', 'x')
+    expect(traced().sent).toBe(2)
+  })
+
+  it('a disabled router is traced as not armed (the kill switch shows in the diagnostics)', () => {
+    const routing = createTerminalDataRouting({ enabled: false })
+    registerTerminalDataRouting({ on: () => undefined }, routing)
+    routing.note(1, { id: 'pane', epoch: 1 }, true)
+    routing.send(fakeWindow(), 'other', 'x')
+    expect(traced()).toMatchObject({ sent: 1, skipped: 0, armed: 0 })
   })
 })

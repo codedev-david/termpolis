@@ -28,6 +28,8 @@
 //     must never happen is a pane that is not sent its output, so a message that cannot be understood is never guessed at;
 //   * TERMPOLIS_TERMINAL_DATA_ROUTING=0 in the environment turns it off at start.
 
+import { registerTypingTraceSource } from './typingTrace'
+
 export interface TerminalDataTarget {
   webContents: { id?: number; send: (channel: string, ...args: unknown[]) => void }
 }
@@ -207,4 +209,10 @@ export function registerTerminalDataRouting(
 ): void {
   ipc.on('terminal:subscribe', (e, msg) => routing.note(e?.sender?.id, msg, true))
   ipc.on('terminal:unsubscribe', (e, msg) => routing.note(e?.sender?.id, msg, false))
+  // The typing trace (and the diagnostics that carry it) shows what routing did, in numbers only: how many chunks were pushed to
+  // the renderer and how many were not, since start; whether it is filtering (armed) and how many terminals a pane listens to.
+  registerTypingTraceSource('terminalData', () => {
+    const s = routing.stats()
+    return { sent: s.sent, skipped: s.skipped, ids: s.ids, armed: s.armed ? 1 : 0, all: s.all ? 1 : 0, graced: s.graced }
+  })
 }
