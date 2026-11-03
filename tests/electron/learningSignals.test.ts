@@ -55,7 +55,7 @@ function repoFs(sha: string) {
 
 interface Harness {
   emitted: WorkEvent[]
-  tick: () => void
+  tick: () => Promise<void>
   fire: (e: Partial<AgentEvent>) => void
   unsubscribed: () => number
   deps: LearningSignalDeps
@@ -65,7 +65,7 @@ interface Harness {
  *  `tick()` runs one git poll, `fire()` pushes one agent event through the bus. */
 function harness(over: Partial<LearningSignalDeps> = {}): Harness {
   const emitted: WorkEvent[] = []
-  let ticker: (() => void) | null = null
+  let ticker: (() => void | Promise<void>) | null = null
   let unsubCount = 0
   const deps: LearningSignalDeps = {
     openProjects: () => [ROOT],
@@ -86,7 +86,7 @@ function harness(over: Partial<LearningSignalDeps> = {}): Harness {
   startLearningSignals(deps)
   return {
     emitted,
-    tick: () => ticker?.(),
+    tick: async () => { await ticker?.() },
     fire: (e) => listener({ id: '1', ts: 1000, terminalId: 't1', agentType: 'claude', kind: 'tool_call', summary: '', payload: {}, ...e }),
     unsubscribed: () => unsubCount,
     deps,
@@ -98,79 +98,79 @@ afterEach(() => stopLearningSignals())
 // ── git HEAD watcher ─────────────────────────────────────────────────────────
 
 describe('learningSignals — a commit made in a terminal is evidence', () => {
-  it('seeds silently on the first tick — the sha we found is not a commit we watched land', () => {
+  it('seeds silently on the first tick — the sha we found is not a commit we watched land', async () => {
     const h = harness()
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([])
   })
 
-  it('emits a git-commit when HEAD advances on the SAME ref', () => {
+  it('emits a git-commit when HEAD advances on the SAME ref', async () => {
     const fs = repoFs(SHA_A)
     const h = harness({ fs })
-    h.tick()
+    await h.tick()
     fs.files.set(join(GITDIR, 'refs', 'heads', 'main'), `${SHA_B}\n`)
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([{ kind: 'git-commit', project: 'repo', ok: true }])
   })
 
-  it('does not re-emit while HEAD stands still', () => {
+  it('does not re-emit while HEAD stands still', async () => {
     const h = harness()
-    h.tick()
-    h.tick()
-    h.tick()
+    await h.tick()
+    await h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([])
   })
 
-  it('a branch switch is NOT a commit — the new position is adopted silently', () => {
+  it('a branch switch is NOT a commit — the new position is adopted silently', async () => {
     const fs = repoFs(SHA_A)
     fs.files.set(join(GITDIR, 'refs', 'heads', 'feature'), `${SHA_B}\n`)
     const h = harness({ fs })
-    h.tick()
+    await h.tick()
     fs.files.set(join(GITDIR, 'HEAD'), 'ref: refs/heads/feature\n')
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([])
     // …but a commit ON the new branch still counts.
     fs.files.set(join(GITDIR, 'refs', 'heads', 'feature'), `${SHA_A}\n`)
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([{ kind: 'git-commit', project: 'repo', ok: true }])
   })
 
-  it('follows a DETACHED head too — the raw sha in .git/HEAD is the position', () => {
+  it('follows a DETACHED head too — the raw sha in .git/HEAD is the position', async () => {
     const fs = makeFs({ [join(GITDIR, 'HEAD')]: `${SHA_A}\n` })
     const h = harness({ fs })
-    h.tick()
+    await h.tick()
     fs.files.set(join(GITDIR, 'HEAD'), `${SHA_B}\n`)
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([{ kind: 'git-commit', project: 'repo', ok: true }])
   })
 
-  it('ignores a cwd that is not a repo at all', () => {
+  it('ignores a cwd that is not a repo at all', async () => {
     const fs = makeFs()
     fs.dirs.delete(GITDIR)
     const h = harness({ fs })
-    h.tick()
-    h.tick()
+    await h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([])
   })
 
-  it('ignores a repo whose ref cannot be resolved yet (no loose ref, no packed-refs)', () => {
+  it('ignores a repo whose ref cannot be resolved yet (no loose ref, no packed-refs)', async () => {
     const h = harness({ fs: makeFs({ [join(GITDIR, 'HEAD')]: 'ref: refs/heads/main\n' }) })
-    h.tick()
-    h.tick()
+    await h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([])
   })
 
-  it('never books the home directory as a project — it is not a competence domain', () => {
+  it('never books the home directory as a project — it is not a competence domain', async () => {
     const home = join('/home', 'me')
     const fs = repoFs(SHA_A)
     const h = harness({ fs, openProjects: () => [home] })
-    h.tick()
+    await h.tick()
     fs.files.set(join(GITDIR, 'refs', 'heads', 'main'), `${SHA_B}\n`)
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([])
   })
 
-  it('one unreadable repo does not stop the others on the same tick', () => {
+  it('one unreadable repo does not stop the others on the same tick', async () => {
     const fs = repoFs(SHA_A)
     const bad = join('/bad')
     const h = harness({
@@ -178,29 +178,29 @@ describe('learningSignals — a commit made in a terminal is evidence', () => {
       openProjects: () => [bad, ROOT],
       normalizeProject: (cwd) => { if (cwd === bad) throw new Error('boom'); return 'repo' },
     })
-    h.tick()
+    await h.tick()
     fs.files.set(join(GITDIR, 'refs', 'heads', 'main'), `${SHA_B}\n`)
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([{ kind: 'git-commit', project: 'repo', ok: true }])
   })
 
-  it('a broken session read costs one tick, not the ticker', () => {
+  it('a broken session read costs one tick, not the ticker', async () => {
     const h = harness({ openProjects: () => { throw new Error('session unreadable') } })
-    expect(() => h.tick()).not.toThrow()
+    await expect(h.tick()).resolves.toBeUndefined()
     expect(h.emitted).toEqual([])
   })
 
-  it('forgets a project once it closes, so reopening it re-seeds instead of firing', () => {
+  it('forgets a project once it closes, so reopening it re-seeds instead of firing', async () => {
     const fs = repoFs(SHA_A)
     let open = [ROOT]
     const h = harness({ fs, openProjects: () => open })
-    h.tick()
+    await h.tick()
     open = []
-    h.tick()
+    await h.tick()
     // Moved while the project was closed: reopening must adopt, not claim a commit.
     fs.files.set(join(GITDIR, 'refs', 'heads', 'main'), `${SHA_B}\n`)
     open = [ROOT]
-    h.tick()
+    await h.tick()
     expect(h.emitted).toEqual([])
   })
 })
@@ -386,10 +386,10 @@ describe('learningSignals — the caller owns the lifecycle', () => {
     expect(h.unsubscribed()).toBe(1)
   })
 
-  it('stop() drops the remembered HEADs, so a restart re-seeds instead of firing', () => {
+  it('stop() drops the remembered HEADs, so a restart re-seeds instead of firing', async () => {
     const fs = repoFs(SHA_A)
     const h = harness({ fs })
-    h.tick()
+    await h.tick()
     stopLearningSignals()
     fs.files.set(join(GITDIR, 'refs', 'heads', 'main'), `${SHA_B}\n`)
     const h2 = harness({ fs })

@@ -31,12 +31,21 @@ function candidateDirs(): string[] {
   return dirs
 }
 
+/** Where each grammar file is, asked once. hasGrammar() is asked for every file a code index walks, on the thread that
+ *  echoes keystrokes when the index is built by a re-index after a file change: it was an existsSync per candidate
+ *  folder per file. The files ship with the app and do not appear or vanish while it runs. */
+const wasmLocations = new Map<string, string | null>()
+
 function findWasm(fileName: string): string | null {
+  const known = wasmLocations.get(fileName)
+  if (known !== undefined) return known
+  let found: string | null = null
   for (const dir of candidateDirs()) {
     const p = path.join(dir, fileName)
-    if (fs.existsSync(p)) return p
+    if (fs.existsSync(p)) { found = p; break }
   }
-  return null
+  wasmLocations.set(fileName, found)
+  return found
 }
 
 function coreWasmPath(): string | null {
@@ -108,4 +117,5 @@ export function grammarAvailable(grammar: string): boolean {
 /** Test seam: drop cached grammars (the one-time runtime init is intentionally NOT reset). */
 export function _resetGrammarCacheForTests(): void {
   tsStore().cache?.clear()
+  wasmLocations.clear()
 }

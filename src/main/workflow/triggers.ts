@@ -25,6 +25,8 @@ import { workflowsDir, globalWorkflowsDir, listWorkflowsFull, type FsLike } from
 import { parseCron, dueSince, MAX_CATCHUP_MS, type CronFields } from './cron'
 import { createIgnoreFilter, createRunGate, WATCH_MIN_INTERVAL_MS, type IgnoreFilter, type RunGate } from '../watchGuard'
 import { TRIGGER_SKIP_NAMES } from '../scopedWatch'
+import { asAsync, gitDirOfAsync, resolveRefAsync, targetRefAsync, type AsyncFsLike } from '../gitRefs'
+import { offMainFiles } from '../offMainFiles'
 
 export interface WatchHandle {
   close(): void
@@ -32,6 +34,9 @@ export interface WatchHandle {
 
 export interface TriggerDeps {
   fs: FsLike
+  /** How the tick reads git refs: on the thread pool. The app passes the real one (gitRefs.nodeAsyncFs); without it the
+   *  synchronous `fs` above answers (an older fake, a test), one microtask later, with the same answers. */
+  fsAsync?: AsyncFsLike
   /** Byte reader for packed-refs. Defaults to node's fs; tests back it with
    *  their fake filesystem so no real repo is needed. */
   readBytes?: (p: string) => Uint8Array
@@ -246,13 +251,13 @@ export class TriggerSupervisor {
     this.ticker = this.d.setTimer(() => {
       this.ticker = null
       // A throw here would kill the ticker and silently stop every trigger in
-      // the app, so the whole pass is guarded and we always re-arm.
-      try {
-        this.tick()
-      } catch (e) {
-        this.log(`tick failed: ${(e as Error)?.message}`)
-      }
-      this.scheduleTick()
+      // the app, so the whole pass is guarded and we always re-arm. The pass reads git on the thread pool, so the next
+      // tick is armed when it has finished: two never overlap.
+      let pass: Promise<void>
+      try { pass = Promise.resolve(this.tick()) } catch (e) { pass = Promise.reject(e) }
+      void pass
+        .catch((e) => { this.log(`tick failed: ${(e as Error)?.message}`) })
+        .finally(() => { this.scheduleTick() })
     }, this.tickMs)
   }
 
@@ -469,16 +474,22 @@ export class TriggerSupervisor {
   }
 
   /** One evaluation pass over every armed schedule and git trigger. */
-  tick(): void {
+  async tick(): Promise<void> {
     const now = this.d.now()
-    for (const p of this.projects.values()) {
-      for (const a of p.armed.values()) {
+    for (const p of [...this.projects.values()]) {
+      for (const a of [...p.armed.values()]) {
+        // A project closed, or a workflow disarmed, while an earlier read was awaiting the disk.
+        if (this.projects.get(p.cwd) !== p || p.armed.get(a.workflow.id) !== a) continue
         const type = a.workflow.trigger.type
         if (type === 'schedule') this.checkSchedule(p, a, now)
-        else if (type === 'gitCommit' || type === 'gitPush') this.checkGit(p, a)
+        else if (type === 'gitCommit' || type === 'gitPush') await this.checkGit(p, a)
       }
       this.flushState(p)
     }
+  }
+
+  private asyncFs(): AsyncFsLike {
+    return this.d.fsAsync ?? asAsync(this.d.fs, this.readBytes)
   }
 
   private checkSchedule(p: Project, a: Armed, now: number): void {
@@ -492,14 +503,17 @@ export class TriggerSupervisor {
     this.fire(p, a.workflow, `schedule: ${a.workflow.trigger.config?.cron ?? ''}`)
   }
 
-  private checkGit(p: Project, a: Armed): void {
+  private async checkGit(p: Project, a: Armed): Promise<void> {
     const wf = a.workflow
-    const gitDir = gitDirOf(p.cwd, this.d.fs)
+    const fs = this.asyncFs()
+    const gitDir = await gitDirOfAsync(p.cwd, fs)
     if (!gitDir) return
-    const ref = targetRef(wf, gitDir, this.d.fs)
+    const ref = await targetRefAsync(wf.trigger.type, wf.trigger.config ?? {}, gitDir, fs)
     if (!ref) return
-    const sha = resolveRef(gitDir, ref, this.d.fs, this.readBytes)
+    const sha = await resolveRefAsync(gitDir, ref, fs)
     if (!sha) return
+    // The project was closed, or this workflow disarmed, while the refs were being read.
+    if (this.projects.get(p.cwd) !== p || p.armed.get(wf.id) !== a) return
     const st = (p.state[wf.id] ??= {})
     // Unseeded, or the ref itself changed (branch switch / checkout): adopt the
     // new position silently. Only movement OF THE SAME ref is a commit/push.
@@ -590,9 +604,16 @@ export class TriggerSupervisor {
     if (!p.stateDirty) return
     p.stateDirty = false
     try {
-      const dir = workflowsDir(p.cwd)
-      if (!this.d.fs.existsSync(dir)) this.d.fs.mkdirSync(dir, { recursive: true })
-      this.d.fs.writeFileSync(this.stateFile(p.cwd), JSON.stringify(p.state, null, 2))
+      const file = this.stateFile(p.cwd)
+      const text = JSON.stringify(p.state, null, 2)
+      // The app writes it on the thread pool (offMainFiles makes the folder too); a fake fs, as before.
+      if (this.d.fsAsync) {
+        void offMainFiles.write(file, text).catch((e) => { this.log(`could not persist trigger state for ${p.cwd}: ${(e as Error)?.message}`) })
+      } else {
+        const dir = workflowsDir(p.cwd)
+        if (!this.d.fs.existsSync(dir)) this.d.fs.mkdirSync(dir, { recursive: true })
+        this.d.fs.writeFileSync(file, text)
+      }
     } catch (e) {
       this.log(`could not persist trigger state for ${p.cwd}: ${(e as Error)?.message}`)
     }

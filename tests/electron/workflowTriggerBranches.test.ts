@@ -228,7 +228,7 @@ describe('optional dependencies', () => {
     expect(explicit.timers.onlyMs).toBe(500)
   })
 
-  it('reads packed-refs off the REAL filesystem when no readBytes is injected', () => {
+  it('reads packed-refs off the REAL filesystem when no readBytes is injected', async () => {
     // Only packed-refs goes through `readBytes`; everything else uses the
     // injected FsLike. Dropping the injection has to leave the supervisor on
     // node's fs rather than on nothing - so this repo is half fake (the
@@ -254,7 +254,7 @@ describe('optional dependencies', () => {
 
     writeFileSync(join(realGitDir, 'packed-refs'), packed(SHA_B))
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
 
     expect(h.fires.map(f => f.id)).toEqual(['p'])
     expect(h.fires[0].reason).toContain('refs/heads/main')
@@ -265,7 +265,7 @@ describe('optional dependencies', () => {
 // -- arming ------------------------------------------------------------------
 
 describe('arming a workflow the supervisor cannot use', () => {
-  it('treats a schedule with NO config as an empty cron, and says so instead of arming it', () => {
+  it('treats a schedule with NO config as an empty cron, and says so instead of arming it', async () => {
     // A schedule saved before its cron was filled in has no config key at all.
     // `cfg.cron` is then undefined, and an undefined cron must land on the same
     // "invalid, not armed" path as a malformed one - never on a cron that
@@ -278,11 +278,11 @@ describe('arming a workflow the supervisor cannot use', () => {
     expect(h.logs.join('\n')).toContain('invalid cron ("")')
 
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
   })
 
-  it('skips a trigger type this build does not recognise', () => {
+  it('skips a trigger type this build does not recognise', async () => {
     // Workflow YAML is a user-editable file that a NEWER Termpolis may also
     // write. An unknown trigger type must be inert - not armed, no watcher, no
     // crash on the way past - so the rest of the project still arms.
@@ -295,7 +295,7 @@ describe('arming a workflow the supervisor cannot use', () => {
     expect(h.sup.armedCount).toBe(0)
     expect(h.watchers).toEqual([])
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
   })
 })
@@ -303,7 +303,7 @@ describe('arming a workflow the supervisor cannot use', () => {
 // -- git triggers ------------------------------------------------------------
 
 describe('git trigger on a detached HEAD', () => {
-  it('neither seeds nor fires while HEAD is detached, and recovers once a branch is checked out', () => {
+  it('neither seeds nor fires while HEAD is detached, and recovers once a branch is checked out', async () => {
     // Mid-rebase / mid-bisect the ref a gitCommit trigger follows does not
     // exist, so both the seed and the tick have to bail before touching state.
     // Bailing must not be permanent: reattaching HEAD has to re-seed silently
@@ -324,19 +324,19 @@ describe('git trigger on a detached HEAD', () => {
 
     h.fs.put(join(gitDir, 'refs', 'heads', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     // HEAD reattaches: the branch moved while we were blind, so this is a seed.
     h.fs.put(join(gitDir, 'HEAD'), 'ref: refs/heads/main\n')
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
     expect(JSON.parse(h.fs.files.get(stateFile)!).c.sha).toBe(SHA_B)
 
     h.fs.put(join(gitDir, 'refs', 'heads', 'main'), `${SHA_C}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.id)).toEqual(['c'])
     expect(h.fires[0].reason).toContain(SHA_C.slice(0, 8))
   })
@@ -345,7 +345,7 @@ describe('git trigger on a detached HEAD', () => {
 // -- schedule state ----------------------------------------------------------
 
 describe('schedule with an unusable persisted timestamp', () => {
-  it('reads a null lastFiredAt as "now" so it cannot trigger a phantom catch-up', () => {
+  it('reads a null lastFiredAt as "now" so it cannot trigger a phantom catch-up', async () => {
     // `.triggers.json` is JSON on disk: a half-written or hand-edited file can
     // hold `lastFiredAt: null`. null is not undefined, so the arm-time seed
     // leaves it alone and it reaches the scheduler as-is. If it were read as 0,
@@ -363,7 +363,7 @@ describe('schedule with an unusable persisted timestamp', () => {
     h.sup.watchProject(ROOT)
 
     h.state.now = base + 60 * MIN // an hour of wall clock the app slept through
-    h.sup.tick()
+    await h.sup.tick()
 
     expect(h.fires.map(f => f.id)).toEqual(['good'])
   })
@@ -454,7 +454,7 @@ describe('ticker lifecycle edges', () => {
     expect(h.fires).toEqual([])
   })
 
-  it('evaluates schedules on a tick but leaves fileWatch workflows to their watcher', () => {
+  it('evaluates schedules on a tick but leaves fileWatch workflows to their watcher', async () => {
     // fileWatch is event-driven; the ticker walking past it is what stops a
     // watched project from running its workflow every 15 seconds forever.
     const h = harness()
@@ -463,7 +463,7 @@ describe('ticker lifecycle edges', () => {
     h.sup.watchProject(ROOT)
 
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
 
     expect(h.fires.map(f => f.id)).toEqual(['s'])
   })

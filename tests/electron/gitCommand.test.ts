@@ -1,248 +1,73 @@
 // Direct unit tests for gitCommand.ts. The IPC-layer security tests in
 // security.test.ts cover argv-injection rejection paths, but they don't
-// exercise safeGit / runSafeCommand defaults or the platform-specific
-// execFileSync vs execSync split — that's what this file is for.
+// exercise safeGitAsync / runSafeCommandAsync defaults or the platform-specific
+// exec vs execFile split — that's what this file is for.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-const { mockExecSync, mockExecFileSync, mockExistsSync, mockExec, mockExecFile } = vi.hoisted(() => ({
-  mockExecSync: vi.fn(),
-  mockExecFileSync: vi.fn(),
-  mockExistsSync: vi.fn(),
+const { mockExec, mockExecFile, mockAccess } = vi.hoisted(() => ({
   // The callback flavours. With no proc host wired up, procClient runs the spawn in-process through
-  // exactly these, so they are what the ASYNC half of this module reaches.
+  // exactly these.
   mockExec: vi.fn(),
   mockExecFile: vi.fn(),
+  // The thread-pool lookup of the git install locations.
+  mockAccess: vi.fn(),
 }))
 
 vi.mock('child_process', () => ({
-  default: { execSync: mockExecSync, execFileSync: mockExecFileSync, exec: mockExec, execFile: mockExecFile },
-  execSync: mockExecSync,
-  execFileSync: mockExecFileSync,
+  default: { exec: mockExec, execFile: mockExecFile },
   exec: mockExec,
   execFile: mockExecFile,
 }))
-vi.mock('fs', () => ({ existsSync: mockExistsSync, default: { existsSync: mockExistsSync } }))
+vi.mock('fs', () => ({ promises: { access: mockAccess }, default: { promises: { access: mockAccess } } }))
 
-import { safeGit, runSafeCommand, runSafeCommandAsync, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
+import { safeGitAsync, runSafeCommandAsync, parseSafeCommand, isValidGitRef, _resetGitBinForTests } from '../../src/main/gitCommand'
 
 beforeEach(() => {
-  mockExecSync.mockReset()
-  mockExecFileSync.mockReset()
-  mockExistsSync.mockReset()
   mockExec.mockReset()
   mockExecFile.mockReset()
+  mockAccess.mockReset()
   _resetGitBinForTests()
 })
 
-describe('safeGit — git-not-on-PATH fallback', () => {
-  it('resolves git from a known install path when the PATH lookup ENOENTs, and caches it', () => {
-    const enoent = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
-    mockExecFileSync.mockImplementationOnce(() => { throw enoent }) // `git` on PATH → not found
-    mockExistsSync.mockImplementation((p: string) => String(p).toLowerCase().includes('git')) // an install exists
-    mockExecFileSync.mockReturnValue(Buffer.from('/repo/root\n')) // the resolved absolute git works
-    expect(safeGit(['rev-parse', '--show-toplevel'], { cwd: '/repo' }).trim()).toBe('/repo/root')
+// safeGitAsync runs git in the proc host; with none wired up (here) procClient runs the same call in-process through
+// execFile, which is what the mock below answers. There is no synchronous safeGit or runSafeCommand any more.
+describe('safeGitAsync — git-not-on-PATH fallback', () => {
+  const enoent = (): Error => Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' })
+  type Cb = (e: Error | null, out: string, err: string) => void
+
+  it('resolves git from a known install path when the PATH lookup ENOENTs, and caches it', async () => {
+    mockExecFile.mockImplementation((bin: string, _a: string[], _o: unknown, cb: Cb) => {
+      if (bin === 'git') return cb(enoent(), '', '') // `git` on PATH → not found
+      cb(null, '/repo/root\n', '') // the resolved absolute git works
+    })
+    mockAccess.mockImplementation(async (p: string) => { if (!String(p).toLowerCase().includes('git')) throw enoent() }) // an install exists
+    expect((await safeGitAsync(['rev-parse', '--show-toplevel'], { cwd: '/repo' })).trim()).toBe('/repo/root')
     // cached: a second call does NOT retry `git` on PATH (no more ENOENT path)
-    mockExecFileSync.mockClear()
-    expect(safeGit(['rev-parse', 'HEAD'], { cwd: '/repo' }).trim()).toBe('/repo/root')
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1)
+    mockExecFile.mockClear()
+    expect((await safeGitAsync(['rev-parse', 'HEAD'], { cwd: '/repo' })).trim()).toBe('/repo/root')
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+    expect(mockExecFile.mock.calls[0][0]).not.toBe('git')
   })
 
-  it('re-throws a genuine git error (not ENOENT) without falling back', () => {
-    const notRepo = Object.assign(new Error('not a git repository'), { status: 128 })
-    mockExecFileSync.mockImplementation(() => { throw notRepo })
-    expect(() => safeGit(['rev-parse', '--show-toplevel'], { cwd: '/tmp' })).toThrow(/not a git repository/)
-    expect(mockExistsSync).not.toHaveBeenCalled() // no fallback attempted
-  })
-})
-
-describe('safeGit', () => {
-  it('uses 10000ms timeout default when opts.timeout is omitted', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from('out'))
-    safeGit(['status'], { cwd: '/r' })
-    const callOpts = mockExecFileSync.mock.calls[0][2]
-    expect(callOpts.timeout).toBe(10000)
+  it('looks for the install on the thread pool: it never calls a synchronous existence check', async () => {
+    mockExecFile.mockImplementation((bin: string, _a: string[], _o: unknown, cb: Cb) => (bin === 'git' ? cb(enoent(), '', '') : cb(null, 'ok\n', '')))
+    mockAccess.mockResolvedValue(undefined)
+    await safeGitAsync(['status'], { cwd: '/repo' })
+    expect(mockAccess).toHaveBeenCalled()
   })
 
-  it('honors caller-supplied timeout', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from('out'))
-    safeGit(['status'], { cwd: '/r', timeout: 5000 })
-    expect(mockExecFileSync.mock.calls[0][2].timeout).toBe(5000)
+  it('re-throws a genuine git error (not ENOENT) without falling back', async () => {
+    const notRepo = Object.assign(new Error('not a git repository'), { code: 128 })
+    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(notRepo, '', 'fatal: not a git repository'))
+    await expect(safeGitAsync(['rev-parse', '--show-toplevel'], { cwd: '/tmp' })).rejects.toThrow(/not a git repository/)
+    expect(mockAccess).not.toHaveBeenCalled() // no fallback attempted
   })
 
-  it('uses 1MB maxBuffer default when omitted', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from('out'))
-    safeGit(['status'], { cwd: '/r' })
-    expect(mockExecFileSync.mock.calls[0][2].maxBuffer).toBe(1024 * 1024)
-  })
-
-  it('honors caller-supplied maxBuffer', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from('out'))
-    safeGit(['status'], { cwd: '/r', maxBuffer: 2 * 1024 * 1024 })
-    expect(mockExecFileSync.mock.calls[0][2].maxBuffer).toBe(2 * 1024 * 1024)
-  })
-
-  it('passes shell:false so metacharacters in argv are literal', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(''))
-    safeGit(['log', '--format=%H'], { cwd: '/r' })
-    expect(mockExecFileSync.mock.calls[0][2].shell).toBe(false)
-    expect(mockExecFileSync.mock.calls[0][2].windowsHide).toBe(true)
-  })
-
-  it('returns the buffer toString() output', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from('hello world'))
-    expect(safeGit(['status'], { cwd: '/r' })).toBe('hello world')
-  })
-})
-
-describe('runSafeCommand', () => {
-  const origPlatform = process.platform
-
-  function setPlatform(p: NodeJS.Platform) {
-    Object.defineProperty(process, 'platform', { value: p, configurable: true })
-  }
-
-  beforeEach(() => setPlatform(origPlatform))
-
-  it('uses execSync on Windows (.cmd shim resolution)', () => {
-    setPlatform('win32')
-    mockExecSync.mockReturnValue(Buffer.from('ok'))
-    const r = runSafeCommand({ bin: 'npm', args: ['test'] }, { cwd: '/r' })
-    expect(r).toEqual({ output: 'ok', exitCode: 0 })
-    expect(mockExecSync).toHaveBeenCalledTimes(1)
-    expect(mockExecFileSync).not.toHaveBeenCalled()
-  })
-
-  it('uses execFileSync on Linux/macOS (shell:false)', () => {
-    setPlatform('linux')
-    mockExecFileSync.mockReturnValue(Buffer.from('ok'))
-    const r = runSafeCommand({ bin: 'npm', args: ['test'] }, { cwd: '/r' })
-    expect(r).toEqual({ output: 'ok', exitCode: 0 })
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1)
-    expect(mockExecFileSync.mock.calls[0][2].shell).toBe(false)
-    expect(mockExecSync).not.toHaveBeenCalled()
-  })
-
-  it('default timeout is 10 minutes when opts.timeout is omitted (linux path)', () => {
-    setPlatform('linux')
-    mockExecFileSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(mockExecFileSync.mock.calls[0][2].timeout).toBe(10 * 60 * 1000)
-  })
-
-  it('default timeout is 10 minutes when opts.timeout is omitted (win32 path)', () => {
-    setPlatform('win32')
-    mockExecSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(mockExecSync.mock.calls[0][1].timeout).toBe(10 * 60 * 1000)
-  })
-
-  it('default maxBuffer is 16MB when omitted (linux)', () => {
-    setPlatform('linux')
-    mockExecFileSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(mockExecFileSync.mock.calls[0][2].maxBuffer).toBe(16 * 1024 * 1024)
-  })
-
-  it('default maxBuffer is 16MB when omitted (win32)', () => {
-    setPlatform('win32')
-    mockExecSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(mockExecSync.mock.calls[0][1].maxBuffer).toBe(16 * 1024 * 1024)
-  })
-
-  // The mac PATH fix: the child must run with an EXTENDED PATH, not the bare launchd PATH a
-  // GUI-launched app inherits — otherwise npm/pnpm/pytest ENOENT and the swarm test-runner records a
-  // fabricated failure into the competence store. getExtendedPath always appends the current PATH
-  // last, so the child's PATH is a superset of the parent's.
-  it('runs the child with an extended PATH env (linux/macOS path)', () => {
-    setPlatform('linux')
-    mockExecFileSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: ['test'] }, { cwd: '/r' })
-    const env = mockExecFileSync.mock.calls[0][2].env
-    expect(env).toBeDefined()
-    expect(typeof env.PATH).toBe('string')
-    if (process.env.PATH) expect(env.PATH).toContain(process.env.PATH) // superset of the parent PATH
-  })
-
-  it('also passes the extended PATH env on win32', () => {
-    setPlatform('win32')
-    mockExecSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: ['test'] }, { cwd: '/r' })
-    const env = mockExecSync.mock.calls[0][1].env
-    expect(env).toBeDefined()
-    expect(typeof env.PATH).toBe('string')
-  })
-
-  it('honors caller-supplied timeout + maxBuffer (linux)', () => {
-    setPlatform('linux')
-    mockExecFileSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r', timeout: 5000, maxBuffer: 8 })
-    expect(mockExecFileSync.mock.calls[0][2].timeout).toBe(5000)
-    expect(mockExecFileSync.mock.calls[0][2].maxBuffer).toBe(8)
-  })
-
-  it('honors caller-supplied timeout + maxBuffer (win32)', () => {
-    setPlatform('win32')
-    mockExecSync.mockReturnValue(Buffer.from(''))
-    runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r', timeout: 5000, maxBuffer: 8 })
-    expect(mockExecSync.mock.calls[0][1].timeout).toBe(5000)
-    expect(mockExecSync.mock.calls[0][1].maxBuffer).toBe(8)
-  })
-
-  it('captures e.stdout + e.stderr when child exits non-zero', () => {
-    setPlatform('linux')
-    const err: any = new Error('exit 1')
-    err.stdout = Buffer.from('partial out\n')
-    err.stderr = Buffer.from('error msg\n')
-    err.status = 1
-    mockExecFileSync.mockImplementation(() => { throw err })
-    const r = runSafeCommand({ bin: 'npm', args: ['test'] }, { cwd: '/r' })
-    expect(r.exitCode).toBe(1)
-    expect(r.output).toContain('partial out')
-    expect(r.output).toContain('error msg')
-  })
-
-  it('falls back to exitCode=1 when e.status is missing', () => {
-    setPlatform('linux')
-    const err: any = new Error('killed')
-    err.stdout = undefined
-    err.stderr = undefined
-    mockExecFileSync.mockImplementation(() => { throw err })
-    const r = runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(r.exitCode).toBe(1)
-    expect(r.output).toBe('')
-  })
-
-  it('falls back to exitCode=1 when e.status is non-numeric', () => {
-    setPlatform('linux')
-    const err: any = new Error('killed')
-    err.status = 'SIGKILL'
-    mockExecFileSync.mockImplementation(() => { throw err })
-    const r = runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(r.exitCode).toBe(1)
-  })
-
-  it('handles missing stdout (only stderr present)', () => {
-    setPlatform('linux')
-    const err: any = new Error('boom')
-    err.stderr = Buffer.from('only stderr')
-    err.status = 2
-    mockExecFileSync.mockImplementation(() => { throw err })
-    const r = runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(r.output).toBe('only stderr')
-    expect(r.exitCode).toBe(2)
-  })
-
-  it('handles missing stderr (only stdout present)', () => {
-    setPlatform('linux')
-    const err: any = new Error('boom')
-    err.stdout = Buffer.from('only stdout')
-    err.status = 3
-    mockExecFileSync.mockImplementation(() => { throw err })
-    const r = runSafeCommand({ bin: 'npm', args: [] }, { cwd: '/r' })
-    expect(r.output).toBe('only stdout')
-    expect(r.exitCode).toBe(3)
+  it('throws the ENOENT when no install exists anywhere', async () => {
+    mockExecFile.mockImplementation((_b: string, _a: string[], _o: unknown, cb: Cb) => cb(enoent(), '', ''))
+    mockAccess.mockRejectedValue(enoent())
+    await expect(safeGitAsync(['status'], { cwd: '/repo' })).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 

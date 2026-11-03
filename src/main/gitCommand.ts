@@ -8,9 +8,8 @@
 // project's test suite" feature from turning into arbitrary RCE if a
 // compromised renderer (or unsanitised MCP client) sends a crafted string.
 
-import { execFileSync, execSync } from 'child_process'
-import { existsSync } from 'fs'
-import { getExtendedPath, getExtendedPathAsync } from './agentPaths'
+import { promises as fsp } from 'fs'
+import { getExtendedPathAsync } from './agentPaths'
 import { execOffThread, execCaptureOffThread, execShellCaptureOffThread } from './procClient'
 
 export interface GitOptions {
@@ -29,37 +28,19 @@ function gitInstallCandidates(): string[] {
     : ['/usr/bin/git', '/opt/homebrew/bin/git', '/usr/local/bin/git', '/bin/git']
 }
 
-function runGit(bin: string, args: string[], opts: GitOptions): string {
-  return execFileSync(bin, args, {
-    cwd: opts.cwd,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: opts.timeout ?? 10000,
-    maxBuffer: opts.maxBuffer ?? 1024 * 1024,
-    windowsHide: true,
-    shell: false,
-  }).toString()
-}
-
-export function safeGit(args: string[], opts: GitOptions): string {
-  const bin = resolvedGit ?? 'git'
+async function isFile(p: string): Promise<boolean> {
   try {
-    return runGit(bin, args, opts)
-  } catch (e) {
-    // Only fall back when git itself couldn't be found (not on a real git error like "not a repo").
-    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT' && bin === 'git') {
-      for (const candidate of gitInstallCandidates()) {
-        if (existsSync(candidate)) {
-          resolvedGit = candidate
-          return runGit(candidate, args, opts)
-        }
-      }
-    }
-    throw e
+    await fsp.access(p)
+    return true
+  } catch {
+    return false
   }
 }
 
 /**
- * safeGit's non-blocking twin — and since v1.47.1, the one every caller should use.
+ * Run git with an argv array, off the main thread. (There was a synchronous `safeGit` once, built on
+ * `execFileSync`; nothing called it after v1.47.1 and it is gone, so that nothing can again: a synchronous spawn on
+ * the main thread freezes every terminal. tests/electron/mainThreadScan.test.ts fails on any new one.)
  *
  * `execFileSync` blocks the main thread for the WHOLE spawn — and on Windows a cold git spawn is
  * ~106 ms of pure process-creation tax (measured; Defender), before git reads a single object. The
@@ -74,8 +55,7 @@ export function safeGit(args: string[], opts: GitOptions): string {
  * git. So the work now leaves the process entirely: execOffThread hands it to the procHost
  * utilityProcess, where a blocked thread blocks nobody's typing.
  *
- * Identical argv-safety (shell: false) and identical git-resolution fallback as safeGit — the two
- * must not drift, or a packaged app with no git on PATH would work in one and ENOENT in the other.
+ * Argv-safe (shell: false), and a packaged app with no git on PATH finds it in the common install locations.
  */
 export async function safeGitAsync(args: string[], opts: GitOptions): Promise<string> {
   const run = (bin: string): Promise<string> => execOffThread(bin, args, {
@@ -92,7 +72,7 @@ export async function safeGitAsync(args: string[], opts: GitOptions): Promise<st
     // so this branch keeps working.
     if ((e as NodeJS.ErrnoException)?.code === 'ENOENT' && bin === 'git') {
       for (const candidate of gitInstallCandidates()) {
-        if (existsSync(candidate)) {
+        if (await isFile(candidate)) {
           resolvedGit = candidate
           return await run(candidate)
         }
@@ -163,58 +143,9 @@ export interface RunResult {
 }
 
 /**
- * A SYNCHRONOUS child process on the main thread, whose only bound is a 10-MINUTE default timeout.
- * Nothing here yields; for however long the subprocess runs, every PTY and every IPC call in the app
- * is dead. Labelled with the actual binary (`exec:git`, `exec:npm`) so a freeze names the command
- * that caused it rather than leaving you to guess which of the app's many git calls it was.
- */
-export function runSafeCommand(cmd: SafeCommand, opts: GitOptions): RunResult {
-  try {
-    // On Windows, npm/yarn/pnpm etc. resolve to .cmd shims which require a
-    // shell to run. Since parseSafeCommand already rejected every shell
-    // metacharacter, delegating to the shell here is purely a PATHEXT /
-    // .cmd resolution shim — the shell has no operators to interpret.
-    const needsShell = process.platform === 'win32'
-    // A GUI-launched app on macOS inherits launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) —
-    // NOT the login shell's — so npm/pnpm/pytest/cargo/go (the whole SAFE_RUNNERS set) live in
-    // /opt/homebrew/bin or ~/.nvm and are invisible. The command then ENOENTs, returns exitCode 1,
-    // and — worse — the caller records that fabricated "test failed" into the self-competence store.
-    // getExtendedPath() is the same login-shell + known-dirs PATH agent detection already uses; it's
-    // a superset of the current PATH, so it can only help resolution, never break it. (Windows has
-    // npm on the machine PATH, so this is a no-op improvement there.)
-    const env = { ...process.env, PATH: getExtendedPath() }
-    const buf = needsShell
-      ? execSync([cmd.bin, ...cmd.args].join(' '), {
-          cwd: opts.cwd,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: opts.timeout ?? 10 * 60 * 1000,
-          maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
-          windowsHide: true,
-          env,
-        })
-      : execFileSync(cmd.bin, cmd.args, {
-          cwd: opts.cwd,
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: opts.timeout ?? 10 * 60 * 1000,
-          maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024,
-          shell: false,
-          windowsHide: true,
-          env,
-        })
-    return { output: buf.toString(), exitCode: 0 }
-  } catch (e: any) {
-    const output = (e.stdout?.toString() || '') + (e.stderr?.toString() || '')
-    return { output, exitCode: typeof e.status === 'number' ? e.status : 1 }
-  }
-}
-
-/**
- * runSafeCommand's off-thread twin, and the one the IPC handler uses.
- *
- * The sync version's own comment says it best: "for however long the subprocess runs, every PTY and
- * every IPC call in the app is dead" — with a TEN MINUTE default bound. `npm test` on a real project
- * froze the entire app for the length of the test run. Here the run happens in procHost instead, so
- * the only thing waiting is this promise.
+ * Run one of the allow-listed test/build commands, off the main thread, in the proc host. (The synchronous
+ * `runSafeCommand` that used to sit beside it is gone: a synchronous child process on the main thread, bounded only by a
+ * ten-minute timeout, froze every PTY and every IPC call for as long as `npm test` ran.)
  *
  * Same `RunResult` contract, including the part callers depend on most: a FAILED command is not an
  * exception, it is `{ output, exitCode }` with the command's own output — which for a test runner is

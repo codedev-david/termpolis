@@ -359,52 +359,52 @@ describe('TriggerSupervisor arming', () => {
 // ── schedule ─────────────────────────────────────────────────────────────────
 
 describe('schedule trigger', () => {
-  it('fires once a cron slot passes', () => {
+  it('fires once a cron slot passes', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.id)).toEqual(['s'])
     expect(h.fires[0].reason).toContain('schedule')
   })
 
-  it('does not fire again inside the same minute', () => {
+  it('does not fire again inside the same minute', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
-    h.sup.tick()
+    await h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 
-  it('catches up a run that came due while the app was closed', () => {
+  it('catches up a run that came due while the app was closed', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '0 2 * * *', catchUp: '1' }))
     h.sup.watchProject(ROOT)
     h.state.now += 3 * 24 * 60 * MIN // three days later
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 
-  it('does NOT catch up when catchUp is off', () => {
+  it('does NOT catch up when catchUp is off', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '0 2 * * *', catchUp: '0' }))
     h.sup.watchProject(ROOT)
     h.state.now += 3 * 24 * 60 * MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
   })
 
-  it('treats catchUp as on unless explicitly "0"', () => {
+  it('treats catchUp as on unless explicitly "0"', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '0 2 * * *' }))
     h.sup.watchProject(ROOT)
     h.state.now += 3 * 24 * 60 * MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 })
@@ -412,23 +412,23 @@ describe('schedule trigger', () => {
 // ── git ──────────────────────────────────────────────────────────────────────
 
 describe('gitCommit trigger', () => {
-  it('fires when the branch sha moves', () => {
+  it('fires when the branch sha moves', async () => {
     const h = harness()
     installRepo(h.fs, ROOT)
     install(h.fs, ROOT, wf('c', 'gitCommit'))
     h.sup.watchProject(ROOT)
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
     expect(h.fires[0].reason).toContain('commit on refs/heads/main')
     expect(h.fires[0].reason).toContain(SHA_B.slice(0, 8))
   })
 
-  it('does not fire on a branch switch (ref name changed, not the commit)', () => {
+  it('does not fire on a branch switch (ref name changed, not the commit)', async () => {
     const h = harness()
     installRepo(h.fs, ROOT, 'main')
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'dev'), `${SHA_B}\n`)
@@ -437,17 +437,17 @@ describe('gitCommit trigger', () => {
 
     h.fs.put(join(ROOT, '.git', 'HEAD'), 'ref: refs/heads/dev\n')
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     // ...but a commit ON the new branch does fire.
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'dev'), `${SHA_A}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 
-  it('follows an explicitly configured branch regardless of what is checked out', () => {
+  it('follows an explicitly configured branch regardless of what is checked out', async () => {
     const h = harness()
     installRepo(h.fs, ROOT, 'main')
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'release'), `${SHA_A}\n`)
@@ -457,46 +457,46 @@ describe('gitCommit trigger', () => {
     // A commit on main must be ignored.
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'release'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 
-  it('does nothing when the project is not a git repo', () => {
+  it('does nothing when the project is not a git repo', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('c', 'gitCommit'))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
   })
 
-  it('waits without firing until an unresolvable ref appears', () => {
+  it('waits without firing until an unresolvable ref appears', async () => {
     const h = harness()
     installRepo(h.fs, ROOT)
     install(h.fs, ROOT, wf('c', 'gitCommit', { branch: 'later' }))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     // The branch is created — that is a seed, not a commit.
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'later'), `${SHA_A}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'later'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 
-  it('a commit made during a run is deferred, not dropped', () => {
+  it('a commit made during a run is deferred, not dropped', async () => {
     let release: (() => void) | null = null
     const h = harness({ fireResult: () => new Promise<void>(res => { release = res }) })
     installRepo(h.fs, ROOT)
@@ -505,20 +505,20 @@ describe('gitCommit trigger', () => {
 
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
 
     // Second commit while the first run is still in flight — suppressed for now.
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'main'), `${SHA_A}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
 
     return Promise.resolve().then(() => {
       release?.()
-      return Promise.resolve().then(() => {
+      return Promise.resolve().then(async () => {
         h.state.now += MIN
-        h.sup.tick()
+        await h.sup.tick()
         expect(h.fires.length).toBe(2)
       })
     })
@@ -526,23 +526,23 @@ describe('gitCommit trigger', () => {
 })
 
 describe('gitPush trigger', () => {
-  it('fires when the remote-tracking ref advances', () => {
+  it('fires when the remote-tracking ref advances', async () => {
     const h = harness()
     installRepo(h.fs, ROOT)
     h.fs.put(join(ROOT, '.git', 'refs', 'remotes', 'origin', 'main'), `${SHA_A}\n`)
     install(h.fs, ROOT, wf('p', 'gitPush'))
     h.sup.watchProject(ROOT)
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
 
     h.fs.put(join(ROOT, '.git', 'refs', 'remotes', 'origin', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
     expect(h.fires[0].reason).toContain('push on refs/remotes/origin/main')
   })
 
-  it('a local commit alone does not count as a push', () => {
+  it('a local commit alone does not count as a push', async () => {
     const h = harness()
     installRepo(h.fs, ROOT)
     h.fs.put(join(ROOT, '.git', 'refs', 'remotes', 'origin', 'main'), `${SHA_A}\n`)
@@ -551,11 +551,11 @@ describe('gitPush trigger', () => {
 
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
   })
 
-  it('honours a custom remote', () => {
+  it('honours a custom remote', async () => {
     const h = harness()
     installRepo(h.fs, ROOT)
     h.fs.put(join(ROOT, '.git', 'refs', 'remotes', 'upstream', 'main'), `${SHA_A}\n`)
@@ -564,11 +564,11 @@ describe('gitPush trigger', () => {
 
     h.fs.put(join(ROOT, '.git', 'refs', 'remotes', 'upstream', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 
-  it('resolves the remote ref out of packed-refs', () => {
+  it('resolves the remote ref out of packed-refs', async () => {
     const h = harness()
     installRepo(h.fs, ROOT)
     h.fs.put(join(ROOT, '.git', 'packed-refs'), `${SHA_A} refs/remotes/origin/main\n`)
@@ -577,7 +577,7 @@ describe('gitPush trigger', () => {
 
     h.fs.put(join(ROOT, '.git', 'packed-refs'), `${SHA_B} refs/remotes/origin/main\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 })
@@ -691,28 +691,28 @@ describe('fileWatch trigger', () => {
 // ── gating, safety, persistence ──────────────────────────────────────────────
 
 describe('safety gates', () => {
-  it('never auto-runs in an untrusted workspace, and warns only once', () => {
+  it('never auto-runs in an untrusted workspace, and warns only once', async () => {
     const h = harness({ trusted: false })
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
     expect(h.logs.filter(l => l.includes('not a trusted workspace')).length).toBe(1)
   })
 
-  it('fires once trust is granted', () => {
+  it('fires once trust is granted', async () => {
     const h = harness({ trusted: false })
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires).toEqual([])
     h.state.trusted = true
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
   })
 
@@ -722,18 +722,18 @@ describe('safety gates', () => {
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1)
 
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(1) // still running
 
     release()
     await Promise.resolve()
     await Promise.resolve()
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(2)
   })
 
@@ -743,12 +743,12 @@ describe('safety gates', () => {
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     reject(new Error('boom'))
     await Promise.resolve()
     await Promise.resolve()
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(2)
   })
 
@@ -771,7 +771,7 @@ describe('safety gates', () => {
     expect(h.fires.length).toBe(2)
   })
 
-  it('a runner that throws does not wedge the trigger', () => {
+  it('a runner that throws does not wedge the trigger', async () => {
     const h = harness({
       fireResult: () => {
         throw new Error('spawn failed')
@@ -780,10 +780,10 @@ describe('safety gates', () => {
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.logs.some(l => l.includes('failed to start'))).toBe(true)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.length).toBe(2) // retried, not stuck
   })
 })
@@ -791,7 +791,7 @@ describe('safety gates', () => {
 describe('state persistence', () => {
   const stateFile = join(workflowsDir(ROOT), '.triggers.json')
 
-  it('persists the seeded git sha and the last fire time', () => {
+  it('persists the seeded git sha and the last fire time', async () => {
     const h = harness()
     installRepo(h.fs, ROOT)
     install(h.fs, ROOT, wf('c', 'gitCommit'))
@@ -800,13 +800,13 @@ describe('state persistence', () => {
 
     h.fs.put(join(ROOT, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     const st = JSON.parse(h.fs.files.get(stateFile)!).c
     expect(st.sha).toBe(SHA_B)
     expect(st.lastFiredAt).toBe(h.state.now)
   })
 
-  it('reloads persisted state so a restart does not re-fire the same commit', () => {
+  it('reloads persisted state so a restart does not re-fire the same commit', async () => {
     const fs = makeFs()
     installRepo(fs, ROOT)
     install(fs, ROOT, wf('c', 'gitCommit'))
@@ -814,14 +814,14 @@ describe('state persistence', () => {
     first.sup.watchProject(ROOT)
     fs.put(join(ROOT, '.git', 'refs', 'heads', 'main'), `${SHA_B}\n`)
     first.state.now += MIN
-    first.sup.tick()
+    await first.sup.tick()
     expect(first.fires.length).toBe(1)
 
     // A brand-new supervisor over the same on-disk state (an app restart).
     const second = harness({ fs, now: first.state.now + 10 * MIN })
     second.sup.watchProject(ROOT)
     second.state.now += MIN
-    second.sup.tick()
+    await second.sup.tick()
     expect(second.fires).toEqual([])
   })
 
@@ -856,7 +856,7 @@ describe('state persistence', () => {
 })
 
 describe('ticker lifecycle', () => {
-  it('start arms a repeating ticker and stop clears it', () => {
+  it('start arms a repeating ticker and stop clears it', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
@@ -866,6 +866,7 @@ describe('ticker lifecycle', () => {
     h.state.now += MIN
     h.timers.flush()
     expect(h.fires.length).toBe(1)
+    await new Promise<void>((r) => setImmediate(r)) // the pass reads git on the thread pool; the ticker re-arms when it is done
     expect(h.timers.pending).toBe(1) // re-armed itself
 
     h.sup.stop()
@@ -880,7 +881,7 @@ describe('ticker lifecycle', () => {
     expect(h.timers.pending).toBe(1)
   })
 
-  it('a throwing tick is contained and the ticker keeps going', () => {
+  it('a throwing tick is contained and the ticker keeps going', async () => {
     const h = harness()
     install(h.fs, ROOT, wf('s', 'schedule', { cron: '* * * * *' }))
     h.sup.watchProject(ROOT)
@@ -889,6 +890,7 @@ describe('ticker lifecycle', () => {
       throw new Error('kaboom')
     })
     h.timers.flush()
+    await new Promise<void>((r) => setImmediate(r))
     expect(h.logs.some(l => l.includes('tick failed'))).toBe(true)
     expect(h.timers.pending).toBe(1)
     spy.mockRestore()
@@ -918,7 +920,7 @@ describe('ticker lifecycle', () => {
     expect(h.sup.tickMs).toBe(15_000)
   })
 
-  it('isolates projects: two watched dirs each arm their own workflows', () => {
+  it('isolates projects: two watched dirs each arm their own workflows', async () => {
     const h = harness()
     const OTHER = join('/other')
     install(h.fs, ROOT, wf('a', 'schedule', { cron: '* * * * *' }))
@@ -927,7 +929,7 @@ describe('ticker lifecycle', () => {
     h.sup.watchProject(OTHER)
     expect(h.sup.armedCount).toBe(2)
     h.state.now += MIN
-    h.sup.tick()
+    await h.sup.tick()
     expect(h.fires.map(f => f.cwd).sort()).toEqual([OTHER, ROOT].sort())
   })
 })

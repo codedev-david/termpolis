@@ -10,20 +10,11 @@
 
 import * as crypto from 'crypto'
 import { promises as fsp } from 'fs'
-import { execFile } from 'child_process'
 import { normalizeNewlines } from './lineEndings'
 import { join } from 'path'
 import { matchSensitiveFile } from './sensitiveFileWatcher'
 import { safeGitAsync } from './gitCommand'
 import { knownHashes } from './conversationIngest' // one membership-resolution rule for both ingesters
-
-// Promise wrapper that references execFile only when CALLED (not at module
-// load), so test files that mock child_process can still import this module.
-function execGit(args: string[], opts: { cwd?: string; maxBuffer?: number }): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, opts, (err, stdout) => (err ? reject(err) : resolve(String(stdout))))
-  })
-}
 
 export interface CodeChunk {
   text: string
@@ -185,16 +176,14 @@ export async function discoverRepoFiles(repoRoot: string): Promise<string[]> {
   if (!repoRoot) return []
   let stdout: string
   try {
-    stdout = await execGit(['-C', repoRoot, 'ls-files'], { maxBuffer: 64 * 1024 * 1024 })
+    // The proc host runs git (safeGitAsync): the spawn happens off the main thread. This used to start git here with
+    // child_process.execFile, whose spawn blocks the calling thread (0.1-0.3 s on a busy Windows laptop), on every
+    // code re-index (a watcher event), and only fell back to the host when that failed. safeGitAsync also resolves the
+    // binary from the common install locations when a packaged app inherits a PATH without git, which is what stops a
+    // transient git-off-PATH from silently wiping the code graph. A REAL "not a repo" error still throws → [].
+    stdout = await safeGitAsync(['-C', repoRoot, 'ls-files'], { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 })
   } catch {
-    // A packaged app can inherit a PATH without git — retry via safeGitAsync, which resolves the
-    // binary from common install locations. A REAL "not a repo" error still throws → []. This is
-    // what stops a transient git-off-PATH from silently wiping the code graph.
-    try {
-      stdout = await safeGitAsync(['-C', repoRoot, 'ls-files'], { cwd: repoRoot, maxBuffer: 64 * 1024 * 1024 })
-    } catch {
-      return []
-    }
+    return []
   }
   return stdout
     .split('\n')
