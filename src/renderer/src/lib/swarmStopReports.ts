@@ -131,8 +131,10 @@ export function carryIfStopped(terminalId: string, turned: () => Promise<boolean
 
 /** v1.54.0's report of a stop to the conductor: for a limit, to close the worker and give its task
  *  to another installed agent; for a menu, to answer it. Sent also when the restart offer for a
- *  limit is declined, fails or has no answer in time (§9). */
-export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusResult): Promise<void> {
+ *  limit is declined, fails or has no answer in time (§9). `afterExit`: a restart that failed once its agent had been exited
+ *  (why, in a few words): the limit is no longer on the worker's screen (a prompt, a sign-in screen or a dialog is), so the conductor
+ *  is told what happened and that the task is its to give away, not to look for a limit first (SWARM-R3-2). */
+export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusResult, afterExit?: string): Promise<void> {
   const kind = stopKind(result)
   // The conductor sent the task, so it knows which one this terminal has; when the task was
   // assigned to it, say which.
@@ -152,12 +154,11 @@ export async function reportWorkerStop(worker: SwarmWorker, result: AgentStatusR
     ? 'Check its screen with read_output first: if the limit is there, close its terminal, then give its task to another installed agent.'
     : `Check its screen with read_output first: if the menu is there, answer it as STEP 6 says, without submit${answer ? `: ${answer}` : ', with the keys its screen shows for the option to pick'}. ` +
       'Then send its task again with submit=true if it never got it. Give its task to another installed agent only if the menu stays.'
+  const said = afterExit !== undefined
+    ? `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) could not be restarted on another account (${afterExit}), and its agent is no longer running there.${task} ` +
+      'Close its terminal and give its task to another installed agent: the limit is no longer on its screen, so there is nothing to look for.'
+    : `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ${todo}`
   try {
-    await window.swarmAPI.sendMessage(
-      'system',
-      'conductor',
-      'info',
-      `${worker.agentName} (${worker.role}, terminal ${worker.terminalId}) is blocked: ${result.summary}.${task} ${todo}`,
-    )
+    await window.swarmAPI.sendMessage('system', 'conductor', 'info', said)
   } catch {}
 }

@@ -751,6 +751,29 @@ describe('the lookups index.ts uses', () => {
     return { on, off, gone: 'acc_00000000000a', agy }
   }
 
+  // SAFETY-R3-3: the gates built on resolveAccountTarget (folder trust, the primer file, Codex's instructions) failed OPEN when the registry
+  // could not be read: an account id it could not find was taken for "no account", the default profile, which is connected. The trust poller's
+  // own gate (isTerminalAccountConnected) already failed closed under the same read failure, so the two disagreed.
+  it('fails closed when the registry cannot be read: an account id it can no longer find is not connected, and no profile is named', async () => {
+    const ids = await accountsFixture()
+    const file = join(sb.paths.userData, 'agent-accounts.json')
+    for (const [what, bad] of [['invalid JSON', '{ broken'], ['a version it does not know', JSON.stringify({ version: 2, accounts: [] })], ['an empty file', '']] as const) {
+      writeText(file, bad)
+      expect(resolveAccountTarget(sb.paths, ids.off), what).toEqual({ connected: false })
+      expect(resolveAccountTarget(sb.paths, ids.on), what).toEqual({ connected: false })
+      expect(resolveLaunchTarget(sb.paths, ids.on, 'claude'), what).toMatchObject({ connected: false })
+      // And no id at all is still the default profile (D13), whatever the registry holds: a user who added nothing sees nothing change.
+      expect(resolveAccountTarget(sb.paths, undefined), what).toEqual({ connected: true })
+      expect(resolveAccountTarget(sb.paths, ''), what).toEqual({ connected: true })
+      expect(resolveAccountTarget(sb.paths, 42), what).toEqual({ connected: true })
+    }
+  })
+
+  it('still takes an id a readable registry does not hold for no account (D13)', async () => {
+    await accountsFixture()
+    expect(resolveAccountTarget(sb.paths, 'acc_ffffffffffff')).toEqual({ connected: true })
+  })
+
   it('resolves an account to its profile, refusing one the user didn\'t connect or whose folder is gone (R9)', async () => {
     const ids = await accountsFixture()
     const main = (await list()).accounts.find((a) => a.isDefault) as AccountRowView
@@ -765,8 +788,9 @@ describe('the lookups index.ts uses', () => {
     expect(resolveAccountTarget(sb.paths, ids.gone)).toMatchObject({ connected: false })
     expect(resolveAccountTarget(sb.paths, ids.gone).target).toBeUndefined()
     expect(resolveAccountTarget(sb.paths, ids.agy)).toMatchObject({ connected: true })
+    // A registry that cannot be read says nothing of the account: a write meant for it is not made (SAFETY-R3-3, below).
     writeText(join(sb.paths.userData, 'agent-accounts.json'), '{ broken')
-    expect(resolveAccountTarget(sb.paths, ids.on)).toEqual({ connected: true })
+    expect(resolveAccountTarget(sb.paths, ids.on)).toEqual({ connected: false })
   })
 
   it('says whether a terminal\'s account is connected, from main\'s own record of it', async () => {

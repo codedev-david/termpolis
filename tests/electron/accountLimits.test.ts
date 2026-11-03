@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import {
-  limitKindOf, limitTargets, parseResetsAt, resetTextOf, stopKey, suggestedModel, untilText,
+  limitKindOf, limitTargets, parseResetsAt, resetTextOf, stopKey, suggestedModel, unofferedLoginOwner, untilText,
 } from '../../src/shared/accountLimits'
 import type { AccountRowView } from '../../src/shared/agentAccounts'
 
@@ -287,5 +287,85 @@ describe('limitTargets', () => {
       ['b', 'available', 'signed in'],
       ['personal', 'this', "this terminal's account"],
     ])
+  })
+})
+
+// SWARM-R3-1: D14 and "the work account is never offered" are decided by the login in a profile, not by the folder's nominal row. David's
+// logins move between his folders (accounts.sh calls them interchangeable login slots, and on 2026-11-02 work sat in the default profile),
+// and accounts.sh's own failover resolves each candidate's login (account_for_email) and takes only an account in its failover order.
+describe('the login in a profile decides which account it is (SWARM-R3-1)', () => {
+  const now = at('2026-11-03T12:00:00Z')
+  // The registry as imported (each folder's nominal account and the email it expects), and the logins as they sit now: the default
+  // profile holds the WORK login, and the work folder holds the personal one.
+  const personal = row('personal', { order: 0, isDefault: true, profile: null, email: 'me@gmail.test', lastEmail: 'me@corp.test' })
+  const codedev = row('codedev', { order: 1, email: 'me@icloud.test', lastEmail: 'me@icloud.test' })
+  const work = row('work', { order: 2, autoOffer: false, email: 'me@corp.test', lastEmail: 'me@gmail.test' })
+  const rows = [personal, codedev, work]
+
+  describe('unofferedLoginOwner', () => {
+    it('names the account kept from the automatic offers whose login is in the profile, whatever folder holds it', () => {
+      expect(unofferedLoginOwner(rows, personal)?.id).toBe('work')
+      expect(unofferedLoginOwner(rows, personal, 'ME@CORP.TEST')?.id).toBe('work')
+    })
+
+    it('names none for a profile on its own login, on another offered account\'s, or on none anyone expects', () => {
+      expect(unofferedLoginOwner(rows, codedev)).toBeUndefined()
+      expect(unofferedLoginOwner(rows, work)).toBeUndefined()
+      expect(unofferedLoginOwner(rows, personal, 'me@icloud.test')).toBeUndefined()
+      expect(unofferedLoginOwner(rows, personal, 'someone@else.test')).toBeUndefined()
+      expect(unofferedLoginOwner(rows, personal, null)).toBeUndefined()
+      expect(unofferedLoginOwner([{ ...personal, lastEmail: null }, work], { ...personal, lastEmail: null })).toBeUndefined()
+    })
+
+    it('knows no login of an agy account, a Codex one without a read login, or an agent that is not the account\'s', () => {
+      const agy = row('g', { agent: 'agy', profile: null, email: 'me@corp.test', lastEmail: null })
+      expect(unofferedLoginOwner([agy, work], agy)).toBeUndefined()
+      expect(unofferedLoginOwner([{ ...work, agent: 'codex' }, personal], personal)).toBeUndefined()
+    })
+
+    it('never names the account itself: its own flag is read by its callers', () => {
+      const alone = row('w', { autoOffer: false, email: 'me@corp.test', lastEmail: 'me@corp.test' })
+      expect(unofferedLoginOwner([alone], alone)).toBeUndefined()
+    })
+
+    it('reads an email the caller already has, as a check said it', () => {
+      expect(unofferedLoginOwner(rows, codedev, 'me@corp.test')?.id).toBe('work')
+    })
+  })
+
+  describe('limitTargets', () => {
+    it('does not offer the profile that holds the work login to a terminal that ran out elsewhere (case 2)', () => {
+      const t = limitTargets(rows, 'claude', { accountId: 'codedev', email: 'me@icloud.test' }, now)
+      expect(t.map((x) => x.row.id)).toEqual(['codedev'])
+      expect(t.map((x) => x.state)).toEqual(['this'])
+    })
+
+    it('offers the other accounts from a terminal on the profile that holds the work login (case 1: personal\'s slot)', () => {
+      const t = limitTargets(rows, 'claude', { accountId: 'personal', email: 'me@corp.test' }, now)
+      expect(t.map((x) => [x.row.id, x.state])).toEqual([['codedev', 'available'], ['personal', 'this']])
+    })
+
+    it('offers the profile that holds the work login again once a check says it has changed hands', () => {
+      const checks = { personal: { kind: 'signed-in' as const, email: 'me@gmail.test' } }
+      const t = limitTargets(rows, 'claude', { accountId: 'codedev', email: 'me@icloud.test' }, now, checks)
+      expect(t.map((x) => x.row.id)).toEqual(['personal', 'codedev'])
+    })
+
+    it('and drops one a check says holds the work login now, though the view still read another', () => {
+      const checks = { codedev: { kind: 'signed-in' as const, email: 'me@corp.test' } }
+      const t = limitTargets([{ ...personal, lastEmail: 'me@gmail.test' }, codedev, { ...work, lastEmail: 'me@corp.test' }], 'claude', { accountId: 'personal', email: 'me@gmail.test' }, now, checks)
+      expect(t.map((x) => x.row.id)).toEqual(['personal'])
+    })
+
+    it('changes nothing for the layout the registry was imported with', () => {
+      const nominal = [{ ...personal, lastEmail: 'me@gmail.test' }, codedev, { ...work, lastEmail: 'me@corp.test' }]
+      const t = limitTargets(nominal, 'claude', { accountId: 'codedev', email: 'me@icloud.test' }, now)
+      expect(t.map((x) => [x.row.id, x.state])).toEqual([['personal', 'available'], ['codedev', 'this']])
+    })
+
+    it('changes nothing for accounts that expect no email: there is no login to match', () => {
+      const plain = [row('a', { order: 0 }), row('b', { order: 1 })]
+      expect(limitTargets(plain, 'claude', { accountId: 'a', email: 'a@example.test' }, now).map((x) => x.row.id)).toEqual(['b', 'a'])
+    })
   })
 })

@@ -60,6 +60,7 @@ function makeDeps(over: Partial<RestartDeps> = {}): RestartDeps {
       switchAccount: vi.fn(async () => ({ success: true as const, data: outcomes.shift() ?? { kind: 'switched' as const, resumed: true } })),
       check: vi.fn(async (id: string) => ({ success: true as const, data: { ...MAIN, id, identity: { email: `${id}@example.test`, signedIn: true, checkedAt: NOW, source: 'auth-status' as const } } })),
       noteLimit: vi.fn(async () => ({ success: true as const, data: undefined })),
+      clearLimit: vi.fn(async () => ({ success: true as const, data: undefined })),
       // Main's own view: the renderer's copy as it stands, unless a test says main knows more.
       list: vi.fn(async () => ({ success: true as const, data: useTerminalStore.getState().accountsView as AccountsView })),
       limitLook: vi.fn(async () => ({ success: true as const, data: { turned: false } as never })),
@@ -374,6 +375,57 @@ describe('the clock (R16)', () => {
     expect(groups()).toEqual([])
   })
 
+  // SWARM-R3-1: the login in a profile is the account, not the folder's nominal row (accounts.sh calls the folders interchangeable login
+  // slots, and on 2026-11-02 the default profile held the work login while the registry called it personal). Every swarm worker runs in the
+  // default profile, so a worker that ran out there ran out on WORK, and restarting it elsewhere carries a work conversation to another account.
+  describe('a profile that holds the work login (SWARM-R3-1)', () => {
+    const swapped = (): AccountsView => view([
+      { ...MAIN, email: 'a@example.test', lastEmail: 'w@example.test' },
+      { ...CODEDEV, email: 'c@example.test', lastEmail: 'c@example.test' },
+      { ...WORK, email: 'w@example.test', lastEmail: 'a@example.test' },
+    ])
+
+    it('asks the second question before a worker whose profile holds it is moved, and moves nothing until the user says yes', async () => {
+      await offerRestart(W1, LIMIT, () => WORDS, deps)
+      useTerminalStore.setState({ accountsView: swapped() })
+      await restartOn('g1', 'acc_c', deps)
+      expect(groups()[0].phase).toMatchObject({ kind: 'confirm', targetId: 'acc_c' })
+      expect((groups()[0].phase as { question: string }).question).toBe('personal is signed in as work, which isn\'t offered automatically. Carry this worker\'s conversation to codedev?')
+      expect(deps.accounts.switchAccount).not.toHaveBeenCalled()
+      await restartOn('g1', 'acc_c', deps, true)
+      expect(deps.accounts.switchAccount).toHaveBeenCalledTimes(1)
+      expect(deps.accounts.switchAccount).toHaveBeenCalledWith(expect.objectContaining({ targetId: 'acc_c', confirmedCarry: true }))
+    })
+
+    it('says "these workers\' conversations" for several, and runs the question\'s clock, as for any other unanswered question', async () => {
+      await offerRestart(W1, LIMIT, () => WORDS, deps)
+      await offerRestart(W2, LIMIT, () => WORDS, deps)
+      useTerminalStore.setState({ accountsView: swapped() })
+      await restartOn('g1', 'acc_c', deps)
+      expect((groups()[0].phase as { question: string }).question).toContain('Carry these workers\' conversations to codedev?')
+      await vi.advanceTimersByTimeAsync(RESTART_WAIT_MS + 1000)
+      expect(groups()).toEqual([])
+    })
+
+    it('asks nothing of the layout the registry was imported with: the same worker moves at once', async () => {
+      await offerRestart(W1, LIMIT, () => WORDS, deps)
+      useTerminalStore.setState({ accountsView: view([{ ...MAIN, email: 'a@example.test', lastEmail: 'a@example.test' }, { ...CODEDEV, email: 'c@example.test' }, { ...WORK, email: 'w@example.test', lastEmail: 'w@example.test' }]) })
+      await restartOn('g1', 'acc_c', deps)
+      expect(deps.accounts.switchAccount).toHaveBeenCalledTimes(1)
+      expect(deps.accounts.switchAccount).toHaveBeenCalledWith(expect.not.objectContaining({ confirmedCarry: true }))
+    })
+
+    it('offers no restart onto the profile that holds the work login to a worker that ran out elsewhere', async () => {
+      // A codedev worker ran out: the default profile holds the work login, so it is no way out (and its own check says so).
+      useTerminalStore.setState({ accountsView: swapped(), terminals: [worker('w1', { agentAccountId: 'acc_c' }), worker('w2')] })
+      const asked = (id: string) => ({ success: true as const, data: { ...MAIN, id, identity: { email: id === 'acc_m' ? 'w@example.test' : 'c@example.test', signedIn: true, checkedAt: NOW, source: 'auth-status' as const } } })
+      ;(deps.accounts as unknown as { check: unknown }).check = vi.fn(async (id: string) => asked(id))
+      const offered = await offerRestart(W1, LIMIT, () => WORDS, deps)
+      expect(offered).toBe(false)
+      expect(groups()).toEqual([])
+    })
+  })
+
   it("lets a question that is answered in time go on without the clock", async () => {
     await offerRestart(W1, LIMIT, () => WORDS, deps)
     useTerminalStore.setState({ accountsView: view([{ ...MAIN, autoOffer: false }, CODEDEV]) })
@@ -499,9 +551,10 @@ describe('restartOn: the restart', () => {
   it.each([
     [{ kind: 'busy' } as SwitchOutcome, 'Claude Code was working, so Termpolis typed nothing and left it as it was.'],
     [{ kind: 'agent-alive' } as SwitchOutcome, 'Claude Code didn\'t exit'],
-    [{ kind: 'asks-user', what: 'Bypass Permissions mode' } as SwitchOutcome, 'codedev is asking something only a person can answer'],
+    [{ kind: 'unknown-exit' } as SwitchOutcome, 'Termpolis couldn\'t tell whether Claude Code is still running'],
+    [{ kind: 'exit-unconfirmed' } as SwitchOutcome, 'didn\'t confirm it exited'],
     [{ kind: 'refused', why: 'a switch is already running in this terminal' } as SwitchOutcome, 'Termpolis didn\'t switch: a switch is already running in this terminal.'],
-  ])('reassigns a worker whose restart failed (%o), saying why', async (outcome, words) => {
+  ])('reassigns, as v1.54.0 did, a worker whose agent is still on its limit when the restart failed (%o), saying why', async (outcome, words) => {
     await offered()
     outcomes = [outcome]
     await restartOn('g1', 'acc_c', deps)
@@ -509,6 +562,63 @@ describe('restartOn: the restart', () => {
     const done = groups()[0].phase as { kind: 'done'; lines: string[] }
     expect(done.lines[0]).toContain(words)
     expect(done.lines[0]).toMatch(/The conductor reassigns its task\.$/)
+  })
+
+  // SWARM-R3-2: a restart that failed AFTER the engine had exited the worker's agent leaves a shell prompt, a sign-in screen or a dialog on
+  // its screen, not the limit. v1.54.0's report says "check its screen with read_output first: if the limit is there, close its terminal",
+  // so a conductor that follows its rules found no limit, left the worker idle, and its task was never given to another agent, though the
+  // card told the user "the conductor reassigns its task".
+  describe('a restart that failed after the agent was exited (SWARM-R3-2)', () => {
+    const AFTER_EXIT: Array<[SwitchOutcome, string]> = [
+      [{ kind: 'didnt-start', line: 'x' }, 'the account line never showed, so nothing was entered'],
+      [{ kind: 'didnt-start', line: 'x', otherShell: true }, 'a shell of another kind took the terminal\'s place'],
+      [{ kind: 'sign-in' }, 'the other account\'s sign-in has expired'],
+      [{ kind: 'asks-user', what: 'Bypass Permissions mode' }, 'it stopped at a question only a person can answer'],
+      [{ kind: 'no-outcome' }, 'nothing showed within 30 seconds'],
+      [{ kind: 'resume-not-found' }, 'the other account could not start it'],
+    ]
+
+    it.each(AFTER_EXIT)('tells the conductor what happened (%o) and that the limit is gone from the screen, not to look for it', async (outcome, reason) => {
+      await offered()
+      outcomes = [outcome, outcome]
+      await restartOn('g1', 'acc_c', deps)
+      const told = messages()[1]
+      expect(told).toBe(
+        `Claude (Build UI, terminal w1) could not be restarted on another account (${reason}), and its agent is no longer running there. Its task is "${TASK1.title}" (taskId ${TASK1.id}). ` +
+        'Close its terminal and give its task to another installed agent: the limit is no longer on its screen, so there is nothing to look for.',
+      )
+      expect(told).not.toMatch(/read_output|if the limit is there/)
+      // The card says the same thing to the user, as it did.
+      expect((groups()[0].phase as { lines: string[] }).lines[0]).toMatch(/The conductor reassigns its task\.$/)
+    })
+
+    it('says so when the fresh session it fell back on could not start either', async () => {
+      await offered()
+      outcomes = [{ kind: 'resume-not-found' }, { kind: 'didnt-start', line: 'x' }]
+      await restartOn('g1', 'acc_c', deps)
+      expect(messages()[1]).toContain('(the account line never showed, so nothing was entered)')
+    })
+
+    it('still never tells it to close a worker something else holds: the report waits, and says the same when it comes', async () => {
+      await offered()
+      outcomes = [{ kind: 'no-outcome' }]
+      // Another relaunch takes the terminal the moment this one lets go of it: the report waits for it, as v1.54.0's does.
+      let held = false
+      let armed = true
+      const unsub = useTerminalStore.subscribe((state) => {
+        if (state.relaunching.w1) held = true
+        else if (held && armed) {
+          armed = false
+          useTerminalStore.setState({ relaunching: { w1: 'model' } as never })
+        }
+      })
+      await restartOn('g1', 'acc_c', deps)
+      unsub()
+      expect(messages()).toHaveLength(1)
+      useTerminalStore.setState({ relaunching: {} })
+      await vi.advanceTimersByTimeAsync(LOCK_RECHECK_MS + 1000)
+      expect(messages()[1]).toContain('could not be restarted on another account (nothing showed within 30 seconds)')
+    })
   })
 
   it('refuses once the conductor closed the worker, typing nothing and telling it nothing', async () => {
@@ -1540,5 +1650,130 @@ describe('the swarm offer and an account that is signed out (UI addendum 2.3)', 
     signedOut('acc_c', 'acc_n')
     expect(await offerConductorRun(WORDS, 'acc_m', deps)).toBe(true)
     expect(groups()[0]).toMatchObject({ conductor: true, targets: [], signIn: ['acc_c'] })
+  })
+})
+
+// SWARM-R3-3 (R11): the clear lets go of every timer AND of the handles it kept: a second clear finds none to cancel again, and a new swarm's
+// offer for the same terminal starts and withdraws cleanly.
+describe('clearSwarmRestarts forgets what it cancelled (SWARM-R3-3)', () => {
+  const closeAndReassign = (): string[] => messages().filter((m) => m.includes('close its terminal, then give its task to another installed agent'))
+
+  it('cancels each timer once: a second clear cancels none, and the next offer for the same worker is clean', async () => {
+    const clearTimer = vi.fn((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>))
+    deps = makeDeps({ clearTimer })
+    ;(window as any).swarmAPI = deps.swarm
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }] })
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    useTerminalStore.getState().beginRelaunch('w1', 'account')
+    await declineRestart(groups()[0].id, deps)
+    await vi.advanceTimersByTimeAsync(LOCK_RECHECK_MS * 2)
+    clearSwarmRestarts(deps)
+    const cancelled = clearTimer.mock.calls.length
+    expect(cancelled).toBeGreaterThan(0)
+    clearSwarmRestarts(deps)
+    expect(clearTimer).toHaveBeenCalledTimes(cancelled)
+    useTerminalStore.getState().endRelaunch('w1')
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+    expect(groups()).toHaveLength(1)
+    await declineRestart(groups()[0].id, deps)
+    expect(closeAndReassign()).toHaveLength(1)
+  })
+
+  // X06d: the sign-in list is judged on the model the worker ran out on, not on whatever the words say once they are read again.
+  it('keeps a signed-out account out of the sign-in list for the model the worker hit, and lists it for an account-wide limit', async () => {
+    const third = row({ id: 'acc_t', label: 'third', profile: '/h/.claude-third', isDefault: false, order: 3, lastEmail: 't@example.test' })
+    const opusOut = { ...third, limit: { seenAt: NOW - 1000, resetsAt: NOW + 3_600_000, text: "You've hit your Opus limit", scope: 'model' as const, model: 'Opus' } }
+    useTerminalStore.setState({ accountsView: view([MAIN, CODEDEV, opusOut, WORK]), swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }] })
+    ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, data: view([MAIN, CODEDEV, opusOut, WORK]) })
+    ;(deps.accounts.check as ReturnType<typeof vi.fn>).mockImplementation(async (id: string) => ({
+      success: true as const, data: { ...MAIN, id, identity: { email: null, signedIn: id !== 'acc_t', checkedAt: NOW, source: 'auth-status' as const } },
+    }))
+    expect(await offerRestart(W1, { status: 'blocked', summary: "You've hit your Opus limit" }, () => "You've hit your Opus limit", deps)).toBe(true)
+    expect(groups()[0].signIn).toBeUndefined()
+    useTerminalStore.setState({ swarmRestarts: [] })
+    expect(await offerRestart(W1, LIMIT, () => WORDS, deps)).toBe(true)
+    expect(groups()[0].signIn).toEqual(['acc_t'])
+  })
+})
+
+// SWARM-R3-4 (MW2-1, mitigated): a healthy worker whose answer quotes a limit reads as stopped, as in v1.54.0, but the stop now also records
+// that limit against the account until its reset time (up to a day), which benches the account for the chooser, the launch ask and every
+// later offer. A worker read at work again after such a stop was not stopped (or the limit lifted): the limit the stop recorded goes, as
+// "Mark available" would take it, unless the user acted on it (a restart accepted it).
+describe('a stop that recorded a limit, and the worker working again (SWARM-R3-4)', () => {
+  const stop = async (): Promise<void> => {
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }] })
+    await offerRestart(W1, LIMIT, () => WORDS, deps)
+  }
+  const cleared = (): string[] => (deps.accounts.clearLimit as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string)
+
+  it('takes the limit it recorded back when the worker with an open offer is read at work again', async () => {
+    await stop()
+    expect((deps.accounts.noteLimit as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])).toEqual(['acc_m'])
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual(['acc_m'])
+    // The view is read again after the limit goes, as it was after it was recorded.
+    expect(deps.accounts.list).toHaveBeenCalledTimes(2)
+  })
+
+  it('takes it back too when there was no offer to withdraw (no other account was a way out)', async () => {
+    useTerminalStore.setState({ accountsView: view([MAIN]) })
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }] })
+    expect(await offerRestart(W1, LIMIT, () => WORDS, deps)).toBe(false)
+    expect(groups()).toEqual([])
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual(['acc_m'])
+    // And once: a second read at work has nothing of its own to take back.
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual(['acc_m'])
+  })
+
+  it('takes it back for a worker whose offer was declined, once it is at work again', async () => {
+    await stop()
+    await declineRestart(groups()[0].id, deps)
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual(['acc_m'])
+  })
+
+  it('never takes it back once the user acted on it: a restart accepted the limit, and the worker at work on the other account says nothing of it', async () => {
+    await stop()
+    await restartOn('g1', 'acc_c', deps)
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual([])
+  })
+
+  it('never takes it back for a worker whose stop recorded nothing', async () => {
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual([])
+  })
+
+  it('goes on withdrawing the offer when the account will not take the limit back', async () => {
+    await stop()
+    ;(deps.accounts.clearLimit as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('gone'))
+    await withdrawFromOffer(W1, deps)
+    expect(groups()).toEqual([])
+    expect(messages()[messages().length - 1]).toBe(withdrawnMessage(W1))
+  })
+
+  it('forgets what a cleared swarm\'s workers recorded, so a new swarm\'s worker with the same terminal id takes nothing back', async () => {
+    await stop()
+    clearSwarmRestarts(deps)
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual([])
+  })
+
+  it('is what the worker reading at work again does, from the stop tracker', async () => {
+    useTerminalStore.setState({ swarmAgents: [{ terminalId: 'w1', agentName: 'Claude', role: 'Build UI', status: 'blocked' }] })
+    setSwarmWorkingAgain((worker) => withdrawFromOffer(worker, deps))
+    try {
+      await noteWorkerStatus(W1, { status: 'blocked', summary: 'usage limit reached (resets 3pm)' }, (w, r, words) => offerRestart(w, r, words, deps), () => WORDS)
+      expect(groups()).toHaveLength(1)
+      expect(cleared()).toEqual([])
+      await noteWorkerStatus(W1, { status: 'working', summary: 'working' }, undefined)
+      expect(cleared()).toEqual(['acc_m'])
+      expect(groups()).toEqual([])
+    } finally {
+      setSwarmWorkingAgain(null)
+    }
   })
 })

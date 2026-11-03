@@ -199,6 +199,20 @@ function actualEmail(r: AccountRowView): string | null {
   return isProfileAgent(r.agent) ? r.lastEmail : r.email ?? null
 }
 
+/**
+ * The account kept from the automatic offers (work) whose own login is in `r`'s profile, though `r` is a different row: undefined for
+ * none. The login in a profile decides which account it is, as accounts.sh's account_for_email decides it for David's own failover,
+ * and not the folder it sits in: his logins move between the folders (accounts.sh calls them interchangeable login slots; on
+ * 2026-11-02 work sat in the default profile, and the personal profile was signed in to work on 2026-10-20). A conversation on such a
+ * profile is a work conversation, and a restart onto it puts one on the employer's account. `email` is the login when the caller knows
+ * a fresher one than the row's last read (a check). Never an account with no expected email to match, and never `r` itself: its own
+ * flag is read by its callers.
+ */
+export function unofferedLoginOwner(rows: readonly AccountRowView[], r: AccountRowView, email: string | null = actualEmail(r)): AccountRowView | undefined {
+  if (!isProfileAgent(r.agent) || !email) return undefined
+  return rows.find((x) => x.agent === r.agent && x.id !== r.id && !x.autoOffer && sameEmail(x.email, email))
+}
+
 /** A recorded limit whose reset time has passed has lifted, whatever the view was last read as: main
  *  drops it when it next lists, and the view the renderer holds is only as new as its last read. A limit
  *  with no time read stays until main drops it (it knows the cooldown). */
@@ -236,7 +250,10 @@ export function limitTargets(
   const targets: LimitTarget[] = []
   for (const r of round) {
     if (!r.autoOffer) continue
-    targets.push(targetOf(r, limited.email, outEmails, now, checks[r.id]))
+    // A profile that holds the work login is the work account, whatever folder holds it: never a way out (D14, SWARM-R3-1).
+    const check = checks[r.id]
+    if (unofferedLoginOwner(rows, r, check?.kind === 'signed-in' && check.email ? check.email : actualEmail(r))) continue
+    targets.push(targetOf(r, limited.email, outEmails, now, check))
   }
   if (at >= 0) targets.push({ row: own[at], state: 'this', text: 'this terminal\'s account' })
   return targets

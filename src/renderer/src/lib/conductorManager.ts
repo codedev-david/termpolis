@@ -6,6 +6,7 @@ import { conductorRunScript, conductorLaunchCommand, conductorLimitOf, findCondu
 import { clearSwarmRestarts, liveRestartDeps, offerConductorRun } from './swarmRestart'
 import { getTerminalDefaults } from './terminalDefaults'
 import { CONDUCTOR_CLAUDE_HOME_FILE } from '../../../shared/conductorFiles'
+import { unofferedLoginOwner } from '../../../shared/accountLimits'
 import { recordSwarmError } from './sentry'
 import { stopAllBridges } from './swarmBridgeManager'
 import type { TerminalSession } from '../types'
@@ -24,7 +25,13 @@ interface ConductorState {
   taskDescription?: string
   /** The account it was run again on (§9); until then, the one Termpolis's environment gives it. */
   accountId?: string
+  /** The run on now is a resume of its earlier conversation (§9): one whose transcript turns out not to be there is run once more
+   *  as a new session (SWARM-R3-5). Cleared once that has been tried, so it cannot loop. */
+  resumed?: boolean
 }
+
+/** What Claude Code prints, and exits 1 on, for a session it was told to resume that has no transcript. */
+const NO_CONVERSATION = /No conversation found with session ID/
 
 /** What was already there when the conductor was launched, and so says nothing about this run.
  *  The swarm bus is emptied only by the dashboard's Clear: a swarm started after another one
@@ -326,7 +333,7 @@ function conductorAccountId(): string | null {
  * with the same goal and a word that a swarm is in progress. The swarm's workers and tasks stay.
  * Answers why it couldn't, or null.
  */
-export async function relaunchConductor(targetId: string): Promise<string | null> {
+export async function relaunchConductor(targetId: string, fresh = false): Promise<string | null> {
   const { terminalId: id, cwd, taskDescription } = conductorState
   const store = useTerminalStore.getState()
   if (!id || !cwd || taskDescription === undefined || conductorState.status !== 'error' || !store.terminals.some((t) => t.id === id)) {
@@ -337,13 +344,13 @@ export async function relaunchConductor(targetId: string): Promise<string | null
   if (!target) return 'that account isn\'t registered any more'
   const from = view!.accounts.find((r) => r.id === conductorAccountId())
   const seesTranscripts = (r: { isDefault: boolean; shares: string[] }): boolean => r.isDefault || r.shares.includes('projects')
-  const resume = !!conductorState.sessionId && !!from && seesTranscripts(from) && seesTranscripts(target)
+  const resume = !fresh && !!conductorState.sessionId && !!from && seesTranscripts(from) && seesTranscripts(target)
   const prompt = resume ? CONDUCTOR_RESUMED : `${await promptFor(taskDescription, cwd)}\n\n${CONDUCTOR_IN_PROGRESS}`
   const sessionId = resume ? conductorState.sessionId! : uuid()
   const runCmd = await writeRun(cwd, prompt, sessionId, { account: { profile: target.profile }, resume })
   // What the terminal showed before, its last report among it, is no part of this run.
   launch = { ...launch, outputOffset: (await readLaunchBaseline(id)).outputOffset }
-  conductorState = { ...conductorState, status: 'running', error: null, sessionId, accountId: target.id }
+  conductorState = { ...conductorState, status: 'running', error: null, sessionId, accountId: target.id, ...(resume ? { resumed: true } : { resumed: false }) }
   if (!resume) traceWatchedFor = null
   store.setSwarmActive(true)
   store.setSwarmNotification(null)
@@ -366,8 +373,12 @@ export async function runConductorOn(groupId: string, targetId: string, confirme
   const rows = store.accountsView?.accounts ?? []
   const from = rows.find((r) => r.id === g.accountId)
   const to = rows.find((r) => r.id === targetId)
-  if (!confirmed && from && to && !from.autoOffer) {
-    store.putSwarmRestart({ ...g, phase: { kind: 'confirm', targetId, question: `${from.label} isn't offered automatically. Carry the conductor's conversation to ${to.label}?` } })
+  // The account the conductor's conversation is on: the row itself when it is kept from the automatic offers, else the one whose login
+  // the profile holds (the conductor runs in the default profile, and the logins move between the folders: SWARM-R3-1).
+  const kept = from ? (from.autoOffer ? unofferedLoginOwner(rows, from) : from) : undefined
+  if (!confirmed && from && to && kept) {
+    const who = kept === from ? `${from.label} isn't offered automatically.` : `${from.label} is signed in as ${kept.label}, which isn't offered automatically.`
+    store.putSwarmRestart({ ...g, phase: { kind: 'confirm', targetId, question: `${who} Carry the conductor's conversation to ${to.label}?` } })
     return
   }
   store.putSwarmRestart({ ...g, phase: { kind: 'restarting', targetId } })
@@ -704,6 +715,12 @@ async function endOnConductorExit(
   if (monitoringInterval) {
     clearInterval(monitoringInterval)
     monitoringInterval = null
+  }
+  // `claude -p --resume <id>` of a conversation that is not there prints "No conversation found with session ID" and exits 1 before any
+  // login check: a run again that resumed such a one is run once more as a new session on the same account, once (SWARM-R3-5).
+  if (conductorState.resumed && conductorState.accountId && NO_CONVERSATION.test(exit.lastLines.join('\n'))) {
+    conductorState = { ...conductorState, resumed: false }
+    if ((await relaunchConductor(conductorState.accountId, true)) === null) return
   }
   store.setSwarmNotification({
     message: `${error}. Its last output is in the Swarm Dashboard's Messages tab, and Debug there shows all of it.`,

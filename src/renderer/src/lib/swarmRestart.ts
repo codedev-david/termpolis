@@ -25,7 +25,7 @@
 import { v4 as uuid } from 'uuid'
 import { ACCOUNT_AGENT_LABEL, isProfileAgent } from '../../../shared/agentAccounts'
 import type { AccountRowView, AccountsView, ProfileAgent } from '../../../shared/agentAccounts'
-import { limitKindOf, limitTargets, parseResetsAt, resetTextOf } from '../../../shared/accountLimits'
+import { limitKindOf, limitTargets, parseResetsAt, resetTextOf, unofferedLoginOwner } from '../../../shared/accountLimits'
 import type { LimitKind, LimitTarget, TargetCheck } from '../../../shared/accountLimits'
 import type { AgentStatusResult } from '../../../shared/agentStatusDetector'
 import type { SwitchOutcome } from '../../../shared/accountSwitch'
@@ -100,7 +100,7 @@ export interface RestartStore {
 export interface RestartDeps extends SwitchDeps {
   store: () => RestartStore
   swarm: Pick<SwarmAPI, 'getTasks' | 'sendMessage'>
-  accounts: Pick<AccountsAPI, 'switchAccount' | 'check' | 'noteLimit' | 'limitLook' | 'list'>
+  accounts: Pick<AccountsAPI, 'switchAccount' | 'check' | 'noteLimit' | 'clearLimit' | 'limitLook' | 'list'>
   now: () => number
   newId: () => string
   /** The window has the focus. */
@@ -205,7 +205,7 @@ async function tell(deps: RestartDeps, content: string): Promise<void> {
 /** v1.54.0's close-and-reassign, for a worker whose offer ended without a restart. Never while a
  *  relaunch holds the worker (R16): it looks again when the lock lets go. And not at all for a
  *  worker the conductor closed meanwhile: there is nothing left to close. */
-async function reassign(w: RestartWorker, deps: RestartDeps): Promise<void> {
+async function reassign(w: RestartWorker, deps: RestartDeps, afterExit?: string): Promise<void> {
   const s = deps.store()
   if (!s.terminals.some((t) => t.id === w.terminalId)) {
     await closedBefore(w, deps)
@@ -214,10 +214,23 @@ async function reassign(w: RestartWorker, deps: RestartDeps): Promise<void> {
   if (s.relaunching[w.terminalId]) {
     // Tracked with the worker's other timers: a relaunch that restarts it ends the wait (noteWorkerSwitched),
     // and the conductor is not then told to close the worker that was just restarted.
-    deferred.set(w.terminalId, deps.setTimer(() => { deferred.delete(w.terminalId); void reassign(w, deps) }, LOCK_RECHECK_MS))
+    deferred.set(w.terminalId, deps.setTimer(() => { deferred.delete(w.terminalId); void reassign(w, deps, afterExit) }, LOCK_RECHECK_MS))
     return
   }
-  await reportWorkerStop(w, { status: 'blocked', summary: w.summary })
+  await reportWorkerStop(w, { status: 'blocked', summary: w.summary }, afterExit)
+}
+
+/** Why a restart that failed ended with the worker's agent already exited, in a few words for the conductor; undefined for an outcome
+ *  that left the agent where it was (busy, still running, not confirmed gone, refused), whose screen still shows the limit. */
+function exitedWhy(o: SwitchOutcome): string | undefined {
+  switch (o.kind) {
+    case 'didnt-start': return o.otherShell ? 'a shell of another kind took the terminal\'s place' : 'the account line never showed, so nothing was entered'
+    case 'sign-in': return 'the other account\'s sign-in has expired'
+    case 'asks-user': return 'it stopped at a question only a person can answer'
+    case 'no-outcome': return 'nothing showed within 30 seconds'
+    case 'resume-not-found': return 'the other account could not start it'
+    default: return undefined
+  }
 }
 
 /** Workers the conductor closed itself (close_terminal): it knows, so it is told nothing of them. */
@@ -239,10 +252,15 @@ async function closedBefore(w: RestartWorker, deps: RestartDeps): Promise<void> 
 const clocks = new Map<string, unknown>()
 /** A close-and-reassign waiting for a relaunch to let go of its worker (R16), by worker. */
 const deferred = new Map<string, unknown>()
+/** The account whose limit each worker's stop recorded (offerRestart), until the user acts on it (a restart accepts it) or it is taken back:
+ *  a worker read at work again after a stop was not stopped, or its limit lifted, and the record would bench the account until its reset
+ *  time (SWARM-R3-4). */
+const recorded = new Map<string, string>()
 
 export function _resetSwarmRestartForTest(): void {
   clocks.clear()
   deferred.clear()
+  recorded.clear()
   conductorClosed.clear()
 }
 
@@ -284,6 +302,7 @@ async function timeUp(terminalId: string, deps: RestartDeps): Promise<void> {
  *  there is nothing to wait for. An offer already restarting it is that restart's. */
 export async function withdrawFromOffer(worker: SwarmWorker, deps: RestartDeps): Promise<void> {
   const s = deps.store()
+  await takeBackLimit(worker.terminalId, deps)
   const g = s.swarmRestarts.find((x) => (x.phase.kind === 'offered' || x.phase.kind === 'confirm') && x.workers.some((w) => w.terminalId === worker.terminalId))
   // A worker declined while a relaunch held it has a close-and-reassign waiting, and no offer: it is withdrawn too.
   if (!g && !deferred.has(worker.terminalId)) return
@@ -294,6 +313,19 @@ export async function withdrawFromOffer(worker: SwarmWorker, deps: RestartDeps):
     else s.dropSwarmRestart(g.id)
   }
   await tell(deps, withdrawnMessage(worker))
+}
+
+/** The limit this worker's stop recorded against its account goes, as "Mark available" would take it, once the worker is at work again: it was
+ *  no stop of the account (a healthy answer that quotes a limit message reads as one), or the limit lifted. Nothing of the offer depends on it. */
+async function takeBackLimit(terminalId: string, deps: RestartDeps): Promise<void> {
+  const accountId = recorded.get(terminalId)
+  if (accountId === undefined) return
+  recorded.delete(terminalId)
+  try {
+    await deps.accounts.clearLimit(accountId)
+    const fresh = await deps.accounts.list()
+    if (fresh.success) deps.store().setAccountsView(fresh.data)
+  } catch { /* the record then lapses at its reset time */ }
 }
 
 /** Workers of open offers whose terminal is gone (the user closed its pane): off the offer and its clock,
@@ -326,6 +358,7 @@ export function clearSwarmRestarts(deps: RestartDeps): void {
     for (const h of timers.values()) deps.clearTimer(h)
     timers.clear()
   }
+  recorded.clear()
 }
 
 /** The open task the conductor assigned to the worker, if any. */
@@ -388,6 +421,7 @@ export async function offerRestart(worker: SwarmWorker, result: AgentStatusResul
   try {
     await deps.accounts.noteLimit(own.id, { text: said, resetsAt, scope: kind.scope, window: kind.window, ...(own.lastEmail ? { email: own.lastEmail } : {}) })
   } catch { /* the offer goes on without the record */ }
+  recorded.set(worker.terminalId, own.id)
   try {
     const fresh = await deps.accounts.list()
     if (fresh.success) deps.store().setAccountsView(fresh.data)
@@ -564,8 +598,12 @@ export async function restartOn(groupId: string, targetId: string, deps: Restart
   const view = s.accountsView
   const target = view?.accounts.find((r) => r.id === targetId && r.agent === g.agent)
   const from = view?.accounts.find((r) => r.id === g.accountId)
-  if (!confirmed && target && from && !from.autoOffer) {
-    const question = `${from.label} isn't offered automatically. Carry ${g.workers.length === 1 ? 'this worker\'s conversation' : 'these workers\' conversations'} to ${target.label}?`
+  // The account the workers' conversations are on: the row itself when it is kept from the automatic offers, else the one whose login
+  // the profile holds (the logins move between the folders, and every swarm worker runs in the default profile: SWARM-R3-1).
+  const kept = from && view ? (from.autoOffer ? unofferedLoginOwner(view.accounts, from) : from) : undefined
+  if (!confirmed && target && from && kept) {
+    const who = kept === from ? `${from.label} isn't offered automatically.` : `${from.label} is signed in as ${kept.label}, which isn't offered automatically.`
+    const question = `${who} Carry ${g.workers.length === 1 ? 'this worker\'s conversation' : 'these workers\' conversations'} to ${target.label}?`
     s.putSwarmRestart({ ...g, phase: { kind: 'confirm', targetId, question } })
     // An unanswered question ends like an unanswered offer: the conductor is waiting on it too.
     for (const w of g.workers) startClock(w.terminalId, RESTART_WAIT_MS, deps)
@@ -610,6 +648,8 @@ export function failureText(o: SwitchOutcome, agent: ProfileAgent, target: Accou
 interface Restarted { line: string; again?: RestartWorker }
 
 async function restartWorker(w: RestartWorker, agent: ProfileAgent, target: AccountRowView | undefined, deps: RestartDeps, confirmed = false): Promise<Restarted> {
+  // The user chose to leave the account: its limit is no false stop, and the worker at work on another account says nothing of it (SWARM-R3-4).
+  recorded.delete(w.terminalId)
   const name = `${w.agentName} (${w.role})`
   const s = deps.store()
   const term = s.terminals.find((t) => t.id === w.terminalId)
@@ -652,7 +692,7 @@ async function restartWorker(w: RestartWorker, agent: ProfileAgent, target: Acco
         : `${name}: on ${target.label}, with a new session: the conductor sends its task again.`,
     }
   }
-  await reassign(w, deps)
+  await reassign(w, deps, exitedWhy(outcome))
   return { line: `${name}: ${failureText(outcome, agent, target)} The conductor reassigns its task.` }
 }
 

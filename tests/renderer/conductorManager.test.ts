@@ -1249,6 +1249,69 @@ describe('conductorManager', () => {
         expect(offer()).toMatchObject({ accountId: 'acc_b', targets: ['acc_c', 'acc_m'] })
       })
 
+      // SWARM-R3-3 (V11): the output the old run left, its limit report among it, is no part of the new run. findConductorExit scans from the
+      // end for the LAST exit line, so without the baseline the next 15 s tick read the OLD limit exit and ended the new run at once.
+      it('does not end the new run on the exit report the old one left in the terminal', async () => {
+        await atLimit()
+        // The terminal as it really is: one buffer that only grows, read from the offset the monitor asks for. The old run's limit report
+        // is in it, and is the last exit line in it when the new run starts.
+        const buffer = `${launchEcho}Working on it
+${WORDS}
+[termpolis-conductor-exited] 1
+PS C:\proj> `
+        ;(window.termpolis.readTerminalBuffer as Mock).mockImplementation(async (_id: string, from = 0) => ({
+          success: true, data: { output: buffer.slice(from), length: buffer.length - from, nextOffset: buffer.length },
+        }))
+        await runConductorOn(offer().id, 'acc_b')
+        expect(getConductorState().status).toBe('running')
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getConductorState()).toMatchObject({ status: 'running', error: null })
+        expect(useTerminalStore.getState().swarmActive).toBe(true)
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getConductorState().status).toBe('running')
+      })
+
+      // SWARM-R3-3 (V06): a conversation is resumed only where the account it ran on can share the transcript.
+      it('starts it anew when the account it ran on does not share projects/, though the account picked does', async () => {
+        const LONE = rowOf({ id: 'acc_l', label: 'lone', profile: '/h/.claude-l', isDefault: false, order: 3, shares: [] as string[], lastEmail: 'l@example.test' })
+        await atLimit([MAIN, SHARED, LONE])
+        useTerminalStore.setState({ accountsView: viewOf([MAIN, SHARED, LONE], { claude: 'acc_l' }) })
+        vi.mocked(uuidV4).mockReturnValueOnce('fresh-session' as never)
+        await relaunchConductor('acc_b')
+        expect(written('.termpolis-conductor-run.sh')).toContain("--session-id 'fresh-session' --dangerously-skip-permissions")
+        expect(written('.termpolis-conductor-task.md').endsWith(`\n\n${CONDUCTOR_IN_PROGRESS}`)).toBe(true)
+      })
+
+      // SWARM-R3-5: the real claude 2.1.317 answers `claude -p --resume <unknown id>` with "No conversation found with session ID" and exit 1,
+      // before any login check. A resume whose transcript is missing (an early failure, a link target of the user's own) ended the run at
+      // once with an exit-1 report that has no limit words, so no new offer followed and the card had already said it runs again.
+      it('runs it once more with a new session when its resume found no conversation, and not again when that fails too', async () => {
+        await atLimit()
+        await runConductorOn(offer().id, 'acc_b')
+        expect(written('.termpolis-conductor-run.sh')).toContain("--resume 'conductor-uuid-1' --dangerously-skip-permissions")
+        vi.mocked(uuidV4).mockReturnValueOnce('fresh-session' as never)
+        screen(`${launchEcho}x\r\nNo conversation found with session ID: conductor-uuid-1\r\n[termpolis-conductor-exited] 1\r\n`, 9999)
+        await vi.advanceTimersByTimeAsync(15000)
+        const script = written('.termpolis-conductor-run.sh')
+        expect(script).toContain("--session-id 'fresh-session' --dangerously-skip-permissions")
+        expect(script).not.toContain('--resume')
+        expect(written('.termpolis-conductor-task.md').endsWith(`\n\n${CONDUCTOR_IN_PROGRESS}`)).toBe(true)
+        expect(getConductorState()).toMatchObject({ status: 'running', error: null, sessionId: 'fresh-session', accountId: 'acc_b' })
+        // The same words from the run that did start a new session end it as any exit does: no loop.
+        screen(`${launchEcho}y\r\nNo conversation found with session ID: fresh-session\r\n[termpolis-conductor-exited] 1\r\n`, 19999)
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+      })
+
+      it('does not run it again for those words from a run that was not a resume', async () => {
+        await atLimit()
+        vi.mocked(uuidV4).mockReturnValueOnce('fresh-session' as never)
+        await runConductorOn(offer().id, 'acc_c')
+        screen(`${launchEcho}x\r\nNo conversation found with session ID: x\r\n[termpolis-conductor-exited] 1\r\n`, 9999)
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+      })
+
       it('starts it anew, with its goal and a word that a swarm is in progress, where the account can\'t see its transcript', async () => {
         await atLimit()
         vi.mocked(uuidV4).mockReturnValueOnce('fresh-session' as never)
@@ -1272,6 +1335,18 @@ describe('conductorManager', () => {
         expect(written('.termpolis-conductor-run.sh')).toContain('\nunset CLAUDE_CONFIG_DIR\n')
         // Both see the default profile's transcripts: it resumes.
         expect(written('.termpolis-conductor-task.md')).toBe(CONDUCTOR_RESUMED)
+      })
+
+      // SWARM-R3-1: the conductor runs in the default profile too, and the login there is the account (accounts.sh's account_for_email),
+      // not the row's nominal name: with the work login in it, carrying its conversation to codedev is carrying work's.
+      it('asks once more before carrying the conductor off a profile that holds the work login, whatever the row calls it', async () => {
+        const WORK_ROW = rowOf({ id: 'acc_w', label: 'work', profile: '/h/.claude-w', isDefault: false, autoOffer: false, order: 2, email: 'w@example.test', lastEmail: 'a@example.test' })
+        await atLimit([rowOf({ email: 'a@example.test', lastEmail: 'w@example.test' }), { ...SHARED, email: 'b@example.test' }, WORK_ROW])
+        await runConductorOn(offer().id, 'acc_b')
+        expect(offer().phase).toEqual({ kind: 'confirm', targetId: 'acc_b', question: 'personal is signed in as work, which isn\'t offered automatically. Carry the conductor\'s conversation to codedev?' })
+        expect(getConductorState().status).toBe('error')
+        await runConductorOn(offer().id, 'acc_b', true)
+        expect(getConductorState().status).toBe('running')
       })
 
       it('asks once more before carrying the conductor off an account not offered automatically (R17)', async () => {

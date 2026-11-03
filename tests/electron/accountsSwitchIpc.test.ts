@@ -795,3 +795,81 @@ describe('accounts:switch, after a relaunch that did not settle (round 1)', () =
     expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: b, shellType: 'gitbash' })).toBe('this terminal already runs on b')
   })
 })
+
+// SWARM-R3-1, main's side: the second confirmation (D14, R17) is decided by the login in a profile, as accounts.sh's account_for_email
+// decides it, not by the registry row's own flag. The logins move between the folders (on 2026-11-02 the default profile held the work
+// login while the registry called it personal), and a switch that carried a work conversation to codedev on the row's word alone
+// went through with no question, from the renderer's menu, the limit card, the swarm's restart offer and a worker's chip alike.
+describe('accounts:switch, the login in a profile decides whether it is the work account (SWARM-R3-1)', () => {
+  const ASK = 'work isn\'t offered automatically, so switching a conversation to or from it needs your confirmation'
+
+  /** personal (the default profile, expecting its own address), codedev, and work (never offered, expecting the work address): and
+   *  the logins as they sit now. `swapped`: the default profile holds the WORK login, and the work folder holds the personal one. */
+  async function accounts(swapped: boolean): Promise<{ main: string; codedev: string; work: string }> {
+    const { main, b, bDir } = await twoClaude()
+    const w = await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'work', folder: 'new', copy: false, share: [] })
+    await ok(ACCOUNTS_IPC.update, { id: main, email: 'a@example.test' })
+    await ok(ACCOUNTS_IPC.update, { id: b, email: 'c@example.test' })
+    await ok(ACCOUNTS_IPC.update, { id: w.account.id, email: 'w@example.test', autoOffer: false })
+    writeJson(sb.paths.claudeJson, { oauthAccount: { emailAddress: swapped ? 'w@example.test' : 'a@example.test' } })
+    writeJson(join(bDir, '.claude.json'), { oauthAccount: { emailAddress: 'c@example.test' } })
+    writeJson(join(w.account.profile!, '.claude.json'), { oauthAccount: { emailAddress: swapped ? 'a@example.test' : 'w@example.test' } })
+    return { main, codedev: b, work: w.account.id }
+  }
+  const aConversation = (): void => {
+    noteAgentStart('t1', { at: term.launchedAt, commands: [term.launchLine()] })
+    noteTerminalSession('t1', ID)
+    mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+    writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+  }
+
+  it('refuses a switch off the profile that holds the work login, though its row is offered, and types nothing', async () => {
+    const { main, codedev } = await accounts(true)
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: codedev, shellType: 'gitbash' })).toBe(ASK)
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: codedev, shellType: 'gitbash', confirmedCarry: 'yes' })).toBe(ASK)
+    expect(term.writes).toEqual([])
+    expect(terminalAccountId('t1')).toBe(main)
+  })
+
+  it('goes ahead, carrying the conversation, once the user confirmed', async () => {
+    const { main, codedev } = await accounts(true)
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect((await switchTo(codedev, { confirmedCarry: true })).kind).toBe('switched')
+    expect(terminalAccountId('t1')).toBe(codedev)
+  })
+
+  it('refuses a switch ONTO the profile that holds the work login, though its row is offered', async () => {
+    const { main, codedev } = await accounts(true)
+    noteTerminalAccount('t1', codedev)
+    aConversation()
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: main, shellType: 'gitbash' })).toBe(ASK)
+    expect(term.writes).toEqual([])
+    expect((await switchTo(main, { confirmedCarry: true })).kind).toBe('switched')
+  })
+
+  it('asks nothing between two profiles neither of which holds the work login (the work folder itself holds the personal one)', async () => {
+    const { main, codedev } = await accounts(false)
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect((await switchTo(codedev)).kind).toBe('switched')
+  })
+
+  it('asks nothing when no login is known to belong to the work account: an unreadable profile, or no expected email', async () => {
+    const { main, codedev, work } = await accounts(true)
+    // The work account expects no email any more: there is no login to match.
+    await ok(ACCOUNTS_IPC.update, { id: work, email: '' })
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect((await switchTo(codedev)).kind).toBe('switched')
+  })
+
+  it('still asks for the work account itself by its flag, whoever holds its login', async () => {
+    const { main, work } = await accounts(true)
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: work, shellType: 'gitbash' })).toBe('work isn\'t offered automatically, so switching a conversation to or from it needs your confirmation')
+  })
+})

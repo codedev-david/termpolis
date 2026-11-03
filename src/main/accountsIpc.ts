@@ -354,6 +354,19 @@ export function envAccounts(doc: AccountsDoc, env: Readonly<Record<string, strin
   return out
 }
 
+/**
+ * The account kept from the automatic offers (work) whose own login is in `a`'s profile, though `a` is a different account: the login
+ * in a profile decides which account it is, as accounts.sh's account_for_email decides it, and David's logins move between his folders
+ * (SWARM-R3-1; the renderer's unofferedLoginOwner reads the same from the view). Undefined for none: no login read, no account that
+ * expects it, or only `a`'s own.
+ */
+function unofferedLoginIn(doc: AccountsDoc, a: AgentAccount, home: string, fsx: AccountFs): AgentAccount | undefined {
+  if (!isProfileAgent(a.agent)) return undefined
+  const login = lastSignedInAs(a, home, doc, fsx)
+  if (!login) return undefined
+  return doc.file.accounts.find((x) => x.agent === a.agent && x.id !== a.id && !x.autoOffer && !!x.email && x.email.toLowerCase() === login.toLowerCase())
+}
+
 /** The longest typed line kept: a pasted file is no account line. */
 const TYPED_LINE_MAX = 4096
 /** One escape sequence at the head of a write, whole: an X10 mouse report (three bytes follow its CSI M), any other CSI, an OSC
@@ -598,7 +611,11 @@ export interface AccountTarget {
 export function resolveAccountTarget(paths: Pick<AgentIntegrationPaths, 'home' | 'userData'>, accountId: unknown, fsx: AccountFs = accountFs): AccountTarget {
   if (typeof accountId !== 'string' || !accountId) return { connected: true }
   const loaded = loadAccounts(paths.userData, fsx)
-  const account = loaded.ok ? findAccount(loaded.doc, accountId) : undefined
+  // A registry that cannot be read (invalid JSON, written by another version, empty) cannot say the id is no account: it is not
+  // connected, as isTerminalAccountConnected reads it, rather than the default profile, which a write meant for another account
+  // would then land in (SAFETY-R3-3). An id a readable registry does not hold is still no account (D13).
+  if (!loaded.ok) return { connected: false }
+  const account = findAccount(loaded.doc, accountId)
   if (!account) return { connected: true }
   if (!isProfileAgent(account.agent) || account.profile === null) return { account, connected: true }
   const dir = liveProfileDir(account, paths.home, fsx)
@@ -1417,7 +1434,10 @@ export function registerAccountsIpc(ipc: AccountsIpcLike, deps: AccountsIpcDeps)
     // request without it is refused here, so no path can skip the question. When Termpolis doesn't
     // know which account the terminal is on (the user changed it by hand, as the account scripts do,
     // or an agent started by hand has no record), the conversation may be on such an account too.
-    const unoffered = !target.autoOffer ? target : source && !source.autoOffer ? source : null
+    // The login in a profile is the account, not the folder's row (accounts.sh's account_for_email; the logins move between the folders):
+    // a profile that is signed in to the work login is the work account for this question, whatever its own flag says (SWARM-R3-1).
+    const unoffered = !target.autoOffer ? target : source && !source.autoOffer ? source
+      : unofferedLoginIn(doc, target, home, fsx) ?? (source ? unofferedLoginIn(doc, source, home, fsx) : undefined) ?? null
     if (unoffered && input.confirmedCarry !== true) throw new Error(`${unoffered.label} isn't offered automatically, so switching a conversation to or from it needs your confirmation`)
     const mayBeOn = !source || isAccountChangedByHand(terminalId) ? doc.file.accounts.find((a) => a.agent === target.agent && !a.autoOffer) : undefined
     if (mayBeOn && input.confirmedCarry !== true) throw new Error(`this conversation may be on ${mayBeOn.label}, which isn't offered automatically, so switching it needs your confirmation`)

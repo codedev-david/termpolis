@@ -1152,6 +1152,10 @@ describe('preload: accounts (Settings ▸ Accounts)', () => {
       [() => t.createTerminal('id1', 'bash', '/tmp', undefined, false, undefined, true), ['terminal:create', { id: 'id1', shellType: 'bash', cwd: '/tmp', extraPaths: undefined, claudeHeadroom: false, limitWatch: true }], []],
       [() => t.claudeTrustWorkspace('/repo'), ['claude:trust-workspace', { cwd: '/repo' }], []],
       [() => t.claudeTrustWorkspace('/repo', 'acc_1'), ['claude:trust-workspace', { cwd: '/repo', accountId: 'acc_1' }], []],
+      // The primer file's gate (R9, R17) reads the account id from this one hop: dropped here, main reads "no account", the default
+      // profile, which is connected, and a primer file is written for an account the user did not connect (SAFETY-R3-4).
+      [() => t.memoryPreparePrimerFile('q', '/repo', 'acc_1'), ['memory:prepare-primer-file', { query: 'q', cwd: '/repo', accountId: 'acc_1' }], []],
+      [() => t.memoryPreparePrimerFile('q', '/repo'), ['memory:prepare-primer-file', { query: 'q', cwd: '/repo', accountId: undefined }], []],
       [() => t.memoryPrepareCodexContext('/repo'), ['memory:prepare-codex-context', { cwd: '/repo' }], []],
       [() => t.memoryPrepareCodexContext('/repo', 'acc_1'), ['memory:prepare-codex-context', { cwd: '/repo', accountId: 'acc_1' }], []],
       [() => t.agentRemoveCodexHomeTrust(), ['agents:remove-codex-home-trust'], []],
