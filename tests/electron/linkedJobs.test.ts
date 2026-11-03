@@ -406,10 +406,10 @@ describe('peerRun working folder', () => {
     const NOT_SHOWN = 'cwd must be an absolute folder path on linux, or start with ~: [a folder name with control or invisible characters]'
     const families: Record<string, string> = {
       'a GitHub token': token,
-      'an Anthropic key': `sk-ant-api03-${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(3)}`.slice(0, 108),
-      'an OpenAI project key': `sk-proj-${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(3)}`.slice(0, 100),
+      'an Anthropic key': `sk-ant-api03-${'Ab1x'.repeat(24)}`.slice(0, 108),
+      'an OpenAI project key': `sk-proj-${'Ab1x'.repeat(24)}`.slice(0, 100),
       'a Slack bot token': `xoxb-${'1'.repeat(10)}-${'1'.repeat(13)}-${'Ab1x'.repeat(6)}`,
-      'a fine-grained GitHub token': `github_pat_aB3dE6gH9jK2mN5pQ8sT1v_${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(2)}`,
+      'a fine-grained GitHub token': `github_pat_${'Ab1x'.repeat(5)}_${'Cd2y'.repeat(16)}`,
       'an AWS key id': `AKIA${'A'.repeat(16)}`,
     }
     for (const [label, key] of Object.entries(families)) {
@@ -459,8 +459,8 @@ describe('peerRun working folder', () => {
     const refusal = async (cwd: string): Promise<string> => ((await start(setup({ mask: maskForDisplay }), FROM, META, { cwd }).catch((e: Error) => e)) as Error).message
     const families: Record<string, string> = {
       'a GitHub token': `ghp_${'a'.repeat(36)}`,
-      'an Anthropic key': `sk-ant-api03-${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(3)}`.slice(0, 108),
-      'a fine-grained GitHub token': `github_pat_aB3dE6gH9jK2mN5pQ8sT1v_${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ'.repeat(2).slice(0, 59)}`,
+      'an Anthropic key': `sk-ant-api03-${'Ab1x'.repeat(24)}`.slice(0, 108),
+      'a fine-grained GitHub token': `github_pat_${'Ab1x'.repeat(5)}_${'Cd2y'.repeat(16).slice(0, 61)}`,
       'an AWS key id': `AKIA${'A'.repeat(16)}`,
     }
     // a zero-width space, joiner and non-joiner, a word joiner, a soft hyphen, the byte order mark, the line and paragraph separators, a no-break space,
