@@ -440,11 +440,12 @@ export const MODEL_HELD = 'an account switch or another model change is running 
 
 /** What a terminal Termpolis relaunches an agent in says to anyone else who types into it meanwhile
  *  (R7): the conductor's write_to_terminal and run_command, and the phone's, are refused with these
- *  words, which every MCP client is shown as they are (mcpServer.ts). A swarm worker's restart on
- *  another account says so, and the conductor waits for system's next message about it (§9). */
+ *  words, which every MCP client is shown as they are (mcpServer.ts). Only a swarm worker's restart on
+ *  another account is followed by a message of system's about it (§9), so only that one says to wait for it: a user's model change or
+ *  account switch ends with no message to the conductor, and a client told to wait for one would wait for ever (MODELS-R3-5). */
 export const RELAUNCH_HELD = {
-  account: 'Termpolis is switching this agent\'s account; wait for system\'s next message',
-  model: 'Termpolis is changing this agent\'s model; wait for system\'s next message',
+  account: 'Termpolis is switching this agent\'s account; try again in a few seconds',
+  model: 'Termpolis is changing this agent\'s model; try again in a few seconds',
   worker: 'Termpolis is restarting this worker; wait for system\'s next message',
 } as const
 

@@ -204,6 +204,53 @@ describe('stripCodexSecrets / strippedCodexConfig (R11)', () => {
   })
 })
 
+// SAFETY-R3-5: the privacy page says the copy leaves out every setting that can hold a key or a token. An exporter's headers and a provider's
+// query parameters can (an OTLP API key; `api-key` in a query string), and were kept.
+describe('stripCodexSecrets: telemetry headers and query parameters (SAFETY-R3-5)', () => {
+  const strip = (text: string) => {
+    const r = stripCodexSecrets(text)
+    if ('error' in r) throw new Error(r.error)
+    return r
+  }
+
+  it('leaves out a provider\'s query_params, as a key and as a table, naming them and keeping the rest', () => {
+    const r = strip(['model = "gpt-6"', '[model_providers.az]', 'name = "Az"', `query_params = { api-key = "${SECRET}" }`, '[model_providers.b]', 'name = "B"', `[model_providers.b.query_params]`, `api-key = "${SECRET}"`, ''].join('\n'))
+    expect(r.text).not.toContain(SECRET)
+    expect(r.text).toContain('name = "Az"')
+    expect(r.text).toContain('name = "B"')
+    expect(r.leftOut).toEqual(['model_providers.az.query_params', 'model_providers.b.query_params'])
+  })
+
+  it('leaves out a provider written as an inline table that holds query_params, whole', () => {
+    const r = strip(`model_providers = { a = { name = "A", query_params = { api-key = "${SECRET}" } }, b = { name = "B" } }\n`)
+    expect(r.text).not.toContain(SECRET)
+    expect(r.leftOut).toEqual(['model_providers'])
+  })
+
+  it.each([
+    ['an exporter table\'s headers', ['[otel]', 'environment = "dev"', '[otel.exporter.otlp-http]', 'endpoint = "https://o.example"', `headers = { x-otlp-api-key = "${SECRET}" }`, ''], ['otel.exporter.otlp-http.headers']],
+    ['a headers table', ['[otel]', 'environment = "dev"', '[otel.exporter.otlp-http.headers]', `x-otlp-api-key = "${SECRET}"`, ''], ['otel.exporter.otlp-http.headers']],
+    ['a trace exporter\'s headers', ['[otel.trace_exporter.otlp-grpc]', 'endpoint = "https://o.example"', `headers = { authorization = "Bearer ${SECRET}" }`, ''], ['otel.trace_exporter.otlp-grpc.headers']],
+  ])('leaves out %s, naming them and keeping the endpoint', (_what, lines, named) => {
+    const r = strip(lines.join('\n'))
+    expect(r.text).not.toContain(SECRET)
+    expect(r.leftOut).toEqual(named)
+    if (lines.includes('environment = "dev"')) expect(r.text).toContain('environment = "dev"')
+  })
+
+  it('leaves out an exporter written inline that holds headers, whole, and keeps one that holds none', () => {
+    const r = strip([`exporter = "none"`, '[otel]', `exporter = { otlp-http = { endpoint = "https://o.example", headers = { k = "${SECRET}" } } }`, `trace_exporter = { otlp-http = { endpoint = "https://t.example" } }`, ''].join('\n'))
+    expect(r.text).not.toContain(SECRET)
+    expect(r.text).toContain('trace_exporter = { otlp-http = { endpoint = "https://t.example" } }')
+    expect(r.leftOut).toEqual(['otel.exporter'])
+  })
+
+  it('keeps an otel table with no headers in it, and what merely contains the word', () => {
+    const plain = ['[otel]', 'environment = "headers-are-not-here"', 'log_user_prompt = false', '[otel.exporter.otlp-http]', 'endpoint = "https://o.example"', ''].join('\n')
+    expect(strip(plain)).toEqual({ text: plain, leftOut: [] })
+  })
+})
+
 function options(over: Partial<CreateProfileOptions> = {}): CreateProfileOptions {
   return { agent: 'claude', home, slug: 'codedev', share: ['projects', 'commands', 'skills', 'agents'], copy: true, commit: () => null, ...over }
 }

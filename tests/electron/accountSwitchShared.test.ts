@@ -496,8 +496,8 @@ describe('carryForSwitch: what a switch repeats of the line the agent was starte
 describe('RELAUNCH_HELD: what the conductor and the phone are told while a relaunch holds a terminal', () => {
   it('says which relaunch, and to wait for system\'s next message', () => {
     expect(RELAUNCH_HELD).toEqual({
-      account: 'Termpolis is switching this agent\'s account; wait for system\'s next message',
-      model: 'Termpolis is changing this agent\'s model; wait for system\'s next message',
+      account: 'Termpolis is switching this agent\'s account; try again in a few seconds',
+      model: 'Termpolis is changing this agent\'s model; try again in a few seconds',
       worker: 'Termpolis is restarting this worker; wait for system\'s next message',
     })
   })

@@ -587,8 +587,9 @@ export function stripCodexProjectTrust(text: string, shouldRemove: (folder: stri
   return 'error' in r ? r : { text: r.text, removed }
 }
 
-/** A model provider's keys that carry a credential. */
-const PROVIDER_SECRET_KEYS: readonly string[] = ['http_headers', 'env_http_headers', 'experimental_bearer_token']
+/** A model provider's keys that carry a credential: its headers and bearer token, and the query parameters appended to its URL (an
+ *  `api-key` can travel there). */
+const PROVIDER_SECRET_KEYS: readonly string[] = ['http_headers', 'env_http_headers', 'experimental_bearer_token', 'query_params']
 
 /** Why a statement or table must be left out of a copy, by the name it is listed under; null to keep it. */
 function secretName(path: string[], text: string): string | null {
@@ -603,15 +604,23 @@ function secretName(path: string[], text: string): string | null {
     if (path.length >= 2) return path[1] === 'set' ? 'shell_environment_policy.set' : null
     return /\bset\b/.test(text) ? 'shell_environment_policy' : null
   }
+  if (path[0] === 'otel') {
+    // An exporter's `headers` (an OTLP API key goes there), as a key or a table under it. An exporter written inline holds them in its
+    // own value, and goes whole when it names `headers`.
+    const at = path.indexOf('headers')
+    if (at >= 0) return path.slice(0, at + 1).join('.')
+    return path.length >= 2 && /[{,]\s*headers\s*=/.test(text) ? path.join('.') : null
+  }
   return null
 }
 
 /**
  * The default profile's config.toml for a new Codex profile, without what can carry a credential:
  * every `[mcp_servers.*]` table (servers keep `env`, `http_headers` and bearer tokens; connecting
- * adds Termpolis's own back), a model provider's `http_headers`, `env_http_headers` and
- * `experimental_bearer_token`, and `shell_environment_policy.set` (variables handed to every
- * command Codex runs). `leftOut` names what went, never its value.
+ * adds Termpolis's own back), a model provider's `http_headers`, `env_http_headers`,
+ * `experimental_bearer_token` and `query_params`, an `[otel]` exporter's `headers`, and
+ * `shell_environment_policy.set` (variables handed to every command Codex runs). `leftOut` names
+ * what went, never its value.
  */
 export function stripCodexSecrets(text: string): { text: string; leftOut: string[] } | { error: string } {
   const leftOut = new Set<string>()

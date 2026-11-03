@@ -1439,9 +1439,9 @@ describe('executeTool on a terminal an account switch holds', () => {
   }
 
   it('refuses write_to_terminal and run_command with the lock\'s words, typing nothing', async () => {
-    const handlers = held('Termpolis is switching this agent\'s account; wait for system\'s next message')
+    const handlers = held('Termpolis is switching this agent\'s account; try again in a few seconds')
     await expect(executeTool('write_to_terminal', { terminalId: 'held', text: 'hi' }, handlers)).rejects.toThrow('Termpolis is switching this agent\'s account')
-    await expect(executeTool('write_to_terminal', { terminalId: 'held', text: 'hi', submit: true }, handlers)).rejects.toThrow('wait for system\'s next message')
+    await expect(executeTool('write_to_terminal', { terminalId: 'held', text: 'hi', submit: true }, handlers)).rejects.toThrow('try again in a few seconds')
     await expect(executeTool('run_command', { terminalId: 'held', command: 'claude' }, handlers)).rejects.toThrow('switching')
     expect(handlers.writeToTerminal).not.toHaveBeenCalled()
     expect(handlers.runCommand).not.toHaveBeenCalled()

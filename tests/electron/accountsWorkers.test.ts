@@ -419,6 +419,6 @@ describe('accounts:switch on a worker (§9)', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     await ok<SwitchOutcome>(ACCOUNTS_IPC.switchAccount, { terminalId: 't9', targetId: b, shellType: 'gitbash' })
     log.mockRestore()
-    expect(held).toBe('Termpolis is switching this agent\'s account; wait for system\'s next message')
+    expect(held).toBe('Termpolis is switching this agent\'s account; try again in a few seconds')
   })
 })

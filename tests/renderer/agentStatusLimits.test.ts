@@ -380,6 +380,57 @@ describe('the limit message a CLI ends its turn with, right above its input box'
   // F-R2-3: the installed agy 1.4.8 holds the quota message but no U+2715 at all, and U+2717 (✗) ten times as the lead of its
   // error rows: the glyph its cell leads with is not known from the program, and no real limit capture exists (a real limit
   // needs a sign-in). Any of the error marks reads, so the chooser and the guided switch open whichever it draws.
+  // F-R3-1: the installed Claude Code (2.1.317) folds a Bash `ls`, `ls -la <dir>`, `tree` or `du` into "Listed 1 directory" ("Listed N
+  // directories"), and a run holding one into "Searched for 1 pattern, read 1 file, listed 1 directory". Captured live on a loopback
+  // fake API in a temp profile, the finished group's real row read off the screen with the limit's NBSP reply spliced under it: a session
+  // or weekly limit that ended such a run read as idle, so the chooser (and a worker's stop report and restart offer) never opened.
+  it.each([
+    ['one directory', ['  Listed 1 directory']],
+    ['two directories', ['  Listed 2 directories']],
+    ['a read and a listing', ['  Read 1 file, listed 1 directory']],
+    ['a search, a read and a listing', ['  Searched for 1 pattern, read 1 file, listed 1 directory']],
+    ['a listing and a shell command', ['  Listed 3 directories, ran 1 shell command']],
+    ['a ten-directory listing', ['  Listed 12 directories']],
+    ['a group that wraps in a narrow pane', ['  Searched for 1 pattern, read 1 file,', '  listed 1 directory']],
+  ])("reads Claude Code's reply under a folded group with a listing in it: %s (F-R3-1)", (_name, group) => {
+    const rows = ['\u276f go', '', '\u25cf I will look at the folder first.', '', ...group, LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
+  it.each([
+    ['a listing counted in words', ['  Listed one directory']],
+    ['a listing with more said after it', ['  Listed 1 directory and found nothing']],
+    ['a listing that is only part of a sentence', ['  I then listed 1 directory']],
+    ['a listing quoted at four spaces', ['    Listed 1 directory']],
+    ['a listing of something else', ['  Listed 1 file']],
+    ['a listing with a word between the items', ['  Read 1 file then listed 1 directory']],
+    ['a listing with a semicolon between the items', ['  Read 1 file; listed 1 directory']],
+  ])('does not read the reply under a row that only looks like one: %s (F-R3-1)', (_name, group) => {
+    const rows = ['\u276f go', '', '\u25cf I will look at the folder first.', '', ...group, LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude').status).not.toBe('blocked')
+  })
+
+  // F-R3-3: guards the F-R2-1 tests did not pin (mutants without an anchor, with a single digit, with any text between the items).
+  it.each([
+    ['a sentence that ENDS like a group', ['  and I then ran 1 shell command']],
+    ['a sentence that ends in a read', ['  I looked and read 1 file']],
+    ['a group with any text between the items', ['  Read 1 file; searched for 1 pattern']],
+    ['a group whose items run together', ['  Read 1 file,ran 1 shell command']],
+  ])('does not read the reply under %s as under a folded group (F-R3-3)', (_name, group) => {
+    const rows = ['\u276f go', '', '\u25cf I will look at the folder first.', '', ...group, LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude').status).not.toBe('blocked')
+  })
+
+  it.each([
+    ['ran twelve shell commands', ['  Ran 12 shell commands']],
+    ['read fourteen files', ['  Read 14 files']],
+    ['searched for twenty patterns', ['  Searched for 20 patterns']],
+    ['a chain of two-digit counts', ['  Read 10 files, ran 11 shell commands, searched for 12 patterns']],
+  ])('reads the reply under a folded group of two-digit counts: %s (F-R3-3)', (_name, group) => {
+    const rows = ['\u276f go', '', '\u25cf I will look at the folder first.', '', ...group, LIMIT_REPLY, '', ...CLAUDE_IDLE]
+    expect(onScreen(rows, 'Claude')).toEqual({ status: 'blocked', summary: 'usage limit reached (resets 3pm (America/New_York))' })
+  })
+
   it.each(['✕', '✗', '✘', '✖', '⚠'])('reads agy\'s quota cell led by %s as a limit, and its credits message as a cell too (F-R2-3)', (glyph) => {
     const idle = ['', '─'.repeat(80), '> ', '─'.repeat(80), '? for shortcuts']
     expect(onScreen(['  Ready.', '', '> Write the docs', '', `${glyph} You have exhausted your quota on this model.`, ...idle], 'Gemini')).toEqual({ status: 'blocked', summary: 'usage limit reached' })

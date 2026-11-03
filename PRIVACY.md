@@ -418,9 +418,13 @@ you can untick when you add the account. For Claude Code these are `projects`
 another account), `commands`, `skills` and `agents`; for Codex, `sessions`.
 Unless you untick it, Termpolis also copies your main `settings.json` and
 `CLAUDE.md` (for Codex, `config.toml`) into the new folder once. The copy leaves
-out every setting that can hold a key or a token (an `env` block, a key helper,
-MCP servers' tokens and headers) and tells you which it left out. Termpolis
-never copies, links or reads a sign-in.
+out the settings that are meant to hold a key or a token, and names them: for
+Claude Code an `env` block and the key and credential helpers, for Codex MCP
+servers and the headers, bearer tokens and query parameters of a model provider
+or a telemetry exporter. It copies the rest as it is, so a command in a `hooks`
+or `statusLine` entry that has a key typed into it is copied with it: look at
+those two before you rely on the copy. Termpolis never copies, links or reads a
+sign-in.
 
 When you switch a conversation to an account whose `projects` folder isn't
 shared, Termpolis copies that one conversation's transcript into the other
@@ -432,7 +436,8 @@ When you connect an account, Termpolis writes into that profile what it writes
 into your main one, listed above; the Add account sheet lists it first.
 Termpolis's memory is shared by every connected account, and an account you
 don't let Termpolis offer automatically, such as a work account, isn't connected
-unless you tick Connect for it. Termpolis's learning reads the conversations in
+unless you tick Connect for it. Learning still reads its conversations, connected
+or not; remove the account to stop that. Termpolis's learning reads the conversations in
 each registered Claude Code and Codex account's profile, as it reads your main
 profile's.
 
@@ -464,7 +469,8 @@ profile. The profile folders, and the sign-ins in them, stay.
   forgets the account, and takes Termpolis's entries out of its profile
   folder. The folder and the sign-in in it stay: Termpolis never deletes a
   profile folder, because some of its subfolders are links into your main
-  profile. Your main profile has no entries of this kind: it stays connected
+  profile. The documentation (Removing an account) says how to remove the links
+  first, if you delete the folder yourself. Your main profile has no entries of this kind: it stays connected
   through Agent Integration, and Disconnect there removes them.
 - **Delete local data** — quit Termpolis and delete the `userData` directory
   listed above.

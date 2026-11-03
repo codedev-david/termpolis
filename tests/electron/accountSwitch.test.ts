@@ -1038,7 +1038,7 @@ describe('R7: the lock', () => {
     })
     expect(second).toEqual({ kind: 'refused', why: 'a switch is already running in this terminal' })
     await p
-    expect(seenLocked).toBe('Termpolis is switching this agent\'s account; wait for system\'s next message')
+    expect(seenLocked).toBe('Termpolis is switching this agent\'s account; try again in a few seconds')
     expect(relaunchLockReason('tL', t.clock)).toBeNull()
   })
 
@@ -1071,8 +1071,8 @@ describe('R7: the lock', () => {
   it('gives the model picker its own hold (§7.5): its keyed writes pass, nothing else does, and it lapses', () => {
     const key = holdForModel('tM', 1000) as string
     expect(key).toMatch(/^[0-9a-f-]{36}$/)
-    expect(relaunchLockReason('tM', 1000)).toBe('Termpolis is changing this agent\'s model; wait for system\'s next message')
-    expect(relaunchLockReason('tM', 1000, 'k-other')).toBe('Termpolis is changing this agent\'s model; wait for system\'s next message')
+    expect(relaunchLockReason('tM', 1000)).toBe('Termpolis is changing this agent\'s model; try again in a few seconds')
+    expect(relaunchLockReason('tM', 1000, 'k-other')).toBe('Termpolis is changing this agent\'s model; try again in a few seconds')
     expect(relaunchLockReason('tM', 1000, key)).toBeNull()
     // One hold at a time: a second pick, or a switch, while it holds.
     expect(holdForModel('tM', 1001)).toBeNull()
@@ -1133,7 +1133,7 @@ describe('R7: the lock', () => {
     })
     await p
     expect(pickerKey).toBeNull()
-    expect(keyed).toBe('Termpolis is switching this agent\'s account; wait for system\'s next message')
+    expect(keyed).toBe('Termpolis is switching this agent\'s account; try again in a few seconds')
     const key = holdForModel('tS', t.clock) as string
     const refused = await runAccountSwitch({ terminalId: 'tS', targetId: 'acc_b', shellType: 'bash' }, {
       io: t.io(), target: B, agent: 'claude', newSessionId: () => NEW_ID, record: () => undefined,
