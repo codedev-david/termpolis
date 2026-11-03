@@ -2868,6 +2868,7 @@ describe('a frame the link lost, whatever it was', () => {
     const toggles = Array.from({ length: 2 + Math.floor(next() * 4) }, () => next() < 0.5)
     const frames = 4 + Math.floor(next() * 12)
     const pLose = 0.1 + next() * 0.3
+    let lastFrame = ''
     for (let tick = 1; tick <= frames; tick += 1) {
       const kind = next()
       let lines: string[]
@@ -2885,19 +2886,32 @@ describe('a frame the link lost, whatever it was', () => {
         lines = ['Select models', ...toggles.map((on, i) => `${on ? '[x]' : '[ ]'} option-${i}`), '-'.repeat(20), `status tick ${String(tick).padStart(5, '0')}`]
       }
       lose = next() < pLose
+      lastFrame = lines.map((line) => line.trimEnd()).join('\n')
       await b.print('t1', tui.frame(lines))
       lose = false
     }
     const truth = b.real.snapshot('t1')!
-    const live = b.real.liveRegion('t1')!
+    const end = truth.replaceFrom + truth.text.length
     const sentBefore = b.room.sent.length
     const diverged = onPhone(chunksIn(b.room)).text !== truth.text
     b.clock.advance(QUIET_MS + QUIET_TICK_MS)
     const after = onPhone(chunksIn(b.room))
+    // What the last frame drew, as the bridge's own screen ends with it: an oracle that needs nothing the
+    // bridge of today lacks, so the control below can run against it. Only meaningful for a frame that fits
+    // the viewport: a taller one scrolls its first rows into the settled text, which no rewrite reaches.
+    const drawn = truth.text.slice(truth.text.length - lastFrame.length)
+    const fits = lastFrame.split('\n').length + 1 <= size.rows
     return {
       lost,
       diverged,
-      liveRight: after.text.endsWith(live.text) && after.end === truth.replaceFrom + truth.text.length,
+      fits,
+      /** The phone shows what the last frame drew, and agrees where the stream ends. */
+      bottomRight: after.text.endsWith(drawn) && after.end === end,
+      /** The stronger oracle, the bridge's whole live region. Null where the emulator has none to give. */
+      liveRight: (() => {
+        const live = b.real.liveRegion?.('t1') ?? null
+        return live === null ? null : after.text.endsWith(live.text) && after.end === end
+      })(),
       exact: after.text === truth.text,
       payloadsToHeal: b.room.sent.length - sentBefore,
       armed: b.clock.armed(),
@@ -2918,6 +2932,7 @@ describe('a frame the link lost, whatever it was', () => {
       if (s.exact) exact += 1
       // The seed is in the message: it is the whole reproduction.
       expect(s.liveRight, `seed ${seed}`).toBe(true)
+      if (s.fits) expect(s.bottomRight, `seed ${seed}`).toBe(true)
       expect(s.payloadsToHeal, `seed ${seed}`).toBeLessThanOrEqual(1)
       expect(s.armed, `seed ${seed}`).toBe(0)
     }
@@ -2935,7 +2950,7 @@ describe('a frame the link lost, whatever it was', () => {
       const s = await scenario(seed, false)
       if (s.lost === 0) continue
       expect(s.payloadsToHeal, `seed ${seed}`).toBe(0)
-      if (!s.liveRight) wrong += 1
+      if (s.fits && !s.bottomRight) wrong += 1
     }
     expect(wrong).toBeGreaterThanOrEqual(10)
   }, 120_000)
