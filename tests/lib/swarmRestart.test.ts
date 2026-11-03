@@ -496,6 +496,13 @@ describe('restartOn: the restart', () => {
     expect(useTerminalStore.getState().relaunching).toEqual({})
   })
 
+  it('asks no question about an account that left the registry while the offer was open, and goes on', async () => {
+    await offered()
+    useTerminalStore.setState({ accountsView: view([CODEDEV]) })
+    await restartOn('g1', 'acc_c', deps)
+    expect(groups()[0].phase).toEqual({ kind: 'done', lines: ['Claude (Build UI): on codedev, its conversation resumed.'] })
+  })
+
   it('holds the relaunch lock in the store while main switches', async () => {
     await offered()
     let held: unknown = null
@@ -1745,6 +1752,15 @@ describe('a stop that recorded a limit, and the worker working again (SWARM-R3-4
   it('never takes it back for a worker whose stop recorded nothing', async () => {
     await withdrawFromOffer(W1, deps)
     expect(cleared()).toEqual([])
+  })
+
+  it('keeps the view it had when the accounts cannot be read again after the limit goes', async () => {
+    await stop()
+    const before = useTerminalStore.getState().accountsView
+    ;(deps.accounts.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ success: false, error: 'busy' })
+    await withdrawFromOffer(W1, deps)
+    expect(cleared()).toEqual(['acc_m'])
+    expect(useTerminalStore.getState().accountsView).toBe(before)
   })
 
   it('goes on withdrawing the offer when the account will not take the limit back', async () => {

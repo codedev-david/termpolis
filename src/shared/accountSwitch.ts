@@ -117,7 +117,7 @@ export function exitHintOf(rows: readonly string[], agent: AccountAgent, whole =
     const hit = last(CLAUDE_HINT_HEAD, CLAUDE_HINT_COMMAND, false)
     if (!hit) return null
     const [, flags, id] = hit.m
-    const named = WORKTREE_FLAG.exec(flags ?? '')
+    const named = WORKTREE_FLAG.exec(flags)
     const worktree = named?.[1]
     // A worktree this can't type back safely (a name with odd characters, or none in quotes) is no worktree to resume in: from the
     // main folder the transcript isn't found, so the session goes as one with no id.

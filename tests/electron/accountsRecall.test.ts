@@ -264,6 +264,17 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     expect(terminalSessionId('t1')).toBe(SESSION)
   })
 
+  it('reads it so for an agent that keeps no conversation id too, and leaves the terminal\'s id as it was', async () => {
+    noteAgentStart('t1', { at: 0, commands: ['codex --model gpt-5'], agent: 'codex' }, clock)
+    noteTerminalSession('t1', SESSION)
+    term.mode = 'shell'
+    term.out += term.prompt()
+    clock += 5000
+    noteTypedInput('t1', 'cd src/ma\t\r', clock)
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'codex', commands: ['codex'], unsure: true })
+    expect(terminalSessionId('t1')).toBe(SESSION)
+  })
+
   it('leaves a record that names no agent alone: it is no agent whose start could be unseen', async () => {
     noteAgentStart('t1', { at: 0, commands: ['some-wrapper --flag'] }, clock)
     const before = terminalAgentStart('t1')!

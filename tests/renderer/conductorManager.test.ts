@@ -1313,6 +1313,17 @@ PS C:\\proj> `
         expect(written('.termpolis-conductor-run.sh')).toContain("--resume 'conductor-uuid-1'")
       })
 
+      it('lets the exit report stand when the run once more cannot be made: the account left the registry meanwhile', async () => {
+        await atLimit()
+        await runConductorOn(offer().id, 'acc_b')
+        useTerminalStore.setState({ accountsView: viewOf([MAIN, OWN]) })
+        screen(`${launchEcho}x\r\nNo conversation found with session ID: conductor-uuid-1\r\n[termpolis-conductor-exited] 1\r\n`, 9999)
+        await vi.advanceTimersByTimeAsync(15000)
+        expect(getConductorState()).toMatchObject({ status: 'error', error: 'Conductor exited (code 1)' })
+        expect(written('.termpolis-conductor-run.sh')).toContain("--resume 'conductor-uuid-1'")
+        expect(useTerminalStore.getState().swarmNotification).toMatchObject({ type: 'error' })
+      })
+
       it('does not run it again for those words from a run that was not a resume', async () => {
         await atLimit()
         vi.mocked(uuidV4).mockReturnValueOnce('fresh-session' as never)
