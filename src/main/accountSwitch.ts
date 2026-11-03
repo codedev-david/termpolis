@@ -617,7 +617,7 @@ export async function typeAtPrompt(io: SwitchIO, id: string, family: ShellFamily
     }
     return io.now() - movedAt >= quietMs ? ('stalled' as const) : null
   })
-  let where: 'box' | 'shell' | null = first === 'stalled' ? null : first
+  const where: 'box' | 'shell' | null = first === 'stalled' ? null : first
   // What has been typed since the Enter, to take back out if the line does not show whole.
   let typedText = probe
   if (where === 'shell' && line.length > probe.length) {

@@ -1258,7 +1258,7 @@ describe('conductorManager', () => {
         const buffer = `${launchEcho}Working on it
 ${WORDS}
 [termpolis-conductor-exited] 1
-PS C:\proj> `
+PS C:\\proj> `
         ;(window.termpolis.readTerminalBuffer as Mock).mockImplementation(async (_id: string, from = 0) => ({
           success: true, data: { output: buffer.slice(from), length: buffer.length - from, nextOffset: buffer.length },
         }))
