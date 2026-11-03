@@ -1869,3 +1869,32 @@ describe("an agy hint that is quoted, with agy's box drawn under it, is no exit 
     expect(t.writes).toEqual(['/exit', '\r'])
   })
 })
+
+// An agent's box that is not on screen at the user's word that it exited, and is drawn by the time the first part of the line is
+// typed (a wrapper that starts it again, a TUI that redraws late), is where that part lands after the sacrificial Enter: it is taken
+// back out of the box, the rest of the line is never typed, and the agent is reported alive.
+describe('typeAtPrompt: an agent\'s box that comes back after the sacrificial Enter', () => {
+  it('takes the first part back out of the box, types no more and enters nothing', async () => {
+    const t = new FakeTerminal(claude({ start: 'gone-hint', family: 'powershell' }))
+    const base = t.io()
+    let drawn = false
+    const io: SwitchIO = {
+      ...base,
+      write: (id, d) => {
+        base.write(id, d)
+        if (d === '\r' && !drawn) {
+          drawn = true
+          t.mode = 'agent'
+          t.out += t.frame()
+        }
+      },
+    }
+    const line = `& { claude --resume ${ID} }`
+    const typed = await typeAtPrompt(io, 't1', 'powershell', line, io.end('t1'))
+    expect(typed.outcome).toBe('agent-alive')
+    expect(t.writes).toContain(line.slice(0, ECHO_PROBE_CHARS))
+    expect(t.writes).not.toContain(line.slice(ECHO_PROBE_CHARS))
+    expect(t.writes.slice(-1)).toEqual(['\u0015'.repeat(20)])
+    expect(t.writes.filter((w) => w === '\r')).toHaveLength(1)
+  })
+})
