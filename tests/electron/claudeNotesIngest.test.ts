@@ -11,6 +11,7 @@ import {
   MAX_NOTE_BYTES,
   MAX_NOTE_FILES,
   NOTES_MANIFEST_FILE,
+  _resetNotesLockForTests,
   fileManifest,
   clearNotesRecord,
   finishQueuedRemovals,
@@ -816,6 +817,56 @@ describe('the manifest is the record of what was stored', () => {
     expect(stats.chunksWritten).toBe(1) // the note is stored again, under a new hash
     expect(store.rows.size).toBe(1)
     expect(manifestJson().stale).toEqual([])
+  })
+
+  // The same kill, in the flow where a note is deleted from disk. The removal is written ahead with the manifest as it stands, so
+  // the entry must not stand as a complete one while its chunks are on their way out: the same words coming back (a restore from
+  // the Recycle Bin keeps the modified time, a git checkout gives a new one and the same hash) would be found unchanged and
+  // never imported again, while Settings counts the note as imported.
+  describe('a note that is deleted from disk, a removal that is killed, and the same words coming back', () => {
+    // Two paragraphs that cannot share a chunk: the note is stored as two copies, so a kill can come between the removal of one and of the other.
+    const paragraph = (word: string): string => `${word} `.repeat(200).trim()
+    const BODY = `---\nname: a\ndescription: about a\ntype: reference\n---\n${paragraph('alpha')}\n\n${paragraph('omega')}`
+    const OTHER = '---\nname: b\ndescription: about b\ntype: feedback\n---\nBeta says another.'
+
+    // The kill is a store call that never returns, after the removal was written ahead and some of the copies are gone. The next pass
+    // is a new process, so the lock is reset. A second note keeps the store from being empty, which the pass would take for a reason
+    // to start the record over (step 0) and so hide the fault.
+    it.each([
+      ['before any copy is deleted', 0],
+      ['after the first of its two copies is deleted', 1],
+    ])('imports the note again when it comes back with the same words (killed %s)', async (_label, deleteBeforeDying) => {
+      note(FOLDER, 'a.md', BODY, Date.UTC(2026, 8, 1))
+      note(FOLDER, 'b.md', OTHER, Date.UTC(2026, 8, 2))
+      session(FOLDER, CWD)
+      const store = fakeStore()
+      await runClaudeNotesIngest(deps(store))
+      const ofA = (): number => [...store.rows.values()].filter((r) => (r.tags ?? []).includes('note:a.md')).length
+      expect(ofA()).toBe(2)
+
+      fs.rmSync(path.join(root, FOLDER, 'memory', 'a.md'))
+      let removals = 0
+      let killed!: () => void
+      const dead = new Promise<void>((resolve) => { killed = resolve })
+      const dying = {
+        ...store,
+        remove: async (id: string): Promise<void> => {
+          if (removals++ >= deleteBeforeDying) { killed(); return new Promise<void>(() => { /* the process is gone: this never returns */ }) }
+          await store.remove(id)
+        },
+      }
+      void runClaudeNotesIngest(deps(dying))
+      await dead // not a timer: the pass has made the removals it is going to make
+      _resetNotesLockForTests()
+
+      note(FOLDER, 'a.md', BODY, Date.UTC(2026, 8, 5)) // restored: the same words, a newer modified time
+      const stats = await runClaudeNotesIngest(deps(store))
+      expect(ofA()).toBe(2)
+      expect(stats.chunksWritten).toBe(2)
+      expect(manifestJson().dirty).toBe(false)
+      const claimed = Object.values(manifestJson().files as Record<string, { chunks: unknown[] }>).reduce((n, f) => n + f.chunks.length, 0)
+      expect(claimed).toBe(store.rows.size) // what Settings counts is what memory holds
+    })
   })
 
   it('a removal that fails stays on the list and is tried again, without losing the rest of the pass', async () => {

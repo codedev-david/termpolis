@@ -680,8 +680,13 @@ async function pass(deps: NotesDeps, opts: PassOptions): Promise<NotesStats> {
       const folder = key.slice(0, key.indexOf('/'))
       // A notes folder that exists but could not be listed is unknown, not empty.
       if (found.folders.has(folder) && !found.listed.has(folder)) continue
-      if (!(await ledger.retire(m.files[key].chunks.map((c) => c.id)))) break
+      // The entry goes BEFORE its copies do, as the edit flow below does it: retire() saves the manifest ahead of the first deletion,
+      // and a kill after that must not leave a complete entry beside copies that are half gone. Were the same words to come back (a
+      // restore from the Recycle Bin keeps the modified time, a git checkout gives a new one and the same hash), the pass would find
+      // the note unchanged and never import it again, while Settings counted it as imported. With no entry it is a new note.
+      const dead = m.files[key].chunks.map((c) => c.id)
       delete m.files[key]
+      if (!(await ledger.retire(dead))) break
       stats.filesRemoved++
     }
   }
