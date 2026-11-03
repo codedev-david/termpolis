@@ -373,7 +373,7 @@ export function envAccounts(doc: AccountsDoc, env: Readonly<Record<string, strin
  * (SWARM-R3-1; the renderer's unofferedLoginOwner reads the same from the view). Undefined for none: no login read, no account that
  * expects it, or only `a`'s own.
  */
-function unofferedLoginIn(doc: AccountsDoc, a: AgentAccount, home: string, fsx: AccountFs): AgentAccount | undefined {
+export function unofferedLoginIn(doc: AccountsDoc, a: AgentAccount, home: string, fsx: AccountFs): AgentAccount | undefined {
   if (!isProfileAgent(a.agent)) return undefined
   const login = lastSignedInAs(a, home, doc, fsx)
   if (!login) return undefined
@@ -409,22 +409,14 @@ function noteLife(terminalId: string, typed: string, now: number, lookNow: () =>
       // The conversation of the line just typed is the terminal's now, and the one an earlier launch named is not: a switch before
       // this session has a turn (no exit hint) must not resume the old one (SAFETY-R3-1). A line the shell edited names none.
       if (started.agent === 'claude') noteTerminalSession(terminalId, started.unsure ? null : claudeSessionOf(typed).id)
-    } else if (edited && mayStartAgent(typed)) noteUnseenLaunch(terminalId, end, now, lookNow)
+    } else if (edited) noteUnseenLaunch(terminalId, end, now, lookNow)
   } catch { /* the next look reads it */ }
 }
 
-/** The agent words, which a completion the keys cut short can stand for: `cla` and Tab typed `claude`. */
-const AGENT_WORDS: readonly string[] = ['claude', 'codex', 'agy', 'gemini']
-
-/** Whether an edited line's first word could be the start of an agent's name, or is one. */
-function mayStartAgent(typed: string): boolean {
-  const word = typed.split(/\s+/)[0].toLowerCase()
-  return word.length > 0 && AGENT_WORDS.some((w) => w.startsWith(word))
-}
-
 /**
- * The shell ran a line the keys do not say (a history recall, a completion): while an earlier start is on record and its agent is
- * gone, it may have started the agent again, with other flags and another conversation. The record becomes one of an agent started
+ * The shell ran a line the keys do not say (a history recall, a completion, a cursor move): while an earlier start is on record and its
+ * agent is gone, the line may have started the agent again, with other flags and another conversation (`cla`, Tab; `cd repo && cla`,
+ * Tab: no word of the keys names it), and any edited line is read so. The cost of the doubt is a bare relaunch that says so. The record becomes one of an agent started
  * with unknown options (a bare relaunch that says so), and the session the earlier launch named is not this one (SAFETY-R3-1,
  * MODELS-R3-3). An agent still running took the line into its box: nothing changes. With no earlier start there is no agent to
  * name, and the line is left alone.

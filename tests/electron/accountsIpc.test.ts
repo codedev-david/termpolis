@@ -5,13 +5,15 @@ import { join } from 'path'
 import {
   _resetTerminalAccountsForTest, accountSettingsEnv, codexHomeFor, connectedProfileTargets, forgetTerminalAccount,
   isAccountChangedByHand, isTerminalAccountConnected, noteTerminalAccount, noteTypedInput, registerAccountsIpc, resolveAccountTarget, resolveLaunchTarget,
-  terminalAccountId, terminalsOnAccount,
+  terminalAccountId, terminalsOnAccount, unofferedLoginIn,
 } from '../../src/main/accountsIpc'
 import type { AccountsIpcDeps } from '../../src/main/accountsIpc'
 import { ACCOUNTS_IPC } from '../../src/shared/agentAccounts'
-import type { AccountIdentity, AccountRowView, AccountsView, AddAccountResult } from '../../src/shared/agentAccounts'
+import type { AccountIdentity, AccountRowView, AccountsView, AddAccountResult, AgentAccount } from '../../src/shared/agentAccounts'
 import type { IdentityCheck } from '../../src/main/accountIdentity'
 import { accountFs } from '../../src/main/accountFs'
+import { loadAccounts } from '../../src/main/agentAccounts'
+import type { AccountsDoc } from '../../src/main/agentAccounts'
 import type { AccountFs } from '../../src/main/accountFs'
 import { CLAUDE_ALLOW_RULES } from '../../src/main/agentMcpRegistry'
 import { createSandbox, readJson, writeJson, writeLedger, writeText } from './_agentIntegrationManagerFixture'
@@ -735,6 +737,68 @@ describe('usage limits', () => {
     expect((await list()).accounts[0].limit).toBeDefined()
     clock += 86400 * 1000 + 1
     expect((await list()).accounts[0].limit).toBeUndefined()
+  })
+})
+
+// SWARM-R3-1: the login a profile holds decides which account it is. Main's gate for the second confirmation reads it from the profile's own
+// .claude.json, as accounts.sh's account_for_email does.
+describe('unofferedLoginIn: the account kept from the offers whose login a profile holds', () => {
+  async function registry(): Promise<{ doc: AccountsDoc; main: AgentAccount; codedev: AgentAccount; work: AgentAccount; set: (a: AgentAccount, email: string | null) => void }> {
+    mainClaude()
+    grant()
+    const b = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'codedev', folder: 'new', copy: false })).account
+    const w = (await ok<AddAccountResult>(ACCOUNTS_IPC.add, { agent: 'claude', label: 'work', folder: 'new', copy: false })).account
+    const main = (await list()).accounts.find((a) => a.isDefault) as AccountRowView
+    await ok(ACCOUNTS_IPC.update, { id: main.id, email: 'a@example.test' })
+    await ok(ACCOUNTS_IPC.update, { id: b.id, email: 'b@example.test' })
+    await ok(ACCOUNTS_IPC.update, { id: w.id, email: 'w@example.test', autoOffer: false })
+    const loaded = loadAccounts(sb.paths.userData)
+    if (!loaded.ok) throw new Error(loaded.error)
+    const doc = loaded.doc
+    const find = (id: string): AgentAccount => doc.file.accounts.find((a) => a.id === id) as AgentAccount
+    const set = (a: AgentAccount, email: string | null): void => {
+      const file = a.profile === null ? sb.paths.claudeJson : join(a.profile, '.claude.json')
+      writeJson(file, email === null ? {} : { oauthAccount: { emailAddress: email } })
+    }
+    return { doc, main: find(main.id), codedev: find(b.id), work: find(w.id), set }
+  }
+
+  it('names work for a profile signed in to work\'s email, whatever its own account is called', async () => {
+    const { doc, main, codedev, work, set } = await registry()
+    set(main, 'w@example.test')
+    expect(unofferedLoginIn(doc, main, sb.home, accountFs)?.id).toBe(work.id)
+    set(codedev, 'w@example.test')
+    expect(unofferedLoginIn(doc, codedev, sb.home, accountFs)?.id).toBe(work.id)
+  })
+
+  it('reads the emails without regard to case, as accounts.sh does', async () => {
+    const { doc, main, work, set } = await registry()
+    set(main, 'W@Example.TEST')
+    expect(unofferedLoginIn(doc, main, sb.home, accountFs)?.id).toBe(work.id)
+  })
+
+  it('names none for a profile that holds its own login, another account\'s that is offered, an unknown one, or none', async () => {
+    const { doc, main, codedev, set } = await registry()
+    set(main, 'a@example.test')
+    expect(unofferedLoginIn(doc, main, sb.home, accountFs)).toBeUndefined()
+    // Two profiles of one login that is offered: nothing is kept from the offers.
+    set(main, 'b@example.test')
+    expect(unofferedLoginIn(doc, main, sb.home, accountFs)).toBeUndefined()
+    set(codedev, 'someone@else.test')
+    expect(unofferedLoginIn(doc, codedev, sb.home, accountFs)).toBeUndefined()
+    set(codedev, null)
+    expect(unofferedLoginIn(doc, codedev, sb.home, accountFs)).toBeUndefined()
+  })
+
+  it('never names the account itself, which is read by its own flag', async () => {
+    const { doc, work, set } = await registry()
+    set(work, 'w@example.test')
+    expect(unofferedLoginIn(doc, work, sb.home, accountFs)).toBeUndefined()
+  })
+
+  it('knows no login of an agy account or of another agent\'s', async () => {
+    const { doc, work } = await registry()
+    expect(unofferedLoginIn(doc, { ...work, agent: 'agy', profile: null }, sb.home, accountFs)).toBeUndefined()
   })
 })
 

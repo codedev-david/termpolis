@@ -857,6 +857,22 @@ describe('accounts:switch, the login in a profile decides whether it is the work
     expect((await switchTo(codedev)).kind).toBe('switched')
   })
 
+  it('asks nothing for a profile that holds another OFFERED account\'s login: two profiles of one login are not work', async () => {
+    const { main, codedev } = await accounts(false)
+    writeJson(sb.paths.claudeJson, { oauthAccount: { emailAddress: 'c@example.test' } })
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect((await switchTo(codedev)).kind).toBe('switched')
+  })
+
+  it('reads the logins without regard to case: the work login in capitals is still the work login', async () => {
+    const { main, codedev } = await accounts(true)
+    writeJson(sb.paths.claudeJson, { oauthAccount: { emailAddress: 'W@EXAMPLE.test' } })
+    noteTerminalAccount('t1', main)
+    aConversation()
+    expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: codedev, shellType: 'gitbash' })).toBe(ASK)
+  })
+
   it('asks nothing when no login is known to belong to the work account: an unreadable profile, or no expected email', async () => {
     const { main, codedev, work } = await accounts(true)
     // The work account expects no email any more: there is no login to match.
@@ -871,5 +887,56 @@ describe('accounts:switch, the login in a profile decides whether it is the work
     noteTerminalAccount('t1', main)
     aConversation()
     expect(await fails(ACCOUNTS_IPC.switchAccount, { terminalId: 't1', targetId: work, shellType: 'gitbash' })).toBe('work isn\'t offered automatically, so switching a conversation to or from it needs your confirmation')
+  })
+})
+
+// SAFETY-R3-1, end to end through the real switch: the shell ran a line the keys do not say after an agent Termpolis launched had exited
+// (Up and Enter, Ctrl+P, a completion no launch word names). The switch before the new session has a turn finds no hint on screen, and used
+// to resume the conversation of the EARLIER launch, with that launch's flags, saying "Conversation resumed". It starts a new session, bare,
+// and says its options were not carried.
+describe('accounts:switch after a line the shell ran that the keys do not say (SAFETY-R3-1)', () => {
+  const quietExit = (): TermScript => claude({ start: 'gone-quiet', exit: 'no-hint' })
+
+  async function afterExit(keys?: string): Promise<{ main: string; b: string }> {
+    const ids = await twoClaude()
+    term = new FakeTerminal(quietExit())
+    // Main's record of where each terminal's output ends: what the typed lines are read against (index.ts wires the buffer's own).
+    register({ outputEnd: () => term.out.length })
+    // Termpolis's own launch, as the renderer typed it, on its own session; the conversation has a transcript.
+    noteTerminalAccount('t1', ids.main)
+    noteAgentStart('t1', { at: term.launchedAt, commands: [`claude --dangerously-skip-permissions --session-id ${ID}`], agent: 'claude' })
+    noteTerminalSession('t1', ID)
+    mkdirSync(join(sb.paths.claudeDir, 'projects', 'C--repo'), { recursive: true })
+    writeFileSync(join(sb.paths.claudeDir, 'projects', 'C--repo', `${ID}.jsonl`), '{}\n')
+    if (keys !== undefined) {
+      noteTypedInput('t1', keys, 40)
+      // What the shell then ran was a line the keys do not name: it started Claude Code again, with flags nobody saw, on a new session.
+      term.type('claude --model opus --session-id 9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f\r')
+    }
+    return ids
+  }
+
+  it('resumes the launch\'s own conversation, with its flags, when nothing was typed since it exited (the control)', async () => {
+    const { b } = await afterExit()
+    const r = await switchTo(b)
+    expect(r).toMatchObject({ kind: 'switched', resumed: true, sessionId: ID })
+    expect(term.ran.join('\n')).toContain(`--resume ${ID}`)
+    expect(term.ran.join('\n')).toContain('--dangerously-skip-permissions')
+  })
+
+  it.each([
+    ['Up and Enter', '\x1b[A\r'],
+    ['Ctrl+P and Enter', '\x10\r'],
+    ['Ctrl+R and Enter', '\x12\r'],
+    ['cla, Tab and Enter', 'cla\t\r'],
+    ['a launch later in the line, completed', 'cd repo && cla\t\r'],
+  ])('%s: starts a new session, bare, saying its options were not carried, and never resumes the old conversation', async (_what, keys) => {
+    const { b } = await afterExit(keys)
+    expect(terminalSessionId('t1')).toBeUndefined()
+    const r = await switchTo(b)
+    expect(r).toMatchObject({ kind: 'fresh', why: 'no-session', unseenStart: true })
+    expect(term.ran.join('\n')).not.toContain(`--resume ${ID}`)
+    expect(term.ran.join('\n')).not.toContain('--dangerously-skip-permissions')
+    expect(term.ran.join('\n')).toContain('--session-id')
   })
 })

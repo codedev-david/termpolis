@@ -264,6 +264,16 @@ describe('what the kept screen costs a flood of output (SAFETY-R3-8)', () => {
     expect(liveScreen(b, 't1')).not.toBeNull()
   })
 
+  it('draws exactly the second\'s budget, and drops the screen at one character more', () => {
+    const b = kept()
+    const per = SCREEN_BYTES_PER_SECOND / 4
+    expect(per).toBeLessThanOrEqual(SCREEN_CHUNK_MAX)
+    for (let i = 0; i < 4; i++) appendOutput(b, 't1', 'y'.repeat(per))
+    expect(liveScreen(b, 't1')).not.toBeNull()
+    appendOutput(b, 't1', 'y')
+    expect(liveScreen(b, 't1')).toBeNull()
+  })
+
   it('draws a chunk of exactly the most', () => {
     const b = kept()
     appendOutput(b, 't1', 'y'.repeat(SCREEN_CHUNK_MAX), 10_000_000)

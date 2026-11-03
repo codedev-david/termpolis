@@ -239,12 +239,29 @@ describe('a line the shell ran that the keys do not say (SAFETY-R3-1, MODELS-R3-
     expect(terminalAgentStart('t1')).toBeUndefined()
   })
 
-  it('leaves it alone for an edited line that names no agent (a path completed with Tab)', async () => {
+  // A line the keys cut short names no agent whatever: `cd repo && cla`, Tab runs claude too, so any edited line after the exit is read so.
+  it.each([
+    ['a path completed with Tab', 'cd src/ma\t\r'],
+    ['an agent started later in a line', 'cd repo && cla\t\r'],
+    ['a line recalled and then edited', `${E}[Afoo\r`],
+  ])('reads %s, after the agent exited, as a line that may have started it again', async (_what, keys) => {
     await exitedAfterLaunch()
+    noteTypedInput('t1', keys, clock)
+    expect(terminalAgentStart('t1')).toMatchObject({ agent: 'claude', commands: ['claude'], unsure: true })
+    expect(terminalSessionId('t1')).toBeUndefined()
+  })
+
+  it('and not for an edited line while the agent still runs, whatever the line says', async () => {
+    await ok(ACCOUNTS_IPC.launchLine, { terminalId: 't1', agent: 'claude', shellType: 'gitbash', command: 'claude --model opus' })
+    noteTypedInput('t1', 'claude --model opus\r', clock)
+    noteTerminalSession('t1', SESSION)
     const before = terminalAgentStart('t1')!
+    term.mode = 'agent'
+    term.out += term.frame()
     noteTypedInput('t1', 'cd src/ma\t\r', clock)
     expect(terminalAgentStart('t1')).toBe(before)
-    expect(terminalSessionId('t1')).toBeDefined()
+    expect(before.unsure).toBeUndefined()
+    expect(terminalSessionId('t1')).toBe(SESSION)
   })
 
   it('a line typed whole that starts the agent again replaces the record and the conversation with its own', async () => {
@@ -322,7 +339,7 @@ describe('the kept screen of a terminal whose agent is gone (SAFETY-R3-8)', () =
     expect(trace).toEqual(['watch t1', 'unwatch t1'])
   })
 
-  it('keeps one again at the next start, which is recorded as ever', async () => {
+  it('keeps one again at the next start, which is recorded as ever, and lets it go again at that agent\'s exit', async () => {
     wire()
     await launched()
     term.mode = 'shell'
@@ -332,6 +349,32 @@ describe('the kept screen of a terminal whose agent is gone (SAFETY-R3-8)', () =
     expect(trace).toEqual(['watch t1', 'unwatch t1'])
     noteTypedInput('t1', 'claude --model sonnet\r', clock)
     expect(trace).toEqual(['watch t1', 'unwatch t1', 'watch t1'])
+    // The second agent runs, then exits: its screen is let go too, once.
+    term.mode = 'agent'
+    term.out += term.frame()
+    clock += 5000
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    expect(trace).toEqual(['watch t1', 'unwatch t1', 'watch t1'])
+    term.mode = 'shell'
+    term.out += term.prompt()
+    clock += 5000
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    await ok<LimitLook>(ACCOUNTS_IPC.limitLook, { terminalId: 't1' })
+    expect(trace).toEqual(['watch t1', 'unwatch t1', 'watch t1', 'unwatch t1'])
+  })
+
+  it('lets it go when a line entered at the shell finds the agent gone, before any look did', async () => {
+    wire()
+    await launched()
+    expect(trace).toEqual(['watch t1'])
+    term.mode = 'shell'
+    term.out += term.prompt()
+    clock += 5000
+    noteTypedInput('t1', 'ls -la\r', clock)
+    expect(trace).toEqual(['watch t1', 'unwatch t1'])
+    // And it was once: a second line says nothing more.
+    noteTypedInput('t1', 'pwd\r', clock)
+    expect(trace).toEqual(['watch t1', 'unwatch t1'])
   })
 
   it('never lets one go for a terminal no agent was started in, and a screen that will not let go changes nothing', async () => {
