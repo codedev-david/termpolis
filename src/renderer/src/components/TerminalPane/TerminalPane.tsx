@@ -7,6 +7,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
+import { echoTraceAttach } from '../../lib/echoTrace'
 import { registerWebglPane, setWebglPaneVisible } from '../../lib/webglBudget'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm, formatAsMessagePlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
@@ -1414,12 +1415,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       return true // let terminal handle all other keys
     })
 
+    const echo = echoTraceAttach(terminalId, term, { throttle: () => throttledWrite.pending(), held: () => pendingWriteRef.current.length })
     term.onData((data) => {
       // A focus-out report xterm sent because it is REPLAYING an old `?1004h` (see writeHistory):
       // not the user's input, and not news to the app. Dropped before it is forwarded or recorded.
       if (historyParses.count > 0 && data === FOCUS_OUT) return
       // Pass data to PTY
-      window.termpolis.writeToTerminal(terminalId, data)
+      echo.write(data)
 
       // Record input if recording
       recording.appendRecordingEntry('input', data)
@@ -1456,7 +1458,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       }
     })
 
-    const throttledWrite = createOutputThrottle((data) => term.write(data))
+    const throttledWrite = createOutputThrottle(echo.tap((data) => term.write(data)))
     // Until this mount's replay lands, live output goes straight into xterm's own (ordered)
     // write queue rather than through the throttle: if the replay then has to be laid in behind
     // it (landReplay), nothing can still be sitting in the throttle to land after the replay.
@@ -1602,6 +1604,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     const unsub = window.termpolis.onTerminalData((id, data, end) => {
       if (id !== terminalId) return
+      echo.received(data.length)
       // Output that beat this mount's replay reply: note where it ends in the stream, so
       // landReplay can tell whether the replay already holds it.
       if (replayPending) {
@@ -1688,6 +1691,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         resizeTimer = setTimeout(doFit, 150)
         return
       }
+      echo.resize()
       fitAddon.fit()
       window.termpolis.resizeTerminal(terminalId, term.cols, term.rows)
     }
@@ -1763,6 +1767,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     return () => {
       disposed = true
       unsub()
+      echo.detach()
       promptParse.cancel()
       selectionChangeDisposable.dispose()
       document.removeEventListener('mouseup', handleDocumentMouseUp)

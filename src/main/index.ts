@@ -110,6 +110,7 @@ import {
 import { detectAvailableShells, resolveShellExecutable } from './shellDetector'
 import { createTerminalNameLookup } from './terminalNames'
 import { initAppLog, logToApp, readAppLog, clearAppLog, appLogFilePath, captureConsole } from './appLog'
+import { startTypingTrace, traceTerminalWrite, noteTerminalOutput, timedIpc } from './typingTrace'
 import { normalizeLevel } from '../shared/appLog'
 import {
   appendOutput,
@@ -816,6 +817,7 @@ ipcMain.handle('terminal:create', async (_, { id, shellType, cwd, extraPaths, cl
           // chunk that is both in its replay and on its way live instead of drawing it twice.
           const end = appendOutput(terminalOutputBuffers, id, data)
           mainWindow?.webContents.send('terminal:data', id, data, end)
+          noteTerminalOutput(id)
           // Mark only. The remote pump reads the buffer on its own 50ms tick, so a
           // paired phone never adds work proportional to PTY chatter -- and with no
           // phone subscribed this is a set lookup that finds nothing.
@@ -973,7 +975,7 @@ ipcMain.handle('ai-security:sensitive-reads', async (_, { terminalId }: { termin
 // Test-only: record raw terminal writes so e2e can assert the compaction re-prime
 // paste actually reached a terminal. Only populated under NODE_ENV=test.
 const __testTerminalWrites: Array<{ id: string; data: string }> = []
-ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => {
+ipcMain.on('terminal:write', traceTerminalWrite((_, { id, data }: { id: string; data: string; t?: number }) => {
   if (process.env.NODE_ENV === 'test') __testTerminalWrites.push({ id, data })
   // The launch patterns below read what was typed or pasted, so a paste's bracketed-paste
   // markers come off first (see stripPasteMarkers). `data` itself still goes to the PTY as is.
@@ -1117,8 +1119,8 @@ ipcMain.on('terminal:write', (_, { id, data }: { id: string; data: string }) => 
       }
     }
   } catch {}
-})
-ipcMain.on('terminal:resize', (_, { id, cols, rows }) => resizeTerminal(id, cols, rows))
+}))
+ipcMain.on('terminal:resize', timedIpc('terminal:resize', (_, { id, cols, rows }) => resizeTerminal(id, cols, rows)))
 
 ipcMain.handle('shell:available', async () => {
   try { return ok(await detectAvailableShells()) }
@@ -2616,7 +2618,7 @@ ipcMain.handle('memory:prepare-codex-context', async (_, opts: { cwd?: string })
 // individual Claude / Codex / Gemini sessions — not only completed swarm tasks. Called
 // by the renderer's useSessionReflection hook on idle-settle and on terminal close.
 // Guarded / best-effort: a read, distill, or write failure never disturbs the terminal.
-ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; cwd: string; agent: string }) => {
+ipcMain.handle('memory:reflect-session', timedIpc('memory:reflect-session', async (_, opts: { terminalId: string; cwd: string; agent: string }) => {
   try {
     if (!opts?.terminalId || !opts?.cwd || !opts?.agent) return ok({ fired: false, lessons: 0 })
     // LOCKED: every lesson write would be refused, yet the cursor would still advance past the turns —
@@ -2655,7 +2657,7 @@ ipcMain.handle('memory:reflect-session', async (_, opts: { terminalId: string; c
     )
     return ok(res)
   } catch (e: any) { return err(e.message) }
-})
+}))
 
 // Cross-machine sync: the brain lives in device-sharded JSONL. Pointing it at a
 // folder the user already syncs (Syncthing/Dropbox/iCloud/git) makes the same
@@ -3332,12 +3334,12 @@ ipcMain.handle('contextPins:clear', async (_, { cwd }: { cwd: string }) => {
 
 // ---- Transcript Watcher IPC ----
 // Renderer calls these when an agent is detected / terminal closes
-ipcMain.handle('agentWatcher:attach', async (_, { terminalId, cwd, agentType, sessionId }: { terminalId: string; cwd: string; agentType: DetectedAgent; sessionId?: string }) => {
+ipcMain.handle('agentWatcher:attach', timedIpc('agentWatcher:attach', async (_, { terminalId, cwd, agentType, sessionId }: { terminalId: string; cwd: string; agentType: DetectedAgent; sessionId?: string }) => {
   try {
     const handle = attachWatcher(terminalId, cwd, agentType, sessionId)
     return ok({ attached: handle !== null })
   } catch (e: any) { return err(e.message) }
-})
+}))
 
 ipcMain.handle('agentWatcher:detach', async (_, { terminalId }: { terminalId: string }) => {
   try { detachWatchers(terminalId); return ok() }
@@ -3552,6 +3554,7 @@ async function semanticPoolOptions(
             // Buffer first: the event carries the chunk's end offset (see terminal:create).
             const end = appendOutput(terminalOutputBuffers, id, data)
             mainWindow?.webContents.send('terminal:data', id, data, end)
+            noteTerminalOutput(id)
             remoteNoteTerminalOutput(id)
           // Inject the proxy env for EVERY swarm worker: create_terminal fixes env BEFORE run_command
           // reveals the real command, and the conductor may name a Claude worker anything ("Backend
@@ -3938,6 +3941,7 @@ async function semanticPoolOptions(
     // (below, at module scope) has been filling the in-memory ring since load, so
     // startup lines survive into the file the first time anything is written.
     initAppLog(app.getPath('userData'))
+    startTypingTrace()
     initAuditLog(app.getPath('userData'))
     initEventBus(app.getPath('userData'))
     initContextPinStore(app.getPath('userData'))

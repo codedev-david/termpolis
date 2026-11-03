@@ -1640,3 +1640,82 @@ describe('createWindow — the agents-running close guard', () => {
     expect(mockWebContents.executeJavaScript).not.toHaveBeenCalled()
   })
 })
+
+// ===========================================================================
+// The typing trace is wired into the terminal path (1.54.5, plan package P0)
+// ===========================================================================
+//
+// src/main/typingTrace.ts has its own unit tests; this block pins the WIRING in index.ts: that the
+// handlers record into it, that a stamp never reaches the pty, and that no behaviour moved. The trace
+// is the real module here, loaded into the same module registry as the real index.ts above.
+
+describe('typing trace wiring', () => {
+  const SHELLS = [{ type: 'bash', executable: '/bin/bash' }]
+  const traceNow = async () => (await import('../../src/main/typingTrace')).getTypingTraceSnapshot()
+
+  it('whenReady starts the trace', async () => {
+    expect((await traceNow()).started).toBe(true)
+  })
+
+  it('times a terminal:write, records T1 for a stamped one, and never lets the stamp reach the pty', async () => {
+    const before = await traceNow()
+    fire('terminal:write', { id: 'tt-1', data: 'a', t: Date.now() - 5 })
+    const after = await traceNow()
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('tt-1', 'a') // exactly two arguments: no `t`
+    expect(after.ipc['terminal:write'].count).toBe((before.ipc['terminal:write']?.count ?? 0) + 1)
+    expect(after.t1.n).toBe(before.t1.n + 1)
+  })
+
+  it('NEGATIVE CONTROL: an unstamped terminal:write is timed but records no T1', async () => {
+    const before = await traceNow()
+    fire('terminal:write', { id: 'tt-2', data: 'a' })
+    const after = await traceNow()
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('tt-2', 'a')
+    expect(after.ipc['terminal:write'].count).toBe(before.ipc['terminal:write'].count + 1)
+    expect(after.t1.n).toBe(before.t1.n)
+  })
+
+  it('still forwards when the strict-mode block returns early, and still times the call', async () => {
+    const before = await traceNow()
+    fire('terminal:write', { id: 'tt-3', data: '' })
+    expect(mockWriteToTerminal).toHaveBeenLastCalledWith('tt-3', '')
+    expect((await traceNow()).ipc['terminal:write'].count).toBe(before.ipc['terminal:write'].count + 1)
+  })
+
+  it('records T2 when the first output of that terminal follows a stamped key', async () => {
+    mockDetectAvailableShells.mockResolvedValue(SHELLS)
+    await invoke('terminal:create', { id: 'tt-4', shellType: 'bash', cwd: '/w' })
+    const onOutput = mockSpawnTerminal.mock.calls[mockSpawnTerminal.mock.calls.length - 1][3] as (d: string) => void
+    const before = await traceNow()
+    fire('terminal:write', { id: 'tt-4', data: 'x', t: Date.now() - 2 })
+    onOutput('x') // the echo
+    onOutput('y') // a second chunk is not the echo
+    const after = await traceNow()
+    expect(after.t2.n).toBe(before.t2.n + 1)
+    expect(mockWebContents.send).toHaveBeenCalledWith('terminal:data', 'tt-4', 'x', expect.any(Number))
+  })
+
+  it('times terminal:resize and still resizes', async () => {
+    const before = await traceNow()
+    fire('terminal:resize', { id: 'tt-5', cols: 90, rows: 33 })
+    expect(mockResizeTerminal).toHaveBeenCalledWith('tt-5', 90, 33)
+    expect((await traceNow()).ipc['terminal:resize'].count).toBe((before.ipc['terminal:resize']?.count ?? 0) + 1)
+  })
+
+  it('times agentWatcher:attach and memory:reflect-session, and still answers them', async () => {
+    const before = await traceNow()
+    await invoke('agentWatcher:attach', { terminalId: 'tt-6', cwd: '/w', agentType: 'claude' })
+    await invoke('memory:reflect-session', {}) // refused for missing fields, but the call is still timed
+    const after = await traceNow()
+    expect(after.ipc['agentWatcher:attach'].count).toBe((before.ipc['agentWatcher:attach']?.count ?? 0) + 1)
+    expect(after.ipc['memory:reflect-session'].count).toBe((before.ipc['memory:reflect-session']?.count ?? 0) + 1)
+  })
+
+  it('answers diagnostics:collect with the typing block, and the seven old fields untouched', async () => {
+    const r = await invoke('diagnostics:collect')
+    expect(r.success).toBe(true)
+    expect(r.data.appVersion).toBe('9.9.9')
+    expect(r.data.typing.started).toBe(true)
+    expect(typeof r.data.typing.ipc['terminal:write'].count).toBe('number')
+  })
+})

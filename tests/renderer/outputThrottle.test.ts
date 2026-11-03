@@ -219,3 +219,47 @@ describe('createOutputThrottle — environments with no animation frames at all'
     expect(writeFn).toHaveBeenLastCalledWith('a')
   })
 })
+
+// The echo trace (src/renderer/src/lib/echoTrace.ts) reads how many chars sit in the throttle, ahead of
+// the next write, through pending(). It must say exactly what is buffered and must never change what
+// the throttle does.
+describe('createOutputThrottle: pending()', () => {
+  let frames: Array<() => void> = []
+  beforeEach(() => {
+    frames = []
+    vi.stubGlobal('requestAnimationFrame', (cb: () => void) => { frames.push(cb); return frames.length })
+    vi.stubGlobal('cancelAnimationFrame', () => undefined)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('is 0 when idle, equals the buffered chars during a burst, and is 0 again once flushed', () => {
+    const out: string[] = []
+    const t = createOutputThrottle((d) => out.push(d))
+    expect(t.pending()).toBe(0)
+    t.pending() // reading it twice changes nothing
+    t('x'.repeat(10_000)) // bigger than the small-write bypass: it queues
+    expect(t.pending()).toBe(10_000)
+    t('abc') // a write behind a burst in flight queues too
+    expect(t.pending()).toBe(10_003)
+    expect(out).toEqual([]) // nothing was written yet: pending() did not flush it
+    frames.shift()!() // the frame arrives
+    expect(t.pending()).toBe(0)
+    expect(out.join('')).toBe('x'.repeat(10_000) + 'abc')
+  })
+
+  it('NEGATIVE CONTROL: a small idle write takes the instant path, so nothing is ever pending', () => {
+    const out: string[] = []
+    const t = createOutputThrottle((d) => out.push(d))
+    t('a')
+    expect(out).toEqual(['a'])
+    expect(t.pending()).toBe(0)
+  })
+
+  it('counts a backlog past the 64 KB frame cap as still pending', () => {
+    const t = createOutputThrottle(() => undefined)
+    t('y'.repeat(70_000))
+    expect(t.pending()).toBe(70_000)
+    frames.shift()!() // one frame writes 64 KB and re-arms for the rest
+    expect(t.pending()).toBe(70_000 - 65_536)
+  })
+})

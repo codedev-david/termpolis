@@ -7,6 +7,7 @@ import { compressToolResult } from './headroom/compressToolResult'
 import { isAgentBinary, sanitizeAgentCommand } from './agentCommandSanitizer'
 import { detectAgentStatus, emptyInputBox, inputBoxRow, inputBoxRows, isBusyOnScreen, type AgentStatusResult } from '../shared/agentStatusDetector'
 import { screenOf, type ScreenSize } from '../shared/terminalScreen'
+import { traceMcpTool } from './typingTrace'
 
 const MCP_PORT_DEFAULT = 9315 // "TERM" on phone keypad
 
@@ -1538,7 +1539,7 @@ export async function executeToolForWorkflow(name: string, args: unknown, handle
     }
   }
   try {
-    const result = await executeTool(name, args ?? {}, handlers)
+    const result = await traceMcpTool(name, () => executeTool(name, args ?? {}, handlers))
     logMcpRequest('tools/call', name, 'ok', undefined, null, 'workflow')
     return result
   } catch (e) {
@@ -1585,7 +1586,7 @@ async function handleJsonRpc(request: any, handlers: McpToolHandlers, device: st
   if (method === 'tools/call') {
     const { name, arguments: args } = params
     try {
-      const result = await executeTool(name, args || {}, handlers, device, abandoned)
+      const result = await traceMcpTool(name, () => executeTool(name, args || {}, handlers, device, abandoned))
       return {
         jsonrpc: '2.0',
         result: { content: [{ type: 'text', text: compressToolResult(name, result) }] },

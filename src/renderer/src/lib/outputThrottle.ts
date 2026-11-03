@@ -31,7 +31,11 @@ const SMALL_WRITE_BYPASS = 8192
  */
 const WATCHDOG_MS = 100
 
-export function createOutputThrottle(writeFn: (data: string) => void) {
+/** The throttle's write function. `pending()` is how many chars are buffered and not yet handed to the
+ *  writer: the echo trace reads it to tell how much output sits ahead of a typed key. */
+export type OutputThrottle = ((data: string) => void) & { pending: () => number }
+
+export function createOutputThrottle(writeFn: (data: string) => void): OutputThrottle {
   let buffer = ''
   let scheduled = false
   let rafId: number | null = null
@@ -74,7 +78,7 @@ export function createOutputThrottle(writeFn: (data: string) => void) {
     }
   }
 
-  return (data: string) => {
+  const write = (data: string): void => {
     // Fast path: a small write while fully idle is almost always a typed character being echoed
     // back — write it now so it appears instantly. The `!scheduled && buffer.length === 0` guard
     // preserves ordering: once a burst is in flight, small writes fall through to the buffer and
@@ -86,4 +90,5 @@ export function createOutputThrottle(writeFn: (data: string) => void) {
     buffer += data
     if (!scheduled) schedule()
   }
+  return Object.assign(write, { pending: (): number => buffer.length })
 }
