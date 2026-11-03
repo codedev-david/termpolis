@@ -572,6 +572,56 @@ describe('TerminalPane resize: real xterm, real FitAddon, real output throttle',
   })
 
   // ---------------------------------------------------------------------------------------------
+  describe('a live write that xterm refuses (key s4: a throw after the buffer was emptied lost 40,000 of 40,000 chars)', () => {
+    const REFUSAL = 'write data discarded, use flow control to avoid losing data'
+    /** 600 labelled lines, about 28 KB: over the throttle's 8 KB bypass, so it queues and is flushed by a frame. */
+    const lines = Array.from({ length: 600 }, (_, i) => `L${String(i).padStart(4, '0')} ${'z'.repeat(40)}`)
+    const burst = lines.join('\r\n') + '\r\n'
+
+    const bufferLines = (t: Terminal): string[] => {
+      const b = t.buffer.active
+      const out: string[] = []
+      for (let y = 0; y < b.length; y++) out.push(b.getLine(y)?.translateToString(true) ?? '')
+      return out
+    }
+
+    async function refuseOnce(): Promise<{ t: Terminal; refused: () => number }> {
+      await mount([['a', true]])
+      await settle(500)
+      const t = term()
+      const realWrite = t.write.bind(t)
+      let refused = 0
+      vi.spyOn(t, 'write').mockImplementation(((data: string, cb?: () => void) => {
+        if (data.length > 8192 && refused < 1) { refused++; throw new Error(REFUSAL) }
+        return realWrite(data, cb)
+      }) as typeof t.write)
+      return { t, refused: () => refused }
+    }
+
+    it('the chunk stays queued and is offered again: all 600 lines arrive, once each, in order', async () => {
+      const { t, refused } = await refuseOnce()
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      await act(async () => { dataCbs[0]('a', burst) })
+      await settle(3000)
+      expect(refused()).toBe(1)
+      const seen = bufferLines(t).filter((l) => /^L\d{4} z{40}$/.test(l))
+      expect(seen).toEqual(lines) // none lost, none repeated, in order
+      expect(errors).toHaveBeenCalledTimes(1) // the refusal was reported once, not swallowed and not once per retry
+      expect(errors.mock.calls[0][0]).toBe('[output throttle]')
+    })
+
+    it('NEGATIVE CONTROL: with the output switch off the same refusal loses the whole chunk and throws out of the timer (1.54.4)', async () => {
+      window.localStorage.setItem('termpolis.outputChunks', '0')
+      const { t, refused } = await refuseOnce()
+      await act(async () => { dataCbs[0]('a', burst) })
+      await expect(settle(3000)).rejects.toThrow(REFUSAL)
+      await settle(3000) // nothing offers it again
+      expect(refused()).toBe(1)
+      expect(bufferLines(t).filter((l) => /^L\d{4} z{40}$/.test(l))).toEqual([]) // all 600 lines are gone
+    })
+  })
+
+  // ---------------------------------------------------------------------------------------------
   it('a font change refits the visible pane and tells the pty, once', async () => {
     await mount([['a', true]])
     await settle(500)
