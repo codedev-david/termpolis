@@ -763,7 +763,13 @@ describe('equivalence with reading the whole transcript', () => {
     if (r < 0.82) return metaLine()
     if (r < 0.86) return noiseLine()
     if (r < 0.9) return summaryLine()
-    if (r < 0.94) return BROKEN_LINE
+    if (r < 0.93) return BROKEN_LINE
+    // The prompts that decide whether a session is another computer's, or carries a primer, can arrive at
+    // any later step (after a bare preamble, say): they must change nothing once the opening is settled
+    // and everything while it is not.
+    if (r < 0.95) return userLine(delegated(text))
+    if (r < 0.97) return userLine(primed(text))
+    if (r < 0.98) return userLine(PREAMBLE)
     return assistantLine(text + ' ' + text)
   }
 
