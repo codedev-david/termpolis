@@ -34,7 +34,8 @@ const M = vi.hoisted(() => ({
   // Both delegate to their sync twin, which is what the tests below still stub.
   execFile: vi.fn((bin: string, args: string[], opts: unknown, cb: (e: Error | null, out: string) => void) => {
     try { cb(null, String(M.execFileSync(bin, args, opts) ?? '')) } catch (e) {
-      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown }
+      // Node's exec error carries the exit status as a NUMBER in `code`, which ErrnoException types as a string.
+      const x = e as Error & { code?: string | number; status?: number; stdout?: unknown }
       if (x && x.code === undefined && x.status !== undefined) x.code = x.status
       cb(x, String(x?.stdout ?? ''))
     }
@@ -43,7 +44,7 @@ const M = vi.hoisted(() => ({
     // execSync reports failure by THROWING, carrying .status/.stdout/.stderr; exec reports it
     // through the callback, with .code and the two streams as arguments. Translate, never drop.
     try { cb(null, String(M.execSync(cmd, opts) ?? ''), '') } catch (e) {
-      const x = e as NodeJS.ErrnoException & { status?: number; stdout?: unknown; stderr?: unknown }
+      const x = e as Error & { code?: string | number; status?: number; stdout?: unknown; stderr?: unknown }
       if (x && x.code === undefined && x.status !== undefined) x.code = x.status
       cb(x, String(x?.stdout ?? ''), String(x?.stderr ?? ''))
     }

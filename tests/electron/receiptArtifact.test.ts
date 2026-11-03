@@ -26,6 +26,7 @@ import {
   resetReceiptIdentity,
 } from '../../src/main/headroom/receiptStore'
 import type { UnifiedTotals } from '../../src/main/headroom/unifiedReceipt'
+import { billBreakdown } from '../../src/main/headroom/effectiveUnits'
 import { isoFromEpochMs } from '../../src/main/isoTime'
 
 function totals(over: Partial<UnifiedTotals> = {}): UnifiedTotals {
@@ -52,6 +53,28 @@ function totals(over: Partial<UnifiedTotals> = {}): UnifiedTotals {
     toolUseOrigTokens: 0,
     toolUseSavedTokens: 0,
     worstSavedPct: 12.5,
+    // The rest of the type. The receipt reads none of it, so these are zeros, and the bill is the real function's.
+    retrievalTurns: 0,
+    retrievalTurnUnits: 0,
+    turnRequests: 0,
+    askedBackTokens: 0,
+    stubKinds: { plain: 0, compact: 0, dedup: 0, diff: 0, aged: 0, agedEarly: 0, agedEarlyRequests: 0 },
+    belowFloorRequests: 0,
+    floorEligibleRequests: 0,
+    bill: billBreakdown({ cacheReadTokens: 2_000_000, cacheCreationTokens: 100_000, inputTokens: 50_000, outputTokens: 40_000 }, 450_000),
+    retrieveMisses: 0,
+    retrieveBadTokens: 0,
+    retrieveUnknownTokens: 0,
+    retrieveExpired: 0,
+    unbackedEvictions: 0,
+    sysTokensPerRequest: 0,
+    toolsTokensPerRequest: 0,
+    tpToolsTokensPerRequest: 0,
+    toolCount: 0,
+    steeredRequests: 0,
+    unsteeredRequests: 0,
+    steeredAvgOutput: 0,
+    unsteeredAvgOutput: 0,
     ...over,
   }
 }
