@@ -189,6 +189,68 @@ describe('the proxy child and the first-sight policy', () => {
     const { applyProxyConfig } = await child()
     for (const bad of [null, undefined, 5, 'x', [], true]) expect(() => applyProxyConfig(bad)).not.toThrow()
   })
+
+  // The line that hands the Settings choice "Age out old history" to the child was the one line of the function nothing
+  // read: dropped, decay would never apply in the child (the default is on, so the model would see more and the savings
+  // would be lost) and the toggle would be dead. The flag has no reader, so it is read where it lands: a conversation
+  // long enough to have old history goes through the real server, and what the upstream receives says whether it aged.
+  describe('the "Age out old history" choice reaches the rewrite', () => {
+    const AGED = 'Aged out of this conversation'
+    /** 130 messages (past the 128 where aging starts) with a 3,000-character result in each user turn: the first 64 are old enough to age. */
+    const longConversation = (): string => {
+      const messages: Array<Record<string, unknown>> = [{ role: 'user', content: first }]
+      for (let i = 0; messages.length < 130; i++) {
+        messages.push({ role: 'assistant', content: [{ type: 'tool_use', id: `t${i}`, name: 'Bash', input: { command: `cat part-${i}` } }] })
+        messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: `part ${i}\n` + Array.from({ length: 80 }, (_, r) => `row ${r} of part ${i} with some padding in it`).join('\n') }] })
+      }
+      return JSON.stringify({ model: 'x', messages })
+    }
+
+    /** What the upstream received for a request through the real server, after the frame is applied. */
+    async function forwarded(frame: unknown): Promise<string> {
+      const main = await import('../../src/main/headroomProxy/proxyMain')
+      const http = await import('http')
+      main.applyProxyConfig(frame)
+      let received = ''
+      const stub = http.createServer((req, res) => {
+        const parts: Buffer[] = []
+        req.on('data', (c: Buffer) => parts.push(c))
+        req.on('end', () => { received = Buffer.concat(parts).toString('utf8'); res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n') })
+      })
+      await new Promise<void>((r) => stub.listen(0, '127.0.0.1', () => r()))
+      const proxy = main.createProxyServer({ upstreamHost: '127.0.0.1', upstreamPort: (stub.address() as { port: number }).port, useHttps: false })
+      await new Promise<void>((r) => proxy.listen(0, '127.0.0.1', () => r()))
+      try {
+        const s = longConversation()
+        await new Promise<void>((resolve, reject) => {
+          const req = http.request({ host: '127.0.0.1', port: (proxy.address() as { port: number }).port, path: '/v1/messages', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(s) } }, (res) => { res.resume(); res.on('end', () => resolve()) })
+          req.on('error', reject); req.write(s); req.end()
+        })
+      } finally { proxy.close(); stub.close() }
+      return received
+    }
+
+    it('ages old history when the frame says decay: true', async () => {
+      const got = await forwarded({ mode: 'aggressive', thinkingCap: 0, decay: true, firstSight: 'late' })
+      expect(got.split(AGED).length - 1).toBeGreaterThan(10)
+    })
+
+    it('ages nothing when the frame says decay: false, and nothing when it says nothing', async () => {
+      expect(await forwarded({ mode: 'aggressive', thinkingCap: 0, decay: false, firstSight: 'late' })).not.toContain(AGED)
+      vi.resetModules()
+      expect(await forwarded({ mode: 'aggressive', thinkingCap: 0, firstSight: 'late' })).not.toContain(AGED)
+    })
+
+    it('takes the latest frame: the flag is not frozen for the run the way the policy is', async () => {
+      // Unlike the first-sight policy, decay is a live setting (supervisor: setProxyDecay), so a later frame replaces it.
+      const main = await import('../../src/main/headroomProxy/proxyMain')
+      main.applyProxyConfig({ mode: 'aggressive', decay: true, firstSight: 'late' })
+      main.applyProxyConfig({ mode: 'aggressive', decay: false, firstSight: 'late' })
+      expect(await forwarded({ mode: 'aggressive', decay: false, firstSight: 'late' })).not.toContain(AGED)
+      const again = await forwarded({ mode: 'aggressive', decay: true, firstSight: 'late' })
+      expect(again).toContain(AGED)
+    })
+  })
 })
 
 // Every test above starts from _resetProxyForTest(), which assigns the same literal the declaration
