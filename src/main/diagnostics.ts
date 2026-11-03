@@ -7,6 +7,7 @@
 import { app } from 'electron'
 import { getGovernorSnapshot, type GovernorSnapshot } from './loopGovernor'
 import { arch, release } from 'os'
+import { getTypingTraceSnapshot, type TypingTraceSnapshot } from './typingTrace'
 
 export interface Diagnostics {
   appVersion: string
@@ -18,6 +19,9 @@ export interface Diagnostics {
   electronVersion: string
   nodeVersion: string
   chromeVersion: string
+  /** The typing trace (loop delay, echo latency, handler timings, memory): numbers only. Not part of
+   *  the Report-a-Problem text, which prints the seven fields above. */
+  typing?: TypingTraceSnapshot
 }
 
 export function collectDiagnostics(): Diagnostics {
@@ -32,6 +36,7 @@ export function collectDiagnostics(): Diagnostics {
     electronVersion: process.versions.electron || 'n/a',
     nodeVersion: process.versions.node || 'n/a',
     chromeVersion: process.versions.chrome || 'n/a',
+    typing: getTypingTraceSnapshot(),
   }
 }
 

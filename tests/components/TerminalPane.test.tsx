@@ -3317,6 +3317,57 @@ describe('TerminalPane', () => {
       expect(mocks.mockTerminal.write).toHaveBeenCalledWith(big)
     })
 
+    // 1.54.5 (plan package P2): the hold is capped at 256 KB, four throttle ticks, so the first key
+    // typed after a selection is not echoed behind sixteen. NEGATIVE CONTROL: the kill switch brings
+    // the 1.54.4 cap of 1,000,000 chars back, and the very same output stays held.
+    it('caps the hold at 256 KB: output that would pass it releases what is held, in order, ahead of itself', () => {
+      mocks.mockTerminal.hasSelection.mockReturnValue(true)
+      render(<TerminalPane {...defaultProps} />)
+      mocks.mockTerminal.write.mockClear()
+      const chunk = 'x'.repeat(10_000)
+      for (let i = 0; i < 26; i++) act(() => { mockOnTerminalDataCb?.('term-1', chunk) }) // 260,000: under 262,144
+      expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+      act(() => { mockOnTerminalDataCb?.('term-1', 'y'.repeat(10_000)) }) // would take the hold past its cap
+      expect(mocks.mockTerminal.write).toHaveBeenCalledTimes(1)
+      expect(mocks.mockTerminal.write).toHaveBeenCalledWith(chunk.repeat(26))
+      // ...and the chunk that overflowed is held, behind the selection, until it is released
+      fireEvent.mouseUp(document)
+      mocks.mockTerminal.hasSelection.mockReturnValue(false)
+      act(() => { mockSelectionChangeCb?.() })
+      expect(mocks.mockTerminal.write).toHaveBeenLastCalledWith('y'.repeat(10_000))
+    })
+
+    it('NEGATIVE CONTROL: with the output-chunks switch off the hold keeps its 1.54.4 cap, so the same output stays held', () => {
+      window.localStorage.setItem('termpolis.outputChunks', '0')
+      try {
+        mocks.mockTerminal.hasSelection.mockReturnValue(true)
+        render(<TerminalPane {...defaultProps} />)
+        mocks.mockTerminal.write.mockClear()
+        for (let i = 0; i < 27; i++) act(() => { mockOnTerminalDataCb?.('term-1', 'x'.repeat(10_000)) }) // 270,000
+        expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+      } finally {
+        window.localStorage.removeItem('termpolis.outputChunks')
+      }
+    })
+
+    it('NEGATIVE CONTROL: with the switch off the hold overflows the 1.54.4 way, writing the chunk that took it past the cap WITH what it held', () => {
+      window.localStorage.setItem('termpolis.outputChunks', '0')
+      try {
+        mocks.mockTerminal.hasSelection.mockReturnValue(true)
+        render(<TerminalPane {...defaultProps} />)
+        mocks.mockTerminal.write.mockClear()
+        for (let i = 0; i < 99; i++) act(() => { mockOnTerminalDataCb?.('term-1', 'x'.repeat(10_000)) }) // 990,000: held
+        expect(mocks.mockTerminal.write).not.toHaveBeenCalled()
+        act(() => { mockOnTerminalDataCb?.('term-1', 'y'.repeat(10_001)) }) // 1,000,001: past the 1,000,000 cap
+        expect(mocks.mockTerminal.write).toHaveBeenCalledTimes(1)
+        const written = mocks.mockTerminal.write.mock.calls[0][0] as string
+        expect(written.length).toBe(1_000_001)
+        expect(written.endsWith('y'.repeat(10_001))).toBe(true) // the new chunk went out with the rest, not into the hold
+      } finally {
+        window.localStorage.removeItem('termpolis.outputChunks')
+      }
+    })
+
     it('stays paused on mouseup / selection-change while a selection still exists', () => {
       mocks.mockTerminal.hasSelection.mockReturnValue(true)
       render(<TerminalPane {...defaultProps} />)
@@ -3434,11 +3485,12 @@ describe('TerminalPane', () => {
   // while selecting and runs once released.
   // =====================================================
   describe('resize reflow guard (doFit)', () => {
-    it('fits when idle, defers the reflow while selecting, then fits on release', () => {
+    it('fits when idle, defers the reflow while selecting, then fits on release', async () => {
       vi.useFakeTimers()
       try {
         mocks.mockTerminal.hasSelection.mockReturnValue(false)
         render(<TerminalPane {...defaultProps} />)
+        await act(async () => {}) // the mount's replay reply lands: until it has, every fit is held (1.54.5)
         vi.advanceTimersByTime(200) // flush any mount-scheduled work
         mockResizeTerminal.mockClear()
 
@@ -4111,13 +4163,21 @@ describe('TerminalPane', () => {
   // 20. Visibility change triggers fit
   // =====================================================
   describe('visibility changes', () => {
-    it('triggers fit and resize when becoming visible', () => {
+    it('triggers fit and resize when becoming visible', async () => {
       vi.useFakeTimers()
-      const { rerender } = render(<TerminalPane {...defaultProps} isVisible={false} />)
-      rerender(<TerminalPane {...defaultProps} isVisible={true} />)
-      vi.advanceTimersByTime(10)
-      expect(mockResizeTerminal).toHaveBeenCalledWith('term-1', 80, 24)
-      vi.useRealTimers()
+      try {
+        const { rerender } = render(<TerminalPane {...defaultProps} isVisible={false} />)
+        // The mount's replay reply lands first (the pane holds every fit until it has: 1.54.5), and a
+        // hidden pane is not fitted or resized at all: the pty is told nothing until it is shown.
+        await act(async () => {})
+        vi.advanceTimersByTime(200)
+        expect(mockResizeTerminal).not.toHaveBeenCalled()
+        rerender(<TerminalPane {...defaultProps} isVisible={true} />)
+        vi.advanceTimersByTime(10)
+        expect(mockResizeTerminal).toHaveBeenCalledWith('term-1', 80, 24)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

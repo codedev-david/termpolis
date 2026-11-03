@@ -88,6 +88,15 @@ describe('preload: termpolis API', () => {
     expect(mockIpcRenderer.send).toHaveBeenCalledWith('terminal:write', { id: 'id1', data: 'ls\r' })
   })
 
+  it('writeToTerminal carries the echo trace stamp only when it is given one', () => {
+    exposed.termpolis.writeToTerminal('id1', 'a', 1_700_000_000_123)
+    expect(mockIpcRenderer.send).toHaveBeenLastCalledWith('terminal:write', { id: 'id1', data: 'a', t: 1_700_000_000_123 })
+    // NEGATIVE CONTROL: no stamp, no `t` key at all: the payload is exactly what it always was
+    exposed.termpolis.writeToTerminal('id1', 'b')
+    expect(mockIpcRenderer.send).toHaveBeenLastCalledWith('terminal:write', { id: 'id1', data: 'b' })
+    expect(Object.keys(mockIpcRenderer.send.mock.calls[mockIpcRenderer.send.mock.calls.length - 1][1])).toEqual(['id', 'data'])
+  })
+
   it('resizeTerminal sends terminal:resize', () => {
     exposed.termpolis.resizeTerminal('id1', 120, 40)
     expect(mockIpcRenderer.send).toHaveBeenCalledWith('terminal:resize', { id: 'id1', cols: 120, rows: 40 })

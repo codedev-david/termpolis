@@ -7,6 +7,11 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon } from '@xterm/addon-search'
 import { getTheme } from '../../themes/terminalThemes'
 import { createOutputThrottle } from '../../lib/outputThrottle'
+import { createChunkQueue, createStringQueue } from '../../lib/chunkQueue'
+import { holdOutput, holdOutputLegacy, HOLD_CAP_CHARS, HOLD_CAP_LEGACY_CHARS } from '../../lib/selectionHold'
+import { switchEnabled, SWITCH_OUTPUT_CHUNKS, SWITCH_RESIZE_ORDER } from '../../lib/paneSwitches'
+import { createPaneFitter, type PaneFitter } from '../../lib/paneFitter'
+import { echoTraceAttach } from '../../lib/echoTrace'
 import { registerWebglPane, setWebglPaneVisible } from '../../lib/webglBudget'
 import { stripAnsi, generateFilename, formatAsCodeBlockFromTerm, formatAsCodeBlockHtmlFromTerm, formatAsPlainTextFromTerm, formatAsMessageHtmlFromTerm, formatAsMessagePlainTextFromTerm } from '../../lib/exportTerminal'
 import { computeMenuPosition, type MenuPosition } from '../../lib/contextMenuPosition'
@@ -271,7 +276,15 @@ function readTerminalText(terminalId?: string): string {
   return lines.join('\n')
 }
 
+/** A terminal's grid as xterm has it, for an e2e spec to compare with the size the shell child
+ *  reports (the two disagreeing is the persistent garble a resize must never leave). */
+function readTerminalSize(terminalId?: string): { cols: number; rows: number } | null {
+  const term = (terminalId ? liveTerminals.get(terminalId) : activeTerminal())?.term
+  return term ? { cols: term.cols, rows: term.rows } : null
+}
+
 if (typeof window !== 'undefined') {
+  ;(window as unknown as { __termpolis_terminal_size?: typeof readTerminalSize }).__termpolis_terminal_size = readTerminalSize
   // Read-only test inspection hook — used by e2e terminal tests.
   ;(window as unknown as { __termpolis_terminal_text?: typeof readTerminalText }).__termpolis_terminal_text =
     readTerminalText
@@ -324,7 +337,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // flips true on left-mousedown and false on a document mouseup; pendingWriteRef
   // holds the deferred output until the selection is released/cleared.
   const selectingRef = useRef(false)
-  const pendingWriteRef = useRef('')
+  // A chunk list, made once (useRef(createChunkQueue()) would build and drop one every render).
+  const [pendingWrite] = useState(createChunkQueue)
+  const pendingWriteRef = useRef(pendingWrite)
   // When the user scrolls a mouse-tracking TUI we forward a wheel report to the
   // pty and the app answers by repainting. That repaint is output the user ASKED
   // for, unlike the streamed agent output the pause above guards against — so it
@@ -336,6 +351,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
   // the replay at the pane's size after all. It points at the CURRENT mount's hold, so a late
   // callback from an earlier mount can never release a later one's.
   const replaySizeHoldRef = useRef<{ active: boolean } | null>(null)
+  // The mount's fitter (paneFitter.ts: fits in stream order, only while visible, never to a collapsed
+  // grid). Null with the resize kill switch off: the effects below then fit as 1.54.4 did.
+  const fitterRef = useRef<PaneFitter | null>(null)
+  // The fitter reads visibility live: the mount effect only ever sees the value it was created with.
+  const isVisibleRef = useRef(isVisible)
+  isVisibleRef.current = isVisible
   // The current mount's count of history writes still being parsed (see writeHistory) — so a
   // Clear's mode restore, made outside the mount effect, is counted where onData looks.
   const historyParsesRef = useRef<HistoryParses>({ count: 0 })
@@ -821,7 +842,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // you get a diff badge on an empty terminal, or a stale copy snapshot the context
     // menu will happily paste.
     outputBufferRef.current = ''
-    pendingWriteRef.current = ''
+    pendingWriteRef.current.clear()
     inputBufferRef.current = ''
     copySnapshotRef.current = null
     mouseDownSnapRef.current = null
@@ -907,7 +928,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // This mount's hold on fits while its replay parses at the pty's size (landReplay). Published
     // through the ref so the font and visibility effects respect it too. Declared first: the
     // mount's own fit below may run synchronously.
-    const sizeHold = { active: false }
+    // Armed from the start (1.54.5): the mount-time font effect used to resize the pty BEFORE the
+    // replay reply, so conhost's new-size repaint was parsed at the replay's old size. It is released
+    // on every exit of landReplay (the replay's parse, a missing reply, an error), with a timer only
+    // as the bound. Off with the resize kill switch: the hold is then armed inside landReplay, as before.
+    const ordered = switchEnabled(SWITCH_RESIZE_ORDER)
+    const sizeHold = { active: ordered }
     replaySizeHoldRef.current = sizeHold
     // This mount's history writes still being parsed (writeHistory); onData reads it. Per mount,
     // so a parse that never reports back from a torn-down pane cannot mute a later mount's.
@@ -1131,8 +1157,10 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     // 7. Fit (deferred to avoid layout thrashing when multiple terminals mount at once) — unless
     // the replay is being parsed at the pty's size by then; it refits when it is done.
+    // (With the resize order on, the fit that follows the replay does this, in stream order, and only
+    // for a visible pane: a hidden one would otherwise be left with a grid its pty was never told about.)
     requestAnimationFrame(() => {
-      if (!disposed && !sizeHold.active) fitAddon.fit()
+      if (!disposed && !sizeHold.active && !ordered) fitAddon.fit()
     })
 
     termRef.current = term
@@ -1414,12 +1442,13 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       return true // let terminal handle all other keys
     })
 
+    const echo = echoTraceAttach(terminalId, term, { throttle: () => throttledWrite.pending(), held: () => pendingWriteRef.current.length })
     term.onData((data) => {
       // A focus-out report xterm sent because it is REPLAYING an old `?1004h` (see writeHistory):
       // not the user's input, and not news to the app. Dropped before it is forwarded or recorded.
       if (historyParses.count > 0 && data === FOCUS_OUT) return
       // Pass data to PTY
-      window.termpolis.writeToTerminal(terminalId, data)
+      echo.write(data)
 
       // Record input if recording
       recording.appendRecordingEntry('input', data)
@@ -1456,7 +1485,14 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       }
     })
 
-    const throttledWrite = createOutputThrottle((data) => term.write(data))
+    // The backlog lives in a chunk list; localStorage 'termpolis.outputChunks' = '0' brings back the 1.54.4 string buffer.
+    const chunkedOutput = switchEnabled(SWITCH_OUTPUT_CHUNKS)
+    // With the switch off the whole 1.54.4 output path is back: the string buffer, the flush that loses a refused chunk,
+    // the 1,000,000 char hold and its overflow rule.
+    const throttledWrite = createOutputThrottle(echo.tap((data) => term.write(data)), {
+      queue: chunkedOutput ? createChunkQueue() : createStringQueue(),
+      retryRefused: chunkedOutput,
+    })
     // Until this mount's replay lands, live output goes straight into xterm's own (ordered)
     // write queue rather than through the throttle: if the replay then has to be laid in behind
     // it (landReplay), nothing can still be sitting in the throttle to land after the replay.
@@ -1472,7 +1508,9 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     // string-based side effect below live — only the term.write is deferred,
     // then flushed on release / when the selection clears. A hard cap stops
     // runaway buffering if output floods while a selection just sits there.
-    const PENDING_WRITE_CAP = 1_000_000
+    // 256 KB = four throttle ticks, so the first key after a selection is not echoed behind sixteen
+    // (selectionHold.ts); the 1.54.4 cap of 1,000,000 returns with the output-chunks switch.
+    const PENDING_WRITE_CAP = chunkedOutput ? HOLD_CAP_CHARS : HOLD_CAP_LEGACY_CHARS
     // Long enough to cover a wheel report's round trip through the pty and the
     // app's repaint, short enough that the selection is protected again as soon
     // as the user stops scrolling. Each notch re-stamps it, so a continuous
@@ -1481,17 +1519,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     const isSelectionActive = (): boolean => selectingRef.current || term.hasSelection()
     const isUserScroll = (): boolean => Date.now() - lastUserScrollRef.current < USER_SCROLL_WINDOW_MS
     const flushPendingWrite = (): void => {
-      const buffered = pendingWriteRef.current
-      if (!buffered) return
-      pendingWriteRef.current = ''
-      toXterm(buffered)
+      const buffered = pendingWriteRef.current.takeAll()
+      if (buffered) toXterm(buffered)
     }
     const writeOutput = (data: string): void => {
       if (isSelectionActive() && !isUserScroll()) {
-        pendingWriteRef.current += data
         // Safety valve: never balloon memory or appear frozen forever — if a lot
-        // of output arrives while a selection sits active, resume live writes.
-        if (pendingWriteRef.current.length > PENDING_WRITE_CAP) flushPendingWrite()
+        // of output arrives while a selection sits active, resume live writes
+        // (holdOutput lets go of what it holds, in order, once it would pass the cap).
+        const through = (chunkedOutput ? holdOutput : holdOutputLegacy)(pendingWriteRef.current, data, PENDING_WRITE_CAP)
+        if (through) toXterm(through)
         return
       }
       flushPendingWrite()
@@ -1602,6 +1639,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
 
     const unsub = window.termpolis.onTerminalData((id, data, end) => {
       if (id !== terminalId) return
+      echo.received(data.length)
       // Output that beat this mount's replay reply: note where it ends in the stream, so
       // landReplay can tell whether the replay already holds it.
       if (replayPending) {
@@ -1676,8 +1714,27 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       }
     })
 
+    // 1.54.5: the fit happens in stream order (the output ahead of it is parsed at the size it was
+    // drawn for), only while the pane is visible, never to a collapsed grid, and the pty is told even
+    // if fit() throws. The body below is the 1.54.4 fit, kept for the kill switch.
+    const fitter = ordered
+      ? createPaneFitter({
+          isDisposed: () => disposed,
+          isHeld: () => sizeHold.active,
+          isVisible: () => isVisibleRef.current,
+          isSelectionActive,
+          onFit: () => echo.resize(),
+          flushHold: flushPendingWrite,
+          throttle: throttledWrite,
+          term,
+          addon: fitAddon,
+          send: (cols, rows) => window.termpolis.resizeTerminal(terminalId, cols, rows),
+        })
+      : null
+    fitterRef.current = fitter
     let resizeTimer: ReturnType<typeof setTimeout> | null = null
     const doFit = (): void => {
+      if (fitter) { fitter.request(); return }
       if (disposed) return
       // A replay still being parsed at the pty's size refits when it is done (landReplay).
       if (sizeHold.active) return
@@ -1688,6 +1745,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         resizeTimer = setTimeout(doFit, 150)
         return
       }
+      echo.resize()
       fitAddon.fit()
       window.termpolis.resizeTerminal(terminalId, term.cols, term.rows)
     }
@@ -1724,20 +1782,21 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
       doFit()
     }
     const landReplay = (reply: ReplayReply | undefined): void => {
-      if (!replayPending) return
+      // Every exit below releases the mount's hold on fits (releaseSizeHold is a no-op once released).
+      if (!replayPending) { releaseSizeHold(); return }
       replayPending = false
       const early = earlyLive.splice(0)
-      if (disposed || !reply) return
+      if (disposed || !reply) { releaseSizeHold(); return }
       const skip = typeof reply.skip === 'number' && reply.skip > 0 ? reply.skip : 0
       let replay = (reply.preamble ?? '') + (reply.output ?? '').slice(skip)
-      if (!replay) return // nothing to replay: whatever arrived early already stands, in order
+      if (!replay) { releaseSizeHold(); return } // nothing to replay: whatever arrived early already stands, in order
       if (early.length > 0) {
         const covered = reply.nextOffset
         const uncovered = early.filter((c) => c.end === undefined || covered === undefined || c.end > covered)
         // The early chunks are already in xterm's queue — or frozen behind a selection — AHEAD
         // of this older replay. RIS, parsed in order, wipes what they drew; the replay redraws
         // the window; and whatever it does not cover goes back on top, once, in order.
-        pendingWriteRef.current = ''
+        pendingWriteRef.current.clear()
         replay = '\x1bc' + replay + uncovered.map((c) => c.data).join('')
       }
       // A resize that throws must not cost the replay: drawn at the wrong width beats a blank
@@ -1750,12 +1809,16 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         // (which tells the pty, if the pane is a different size). The timer only bounds a parse
         // that never reports back.
         sizeHold.active = true
+        clearTimeout(sizeHoldTimer) // the mount's own bound must not cut this parse short
         sizeHoldTimer = setTimeout(releaseSizeHold, REPLAY_PARSE_GRACE_MS)
         writeHistory(term, historyParses, replay, releaseSizeHold)
         return
       }
       writeHistory(term, historyParses, replay)
+      releaseSizeHold() // the fit waits for the replay's parse (resizeInStreamOrder), so it runs in stream order
     }
+    // The mount's hold is bounded too, in case the reply never comes.
+    if (sizeHold.active) sizeHoldTimer = setTimeout(releaseSizeHold, REPLAY_PARSE_GRACE_MS)
     replayRequest
       .then((res) => landReplay(res?.success ? res.data : undefined))
       .catch(() => landReplay(undefined)) // the terminal may have been killed before the replay
@@ -1763,10 +1826,12 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     return () => {
       disposed = true
       unsub()
+      echo.detach()
       promptParse.cancel()
       selectionChangeDisposable.dispose()
       document.removeEventListener('mouseup', handleDocumentMouseUp)
       if (resizeTimer) clearTimeout(resizeTimer)
+      fitter?.cancel() // a resize waiting for output, or a retry behind a selection, must not reach a pty that is going away
       // A hold that outlives its mount would freeze the next one's fits; the next mount
       // publishes its own hold through the ref, and this one now reads as released.
       clearTimeout(sizeHoldTimer)
@@ -1807,6 +1872,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
     termRef.current.options.theme = getTheme(theme)
     // A replay still being parsed at the pty's size refits once it has (landReplay).
     if (replaySizeHoldRef.current?.active) return
+    if (fitterRef.current) { fitterRef.current.request(); return }
     fitRef.current?.fit()
     window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
   }, [fontSize, theme, fontFamily])
@@ -1817,6 +1883,7 @@ function TerminalPaneInner({ terminalId, terminalName, shellType, cwd, isVisible
         if (!fitRef.current || !termRef.current) return
         if (typeof window === 'undefined' || !window.termpolis?.resizeTerminal) return
         if (replaySizeHoldRef.current?.active) return // the replay refits once it has parsed
+        if (fitterRef.current) { fitterRef.current.request(); return }
         fitRef.current.fit()
         window.termpolis.resizeTerminal(terminalId, termRef.current.cols, termRef.current.rows)
       }, 0)

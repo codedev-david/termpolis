@@ -336,7 +336,8 @@ export interface TermpolisAPI {
   /** Tell main which project the sidebar is showing so its automatic triggers arm. */
   watchWorkflowProject: (cwd: string) => Promise<IpcResponse<void>>
   onWorkflowRunEvent: (cb: (event: WorkflowRunEvent) => void) => () => void
-  writeToTerminal: (id: string, data: string) => void
+  /** `t` is the echo trace's wall-clock stamp for a sampled key; omitted for every other write. */
+  writeToTerminal: (id: string, data: string, t?: number) => void
   resizeTerminal: (id: string, cols: number, rows: number) => void
   /** `end` is where the chunk ends in the terminal's output stream — absent for output main
    *  never buffered (a Strict-Mode banner). Comparable with readTerminalBuffer's `nextOffset`. */
@@ -374,6 +375,8 @@ export interface TermpolisAPI {
     electronVersion: string
     nodeVersion: string
     chromeVersion: string
+    /** The main-process typing trace (numbers only). Absent from older builds. */
+    typing?: unknown
   }>>
   getTerminalStatus: (terminalId: string, fallbackCwd: string) => Promise<IpcResponse<{ cwd: string; gitBranch: string }>>
   getGitInfo: (cwd: string) => Promise<IpcResponse<{ status: string; recentCommits: string }>>

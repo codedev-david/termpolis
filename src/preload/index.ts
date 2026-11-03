@@ -33,8 +33,10 @@ const api: TermpolisAPI = {
   watchWorkflowProject: (cwd) => ipcRenderer.invoke('workflow:watch-project', { cwd }),
   onWorkflowRunEvent: (cb) => { const h = (_: unknown, e: import('../renderer/src/types').WorkflowRunEvent) => cb(e); ipcRenderer.on('workflow:run-event', h); return () => ipcRenderer.removeListener('workflow:run-event', h) },
 
-  writeToTerminal: (id, data) =>
-    ipcRenderer.send('terminal:write', { id, data }),
+  // `t` is the sampled key's wall-clock stamp (the echo trace, 1 printable key in 10). Only a stamped
+  // write carries it; every other write sends exactly the payload it always did.
+  writeToTerminal: (id, data, t) =>
+    ipcRenderer.send('terminal:write', t === undefined ? { id, data } : { id, data, t }),
 
   resizeTerminal: (id, cols, rows) =>
     ipcRenderer.send('terminal:resize', { id, cols, rows }),
