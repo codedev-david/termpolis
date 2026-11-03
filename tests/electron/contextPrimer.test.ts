@@ -1737,6 +1737,16 @@ describe('buildContextPrimer — a chunk and the fuller chunk that begins with i
       expect(rows(out)).toHaveLength(4)
     })
 
+    // What relevance chose is left out before the pairs are folded, but a row the lane itself already took is still skipped inside the
+    // loop: a lister that gives one id twice (an overlapping page) shows the row once, and the second slot goes to the next row.
+    it('counts a row once when the lister gives the same id twice', async () => {
+      const twice = chunk('twice', long('the same row listed twice by an overlapping page'), { score: 0, ts: NOW - HOUR })
+      const lane = vi.fn().mockResolvedValue([twice, twice, chunk('next', long('something else entirely from today'), { score: 0, ts: NOW - 2 * HOUR })])
+      const out = await buildContextPrimer(asked([]), { query: 'q', project: proj, recent: lane, now: NOW, limit: 10 })
+      expect(out!.match(/the same row listed twice by an overlapping page/g)).toHaveLength(1)
+      expect(out).toContain('something else entirely from today')
+    })
+
     it('shows the passage once when the lane could not fill its slots and so left the relevance block more room', async () => {
       // limit 10: three lane slots, but only the head to fill them, so the block has nine lines and shows the fuller chunk that
       // ranks last. It must not show the head above it too.
