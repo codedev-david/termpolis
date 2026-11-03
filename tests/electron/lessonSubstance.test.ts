@@ -295,6 +295,12 @@ describe('lessonSubstance: a rule or a mechanism', () => {
       'it broke since 3 days',
       'it broke since v1.54',
       'it broke ever since the update',
+      // the exclusions of "since" hold for wrapped and double-spaced text too, not only for a single space
+      'it broke ever  since the update',
+      'it broke ever\nsince the update',
+      'it broke since the  morning',
+      'it broke since the\nmorning',
+      'it broke since the\tstart of the run',
     ])('does not count: %s', (clause) => {
       expect(named(clause)).toBe(false)
     })
@@ -641,6 +647,18 @@ describe('lessonSubstance: the edges of each rule', () => {
       expect(ids(at(1150))).toBe('identifiers +1')
       expect(has(at(1250), 'connective +2')).toBe(false) // starts after the window
       expect(ids(at(1250))).toBeUndefined()
+    })
+
+    // A bare "so" or "since" is read through the same window as everything else: one that starts after it does not count, though
+    // the name that would carry it is inside.
+    it('reads a bare so or since to character 1,200 and no further', () => {
+      const so = (n: number): string => 'In `ready` ' + filler(n) + ', so debounce the handler'
+      const since = (n: number): string => 'In `ready` ' + filler(n) + ' cap it since the viewer cannot open more'
+      for (const at of [so, since]) {
+        expect(has(at(1100), 'connective +2')).toBe(true)
+        expect(has(at(1250), 'connective +2')).toBe(false) // starts after the window
+        expect(ids(at(1250))).toBe('identifiers +1') // and the name in the first words is still inside it
+      }
     })
 
     // The window is 1,200 characters, to the character: a word that ends at 1,200 is inside it, one that ends at 1,201 is cut.
