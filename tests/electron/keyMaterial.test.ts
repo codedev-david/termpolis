@@ -4633,6 +4633,9 @@ describe('T1 K1: a key in a listing under a Windows path whose folder or file na
       ['a name with an @ and a path after it', `x ${piece}${BS}node_modules${BS}@types${BS}react${BS}a.pem:12:${P}`, false, true],
       ['a name of 246 characters with a folder in it', `x ${piece}${BS}r${'a'.repeat(240)}${BS}a.pem:12:${P}`, false, true],
       ['a name of 266 characters with a folder in it', `x ${piece}${BS}r${'a'.repeat(260)}${BS}a.pem:12:${P}`, true],
+      // (MAX_PATH: a Windows path is 259 characters at the most; the name is what stands between the escape and the listing's colon)
+      ['a name of exactly 259 characters', `x ${piece}${BS}r${'a'.repeat(255)}.pem:12:${P}`, false, true],
+      ['a name of 260 characters', `x ${piece}${BS}r${'a'.repeat(256)}.pem:12:${P}`, true],
       ['a name with a character no name holds (*)', `x ${piece}${BS}rfoo*bar${BS}a.pem:12:${P}`, true],
       ['a name with a character no name holds (a quote)', `x ${piece}${BS}rfoo"bar${BS}a.pem:12:${P}`, true],
       ['a name that holds a blank and no folder or extension (a line of prose)', `x ${piece}${BS}note 3 and some words:12:${P}`, true],
